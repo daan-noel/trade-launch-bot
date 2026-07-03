@@ -3,7 +3,7 @@
 //! Detects alternating buy-dominant (swing high) and sell-dominant (swing low)
 //! legs in a token's trade history. Moved here from `lab/src/analyzers/swing_analyzer.rs`
 //! (swing1 Phase 1a) and made generic over `T: TradeRow` so the SAME analyzer
-//! runs in the lab swing endpoint (`Trade`), the backtest sweep (`SweepTrade`),
+//! runs in the lab swing endpoint (`Trade`), the backtest sweep (`CorpusTrade`),
 //! and — later — live (`CachedTrade`). Pricing is the single shared GMGN spot
 //! ([`TradeRow::chart_spot_price`]), so a leg detected offline is the leg
 //! detected live.
@@ -390,7 +390,7 @@ fn reversal_threshold(sol: f64, pct: f64, prev_leg_net_flow_abs: f64) -> f64 {
 /// Run swing detection over a token's trades, returning the filtered ledger.
 ///
 /// Generic over any [`TradeRow`] so the lab endpoint (`Trade`), the sweep
-/// (`SweepTrade`), and live (`CachedTrade`) all run the identical scan.
+/// (`CorpusTrade`), and live (`CachedTrade`) all run the identical scan.
 pub fn detect_swings<T: TradeRow>(trades: &[T], params: &SwingParams) -> Vec<SwingLeg> {
     let txs = sanitize_and_order(trades);
     let ledger = scan(&txs, params);

@@ -78,7 +78,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 | File | Table(s) | Notable fns |
 | --- | --- | --- |
 | `token_repo.rs` | tokens (+tokens_info) | `find_list_rows` (DB base for /api/tokens; `TokenListRow` carries the `tokens_info` metrics incl. `first_slot_buy_sol`/`first_slot_sell_sol`, divided to human SOL in the SELECT), `find_page_before` (keyset page for analysis scans), `find_by_mints` (chunked mint=ANY) |
-| `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `find_by_mints_all` (batched per-mint grouped reads for backtests; **reconstructs** the dropped `real_reserve_sol` via `approx_real_sol_reserves(reserve_sol, venue)` — backtest-only, never the live path) |
+| `trade_repo.rs` | trades | `find_fill_by_signature`, `sum_legs_by_signatures` (per-sig attribution), `for_each_seed_mint` (cold-start seed), `sig_bytes_to_base58` (`pub`; BYTEA→base58, reused by the lake export), `find_by_mints_all` (batched per-mint grouped reads; **reconstructs** the dropped `real_reserve_sol` via `approx_real_sol_reserves(reserve_sol, venue)`, never the live path — but the **simulate/backtest path no longer calls it**: single-rule simulate now reads the Parquet lake like the sweep, which bakes that same value in at export/read. Retained for ad-hoc grouped reads / tests) |
 | `raw_tx_repo.rs` | raw_txs | `insert`, `insert_many` (ON CONFLICT DO NOTHING), `find_by_signature` (PK lookup) |
 | `token_info_repo.rs` | tokens_info | `upsert_metrics`, `get/update_sync_watermark` |
 | `creation_stats_repo.rs` | tokens (+tokens_info) | `heatmap`, `trend`, `grouped` — TZ-aware SQL, bucket granularities, per-field corpus filters |

@@ -8,7 +8,7 @@
 //! retired once the lake was proven to produce byte-identical metrics.
 //!
 //! The full `Trade` never enters the sweep loop: each token is projected **once at
-//! load** into a slim, wallet-interned [`SweepTrade`] buffer (see
+//! load** into a slim, wallet-interned [`CorpusTrade`] buffer (see
 //! [`crate::sweep::projection`]) — the hot loop walks that, not the ~250 B `Trade`.
 
 use std::sync::Arc;
@@ -19,45 +19,39 @@ use chrono::{DateTime, Utc};
 
 use crate::models::trade::TradeRow;
 use crate::sweep::grouping::TokenFingerprint;
-use crate::sweep::projection::{project_trades, SweepTrade};
+use crate::sweep::projection::{project_trades, CorpusTrade};
 
 /// One token's trade history, ready for `simulate`. `trades` is the slim
-/// [`SweepTrade`] projection (wallet-interned, ~3× smaller than `Trade`), shared
-/// (`Arc`) so building a sub-corpus per group is a refcount clone, not a copy.
-/// `wallets` is the token-local `u32 → address` table the projection interns
-/// against; the hot loop never reads it (wallet identity is pure `u32`) — it
-/// exists only to recover addresses for display.
+/// [`CorpusTrade`] projection (~3× smaller than `Trade`), shared (`Arc`) so building
+/// a sub-corpus per group is a refcount clone, not a copy. Both the grouped sweep
+/// and single-rule simulate load this one shape.
 ///
 /// `fp` carries the token-creation fingerprint used only by the grouping layer
 /// (never by `simulate`). The lake source fills it from the `tokens` dimension at
 /// load (`has_fingerprints`), so the grouping layer can read it directly.
 #[derive(Clone)]
-pub struct TokenTrades {
+pub struct CorpusToken {
     pub mint: String,
     pub symbol: String,
-    pub trades: Arc<Vec<SweepTrade>>,
-    /// `u32 → wallet address` for this token (interned by [`project_trades`]).
-    pub wallets: Arc<Vec<Box<str>>>,
+    pub trades: Arc<Vec<CorpusTrade>>,
     pub fp: TokenFingerprint,
 }
 
-impl TokenTrades {
-    /// Project a token's chronological `Trade` slice into the slim sweep buffer
-    /// once, at load. Apply any corpus-wide trade filter (e.g. `curve_only`)
-    /// **before** calling this — `SweepTrade` drops `venue`.
+impl CorpusToken {
+    /// Project a token's chronological `Trade` slice into the slim buffer once, at
+    /// load. Apply any corpus-wide trade filter (e.g. `curve_only`) **before**
+    /// calling this — `CorpusTrade` drops `venue`.
     pub fn from_trades<T: TradeRow<Wallet = String>>(
         mint: String,
         symbol: String,
         fp: TokenFingerprint,
         trades: &[T],
     ) -> Self {
-        let (rows, wallets) = project_trades(trades);
         Self {
             mint,
             symbol,
             fp,
-            trades: Arc::new(rows),
-            wallets: Arc::new(wallets),
+            trades: Arc::new(project_trades(trades)),
         }
     }
 }
@@ -65,7 +59,7 @@ impl TokenTrades {
 /// The whole loaded population plus the hash that identifies it for the warm
 /// in-memory cache.
 pub struct Corpus {
-    pub tokens: Vec<TokenTrades>,
+    pub tokens: Vec<CorpusToken>,
     /// Stable hash naming the realised selection — keys the warm corpus cache.
     pub hash: String,
     /// True when token fingerprints were loaded with the trades (the lake source
@@ -121,6 +115,12 @@ pub struct Selection {
     pub window: TradeWindow,
     /// Drop AMM (post-migration) legs, keeping only bonding-curve trades.
     pub curve_only: bool,
+    /// Populate each row's `tx_signature` from the lake (single-rule **simulate**
+    /// renders `entry_tx`/`exit_tx` Solscan links). The sweep leaves this `false` so
+    /// its rows stay slim — the trigger is resolved by index, not signature. Only
+    /// affects the projected `CorpusTrade::tx_signature`; never changes which rows load
+    /// or how they price.
+    pub with_signatures: bool,
 }
 
 impl Default for Selection {
@@ -133,6 +133,7 @@ impl Default for Selection {
             per_mint_cap: crate::state::token_cache::MAX_TRADES_RETAINED as i64,
             window: TradeWindow::LaunchWindow,
             curve_only: false,
+            with_signatures: false,
         }
     }
 }

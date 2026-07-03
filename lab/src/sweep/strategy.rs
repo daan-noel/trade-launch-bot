@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use rand::rngs::StdRng;
 use rand::Rng;
 
-use crate::sweep::projection::SweepTrade;
+use crate::sweep::projection::CorpusTrade;
 
 // The cost model, round-trip pricing, and the exit-reason code are owned by the
 // core simulation kernel (one copy of the math, shared by live/paper/sweep). The
@@ -173,7 +173,7 @@ pub struct TokenOutcome {
     pub entry_price: Option<f64>,
     /// Slot of the entry fill trade (`None` when not fired). Lets the drill-in
     /// endpoint resolve the fill's real `tx_signature` from the `trades` table —
-    /// the slim `SweepTrade` carries no signature, so it can't ride along here.
+    /// the slim `CorpusTrade` carries no signature, so it can't ride along here.
     pub entry_slot: Option<u64>,
     /// Block time of the simulated exit fill (`None` when not fired or still open).
     pub exit_time: Option<DateTime<Utc>>,
@@ -276,18 +276,18 @@ pub trait Strategy: ParamSpace + Send + Sync {
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
 
     /// Compute the shared [`Strategy::TokenState`] for one token, **once** before
-    /// any combo runs against it. Pure over the slim [`SweepTrade`] slice.
-    fn prepare_token(&self, trades: &[SweepTrade]) -> Self::TokenState;
+    /// any combo runs against it. Pure over the slim [`CorpusTrade`] slice.
+    fn prepare_token(&self, trades: &[CorpusTrade]) -> Self::TokenState;
 
     /// Resolve the entry on one token's full trade history under a combo's **entry**
     /// params, given the pre-computed [`Strategy::TokenState`]. The expensive half
     /// (the scalp walk); called once per distinct [`Strategy::entry_key`] per token.
-    /// The history is the slim, wallet-interned [`SweepTrade`] projection (not the
+    /// The history is the slim, wallet-interned [`CorpusTrade`] projection (not the
     /// heavy `Trade`); the shared entry fns run over it via the `TradeRow`
     /// abstraction. Pure — safe from many `rayon` threads.
     fn resolve_entry(
         &self,
-        trades: &[SweepTrade],
+        trades: &[CorpusTrade],
         state: &Self::TokenState,
         params: &Self::Params,
     ) -> Self::Entry;
@@ -300,7 +300,7 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// [`round_trip_with_costs`]).
     fn resolve_exit(
         &self,
-        trades: &[SweepTrade],
+        trades: &[CorpusTrade],
         state: &Self::TokenState,
         entry: &Self::Entry,
         params: &Self::Params,

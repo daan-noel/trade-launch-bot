@@ -100,6 +100,7 @@ pub async fn census(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> an
         per_mint_cap: crate::sweep::corpus::sweep_per_mint_cap(),
         window: TradeWindow::LaunchWindow,
         curve_only: true,
+        with_signatures: false,
     };
     let corpus = LakeSource::new(root).load(&sel).await.context("lake load")?;
     println!(
@@ -189,6 +190,7 @@ pub async fn run(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> anyho
         per_mint_cap: crate::sweep::corpus::sweep_per_mint_cap(),
         window: TradeWindow::LaunchWindow,
         curve_only: true,
+        with_signatures: false,
     };
     let corpus = LakeSource::new(root).load(&sel).await.context("lake load")?;
     println!(

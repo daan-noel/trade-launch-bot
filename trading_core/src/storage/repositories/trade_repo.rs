@@ -280,7 +280,7 @@ impl TradeRepo {
     }
 
     /// Resolve the real base58 `tx_signature` for a batch of fill rows, each keyed
-    /// by `(mint, slot, side)`. The sweep walks a slim `SweepTrade` that carries no
+    /// by `(mint, slot, side)`. The sweep walks a slim `CorpusTrade` that carries no
     /// signature, so its entry/exit fills only know the slot; the grouped-sweep
     /// drill-in calls this to recover the actual signature for chart/table linking.
     ///
@@ -864,7 +864,10 @@ fn sig_base58_to_bytes(s: &str) -> anyhow::Result<Vec<u8>> {
 
 /// Raw signature bytes → base58 string. Best-effort: a malformed length yields an
 /// empty string rather than erroring (read paths shouldn't fail on a stray row).
-fn sig_bytes_to_base58(bytes: &[u8]) -> String {
+/// `pub` so the `lab` lake export can convert the `trades.tx_signature` BYTEA
+/// column to the base58 string the lake carries (Stage 1 of the simulate→lake
+/// migration) with the exact same encoding this repo uses everywhere else.
+pub fn sig_bytes_to_base58(bytes: &[u8]) -> String {
     solana_sdk::signature::Signature::try_from(bytes)
         .map(|s| s.to_string())
         .unwrap_or_default()

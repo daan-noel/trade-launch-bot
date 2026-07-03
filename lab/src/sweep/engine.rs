@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
 use crate::sweep::progress::SweepObserver;
-use crate::sweep::projection::SweepTrade;
+use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{Strategy, TokenOutcome};
 
 /// How many combos one token folds between cancel polls. Small enough that a
@@ -36,7 +36,7 @@ const CANCEL_CHECK_STRIDE: usize = 256;
 pub(crate) fn fill_outcomes<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
-    trades: &[SweepTrade],
+    trades: &[CorpusTrade],
     observer: &dyn SweepObserver,
     out: &mut Vec<TokenOutcome>,
 ) -> std::result::Result<(), ()> {
@@ -255,8 +255,8 @@ fn fold_batch<S: Strategy>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sweep::corpus::TokenTrades;
-    use crate::sweep::projection::SweepTrade;
+    use crate::sweep::corpus::CorpusToken;
+    use crate::sweep::projection::CorpusTrade;
     use crate::sweep::strategy::{ExitCode, ParamSpace, SweepMethod, TokenOutcome};
     use crate::models::trade::{Trade, TradeType};
     use chrono::Utc;
@@ -277,11 +277,11 @@ mod tests {
         type EntryKey = ();
         type TokenState = ();
         fn entry_key(&self, _p: &f64) {}
-        fn prepare_token(&self, _trades: &[SweepTrade]) {}
-        fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {
+        fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+        fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[SweepTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,
@@ -301,7 +301,7 @@ mod tests {
         }
     }
 
-    fn token(mint: &str, n: usize) -> TokenTrades {
+    fn token(mint: &str, n: usize) -> CorpusToken {
         let trades: Vec<Trade> = (0..n)
             .map(|i| {
                 Trade::new(
@@ -316,7 +316,7 @@ mod tests {
                 )
             })
             .collect();
-        TokenTrades::from_trades(
+        CorpusToken::from_trades(
             mint.into(),
             mint.into(),
             crate::sweep::grouping::TokenFingerprint::default(),
@@ -376,11 +376,11 @@ mod tests {
         fn entry_key(&self, p: &(i64, f64)) -> i64 {
             p.0
         }
-        fn prepare_token(&self, _trades: &[SweepTrade]) {}
-        fn resolve_entry(&self, _trades: &[SweepTrade], _state: &(), p: &(i64, f64)) -> i64 {
+        fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+        fn resolve_entry(&self, _trades: &[CorpusTrade], _state: &(), p: &(i64, f64)) -> i64 {
             p.0
         }
-        fn resolve_exit(&self, _trades: &[SweepTrade], _state: &(), entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
             TokenOutcome {
                 fired: true,
                 holding_secs: 0,

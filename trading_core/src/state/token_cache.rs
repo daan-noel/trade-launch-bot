@@ -39,10 +39,10 @@ pub const TRADES_TRIM_SLACK: usize = 1_000;
 /// `/api/tokens/:mint/trades` + swing endpoints serve (both read from Postgres).
 ///
 /// Implements [`TradeRow`] (`Wallet = u32`) so every shared entry/exit fn runs
-/// against it unchanged — exactly as the sweep's `SweepTrade` does. No
+/// against it unchanged — exactly as the sweep's `CorpusTrade` does. No
 /// `tx_signature` is retained (Phase B step 1): the live paper fill resolvers work
 /// by **trade index**, not sig match, and `tx_signature()` returns `""` (same as
-/// `SweepTrade`) — the backtest still reads the real sig off the DB `Trade`, and
+/// `CorpusTrade`) — the backtest still reads the real sig off the DB `Trade`, and
 /// real mode records it from the on-chain confirm, never the cache.
 ///
 /// The wallet is stored as a token-local interned `u32` (Phase B step 2), not the
@@ -127,7 +127,7 @@ impl TradeRow for CachedTrade {
         &self.wallet
     }
     /// No signature is retained on the cache row (Phase B step 1) — the live paper
-    /// resolvers key off the trade index, not the sig. Mirrors `SweepTrade`.
+    /// resolvers key off the trade index, not the sig. Mirrors `CorpusTrade`.
     fn tx_signature(&self) -> &str {
         ""
     }

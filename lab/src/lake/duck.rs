@@ -2,7 +2,7 @@
 //! Parquet lake instead of Postgres.
 //!
 //! This is the lake-fed analogue of [`crate::sweep::corpus::DbSource`]: same output
-//! ([`TokenTrades`] with slim, wallet-interned [`SweepTrade`] buffers + a grouping
+//! ([`CorpusToken`] with slim [`CorpusTrade`] buffers + a grouping
 //! [`TokenFingerprint`]), but the trades come from the immutable day-partitioned
 //! Parquet files and the fingerprint/symbol from the `tokens` dimension, queried
 //! through an in-memory DuckDB connection. DuckDB does the per-mint windowing
@@ -12,7 +12,7 @@
 //! **Arrow-version isolation.** DuckDB bundles its own `arrow`, which may not match
 //! lab's `arrow 53`. To avoid two arrow crates colliding in one type, this module
 //! uses DuckDB's **row API** (`query_map`) only — never `query_arrow` — and
-//! re-projects into our `SweepTrade` by hand.
+//! re-projects into our `CorpusTrade` by hand.
 //!
 //! Runtime-unverified this session (no lake to read). The SQL mirrors the verified
 //! `DbSource` shape; validation against a PG-sourced baseline is the Phase-4
@@ -31,8 +31,8 @@ use trading_core::config::constants::approx_real_sol_reserves;
 
 use crate::sweep::corpus::{Corpus, CorpusSource, Selection, TradeWindow};
 use crate::sweep::grouping::TokenFingerprint;
-use crate::sweep::projection::{SweepTrade, WalletInterner};
-use crate::sweep::corpus::TokenTrades;
+use crate::sweep::projection::CorpusTrade;
+use crate::sweep::corpus::CorpusToken;
 
 use super::{tokens_file, trades_glob};
 
@@ -111,7 +111,7 @@ impl CorpusSource for LakeSource {
         //    returns tokens in `mint ASC`; reorder to the candidate order
         //    (`created_at DESC`) so the corpus token order matches `DbSource` exactly
         //    — within-group fold order then matches, down to f64 summation.
-        let mut tokens = load_token_trades(&conn, &trades_lit, &candidates, sel)?;
+        let mut tokens = load_corpus_tokens(&conn, &trades_lit, &candidates, sel)?;
         let rank: HashMap<&str, usize> =
             candidates.iter().enumerate().map(|(i, (m, _))| (m.as_str(), i)).collect();
         tokens.sort_by_key(|t| rank.get(t.mint.as_str()).copied().unwrap_or(usize::MAX));
@@ -139,6 +139,9 @@ fn lake_hash(root: &Path, sel: &Selection) -> String {
     sel.per_mint_cap.hash(&mut h);
     (sel.window as u8).hash(&mut h);
     sel.curve_only.hash(&mut h);
+    // Distinguishes a signature-populated simulate load from a slim sweep load over
+    // the same mints, so a hash-keyed corpus cache can't serve sig-less rows to sim.
+    sel.with_signatures.hash(&mut h);
     sel.created_after.map(|t| t.timestamp_millis()).hash(&mut h);
     sel.created_before.map(|t| t.timestamp_millis()).hash(&mut h);
     if let Some(mints) = &sel.mints {
@@ -211,30 +214,38 @@ fn stage_mints<'a>(conn: &Connection, mints: impl Iterator<Item = &'a str>) -> R
     Ok(())
 }
 
-/// Stream the per-mint capped trades and group them into [`TokenTrades`] with a
-/// token-local wallet interner — the same projection the corpus Parquet reader builds.
-fn load_token_trades(
+/// Stream the per-mint capped trades and group them into [`CorpusToken`] — one slim
+/// [`CorpusTrade`] buffer per token, the single row type both sweep and simulate walk.
+fn load_corpus_tokens(
     conn: &Connection,
     trades_lit: &str,
     candidates: &[(String, String)],
     sel: &Selection,
-) -> Result<Vec<TokenTrades>> {
+) -> Result<Vec<CorpusToken>> {
     let symbols: HashMap<&str, &str> =
         candidates.iter().map(|(m, s)| (m.as_str(), s.as_str())).collect();
     let order = partition_order(sel.window);
     let curve_filter = if sel.curve_only { "AND t.venue = 'curve'" } else { "" };
+    // Simulate needs `tx_signature` (Solscan links); the sweep leaves it out so its
+    // rows stay slim (the trigger is resolved by index, not signature). Selecting the
+    // column only when asked keeps the sweep read from touching the ~88 B/row string.
+    let sig_col = if sel.with_signatures { ", tx_signature" } else { "" };
 
     // ROW_NUMBER window caps each mint's slice; outer ORDER BY restores execution
     // order so a token's legs arrive contiguous + chronological (single-pass group).
+    // `union_by_name=true`: `tx_signature` exists only on files exported after the
+    // Stage-1 schema change. Without name-union, DuckDB's positional glob-read errors
+    // on the mixed old/new schema until the full re-export makes every day uniform;
+    // name-union tolerates the gap (a pre-column day null-fills → empty signature).
     let sql = format!(
         "WITH ranked AS ( \
-            SELECT t.mint, t.wallet, t.is_buy, t.sol_amount, t.token_amount, t.price, \
-                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue, \
+            SELECT t.mint, t.is_buy, t.sol_amount, t.token_amount, t.price, \
+                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue{sig_col}, \
                    ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
-            FROM read_parquet({trades_lit}, hive_partitioning=true) t \
+            FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t \
             WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} \
          ) \
-         SELECT mint, wallet, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok, venue \
+         SELECT mint, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok, venue{sig_col} \
          FROM ranked WHERE rn <= ? \
          ORDER BY mint ASC, slot ASC, tx_index ASC, leg_index ASC, block_time ASC"
     );
@@ -242,33 +253,38 @@ fn load_token_trades(
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(duckdb::params![sel.per_mint_cap])?;
 
-    let mut tokens: Vec<TokenTrades> = Vec::with_capacity(candidates.len());
+    let mut tokens: Vec<CorpusToken> = Vec::with_capacity(candidates.len());
     let mut cur_mint: Option<String> = None;
-    let mut cur_trades: Vec<SweepTrade> = Vec::new();
-    let mut interner = WalletInterner::default();
+    let mut cur_trades: Vec<CorpusTrade> = Vec::new();
 
     while let Some(row) = rows.next()? {
         let mint: String = row.get(0)?;
-        let wallet: String = row.get(1)?;
-        let is_buy: bool = row.get(2)?;
-        let amount_sol: f64 = row.get(3)?;
-        let token_amount: f64 = row.get(4)?;
-        let price: f64 = row.get(5)?;
-        let slot: i64 = row.get(6)?;
-        let block_time: i64 = row.get(7)?;
-        let leg_index: i32 = row.get(8)?;
-        let vsol: Option<f64> = row.get(9)?;
-        let vtok: Option<f64> = row.get(10)?;
-        let venue: String = row.get(11)?;
+        let is_buy: bool = row.get(1)?;
+        let amount_sol: f64 = row.get(2)?;
+        let token_amount: f64 = row.get(3)?;
+        let price: f64 = row.get(4)?;
+        let slot: i64 = row.get(5)?;
+        let block_time: i64 = row.get(6)?;
+        let leg_index: i32 = row.get(7)?;
+        let vsol: Option<f64> = row.get(8)?;
+        let vtok: Option<f64> = row.get(9)?;
+        let venue: String = row.get(10)?;
+        // Column 11 only exists in the SELECT when `with_signatures`; a NULL from a
+        // pre-migration (union_by_name) day → `None` → empty display link.
+        let tx_signature: Option<Box<str>> = if sel.with_signatures {
+            row.get::<_, Option<String>>(11)?.map(String::into_boxed_str)
+        } else {
+            None
+        };
 
         if cur_mint.as_deref() != Some(mint.as_str()) {
             if let Some(prev) = cur_mint.take() {
-                push_token(&mut tokens, prev, &symbols, &mut cur_trades, &mut interner);
+                push_token(&mut tokens, prev, &symbols, &mut cur_trades);
             }
             cur_mint = Some(mint.clone());
         }
-        cur_trades.push(SweepTrade {
-            block_time: ts(block_time),
+        cur_trades.push(CorpusTrade {
+            block_time: micros_to_utc(block_time),
             amount_sol,
             token_amount,
             price_per_token: price,
@@ -285,39 +301,38 @@ fn load_token_trades(
             real_reserve_sol: vsol.map(|s| approx_real_sol_reserves(s, &venue)),
             real_token_reserves: None,
             slot: slot as u64,
-            wallet: interner.intern(&wallet),
             leg_index: leg_index as u32,
             is_buy,
+            tx_signature,
         });
     }
     if let Some(prev) = cur_mint.take() {
-        push_token(&mut tokens, prev, &symbols, &mut cur_trades, &mut interner);
+        push_token(&mut tokens, prev, &symbols, &mut cur_trades);
     }
     Ok(tokens)
 }
 
-/// Close out one token's accumulated buffer into a [`TokenTrades`], resetting the
-/// per-token trade buffer + wallet interner for the next mint.
+/// Close out one token's accumulated buffer into a [`CorpusToken`], resetting the
+/// per-token trade buffer for the next mint.
 fn push_token(
-    out: &mut Vec<TokenTrades>,
+    out: &mut Vec<CorpusToken>,
     mint: String,
     symbols: &HashMap<&str, &str>,
-    trades: &mut Vec<SweepTrade>,
-    interner: &mut WalletInterner,
+    trades: &mut Vec<CorpusTrade>,
 ) {
     let symbol = symbols.get(mint.as_str()).copied().unwrap_or_default().to_string();
-    out.push(TokenTrades {
+    out.push(CorpusToken {
         symbol,
         mint,
         trades: Arc::new(std::mem::take(trades)),
-        wallets: Arc::new(std::mem::take(interner).into_table()),
         fp: TokenFingerprint::default(),
     });
 }
 
-/// Attach the grouping [`TokenFingerprint`] (+ nothing else) to each token from the
-/// dimension file, mirroring [`crate::sweep::corpus::attach_fingerprints`].
-fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenTrades]) -> Result<()> {
+/// Read the grouping [`TokenFingerprint`] for every staged mint from the `tokens`
+/// dimension into a `mint → fp` map (one query), for [`attach_fingerprints`]. Relies
+/// on `sel_mints` being staged by the caller.
+fn load_fingerprints(conn: &Connection, tokens_lit: &str) -> Result<HashMap<String, TokenFingerprint>> {
     let sql = format!(
         "SELECT mint, fp_token_program_id, fp_initial_buy_sol, \
                 fp_cu_limit, fp_cu_price, fp_is_cashback_enabled, fp_max_sol_cost, \
@@ -348,6 +363,13 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
             },
         );
     }
+    Ok(by_mint)
+}
+
+/// Attach the grouping [`TokenFingerprint`] (+ nothing else) to each token from the
+/// dimension file, mirroring [`crate::sweep::corpus::attach_fingerprints`].
+fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [CorpusToken]) -> Result<()> {
+    let by_mint = load_fingerprints(conn, tokens_lit)?;
     let mut missing = 0u64;
     for tt in tokens.iter_mut() {
         match by_mint.get(&tt.mint) {
@@ -364,7 +386,7 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
 /// Epoch **microseconds** → `DateTime<Utc>` (falls back to now on the impossible
 /// overflow). Matches `export.rs`, which writes `block_time` as µs to preserve PG's
 /// timestamptz precision for the sweep's time gates.
-fn ts(micros: i64) -> DateTime<Utc> {
+fn micros_to_utc(micros: i64) -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp_micros(micros).unwrap_or_else(Utc::now)
 }
 
@@ -389,5 +411,87 @@ mod tests {
         let src = LakeSource::new(std::env::temp_dir().join("definitely-no-lake-here-xyz"));
         let err = src.connect().unwrap_err().to_string();
         assert!(err.contains("lake"), "expected a lake-not-found message, got: {err}");
+    }
+}
+
+/// Simulate ↔ sweep parity — the guarantee the migration exists to make: a rule
+/// prices identically whether swept or drilled into. Both now load ONE row type
+/// ([`CorpusTrade`]) through ONE loader; the sole difference is the display-only
+/// `with_signatures` flag. This test pins that the flag populates `tx_signature` and
+/// changes **nothing else** — so simulate can never diverge from the sweep on any
+/// decision field. `--ignored` because it needs a populated `$SWEEP_LAKE_DIR`; the
+/// analogue of `token_repo::parity_tests` for the two token-list engines.
+///
+/// [`CorpusTrade`]: crate::sweep::projection::CorpusTrade
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    use crate::lake::lake_root;
+    use crate::sweep::corpus::{CorpusSource, Selection};
+    use trading_core::models::trade::TradeRow;
+
+    /// Exact-bits compare for an `Option<f64>` so a reserve that must be identical
+    /// can't slip through on a rounding-equal-but-not-bit-equal value.
+    fn opt_bits(v: Option<f64>) -> Option<u64> {
+        v.map(f64::to_bits)
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a populated lake ($SWEEP_LAKE_DIR)"]
+    async fn signature_flag_changes_only_the_signature() {
+        let root = lake_root();
+        if !tokens_file(&root).exists() || !super::super::trades_dir(&root).exists() {
+            eprintln!("skipping sim/sweep parity: no lake at {}", root.display());
+            return;
+        }
+
+        // Same selection but for the display-only `with_signatures` flag: the sweep
+        // read (false) and the simulate read (true) must agree on every row and every
+        // decision field, differing ONLY in the populated `tx_signature`.
+        let base = Selection {
+            mints: None,
+            token_cap: 200,
+            created_after: None,
+            created_before: None,
+            per_mint_cap: 5_000,
+            window: TradeWindow::LaunchWindow,
+            curve_only: false,
+            with_signatures: false,
+        };
+        let with_sigs = Selection { with_signatures: true, ..base.clone() };
+
+        let src = LakeSource::new(root);
+        let sweep = src.load(&base).await.expect("sweep corpus load");
+        let sim = src.load(&with_sigs).await.expect("sim corpus load");
+
+        assert_eq!(sweep.tokens.len(), sim.tokens.len(), "token count must match");
+        assert!(!sim.tokens.is_empty(), "lake returned no tokens — populate it first");
+
+        let mut any_sig = false;
+        for (st, mt) in sweep.tokens.iter().zip(&sim.tokens) {
+            assert_eq!(st.mint, mt.mint, "token order must match");
+            assert_eq!(st.trades.len(), mt.trades.len(), "trade count for {}", st.mint);
+
+            for (a, b) in st.trades.iter().zip(mt.trades.iter()) {
+                // Every decision field bit-identical, so any `TradeRow`-generic
+                // resolver replays identically. Only `tx_signature` may differ.
+                assert_eq!(a.is_buy(), b.is_buy(), "is_buy {}", st.mint);
+                assert_eq!(a.slot(), b.slot(), "slot {}", st.mint);
+                assert_eq!(a.leg_index(), b.leg_index(), "leg_index {}", st.mint);
+                assert_eq!(a.block_time(), b.block_time(), "block_time {}", st.mint);
+                assert_eq!(a.amount_sol().to_bits(), b.amount_sol().to_bits(), "amount_sol {}", st.mint);
+                assert_eq!(a.token_amount().to_bits(), b.token_amount().to_bits(), "token_amount {}", st.mint);
+                assert_eq!(a.price_per_token().to_bits(), b.price_per_token().to_bits(), "price {}", st.mint);
+                assert_eq!(opt_bits(a.reserve_sol()), opt_bits(b.reserve_sol()), "reserve_sol {}", st.mint);
+                assert_eq!(opt_bits(a.reserve_token()), opt_bits(b.reserve_token()), "reserve_token {}", st.mint);
+                assert_eq!(opt_bits(a.real_reserve_sol()), opt_bits(b.real_reserve_sol()), "real_reserve_sol {}", st.mint);
+
+                // The sweep row never carries a signature; the sim row carries one on
+                // any day exported after the schema change (pre-migration days null-fill).
+                assert!(a.tx_signature.is_none(), "sweep row must stay signature-free ({})", st.mint);
+                any_sig |= b.tx_signature.is_some();
+            }
+        }
+        assert!(any_sig, "simulate load populated no signatures — is the lake re-exported with tx_signature?");
     }
 }

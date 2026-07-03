@@ -29,7 +29,7 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::models::Swing1Rule;
-use crate::sweep::projection::SweepTrade;
+use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{
     index_of, lhs_index_plan, neighbor_indices, round_trip_with_costs, CostModel, ExitCode,
     ParamSpace, Strategy, SweepMethod, TokenOutcome,
@@ -744,11 +744,11 @@ impl Strategy for Swing1Strategy {
         }
     }
 
-    fn prepare_token(&self, _trades: &[SweepTrade]) {}
+    fn prepare_token(&self, _trades: &[CorpusTrade]) {}
 
     fn resolve_entry(
         &self,
-        trades: &[SweepTrade],
+        trades: &[CorpusTrade],
         _state: &(),
         params: &Swing1Combo,
     ) -> Swing1Entry {
@@ -765,7 +765,7 @@ impl Strategy for Swing1Strategy {
 
     fn resolve_exit(
         &self,
-        trades: &[SweepTrade],
+        trades: &[CorpusTrade],
         _state: &(),
         entry: &Swing1Entry,
         params: &Swing1Combo,

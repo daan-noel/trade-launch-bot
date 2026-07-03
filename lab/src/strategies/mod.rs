@@ -5,6 +5,7 @@
 
 pub use trading_core::strategies::analysis;
 
+pub mod sim_fetch;
 pub mod sim_progress;
 pub mod sim_query;
 pub mod swing_1;

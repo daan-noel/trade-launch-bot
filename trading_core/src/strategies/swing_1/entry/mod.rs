@@ -142,7 +142,7 @@ pub fn find_phase_entry<T: TradeRow>(
 
     // 4. Worst-case paper fill at the trigger, priced off the **canonical GMGN
     //    spot** (`chart_spot_price`), not execution `price_per_token`. swing1 is
-    //    validated against the Parquet lake, whose `SweepTrade` rows carry the
+    //    validated against the Parquet lake, whose `CorpusTrade` rows carry the
     //    reserve pair but a **zeroed `price_per_token`** — tpsl2's shared
     //    `find_worst_case_paper_entry_at` reads `price_per_token` and so returns a
     //    ~0 fill there, which the sweep then discards (zero fires). Pricing the fill

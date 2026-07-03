@@ -83,7 +83,7 @@ the rule lifecycle; `strategy_cache()` exposes the cache; replaced the per-strat
 
 ### `LocalState` — `lab/src/state/local_state.rs`
 
-`core: Arc<CoreState>` + `backtest_trade_cache` · `sweep_running` / `sweep_cancel` /
+`core: Arc<CoreState>` + `sweep_running` / `sweep_cancel` /
 `sweep_progress` (single-flight grouped sweep) · `sim_cancels` / `sim_progress` /
 `sim_results` (per-rule backtests) · `backtest_sem` (concurrency cap) · `swing_cancels` /
 `swing_progress` / `swing_results` / `swing_runs` (swing runs) · `sweep_corpus_cache`
@@ -177,6 +177,6 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `trade_signals.rs` | `TradeSignals` — wakeup hub: `(wallet,mint)` lane + mint-only lane. **Notify over poll** (held by `DeployState`) |
 
 `IngestHeartbeat` + watchdog live in `ingest-laserstream/src/ingest_health.rs` (not in
-`state/`). Local-only state (`backtest_trade_cache`, `job_progress`, `sim_results`,
+`state/`). Local-only state (`job_progress`, `sim_results`,
 `swing_results`, `swing_run_cache`) lives in `lab/src/state/`. See
 [@arch/database.md](@arch/database.md) for pools + repos.

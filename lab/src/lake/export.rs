@@ -20,6 +20,7 @@ use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
 
 use trading_core::grouping::{extract_lamports, normalize_labels};
+use trading_core::storage::repositories::trade_repo::sig_bytes_to_base58;
 
 use super::{tokens_file, trades_day_file};
 
@@ -42,14 +43,15 @@ pub struct ExportSummary {
 // Schemas
 // ---------------------------------------------------------------------------
 
-/// Day-partitioned trade file schema — the f64 *decimal* fields the sweep reads
-/// (no `tx_signature`, no `real_*_reserves`, no fingerprint: those live in the
-/// `tokens` dimension or are dropped by the new schema). Carries `vsol`+`vtok` so
-/// the sweep prices the GMGN curve-spot (`vsol / vtok`) the same as live + chart.
+/// Day-partitioned trade file schema — the f64 *decimal* fields the sweep +
+/// simulate read. Carries `vsol`+`vtok` so the price is the GMGN curve-spot
+/// (`vsol / vtok`) the same as live + chart, and `tx_signature` for simulate's
+/// Solscan links. No per-trade `wallet` (cohort logic was removed — nothing on the
+/// analysis path reads wallet identity), and no `real_*_reserves`/fingerprint (those
+/// live in the `tokens` dimension or are re-derived on read).
 fn trades_schema() -> Schema {
     Schema::new(vec![
         Field::new("mint", DataType::Utf8, false),
-        Field::new("wallet", DataType::Utf8, false),
         Field::new("is_buy", DataType::Boolean, false),
         Field::new("sol_amount", DataType::Float64, false),
         Field::new("token_amount", DataType::Float64, false),
@@ -69,6 +71,12 @@ fn trades_schema() -> Schema {
         // (slot, tx_index, leg_index) reproduces PG's exactly — many trades share a
         // slot, and block_time alone can't break those ties (corpus-parity bug fix).
         Field::new("tx_index", DataType::Int32, false),
+        // Base58 transaction signature. Carried for the *simulate* read path only —
+        // the sweep's `CorpusTrade` ignores it (stays slim). Re-added in Stage 1 of the
+        // simulate→lake migration so simulate result rows keep their Solscan links
+        // (`entry_tx`/`exit_tx`/`target_tx`) without a PG round-trip. ~88 B/row; lands
+        // on every lake file (the sweep reads them too but never projects this column).
+        Field::new("tx_signature", DataType::Utf8, false),
     ])
 }
 
@@ -172,7 +180,6 @@ async fn sealed_days(pool: &PgPool, include_today: bool) -> Result<Vec<NaiveDate
 #[derive(sqlx::FromRow)]
 struct LakeTradeRow {
     mint_address: String,
-    wallet: String,
     trade_type: String,
     venue: String,
     amount_lamports: i64,
@@ -183,6 +190,8 @@ struct LakeTradeRow {
     tx_index: i32,
     leg_index: i16,
     block_time: DateTime<Utc>,
+    /// Raw 64-byte signature (BYTEA in `trades`); converted to base58 on write.
+    tx_signature: Vec<u8>,
 }
 
 /// Stream one sealed day's trades and write them to the immutable day file. Returns
@@ -211,11 +220,10 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
 
     let mut stream = sqlx::query_as::<_, LakeTradeRow>(
         r#"
-        SELECT t.mint_address, w.address AS wallet, t.trade_type, t.venue,
+        SELECT t.mint_address, t.trade_type, t.venue,
                t.amount_lamports, t.token_amount, t.reserve_lamports, t.reserve_token,
-               t.slot, t.tx_index, t.leg_index, t.block_time
+               t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
         FROM trades t
-        JOIN wallet_dict w ON w.id = t.wallet_id
         WHERE t.block_time >= $1 AND t.block_time < $2
         ORDER BY t.mint_address ASC, t.slot ASC, t.tx_index ASC, t.leg_index ASC, t.block_time ASC
         "#,
@@ -248,7 +256,6 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
 #[derive(Default)]
 struct TradeBuilders {
     mint: StringBuilder,
-    wallet: StringBuilder,
     is_buy: BooleanBuilder,
     sol_amount: Float64Builder,
     token_amount: Float64Builder,
@@ -260,6 +267,7 @@ struct TradeBuilders {
     vtok: Float64Builder,
     venue: StringBuilder,
     tx_index: Int32Builder,
+    tx_signature: StringBuilder,
 }
 
 impl TradeBuilders {
@@ -268,7 +276,6 @@ impl TradeBuilders {
         let token = r.token_amount as f64;
         let price = if token > 0.0 { sol / token } else { 0.0 };
         self.mint.append_value(&r.mint_address);
-        self.wallet.append_value(&r.wallet);
         self.is_buy.append_value(r.trade_type == "buy");
         self.sol_amount.append_value(sol);
         self.token_amount.append_value(token);
@@ -290,6 +297,9 @@ impl TradeBuilders {
         self.vtok.append_option(r.reserve_token.map(|v| v as f64));
         self.venue.append_value(&r.venue);
         self.tx_index.append_value(r.tx_index);
+        // BYTEA → base58, the exact encoding `trade_repo` uses on the PG read path,
+        // so a lake signature is byte-identical to what simulate showed pre-migration.
+        self.tx_signature.append_value(sig_bytes_to_base58(&r.tx_signature));
     }
 
     fn finish(&mut self, schema: &Arc<Schema>) -> Result<RecordBatch> {
@@ -297,7 +307,6 @@ impl TradeBuilders {
             schema.clone(),
             vec![
                 Arc::new(self.mint.finish()),
-                Arc::new(self.wallet.finish()),
                 Arc::new(self.is_buy.finish()),
                 Arc::new(self.sol_amount.finish()),
                 Arc::new(self.token_amount.finish()),
@@ -309,6 +318,7 @@ impl TradeBuilders {
                 Arc::new(self.vtok.finish()),
                 Arc::new(self.venue.finish()),
                 Arc::new(self.tx_index.finish()),
+                Arc::new(self.tx_signature.finish()),
             ],
         )?)
     }
@@ -455,10 +465,9 @@ mod tests {
     use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-    fn row(mint: &str, wallet: &str, buy: bool, lamports: i64, raw_tok: i64) -> LakeTradeRow {
+    fn row(mint: &str, buy: bool, lamports: i64, raw_tok: i64) -> LakeTradeRow {
         LakeTradeRow {
             mint_address: mint.into(),
-            wallet: wallet.into(),
             trade_type: if buy { "buy".into() } else { "sell".into() },
             venue: "curve".into(),
             amount_lamports: lamports,
@@ -469,6 +478,7 @@ mod tests {
             tx_index: 0,
             leg_index: 0,
             block_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+            tx_signature: vec![7u8; 64], // valid 64-byte sig → non-empty base58
         }
     }
 
@@ -476,15 +486,15 @@ mod tests {
     fn trade_builders_apply_trade_repo_unit_conversion() {
         // 1.5 SOL = 1_500_000_000 lamports; price = sol / raw_token.
         let mut b = TradeBuilders::default();
-        b.push(&row("m1", "wA", true, 1_500_000_000, 3_000_000));
+        b.push(&row("m1", true, 1_500_000_000, 3_000_000));
         let schema = Arc::new(trades_schema());
         let batch = b.finish(&schema).unwrap();
 
-        let sol = batch.column(3).as_any().downcast_ref::<Float64Array>().unwrap();
-        let token = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
-        let price = batch.column(5).as_any().downcast_ref::<Float64Array>().unwrap();
-        let vsol = batch.column(9).as_any().downcast_ref::<Float64Array>().unwrap();
-        let vtok = batch.column(10).as_any().downcast_ref::<Float64Array>().unwrap();
+        let sol = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+        let token = batch.column(3).as_any().downcast_ref::<Float64Array>().unwrap();
+        let price = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
+        let vsol = batch.column(8).as_any().downcast_ref::<Float64Array>().unwrap();
+        let vtok = batch.column(9).as_any().downcast_ref::<Float64Array>().unwrap();
         assert!((sol.value(0) - 1.5).abs() < 1e-12, "lamports→SOL ÷1e9");
         assert!((token.value(0) - 3_000_000.0).abs() < 1e-6, "raw token units kept as f64");
         assert!((price.value(0) - 1.5 / 3_000_000.0).abs() < 1e-18, "price = sol/token");
@@ -495,10 +505,10 @@ mod tests {
     #[test]
     fn zero_token_amount_yields_zero_price_not_nan() {
         let mut b = TradeBuilders::default();
-        b.push(&row("m1", "wA", false, 1_000, 0));
+        b.push(&row("m1", false, 1_000, 0));
         let schema = Arc::new(trades_schema());
         let batch = b.finish(&schema).unwrap();
-        let price = batch.column(5).as_any().downcast_ref::<Float64Array>().unwrap();
+        let price = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
         assert_eq!(price.value(0), 0.0, "guard divide-by-zero like price_of()");
     }
 
@@ -515,8 +525,8 @@ mod tests {
         let file = std::fs::File::create(&path).unwrap();
         let mut writer = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
         let mut b = TradeBuilders::default();
-        b.push(&row("m1", "wA", true, 2_000_000_000, 1_000_000));
-        b.push(&row("m1", "wB", false, 500_000_000, 250_000));
+        b.push(&row("m1", true, 2_000_000_000, 1_000_000));
+        b.push(&row("m1", false, 500_000_000, 250_000));
         writer.write(&b.finish(&schema).unwrap()).unwrap();
         writer.close().unwrap();
 
@@ -525,9 +535,9 @@ mod tests {
         let batch = reader.next().unwrap().unwrap();
         assert_eq!(batch.num_rows(), 2);
         let mint = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-        let is_buy = batch.column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
-        let sol = batch.column(3).as_any().downcast_ref::<Float64Array>().unwrap();
-        let slot = batch.column(6).as_any().downcast_ref::<Int64Array>().unwrap();
+        let is_buy = batch.column(1).as_any().downcast_ref::<BooleanArray>().unwrap();
+        let sol = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+        let slot = batch.column(5).as_any().downcast_ref::<Int64Array>().unwrap();
         assert_eq!(mint.value(0), "m1");
         assert!(is_buy.value(0));
         assert!(!is_buy.value(1));

@@ -126,7 +126,7 @@ impl Trade {
 /// The read-only fields the shared entry/exit fns consume, abstracted over
 /// the concrete row type so those fns can run against either the live `Trade`
 /// (decision parity with real trading) **or** the sweep's slim, wallet-interned
-/// [`SweepTrade`](crate::sweep::projection::SweepTrade) projection without
+/// [`CorpusTrade`](crate::sweep::projection::CorpusTrade) projection without
 /// duplicating any decision logic.
 ///
 /// `Trade` impls this trivially (below); the sweep impls it over a ~3× smaller
@@ -148,7 +148,7 @@ pub trait TradeRow {
     /// ordering key. Together with `slot` and `leg_index` it gives the one canonical
     /// trade order (`slot → tx_index → leg_index`) the DB, lake, and every in-memory
     /// consumer sort on. Defaults to `0` for slim rows that don't carry it
-    /// (`SweepTrade`/`CachedTrade`): they're built from an already DB-ordered slice
+    /// (`CorpusTrade`/`CachedTrade`): they're built from an already DB-ordered slice
     /// and never re-sorted, so they need no per-row copy (RAM budget). Only the live
     /// `Trade` — which IS re-sorted in memory — overrides it with the real column.
     fn tx_index(&self) -> u32 {

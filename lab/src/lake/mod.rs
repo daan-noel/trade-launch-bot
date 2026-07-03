@@ -22,7 +22,7 @@
 //! rewritten wholesale each export.
 //!
 //! **Unit parity.** Rows are written in the same f64 *decimal* units the sweep's
-//! [`SweepTrade`](crate::sweep::projection::SweepTrade) uses, mirroring
+//! [`CorpusTrade`](crate::sweep::projection::CorpusTrade) uses, mirroring
 //! `trade_repo`'s `TradeDbRow` read conversion exactly (lamports→SOL ÷1e9; raw token
 //! units kept as f64; virtual reserves raw→f64; the dropped `real_*_reserves` become
 //! `None`). The lake is therefore a columnar mirror of what the PG corpus source

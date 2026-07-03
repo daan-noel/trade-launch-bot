@@ -412,12 +412,14 @@ async fn run_grouped_sweep_job(
         // first minutes, which a newest-first cap would drop (Rec 4).
         window: crate::sweep::corpus::TradeWindow::LaunchWindow,
         curve_only: b.curve_only,
+        // Sweep resolves the trigger by index, not signature — no `tx_signature` needed.
+        with_signatures: false,
     };
 
     // Load the corpus from the immutable Parquet lake via DuckDB (the sole sweep
     // corpus source). The lake embeds grouping fingerprints (`has_fingerprints`), so
     // no separate `tokens` lookup is needed; trades arrive as slim, wallet-interned
-    // `SweepTrade` buffers in the same launch-window order the engine expects.
+    // `CorpusTrade` buffers in the same launch-window order the engine expects.
     let root = crate::lake::lake_root();
     tracing::info!(lake = %root.display(), "grouped sweep: corpus source = Parquet lake (DuckDB)");
     let mut corpus = match LakeSource::new(root).load(&sel).await {
@@ -1200,7 +1202,7 @@ pub async fn list_token_results(
     let target_key = group.group_key.clone();
 
     // Helper: apply the run's ix_labels + field filters to an owned token vec.
-    let apply_filters = |mut tokens: Vec<crate::sweep::corpus::TokenTrades>| -> Vec<crate::sweep::corpus::TokenTrades> {
+    let apply_filters = |mut tokens: Vec<crate::sweep::corpus::CorpusToken>| -> Vec<crate::sweep::corpus::CorpusToken> {
         if let Some(want) = run
             .ix_labels_filter
             .as_ref()
@@ -1261,6 +1263,7 @@ pub async fn list_token_results(
             token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
+            with_signatures: false,
         };
         let root = crate::lake::lake_root();
         match LakeSource::new(root).load(&sel).await {
@@ -1300,7 +1303,7 @@ pub async fn list_token_results(
     };
 
     // Resolve the real base58 entry/exit signatures the chart/table need to link a
-    // fill to its candle. The sweep walks a slim `SweepTrade` with no signature, so
+    // fill to its candle. The sweep walks a slim `CorpusTrade` with no signature, so
     // the fills only carry the slot; look the signatures up from the `trades` table
     // by (mint, slot, side). Entry fills are buys, exit fills sells.
     let fill_keys: Vec<(String, u64, bool)> = rows

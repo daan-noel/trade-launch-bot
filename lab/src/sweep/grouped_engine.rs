@@ -22,7 +22,7 @@
 //! pools are nested (large groups fold serially inside their own `run_sweep`;
 //! small groups fold serially inside the cross-group `par_iter`).
 //!
-//! Each sub-corpus is a refcount-clone of `TokenTrades` (`trades` is an `Arc`, so
+//! Each sub-corpus is a refcount-clone of `CorpusToken` (`trades` is an `Arc`, so
 //! no trade buffer is copied). Empty `fields` ⇒ a single "ALL" group ⇒ identical
 //! to a global ungrouped sweep.
 
@@ -573,9 +573,9 @@ fn score_cmp(a: Option<f64>, b: Option<f64>) -> Ordering {
 mod tests {
     use super::*;
     use crate::models::trade::{Trade, TradeType};
-    use crate::sweep::corpus::TokenTrades;
+    use crate::sweep::corpus::CorpusToken;
     use crate::sweep::grouping::TokenFingerprint;
-    use crate::sweep::projection::SweepTrade;
+    use crate::sweep::projection::CorpusTrade;
     use crate::sweep::strategy::{ExitCode, ParamSpace, SweepMethod, TokenOutcome};
     use chrono::Utc;
 
@@ -598,11 +598,11 @@ mod tests {
         type EntryKey = ();
         type TokenState = ();
         fn entry_key(&self, _p: &f64) {}
-        fn prepare_token(&self, _trades: &[SweepTrade]) {}
-        fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _p: &f64) -> bool {
+        fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+        fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[SweepTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,
@@ -622,7 +622,7 @@ mod tests {
         }
     }
 
-    fn token(mint: &str, program: &str) -> TokenTrades {
+    fn token(mint: &str, program: &str) -> CorpusToken {
         let t = Trade::new(
             mint.into(),
             "w".into(),
@@ -633,7 +633,7 @@ mod tests {
             1,
             Utc::now(),
         );
-        TokenTrades::from_trades(
+        CorpusToken::from_trades(
             mint.into(),
             mint.into(),
             TokenFingerprint {
@@ -727,7 +727,7 @@ mod tests {
         use crate::sweep::grouping::GroupField;
         let threads = rayon::current_num_threads().max(1);
         let big = LARGE_GROUP_TOKEN_FACTOR * threads + 1; // clears `large_min`
-        let mut tokens: Vec<TokenTrades> =
+        let mut tokens: Vec<CorpusToken> =
             (0..big).map(|i| token(&format!("a{i}"), "devA")).collect();
         tokens.push(token("b0", "devB"));
         tokens.push(token("b1", "devB"));

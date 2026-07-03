@@ -10,11 +10,11 @@
 //! [`strategy::ParamSpace`] impl under [`strategies`] — the corpus, grouping,
 //! engine, aggregate, and persistence layers are reused verbatim. Module layout,
 //! one responsibility each:
-//! - [`corpus`] — `CorpusSource` (cache | DB) → `TokenTrades`, each token
-//!   projected once into a slim, wallet-interned [`projection::SweepTrade`] buffer
+//! - [`corpus`] — `CorpusSource` (cache | DB) → `CorpusToken`, each token
+//!   projected once into a slim, wallet-interned [`projection::CorpusTrade`] buffer
 //!   (carrying a grouping [`grouping::TokenFingerprint`]), cached to Parquet by
 //!   corpus hash.
-//! - [`projection`] — `SweepTrade`, the slim row the hot loop walks; the shared
+//! - [`projection`] — `CorpusTrade`, the slim row the hot loop walks; the shared
 //!   entry/exit fns are generic over `TradeRow` so they serve it and the live
 //!   `Trade` from one implementation.
 //! - [`strategy`] — `Strategy` + `ParamSpace` traits + `TokenOutcome`; re-exports

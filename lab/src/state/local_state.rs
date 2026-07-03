@@ -5,14 +5,13 @@ use dashmap::DashMap;
 use uuid::Uuid;
 use tokio::sync::{RwLock, Semaphore};
 
-use super::backtest_trade_cache::BacktestTradeCache;
 use super::core_state::CoreState;
 use super::job_progress::ProgressCell;
 use super::matched_cache::MatchedCache;
 use super::sim_results::SimResults;
 use super::swing_results::SwingResults;
 use super::swing_run_cache::SwingRunCache;
-use crate::sweep::corpus::TokenTrades;
+use crate::sweep::corpus::CorpusToken;
 
 /// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
 /// sweep run, keyed by its corpus hash. Lets `list_token_results` skip both the
@@ -22,7 +21,7 @@ pub struct SweepCorpusCache {
     pub corpus_hash: String,
     /// All tokens with fingerprints already attached, as `Arc<Vec<_>>` so
     /// cloning into the handler is a refcount bump (no copy of the trade data).
-    pub tokens: Arc<Vec<TokenTrades>>,
+    pub tokens: Arc<Vec<CorpusToken>>,
 }
 
 /// Max concurrent backtests across both strategies. Each one streams the `tokens`
@@ -32,16 +31,11 @@ pub struct SweepCorpusCache {
 const MAX_CONCURRENT_BACKTESTS: usize = 2;
 
 /// Analysis (local) state: the shared [`CoreState`] plus the handles only the
-/// backtest/sweep/swing process needs — the backtest trade cache, sweep + sim +
-/// swing run gates/progress/results, and the warm sweep corpus cache. `Deref`s to
+/// backtest/sweep/swing process needs — sweep + sim + swing run
+/// gates/progress/results, and the warm sweep corpus cache. `Deref`s to
 /// `CoreState` so local handlers reach core fields/accessors transparently.
 pub struct LocalState {
     pub core: Arc<CoreState>,
-    /// Cross-run cache of per-mint trade history for backtests. Reuses immutable
-    /// history across simulation runs (keyed on `TokenState::trade_count` for
-    /// exact, free freshness) so re-tuning a rule re-fetches nothing. Constructed
-    /// empty; only the backtest reads/writes it.
-    pub backtest_trade_cache: Arc<BacktestTradeCache>,
     /// Single-flight gate for the CPU-heavy grouped sweep
     /// (`POST /api/strategies/sweeps`): while one is running the handler returns
     /// 409, so a sweep can never pile more rayon work onto the process while one
@@ -111,7 +105,6 @@ impl LocalState {
     pub fn new(core: Arc<CoreState>) -> Self {
         Self {
             core,
-            backtest_trade_cache: Arc::new(BacktestTradeCache::new()),
             sweep_running: Arc::new(AtomicBool::new(false)),
             sweep_cancel: Arc::new(AtomicBool::new(false)),
             sim_cancels: Arc::new(DashMap::new()),

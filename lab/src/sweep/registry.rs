@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::models::grouped_sweep::ComboTokenResult;
 use crate::models::{Swing1Rule, Tpsl1Rule, Tpsl2Rule};
 use crate::storage::repositories::grouped_sweep_repo::GroupedSweepTables;
-use crate::sweep::corpus::{Corpus, TokenTrades};
+use crate::sweep::corpus::{Corpus, CorpusToken};
 use crate::sweep::engine::fill_outcomes;
 use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::GroupField;
@@ -576,7 +576,7 @@ async fn sweep_tpsl1(
 /// always including non-fired tokens so the caller can display the full group slice.
 pub fn simulate_one_combo(
     strategy_id: &str,
-    tokens: &[TokenTrades],
+    tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
@@ -606,7 +606,7 @@ fn exit_label(code: ExitCode) -> &'static str {
 }
 
 fn simulate_tpsl2_one_combo(
-    tokens: &[TokenTrades],
+    tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
@@ -656,7 +656,7 @@ fn simulate_tpsl2_one_combo(
 }
 
 fn simulate_tpsl1_one_combo(
-    tokens: &[TokenTrades],
+    tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
@@ -706,7 +706,7 @@ fn simulate_tpsl1_one_combo(
 }
 
 fn simulate_swing1_one_combo(
-    tokens: &[TokenTrades],
+    tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {

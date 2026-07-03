@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::Tpsl1Rule;
 use crate::strategies::tpsl_sniper_1::{entry, exit};
-use crate::sweep::projection::SweepTrade;
+use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{
     index_of, lhs_index_plan, neighbor_indices, round_trip_with_costs, CostModel, ExitCode,
     ParamSpace, Strategy, SweepMethod, TokenOutcome,
@@ -390,9 +390,9 @@ impl Strategy for Tpsl1Strategy {
 
     fn entry_key(&self, _params: &Tpsl1Combo) {}
 
-    fn prepare_token(&self, _trades: &[SweepTrade]) {}
+    fn prepare_token(&self, _trades: &[CorpusTrade]) {}
 
-    fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), _params: &Tpsl1Combo) -> Tpsl1Entry {
+    fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _params: &Tpsl1Combo) -> Tpsl1Entry {
         // (1) Entry fill — the live/backtest fill resolution (cap 1, matching
         // `run_backtest`). TPSL1 has no per-trade entry gate; the token-creation
         // filter ran upstream when the corpus was selected.
@@ -411,7 +411,7 @@ impl Strategy for Tpsl1Strategy {
 
     fn resolve_exit(
         &self,
-        trades: &[SweepTrade],
+        trades: &[CorpusTrade],
         _state: &(),
         entry: &Tpsl1Entry,
         params: &Tpsl1Combo,

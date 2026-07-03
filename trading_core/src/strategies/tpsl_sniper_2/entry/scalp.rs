@@ -261,7 +261,7 @@ pub fn find_scalp_entry<T: TradeRow>(trades: &[T], rule: &Tpsl2Rule) -> Option<E
 }
 
 /// [`find_scalp_entry`] that also returns the trigger trade's **index** in
-/// `trades`. The sweep uses this directly (its slim `SweepTrade` carries no
+/// `trades`. The sweep uses this directly (its slim `CorpusTrade` carries no
 /// `tx_signature`) to hand the index straight to [`find_worst_case_paper_entry_at`]
 /// (string-free); the live cache row (`CachedTrade`) is likewise signature-free, so
 /// the paper entry resolver uses this form too.
@@ -394,7 +394,7 @@ pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -
 /// [`find_worst_case_paper_entry`] keyed by the trigger trade's **index** rather
 /// than its `tx_signature`. The sweep resolves the trigger index from
 /// [`find_scalp_entry_indexed`] and calls this directly, so its
-/// [`SweepTrade`] rows need carry no signature string at all (Phase 1.2).
+/// [`CorpusTrade`] rows need carry no signature string at all (Phase 1.2).
 ///
 /// Fill model: window = trigger slot S (always) + the next observed slot after S
 /// if it's within [`MAX_FILL_WAIT_SLOTS`]. Only trades at indices > `target_idx`
@@ -404,7 +404,7 @@ pub fn find_worst_case_paper_entry<T: TradeRow>(trades: &[T], target_tx: &str) -
 ///
 /// `target_idx` must index a real trade in `trades`.
 ///
-/// `SweepTrade` lives in the local-only sweep crate (`sweep::projection::SweepTrade`).
+/// `CorpusTrade` lives in the local-only sweep crate (`sweep::projection::CorpusTrade`).
 pub fn find_worst_case_paper_entry_at<T: TradeRow>(trades: &[T], target_idx: usize) -> Option<EntryFill> {
     let trigger_slot = trades[target_idx].slot();
     let post = trades.get(target_idx + 1..).unwrap_or(&[]);

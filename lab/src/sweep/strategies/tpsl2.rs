@@ -19,7 +19,7 @@ use crate::sweep::strategy::{
     index_of, lhs_index_plan, neighbor_indices, round_trip_with_costs, CostModel, ExitCode,
     ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
-use crate::sweep::projection::SweepTrade;
+use crate::sweep::projection::CorpusTrade;
 use crate::models::Tpsl2Rule;
 use crate::strategies::tpsl_sniper_2::{entry, exit};
 
@@ -563,13 +563,13 @@ impl Strategy for Tpsl2Strategy {
         }
     }
 
-    fn prepare_token(&self, _trades: &[SweepTrade]) {}
+    fn prepare_token(&self, _trades: &[CorpusTrade]) {}
 
-    fn resolve_entry(&self, trades: &[SweepTrade], _state: &(), params: &Tpsl2Combo) -> Tpsl2Entry {
+    fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), params: &Tpsl2Combo) -> Tpsl2Entry {
         let rule = &params.rule;
         // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged.
         // The indexed variant hands back the trigger's position so the worst-case
-        // fill is resolved by index, never by `tx_signature` — letting `SweepTrade`
+        // fill is resolved by index, never by `tx_signature` — letting `CorpusTrade`
         // carry no signature string at all (Phase 1.2).
         let Some((trigger_idx, _)) = entry::find_scalp_entry_indexed(trades, rule) else {
             return Tpsl2Entry::None;
@@ -590,7 +590,7 @@ impl Strategy for Tpsl2Strategy {
 
     fn resolve_exit(
         &self,
-        trades: &[SweepTrade],
+        trades: &[CorpusTrade],
         _state: &(),
         entry: &Tpsl2Entry,
         params: &Tpsl2Combo,

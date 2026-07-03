@@ -117,9 +117,12 @@ Uses the most recent trade in the prefix that carries a `real_sol_reserves` snap
 > `approx_real_sol_reserves` — AMM → `reserve_sol`, curve → `reserve_sol − 30` (the
 > initial virtual SOL), clamped ≥0:
 >
-> - **Single-rule simulate** (`.../simulate`, the per-rule backtest) reads from
->   Postgres via `TradeRepo::find_by_mints_all`, which now reconstructs the value
->   after `Trade::try_from` (backtest-only method — never on the live path).
+> - **Single-rule simulate** (`.../simulate`, the per-rule backtest) now reads the
+>   **same Parquet lake, same loader, same `SweepTrade`** the grouped sweep does
+>   (`fetch_sim_histories` → `LakeSource::load` with `with_signatures=true`), so
+>   `lab::lake::duck` reconstructs the value there — one source, identical pricing
+>   whether a rule is swept or drilled into. (It used to read Postgres via
+>   `TradeRepo::find_by_mints_all`; that split is gone.)
 > - **Grouped sweep** reads the Parquet lake; `lab::lake::duck` reconstructs it there.
 >
 > Same "true liquidity" the chart shows. Consequence: on the curve this gate is

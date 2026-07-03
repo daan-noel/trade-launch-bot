@@ -49,9 +49,11 @@ trade/time exit ladder, real sell, manual-sell close, recovery reapers, rule CRU
 stop lifecycle), `runner.rs` (the `select!` dispatch), `execution/{real,paper,scalp}.rs` (real on-chain
 exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-arming).
 
-## Shared — `sim_progress.rs`
+## Shared — `sim_progress.rs` + `sim_fetch.rs`
 
-`SimProgress` — per-backtest progress reporter shared by both snipers' `backtest.rs`. Simulate is a **start→wait→fetch** job (POST → 202; the detached run stores its per-token results as `Vec<serde_json::Value>` in `LocalState.sim_results`; client collects via the `simulation_finished` SSE).
+`SimProgress` — per-backtest progress reporter shared by all three backtests' `backtest.rs`. Simulate is a **start→wait→fetch** job (POST → 202; the detached run stores its per-token results as `Vec<serde_json::Value>` in `LocalState.sim_results`; client collects via the `simulation_finished` SSE).
+
+`sim_fetch.rs::fetch_sim_histories(mints) -> HashMap<mint, Arc<Vec<SweepTrade>>>` — the **single shared lake read** behind tpsl1/tpsl2/swing1 backtests. All three keep their PG candidate scan (`collect_matching_tokens`, the `tokens` table) but pull trade histories from the **same Parquet lake, same loader, same `SweepTrade`** the grouped sweep uses — just with `Selection::with_signatures = true` so `SweepTrade::tx_signature` (`Option<Box<str>>`) is populated for the result tables' Solscan links (the sweep leaves it `None`). So a rule prices identically whether swept or drilled into, by construction. Uncapped per-mint (full history, matching the old `find_by_mints_all`), `curve_only: false`, with a stale-lake warn (the lake is sealed-days-only → keep `lake-export --include-today` on a cadence). The old per-chunk PG fetch + `BacktestTradeCache` is gone; the flag's isolation is guarded by `lake::duck::parity_tests` (`--ignored`).
 
 **Simulated table = in-memory server-side paging** (`lab/src/strategies/sim_query.rs`). The finished backtest's rows are already resident (lab is single-user, workstation RAM), so `POST …/rules/{id}/simulate/result` (unified `TableRequest`) pages/sorts/filters them in Rust — numeric operators compare numerically, matching the SQL path's semantics — with a whole-run `GET …/simulate/result/summary` aggregate. No `sim_result_tokens` table: an in-RAM query fits the data. The legacy whole-blob `GET /api/jobs/simulations/{rule_id}/result` still serves (re-serializes on take).
 
@@ -82,7 +84,7 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 | `lifecycle.rs` | `activate_rule`, `pause_rule`, `stop_and_close_rule` — rule state transitions |
 | `runtime_cache.rs` | In-memory rules/positions/counters/paper-runs/exit-memos; `exiting`/`entering` guard sets; `ladder_params_by_id` (no full Rule clone on hot path); **emits `tpsl_positions_changed` SSE deltas from the `sync_position`/`remove_position` funnel** via an optional sender (`set_sse_sender`; unset in tests/`lab` ⇒ no-op) — every transition funnels here, so no delta is missed |
 | `paper_run.rs` | `finish_paper_run_if_complete` |
-| `backtest.rs` | `run_backtest` — replay using same exit fns as live; cross-run `BacktestTradeCache`; detached + 202 |
+| `backtest.rs` | `run_backtest` — replay using same exit fns as live; trade histories from the Parquet lake (`sim_fetch::fetch_sim_histories`, shared by all three backtests); detached + 202 |
 | `util.rs` | `none_if_zero_f64/u64` |
 
 `tpsl_sniper_2/` adds `entry/scalp.rs` (per-trade scalp-continuation entry gates — age/liveness/organic-flow/liquidity/pullback).

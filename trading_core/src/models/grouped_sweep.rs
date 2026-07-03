@@ -143,7 +143,7 @@ pub struct ComboTokenResult {
     /// Simulated entry fill price in SOL/token; `None` when not fired.
     pub entry_price: Option<f64>,
     /// Real `tx_signature` of the entry fill, resolved from the `trades` table by
-    /// (mint, `entry_slot`, buy) after the re-sim — the slim `SweepTrade` the sweep
+    /// (mint, `entry_slot`, buy) after the re-sim — the slim `CorpusTrade` the sweep
     /// walks carries no signature. `None` when not fired or unresolved.
     pub entry_tx: Option<String>,
     /// Slot of the entry fill trade — the join key for `entry_tx`. Kept on the

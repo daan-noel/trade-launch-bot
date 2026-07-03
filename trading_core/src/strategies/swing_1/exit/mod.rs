@@ -29,7 +29,7 @@ use super::{exit_next_kill_profile, swing_params_from_rule};
 /// fallback), exactly as the leg detector ([`super::swing::sanitize_and_order`])
 /// prices. The execution fallback covers rows without a reserve pair. This is the
 /// counterpart of the entry's spot-priced fill — both avoid execution
-/// `price_per_token`, which is **zeroed** in the Parquet-lake `SweepTrade` rows
+/// `price_per_token`, which is **zeroed** in the Parquet-lake `CorpusTrade` rows
 /// swing1 sweeps over (it carries the reserve pair, not the exec price), so reading
 /// it yielded a ~0 exit price and garbage PnL. Pricing off the spot keeps live and
 /// sweep byte-identical (Step 0 canonical-price contract).
@@ -76,7 +76,7 @@ pub struct ExitFill {
     pub tx_signature: String,
     /// Slot of the fill trade — the unambiguous key the sweep drill-in uses to
     /// resolve this fill's real `tx_signature` from the `trades` table (the slim
-    /// `SweepTrade` carries no signature, so the in-row `tx_signature` is empty
+    /// `CorpusTrade` carries no signature, so the in-row `tx_signature` is empty
     /// on the sweep path). Live reads the signature directly and ignores this.
     pub slot: u64,
     pub block_time: DateTime<Utc>,
