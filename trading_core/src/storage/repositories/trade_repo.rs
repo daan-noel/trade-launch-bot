@@ -421,6 +421,69 @@ impl TradeRepo {
         row.map(Trade::try_from).transpose()
     }
 
+    /// Average manual-buy cost basis per mint for `wallet` over a bounded mint set.
+    /// Rolls up `trade_type='buy'` legs — `SUM(amount_lamports)` / `SUM(token_amount)`
+    /// grouped by mint — into an [`AvgEntry`] each. This is the **manual-buy
+    /// cost-basis SSOT** (bot buys already carry `strategy_positions.entry_*`).
+    ///
+    /// `avg_entry_price` is human SOL per raw token unit — the SAME price convention
+    /// as [`crate::models::strategy::StrategyPosition::entry_price`] and
+    /// [`SigLegs::price_per_token`] (Σsol / Σtokens) — so a manually-bought bag and a
+    /// bot bag price identically.
+    ///
+    /// Bounded by the caller's `mints` slice (the held-mint set is tiny). An unknown
+    /// wallet has no trades, so returns an empty map without touching `trades`; mints
+    /// the wallet never bought are simply absent.
+    pub async fn avg_entry_by_wallet_and_mints(
+        &self,
+        wallet: &str,
+        mints: &[String],
+    ) -> anyhow::Result<std::collections::HashMap<String, AvgEntry>> {
+        if mints.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+            return Ok(std::collections::HashMap::new());
+        };
+        // Σ over the wallet's buy legs, grouped per mint. Kept integer in SQL
+        // (exact lamports / raw units); the SOL conversion happens once in Rust.
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT mint_address,
+                   COALESCE(SUM(amount_lamports), 0)::bigint,
+                   COALESCE(SUM(token_amount), 0)::bigint
+            FROM trades
+            WHERE wallet_id = $1
+              AND trade_type = 'buy'
+              AND mint_address = ANY($2)
+            GROUP BY mint_address
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(mints)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(mint, total_cost_lamports, total_token_amount)| {
+                let avg_entry_price = if total_token_amount > 0 {
+                    lamports_to_sol(total_cost_lamports) / total_token_amount as f64
+                } else {
+                    0.0
+                };
+                (
+                    mint,
+                    AvgEntry {
+                        avg_entry_price,
+                        total_token_amount: total_token_amount as u64,
+                        total_cost_lamports,
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// Find all trades for a token in execution order (slot, tx_index, leg_index).
     /// Joins `wallet_dict` to recover each trade's wallet address.
     pub async fn find_by_mint_all(&self, mint: &str) -> anyhow::Result<Vec<Trade>> {
@@ -796,6 +859,21 @@ pub struct SigLegs {
     pub first_block_time: DateTime<Utc>,
     /// Latest leg's block time (the fill's exit time).
     pub last_block_time: DateTime<Utc>,
+}
+
+/// Rolled-up manual-buy cost basis for one `(wallet, mint)` — the Σ of the
+/// wallet's `trade_type='buy'` legs on the mint ([`TradeRepo::avg_entry_by_wallet_and_mints`]).
+/// The cost-basis SSOT for manually-bought bags (bot bags carry
+/// `strategy_positions.entry_*`).
+#[derive(Debug, Clone)]
+pub struct AvgEntry {
+    /// Weighted-average entry price — human SOL per raw token unit (Σsol / Σtokens),
+    /// 0 when no tokens. Same convention as `StrategyPosition::entry_price`.
+    pub avg_entry_price: f64,
+    /// Σ token_amount across the wallet's buy legs — exact raw integer units.
+    pub total_token_amount: u64,
+    /// Σ amount_lamports across the wallet's buy legs — exact integer lamports.
+    pub total_cost_lamports: i64,
 }
 
 impl SigLegs {
