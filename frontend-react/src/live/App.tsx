@@ -14,7 +14,7 @@ const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
 const SyncTokenPage = lazy(() => import('@live/pages/tokens/SyncTokenPage').then((m) => ({ default: m.SyncTokenPage })));
 const MyWalletPage = lazy(() => import('@live/pages/profiles/MyWalletPage').then((m) => ({ default: m.MyWalletPage })));
-const OtherProfilesPage = lazy(() => import('pages/profiles/OtherProfilesPage').then((m) => ({ default: m.OtherProfilesPage })));
+const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) => ({ default: m.ProfilesPage })));
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const Tpsl1Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl1' }) })));
 const Tpsl2Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl2' }) })));
@@ -49,9 +49,8 @@ export default function App() {
                 <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
                 <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
                 <Route path="strategies/swing1" element={<Swing1Page />} />
-                <Route path="wallet" element={<Navigate to="/profiles/mine" replace />} />
-                <Route path="profiles/mine" element={<MyWalletPage />} />
-                <Route path="profiles/other" element={<OtherProfilesPage />} />
+                <Route path="wallet" element={<MyWalletPage />} />
+                <Route path="profiles" element={<ProfilesPage />} />
                 <Route path="settings" element={<SettingsPage />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Route>

@@ -385,23 +385,28 @@ function TagAssignDropdown({ profile, allTags, onToggle }: TagAssignDropdownProp
 interface ProfileModalProps {
   open: boolean;
   initial?: WalletProfile;
+  /** Locks the type to `mine` and hides the type picker — used by the "+ Add my
+   *  profile" CTA so the singleton `mine` profile can't be created/edited as
+   *  another type by mistake. */
+  forcedType?: ProfileType;
   onClose: () => void;
   onSaved: (profile: WalletProfile) => void;
 }
 
-function ProfileModal({ open, initial, onClose, onSaved }: ProfileModalProps) {
+function ProfileModal({ open, initial, forcedType, onClose, onSaved }: ProfileModalProps) {
   const [name, setName] = useState(initial?.name ?? '');
-  const [type, setType] = useState<ProfileType>(initial?.profile_type ?? 'trader');
+  const [type, setType] = useState<ProfileType>(initial?.profile_type ?? forcedType ?? 'trader');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const typeLocked = (initial?.profile_type ?? forcedType) === 'mine';
 
   useEffect(() => {
     if (open) {
-      setName(initial?.name ?? '');
-      setType(initial?.profile_type ?? 'trader');
+      setName(initial?.name ?? (forcedType === 'mine' ? 'Me' : ''));
+      setType(initial?.profile_type ?? forcedType ?? 'trader');
       setError('');
     }
-  }, [open, initial]);
+  }, [open, initial, forcedType]);
 
   const submit = async () => {
     if (!name.trim()) { setError('Name is required'); return; }
@@ -424,7 +429,11 @@ function ProfileModal({ open, initial, onClose, onSaved }: ProfileModalProps) {
   };
 
   return (
-    <Modal title={initial ? 'Edit profile' : 'New profile'} open={open} onClose={onClose}>
+    <Modal
+      title={initial ? 'Edit profile' : typeLocked ? 'Add my profile' : 'New profile'}
+      open={open}
+      onClose={onClose}
+    >
       <div className="flex flex-col gap-3">
         <label className="flex flex-col gap-1.5">
           <span className="text-xs text-text-dim">Name</span>
@@ -438,11 +447,15 @@ function ProfileModal({ open, initial, onClose, onSaved }: ProfileModalProps) {
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-xs text-text-dim">Type</span>
-          <Select value={type} onChange={(e) => setType(e.target.value as ProfileType)} fieldSize="md">
-            {PROFILE_TYPES.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </Select>
+          {typeLocked ? (
+            <TypeBadge type="mine" />
+          ) : (
+            <Select value={type} onChange={(e) => setType(e.target.value as ProfileType)} fieldSize="md">
+              {PROFILE_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </Select>
+          )}
         </label>
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
         <div className="flex justify-end gap-2 pt-1">
@@ -820,7 +833,7 @@ const ProfileCard = memo(function ProfileCard({
 // Page
 // ---------------------------------------------------------------------------
 
-export function OtherProfilesPage() {
+export function ProfilesPage() {
   const dispatch = useDispatch<AppDispatch>();
 
   // Profiles live in the shared RTK Query cache (`getProfiles`) — the same one
@@ -832,7 +845,9 @@ export function OtherProfilesPage() {
     useGetProfilesQuery();
   const error = apiErrorMessage(queryError, 'Failed to load profiles') ?? '';
 
-  // The editor manages everyone but "mine" (that lives on the My-wallet page).
+  // "mine" is a de-facto singleton, pinned above the rest instead of mixed into
+  // the sortable/filterable list of tracked trader/whale/dev profiles.
+  const myProfile = useMemo(() => allProfiles.find((p) => p.profile_type === 'mine'), [allProfiles]);
   const profiles = useMemo(
     () => allProfiles.filter((p) => p.profile_type !== 'mine'),
     [allProfiles],
@@ -845,7 +860,7 @@ export function OtherProfilesPage() {
   const [manageTagsOpen, setManageTagsOpen] = useState(false);
 
   // Modals
-  const [profileModal, setProfileModal] = useState<{ open: boolean; profile?: WalletProfile }>({ open: false });
+  const [profileModal, setProfileModal] = useState<{ open: boolean; profile?: WalletProfile; forcedType?: ProfileType }>({ open: false });
   const [addWalletModal, setAddWalletModal] = useState<{ open: boolean; profileId: string }>({ open: false, profileId: '' });
   const [editWalletModal, setEditWalletModal] = useState<{ open: boolean; wallet: WalletEntry | null }>({ open: false, wallet: null });
   const [deleteProfileModal, setDeleteProfileModal] = useState<{ open: boolean; profile: WalletProfile | null }>({ open: false, profile: null });
@@ -976,8 +991,8 @@ export function OtherProfilesPage() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-text">Other profiles</h1>
-          <p className="mt-0.5 text-xs text-text-dim">Manage trader, whale, and dev wallet profiles.</p>
+          <h1 className="text-xl font-bold text-text">Profiles</h1>
+          <p className="mt-0.5 text-xs text-text-dim">Your own wallet, plus tracked trader, whale, and dev wallet profiles.</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="ghost" onClick={() => setManageTagsOpen(true)}>
@@ -1002,6 +1017,42 @@ export function OtherProfilesPage() {
       {/* States */}
       {loading && <p className="text-sm text-text-dim">Loading…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
+
+      {/* My profile — pinned above the rest, not mixed into the general list */}
+      {!loading && (
+        <div className="flex flex-col gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Me</span>
+          {myProfile ? (
+            <div className="rounded-xl ring-1 ring-primary/40">
+              <ProfileCard
+                profile={myProfile}
+                allTags={allTags}
+                onEdit={handleEditProfile}
+                onDelete={handleDeleteProfile}
+                onAddWallet={handleAddWallet}
+                onEditWallet={handleEditWallet}
+                onDeleteWallet={handleDeleteWallet}
+                onToggleWalletTracked={handleToggleWalletTracked}
+                togglingWalletId={togglingWalletId}
+                onTagToggle={handleTagToggle}
+              />
+            </div>
+          ) : (
+            <div className="flex items-center justify-between rounded-xl border border-dashed border-white/12 bg-white/2 px-4 py-4">
+              <span className="text-sm text-text-dim">
+                Add your own wallet(s) to mark your trades on charts and tables.
+              </span>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setProfileModal({ open: true, forcedType: 'mine' })}
+              >
+                + Add my profile
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Profile cards */}
       {!loading && profiles.length === 0 && !error && (
@@ -1040,6 +1091,7 @@ export function OtherProfilesPage() {
       <ProfileModal
         open={profileModal.open}
         initial={profileModal.profile}
+        forcedType={profileModal.forcedType}
         onClose={() => setProfileModal({ open: false })}
         onSaved={handleProfileSaved}
       />

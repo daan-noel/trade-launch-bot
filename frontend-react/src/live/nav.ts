@@ -27,15 +27,8 @@ export const liveNav: NavConfig = {
         { to: '/strategies/swing1', label: 'Swing 1' },
       ],
     },
-    {
-      kind: 'group',
-      label: 'Profiles',
-      basePath: '/profiles',
-      items: [
-        { to: '/profiles/mine', label: 'My wallets' },
-        { to: '/profiles/other', label: 'Other profiles' },
-      ],
-    },
+    { kind: 'item', to: '/wallet', label: 'My Wallet' },
+    { kind: 'item', to: '/profiles', label: 'Profiles' },
     { kind: 'item', to: '/settings', label: 'Settings' },
   ],
 };

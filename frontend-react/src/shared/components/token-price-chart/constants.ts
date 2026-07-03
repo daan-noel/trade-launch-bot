@@ -80,6 +80,10 @@ export const CHART_COLORS = {
   swingLow: '#e879f9',
   /** Selected OHLC bar / line point */
   barSelected: '#fddc3b',
+  /** Fixed marker color for the user's own ("mine") tracked wallet — bypasses the
+   *  rotating WALLET_MARKER_COLORS palette so it's recognizable at a glance among
+   *  other tracked trader/whale/dev wallets. */
+  mine: '#fbbf24',
   /** Longest swing-chain highlight band (amber wash + solid label chip) */
   chainBandFill: 'rgba(250, 204, 21, 0.12)',
   chainBandBorder: 'rgba(250, 204, 21, 0.6)',

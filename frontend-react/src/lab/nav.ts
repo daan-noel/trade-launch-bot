@@ -46,12 +46,7 @@ export const labNav: NavConfig = {
       ],
     },
 
-    {
-      kind: 'group',
-      label: 'Profiles',
-      basePath: '/profiles',
-      items: [{ to: '/profiles/other', label: 'Other profiles' }],
-    },
+    { kind: 'item', to: '/profiles', label: 'Profiles' },
     { kind: 'item', to: '/settings', label: 'Settings' },
   ],
 };

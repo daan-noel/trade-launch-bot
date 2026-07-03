@@ -335,10 +335,10 @@ function buildWalletMarkerDefs(
       defs.push({
         barTime,
         barEdgePrice: bar.high,
-        letter: (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
+        letter: w.isMine ? '★' : (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
         color: w.color,
         borderColor: CHART_COLORS.up,
-        type: 'sell',
+        type: 'buy',
         stackIndex: stackIndex++,
       });
     }
@@ -346,7 +346,7 @@ function buildWalletMarkerDefs(
       defs.push({
         barTime,
         barEdgePrice: bar.high,
-        letter: (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
+        letter: w.isMine ? '★' : (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
         color: w.color,
         borderColor: CHART_COLORS.down,
         type: 'sell',

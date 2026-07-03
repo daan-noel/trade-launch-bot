@@ -40,6 +40,10 @@ export interface ProfileWalletInfo {
   color: string;
   profileName?: string;
   tags?: ProfileTagInfo[];
+  /** True for wallets on the user's own `mine`-type profile — gets a fixed
+   *  marker color/glyph instead of the rotating tracked-wallet palette, and
+   *  drives the "my trade" row highlight in trade tables. */
+  isMine?: boolean;
 }
 
 /**

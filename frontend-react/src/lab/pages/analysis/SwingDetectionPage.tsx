@@ -3,16 +3,8 @@ import { useDispatch, useSelector } from 'react-redux';
 import { STORAGE_KEYS, getString, setString } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import type { TableQuery } from 'components/table/types';
-import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import {
-  TokenPriceChart,
-  WALLET_MARKER_COLORS,
-  tradeBarTime,
-  type ChartBarSelection,
-  type ChartMetric,
-  type ChartSwingLeg,
-  type ProfileWalletInfo,
-} from 'components/token-price-chart';
+import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { type ChartSwingLeg } from 'components/token-price-chart';
 import { swingLegKey } from 'components/token-price-chart/swingOverlay';
 import { FilterPanel } from 'components/tokens/FilterPanel';
 import {
@@ -23,7 +15,6 @@ import {
   type TokenFilters,
 } from 'components/tokens/filters';
 import { tokenColumns } from 'components/tokens/tokenColumns';
-import { usePriceUnit } from 'context/PriceUnitContext';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatTimestampMs } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
@@ -64,7 +55,6 @@ import { connectSwingDetectionFinished } from 'services/sse';
 import {
   apiErrorMessage,
   TOKENS_LIST_LIMIT,
-  useGetProfilesQuery,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
   useGetTokensPageQuery,
@@ -87,13 +77,11 @@ import type {
   SwingParams,
   TokenRecord,
   TradeRecord,
-  WalletProfile,
 } from 'types';
 
 /** Stable empty references so derived memos don't recompute every render. */
 const EMPTY_TOKENS: TokenRecord[] = [];
 const EMPTY_TRADES: TradeRecord[] = [];
-const EMPTY_PROFILES: WalletProfile[] = [];
 
 /**
  * Column keys of the browser-derived "Chain of Swings" columns (see
@@ -301,15 +289,8 @@ export function SwingDetectionPage() {
   const swingRunId = useSelector((s: RootState) => s.swingDetection.swingRunId);
 
   const price = usePriceDisplay();
-  const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
-  const tradeTableColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
   const swingTableColumns = useMemo(() => swingColumns(price, timezone), [price, timezone]);
-
-  const toChartValue = useCallback(
-    (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
-    [unit, usdRate],
-  );
 
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
@@ -393,30 +374,6 @@ export function SwingDetectionPage() {
   // `loading` flag drives the in-table busy state across page changes.
   const loaded = tokensFetched;
   const error = apiErrorMessage(tokensError, 'Failed to load tokens');
-  // Tracked-wallet markers for the chart. Read from the shared RTK cache so this
-  // and the Sync page dedupe one fetch and reuse it across navigation.
-  const { data: profiles = EMPTY_PROFILES } = useGetProfilesQuery();
-
-  const profileWallets = useMemo<ProfileWalletInfo[]>(() => {
-    const result: ProfileWalletInfo[] = [];
-    let colorIdx = 0;
-    for (const profile of profiles) {
-      for (const wallet of profile.wallets) {
-        if (!wallet.is_tracked) continue;
-        result.push({
-          address: wallet.address,
-          label: wallet.comment
-            ? wallet.comment.slice(0, 12)
-            : `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`,
-          color: WALLET_MARKER_COLORS[colorIdx % WALLET_MARKER_COLORS.length],
-          profileName: profile.name,
-          tags: profile.tags.map((t) => ({ name: t.name, color: t.color })),
-        });
-        colorIdx++;
-      }
-    }
-    return result;
-  }, [profiles]);
 
   // Selected token's detail (symbol / flags / ATH / created_at for the chart).
   // Fetched by mint so the chart keeps its metadata even after paging away from
@@ -425,18 +382,13 @@ export function SwingDetectionPage() {
     skip: !selectedMint,
   });
 
-  // Per-mint trades cached by mint, so re-selecting a token doesn't re-pull.
-  const {
-    data: tradesData,
-    isFetching: tradesLoading,
-    error: tradesErrorRaw,
-  } = useGetTokenTradesQuery(selectedMint ?? '', { skip: !selectedMint });
+  // Per-mint trades cached by mint, so re-selecting a token doesn't re-pull —
+  // shares the same RTK Query cache entry TokenTradeChart's own fetch reads,
+  // so this is a dedupe, not a second network request. Still fetched here
+  // (rather than only inside TokenTradeChart) because swing-leg selection
+  // filters this list into `swingTrades` below.
+  const { data: tradesData } = useGetTokenTradesQuery(selectedMint ?? '', { skip: !selectedMint });
   const trades = tradesData ?? EMPTY_TRADES;
-  const tradesError = selectedMint
-    ? apiErrorMessage(tradesErrorRaw, 'Failed to load trades')
-    : null;
-  const [selectedBar, setSelectedBar] = useState<ChartBarSelection | null>(null);
-  const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
 
   const [activeAnalysis, setActiveAnalysis] = useState<AnalysisKind | null>(null);
   const [swingParams, setSwingParams] = useState<SwingParamsForm>(storedSwingCriteria.params);
@@ -737,8 +689,8 @@ export function SwingDetectionPage() {
   // Reset local selection-derived UI when the chosen token changes. The Redux
   // swing result and leg selection are cleared by the setSelectedMint reducer;
   // trades themselves are fetched/cached by the useGetTokenTradesQuery hook.
+  // TokenTradeChart's own bar/range selection resets via its `key={selectedMint}`.
   useEffect(() => {
-    setSelectedBar(null);
     setSwingError(null);
   }, [selectedMint]);
 
@@ -762,10 +714,12 @@ export function SwingDetectionPage() {
     );
   }, [selectedMint, swingResult, swingsByMint, swingParams, dispatch]);
 
+  // Clicking a bar/range inside TokenTradeChart clears this via its
+  // `externalSelection.onClear` callback, so this no longer needs to touch any
+  // bar/range state itself (that now lives inside TokenTradeChart).
   const handleSwingSelect = useCallback(
     (key: string | null) => {
       dispatch(setSelectedSwingKey(key));
-      if (key) setSelectedBar(null);
     },
     [dispatch],
   );
@@ -777,35 +731,8 @@ export function SwingDetectionPage() {
     [handleSwingSelect],
   );
 
-  const handleBarClick = useCallback(
-    (selection: ChartBarSelection | null) => {
-      setSelectedBar(selection);
-      if (selection) dispatch(setSelectedSwingKey(null));
-    },
-    [dispatch],
-  );
-
   const chartSymbol =
     selectedToken?.symbol || selectedToken?.name || selectedMint || '';
-
-  const chartPriceLabel = chartMetric === 'mc' ? `MC (${unit})` : unit;
-
-  const barTrades = useMemo(() => {
-    if (!selectedBar) return [];
-    if (selectedBar.groupMode === 'slot') {
-      return trades.filter((t) => t.slot === selectedBar.slot);
-    }
-    return trades.filter(
-      (t) =>
-        tradeBarTime(t.block_time, selectedBar.intervalSec ?? 60) === selectedBar.barTime,
-    );
-  }, [trades, selectedBar]);
-
-  const barTimeLabel = selectedBar
-    ? selectedBar.groupMode === 'slot'
-      ? `Slot ${selectedBar.slot}`
-      : formatTimestampMs(Number(selectedBar.barTime) * 1000, timezone)
-    : '';
 
   // Swings to draw on the chart for the selected token. The per-token "Run"
   // result takes precedence (it honors the Analysis/Filter panel); otherwise
@@ -1735,77 +1662,29 @@ export function SwingDetectionPage() {
 
       <SectionDivider />
 
-      <div>
-        <TokenPriceChart
-          symbol={chartSymbol}
-          id={selectedMint ?? ''}
-          trades={trades}
-          loading={tradesLoading}
-          error={tradesError}
-          toValue={toChartValue}
-          priceLabel={chartPriceLabel}
-          priceUnit={unit}
-          metric={chartMetric}
-          onMetricChange={setChartMetric}
-          onBarClick={handleBarClick}
-          selectedBar={selectedBar}
-          swingOverlay={swingOverlay}
-          highlightChain={longestChainHighlight}
-          selectedSwingLegKey={selectedSwingKey}
-          onSwingLegClick={handleSwingLegClick}
-          connectSwings={connectSwings}
-          onConnectSwingsChange={setConnectSwings}
-          athPriceInSol={selectedToken?.ath_price ?? null}
-          isMigrated={selectedToken?.is_migrated}
-          isMayhemMode={selectedToken?.is_mayhem_mode}
-          isCashbackEnabled={selectedToken?.is_cashback_enabled}
-          profileWallets={profileWallets}
-          tokenCreatedAt={selectedToken?.created_at}
-        />
-      </div>
-
-      {(selectedBar || selectedSwingKey) && selectedMint && (
-        <>
-          <SectionDivider />
-          <div>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <h3 className="text-sm font-bold text-text">
-                {selectedSwingKey ? 'Swing trades' : 'Bar trades'}
-              </h3>
-              <span className="font-mono text-[11px] text-text-dim">
-                {selectedSwingKey ? swingTimeLabel : barTimeLabel}
-              </span>
-              <Badge variant="primary" className="font-mono font-normal">
-                {(selectedSwingKey ? swingTrades : barTrades).length} trade
-                {(selectedSwingKey ? swingTrades : barTrades).length === 1 ? '' : 's'}
-              </Badge>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedBar(null);
-                  dispatch(setSelectedSwingKey(null));
-                }}
-                className="text-[11px] text-text-dim hover:text-text"
-              >
-                Clear
-              </button>
-            </div>
-            <DataTable
-              tableId="swing_trades"
-              columns={tradeTableColumns}
-              rows={selectedSwingKey ? swingTrades : barTrades}
-              rowKey={(t) => t.id}
-              defaultPageSize={25}
-              searchable
-              colFilters
-              hoverable
-              emptyMessage={
-                selectedSwingKey ? 'No trades in this swing.' : 'No trades in this bar.'
+      <TokenTradeChart
+        key={selectedMint ?? undefined}
+        tableId="swing_trades"
+        detail={selectedToken}
+        swingOverlay={swingOverlay}
+        highlightChain={longestChainHighlight}
+        selectedSwingLegKey={selectedSwingKey}
+        onSwingLegClick={handleSwingLegClick}
+        connectSwings={connectSwings}
+        onConnectSwingsChange={setConnectSwings}
+        externalSelection={
+          selectedSwingKey
+            ? {
+                key: selectedSwingKey,
+                label: 'Swing trades',
+                timeLabel: swingTimeLabel,
+                trades: swingTrades,
+                emptyMessage: 'No trades in this swing.',
+                onClear: () => dispatch(setSelectedSwingKey(null)),
               }
-            />
-          </div>
-        </>
-      )}
+            : null
+        }
+      />
     </div>
   );
 }

@@ -1,12 +1,14 @@
-﻿import { useCallback, useMemo, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   TokenPriceChart,
   tradeBarSlot,
   tradeBarTime,
   type ChartBarSelection,
+  type ChartChainHighlight,
   type ChartEventMarker,
   type ChartMetric,
   type ChartRangeSelectionDetail,
+  type ChartSwingLeg,
   type ChartSwingOverlay,
 } from 'components/token-price-chart';
 import { DataTable } from 'components/table/DataTable';
@@ -15,6 +17,7 @@ import { Badge } from 'components/ui/Badge';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useTimezone } from 'context/TimezoneContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
+import { useProfileWallets } from 'hooks/useProfileWallets';
 import { formatTimestampMs } from 'utils/date';
 import { apiErrorMessage, useGetTokenTradesQuery } from 'store/apiSlice';
 import type { TokenDetailRecord, TradeRecord } from 'types';
@@ -22,12 +25,40 @@ import type { TokenDetailRecord, TradeRecord } from 'types';
 /** Stable empty reference so the chart doesn't re-aggregate on every render. */
 const EMPTY_TRADES: TradeRecord[] = [];
 
+/** A selection that lives outside the chart's own bar/range click (e.g. a swing
+ *  leg picked in a separate results table) but should drive the trades panel
+ *  below the chart the same way. Setting this clears the chart's internal
+ *  bar/range selection; clicking a bar/range inside the chart calls `onClear`
+ *  to hand control back. */
+interface TokenTradeChartExternalSelection {
+  /** Stable identity for the current selection — used to detect a new pick. */
+  key: string;
+  /** Panel heading, e.g. "Swing trades". */
+  label: string;
+  /** Rendered next to the heading, e.g. a formatted time range. */
+  timeLabel: string;
+  trades: TradeRecord[];
+  emptyMessage: string;
+  onClear: () => void;
+}
+
 interface TokenTradeChartProps {
   detail: TokenDetailRecord | null;
   /** Strategy entry/exit points to overlay (TPSL result inspection). */
   eventMarkers?: ChartEventMarker[] | null;
-  /** Swing-detection legs to draw as an overlay line (swing1 result inspection). */
+  /** Swing-detection legs to draw as an overlay line (swing1/swing-detection inspection). */
   swingOverlay?: ChartSwingOverlay | null;
+  /** Longest swing chain to highlight as a translucent band (batch swing detection). */
+  highlightChain?: ChartChainHighlight | null;
+  /** Selected swing leg key to highlight on the overlay (swing-detection page). */
+  selectedSwingLegKey?: string | null;
+  /** Fired when a swing path segment is clicked on the chart. */
+  onSwingLegClick?: (leg: ChartSwingLeg | null) => void;
+  /** Chain swing reversal points (swing-detection page toggle). */
+  connectSwings?: boolean;
+  onConnectSwingsChange?: (connected: boolean) => void;
+  /** See {@link TokenTradeChartExternalSelection}. */
+  externalSelection?: TokenTradeChartExternalSelection | null;
   /** Passed to DataTable so column visibility is persisted per call-site. */
   tableId?: string;
 }
@@ -82,6 +113,12 @@ export function TokenTradeChart({
   detail,
   eventMarkers = null,
   swingOverlay = null,
+  highlightChain = null,
+  selectedSwingLegKey = null,
+  onSwingLegClick,
+  connectSwings,
+  onConnectSwingsChange,
+  externalSelection = null,
   tableId,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
@@ -100,46 +137,81 @@ export function TokenTradeChart({
     error: tradesErrorRaw,
   } = useGetTokenTradesQuery(mint, { skip: !mint });
   const trades = tradesData ?? EMPTY_TRADES;
+  const profileWallets = useProfileWallets();
 
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
     [unit, usdRate],
   );
 
+  // An externally-driven pick (e.g. a swing-leg row selected in another table)
+  // takes over the panel below — clear this chart's own bar/range selection so
+  // only one selection is shown at a time. Keyed off `.key`, not the object
+  // reference, since callers rebuild the object every render.
+  useEffect(() => {
+    if (externalSelection) {
+      setSelectedBar(null);
+      setSelectedRange(null);
+    }
+  }, [externalSelection?.key]);
+
   const handleBarClick = useCallback((selection: ChartBarSelection | null) => {
     setSelectedBar(selection);
-    if (selection) setSelectedRange(null);
-  }, []);
+    if (selection) {
+      setSelectedRange(null);
+      externalSelection?.onClear();
+    }
+  }, [externalSelection]);
 
   const handleRangeChange = useCallback((range: ChartRangeSelectionDetail | null) => {
     setSelectedRange(range);
-    if (range) setSelectedBar(null);
-  }, []);
+    if (range) {
+      setSelectedBar(null);
+      externalSelection?.onClear();
+    }
+  }, [externalSelection]);
 
   const clearSelection = useCallback(() => {
     setSelectedBar(null);
     setSelectedRange(null);
-  }, []);
+    externalSelection?.onClear();
+  }, [externalSelection]);
 
   const tradeColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
 
   const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
 
+  const myWalletAddresses = useMemo(
+    () => new Set(profileWallets.filter((w) => w.isMine).map((w) => w.address)),
+    [profileWallets],
+  );
+
   const tradeRowClassName = useMemo(() => {
-    if (entryExitMap.size === 0) return undefined;
+    if (entryExitMap.size === 0 && myWalletAddresses.size === 0) return undefined;
     return (t: TradeRecord) => {
       const kind = entryExitMap.get(t.tx_signature);
-      if (kind === 'entry') return 'bg-[#02c076]/12 hover:bg-[#02c076]/20';
-      if (kind === 'exit') return 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20';
-      return undefined;
+      // Entry/exit tint takes the full-row background; "my trade" layers a
+      // left-border accent so both signals stay visible on the same row.
+      const base =
+        kind === 'entry'
+          ? 'bg-[#02c076]/12 hover:bg-[#02c076]/20'
+          : kind === 'exit'
+            ? 'bg-[#f6465d]/12 hover:bg-[#f6465d]/20'
+            : '';
+      const mine =
+        t.wallet_address && myWalletAddresses.has(t.wallet_address)
+          ? 'border-l-2 border-l-[#fbbf24]'
+          : '';
+      return [base, mine].filter(Boolean).join(' ') || undefined;
     };
-  }, [entryExitMap]);
+  }, [entryExitMap, myWalletAddresses]);
 
   const selectionTrades = useMemo(() => {
+    if (externalSelection) return externalSelection.trades;
     if (selectedRange) return tradesInRange(trades, selectedRange);
     if (selectedBar) return tradesInBar(trades, selectedBar);
     return EMPTY_TRADES;
-  }, [trades, selectedBar, selectedRange]);
+  }, [trades, selectedBar, selectedRange, externalSelection]);
 
   if (!detail) return null;
 
@@ -156,6 +228,19 @@ export function TokenTradeChart({
         ? `Slot ${selectedBar.slot}`
         : formatTimestampMs(Number(selectedBar.barTime) * 1000, timezone)
       : '';
+
+  const showSelectionPanel = Boolean(externalSelection || selectedBar || selectedRange);
+  const selectionPanelLabel = externalSelection
+    ? externalSelection.label
+    : selectedRange
+      ? 'Range Trades'
+      : 'Bar Trades';
+  const selectionTimeLabel = externalSelection ? externalSelection.timeLabel : selectionLabel;
+  const selectionEmptyMessage = externalSelection
+    ? externalSelection.emptyMessage
+    : selectedRange
+      ? 'No trades in this range.'
+      : 'No trades in this bar.';
 
   return (
     <div className="border-t border-white/7 pt-2">
@@ -183,15 +268,21 @@ export function TokenTradeChart({
         tokenCreatedAt={detail.created_at}
         eventMarkers={eventMarkers}
         swingOverlay={swingOverlay}
+        highlightChain={highlightChain}
+        selectedSwingLegKey={selectedSwingLegKey}
+        onSwingLegClick={onSwingLegClick}
+        connectSwings={connectSwings}
+        onConnectSwingsChange={onConnectSwingsChange}
+        profileWallets={profileWallets}
       />
 
-      {(selectedBar || selectedRange) && (
+      {showSelectionPanel && (
         <div className="mt-3 border-t border-white/7 pt-2">
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <span className="text-[9px] font-bold uppercase tracking-widest text-text-dim">
-              {selectedRange ? 'Range Trades' : 'Bar Trades'}
+              {selectionPanelLabel}
             </span>
-            <span className="font-mono text-[11px] text-text-dim">{selectionLabel}</span>
+            <span className="font-mono text-[11px] text-text-dim">{selectionTimeLabel}</span>
             <Badge variant="primary" className="font-mono font-normal">
               {selectionTrades.length} trade{selectionTrades.length === 1 ? '' : 's'}
             </Badge>
@@ -213,9 +304,7 @@ export function TokenTradeChart({
             colFilters
             hoverable
             rowClassName={tradeRowClassName}
-            emptyMessage={
-              selectedRange ? 'No trades in this range.' : 'No trades in this bar.'
-            }
+            emptyMessage={selectionEmptyMessage}
           />
         </div>
       )}

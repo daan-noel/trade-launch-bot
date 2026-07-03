@@ -3,8 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from 'components/table/DataTable';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import type { ColumnDef } from 'components/table/types';
-import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import { TokenPriceChart, WALLET_MARKER_COLORS, type ChartMetric, type ProfileWalletInfo } from 'components/token-price-chart';
+import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
 import { InputSyncStatus } from '@live/components/tokens/InputSyncStatus';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
@@ -12,11 +11,10 @@ import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Textarea } from 'components/ui/Input';
-import { usePriceUnit } from 'context/PriceUnitContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { syncToken } from 'services/api';
-import { useGetProfilesQuery, useGetSettingsQuery } from 'store/apiSlice';
-import type { SyncProgressEvent, TokenDetailRecord, TradeRecord, WalletProfile } from 'types';
+import { sharedApi, useGetSettingsQuery } from 'store/apiSlice';
+import type { SyncProgressEvent, TokenDetailRecord } from 'types';
 import type { AppDispatch, RootState } from '@live/store';
 import {
   cacheSyncPreview,
@@ -62,30 +60,6 @@ function stageLabel(stage: string): string {
   }
 }
 
-/** Stable empty default so the profiles memo doesn't recompute while loading. */
-const EMPTY_PROFILES: WalletProfile[] = [];
-
-function buildProfileWallets(profiles: WalletProfile[]): ProfileWalletInfo[] {
-  const result: ProfileWalletInfo[] = [];
-  let colorIdx = 0;
-  for (const profile of profiles) {
-    for (const wallet of profile.wallets) {
-      if (!wallet.is_tracked) continue;
-      result.push({
-        address: wallet.address,
-        label: wallet.comment
-          ? wallet.comment.slice(0, 12)
-          : `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`,
-        color: WALLET_MARKER_COLORS[colorIdx % WALLET_MARKER_COLORS.length],
-        profileName: profile.name,
-        tags: profile.tags.map((t) => ({ name: t.name, color: t.color })),
-      });
-      colorIdx++;
-    }
-  }
-  return result;
-}
-
 /** Split a comma/newline/whitespace separated blob into unique, trimmed mint addresses. */
 function parseMints(raw: string): string[] {
   return Array.from(
@@ -101,10 +75,9 @@ function parseMints(raw: string): string[] {
 /** A synced-tokens table row: a sync result, with its token record (null on failure). */
 type SyncedRow = SyncResultItem & { token: TokenDetailRecord | null };
 
-/** Stable row-key refs so a SOL/USD or live-trade tick doesn't break DataTable's
+/** Stable row-key ref so a SOL/USD or live-trade tick doesn't break DataTable's
  *  row memo by handing it a fresh function identity each render. */
 const syncedRowKey = (r: SyncedRow) => r.mint;
-const tradeRowKey = (t: TradeRecord) => `${t.tx_signature}-${t.leg_index}`;
 
 /** Compact column set for the synced-tokens picker table. */
 function syncedTokenColumns(
@@ -254,8 +227,6 @@ function ProgressBar({
 
 export function SyncTokenPage() {
   const price = usePriceDisplay();
-  const { unit, usdRate } = usePriceUnit();
-  const tradeColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
 
   // Synced output lives in Redux so it survives navigation (the route unmounts
   // on leave). The in-flight sync state below stays local — it's tied to a
@@ -265,12 +236,6 @@ export function SyncTokenPage() {
   const syncedTokens = useSelector((s: RootState) => s.syncToken.syncedTokens);
   const selectedMint = useSelector((s: RootState) => s.syncToken.selectedMint);
   const syncedMints = useSelector((s: RootState) => s.syncToken.syncedMints);
-
-  const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
-  const toChartValue = useCallback(
-    (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
-    [unit, usdRate],
-  );
 
   const [mint, setMint] = useState('');
   const [includePostMigrate, setIncludePostMigrate] = useState(false);
@@ -284,9 +249,6 @@ export function SyncTokenPage() {
   // Bumped after every sync run so the input status panel re-reads freshness.
   const [syncNonce, setSyncNonce] = useState(0);
   const syncAbortRef = useRef<AbortController | null>(null);
-  // Tracked-wallet markers, from the shared RTK cache (deduped with the Swing
-  // page and reused across navigation instead of re-fetching on every mount).
-  const { data: profiles = EMPTY_PROFILES } = useGetProfilesQuery();
 
   // Default the post-migration checkbox to the global tracking policy, unless
   // the user has already chosen. Overridable per-sync. Settings come from the
@@ -298,7 +260,6 @@ export function SyncTokenPage() {
     }
   }, [settings]);
 
-  const profileWallets = useMemo(() => buildProfileWallets(profiles), [profiles]);
   const mints = useMemo(() => parseMints(mint), [mint]);
   // How many entries the user typed were duplicates of an earlier one. parseMints
   // already drops them, so this is purely to let the user know they were ignored.
@@ -417,6 +378,10 @@ export function SyncTokenPage() {
               data: { newCount: 0, newCapped: false, totalCount: 0, totalCapped: false },
             }),
           );
+          // Seed the shared trades cache with the freshly synced rows so
+          // TokenTradeChart's own `useGetTokenTradesQuery` reflects this sync
+          // immediately instead of showing a stale pre-sync cache entry.
+          dispatch(sharedApi.util.upsertQueryData('getTokenTrades', target, result.trades));
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') {
             throw e;
@@ -615,44 +580,7 @@ export function SyncTokenPage() {
             <TokenDetailPanel detail={selected.token} loading={false} error={null} />
           </div>
 
-          <div className="mb-6">
-            <TokenPriceChart
-              key={selected.token.mint_address}
-              symbol={selected.token.symbol || selected.token.name || selected.token.mint_address}
-              id={selected.token.mint_address}
-              trades={selected.trades}
-              toValue={toChartValue}
-              priceLabel={chartMetric === 'mc' ? `MC (${unit})` : unit}
-              priceUnit={unit}
-              metric={chartMetric}
-              onMetricChange={setChartMetric}
-              athPriceInSol={selected.token.ath_price}
-              isMigrated={selected.token.is_migrated}
-              isMayhemMode={selected.token.is_mayhem_mode}
-              isCashbackEnabled={selected.token.is_cashback_enabled}
-              profileWallets={profileWallets}
-              tokenCreatedAt={selected.token.created_at}
-            />
-          </div>
-
-          <div className="mb-2 flex items-center gap-2">
-            <h3 className="text-sm font-bold text-text">Trades</h3>
-            <Badge variant="primary" className="font-mono">
-              {selected.trades.length}
-            </Badge>
-          </div>
-          <DataTable
-            tableId="sync_trades"
-            key={selected.token.mint_address}
-            columns={tradeColumns}
-            rows={selected.trades}
-            rowKey={tradeRowKey}
-            defaultPageSize={25}
-            searchable
-            colFilters
-            hoverable
-            emptyMessage="No trades"
-          />
+          <TokenTradeChart key={selected.token.mint_address} tableId="sync_trades" detail={selected.token} />
         </>
       )}
     </div>

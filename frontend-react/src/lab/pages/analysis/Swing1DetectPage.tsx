@@ -1,12 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
-import {
-  TokenPriceChart,
-  type ChartBarSelection,
-  type ChartEventMarker,
-  type ChartMetric,
-  type ChartSwingLeg,
-} from 'components/token-price-chart';
-import { usePriceUnit } from 'context/PriceUnitContext';
+import { type ChartEventMarker, type ChartSwingLeg } from 'components/token-price-chart';
+import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { Button } from 'components/ui/Button';
@@ -16,11 +10,7 @@ import { SectionDivider } from 'components/ui/SectionDivider';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { cn } from 'lib/cn';
 import { getString, setString, STORAGE_KEYS } from 'lib/storage';
-import {
-  apiErrorMessage,
-  useGetTokenDetailQuery,
-  useGetTokenTradesQuery,
-} from 'store/apiSlice';
+import { useGetTokenDetailQuery } from 'store/apiSlice';
 import { SWING1_AXES, groupAxesBySubgroup } from '@lab/components/sweep/groupedTypes';
 import { PasteParamsSection } from 'components/strategy/PasteParamsSection';
 import { blobToDetectParams, detectParamsToJson } from 'lib/params';
@@ -30,9 +20,7 @@ import {
   type Swing1DetectResponse,
   type Swing1LowVerdict,
 } from '@lab/services/swing1Detect';
-import type { TradeRecord } from 'types';
 
-const EMPTY_TRADES: TradeRecord[] = [];
 const LS_KEY = `${STORAGE_KEYS.sweepConfig}.swing1detect`;
 
 /** Probe-validated firing defaults (matches `swing_probe::probe_rule` — the
@@ -101,7 +89,6 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
 }
 
 export function Swing1DetectPage() {
-  const { unit, usdRate } = usePriceUnit();
   const [mintInput, setMintInput] = useState('');
   const [activeMint, setActiveMint] = useState<string | null>(null);
   const [params, setParams] = useState<Swing1DetectParams>(loadParams);
@@ -109,24 +96,10 @@ export function Swing1DetectPage() {
   const [result, setResult] = useState<Swing1DetectResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [chartMetric, setChartMetric] = useState<ChartMetric>('price');
-  const [selectedBar, setSelectedBar] = useState<ChartBarSelection | null>(null);
   const [selectedLegKey, setSelectedLegKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const { data: detail } = useGetTokenDetailQuery(activeMint ?? '', { skip: !activeMint });
-  const {
-    data: tradesData,
-    isFetching: tradesLoading,
-    error: tradesErrorRaw,
-  } = useGetTokenTradesQuery(activeMint ?? '', { skip: !activeMint });
-  const trades = tradesData ?? EMPTY_TRADES;
-  const tradesError = activeMint ? apiErrorMessage(tradesErrorRaw, 'Failed to load trades') : null;
-
-  const toChartValue = useCallback(
-    (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),
-    [unit, usdRate],
-  );
 
   // Commit a parsed numeric value for a param (the Input handles raw in-progress
   // text + parsing in its `numeric` mode; here we just persist the result).
@@ -186,7 +159,6 @@ export function Swing1DetectPage() {
     setLoading(true);
     setError(null);
     setSelectedLegKey(null);
-    setSelectedBar(null);
     try {
       const res = await fetchSwing1Detect(mint, params, {
         startMs: null,
@@ -413,26 +385,14 @@ export function Swing1DetectPage() {
       {/* Chart with leg overlay + entry/exit pins */}
       {activeMint && (
         <div className="mb-4">
-          <TokenPriceChart
-            symbol={detail?.symbol || detail?.name || activeMint}
-            id={activeMint}
-            trades={trades}
-            loading={tradesLoading}
-            error={tradesError}
-            toValue={toChartValue}
-            priceLabel={unit}
-            priceUnit={unit}
-            metric={chartMetric}
-            onMetricChange={setChartMetric}
-            onBarClick={setSelectedBar}
-            selectedBar={selectedBar}
+          <TokenTradeChart
+            key={activeMint}
+            tableId="swing1_detect_trades"
+            detail={detail ?? null}
             swingOverlay={swingOverlay}
             selectedSwingLegKey={selectedLegKey}
             onSwingLegClick={handleLegClick}
             eventMarkers={eventMarkers}
-            athPriceInSol={detail?.ath_price ?? null}
-            isMigrated={detail?.is_migrated}
-            tokenCreatedAt={detail?.created_at}
           />
         </div>
       )}
