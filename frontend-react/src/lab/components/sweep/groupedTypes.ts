@@ -81,11 +81,10 @@ export interface Tpsl2AxesSpec {
   entry_min_age_secs?: (number | null)[];
   entry_max_age_secs?: (number | null)[];
   entry_min_alive_sol?: (number | null)[];
-  entry_min_organic_sol?: (number | null)[];
+  entry_min_net_buy_sol?: (number | null)[];
   entry_pullback_pct?: (number | null)[];
   entry_higher_low_secs?: (number | null)[];
   entry_min_liquidity_sol?: (number | null)[];
-  entry_min_organic_liq?: (number | null)[];
 }
 
 /** The page-editable param grid for TPSL1 — the exit ladder only (no scalp
@@ -113,8 +112,7 @@ export const TPSL2_AXES: AxisDef[] = [
   { key: 'entry_min_age_secs', label: 'Entry min age (s)', group: 'entry', nullable: true, default: [10, 30] },
   { key: 'entry_max_age_secs', label: 'Entry max age (s)', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_alive_sol', label: 'Entry min alive (SOL)', group: 'entry', nullable: true, default: [null] },
-  { key: 'entry_min_organic_sol', label: 'Entry min organic (SOL)', group: 'entry', nullable: true, default: [null] },
-  { key: 'entry_min_organic_liq', label: 'Entry min organic liq (SOL)', group: 'entry', nullable: true, default: [null] },
+  { key: 'entry_min_net_buy_sol', label: 'Entry min net buy (SOL)', group: 'entry', nullable: true, default: [null] },
   { key: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', group: 'entry', nullable: true, default: [null, 5] },
   { key: 'entry_pullback_pct', label: 'Entry pullback %', group: 'entry', nullable: true, default: [null, 10] },
   { key: 'entry_higher_low_secs', label: 'Entry higher-low (s)', group: 'entry', nullable: true, default: [null] },

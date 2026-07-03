@@ -13,13 +13,10 @@
 //!     ceiling lives here, the backtest, paper, and real paths all stop entering
 //!     past it by construction — the live deadline merely derives from it.
 //!   • `p_entry_min_alive_sol`     — still trading (total SOL in the trailing window).
-//!   • `p_entry_min_organic_sol`   — demand: net SOL bought so far (buys − sells,
-//!     any wallet).
+//!   • `p_entry_min_net_buy_sol`   — net demand: net SOL bought so far
+//!     (Σbuys − Σsells, any wallet). A demand *flow*, not pool liquidity.
 //!   • `p_entry_pullback_pct` (+ `p_entry_higher_low_secs`) — higher-low continuation shape.
 //!   • `p_entry_min_liquidity_sol` — real reserves ≥ N SOL.
-//!   • `p_entry_min_organic_liq`   — real reserves ≥ N SOL (a second, independently
-//!     tunable reserves floor; reads the same `real_reserve_sol` snapshot as
-//!     `p_entry_min_liquidity_sol`).
 
 use chrono::{DateTime, Utc};
 
@@ -42,10 +39,9 @@ const ALIVE_WINDOW_SECS: i64 = 10;
 pub fn rule_configures_any_scalp_gate(rule: &Tpsl2Rule) -> bool {
     none_if_zero_u64(rule.p_entry_min_age_secs).is_some()
         || none_if_zero_f64(rule.p_entry_min_alive_sol).is_some()
-        || none_if_zero_f64(rule.p_entry_min_organic_sol).is_some()
+        || none_if_zero_f64(rule.p_entry_min_net_buy_sol).is_some()
         || none_if_zero_f64(rule.p_entry_pullback_pct).is_some()
         || none_if_zero_f64(rule.p_entry_min_liquidity_sol).is_some()
-        || none_if_zero_f64(rule.p_entry_min_organic_liq).is_some()
 }
 
 /// Trade-window features computed over a **causal prefix** (`trades[0..=i]`, the
@@ -57,8 +53,8 @@ pub struct ScalpFeatures {
     pub age_secs: i64,
     /// Total SOL (buys + sells, any wallet) in the trailing `ALIVE_WINDOW_SECS`.
     pub alive_sol: f64,
-    /// Net SOL bought so far (buys − sells, any wallet).
-    pub organic_sol: f64,
+    /// Net SOL bought so far (Σbuys − Σsells, any wallet) — net demand.
+    pub net_buy_sol: f64,
     /// Latest known real SOL reserves at the candidate.
     pub real_liquidity_sol: f64,
 }
@@ -83,7 +79,7 @@ pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
         .map(|t| t.amount_sol)
         .sum();
 
-    let organic_sol: f64 = prefix
+    let net_buy_sol: f64 = prefix
         .iter()
         .map(|t| if t.is_buy() { t.amount_sol } else { -t.amount_sol })
         .sum();
@@ -96,7 +92,7 @@ pub fn scalp_features(prefix: &[Trade]) -> Option<ScalpFeatures> {
         .find_map(|t| t.real_reserve_sol)
         .unwrap_or(0.0);
 
-    Some(ScalpFeatures { age_secs, alive_sol, organic_sol, real_liquidity_sol })
+    Some(ScalpFeatures { age_secs, alive_sol, net_buy_sol, real_liquidity_sol })
 }
 
 /// Higher-low continuation gate. Walks the price series detecting **swing lows**
@@ -278,11 +274,10 @@ pub fn find_scalp_entry_indexed<T: TradeRow>(
     // it, no later candidate can qualify (age is monotonic), so we `break`.
     let max_age = none_if_zero_u64(rule.p_entry_max_age_secs).map(|v| v as i64);
     let min_alive = none_if_zero_f64(rule.p_entry_min_alive_sol);
-    let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
+    let min_net_buy = none_if_zero_f64(rule.p_entry_min_net_buy_sol);
     let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
     let higher_low_secs = none_if_zero_u64(rule.p_entry_higher_low_secs).map(|v| v as i64).unwrap_or(0);
     let min_liq = none_if_zero_f64(rule.p_entry_min_liquidity_sol);
-    let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
 
     // O(n) single forward pass (M3): carrying the running net-SOL flow, the
     // trailing alive-window sum, and the last-seen real reserves forward as the
@@ -293,7 +288,7 @@ pub fn find_scalp_entry_indexed<T: TradeRow>(
     let higher_low_idx = pullback.and_then(|pb| higher_low_confirmed_index(trades, pb, higher_low_secs));
 
     let first_time = trades[0].block_time();
-    let mut organic_sol = 0.0f64; // running net SOL bought so far (any wallet)
+    let mut net_buy_sol = 0.0f64; // running net SOL bought so far (any wallet)
     let mut last_real_reserves = 0.0f64; // most recent real_reserve_sol snapshot
     // Trailing alive-window: a running sum + a front cursor over `trades`.
     let mut alive_sol = 0.0f64;
@@ -306,9 +301,9 @@ pub fn find_scalp_entry_indexed<T: TradeRow>(
         // Fold this trade into the running accumulators FIRST so the features
         // below reflect the prefix `[0..=i]` (the candidate inclusive).
         if t.is_buy() {
-            organic_sol += amount_sol;
+            net_buy_sol += amount_sol;
         } else {
-            organic_sol -= amount_sol;
+            net_buy_sol -= amount_sol;
         }
         if let Some(r) = t.real_reserve_sol() {
             last_real_reserves = r;
@@ -345,17 +340,12 @@ pub fn find_scalp_entry_indexed<T: TradeRow>(
                 continue;
             }
         }
-        if let Some(min) = min_organic {
-            if organic_sol < min {
+        if let Some(min) = min_net_buy {
+            if net_buy_sol < min {
                 continue;
             }
         }
         if let Some(min) = min_liq {
-            if last_real_reserves < min {
-                continue;
-            }
-        }
-        if let Some(min) = min_organic_liq {
             if last_real_reserves < min {
                 continue;
             }
@@ -542,9 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn organic_gate_requires_net_demand() {
+    fn net_buy_gate_requires_net_demand() {
         let mut r = rule();
-        r.p_entry_min_organic_sol = Some(1.0);
+        r.p_entry_min_net_buy_sol = Some(1.0);
         // No buys at all yet → net SOL is 0 → never enters.
         let none_yet = vec![t("dev", TradeType::Sell, 5.0, 100.0, 1, 0)];
         assert!(find_scalp_entry(&none_yet, &r).is_none());
@@ -579,11 +569,10 @@ mod tests {
         let min_age = none_if_zero_u64(rule.p_entry_min_age_secs).map(|v| v as i64);
         let max_age = none_if_zero_u64(rule.p_entry_max_age_secs).map(|v| v as i64);
         let min_alive = none_if_zero_f64(rule.p_entry_min_alive_sol);
-        let min_organic = none_if_zero_f64(rule.p_entry_min_organic_sol);
+        let min_net_buy = none_if_zero_f64(rule.p_entry_min_net_buy_sol);
         let pullback = none_if_zero_f64(rule.p_entry_pullback_pct);
         let hl_secs = none_if_zero_u64(rule.p_entry_higher_low_secs).map(|v| v as i64).unwrap_or(0);
         let min_liq = none_if_zero_f64(rule.p_entry_min_liquidity_sol);
-        let min_organic_liq = none_if_zero_f64(rule.p_entry_min_organic_liq);
         for i in 0..trades.len() {
             let cand = &trades[i];
             if cand.trade_type != TradeType::Buy || cand.price_per_token <= 0.0 {
@@ -594,9 +583,8 @@ mod tests {
             if max_age.is_some_and(|m| f.age_secs > m) { break; }
             if min_age.is_some_and(|m| f.age_secs < m) { continue; }
             if min_alive.is_some_and(|m| f.alive_sol < m) { continue; }
-            if min_organic.is_some_and(|m| f.organic_sol < m) { continue; }
+            if min_net_buy.is_some_and(|m| f.net_buy_sol < m) { continue; }
             if min_liq.is_some_and(|m| f.real_liquidity_sol < m) { continue; }
-            if min_organic_liq.is_some_and(|m| f.real_liquidity_sol < m) { continue; }
             if let Some(pb) = pullback {
                 if !higher_low_confirmed(prefix, pb, hl_secs) { continue; }
             }
@@ -639,34 +627,32 @@ mod tests {
         // Sweep several gate combinations; each must agree with the oracle. The
         // trailing field is `max_age` (the entry-window ceiling) so the linearized
         // `break` is pinned against the oracle alongside every other gate.
-        type Combo = (Option<u64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>);
+        type Combo = (Option<u64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>);
         let combos: &[Combo] = &[
-            (Some(5), None, None, None, None, None),
-            (None, Some(2.0), None, None, None, None),
-            (None, None, Some(1.0), None, None, None),
-            (None, None, None, Some(10.0), None, None),
-            (None, None, None, None, Some(5.0), None),
-            (Some(5), Some(1.0), Some(1.0), Some(5.0), Some(1.0), None),
+            (Some(5), None, None, None, None),
+            (None, Some(2.0), None, None, None),
+            (None, None, Some(1.0), None, None),
+            (None, None, None, Some(10.0), None),
+            (Some(5), Some(1.0), Some(1.0), Some(5.0), None),
             // max_age alone is inert (not a positive gate) → no entry.
-            (None, None, None, None, None, Some(5)),
+            (None, None, None, None, Some(5)),
             // min_age floor paired with a max_age ceiling = a real window.
-            (Some(1), None, None, None, None, Some(8)),
+            (Some(1), None, None, None, Some(8)),
             // A real gate under a tight ceiling that cuts the walk short.
-            (None, Some(1.0), None, None, None, Some(2)),
+            (None, Some(1.0), None, None, Some(2)),
         ];
-        for &(age, alive, organic, liq, organic_liq, max_age) in combos {
+        for &(age, alive, net_buy, liq, max_age) in combos {
             let mut r = rule();
             r.p_entry_min_age_secs = age;
             r.p_entry_min_alive_sol = alive;
-            r.p_entry_min_organic_sol = organic;
+            r.p_entry_min_net_buy_sol = net_buy;
             r.p_entry_min_liquidity_sol = liq;
-            r.p_entry_min_organic_liq = organic_liq;
             r.p_entry_max_age_secs = max_age;
             assert_eq!(
                 find_scalp_entry(&trades, &r),
                 scalp_entry_oracle(&trades, &r),
                 "linearized find_scalp_entry diverged from the per-prefix oracle for combo {:?}",
-                (age, alive, organic, liq, organic_liq, max_age)
+                (age, alive, net_buy, liq, max_age)
             );
         }
     }

@@ -42,11 +42,10 @@ function entryKey(r: RuleRecord): string {
     r.p_entry_min_age_secs ?? '',
     r.p_entry_max_age_secs ?? '',
     r.p_entry_min_alive_sol ?? '',
-    r.p_entry_min_organic_sol ?? '',
+    r.p_entry_min_net_buy_sol ?? '',
     r.p_entry_pullback_pct ?? '',
     r.p_entry_higher_low_secs ?? '',
     r.p_entry_min_liquidity_sol ?? '',
-    r.p_entry_min_organic_liq ?? '',
   ].join('|');
 }
 

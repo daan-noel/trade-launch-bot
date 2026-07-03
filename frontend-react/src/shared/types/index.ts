@@ -114,11 +114,10 @@ export interface RuleRecord {
   p_entry_min_age_secs: number | null;
   p_entry_max_age_secs: number | null;
   p_entry_min_alive_sol: number | null;
-  p_entry_min_organic_sol: number | null;
+  p_entry_min_net_buy_sol: number | null;
   p_entry_pullback_pct: number | null;
   p_entry_higher_low_secs: number | null;
   p_entry_min_liquidity_sol: number | null;
-  p_entry_min_organic_liq: number | null;
   // ── swing1-only params (null on tpsl1/tpsl2). Merged flat into the rule JSON by
   //    the backend `rule_to_json`; 0/null = that knob is off. ──
   p_swing_high_to_low_sol?: number | null;

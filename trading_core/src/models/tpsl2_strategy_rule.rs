@@ -70,9 +70,9 @@ pub struct Tpsl2Rule {
     /// Liveness: total SOL traded (buys + sells, any wallet) in the trailing
     /// window ending at the candidate trade must be ≥ this. `None`/`0` disables.
     pub p_entry_min_alive_sol: Option<f64>,
-    /// Real demand: net SOL bought so far (buys − sells, any wallet) must be ≥
-    /// this. `None`/`0` disables.
-    pub p_entry_min_organic_sol: Option<f64>,
+    /// Net demand: net SOL **bought** so far (Σbuys − Σsells, any wallet) must be ≥
+    /// this. A demand *flow* (not pool liquidity). `None`/`0` disables.
+    pub p_entry_min_net_buy_sol: Option<f64>,
     /// Higher-low shape gate — minimum dip off the local high (percent) for a dip
     /// to count. Paired with `p_entry_higher_low_secs`. `None`/`0` disables the gate.
     pub p_entry_pullback_pct: Option<f64>,
@@ -81,10 +81,6 @@ pub struct Tpsl2Rule {
     pub p_entry_higher_low_secs: Option<u64>,
     /// Minimum **real** SOL reserves at entry. `None`/`0` disables.
     pub p_entry_min_liquidity_sol: Option<f64>,
-    /// A second, independently tunable real-reserves floor — reads the same
-    /// `real_sol_reserves` snapshot as `p_entry_min_liquidity_sol`. `None`/`0`
-    /// disables.
-    pub p_entry_min_organic_liq: Option<f64>,
 
     /// Price tolerance percent when matching p_token_initial_buy_sol.
     pub tolerance_pct: f64,
@@ -137,11 +133,10 @@ impl Tpsl2Rule {
             p_entry_min_age_secs: None,
             p_entry_max_age_secs: None,
             p_entry_min_alive_sol: None,
-            p_entry_min_organic_sol: None,
+            p_entry_min_net_buy_sol: None,
             p_entry_pullback_pct: None,
             p_entry_higher_low_secs: None,
             p_entry_min_liquidity_sol: None,
-            p_entry_min_organic_liq: None,
             p_token_max_sol_cost,
             p_token_spendable_sol_in,
             p_max_concurrent_tokens,

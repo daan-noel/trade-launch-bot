@@ -93,7 +93,7 @@ exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-armin
 | `backtest.rs` | `run_backtest` — replay using same exit fns as live; trade histories from the Parquet lake (`sim_fetch::fetch_sim_histories`, shared by all three backtests); detached + 202 |
 | `util.rs` | `none_if_zero_f64/u64` |
 
-`tpsl_sniper_2/` adds `entry/scalp.rs` (per-trade scalp-continuation entry gates — age/liveness/organic-flow/liquidity/pullback).
+`tpsl_sniper_2/` adds `entry/scalp.rs` (per-trade scalp-continuation entry gates — age/liveness/net-buy-demand/liquidity/pullback).
 
 ## Buy guards (service.rs)
 

@@ -59,13 +59,11 @@ Each new buy trade
     ↓ pass
 2. alive gate        — token still trading?
     ↓ pass
-3. organic gate      — real net buying pressure?
+3. net-buy gate      — real net buying pressure (Σbuys − Σsells)?
     ↓ pass
 4. liquidity gate    — pool has enough real SOL?
     ↓ pass
-5. organic-liq gate  — second, independently tunable real-reserves floor?
-    ↓ pass
-6. higher-low gate   — price chart shows continuation shape?
+5. higher-low gate   — price chart shows continuation shape?
     ↓ all pass
 →  ENTER at this trade's price
 ```
@@ -94,11 +92,11 @@ Total SOL traded (buys + sells, all wallets) in a trailing **10-second window** 
 
 ---
 
-**3. `p_entry_min_organic_sol` — Organic Demand**
+**3. `p_entry_min_net_buy_sol` — Net Buy Demand**
 
-Net SOL flow (buys − sells, any wallet) since the token's first trade must be ≥ N.
+Net SOL flow (Σbuys − Σsells, any wallet) since the token's first trade must be ≥ N. A demand **flow**, not pool liquidity (renamed from the old `p_entry_min_organic_sol`, whose "organic" name misread as a liquidity measure).
 
-> Example: `2.0` → at least 2 SOL net bought so far — genuine buying pressure, not just the initial launch trade.
+> Example: `2.0` → at least 2 SOL net bought so far — genuine buying pressure, not just the initial launch trade. Sells subtract, so a pumped-then-dumped token won't qualify.
 
 ---
 
@@ -133,15 +131,16 @@ Uses the most recent trade in the prefix that carries a `real_sol_reserves` snap
 
 ---
 
-**5. `p_entry_min_organic_liq` — Organic Liquidity Floor**
-
-A second, independently tunable real-reserves floor — reads the same `real_sol_reserves` snapshot as `p_entry_min_liquidity_sol`, so the two can be set to different thresholds.
-
-> Example: `3.0` → at least 3 SOL of real pool depth, checked independently from `p_entry_min_liquidity_sol`.
+> **Historical note.** A second, redundant reserves gate `p_entry_min_organic_liq`
+> once sat here — it read the **same** `real_sol_reserves` snapshot as
+> `p_entry_min_liquidity_sol`, so a single rule's effective floor was always
+> `max(liq, organic_liq)`, a pure duplicate. It was dropped (migration
+> `0010_tpsl2_entry_param_cleanup.sql`); `p_entry_min_liquidity_sol` is the one
+> real-reserves floor.
 
 ---
 
-**6. `p_entry_pullback_pct` + `p_entry_higher_low_secs` — Higher-Low Shape**
+**4b. `p_entry_pullback_pct` + `p_entry_higher_low_secs` — Higher-Low Shape**
 
 Waits for a specific price structure: the token must have formed a **higher low** — a swing bottom that is above the previous swing bottom — confirming a continuation pattern.
 

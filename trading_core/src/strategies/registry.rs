@@ -236,15 +236,13 @@ pub struct Tpsl2Params {
     #[serde(default)]
     pub p_entry_min_alive_sol: Option<f64>,
     #[serde(default)]
-    pub p_entry_min_organic_sol: Option<f64>,
+    pub p_entry_min_net_buy_sol: Option<f64>,
     #[serde(default)]
     pub p_entry_pullback_pct: Option<f64>,
     #[serde(default)]
     pub p_entry_higher_low_secs: Option<u64>,
     #[serde(default)]
     pub p_entry_min_liquidity_sol: Option<f64>,
-    #[serde(default)]
-    pub p_entry_min_organic_liq: Option<f64>,
 }
 
 impl Tpsl2Params {
@@ -267,11 +265,10 @@ impl Tpsl2Params {
             p_entry_min_age_secs: r.p_entry_min_age_secs,
             p_entry_max_age_secs: r.p_entry_max_age_secs,
             p_entry_min_alive_sol: r.p_entry_min_alive_sol,
-            p_entry_min_organic_sol: r.p_entry_min_organic_sol,
+            p_entry_min_net_buy_sol: r.p_entry_min_net_buy_sol,
             p_entry_pullback_pct: r.p_entry_pullback_pct,
             p_entry_higher_low_secs: r.p_entry_higher_low_secs,
             p_entry_min_liquidity_sol: r.p_entry_min_liquidity_sol,
-            p_entry_min_organic_liq: r.p_entry_min_organic_liq,
         }
     }
 
@@ -301,11 +298,10 @@ impl Tpsl2Params {
         r.p_entry_min_age_secs = self.p_entry_min_age_secs;
         r.p_entry_max_age_secs = self.p_entry_max_age_secs;
         r.p_entry_min_alive_sol = self.p_entry_min_alive_sol;
-        r.p_entry_min_organic_sol = self.p_entry_min_organic_sol;
+        r.p_entry_min_net_buy_sol = self.p_entry_min_net_buy_sol;
         r.p_entry_pullback_pct = self.p_entry_pullback_pct;
         r.p_entry_higher_low_secs = self.p_entry_higher_low_secs;
         r.p_entry_min_liquidity_sol = self.p_entry_min_liquidity_sol;
-        r.p_entry_min_organic_liq = self.p_entry_min_organic_liq;
         r.is_active = true;
         r
     }

@@ -69,45 +69,42 @@ export const TPSL_PARAM_HELP = {
   },
 
   // ── Entry gates · scalp continuation (TPSL2 only — decide WHEN to buy) ──
+  // Each gate is a condition on the live trade stream; the bot buys on the first
+  // trade where EVERY gate you set is satisfied. Blank or 0 turns a gate off.
   minAgeSecs: {
     title: 'Min Age (seconds)',
     body:
-      "Wait until the token is at least this many seconds old (measured from its first trade) before buying, skipping the wild first moments after launch. Blank or 0 turns it off.",
+      "Don't buy until the token is at least this many seconds old (age = time since its first trade), skipping the chaotic launch spike. Example: 10 → ignore the first 10 seconds after launch. Blank or 0 turns it off.",
   },
   maxAgeSecs: {
     title: 'Max Age (seconds)',
     body:
-      "Upper bound of the entry window: stop buying once the token is older than this many seconds (measured from its first trade), so you only scalp the early window. Together with Min Age this forms the window [Min Age, Max Age], and Max Age must be greater than Min Age. Blank or 0 means no ceiling — entries stay open until dead.",
+      "Stop buying once the token is older than this many seconds (age from its first trade), so you only scalp the early window. With Min Age this forms the window [Min Age, Max Age] and must be larger than Min Age. Example: Min 10 + Max 60 → only buy while the token is between 10 and 60 seconds old. Blank or 0 means no ceiling — entries stay open until the token dies.",
   },
   minAliveSol: {
     title: 'Min Alive SOL',
     body:
-      "Only buy if the token is still actively trading. 'Alive SOL' is the total SOL traded (buys + sells) in the last 10 seconds; require at least this much so you don't buy into a token that has already gone quiet. Blank or 0 turns it off.",
+      "Only buy while the token is still actively trading. Alive SOL = total SOL traded (buys + sells) in the last 10 seconds. Example: 5 → require ≥ 5 SOL of trading in the last 10s, so you skip tokens that have already gone quiet. Blank or 0 turns it off.",
   },
-  minOrganicSol: {
-    title: 'Min Organic SOL',
+  minNetBuySol: {
+    title: 'Min Net Buy SOL',
     body:
-      "Require real demand. 'Organic SOL' is the net SOL bought so far (buys minus sells, from any wallet) — a high value means genuine buying pressure, not just the initial launch trade. Blank or 0 turns it off.",
+      "Require real net demand. Net Buy SOL = every buy minus every sell so far, any wallet — the SOL that has actually flowed IN. Example: 8 → enter only after a net +8 SOL has been bought, proving genuine buying pressure rather than a single launch trade. Sells subtract, so a token that pumped then dumped won't qualify. This measures demand (a flow), NOT how much SOL is in the pool — for that use Min Liquidity SOL. Blank or 0 turns it off.",
   },
   pullbackPct: {
     title: 'Pullback %',
     body:
-      "First half of the 'higher-low' entry. Min dip off the recent high for a higher-low to count — the size of the pullback you want to see before buying. Whole-percent, 0–100. Needs Higher-Low (s) set too. Blank or 0 turns it off.",
+      "First half of the 'higher-low' entry: the minimum dip off the recent high that counts as a real pullback. Example: 15 → the price must drop at least 15% from its high before the pattern can arm. Whole-percent, 0–100. Needs Higher-Low (s) set too. Blank or 0 turns it off.",
   },
   higherLowSecs: {
     title: 'Higher-Low (seconds)',
     body:
-      "Second half of the 'higher-low' entry. After the first dip (see Pullback %), buy only once the price makes a second dip that bottoms HIGHER than the first — confirming buyers are stepping in. The two bottoms must be at least this many seconds apart, which filters out split-second fakes. Blank or 0 turns it off.",
+      "Second half of the 'higher-low' entry. After the first dip (see Pullback %), buy only once the price makes a SECOND dip that bottoms HIGHER than the first — confirming buyers are stepping in. The two bottoms must be at least this many seconds apart, which filters split-second fakes. Example: 10 → the two lows must be ≥ 10s apart. Blank or 0 turns it off.",
   },
   minLiquiditySol: {
     title: 'Min Liquidity SOL',
     body:
-      "Require at least this much REAL SOL in the pool before buying. Real liquidity is actual deposited SOL (not the bonding-curve 'virtual' number the creator can fake), so this avoids tokens you can't sell out of. Blank or 0 turns it off.",
-  },
-  minOrganicLiq: {
-    title: 'Min Organic Liquidity SOL',
-    body:
-      'A second, independently tunable real-liquidity floor — reads the same real pool SOL reserves as Min Liquidity SOL, so you can set both to different thresholds if needed. Blank or 0 turns it off.',
+      "Require at least this much REAL SOL in the pool before buying. Real liquidity = actual deposited SOL, not the bonding-curve 'virtual' figure a creator can inflate. Example: 5 → skip any token with under 5 SOL of real liquidity that you couldn't sell back out of. This measures pool size (a level), NOT demand — for that use Min Net Buy SOL. Blank or 0 turns it off.",
   },
 
   // ── Exit gates: when to sell ──
@@ -129,12 +126,12 @@ export const TPSL_PARAM_HELP = {
   timeStopSecs: {
     title: 'Time Stop (seconds)',
     body:
-      'Sell after holding for this long, even if neither take-profit nor stop-loss has hit. Cuts loose positions that are just sitting flat. Blank or 0 turns it off.',
+      'Sell after holding this long, even if neither take-profit nor stop-loss has hit — cuts loose a position just sitting flat. Example: 300 → force an exit 5 minutes after entry. Blank or 0 turns it off.',
   },
   stallSecs: {
     title: 'Stall (seconds)',
     body:
-      "Sell when momentum dies — when the price hasn't made a new high for this many seconds. Gets you out of a token that has stopped climbing. Blank or 0 turns it off.",
+      "Sell when momentum dies — when the price hasn't set a new high for this many seconds — to get out of a token that stopped climbing. Example: 30 → exit after 30s with no new high. Blank or 0 turns it off.",
   },
   liquidityDropPct: {
     title: 'Liquidity Drop %',

@@ -39,11 +39,10 @@ pub struct Tpsl2Params {
     pub entry_min_age_secs: Option<u64>,
     pub entry_max_age_secs: Option<u64>,
     pub entry_min_alive_sol: Option<f64>,
-    pub entry_min_organic_sol: Option<f64>,
+    pub entry_min_net_buy_sol: Option<f64>,
     pub entry_pullback_pct: Option<f64>,
     pub entry_higher_low_secs: Option<u64>,
     pub entry_min_liquidity_sol: Option<f64>,
-    pub entry_min_organic_liq: Option<f64>,
 }
 
 /// One evaluated combo: the `Copy` scalar params (for `entry_key`/`params_json`)
@@ -69,11 +68,10 @@ pub struct Tpsl2EntryKey {
     min_age_secs: Option<u64>,
     max_age_secs: Option<u64>,
     min_alive_sol: Option<f64>,
-    min_organic_sol: Option<f64>,
+    min_net_buy_sol: Option<f64>,
     pullback_pct: Option<f64>,
     higher_low_secs: Option<u64>,
     min_liquidity_sol: Option<f64>,
-    min_organic_liq: Option<f64>,
 }
 
 /// The resolved entry for a token under one entry-param tuple: either no entry, or
@@ -107,11 +105,10 @@ pub struct Tpsl2Axes {
     pub entry_min_age_secs: Vec<Option<u64>>,
     pub entry_max_age_secs: Vec<Option<u64>>,
     pub entry_min_alive_sol: Vec<Option<f64>>,
-    pub entry_min_organic_sol: Vec<Option<f64>>,
+    pub entry_min_net_buy_sol: Vec<Option<f64>>,
     pub entry_pullback_pct: Vec<Option<f64>>,
     pub entry_higher_low_secs: Vec<Option<u64>>,
     pub entry_min_liquidity_sol: Vec<Option<f64>>,
-    pub entry_min_organic_liq: Vec<Option<f64>>,
 }
 
 impl Default for Tpsl2Axes {
@@ -129,11 +126,10 @@ impl Default for Tpsl2Axes {
             entry_min_age_secs: vec![Some(10), Some(30)],
             entry_max_age_secs: vec![None],
             entry_min_alive_sol: vec![None],
-            entry_min_organic_sol: vec![None],
+            entry_min_net_buy_sol: vec![None],
             entry_pullback_pct: vec![None, Some(10.0)],
             entry_higher_low_secs: vec![None],
             entry_min_liquidity_sol: vec![None, Some(5.0)],
-            entry_min_organic_liq: vec![None],
         }
     }
 }
@@ -163,15 +159,13 @@ pub struct AxesSpec {
     #[serde(default)]
     pub entry_min_alive_sol: Option<Vec<Option<f64>>>,
     #[serde(default)]
-    pub entry_min_organic_sol: Option<Vec<Option<f64>>>,
+    pub entry_min_net_buy_sol: Option<Vec<Option<f64>>>,
     #[serde(default)]
     pub entry_pullback_pct: Option<Vec<Option<f64>>>,
     #[serde(default)]
     pub entry_higher_low_secs: Option<Vec<Option<u64>>>,
     #[serde(default)]
     pub entry_min_liquidity_sol: Option<Vec<Option<f64>>>,
-    #[serde(default)]
-    pub entry_min_organic_liq: Option<Vec<Option<f64>>>,
 }
 
 impl Tpsl2Axes {
@@ -204,11 +198,10 @@ impl Tpsl2Axes {
             entry_min_age_secs: axis(&spec.entry_min_age_secs, d.entry_min_age_secs),
             entry_max_age_secs: axis(&spec.entry_max_age_secs, d.entry_max_age_secs),
             entry_min_alive_sol: axis(&spec.entry_min_alive_sol, d.entry_min_alive_sol),
-            entry_min_organic_sol: axis(&spec.entry_min_organic_sol, d.entry_min_organic_sol),
+            entry_min_net_buy_sol: axis(&spec.entry_min_net_buy_sol, d.entry_min_net_buy_sol),
             entry_pullback_pct: axis(&spec.entry_pullback_pct, d.entry_pullback_pct),
             entry_higher_low_secs: axis(&spec.entry_higher_low_secs, d.entry_higher_low_secs),
             entry_min_liquidity_sol: axis(&spec.entry_min_liquidity_sol, d.entry_min_liquidity_sol),
-            entry_min_organic_liq: axis(&spec.entry_min_organic_liq, d.entry_min_organic_liq),
         }
     }
 
@@ -224,11 +217,10 @@ impl Tpsl2Axes {
             * self.entry_min_age_secs.len()
             * self.entry_max_age_secs.len()
             * self.entry_min_alive_sol.len()
-            * self.entry_min_organic_sol.len()
+            * self.entry_min_net_buy_sol.len()
             * self.entry_pullback_pct.len()
             * self.entry_higher_low_secs.len()
             * self.entry_min_liquidity_sol.len()
-            * self.entry_min_organic_liq.len()
     }
 
     /// Grid size as `u128` — the index space the random sampler draws **without
@@ -245,11 +237,10 @@ impl Tpsl2Axes {
             self.entry_min_age_secs.len(),
             self.entry_max_age_secs.len(),
             self.entry_min_alive_sol.len(),
-            self.entry_min_organic_sol.len(),
+            self.entry_min_net_buy_sol.len(),
             self.entry_pullback_pct.len(),
             self.entry_higher_low_secs.len(),
             self.entry_min_liquidity_sol.len(),
-            self.entry_min_organic_liq.len(),
         ]
         .iter()
         .map(|&l| l as u128)
@@ -297,11 +288,10 @@ impl Tpsl2Strategy {
             entry_min_age_secs: take!(a.entry_min_age_secs),
             entry_max_age_secs: take!(a.entry_max_age_secs),
             entry_min_alive_sol: take!(a.entry_min_alive_sol),
-            entry_min_organic_sol: take!(a.entry_min_organic_sol),
+            entry_min_net_buy_sol: take!(a.entry_min_net_buy_sol),
             entry_pullback_pct: take!(a.entry_pullback_pct),
             entry_higher_low_secs: take!(a.entry_higher_low_secs),
             entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
-            entry_min_organic_liq: take!(a.entry_min_organic_liq),
         })
     }
 
@@ -318,11 +308,10 @@ impl Tpsl2Strategy {
         r.p_entry_min_age_secs = p.entry_min_age_secs;
         r.p_entry_max_age_secs = p.entry_max_age_secs;
         r.p_entry_min_alive_sol = p.entry_min_alive_sol;
-        r.p_entry_min_organic_sol = p.entry_min_organic_sol;
+        r.p_entry_min_net_buy_sol = p.entry_min_net_buy_sol;
         r.p_entry_pullback_pct = p.entry_pullback_pct;
         r.p_entry_higher_low_secs = p.entry_higher_low_secs;
         r.p_entry_min_liquidity_sol = p.entry_min_liquidity_sol;
-        r.p_entry_min_organic_liq = p.entry_min_organic_liq;
         r
     }
 
@@ -358,11 +347,10 @@ impl Tpsl2Strategy {
             entry_min_age_secs: opt_u(v, "entry_min_age_secs"),
             entry_max_age_secs: opt_u(v, "entry_max_age_secs"),
             entry_min_alive_sol: opt_f(v, "entry_min_alive_sol"),
-            entry_min_organic_sol: opt_f(v, "entry_min_organic_sol"),
+            entry_min_net_buy_sol: opt_f(v, "entry_min_net_buy_sol"),
             entry_pullback_pct: opt_f(v, "entry_pullback_pct"),
             entry_higher_low_secs: opt_u(v, "entry_higher_low_secs"),
             entry_min_liquidity_sol: opt_f(v, "entry_min_liquidity_sol"),
-            entry_min_organic_liq: opt_f(v, "entry_min_organic_liq"),
         };
         Ok(self.combo(raw))
     }
@@ -378,7 +366,7 @@ impl ParamSpace for Tpsl2Strategy {
         let a = &self.axes;
         match method {
             SweepMethod::Grid => {
-                // Full grid = Cartesian product of all 15 axes, one combo per flat
+                // Full grid = Cartesian product of all 13 axes, one combo per flat
                 // index (mixed-radix decode in `combo_at`). The grid is pre-checked
                 // ≤ cap, so `combo_count` (usize) can't overflow here.
                 (0..a.combo_count() as u128).map(|idx| self.combo_at(idx)).collect()
@@ -426,11 +414,10 @@ impl ParamSpace for Tpsl2Strategy {
                     a.entry_min_age_secs.len(),
                     a.entry_max_age_secs.len(),
                     a.entry_min_alive_sol.len(),
-                    a.entry_min_organic_sol.len(),
+                    a.entry_min_net_buy_sol.len(),
                     a.entry_pullback_pct.len(),
                     a.entry_higher_low_secs.len(),
                     a.entry_min_liquidity_sol.len(),
-                    a.entry_min_organic_liq.len(),
                 ];
                 let plan = lhs_index_plan(&mut rng, n, &lens);
                 (0..n)
@@ -454,11 +441,10 @@ impl ParamSpace for Tpsl2Strategy {
                             entry_min_age_secs: take!(a.entry_min_age_secs),
                             entry_max_age_secs: take!(a.entry_max_age_secs),
                             entry_min_alive_sol: take!(a.entry_min_alive_sol),
-                            entry_min_organic_sol: take!(a.entry_min_organic_sol),
+                            entry_min_net_buy_sol: take!(a.entry_min_net_buy_sol),
                             entry_pullback_pct: take!(a.entry_pullback_pct),
                             entry_higher_low_secs: take!(a.entry_higher_low_secs),
                             entry_min_liquidity_sol: take!(a.entry_min_liquidity_sol),
-                            entry_min_organic_liq: take!(a.entry_min_organic_liq),
                         })
                     })
                     .collect()
@@ -498,16 +484,15 @@ impl ParamSpace for Tpsl2Strategy {
             walk!(a.entry_min_age_secs, entry_min_age_secs);
             walk!(a.entry_max_age_secs, entry_max_age_secs);
             walk!(a.entry_min_alive_sol, entry_min_alive_sol);
-            walk!(a.entry_min_organic_sol, entry_min_organic_sol);
+            walk!(a.entry_min_net_buy_sol, entry_min_net_buy_sol);
             walk!(a.entry_pullback_pct, entry_pullback_pct);
             walk!(a.entry_higher_low_secs, entry_higher_low_secs);
             walk!(a.entry_min_liquidity_sol, entry_min_liquidity_sol);
-            walk!(a.entry_min_organic_liq, entry_min_organic_liq);
         }
         out
     }
 
-    /// Stable-sort the combo set so combos sharing the 9 scalp-gate knobs land
+    /// Stable-sort the combo set so combos sharing the 7 scalp-gate knobs land
     /// contiguously, restoring the engine's per-entry-key cache hit rate under
     /// `random`/`lhs`/`refine` (a full `Grid` is already entry-contiguous). The
     /// entry resolve — a full trade-slice walk plus the higher-low scan — is the
@@ -524,7 +509,7 @@ impl ParamSpace for Tpsl2Strategy {
 /// needs to be injective on the candidate values: `Option`s map a present value to
 /// its bit pattern and `None` to a reserved sentinel. The axes never carry `NaN`/
 /// `-0.0`, so equal bits ⟺ equal value ⟺ equal `entry_key` (`PartialEq`).
-fn entry_order_key(p: &Tpsl2Params) -> [u64; 8] {
+fn entry_order_key(p: &Tpsl2Params) -> [u64; 7] {
     // `+1` keeps `None` (0) distinct from `Some(0)` (1); real age/secs never hit u64::MAX.
     fn ou64(o: Option<u64>) -> u64 {
         o.map(|v| v.wrapping_add(1)).unwrap_or(0)
@@ -536,11 +521,10 @@ fn entry_order_key(p: &Tpsl2Params) -> [u64; 8] {
         ou64(p.entry_min_age_secs),
         ou64(p.entry_max_age_secs),
         of64(p.entry_min_alive_sol),
-        of64(p.entry_min_organic_sol),
+        of64(p.entry_min_net_buy_sol),
         of64(p.entry_pullback_pct),
         ou64(p.entry_higher_low_secs),
         of64(p.entry_min_liquidity_sol),
-        of64(p.entry_min_organic_liq),
     ]
 }
 
@@ -555,11 +539,10 @@ impl Strategy for Tpsl2Strategy {
             min_age_secs: p.entry_min_age_secs,
             max_age_secs: p.entry_max_age_secs,
             min_alive_sol: p.entry_min_alive_sol,
-            min_organic_sol: p.entry_min_organic_sol,
+            min_net_buy_sol: p.entry_min_net_buy_sol,
             pullback_pct: p.entry_pullback_pct,
             higher_low_secs: p.entry_higher_low_secs,
             min_liquidity_sol: p.entry_min_liquidity_sol,
-            min_organic_liq: p.entry_min_organic_liq,
         }
     }
 
@@ -656,11 +639,10 @@ impl Strategy for Tpsl2Strategy {
             "entry_min_age_secs": p.entry_min_age_secs,
             "entry_max_age_secs": p.entry_max_age_secs,
             "entry_min_alive_sol": p.entry_min_alive_sol,
-            "entry_min_organic_sol": p.entry_min_organic_sol,
+            "entry_min_net_buy_sol": p.entry_min_net_buy_sol,
             "entry_pullback_pct": p.entry_pullback_pct,
             "entry_higher_low_secs": p.entry_higher_low_secs,
             "entry_min_liquidity_sol": p.entry_min_liquidity_sol,
-            "entry_min_organic_liq": p.entry_min_organic_liq,
         })
     }
 }
@@ -712,11 +694,10 @@ mod tests {
             entry_min_age_secs: a.entry_min_age_secs[0],
             entry_max_age_secs: a.entry_max_age_secs[0],
             entry_min_alive_sol: a.entry_min_alive_sol[0],
-            entry_min_organic_sol: a.entry_min_organic_sol[0],
+            entry_min_net_buy_sol: a.entry_min_net_buy_sol[0],
             entry_pullback_pct: a.entry_pullback_pct[0],
             entry_higher_low_secs: a.entry_higher_low_secs[0],
             entry_min_liquidity_sol: a.entry_min_liquidity_sol[0],
-            entry_min_organic_liq: a.entry_min_organic_liq[0],
         });
         let neighbors = s.refine(std::slice::from_ref(&survivor));
         assert_eq!(neighbors.len(), 8, "one forward coordinate move per multi-valued axis");
@@ -735,11 +716,10 @@ mod tests {
                 + (q.entry_min_age_secs != p.entry_min_age_secs) as u8
                 + (q.entry_max_age_secs != p.entry_max_age_secs) as u8
                 + (q.entry_min_alive_sol != p.entry_min_alive_sol) as u8
-                + (q.entry_min_organic_sol != p.entry_min_organic_sol) as u8
+                + (q.entry_min_net_buy_sol != p.entry_min_net_buy_sol) as u8
                 + (q.entry_pullback_pct != p.entry_pullback_pct) as u8
                 + (q.entry_higher_low_secs != p.entry_higher_low_secs) as u8
-                + (q.entry_min_liquidity_sol != p.entry_min_liquidity_sol) as u8
-                + (q.entry_min_organic_liq != p.entry_min_organic_liq) as u8;
+                + (q.entry_min_liquidity_sol != p.entry_min_liquidity_sol) as u8;
             assert_eq!(diffs, 1, "a coordinate move changes exactly one axis");
         }
     }
@@ -791,8 +771,8 @@ mod tests {
 
         // Contiguity: walking the ordered combos, each distinct entry key forms one
         // unbroken run — a key that reappears after a different key fails the cache.
-        let mut seen: HashSet<[u64; 8]> = HashSet::new();
-        let mut prev: Option<[u64; 8]> = None;
+        let mut seen: HashSet<[u64; 7]> = HashSet::new();
+        let mut prev: Option<[u64; 7]> = None;
         for c in &combos {
             let k = entry_order_key(&c.raw);
             if Some(k) != prev {
