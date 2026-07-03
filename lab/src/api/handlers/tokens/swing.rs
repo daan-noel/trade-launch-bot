@@ -1,25 +1,20 @@
 use actix_web::{web, HttpResponse, Responder};
-use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use trading_core::models::trade::TradeRow;
+
 use crate::{
     analyzers::swing_analyzer::{detect_swings, SwingLeg, SwingParams},
     models::ingest::SseEvent,
-    models::trade::Trade,
     state::local_state::LocalState,
     state::job_progress::ProgressCell,
     state::swing_results::SwingOutcome,
-    state::token_cache::MAX_TRADES_RETAINED,
+    strategies::sim_fetch::{fetch_sim_histories, fetch_sim_history_one},
+    sweep::projection::CorpusTrade,
 };
-
-/// Bound for the cache-miss DB fallback. Matches the in-memory retention window
-/// so a high-volume mint can't pull its entire (unbounded, growing) trade
-/// history into a single HTTP response — the same launch→recent window the live
-/// cache would have served, in chronological order.
-const SWING_DB_TRADE_CAP: i64 = MAX_TRADES_RETAINED as i64;
 
 #[derive(Serialize)]
 pub struct SwingResponse {
@@ -83,19 +78,20 @@ pub struct SwingBatchRequest {
 /// Borrows the slice and returns it untouched (`Cow::Borrowed`) when no window
 /// is set, allocating a filtered `Vec` only when a window actually clips it — so
 /// the common no-window swing scan reads the Arc-shared buffer in place with zero
-/// copy.
-pub(crate) fn filter_trades_to_window<'a>(
-    trades: &'a [Trade],
+/// copy. Generic over [`TradeRow`] so it serves both the live `Trade` and the
+/// lake's `CorpusTrade` off the same accessors.
+pub(crate) fn filter_trades_to_window<T: TradeRow + Clone>(
+    trades: &[T],
     window_start_ms: Option<i64>,
     window_end_ms: Option<i64>,
-) -> Cow<'a, [Trade]> {
+) -> Cow<'_, [T]> {
     if window_start_ms.is_none() && window_end_ms.is_none() {
         return Cow::Borrowed(trades);
     }
     let anchor = trades
         .iter()
-        .filter(|t| t.amount_sol > 0.0)
-        .map(|t| t.block_time.timestamp_millis())
+        .filter(|t| t.amount_sol() > 0.0)
+        .map(|t| t.block_time().timestamp_millis())
         .min();
     let Some(anchor) = anchor else {
         return Cow::Borrowed(trades);
@@ -106,7 +102,7 @@ pub(crate) fn filter_trades_to_window<'a>(
         trades
             .iter()
             .filter(|t| {
-                let ts = t.block_time.timestamp_millis();
+                let ts = t.block_time().timestamp_millis();
                 lo.map_or(true, |lo| ts >= lo) && hi.map_or(true, |hi| ts <= hi)
             })
             .cloned()
@@ -128,13 +124,14 @@ pub struct SwingBatchResponse {
     pub results: Vec<SwingBatchEntry>,
 }
 
-/// `POST /api/tokens/:mint/swings` — run swing detection over a token's trade
-/// history (cache first, else DB). The (optional) JSON body carries tunable
-/// `params` plus the same `window_start_ms` / `window_end_ms` / `curve_only`
-/// trade filters as the batch endpoint; send `{}` to use defaults over full
-/// history.
+/// `POST /api/tokens/:mint/swings` — run swing detection over a token's full,
+/// uncapped trade history read from the Parquet lake (the same corpus + fetch
+/// path `swing1-detect` and the single-rule backtests use). The (optional) JSON
+/// body carries tunable `params` plus the same `window_start_ms` /
+/// `window_end_ms` / `curve_only` trade filters as the batch endpoint; send `{}`
+/// to use defaults over full history.
 pub async fn detect_token_swings(
-    state: web::Data<Arc<LocalState>>,
+    _state: web::Data<Arc<LocalState>>,
     path: web::Path<String>,
     body: web::Json<SwingDetectRequest>,
 ) -> impl Responder {
@@ -146,17 +143,14 @@ pub async fn detect_token_swings(
         curve_only,
     } = body.into_inner();
 
-    // Read full `Trade` rows from the DB (not the slim cache window): swing
-    // analysis is a cold, bounded, paginated path, and the live `TokenCache` now
-    // retains only a slimmed `CachedTrade` projection. Bounded read — never
-    // materialise an unbounded mint history.
-    let repo = state.trade_repo();
-    let trades: Arc<Vec<Trade>> = match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
-        Ok(trades) => Arc::new(trades),
+    // Uncapped, full-history read from the lake — `curve_only` is applied at load
+    // (the projected `CorpusTrade` has no `venue`).
+    let trades: Arc<Vec<CorpusTrade>> = match fetch_sim_history_one(&mint, curve_only).await {
+        Ok(trades) => trades,
         Err(e) => {
-            tracing::error!("DB error fetching trades for swing analysis {mint}: {e}");
+            tracing::error!("lake trade fetch failed for swing analysis {mint}: {e}");
             return HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "database error"
+                "error": "lake trade fetch failed"
             }));
         }
     };
@@ -165,12 +159,7 @@ pub async fn detect_token_swings(
     // the batch path — doing it inline would pin a worker for the whole scan.
     let resp_params = params.clone();
     let result = web::block(move || {
-        // Borrow the shared buffer; the curve filter allocates only the kept
-        // trades, and the window filter borrows when unset — no full-history copy.
-        let curve_filtered: Option<Vec<Trade>> = curve_only
-            .then(|| trades.iter().filter(|t| t.venue == "curve").cloned().collect());
-        let base: &[Trade] = curve_filtered.as_deref().unwrap_or(&trades);
-        let windowed = filter_trades_to_window(base, window_start_ms, window_end_ms);
+        let windowed = filter_trades_to_window(&trades, window_start_ms, window_end_ms);
         detect_swings(&windowed, &params)
     })
     .await;
@@ -193,15 +182,10 @@ pub async fn detect_token_swings(
 
 /// Sanity ceiling on a single run's mint count. The run is uncapped by design
 /// (the whole filtered set can be thousands of tokens), but a wildly out-of-range
-/// list — a client bug, a hostile caller — would still pin the blocking pool and
-/// a connection-pool slice, so reject the absurd while leaving every real run
-/// (≤ the tokens-list ceiling) through.
+/// list — a client bug, a hostile caller — would still pin the blocking pool for
+/// the whole scan, so reject the absurd while leaving every real run (≤ the
+/// tokens-list ceiling) through.
 const MAX_RUN_MINTS: usize = 100_000;
-
-/// Max cache-miss DB loads in flight at once. Bounds the connection-pool pressure
-/// the detached run can create while still overlapping the round-trips instead of
-/// awaiting them one at a time.
-const BATCH_FETCH_CONCURRENCY: usize = 16;
 
 /// `POST /api/tokens/swings/batch` — start a "Swing Detection All" run as a
 /// detached background job and return at once (`202 {"started": true}`).
@@ -295,53 +279,45 @@ pub async fn detect_tokens_swings_batch(
         // chain sort.
         let run = app.swing_runs.get_or_create(&run_id);
 
-        // 1) Resolve each mint's trades concurrently — read full `Trade`s from
-        //    Postgres (the cache holds a slim projection; swing analysis is a cold
-        //    bounded path). The index is carried so results realign to the
-        //    requested order after the unordered fan-out.
-        let fetches = mints.into_iter().enumerate().map(|(idx, mint)| {
-            let app = app.clone();
-            async move {
-                let repo = app.trade_repo();
-                let trades: Arc<Vec<Trade>> =
-                    match repo.find_by_mint_paged(&mint, SWING_DB_TRADE_CAP, 0).await {
-                        Ok(trades) => Arc::new(trades),
-                        Err(e) => {
-                            tracing::error!(
-                                "DB error fetching trades for batch swing analysis {mint}: {e}"
-                            );
-                            Arc::new(Vec::new())
-                        }
-                    };
-                (idx, mint, trades)
+        // 1) Resolve every requested mint's trades in a single lake read — the
+        //    loader stages the whole mint list into one DuckDB temp table and
+        //    scans once, so this is one lake query rather than one PG round trip
+        //    per mint. `curve_only` is applied at load (the projected
+        //    `CorpusTrade` has no `venue`). A lake-wide failure fails the whole
+        //    run explicitly rather than degrading per-mint to an empty history.
+        let mut histories = match fetch_sim_histories(&mints, curve_only).await {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::error!("lake trade fetch failed for batch swing analysis: {e}");
+                app.swing_results.insert(
+                    run_id,
+                    SwingOutcome::Failed {
+                        status: 500,
+                        message: "lake trade fetch failed".to_string(),
+                    },
+                );
+                return;
             }
-        });
-        let mut resolved: Vec<(usize, String, Arc<Vec<Trade>>)> = stream::iter(fetches)
-            .buffer_unordered(BATCH_FETCH_CONCURRENCY)
-            .collect()
-            .await;
+        };
 
         // 2) Run the (pure-CPU) window filter + swing scans off the runtime, on
         //    the blocking pool — doing them inline would pin a worker for the whole
         //    run. Check the cancel flag between mints and bump the progress cell
         //    per completed mint; on cancel, break early and surface a partial set
-        //    the caller discards.
+        //    the caller discards. A mint absent from the lake result (no rows) is
+        //    treated as an empty history.
         let resp_params = params.clone();
         let cancel_scan = cancel.clone();
         let cell_scan = cell.clone();
         let run_scan = run.clone();
         let scan = web::block(move || {
-            resolved.sort_by_key(|(idx, _, _)| *idx);
-            let mut results = Vec::with_capacity(resolved.len());
-            for (processed, (_, mint, trades)) in resolved.into_iter().enumerate() {
+            let mut results = Vec::with_capacity(mints.len());
+            for (processed, mint) in mints.into_iter().enumerate() {
                 if cancel_scan.load(Ordering::Acquire) {
                     break;
                 }
-                // Borrow the shared buffer; allocate only what a filter retains.
-                let curve_filtered: Option<Vec<Trade>> = curve_only
-                    .then(|| trades.iter().filter(|t| t.venue == "curve").cloned().collect());
-                let base: &[Trade] = curve_filtered.as_deref().unwrap_or(&trades);
-                let windowed = filter_trades_to_window(base, window_start_ms, window_end_ms);
+                let trades = histories.remove(&mint).unwrap_or_default();
+                let windowed = filter_trades_to_window(&trades, window_start_ms, window_end_ms);
                 let swings = detect_swings(&windowed, &params);
                 // Stash the raw legs for this run so the tokens list can sort by
                 // (and re-group at any latency) the chain columns.
