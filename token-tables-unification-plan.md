@@ -50,15 +50,30 @@ from `.env`); `cargo check -p live` + `-p lab` clean. No frontend code changed.
   Runtime-verified against the lab bin (every fold path). See Phase 3 section (all `[x]`) for the full
   per-field mapping.
 
-### OPEN — resume here (recommended order: 7(items 1–2, dev servers up) → 5 → 8)
+### DONE this session — Phase 7 items 1–3 (frontend column-dedup; BUILD-verified, LIVE-eyeball pending)
 
-- **Phase 7 items 1–2** (UI-affecting — run `npm run dev` and eyeball the Tokens page + strategy tables):
-  collapse `tokenColumns.tsx` ↔ `sharedTokenColumns.tsx` `ALL_TOKEN_COLS` into one source; remove the
-  `init_buy`/`initial_buy` + `cu_limit`/`cu_price` hand-column aliases; then reconcile tpsl1/tpsl2
-  `*_KEYS` via a shared constant (`mint` is a no-op today — cosmetic only).
-- **Phase 3** (BREAKING wire change): `/api/tokens` GET `?f_*` → POST `TableRequest`, backend
-  (`live`/`lab` `list.rs`) + frontend `TokensPage.tsx`. Keep the SQL(live)/in-RAM(lab) split behind the
-  contract, both fed by the Phase-2 registry.
+- **Phase 7 items 1–3 — token-info columns collapsed to ONE source.** The ~26 enrichment columns now
+  live in a single `tokenInfoColumns()` SSOT in `sharedTokenColumns.tsx` (render/sort/search/filter
+  logic — the facts that can drift). Both consumers derive from it: `appendedTokenColumns` overlays
+  `defaultVisible` (via `APPENDED_HIDDEN_KEYS`) for strategy tables; `tokenColumns.tsx` pulls each
+  shared column by key through `tokenInfoColumnMap()` and applies only Tokens-page presentation (bespoke
+  order, per-column widths via `TOKEN_COL_WIDTH`, plus its own identity/`token_age`/`lifetime`/fep-ratio
+  columns). `defaultVisible`/width/order stay per-view (legitimate) — everything else is shared. Label
+  drift fixed (`trade_count` is now "Token Trades" on the Tokens page too); `IxCountCell` (copy-on-click)
+  moved to the shared module so strategy tables gain it. **Item 2:** the hand `init_buy`/`cu_limit`/
+  `cu_price` columns deleted from tpsl1+tpsl2 `matchedColumns`; they now render from the shared
+  `initial_buy`/`cu_limit`/`cu_price` enrichment columns (label/format/group change: "Init Buy (SOL)"
+  group `params` → "Init Buy" AmountCell group `initial`; CU cols → `compute`). **Item 3:** `MATCHED_KEYS`
+  cleaned in both (dropped the now-meaningless `init_buy`/`initial_buy`/`cu_limit`/`cu_price` suppression);
+  the remaining identity keys are documentation no-ops (not enrichment keys). `POSITION_KEYS`/`SIM_KEYS`
+  stay per-strategy — they gate genuinely different bespoke columns (SIM's own `ath_price` suppression is
+  real and preserved). Verified: `npx tsc` clean (both trees) + `npm run build` clean.
+  **STILL REQUIRED:** live visual check — `npm run dev` and eyeball the Tokens page + tpsl1/tpsl2
+  Matched/Positions tables (I can't drive a browser here). Expected visible deltas: "Trades"→"Token
+  Trades" header on Tokens page; matched Init Buy/CU columns relabelled + regrouped.
+
+### OPEN — resume here (recommended order: 5 → 8)
+
 - **Phase 5** (frontend page rewrite): Wallet Holdings onto the shared `DataTable` + TS evaluator; delete
   `mergeTokenData`; flag Wallet live-only cols `client_only`.
 - **Phase 8**: Rust↔TS evaluator conformance test; update `@arch/frontend.md` + `@arch/database.md` +
@@ -201,23 +216,22 @@ the internal rep the two proven engines already consume —
       `to_string` numeric-substring drift. Test `global_search_is_mint_and_symbol_only`; DB parity's
       "global search AB" case still green. (Simulated already mint/symbol.)
 
-## Phase 7 — Frontend column-duplication cleanup (by meaning) — PARTIAL
+## Phase 7 — Frontend column-duplication cleanup (by meaning) — items 1–3 DONE, 4 DEFERRED
 
-- [ ] **DEFERRED (UI-affecting — verify with dev servers).** Collapse the two hand-maintained copies of
-      the ~26 token-info columns into one source: `tokenColumns.tsx` (Tokens page, 34 cols incl. the
-      extra `mint`/`token_age`/`lifetime`/`ath_fep_ratio`/`current_fep_ratio`) and
-      `sharedTokenColumns.tsx` `ALL_TOKEN_COLS` (29 cols). They diverge in `defaultVisible`/grouping/order,
-      so a merge changes the Tokens-page appearance and must be checked live (`npm run dev`). Fixes the
-      label drift (`"Trades"` vs `"Token Trades"`).
-- [ ] **DEFERRED (UI-affecting).** Remove the `init_buy`/`initial_buy` alias duplication — the matched
-      table renders `initial_buy_sol` via a hand column `key:'init_buy'` (label "Init Buy (SOL)", group
-      `params`) while the enrichment `initial_buy` column is suppressed via `MATCHED_KEYS`. Collapsing to
-      the enrichment column changes the label/format/group, so verify visually. Same for hand
-      `cu_limit`/`cu_price` vs the enrichment cols.
-- [ ] **DEFERRED.** Reconcile tpsl1 vs tpsl2 `*_KEYS` suppression sets via a shared constant. NOTE:
-      `mint` is NOT an `ALL_TOKEN_COLS` key, so its presence in tpsl2 / absence in tpsl1 is a **no-op**
-      today (nothing to suppress) — the divergence is cosmetic, not a live bug. Bundle with the item-1
-      collapse.
+- [x] **Collapsed the two hand-maintained copies into ONE `tokenInfoColumns()` SSOT** in
+      `sharedTokenColumns.tsx`. `ALL_TOKEN_COLS` is gone; `appendedTokenColumns` derives from the SSOT +
+      overlays `defaultVisible` (`APPENDED_HIDDEN_KEYS`). `tokenColumns.tsx` consumes the shared columns
+      by key via `tokenInfoColumnMap()`, applying only Tokens-page presentation (order + `TOKEN_COL_WIDTH`
+      widths) and keeping its own `symbol`/`name`/`mint`/`token_age`/`lifetime`/`ath_fep_ratio`/
+      `current_fep_ratio`. Label drift fixed (`trade_count` → "Token Trades" everywhere); `IxCountCell`
+      moved to the shared module. `npx tsc` + `npm run build` clean. **Live eyeball pending** (`npm run dev`).
+- [x] **Removed the `init_buy`/`cu_limit`/`cu_price` hand-column aliases** from tpsl1+tpsl2
+      `matchedColumns` — they now render from the shared `initial_buy`/`cu_limit`/`cu_price` enrichment
+      columns (label/format/group changes as expected; verify visually).
+- [x] **Reconciled `MATCHED_KEYS`** in both tpsl bins — dropped the now-dead `init_buy`/`initial_buy`/
+      `cu_limit`/`cu_price` suppression; remaining identity keys are documentation no-ops. `POSITION_KEYS`/
+      `SIM_KEYS` intentionally stay per-strategy (they gate genuinely different bespoke columns; SIM's
+      real `ath_price` suppression preserved). The `mint` divergence noted earlier was a no-op, unchanged.
 - [ ] **DEFERRED (doc).** Document the by-meaning overlaps left by design (`current_price` SOL/DB vs
       `price_usd` USD/live in Wallet — the latter arrives in Phase 5; `created`/`token_created_at`;
       `ath_price` row-owned + enrichment). Best written alongside the Phase 5 Wallet work.

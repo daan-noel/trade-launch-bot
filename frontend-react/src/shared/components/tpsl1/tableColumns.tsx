@@ -38,10 +38,11 @@ const POSITION_KEYS = new Set([
   'entry_price', 'entry_time', 'exit_price', 'exit_time',
   'holding', 'pnl_pct', 'pnl_sol', 'status', 'exit_reason',
 ]);
-const MATCHED_KEYS = new Set([
-  'symbol', 'name', 'created',
-  'init_buy', 'initial_buy', 'cu_limit', 'cu_price',
-]);
+// Init Buy / CU Limit / CU Price now render from the shared enrichment columns
+// (`initial_buy`/`cu_limit`/`cu_price`) — no hand columns to suppress. Only the
+// identity columns are table-owned (they aren't enrichment keys, so listing them
+// is documentation, not suppression).
+const MATCHED_KEYS = new Set(['symbol', 'name', 'created']);
 const SIM_KEYS = new Set([
   'symbol', 'created', 'entry_price', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
   'holding', 'pnl_pct', 'pnl_sol', 'reason',
@@ -202,33 +203,6 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
     render: (r) => <DateCell iso={r.created_at} />,
     sortValue: (r) => r.created_at,
     searchValue: (r) => r.created_at,
-  },
-  {
-    key: 'init_buy',
-    label: 'Init Buy (SOL)',
-    group: 'params',
-    sortable: true,
-    render: (r) => (r.initial_buy_sol != null ? r.initial_buy_sol.toFixed(4) : '—'),
-    sortValue: (r) => r.initial_buy_sol,
-    searchValue: (r) => String(r.initial_buy_sol ?? ''),
-  },
-  {
-    key: 'cu_limit',
-    label: 'CU Limit',
-    group: 'params',
-    sortable: true,
-    render: (r) => (r.cu_limit != null ? r.cu_limit : '—'),
-    sortValue: (r) => r.cu_limit,
-    searchValue: (r) => String(r.cu_limit ?? ''),
-  },
-  {
-    key: 'cu_price',
-    label: 'CU Price',
-    group: 'params',
-    sortable: true,
-    render: (r) => (r.cu_price != null ? r.cu_price : '—'),
-    sortValue: (r) => r.cu_price,
-    searchValue: (r) => String(r.cu_price ?? ''),
   },
   ...appendedTokenColumns(MATCHED_KEYS),
 ];
