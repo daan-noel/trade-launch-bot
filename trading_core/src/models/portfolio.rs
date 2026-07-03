@@ -8,6 +8,25 @@
 //! [`crate::models::strategy::StrategyPosition::realized_pnl_sol`].
 
 use serde::Serialize;
+use uuid::Uuid;
+
+/// "Who manages this mint" — one open (unsettled) strategy position, tagged with
+/// its rule's human name. The cross-strategy bot-correlation read backing the
+/// Holdings bot badge and (later) the Trade-page interlock: a manual sell must not
+/// race a live strategy's own exit (the double-sell hard constraint). Produced by
+/// `StrategyRepo::managed_mints`; a mint with no open position is simply absent.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManagedMint {
+    pub mint: String,
+    /// Owning rule (`None` only for a malformed/legacy row with no `rule_id`).
+    pub rule_id: Option<Uuid>,
+    /// Human rule label (`None` if the rule was deleted out from under the position).
+    pub rule_name: Option<String>,
+    /// `Arming` | `BuySubmitted` | `Holding` | `ExitPending` (never `End`/`ExitFailed`).
+    pub status: String,
+    /// Execution mode: `real` | `paper`.
+    pub mode: String,
+}
 
 /// Unrealized PnL of an open bag, in human SOL. Price is SOL per token unit and
 /// amount is that same token unit, so `price × amount` is human SOL (same

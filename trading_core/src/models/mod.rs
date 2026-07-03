@@ -18,7 +18,7 @@ pub mod wallet_profile_tag;
 
 // Re-export types for convenience
 pub use paper_run::{PaperRun, PaperRunStatus};
-pub use portfolio::{unrealized_pnl, UnrealizedPnl};
+pub use portfolio::{unrealized_pnl, ManagedMint, UnrealizedPnl};
 pub use position::{Position, PositionResponse, PositionStatus};
 pub use raw_tx::RawTx;
 pub use strategy::{

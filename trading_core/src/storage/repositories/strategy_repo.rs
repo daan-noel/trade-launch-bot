@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::api::table_query::{FilterOp, FilterSpec, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
+use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
@@ -1489,6 +1490,37 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Cross-strategy "who manages this mint" — every open (unsettled) position,
+    /// each tagged with its rule's human name via a `LEFT JOIN strategy_rules`.
+    /// A thin, projection-only read (no full `StrategyPosition` rows) backing the
+    /// portfolio bot badge / Trade-page interlock. Open positions are a tiny set,
+    /// so this is unbounded-but-cheap; the service correlates it against the held
+    /// mints in memory. `real_only` restricts to live-money positions (`mode='real'`).
+    /// A mint can have several open positions — the caller picks the one that matters.
+    pub async fn managed_mints(&self, real_only: bool) -> anyhow::Result<Vec<ManagedMint>> {
+        let rows: Vec<(String, Option<Uuid>, Option<String>, String, String)> = sqlx::query_as(
+            "SELECT p.mint, p.rule_id, r.rule_name, p.status, p.mode \
+             FROM strategy_positions p \
+             LEFT JOIN strategy_rules r ON r.id = p.rule_id \
+             WHERE p.status NOT IN ('End', 'ExitFailed') \
+               AND ($1 = false OR p.mode = 'real') \
+             ORDER BY p.created_at DESC",
+        )
+        .bind(real_only)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(mint, rule_id, rule_name, status, mode)| ManagedMint {
+                mint,
+                rule_id,
+                rule_name,
+                status,
+                mode,
+            })
+            .collect())
     }
 
     /// Distinct mints with an unsettled **real** position — every mint the wallet
