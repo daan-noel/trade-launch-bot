@@ -74,10 +74,14 @@ from `.env`); `cargo check -p live` + `-p lab` clean. No frontend code changed.
 
 ### OPEN — resume here
 
-- **Phase 8**: Rust↔TS evaluator conformance test (`table_eval` ↔ `tableEval.ts`, shared fixtures);
-  update `@arch/frontend.md` + `@arch/database.md` + `@plans/…`.
+All phases (1–8) landed. Two carve-outs remain, both needing a product/backend decision, not
+mechanical work:
+
 - **Phase 5 bullet 3** (deferred): retire `mergeTokenData`/`useGetTokensByMintsQuery` — needs a
   `getWalletHoldings` backend enrichment-join decision first (see Phase 5 section).
+- **Phase 7 items 1–3 live eyeball**: build-verified only; run `npm run dev` to confirm the Tokens page
+  + tpsl1/tpsl2 Matched tables look right (expected: "Trades"→"Token Trades"; matched Init Buy/CU cols
+  relabelled + regrouped).
 
 ## Decisions locked (do not re-litigate)
 
@@ -256,12 +260,15 @@ the internal rep the two proven engines already consume —
       value-parity test now auto-runs with `DATABASE_URL`. NOTE: coverage is **key-set only** — extend
       it to sort/tiebreak/ordering equivalence once the Phase-2 registry lands (see Phase 1 fixture
       todo, which covers the default-order ordering case).
-- [ ] Add a Rust↔TS evaluator conformance check (shared fixture set, same expected ordering) so the two
-      in-memory evaluators (Simulated in Rust, Wallet in TS) can't drift.
-- [ ] Update docs per CLAUDE.md "Definition of done":
-      - `@arch/frontend.md` (unified contract now covers Tokens + Wallet; `mergeTokenData` removed)
-      - `@arch/database.md` (search = mint/symbol; shared registry as filter/sort SSOT)
-      - `@plans/…` deep-dive for the registry + evaluator design.
+- [x] **Rust↔TS conformance check** — one shared fixture `frontend-react/src/shared/services/
+      tableEval.fixtures.json` (rows + 12 cases + expected `mint` orderings) drives BOTH
+      `table_eval::conformance_shared_fixtures` (Rust, `include_str!`) and `tableEval.conformance.test.ts`
+      (vitest — added `vitest` dev-dep + `vitest.config.ts` + `npm test`; `resolveJsonModule` on). Both
+      green. Fixture text is lowercase ASCII so TS `localeCompare` ≡ Rust lowercased-bytewise sort.
+- [x] **Docs updated:** `@arch/frontend.md` (client TS evaluator `tableEval.ts` + Wallet on the shared
+      contract + `tokenInfoColumns()` SSOT + conformance test); `@plans/frontend/token-table-unification.md`
+      (new deep-dive: one contract, three evaluator backends, column SSOT, conformance, deferrals).
+      `@arch/database.md` already carried search=mint/symbol + the `TableRequest`/parity notes (Phase 2/6).
 
 ## Definition of done (per CLAUDE.md)
 

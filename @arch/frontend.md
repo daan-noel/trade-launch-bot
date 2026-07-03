@@ -156,8 +156,21 @@ there are no camelCase/axis/prefix translators.
   `trading_core::storage::token_enrichment` SSOT — so sort/filter/search on enrichment columns works
   across the whole result set. `mergeTokenData(rows, tokenMap)` + the per-table
   `useGetTokensByMintsQuery` batch call were **removed** from those tables; `mergeTokenData` survives
-  **only** for **Wallet Holdings** (`MyWalletPage`), which has no server pagination (a full client-side
-  on-chain-scan dataset, so a client merge there isn't a workaround for missing server sort).
+  **only** for **Wallet Holdings** (`MyWalletPage`), whose rows are a client-side on-chain scan (no
+  server pagination). Wallet no longer forks the table logic, though: it runs the **same** `TableRequest`
+  contract locally (see the shared client evaluator below), with `mergeTokenData` reduced to just the
+  enrichment-data join (a backend holdings-enrichment join to retire it too is a pending follow-up).
+- **Client-side evaluator = the TS twin of the Rust one (`services/tableEval.ts`).** For token tables
+  whose rows are already in the browser (Wallet Holdings today; any future client-fed table),
+  `applyTableRequest(rows, body, resolve)` runs the **same** search→filter→sort→page semantics as the
+  Rust `trading_core::api::table_eval` (mint/symbol search, numeric-op-on-text drop, null-numeric
+  exclude, contains-on-number→eq, all sort keys + raw-`mint` ASC tiebreak, `Page::bounds` paging). It's
+  generic over a `ColResolver`; `columnResolver(columns)` derives the grammar from a table's
+  `ColumnDef[]` (numeric iff `filterNumber`; sort via `sortValue` with `DataTable`'s `compareSort`), so
+  there's zero sort regression. Wallet's `DataTable` runs `serverSide` but is fed by this evaluator
+  **locally**. The Rust and TS evaluators are pinned to one shared fixture file
+  (`tableEval.fixtures.json`) by the Rust `table_eval::conformance_shared_fixtures` test + the vitest
+  `tableEval.conformance.test.ts` (run `npm test`), so they can't drift.
 - **Shared enrichment type + strategy primitives.** The ~28 enrichment fields the backend
   `TokenEnrichment` flattens onto result rows are declared **once** in TS as
   `TokenEnrichmentFields` (`shared/types`); `RulePositionRecord`/`MatchedTokenRecord`/
@@ -166,13 +179,20 @@ there are no camelCase/axis/prefix translators.
   is shared under `shared/components/strategy/`: `cellFormat.ts` (the former byte-identical
   `tpsl1/2 utils.ts`), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
   `inspectFromPosition` mappers, previously copy-pasted across five pages and both modal forks).
-- **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`) on the shared token-enrichment columns:
-  `ALL_TOKEN_COLS` in `sharedTokenColumns.tsx` declares `filterNumber` on every numeric column
-  (mirrors the Tokens-page `tokenColumns.tsx`). The `DataTable` emits raw filter text; the serializer
-  (`toTableRequest` via `parseFilterSpec`) turns a numeric-column expression into a structured op that
-  compares **numerically server-side** (no longer client-only / `ILIKE`-substring). `!=` has no server
-  op and maps to `eq`; the legacy `parseNumericPredicate` (still used by any fully client-side table)
-  keeps the real `!=` negation.
+- **One token-info column SSOT (`tokenInfoColumns()` in `sharedTokenColumns.tsx`).** The ~26 enrichment
+  columns are defined **once** (render/sort/search/filter logic); both consumers derive from it —
+  `appendedTokenColumns(existingKeys)` (strategy + wallet tables) overlays `defaultVisible` via
+  `APPENDED_HIDDEN_KEYS`, and the Tokens page (`tokenColumns.tsx`) pulls each column by key through
+  `tokenInfoColumnMap()`, adding only its own presentation (order + `TOKEN_COL_WIDTH` widths) and
+  Tokens-only columns (identity/`token_age`/`lifetime`/fep-ratios). Per-view `defaultVisible`/width/order
+  legitimately differ; the render/sort/filter facts don't. The matched tables no longer hand-roll
+  `init_buy`/`cu_limit`/`cu_price` — those come from the shared `initial_buy`/`cu_limit`/`cu_price`
+  columns.
+- **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`): every numeric column declares `filterNumber`.
+  The `DataTable` emits raw filter text; the serializer (`toTableRequest` via `parseFilterSpec`) turns a
+  numeric-column expression into a structured op that compares **numerically** (server-side for the
+  paged tables; via `tableEval.ts` client-side for Wallet). `!=` has no server op and maps to `eq`; the
+  legacy `parseNumericPredicate` (still used by any fully client-side table) keeps the real `!=` negation.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 

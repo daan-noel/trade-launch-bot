@@ -1,0 +1,73 @@
+{
+  "_comment": "Shared Rust<->TS table-evaluator conformance fixtures. Consumed by BOTH `trading_core::api::table_eval` (Rust `conformance` test, via include_str!) and `tableEval.conformance.test.ts` (vitest). Every case's `expected` is the ordered list of `mint` values on the resulting page. Grammar (both sides): mint->mint(text), symbol->symbol(text), reason->exit_reason(text), pnl->pnl_percent(number), trades->trade_count(number). Text values are lowercase ASCII so localeCompare (TS) and lowercased-bytewise (Rust) agree.",
+  "rows": [
+    { "mint": "a", "symbol": "bonk", "pnl_percent": 10.0, "trade_count": 3, "exit_reason": "takeprofit" },
+    { "mint": "b", "symbol": "pumpcat", "pnl_percent": -5.0, "trade_count": 9, "exit_reason": "stoploss" },
+    { "mint": "c", "symbol": "wif", "pnl_percent": 50.0, "trade_count": 1, "exit_reason": "takeprofit" },
+    { "mint": "d", "symbol": "pumpdog", "pnl_percent": 10.0, "trade_count": 9, "exit_reason": "stall" },
+    { "mint": "e", "symbol": "doge", "pnl_percent": null, "trade_count": 2, "exit_reason": "timestop" },
+    { "mint": "f", "symbol": "mypump", "pnl_percent": 0.0, "trade_count": 5, "exit_reason": null }
+  ],
+  "cases": [
+    {
+      "name": "numeric_gt_excludes_null",
+      "request": { "filters": { "pnl": { "op": "gt", "val": 5 } } },
+      "expected": ["a", "c", "d"]
+    },
+    {
+      "name": "numeric_between",
+      "request": { "filters": { "trades": { "op": "between", "min": 2, "max": 5 } } },
+      "expected": ["a", "e", "f"]
+    },
+    {
+      "name": "numeric_op_on_text_is_ignored",
+      "request": { "filters": { "symbol": { "op": "gt", "val": 5 } } },
+      "expected": ["a", "b", "c", "d", "e", "f"]
+    },
+    {
+      "name": "contains_on_number_is_eq",
+      "request": { "filters": { "trades": { "op": "contains", "val": 9 } } },
+      "expected": ["b", "d"]
+    },
+    {
+      "name": "search_is_mint_symbol_only",
+      "request": { "search": "pump" },
+      "expected": ["b", "d", "f"]
+    },
+    {
+      "name": "text_contains",
+      "request": { "filters": { "reason": { "op": "contains", "val": "take" } } },
+      "expected": ["a", "c"]
+    },
+    {
+      "name": "text_eq",
+      "request": { "filters": { "reason": { "op": "eq", "val": "stoploss" } } },
+      "expected": ["b"]
+    },
+    {
+      "name": "multi_key_sort_then_mint_tail",
+      "request": { "sorting": [{ "col": "pnl", "dir": "desc" }, { "col": "trades", "dir": "asc" }] },
+      "expected": ["c", "a", "d", "f", "b", "e"]
+    },
+    {
+      "name": "sort_asc_nulls_last_then_mint_tail",
+      "request": { "sorting": [{ "col": "pnl", "dir": "asc" }] },
+      "expected": ["b", "f", "a", "d", "c", "e"]
+    },
+    {
+      "name": "unknown_sort_key_falls_back_to_mint_tail",
+      "request": { "sorting": [{ "col": "nope", "dir": "desc" }] },
+      "expected": ["a", "b", "c", "d", "e", "f"]
+    },
+    {
+      "name": "pagination_page_2",
+      "request": { "pagination": { "page": 2, "pageSize": 2 }, "sorting": [{ "col": "trades", "dir": "desc" }] },
+      "expected": ["f", "a"]
+    },
+    {
+      "name": "default_no_sort_is_mint_tail",
+      "request": {},
+      "expected": ["a", "b", "c", "d", "e", "f"]
+    }
+  ]
+}

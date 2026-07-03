@@ -290,6 +290,32 @@ mod tests {
     }
 
     #[test]
+    fn conformance_shared_fixtures() {
+        // The SAME fixture file drives the TS `tableEval.conformance.test.ts` (vitest),
+        // so the Rust and TS evaluators can't drift on op/sort/search/tiebreak/paging.
+        // See the JSON's `_comment` for the shared grammar (it matches `resolve` above).
+        let data: Value = serde_json::from_str(include_str!(
+            "../../../frontend-react/src/shared/services/tableEval.fixtures.json"
+        ))
+        .expect("fixtures parse");
+        let rows: Vec<Value> = data["rows"].as_array().expect("rows array").clone();
+        for case in data["cases"].as_array().expect("cases array") {
+            let name = case["name"].as_str().unwrap_or("<unnamed>");
+            let request: TableRequest =
+                serde_json::from_value(case["request"].clone()).expect("request");
+            let (page, _) = apply_table_request(&rows, &request, resolve);
+            let got: Vec<&str> = page.iter().map(|r| r["mint"].as_str().unwrap()).collect();
+            let want: Vec<&str> = case["expected"]
+                .as_array()
+                .expect("expected array")
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(got, want, "case `{name}`");
+        }
+    }
+
+    #[test]
     fn multi_key_sort_then_mint_tail() {
         // Two rows tie on pnl; the second sort key (trades ASC) breaks it, and equal
         // on both would fall to mint ASC.
