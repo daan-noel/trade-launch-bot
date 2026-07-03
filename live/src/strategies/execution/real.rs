@@ -771,14 +771,20 @@ const CURVE_MISSING_USER_VOLUME_ACCUMULATOR: u32 = 6024;
 /// `signature_state_detailed` check decides whether re-sending is worth the fee,
 /// using the on-chain **program error code**: a slippage-floor revert retries; a
 /// structural/unknown revert on a venue the retry would reuse stops; a curve 2006
-/// refreshes the creator vault; 6024 refreshes the cashback flag; 6005 re-routes
-/// to the AMM after confirming migration; a mid-exit migration always re-routes.
-/// Pure.
+/// refreshes the creator vault; an AMM 2006 refreshes the pool's coin_creator;
+/// 6024 refreshes the cashback flag; 6005 re-routes to the AMM after confirming
+/// migration; a mid-exit migration always re-routes. Pure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SellRetryDecision {
     Retry,
     StopFeeBurn,
+    /// Curve 2006: `bonding_curve.creator` rotated (pump `set_creator`) after the
+    /// buy cached the vault — re-read the creator, retry.
     RefreshCreator,
+    /// AMM 2006: the pool's `coin_creator` rotated after we cached the pool — evict
+    /// the stale `AmmPoolInfo`, re-read the pool (re-derives the coin_creator vault
+    /// authority), retry.
+    RefreshCoinCreator,
     /// Curve 6024: cashback UVA was missing — re-read cashback flag, retry.
     RefreshCashback,
     /// Curve 6005: token already migrated — re-read migration state, re-route.
@@ -804,6 +810,8 @@ fn classify_sell_revert<E>(
                 SellRetryDecision::Retry
             } else if *custom == Some(ANCHOR_CONSTRAINT_SEEDS) && !used_migrated {
                 SellRetryDecision::RefreshCreator
+            } else if *custom == Some(ANCHOR_CONSTRAINT_SEEDS) && used_migrated {
+                SellRetryDecision::RefreshCoinCreator
             } else if *custom == Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR) && !used_migrated {
                 SellRetryDecision::RefreshCashback
             } else if *custom == Some(BONDING_CURVE_COMPLETE) && !used_migrated {
@@ -1029,6 +1037,34 @@ async fn sell_until_balance_cleared(
                                 }
                             }
                         }
+                        SellRetryDecision::RefreshCoinCreator => {
+                            match trader
+                                .refresh_amm_pool_info(&mint, &base_token_program)
+                                .await
+                            {
+                                Ok(Some(vault)) => warn!(mint = %mint, attempt, sig = %sig,
+                                    new_coin_creator_vault_authority = %vault,
+                                    "AMM sell reverted on a stale coin_creator (pump rotated the \
+                                     pool's coin_creator after we cached it); refreshed the pool, \
+                                     retrying with a higher tip"),
+                                Ok(None) => {
+                                    // The re-read yielded the SAME coin_creator, so a retry would
+                                    // derive the identical authority and revert again — stop
+                                    // instead of re-paying fees (bounds the refresh loop).
+                                    warn!(mint = %mint, attempt, sig = %sig,
+                                        "AMM sell reverted 2006 but the pool's coin_creator is \
+                                         unchanged on re-read; not retrying (would only re-pay \
+                                         fees); marking ExitFailed");
+                                    return SellOutcome::Failed { sigs: sell_sigs };
+                                }
+                                Err(err) => {
+                                    warn!(mint = %mint, attempt, sig = %sig,
+                                        "AMM pool refresh failed after a 2006 revert: {err}; \
+                                         marking ExitFailed");
+                                    return SellOutcome::Failed { sigs: sell_sigs };
+                                }
+                            }
+                        }
                         SellRetryDecision::RefreshCashback => {
                             match trader.refresh_curve_facts(&mint).await {
                                 Ok(facts) => {
@@ -1195,6 +1231,16 @@ mod tests {
         assert_eq!(
             classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), false, false),
             SellRetryDecision::RefreshCreator
+        );
+    }
+
+    #[test]
+    fn amm_constraint_seeds_refreshes_coin_creator() {
+        // The same 2006 code on an AMM route means the pool's coin_creator rotated
+        // — refresh the pool, not the curve creator.
+        assert_eq!(
+            classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), true, true),
+            SellRetryDecision::RefreshCoinCreator
         );
     }
 

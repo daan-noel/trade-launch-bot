@@ -768,6 +768,39 @@ impl PumpFunTrader {
         Ok(())
     }
 
+    /// Force-refresh the cached [`AmmPoolInfo`] for `token_mint` by evicting the
+    /// entry and re-reading the pool account, returning the freshly derived
+    /// `coin_creator_vault_authority` **only if the pool's `coin_creator` actually
+    /// changed** (`None` when the re-read matches what we already had).
+    ///
+    /// PumpSwap can populate/rotate a pool's `coin_creator` AFTER our first read
+    /// cached it (`amm_pool_cache` has no TTL). The stale `coin_creator` then
+    /// derives the wrong `coin_creator_vault_authority`, and every AMM sell reverts
+    /// with Anchor `ConstraintSeeds` (2006) — the AMM analogue of the curve
+    /// `set_creator` case [`Self::refresh_curve_creator_vault`] handles. After this
+    /// call the cache holds the fresh pool, so the next `amm_sell` builds with the
+    /// correct authority. Returning `None` (unchanged) lets the caller stop instead
+    /// of re-paying fees on a retry that would derive the identical authority.
+    /// OFF the hot path — the exit loop calls this only after an AMM 2006 revert.
+    pub async fn refresh_amm_pool_info(
+        &self,
+        token_mint: &str,
+        base_token_program_id: &str,
+    ) -> Result<Option<Pubkey>> {
+        let prev_creator = self.amm_pool_cache.get(token_mint).map(|r| r.coin_creator);
+        // Evict so `amm_pool_info` performs a fresh on-chain read (canonical pool,
+        // matching the sell path's `pool_override = None`) instead of serving the
+        // stale cached entry.
+        self.amm_pool_cache.remove(token_mint);
+        let pool = self
+            .amm_pool_info(token_mint, None, base_token_program_id)
+            .await?;
+        if prev_creator == Some(pool.coin_creator) {
+            return Ok(None);
+        }
+        Ok(Some(self.amm_coin_creator_vault_authority(&pool.coin_creator)))
+    }
+
     /// override → cache → on-chain lookup (mirrors `sell_token`).
     pub(super) async fn resolve_user_base_account(
         &self,

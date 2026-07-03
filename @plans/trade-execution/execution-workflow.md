@@ -54,6 +54,10 @@ per-attempt loop (max 6, Jito tip escalates per level):
     slippage revert OR route changed       → retry (new reserves / new route next attempt)
     curve ConstraintSeeds 2006             → RefreshCreator: refresh_curve_creator_vault()
                                              (re-read bonding_curve.creator) then retry
+    AMM   ConstraintSeeds 2006             → RefreshCoinCreator: refresh_amm_pool_info()
+                                             (evict + re-read pool.coin_creator → re-derive
+                                             coin_creator_vault_authority) then retry;
+                                             coin_creator unchanged on re-read → StopFeeBurn
     structural revert (empty acct, etc.)   → StopFeeBurn (blind retry only wastes fees)
     no-land / pending / status error       → retry with escalated Jito tip
 
