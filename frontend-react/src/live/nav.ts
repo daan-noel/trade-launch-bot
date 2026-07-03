@@ -1,11 +1,12 @@
 import type { NavConfig } from 'components/layout/navTypes';
 
 /**
- * Live (LIVE box) nav. Teal accent + the live-mode kill switch (wired in the
- * layout's header slot). Tokens stays prominent — it's the live-ingest monitor.
+ * Live (LIVE box) nav. Teal primary (base theme) + the live-mode kill switch
+ * (wired in the layout's header slot). Tokens stays prominent — it's the
+ * live-ingest monitor. The `LIVE` badge pulses as a "this is armed" cue.
  */
 export const liveNav: NavConfig = {
-  accent: 'teal',
+  identity: { subtitle: 'Live Trading', badge: 'LIVE', glyph: '◈', pulse: true },
   items: [
     { kind: 'item', to: '/', label: 'Home' },
     {

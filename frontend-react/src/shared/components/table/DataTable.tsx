@@ -32,8 +32,10 @@ if (typeof document !== 'undefined' && !document.getElementById(HOVER_STYLE_ID))
   }
   const el = document.createElement('style');
   el.id = HOVER_STYLE_ID;
-  // Matches the old `bg-primary/12` tint (--color-primary #13ceaf at 12%).
-  el.textContent = `${sels.join(',')}{background-color:rgba(19,206,175,0.12)}`;
+  // Column-hover tint = `bg-primary/12`, but resolved from the live token so it
+  // follows the per-app primary (teal on live, blue on lab) instead of a
+  // hardcoded teal.
+  el.textContent = `${sels.join(',')}{background-color:color-mix(in srgb, var(--color-primary) 12%, transparent)}`;
   document.head.appendChild(el);
 }
 

@@ -6,18 +6,9 @@ import { TimezoneSelect } from 'components/ui/TimezoneSelect';
 import { useGetSolPriceQuery } from 'store/apiSlice';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { cn } from 'lib/cn';
-import { accentClasses } from 'lib/accent';
 import type { NavConfig } from './navTypes';
 
-function NavItem({
-  to,
-  accentActive,
-  children,
-}: {
-  to: string;
-  accentActive: string;
-  children: ReactNode;
-}) {
+function NavItem({ to, children }: { to: string; children: ReactNode }) {
   return (
     <NavLink
       to={to}
@@ -25,7 +16,11 @@ function NavItem({
       className={({ isActive }) =>
         cn(
           'rounded-md px-3 py-1.5 text-[13px] font-medium transition-all duration-150',
-          isActive ? accentActive : 'text-text-mid hover:bg-white/4 hover:text-text',
+          // Active highlight rides `--color-primary`, so it's teal on live and
+          // violet on lab with no per-mode branch.
+          isActive
+            ? 'bg-primary/12 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
+            : 'text-text-mid hover:bg-white/4 hover:text-text',
         )
       }
     >
@@ -45,7 +40,7 @@ export function Header({ nav, rightSlot }: { nav: NavConfig; rightSlot?: ReactNo
   const location = useLocation();
   const { data: usdRate } = useGetSolPriceQuery();
   const { setUsdRate } = usePriceUnit();
-  const accent = accentClasses[nav.accent];
+  const { subtitle, badge, glyph, pulse } = nav.identity;
 
   // Mirror the fetched SOL/USD rate into the price-unit context so USD display
   // works app-wide. The fetch itself is owned (and deduped) by the query above.
@@ -60,18 +55,19 @@ export function Header({ nav, rightSlot }: { nav: NavConfig; rightSlot?: ReactNo
           to="/"
           className="group flex shrink-0 items-center gap-2.5 transition-opacity hover:opacity-90"
         >
-          <span
-            className={cn(
-              'flex size-8 items-center justify-center rounded-lg text-sm ring-1 transition-colors',
-              accent.logo,
-            )}
-          >
-            ◈
+          <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-sm text-primary ring-1 ring-primary/20 transition-colors group-hover:bg-primary/15">
+            {glyph ?? '◈'}
           </span>
           <span className="flex flex-col leading-tight">
-            <span className="text-sm font-semibold tracking-tight text-text">Meme Trading</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-sm font-semibold tracking-tight text-text">Meme Trading</span>
+              <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-px text-[9px] font-bold tracking-wider text-primary uppercase ring-1 ring-primary/25">
+                {pulse && <span className="size-1 animate-pulse rounded-full bg-primary" />}
+                {badge}
+              </span>
+            </span>
             <span className="text-[10px] font-medium tracking-wide text-text-dim uppercase">
-              Solana Bot
+              {subtitle}
             </span>
           </span>
         </Link>
@@ -81,7 +77,7 @@ export function Header({ nav, rightSlot }: { nav: NavConfig; rightSlot?: ReactNo
         <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-visible rounded-lg border border-white/6 bg-white/3 p-1">
           {nav.items.map((entry) =>
             entry.kind === 'item' ? (
-              <NavItem key={entry.to} to={entry.to} accentActive={accent.navActive}>
+              <NavItem key={entry.to} to={entry.to}>
                 {entry.label}
               </NavItem>
             ) : (

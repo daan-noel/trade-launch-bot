@@ -195,7 +195,7 @@ function AnalysisControls({ rule }: { rule: RuleRecord }) {
         disabled={a.simLoading}
         onClick={stop(() => a.onSimulate(rule))}
         active={simActive}
-        activeClassName="border-primary/70 bg-primary/20 text-primary shadow-[0_0_8px_rgba(19,206,175,0.35)]"
+        activeClassName="border-primary/70 bg-primary/20 text-primary shadow-[0_0_8px_color-mix(in_srgb,var(--color-primary)_35%,transparent)]"
         className="text-primary"
         title="Simulate — backtest this rule over historical tokens"
       >

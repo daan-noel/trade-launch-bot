@@ -30,7 +30,7 @@ const sizes: Record<ButtonSize, string> = {
 
 const variants: Record<ButtonVariant, string> = {
   primary:
-    'border border-primary bg-primary/15 font-semibold text-primary hover:bg-primary/25 hover:shadow-[0_0_12px_rgba(19,206,175,0.25)]',
+    'border border-primary bg-primary/15 font-semibold text-primary hover:bg-primary/25 hover:shadow-[0_0_12px_color-mix(in_srgb,var(--color-primary)_25%,transparent)]',
   ghost:
     'border border-white/10 bg-transparent text-text-dim hover:border-white/20 hover:bg-white/5 hover:text-text',
   danger:

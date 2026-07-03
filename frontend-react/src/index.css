@@ -21,6 +21,30 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 }
 
+/* ------------------------------------------------------------------ *
+ * Per-app skin. The `@theme` block above IS the live (default) palette
+ * — neutral near-black + teal primary. The lab build tags <html> with
+ * `data-app="lab"` (see lab.html) and swaps in a cooler slate base +
+ * cyan primary (one hue-step over from live's teal — related but
+ * distinguishable), so a glance tells you which app you're in (you must
+ * never mistake the lab sandbox for the live-trading cockpit).
+ *
+ * Overriding the CSS variables re-skins every token-driven utility
+ * (bg-bg, text-primary, border-border, …) at once — NO component forks,
+ * strict SSOT. `:root[data-app='lab']` (specificity 0,2,0) outranks
+ * Tailwind's `:root,:host` theme block (0,1,0) and comes later, so it
+ * wins. Live is deliberately left on the base tokens (EC2-shipped app,
+ * lowest risk).
+ * ------------------------------------------------------------------ */
+:root[data-app='lab'] {
+  --color-bg: #0c0e13;
+  --color-bg-panel: #13161d;
+  --color-bg-card: #1a1e27;
+  --color-bg-hover: #222735;
+  --color-border: #252a37;
+  --color-primary: #06b6d4;
+}
+
 @layer base {
   *,
   *::before,

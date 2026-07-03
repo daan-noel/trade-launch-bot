@@ -1,12 +1,13 @@
 import type { NavConfig } from 'components/layout/navTypes';
 
 /**
- * Lab (workstation) nav. Violet accent, no live-mode toggle (there is no
- * ingest/trading to switch). Adds the Analysis pages + strategy authoring +
- * grouped sweeps; omits the live-only live-trading entries.
+ * Lab (workstation) nav. Cyan primary (swapped in via `data-app="lab"`), no
+ * live-mode toggle (there is no ingest/trading to switch). Adds the Analysis
+ * pages + strategy authoring + grouped sweeps; omits the live-only live-trading
+ * entries. A calm `LAB` badge (no pulse) marks the research sandbox.
  */
 export const labNav: NavConfig = {
-  accent: 'violet',
+  identity: { subtitle: 'Research & Backtesting', badge: 'LAB', glyph: '◇' },
   items: [
     { kind: 'item', to: '/', label: 'Home' },
     { kind: 'item', to: '/creation-stats', label: 'Creation Stats' },

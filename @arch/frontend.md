@@ -34,8 +34,11 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   middleware in `vite.lab.config.ts` rewrites top-level HTML navigations to `lab.html` — a hard refresh
   on a deep route (e.g. `/strategies/tpsl1`) loads the lab app, not the live one. The live server uses
   Vite's default SPA fallback (`index.html`).
-- **Per-mode `App.tsx` + `nav.ts`:** static route table + `NavConfig` (`{accent, items[]}`), no
-  gating. Live nav (`liveNav`) = teal accent + Live-mode toggle; lab nav (`labNav`) = violet accent, no toggle.
+- **Per-mode `App.tsx` + `nav.ts`:** static route table + `NavConfig` (`{identity, items[]}`), no
+  gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
+  (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
+  `Research & Backtesting` / `LAB`, no toggle. The per-app **color** is NOT in the nav config — it's
+  the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
 ## Store — split `createApi` (the isolation seam)
 
@@ -59,9 +62,27 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 
 ## Parameterized chrome — `shared/components/layout/`
 
-- `Header.tsx` — data-driven from `NavConfig` (`navTypes.ts`); accent via `lib/accent.ts`
-  (`accentClasses[teal|violet]`). Live-mode kill switch injected via `rightSlot` (live passes
-  `@live/components/LiveModeControl`). Shared: SOL/USD mirror, timezone, price-unit toggle.
+- `Header.tsx` — data-driven from `NavConfig` (`navTypes.ts`); renders `identity` (name + `badge`
+  chip + `subtitle` + `glyph`) and highlights active nav with `primary` utilities (no per-mode class
+  map — the old `lib/accent.ts` is deleted). Live-mode kill switch injected via `rightSlot` (live
+  passes `@live/components/LiveModeControl`). Shared: SOL/USD mirror, timezone, price-unit toggle.
+
+### Per-app skin (`src/index.css`, `index.html` / `lab.html`)
+
+- **Mechanism:** each HTML entry tags `<html data-app="live|lab">`. `@theme` in `index.css` is the
+  **live base** (neutral near-black + teal `--color-primary`); one `:root[data-app='lab']` block
+  overrides the bg/panel/card/hover/border tokens (cool slate) + `--color-primary` (cyan `#06b6d4`,
+  one hue-step over from live's teal — related but distinguishable).
+- **Why it re-skins everything for free:** Tailwind v4 compiles `bg-bg`/`text-primary`/… to
+  `var(--color-*)`, so overriding the variables re-skins every token-driven shared component with
+  **no forks** (strict SSOT). The override is unlayered + higher specificity, so it wins over the
+  `@theme` layer. Live is left on the base tokens (EC2-shipped app, lowest risk).
+- **Purpose:** an at-a-glance "which app am I in" signal — error-prevention first (never mistake the
+  lab sandbox for the live-trading cockpit), identity second.
+- **Chrome that hardcoded teal** (DataTable column-hover, primary Button glow, tpsl2 sim-pill glow)
+  now resolves from `var(--color-primary)` via `color-mix`, so it follows the per-app accent. Chart
+  **series** colors (`token-price-chart/constants.ts` price line, range band) stay teal by design —
+  semantic data-viz, not chrome.
 - `AppLayout.tsx` — slots `{nav, rightSlot, beforeMain, footer}`: live passes
   `beforeMain=<NotificationMount/>` (mounts `usePositionNotifications`); lab passes
   `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral (Timezone+PriceUnit+Toast);

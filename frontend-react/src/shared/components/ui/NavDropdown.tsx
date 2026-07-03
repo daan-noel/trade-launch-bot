@@ -167,7 +167,7 @@ export function NavDropdown({ label, items, isActive = false }: NavDropdownProps
           className={cn(
             'flex cursor-pointer items-center gap-1 rounded-md px-3 py-1.5 text-[13px] font-medium transition-all duration-150',
             isActive
-              ? 'bg-primary/12 text-primary shadow-[inset_0_1px_0_rgba(19,206,175,0.15)]'
+              ? 'bg-primary/12 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
               : 'text-text-mid hover:bg-white/4 hover:text-text',
           )}
         >
