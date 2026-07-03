@@ -324,7 +324,7 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
 /// left whole-run (it mirrors the strategy-table row).
 #[derive(Debug, Clone, Default)]
 pub struct PositionQuery {
-    /// Free-text search over mint / symbol / name (ILIKE). Empty = no search.
+    /// Free-text search over mint / symbol (ILIKE). Empty = no search.
     pub search: String,
     /// Per-column structured filters as `(frontend_key, spec)`. Non-whitelisted
     /// keys — and specs whose operand shape doesn't fit the op/column type — are
@@ -492,8 +492,6 @@ fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
         qb.push(" AND (sp.mint ILIKE ")
             .push_bind(needle.clone())
             .push(" OR t.symbol ILIKE ")
-            .push_bind(needle.clone())
-            .push(" OR t.name ILIKE ")
             .push_bind(needle)
             .push(")");
     }
@@ -556,7 +554,7 @@ fn token_sort_sql(key: &str) -> Option<&'static str> {
 }
 
 /// Append the search + per-column filters for the token-scoped (matched) query.
-/// Search spans mint / symbol / name (ILIKE), mirroring the positions search.
+/// Search spans mint / symbol (ILIKE), mirroring the positions search.
 fn push_token_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &PositionQuery) {
     let search = query.search.trim();
     if !search.is_empty() {
@@ -564,8 +562,6 @@ fn push_token_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Positio
         qb.push(" AND (t.mint_address ILIKE ")
             .push_bind(needle.clone())
             .push(" OR t.symbol ILIKE ")
-            .push_bind(needle.clone())
-            .push(" OR t.name ILIKE ")
             .push_bind(needle)
             .push(")");
     }

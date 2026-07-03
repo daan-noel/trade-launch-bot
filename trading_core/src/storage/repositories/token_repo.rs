@@ -384,7 +384,10 @@ impl TokenRepo {
         since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<TokenListRow>> {
         let sql = format!(
-            "{} WHERE t.created_at >= $1 ORDER BY t.created_at DESC LIMIT $2",
+            // `created_at DESC, mint_address DESC` matches the in-RAM snapshot's
+            // `newest_first` order (token_list_cache) so the two pre-sorted halves
+            // stay mergeable and the LIMIT boundary is deterministic across refreshes.
+            "{} WHERE t.created_at >= $1 ORDER BY t.created_at DESC, t.mint_address DESC LIMIT $2",
             Self::list_row_select()
         );
         let rows = sqlx::query_as::<_, TokenListRow>(&sql)
@@ -656,10 +659,15 @@ mod parity_tests {
             .await
             .expect("rows");
         let mut summaries: Vec<TokenSummary> = rows.into_iter().map(TokenSummary::from).collect();
-        // Mirror `TokenListSnapshot::build`: the in-RAM engine always sees the
-        // snapshot pre-sorted newest-first, so the no-sort default order is
-        // created_at DESC (the SQL default). Reproduce that here before filtering.
-        summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // Mirror `TokenListSnapshot::newest_first`: the in-RAM engine always sees the
+        // snapshot pre-sorted newest-first with a `mint_address` DESC tiebreak, so the
+        // no-sort default order is `created_at DESC, mint_address DESC` (the SQL
+        // default). Reproduce that here before filtering.
+        summaries.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.mint_address.cmp(&a.mint_address))
+        });
         let mut refs: Vec<&TokenSummary> = summaries.iter().filter(|t| query.matches_public(t, now)).collect();
         query.sort_refs_public(&mut refs);
         refs.into_iter().map(|t| t.mint_address.clone()).collect()
@@ -692,7 +700,7 @@ mod parity_tests {
         let repo = TokenRepo::new(pool.clone());
         let now = Utc::now();
         let base = now - chrono::Duration::days(2);
-        let mints = ["PARITYa", "PARITYb", "PARITYc", "PARITYd", "PARITYe"];
+        let mints = ["PARITYa", "PARITYb", "PARITYc", "PARITYd", "PARITYe", "PARITYf", "PARITYg"];
 
         // Diverse fixture: prices, volumes, deadness, missing metrics (LEFT JOIN
         // nulls), buy-ix args, migrated flag.
@@ -709,6 +717,15 @@ mod parity_tests {
             Some(now - chrono::Duration::hours(3)), false, false).await;
         seed(&pool, "PARITYe", "AAB", base + chrono::Duration::minutes(50), 1_500_000_000, 1_000_000,
             serde_json::json!({"token_amount": 700}), Some(0.001), Some(0.0009), 7.0, 40,
+            Some(now - chrono::Duration::hours(3)), false, false).await;
+        // PARITYf/g deliberately SHARE a created_at so the default-order case exercises
+        // the `mint_address DESC` tiebreak (g must precede f). Guards against the
+        // engines diverging on same-created_at pairs (the Phase-1 default-order bug).
+        seed(&pool, "PARITYf", "TIEF", base + chrono::Duration::minutes(25), 1_000_000_000, 1_000_000,
+            serde_json::json!({"token_amount": 300}), Some(0.003), Some(0.002), 9.0, 40,
+            Some(now - chrono::Duration::hours(3)), false, false).await;
+        seed(&pool, "PARITYg", "TIEG", base + chrono::Duration::minutes(25), 1_000_000_000, 1_000_000,
+            serde_json::json!({"token_amount": 300}), Some(0.003), Some(0.002), 9.0, 40,
             Some(now - chrono::Duration::hours(3)), false, false).await;
 
         // (label, query-json) matrix — each must agree between the two engines.
@@ -735,6 +752,14 @@ mod parity_tests {
             let sql = sql_mints(&repo, &query, &mints, now).await;
             assert_eq!(sql, ram, "PARITY MISMATCH for case: {label}\n  sql={sql:?}\n  ram={ram:?}");
         }
+
+        // Explicit default-order tiebreak assertion: both engines agreeing isn't
+        // enough (they could agree on a WRONG order). PARITYg/f share a created_at,
+        // so `mint_address DESC` must place g immediately before f in the default view.
+        let default_order = sql_mints(&repo, &q(serde_json::json!({})), &mints, now).await;
+        let gi = default_order.iter().position(|m| m == "PARITYg").expect("g present");
+        let fi = default_order.iter().position(|m| m == "PARITYf").expect("f present");
+        assert_eq!(gi + 1, fi, "same-created_at pair must order g→f by mint DESC: {default_order:?}");
 
         cleanup(&pool, &mints).await;
     }

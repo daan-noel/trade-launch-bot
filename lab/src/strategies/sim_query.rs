@@ -107,6 +107,12 @@ fn field_text(row: &Value, field: &str) -> Option<String> {
     }
 }
 
+/// Raw (case-sensitive) `mint` string for the stable sort tiebreak — mirrors the
+/// SQL `t.mint_address ASC` tail, which does NOT lowercase. `""` when absent.
+fn mint_raw(row: &Value) -> &str {
+    row.get("mint").and_then(Value::as_str).unwrap_or("")
+}
+
 /// Coerce a filter operand `Value` to `f64` (number or numeric string).
 fn operand_num(v: &Value) -> Option<f64> {
     match v {
@@ -205,20 +211,23 @@ pub fn query(rows: &[Value], req: &TableRequest) -> (Vec<Value>, usize) {
     let total = matched.len();
 
     // Apply the first resolved sort key (the table sorts by one column at a time;
-    // extra keys, if ever sent, are ignored). NULLS-last regardless of direction.
-    if let Some((field, kind)) = req.sorting.first().and_then(|s| resolve(&s.col).map(|r| (r.0, r.1))) {
-        let desc = req.sorting[0].dir.is_desc();
-        match kind {
-            Kind::Number => matched.sort_by(|a, b| {
-                let (na, nb) = (field_num(a, field), field_num(b, field));
-                cmp_opt(na, nb, desc)
-            }),
-            Kind::Text => matched.sort_by(|a, b| {
-                let (ta, tb) = (field_text(a, field), field_text(b, field));
-                cmp_opt(ta, tb, desc)
-            }),
-        }
-    }
+    // extra keys, if ever sent, are ignored), then a deterministic `mint` ASC tail
+    // so ties don't shuffle across page seams — matching the SQL tables'
+    // `t.mint_address ASC` tiebreak (raw, case-sensitive base58). NULLS-last on the
+    // primary key regardless of direction. Runs even with no sort column so paging
+    // is stable in the default view too.
+    let primary = req
+        .sorting
+        .first()
+        .and_then(|s| resolve(&s.col).map(|(field, kind)| (field, kind, s.dir.is_desc())));
+    matched.sort_by(|a, b| {
+        let ord = match primary {
+            Some((field, Kind::Number, desc)) => cmp_opt(field_num(a, field), field_num(b, field), desc),
+            Some((field, Kind::Text, desc)) => cmp_opt(field_text(a, field), field_text(b, field), desc),
+            None => std::cmp::Ordering::Equal,
+        };
+        ord.then_with(|| mint_raw(a).cmp(mint_raw(b)))
+    });
 
     // Page.
     let (limit, offset) = req.pagination.bounds();
@@ -350,5 +359,39 @@ mod tests {
         assert_eq!(page.len(), 2, "page size 2");
         assert_eq!(page[0]["mint"], "c", "WIF(50) first desc");
         assert_eq!(page[1]["mint"], "a", "BONK(10) second");
+    }
+
+    #[test]
+    fn equal_sort_key_breaks_ties_by_mint_asc() {
+        // Three rows share pnl_sol=1.0 — without a tiebreak their order is unstable
+        // across page seams. The `mint` ASC tail must pin them to b < m < z.
+        let rows = vec![
+            json!({"mint":"z","symbol":"Z","pnl_sol":1.0}),
+            json!({"mint":"b","symbol":"B","pnl_sol":1.0}),
+            json!({"mint":"m","symbol":"M","pnl_sol":1.0}),
+        ];
+        let r = req(json!({"sorting": [{"col":"pnl_sol","dir":"desc"}]}));
+        let (page, _) = query(&rows, &r);
+        assert_eq!(
+            page.iter().map(|r| r["mint"].as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["b", "m", "z"],
+            "equal pnl_sol rows order by mint ASC"
+        );
+    }
+
+    #[test]
+    fn no_sort_column_still_orders_by_mint() {
+        // Default view (no sort levels) must still be deterministic → mint ASC.
+        let rows = vec![
+            json!({"mint":"z","symbol":"Z"}),
+            json!({"mint":"a","symbol":"A"}),
+            json!({"mint":"m","symbol":"M"}),
+        ];
+        let (page, _) = query(&rows, &req(json!({})));
+        assert_eq!(
+            page.iter().map(|r| r["mint"].as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["a", "m", "z"],
+            "no sort key → stable mint ASC order"
+        );
     }
 }

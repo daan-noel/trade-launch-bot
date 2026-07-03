@@ -1,0 +1,196 @@
+# Token-tables unification & correctness — todo plan
+
+Audit outcome for the 7 token-bearing tables (Tokens page · Positions · Paper · Old-run history ·
+Matched · Simulated · Wallet Holdings). Goal: **one shared method** (contract + column grammar) for
+every token table, no by-meaning column duplication, and two live pagination bugs fixed.
+
+## Status — updated 2026-07-03 (Phases 1, 6, 2 landed this session)
+
+Legend: `[x]` done · `[~]` partial · `[ ]` open.
+
+### DONE & VERIFIED this session (all backend; committed together)
+
+- **Phase 1 — correctness bugs.** Simulated `mint` ASC tiebreak (`sim_query.rs`); Tokens default order
+  unified to `created_at DESC, mint_address DESC` on both engines via one `newest_first` comparator
+  (`token_list_cache.rs`) + `find_list_rows` ORDER BY; parity fixtures extended with a shared-`created_at`
+  pair. See Phase 1 section (all `[x]`).
+- **Phase 6 — search = mint/symbol everywhere.** `strategy_repo` positions/matched, `sql.rs::search_clause`,
+  and in-RAM `search_match` all narrowed; `float8::text` drift + dead `rust_float_text` helper removed.
+- **Phase 2 — full-merge column registry (chose (a)).** One `build_registry()` SSOT in `tokens.rs`;
+  each `ColumnSpec` holds SQL (`sql_num`/`sql_text`/`sql_sort`) + in-RAM (`ram_num`/`ram_text`/`ram_sort`).
+  Six match-arm fns + `NUMERIC_COLS`/`SORTABLE_COLS` are now registry lookups. **SQL↔in-RAM drift is now
+  structurally impossible.** `grammar_parity_tests` rewritten to registry-invariant + frozen-key-set;
+  `sql.rs` header updated.
+- **Phase 7 (item 5 only):** fixed the stale `token_enrichment.rs` "mirrors 1:1" doc.
+
+Verification run: `cargo test -p trading_core` 241 pass; registry + `sql` + `sim_query` tests pass; the
+DB value-parity matrix (`token_repo::parity_tests`) passes against local DB (port 5555, `DATABASE_URL`
+from `.env`); `cargo check -p live` + `-p lab` clean. No frontend code changed.
+
+### OPEN — resume here (recommended order: 4 → 7(items 1–2, dev servers up) → 3 → 5 → 8)
+
+- **Phase 4** (contained, non-breaking): extract reusable Rust `apply_table_request(rows, &TableRequest)`
+  from `sim_query.rs`; also the clean home for folding the sim whitelist into the shared grammar.
+- **Phase 7 items 1–2** (UI-affecting — run `npm run dev` and eyeball the Tokens page + strategy tables):
+  collapse `tokenColumns.tsx` ↔ `sharedTokenColumns.tsx` `ALL_TOKEN_COLS` into one source; remove the
+  `init_buy`/`initial_buy` + `cu_limit`/`cu_price` hand-column aliases; then reconcile tpsl1/tpsl2
+  `*_KEYS` via a shared constant (`mint` is a no-op today — cosmetic only).
+- **Phase 3** (BREAKING wire change): `/api/tokens` GET `?f_*` → POST `TableRequest`, backend
+  (`live`/`lab` `list.rs`) + frontend `TokensPage.tsx`. Keep the SQL(live)/in-RAM(lab) split behind the
+  contract, both fed by the Phase-2 registry.
+- **Phase 5** (frontend page rewrite): Wallet Holdings onto the shared `DataTable` + TS evaluator; delete
+  `mergeTokenData`; flag Wallet live-only cols `client_only`.
+- **Phase 8**: Rust↔TS evaluator conformance test; update `@arch/frontend.md` + `@arch/database.md` +
+  `@plans/…`.
+
+## Decisions locked (do not re-litigate)
+
+- **One shared method** for *all* token tables, including Wallet Holdings and the Tokens page.
+- **Free-text search = `mint` / `symbol` only**, everywhere. Remove `name`. Tokens-page global search
+  narrows to mint/symbol too (this also **deletes the numeric-search formatting-drift bug** and drops
+  creator-wallet search on the Tokens page — accepted).
+- **Tokens default order = `created_at DESC, mint_address DESC` on BOTH engines** (deterministic /
+  stable). Do **not** go created_at-only.
+- **Simulated sort gets a `mint` tiebreaker.**
+- **Evaluator split:** Simulated stays server-side (Rust, data off the wire); Wallet gets a small **TS**
+  evaluator mirroring the same column-grammar spec. Wallet's live USD/liquidity columns are client-only
+  and cannot be server-paged.
+
+---
+
+## Phase 1 — Contained correctness bug fixes (do first, ship independently) — DONE
+
+- [x] **Simulated pagination stability.** `sim_query.rs::query` now sorts by the resolved primary key
+      then a raw-`mint` ASC tail (`mint_raw`), matching the SQL tables' `t.mint_address ASC` tiebreak
+      (case-sensitive base58). Runs even with no sort column, so the default view is stable too.
+      Tests: `equal_sort_key_breaks_ties_by_mint_asc`, `no_sort_column_still_orders_by_mint`.
+- [x] **Tokens default-order divergence.** `token_list_cache.rs` now has a single `newest_first`
+      comparator (`created_at DESC, mint_address DESC`) used by BOTH `TokenListSnapshot::build` and the
+      `merged_filtered` two-pointer merge, matching the SQL default exactly. `find_list_rows` (the DB
+      base source) now `ORDER BY t.created_at DESC, t.mint_address DESC` so the two pre-sorted halves
+      stay mergeable and the LIMIT boundary is deterministic. Test:
+      `same_created_at_breaks_ties_by_mint_desc`.
+- [x] **Mint-direction parity confirmed.** Default order = `mint DESC` on both engines; explicit-sort
+      tiebreak = `mint ASC` on both (SQL `build_order` vs in-RAM `sort_refs` — already agreed).
+- [x] **Parity fixtures extended for ORDERING.** `token_repo::parity_tests` gains PARITYf/PARITYg
+      sharing a `created_at`; `in_ram_mints` now pre-sorts `created_at DESC, mint DESC`; an explicit
+      assertion pins g→f adjacency under default order (catches both engines dropping the tiebreak
+      identically). Ran green against local DB.
+- [x] `cargo test -p lab` (sim) ✓, `cargo check -p live` + `-p lab` ✓, `cargo check -p trading_core` ✓.
+
+## Phase 2 — Shared column-grammar registry (backend SSOT — highest leverage)
+
+- [x] **Strategy-table whitelist → enrichment SSOT.** `strategy_repo` token sort/filter now delegates to
+      `enrich_sort_sql`/`enrich_filter_sql` (commit `705809c`). Matched + Positions token columns share
+      one whitelist.
+- [x] **Market-cap formula deduped.** Single `MARKET_CAP_SQL` const in `token_enrichment.rs`, referenced
+      by `sql.rs`, `tokens.rs`, `enrich_*` (staged) + `market_cap_ssot_tests`.
+- [x] **Token-list grammar fully merged into ONE registry — chose (a).** `tokens.rs` now has a single
+      `build_registry()` → `HashMap<key, ColumnSpec>` SSOT. Each `ColumnSpec` carries the SQL side
+      (`sql_num`/`sql_text`/`sql_sort`) AND the in-RAM `TokenSummary` accessors (`ram_num`/`ram_text`/
+      `ram_sort`). The old parallel pair — `NUMERIC_COLS`, `SORTABLE_COLS`, and the six match-arm
+      functions (`sort_sql_expr`, `col_filter_number_sql`, `col_filter_text_sql`, `sort_key`,
+      `col_filter_number`, `col_filter_text`) — are now thin registry lookups; `is_numeric_col` /
+      `is_sortable_key` derive from it. Drift is now impossible by construction (not just guarded).
+      Verified: registry-invariant tests (both engines defined per capability; frozen numeric/sortable
+      key sets) + the DB value-parity matrix (`token_repo::parity_tests`) all green; `sql.rs` header
+      updated to describe the registry SSOT.
+- [ ] **Fold in `sim_query.rs::resolve`** — deferred to **Phase 4**. Simulated reads JSON backtest-result
+      rows (different shape + key universe: `entry_price`/`pnl_pct`/`exit_reason` plus the enrichment
+      subset), so it doesn't share the `TokenSummary`-typed registry directly; the clean unification is
+      the generalized Rust evaluator in Phase 4 (deferred by the current batch).
+- [x] **sortable/filterable encoded as flags (single source).** The registry structure IS the encoding:
+      `sql_sort.is_some()` ⇒ sortable, `sql_num.is_some()` ⇒ numeric-grammar-filterable; every other
+      column stays substring-filterable via `sql_text`. The sortable-but-not-numeric cols (`created`,
+      `mayhem_mode`, `cashback`, `migrated`, `dead`, `ath_timestamp`, `last_trade`, `ath_price`,
+      `current_price`, …) are now one explicit entry each — no divergent lists left to reconcile.
+
+## Phase 3 — One wire contract: migrate Tokens page onto `TableRequest`
+
+- [ ] Backend: change the `/api/tokens` handlers (`live/src/api/handlers/tokens/list.rs`,
+      `lab/src/api/handlers/tokens/list.rs`) from `web::Query<PaginationParams>` (flat GET `f_*`/`cf`/
+      `sort`) to `web::Json<TableRequest>` (POST), mapping into the existing `TokenQuery` lowering.
+      Reuse `trading_core::api::table_query`.
+- [ ] Frontend: drive the Tokens page (`frontend-react/src/pages/tokens/TokensPage.tsx`) through the
+      shared `toTableRequest` serializer (`shared/services/tableRequest.ts`) like the other four tables;
+      drop the bespoke `f_*` query-param builder. Emit `X-Total-Count`-style total from the response.
+- [ ] Keep the SQL(live)/in-RAM(lab) split *behind* the contract, both fed by the Phase-2 registry.
+
+## Phase 4 — Generalized in-memory evaluator (Rust) for Simulated
+
+- [ ] Extract `sim_query.rs` filter/sort/search logic into a reusable
+      `apply_table_request(rows, &TableRequest)` that consumes the Phase-2 registry `kind`/op semantics
+      (Contains/Eq/Gt/Gte/Lt/Lte/Between; numeric-op-on-text → drop; Contains-on-number → eq;
+      null numeric → exclude). Simulated calls it. Behavior stays identical to the SQL path.
+- [ ] Fold the Phase-1 Simulated tiebreak into this evaluator (all resolved sort keys + `mint` tail).
+
+## Phase 5 — Wallet Holdings onto the shared method (client-executed TS evaluator)
+
+- [ ] Write the TS evaluator `applyTableRequest(rows, tableRequestBody)` mirroring the registry's
+      `kind`/op semantics + the mint/symbol search + stable tiebreak. Single client evaluator (Wallet
+      today; available to any future client-resident token table).
+- [ ] Convert Wallet Holdings (`frontend-react/src/live/pages/profiles/MyWalletPage.tsx` +
+      `live/components/wallet/walletColumns.tsx`) to the shared `DataTable` in `serverSide` mode fed by
+      the TS evaluator: same `TableQuery`→`toTableRequest` shape, executed locally.
+- [ ] Retire the bespoke client path for Wallet: remove `mergeTokenData` + `useGetTokensByMintsQuery`
+      from the wallet table; attach enrichment the same way the other tables receive it. (`mergeTokenData`
+      has no other callers after this — delete it.)
+- [ ] Keep Wallet's live-only columns (`value_usd`, `price_usd`, `price_change_24h`, `liquidity`,
+      `ui_amount`, `token_account`, `decimals`, `token_program`) as first-class registry entries flagged
+      `client_only` so the evaluator can sort/filter them but the SQL builder ignores them.
+
+## Phase 6 — Search = mint/symbol everywhere — DONE
+
+- [x] `strategy_repo.rs`: dropped `t.name ILIKE` from both the positions search (`push_position_where`)
+      and matched search (`push_token_where`) → now `sp.mint`/`t.mint_address` + `t.symbol` only. Doc
+      comments updated.
+- [x] Tokens-page global search: `sql.rs::search_clause` narrowed to `t.mint_address` + `t.symbol`
+      (deleted the date/numeric/`name`/`creator_wallet` ORs and the now-unused `rust_float_text` helper);
+      the in-RAM `search_match` collapsed to the same two-field check. Removes the `float8::text` vs Rust
+      `to_string` numeric-substring drift. Test `global_search_is_mint_and_symbol_only`; DB parity's
+      "global search AB" case still green. (Simulated already mint/symbol.)
+
+## Phase 7 — Frontend column-duplication cleanup (by meaning) — PARTIAL
+
+- [ ] **DEFERRED (UI-affecting — verify with dev servers).** Collapse the two hand-maintained copies of
+      the ~26 token-info columns into one source: `tokenColumns.tsx` (Tokens page, 34 cols incl. the
+      extra `mint`/`token_age`/`lifetime`/`ath_fep_ratio`/`current_fep_ratio`) and
+      `sharedTokenColumns.tsx` `ALL_TOKEN_COLS` (29 cols). They diverge in `defaultVisible`/grouping/order,
+      so a merge changes the Tokens-page appearance and must be checked live (`npm run dev`). Fixes the
+      label drift (`"Trades"` vs `"Token Trades"`).
+- [ ] **DEFERRED (UI-affecting).** Remove the `init_buy`/`initial_buy` alias duplication — the matched
+      table renders `initial_buy_sol` via a hand column `key:'init_buy'` (label "Init Buy (SOL)", group
+      `params`) while the enrichment `initial_buy` column is suppressed via `MATCHED_KEYS`. Collapsing to
+      the enrichment column changes the label/format/group, so verify visually. Same for hand
+      `cu_limit`/`cu_price` vs the enrichment cols.
+- [ ] **DEFERRED.** Reconcile tpsl1 vs tpsl2 `*_KEYS` suppression sets via a shared constant. NOTE:
+      `mint` is NOT an `ALL_TOKEN_COLS` key, so its presence in tpsl2 / absence in tpsl1 is a **no-op**
+      today (nothing to suppress) — the divergence is cosmetic, not a live bug. Bundle with the item-1
+      collapse.
+- [ ] **DEFERRED (doc).** Document the by-meaning overlaps left by design (`current_price` SOL/DB vs
+      `price_usd` USD/live in Wallet — the latter arrives in Phase 5; `created`/`token_created_at`;
+      `ath_price` row-owned + enrichment). Best written alongside the Phase 5 Wallet work.
+- [x] **Fixed stale doc:** `token_enrichment.rs` header now says the JSON `TokenEnrichment` flatten
+      mirrors `TOKEN_ENRICH_FIELDS` 1:1 while the `TokenEnrichmentRow` is a **superset** carrying the
+      row-owned `symbol`/`created_at`/`ath_price`.
+
+## Phase 8 — Tests / CI / docs
+
+- [x] Non-DB CI grammar guard exists (`grammar_parity_tests` in tokens.rs — key coverage) and the DB
+      value-parity test now auto-runs with `DATABASE_URL`. NOTE: coverage is **key-set only** — extend
+      it to sort/tiebreak/ordering equivalence once the Phase-2 registry lands (see Phase 1 fixture
+      todo, which covers the default-order ordering case).
+- [ ] Add a Rust↔TS evaluator conformance check (shared fixture set, same expected ordering) so the two
+      in-memory evaluators (Simulated in Rust, Wallet in TS) can't drift.
+- [ ] Update docs per CLAUDE.md "Definition of done":
+      - `@arch/frontend.md` (unified contract now covers Tokens + Wallet; `mergeTokenData` removed)
+      - `@arch/database.md` (search = mint/symbol; shared registry as filter/sort SSOT)
+      - `@plans/…` deep-dive for the registry + evaluator design.
+
+## Definition of done (per CLAUDE.md)
+
+- [ ] `cargo check -p live` + `cargo check -p lab` + `-p trading_core` clean; clippy on touched code;
+      tests where logic changed.
+- [ ] `npm run build` clean (tsc checks both trees); no extra re-render on SOL/USD tick or live-trade
+      stream.
+- [ ] No secrets in code; stayed in owning crates; docs updated across all affected tiers.

@@ -585,68 +585,194 @@ pub async fn get_trades(
 /// `is_dead` flag, which is a richer liquidity/price/volume verdict.
 const LIFETIME_STALE_MS: i64 = 60 * 60 * 1000;
 
-/// Columns whose per-column filter understands the numeric grammar (they declare
-/// `filterNumber` in tokenColumns.tsx). All others are substring-only.
-const NUMERIC_COLS: &[&str] = &[
-    "trade_count",
-    "ath_fep_ratio",
-    "current_fep_ratio",
-    "market_cap",
-    "volume",
-    "first_slot_buy",
-    "first_slot_sell",
-    "initial_buy",
-    "init_supply",
-    "token_amount",
-    "max_cost_lamports",
-    "spendable_lamports_in",
-    "min_tokens_out",
-    "cu_limit",
-    "cu_price",
-    "ix_count",
-];
+// ===========================================================================
+// Column-grammar registry — the SINGLE source of truth for the token-list
+// filter/sort grammar, read by BOTH engines:
+//   * the SQL backend (`sql.rs`, `live`): `sql_num` / `sql_text` / `sql_sort`
+//   * the in-RAM evaluator (`lab` + Simulated): `ram_num` / `ram_text` / `ram_sort`
+// A column is declared exactly ONCE here, so its SQL expression and its
+// `TokenSummary` accessor can never silently drift (previously two parallel match
+// families held at parity only by tests). `sql_num`/`ram_num` are `Some` iff the
+// column takes the numeric per-column-filter grammar (the old `NUMERIC_COLS`);
+// `sql_sort`/`ram_sort` are `Some` iff it is sortable (the old `SORTABLE_COLS`).
+// Browser-derived swing-chain columns have no `TokenSummary` field and stay
+// outside the registry (see `is_swing_sort_col`).
+// ===========================================================================
 
-/// Sortable column keys (have a `sortValue` in tokenColumns.tsx).
-const SORTABLE_COLS: &[&str] = &[
-    "symbol",
-    "name",
-    "mint",
-    "creator",
-    "token_age",
-    "created",
-    "last_trade",
-    "lifetime",
-    "last_synced",
-    "trade_count",
-    "ath_price",
-    "ath_timestamp",
-    "ath_fep_ratio",
-    "current_price",
-    "current_fep_ratio",
-    "market_cap",
-    "volume",
-    "first_slot_buy",
-    "first_slot_sell",
-    "initial_buy",
-    "init_supply",
-    "token_amount",
-    "max_cost_lamports",
-    "spendable_lamports_in",
-    "min_tokens_out",
-    "cu_limit",
-    "cu_price",
-    "ix_count",
-    "migrated",
-    "dead",
-    "mayhem_mode",
-    "cashback",
-    // Browser-derived "Swing Detection All" chain columns. Sorted from the raw
-    // legs in `state.swing_runs` (see `swing_sort_value`), not a `TokenSummary`
-    // field — handled specially in `list_tokens` / `sort_refs`.
-    "swing_pairs",
-    "max_seq_pairs",
-    "chain_count",
-];
+type RamText = fn(&TokenSummary) -> String;
+type RamNum = fn(&TokenSummary) -> Option<f64>;
+type RamSort = fn(&TokenSummary) -> SortKey;
+
+/// One column's complete filter/sort grammar for both engines.
+struct ColumnSpec {
+    key: &'static str,
+    /// SQL text projection for a substring filter; `None` ⇒ not text-filterable in
+    /// SQL (only `ix_labels`, whose labels live in JSONB — in-RAM-only, as before).
+    sql_text: Option<String>,
+    ram_text: RamText,
+    /// Numeric filter expression (nullable numeric). `Some` ⇒ numeric-filterable.
+    sql_num: Option<String>,
+    ram_num: Option<RamNum>,
+    /// Sort expression + whether it's a text sort (caller wraps in `LOWER`).
+    /// `Some` ⇒ sortable.
+    sql_sort: Option<(String, bool)>,
+    ram_sort: Option<RamSort>,
+}
+
+impl ColumnSpec {
+    fn new(key: &'static str, sql_text: Option<String>, ram_text: RamText) -> Self {
+        Self { key, sql_text, ram_text, sql_num: None, ram_num: None, sql_sort: None, ram_sort: None }
+    }
+    /// Declare the column sortable: SQL sort expr (`is_text` ⇒ case-insensitive at
+    /// the caller) paired with its in-RAM sort key.
+    fn sortable(mut self, expr: impl Into<String>, is_text: bool, ram: RamSort) -> Self {
+        self.sql_sort = Some((expr.into(), is_text));
+        self.ram_sort = Some(ram);
+        self
+    }
+    /// Declare the column numeric-filterable: SQL numeric expr paired with its
+    /// in-RAM numeric accessor.
+    fn numeric(mut self, expr: impl Into<String>, ram: RamNum) -> Self {
+        self.sql_num = Some(expr.into());
+        self.ram_num = Some(ram);
+        self
+    }
+}
+
+/// Build the column registry. Owned `String` SQL exprs (several are computed) +
+/// zero-cost `fn`-pointer `TokenSummary` accessors. Constructed once (see
+/// [`registry`]). Sort expressions that need a JSON/CASE body reuse the `*_SORT`
+/// constants; filter exprs reuse the `*_sql`/`*_sql_expr` helpers, so the SQL and
+/// in-RAM sides of each column are literally the same declaration.
+fn build_registry() -> Vec<ColumnSpec> {
+    use ColumnSpec as C;
+    vec![
+        // --- identity / text ---
+        C::new("symbol", Some("(t.symbol || ' ' || t.name || ' ' || t.mint_address)".into()),
+                |t| format!("{} {} {}", t.symbol, t.name, t.mint_address))
+            .sortable("t.symbol", true, |t| SortKey::Str(Some(t.symbol.clone()))),
+        C::new("name", Some("t.name".into()), |t| t.name.clone())
+            .sortable("t.name", true, |t| SortKey::Str(Some(t.name.clone()))),
+        C::new("mint", Some("t.mint_address".into()), |t| t.mint_address.clone())
+            .sortable("t.mint_address", true, |t| SortKey::Str(Some(t.mint_address.clone()))),
+        C::new("creator", Some("t.creator_wallet".into()), |t| t.creator_address.clone())
+            .sortable("t.creator_wallet", true, |t| SortKey::Str(Some(t.creator_address.clone()))),
+        C::new("create_tx", Some("t.creation_tx_signature".into()), |t| t.create_tx_address.clone()),
+        C::new("token_age", Some("EXTRACT(EPOCH FROM (now() - t.created_at))::bigint::text".into()),
+                |t| t.age_seconds.to_string())
+            .sortable("EXTRACT(EPOCH FROM (now() - t.created_at))", false,
+                |t| SortKey::Num(Some(t.age_seconds as f64))),
+        // Timestamps sort/filter as their RFC3339 string (lexical == chronological).
+        C::new("created", Some(rfc3339_sql("t.created_at")), |t| t.created_at.to_rfc3339())
+            .sortable("t.created_at", false, |t| SortKey::Str(Some(t.created_at.to_rfc3339()))),
+        C::new("last_trade", Some(rfc3339_sql("i.last_trade_at")),
+                |t| opt_num_str(t.last_trade_at.map(|d| d.to_rfc3339())))
+            .sortable("i.last_trade_at", false, |t| SortKey::Str(t.last_trade_at.map(|d| d.to_rfc3339()))),
+        C::new("lifetime", Some("COALESCE(i.lifetime_secs::text, '')".into()), |t| opt_num_str(t.lifetime_secs))
+            .sortable("i.lifetime_secs", false, |t| SortKey::Num(t.lifetime_secs.map(|v| v as f64))),
+        C::new("last_synced", Some(rfc3339_sql("sync.last_synced_at")),
+                |t| opt_num_str(t.last_synced_at.map(|d| d.to_rfc3339())))
+            .sortable("sync.last_synced_at", false, |t| SortKey::Str(t.last_synced_at.map(|d| d.to_rfc3339()))),
+        C::new("ath_timestamp", Some(rfc3339_sql("i.ath_timestamp")),
+                |t| opt_num_str(t.ath_timestamp.map(|d| d.to_rfc3339())))
+            .sortable("i.ath_timestamp", false, |t| SortKey::Str(t.ath_timestamp.map(|d| d.to_rfc3339()))),
+        // --- numeric (sortable + numeric-filterable) ---
+        C::new("trade_count", Some("COALESCE(i.trade_count, 0)::text".into()), |t| t.trade_count.to_string())
+            .numeric("COALESCE(i.trade_count, 0)", |t| Some(t.trade_count as f64))
+            .sortable("COALESCE(i.trade_count, 0)", false, |t| SortKey::Num(Some(t.trade_count as f64))),
+        C::new("volume", Some("COALESCE(i.volume_sol, 0)::text".into()), |t| t.volume_sol_total.to_string())
+            .numeric("COALESCE(i.volume_sol, 0)", |t| Some(t.volume_sol_total))
+            .sortable("COALESCE(i.volume_sol, 0)", false, |t| SortKey::Num(Some(t.volume_sol_total))),
+        C::new("market_cap", Some(format!("COALESCE({MARKET_CAP_SQL}::text, '')")), |t| opt_num_str(t.market_cap))
+            .numeric(MARKET_CAP_SQL, |t| t.market_cap)
+            .sortable(MARKET_CAP_SQL, false, |t| SortKey::Num(t.market_cap)),
+        C::new("ath_fep_ratio", Some(format!("COALESCE(({})::text, '')", ath_fep_sql_expr())),
+                |t| opt_num_str(ath_fep_of(t)))
+            .numeric(ath_fep_sql_expr(), ath_fep_of)
+            .sortable(ATH_FEP_SORT, false, |t| SortKey::Num(ath_fep_of(t))),
+        C::new("current_fep_ratio", Some(format!("COALESCE(({})::text, '')", cur_fep_sql_expr())),
+                |t| opt_num_str(cur_fep_of(t)))
+            .numeric(cur_fep_sql_expr(), cur_fep_of)
+            .sortable(CUR_FEP_SORT, false, |t| SortKey::Num(cur_fep_of(t))),
+        C::new("first_slot_buy", Some("COALESCE((i.first_slot_buy_lamports::float8/1e9)::text, '')".into()),
+                |t| opt_num_str(t.first_slot_buy_sol))
+            .numeric("i.first_slot_buy_lamports::float8/1e9", |t| t.first_slot_buy_sol)
+            // sort on raw lamports (monotonic with /1e9 — cheaper, no cast).
+            .sortable("i.first_slot_buy_lamports", false, |t| SortKey::Num(t.first_slot_buy_sol)),
+        C::new("first_slot_sell", Some("COALESCE((i.first_slot_sell_lamports::float8/1e9)::text, '')".into()),
+                |t| opt_num_str(t.first_slot_sell_sol))
+            .numeric("i.first_slot_sell_lamports::float8/1e9", |t| t.first_slot_sell_sol)
+            .sortable("i.first_slot_sell_lamports", false, |t| SortKey::Num(t.first_slot_sell_sol)),
+        C::new("initial_buy", Some("COALESCE((t.initial_buy_lamports::float8/1e9)::text, '')".into()),
+                |t| opt_num_str(t.initial_buy_sol))
+            .numeric("t.initial_buy_lamports::float8/1e9", |t| t.initial_buy_sol)
+            .sortable("t.initial_buy_lamports", false, |t| SortKey::Num(t.initial_buy_sol)),
+        C::new("init_supply", Some("COALESCE(t.initial_supply_token::text, '')".into()),
+                |t| opt_num_str(t.initial_supply_token))
+            .numeric("t.initial_supply_token::float8", |t| t.initial_supply_token.map(|v| v as f64))
+            .sortable("t.initial_supply_token", false, |t| SortKey::Num(t.initial_supply_token.map(|v| v as f64))),
+        C::new("token_amount", Some(format!("COALESCE(({})::text, '')", buy_arg_sql("token_amount"))),
+                |t| opt_num_str(t.token_amount))
+            .numeric(buy_arg_sql("token_amount"), |t| t.token_amount.map(|v| v as f64))
+            .sortable(TOKEN_AMOUNT_SORT, false, |t| SortKey::Num(t.token_amount.map(|v| v as f64))),
+        C::new("max_cost_lamports", Some(format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("max_cost_lamports"))),
+                |t| opt_num_str(t.max_cost_lamports.map(|v| v as f64 / 1e9)))
+            .numeric(format!("({}/1e9)", buy_arg_sql("max_cost_lamports")),
+                |t| t.max_cost_lamports.map(|v| v as f64 / 1e9))
+            // sort on raw lamports (monotonic with /1e9).
+            .sortable(MAX_SOL_COST_SORT, false, |t| SortKey::Num(t.max_cost_lamports.map(|v| v as f64))),
+        C::new("spendable_lamports_in", Some(format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("spendable_lamports_in"))),
+                |t| opt_num_str(t.spendable_lamports_in.map(|v| v as f64 / 1e9)))
+            .numeric(format!("({}/1e9)", buy_arg_sql("spendable_lamports_in")),
+                |t| t.spendable_lamports_in.map(|v| v as f64 / 1e9))
+            .sortable(SPENDABLE_SORT, false, |t| SortKey::Num(t.spendable_lamports_in.map(|v| v as f64))),
+        C::new("min_tokens_out", Some(format!("COALESCE(({})::text, '')", buy_arg_sql("min_tokens_out"))),
+                |t| opt_num_str(t.min_tokens_out))
+            .numeric(buy_arg_sql("min_tokens_out"), |t| t.min_tokens_out.map(|v| v as f64))
+            .sortable(MIN_TOKENS_OUT_SORT, false, |t| SortKey::Num(t.min_tokens_out.map(|v| v as f64))),
+        C::new("cu_limit", Some("COALESCE(t.cu_limit::text, '')".into()), |t| opt_num_str(t.cu_limit))
+            .numeric("t.cu_limit::float8", |t| t.cu_limit.map(|v| v as f64))
+            .sortable("t.cu_limit", false, |t| SortKey::Num(t.cu_limit.map(|v| v as f64))),
+        C::new("cu_price", Some("COALESCE(t.cu_price::text, '')".into()), |t| opt_num_str(t.cu_price))
+            .numeric("t.cu_price::float8", |t| t.cu_price.map(|v| v as f64))
+            .sortable("t.cu_price", false, |t| SortKey::Num(t.cu_price.map(|v| v as f64))),
+        C::new("ix_count", Some(format!("{}::text", ix_count_sql())), |t| t.ix_labels_count.to_string())
+            .numeric(ix_count_sql(), |t| Some(t.ix_labels_count as f64))
+            .sortable(IX_COUNT_SORT, false, |t| SortKey::Num(Some(t.ix_labels_count as f64))),
+        // --- numeric-typed but substring-filtered (NOT in the numeric grammar) ---
+        C::new("ath_price", Some("COALESCE(i.ath_price::text, '')".into()), |t| opt_num_str(t.ath_price))
+            .sortable("i.ath_price", false, |t| SortKey::Num(t.ath_price)),
+        C::new("current_price", Some("COALESCE(i.current_price::text, '')".into()), |t| opt_num_str(t.current_price))
+            .sortable("i.current_price", false, |t| SortKey::Num(t.current_price)),
+        // --- flags (sortable as 0/1; substring text filter) ---
+        C::new("migrated", Some("COALESCE(i.is_migrated, false)::text".into()), |t| t.is_migrated.to_string())
+            .sortable("(COALESCE(i.is_migrated, false))::int", false,
+                |t| SortKey::Num(Some(if t.is_migrated { 1.0 } else { 0.0 }))),
+        C::new("dead", Some("COALESCE(i.is_dead, false)::text".into()), |t| t.is_dead.to_string())
+            .sortable("(COALESCE(i.is_dead, false))::int", false,
+                |t| SortKey::Num(Some(if t.is_dead { 1.0 } else { 0.0 }))),
+        C::new("mayhem_mode", Some("t.is_mayhem_mode::text".into()), |t| t.is_mayhem_mode.to_string())
+            .sortable("t.is_mayhem_mode::int", false,
+                |t| SortKey::Num(Some(if t.is_mayhem_mode { 1.0 } else { 0.0 }))),
+        C::new("cashback", Some("t.is_cashback_enabled::text".into()), |t| t.is_cashback_enabled.to_string())
+            .sortable("t.is_cashback_enabled::int", false,
+                |t| SortKey::Num(Some(if t.is_cashback_enabled { 1.0 } else { 0.0 }))),
+        // --- in-RAM-only text filter (JSONB labels; no SQL projection, as before) ---
+        C::new("ix_labels", None, |t| ix_label_list(&t.instruction_labels).join(", ")),
+    ]
+}
+
+/// The built column registry, keyed by frontend column key. Built once.
+fn registry() -> &'static std::collections::HashMap<&'static str, ColumnSpec> {
+    static REG: std::sync::OnceLock<std::collections::HashMap<&'static str, ColumnSpec>> =
+        std::sync::OnceLock::new();
+    REG.get_or_init(|| build_registry().into_iter().map(|c| (c.key, c)).collect())
+}
+
+/// Look up a column spec by frontend key (`None` for unknown / swing-chain keys).
+fn column(key: &str) -> Option<&'static ColumnSpec> {
+    registry().get(key)
+}
 
 /// The chain columns whose sort key comes from a swing run rather than a
 /// `TokenSummary` field. Default chain latency when the client omits it.
@@ -657,10 +783,16 @@ pub fn is_swing_sort_col(col: &str) -> bool {
     SWING_SORT_COLS.contains(&col)
 }
 
-/// Whether a per-column filter key understands the numeric grammar (mirrors
-/// `NUMERIC_COLS`). Exposed for the SQL backend.
+/// Whether a per-column filter key understands the numeric grammar (registry
+/// `sql_num`/`ram_num` present). Exposed for the SQL backend.
 pub fn is_numeric_col(key: &str) -> bool {
-    NUMERIC_COLS.contains(&key)
+    column(key).is_some_and(|c| c.sql_num.is_some())
+}
+
+/// Whether a sort key is accepted (a registry column with a sort projection, or a
+/// browser-derived swing-chain column).
+fn is_sortable_key(col: &str) -> bool {
+    column(col).is_some_and(|c| c.sql_sort.is_some()) || is_swing_sort_col(col)
 }
 
 // ---------------------------------------------------------------------------
@@ -689,119 +821,24 @@ pub fn cur_fep_sql_expr() -> &'static str {
        THEN i.current_price / (t.initial_buy_lamports::float8/1e9 / t.initial_supply_token) END)"
 }
 
-/// SQL numeric expression for a per-column numeric filter key (mirrors
-/// `col_filter_number`). `None` for unknown keys.
+/// SQL numeric expression for a per-column numeric filter key (registry `sql_num`).
+/// `None` for unknown / non-numeric keys.
 pub fn col_filter_number_sql(key: &str) -> Option<String> {
-    Some(
-        match key {
-            "trade_count" => "COALESCE(i.trade_count, 0)".into(),
-            "ath_fep_ratio" => ath_fep_sql_expr().to_string(),
-            "current_fep_ratio" => cur_fep_sql_expr().to_string(),
-            "market_cap" => MARKET_CAP_SQL.into(),
-            "volume" => "COALESCE(i.volume_sol, 0)".into(),
-            "first_slot_buy" => "i.first_slot_buy_lamports::float8/1e9".into(),
-            "first_slot_sell" => "i.first_slot_sell_lamports::float8/1e9".into(),
-            "initial_buy" => "t.initial_buy_lamports::float8/1e9".into(),
-            "init_supply" => "t.initial_supply_token::float8".into(),
-            "token_amount" => buy_arg_sql("token_amount"),
-            "max_cost_lamports" => format!("({}/1e9)", buy_arg_sql("max_cost_lamports")),
-            "spendable_lamports_in" => format!("({}/1e9)", buy_arg_sql("spendable_lamports_in")),
-            "min_tokens_out" => buy_arg_sql("min_tokens_out"),
-            "cu_limit" => "t.cu_limit::float8".into(),
-            "cu_price" => "t.cu_price::float8".into(),
-            "ix_count" => ix_count_sql().into(),
-            _ => return None,
-        },
-    )
+    column(key).and_then(|c| c.sql_num.clone())
 }
 
-/// SQL text expression for a per-column substring filter key (mirrors
-/// `col_filter_text`). Rendered close to the Rust string form; numeric/date cols
-/// stringify to their raw value. `None` for unknown keys.
+/// SQL text expression for a per-column substring filter key (registry `sql_text`).
+/// `None` for unknown keys and for `ix_labels` (JSONB, in-RAM-only).
 pub fn col_filter_text_sql(key: &str) -> Option<String> {
-    Some(match key {
-        "symbol" => "(t.symbol || ' ' || t.name || ' ' || t.mint_address)".into(),
-        "name" => "t.name".into(),
-        "mint" => "t.mint_address".into(),
-        "creator" => "t.creator_wallet".into(),
-        "create_tx" => "t.creation_tx_signature".into(),
-        "token_age" => "EXTRACT(EPOCH FROM (now() - t.created_at))::bigint::text".into(),
-        "created" => rfc3339_sql("t.created_at"),
-        "last_trade" => rfc3339_sql("i.last_trade_at"),
-        "lifetime" => "COALESCE(i.lifetime_secs::text, '')".into(),
-        "last_synced" => rfc3339_sql("sync.last_synced_at"),
-        "trade_count" => "COALESCE(i.trade_count, 0)::text".into(),
-        "ath_price" => "COALESCE(i.ath_price::text, '')".into(),
-        "ath_timestamp" => rfc3339_sql("i.ath_timestamp"),
-        "ath_fep_ratio" => format!("COALESCE(({})::text, '')", ath_fep_sql_expr()),
-        "current_price" => "COALESCE(i.current_price::text, '')".into(),
-        "current_fep_ratio" => format!("COALESCE(({})::text, '')", cur_fep_sql_expr()),
-        "market_cap" => format!("COALESCE({MARKET_CAP_SQL}::text, '')"),
-        "volume" => "COALESCE(i.volume_sol, 0)::text".into(),
-        "first_slot_buy" => "COALESCE((i.first_slot_buy_lamports::float8/1e9)::text, '')".into(),
-        "first_slot_sell" => "COALESCE((i.first_slot_sell_lamports::float8/1e9)::text, '')".into(),
-        "initial_buy" => "COALESCE((t.initial_buy_lamports::float8/1e9)::text, '')".into(),
-        "init_supply" => "COALESCE(t.initial_supply_token::text, '')".into(),
-        "token_amount" => format!("COALESCE(({})::text, '')", buy_arg_sql("token_amount")),
-        "max_cost_lamports" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("max_cost_lamports")),
-        "spendable_lamports_in" => format!("COALESCE(({}/1e9)::text, '')", buy_arg_sql("spendable_lamports_in")),
-        "min_tokens_out" => format!("COALESCE(({})::text, '')", buy_arg_sql("min_tokens_out")),
-        "cu_limit" => "COALESCE(t.cu_limit::text, '')".into(),
-        "cu_price" => "COALESCE(t.cu_price::text, '')".into(),
-        "ix_count" => format!("{}::text", ix_count_sql()),
-        "migrated" => "COALESCE(i.is_migrated, false)::text".into(),
-        "dead" => "COALESCE(i.is_dead, false)::text".into(),
-        "mayhem_mode" => "t.is_mayhem_mode::text".into(),
-        "cashback" => "t.is_cashback_enabled::text".into(),
-        _ => return None,
-    })
+    column(key).and_then(|c| c.sql_text.clone())
 }
 
 /// SQL sort expression for a sortable column, plus whether it's a text sort (so the
-/// caller applies a case-insensitive `LOWER`). Mirrors `sort_key` (which dir/null
-/// semantics are applied by the caller via `NULLS LAST`). `None` for unknown /
+/// caller applies a case-insensitive `LOWER`). Registry `sql_sort`. Dir/null
+/// semantics are applied by the caller via `NULLS LAST`. `None` for unknown /
 /// swing-chain columns.
-pub fn sort_sql_expr(col: &str) -> Option<(&'static str, bool)> {
-    Some(match col {
-        "symbol" => ("t.symbol", true),
-        "name" => ("t.name", true),
-        "mint" => ("t.mint_address", true),
-        "creator" => ("t.creator_wallet", true),
-        // token_age sorts by age = now-created; monotonic with created_at DESC, so
-        // sort by created_at with reversed sense handled at caller: age ASC == created DESC.
-        // To keep it simple & correct we sort on the numeric age expression.
-        "token_age" => ("EXTRACT(EPOCH FROM (now() - t.created_at))", false),
-        // in-RAM sorts created/last_trade/ath_timestamp/last_synced as RFC3339
-        // STRINGS; lexical order of RFC3339 == chronological, so sort on the ts.
-        "created" => ("t.created_at", false),
-        "last_trade" => ("i.last_trade_at", false),
-        "lifetime" => ("i.lifetime_secs", false),
-        "last_synced" => ("sync.last_synced_at", false),
-        "trade_count" => ("COALESCE(i.trade_count, 0)", false),
-        "ath_price" => ("i.ath_price", false),
-        "ath_timestamp" => ("i.ath_timestamp", false),
-        "ath_fep_ratio" => (ATH_FEP_SORT, false),
-        "current_price" => ("i.current_price", false),
-        "current_fep_ratio" => (CUR_FEP_SORT, false),
-        "market_cap" => (MARKET_CAP_SQL, false),
-        "volume" => ("COALESCE(i.volume_sol, 0)", false),
-        "first_slot_buy" => ("i.first_slot_buy_lamports", false),
-        "first_slot_sell" => ("i.first_slot_sell_lamports", false),
-        "initial_buy" => ("t.initial_buy_lamports", false),
-        "init_supply" => ("t.initial_supply_token", false),
-        "token_amount" => (TOKEN_AMOUNT_SORT, false),
-        "max_cost_lamports" => (MAX_SOL_COST_SORT, false),
-        "spendable_lamports_in" => (SPENDABLE_SORT, false),
-        "min_tokens_out" => (MIN_TOKENS_OUT_SORT, false),
-        "cu_limit" => ("t.cu_limit", false),
-        "cu_price" => ("t.cu_price", false),
-        "ix_count" => (IX_COUNT_SORT, false),
-        "migrated" => ("(COALESCE(i.is_migrated, false))::int", false),
-        "dead" => ("(COALESCE(i.is_dead, false))::int", false),
-        "mayhem_mode" => ("t.is_mayhem_mode::int", false),
-        "cashback" => ("t.is_cashback_enabled::int", false),
-        _ => return None,
-    })
+pub fn sort_sql_expr(col: &str) -> Option<(String, bool)> {
+    column(col).and_then(|c| c.sql_sort.clone())
 }
 
 // Sort-expression constants that need a JSON/CASE body inline as a `&'static str`.
@@ -854,7 +891,7 @@ fn sort_levels_from(
             .filter_map(|entry| {
                 let (col, dir) = entry.split_once(':').unwrap_or((entry, "asc"));
                 let col = col.trim();
-                if !SORTABLE_COLS.contains(&col) {
+                if !is_sortable_key(col) {
                     return None;
                 }
                 Some((col.to_string(), dir.trim().eq_ignore_ascii_case("desc")))
@@ -862,7 +899,7 @@ fn sort_levels_from(
             .collect();
     }
     // Legacy single-pair fallback.
-    match sort_col.filter(|s| SORTABLE_COLS.contains(s)) {
+    match sort_col.filter(|s| is_sortable_key(s)) {
         Some(col) => vec![(col.to_string(), sort_dir == Some("desc"))],
         None => Vec::new(),
     }
@@ -1488,44 +1525,12 @@ fn field_contains(field: &str, q_lower: &str) -> bool {
 }
 
 fn search_match(t: &TokenSummary, q_lower: &str) -> bool {
-    // Cheap path: match the borrowed string fields with no upfront cloning.
-    let str_fields = [
-        t.symbol.as_str(),
-        t.name.as_str(),
-        t.mint_address.as_str(),
-        t.creator_address.as_str(),
-        t.create_tx_address.as_str(),
-    ];
-    if str_fields.iter().any(|s| field_contains(s, q_lower)) {
-        return true;
-    }
-
-    // Only allocate/format the timestamp + numeric fields if nothing above hit.
-    let dates = [
-        Some(t.created_at),
-        t.last_trade_at,
-        t.ath_timestamp,
-        t.last_synced_at,
-    ];
-    if dates
-        .into_iter()
-        .flatten()
-        .any(|d| field_contains(&d.to_rfc3339(), q_lower))
-    {
-        return true;
-    }
-
-    if field_contains(&t.trade_count.to_string(), q_lower)
-        || field_contains(&t.volume_sol_total.to_string(), q_lower)
-    {
-        return true;
-    }
-
-    let opt_nums = [t.ath_price, t.current_price, t.market_cap];
-    opt_nums
-        .into_iter()
-        .flatten()
-        .any(|n| field_contains(&n.to_string(), q_lower))
+    // Global search is deliberately narrowed to mint + symbol only (locked
+    // decision). This drops the old creator-wallet/create-tx/date/numeric matching
+    // — and with it the `float8::text` vs Rust `to_string` numeric formatting drift
+    // that made the SQL and in-RAM engines disagree on numeric-substring hits. The
+    // SQL side (`sql.rs::search_clause`) mirrors this exact field set.
+    field_contains(&t.mint_address, q_lower) || field_contains(&t.symbol, q_lower)
 }
 
 // --- per-column filters (numericFilter.ts grammar) -------------------------
@@ -1637,69 +1642,16 @@ fn eval_pred(p: &NumPred, n: f64) -> bool {
     }
 }
 
-/// Numeric value for a column's per-column filter, in displayed units.
+/// Numeric value for a column's per-column filter, in displayed units (registry
+/// `ram_num`). `None` for unknown / non-numeric keys.
 fn col_filter_number(key: &str, t: &TokenSummary) -> Option<f64> {
-    match key {
-        "trade_count" => Some(t.trade_count as f64),
-        "ath_fep_ratio" => ath_fep_of(t),
-        "current_fep_ratio" => cur_fep_of(t),
-        "market_cap" => t.market_cap,
-        "volume" => Some(t.volume_sol_total),
-        "first_slot_buy" => t.first_slot_buy_sol,
-        "first_slot_sell" => t.first_slot_sell_sol,
-        "initial_buy" => t.initial_buy_sol,
-        "init_supply" => t.initial_supply_token.map(|v| v as f64),
-        "token_amount" => t.token_amount.map(|v| v as f64),
-        "max_cost_lamports" => t.max_cost_lamports.map(|v| v as f64 / 1e9),
-        "spendable_lamports_in" => t.spendable_lamports_in.map(|v| v as f64 / 1e9),
-        "min_tokens_out" => t.min_tokens_out.map(|v| v as f64),
-        "cu_limit" => t.cu_limit.map(|v| v as f64),
-        "cu_price" => t.cu_price.map(|v| v as f64),
-        "ix_count" => Some(t.ix_labels_count as f64),
-        _ => None,
-    }
+    column(key).and_then(|c| c.ram_num).and_then(|f| f(t))
 }
 
-/// Raw text for a column's per-column substring filter (deviation: raw rather
-/// than the JS-formatted value).
+/// Raw text for a column's per-column substring filter (registry `ram_text`;
+/// deviation: raw rather than the JS-formatted value). `""` for unknown keys.
 fn col_filter_text(key: &str, t: &TokenSummary) -> String {
-    match key {
-        "symbol" => format!("{} {} {}", t.symbol, t.name, t.mint_address),
-        "name" => t.name.clone(),
-        "mint" => t.mint_address.clone(),
-        "creator" => t.creator_address.clone(),
-        "create_tx" => t.create_tx_address.clone(),
-        "token_age" => t.age_seconds.to_string(),
-        "created" => t.created_at.to_rfc3339(),
-        "last_trade" => opt_num_str(t.last_trade_at.map(|d| d.to_rfc3339())),
-        "lifetime" => opt_num_str(t.lifetime_secs),
-        "last_synced" => opt_num_str(t.last_synced_at.map(|d| d.to_rfc3339())),
-        "trade_count" => t.trade_count.to_string(),
-        "ath_price" => opt_num_str(t.ath_price),
-        "ath_timestamp" => opt_num_str(t.ath_timestamp.map(|d| d.to_rfc3339())),
-        "ath_fep_ratio" => opt_num_str(ath_fep_of(t)),
-        "current_price" => opt_num_str(t.current_price),
-        "current_fep_ratio" => opt_num_str(cur_fep_of(t)),
-        "market_cap" => opt_num_str(t.market_cap),
-        "volume" => t.volume_sol_total.to_string(),
-        "first_slot_buy" => opt_num_str(t.first_slot_buy_sol),
-        "first_slot_sell" => opt_num_str(t.first_slot_sell_sol),
-        "initial_buy" => opt_num_str(t.initial_buy_sol),
-        "init_supply" => opt_num_str(t.initial_supply_token),
-        "token_amount" => opt_num_str(t.token_amount),
-        "max_cost_lamports" => opt_num_str(t.max_cost_lamports.map(|v| v as f64 / 1e9)),
-        "spendable_lamports_in" => opt_num_str(t.spendable_lamports_in.map(|v| v as f64 / 1e9)),
-        "min_tokens_out" => opt_num_str(t.min_tokens_out),
-        "cu_limit" => opt_num_str(t.cu_limit),
-        "cu_price" => opt_num_str(t.cu_price),
-        "ix_count" => t.ix_labels_count.to_string(),
-        "ix_labels" => ix_label_list(&t.instruction_labels).join(", "),
-        "migrated" => t.is_migrated.to_string(),
-        "dead" => t.is_dead.to_string(),
-        "mayhem_mode" => t.is_mayhem_mode.to_string(),
-        "cashback" => t.is_cashback_enabled.to_string(),
-        _ => String::new(),
-    }
+    column(key).map(|c| (c.ram_text)(t)).unwrap_or_default()
 }
 
 fn col_filter_matches(key: &str, expr: &str, t: &TokenSummary) -> bool {
@@ -1707,7 +1659,7 @@ fn col_filter_matches(key: &str, expr: &str, t: &TokenSummary) -> bool {
     if text.is_empty() {
         return true;
     }
-    if NUMERIC_COLS.contains(&key) {
+    if is_numeric_col(key) {
         if let Some(pred) = parse_numeric_predicate(text) {
             return match col_filter_number(key, t) {
                 Some(n) => eval_pred(&pred, n),
@@ -1727,42 +1679,12 @@ enum SortKey {
     Str(Option<String>),
 }
 
+/// In-RAM sort key for a column (registry `ram_sort`). Unknown / non-sortable keys
+/// fall back to `Str(None)` (sorts last), matching the prior default arm.
 fn sort_key(col: &str, t: &TokenSummary) -> SortKey {
-    match col {
-        "symbol" => SortKey::Str(Some(t.symbol.clone())),
-        "name" => SortKey::Str(Some(t.name.clone())),
-        "mint" => SortKey::Str(Some(t.mint_address.clone())),
-        "creator" => SortKey::Str(Some(t.creator_address.clone())),
-        "token_age" => SortKey::Num(Some(t.age_seconds as f64)),
-        "created" => SortKey::Str(Some(t.created_at.to_rfc3339())),
-        "last_trade" => SortKey::Str(t.last_trade_at.map(|d| d.to_rfc3339())),
-        "lifetime" => SortKey::Num(t.lifetime_secs.map(|v| v as f64)),
-        "last_synced" => SortKey::Str(t.last_synced_at.map(|d| d.to_rfc3339())),
-        "trade_count" => SortKey::Num(Some(t.trade_count as f64)),
-        "ath_price" => SortKey::Num(t.ath_price),
-        "ath_timestamp" => SortKey::Str(t.ath_timestamp.map(|d| d.to_rfc3339())),
-        "ath_fep_ratio" => SortKey::Num(ath_fep_of(t)),
-        "current_price" => SortKey::Num(t.current_price),
-        "current_fep_ratio" => SortKey::Num(cur_fep_of(t)),
-        "market_cap" => SortKey::Num(t.market_cap),
-        "volume" => SortKey::Num(Some(t.volume_sol_total)),
-        "first_slot_buy" => SortKey::Num(t.first_slot_buy_sol),
-        "first_slot_sell" => SortKey::Num(t.first_slot_sell_sol),
-        "initial_buy" => SortKey::Num(t.initial_buy_sol),
-        "init_supply" => SortKey::Num(t.initial_supply_token.map(|v| v as f64)),
-        "token_amount" => SortKey::Num(t.token_amount.map(|v| v as f64)),
-        // raw lamports — monotonic with /1e9, so equivalent to the displayed sort.
-        "max_cost_lamports" => SortKey::Num(t.max_cost_lamports.map(|v| v as f64)),
-        "spendable_lamports_in" => SortKey::Num(t.spendable_lamports_in.map(|v| v as f64)),
-        "min_tokens_out" => SortKey::Num(t.min_tokens_out.map(|v| v as f64)),
-        "cu_limit" => SortKey::Num(t.cu_limit.map(|v| v as f64)),
-        "cu_price" => SortKey::Num(t.cu_price.map(|v| v as f64)),
-        "ix_count" => SortKey::Num(Some(t.ix_labels_count as f64)),
-        "migrated" => SortKey::Num(Some(if t.is_migrated { 1.0 } else { 0.0 })),
-        "dead" => SortKey::Num(Some(if t.is_dead { 1.0 } else { 0.0 })),
-        "mayhem_mode" => SortKey::Num(Some(if t.is_mayhem_mode { 1.0 } else { 0.0 })),
-        "cashback" => SortKey::Num(Some(if t.is_cashback_enabled { 1.0 } else { 0.0 })),
-        _ => SortKey::Str(None),
+    match column(col).and_then(|c| c.ram_sort) {
+        Some(f) => f(t),
+        None => SortKey::Str(None),
     }
 }
 
@@ -1794,46 +1716,83 @@ fn cmp_keys(a: &SortKey, b: &SortKey, desc: bool) -> Ordering {
 #[cfg(test)]
 mod grammar_parity_tests {
     use super::*;
+    use std::collections::BTreeSet;
 
-    // SSOT guard (no DB): the SQL backend (`sql.rs`, used by `live`) must recognize
-    // exactly the column keys the in-RAM registries (`NUMERIC_COLS`/`SORTABLE_COLS`,
-    // used by `lab`) declare. Adding a filter/sort column to one engine but not the
-    // other then fails HERE — in keyless CI — instead of silently returning different
-    // rows for the same query. The DB-backed `token_repo::parity_tests` proves the
-    // resulting *values* agree; this proves the two *grammars* cover the same columns.
+    // SSOT guard (no DB). The token-list grammar is now ONE registry (`build_registry`)
+    // that both engines read, so SQL-vs-in-RAM *key* drift is impossible by
+    // construction. These tests instead pin the registry's internal invariants (each
+    // column defines BOTH sides of every capability it claims) and freeze the numeric
+    // / sortable key sets so a careless registry edit can't silently change the
+    // grammar. The DB-backed `token_repo::parity_tests` still proves the resulting
+    // *values* agree between the SQL and in-RAM projections.
 
     #[test]
-    fn numeric_filter_columns_match_between_engines() {
-        // Every in-RAM numeric column has a SQL numeric expression …
-        for &k in NUMERIC_COLS {
-            assert!(
-                col_filter_number_sql(k).is_some(),
-                "SQL numeric filter missing for in-RAM numeric column `{k}`"
+    fn registry_defines_both_engines_for_every_capability() {
+        let mut seen = BTreeSet::new();
+        for c in build_registry() {
+            assert!(seen.insert(c.key), "duplicate registry key `{}`", c.key);
+            // A column claiming to be numeric-filterable must define BOTH the SQL
+            // expression and the in-RAM accessor (never one without the other).
+            assert_eq!(
+                c.sql_num.is_some(),
+                c.ram_num.is_some(),
+                "column `{}`: sql_num / ram_num presence must match",
+                c.key
             );
-        }
-        // … and (over the sortable-column universe) SQL treats no column as numeric
-        // that the in-RAM side doesn't. NUMERIC_COLS ⊆ SORTABLE_COLS, so this bounds
-        // the reverse direction without needing to reflect over SQL's match arms.
-        for &k in SORTABLE_COLS {
-            if col_filter_number_sql(k).is_some() {
-                assert!(
-                    NUMERIC_COLS.contains(&k),
-                    "SQL treats `{k}` as numeric but NUMERIC_COLS (in-RAM) does not"
-                );
-            }
+            assert_eq!(
+                c.sql_sort.is_some(),
+                c.ram_sort.is_some(),
+                "column `{}`: sql_sort / ram_sort presence must match",
+                c.key
+            );
         }
     }
 
     #[test]
-    fn sortable_columns_have_matching_sql_expressions() {
-        for &k in SORTABLE_COLS {
-            if is_swing_sort_col(k) {
-                // Swing chain columns are browser-derived (no TokenSummary field), so
-                // the SQL backend correctly has no expression and falls back to default.
-                assert!(sort_sql_expr(k).is_none(), "swing col `{k}` must not have a SQL sort expr");
-            } else {
-                assert!(sort_sql_expr(k).is_some(), "SQL sort expr missing for sortable column `{k}`");
-            }
+    fn numeric_grammar_key_set_is_frozen() {
+        let numeric: BTreeSet<&str> = build_registry()
+            .iter()
+            .filter(|c| c.sql_num.is_some())
+            .map(|c| c.key)
+            .collect();
+        let expected: BTreeSet<&str> = [
+            "trade_count", "ath_fep_ratio", "current_fep_ratio", "market_cap", "volume",
+            "first_slot_buy", "first_slot_sell", "initial_buy", "init_supply", "token_amount",
+            "max_cost_lamports", "spendable_lamports_in", "min_tokens_out", "cu_limit", "cu_price",
+            "ix_count",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(numeric, expected, "numeric-filter grammar changed unexpectedly");
+        // `is_numeric_col` (used by the SQL backend) agrees with the registry.
+        for k in &expected {
+            assert!(is_numeric_col(k), "is_numeric_col disagrees for `{k}`");
+        }
+    }
+
+    #[test]
+    fn sortable_key_set_is_frozen() {
+        let sortable: BTreeSet<&str> = build_registry()
+            .iter()
+            .filter(|c| c.sql_sort.is_some())
+            .map(|c| c.key)
+            .collect();
+        let expected: BTreeSet<&str> = [
+            "symbol", "name", "mint", "creator", "token_age", "created", "last_trade", "lifetime",
+            "last_synced", "trade_count", "ath_price", "ath_timestamp", "ath_fep_ratio",
+            "current_price", "current_fep_ratio", "market_cap", "volume", "first_slot_buy",
+            "first_slot_sell", "initial_buy", "init_supply", "token_amount", "max_cost_lamports",
+            "spendable_lamports_in", "min_tokens_out", "cu_limit", "cu_price", "ix_count",
+            "migrated", "dead", "mayhem_mode", "cashback",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(sortable, expected, "sortable grammar changed unexpectedly");
+        // Swing-chain columns remain browser-derived: sortable-key-accepted but with
+        // no registry / SQL sort expression (they fall back to default order in SQL).
+        for k in SWING_SORT_COLS {
+            assert!(is_sortable_key(k), "swing col `{k}` must be an accepted sort key");
+            assert!(sort_sql_expr(k).is_none(), "swing col `{k}` must have no SQL sort expr");
         }
     }
 }

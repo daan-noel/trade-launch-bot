@@ -1,7 +1,10 @@
 //! Single source of truth for **token enrichment** — the ~28 `tokens` +
 //! `tokens_info` metadata fields every token-result table renders (Matched,
-//! Positions, Simulated, Sweep drill-in). Mirrors the frontend `TOKEN_ENRICH_FIELDS`
-//! (`sharedTokenColumns.tsx`) 1:1.
+//! Positions, Simulated, Sweep drill-in). The JSON flatten struct [`TokenEnrichment`]
+//! mirrors the frontend `TOKEN_ENRICH_FIELDS` (`sharedTokenColumns.tsx`) 1:1; the
+//! `FromRow` shape [`TokenEnrichmentRow`] is a **superset** — it additionally carries
+//! the row-owned `symbol` / `created_at` (aliased `token_created_at`) / `ath_price`
+//! that are excluded from the flatten (see the exclusion note below).
 //!
 //! Three artifacts kept in lockstep so no table re-derives the projection:
 //!   - [`ENRICH_SELECT`] — the SQL column fragment (aliases `t` = tokens,

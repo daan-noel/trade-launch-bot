@@ -41,6 +41,18 @@ pub struct TokenListSnapshot {
     built_at: DateTime<Utc>,
 }
 
+/// Default token-list order: newest-first by `created_at`, with a deterministic
+/// `mint_address` DESC tail so a same-`created_at` pair never reorders across pages
+/// or refetches. This mirrors the live (SQL) engine's default `ORDER BY
+/// t.created_at DESC, t.mint_address DESC` (`sql.rs::build_order`) exactly, so the
+/// SQL and in-RAM engines page identically. The DB base (`find_list_rows`) is
+/// queried with the same two-key order, so the two pre-sorted halves stay mergeable.
+fn newest_first(a: &TokenSummary, b: &TokenSummary) -> std::cmp::Ordering {
+    b.created_at
+        .cmp(&a.created_at)
+        .then_with(|| b.mint_address.cmp(&a.mint_address))
+}
+
 impl TokenListSnapshot {
     /// Clone the live cache into list rows and pre-sort newest-first, pairing it
     /// with the shared (Arc) DB base. Only the live half is cloned here — the DB
@@ -49,7 +61,7 @@ impl TokenListSnapshot {
     fn build(cache: &TokenCache, db_rows: Arc<Vec<TokenSummary>>, now: DateTime<Utc>) -> Self {
         let mut live_rows: Vec<TokenSummary> =
             cache.iter().map(|e| TokenSummary::from(e.value())).collect();
-        live_rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        live_rows.sort_by(newest_first);
         let live_mints = live_rows.iter().map(|t| t.mint_address.clone()).collect();
         Self {
             live_rows,
@@ -77,11 +89,12 @@ impl TokenListSnapshot {
     }
 
     /// Merged view — live cache overlaying the DB base — newest-first by
-    /// `created_at`, keeping only rows that satisfy `pred`. A two-pointer merge of
-    /// the two desc-sorted sources: it returns borrows (no clone), and DB rows
-    /// whose mint is in the live set are dropped (the live copy already covers that
-    /// mint). The result is globally newest-first, so the default (unsorted) table
-    /// view needs no further sort.
+    /// `created_at` with a `mint_address` DESC tiebreak (`newest_first`), keeping
+    /// only rows that satisfy `pred`. A two-pointer merge of the two identically
+    /// sorted sources: it returns borrows (no clone), and DB rows whose mint is in
+    /// the live set are dropped (the live copy already covers that mint). The result
+    /// is globally in `newest_first` order — matching the SQL default exactly — so
+    /// the default (unsorted) table view needs no further sort.
     pub fn merged_filtered<'a>(
         &'a self,
         mut pred: impl FnMut(&TokenSummary) -> bool,
@@ -96,7 +109,7 @@ impl TokenListSnapshot {
                 j += 1;
                 continue;
             }
-            if live[i].created_at >= db[j].created_at {
+            if newest_first(&live[i], &db[j]) != std::cmp::Ordering::Greater {
                 if pred(&live[i]) {
                     out.push(&live[i]);
                 }
@@ -305,6 +318,19 @@ mod tests {
         // Globally newest-first; B served once from the live copy (created_at 30,
         // not the DB's stale 25), placing it after A and before D.
         assert_eq!(mints(&out), vec!["A", "B", "D", "C"]);
+    }
+
+    #[test]
+    fn same_created_at_breaks_ties_by_mint_desc() {
+        // Live A@10 and DB C@10, B@10 all share created_at → the merge must fall back
+        // to `mint_address DESC` (C > B > A), matching the SQL default
+        // `created_at DESC, mint_address DESC`. Without the tiebreak the order would
+        // depend on merge-pointer happenstance and drift across pages.
+        let live = vec![ts("A", 10)];
+        let db = vec![ts("C", 10), ts("B", 10)];
+        let snap = snapshot(live, db);
+        let out = snap.merged_filtered(|_| true);
+        assert_eq!(mints(&out), vec!["C", "B", "A"], "equal created_at → mint DESC");
     }
 
     #[test]

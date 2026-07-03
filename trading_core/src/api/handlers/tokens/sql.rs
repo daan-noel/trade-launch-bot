@@ -1,16 +1,20 @@
 //! SQL execution backend for the token list (the `live` bin's `/api/tokens`).
 //!
-//! The in-RAM engine in `tokens.rs` (`TokenQuery::matches` / `sort_refs`) is the
-//! canonical filter/sort grammar; `lab` runs it over a full in-RAM snapshot. This
-//! module is a **second backend for the same grammar**: it turns a parsed
-//! [`TokenQuery`] into a parameterized `WHERE` + `ORDER BY` fragment over
-//! `tokens t LEFT JOIN tokens_info i`, so `live` can page the whole token universe
-//! from Postgres without holding it in RAM (the live cache stays tracking-only).
+//! `lab` runs the in-RAM engine in `tokens.rs` (`TokenQuery::matches` / `sort_refs`)
+//! over a full in-RAM snapshot; this module is a **second backend for the same
+//! grammar**: it turns a parsed [`TokenQuery`] into a parameterized `WHERE` +
+//! `ORDER BY` fragment over `tokens t LEFT JOIN tokens_info i`, so `live` can page
+//! the whole token universe from Postgres without holding it in RAM (the live cache
+//! stays tracking-only).
 //!
-//! **Parity is the contract.** Every column expression below mirrors the
-//! corresponding arm of `TokenQuery::matches` / `sort_key` / `col_filter_number` in
-//! `tokens.rs`. The `sql_parity` integration test (behind `--ignored`, needs
-//! `DATABASE_URL`) proves the two engines return identical ordered mint lists.
+//! **Parity is the contract.** The per-column sort/filter grammar is single-sourced
+//! in the `tokens.rs` column registry (`build_registry`): this module reads the SQL
+//! side of each column via `sort_sql_expr` / `col_filter_number_sql` /
+//! `col_filter_text_sql`, while the in-RAM engine reads the `TokenSummary` accessor
+//! side of the SAME registry entry — so the two can't drift by construction. The
+//! global `f_*` filter clauses below still mirror `TokenQuery::matches` directly.
+//! The DB-backed `token_repo::parity_tests` (auto-runs with `DATABASE_URL`) proves
+//! the two engines return identical ordered mint lists.
 //!
 //! Injection safety: user values are NEVER interpolated. Only fixed, code-chosen
 //! column expressions are written into the SQL string; every `q` value is pushed as
@@ -339,46 +343,18 @@ fn push_tri(clauses: &mut Vec<String>, expr: &str, tri: Option<&str>) {
     }
 }
 
-/// Global-search clause (full parity). ORs case-insensitive substring over the text
-/// columns plus the stringified date/numeric fields, matching `search_match`'s field
-/// set and Rust formatting (RFC3339 dates, Rust float/int `to_string`).
+/// Global-search clause — deliberately narrowed to `mint` + `symbol` only (locked
+/// decision), mirroring the in-RAM `search_match`'s field set exactly. Dropping the
+/// old date/numeric substring matching also removes the `float8::text` vs Rust
+/// `to_string` formatting drift the two engines used to disagree on.
 fn search_clause(raw: &str, a: &mut SqlArgs) -> String {
     let needle = raw.trim().to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     let ph = a.push(SqlArg::Str(needle));
-    // Text columns.
-    let mut ors: Vec<String> = ["t.symbol", "t.name", "t.mint_address", "t.creator_wallet", "t.creation_tx_signature"]
+    let ors: Vec<String> = ["t.mint_address", "t.symbol"]
         .iter()
         .map(|c| format!("LOWER({c}) LIKE '%' || {ph} || '%' ESCAPE '\\'"))
         .collect();
-    // Dates → RFC3339 (matches DateTime::to_rfc3339, e.g. 2026-07-02T12:34:56+00:00).
-    for c in ["t.created_at", "i.last_trade_at", "i.ath_timestamp", "sync.last_synced_at"] {
-        ors.push(format!(
-            "to_char({c} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS+00:00') LIKE '%' || {ph} || '%' ESCAPE '\\'"
-        ));
-    }
-    // Numerics → Rust to_string form. trade_count/volume always; ath/current/mcap when non-null.
-    for c in [
-        "COALESCE(i.trade_count, 0)::text",
-        rust_float_text("COALESCE(i.volume_sol, 0)").as_str(),
-    ] {
-        ors.push(format!("{c} LIKE '%' || {ph} || '%' ESCAPE '\\'"));
-    }
-    for c in ["i.ath_price", "i.current_price", MARKET_CAP_SQL] {
-        ors.push(format!("{} LIKE '%' || {ph} || '%' ESCAPE '\\'", rust_float_text(c)));
-    }
     format!("({})", ors.join(" OR "))
-}
-
-/// Render a float column as text matching Rust's `f64::to_string()` closely enough
-/// for the search-substring test. Postgres `float8::text` uses shortest round-trip
-/// like Rust; we strip a trailing `.0`-free integer difference by trimming. The
-/// parity test asserts equivalence and this expression is adjusted if it drifts.
-fn rust_float_text(expr: &str) -> String {
-    // `float8::text` gives e.g. '1.5', '100', '1e-07'. Rust gives '1.5', '100',
-    // '0.0000001'. Exponent formatting differs; accepted + covered by parity test,
-    // which narrows the fixture to values that render identically (the realistic
-    // price/volume range). Kept as a single helper so the format is tuned in one place.
-    format!("({expr})::text")
 }
 
 /// Per-column `cf` filter: numeric grammar on numeric columns, else substring.
@@ -608,13 +584,17 @@ mod tests {
     }
 
     #[test]
-    fn global_search_covers_text_date_numeric() {
+    fn global_search_is_mint_and_symbol_only() {
         let b = build_where_and_order(&query(serde_json::json!({"search": "abc"})), now());
-        // one bound needle, reused across all ORed columns
+        // One bound needle, reused across exactly the mint + symbol columns.
         assert_eq!(b.args.len(), 1);
+        assert!(b.where_sql.contains("LOWER(t.mint_address) LIKE"));
         assert!(b.where_sql.contains("LOWER(t.symbol) LIKE"));
-        assert!(b.where_sql.contains("to_char(t.created_at"));
-        assert!(b.where_sql.contains("COALESCE(i.trade_count, 0)::text LIKE"));
+        // Narrowed: no more date / numeric / creator / name substring matching.
+        assert!(!b.where_sql.contains("to_char("));
+        assert!(!b.where_sql.contains("i.trade_count, 0)::text"));
+        assert!(!b.where_sql.contains("t.name"));
+        assert!(!b.where_sql.contains("creator_wallet"));
     }
 
     #[test]
