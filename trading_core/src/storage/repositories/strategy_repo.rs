@@ -1523,6 +1523,27 @@ impl StrategyRepo {
             .collect())
     }
 
+    /// Realized SOL PnL (lamports) from **real** positions that cleanly exited
+    /// (`status='End'`) on/after `since` — the "realized today" KPI (pass 00:00
+    /// UTC). Same `exit_lamports − entry_lamports` basis as [`Self::positions_summary`].
+    /// A failed exit realized nothing bookable, so `End`-only.
+    pub async fn realized_pnl_lamports_since(
+        &self,
+        since: DateTime<Utc>,
+    ) -> anyhow::Result<i64> {
+        let sum: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(exit_lamports - entry_lamports), 0)::BIGINT \
+             FROM strategy_positions \
+             WHERE mode = 'real' AND status = 'End' \
+               AND exit_lamports IS NOT NULL AND entry_lamports IS NOT NULL \
+               AND exit_time >= $1",
+        )
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(sum)
+    }
+
     /// Distinct mints with an unsettled **real** position — every mint the wallet
     /// could legitimately hold a bag for. Covers `Holding`/`Arming`/`BuySubmitted`/
     /// `ExitPending`/`ExitFailed` (the last can still hold a bag whose sell failed),
