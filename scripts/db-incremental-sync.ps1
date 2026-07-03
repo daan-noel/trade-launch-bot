@@ -25,18 +25,20 @@
   so the server prunes to exactly the sealed window. TimescaleDB auto-creates the
   destination chunks on insert, so there is no partition-ensure step anymore.
 
-  Non-destructive & idempotent: existing local rows are never deleted; the dedup PKs
-  + ON CONFLICT make re-running over an overlapping window a no-op. Conflict policy:
+  Non-destructive & idempotent for market data: existing local rows are never deleted;
+  the dedup PKs + ON CONFLICT make re-running over an overlapping window a no-op.
+  Strategy tables ARE allowed to delete locally (see below), but only rows previously
+  observed coming FROM the server -- never a lab-authored row. Conflict policy:
     wallet_dict      PK(id) / UNIQUE(address)                    -> DO NOTHING (immutable)
     tokens           PK(mint_address)                            -> DO NOTHING (write-once)
     tokens_info      PK(mint_address)                            -> DO UPDATE (newer updated_at wins)
     token_sync_state PK(mint_address, venue)                     -> DO UPDATE (newer last_synced_at wins)
     trades           PK(block_time, tx_signature, leg_index)     -> DO NOTHING (append-only)
     raw_txs          PK(block_time, tx_signature)                -> DO NOTHING (append-only; opt-in)
-    strategy_rules       PK(id)                                  -> DO UPDATE (server wins; full-table)
-    strategy_runs        PK(id)                                  -> DO UPDATE (server wins; full-table)
-    strategy_run_metrics PK(run_id)                              -> DO UPDATE (server wins; full-table)
-    strategy_positions   PK(id)                                  -> DO UPDATE (server wins; full-table)
+    strategy_rules       PK(id)                                  -> DO UPDATE + tombstone delete (server wins)
+    strategy_runs        PK(id)                                  -> DO UPDATE + tombstone delete (server wins)
+    strategy_run_metrics PK(run_id)                              -> DO UPDATE + tombstone delete (server wins)
+    strategy_positions   PK(id)                                  -> DO UPDATE + tombstone delete (server wins)
 
   wallet_dict ids are GENERATED ALWAYS AS IDENTITY. The local DB is a read-mirror of
   the server's market data (lab has no ingest, so it never mints its own ids), so we
@@ -53,6 +55,22 @@
   strategy_rules -> strategy_runs -> strategy_run_metrics -> strategy_positions. NOTE:
   server ids overwrite local rows on id-conflict, so a lab-authored rule/run sharing a
   UUID with the server's would be clobbered (UUIDs collide with ~0 probability).
+
+  CRITICAL: the `lab` bin also authors its OWN local-only strategy_rules/runs/positions
+  (its create/update/delete-rule handlers write straight to the local DB -- see
+  lab/src/api/handlers/strategies/{swing1,tpsl1,tpsl2}.rs -- for local backtest/paper
+  authoring that never touches the server). A plain full-table upsert can never CLEAN
+  UP a row the server deleted (rule delete, "clear paper results", the stale-position
+  reaper), because DO UPDATE only adds/refreshes -- it has no way to tell "gone from
+  the server" apart from "never existed on the server", so it must never blanket-
+  TRUNCATE these tables. Instead each run maintains a local tombstone-tracking table,
+  `_ec2_sync_seen_ids(table_name, id)`, recording every id ever OBSERVED coming from
+  ec2_sync_src. Before each run's upsert, any local row whose id is in that table for
+  its table but is NO LONGER present in ec2_sync_src is deleted (a real server-side
+  delete, propagated); the tracking table is then refreshed to the current server id
+  set. A lab-authored row's id is never added to `_ec2_sync_seen_ids` (it never came
+  from the server), so it is never a delete candidate -- lab-only data survives
+  indefinitely, while deleted server rows stop lingering forever.
 
   Requires: ssh + psql on PATH; local Postgres >= 16 with postgres_fdw + TimescaleDB;
   connect as a SUPERUSER local role (CREATE EXTENSION / USER MAPPING). Stop any local
@@ -159,7 +177,10 @@ if ($IncludeRawTxs) { $syncTables += 'raw_txs' }
 # Strategy tables (FK chain: rules -> runs -> run_metrics -> positions). Copied
 # full-table each run with DO UPDATE (server wins) so live's real+paper positions
 # show on the lab. Appended AFTER market data so the FDW import + parity guard cover
-# them; their inserts run in a dedicated FK-ordered block (see step 7b).
+# them; their inserts + tombstone-delete propagation run in a dedicated FK-ordered
+# block (see step 7b) -- deletes are scoped to ids previously seen from the server
+# (see `_ec2_sync_seen_ids` in step 7b), so a lab-authored rule/run/position is never
+# a delete candidate.
 $strategyTables = @('strategy_rules', 'strategy_runs', 'strategy_run_metrics', 'strategy_positions')
 $syncTables += $strategyTables
 $importList = ($syncTables -join ', ')
@@ -419,7 +440,23 @@ $rawTxsSql
   # BUILT AT RUNTIME from information_schema (all non-PK columns) so it stays
   # correct after future migrations add columns (e.g. 0002's token_account) --
   # no hand-maintained column list to rot. Both real + paper rows are pulled.
-  Write-Host "Mirroring strategy tables (rules/runs/run_metrics/positions; server wins, full-table) ..."
+  #
+  # Tombstone deletes: an upsert alone can only ADD/refresh rows -- it can never
+  # clean up a row the server genuinely deleted (rule delete, "clear paper
+  # results", the stale-position reaper all do real server-side DELETEs), so
+  # deleted/finished rows used to linger locally forever. But these tables are
+  # NOT exclusively server-owned: `lab` has its own create/update/delete-rule
+  # handlers that write straight to the local DB for local backtest/paper
+  # authoring, so a blind TRUNCATE+replace would destroy that. Fix: a local
+  # bookkeeping table `_ec2_sync_seen_ids(table_name, id)` remembers every id
+  # this script has ever observed present in ec2_sync_src. Before each table's
+  # upsert, any local row whose id is recorded there but is NO LONGER in
+  # ec2_sync_src is deleted (propagating a real server-side delete); the
+  # bookkeeping set is then refreshed to the current server ids. A lab-authored
+  # row's id was never added (it never came from the server), so it's never a
+  # delete candidate. Lives in `public` (untouched by step 9's ec2_sync_src
+  # teardown) so it persists across runs.
+  Write-Host "Mirroring strategy tables (rules/runs/run_metrics/positions; server wins, full-table + tombstone delete) ..."
   # Explicit, plain INSERT..SELECT..ON CONFLICT DO UPDATE per table, in FK-safe order
   # (rules -> runs -> run_metrics -> positions). Server wins. DO UPDATE excludes the
   # PK; EXCLUDED refreshes every other column so a server-side status/exit-fill change
@@ -428,6 +465,18 @@ $rawTxsSql
   # with a server run under a different id WOULD collide on the secondary key -- the
   # strategy_runs block below deletes such divergent local rows first (server wins).
   Invoke-LocalSqlFile @"
+CREATE TABLE IF NOT EXISTS _ec2_sync_seen_ids (
+  table_name text NOT NULL,
+  id         uuid NOT NULL,
+  PRIMARY KEY (table_name, id)
+);
+
+\echo '-- strategy_rules: propagate server-side deletes'
+DELETE FROM strategy_rules q
+USING _ec2_sync_seen_ids s
+WHERE s.table_name = 'strategy_rules' AND s.id = q.id
+  AND NOT EXISTS (SELECT 1 FROM ec2_sync_src.strategy_rules r WHERE r.id = q.id);
+
 \echo '-- strategy_rules'
 INSERT INTO strategy_rules SELECT * FROM ec2_sync_src.strategy_rules
 ON CONFLICT (id) DO UPDATE SET
@@ -436,6 +485,16 @@ ON CONFLICT (id) DO UPDATE SET
   is_active = EXCLUDED.is_active, max_concurrent_tokens = EXCLUDED.max_concurrent_tokens,
   max_total_tokens = EXCLUDED.max_total_tokens, params = EXCLUDED.params,
   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at;
+
+DELETE FROM _ec2_sync_seen_ids WHERE table_name = 'strategy_rules';
+INSERT INTO _ec2_sync_seen_ids (table_name, id)
+SELECT 'strategy_rules', id FROM ec2_sync_src.strategy_rules;
+
+\echo '-- strategy_runs: propagate server-side deletes'
+DELETE FROM strategy_runs u
+USING _ec2_sync_seen_ids s
+WHERE s.table_name = 'strategy_runs' AND s.id = u.id
+  AND NOT EXISTS (SELECT 1 FROM ec2_sync_src.strategy_runs r WHERE r.id = u.id);
 
 \echo '-- strategy_runs'
 -- strategy_runs has TWO unique constraints: PK(id) and UNIQUE(rule_id, mode, run_seq).
@@ -456,6 +515,16 @@ ON CONFLICT (id) DO UPDATE SET
   params_snapshot = EXCLUDED.params_snapshot, max_total_tokens = EXCLUDED.max_total_tokens,
   started_at = EXCLUDED.started_at, finished_at = EXCLUDED.finished_at;
 
+DELETE FROM _ec2_sync_seen_ids WHERE table_name = 'strategy_runs';
+INSERT INTO _ec2_sync_seen_ids (table_name, id)
+SELECT 'strategy_runs', id FROM ec2_sync_src.strategy_runs;
+
+\echo '-- strategy_run_metrics: propagate server-side deletes'
+DELETE FROM strategy_run_metrics m
+USING _ec2_sync_seen_ids s
+WHERE s.table_name = 'strategy_run_metrics' AND s.id = m.run_id
+  AND NOT EXISTS (SELECT 1 FROM ec2_sync_src.strategy_run_metrics r WHERE r.run_id = m.run_id);
+
 \echo '-- strategy_run_metrics'
 INSERT INTO strategy_run_metrics SELECT * FROM ec2_sync_src.strategy_run_metrics
 ON CONFLICT (run_id) DO UPDATE SET
@@ -471,6 +540,16 @@ ON CONFLICT (run_id) DO UPDATE SET
   n_exit_trailing = EXCLUDED.n_exit_trailing, n_exit_stall = EXCLUDED.n_exit_stall,
   n_exit_time = EXCLUDED.n_exit_time, n_exit_liquidity = EXCLUDED.n_exit_liquidity,
   n_exit_open = EXCLUDED.n_exit_open;
+
+DELETE FROM _ec2_sync_seen_ids WHERE table_name = 'strategy_run_metrics';
+INSERT INTO _ec2_sync_seen_ids (table_name, id)
+SELECT 'strategy_run_metrics', run_id FROM ec2_sync_src.strategy_run_metrics;
+
+\echo '-- strategy_positions: propagate server-side deletes'
+DELETE FROM strategy_positions p
+USING _ec2_sync_seen_ids s
+WHERE s.table_name = 'strategy_positions' AND s.id = p.id
+  AND NOT EXISTS (SELECT 1 FROM ec2_sync_src.strategy_positions r WHERE r.id = p.id);
 
 \echo '-- strategy_positions'
 INSERT INTO strategy_positions SELECT * FROM ec2_sync_src.strategy_positions
@@ -489,6 +568,10 @@ ON CONFLICT (id) DO UPDATE SET
   exit_reason = EXCLUDED.exit_reason, extra = EXCLUDED.extra,
   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
   token_account = EXCLUDED.token_account;
+
+DELETE FROM _ec2_sync_seen_ids WHERE table_name = 'strategy_positions';
+INSERT INTO _ec2_sync_seen_ids (table_name, id)
+SELECT 'strategy_positions', id FROM ec2_sync_src.strategy_positions;
 "@
 
   # ---- 8. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
