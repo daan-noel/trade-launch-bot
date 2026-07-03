@@ -24,10 +24,11 @@ use crate::lake::{lake_root, trades_dir};
 use crate::sweep::corpus::{CorpusSource, Selection, TradeWindow};
 use crate::sweep::projection::CorpusTrade;
 
-/// Uncapped per-mint history for simulate (locked decision 3): simulate keeps each
-/// token's **full** trade history so ATH/exit match today's PG `find_by_mints_all`,
-/// unlike the sweep's launch-window `SWEEP_PER_MINT_CAP`. `i64::MAX` makes the DuckDB
-/// `rn <= ?` clip a no-op.
+/// Uncapped per-mint history for simulate: keeps each token's **full** trade history so
+/// ATH/exit match today's PG `find_by_mints_all`. Same as the grouped sweep's default
+/// (`SWEEP_DEFAULT_PER_MINT_CAP = i64::MAX`) — both analysis paths run over full history,
+/// so they price high-volume tokens identically. `i64::MAX` makes the DuckDB `rn <= ?`
+/// clip a no-op.
 const SIM_PER_MINT_CAP: i64 = i64::MAX;
 
 /// Fetch each mint's full trade history from the Parquet lake as [`CorpusTrade`] rows,

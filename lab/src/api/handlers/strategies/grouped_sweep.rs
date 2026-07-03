@@ -404,12 +404,12 @@ async fn run_grouped_sweep_job(
         token_cap,
         created_after: b.created_after,
         created_before: b.created_before,
-        // Sweep-specific cap (Phase 1.1): launch-window scalp entries decide on the
-        // first minutes, so a few thousand trades/token is plenty — far below the
-        // live `MAX_TRADES_RETAINED`. Override with `SWEEP_PER_MINT_CAP`.
+        // Uncapped by default (full history) — analysis prices over every trade, so
+        // the sweep matches single-rule simulate for high-volume tokens. Set
+        // `SWEEP_PER_MINT_CAP` (≥1) only to trade fidelity for a lighter/faster run.
         per_mint_cap: crate::sweep::corpus::sweep_per_mint_cap(),
-        // Keep each over-cap token's launch window — the entry logic decides on the
-        // first minutes, which a newest-first cap would drop (Rec 4).
+        // Moot when uncapped (whole history loads); still keeps the launch prefix if a
+        // `SWEEP_PER_MINT_CAP` override is set, which the entry logic decides on (Rec 4).
         window: crate::sweep::corpus::TradeWindow::LaunchWindow,
         curve_only: b.curve_only,
         // Sweep resolves the trigger by index, not signature — no `tx_signature` needed.

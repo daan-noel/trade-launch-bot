@@ -138,15 +138,18 @@ impl Default for Selection {
     }
 }
 
-/// Default sweep per-mint trade cap (Phase 1.1). Launch-window scalp entries decide
-/// on the first minutes, so a few thousand trades/token is plenty and cuts a
-/// high-volume token's corpus weight (and its entry/exit walk) ~10–25×. Override per
-/// box with `SWEEP_PER_MINT_CAP`.
-pub const SWEEP_DEFAULT_PER_MINT_CAP: i64 = 5_000;
+/// Default sweep per-mint trade cap: **uncapped** (`i64::MAX` ⇒ the DuckDB `rn <= ?`
+/// clip is a no-op, exactly like single-rule simulate's `SIM_PER_MINT_CAP`). Analysis
+/// runs over each token's **entire** trade history — the grouped sweep and single-rule
+/// simulate therefore price high-volume tokens (>launch-window) identically, closing
+/// the old parity gap where the sweep truncated to the first ~5k trades but simulate
+/// did not. `SWEEP_PER_MINT_CAP` (≥1) remains an **opt-in** bound for a workstation that
+/// needs to cut corpus weight (`tokens × trades/token`) for a faster/lighter run.
+pub const SWEEP_DEFAULT_PER_MINT_CAP: i64 = i64::MAX;
 
 /// Effective per-mint trade cap for a sweep `Selection`: `SWEEP_PER_MINT_CAP` if set
-/// (≥1), else [`SWEEP_DEFAULT_PER_MINT_CAP`]. This is the second factor of the corpus
-/// weight (`tokens × trades/token`); `token_cap` bounds the first.
+/// (≥1), else [`SWEEP_DEFAULT_PER_MINT_CAP`] (uncapped — full history). `token_cap`
+/// bounds the token count (selection scope); this bounds trades/token (opt-in only).
 pub fn sweep_per_mint_cap() -> i64 {
     std::env::var("SWEEP_PER_MINT_CAP")
         .ok()
@@ -168,11 +171,11 @@ mod tests {
 
     #[test]
     fn sweep_per_mint_cap_defaults_when_env_unset() {
-        // Reads the historical corpus, so this cap is NOT tied to the live in-RAM
-        // MAX_TRADES_RETAINED cache (different storage tier). What must hold: a
-        // positive default, returned by sweep_per_mint_cap() when the env override is
-        // absent. (Env unset here because no test in this binary sets it.)
-        assert!(SWEEP_DEFAULT_PER_MINT_CAP >= 1);
+        // Analysis runs over full history: the default is uncapped (i64::MAX), NOT the
+        // live in-RAM MAX_TRADES_RETAINED cache (different storage tier, different job).
+        // What must hold: with no env override, sweep_per_mint_cap() returns the
+        // uncapped default. (Env unset here because no test in this binary sets it.)
+        assert_eq!(SWEEP_DEFAULT_PER_MINT_CAP, i64::MAX);
         std::env::remove_var("SWEEP_PER_MINT_CAP");
         assert_eq!(sweep_per_mint_cap(), SWEEP_DEFAULT_PER_MINT_CAP);
     }

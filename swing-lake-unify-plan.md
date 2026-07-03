@@ -5,6 +5,13 @@
 (one pre-existing unrelated `live/App.tsx` unused-import error remains). Chart-candle
 unification (options B/C) deferred. Generic `swing.rs` endpoints left on PG + cap.
 
+**Follow-up (same day):** grouped sweep per-mint trade cap removed too —
+`SWEEP_DEFAULT_PER_MINT_CAP` 5000→`i64::MAX`, so ALL analysis (sweep + simulate +
+backtest) runs over each token's entire history, no cap. Also closes a real parity gap
+(the sweep used to truncate high-volume tokens to the launch-window 5k while simulate was
+uncapped). `SWEEP_PER_MINT_CAP` env (≥1) kept as an opt-in perf bound; cost is corpus
+weight (`tokens × trades/token`, was cut ~10–25× by the cap) on high-volume tokens.
+
 Continuation of `simulate-lake-migration-plan.md`. Closes the "same token bounded three
 different ways" seam on the chart page and makes swing1 legs, entry, and exit come from
 **one uncapped lake read** — the same corpus the backtest/sweep price on.
