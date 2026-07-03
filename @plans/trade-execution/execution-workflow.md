@@ -26,6 +26,8 @@ per-attempt loop (max 3):
   poll_feed_until_entry_fill() 12 × 1 s   ← event-driven (TradeSignals.notify)
   on timeout → classify_silent_send(sig):
     Ok(Some(false)) proven revert  → retry (safe: tx is confirmed gone)
+      curve ConstraintSeeds 2006 → trader.refresh_creator(mint) first, then retry with
+      the fresh creator (2006 rationale below, under C); other proven reverts retry unchanged
     Ok(Some(true))  landed+unindexed → wait extra poll window (re-send = double-buy)
     Ok(None) / Err  pending/unknown → give up (never re-send; nonce tx may still land)
 
@@ -51,13 +53,17 @@ per-attempt loop (max 6, Jito tip escalates per level):
     sum_legs_by_signatures(sell_sigs)      ← per-sig; never shared net balance
     remaining ≤ 0.0001 → cleared ✓
   if deadline without clear → classify_sell_revert(error_code, route_changed):
+    (thin wrapper over pump-trader's shared pump_trader::classify_swap_revert(
+     custom, SwapRoute, SwapDirection::Sell) — the SAME classifier pump-trader's
+     own confirm=true sell/amm_sell retry uses; see @arch/trade-execution.md)
     slippage revert OR route changed       → retry (new reserves / new route next attempt)
     curve ConstraintSeeds 2006             → RefreshCreator: refresh_curve_creator_vault()
-                                             (re-read bonding_curve.creator) then retry
+                                             (re-read bonding_curve.creator); Some(vault)
+                                             changed → retry, None unchanged → StopFeeBurn
     AMM   ConstraintSeeds 2006             → RefreshCoinCreator: refresh_amm_pool_info()
                                              (evict + re-read pool.coin_creator → re-derive
-                                             coin_creator_vault_authority) then retry;
-                                             coin_creator unchanged on re-read → StopFeeBurn
+                                             coin_creator_vault_authority); Some(vault)
+                                             changed → retry, None unchanged → StopFeeBurn
     structural revert (empty acct, etc.)   → StopFeeBurn (blind retry only wastes fees)
     no-land / pending / status error       → retry with escalated Jito tip
 
@@ -72,7 +78,7 @@ on failed:
 
 **Why route is re-read per attempt:** a token can migrate from curve → AMM between sell attempts. Re-reading `is_migrated` lets the next attempt automatically switch venue without manual intervention.
 
-**Why a 2006 (ConstraintSeeds) is recoverable, not StopFeeBurn:** the snipe buy caches `TokenPDAs.creator_vault` derived from the create-event creator. pump.fun can change `bonding_curve.creator` (via `set_creator`) *after* that buy — both `buy` and `sell` seed `creator_vault` from `["creator-vault", bonding_curve.creator]`, so the stale cached vault then reverts every sell with Anchor `ConstraintSeeds (2006)`. On the curve route a 2006 is therefore *not* structural: `refresh_curve_creator_vault()` re-reads the current creator (one off-path RPC, only after a failed poll window) and overwrites the cached vault, and the next attempt builds with it. Scoped to the curve route only — the AMM derives its coin-creator vault from a freshly read pool each attempt, so a 2006 there stays StopFeeBurn. If the refresh RPC itself fails, the position falls to ExitFailed.
+**Why a 2006 (ConstraintSeeds) is recoverable, not StopFeeBurn:** the snipe buy caches `TokenPDAs.creator_vault` derived from the create-event creator. pump.fun can change `bonding_curve.creator` (via `set_creator`) *after* that buy — both `buy` and `sell` seed `creator_vault` from `["creator-vault", bonding_curve.creator]`, so the stale cached vault then reverts every sell (or resend of a buy) with Anchor `ConstraintSeeds (2006)`. A 2006 is therefore *not* structural on either route: `refresh_curve_creator_vault()` / `refresh_amm_pool_info()` re-read the current creator/pool (one off-path RPC, only after a failed poll window) and report changed-vs-unchanged; changed → overwrite the cache and retry with it, unchanged (or the refresh RPC itself fails) → StopFeeBurn / ExitFailed, since re-sending an identical tx would just revert again. Both the sell loop here and the curve-buy retry in **B** funnel through the one `pump_trader::classify_swap_revert` decision table (route × direction × error code) so the two crates' healing can't drift — see `@arch/trade-execution.md` and `stale-creator-2006-unify-plan.md` (repo root).
 
 **Why rate-limit balance queries:** during a rapid sell dump the `trades` feed can fire many times per 250 ms window. Querying `sum_legs_by_signatures` on every notification would run a DB aggregate in a tight loop; the rate-limit batches notifications into at most one query per 250 ms, with a bypass at the poll deadline to ensure a final check always runs.
 

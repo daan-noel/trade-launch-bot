@@ -8,6 +8,7 @@
 // assembles, signs, sends, and confirms one sell tx.
 // ============================================================
 
+use super::swap_retry::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
@@ -287,117 +288,161 @@ impl PumpFunTrader {
         tip_level: u8,
         confirm: bool,
     ) -> Result<Option<String>> {
-        let t0 = Instant::now();
+        let mint = Pubkey::from_str(token_mint)?;
         let signer = self.config.signer.as_ref();
 
-        let mint = Pubkey::from_str(token_mint)?;
+        // At most one self-heal resend: a `confirm=true` caller synchronously
+        // learns a stale-creator `ConstraintSeeds` (2006) revert (`tx.rs`'s
+        // `confirm_transaction` surfaces it before returning); if the freshly
+        // re-read `creator_vault` actually changed, rebuild with a fresh nonce
+        // and resend once — a confirmed revert bought/sold nothing, so this
+        // can't double-spend. `confirm=false` callers never see the error here
+        // (their own feed classifies it off-path — see the bot exit loop's
+        // `RefreshCreator` branch, which shares this same decision).
+        let mut healed = false;
+        let mut tip_level = tip_level;
 
-        // Read cached PDAs (must exist from buy)
-        let mut pdas = self
-            .token_pdas
-            .get(token_mint)
-            .map(|r| *r)
-            .context("Token PDAs not cached — buy must precede sell")?;
+        loop {
+            let t0 = Instant::now();
 
-        // Allow caller to override creator vault (e.g. after a creator update)
-        if let Some(creator_str) = creator_override {
-            let creator = Pubkey::from_str(creator_str)?;
-            let (vault, _) = Pubkey::find_program_address(
-                &[b"creator-vault", creator.as_ref()],
-                &protocol::PUMP_FUN,
-            );
-            if pdas.creator_vault != vault {
-                info!(
-                    "🔄 Creator vault updated: {} → {}",
-                    pdas.creator_vault, vault
-                );
-                pdas.creator_vault = vault;
-            }
-        }
+            // Read cached PDAs (must exist from buy). On the healed resend this
+            // reads the vault `refresh_curve_creator_vault` just wrote below.
+            let mut pdas = self
+                .token_pdas
+                .get(token_mint)
+                .map(|r| *r)
+                .context("Token PDAs not cached — buy must precede sell")?;
 
-        // Read cached user token account (must exist from buy)
-        let user_token_account = self
-            .user_token_accounts
-            .get(token_mint)
-            .map(|r| *r)
-            .context("User token account not cached — buy must precede sell")?;
-        warn!(
-            user_token_account = user_token_account.to_string(),
-            "=== Using cached user token account for sell"
-        );
-
-        // `sell(amount, min_sol_output)`: slippage floor on SOL received. `None`
-        // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` reads the
-        // curve's virtual reserves for a conservative lower bound, falling back to
-        // 1 if the read fails so slippage never blocks a sell.
-        let reserves: Option<(u128, u128)> = match slippage_bps {
-            Some(_) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    warn!("curve sell slippage: reserve read failed ({e}); using min_out=1");
-                    None
+            // Allow caller to override creator vault (e.g. after a creator
+            // update) — but not on the healed resend, where the just-refreshed
+            // cache IS the fresh creator and a caller-supplied override (from
+            // the same stale routing read that caused the revert) must not
+            // shadow it back to the stale vault.
+            if !healed {
+                if let Some(creator_str) = creator_override {
+                    let creator = Pubkey::from_str(creator_str)?;
+                    let (vault, _) = Pubkey::find_program_address(
+                        &[b"creator-vault", creator.as_ref()],
+                        &protocol::PUMP_FUN,
+                    );
+                    if pdas.creator_vault != vault {
+                        info!(
+                            "🔄 Creator vault updated: {} → {}",
+                            pdas.creator_vault, vault
+                        );
+                        pdas.creator_vault = vault;
+                    }
                 }
-            },
-            None => None,
-        };
-        let min_sol_output = compute_curve_sell_min_out(
-            token_amount,
-            slippage_bps,
-            reserves,
-            self.config.slippage.curve_fee_buffer_bps,
-        );
+            }
 
-        let ixs = self.build_curve_sell_ixs(
-            &mint,
-            &pdas,
-            &user_token_account,
-            token_amount,
-            min_sol_output,
-            is_cashback,
-            tip_level,
-        )?;
-
-        // ── Acquire nonce + sign & send ─────────────────────────────────────
-        // Acquire the nonce only now — after the cached-PDA / token-account reads
-        // and the slippage `curve_reserves` read above — so the slot isn't held
-        // `in_use` across any RPC. Only the build/send/confirm below runs while
-        // holding it, and we always fall through to `schedule_nonce_refresh`.
-        let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-        info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
-
-        let res: Result<Option<String>> = async {
-            let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
-            let sig = self.send_transaction(&tx).await?;
-
-            info!(
-                "📤 Sell sent — sig: {} | amount: {} | {}ms",
-                sig,
-                token_amount,
-                t0.elapsed().as_millis()
+            // Read cached user token account (must exist from buy)
+            let user_token_account = self
+                .user_token_accounts
+                .get(token_mint)
+                .map(|r| *r)
+                .context("User token account not cached — buy must precede sell")?;
+            warn!(
+                user_token_account = user_token_account.to_string(),
+                "=== Using cached user token account for sell"
             );
 
-            // Feed-confirm path (`confirm == false`): the caller watches the
-            // LaserStream-fed `trades` balance, so blocking on the RPC poll here
-            // just adds 1–4 s of latency before that poll can even start.
-            // Manual/API callers keep the RPC confirm (and its `OnChainRevert`
-            // budget signal).
-            if confirm {
-                self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
-                    .await?;
+            // `sell(amount, min_sol_output)`: slippage floor on SOL received. `None`
+            // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` reads the
+            // curve's virtual reserves for a conservative lower bound, falling back to
+            // 1 if the read fails so slippage never blocks a sell.
+            let reserves: Option<(u128, u128)> = match slippage_bps {
+                Some(_) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        warn!("curve sell slippage: reserve read failed ({e}); using min_out=1");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let min_sol_output = compute_curve_sell_min_out(
+                token_amount,
+                slippage_bps,
+                reserves,
+                self.config.slippage.curve_fee_buffer_bps,
+            );
+
+            let ixs = self.build_curve_sell_ixs(
+                &mint,
+                &pdas,
+                &user_token_account,
+                token_amount,
+                min_sol_output,
+                is_cashback,
+                tip_level,
+            )?;
+
+            // ── Acquire nonce + sign & send ─────────────────────────────────
+            // Acquire the nonce only now — after the cached-PDA / token-account
+            // reads and the slippage `curve_reserves` read above — so the slot
+            // isn't held `in_use` across any RPC. Only the build/send/confirm
+            // below runs while holding it, and we always fall through to
+            // `schedule_nonce_refresh`.
+            let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+            info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
+
+            let res: Result<Option<String>> = async {
+                let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
+                let sig = self.send_transaction(&tx).await?;
+
                 info!(
-                    "✅ Sell confirmed — sig: {} | {}ms",
+                    "📤 Sell sent — sig: {} | amount: {} | {}ms",
                     sig,
+                    token_amount,
                     t0.elapsed().as_millis()
                 );
-            }
-            // Hand the signature back so a feed-confirm caller can classify a
-            // landed-revert off its own poll window (see `sell_token_once`).
-            Ok(Some(sig))
-        }
-        .await;
 
-        self.schedule_nonce_refresh(nonce_pubkey);
-        res
+                // Feed-confirm path (`confirm == false`): the caller watches the
+                // LaserStream-fed `trades` balance, so blocking on the RPC poll here
+                // just adds 1–4 s of latency before that poll can even start.
+                // Manual/API callers keep the RPC confirm (and its `OnChainRevert`
+                // budget signal).
+                if confirm {
+                    self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                        .await?;
+                    info!(
+                        "✅ Sell confirmed — sig: {} | {}ms",
+                        sig,
+                        t0.elapsed().as_millis()
+                    );
+                }
+                // Hand the signature back so a feed-confirm caller can classify a
+                // landed-revert off its own poll window (see `sell_token_once`).
+                Ok(Some(sig))
+            }
+            .await;
+
+            self.schedule_nonce_refresh(nonce_pubkey);
+
+            if let Err(TradeError::Reverted { custom }) = &res {
+                if !healed
+                    && classify_swap_revert(*custom, SwapRoute::Curve, SwapDirection::Sell)
+                        == SwapRetryDecision::RefreshCreator
+                {
+                    match self.refresh_curve_creator_vault(token_mint).await {
+                        Ok(Some(vault)) => {
+                            info!(
+                                "🔄 Sell reverted on a stale creator_vault (pump set_creator); \
+                                 refreshed to {vault}, resending once"
+                            );
+                            healed = true;
+                            tip_level = tip_level.saturating_add(1);
+                            continue;
+                        }
+                        // Unchanged creator (the retry would derive the identical
+                        // vault) or the refresh itself failed — stop rather than
+                        // re-pay fees on a resend that can't fix anything.
+                        Ok(None) | Err(_) => return res,
+                    }
+                }
+            }
+            return res;
+        }
     }
 
     /// Assemble the curve-sell instruction set (compute budget + `sell` +

@@ -122,5 +122,6 @@ Every field/column/variable that denotes an amount of SOL names its unit. `_lamp
 ## Gotchas
 
 - **Sell-confirm timing:** the exit loop polls the **full** window before retrying — buffers the gRPC feed's index lag. Without it, duplicate sells fire. Preserve when editing `execution/real.rs` or the sell retry path.
+- **Stale-creator `ConstraintSeeds` (2006) self-heal is unified**, not sell-only: `pump-trader::trader::swap_retry::classify_swap_revert` is the one SSOT decision (route × direction × error code) both crates use. `pump-trader` self-heals in-call on every `confirm=true` swap (`sell_token`/`buy_token`/`amm_sell`/`amm_buy` — manual + AMM buy/sell are now covered, not just curve sell), retrying once only when the refresh reports the creator/`coin_creator` actually changed. `live`'s feed-confirmed bot sell loop and curve-buy snipe retry import the same classifier instead of keeping a local copy — see `@arch/trade-execution.md` and `stale-creator-2006-unify-plan.md`.
 - `tpsl_sniper_1`/`tpsl_sniper_2` **decision** modules (`entry`/`exit`, in `trading_core`) are intentional clones — a fix in one usually belongs in both. (The live *orchestration* is no longer cloned: Phase 3 unified it into one registry-dispatched `live/src/strategies/{service,runner,execution}`.)
 - `.env` required (see `.env.example`); secrets/keys there only, never in code.

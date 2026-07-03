@@ -44,6 +44,7 @@ mod query;
 mod reserves;
 mod sell;
 pub mod sim;
+mod swap_retry;
 mod tx;
 
 use blockhash::BlockhashCache;
@@ -54,6 +55,11 @@ use reserves::ReserveCache;
 pub use buy::BuySignedHook;
 pub use nonce::NonceAuthCheck;
 pub use sim::{AccountDelta, SimOutcome};
+pub use swap_retry::{
+    classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute, AMM_EXCEEDED_SLIPPAGE,
+    ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE, CURVE_MISSING_USER_VOLUME_ACCUMULATOR,
+    CURVE_TOO_LITTLE_SOL_RECEIVED,
+};
 pub use tx::SigStatus;
 
 // `TraderConfig` lives in `crate::config` now; re-export it here so the existing

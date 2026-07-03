@@ -7,6 +7,7 @@
 // and pool replenishment so the next buy starts warm.
 // ============================================================
 
+use super::swap_retry::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
 use crate::protocol;
@@ -293,67 +294,114 @@ impl PumpFunTrader {
                 self.config.slippage.curve_fee_buffer_bps,
             );
 
-            // Assemble the curve-buy ix set (compute budget + account creation +
-            // `buy` + Jito tip) through the shared builder, so the simulate path
-            // sends the byte-identical buy instruction the live path does.
-            let ixs = self.build_curve_buy_ixs(
-                mint,
-                &pdas,
-                &user_token_account,
-                account_creation_ixs,
-                buy_lamports,
-                min_tokens_out,
-            )?;
+            // At most one self-heal resend on a confirmed stale-`creator_vault`
+            // 2006 — the curve-buy analogue of `sell.rs::execute_sell`'s heal
+            // (same shared `classify_swap_revert` decision). Only reachable when
+            // `!skip_confirm` (manual/API callers); the snipe path always sets
+            // `skip_confirm = true` and never sees a sync revert here — its
+            // recovery stays feed-driven (`classify_silent_send`). A confirmed
+            // revert bought nothing, and the resend takes a fresh nonce, so it
+            // can't double-buy.
+            let mut healed = false;
+            let mut current_pdas = pdas;
+            // `on_signed` fires once, on the FIRST signed tx only — the healed
+            // resend is a distinct tx the caller's write-ahead marker doesn't
+            // need to re-anchor to (the original signature already covers "a buy
+            // for this position is in flight").
+            let mut on_signed = on_signed;
+            // Cloned up front: `build_curve_buy_ixs` consumes its instructions,
+            // and the healed resend rebuilds with the SAME (idempotent) creation
+            // prefix against the freshly-refreshed PDAs.
+            let account_creation_ixs_retry = account_creation_ixs.clone();
 
-            // Acquire the nonce only now — after PDA derivation, the ATA-exists
-            // RPC, template acquisition, and the slippage reserve read above — so
-            // the slot isn't held `in_use` across any of those reads. Only the
-            // build/send/confirm below can fail while holding it, and the inner
-            // block always falls through to `schedule_nonce_refresh`.
-            let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-            let sent: Result<String> = async {
-                let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
-                // Write-ahead persist (Phase 2): the durable-nonce signature is
-                // fixed the instant we sign — before any network round-trip — so
-                // hand it to the hook to durably record the "buy in flight" marker
-                // BEFORE the submit below. A crash anywhere after this point is
-                // recoverable; a crash before it means the tx never went out, so no
-                // tokens can exist. The hook is one DB write under the nonce's
-                // `in_use` window (the slot frees in `schedule_nonce_refresh`
-                // below regardless) — an intentional, bounded latency trade for
-                // crash-safety, off the ingest hot path (this is the spawned buy
-                // task).
-                if let Some(hook) = on_signed {
-                    let sig = tx
-                        .signatures
-                        .first()
-                        .map(|s| s.to_string())
-                        .context("signed buy tx has no signature")?;
-                    hook(sig).await;
-                }
-                let sig = self.send_transaction(&tx).await?;
-                info!(
-                    "📤 Buy sent — sig: {} | SOL: {} | {}ms",
-                    sig,
-                    sol_amount,
-                    t0.elapsed().as_millis()
-                );
+            loop {
+                let ixs = self.build_curve_buy_ixs(
+                    mint,
+                    &current_pdas,
+                    &user_token_account,
+                    if healed {
+                        account_creation_ixs_retry.clone()
+                    } else {
+                        account_creation_ixs.clone()
+                    },
+                    buy_lamports,
+                    min_tokens_out,
+                )?;
 
-                if !skip_confirm {
-                    self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
-                        .await?;
+                // Acquire the nonce only now — after PDA derivation, the ATA-exists
+                // RPC, template acquisition, and the slippage reserve read above — so
+                // the slot isn't held `in_use` across any of those reads. Only the
+                // build/send/confirm below can fail while holding it, and the inner
+                // block always falls through to `schedule_nonce_refresh`.
+                let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+                let sent: Result<String> = async {
+                    let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
+                    // Write-ahead persist (Phase 2): the durable-nonce signature is
+                    // fixed the instant we sign — before any network round-trip — so
+                    // hand it to the hook to durably record the "buy in flight" marker
+                    // BEFORE the submit below. A crash anywhere after this point is
+                    // recoverable; a crash before it means the tx never went out, so no
+                    // tokens can exist. The hook is one DB write under the nonce's
+                    // `in_use` window (the slot frees in `schedule_nonce_refresh`
+                    // below regardless) — an intentional, bounded latency trade for
+                    // crash-safety, off the ingest hot path (this is the spawned buy
+                    // task).
+                    if let Some(hook) = on_signed.take() {
+                        let sig = tx
+                            .signatures
+                            .first()
+                            .map(|s| s.to_string())
+                            .context("signed buy tx has no signature")?;
+                        hook(sig).await;
+                    }
+                    let sig = self.send_transaction(&tx).await?;
                     info!(
-                        "✅ Buy confirmed — sig: {} | {}ms",
+                        "📤 Buy sent — sig: {} | SOL: {} | {}ms",
                         sig,
+                        sol_amount,
                         t0.elapsed().as_millis()
                     );
-                }
-                Ok(sig)
-            }
-            .await;
 
-            self.schedule_nonce_refresh(nonce_pubkey);
-            sent
+                    if !skip_confirm {
+                        self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                            .await?;
+                        info!(
+                            "✅ Buy confirmed — sig: {} | {}ms",
+                            sig,
+                            t0.elapsed().as_millis()
+                        );
+                    }
+                    Ok(sig)
+                }
+                .await;
+
+                self.schedule_nonce_refresh(nonce_pubkey);
+
+                if let Err(TradeError::Reverted { custom }) = &sent {
+                    if !healed
+                        && classify_swap_revert(*custom, SwapRoute::Curve, SwapDirection::Buy)
+                            == SwapRetryDecision::RefreshCreator
+                    {
+                        match self.refresh_curve_creator_vault(&mint_str).await {
+                            Ok(Some(vault)) => {
+                                if let Some(fresh) = self.token_pdas.get(&mint_str).map(|r| *r) {
+                                    current_pdas = fresh;
+                                }
+                                info!(
+                                    "🔄 Buy reverted on a stale creator_vault (pump set_creator); \
+                                     refreshed to {vault}, resending once"
+                                );
+                                healed = true;
+                                continue;
+                            }
+                            // Unchanged creator or the refresh itself failed — stop
+                            // rather than re-pay fees on a resend that can't fix anything.
+                            Ok(None) | Err(_) => return sent,
+                        }
+                    }
+                }
+                return sent;
+            }
         }
         .await
     }

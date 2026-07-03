@@ -636,21 +636,31 @@ impl PumpFunTrader {
 
     /// Force-refresh the cached curve `creator_vault` for `mint` by re-reading the
     /// bonding curve's CURRENT `creator` from chain, returning the freshly derived
-    /// vault. pump.fun can mutate `bonding_curve.creator` (via `set_creator`) AFTER
-    /// the snipe buy cached this mint's [`TokenPDAs`]; the stale buy-time
-    /// `creator_vault` then reverts every sell with Anchor `ConstraintSeeds` (2006).
-    /// [`Self::ensure_token_pdas`] re-reads the routing (a non-migrated curve is read
-    /// fresh, not served from cache) and overwrites the cached PDAs, so the next sell
-    /// attempt builds with the current vault. OFF the hot path — the exit loop calls
-    /// this only after a sell poll window failed AND the on-chain revert code is 2006.
-    pub async fn refresh_curve_creator_vault(&self, mint_address: &str) -> Result<Pubkey> {
+    /// vault **only if it actually changed** (`None` when the re-read matches what
+    /// was already cached). pump.fun can mutate `bonding_curve.creator` (via
+    /// `set_creator`) AFTER a buy cached this mint's [`TokenPDAs`]; the stale
+    /// `creator_vault` then reverts every buy/sell with Anchor `ConstraintSeeds`
+    /// (2006) — mirrors the AMM analogue [`Self::refresh_amm_pool_info`]. Returning
+    /// `None` (unchanged) lets the caller stop instead of re-paying fees on a retry
+    /// that would derive the identical vault. [`Self::ensure_token_pdas`] re-reads the
+    /// routing (a non-migrated curve is read fresh, not served from cache) and
+    /// overwrites the cached PDAs, so a `Some` result means the next attempt builds
+    /// with the current vault. OFF the hot path — called only after a confirmed 2006
+    /// revert (the manual in-call heal, or the bot exit loop's post-poll classify).
+    pub async fn refresh_curve_creator_vault(&self, mint_address: &str) -> Result<Option<Pubkey>> {
+        let prev_vault = self.token_pdas.get(mint_address).map(|r| r.creator_vault);
         self.ensure_token_pdas(mint_address).await?;
-        self.token_pdas
+        let new_vault = self
+            .token_pdas
             .get(mint_address)
             .map(|r| r.creator_vault)
             .ok_or_else(|| {
                 TradeError::Other(format!("creator_vault missing after refresh for {mint_address}"))
-            })
+            })?;
+        if prev_vault == Some(new_vault) {
+            return Ok(None);
+        }
+        Ok(Some(new_vault))
     }
 
     /// Re-read bonding-curve state from chain and return the fresh [`crate::types::CurveFacts`]

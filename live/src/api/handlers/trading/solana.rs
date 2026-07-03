@@ -162,11 +162,18 @@ pub async fn manual_buy(
     // surfacing a 500. Curve buys use a durable nonce whose signature is fixed at
     // signing, so a `ConfirmTimeout` is similarly safe to surface as pending.
     //
-    // Only retry on a proven on-chain revert (6003 curve / 6004 AMM) — mirrors
+    // Only retry HERE on a proven on-chain revert (6003 curve / 6004 AMM) — mirrors
     // `classify_silent_send`: `Reverted` → resend (no tokens bought, safe); any
     // other error → stop (durable-nonce tx may have landed, re-sending risks a
     // double-buy). The AMM path uses a recent-blockhash tx so a timeout truly is
     // ambiguous; the curve path uses a durable nonce so the same caution applies.
+    //
+    // A stale-creator revert (2006) never reaches this loop in practice: both
+    // `buy_token` and `amm_buy` already self-heal it internally (refresh the
+    // creator/coin_creator cache + resend once with `confirm=true`) before
+    // returning — see `pump_trader`'s `buy.rs`/`amm.rs`. This loop is the
+    // caller-level backstop for the two codes that heal can't fix (a genuine
+    // price move, not a stale cache).
     const BUY_MAX_ATTEMPTS: usize = 3;
     // Pump.fun curve slippage-floor revert; PumpSwap AMM slippage revert.
     const CURVE_SLIPPAGE_ERR: u32 = 6003;
@@ -313,6 +320,12 @@ pub async fn manual_sell(
     // override so the right account is drained, and each cleared account is closed
     // for rent reclaim. `sold_any` lets a sell that left sub-threshold dust still
     // report success; a hard error before any sell landed surfaces as a 500.
+    //
+    // A stale-creator revert (2006) is self-healed inside `sell_token`/`amm_sell`
+    // (refresh the creator/coin_creator cache + resend once, `confirm=true`) —
+    // see `pump_trader`'s `sell.rs`/`amm.rs` — so it never needs special-casing
+    // here; a pass only sees it as a plain `Err` if that internal heal itself
+    // couldn't fix it (unchanged creator, or the refresh RPC failed).
     let mut sold_any = false;
     let mut last_err: Option<String> = None;
     for (account_pk, initial_amount) in &accounts {

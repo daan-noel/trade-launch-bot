@@ -15,6 +15,7 @@
 // a WSOL token account (buy) / unwraps proceeds (sell) and closes it afterward.
 // ============================================================
 
+use super::swap_retry::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use super::{AmmGlobalConfig, AmmPoolInfo, PumpFunTrader};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol::{
@@ -82,49 +83,85 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         confirm: bool,
     ) -> Result<String> {
-        let t0 = Instant::now();
         let user = self.config.signer.pubkey();
 
-        let (core_ixs, user_base) = self
-            .build_amm_buy_ixs(
-                token_mint,
-                base_token_program_id,
-                sol_amount,
-                pool_override,
-                slippage_bps,
-                &user,
-            )
-            .await?;
+        // At most one self-heal resend on a confirmed stale-`coin_creator` 2006 —
+        // the AMM-buy analogue of `amm_sell_inner`'s heal. A confirmed revert
+        // bought nothing, and the resend takes a fresh blockhash, so it can't
+        // double-buy. `confirm=false` callers (none today — AMM buys have no bot
+        // path) never reach this branch.
+        let mut healed = false;
 
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
-        ixs.extend_from_slice(&self.cu_ixs_amm);
-        ixs.extend(core_ixs);
-        ixs.push(self.jito_tip_ix(0));
+        loop {
+            let t0 = Instant::now();
 
-        // Recent blockhash (not durable nonce): the swap already carries ~27
-        // accounts, and a nonce-advance would push the legacy tx over 1232 bytes.
-        let tx = self.build_recent_tx(ixs, self.config.signer.as_ref()).await?;
-        let sig = self.send_transaction(&tx).await?;
-        info!(
-            "📤 AMM buy sent — sig: {} | SOL: {} | {}ms",
-            sig,
-            sol_amount,
-            t0.elapsed().as_millis()
-        );
-        // Tokens land in the base ATA — cache it for a later sell. Done before
-        // the (optional) confirm so a `confirm=false` caller still gets it cached.
-        self.user_token_accounts
-            .insert(token_mint.to_string(), user_base);
-        if confirm {
-            self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+            let (core_ixs, user_base) = self
+                .build_amm_buy_ixs(
+                    token_mint,
+                    base_token_program_id,
+                    sol_amount,
+                    pool_override,
+                    slippage_bps,
+                    &user,
+                )
                 .await?;
+
+            let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
+            ixs.extend_from_slice(&self.cu_ixs_amm);
+            ixs.extend(core_ixs);
+            ixs.push(self.jito_tip_ix(0));
+
+            // Recent blockhash (not durable nonce): the swap already carries ~27
+            // accounts, and a nonce-advance would push the legacy tx over 1232 bytes.
+            let tx = self.build_recent_tx(ixs, self.config.signer.as_ref()).await?;
+            let sig = self.send_transaction(&tx).await?;
             info!(
-                "✅ AMM buy confirmed — sig: {} | {}ms",
+                "📤 AMM buy sent — sig: {} | SOL: {} | {}ms",
                 sig,
+                sol_amount,
                 t0.elapsed().as_millis()
             );
+            // Tokens land in the base ATA — cache it for a later sell. Done before
+            // the (optional) confirm so a `confirm=false` caller still gets it cached.
+            self.user_token_accounts
+                .insert(token_mint.to_string(), user_base);
+            if confirm {
+                match self.confirm_transaction(&sig, self.config.retry.confirm_max_retries).await {
+                    Ok(()) => {
+                        info!(
+                            "✅ AMM buy confirmed — sig: {} | {}ms",
+                            sig,
+                            t0.elapsed().as_millis()
+                        );
+                        return Ok(sig);
+                    }
+                    Err(TradeError::Reverted { custom })
+                        if !healed
+                            && classify_swap_revert(custom, SwapRoute::Amm, SwapDirection::Buy)
+                                == SwapRetryDecision::RefreshCoinCreator =>
+                    {
+                        match self.refresh_amm_pool_info(token_mint, base_token_program_id).await {
+                            Ok(Some(vault)) => {
+                                info!(
+                                    "🔄 AMM buy reverted on a stale coin_creator; refreshed the \
+                                     pool (new coin_creator_vault_authority {vault}), resending \
+                                     once"
+                                );
+                                healed = true;
+                                continue;
+                            }
+                            // Unchanged coin_creator or the refresh itself failed — stop
+                            // rather than re-pay fees on a resend that can't fix anything.
+                            Ok(None) | Err(_) => {
+                                return Err(TradeError::Reverted { custom });
+                            }
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            return Ok(sig);
         }
-        Ok(sig)
     }
 
     /// Sell `token_amount` raw base-token units of a migrated token on the AMM.
@@ -171,59 +208,99 @@ impl PumpFunTrader {
         tip_level: u8,
         confirm: bool,
     ) -> Result<Option<String>> {
-        let t0 = Instant::now();
         let user = self.config.signer.pubkey();
 
-        let core_ixs = self
-            .build_amm_sell_ixs(
-                token_mint,
-                token_amount,
-                base_token_program_id,
-                pool_override,
-                token_account_override,
-                slippage_bps,
-                &user,
-            )
-            .await?;
+        // At most one self-heal resend on a confirmed stale-`coin_creator` 2006 —
+        // mirrors the curve sell's heal in `sell.rs::execute_sell` (same shared
+        // `classify_swap_revert` decision). `confirm=false` callers never see the
+        // error here; their own feed classifies it off-path (the bot exit loop's
+        // `RefreshCoinCreator` branch).
+        let mut healed = false;
+        let mut tip_level = tip_level;
 
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
-        ixs.extend_from_slice(&self.cu_ixs_amm);
-        ixs.extend(core_ixs);
-        ixs.push(self.jito_tip_ix(tip_level));
+        loop {
+            let t0 = Instant::now();
 
-        // Acquire the nonce only after `build_amm_sell_ixs`' pool/config/reserve
-        // reads — don't hold the slot `in_use` across that RPC. The block below
-        // always falls through to `schedule_nonce_refresh`.
-        let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-        let result: Result<Option<String>> = async {
-            let tx =
-                self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, self.config.signer.as_ref())?;
-            let sig = self.send_transaction(&tx).await?;
-            info!(
-                "📤 AMM sell sent — sig: {} | amount: {} | {}ms",
-                sig,
-                token_amount,
-                t0.elapsed().as_millis()
-            );
-            // See `sell_token_once`: skip the redundant RPC poll on the
-            // feed-confirmed path (the caller watches the LaserStream `trades`).
-            if confirm {
-                self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
-                    .await?;
+            // Re-resolves `amm_pool_info` each iteration — on the healed retry this
+            // reads the pool `refresh_amm_pool_info` just re-cached below, picking
+            // up the fresh `coin_creator`.
+            let core_ixs = self
+                .build_amm_sell_ixs(
+                    token_mint,
+                    token_amount,
+                    base_token_program_id,
+                    pool_override,
+                    token_account_override,
+                    slippage_bps,
+                    &user,
+                )
+                .await?;
+
+            let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
+            ixs.extend_from_slice(&self.cu_ixs_amm);
+            ixs.extend(core_ixs);
+            ixs.push(self.jito_tip_ix(tip_level));
+
+            // Acquire the nonce only after `build_amm_sell_ixs`' pool/config/reserve
+            // reads — don't hold the slot `in_use` across that RPC. The block below
+            // always falls through to `schedule_nonce_refresh`.
+            let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+            let result: Result<Option<String>> = async {
+                let tx = self.build_nonce_tx(
+                    ixs,
+                    &nonce_pubkey,
+                    nonce_hash,
+                    self.config.signer.as_ref(),
+                )?;
+                let sig = self.send_transaction(&tx).await?;
                 info!(
-                    "✅ AMM sell confirmed — sig: {} | {}ms",
+                    "📤 AMM sell sent — sig: {} | amount: {} | {}ms",
                     sig,
+                    token_amount,
                     t0.elapsed().as_millis()
                 );
+                // See `sell_token_once`: skip the redundant RPC poll on the
+                // feed-confirmed path (the caller watches the LaserStream `trades`).
+                if confirm {
+                    self.confirm_transaction(&sig, self.config.retry.confirm_max_retries)
+                        .await?;
+                    info!(
+                        "✅ AMM sell confirmed — sig: {} | {}ms",
+                        sig,
+                        t0.elapsed().as_millis()
+                    );
+                }
+                // Hand the signature back so a feed-confirm caller can classify a
+                // landed-revert off its own poll window (see `sell_token_once`).
+                Ok(Some(sig))
             }
-            // Hand the signature back so a feed-confirm caller can classify a
-            // landed-revert off its own poll window (see `sell_token_once`).
-            Ok(Some(sig))
-        }
-        .await;
+            .await;
 
-        self.schedule_nonce_refresh(nonce_pubkey);
-        result
+            self.schedule_nonce_refresh(nonce_pubkey);
+
+            if let Err(TradeError::Reverted { custom }) = &result {
+                if !healed
+                    && classify_swap_revert(*custom, SwapRoute::Amm, SwapDirection::Sell)
+                        == SwapRetryDecision::RefreshCoinCreator
+                {
+                    match self.refresh_amm_pool_info(token_mint, base_token_program_id).await {
+                        Ok(Some(vault)) => {
+                            info!(
+                                "🔄 AMM sell reverted on a stale coin_creator; refreshed the \
+                                 pool (new coin_creator_vault_authority {vault}), resending once"
+                            );
+                            healed = true;
+                            tip_level = tip_level.saturating_add(1);
+                            continue;
+                        }
+                        // Unchanged coin_creator or the refresh itself failed — stop
+                        // rather than re-pay fees on a resend that can't fix anything.
+                        Ok(None) | Err(_) => return result,
+                    }
+                }
+            }
+            return result;
+        }
     }
 
     // -----------------------------------------------------------------------

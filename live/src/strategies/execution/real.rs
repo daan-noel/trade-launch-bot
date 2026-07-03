@@ -25,6 +25,7 @@ use trading_core::strategies::runtime_cache::StrategyRuntimeCache;
 use crate::state::token_cache::TokenCache;
 use crate::state::trade_signals::TradeSignals;
 use crate::trader::{PumpFunTrader, SigStatus};
+use pump_trader::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 
 /// Decision for a snipe buy that was sent but whose fill never appeared in the
 /// WS/DB feed within the poll window. Centralizing it keeps the **double-buy
@@ -42,14 +43,25 @@ enum SilentSendOutcome {
     GiveUp,
 }
 
-/// Map a one-shot `signature_state` result to the post-poll action. Pure; generic
-/// over the error type so tests need no `anyhow` value.
-fn classify_silent_send<E>(status: &Result<Option<bool>, E>) -> SilentSendOutcome {
+/// Map a one-shot `signature_state_detailed` result to the post-poll action. Pure;
+/// generic over the error type so tests need no `anyhow` value.
+fn classify_silent_send<E>(status: &Result<SigStatus, E>) -> SilentSendOutcome {
     match status {
-        Ok(Some(false)) => SilentSendOutcome::Resend,
-        Ok(Some(true)) => SilentSendOutcome::WaitThenSettle,
-        Ok(None) | Err(_) => SilentSendOutcome::GiveUp,
+        Ok(SigStatus::Reverted { .. }) => SilentSendOutcome::Resend,
+        Ok(SigStatus::Succeeded) => SilentSendOutcome::WaitThenSettle,
+        Ok(SigStatus::Pending) | Err(_) => SilentSendOutcome::GiveUp,
     }
+}
+
+/// True when a confirmed-reverted snipe buy's custom error code is the
+/// stale-creator `ConstraintSeeds` (2006) — shares the SSOT decision with the
+/// sell path and pump-trader's own in-call heal (see `classify_sell_revert`).
+/// Curve buys are always route=Curve (snipes are curve-only).
+fn is_stale_creator_buy_revert<E>(status: &Result<SigStatus, E>) -> bool {
+    matches!(
+        status,
+        Ok(SigStatus::Reverted { custom }) if classify_swap_revert(*custom, SwapRoute::Curve, SwapDirection::Buy) == SwapRetryDecision::RefreshCreator
+    )
 }
 
 /// Recovery verdict for a `BuySubmitted` position whose submitted buy did **not**
@@ -229,7 +241,18 @@ pub(crate) trait SnipeExecutor: Send + Sync {
         // buys land in ONE account. `None` = first buy: template mints a fresh one.
         user_token_account_override: Option<&str>,
     ) -> anyhow::Result<String>;
-    async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>>;
+    /// Detailed status (unlike a bare landed-bool, preserves the on-chain custom
+    /// error code) so a confirmed stale-creator revert can be told apart from any
+    /// other confirmed revert — see [`buy_until_filled_or_give_up`]'s use of
+    /// [`pump_trader::classify_swap_revert`].
+    async fn check_signature(&self, signature: &str) -> anyhow::Result<SigStatus>;
+    /// Re-read `mint`'s bonding-curve creator from chain and return it (also warms
+    /// the trader's `TokenPDAs`/creator caches). Called only after a CONFIRMED
+    /// stale-creator (2006) revert on this mint's snipe buy — pump.fun rotated
+    /// `bonding_curve.creator` (`set_creator`) between the triggering event and
+    /// the buy, so every resend with the original `creator` would revert
+    /// identically. OFF the hot path.
+    async fn refresh_creator(&self, mint: &str) -> anyhow::Result<String>;
     /// The trader's in-memory cached token account for `mint` (the account the last
     /// buy landed into), or `None`. Captured after a fill to persist on the row.
     fn cached_token_account(&self, mint: &str) -> Option<String>;
@@ -263,8 +286,11 @@ impl SnipeExecutor for PumpFunTrader {
             .await
             .map_err(anyhow::Error::from)
     }
-    async fn check_signature(&self, signature: &str) -> anyhow::Result<Option<bool>> {
-        self.signature_state(signature).await.map_err(anyhow::Error::from)
+    async fn check_signature(&self, signature: &str) -> anyhow::Result<SigStatus> {
+        self.signature_state_detailed(signature).await.map_err(anyhow::Error::from)
+    }
+    async fn refresh_creator(&self, mint: &str) -> anyhow::Result<String> {
+        self.get_creator_from_mint_pda(mint).await.map_err(anyhow::Error::from)
     }
     fn cached_token_account(&self, mint: &str) -> Option<String> {
         // Inherent method on PumpFunTrader (query.rs).
@@ -301,7 +327,7 @@ impl BuyRetryCfg {
 pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
     trader: Arc<E>,
     mint: String,
-    creator: String,
+    mut creator: String,
     token_program_id: String,
     buy_amount_sol: f64,
     position_id: Uuid,
@@ -439,7 +465,33 @@ pub(crate) async fn buy_until_filled_or_give_up<E: SnipeExecutor + 'static>(
         let status = trader.check_signature(&signature).await;
         match classify_silent_send(&status) {
             SilentSendOutcome::Resend => {
-                warn!(mint = %mint, attempt, sig = %signature, "buy reverted on-chain; retrying");
+                // A stale `bonding_curve.creator` (pump `set_creator` between the
+                // triggering event and this buy) means every resend with the
+                // ORIGINAL `creator` would revert identically (2006) forever —
+                // refresh it once so the next attempt uses the current one.
+                // Gated on a CONFIRMED revert (already true for `Resend`), so
+                // this can't double-buy; shares the SSOT decision with the sell
+                // path (`classify_sell_revert`) and pump-trader's own in-call
+                // heal.
+                if is_stale_creator_buy_revert(&status) {
+                    match trader.refresh_creator(&mint).await {
+                        Ok(fresh) if fresh != creator => {
+                            warn!(mint = %mint, attempt, sig = %signature,
+                                old_creator = %creator, new_creator = %fresh,
+                                "buy reverted on a stale creator (pump set_creator); \
+                                 refreshed creator, retrying");
+                            creator = fresh;
+                        }
+                        Ok(_) => warn!(mint = %mint, attempt, sig = %signature,
+                            "buy reverted 2006 but the creator is unchanged on re-read; \
+                             retrying anyway (would only re-pay fees if truly stale)"),
+                        Err(err) => warn!(mint = %mint, attempt, sig = %signature,
+                            "creator refresh failed after a 2006 revert: {err}; \
+                             retrying with the original creator"),
+                    }
+                } else {
+                    warn!(mint = %mint, attempt, sig = %signature, "buy reverted on-chain; retrying");
+                }
             }
             SilentSendOutcome::WaitThenSettle => {
                 warn!(mint = %mint, sig = %signature,
@@ -751,80 +803,31 @@ enum SellOutcome {
     Failed { sigs: Vec<String> },
 }
 
-/// pump.fun bonding-curve `TooLittleSolReceived` (Anchor 6003) — the sell-side
-/// slippage floor. Retryable (re-quote and resend).
-const CURVE_TOO_LITTLE_SOL_RECEIVED: u32 = 6003;
-/// PumpSwap AMM `ExceededSlippage` (Anchor 6004) — the AMM-side slippage floor.
-const AMM_EXCEEDED_SLIPPAGE: u32 = 6004;
-/// pump.fun `BondingCurveComplete` (6005): token already migrated to AMM but our
-/// cache still had `is_migrated = false`. Re-read curve state and re-route.
-const BONDING_CURVE_COMPLETE: u32 = 6005;
-/// Anchor `ConstraintSeeds` (2006): on a curve sell it means pump.fun rotated
-/// `bonding_curve.creator` after our buy cached the vault — refresh + retry.
-const ANCHOR_CONSTRAINT_SEEDS: u32 = 2006;
-/// pump.fun `MissingUserVolumeAccumulator` (6024): cashback UVA account not
-/// included in the tx because our cache had `is_cashback = false`. Re-read the
-/// curve's cashback flag and retry with the UVA included.
-const CURVE_MISSING_USER_VOLUME_ACCUMULATOR: u32 = 6024;
-
 /// After a feed-confirm sell's poll window elapses without clearing, one
 /// `signature_state_detailed` check decides whether re-sending is worth the fee,
-/// using the on-chain **program error code**: a slippage-floor revert retries; a
-/// structural/unknown revert on a venue the retry would reuse stops; a curve 2006
-/// refreshes the creator vault; an AMM 2006 refreshes the pool's coin_creator;
-/// 6024 refreshes the cashback flag; 6005 re-routes to the AMM after confirming
-/// migration; a mid-exit migration always re-routes. Pure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SellRetryDecision {
-    Retry,
-    StopFeeBurn,
-    /// Curve 2006: `bonding_curve.creator` rotated (pump `set_creator`) after the
-    /// buy cached the vault — re-read the creator, retry.
-    RefreshCreator,
-    /// AMM 2006: the pool's `coin_creator` rotated after we cached the pool — evict
-    /// the stale `AmmPoolInfo`, re-read the pool (re-derives the coin_creator vault
-    /// authority), retry.
-    RefreshCoinCreator,
-    /// Curve 6024: cashback UVA was missing — re-read cashback flag, retry.
-    RefreshCashback,
-    /// Curve 6005: token already migrated — re-read migration state, re-route.
-    RerouteMigrated,
-}
-
-/// Map a landed-and-reverted sell to a retry decision using the on-chain error code.
-/// `used_migrated` is the venue the sent tx used (true = AMM); `now_migrated` is the
-/// venue the next attempt would use, so a mid-exit migration always retries re-routed.
+/// using the on-chain **program error code**. The route↔decision mapping (slippage
+/// retries, 2006 creator/coin_creator refresh, 6024 cashback refresh, 6005
+/// reroute) is the SSOT `pump_trader::classify_swap_revert` — shared with this
+/// crate's own trader-internal `confirm=true` heal (see `pump-trader`'s
+/// `sell.rs`/`buy.rs`/`amm.rs`) so the sync-error and feed-classify triggers apply
+/// the identical rule. `used_migrated` is the venue the sent tx used (true = AMM);
+/// `now_migrated` is the venue the next attempt would use, so a mid-exit migration
+/// always retries re-routed regardless of the code (a route change is this loop's
+/// own concern, not part of the shared per-code decision). Pure.
 fn classify_sell_revert<E>(
     state: &Result<SigStatus, E>,
     used_migrated: bool,
     now_migrated: bool,
-) -> SellRetryDecision {
+) -> SwapRetryDecision {
     match state {
         Ok(SigStatus::Reverted { custom }) if used_migrated == now_migrated => {
-            let slippage_code = if used_migrated {
-                AMM_EXCEEDED_SLIPPAGE
-            } else {
-                CURVE_TOO_LITTLE_SOL_RECEIVED
-            };
-            if *custom == Some(slippage_code) {
-                SellRetryDecision::Retry
-            } else if *custom == Some(ANCHOR_CONSTRAINT_SEEDS) && !used_migrated {
-                SellRetryDecision::RefreshCreator
-            } else if *custom == Some(ANCHOR_CONSTRAINT_SEEDS) && used_migrated {
-                SellRetryDecision::RefreshCoinCreator
-            } else if *custom == Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR) && !used_migrated {
-                SellRetryDecision::RefreshCashback
-            } else if *custom == Some(BONDING_CURVE_COMPLETE) && !used_migrated {
-                SellRetryDecision::RerouteMigrated
-            } else {
-                SellRetryDecision::StopFeeBurn
-            }
+            let route = if used_migrated { SwapRoute::Amm } else { SwapRoute::Curve };
+            classify_swap_revert(*custom, route, SwapDirection::Sell)
         }
-        _ => SellRetryDecision::Retry,
+        _ => SwapRetryDecision::Retry,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 async fn sell_until_balance_cleared(
     trader: Arc<PumpFunTrader>,
@@ -993,7 +996,7 @@ async fn sell_until_balance_cleared(
                         cache.get(&mint).map(|e| e.is_migrated).unwrap_or(is_migrated);
                     let state = trader.signature_state_detailed(&sig).await;
                     match classify_sell_revert(&state, is_migrated, now_migrated) {
-                        SellRetryDecision::StopFeeBurn => {
+                        SwapRetryDecision::StopFeeBurn => {
                             let raw_code = match &state {
                                 Ok(SigStatus::Reverted { custom }) => *custom,
                                 _ => None,
@@ -1023,12 +1026,22 @@ async fn sell_until_balance_cleared(
                             }
                             return SellOutcome::Failed { sigs: sell_sigs };
                         }
-                        SellRetryDecision::RefreshCreator => {
+                        SwapRetryDecision::RefreshCreator => {
                             match trader.refresh_curve_creator_vault(&mint).await {
-                                Ok(vault) => warn!(mint = %mint, attempt, sig = %sig,
+                                Ok(Some(vault)) => warn!(mint = %mint, attempt, sig = %sig,
                                     new_creator_vault = %vault,
                                     "sell reverted on a stale creator_vault (pump set_creator); \
                                      refreshed creator, retrying with a higher tip"),
+                                Ok(None) => {
+                                    // The re-read yielded the SAME creator_vault, so a retry
+                                    // would derive the identical vault and revert again — stop
+                                    // instead of re-paying fees (mirrors the AMM branch below).
+                                    warn!(mint = %mint, attempt, sig = %sig,
+                                        "sell reverted 2006 but the creator_vault is unchanged \
+                                         on re-read; not retrying (would only re-pay fees); \
+                                         marking ExitFailed");
+                                    return SellOutcome::Failed { sigs: sell_sigs };
+                                }
                                 Err(err) => {
                                     warn!(mint = %mint, attempt, sig = %sig,
                                         "creator_vault refresh failed after a 2006 revert: {err}; \
@@ -1037,7 +1050,7 @@ async fn sell_until_balance_cleared(
                                 }
                             }
                         }
-                        SellRetryDecision::RefreshCoinCreator => {
+                        SwapRetryDecision::RefreshCoinCreator => {
                             match trader
                                 .refresh_amm_pool_info(&mint, &base_token_program)
                                 .await
@@ -1065,7 +1078,7 @@ async fn sell_until_balance_cleared(
                                 }
                             }
                         }
-                        SellRetryDecision::RefreshCashback => {
+                        SwapRetryDecision::RefreshCashback => {
                             match trader.refresh_curve_facts(&mint).await {
                                 Ok(facts) => {
                                     // Update cache so next attempt's is_cashback read
@@ -1086,7 +1099,7 @@ async fn sell_until_balance_cleared(
                                 }
                             }
                         }
-                        SellRetryDecision::RerouteMigrated => {
+                        SwapRetryDecision::RerouteMigrated => {
                             match trader.refresh_curve_facts(&mint).await {
                                 Ok(facts) => {
                                     if facts.is_migrated {
@@ -1114,7 +1127,7 @@ async fn sell_until_balance_cleared(
                                 }
                             }
                         }
-                        SellRetryDecision::Retry => {
+                        SwapRetryDecision::Retry => {
                             warn!(mint = %mint, attempt, remaining = remaining_amount,
                                 "sell not cleared within poll window; retrying with a higher tip");
                         }
@@ -1152,23 +1165,26 @@ async fn sell_until_balance_cleared(
 mod tests {
     use super::*;
 
-    fn outcome(status: Result<Option<bool>, &'static str>) -> SilentSendOutcome {
+    fn outcome(status: Result<SigStatus, &'static str>) -> SilentSendOutcome {
         classify_silent_send(&status)
     }
 
     #[test]
     fn confirmed_revert_is_the_only_resend() {
-        assert_eq!(outcome(Ok(Some(false))), SilentSendOutcome::Resend);
+        assert_eq!(
+            outcome(Ok(SigStatus::Reverted { custom: None })),
+            SilentSendOutcome::Resend
+        );
     }
 
     #[test]
     fn landed_but_unindexed_waits_never_resends() {
-        assert_eq!(outcome(Ok(Some(true))), SilentSendOutcome::WaitThenSettle);
+        assert_eq!(outcome(Ok(SigStatus::Succeeded)), SilentSendOutcome::WaitThenSettle);
     }
 
     #[test]
     fn pending_gives_up_to_avoid_double_buy() {
-        assert_eq!(outcome(Ok(None)), SilentSendOutcome::GiveUp);
+        assert_eq!(outcome(Ok(SigStatus::Pending)), SilentSendOutcome::GiveUp);
     }
 
     #[test]
@@ -1178,9 +1194,23 @@ mod tests {
 
     #[test]
     fn nothing_but_a_confirmed_revert_ever_resends() {
-        for status in [Ok(Some(true)), Ok(None), Err("x")] {
+        for status in [Ok(SigStatus::Succeeded), Ok(SigStatus::Pending), Err("x")] {
             assert_ne!(outcome(status), SilentSendOutcome::Resend);
         }
+    }
+
+    #[test]
+    fn stale_creator_buy_revert_is_detected_by_code() {
+        let stale: Result<SigStatus, &'static str> =
+            Ok(SigStatus::Reverted { custom: Some(pump_trader::ANCHOR_CONSTRAINT_SEEDS) });
+        assert!(is_stale_creator_buy_revert(&stale));
+
+        let other: Result<SigStatus, &'static str> =
+            Ok(SigStatus::Reverted { custom: Some(6022) });
+        assert!(!is_stale_creator_buy_revert(&other));
+
+        let succeeded: Result<SigStatus, &'static str> = Ok(SigStatus::Succeeded);
+        assert!(!is_stale_creator_buy_revert(&succeeded));
     }
 
     fn recover(status: Result<Option<bool>, &'static str>) -> BuyRecoveryVerdict {
@@ -1203,12 +1233,15 @@ mod tests {
         Ok(SigStatus::Reverted { custom })
     }
 
+    use pump_trader::{AMM_EXCEEDED_SLIPPAGE, ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE,
+        CURVE_MISSING_USER_VOLUME_ACCUMULATOR, CURVE_TOO_LITTLE_SOL_RECEIVED};
+
     #[test]
     fn structural_revert_same_route_stops_fee_burn() {
         let structural = reverted(Some(6022));
         assert_eq!(
             classify_sell_revert(&structural, false, false),
-            SellRetryDecision::StopFeeBurn
+            SwapRetryDecision::StopFeeBurn
         );
     }
 
@@ -1217,12 +1250,12 @@ mod tests {
         // Curve slippage floor on a curve route → retryable.
         assert_eq!(
             classify_sell_revert(&reverted(Some(CURVE_TOO_LITTLE_SOL_RECEIVED)), false, false),
-            SellRetryDecision::Retry
+            SwapRetryDecision::Retry
         );
         // AMM slippage floor on an AMM route → retryable.
         assert_eq!(
             classify_sell_revert(&reverted(Some(AMM_EXCEEDED_SLIPPAGE)), true, true),
-            SellRetryDecision::Retry
+            SwapRetryDecision::Retry
         );
     }
 
@@ -1230,7 +1263,7 @@ mod tests {
     fn curve_constraint_seeds_refreshes_creator() {
         assert_eq!(
             classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), false, false),
-            SellRetryDecision::RefreshCreator
+            SwapRetryDecision::RefreshCreator
         );
     }
 
@@ -1240,7 +1273,7 @@ mod tests {
         // — refresh the pool, not the curve creator.
         assert_eq!(
             classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), true, true),
-            SellRetryDecision::RefreshCoinCreator
+            SwapRetryDecision::RefreshCoinCreator
         );
     }
 
@@ -1252,7 +1285,7 @@ mod tests {
                 false,
                 false
             ),
-            SellRetryDecision::RefreshCashback
+            SwapRetryDecision::RefreshCashback
         );
     }
 
@@ -1260,7 +1293,7 @@ mod tests {
     fn bonding_curve_complete_reroutes_migrated() {
         assert_eq!(
             classify_sell_revert(&reverted(Some(BONDING_CURVE_COMPLETE)), false, false),
-            SellRetryDecision::RerouteMigrated
+            SwapRetryDecision::RerouteMigrated
         );
     }
 
@@ -1275,11 +1308,11 @@ mod tests {
                 true,
                 true
             ),
-            SellRetryDecision::StopFeeBurn
+            SwapRetryDecision::StopFeeBurn
         );
         assert_eq!(
             classify_sell_revert(&reverted(Some(BONDING_CURVE_COMPLETE)), true, true),
-            SellRetryDecision::StopFeeBurn
+            SwapRetryDecision::StopFeeBurn
         );
     }
 
@@ -1288,7 +1321,7 @@ mod tests {
         // Route changed (curve→AMM) → re-route regardless of the code.
         assert_eq!(
             classify_sell_revert(&reverted(Some(6022)), false, true),
-            SellRetryDecision::Retry
+            SwapRetryDecision::Retry
         );
     }
 }

@@ -37,6 +37,9 @@ pub use trader::claim::{ClaimOutcome, PotStatus};
 #[cfg(feature = "probe")]
 pub use trader::probe::{EndpointResult, FanoutReport};
 pub use trader::{
-    AccountDelta, BuySignedHook, NonceAuthCheck, PumpFunTrader, SigStatus, SimOutcome,
+    classify_swap_revert, AccountDelta, BuySignedHook, NonceAuthCheck, PumpFunTrader, SigStatus,
+    SimOutcome, SwapDirection, SwapRetryDecision, SwapRoute, AMM_EXCEEDED_SLIPPAGE,
+    ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE, CURVE_MISSING_USER_VOLUME_ACCUMULATOR,
+    CURVE_TOO_LITTLE_SOL_RECEIVED,
 };
 pub use types::{BuyRouting, TokenBalance, TokenProgram, WalletHolding};
