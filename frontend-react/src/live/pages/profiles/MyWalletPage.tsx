@@ -3,6 +3,7 @@ import { useDispatch } from 'react-redux';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { DataTable } from 'components/table/DataTable';
+import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
@@ -10,6 +11,8 @@ import { InlineAlert, Modal } from 'components/ui/Modal';
 import { walletColumns } from '@live/components/wallet/walletColumns';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
+import { toTableRequest, numericColKeys } from 'services/tableRequest';
+import { applyTableRequest, columnResolver } from 'services/tableEval';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import {
   liveApi,
@@ -36,6 +39,15 @@ interface SellDialog {
   /// Slippage tolerance as a percent string; blank = use the global default.
   slippageInput: string;
 }
+
+/// Initial table view-state; pageSize matches the DataTable default below (25).
+const INITIAL_QUERY: TableQuery = {
+  page: 1,
+  pageSize: 25,
+  sortKeys: [],
+  search: '',
+  colFilters: {},
+};
 
 /// Parse a slippage percent string into basis points (1% = 100 bps), shared by
 /// the buy and sell dialogs. Blank → `{}` (let the backend use its default);
@@ -306,6 +318,20 @@ export function MyWalletPage() {
     [handleBuyOpen, handleSell, sellingMint],
   );
 
+  // Wallet Holdings runs the shared server-side table contract, but locally: the
+  // DataTable emits its view-state, we serialize it to the unified `TableRequest`
+  // body and evaluate it in-browser with the same op/sort/search semantics as the
+  // Rust evaluator (Simulated) and the SQL path. The live-only value/price/
+  // liquidity columns can't be server-paged, so the whole evaluation is client-
+  // resident — `columnResolver` derives the grammar straight from the columns.
+  const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
+  const numericCols = useMemo(() => numericColKeys(columns), [columns]);
+  const resolver = useMemo(() => columnResolver(columns), [columns]);
+  const { items, total } = useMemo(
+    () => applyTableRequest(rows, toTableRequest(tableQuery, numericCols), resolver),
+    [rows, tableQuery, numericCols, resolver],
+  );
+
   const buyTitle = buyDialog
     ? buyDialog.manual
       ? 'Manual Buy'
@@ -342,8 +368,12 @@ export function MyWalletPage() {
       ) : (
         <DataTable
           columns={columns}
-          rows={rows}
+          rows={items}
           rowKey={(r) => r.mint}
+          serverSide
+          serverTotal={total}
+          onQueryChange={setTableQuery}
+          loading={isFetching}
           defaultPageSize={25}
           pageSizeOptions={[25, 50, 100]}
           searchable

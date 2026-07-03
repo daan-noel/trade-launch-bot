@@ -72,12 +72,12 @@ from `.env`); `cargo check -p live` + `-p lab` clean. No frontend code changed.
   Matched/Positions tables (I can't drive a browser here). Expected visible deltas: "Trades"→"Token
   Trades" header on Tokens page; matched Init Buy/CU columns relabelled + regrouped.
 
-### OPEN — resume here (recommended order: 5 → 8)
+### OPEN — resume here
 
-- **Phase 5** (frontend page rewrite): Wallet Holdings onto the shared `DataTable` + TS evaluator; delete
-  `mergeTokenData`; flag Wallet live-only cols `client_only`.
-- **Phase 8**: Rust↔TS evaluator conformance test; update `@arch/frontend.md` + `@arch/database.md` +
-  `@plans/…`.
+- **Phase 8**: Rust↔TS evaluator conformance test (`table_eval` ↔ `tableEval.ts`, shared fixtures);
+  update `@arch/frontend.md` + `@arch/database.md` + `@plans/…`.
+- **Phase 5 bullet 3** (deferred): retire `mergeTokenData`/`useGetTokensByMintsQuery` — needs a
+  `getWalletHoldings` backend enrichment-join decision first (see Phase 5 section).
 
 ## Decisions locked (do not re-litigate)
 
@@ -190,20 +190,31 @@ the internal rep the two proven engines already consume —
       sort keys in order then the raw `mint` ASC tail (was first-key-only; identical for today's
       single-key UI, but the SSOT is now the general form the TS evaluator will mirror).
 
-## Phase 5 — Wallet Holdings onto the shared method (client-executed TS evaluator)
+## Phase 5 — Wallet Holdings onto the shared method (client-executed TS evaluator) — 1/2/4 DONE, 3 DEFERRED
 
-- [ ] Write the TS evaluator `applyTableRequest(rows, tableRequestBody)` mirroring the registry's
-      `kind`/op semantics + the mint/symbol search + stable tiebreak. Single client evaluator (Wallet
-      today; available to any future client-resident token table).
-- [ ] Convert Wallet Holdings (`frontend-react/src/live/pages/profiles/MyWalletPage.tsx` +
-      `live/components/wallet/walletColumns.tsx`) to the shared `DataTable` in `serverSide` mode fed by
-      the TS evaluator: same `TableQuery`→`toTableRequest` shape, executed locally.
-- [ ] Retire the bespoke client path for Wallet: remove `mergeTokenData` + `useGetTokensByMintsQuery`
-      from the wallet table; attach enrichment the same way the other tables receive it. (`mergeTokenData`
-      has no other callers after this — delete it.)
-- [ ] Keep Wallet's live-only columns (`value_usd`, `price_usd`, `price_change_24h`, `liquidity`,
-      `ui_amount`, `token_account`, `decimals`, `token_program`) as first-class registry entries flagged
-      `client_only` so the evaluator can sort/filter them but the SQL builder ignores them.
+- [x] **TS evaluator `applyTableRequest(rows, body, resolve)`** written at `services/tableEval.ts`,
+      mirroring the Rust `table_eval` op/sort/search semantics (mint/symbol search, numeric-op-on-text
+      drop, null-numeric exclude, contains-on-number → eq, all resolved sort keys in order + raw-`mint`
+      ASC tiebreak, `Page::bounds` paging). Generic over a `ColResolver`; `columnResolver(columns)`
+      derives the grammar straight from a table's `ColumnDef[]` (numeric iff `filterNumber`; sort via
+      `sortValue` with the same `compareSort` the client `DataTable` used) — so it's the single client
+      evaluator, reusable for any future client-resident token table, with **zero sort regression**.
+- [x] **Wallet Holdings converted to `DataTable` `serverSide` mode fed by the evaluator, locally.**
+      `MyWalletPage` holds the emitted `TableQuery`, serializes it via `toTableRequest`, and evaluates
+      in-browser (`applyTableRequest(rows, …, columnResolver(columns))`) → `{items,total}` passed as
+      `rows`/`serverTotal`. Behavior deltas (all intended, matching the unified grammar the other tables
+      already use): free-text search narrows to **mint/symbol only** (was all-columns); a plain-number
+      filter in a numeric column now means `eq` (was substring); `!=` maps to `eq`.
+- [x] **Item 4 — live-only columns:** handled uniformly by `columnResolver` (value/price/liquidity/…
+      sort + filter client-side). No `client_only` flag added: the whole Wallet evaluation is
+      client-resident, so there is **no SQL builder to exclude them from** — a flag would be dead
+      metadata. (Revisit only if these columns are ever fed to `toTableRequest` for a *server* table.)
+- [ ] **DEFERRED — retire `mergeTokenData` + `useGetTokensByMintsQuery`.** These are the Wallet's
+      enrichment DATA source (RPC balances × token-DB batch, merged client-side). Deleting them strips
+      creator/ATH/volume/mcap/CU/ix data from the Wallet unless the `getWalletHoldings` backend endpoint
+      starts LEFT JOIN-ing `tokens_info` (a `live`-bin handler/repo change — "the same way the other
+      tables receive it" = server-joined). That's a separate decision + backend change; the evaluator
+      + serverSide conversion above don't require it and don't regress. `mergeTokenData` kept for now.
 
 ## Phase 6 — Search = mint/symbol everywhere — DONE
 
