@@ -72,9 +72,11 @@ fn trades_schema() -> Schema {
     ])
 }
 
-/// Token-dimension schema — `mint`/`symbol` plus the 9 grouping-fingerprint columns
+/// Token-dimension schema — `mint`/`symbol` plus the 11 grouping-fingerprint columns
 /// (same set the corpus cache carries) and the two filter columns the candidate
-/// selection needs (`is_mayhem_mode`, `created_at` epoch secs).
+/// selection needs (`is_mayhem_mode`, `created_at` epoch secs). The two
+/// `fp_first_slot_*` columns are trade-derived (sourced from `tokens_info`, not the
+/// `tokens` creation row) — every other `fp_*` column is a `tokens` creation fact.
 fn tokens_schema() -> Schema {
     Schema::new(vec![
         Field::new("mint", DataType::Utf8, false),
@@ -86,6 +88,8 @@ fn tokens_schema() -> Schema {
         Field::new("fp_is_cashback_enabled", DataType::Boolean, false),
         Field::new("fp_max_sol_cost", DataType::Int64, true),
         Field::new("fp_spendable_sol_in", DataType::Int64, true),
+        Field::new("fp_first_slot_buy_sol", DataType::Float64, true),
+        Field::new("fp_first_slot_sell_sol", DataType::Float64, true),
         Field::new("fp_ix_labels", DataType::Utf8, true),
         Field::new("is_mayhem_mode", DataType::Boolean, false),
         Field::new("created_at", DataType::Int64, false),
@@ -325,6 +329,8 @@ struct LakeTokenRow {
     cu_limit: Option<i64>,
     cu_price: Option<i64>,
     is_cashback_enabled: bool,
+    first_slot_buy_sol: Option<f64>,
+    first_slot_sell_sol: Option<f64>,
     is_mayhem_mode: bool,
     created_at: DateTime<Utc>,
     initial_buy_instruction: Option<serde_json::Value>,
@@ -355,6 +361,8 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
     let mut cashback = BooleanBuilder::new();
     let mut max_sol_cost = Int64Builder::new();
     let mut spendable_sol_in = Int64Builder::new();
+    let mut first_slot_buy = Float64Builder::new();
+    let mut first_slot_sell = Float64Builder::new();
     let mut ix_labels = StringBuilder::new();
     let mut mayhem = BooleanBuilder::new();
     let mut created = Int64Builder::new();
@@ -375,6 +383,8 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
                     Arc::new(cashback.finish()),
                     Arc::new(max_sol_cost.finish()),
                     Arc::new(spendable_sol_in.finish()),
+                    Arc::new(first_slot_buy.finish()),
+                    Arc::new(first_slot_sell.finish()),
                     Arc::new(ix_labels.finish()),
                     Arc::new(mayhem.finish()),
                     Arc::new(created.finish()),
@@ -386,11 +396,14 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
 
     let mut stream = sqlx::query_as::<_, LakeTokenRow>(
         r#"
-        SELECT mint_address, symbol, token_program_id,
-               initial_buy_lamports::float8 / 1e9 AS initial_buy_sol,
-               cu_limit, cu_price, is_cashback_enabled,
-               is_mayhem_mode, created_at, initial_buy_instruction, ix_labels
-        FROM tokens
+        SELECT t.mint_address, t.symbol, t.token_program_id,
+               t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol,
+               t.cu_limit, t.cu_price, t.is_cashback_enabled,
+               ti.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
+               ti.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol,
+               t.is_mayhem_mode, t.created_at, t.initial_buy_instruction, t.ix_labels
+        FROM tokens t
+        LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
         "#,
     )
     .fetch(pool);
@@ -412,6 +425,8 @@ async fn export_tokens(pool: &PgPool, root: &Path) -> Result<usize> {
         max_sol_cost.append_option(extract_lamports(r.initial_buy_instruction.as_ref(), "max_cost_lamports"));
         spendable_sol_in
             .append_option(extract_lamports(r.initial_buy_instruction.as_ref(), "spendable_lamports_in"));
+        first_slot_buy.append_option(r.first_slot_buy_sol);
+        first_slot_sell.append_option(r.first_slot_sell_sol);
         ix_labels.append_option(labels_json.as_deref());
         mayhem.append_value(r.is_mayhem_mode);
         // Microseconds, not seconds: PG `tokens.created_at` is timestamptz, and the

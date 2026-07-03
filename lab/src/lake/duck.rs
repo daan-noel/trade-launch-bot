@@ -321,7 +321,7 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
     let sql = format!(
         "SELECT mint, fp_token_program_id, fp_initial_buy_sol, \
                 fp_cu_limit, fp_cu_price, fp_is_cashback_enabled, fp_max_sol_cost, \
-                fp_spendable_sol_in, fp_ix_labels \
+                fp_spendable_sol_in, fp_first_slot_buy_sol, fp_first_slot_sell_sol, fp_ix_labels \
          FROM read_parquet({tokens_lit}) WHERE mint IN (SELECT mint FROM sel_mints)"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -329,7 +329,7 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
     let mut by_mint: HashMap<String, TokenFingerprint> = HashMap::new();
     while let Some(row) = rows.next()? {
         let mint: String = row.get(0)?;
-        let ix_labels_json: Option<String> = row.get(8)?;
+        let ix_labels_json: Option<String> = row.get(10)?;
         by_mint.insert(
             mint,
             TokenFingerprint {
@@ -340,6 +340,8 @@ fn attach_fingerprints(conn: &Connection, tokens_lit: &str, tokens: &mut [TokenT
                 is_cashback_enabled: row.get::<_, Option<bool>>(5)?.unwrap_or(false),
                 max_cost_lamports: row.get(6)?,
                 spendable_lamports_in: row.get(7)?,
+                first_slot_buy_sol: row.get(8)?,
+                first_slot_sell_sol: row.get(9)?,
                 ix_labels: ix_labels_json
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default(),

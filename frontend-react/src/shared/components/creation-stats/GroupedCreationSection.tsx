@@ -54,6 +54,8 @@ const SCALAR_FILTER_FIELDS: GroupField[] = [
   'max_cost_lamports',
   'spendable_lamports_in',
   'initial_buy_sol',
+  'first_slot_buy_sol',
+  'first_slot_sell_sol',
 ];
 
 /** A `GroupedCreationCell` lacks the outcome fields `CreationHeatmap` reads; the

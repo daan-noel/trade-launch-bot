@@ -39,6 +39,8 @@ const FIELD_UNIT_HINTS: Partial<Record<GroupField, string>> = {
   max_cost_lamports: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
   spendable_lamports_in: 'In lamports — 1 SOL = 1,000,000,000. Match values shown in group keys.',
   initial_buy_sol: 'In SOL (e.g. 0.5, 1.0). Match values shown in group keys.',
+  first_slot_buy_sol: 'In SOL — total buy volume in the creation slot. Match values shown in group keys.',
+  first_slot_sell_sol: 'In SOL — total sell volume in the creation slot. Match values shown in group keys.',
 };
 
 /** Tooltip for a numeric field's filter input — explains the 3-state interaction

@@ -26,6 +26,8 @@ export const GROUP_FIELDS = [
   'max_cost_lamports',
   'spendable_lamports_in',
   'initial_buy_sol',
+  'first_slot_buy_sol',
+  'first_slot_sell_sol',
   'is_cashback_enabled',
   'ix_labels',
 ] as const;
@@ -39,6 +41,8 @@ export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
   max_cost_lamports: 'Max SOL cost',
   spendable_lamports_in: 'Spendable SOL in',
   initial_buy_sol: 'Initial buy SOL',
+  first_slot_buy_sol: 'First-slot buy SOL',
+  first_slot_sell_sol: 'First-slot sell SOL',
   ix_labels: 'Instruction labels',
   is_cashback_enabled: 'Cashback on',
 };

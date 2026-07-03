@@ -42,6 +42,12 @@ pub struct TokenFingerprint {
     pub max_cost_lamports: Option<i64>,
     /// Creation-instruction `spendable_lamports_in`, in lamports.
     pub spendable_lamports_in: Option<i64>,
+    /// Total buy SOL across trades landing in the token's creation slot (human
+    /// SOL). First **trade-derived** fingerprint field — sourced from `tokens_info`,
+    /// not the `tokens` creation row like every field above.
+    pub first_slot_buy_sol: Option<f64>,
+    /// Total sell SOL across trades landing in the token's creation slot (human SOL).
+    pub first_slot_sell_sol: Option<f64>,
     /// Creation instruction-label set, sorted + deduped for a stable key.
     pub ix_labels: Vec<String>,
 }
@@ -89,6 +95,8 @@ pub enum GroupField {
     MaxCostLamports,
     SpendableLamportsIn,
     InitialBuySol,
+    FirstSlotBuySol,
+    FirstSlotSellSol,
     IxLabels,
 }
 
@@ -103,6 +111,8 @@ impl GroupField {
             GroupField::MaxCostLamports => "max_cost_lamports",
             GroupField::SpendableLamportsIn => "spendable_lamports_in",
             GroupField::InitialBuySol => "initial_buy_sol",
+            GroupField::FirstSlotBuySol => "first_slot_buy_sol",
+            GroupField::FirstSlotSellSol => "first_slot_sell_sol",
             GroupField::IxLabels => "ix_labels",
         }
     }
@@ -118,6 +128,8 @@ impl GroupField {
             "max_cost_lamports" => GroupField::MaxCostLamports,
             "spendable_lamports_in" => GroupField::SpendableLamportsIn,
             "initial_buy_sol" => GroupField::InitialBuySol,
+            "first_slot_buy_sol" => GroupField::FirstSlotBuySol,
+            "first_slot_sell_sol" => GroupField::FirstSlotSellSol,
             "ix_labels" => GroupField::IxLabels,
             _ => return None,
         })
@@ -164,6 +176,12 @@ fn render_field(fp: &TokenFingerprint, f: GroupField) -> String {
         GroupField::InitialBuySol => {
             fp.initial_buy_sol.map(|v| format!("{v}")).unwrap_or_else(|| MISSING.to_string())
         }
+        GroupField::FirstSlotBuySol => {
+            fp.first_slot_buy_sol.map(|v| format!("{v}")).unwrap_or_else(|| MISSING.to_string())
+        }
+        GroupField::FirstSlotSellSol => {
+            fp.first_slot_sell_sol.map(|v| format!("{v}")).unwrap_or_else(|| MISSING.to_string())
+        }
         GroupField::IxLabels => {
             if fp.ix_labels.is_empty() {
                 MISSING.to_string()
@@ -188,6 +206,8 @@ mod tests {
             is_cashback_enabled: true,
             max_cost_lamports: Some(1_000_000_000),
             spendable_lamports_in: None,
+            first_slot_buy_sol: Some(2.25),
+            first_slot_sell_sol: None,
             ix_labels: vec!["Pump.Fun: Create".into(), "System: Transfer".into()],
         }
     }
@@ -235,6 +255,19 @@ mod tests {
         assert_eq!(normalize_labels(&json!(["b", "a", "a"])), vec!["b", "a", "a"]);
         let k = group_key(&fp(), &[GroupField::IxLabels]);
         assert_eq!(k.0[0].1, "Pump.Fun: Create | System: Transfer");
+    }
+
+    #[test]
+    fn first_slot_fields_round_trip_and_render() {
+        // as_str / from_tag round-trip for the new trade-derived variants.
+        for f in [GroupField::FirstSlotBuySol, GroupField::FirstSlotSellSol] {
+            assert_eq!(GroupField::from_tag(f.as_str()), Some(f));
+        }
+        // Present value renders exactly; None → sentinel (own group, not a "0" collision).
+        let buy = group_key(&fp(), &[GroupField::FirstSlotBuySol]);
+        assert_eq!(buy.0[0].1, "2.25");
+        let sell = group_key(&fp(), &[GroupField::FirstSlotSellSol]);
+        assert_eq!(sell.0[0].1, MISSING);
     }
 
     #[test]

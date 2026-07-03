@@ -1443,6 +1443,22 @@ fn matches_field_filter(
                     .unwrap_or(false)
             })
         }
+        FirstSlotBuySol => {
+            let v = fp.first_slot_buy_sol;
+            allowed.iter().any(|a| {
+                a.as_f64()
+                    .map(|x| v.map(|y| (x - y).abs() < 1e-9).unwrap_or(false))
+                    .unwrap_or(false)
+            })
+        }
+        FirstSlotSellSol => {
+            let v = fp.first_slot_sell_sol;
+            allowed.iter().any(|a| {
+                a.as_f64()
+                    .map(|x| v.map(|y| (x - y).abs() < 1e-9).unwrap_or(false))
+                    .unwrap_or(false)
+            })
+        }
         IsCashbackEnabled => {
             let v = fp.is_cashback_enabled;
             allowed.iter().any(|a| a.as_bool().map(|b| b == v).unwrap_or(false))

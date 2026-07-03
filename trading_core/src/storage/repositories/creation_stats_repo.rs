@@ -216,6 +216,11 @@ fn group_field_sql(f: GroupField) -> &'static str {
         // initial_buy_lamports is lamports (BIGINT); group on the human-SOL value so the
         // displayed label matches the rest of the UI (÷1e9).
         GroupField::InitialBuySol => "COALESCE((t.initial_buy_lamports::float8 / 1e9)::text, '∅')",
+        // First-slot buy/sell are trade-derived, sourced from `tokens_info` (the `ti`
+        // alias the LEFT JOIN in `grouped()` adds) — the only non-`tokens` group fields.
+        // Lamports BIGINT → human SOL (÷1e9), matching the UI + `InitialBuySol` above.
+        GroupField::FirstSlotBuySol => "COALESCE((ti.first_slot_buy_lamports::float8 / 1e9)::text, '∅')",
+        GroupField::FirstSlotSellSol => "COALESCE((ti.first_slot_sell_lamports::float8 / 1e9)::text, '∅')",
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
         // preserves array position; duplicates are kept intentionally.
@@ -236,8 +241,11 @@ pub struct GroupedCreation {
 impl CreationStatsRepo {
     /// Partition tokens by a compound fingerprint key (`fields`, in order), keep
     /// the top-`top` groups by volume over the window, and return each group's
-    /// day×hour fold (`cells`) and calendar trend (`points`). Count only — no
-    /// `tokens_info` join. Shares the same TZ-aware bucketing + segment filter as
+    /// day×hour fold (`cells`) and calendar trend (`points`). Count only (no
+    /// outcome columns), but LEFT JOINs `tokens_info` so trade-derived group fields
+    /// (`first_slot_buy_sol`/`first_slot_sell_sol`) can key off it — the join is
+    /// one-to-one on `mint_address`, so it doesn't change group cardinality. Shares
+    /// the same TZ-aware bucketing + segment filter as
     /// [`heatmap`]/[`trend`]; the window is caller-clamped so the scan is bounded.
     pub async fn grouped(
         &self,
@@ -300,6 +308,7 @@ impl CreationStatsRepo {
                        EXTRACT(HOUR FROM (t.created_at AT TIME ZONE $1))::int AS hour,
                        {bkt} AS bkt
                 FROM tokens t
+                LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
                 WHERE t.created_at >= $2 AND t.created_at < $3
                   AND ($4::bool IS NULL OR t.is_mayhem_mode = $4)
                   AND ($5::bool IS NULL OR t.is_cashback_enabled = $5){preds}
