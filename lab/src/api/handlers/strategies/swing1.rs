@@ -25,7 +25,7 @@ use crate::{
     models::ingest::SseEvent,
     state::local_state::LocalState,
     state::sim_results::SimOutcome,
-    strategies::swing_1::backtest::BacktestTokenResult,
+    strategies::swing_1::backtest::{BacktestBase, BacktestTokenResult},
 };
 
 use trading_core::api::table_query::TableRequest;
@@ -759,21 +759,26 @@ pub(crate) fn paper_position_to_sim_result(
     let entry_tx = p.entry_tx_sigs().first().cloned().unwrap_or_default();
     let exit_tx = p.exit_tx_sigs().last().cloned();
     BacktestTokenResult {
-        symbol,
-        mint: p.mint,
-        entry_price: p.entry_price.unwrap_or(0.0),
-        ath_price,
-        entry_token_amount: p.entry_token_amount.map(|a| a as f64).unwrap_or(0.0),
-        entry_tx,
-        entry_time: p.entry_time.unwrap_or(p.created_at),
-        exit_price: p.exit_price,
-        exit_tx,
-        exit_time: p.exit_time,
-        holding_secs,
-        pnl_percent,
-        pnl_sol,
-        exit_reason,
-        total_trades: 0,
+        base: BacktestBase {
+            symbol,
+            mint: p.mint,
+            entry_price: p.entry_price.unwrap_or(0.0),
+            ath_price,
+            entry_token_amount: p.entry_token_amount.map(|a| a as f64).unwrap_or(0.0),
+            entry_tx,
+            entry_time: p.entry_time.unwrap_or(p.created_at),
+            exit_price: p.exit_price,
+            exit_tx,
+            exit_time: p.exit_time,
+            holding_secs,
+            pnl_percent,
+            pnl_sol,
+            exit_reason,
+            total_trades: 0,
+        },
+        // Live-position rows carry no sim funnel; their legs (when shown) come from
+        // the exit memo via a separate path, not from a backtest.
+        swing_legs: None,
     }
 }
 
@@ -808,15 +813,15 @@ mod tests {
         let mut p = closed(1.0, 1.5);
         p.exit_reason = Some("NextKill".into());
         let r = paper_position_to_sim_result(p, &HashMap::new());
-        assert_eq!(r.exit_reason, "NextKill");
+        assert_eq!(r.base.exit_reason, "NextKill");
     }
 
     #[test]
     fn legacy_rows_fall_back_to_pnl_sign() {
         let win = paper_position_to_sim_result(closed(1.0, 1.5), &HashMap::new());
-        assert_eq!(win.exit_reason, "TakeProfit");
+        assert_eq!(win.base.exit_reason, "TakeProfit");
         let loss = paper_position_to_sim_result(closed(1.0, 0.5), &HashMap::new());
-        assert_eq!(loss.exit_reason, "StopLoss");
+        assert_eq!(loss.base.exit_reason, "StopLoss");
     }
 
     #[test]
@@ -834,6 +839,6 @@ mod tests {
         p.entry_token_amount = Some(1);
         p.entry_time = Some(Utc::now());
         let r = paper_position_to_sim_result(p, &HashMap::new());
-        assert_eq!(r.exit_reason, "Open");
+        assert_eq!(r.base.exit_reason, "Open");
     }
 }

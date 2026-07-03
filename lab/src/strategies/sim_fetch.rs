@@ -37,11 +37,18 @@ const SIM_PER_MINT_CAP: i64 = i64::MAX;
 /// empty-history default).
 ///
 /// Reads the same lake root (`SWEEP_LAKE_DIR`) the grouped sweep does, with simulate's
-/// contract: explicit mint list, **uncapped** per-mint history, `curve_only: false`
-/// (matches the venue-unfiltered `find_by_mints_all`). `with_signatures: true` is the
-/// only thing distinguishing this from a sweep load — it populates each
+/// contract: explicit mint list, **uncapped** per-mint history. `with_signatures: true` is
+/// the only thing distinguishing this from a sweep load — it populates each
 /// `CorpusTrade::tx_signature` for the result tables' Solscan links.
-pub async fn fetch_sim_histories(mints: &[String]) -> Result<HashMap<String, Arc<Vec<CorpusTrade>>>> {
+///
+/// `curve_only` is a **load-time** filter (`Selection.curve_only`) — the projected
+/// [`CorpusTrade`] drops `venue`, so a venue filter can only be applied before projection.
+/// The single-rule backtests pass `false` (matching the venue-unfiltered
+/// `find_by_mints_all`); the per-token swing1 detect endpoint threads the request's flag.
+pub async fn fetch_sim_histories(
+    mints: &[String],
+    curve_only: bool,
+) -> Result<HashMap<String, Arc<Vec<CorpusTrade>>>> {
     if mints.is_empty() {
         return Ok(HashMap::new());
     }
@@ -57,7 +64,7 @@ pub async fn fetch_sim_histories(mints: &[String]) -> Result<HashMap<String, Arc
         created_before: None,
         per_mint_cap: SIM_PER_MINT_CAP,
         window: TradeWindow::LaunchWindow,
-        curve_only: false,
+        curve_only,
         // Populate `tx_signature` (Solscan links) — the ONLY difference from a sweep
         // load; every other row/field is identical, so a rule prices the same either way.
         with_signatures: true,
@@ -65,6 +72,15 @@ pub async fn fetch_sim_histories(mints: &[String]) -> Result<HashMap<String, Arc
 
     let corpus = LakeSource::new(root).load(&sel).await?;
     Ok(corpus.tokens.into_iter().map(|t| (t.mint, t.trades)).collect())
+}
+
+/// Single-mint variant for the per-token swing1 detect endpoint: the **same** uncapped
+/// lake read the backtest uses, so the detect funnel and the sim resolve identical legs +
+/// entry + exit by construction (no separate PG read, no `MAX_TRADES_RETAINED` cap). Returns
+/// the mint's full history, or an empty buffer when the token has no lake rows.
+pub async fn fetch_sim_history_one(mint: &str, curve_only: bool) -> Result<Arc<Vec<CorpusTrade>>> {
+    let mut map = fetch_sim_histories(std::slice::from_ref(&mint.to_string()), curve_only).await?;
+    Ok(map.remove(mint).unwrap_or_default())
 }
 
 /// Log a non-fatal warning if the lake looks stale. The lake is **sealed-days-only**

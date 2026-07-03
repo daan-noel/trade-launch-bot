@@ -336,6 +336,11 @@ export interface SimulatedTokenResult {
   pnl_sol: number | null;
   exit_reason: string;
   total_trades: number;
+  /** swing1-only: the exact leg ledger the sim resolved this row's entry/exit
+   *  against, carried by the single-rule backtest so the inspect chart draws them
+   *  with no separate `swing1-detect` round-trip. Absent for tpsl1/tpsl2 and for
+   *  live-position rows (whose legs, if any, come from the exit memo). */
+  swing_legs?: ChartSwingLeg[] | null;
   // Token enrichment fields (populated by the batch endpoint; optional).
   name?: string;
   creator_address?: string;

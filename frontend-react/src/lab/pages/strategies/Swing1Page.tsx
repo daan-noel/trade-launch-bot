@@ -212,6 +212,10 @@ type InspectState = {
   /** The rule whose params produced this row — drives the swing-leg overlay
    *  fetch (absent for `matched`, which runs no funnel yet). */
   ruleId: string | null;
+  /** Legs the sim already resolved for this row (single-rule backtest carries
+   *  them), so the modal skips the `swing1-detect` round-trip. Absent for rows
+   *  with no carried legs (matched, positions) — those still fetch by rule. */
+  carriedLegs?: ChartSwingLeg[] | null;
 };
 
 // Recognized detect-param keys == the swing1 spec's detect-keyed fields, so a
@@ -228,15 +232,25 @@ const SWING1_DETECT_KEYS = new Set(
 function SwingRuleInspectModal({
   target,
   rule,
+  carriedLegs,
   onClose,
 }: {
   target: InspectTarget;
   rule: RuleRecord | undefined;
+  /** Legs the sim already resolved for this row; when present the modal draws
+   *  them directly and skips the `swing1-detect` round-trip (they're the exact
+   *  legs that produced this row's entry/exit, so a re-detect is redundant). */
+  carriedLegs?: ChartSwingLeg[] | null;
   onClose: () => void;
 }) {
   const [legs, setLegs] = useState<ChartSwingLeg[] | null>(null);
 
   useEffect(() => {
+    // Carried legs win — same corpus + params the row's sim used, so no fetch.
+    if (carriedLegs && carriedLegs.length) {
+      setLegs(carriedLegs);
+      return;
+    }
     if (!rule) {
       setLegs(null);
       return;
@@ -264,7 +278,7 @@ function SwingRuleInspectModal({
     return () => {
       cancelled = true;
     };
-  }, [target.mint, rule]);
+  }, [target.mint, rule, carriedLegs]);
 
   const swingOverlay = useMemo<ChartSwingOverlay | null>(() => {
     if (!legs || !legs.length) return null;
@@ -932,7 +946,13 @@ export function Swing1Page() {
       const row = key ? simTokens.find((t) => t.mint === key) ?? null : null;
       setInspect(
         row
-          ? { table: 'sim', key: row.mint, target: inspectFromSim(row), ruleId: simRuleId }
+          ? {
+              table: 'sim',
+              key: row.mint,
+              target: inspectFromSim(row),
+              ruleId: simRuleId,
+              carriedLegs: row.swing_legs ?? null,
+            }
           : null,
       );
     },
@@ -1287,6 +1307,7 @@ export function Swing1Page() {
         <SwingRuleInspectModal
           target={inspect.target}
           rule={inspect.ruleId ? rules.find((r) => r.id === inspect.ruleId) : undefined}
+          carriedLegs={inspect.carriedLegs}
           onClose={() => setInspect(null)}
         />
       )}

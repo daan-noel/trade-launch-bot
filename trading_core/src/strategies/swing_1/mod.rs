@@ -14,6 +14,7 @@
 pub mod classifier;
 pub mod entry;
 pub mod exit;
+pub mod funnel;
 pub mod swing;
 
 use crate::models::Swing1Rule;

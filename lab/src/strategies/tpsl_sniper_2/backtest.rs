@@ -176,7 +176,7 @@ pub async fn run_backtest(
     progress.start();
 
     let mints: Vec<String> = tokens.iter().map(|t| t.mint_address.clone()).collect();
-    let histories = fetch_sim_histories(&mints)
+    let histories = fetch_sim_histories(&mints, false)
         .await
         .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?;
 

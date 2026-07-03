@@ -11,13 +11,30 @@ use crate::strategies::sim_fetch::fetch_sim_histories;
 use crate::strategies::sim_progress::SimProgress;
 use crate::storage::repositories::token_repo::TokenRepo;
 // swing1 borrows tpsl1's `none_if_zero_u64` (there is no swing1 `util` module).
+use serde::Serialize;
 use trading_core::models::trade::TradeRow;
 use trading_core::strategies::registry::swing1_decision_rule;
+use trading_core::strategies::swing_1::swing::{detect_swing_legs_raw, SwingLeg};
+use trading_core::strategies::swing_1::swing_params_from_rule;
 use trading_core::strategies::tpsl_sniper_1::util::none_if_zero_u64;
 
-// Reuse tpsl1's per-token result shape verbatim (swing1 has no trigger snapshot,
-// exactly like tpsl1) so the shared frontend card/table renders both identically.
-pub use crate::strategies::tpsl_sniper_1::backtest::BacktestTokenResult;
+// Reuse tpsl1's per-token result shape (swing1 has no trigger snapshot, exactly like
+// tpsl1) as the flattened base so the shared frontend card/table renders both
+// identically — kept in lockstep by embedding, not duplicating, the struct.
+pub use crate::strategies::tpsl_sniper_1::backtest::BacktestTokenResult as BacktestBase;
+
+/// swing1's per-token result: tpsl1's base shape plus the leg ledger the sim resolved
+/// this token's entry/exit against. `#[serde(flatten)]` inlines every base field on the
+/// wire (unchanged contract), adding only `swing_legs` — so the inspect chart draws
+/// exactly the legs the sim used with no separate `swing1-detect` round-trip. `None` for
+/// the live-position adapter (its legs come from the exit memo, not a sim).
+#[derive(Clone, Serialize)]
+pub struct BacktestTokenResult {
+    #[serde(flatten)]
+    pub base: BacktestBase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swing_legs: Option<Vec<SwingLeg>>,
+}
 
 /// Apply the rule's concurrency / total-token caps to entry-time-sorted
 /// candidates, mirroring how the live run admits tokens: a token is skipped when
@@ -125,7 +142,7 @@ pub async fn run_backtest(
     // absent from the map (absent = no trades = no entry). One `tick()` per
     // candidate keeps the bar reaching `total`.
     let mints: Vec<String> = tokens.iter().map(|t| t.mint_address.clone()).collect();
-    let histories = fetch_sim_histories(&mints)
+    let histories = fetch_sim_histories(&mints, false)
         .await
         .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?;
 
@@ -174,7 +191,7 @@ pub async fn run_backtest(
                     None => (None, None, None, "Open".to_string(), None, None, None),
                 };
 
-            let result = BacktestTokenResult {
+            let base = BacktestBase {
                 mint: token.mint_address.clone(),
                 symbol: token.symbol.clone(),
                 entry_price,
@@ -191,6 +208,15 @@ pub async fn run_backtest(
                 exit_reason,
                 total_trades: trades.len(),
             };
+
+            // Carry the exact legs the sim priced entry/exit against so the inspect
+            // chart draws them without a separate `swing1-detect` round-trip. Same
+            // `detect_swing_legs_raw` + params the entry walk used, over the same
+            // corpus → identical legs by construction. Only for entry-resolved tokens
+            // (this closure returns early otherwise), so the ledger isn't computed for
+            // the whole candidate scan.
+            let legs = detect_swing_legs_raw(trades, &swing_params_from_rule(&rule));
+            let result = BacktestTokenResult { base, swing_legs: Some(legs) };
 
             Some((entry_time, exit_time, result))
         });
@@ -218,12 +244,13 @@ pub async fn run_backtest(
             "Open" => 2,
             _ => 1,
         };
-        rank(&a.exit_reason)
-            .cmp(&rank(&b.exit_reason))
+        rank(&a.base.exit_reason)
+            .cmp(&rank(&b.base.exit_reason))
             .then_with(|| {
-                b.pnl_percent
+                b.base
+                    .pnl_percent
                     .unwrap_or(0.0)
-                    .partial_cmp(&a.pnl_percent.unwrap_or(0.0))
+                    .partial_cmp(&a.base.pnl_percent.unwrap_or(0.0))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     });
