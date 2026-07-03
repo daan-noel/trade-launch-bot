@@ -18,8 +18,9 @@ use trading_core::config;
 use trading_core::models::trade::TradeRow;
 use trading_core::models::Swing1Rule;
 use trading_core::strategies::swing_1::{
-    classifier::{self, LowFeatures},
+    classifier,
     entry::find_phase_entry,
+    funnel::{build_swing1_funnel, classify_swing_lows},
     phase_profile_from_rule,
     rule_configures_any_entry_gate,
     swing::{detect_swing_legs_raw, SwingType},
@@ -141,24 +142,14 @@ pub async fn census(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> an
 
         let (mut n_kill, mut n_vol, mut n_latch) = (0usize, 0usize, 0usize);
         for legs in &chains {
-            let mut prev_up: Option<i64> = None;
-            let (mut any_kill, mut any_vol) = (false, false);
-            for leg in legs {
-                match leg.leg_type {
-                    SwingType::SwingHigh => prev_up = Some(leg.duration_ms),
-                    SwingType::SwingLow => {
-                        if let Some(f) = LowFeatures::from_low(leg) {
-                            any_kill |= profile.is_kill_low(&f);
-                            any_vol |= profile.is_volume_low(&f, prev_up);
-                        }
-                        prev_up = None;
-                    }
-                }
-            }
-            if any_kill {
+            // Same shared low-verdict walk the funnel/probe use — reused per
+            // kill-depth threshold over the pre-scanned leg chain (one scan, many
+            // profiles).
+            let lows = classify_swing_lows(legs, &profile);
+            if lows.iter().any(|l| l.is_kill) {
                 n_kill += 1;
             }
-            if any_vol {
+            if lows.iter().any(|l| l.is_volume) {
                 n_vol += 1;
             }
             if classifier::classify_phase(legs, &profile).volume_phase_latched {
@@ -220,39 +211,28 @@ pub async fn run(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> anyho
 
     for tok in corpus.tokens.iter().take(n_tokens) {
         let trades = tok.trades.as_ref();
-        let legs = detect_swing_legs_raw(trades, &sparams);
-        let lows = legs.iter().filter(|l| l.leg_type == SwingType::SwingLow).count();
-        let highs = legs.len() - lows;
+        // The SAME funnel the detect endpoint builds — legs + per-low verdicts +
+        // latch from one shared walk, so the CLI prints exactly the detection page.
+        let funnel = build_swing1_funnel(trades, &rule);
+        let lows = funnel.legs.iter().filter(|l| l.leg_type == SwingType::SwingLow).count();
+        let highs = funnel.legs.len() - lows;
 
         println!("── {} ({} trades)", tok.mint, trades.len());
-        println!("   legs={} (highs={}, lows={})", legs.len(), highs, lows);
+        println!("   legs={} (highs={}, lows={})", funnel.legs.len(), highs, lows);
 
         // Per-swing-low verdicts (the gates that drive the latch).
-        let mut prev_up: Option<i64> = None;
-        let mut any_kill = false;
-        let mut any_vol = false;
-        for leg in &legs {
-            match leg.leg_type {
-                SwingType::SwingHigh => prev_up = Some(leg.duration_ms),
-                SwingType::SwingLow => {
-                    if let Some(f) = LowFeatures::from_low(leg) {
-                        let is_kill = profile.is_kill_low(&f);
-                        let is_vol = profile.is_volume_low(&f, prev_up);
-                        any_kill |= is_kill;
-                        any_vol |= is_vol;
-                        println!(
-                            "     low: depth={:.3} dur_ms={} flow/s={:.3} trades={} pivot={:.6} → kill={} vol={}",
-                            f.depth_pct, f.duration_ms, f.net_flow_per_sec, f.trade_count,
-                            f.pivot_price, is_kill, is_vol
-                        );
-                    }
-                    prev_up = None;
-                }
-            }
+        for v in &funnel.lows {
+            println!(
+                "     low: depth={:.3} dur_ms={} flow/s={:.3} trades={} pivot={:.6} → kill={} vol={}",
+                v.depth_pct, v.duration_ms, v.net_flow_per_sec, v.trade_count,
+                v.pivot_price, v.is_kill, v.is_volume
+            );
         }
+        let any_kill = funnel.lows.iter().any(|v| v.is_kill);
+        let any_vol = funnel.lows.iter().any(|v| v.is_volume);
         println!("   any_kill_low={any_kill}  any_volume_low={any_vol}");
 
-        let latch = classifier::classify_phase(&legs, &profile);
+        let latch = &funnel.latch;
         println!(
             "   latch: volume_phase_latched={} latched_leg_index={:?} kills_seen={}",
             latch.volume_phase_latched, latch.latched_leg_index, latch.kills_seen

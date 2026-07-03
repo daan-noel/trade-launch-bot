@@ -5,6 +5,20 @@
 (one pre-existing unrelated `live/App.tsx` unused-import error remains). Chart-candle
 unification (options B/C) deferred. Generic `swing.rs` endpoints left on PG + cap.
 
+**Follow-up 2 (2026-07-03) — single-source hardening.** Confirmed the *decision* SoT was
+already met: sweep + backtest + simulate + detect all resolve entry/exit through the same
+`entry::find_phase_entry` / `exit::find_trade_driven_exit` primitives. Closed the remaining
+*diagnostic* duplication: the per-low verdict walk is now extracted to
+`funnel::classify_swing_lows(legs, profile)` and shared by `build_swing1_funnel`,
+`lab swing-probe`, and `lab swing-census` (the two probe fns previously re-walked the gate
+loop inline). Added the `funnel_matches_leg_primitive` parity test pinning the funnel's legs
+to the exact `detect_swing_legs_raw` call the backtest carries. **Deliberately did NOT** make
+the backtest carry the whole `Swing1Funnel` (plan change §4's `Swing1BacktestTokenResult {
+funnel, entry_index }`): the inspect chart draws only legs, so carrying per-token lows/latch
+would bloat the multi-token sim payload for data the table never shows — the backtest keeps
+carrying just `swing_legs` from the same shared leg primitive. §4 as originally specced is
+therefore **intentionally superseded**, not pending.
+
 **Follow-up (same day):** grouped sweep per-mint trade cap removed too —
 `SWEEP_DEFAULT_PER_MINT_CAP` 5000→`i64::MAX`, so ALL analysis (sweep + simulate +
 backtest) runs over each token's entire history, no cap. Also closes a real parity gap

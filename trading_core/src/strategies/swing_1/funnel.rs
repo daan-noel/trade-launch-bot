@@ -1,24 +1,34 @@
 //! Shared swing1 detection funnel — the leg ledger + per-low classifier verdicts +
-//! kill→volume latch for one token, built by a single `TradeRow`-generic fn.
+//! kill→volume latch for one token, built by a single `TradeRow`-generic fn so the
+//! diagnostic surfaces can never drift from each other.
 //!
-//! One builder, three callers, so they can never drift:
-//! - the lab backtest ([`crate::strategies::swing_1`] over `CorpusTrade`) carries the
-//!   funnel in its per-token result, so the inspect chart draws exactly the legs the
-//!   sim resolved entry/exit against — no separate detect round-trip;
-//! - the `POST /api/tokens/{mint}/swing1-detect` handler (over the same lake
-//!   `CorpusTrade`) renders the per-token detection page;
-//! - `lab swing-probe` (over `Trade`) prints the same funnel from the CLI.
+//! **Single source of truth, two levels.** The *decision* logic (entry latch + exit
+//! ladder) already lives in one place — [`super::entry::find_phase_entry`] /
+//! [`super::exit::find_trade_driven_exit`] — and the grouped sweep, the backtest, the
+//! detect handler and the probe all call those same pure fns, so a rule prices
+//! identically however it is run. This module owns the *diagnostic* layer on top: the
+//! leg ledger + per-low verdicts + latch that the inspect chart and detection page
+//! render. Its callers:
+//! - the `POST /api/tokens/{mint}/swing1-detect` handler (over the lake `CorpusTrade`)
+//!   builds the whole funnel for the per-token detection page;
+//! - `lab swing-probe` / `lab swing-census` (over `Trade`) print the same funnel /
+//!   share the same [`classify_swing_lows`] walk from the CLI;
+//! - the lab backtest carries only the leg ledger in its per-token result (the inspect
+//!   chart draws just the legs), sourced from the same [`detect_swing_legs_raw`]
+//!   primitive this builder uses — so the carried legs equal the funnel's by
+//!   construction, without paying to serialize per-token lows/latch the sim table
+//!   never displays.
 //!
-//! Only the leg/low/latch core lives here (the part all three share). Entry + exit are
-//! resolved by the caller (the backtest already computes them; re-resolving here would
-//! double the work), so this fn stays pure-CPU and I/O-free.
+//! Only the leg/low/latch core lives here. Entry + exit are resolved by the caller via
+//! the shared decision fns (re-resolving here would double the work), so this stays
+//! pure-CPU and I/O-free. Pinned to the primitives by `funnel_matches_leg_primitive`.
 
 use serde::Serialize;
 
 use crate::models::trade::TradeRow;
 use crate::models::Swing1Rule;
 
-use super::classifier::{self, LowFeatures};
+use super::classifier::{self, LowFeatures, PhaseProfile};
 use super::swing::{detect_swing_legs_raw, SwingLeg, SwingType};
 use super::{phase_profile_from_rule, rule_configures_any_entry_gate, swing_params_from_rule};
 
@@ -61,18 +71,15 @@ pub struct Swing1Funnel {
     pub latch: Swing1LatchInfo,
 }
 
-/// Build the funnel from a chronological trade slice — pure CPU, no I/O. Generic over
-/// [`TradeRow`] so it runs over the backtest/detect `CorpusTrade` and the probe's
-/// `Trade` identically (`detect_swing_legs_raw` + `classify_phase` are both generic).
-pub fn build_swing1_funnel<T: TradeRow>(trades: &[T], rule: &Swing1Rule) -> Swing1Funnel {
-    let gate_configured = rule_configures_any_entry_gate(rule);
-    let sparams = swing_params_from_rule(rule);
-    let profile = phase_profile_from_rule(rule);
-    let legs = detect_swing_legs_raw(trades, &sparams);
-
-    // Walk the ledger collecting per-low verdicts, tracking the preceding up-leg
-    // duration and the running last-kill pivot — the same state `classify_phase`
-    // keeps, so `higher_low_ok` matches the latch gate.
+/// Walk a raw leg ledger and emit the per-swing-low classifier verdicts — the single
+/// low-verdict walk shared by the funnel builder, `lab swing-probe`, and `lab
+/// swing-census`, so no caller re-implements the gate loop. Tracks the preceding
+/// up-leg duration and the running last-kill pivot exactly as [`classify_phase`] does,
+/// so `higher_low_ok` matches the latch gate. Pure CPU; operates on already-detected
+/// legs so a caller with multiple profiles (census) can reuse one leg scan.
+///
+/// [`classify_phase`]: super::classifier::classify_phase
+pub fn classify_swing_lows(legs: &[SwingLeg], profile: &PhaseProfile) -> Vec<Swing1LowVerdict> {
     let mut lows = Vec::new();
     let mut prev_up: Option<i64> = None;
     let mut last_kill_pivot: Option<f64> = None;
@@ -105,7 +112,19 @@ pub fn build_swing1_funnel<T: TradeRow>(trades: &[T], rule: &Swing1Rule) -> Swin
             }
         }
     }
+    lows
+}
 
+/// Build the funnel from a chronological trade slice — pure CPU, no I/O. Generic over
+/// [`TradeRow`] so it runs over the backtest/detect `CorpusTrade` and the probe's
+/// `Trade` identically (`detect_swing_legs_raw` + `classify_phase` are both generic).
+pub fn build_swing1_funnel<T: TradeRow>(trades: &[T], rule: &Swing1Rule) -> Swing1Funnel {
+    let gate_configured = rule_configures_any_entry_gate(rule);
+    let sparams = swing_params_from_rule(rule);
+    let profile = phase_profile_from_rule(rule);
+    let legs = detect_swing_legs_raw(trades, &sparams);
+
+    let lows = classify_swing_lows(&legs, &profile);
     let latch = classifier::classify_phase(&legs, &profile);
     Swing1Funnel {
         gate_configured,
@@ -116,5 +135,115 @@ pub fn build_swing1_funnel<T: TradeRow>(trades: &[T], rule: &Swing1Rule) -> Swin
             latched_leg_index: latch.latched_leg_index,
             kills_seen: latch.kills_seen,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::trade::{Trade, TradeType};
+    use crate::models::Swing1Rule;
+    use chrono::Utc;
+
+    fn trade(ms: i64, ty: TradeType, sol: f64, tokens: u64) -> Trade {
+        let mut t = Trade::new(
+            "mint".into(),
+            "user".into(),
+            ty,
+            sol,
+            tokens,
+            "sig".into(),
+            1,
+            Utc::now(),
+        );
+        t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
+        t
+    }
+
+    /// A rule with real reversal thresholds + kill/volume gates so the fixture forms
+    /// several legs with a mix of low verdicts (the walk under test).
+    fn fixture_rule() -> Swing1Rule {
+        let mut r = Swing1Rule::new(
+            "funnel-parity".into(),
+            None,
+            None,
+            None,
+            serde_json::json!([]),
+            "paper".into(),
+            0.05,
+            100.0,
+            50.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(60),
+            None,
+        );
+        r.p_swing_high_to_low_sol = Some(1.0);
+        r.p_swing_low_to_high_sol = Some(1.0);
+        r.p_swing_high_to_low_pct = Some(15.0);
+        r.p_swing_low_to_high_pct = Some(15.0);
+        r.p_kill_depth_min_pct = Some(0.4);
+        r.p_kill_max_duration_ms = Some(10_000);
+        r.p_vol_depth_max_pct = Some(0.6);
+        r.p_min_kills_before_volume = Some(0);
+        r.p_entry_pullback_pct = Some(10.0);
+        r
+    }
+
+    /// A varied buy/sell chain that reverses several times → multiple legs.
+    fn fixture_trades() -> Vec<Trade> {
+        vec![
+            trade(1_000, TradeType::Buy, 3.0, 300_000),
+            trade(2_000, TradeType::Buy, 2.0, 150_000),
+            trade(3_000, TradeType::Sell, 2.5, 250_000), // reversal down
+            trade(4_000, TradeType::Sell, 1.5, 200_000),
+            trade(5_000, TradeType::Buy, 3.0, 200_000), // reversal up
+            trade(6_000, TradeType::Buy, 2.0, 120_000),
+            trade(7_000, TradeType::Sell, 3.0, 240_000), // reversal down
+            trade(8_000, TradeType::Buy, 2.5, 140_000),  // reversal up
+        ]
+    }
+
+    /// The funnel must never drift from the primitives it wraps: its legs equal the
+    /// exact `detect_swing_legs_raw` call the backtest carries, its lows equal the
+    /// shared `classify_swing_lows` walk, and its latch equals `classify_phase` — so
+    /// the detect page, the probe, and the sim's carried legs all agree by
+    /// construction, not by coincidence.
+    #[test]
+    fn funnel_matches_leg_primitive() {
+        let rule = fixture_rule();
+        let trades = fixture_trades();
+
+        let funnel = build_swing1_funnel(&trades, &rule);
+
+        // Legs == the exact primitive the backtest carries (`backtest.rs` uses
+        // `detect_swing_legs_raw(trades, &swing_params_from_rule(&rule))`).
+        let legs = detect_swing_legs_raw(&trades, &swing_params_from_rule(&rule));
+        assert_eq!(
+            serde_json::to_value(&funnel.legs).unwrap(),
+            serde_json::to_value(&legs).unwrap(),
+            "funnel legs must equal the backtest's leg primitive"
+        );
+        assert!(!funnel.legs.is_empty(), "fixture must form legs to exercise the walk");
+
+        // Lows == the shared walk the probe/census also call.
+        let profile = phase_profile_from_rule(&rule);
+        let lows = classify_swing_lows(&legs, &profile);
+        assert_eq!(
+            serde_json::to_value(&funnel.lows).unwrap(),
+            serde_json::to_value(&lows).unwrap(),
+            "funnel lows must equal the shared classify_swing_lows walk"
+        );
+
+        // Latch == classify_phase over the same legs/profile.
+        let latch = classifier::classify_phase(&legs, &profile);
+        assert_eq!(funnel.latch.volume_phase_latched, latch.volume_phase_latched);
+        assert_eq!(funnel.latch.latched_leg_index, latch.latched_leg_index);
+        assert_eq!(funnel.latch.kills_seen, latch.kills_seen);
     }
 }
