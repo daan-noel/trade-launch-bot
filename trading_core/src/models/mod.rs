@@ -1,6 +1,7 @@
 pub mod grouped_sweep;
 pub mod ingest;
 pub mod paper_run;
+pub mod portfolio;
 pub mod position;
 pub mod raw_tx;
 pub mod strategy;
@@ -17,6 +18,7 @@ pub mod wallet_profile_tag;
 
 // Re-export types for convenience
 pub use paper_run::{PaperRun, PaperRunStatus};
+pub use portfolio::{unrealized_pnl, UnrealizedPnl};
 pub use position::{Position, PositionResponse, PositionStatus};
 pub use raw_tx::RawTx;
 pub use strategy::{
