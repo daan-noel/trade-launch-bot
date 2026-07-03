@@ -437,6 +437,24 @@ async fn run_grouped_sweep_job(
         return;
     }
 
+    // A cancel requested during the corpus load lands here. The lake read is a
+    // synchronous DuckDB query (not itself mid-flight abortable), but this is the
+    // longest pre-fold phase — and for swing1 by far: it has no token-creation gate,
+    // so its corpus is the WHOLE window (the fingerprint/field filters below run
+    // in-memory AFTER the load), where tpsl1/2 pre-prune to a fingerprint. Without
+    // this poll a cancel clicked during that load looked completely dead: the engine
+    // only starts polling once the fold begins. Bail the instant the load returns so
+    // the user's cancel takes effect instead of folding a corpus they abandoned.
+    // Pre-admission (no run row / `run_id` yet), so nothing to mark cancelled — the
+    // `Gate` still releases the single-flight lock and broadcasts the terminal
+    // `SweepFinished { cancelled: true }` frame that clears the global indicator.
+    if state.sweep_cancel.load(Ordering::Acquire) {
+        tracing::info!("grouped sweep: cancelled during corpus load (pre-admission)");
+        let _ = early_tx.send(HttpResponse::Ok()
+            .json(serde_json::json!({ "run_id": null, "status": "cancelled" })));
+        return;
+    }
+
     // Option A: stash the **unfiltered** selection corpus (trades + fingerprints) in
     // the in-memory cache so `list_token_results` calls right after the sweep skip
     // all I/O. This MUST happen BEFORE the in-memory ix_labels/field filters below:

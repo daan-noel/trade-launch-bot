@@ -26,7 +26,8 @@ const CANCEL_CHECK_STRIDE: usize = 256;
 /// E·X× (a scattered `random:N` order still resolves correctly — only the reuse
 /// rate falls). Param-independent per-token state ([`Strategy::prepare_token`])
 /// is computed once up front and shared across every entry resolve. The cancel
-/// flag is polled every [`CANCEL_CHECK_STRIDE`] combos so
+/// flag is polled every [`CANCEL_CHECK_STRIDE`] combos **and before each fresh entry
+/// resolve** (the expensive unit for swing1) so
 /// a large combo set bails mid-token; on a cancel `out` is left **partial** and
 /// `Err(())` is returned — the caller must discard it (never fold a short `out`,
 /// which is indexed by `combo_id`).
@@ -57,6 +58,15 @@ pub(crate) fn fill_outcomes<S: Strategy>(
                 None => true,
             };
             if stale {
+                // A fresh entry resolve is the expensive unit of work — for swing1 a
+                // full-history swing scan, orders of magnitude past a tpsl combo eval.
+                // Poll cancel here too so a cancel lands within one resolve instead of a
+                // whole CANCEL_CHECK_STRIDE of them (the per-chunk check alone assumes
+                // cheap per-combo work). Near-free for tpsl: the entry key rarely
+                // changes, so this fires seldom.
+                if observer.cancelled() {
+                    return Err(());
+                }
                 let entry = strategy.resolve_entry(trades, &token_state, p);
                 entry_cache = Some((key, entry));
             }
@@ -334,6 +344,33 @@ mod tests {
         fn cancelled(&self) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn cancel_polled_before_each_entry_resolve() {
+        // Prove the per-resolve poll (not just the per-chunk one) fires: an observer
+        // that returns `false` on its first poll (the chunk-top check) and `true` on
+        // its second must make `fill_outcomes` bail BEFORE folding any combo. Without
+        // the pre-resolve poll, the single sub-stride chunk would fold every combo.
+        struct CancelOnSecondPoll {
+            polls: std::sync::atomic::AtomicUsize,
+        }
+        impl crate::sweep::progress::SweepObserver for CancelOnSecondPoll {
+            fn set_total(&self, _total: usize) {}
+            fn token_done(&self) {}
+            fn cancelled(&self) -> bool {
+                // 0th poll → false (chunk top), 1st poll → true (before 1st resolve).
+                self.polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 1
+            }
+        }
+        let strat = Mock; // unit entry key ⇒ exactly one resolve per token
+        let params = strat.sample(SweepMethod::Grid); // 3 combos, one sub-stride chunk
+        let tok = token("m", 3);
+        let obs = CancelOnSecondPoll { polls: std::sync::atomic::AtomicUsize::new(0) };
+        let mut out = Vec::new();
+        let r = fill_outcomes(&strat, &params, &tok.trades, &obs, &mut out);
+        assert!(r.is_err(), "must bail on the pre-resolve cancel poll");
+        assert!(out.is_empty(), "bailed before folding any combo");
     }
 
     #[test]

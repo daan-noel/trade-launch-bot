@@ -10,8 +10,12 @@
 //!
 //! Cancellation is cooperative: the handler flips an `AtomicBool` (via the cancel
 //! endpoint) and the engine polls [`SweepObserver::cancelled`] between groups,
-//! between tokens, and between chunks of combos *within* a token, bailing fast
-//! (sub-100ms even on a large combo set) without an extra RPC/DB hit.
+//! between tokens, between chunks of combos *within* a token, AND before each fresh
+//! entry resolve (so a strategy with an expensive entry — swing1's full-history
+//! swing scan — still bails promptly, not once per `CANCEL_CHECK_STRIDE` scans),
+//! bailing fast without an extra RPC/DB hit. The one pre-fold phase the engine can't
+//! see is the DuckDB corpus load; the handler polls the flag the instant that load
+//! returns (see `run_grouped_sweep_job`) so a cancel during it isn't swallowed.
 //!
 //! [`engine`]: crate::sweep::engine
 //! [`grouped_engine`]: crate::sweep::grouped_engine
