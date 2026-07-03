@@ -68,6 +68,19 @@ pub struct PositionResponse {
     /// positions (no such key in `extra`) and for still-open swing1 positions
     /// (not harvested until the position leaves the holding index).
     pub swing_legs: Option<Vec<SwingLeg>>,
+    /// Token symbol (row-owned identity; excluded from the shared `token` flatten).
+    /// Empty until enriched.
+    pub symbol: String,
+    /// Token all-time-high price (`tokens_info`; row-owned, excluded from `token`).
+    pub ath_price: Option<f64>,
+    /// Full shared token enrichment (`name`, `market_cap`, `cu_price`, `trade_count`,
+    /// `is_migrated`, …) — the same SSOT the Matched / Simulated / Sweep tables use,
+    /// attached server-side from `strategy_positions LEFT JOIN tokens`'s mints so the
+    /// positions table sorts/filters/searches on token columns with no client merge.
+    /// Default (empty) on the SSE-delta / single-position paths (the client already
+    /// holds the token there).
+    #[serde(flatten)]
+    pub token: trading_core::storage::token_enrichment::TokenEnrichment,
 }
 
 impl From<StrategyPosition> for PositionResponse {
@@ -109,7 +122,39 @@ impl From<StrategyPosition> for PositionResponse {
             created_at: p.created_at,
             updated_at: p.updated_at,
             swing_legs,
+            // Enrichment is attached by the paged handler (`enrich_position_responses`);
+            // default here so the SSE-delta / single-position paths stay unchanged.
+            symbol: String::new(),
+            ath_price: None,
+            token: Default::default(),
         }
+    }
+}
+
+/// Attach shared token enrichment to a page of position responses via one bounded
+/// batch fetch (`token_enrichment::fetch_by_mints` over the page's mints) — the same
+/// SSOT the Matched / Simulated / Sweep tables use. Sets the row-owned `symbol` /
+/// `ath_price` off the row too. A fetch error is logged and leaves rows un-enriched
+/// (the table still renders; enrichment columns are just blank) rather than failing
+/// the whole list.
+async fn enrich_position_responses(repo: &StrategyRepo, responses: &mut [PositionResponse]) {
+    if responses.is_empty() {
+        return;
+    }
+    let mints: Vec<String> = responses.iter().map(|r| r.mint.clone()).collect();
+    match trading_core::storage::token_enrichment::fetch_by_mints(repo.pool(), &mints).await {
+        Ok(rows) => {
+            let by_mint: std::collections::HashMap<String, _> =
+                rows.into_iter().map(|r| (r.mint_address.clone(), r)).collect();
+            for r in responses.iter_mut() {
+                if let Some(row) = by_mint.get(&r.mint) {
+                    r.symbol = row.symbol.clone();
+                    r.ath_price = row.ath_price;
+                    r.token = row.into();
+                }
+            }
+        }
+        Err(e) => tracing::warn!("positions enrichment fetch failed: {e}"),
     }
 }
 
@@ -216,6 +261,33 @@ fn json_positions_with_total_seq(
         .json(responses)
 }
 
+/// Build + enrich + serialize a page of positions with the pager total. Mirrors
+/// [`json_positions_with_total_seq`] but attaches shared token enrichment (one batch
+/// fetch) before serializing — used by the rule-positions table (the only positions
+/// view with token-enrichment columns).
+async fn json_positions_enriched(
+    repo: &StrategyRepo,
+    positions: Vec<StrategyPosition>,
+    total: i64,
+    seq_map: Option<&std::collections::HashMap<Uuid, i64>>,
+) -> HttpResponse {
+    let mut responses: Vec<PositionResponse> = positions
+        .into_iter()
+        .map(|p| {
+            let mut r = PositionResponse::from(p);
+            if let Some(map) = seq_map {
+                r.run_seq = map.get(&r.run_id).copied();
+            }
+            r
+        })
+        .collect();
+    enrich_position_responses(repo, &mut responses).await;
+    HttpResponse::Ok()
+        .insert_header(("X-Total-Count", total.to_string()))
+        .insert_header(("Access-Control-Expose-Headers", "X-Total-Count"))
+        .json(responses)
+}
+
 fn list_error(what: &str, e: anyhow::Error) -> HttpResponse {
     tracing::error!("Failed to {what}: {e}");
     HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to load positions"}))
@@ -306,7 +378,9 @@ pub async fn get_positions_by_rule(
     };
 
     match (result, total) {
-        (Ok(positions), Ok(total)) => json_positions_with_total_seq(positions, total, seq_map.as_ref()),
+        (Ok(positions), Ok(total)) => {
+            json_positions_enriched(repo, positions, total, seq_map.as_ref()).await
+        }
         (Err(e), _) | (_, Err(e)) => list_error("load positions for rule", e),
     }
 }

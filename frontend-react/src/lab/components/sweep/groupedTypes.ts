@@ -230,17 +230,20 @@ export interface ComboTokenResult {
   /** Real base58 tx signature of the exit fill (sell side). Null when open,
    *  not fired, or unresolved. */
   exit_tx: string | null;
-  // Token metadata (from tokens + tokens_info)
+  // Token metadata — `created_at`/`ath_price` are row-owned; the rest arrive
+  // flattened from the shared `TokenEnrichment` SSOT (same as the Matched /
+  // Positions / Simulated tables), so the names match `TOKEN_ENRICH_FIELDS`
+  // (`creator_address`, `volume_sol_total`, …).
   created_at: string | null;
-  creator_wallet: string | null;
   ath_price: number | null;
+  creator_address: string;
   ath_timestamp: string | null;
   current_price: number | null;
   market_cap: number | null;
-  volume_sol: number | null;
-  trade_count: number | null;
-  is_migrated: boolean | null;
-  is_dead: boolean | null;
+  volume_sol_total: number;
+  trade_count: number;
+  is_migrated: boolean;
+  is_dead: boolean;
 }
 
 // --- start request ----------------------------------------------------------

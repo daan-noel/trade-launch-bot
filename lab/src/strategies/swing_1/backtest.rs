@@ -9,10 +9,10 @@ use crate::models::Token;
 use crate::state::local_state::LocalState;
 use crate::strategies::sim_fetch::fetch_sim_histories;
 use crate::strategies::sim_progress::SimProgress;
+use crate::strategies::token_enrich::{self, TokenEnrichment};
 use crate::storage::repositories::token_repo::TokenRepo;
 // swing1 borrows tpsl1's `none_if_zero_u64` (there is no swing1 `util` module).
 use serde::Serialize;
-use trading_core::models::trade::TradeRow;
 use trading_core::strategies::registry::swing1_decision_rule;
 use trading_core::strategies::swing_1::swing::{detect_swing_legs_raw, SwingLeg};
 use trading_core::strategies::swing_1::swing_params_from_rule;
@@ -162,14 +162,6 @@ pub async fn run_backtest(
             let (_trigger_idx, fill) = entry::find_phase_entry(trades, &rule)?;
             let (entry_price, entry_tx, entry_time) = (fill.price, fill.tx_signature, fill.block_time);
 
-            // All-time high across the token's full history, priced off the
-            // **canonical GMGN spot** (the same price the leg detector and the fill
-            // use) so ATH is on the same scale as entry/exit.
-            let ath_price = trades
-                .iter()
-                .map(|t| t.chart_spot_price().unwrap_or_else(|| t.execution_price()))
-                .fold(entry_price, f64::max);
-
             let exit = exit::find_trade_driven_exit(trades, entry_time, entry_price, &rule);
 
             let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
@@ -195,7 +187,8 @@ pub async fn run_backtest(
                 mint: token.mint_address.clone(),
                 symbol: token.symbol.clone(),
                 entry_price,
-                ath_price,
+                // Filled from the enrichment batch fetch below (tokens_info ATH).
+                ath_price: None,
                 entry_token_amount: rule.buy_amount_sol,
                 entry_tx,
                 entry_time,
@@ -206,7 +199,7 @@ pub async fn run_backtest(
                 pnl_percent,
                 pnl_sol,
                 exit_reason,
-                total_trades: trades.len(),
+                token: TokenEnrichment::default(),
             };
 
             // Carry the exact legs the sim priced entry/exit against so the inspect
@@ -235,6 +228,23 @@ pub async fn run_backtest(
     candidates.sort_by_key(|(entry_time, _, _)| *entry_time);
 
     let mut results = select_simulated_tokens(candidates, max_concurrent_tokens, max_total_tokens);
+
+    // One bounded batch fetch — enrich exactly the tokens that made the final
+    // result set with token metadata (initial buy, CU price, market cap,
+    // migrated/dead, ...), so the Simulated-tokens table can sort/filter/search
+    // on it server-side (previously only merged client-side, per visible page).
+    let result_mints: Vec<String> = results.iter().map(|r| r.base.mint.clone()).collect();
+    let mut enrichment = token_enrich::fetch_enrichment(&app_state.batch_db, &result_mints)
+        .await
+        .map_err(|e| anyhow!("token enrichment fetch failed: {e}"))?;
+    for r in &mut results {
+        if let Some(e) = enrichment.remove(&r.base.mint) {
+            // `ath_price` is row-owned (excluded from `TokenEnrichment`); set it
+            // off the row, then flatten the rest — mirrors Positions/Sweep.
+            r.base.ath_price = e.ath_price;
+            r.base.token = (&e).into();
+        }
+    }
 
     results.sort_by(|a, b| {
         // TakeProfit first, then any other closed exit (incl. NextKill / StopLoss /

@@ -384,6 +384,17 @@ pub struct PositionResponse {
     pub run_seq: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Token symbol (row-owned identity; excluded from the shared `token` flatten).
+    /// Empty until enriched by the paged handler.
+    pub symbol: String,
+    /// Token all-time-high price (`tokens_info`; row-owned, excluded from `token`).
+    pub ath_price: Option<f64>,
+    /// Full shared token enrichment (`name`, `market_cap`, `cu_price`, `trade_count`,
+    /// `is_migrated`, …) — the same SSOT the Matched / Simulated / Sweep tables use,
+    /// attached server-side so the positions table sorts/filters/searches on token
+    /// columns with no client merge. Default (empty) on the SSE-delta path.
+    #[serde(flatten)]
+    pub token: crate::storage::token_enrichment::TokenEnrichment,
 }
 
 impl From<Position> for PositionResponse {
@@ -421,6 +432,10 @@ impl From<Position> for PositionResponse {
             run_seq: None,
             created_at: p.created_at,
             updated_at: p.updated_at,
+            // Enrichment attached by the paged handler; default on the SSE-delta path.
+            symbol: String::new(),
+            ath_price: None,
+            token: Default::default(),
         }
     }
 }

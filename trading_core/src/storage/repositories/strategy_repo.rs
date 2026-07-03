@@ -8,6 +8,7 @@ use crate::api::table_query::{FilterOp, FilterSpec, TableRequest};
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
+use crate::storage::token_enrichment::{TokenEnrichmentRow, ENRICH_SELECT};
 
 // `entry_sol`/`exit_sol` are human SOL (f64) in the model but stored as exact
 // lamports (`entry_lamports`/`exit_lamports`, BIGINT) in the column, mirroring
@@ -702,19 +703,11 @@ fn push_token_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Positio
     qb.push(", t.mint_address DESC");
 }
 
-/// Sparse matched-token row: the projection the matched table renders (enrichment
-/// columns hydrate client-side via the batch endpoint). Field-for-field the lab
-/// handler's `MatchedTokenResult` / the frontend `MatchedTokenRecord`.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct MatchedTokenRow {
-    pub mint: String,
-    pub symbol: String,
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-    pub initial_buy_sol: Option<f64>,
-    pub cu_limit: Option<i64>,
-    pub cu_price: Option<i64>,
-}
+// The matched table now returns the **full** shared enrichment row
+// ([`TokenEnrichmentRow`]) — the same SSOT the Positions / Simulated / Sweep tables
+// use — so the whole token metadata set is in the response body, sort/filter/search
+// all work server-side, and the frontend needs no client-side merge. (The old sparse
+// `MatchedTokenRow` + client `mergeTokenData` band-aid is gone.)
 
 // ---------------------------------------------------------------------------
 // Repo
@@ -1325,20 +1318,17 @@ impl StrategyRepo {
         limit: i64,
         offset: i64,
         query: &PositionQuery,
-    ) -> anyhow::Result<Vec<MatchedTokenRow>> {
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT t.mint_address AS mint, t.symbol, t.name, t.created_at, \
-                    t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, \
-                    t.cu_limit, t.cu_price \
-             FROM tokens t \
+    ) -> anyhow::Result<Vec<TokenEnrichmentRow>> {
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
+            "SELECT {ENRICH_SELECT} FROM tokens t \
              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address \
-             WHERE t.mint_address = ANY(",
-        );
+             WHERE t.mint_address = ANY("
+        ));
         qb.push_bind(mints).push(")");
         push_token_where(&mut qb, query);
         push_token_order(&mut qb, query);
         qb.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
-        let rows = qb.build_query_as::<MatchedTokenRow>().fetch_all(&self.pool).await?;
+        let rows = qb.build_query_as::<TokenEnrichmentRow>().fetch_all(&self.pool).await?;
         Ok(rows)
     }
 

@@ -25,13 +25,18 @@ enum Kind {
 }
 
 /// Resolve a frontend column key to the JSON field it reads + its type. `None` =
-/// not filterable/sortable (dropped). Mirrors the frontend `simColumns` keys.
+/// not filterable/sortable (dropped). Mirrors the frontend `simColumns` +
+/// `appendedTokenColumns` keys — several columns use a friendlier display key
+/// than the underlying JSON field name, so those are aliased here too. The
+/// `appendedTokenColumns` set (`creator`, `trade_count`, `initial_buy`, `cu_limit`,
+/// `migrated`, ...) reads token metadata that `token_enrich::TokenEnrichment`
+/// flattens onto the row — see that module for where it's populated.
 fn resolve(key: &str) -> Option<(&'static str, Kind)> {
     use Kind::{Number, Text};
     Some(match key {
         "mint" => ("mint", Text),
         "symbol" => ("symbol", Text),
-        "exit_reason" => ("exit_reason", Text),
+        "reason" | "exit_reason" => ("exit_reason", Text),
         "entry_tx" => ("entry_tx", Text),
         "exit_tx" => ("exit_tx", Text),
         "target_price" => ("target_price", Number),
@@ -39,24 +44,55 @@ fn resolve(key: &str) -> Option<(&'static str, Kind)> {
         "ath_price" => ("ath_price", Number),
         "exit_price" => ("exit_price", Number),
         "entry_token_amount" => ("entry_token_amount", Number),
-        "holding_secs" => ("holding_secs", Number),
-        "pnl_percent" => ("pnl_percent", Number),
+        "holding" | "holding_secs" => ("holding_secs", Number),
+        "pnl_pct" | "pnl_percent" => ("pnl_percent", Number),
         "pnl_sol" => ("pnl_sol", Number),
-        "total_trades" => ("total_trades", Number),
         // Time fields sort/filter lexicographically on the RFC3339 string, which is
         // chronological — treat as text.
         "entry_time" => ("entry_time", Text),
         "exit_time" => ("exit_time", Text),
         "target_time" => ("target_time", Text),
+
+        // --- token_enrich::TokenEnrichment fields (appendedTokenColumns) ---
+        "name" => ("name", Text),
+        "created" | "created_at" => ("created_at", Text),
+        "creator" | "creator_address" => ("creator_address", Text),
+        "create_tx" | "create_tx_address" => ("create_tx_address", Text),
+        "trade_count" => ("trade_count", Number),
+        "last_trade" | "last_trade_at" => ("last_trade_at", Text),
+        "last_synced" | "last_synced_at" => ("last_synced_at", Text),
+        "current_price" => ("current_price", Number),
+        "ath_timestamp" => ("ath_timestamp", Text),
+        "market_cap" => ("market_cap", Number),
+        "volume" | "volume_sol_total" => ("volume_sol_total", Number),
+        "first_slot_buy" | "first_slot_buy_sol" => ("first_slot_buy_sol", Number),
+        "first_slot_sell" | "first_slot_sell_sol" => ("first_slot_sell_sol", Number),
+        "initial_buy" | "init_buy" | "initial_buy_sol" => ("initial_buy_sol", Number),
+        "init_supply" | "initial_supply_token" => ("initial_supply_token", Number),
+        "token_amount" => ("token_amount", Number),
+        "max_cost_lamports" => ("max_cost_lamports", Number),
+        "spendable_lamports_in" => ("spendable_lamports_in", Number),
+        "min_tokens_out" => ("min_tokens_out", Number),
+        "cu_limit" => ("cu_limit", Number),
+        "cu_price" => ("cu_price", Number),
+        "ix_count" | "ix_labels_count" => ("ix_labels_count", Number),
+        // Booleans sort via `field_num`'s bool→0/1 coercion (no dedicated filter
+        // UI for these columns client-side, same as the SQL-backed tables).
+        "migrated" | "is_migrated" => ("is_migrated", Number),
+        "dead" | "is_dead" => ("is_dead", Number),
+        "mayhem_mode" | "is_mayhem_mode" => ("is_mayhem_mode", Number),
+        "cashback" | "is_cashback_enabled" => ("is_cashback_enabled", Number),
         _ => return None,
     })
 }
 
-/// Read a JSON field as `f64` (number or numeric string); `None` if absent/null.
+/// Read a JSON field as `f64` (number, numeric string, or bool as 0.0/1.0);
+/// `None` if absent/null.
 fn field_num(row: &Value, field: &str) -> Option<f64> {
     match row.get(field) {
         Some(Value::Number(n)) => n.as_f64(),
         Some(Value::String(s)) => s.parse().ok(),
+        Some(Value::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
         _ => None,
     }
 }
@@ -255,6 +291,52 @@ mod tests {
         let r = req(json!({"search": "pump"}));
         let (_, total) = query(&rows(), &r);
         assert_eq!(total, 1, "search 'pump' matches only pumpcat");
+    }
+
+    #[test]
+    fn frontend_display_key_aliases_resolve() {
+        // Frontend `simColumns` keys (`holding`, `pnl_pct`, `reason`) are friendlier
+        // than the backend field names — must resolve identically.
+        let rows = vec![
+            json!({"mint":"a","symbol":"BONK","trade_count":3,"exit_reason":"TakeProfit"}),
+            json!({"mint":"b","symbol":"WIF","trade_count":9,"exit_reason":"StopLoss"}),
+        ];
+        let r = req(json!({"filters": {"trade_count": {"op":"gt","val":5}}}));
+        let (_, total) = query(&rows, &r);
+        assert_eq!(total, 1, "'trade_count' (Token Trades) filters the enrichment count");
+
+        let r = req(json!({"filters": {"reason": {"op":"eq","val":"StopLoss"}}}));
+        let (page, total) = query(&rows, &r);
+        assert_eq!(total, 1, "'reason' alias must filter on exit_reason");
+        assert_eq!(page[0]["mint"], "b");
+
+        let r = req(json!({"sorting": [{"col":"holding","dir":"asc"}]}));
+        let (page, _) = query(&rows, &r);
+        assert_eq!(page.len(), 2, "'holding' alias must not drop rows lacking holding_secs");
+    }
+
+    #[test]
+    fn token_enrichment_fields_sort_and_filter() {
+        // Fields flattened onto the row by `token_enrich::TokenEnrichment` — the
+        // frontend's `appendedTokenColumns` display keys must alias to them.
+        let rows = vec![
+            json!({"mint":"a","symbol":"BONK","initial_buy_sol":0.5,"cu_price":1000,"is_migrated":true}),
+            json!({"mint":"b","symbol":"WIF","initial_buy_sol":2.0,"cu_price":5000,"is_migrated":false}),
+        ];
+
+        let r = req(json!({"filters": {"initial_buy": {"op":"gt","val":1.0}}}));
+        let (page, total) = query(&rows, &r);
+        assert_eq!(total, 1, "'initial_buy' alias must filter on initial_buy_sol");
+        assert_eq!(page[0]["mint"], "b");
+
+        let r = req(json!({"sorting": [{"col":"cu_price","dir":"desc"}]}));
+        let (page, _) = query(&rows, &r);
+        assert_eq!(page[0]["mint"], "b", "cu_price sorts desc: WIF(5000) first");
+
+        // Booleans coerce to 0.0/1.0 for sort — true (migrated) sorts before false.
+        let r = req(json!({"sorting": [{"col":"migrated","dir":"desc"}]}));
+        let (page, _) = query(&rows, &r);
+        assert_eq!(page[0]["mint"], "a", "'migrated' alias sorts is_migrated true first (desc)");
     }
 
     #[test]

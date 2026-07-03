@@ -1,7 +1,31 @@
 pub mod handlers;
 pub mod table_query;
 
-use actix_web::web;
+use actix_web::{error, web, HttpResponse};
+
+/// Shared `web::Json` extractor config for every backend bin: on a malformed
+/// request body (missing/mistyped field), actix's *default* rejection is a
+/// plain-text 400 ("Json deserialize error: ..."). RTK Query's `fetchBaseQuery`
+/// always tries to parse the response body as JSON, so that plain-text body
+/// throws and surfaces to the frontend as an opaque `status: "PARSING_ERROR"` —
+/// hiding the actual validation message. This turns the same rejection into a
+/// JSON `{"error": "..."}` 400 body so the real message reaches the UI.
+pub fn json_error_config() -> web::JsonConfig {
+    web::JsonConfig::default().error_handler(|err, _req| {
+        let body = HttpResponse::BadRequest().json(serde_json::json!({ "error": err.to_string() }));
+        error::InternalError::from_response(err, body).into()
+    })
+}
+
+/// Same rationale as [`json_error_config`], for `web::Query` extractors — a
+/// mistyped query param (e.g. a non-numeric `limit`) hits the same actix
+/// plain-text-400 default and the same RTK Query `PARSING_ERROR` masking.
+pub fn query_error_config() -> web::QueryConfig {
+    web::QueryConfig::default().error_handler(|err, _req| {
+        let body = HttpResponse::BadRequest().json(serde_json::json!({ "error": err.to_string() }));
+        error::InternalError::from_response(err, body).into()
+    })
+}
 
 /// Register the mode-agnostic **core** routes shared by every backend bin:
 /// SSE stream, settings/price, profiles/wallets/tags, token reads + creation

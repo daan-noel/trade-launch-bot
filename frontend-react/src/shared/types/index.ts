@@ -323,7 +323,9 @@ export interface SimulatedTokenResult {
   target_time: string | null;
   target_tx: string | null;
   entry_price: number;
-  ath_price: number;
+  /** All-time-high price from `tokens_info` (row-owned enrichment); null if the
+   *  token has no info row. */
+  ath_price: number | null;
   /** Tokens bought at entry; SOL derived as `entry_price × entry_token_amount`. */
   entry_token_amount: number;
   entry_tx: string;
@@ -335,13 +337,14 @@ export interface SimulatedTokenResult {
   pnl_percent: number | null;
   pnl_sol: number | null;
   exit_reason: string;
-  total_trades: number;
   /** swing1-only: the exact leg ledger the sim resolved this row's entry/exit
    *  against, carried by the single-rule backtest so the inspect chart draws them
    *  with no separate `swing1-detect` round-trip. Absent for tpsl1/tpsl2 and for
    *  live-position rows (whose legs, if any, come from the exit memo). */
   swing_legs?: ChartSwingLeg[] | null;
-  // Token enrichment fields (populated by the batch endpoint; optional).
+  // Token enrichment fields — the backend bakes these in once per backtest run
+  // (`lab::strategies::token_enrich`), so they're already on the row and sort/
+  // filter/search server-side like any other field; no client-side merge needed.
   name?: string;
   creator_address?: string;
   created_at?: string;
@@ -364,6 +367,7 @@ export interface SimulatedTokenResult {
   first_slot_buy_sol?: number | null;
   first_slot_sell_sol?: number | null;
   market_cap?: number | null;
+  ath_timestamp?: string | null;
   is_migrated?: boolean;
   is_dead?: boolean;
   last_trade_at?: string | null;

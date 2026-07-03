@@ -324,7 +324,18 @@ export function SweepConfigForm({
     setConfig(() => runToConfig(reuseRun, axes, DEFAULT_SWEEP_CONFIG));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reuseNonce]);
-  const config = { ...DEFAULT_SWEEP_CONFIG, ...stored };
+  // Sanitize `groupBy` against the current `GROUP_FIELDS` — a stale localStorage
+  // entry from before a backend field rename (e.g. `spendable_sol_in` →
+  // `spendable_lamports_in`) is no longer a valid `GroupField` tag, and sending
+  // it verbatim fails the backend's `Vec<GroupField>` deserialize (400 for the
+  // whole request, not just a dropped field).
+  const config = {
+    ...DEFAULT_SWEEP_CONFIG,
+    ...stored,
+    groupBy: (stored.groupBy ?? DEFAULT_SWEEP_CONFIG.groupBy).filter((f): f is GroupField =>
+      (GROUP_FIELDS as readonly string[]).includes(f),
+    ),
+  };
   const {
     createdAfter,
     createdBefore,

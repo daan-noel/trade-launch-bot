@@ -56,7 +56,7 @@ const SIM_KEYS = new Set([
   'symbol', 'mint', 'created',
   'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
   'entry_price', 'entry_tokens', 'entry_sol', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
-  'holding', 'pnl_pct', 'pnl_sol', 'reason', 'trades',
+  'holding', 'pnl_pct', 'pnl_sol', 'reason',
 ]);
 
 // Price/amount cells read the unit + USD rate from context themselves (see
@@ -484,12 +484,12 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     {
       key: 'ath_price',
       label: 'ATH',
-      tooltip: 'All-time-high price across the token’s full trade history.',
+      tooltip: 'All-time-high price from tokens_info (token’s recorded ATH).',
       group: 'ath',
       sortable: true,
       render: (r) => <CurrentPriceCell sol={r.ath_price} />,
       sortValue: (r) => r.ath_price,
-      searchValue: (r) => String(r.ath_price),
+      searchValue: (r) => String(r.ath_price ?? ''),
     },
     {
       key: 'exit_price',
@@ -565,14 +565,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       sortValue: (r) => r.exit_reason,
       searchValue: (r) => r.exit_reason,
     },
-    {
-      key: 'trades',
-      label: 'Trades',
-      group: 'result',
-      sortable: true,
-      render: (r) => r.total_trades,
-      sortValue: (r) => r.total_trades,
-      searchValue: (r) => String(r.total_trades),
-    },
+  // Trade count comes from the shared "Token Trades" enrichment column
+  // (`trade_count`) appended below — the sim no longer carries its own count.
   ...appendedTokenColumns(SIM_KEYS),
 ];

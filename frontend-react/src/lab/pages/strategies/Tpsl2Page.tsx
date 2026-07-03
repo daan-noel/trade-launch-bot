@@ -52,9 +52,8 @@ import {
 } from 'services/api';
 import { connectPaperTestStream, connectSimulationFinished } from 'services/sse';
 import { useBackgroundJobActions } from '@lab/context/BackgroundJobsContext';
-import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
+import { apiErrorMessage } from 'store/apiSlice';
 import { useSellTokenMutation } from '@live/store/liveEndpoints';
-import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import {
   fetchPaperResultCached,
   invalidatePaperResult,
@@ -534,26 +533,6 @@ export function Tpsl2Page() {
   const simCardSummary = useMemo(
     () => (simSummary ? simSummaryToCard(simSummary) : null),
     [simSummary],
-  );
-
-  // Collect all unique mints from every result table and fetch their full token
-  // records in one batch request. The sorted join keeps the RTK cache key
-  // stable regardless of the collection order.
-  const allMints = useMemo(() => {
-    const s = new Set<string>();
-    matchedTokens.forEach((r) => s.add(r.mint));
-    simTokens.forEach((r) => s.add(r.mint));
-    paperPositions.forEach((r) => s.add(r.mint));
-    return [...s].sort();
-  }, [matchedTokens, simTokens, paperPositions]);
-
-  const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, {
-    skip: allMints.length === 0,
-  });
-
-  const tokenMap = useMemo(
-    () => new Map((tokenBatch ?? []).map((t) => [t.mint_address, t])),
-    [tokenBatch],
   );
 
   const openAdd = () => {
@@ -1110,7 +1089,7 @@ export function Tpsl2Page() {
           />
           <DataTable
             columns={matchedColumns}
-            rows={mergeTokenData(matchedTokens, tokenMap)}
+            rows={matchedTokens}
             rowKey={keyByMint}
             selectedKey={inspect?.table === 'matched' ? inspect.key : null}
             onSelect={onSelectMatched}
@@ -1158,7 +1137,7 @@ export function Tpsl2Page() {
             />
             <DataTable
               columns={simCols}
-              rows={mergeTokenData(simTokens, tokenMap)}
+              rows={simTokens}
               rowKey={keyByMint}
               selectedKey={inspect?.table === 'sim' ? inspect.key : null}
               onSelect={onSelectSim}
@@ -1190,7 +1169,6 @@ export function Tpsl2Page() {
           positionsTotal={paperPositionsTotal}
           positionsSummary={paperPositionsSummary}
           positionsLoading={paperPositionsLoading}
-          tokenMap={tokenMap}
           price={price}
           tableId="tpsl2_paper"
           resetKey={paperResult.ruleId}

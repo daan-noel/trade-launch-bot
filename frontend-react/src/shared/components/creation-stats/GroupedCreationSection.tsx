@@ -25,6 +25,7 @@ import {
   type CreationSegment,
 } from './creationStats';
 import {
+  GROUP_FIELDS,
   GROUP_FIELD_LABELS,
   TOP_OPTIONS,
   MISSING_VALUE,
@@ -77,7 +78,15 @@ function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
 export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionProps) {
   // --- draft controls (don't fetch until applied) ---------------------------
   // Click order = compound-key order (matches the sweep page semantics).
-  const [groupBy, setGroupBy] = useLocalStorage<GroupField[]>(STORAGE_KEYS.groupedBy, DEFAULT_GROUP_BY);
+  const [rawGroupBy, setGroupBy] = useLocalStorage<GroupField[]>(STORAGE_KEYS.groupedBy, DEFAULT_GROUP_BY);
+  // Sanitize against the current `GROUP_FIELDS` — a stale entry from before a
+  // backend field rename (or a removed field like the old `creator_wallet`) is
+  // invisible in the picker (which only renders known fields) and unremovable
+  // by the user, and the backend's `parse_group_by` hard-rejects it forever.
+  const groupBy = useMemo(
+    () => rawGroupBy.filter((f) => (GROUP_FIELDS as readonly string[]).includes(f)),
+    [rawGroupBy],
+  );
   const [top, setTop] = useLocalStorage<number>(STORAGE_KEYS.groupedTop, 8);
   const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'day');
   const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.groupedRange, 30);

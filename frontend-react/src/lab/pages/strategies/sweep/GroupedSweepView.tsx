@@ -310,20 +310,20 @@ export function GroupedSweepView({
         sortable: false,
       },
       {
-        key: 'creator_wallet',
+        key: 'creator_address',
         label: 'Creator',
         group: 'identity',
         render: (r) =>
-          r.creator_wallet ? (
-            <span className="font-mono text-xs text-text-dim" title={r.creator_wallet}>
-              {r.creator_wallet.slice(0, 6)}…{r.creator_wallet.slice(-4)}
+          r.creator_address ? (
+            <span className="font-mono text-xs text-text-dim" title={r.creator_address}>
+              {r.creator_address.slice(0, 6)}…{r.creator_address.slice(-4)}
             </span>
           ) : (
             <span className="text-text-dim">—</span>
           ),
-        searchValue: (r) => r.creator_wallet ?? '',
-        filterValue: (r) => r.creator_wallet ?? '',
-        sortValue: (r) => r.creator_wallet ?? '',
+        searchValue: (r) => r.creator_address ?? '',
+        filterValue: (r) => r.creator_address ?? '',
+        sortValue: (r) => r.creator_address ?? '',
         sortable: true,
       },
       // --- Activity ---
@@ -418,17 +418,17 @@ export function GroupedSweepView({
         sortable: true,
       },
       {
-        key: 'volume_sol',
+        key: 'volume_sol_total',
         label: 'Vol (SOL)',
         group: 'market',
         render: (r) => (
           <span className="text-xs text-text-dim">
-            {r.volume_sol != null ? r.volume_sol.toFixed(1) : '—'}
+            {r.volume_sol_total != null ? r.volume_sol_total.toFixed(1) : '—'}
           </span>
         ),
         searchValue: () => '',
-        filterNumber: (r) => r.volume_sol,
-        sortValue: (r) => r.volume_sol ?? -1,
+        filterNumber: (r) => r.volume_sol_total,
+        sortValue: (r) => r.volume_sol_total ?? -1,
         sortable: true,
       },
       // --- Flags ---

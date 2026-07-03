@@ -10,6 +10,7 @@ use crate::models::Token;
 use crate::state::local_state::LocalState;
 use crate::strategies::sim_fetch::fetch_sim_histories;
 use crate::strategies::sim_progress::SimProgress;
+use crate::strategies::token_enrich::{self, TokenEnrichment};
 use crate::storage::repositories::token_repo::TokenRepo;
 use trading_core::strategies::registry::tpsl1_decision_rule;
 
@@ -19,8 +20,10 @@ pub struct BacktestTokenResult {
     pub mint: String,
     pub symbol: String,
     pub entry_price: f64,
-    /// All-time-high price across every one of the token's trades.
-    pub ath_price: f64,
+    /// All-time-high price from `tokens_info` — row-owned, filled from the
+    /// enrichment batch fetch (same source as Positions/Sweep), not recomputed
+    /// from the corpus. `None` until that fetch runs / if the token has no info row.
+    pub ath_price: Option<f64>,
     pub entry_token_amount: f64,
     pub entry_tx: String,
     pub entry_time: DateTime<Utc>,
@@ -35,7 +38,11 @@ pub struct BacktestTokenResult {
     /// "LiquidityExit", "TakeProfit", "StopLoss", "TrailingStop", "Stall",
     /// "TimeStop", or "Open"
     pub exit_reason: String,
-    pub total_trades: usize,
+    /// Token metadata (initial buy, CU price, migrated/dead, market cap, ...),
+    /// filled in once after selection via a single bounded batch fetch — see
+    /// [`token_enrich`]. Default (empty) until that fetch runs.
+    #[serde(flatten)]
+    pub token: TokenEnrichment,
 }
 
 /// Apply the rule's concurrency / total-token caps to entry-time-sorted
@@ -173,12 +180,6 @@ pub async fn run_backtest(
             let (entry_price, entry_tx, entry_time) =
                 (entry.price, entry.tx_signature, entry.block_time);
 
-            // All-time high across the token's full trade history.
-            let ath_price = trades
-                .iter()
-                .map(|t| t.price_per_token)
-                .fold(entry_price, f64::max);
-
             let exit = exit::find_trade_driven_exit(trades, entry_time, entry_price, &rule);
 
             let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
@@ -204,7 +205,8 @@ pub async fn run_backtest(
                 mint: token.mint_address.clone(),
                 symbol: token.symbol.clone(),
                 entry_price,
-                ath_price,
+                // Filled from the enrichment batch fetch below (tokens_info ATH).
+                ath_price: None,
                 entry_token_amount: rule.buy_amount_sol,
                 entry_tx,
                 entry_time,
@@ -215,7 +217,7 @@ pub async fn run_backtest(
                 pnl_percent,
                 pnl_sol,
                 exit_reason,
-                total_trades: trades.len(),
+                token: TokenEnrichment::default(),
             };
             Some((entry_time, exit_time, result))
         });
@@ -234,6 +236,23 @@ pub async fn run_backtest(
     candidates.sort_by_key(|(entry_time, _, _)| *entry_time);
 
     let mut results = select_simulated_tokens(candidates, max_concurrent_tokens, max_total_tokens);
+
+    // One bounded batch fetch — enrich exactly the tokens that made the final
+    // result set with token metadata (initial buy, CU price, market cap,
+    // migrated/dead, ...), so the Simulated-tokens table can sort/filter/search
+    // on it server-side (previously only merged client-side, per visible page).
+    let result_mints: Vec<String> = results.iter().map(|r| r.mint.clone()).collect();
+    let mut enrichment = token_enrich::fetch_enrichment(&app_state.batch_db, &result_mints)
+        .await
+        .map_err(|e| anyhow!("token enrichment fetch failed: {e}"))?;
+    for r in &mut results {
+        if let Some(e) = enrichment.remove(&r.mint) {
+            // `ath_price` is row-owned (excluded from `TokenEnrichment`); set it
+            // off the row, then flatten the rest — mirrors Positions/Sweep.
+            r.ath_price = e.ath_price;
+            r.token = (&e).into();
+        }
+    }
 
     results.sort_by(|a, b| {
         // TakeProfit first, then any other closed exit (StopLoss / TrailingStop /

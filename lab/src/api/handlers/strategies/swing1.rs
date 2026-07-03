@@ -26,6 +26,7 @@ use crate::{
     state::local_state::LocalState,
     state::sim_results::SimOutcome,
     strategies::swing_1::backtest::{BacktestBase, BacktestTokenResult},
+    strategies::token_enrich::TokenEnrichment,
 };
 
 use trading_core::api::table_query::TableRequest;
@@ -753,8 +754,7 @@ pub(crate) fn paper_position_to_sim_result(
     let ath_price = p
         .exit_price
         .map(|x| x.max(p.entry_price.unwrap_or(0.0)))
-        .or(p.entry_price)
-        .unwrap_or(0.0);
+        .or(p.entry_price);
     let symbol = symbols.get(&p.mint).cloned().unwrap_or_default();
     let entry_tx = p.entry_tx_sigs().first().cloned().unwrap_or_default();
     let exit_tx = p.exit_tx_sigs().last().cloned();
@@ -774,7 +774,9 @@ pub(crate) fn paper_position_to_sim_result(
             pnl_percent,
             pnl_sol,
             exit_reason,
-            total_trades: 0,
+            // Paper-position rows aren't backed by a batch enrichment fetch (a
+            // small, one-off preview, not a full backtest).
+            token: TokenEnrichment::default(),
         },
         // Live-position rows carry no sim funnel; their legs (when shown) come from
         // the exit memo via a separate path, not from a backtest.

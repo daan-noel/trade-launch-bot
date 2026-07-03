@@ -141,6 +141,14 @@ there are no camelCase/axis/prefix translators.
   backtest's rows **in memory** on the server (already resident — lab is single-user), with a whole-run
   `/simulate/result/summary` aggregate for its card; `reload()` refetches on the `simulation_finished`
   SSE (collect → fetch-first-page).
+- **Token enrichment is server-side, not client-merged.** Every token-result table (Matched,
+  Positions current/history, lab paper positions, Simulated, Sweep drill-in) receives the full
+  `TOKEN_ENRICH_FIELDS` set **in the response body** — the backend attaches it from one shared
+  `trading_core::storage::token_enrichment` SSOT — so sort/filter/search on enrichment columns works
+  across the whole result set. `mergeTokenData(rows, tokenMap)` + the per-table
+  `useGetTokensByMintsQuery` batch call were **removed** from those tables; `mergeTokenData` survives
+  **only** for **Wallet Holdings** (`MyWalletPage`), which has no server pagination (a full client-side
+  on-chain-scan dataset, so a client merge there isn't a workaround for missing server sort).
 - **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`) on the shared token-enrichment columns:
   `ALL_TOKEN_COLS` in `sharedTokenColumns.tsx` declares `filterNumber` on every numeric column
   (mirrors the Tokens-page `tokenColumns.tsx`). The `DataTable` emits raw filter text; the serializer

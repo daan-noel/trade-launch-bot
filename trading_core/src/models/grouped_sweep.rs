@@ -161,16 +161,16 @@ pub struct ComboTokenResult {
     #[serde(skip_serializing)]
     pub exit_slot: Option<u64>,
     // --- Token metadata (batch-joined from tokens + tokens_info after sim) ---
+    /// Token creation time (RFC3339); row-owned (excluded from `token`).
     pub created_at: Option<String>,
-    pub creator_wallet: Option<String>,
+    /// All-time-high price from `tokens_info`; row-owned (excluded from `token`).
     pub ath_price: Option<f64>,
-    pub ath_timestamp: Option<String>,
-    pub current_price: Option<f64>,
-    pub market_cap: Option<f64>,
-    pub volume_sol: Option<f64>,
-    pub trade_count: Option<i64>,
-    pub is_migrated: Option<bool>,
-    pub is_dead: Option<bool>,
+    /// Full shared token enrichment (`creator_address`, `market_cap`, `trade_count`,
+    /// `is_migrated`, `cu_price`, …) — the same SSOT the Matched / Positions /
+    /// Simulated tables use, attached server-side after the re-sim. Default until the
+    /// batch join runs.
+    #[serde(flatten)]
+    pub token: crate::storage::token_enrichment::TokenEnrichment,
 }
 
 /// A group plus its ranked combo rows, handed to the repo's `save_run` as the

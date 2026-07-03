@@ -641,15 +641,8 @@ fn simulate_tpsl2_one_combo(
             exit_tx: None,
             exit_slot: o.exit_slot,
             created_at: None,
-            creator_wallet: None,
             ath_price: None,
-            ath_timestamp: None,
-            current_price: None,
-            market_cap: None,
-            volume_sol: None,
-            trade_count: None,
-            is_migrated: None,
-            is_dead: None,
+            token: Default::default(),
         });
     }
     Ok(results)
@@ -691,15 +684,8 @@ fn simulate_tpsl1_one_combo(
             exit_tx: None,
             exit_slot: o.exit_slot,
             created_at: None,
-            creator_wallet: None,
             ath_price: None,
-            ath_timestamp: None,
-            current_price: None,
-            market_cap: None,
-            volume_sol: None,
-            trade_count: None,
-            is_migrated: None,
-            is_dead: None,
+            token: Default::default(),
         });
     }
     Ok(results)
@@ -741,15 +727,8 @@ fn simulate_swing1_one_combo(
             exit_tx: None,
             exit_slot: o.exit_slot,
             created_at: None,
-            creator_wallet: None,
             ath_price: None,
-            ath_timestamp: None,
-            current_price: None,
-            market_cap: None,
-            volume_sol: None,
-            trade_count: None,
-            is_migrated: None,
-            is_dead: None,
+            token: Default::default(),
         });
     }
     Ok(results)

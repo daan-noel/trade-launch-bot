@@ -859,6 +859,8 @@ async fn main() -> anyhow::Result<()> {
                 .app_data(web::Data::new(http_core.clone()))
                 .app_data(web::Data::new(http_deploy.clone()))
                 .app_data(web::Data::new(api_auth.clone()))
+                .app_data(trading_core::api::json_error_config())
+                .app_data(trading_core::api::query_error_config())
                 .configure(trading_core::api::configure_core_routes)
                 .configure(api::configure_deploy_routes)
         })

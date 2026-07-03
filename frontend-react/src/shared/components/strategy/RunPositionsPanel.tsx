@@ -4,8 +4,6 @@ import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
 import { InlineAlert } from 'components/ui/Modal';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
-import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
-import { useGetTokensByMintsQuery } from 'store/apiSlice';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
 import { numericColKeys } from 'services/tableRequest';
 import type { PositionScope } from 'services/api';
@@ -164,26 +162,10 @@ export function RunPositionsPanel({
     selectedRuleId, rules, fetchHistory, fetchHistorySummary, strategy, historyQuery, numericCols, false,
   );
 
-  // One token-enrichment batch across both sections.
-  const allMints = useMemo(() => {
-    const s = new Set<string>();
-    for (const p of current.positions) s.add(p.mint);
-    for (const p of history.positions) s.add(p.mint);
-    return [...s].sort();
-  }, [current.positions, history.positions]);
-  const { data: tokenBatch } = useGetTokensByMintsQuery(allMints, { skip: allMints.length === 0 });
-  const tokenMap = useMemo(
-    () => new Map((tokenBatch ?? []).map((t) => [t.mint_address, t])),
-    [tokenBatch],
-  );
-  const currentRows = useMemo(
-    () => mergeTokenData(current.positions, tokenMap),
-    [current.positions, tokenMap],
-  );
-  const historyRows = useMemo(
-    () => mergeTokenData(history.positions, tokenMap),
-    [history.positions, tokenMap],
-  );
+  // Positions arrive already enriched from the server (the positions endpoint joins
+  // token metadata in via the shared enrichment SSOT), so no client-side merge.
+  const currentRows = current.positions;
+  const historyRows = history.positions;
 
   const onSelectCurrent = useCallback(
     (key: string | null) => onInspect(key ? current.positions.find((p) => p.id === key) ?? null : null),

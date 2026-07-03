@@ -63,6 +63,33 @@ pub struct ScopeParam {
     pub scope: Option<PositionScope>,
 }
 
+/// Attach shared token enrichment to a page of position responses via one bounded
+/// batch fetch (`token_enrichment::fetch_by_mints` over the page's mints) — the same
+/// SSOT the Matched / Simulated / Sweep tables use, so the positions table
+/// sorts/filters/searches on token columns with no client merge. Sets the row-owned
+/// `symbol` / `ath_price` off the row too. A fetch error is logged and leaves rows
+/// un-enriched rather than failing the list.
+async fn enrich_positions(repo: &StrategyRepo, responses: &mut [PositionResponse]) {
+    if responses.is_empty() {
+        return;
+    }
+    let mints: Vec<String> = responses.iter().map(|r| r.mint.clone()).collect();
+    match trading_core::storage::token_enrichment::fetch_by_mints(repo.pool(), &mints).await {
+        Ok(rows) => {
+            let by_mint: std::collections::HashMap<String, _> =
+                rows.into_iter().map(|r| (r.mint_address.clone(), r)).collect();
+            for r in responses.iter_mut() {
+                if let Some(row) = by_mint.get(&r.mint) {
+                    r.symbol = row.symbol.clone();
+                    r.ath_price = row.ath_price;
+                    r.token = row.into();
+                }
+            }
+        }
+        Err(e) => tracing::warn!("positions enrichment fetch failed: {e}"),
+    }
+}
+
 /// POST `.../rules/{rule_id}/positions` — one page of positions, with the total on
 /// `X-Total-Count` (exposed to the browser fetch) so the client pager can size itself.
 /// `scope` selects the run(s): `current`/absent → latest paper run; `history` → every
@@ -97,7 +124,7 @@ pub async fn positions_by_rule_paged(
             repo.count_positions_by_rule_excluding_run(rule_id, latest_run_id, &pq).await,
         ) {
             (Ok(positions), Ok(total)) => {
-                let responses: Vec<PositionResponse> = positions
+                let mut responses: Vec<PositionResponse> = positions
                     .iter()
                     .map(|p| {
                         let mut r = PositionResponse::from(Position::from(p));
@@ -105,6 +132,7 @@ pub async fn positions_by_rule_paged(
                         r
                     })
                     .collect();
+                enrich_positions(repo, &mut responses).await;
                 positions_response(responses, total)
             }
             (Err(e), _) | (_, Err(e)) => {
@@ -125,10 +153,11 @@ pub async fn positions_by_rule_paged(
         repo.count_positions_by_run(run_id, &pq).await,
     ) {
         (Ok(positions), Ok(total)) => {
-            let responses: Vec<PositionResponse> = positions
+            let mut responses: Vec<PositionResponse> = positions
                 .iter()
                 .map(|p| PositionResponse::from(Position::from(p)))
                 .collect();
+            enrich_positions(repo, &mut responses).await;
             positions_response(responses, total)
         }
         (Err(e), _) | (_, Err(e)) => {

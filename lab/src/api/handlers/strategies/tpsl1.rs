@@ -31,6 +31,7 @@ use crate::{
     models::ingest::SseEvent,
     state::local_state::LocalState,
     state::sim_results::SimOutcome,
+    strategies::token_enrich::TokenEnrichment,
     strategies::tpsl_sniper_1::backtest::BacktestTokenResult,
 };
 
@@ -362,18 +363,19 @@ where
 // Matched tokens (whole-table entry-criteria scan)
 // ---------------------------------------------------------------------------
 
-/// Sparse projection of a matched token sent to the page (enrichment columns are
-/// hydrated client-side via the batch endpoint). Field-for-field the frontend's
-/// `MatchedTokenRecord`.
+/// A matched token sent to the page. Carries the **full** shared token enrichment
+/// (`#[serde(flatten)] token`) in the response body — no client-side merge — plus
+/// the row-owned identity/divergent fields (`mint`/`symbol`/`ath_price`/`created_at`)
+/// the shared struct excludes. Field names match the frontend's `MatchedTokenRecord`.
 #[derive(Serialize)]
 pub struct MatchedTokenResult {
     pub mint: String,
     pub symbol: String,
-    pub name: String,
+    /// Token creation time (from `tokens.created_at`).
     pub created_at: DateTime<Utc>,
-    pub initial_buy_sol: Option<f64>,
-    pub cu_limit: Option<i64>,
-    pub cu_price: Option<i64>,
+    pub ath_price: Option<f64>,
+    #[serde(flatten)]
+    pub token: TokenEnrichment,
 }
 
 #[derive(Serialize)]
@@ -477,15 +479,13 @@ pub(super) async fn matched_page_response(
     ) {
         (Ok(rows), Ok(total)) => {
             let tokens: Vec<MatchedTokenResult> = rows
-                .into_iter()
+                .iter()
                 .map(|r| MatchedTokenResult {
-                    mint: r.mint,
-                    symbol: r.symbol,
-                    name: r.name,
-                    created_at: r.created_at,
-                    initial_buy_sol: r.initial_buy_sol,
-                    cu_limit: r.cu_limit,
-                    cu_price: r.cu_price,
+                    mint: r.mint_address.clone(),
+                    symbol: r.symbol.clone(),
+                    created_at: r.token_created_at,
+                    ath_price: r.ath_price,
+                    token: TokenEnrichment::from(r),
                 })
                 .collect();
             HttpResponse::Ok()
@@ -835,8 +835,7 @@ pub(crate) fn paper_position_to_sim_result(
     let ath_price = p
         .exit_price
         .map(|x| x.max(p.entry_price.unwrap_or(0.0)))
-        .or(p.entry_price)
-        .unwrap_or(0.0);
+        .or(p.entry_price);
     let symbol = symbols.get(&p.mint).cloned().unwrap_or_default();
     let entry_tx = p.entry_tx_sigs().first().cloned().unwrap_or_default();
     let exit_tx = p.exit_tx_sigs().last().cloned();
@@ -855,7 +854,9 @@ pub(crate) fn paper_position_to_sim_result(
         pnl_percent,
         pnl_sol,
         exit_reason,
-        total_trades: 0,
+        // Paper-position rows aren't backed by a batch enrichment fetch (a small,
+        // one-off preview, not a full backtest).
+        token: TokenEnrichment::default(),
     }
 }
 

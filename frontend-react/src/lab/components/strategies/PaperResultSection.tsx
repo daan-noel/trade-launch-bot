@@ -5,7 +5,6 @@ import { Button } from 'components/ui/Button';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatIso } from 'utils/date';
-import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { cn } from 'lib/cn';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import type { ColumnDef, TableQuery } from 'components/table/types';
@@ -13,7 +12,6 @@ import type {
   PaperResultResponse,
   PositionsSummary,
   RulePositionRecord,
-  TokenRecord,
 } from 'types';
 
 /** Inline section heading (marker bar + title + optional count badge + subtitle +
@@ -73,7 +71,6 @@ export function PaperResultSection({
   positionsTotal,
   positionsSummary,
   positionsLoading,
-  tokenMap,
   price,
   tableId,
   resetKey,
@@ -94,7 +91,6 @@ export function PaperResultSection({
   /** Run-wide aggregates for the summary card (null until loaded). */
   positionsSummary: PositionsSummary | null;
   positionsLoading: boolean;
-  tokenMap: Map<string, TokenRecord>;
   price: ReturnType<typeof usePriceDisplay>;
   tableId: string;
   /** Snap the table back to page 1 when the open paper rule changes. */
@@ -219,7 +215,7 @@ export function PaperResultSection({
         />
         <DataTable
           columns={positionColumns}
-          rows={mergeTokenData(positions, tokenMap)}
+          rows={positions}
           rowKey={keyById}
           selectedKey={selectedKey}
           onSelect={handleSelect}
