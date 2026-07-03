@@ -98,6 +98,12 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions/{position_id}",
                 web::get().to(handlers::strategies::positions::get_position),
             )
+            // Portfolio/PnL reads (Holdings + Home + Live-Trading) — enriched
+            // holdings with cost basis/PnL/bot tag, the wallet summary, and the
+            // cross-strategy open-positions roll-up.
+            .route("/portfolio/holdings", web::get().to(handlers::trading::get_portfolio_holdings))
+            .route("/portfolio/summary", web::get().to(handlers::trading::get_portfolio_summary))
+            .route("/portfolio/positions", web::get().to(handlers::trading::get_portfolio_positions))
             // On-chain Solana queries
             .route("/solana/wallet/tokens", web::get().to(handlers::trading::get_wallet_tokens))
             .route("/solana/wallet/tokens/{mint}", web::get().to(handlers::trading::get_wallet_token))
