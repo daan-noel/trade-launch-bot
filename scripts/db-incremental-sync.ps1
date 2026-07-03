@@ -134,6 +134,14 @@ function Initialize-SshPassphrase {
 
   # Helper prints ONLY the passphrase. .cmd so Windows ssh can exec it directly.
   $script:askpassFile = Join-Path $env:TEMP ("dbsync-askpass-{0}.cmd" -f $PID)
+  # A previous run in THIS PowerShell session (same $PID -> same filename) that was
+  # interrupted before `finally` ran leaves the helper locked to (RX) -- no write access,
+  # so the Set-Content below would fail with UnauthorizedAccessException. Restore full
+  # control and remove any stale copy first so creation is idempotent across re-runs.
+  if (Test-Path $script:askpassFile) {
+    try { icacls $script:askpassFile /grant:r "$($env:USERNAME):(F)" | Out-Null } catch {}
+    Remove-Item $script:askpassFile -Force -ErrorAction SilentlyContinue
+  }
   Set-Content -Path $script:askpassFile -Value ("@echo " + $pp) -Encoding ascii
   # Lock to the current user, but grant READ+EXECUTE -- ssh must EXEC this helper,
   # so read-only (RX missing) makes CreateProcess fail with "error:5".
@@ -378,10 +386,12 @@ WHERE i.updated_at >= '$tinfoWm'::timestamptz
   AND EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = i.mint_address)
 ON CONFLICT (mint_address) DO UPDATE SET
   current_price = EXCLUDED.current_price, ath_price = EXCLUDED.ath_price,
-  ath_timestamp = EXCLUDED.ath_timestamp, volume = EXCLUDED.volume,
+  ath_timestamp = EXCLUDED.ath_timestamp, volume_sol = EXCLUDED.volume_sol,
   trade_count = EXCLUDED.trade_count, last_trade_at = EXCLUDED.last_trade_at,
   is_dead = EXCLUDED.is_dead, is_migrated = EXCLUDED.is_migrated,
-  lifetime_secs = EXCLUDED.lifetime_secs, updated_at = EXCLUDED.updated_at
+  lifetime_secs = EXCLUDED.lifetime_secs, updated_at = EXCLUDED.updated_at,
+  first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
+  first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports
 WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
 
 \echo '-- token_sync_state'
@@ -413,20 +423,32 @@ $rawTxsSql
   # Explicit, plain INSERT..SELECT..ON CONFLICT DO UPDATE per table, in FK-safe order
   # (rules -> runs -> run_metrics -> positions). Server wins. DO UPDATE excludes the
   # PK; EXCLUDED refreshes every other column so a server-side status/exit-fill change
-  # updates the local row. NOTE: strategy_runs ALSO has UNIQUE(rule_id,mode,run_seq) --
-  # ON CONFLICT (id) handles same-id updates; the lab's runs mirror the server 1:1 so
-  # that secondary key never collides across boxes in practice.
+  # updates the local row. NOTE: strategy_runs ALSO has UNIQUE(rule_id,mode,run_seq).
+  # ON CONFLICT (id) only resolves the PK, so a lab-authored run that shares that triple
+  # with a server run under a different id WOULD collide on the secondary key -- the
+  # strategy_runs block below deletes such divergent local rows first (server wins).
   Invoke-LocalSqlFile @"
 \echo '-- strategy_rules'
 INSERT INTO strategy_rules SELECT * FROM ec2_sync_src.strategy_rules
 ON CONFLICT (id) DO UPDATE SET
   strategy_id = EXCLUDED.strategy_id, rule_name = EXCLUDED.rule_name,
-  buy_amount = EXCLUDED.buy_amount, trade_mode = EXCLUDED.trade_mode,
+  buy_amount_sol = EXCLUDED.buy_amount_sol, trade_mode = EXCLUDED.trade_mode,
   is_active = EXCLUDED.is_active, max_concurrent_tokens = EXCLUDED.max_concurrent_tokens,
   max_total_tokens = EXCLUDED.max_total_tokens, params = EXCLUDED.params,
   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at;
 
 \echo '-- strategy_runs'
+-- strategy_runs has TWO unique constraints: PK(id) and UNIQUE(rule_id, mode, run_seq).
+-- ON CONFLICT (id) only resolves the PK. If the lab authored its own run for a rule the
+-- server also ran, the local row carries a DIFFERENT id but the SAME (rule_id, mode,
+-- run_seq) -- the id-upsert misses and the secondary key blocks the insert. Server wins,
+-- so drop any local run that collides on the secondary key under a different id first;
+-- its metrics + positions cascade (ON DELETE CASCADE) and are re-inserted from the server.
+DELETE FROM strategy_runs l
+USING ec2_sync_src.strategy_runs r
+WHERE l.rule_id IS NOT DISTINCT FROM r.rule_id
+  AND l.mode = r.mode AND l.run_seq = r.run_seq
+  AND l.id <> r.id;
 INSERT INTO strategy_runs SELECT * FROM ec2_sync_src.strategy_runs
 ON CONFLICT (id) DO UPDATE SET
   strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
@@ -458,10 +480,10 @@ ON CONFLICT (id) DO UPDATE SET
   token_program_id = EXCLUDED.token_program_id, target_price = EXCLUDED.target_price,
   target_token_amount = EXCLUDED.target_token_amount, target_time = EXCLUDED.target_time,
   target_tx = EXCLUDED.target_tx, entry_price = EXCLUDED.entry_price,
-  entry_token_amount = EXCLUDED.entry_token_amount, entry_sol = EXCLUDED.entry_sol,
+  entry_token_amount = EXCLUDED.entry_token_amount, entry_lamports = EXCLUDED.entry_lamports,
   entry_time = EXCLUDED.entry_time, entry_tx_signatures = EXCLUDED.entry_tx_signatures,
   exit_price = EXCLUDED.exit_price, exit_token_amount = EXCLUDED.exit_token_amount,
-  exit_sol = EXCLUDED.exit_sol, exit_time = EXCLUDED.exit_time,
+  exit_lamports = EXCLUDED.exit_lamports, exit_time = EXCLUDED.exit_time,
   exit_tx_signatures = EXCLUDED.exit_tx_signatures,
   submitted_buy_signatures = EXCLUDED.submitted_buy_signatures, status = EXCLUDED.status,
   exit_reason = EXCLUDED.exit_reason, extra = EXCLUDED.extra,
