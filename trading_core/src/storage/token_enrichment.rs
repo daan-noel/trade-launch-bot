@@ -181,3 +181,95 @@ pub async fn fetch_by_mints(
         .await?;
     Ok(rows)
 }
+
+// ---------------------------------------------------------------------------
+// Sort/filter whitelist — the token-column (`t.`/`i.`) half of the sort/filter
+// mapping. The SSOT for *sortable/filterable* enrichment columns, mirroring the
+// `ENRICH_SELECT` projection. SQL-paged hosts layer their own row-owned arms on
+// top and fall through here: `strategy_repo::position_*_sql` keeps only its
+// `sp.*` arms, `token_*_sql` keeps only its `mint → t.mint_address` alias.
+// ---------------------------------------------------------------------------
+
+/// Filter-column type: decides which filter operators are legal and how the
+/// value binds. `Text` cols honor substring / exact string match (`ILIKE`);
+/// `Numeric` cols honor the comparison ops with the value bound as `f64` (the
+/// expr is the **uncast** numeric so the compare is numeric, not `::text`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterKind {
+    Text,
+    Numeric,
+}
+
+/// Map a frontend column key to its **trusted** whitelisted `ORDER BY` expression
+/// for the enrichment (`t.`/`i.`) columns. `None` = not a known enrichment sort
+/// key (the host wrapper decides whether it owns the key). Column set matches
+/// [`ENRICH_SELECT`]; both frontend key aliases are accepted where the Matched
+/// and Positions tables historically disagreed (`created`/`created_at`,
+/// `initial_buy`/`init_buy`).
+pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
+    Some(match key {
+        // tokens
+        "symbol" => "t.symbol",
+        "name" => "t.name",
+        "creator" => "t.creator_wallet",
+        "created" | "created_at" => "t.created_at",
+        "initial_buy" | "init_buy" => "t.initial_buy_lamports",
+        "init_supply" => "t.initial_supply_token",
+        "cu_limit" => "t.cu_limit",
+        "cu_price" => "t.cu_price",
+        "mayhem_mode" => "t.is_mayhem_mode",
+        "cashback" => "t.is_cashback_enabled",
+        // tokens_info
+        "current_price" => "i.current_price",
+        "ath_price" => "i.ath_price",
+        "ath_timestamp" => "i.ath_timestamp",
+        "market_cap" => "(i.current_price * t.initial_supply_token)",
+        "volume" => "i.volume_sol",
+        "trade_count" => "i.trade_count",
+        "last_trade" => "i.last_trade_at",
+        "migrated" => "i.is_migrated",
+        "dead" => "i.is_dead",
+        "first_slot_buy" => "i.first_slot_buy_lamports",
+        "first_slot_sell" => "i.first_slot_sell_lamports",
+        // initial_buy_instruction JSONB
+        "token_amount" => "(t.initial_buy_instruction->>'token_amount')::numeric",
+        "max_cost_lamports" => "(t.initial_buy_instruction->>'max_cost_lamports')::numeric",
+        "spendable_lamports_in" => "(t.initial_buy_instruction->>'spendable_lamports_in')::numeric",
+        "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
+        _ => return None,
+    })
+}
+
+/// Map a frontend column key to its **trusted** whitelisted filter expression +
+/// type for the enrichment (`t.`/`i.`) columns. `None` = not a known enrichment
+/// filter key. `Numeric` returns the **uncast** expr so numeric operators compare
+/// numerically. Mirrors [`enrich_sort_sql`]'s columns (the boolean columns aren't
+/// filterable, matching the historical whitelist).
+pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
+    use FilterKind::{Numeric, Text};
+    Some(match key {
+        // tokens
+        "symbol" => ("t.symbol", Text),
+        "name" => ("t.name", Text),
+        "creator" => ("t.creator_wallet", Text),
+        "initial_buy" | "init_buy" => ("t.initial_buy_lamports", Numeric),
+        "init_supply" => ("t.initial_supply_token", Numeric),
+        "cu_limit" => ("t.cu_limit", Numeric),
+        "cu_price" => ("t.cu_price", Numeric),
+        // tokens_info
+        "current_price" => ("i.current_price", Numeric),
+        "ath_price" => ("i.ath_price", Numeric),
+        "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
+        "volume" => ("i.volume_sol", Numeric),
+        "trade_count" => ("i.trade_count", Numeric),
+        "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
+        "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
+        // initial_buy_instruction JSONB — text in JSONB, cast to numeric so the
+        // comparison ops work.
+        "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
+        "max_cost_lamports" => ("(t.initial_buy_instruction->>'max_cost_lamports')::numeric", Numeric),
+        "spendable_lamports_in" => ("(t.initial_buy_instruction->>'spendable_lamports_in')::numeric", Numeric),
+        "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
+        _ => return None,
+    })
+}

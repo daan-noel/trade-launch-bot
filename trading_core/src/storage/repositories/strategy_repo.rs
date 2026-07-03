@@ -8,7 +8,9 @@ use crate::api::table_query::{FilterOp, FilterSpec, TableRequest};
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
-use crate::storage::token_enrichment::{TokenEnrichmentRow, ENRICH_SELECT};
+use crate::storage::token_enrichment::{
+    enrich_filter_sql, enrich_sort_sql, FilterKind, TokenEnrichmentRow, ENRICH_SELECT,
+};
 
 // `entry_sol`/`exit_sol` are human SOL (f64) in the model but stored as exact
 // lamports (`entry_lamports`/`exit_lamports`, BIGINT) in the column, mirroring
@@ -363,7 +365,8 @@ impl From<TableRequest> for PositionQuery {
 /// `initial_buy_instruction` JSONB.
 fn position_sort_sql(key: &str) -> Option<&'static str> {
     Some(match key {
-        // strategy_positions
+        // strategy_positions — the position-owned arms; everything else is a
+        // token-enrichment column resolved by the SSOT whitelist below.
         "mint" => "sp.mint",
         "entry_price" => "sp.entry_price",
         "entry_time" => "sp.entry_time",
@@ -372,85 +375,24 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
         "pnl_pct" => "((sp.exit_price - sp.entry_price) / NULLIF(sp.entry_price, 0))",
         "status" => "sp.status",
         "exit_reason" => "sp.exit_reason",
-        // tokens
-        "symbol" => "t.symbol",
-        "name" => "t.name",
-        "creator" => "t.creator_wallet",
-        "created" => "t.created_at",
-        "initial_buy" => "t.initial_buy_lamports",
-        "init_supply" => "t.initial_supply_token",
-        "cu_limit" => "t.cu_limit",
-        "cu_price" => "t.cu_price",
-        "mayhem_mode" => "t.is_mayhem_mode",
-        "cashback" => "t.is_cashback_enabled",
-        // tokens_info
-        "current_price" => "i.current_price",
-        "ath_price" => "i.ath_price",
-        "ath_timestamp" => "i.ath_timestamp",
-        "market_cap" => "(i.current_price * t.initial_supply_token)",
-        "volume" => "i.volume_sol",
-        "trade_count" => "i.trade_count",
-        "last_trade" => "i.last_trade_at",
-        "migrated" => "i.is_migrated",
-        "dead" => "i.is_dead",
-        "first_slot_buy" => "i.first_slot_buy_lamports",
-        "first_slot_sell" => "i.first_slot_sell_lamports",
-        // initial_buy_instruction JSONB
-        "token_amount" => "(t.initial_buy_instruction->>'token_amount')::numeric",
-        "max_cost_lamports" => "(t.initial_buy_instruction->>'max_cost_lamports')::numeric",
-        "spendable_lamports_in" => "(t.initial_buy_instruction->>'spendable_lamports_in')::numeric",
-        "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
-        _ => return None,
+        _ => return enrich_sort_sql(key),
     })
 }
 
-/// Filter-column type: decides which [`FilterOp`]s are legal and how the value
-/// binds. `Text` cols honor only `Contains`/`Eq` (string `ILIKE`); `Numeric` cols
-/// honor the comparison ops (`Eq`/`Gt`/`Gte`/`Lt`/`Lte`/`Between`) with the value
-/// bound as `f64` — the expr is the **uncast** numeric so the compare is numeric,
-/// not a `::text` substring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FilterKind {
-    Text,
-    Numeric,
-}
-
-/// Map a frontend column key to its **trusted** SQL expression + type. `None` =
-/// not filterable. `Numeric` columns return the **uncast** expr so numeric
-/// operators (`gt`, `between`, …) compare numerically; `Text` columns return the
-/// string col for `ILIKE`. Mirrors [`position_sort_sql`]'s columns.
+/// Map a frontend column key to its **trusted** SQL expression + type for a
+/// positions query. `None` = not filterable. Owns only the `sp.*` arms; the
+/// token-enrichment (`t.`/`i.`) columns fall through to
+/// [`enrich_filter_sql`][crate::storage::token_enrichment::enrich_filter_sql] —
+/// the SSOT shared with the Matched table.
 fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     use FilterKind::{Numeric, Text};
     Some(match key {
-        // strategy_positions
         "mint" => ("sp.mint", Text),
         "status" => ("sp.status", Text),
         "exit_reason" => ("sp.exit_reason", Text),
         "entry_price" => ("sp.entry_price", Numeric),
         "exit_price" => ("sp.exit_price", Numeric),
-        // tokens
-        "symbol" => ("t.symbol", Text),
-        "name" => ("t.name", Text),
-        "creator" => ("t.creator_wallet", Text),
-        "initial_buy" => ("t.initial_buy_lamports", Numeric),
-        "init_supply" => ("t.initial_supply_token", Numeric),
-        "cu_limit" => ("t.cu_limit", Numeric),
-        "cu_price" => ("t.cu_price", Numeric),
-        // tokens_info
-        "current_price" => ("i.current_price", Numeric),
-        "ath_price" => ("i.ath_price", Numeric),
-        "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
-        "volume" => ("i.volume_sol", Numeric),
-        "trade_count" => ("i.trade_count", Numeric),
-        "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
-        "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
-        // initial_buy_instruction JSONB — text in JSONB, cast to numeric so the
-        // comparison ops work.
-        "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
-        "max_cost_lamports" => ("(t.initial_buy_instruction->>'max_cost_lamports')::numeric", Numeric),
-        "spendable_lamports_in" => ("(t.initial_buy_instruction->>'spendable_lamports_in')::numeric", Numeric),
-        "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
-        _ => return None,
+        _ => return enrich_filter_sql(key),
     })
 }
 
@@ -601,61 +543,24 @@ fn push_position_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
 // materialized mint set, sharing the structured filter machinery above.
 // ---------------------------------------------------------------------------
 
-/// Token-scoped filter whitelist: the `t.`/`i.` subset of [`position_filter_sql`]
-/// (no `sp.*` — there's no position join here) plus the matched table's frontend
-/// key aliases (`created`/`init_buy`). `None` = not filterable.
+/// Token-scoped filter whitelist. The matched table has no `sp` join, so `mint`
+/// resolves to `t.mint_address` (vs positions' `sp.mint`); everything else falls
+/// through to the shared [`enrich_filter_sql`][crate::storage::token_enrichment::enrich_filter_sql]
+/// SSOT. `None` = not filterable.
 fn token_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
-    use FilterKind::{Numeric, Text};
-    Some(match key {
-        "mint" => ("t.mint_address", Text),
-        "symbol" => ("t.symbol", Text),
-        "name" => ("t.name", Text),
-        "creator" => ("t.creator_wallet", Text),
-        "initial_buy" | "init_buy" => ("t.initial_buy_lamports", Numeric),
-        "init_supply" => ("t.initial_supply_token", Numeric),
-        "cu_limit" => ("t.cu_limit", Numeric),
-        "cu_price" => ("t.cu_price", Numeric),
-        "current_price" => ("i.current_price", Numeric),
-        "ath_price" => ("i.ath_price", Numeric),
-        "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
-        "volume" => ("i.volume_sol", Numeric),
-        "trade_count" => ("i.trade_count", Numeric),
-        "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
-        "first_slot_sell" => ("i.first_slot_sell_lamports", Numeric),
-        "token_amount" => ("(t.initial_buy_instruction->>'token_amount')::numeric", Numeric),
-        "max_cost_lamports" => ("(t.initial_buy_instruction->>'max_cost_lamports')::numeric", Numeric),
-        "spendable_lamports_in" => ("(t.initial_buy_instruction->>'spendable_lamports_in')::numeric", Numeric),
-        "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
-        _ => return None,
-    })
+    match key {
+        "mint" => Some(("t.mint_address", FilterKind::Text)),
+        _ => enrich_filter_sql(key),
+    }
 }
 
-/// Token-scoped sort whitelist — the `t.`/`i.` counterpart of
-/// [`position_sort_sql`], with the matched table's `created`/`init_buy` aliases.
+/// Token-scoped sort whitelist — the `mint → t.mint_address` alias plus the shared
+/// [`enrich_sort_sql`][crate::storage::token_enrichment::enrich_sort_sql] SSOT.
 fn token_sort_sql(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "mint" => "t.mint_address",
-        "symbol" => "t.symbol",
-        "name" => "t.name",
-        "creator" => "t.creator_wallet",
-        "created" | "created_at" => "t.created_at",
-        "initial_buy" | "init_buy" => "t.initial_buy_lamports",
-        "init_supply" => "t.initial_supply_token",
-        "cu_limit" => "t.cu_limit",
-        "cu_price" => "t.cu_price",
-        "current_price" => "i.current_price",
-        "ath_price" => "i.ath_price",
-        "market_cap" => "(i.current_price * t.initial_supply_token)",
-        "volume" => "i.volume_sol",
-        "trade_count" => "i.trade_count",
-        "first_slot_buy" => "i.first_slot_buy_lamports",
-        "first_slot_sell" => "i.first_slot_sell_lamports",
-        "token_amount" => "(t.initial_buy_instruction->>'token_amount')::numeric",
-        "max_cost_lamports" => "(t.initial_buy_instruction->>'max_cost_lamports')::numeric",
-        "spendable_lamports_in" => "(t.initial_buy_instruction->>'spendable_lamports_in')::numeric",
-        "min_tokens_out" => "(t.initial_buy_instruction->>'min_tokens_out')::numeric",
-        _ => return None,
-    })
+    match key {
+        "mint" => Some("t.mint_address"),
+        _ => enrich_sort_sql(key),
+    }
 }
 
 /// Append the search + per-column filters for the token-scoped (matched) query.
