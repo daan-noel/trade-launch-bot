@@ -11,10 +11,17 @@ two binaries (`live` = live trading, `lab` = analysis). Deep-dive detail: `@plan
 | --- | --- | --- | --- |
 | `trading_core` | lib | Everything shared by both bins: `config` (incl. protocol/CU constants), `models`, `storage` (pools + repos), core `services`, core `state`, the actix api framework + auth + SSE bridge, **core handlers**, the trading-free **strategy domain** (`tpsl_rules_core` + `strategies/`), and the **ingest contract** (`ingest`). Exposes `configure_core_routes`. | — (NOT `pump-trader`) |
 | `pump-trader` | lib | Trade execution (`PumpFunTrader`, sims, cashback). Owns protocol/tuning constants in-crate (`constants`, folded in from the former `pump-constants`). See [@arch/trade-execution.md](@arch/trade-execution.md) | — |
-| `ingest-laserstream` | lib | Helius LaserStream gRPC live transport: client→pipeline→db_writer + heartbeat/watchdog (partition maintenance removed — Timescale policies). Exposes `spawn(...) -> IngestHandles`; re-exports the `trading_core::ingest` contract types. See [@arch/ingest.md](@arch/ingest.md) | `trading_core` + tonic/prost/tokio-stream (NOT `pump-trader`) |
+| `ingest-laserstream` | lib | Helius LaserStream gRPC live transport: client→pipeline→db_writer + heartbeat/watchdog (partition maintenance removed — Timescale policies). Exposes its own raw transport API (`Ingest`/`IngestHandle`/`IngestEvent`/`Protocol`); `live/src/ingest/` bridges it onto the `trading_core::ingest` contract. See [@arch/ingest.md](@arch/ingest.md) | **standalone — no workspace deps** (tonic/prost/tokio-stream/solana-sdk/borsh; NOT `trading_core`, NOT `pump-trader`) |
 | `ingest-websocket` | lib | **Empty scaffold** — `spawn(...) -> IngestHandles` stub mirroring laserstream behind the `trading_core::ingest` contract, so `live` can swap transports later. Wire protocol/decoder not yet implemented. | `trading_core` |
 | `live` | **bin** | Live-trading box: `strategies/` (runner + tpsl_sniper_{1,2} runtime), `trader/` (pump-trader shim), deploy services/state/handlers, the `probe` subcommand, deploy `main.rs`. Serves core + deploy routes. | `trading_core` + `ingest-laserstream` + `pump-trader` |
 | `lab` | **bin** | Analysis box (no trading keys, no gRPC): `sweep/` engine, `analyzers/`, local state/handlers, backtest harness, local `main.rs`. Serves core + local routes. See [@arch/sweep.md](@arch/sweep.md) | `trading_core` + rayon/arrow/parquet (NOT `pump-trader`, NOT `ingest-laserstream`) |
+
+**Deliberately-duplicated protocol constants** (program IDs, mints, `LAMPORTS_PER_SOL`)
+live in both `trading_core::config::constants` and `pump_trader::protocol` so the trader
+stays dependency-free (it must not pull `trading_core`). The split is guarded, not
+trusted: `live/tests/protocol_constants_ssot.rs` (`live` is the only crate depending on
+both) asserts the two copies stay byte-equal, so a program-ID change applied to one crate
+can't silently break the other.
 
 ## Composition roots — the two `main.rs` files
 
@@ -28,7 +35,7 @@ the bearer-auth middleware (fail-closed on mutating requests) + CORS.
 
 Builds trader → DB pools → caches → `CoreState` → `DeployState`. Long-lived tasks:
 
-- **ingest** (3 handles from `ingest_laserstream::spawn`): gRPC producer · pipeline · DbWriter
+- **ingest** (host adapter `live::ingest::spawn_ingest`, which drives `ingest_laserstream::Ingest`): gRPC producer · pipeline · DbWriter
 - **StrategyRunner** (consumes the ingest `strategy_rx`)
 - **SOL price poller**
 - optional **HTTP server** (core + deploy routes)

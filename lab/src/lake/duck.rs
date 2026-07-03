@@ -412,6 +412,31 @@ mod tests {
         let err = src.connect().unwrap_err().to_string();
         assert!(err.contains("lake"), "expected a lake-not-found message, got: {err}");
     }
+
+    /// Every column name the reader `SELECT`s / reads must exist in the writer's
+    /// canonical column set ([`crate::lake::schema`]). DuckDB matches columns by name,
+    /// so a writer rename that isn't mirrored here would otherwise surface only as a
+    /// runtime "column not found" against a populated lake — this pins it at build time.
+    #[test]
+    fn reader_columns_are_canonical() {
+        use crate::lake::schema::{TOKEN_WRITE_COLS, TRADE_WRITE_COLS};
+        // Columns the trade query references (outer SELECT + the `tx_index` ordering key).
+        for c in [
+            "mint", "is_buy", "sol_amount", "token_amount", "price", "slot", "block_time",
+            "leg_index", "vsol", "vtok", "venue", "tx_index", "tx_signature",
+        ] {
+            assert!(TRADE_WRITE_COLS.contains(&c), "reader trade col `{c}` is not a canonical write column");
+        }
+        // Columns the candidate + fingerprint queries reference.
+        for c in [
+            "mint", "symbol", "fp_token_program_id", "fp_initial_buy_sol", "fp_cu_limit",
+            "fp_cu_price", "fp_is_cashback_enabled", "fp_max_sol_cost", "fp_spendable_sol_in",
+            "fp_first_slot_buy_sol", "fp_first_slot_sell_sol", "fp_ix_labels", "is_mayhem_mode",
+            "created_at",
+        ] {
+            assert!(TOKEN_WRITE_COLS.contains(&c), "reader token col `{c}` is not a canonical write column");
+        }
+    }
 }
 
 /// Simulate ↔ sweep parity — the guarantee the migration exists to make: a rule
@@ -436,8 +461,10 @@ mod parity_tests {
         v.map(f64::to_bits)
     }
 
+    // NOT `#[ignore]`: self-skips when no lake is present (keyless CI stays green) but
+    // runs automatically once `$SWEEP_LAKE_DIR` points at a populated lake, so the
+    // sim↔sweep parity is enforced without an `--ignored` opt-in.
     #[tokio::test]
-    #[ignore = "needs a populated lake ($SWEEP_LAKE_DIR)"]
     async fn signature_flag_changes_only_the_signature() {
         let root = lake_root();
         if !tokens_file(&root).exists() || !super::super::trades_dir(&root).exists() {

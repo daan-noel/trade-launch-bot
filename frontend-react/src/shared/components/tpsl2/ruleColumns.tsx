@@ -1,7 +1,7 @@
 import { createContext, useContext, type MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import type { RuleRecord } from 'types';
-import { dashF, dashNum, dashPercent } from './utils';
+import { dashF, dashNum, dashPercent } from 'components/strategy/cellFormat';
 import { formatAge } from 'utils/format';
 import { paramTip } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';

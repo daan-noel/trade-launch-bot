@@ -8,7 +8,7 @@
 // build tree. `RuleRecord` is imported type-only.
 
 import type { RuleRecord } from 'types';
-import { parseIxLabels } from '@shared/components/tpsl2/utils';
+import { parseIxLabels } from '@shared/components/strategy/cellFormat';
 import type {
   ApplyResult,
   FormState,

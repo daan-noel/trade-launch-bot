@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::token_info::TokenInfo;
 
 /// Repo over the (clean-rebuild) `tokens_info` metrics table.
@@ -83,17 +84,9 @@ fn row_to_info(r: InfoRow) -> TokenInfo {
     }
 }
 
-/// Human SOL (f64) → lamports (i64). `first_slot_*_sol` are stored as exact
-/// lamports (BIGINT) but carried as human SOL on the metrics/model side, mirroring
-/// `tokens.initial_buy_sol` / `trades.amount_lamports`.
-fn sol_to_lamports(sol: f64) -> i64 {
-    (sol * 1_000_000_000.0).round() as i64
-}
-
-/// Lamports (i64) → human SOL (f64).
-fn lamports_to_sol(lamports: i64) -> f64 {
-    lamports as f64 / 1_000_000_000.0
-}
+// SOL ↔ lamports use the shared `config::constants` DB-boundary helpers.
+// `first_slot_*_sol` are stored as exact lamports (BIGINT) but carried as human SOL
+// on the metrics/model side, mirroring `tokens.initial_buy_sol` / `trades.amount_lamports`.
 
 impl TokenInfoRepo {
     pub fn new(pool: PgPool) -> Self {

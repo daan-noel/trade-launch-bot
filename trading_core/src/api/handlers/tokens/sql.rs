@@ -18,6 +18,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::storage::token_enrichment::MARKET_CAP_SQL;
 use super::tokens::{
     ath_fep_sql_expr, col_filter_number_sql, col_filter_text_sql, cur_fep_sql_expr,
     is_numeric_col, is_swing_sort_col, parse_dt_public, parse_numeric_predicate_public, sort_sql_expr,
@@ -147,7 +148,7 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     push_range(&mut clauses, "COALESCE(i.volume_sol, 0)", q.f_get("volume_min"), q.f_get("volume_max"), &mut a);
     push_opt_range(&mut clauses, "i.first_slot_buy_lamports::float8/1e9", q.f_get("first_slot_buy_min"), q.f_get("first_slot_buy_max"), &mut a);
     push_opt_range(&mut clauses, "i.first_slot_sell_lamports::float8/1e9", q.f_get("first_slot_sell_min"), q.f_get("first_slot_sell_max"), &mut a);
-    push_opt_range(&mut clauses, "(i.current_price * t.initial_supply_token)", q.f_get("mcap_min"), q.f_get("mcap_max"), &mut a);
+    push_opt_range(&mut clauses, MARKET_CAP_SQL, q.f_get("mcap_min"), q.f_get("mcap_max"), &mut a);
     push_range(&mut clauses, "COALESCE(i.trade_count, 0)", q.f_get("trades_min"), q.f_get("trades_max"), &mut a);
     // initial_buy_sol stored lamports; model is human SOL → /1e9.
     push_opt_range(&mut clauses, "t.initial_buy_lamports::float8/1e9", q.f_get("init_buy_min"), q.f_get("init_buy_max"), &mut a);
@@ -362,7 +363,7 @@ fn search_clause(raw: &str, a: &mut SqlArgs) -> String {
     ] {
         ors.push(format!("{c} LIKE '%' || {ph} || '%' ESCAPE '\\'"));
     }
-    for c in ["i.ath_price", "i.current_price", "(i.current_price * t.initial_supply_token)"] {
+    for c in ["i.ath_price", "i.current_price", MARKET_CAP_SQL] {
         ors.push(format!("{} LIKE '%' || {ph} || '%' ESCAPE '\\'", rust_float_text(c)));
     }
     format!("({})", ors.join(" OR "))

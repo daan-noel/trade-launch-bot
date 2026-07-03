@@ -7,6 +7,43 @@ export interface PriceUnitState {
   usdRate: number | null;
 }
 
+/** The shared token-enrichment fields the backend `TokenEnrichment` struct
+ *  (`trading_core::storage::token_enrichment`) flattens onto every token-result row.
+ *  All optional here because most result tables receive them only after a batch
+ *  enrich resolves (the fully-populated `TokenRecord`/`TokenDetailRecord` redeclare
+ *  them required). Single source: interfaces `extends` this instead of re-listing the
+ *  block, so a backend field add/rename is one edit, not five. */
+export interface TokenEnrichmentFields {
+  symbol?: string;
+  name?: string;
+  creator_address?: string;
+  initial_buy_sol?: number | null;
+  initial_supply_token?: number | null;
+  token_amount?: number | null;
+  max_cost_lamports?: number | null;
+  spendable_lamports_in?: number | null;
+  min_tokens_out?: number | null;
+  cu_limit?: number | null;
+  cu_price?: number | null;
+  is_mayhem_mode?: boolean;
+  is_cashback_enabled?: boolean;
+  create_tx_address?: string;
+  ix_labels_count?: number;
+  instruction_labels?: unknown;
+  trade_count?: number;
+  current_price?: number | null;
+  volume_sol_total?: number;
+  first_slot_buy_sol?: number | null;
+  first_slot_sell_sol?: number | null;
+  market_cap?: number | null;
+  ath_price?: number | null;
+  ath_timestamp?: string | null;
+  is_migrated?: boolean;
+  is_dead?: boolean;
+  last_trade_at?: string | null;
+  last_synced_at?: string | null;
+}
+
 export interface TokenRecord {
   mint_address: string;
   name: string;
@@ -133,7 +170,7 @@ export interface BulkRuleResult {
   failed: { rule_id: string; error: string }[];
 }
 
-export interface RulePositionRecord {
+export interface RulePositionRecord extends TokenEnrichmentFields {
   id: string;
   mint: string;
   wallet: string;
@@ -174,35 +211,8 @@ export interface RulePositionRecord {
   run_seq?: number | null;
   created_at: string;
   updated_at: string;
-  // Token enrichment fields (populated by the batch endpoint; optional).
-  symbol?: string;
-  name?: string;
-  creator_address?: string;
-  initial_buy_sol?: number | null;
-  initial_supply_token?: number | null;
-  token_amount?: number | null;
-  max_cost_lamports?: number | null;
-  spendable_lamports_in?: number | null;
-  min_tokens_out?: number | null;
-  cu_limit?: number | null;
-  cu_price?: number | null;
-  is_mayhem_mode?: boolean;
-  is_cashback_enabled?: boolean;
-  create_tx_address?: string;
-  ix_labels_count?: number;
-  instruction_labels?: unknown;
-  trade_count?: number;
-  current_price?: number | null;
-  volume_sol_total?: number;
-  first_slot_buy_sol?: number | null;
-  first_slot_sell_sol?: number | null;
-  market_cap?: number | null;
-  ath_price?: number | null;
-  ath_timestamp?: string | null;
-  is_migrated?: boolean;
-  is_dead?: boolean;
-  last_trade_at?: string | null;
-  last_synced_at?: string | null;
+  // Token enrichment fields (populated by the batch endpoint) come from
+  // `TokenEnrichmentFields`; only the record-specific extras stay here.
   /** Swing1-only: legs harvested from the live exit memo at close. `null`/absent
    *  for tpsl1/tpsl2 positions and for still-open swing1 positions. */
   swing_legs?: ChartSwingLeg[] | null;
@@ -268,39 +278,16 @@ export interface PositionsSummary {
   worst_pct: number | null;
 }
 
-export interface MatchedTokenRecord {
+export interface MatchedTokenRecord extends TokenEnrichmentFields {
   mint: string;
+  // These are always present on a matched row, so they narrow the optional
+  // `TokenEnrichmentFields` members to required (the rest come from the base).
   symbol: string;
   name: string;
   created_at: string;
   initial_buy_sol: number | null;
   cu_limit: number | null;
   cu_price: number | null;
-  // Token enrichment fields (populated by the batch endpoint; optional so the
-  // type stays compatible before the fetch resolves).
-  creator_address?: string;
-  initial_supply_token?: number | null;
-  token_amount?: number | null;
-  max_cost_lamports?: number | null;
-  spendable_lamports_in?: number | null;
-  min_tokens_out?: number | null;
-  is_mayhem_mode?: boolean;
-  is_cashback_enabled?: boolean;
-  create_tx_address?: string;
-  ix_labels_count?: number;
-  instruction_labels?: unknown;
-  trade_count?: number;
-  current_price?: number | null;
-  volume_sol_total?: number;
-  first_slot_buy_sol?: number | null;
-  first_slot_sell_sol?: number | null;
-  market_cap?: number | null;
-  ath_price?: number | null;
-  ath_timestamp?: string | null;
-  is_migrated?: boolean;
-  is_dead?: boolean;
-  last_trade_at?: string | null;
-  last_synced_at?: string | null;
 }
 
 export interface MatchedTokensResponse {
@@ -311,7 +298,7 @@ export interface MatchedTokensResponse {
   capped: boolean;
 }
 
-export interface SimulatedTokenResult {
+export interface SimulatedTokenResult extends TokenEnrichmentFields {
   mint: string;
   symbol: string;
   /** Trigger-trade (scalp signal) snapshot that armed the position, distinct
@@ -342,36 +329,10 @@ export interface SimulatedTokenResult {
    *  with no separate `swing1-detect` round-trip. Absent for tpsl1/tpsl2 and for
    *  live-position rows (whose legs, if any, come from the exit memo). */
   swing_legs?: ChartSwingLeg[] | null;
-  // Token enrichment fields — the backend bakes these in once per backtest run
-  // (`lab::strategies::token_enrich`), so they're already on the row and sort/
-  // filter/search server-side like any other field; no client-side merge needed.
-  name?: string;
-  creator_address?: string;
+  // Token enrichment fields come from `TokenEnrichmentFields` (the backend bakes
+  // them in once per backtest run via `lab::strategies::token_enrich`); only
+  // `created_at`, which the base leaves to row-owners, stays here.
   created_at?: string;
-  initial_buy_sol?: number | null;
-  initial_supply_token?: number | null;
-  token_amount?: number | null;
-  max_cost_lamports?: number | null;
-  spendable_lamports_in?: number | null;
-  min_tokens_out?: number | null;
-  cu_limit?: number | null;
-  cu_price?: number | null;
-  is_mayhem_mode?: boolean;
-  is_cashback_enabled?: boolean;
-  create_tx_address?: string;
-  ix_labels_count?: number;
-  instruction_labels?: unknown;
-  trade_count?: number;
-  current_price?: number | null;
-  volume_sol_total?: number;
-  first_slot_buy_sol?: number | null;
-  first_slot_sell_sol?: number | null;
-  market_cap?: number | null;
-  ath_timestamp?: string | null;
-  is_migrated?: boolean;
-  is_dead?: boolean;
-  last_trade_at?: string | null;
-  last_synced_at?: string | null;
 }
 
 /** Whole-run aggregate for the Simulated summary card (server-side over the
@@ -539,8 +500,10 @@ export interface TokenDetailRecord {
   is_cashback_enabled: boolean;
   create_tx_address: string;
   created_at: string;
-  trade_count: number | null;
-  volume_sol_total: number | null;
+  // Coalesced to 0 by the backend (matches the list endpoint), so never null —
+  // unlike the other tokens_info-derived fields below.
+  trade_count: number;
+  volume_sol_total: number;
   first_slot_buy_sol: number | null;
   first_slot_sell_sol: number | null;
   market_cap: number | null;

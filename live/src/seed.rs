@@ -7,7 +7,7 @@ use tracing::info;
 
 use crate::state::token_cache::{TokenCache, TokenState};
 use trading_core::config::constants::{
-    total_supply_for, INITIAL_VIRTUAL_TOKEN_RESERVES, SEED_ACTIVITY_WINDOW_DAYS,
+    market_cap_sol, INITIAL_VIRTUAL_TOKEN_RESERVES, SEED_ACTIVITY_WINDOW_DAYS,
     SEED_TRACKING_LIMIT, SEED_TRADES_PER_MINT,
 };
 use trading_core::models::{token::Token, token_info::TokenInfo, trade::Trade};
@@ -170,7 +170,8 @@ fn build_state(
         }
         if state.market_cap.is_none() {
             if let Some(price) = agg.newest_price {
-                state.market_cap = Some(total_supply_for(state.token.is_mayhem_mode) * price);
+                state.market_cap =
+                    Some(market_cap_sol(price, state.token.initial_supply_token, state.token.is_mayhem_mode));
             }
         }
     }

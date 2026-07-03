@@ -5,7 +5,9 @@ use sqlx::{types::Json, Postgres, PgPool};
 use uuid::Uuid;
 
 use crate::api::handlers::tokens::SqlArg;
+use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::token::Token;
+use crate::storage::token_enrichment::MARKET_CAP_SQL;
 
 /// Bind an ordered `SqlArg` slice onto a `query_as` builder, in `$1..$n` order.
 /// Split from the scalar variant because sqlx's `Query`/`QueryScalar` are distinct
@@ -149,20 +151,9 @@ impl From<TokenDbRow> for Token {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SOL ↔ lamports — `initial_buy_sol` is human SOL (f64) in the model but stored
-// as exact lamports (BIGINT) in the column, mirroring `trades.amount_lamports`.
-// ---------------------------------------------------------------------------
-
-/// Human SOL (f64) → lamports (i64).
-fn sol_to_lamports(sol: f64) -> i64 {
-    (sol * 1_000_000_000.0).round() as i64
-}
-
-/// Lamports (i64) → human SOL (f64).
-fn lamports_to_sol(lamports: i64) -> f64 {
-    lamports as f64 / 1_000_000_000.0
-}
+// SOL ↔ lamports use the shared `config::constants` DB-boundary helpers:
+// `initial_buy_sol` is human SOL (f64) in the model but stored as exact lamports
+// (BIGINT) in the column, mirroring `trades.amount_lamports`.
 
 // ---------------------------------------------------------------------------
 // Repo
@@ -392,35 +383,44 @@ impl TokenRepo {
         limit: i64,
         since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<TokenListRow>> {
-        let rows = sqlx::query_as::<_, TokenListRow>(
-            r#"
-            SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
-                   t.bonding_curve_address,
-                   t.initial_supply_token,
-                   t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
-                   t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
-                   t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume_sol,
-                   (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
-                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
-                   (SELECT MAX(s.last_synced_at) FROM token_sync_state s
-                      WHERE s.mint_address = t.mint_address) AS last_synced_at,
-                   i.lifetime_secs,
-                   i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
-                   i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol
-              FROM tokens t
-              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
-             WHERE t.created_at >= $1
-             ORDER BY t.created_at DESC
-             LIMIT $2
-            "#,
-        )
-        .bind(since)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        let sql = format!(
+            "{} WHERE t.created_at >= $1 ORDER BY t.created_at DESC LIMIT $2",
+            Self::list_row_select()
+        );
+        let rows = sqlx::query_as::<_, TokenListRow>(&sql)
+            .bind(since)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows)
+    }
+
+    /// The full `TokenListRow` `SELECT … FROM tokens t LEFT JOIN tokens_info i`
+    /// projection shared by the mint-scoped list lookups (`find_list_rows`,
+    /// `find_list_rows_for_mints`, `find_list_row_by_mint`) — one definition so the
+    /// ~28-column projection (market_cap via [`MARKET_CAP_SQL`] included) can't drift
+    /// between them; each caller appends only its own `WHERE`. The paged
+    /// `find_list_page` builds its own SELECT because it sources `last_synced_at`
+    /// from [`LIST_FROM`]'s lateral join rather than the correlated subquery here.
+    fn list_row_select() -> String {
+        format!(
+            "SELECT t.mint_address, t.creator_wallet, t.name, t.symbol, \
+                    t.bonding_curve_address, t.initial_supply_token, \
+                    t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction, \
+                    t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled, \
+                    t.ix_labels, t.creation_tx_signature, t.created_at, \
+                    i.ath_price, i.ath_timestamp, i.volume_sol, \
+                    {MARKET_CAP_SQL} AS market_cap, i.trade_count, \
+                    i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, \
+                    (SELECT MAX(s.last_synced_at) FROM token_sync_state s \
+                       WHERE s.mint_address = t.mint_address) AS last_synced_at, \
+                    i.lifetime_secs, \
+                    i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol, \
+                    i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol \
+             FROM tokens t \
+             LEFT JOIN tokens_info i ON i.mint_address = t.mint_address"
+        )
     }
 
     /// Fragment shared by the DB-paged list methods: the `tokens t LEFT JOIN
@@ -458,7 +458,7 @@ impl TokenRepo {
                     t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled, \
                     t.ix_labels, t.creation_tx_signature, t.created_at, \
                     i.ath_price, i.ath_timestamp, i.volume_sol, \
-                    (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count, \
+                    {MARKET_CAP_SQL} AS market_cap, i.trade_count, \
                     i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, \
                     sync.last_synced_at, i.lifetime_secs, \
                     i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol, \
@@ -513,30 +513,11 @@ impl TokenRepo {
         if mints.is_empty() {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query_as::<_, TokenListRow>(
-            r#"
-            SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
-                   t.bonding_curve_address,
-                   t.initial_supply_token,
-                   t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
-                   t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
-                   t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume_sol,
-                   (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
-                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
-                   (SELECT MAX(s.last_synced_at) FROM token_sync_state s
-                      WHERE s.mint_address = t.mint_address) AS last_synced_at,
-                   i.lifetime_secs,
-                   i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
-                   i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol
-              FROM tokens t
-              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
-             WHERE t.mint_address = ANY($1)
-            "#,
-        )
-        .bind(mints)
-        .fetch_all(&self.pool)
-        .await?;
+        let sql = format!("{} WHERE t.mint_address = ANY($1)", Self::list_row_select());
+        let rows = sqlx::query_as::<_, TokenListRow>(&sql)
+            .bind(mints)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows)
     }
 
@@ -544,30 +525,11 @@ impl TokenRepo {
     /// `GET /api/tokens/:mint` slow path so the detail modal shows real stats for
     /// tokens that were evicted from the live cache.
     pub async fn find_list_row_by_mint(&self, mint: &str) -> anyhow::Result<Option<TokenListRow>> {
-        let row = sqlx::query_as::<_, TokenListRow>(
-            r#"
-            SELECT t.mint_address, t.creator_wallet, t.name, t.symbol,
-                   t.bonding_curve_address,
-                   t.initial_supply_token,
-                   t.initial_buy_lamports::float8 / 1e9 AS initial_buy_sol, t.initial_buy_instruction,
-                   t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled,
-                   t.ix_labels, t.creation_tx_signature, t.created_at,
-                   i.ath_price, i.ath_timestamp, i.volume_sol,
-                   (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count,
-                   i.last_trade_at, i.current_price, i.is_dead, i.is_migrated,
-                   (SELECT MAX(s.last_synced_at) FROM token_sync_state s
-                      WHERE s.mint_address = t.mint_address) AS last_synced_at,
-                   i.lifetime_secs,
-                   i.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol,
-                   i.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol
-              FROM tokens t
-              LEFT JOIN tokens_info i ON i.mint_address = t.mint_address
-             WHERE t.mint_address = $1
-            "#,
-        )
-        .bind(mint)
-        .fetch_optional(&self.pool)
-        .await?;
+        let sql = format!("{} WHERE t.mint_address = $1", Self::list_row_select());
+        let row = sqlx::query_as::<_, TokenListRow>(&sql)
+            .bind(mint)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row)
     }
 
@@ -598,8 +560,9 @@ impl TokenRepo {
 // The token-list filter/sort grammar has two backends: the in-RAM
 // `TokenQuery::matches`/`sort_refs` (lab) and the SQL `build_where_and_order`
 // (live). These tests prove they return IDENTICAL ordered mint lists over a real
-// Postgres fixture, across a matrix of filter/sort permutations. Behind `--ignored`
-// (needs a local Postgres via DATABASE_URL); run with `cargo test -p trading_core -- --ignored`.
+// Postgres fixture, across a matrix of filter/sort permutations. Runs automatically
+// whenever `DATABASE_URL` is set (self-skips, staying green, when it is not) — no
+// `--ignored` opt-in, so the parity guarantee is actually enforced in any DB-backed run.
 // ===========================================================================
 #[cfg(test)]
 mod parity_tests {
@@ -716,10 +679,16 @@ mod parity_tests {
         rows.into_iter().map(|r| r.mint_address).collect()
     }
 
+    // NOT `#[ignore]`: this SSOT guard must actually run. It self-skips (returns Ok)
+    // when `DATABASE_URL` is unset, so a keyless CI stays green, but the moment a
+    // local Postgres is configured the SQL-vs-in-RAM parity is enforced automatically
+    // — no `--ignored` opt-in that everyone forgets to pass.
     #[tokio::test]
-    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
     async fn sql_and_in_ram_agree_across_filter_sort_matrix() {
-        let Some(pool) = test_pool().await else { return };
+        let Some(pool) = test_pool().await else {
+            eprintln!("skipping token-list parity: no DATABASE_URL");
+            return;
+        };
         let repo = TokenRepo::new(pool.clone());
         let now = Utc::now();
         let base = now - chrono::Duration::days(2);

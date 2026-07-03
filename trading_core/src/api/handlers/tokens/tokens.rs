@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::{
     analyzers::ChainStats,
     state::{core_state::CoreState, token_cache::TokenState},
+    storage::token_enrichment::MARKET_CAP_SQL,
 };
 
 /// Read a `u64` buy-instruction arg by its snake_case name from
@@ -202,8 +203,10 @@ pub struct TokenDetail {
     pub instruction_labels: serde_json::Value,
     pub create_tx_address: String,
     pub created_at: DateTime<Utc>,
-    pub trade_count: Option<u64>,
-    pub volume_sol_total: Option<f64>,
+    // Non-null (coalesced to 0), matching `TokenSummary`/the list endpoint — the
+    // detail modal and the list agree on these two counters' shape (SSOT reconcile).
+    pub trade_count: u64,
+    pub volume_sol_total: f64,
     pub first_slot_buy_sol: Option<f64>,
     pub first_slot_sell_sol: Option<f64>,
     pub market_cap: Option<f64>,
@@ -240,8 +243,8 @@ impl From<&TokenState> for TokenDetail {
             instruction_labels: s.token.instruction_labels.clone(),
             create_tx_address: s.token.creation_tx_signature.clone(),
             created_at: s.token.created_at,
-            trade_count: Some(s.trade_count),
-            volume_sol_total: Some(s.volume_sol_total),
+            trade_count: s.trade_count,
+            volume_sol_total: s.volume_sol_total,
             first_slot_buy_sol: Some(s.first_slot_buy_sol),
             first_slot_sell_sol: Some(s.first_slot_sell_sol),
             market_cap: s.market_cap,
@@ -694,7 +697,7 @@ pub fn col_filter_number_sql(key: &str) -> Option<String> {
             "trade_count" => "COALESCE(i.trade_count, 0)".into(),
             "ath_fep_ratio" => ath_fep_sql_expr().to_string(),
             "current_fep_ratio" => cur_fep_sql_expr().to_string(),
-            "market_cap" => "(i.current_price * t.initial_supply_token)".into(),
+            "market_cap" => MARKET_CAP_SQL.into(),
             "volume" => "COALESCE(i.volume_sol, 0)".into(),
             "first_slot_buy" => "i.first_slot_buy_lamports::float8/1e9".into(),
             "first_slot_sell" => "i.first_slot_sell_lamports::float8/1e9".into(),
@@ -733,7 +736,7 @@ pub fn col_filter_text_sql(key: &str) -> Option<String> {
         "ath_fep_ratio" => format!("COALESCE(({})::text, '')", ath_fep_sql_expr()),
         "current_price" => "COALESCE(i.current_price::text, '')".into(),
         "current_fep_ratio" => format!("COALESCE(({})::text, '')", cur_fep_sql_expr()),
-        "market_cap" => "COALESCE((i.current_price * t.initial_supply_token)::text, '')".into(),
+        "market_cap" => format!("COALESCE({MARKET_CAP_SQL}::text, '')"),
         "volume" => "COALESCE(i.volume_sol, 0)::text".into(),
         "first_slot_buy" => "COALESCE((i.first_slot_buy_lamports::float8/1e9)::text, '')".into(),
         "first_slot_sell" => "COALESCE((i.first_slot_sell_lamports::float8/1e9)::text, '')".into(),
@@ -780,7 +783,7 @@ pub fn sort_sql_expr(col: &str) -> Option<(&'static str, bool)> {
         "ath_fep_ratio" => (ATH_FEP_SORT, false),
         "current_price" => ("i.current_price", false),
         "current_fep_ratio" => (CUR_FEP_SORT, false),
-        "market_cap" => ("(i.current_price * t.initial_supply_token)", false),
+        "market_cap" => (MARKET_CAP_SQL, false),
         "volume" => ("COALESCE(i.volume_sol, 0)", false),
         "first_slot_buy" => ("i.first_slot_buy_lamports", false),
         "first_slot_sell" => ("i.first_slot_sell_lamports", false),
@@ -1785,6 +1788,53 @@ fn cmp_keys(a: &SortKey, b: &SortKey, desc: bool) -> Ordering {
         base.reverse()
     } else {
         base
+    }
+}
+
+#[cfg(test)]
+mod grammar_parity_tests {
+    use super::*;
+
+    // SSOT guard (no DB): the SQL backend (`sql.rs`, used by `live`) must recognize
+    // exactly the column keys the in-RAM registries (`NUMERIC_COLS`/`SORTABLE_COLS`,
+    // used by `lab`) declare. Adding a filter/sort column to one engine but not the
+    // other then fails HERE — in keyless CI — instead of silently returning different
+    // rows for the same query. The DB-backed `token_repo::parity_tests` proves the
+    // resulting *values* agree; this proves the two *grammars* cover the same columns.
+
+    #[test]
+    fn numeric_filter_columns_match_between_engines() {
+        // Every in-RAM numeric column has a SQL numeric expression …
+        for &k in NUMERIC_COLS {
+            assert!(
+                col_filter_number_sql(k).is_some(),
+                "SQL numeric filter missing for in-RAM numeric column `{k}`"
+            );
+        }
+        // … and (over the sortable-column universe) SQL treats no column as numeric
+        // that the in-RAM side doesn't. NUMERIC_COLS ⊆ SORTABLE_COLS, so this bounds
+        // the reverse direction without needing to reflect over SQL's match arms.
+        for &k in SORTABLE_COLS {
+            if col_filter_number_sql(k).is_some() {
+                assert!(
+                    NUMERIC_COLS.contains(&k),
+                    "SQL treats `{k}` as numeric but NUMERIC_COLS (in-RAM) does not"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sortable_columns_have_matching_sql_expressions() {
+        for &k in SORTABLE_COLS {
+            if is_swing_sort_col(k) {
+                // Swing chain columns are browser-derived (no TokenSummary field), so
+                // the SQL backend correctly has no expression and falls back to default.
+                assert!(sort_sql_expr(k).is_none(), "swing col `{k}` must not have a SQL sort expr");
+            } else {
+                assert!(sort_sql_expr(k).is_some(), "SQL sort expr missing for sortable column `{k}`");
+            }
+        }
     }
 }
 

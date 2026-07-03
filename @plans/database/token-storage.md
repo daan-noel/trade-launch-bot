@@ -198,6 +198,11 @@ LEFT JOIN tokens_info i USING (mint_address);
 
 - **`market_cap`** — derived in the view (chosen). Promote to a cached, indexed
   column **only if** you need keyset pagination ordered by market cap at scale.
+  *SSOT:* the SQL derivation lives once in `storage::token_enrichment::MARKET_CAP_SQL`
+  (`current_price × initial_supply_token`), spliced into every projection/sort/filter;
+  the live in-RAM path uses `config::constants::market_cap_sol` with the same per-token
+  supply (mayhem-aware constant only as fallback), so both formulas agree. A guard test
+  pins `ENRICH_SELECT` to the const.
 - **`name` / `symbol`** — static (chosen). Move to `tokens_info` only if on-chain
   metadata renames must be tracked over time.
 - **`tokens` retention** — unbounded growth (one row per token ever created). On a

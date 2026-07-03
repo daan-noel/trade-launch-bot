@@ -29,10 +29,20 @@ use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::PgPool;
 
+/// Canonical **market-cap** SQL expression — current spot price × on-chain supply.
+/// Requires aliases `t` = tokens, `i` = tokens_info. THE single definition; every
+/// SQL site that projects/sorts/filters `market_cap` (this module's [`ENRICH_SELECT`]
+/// + sort/filter arms, `handlers::tokens`, `handlers::tokens::sql`, `token_repo`)
+/// references this const so the formula can never drift between the token-list SQL
+/// backends. The parenthesis is part of the expression so it composes inside
+/// `COALESCE(...)`/`(...)::text` without extra wrapping.
+pub const MARKET_CAP_SQL: &str = "(i.current_price * t.initial_supply_token)";
+
 /// SQL column fragment for the token-enrichment projection. Requires the query to
 /// alias `tokens` as `t` and `tokens_info` as `i` (LEFT JOIN). Column names/order
-/// match [`TokenEnrichmentRow`]. `market_cap` is computed (`current_price ×
-/// initial_supply_token`) — the canonical definition shared with the token list.
+/// match [`TokenEnrichmentRow`]. `market_cap` is computed ([`MARKET_CAP_SQL`],
+/// `current_price × initial_supply_token`) — the canonical definition shared with
+/// the token list; a guard test pins this literal to that const.
 /// `token_created_at` is deliberately not `created_at` (flatten-collision guard).
 pub const ENRICH_SELECT: &str = "t.mint_address, t.symbol, t.name, \
     t.created_at AS token_created_at, t.creator_wallet, t.creation_tx_signature, \
@@ -223,7 +233,7 @@ pub fn enrich_sort_sql(key: &str) -> Option<&'static str> {
         "current_price" => "i.current_price",
         "ath_price" => "i.ath_price",
         "ath_timestamp" => "i.ath_timestamp",
-        "market_cap" => "(i.current_price * t.initial_supply_token)",
+        "market_cap" => MARKET_CAP_SQL,
         "volume" => "i.volume_sol",
         "trade_count" => "i.trade_count",
         "last_trade" => "i.last_trade_at",
@@ -259,7 +269,7 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         // tokens_info
         "current_price" => ("i.current_price", Numeric),
         "ath_price" => ("i.ath_price", Numeric),
-        "market_cap" => ("(i.current_price * t.initial_supply_token)", Numeric),
+        "market_cap" => (MARKET_CAP_SQL, Numeric),
         "volume" => ("i.volume_sol", Numeric),
         "trade_count" => ("i.trade_count", Numeric),
         "first_slot_buy" => ("i.first_slot_buy_lamports", Numeric),
@@ -272,4 +282,26 @@ pub fn enrich_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "min_tokens_out" => ("(t.initial_buy_instruction->>'min_tokens_out')::numeric", Numeric),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod market_cap_ssot_tests {
+    use super::*;
+
+    /// The `ENRICH_SELECT` projection embeds the market-cap formula as a literal
+    /// (Rust `const` can't concat another `&str`), so pin it to [`MARKET_CAP_SQL`]
+    /// here — this fails the moment the projection drifts from the canonical formula.
+    #[test]
+    fn enrich_select_uses_canonical_market_cap() {
+        assert!(
+            ENRICH_SELECT.contains(MARKET_CAP_SQL),
+            "ENRICH_SELECT must project market_cap via MARKET_CAP_SQL"
+        );
+    }
+
+    #[test]
+    fn market_cap_sort_and_filter_use_canonical() {
+        assert_eq!(enrich_sort_sql("market_cap"), Some(MARKET_CAP_SQL));
+        assert_eq!(enrich_filter_sql("market_cap"), Some((MARKET_CAP_SQL, FilterKind::Numeric)));
+    }
 }

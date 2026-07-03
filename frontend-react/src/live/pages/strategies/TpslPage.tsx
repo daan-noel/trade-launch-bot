@@ -7,6 +7,7 @@ import { Button } from 'components/ui/Button';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
+import { inspectFromPosition } from 'components/strategy/inspectTarget';
 import { positionColumns } from 'components/tpsl1/tableColumns';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
@@ -381,14 +382,6 @@ const RuleActionsCell = memo(function RuleActionsCell({
 });
 
 
-function inspectFromPosition(r: RulePositionRecord): InspectTarget {
-  return {
-    mint: r.mint,
-    entryTime: r.entry_time, entryPrice: r.entry_price, entryTx: r.entry_tx,
-    exitTime: r.exit_time, exitPrice: r.exit_price, exitTx: r.exit_tx,
-    exitLabel: r.status && r.status !== 'Open' ? r.status : null,
-  };
-}
 
 // Stable no-op analysis bag — the 'analyze' column is filtered out of the live
 // rule table, so these handlers are never called, but the RuleRowProvider type

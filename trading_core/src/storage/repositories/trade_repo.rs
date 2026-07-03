@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::trade::{Trade, TradeType};
 use crate::storage::repositories::wallet_dict_repo::WalletDictRepo;
 
@@ -166,7 +167,7 @@ impl TradeRepo {
         .bind(&trade.venue)
         .bind(sol_to_lamports(trade.amount_sol))
         .bind(trade.token_amount as i64)
-        .bind(trade.reserve_sol.map(sol_to_lamports_opt))
+        .bind(trade.reserve_sol.map(sol_to_lamports))
         .bind(trade.reserve_token.map(|v| v as i64))
         .bind(trade.slot as i64)
         .bind(trade.tx_index as i32)
@@ -237,7 +238,7 @@ impl TradeRepo {
                     .push_bind(&t.venue)
                     .push_bind(sol_to_lamports(t.amount_sol))
                     .push_bind(t.token_amount as i64)
-                    .push_bind(t.reserve_sol.map(sol_to_lamports_opt))
+                    .push_bind(t.reserve_sol.map(sol_to_lamports))
                     .push_bind(t.reserve_token.map(|v| v as i64))
                     .push_bind(t.slot as i64)
                     .push_bind(t.tx_index as i32)
@@ -831,21 +832,6 @@ pub struct SeedAgg {
 // — no float helper, no precision loss above 2^53.
 // ---------------------------------------------------------------------------
 
-/// SOL (human-readable f64) → lamports (i64).
-fn sol_to_lamports(sol: f64) -> i64 {
-    (sol * 1_000_000_000.0).round() as i64
-}
-
-/// SOL reserve (human-readable f64) → lamports (i64); `.map(..)`-friendly.
-fn sol_to_lamports_opt(sol: f64) -> i64 {
-    sol_to_lamports(sol)
-}
-
-/// Lamports (i64) → SOL (human-readable f64).
-fn lamports_to_sol(lamports: i64) -> f64 {
-    lamports as f64 / 1_000_000_000.0
-}
-
 /// Derived execution price (`sol / token`), or 0 when no tokens.
 fn price_of(sol: f64, token: f64) -> f64 {
     if token > 0.0 {
@@ -909,7 +895,7 @@ mod tests {
     #[test]
     fn reserve_sol_round_trips_through_lamports() {
         let sol = 30.123_456_789_f64;
-        let stored = sol_to_lamports_opt(sol);
+        let stored = sol_to_lamports(sol);
         assert_eq!(stored, 30_123_456_789, "SOL → lamports keeps 9-decimal precision");
         let back = lamports_to_sol(stored);
         assert!((back - sol).abs() < 1e-9, "lamports → SOL recovers the value");

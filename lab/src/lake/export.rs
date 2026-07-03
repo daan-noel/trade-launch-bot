@@ -50,33 +50,34 @@ pub struct ExportSummary {
 /// analysis path reads wallet identity), and no `real_*_reserves`/fingerprint (those
 /// live in the `tokens` dimension or are re-derived on read).
 fn trades_schema() -> Schema {
+    use super::schema as col;
     Schema::new(vec![
-        Field::new("mint", DataType::Utf8, false),
-        Field::new("is_buy", DataType::Boolean, false),
-        Field::new("sol_amount", DataType::Float64, false),
-        Field::new("token_amount", DataType::Float64, false),
-        Field::new("price", DataType::Float64, false),
-        Field::new("slot", DataType::Int64, false),
-        Field::new("block_time", DataType::Int64, false),
-        Field::new("leg_index", DataType::Int32, false),
-        Field::new("vsol", DataType::Float64, true),
+        Field::new(col::T_MINT, DataType::Utf8, false),
+        Field::new(col::T_IS_BUY, DataType::Boolean, false),
+        Field::new(col::T_SOL_AMOUNT, DataType::Float64, false),
+        Field::new(col::T_TOKEN_AMOUNT, DataType::Float64, false),
+        Field::new(col::T_PRICE, DataType::Float64, false),
+        Field::new(col::T_SLOT, DataType::Int64, false),
+        Field::new(col::T_BLOCK_TIME, DataType::Int64, false),
+        Field::new(col::T_LEG_INDEX, DataType::Int32, false),
+        Field::new(col::T_VSOL, DataType::Float64, true),
         // Virtual TOKEN reserves — carried so the sweep computes the same GMGN
         // curve-spot (`vsol / vtok`) as live + chart. `real_*_reserves` are NOT in
         // the `trades` table (dropped, re-derivable from raw_txs), so the lake can't
         // carry the pool-spot fallback; curve rows lack real reserves live too, so
         // curve-spot + execution fallback is full parity for the curve phase.
-        Field::new("vtok", DataType::Float64, true),
-        Field::new("venue", DataType::Utf8, false),
+        Field::new(col::T_VTOK, DataType::Float64, true),
+        Field::new(col::T_VENUE, DataType::Utf8, false),
         // Intra-block execution order. Carried so the lake's per-mint ordering
         // (slot, tx_index, leg_index) reproduces PG's exactly — many trades share a
         // slot, and block_time alone can't break those ties (corpus-parity bug fix).
-        Field::new("tx_index", DataType::Int32, false),
+        Field::new(col::T_TX_INDEX, DataType::Int32, false),
         // Base58 transaction signature. Carried for the *simulate* read path only —
         // the sweep's `CorpusTrade` ignores it (stays slim). Re-added in Stage 1 of the
         // simulate→lake migration so simulate result rows keep their Solscan links
         // (`entry_tx`/`exit_tx`/`target_tx`) without a PG round-trip. ~88 B/row; lands
         // on every lake file (the sweep reads them too but never projects this column).
-        Field::new("tx_signature", DataType::Utf8, false),
+        Field::new(col::T_TX_SIGNATURE, DataType::Utf8, false),
     ])
 }
 
@@ -86,21 +87,22 @@ fn trades_schema() -> Schema {
 /// `fp_first_slot_*` columns are trade-derived (sourced from `tokens_info`, not the
 /// `tokens` creation row) — every other `fp_*` column is a `tokens` creation fact.
 fn tokens_schema() -> Schema {
+    use super::schema as col;
     Schema::new(vec![
-        Field::new("mint", DataType::Utf8, false),
-        Field::new("symbol", DataType::Utf8, false),
-        Field::new("fp_token_program_id", DataType::Utf8, true),
-        Field::new("fp_initial_buy_sol", DataType::Float64, true),
-        Field::new("fp_cu_limit", DataType::Int64, true),
-        Field::new("fp_cu_price", DataType::Int64, true),
-        Field::new("fp_is_cashback_enabled", DataType::Boolean, false),
-        Field::new("fp_max_sol_cost", DataType::Int64, true),
-        Field::new("fp_spendable_sol_in", DataType::Int64, true),
-        Field::new("fp_first_slot_buy_sol", DataType::Float64, true),
-        Field::new("fp_first_slot_sell_sol", DataType::Float64, true),
-        Field::new("fp_ix_labels", DataType::Utf8, true),
-        Field::new("is_mayhem_mode", DataType::Boolean, false),
-        Field::new("created_at", DataType::Int64, false),
+        Field::new(col::K_MINT, DataType::Utf8, false),
+        Field::new(col::K_SYMBOL, DataType::Utf8, false),
+        Field::new(col::K_FP_TOKEN_PROGRAM_ID, DataType::Utf8, true),
+        Field::new(col::K_FP_INITIAL_BUY_SOL, DataType::Float64, true),
+        Field::new(col::K_FP_CU_LIMIT, DataType::Int64, true),
+        Field::new(col::K_FP_CU_PRICE, DataType::Int64, true),
+        Field::new(col::K_FP_IS_CASHBACK_ENABLED, DataType::Boolean, false),
+        Field::new(col::K_FP_MAX_SOL_COST, DataType::Int64, true),
+        Field::new(col::K_FP_SPENDABLE_SOL_IN, DataType::Int64, true),
+        Field::new(col::K_FP_FIRST_SLOT_BUY_SOL, DataType::Float64, true),
+        Field::new(col::K_FP_FIRST_SLOT_SELL_SOL, DataType::Float64, true),
+        Field::new(col::K_FP_IX_LABELS, DataType::Utf8, true),
+        Field::new(col::K_IS_MAYHEM_MODE, DataType::Boolean, false),
+        Field::new(col::K_CREATED_AT, DataType::Int64, false),
     ])
 }
 
@@ -510,6 +512,47 @@ mod tests {
         let batch = b.finish(&schema).unwrap();
         let price = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
         assert_eq!(price.value(0), 0.0, "guard divide-by-zero like price_of()");
+    }
+
+    #[test]
+    fn schema_field_order_is_canonical() {
+        // The writer's Arrow schema order must equal the single-source column arrays,
+        // so the positional `finish()` vec can't silently diverge from the names.
+        let trades_s = trades_schema();
+        let trades: Vec<&str> = trades_s.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(trades, crate::lake::schema::TRADE_WRITE_COLS.to_vec());
+        let tokens_s = tokens_schema();
+        let tokens: Vec<&str> = tokens_s.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(tokens, crate::lake::schema::TOKEN_WRITE_COLS.to_vec());
+    }
+
+    #[test]
+    fn finish_maps_each_builder_to_its_named_column() {
+        // Distinct value per column so a same-typed builder swap in `finish()`
+        // (slot↔block_time both Int64; vsol↔vtok / sol↔token↔price all Float64) is
+        // caught by reading each column BACK BY NAME, not by position.
+        use crate::lake::schema as col;
+        let mut b = TradeBuilders::default();
+        // 2 SOL, 1_234_567 raw tokens → price = 2/1_234_567; vsol 30, vtok 84, slot 7.
+        b.push(&row("mZ", true, 2_000_000_000, 1_234_567));
+        let schema = Arc::new(trades_schema());
+        let batch = b.finish(&schema).unwrap();
+
+        let f64_at = |name: &str| -> f64 {
+            let i = batch.schema().index_of(name).unwrap();
+            batch.column(i).as_any().downcast_ref::<Float64Array>().unwrap().value(0)
+        };
+        let i64_at = |name: &str| -> i64 {
+            let i = batch.schema().index_of(name).unwrap();
+            batch.column(i).as_any().downcast_ref::<Int64Array>().unwrap().value(0)
+        };
+        assert!((f64_at(col::T_SOL_AMOUNT) - 2.0).abs() < 1e-12);
+        assert!((f64_at(col::T_TOKEN_AMOUNT) - 1_234_567.0).abs() < 1e-6);
+        assert!((f64_at(col::T_PRICE) - 2.0 / 1_234_567.0).abs() < 1e-18);
+        assert!((f64_at(col::T_VSOL) - 30.0).abs() < 1e-12);
+        assert!((f64_at(col::T_VTOK) - 84.0).abs() < 1e-12);
+        assert_eq!(i64_at(col::T_SLOT), 7);
+        assert_eq!(i64_at(col::T_BLOCK_TIME), 1_700_000_000_000_000);
     }
 
     #[test]

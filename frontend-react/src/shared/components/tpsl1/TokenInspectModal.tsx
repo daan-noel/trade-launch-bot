@@ -5,22 +5,10 @@ import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
 import type { ChartEventMarker } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 
-/** A token to inspect from a TPSL result table, with its strategy entry/exit
- *  fill so the chart can mark them. Built from a sim/paper result row or a
- *  rule position via the adapters in TpslPage. */
-export interface InspectTarget {
-  mint: string;
-  symbol?: string | null;
-  entryTime: string | null;
-  /** null for an armed position whose entry hasn't filled yet. */
-  entryPrice: number | null;
-  entryTx?: string | null;
-  exitTime: string | null;
-  exitPrice: number | null;
-  exitTx?: string | null;
-  /** Exit reason / position status (e.g. "TakeProfit"); appended to the exit label. */
-  exitLabel?: string | null;
-}
+// `InspectTarget` is defined once in the shared strategy module and re-exported here
+// so existing `import { type InspectTarget } from '.../TokenInspectModal'` keeps working.
+import type { InspectTarget } from 'components/strategy/inspectTarget';
+export type { InspectTarget };
 
 function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
   const markers: ChartEventMarker[] = [];

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::api::table_query::{FilterOp, FilterSpec, TableRequest};
+use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
 };
@@ -14,18 +15,9 @@ use crate::storage::token_enrichment::{
 
 // `entry_sol`/`exit_sol` are human SOL (f64) in the model but stored as exact
 // lamports (`entry_lamports`/`exit_lamports`, BIGINT) in the column, mirroring
-// `trades.amount_lamports`. Token amounts are
-// already exact integers (`u64`) and bind/read as `i64` directly.
-
-/// Human SOL (f64) → lamports (i64).
-fn sol_to_lamports(sol: f64) -> i64 {
-    (sol * 1_000_000_000.0).round() as i64
-}
-
-/// Lamports (i64) → human SOL (f64).
-fn lamports_to_sol(lamports: i64) -> f64 {
-    lamports as f64 / 1_000_000_000.0
-}
+// `trades.amount_lamports`. Token amounts are already exact integers (`u64`) and
+// bind/read as `i64` directly. SOL ↔ lamports use the shared `config::constants`
+// DB-boundary helpers.
 
 /// Repo spanning the unified strategy schema: `strategy_rules`,
 /// `strategy_runs`, `strategy_run_metrics`, `strategy_positions`.

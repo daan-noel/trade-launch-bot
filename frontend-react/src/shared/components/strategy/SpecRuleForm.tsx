@@ -8,7 +8,7 @@ import { Accordion } from 'components/ui/Accordion';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { TPSL_PARAM_HELP, type TpslParamKey } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
-import { EXAMPLE_IX_LABELS } from 'components/tpsl2/utils';
+import { EXAMPLE_IX_LABELS } from 'components/strategy/cellFormat';
 import { PasteParamsSection } from 'components/strategy/PasteParamsSection';
 import {
   applyBlob,

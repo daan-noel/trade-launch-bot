@@ -26,9 +26,12 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
   `SigLegs`). The old `f64` model field silently lost precision above 2^53 on large
   legs — that was the bug this convention fixes.
 - **SOL** → lamports, `BIGINT` column. The model keeps SOL as human `f64`; conversion
-  (`sol_to_lamports`/`lamports_to_sol`) happens at the repo boundary — exactness lives
-  in the column (`trades.amount_lamports`, `tokens.initial_buy_lamports`,
-  `strategy_positions.entry_lamports/exit_lamports`).
+  happens at the repo boundary via **one shared pair** —
+  `config::constants::{sol_to_lamports, lamports_to_sol}` (in `token_math.rs`; rounds,
+  so a value round-trips exactly). Every repo (`trade`/`token`/`token_info`/`strategy`)
+  imports these instead of a private copy; `pump-trader` keeps its own `u64` truncating
+  variant by design. Exactness lives in the column (`trades.amount_lamports`,
+  `tokens.initial_buy_lamports`, `strategy_positions.entry_lamports/exit_lamports`).
 - **Unit-in-the-name rule (no exceptions):** every field/column/variable that denotes an
   amount of SOL names its unit. `_lamports` = exact integer (`BIGINT`/`i64`/`u64`); `_sol`
   = human `f64`. Same base concept, unit-only suffix differs by layer: the DB stores
@@ -41,6 +44,21 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 - **Views** divide lamports back to SOL (`strategy_position_pnl.realized_pnl_sol`,
   `trades_priced.price_per_token`). **Frontend** receives integer JSON numbers and
   scales for display ("store integer, display float").
+
+### Derived-value single sources
+
+- **Market cap** = spot price × supply, defined once per surface: `MARKET_CAP_SQL`
+  (`storage::token_enrichment` — `current_price × initial_supply_token`) is spliced into
+  every SQL projection/sort/filter (`ENRICH_SELECT`, `token_repo`, `handlers::tokens`,
+  `sql`); the live in-RAM path uses `config::constants::market_cap_sol` (same per-token
+  supply, falling back to the mayhem-aware constant only when unknown), so the two agree.
+  `ENRICH_SELECT` is pinned to `MARKET_CAP_SQL` by a guard test.
+- **Token-list filter/sort grammar** has two backends (live SQL `handlers::tokens::sql`,
+  lab in-RAM `TokenQuery`); `tokens::grammar_parity_tests` (no DB) asserts they recognize
+  the same column keys, and `token_repo::parity_tests` (auto-runs when `DATABASE_URL` is
+  set, self-skips otherwise) asserts identical ordered rows.
+- **`TokenDetail`** coalesces `trade_count`/`volume_sol_total` to 0 (non-null), matching
+  the list endpoint's `TokenSummary` — the detail modal and the list agree on those two.
 
 ## Tables
 

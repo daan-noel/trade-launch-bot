@@ -149,6 +149,14 @@ there are no camelCase/axis/prefix translators.
   `useGetTokensByMintsQuery` batch call were **removed** from those tables; `mergeTokenData` survives
   **only** for **Wallet Holdings** (`MyWalletPage`), which has no server pagination (a full client-side
   on-chain-scan dataset, so a client merge there isn't a workaround for missing server sort).
+- **Shared enrichment type + strategy primitives.** The ~28 enrichment fields the backend
+  `TokenEnrichment` flattens onto result rows are declared **once** in TS as
+  `TokenEnrichmentFields` (`shared/types`); `RulePositionRecord`/`MatchedTokenRecord`/
+  `SimulatedTokenResult` `extends` it (the all-required `TokenRecord`/`TokenDetailRecord`
+  stay bespoke — their nullability differs by endpoint on purpose). Strategy-page boilerplate
+  is shared under `shared/components/strategy/`: `cellFormat.ts` (the former byte-identical
+  `tpsl1/2 utils.ts`), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
+  `inspectFromPosition` mappers, previously copy-pasted across five pages and both modal forks).
 - **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`) on the shared token-enrichment columns:
   `ALL_TOKEN_COLS` in `sharedTokenColumns.tsx` declares `filterNumber` on every numeric column
   (mirrors the Tokens-page `tokenColumns.tsx`). The `DataTable` emits raw filter text; the serializer

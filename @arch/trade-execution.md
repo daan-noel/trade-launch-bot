@@ -1,8 +1,7 @@
 # Trade execution — `pump-trader` crate
 
 File-level map of `pump-trader/` (crate `pump_trader`; has `lib.rs` + unit tests). `live` re-exports via `live/src/trader/mod.rs`.
-Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-execution/slippage-logic-buy-sell.md`, `@plans/trade-execution/buy-in-flight-recovery.md`. Redesign rationale (three-tier consts/config/error, `Arc<dyn Signer>`, feature gates): [pump-trader-redesign-plan.md](../pump-trader-redesign-plan.md).
-
+Deep-dive detail: `@plans/trade-execution/module-details.md`, `@plans/trade-execution/slippage-logic-buy-sell.md`, `@plans/trade-execution/buy-in-flight-recovery.md`.
 **Standalone & reusable:** the crate is a drop-in library — a consumer supplies a `TraderConfig` (sane `Default`s, `Arc<dyn Signer>` for HSM/remote-signer support), gets a typed `TradeError`, and never forks source to tune. No workspace deps.
 
 ## Modules — `src/trader/`

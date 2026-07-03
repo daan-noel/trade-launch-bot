@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::config::constants::{
-    total_supply_for, DEAD_MAX_LIQUIDITY_SOL, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS,
+    market_cap_sol, DEAD_MAX_LIQUIDITY_SOL, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS,
     INITIAL_VIRTUAL_TOKEN_RESERVES, TOKEN_CACHE_EVICT_IDLE_SECONDS,
     TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
 };
@@ -440,10 +440,15 @@ impl TokenState {
     }
 
     fn update_market_cap(&mut self, price: f64) {
-        // FDV in SOL: total supply × curve spot price (GMGN-style). Mayhem-mode
-        // tokens are minted with 2× supply, so scale accordingly.
-        let supply = total_supply_for(self.token.is_mayhem_mode);
-        self.market_cap = Some(supply * price);
+        // FDV in SOL = curve spot price (GMGN-style) × total supply, using the token's
+        // actual `initial_supply_token` so this matches the SQL/enrichment canonical
+        // (`current_price × initial_supply_token`); the mayhem-aware constant supply is
+        // only a fallback when the per-token value is unknown.
+        self.market_cap = Some(market_cap_sol(
+            price,
+            self.token.initial_supply_token,
+            self.token.is_mayhem_mode,
+        ));
     }
 
     /// Count unique wallets across the retained trade history. For a token under

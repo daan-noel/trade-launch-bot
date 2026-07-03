@@ -28,6 +28,7 @@ import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { PaperResultSection } from '@lab/components/strategies/PaperResultSection';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
+import { inspectFromPosition, inspectFromSim } from 'components/strategy/inspectTarget';
 import type { ChartSwingLeg, ChartSwingOverlay } from 'components/token-price-chart';
 import { fetchSwing1Detect, type Swing1DetectParams } from '@lab/services/swing1Detect';
 import {
@@ -298,32 +299,7 @@ function inspectFromMatched(r: import('types').MatchedTokenRecord): InspectTarge
   };
 }
 
-function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
-  return {
-    mint: r.mint,
-    symbol: r.symbol,
-    entryTime: r.entry_time,
-    entryPrice: r.entry_price,
-    entryTx: r.entry_tx,
-    exitTime: r.exit_time,
-    exitPrice: r.exit_price,
-    exitTx: r.exit_tx,
-    exitLabel: r.exit_reason && r.exit_reason !== 'Open' ? r.exit_reason : null,
-  };
-}
 
-function inspectFromPosition(r: RulePositionRecord): InspectTarget {
-  return {
-    mint: r.mint,
-    entryTime: r.entry_time,
-    entryPrice: r.entry_price,
-    entryTx: r.entry_tx,
-    exitTime: r.exit_time,
-    exitPrice: r.exit_price,
-    exitTx: r.exit_tx,
-    exitLabel: r.status && r.status !== 'Open' ? r.status : null,
-  };
-}
 
 /** No-op run-control bag — lab rules never execute a live run (no keys, no
  *  gRPC), so the 'controls' column is filtered out of the rule table below and

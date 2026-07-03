@@ -30,6 +30,7 @@
 
 pub mod duck;
 pub mod export;
+pub mod schema;
 
 use std::path::{Path, PathBuf};
 
