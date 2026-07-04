@@ -16,7 +16,7 @@ import { applyTableRequest, columnResolver } from 'services/tableEval';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import {
   liveApi,
-  useGetWalletHoldingsQuery,
+  useGetPortfolioHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
@@ -73,7 +73,7 @@ export function MyWalletPage() {
     isFetching,
     error: holdingsError,
     refetch,
-  } = useGetWalletHoldingsQuery();
+  } = useGetPortfolioHoldingsQuery();
   const [buyToken] = useBuyTokenMutation();
   const [sellToken] = useSellTokenMutation();
 
@@ -147,7 +147,7 @@ export function MyWalletPage() {
           const holding = await sub.unwrap();
           if ((holding?.amount ?? undefined) !== prevAmount) {
             dispatch(
-              liveApi.util.updateQueryData('getWalletHoldings', undefined, (draft) => {
+              liveApi.util.updateQueryData('getPortfolioHoldings', undefined, (draft) => {
                 const idx = draft.findIndex((h) => h.mint === mint);
                 if (holding) {
                   if (idx >= 0) draft[idx] = holding;

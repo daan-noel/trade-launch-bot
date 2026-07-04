@@ -421,14 +421,31 @@ export interface JobsStatus {
   swings: { run_id: string; processed: number; total: number }[];
 }
 
-export interface WalletHolding {
+/** The live (real) strategy managing a held mint — the Holdings bot badge and the
+ *  manual-vs-bot double-sell guard. Mirrors the backend `ManagedMint`. */
+export interface ManagedBy {
+  mint: string;
+  rule_id: string | null;
+  rule_name: string | null;
+  /** `Arming` | `BuySubmitted` | `Holding` | `ExitPending`. */
+  status: string;
+  /** `real` | `paper` (Holdings only ever surfaces `real`). */
+  mode: string;
+}
+
+/** One enriched wallet holding from `GET /api/portfolio/holdings`. Extends the
+ *  shared {@link TokenEnrichmentFields} (the backend flattens the same enrichment
+ *  SSOT onto each row) and adds the live wallet fields, SOL valuation, cost basis,
+ *  unrealized PnL, and the bot-managed tag. `is_migrated`/`is_cashback_enabled`/
+ *  `symbol` carry the live-authoritative values. PnL fields are `undefined` on the
+ *  lean single-mint confirmation response until the next full refresh. */
+export interface WalletHolding extends TokenEnrichmentFields {
   mint: string;
   amount: number;
   ui_amount: number;
   decimals: number;
   token_account: string;
   token_program_id: string;
-  symbol: string | null;
   price_usd: number | null;
   value_usd: number | null;
   liquidity: number | null;
@@ -436,6 +453,14 @@ export interface WalletHolding {
   token_created_at: string | null;
   is_migrated: boolean;
   is_cashback_enabled: boolean;
+  /** Mark-to-market SOL value of the bag; `null`/absent when no live SOL mark. */
+  value_sol?: number | null;
+  /** Remaining bag's cost basis in SOL; `null`/absent when no recorded buys. */
+  cost_basis_sol?: number | null;
+  unrealized_pnl_sol?: number | null;
+  unrealized_pnl_pct?: number | null;
+  /** The live strategy managing this bag, or `null` when unmanaged (orphan/manual). */
+  managed_by?: ManagedBy | null;
 }
 
 /// Live, fast-changing market data for one mint (Jupiter). Fetched separately

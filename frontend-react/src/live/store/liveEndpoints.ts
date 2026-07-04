@@ -31,12 +31,13 @@ export interface SellTokenArgs {
  */
 export const liveApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
-    // Wallet holdings — an expensive read (full wallet RPC scan + Jupiter batch
-    // price + migration resolution). Cached like the token list so revisiting
-    // the page reuses it instead of re-scanning the chain. A manual trade
-    // refreshes it surgically (see getWalletHolding) rather than re-fetching.
-    getWalletHoldings: builder.query<WalletHolding[], void>({
-      query: () => '/api/solana/wallet/tokens',
+    // Portfolio holdings — the position-manager read (full wallet RPC scan +
+    // Jupiter marks + cost basis + unrealized PnL + bot-managed tag + token
+    // enrichment, composed server-side by the portfolio service). Expensive, so
+    // cached like the token list; a manual trade refreshes it surgically (see
+    // getWalletHolding) rather than re-fetching the whole wallet.
+    getPortfolioHoldings: builder.query<WalletHolding[], void>({
+      query: () => '/api/portfolio/holdings',
       providesTags: ['WalletHoldings'],
     }),
     // Single-mint counterpart used only for post-trade confirmation polling:
@@ -90,7 +91,7 @@ export const liveApi = baseApi.injectEndpoints({
 });
 
 export const {
-  useGetWalletHoldingsQuery,
+  useGetPortfolioHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
