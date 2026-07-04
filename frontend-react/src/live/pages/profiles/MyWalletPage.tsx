@@ -23,6 +23,7 @@ import {
   useSellTokenMutation,
 } from '@live/store/liveEndpoints';
 import type { AppDispatch } from '@live/store';
+import type { ManagedBy } from 'types';
 
 interface BuyDialog {
   mint: string;
@@ -127,6 +128,14 @@ export function MyWalletPage() {
   const [sellingMint, setSellingMint] = useState<string | null>(null);
   const [buyDialog, setBuyDialog] = useState<BuyDialog | null>(null);
   const [sellDialog, setSellDialog] = useState<SellDialog | null>(null);
+  // A pending manual sell held back for confirmation because a live strategy
+  // manages this bag — selling manually can race the bot's own exit (double-sell).
+  const [pendingSell, setPendingSell] = useState<{
+    mint: string;
+    tokenAccount?: string;
+    slippageBps?: number;
+    managedBy: ManagedBy;
+  } | null>(null);
 
   const error = apiErrorMessage(holdingsError);
 
@@ -208,6 +217,21 @@ export function MyWalletPage() {
     [holdings, sellToken, confirmTrade],
   );
 
+  // Gate every manual sell on the bot-managed check: if a live strategy holds
+  // this bag, hold the sell for an explicit confirm (double-sell interlock);
+  // otherwise sell straight through.
+  const requestSell = useCallback(
+    (mint: string, tokenAccount?: string, slippageBps?: number) => {
+      const managedBy = holdings.find((h) => h.mint === mint)?.managed_by;
+      if (managedBy) {
+        setPendingSell({ mint, tokenAccount, slippageBps, managedBy });
+        return;
+      }
+      void runSell(mint, tokenAccount, slippageBps);
+    },
+    [holdings, runSell],
+  );
+
   const handleSell = useCallback(
     (mint: string) => {
       const holding = holdings.find((h) => h.mint === mint);
@@ -215,10 +239,18 @@ export function MyWalletPage() {
         setActionError('Token account not found for mint');
         return;
       }
-      void runSell(mint, holding.token_account);
+      requestSell(mint, holding.token_account);
     },
-    [holdings, runSell],
+    [holdings, requestSell],
   );
+
+  // Proceed with a sell the user confirmed despite the bot-managed warning.
+  const confirmPendingSell = useCallback(() => {
+    if (!pendingSell) return;
+    const { mint, tokenAccount, slippageBps } = pendingSell;
+    setPendingSell(null);
+    void runSell(mint, tokenAccount, slippageBps);
+  }, [pendingSell, runSell]);
 
   const handleManualSellOpen = useCallback(() => {
     setSellDialog({ mint: '', slippageInput: '' });
@@ -250,8 +282,9 @@ export function MyWalletPage() {
     setActionSuccess(null);
     setSellDialog(null);
     // Pass the known token account as a hint so the backend skips a wallet scan.
-    await runSell(mint, holding.token_account, slippageBps);
-  }, [sellDialog, holdings, runSell]);
+    // Routes through the bot-managed interlock like the row Sell-All.
+    requestSell(mint, holding.token_account, slippageBps);
+  }, [sellDialog, holdings, requestSell]);
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
     setBuyDialog({ mint, tokenProgramId, solInput: '0.001', slippageInput: '', manual: false });
@@ -511,6 +544,31 @@ export function MyWalletPage() {
               </Button>
               <Button variant="danger" onClick={handleSellSubmit}>
                 Sell All
+              </Button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      <Modal
+        title="⚠ Bot-managed position"
+        open={pendingSell != null}
+        onClose={() => setPendingSell(null)}
+      >
+        {pendingSell && (
+          <>
+            <InlineAlert variant="warning">
+              <strong>{pendingSell.managedBy.rule_name ?? 'A live strategy'}</strong> is
+              managing this bag (status: {pendingSell.managedBy.status}). Selling
+              manually can race the bot's own exit and double-sell. Consider stopping
+              the rule first. Sell anyway?
+            </InlineAlert>
+            <div className="mt-4 flex items-center justify-end gap-2.5">
+              <Button variant="ghost" onClick={() => setPendingSell(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={confirmPendingSell}>
+                Sell Anyway
               </Button>
             </div>
           </>
