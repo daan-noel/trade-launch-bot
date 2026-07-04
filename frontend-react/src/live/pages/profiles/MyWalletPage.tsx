@@ -42,6 +42,9 @@ interface SellDialog {
   slippageInput: string;
 }
 
+/// Below-this USD value a holding is treated as dust and hidden when the toggle is on.
+const DUST_USD = 1;
+
 /// Initial table view-state; pageSize matches the DataTable default below (25).
 const INITIAL_QUERY: TableQuery = {
   page: 1,
@@ -122,6 +125,14 @@ export function MyWalletPage() {
     });
     return mergeTokenData(priced, tokenMap);
   }, [holdings, prices, tokenMap]);
+
+  // Optional dust filter: hide bags worth less than a dollar so the table shows
+  // real positions. Applied before both the table eval and the summary totals.
+  const [hideDust, setHideDust] = useState(false);
+  const visibleRows = useMemo(
+    () => (hideDust ? rows.filter((r) => (r.value_usd ?? 0) >= DUST_USD) : rows),
+    [rows, hideDust],
+  );
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -362,8 +373,8 @@ export function MyWalletPage() {
   const numericCols = useMemo(() => numericColKeys(columns), [columns]);
   const resolver = useMemo(() => columnResolver(columns), [columns]);
   const { items, total } = useMemo(
-    () => applyTableRequest(rows, toTableRequest(tableQuery, numericCols), resolver),
-    [rows, tableQuery, numericCols, resolver],
+    () => applyTableRequest(visibleRows, toTableRequest(tableQuery, numericCols), resolver),
+    [visibleRows, tableQuery, numericCols, resolver],
   );
 
   const buyTitle = buyDialog
@@ -382,6 +393,13 @@ export function MyWalletPage() {
         <Button variant="subtle" size="sm" onClick={() => refetch()} disabled={isFetching}>
           {isFetching ? 'Loading…' : '↻ Refresh'}
         </Button>
+        <Button
+          variant={hideDust ? 'primary' : 'subtle'}
+          size="sm"
+          onClick={() => setHideDust((v) => !v)}
+        >
+          {hideDust ? '✓ ' : ''}Hide dust
+        </Button>
         <div className='flex-grow' />
         <Button variant="primary" size="md" onClick={handleManualBuyOpen}>
           + Manual Buy
@@ -391,7 +409,7 @@ export function MyWalletPage() {
         </Button>
       </div>
 
-      {!isLoading && rows.length > 0 && <HoldingsSummaryBar rows={rows} />}
+      {!isLoading && visibleRows.length > 0 && <HoldingsSummaryBar rows={visibleRows} />}
 
       <CashbackCard />
 

@@ -113,23 +113,23 @@ sells wait for Phase 5.
 Current 3 data sources stay (RPC scan, Jupiter 20s poll, token-DB enrichment) — Phase 1's
 `/api/portfolio/holdings` folds the enrichment + cost basis + bot tag into one server join.
 
-- [ ] **2.1 Point at `/api/portfolio/holdings`** — new `getPortfolioHoldings` endpoint in
+- [x] **2.1 Point at `/api/portfolio/holdings`** — new `getPortfolioHoldings` endpoint in
   `@live/store/liveEndpoints.ts`; `WalletHolding` `extends TokenEnrichmentFields` and gains
   `cost_basis_sol`, `unrealized_pnl_sol`, `unrealized_pnl_pct`, `managed_by` (`{rule_name,
   status, mode} | null`). Keep the surgical single-mint post-trade patch (`confirmTrade`).
-- [ ] **2.2 Portfolio header** — stat row above the table: **total value (SOL + USD)**, 24h
+- [x] **2.2 Portfolio header** — stat row above the table: **total value (SOL + USD)**, 24h
   change, **# positions**, **total unrealized PnL**. Build from `components/ui/`; memoize so
   the 20s price tick doesn't re-render the table.
-- [ ] **2.3 Per-row PnL** — add **cost basis** + **PnL% / PnL SOL** columns (green/red) in
+- [x] **2.3 Per-row PnL** — add **cost basis** + **PnL% / PnL SOL** columns (green/red) in
   `walletColumns.tsx`.
-- [ ] **2.4 Bot-managed badge** ⭐ — per row, show `managed_by` (rule name + status:
+- [x] **2.4 Bot-managed badge** ⭐ — per row, show `managed_by` (rule name + status:
   Holding / TP-armed / exit-pending). **Why critical:** a manual Sell-All can race the bot's
   own exit → the double-sell risk that's a hard constraint. Surfaces autopilot vs. orphaned.
-- [ ] **2.5 Keep actions** — Manual Buy + row Sell-All + manual-sell dialog stay as-is
+- [x] **2.5 Keep actions** — Manual Buy + row Sell-All + manual-sell dialog stay as-is
   (100% sell); add a confirm warning when `managed_by` is set.
-- [ ] **2.6 Niceties (optional)** — dust filter (hide value < threshold); click-row →
+- [x] **2.6 Niceties (optional)** — dust filter (hide value < threshold); click-row →
   `TokenTradeChart` detail (Tokens page already has this).
-- [ ] **DoD:** `npm run build` clean; no extra re-render on SOL/USD tick or trade stream.
+- [x] **DoD:** `npm run build` clean; no extra re-render on SOL/USD tick or trade stream.
 
 ## Phase 3 — Home → "Command Center"
 
