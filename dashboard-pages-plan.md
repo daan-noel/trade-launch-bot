@@ -71,24 +71,24 @@ inspect). We do **not** rebuild them.
 Build once; Phases 2, 3, 4 all read it. Bounded/cheap (held-mint + open-position sets are
 tiny → safe on 4GB EC2). No new pools.
 
-- [ ] **1.1 Cost-basis repo fn** — add `TradeRepo::avg_entry_by_wallet_and_mints(wallet, &[mint])`
+- [x] **1.1 Cost-basis repo fn** — add `TradeRepo::avg_entry_by_wallet_and_mints(wallet, &[mint])`
   in `trade_repo.rs`. SQL: `SUM(amount_lamports)/SUM(token_amount)` grouped by mint over
   `trade_type='buy'` for the wallet (resolve `wallet_id` via `wallet_dict`). Returns
   `{mint → (avg_entry_price, total_token_amount, total_cost_lamports)}`. **This is the
   manual-buy cost-basis SSOT.** (Bot buys already carry `strategy_positions.entry_*`.)
-- [ ] **1.2 Pure PnL math** — one helper (in `trading_core`, e.g. `models/position.rs` or a
+- [x] **1.2 Pure PnL math** — one helper (in `trading_core`, e.g. `models/position.rs` or a
   small `portfolio` mod) computing `{cost_basis_sol, unrealized_pnl_sol, unrealized_pnl_pct}`
   from `(avg_entry_price, current_mark, held_ui_amount)`. Reuse the existing
   `StrategyPosition::{realized_pnl_sol,pnl_pct}` conventions; do **not** re-derive PnL in JS.
-- [ ] **1.3 Bot-correlation read** — thin wrapper over `StrategyRepo::find_open_positions`
+- [x] **1.3 Bot-correlation read** — thin wrapper over `StrategyRepo::find_open_positions`
   returning `{mint → {rule_id, rule_name, status, mode}}` for a held-mint set (correlate on
   `mint` / `token_account`). Real-only filter available via `mode='real'`.
-- [ ] **1.4 Portfolio service** — new `live/src/services/portfolio.rs` mirroring
+- [x] **1.4 Portfolio service** — new `live/src/services/portfolio.rs` mirroring
   `wallet_tokens.rs`; composes: held holdings (`state.trader`) + marks
   (`jupiter::fetch_prices`) + cost basis (1.1) + PnL (1.2) + bot info (1.3) + enrichment
   (`token_enrichment::fetch_by_mints`). Live wallet fields (symbol/migrated/cashback/marks)
   **win** over any DB copy.
-- [ ] **1.5 Endpoints** (handler in `live/src/api/handlers/trading/` — new `portfolio.rs`;
+- [x] **1.5 Endpoints** (handler in `live/src/api/handlers/trading/` — new `portfolio.rs`;
   register in `configure_deploy_routes`, `api/mod.rs:14`):
   - `GET /api/portfolio/holdings` — enriched holdings + cost basis + unrealized PnL + bot
     tag (Holdings page + Home top-holdings).
@@ -96,11 +96,11 @@ tiny → safe on 4GB EC2). No new pools.
     realized PnL today, # active rules, open-position count (Home KPIs).
   - `GET /api/portfolio/positions` — all open **strategy** positions cross-rule via
     `find_open_positions` (Live Trading roll-up, Phase 4). Real-only param.
-- [ ] **1.6 SSOT guard test** — assert the JS-facing PnL never re-implements the math (single
+- [x] **1.6 SSOT guard test** — assert the JS-facing PnL never re-implements the math (single
   compute site); a `live` unit test on 1.1/1.2 with a fixture (avg-entry + mark → known PnL).
-- [ ] **1.7 Docs** — `@arch/database.md` (new `TradeRepo` fn), `@arch/architecture.md`
+- [x] **1.7 Docs** — `@arch/database.md` (new `TradeRepo` fn), `@arch/architecture.md`
   (new service + `/api/portfolio/*`); note the cost-basis SSOT decision in `@plans/`.
-- [ ] **DoD:** `cargo check -p live` + `cargo check -p trading_core` clean; clippy on touched;
+- [x] **DoD:** `cargo check -p live` + `cargo check -p trading_core` clean; clippy on touched;
   the guard test passes.
 
 ## Phase 2 — Holdings page → position manager
