@@ -158,6 +158,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `handlers/system/live_mode.rs` | `get/set_live_mode` |
 | `handlers/tokens/sync.rs` | `sync_token`, `preview_sync` (RPC backfill, gated by `SyncGate`) |
 | `handlers/trading/solana.rs` | `manual_buy`, `manual_sell` (Sell All), `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
+| `handlers/trading/portfolio.rs` | `/api/portfolio/{holdings,summary,positions}` — thin reads over `services::portfolio` (holdings + cost basis + PnL + bot tag; wallet KPI summary; cross-strategy open-positions roll-up). Holdings/Home/Live-Trading surfaces |
 | `handlers/trading/cashback.rs` | `get_cashback_status`, `claim_cashback` |
 | `handlers/strategies/positions.rs` | **unified** position reads over `StrategyRepo`, keyed by the `{strategy}` path segment (`tpsl1`/`tpsl2` aliases or canonical ids) — by rule / mint / wallet / id. Replaced the per-strategy `tpsl{1,2}_positions.rs` (Phase 3) |
 | `handlers/strategies/rules.rs` | **unified** rule CRUD + lifecycle (list/get/create/update/delete · activate/pause/stop), keyed by `{strategy}`, over the `StrategyService` + `strategies::rules` domain. Edge appends cache reload + `rules_changed` SSE (Phase 3) |
