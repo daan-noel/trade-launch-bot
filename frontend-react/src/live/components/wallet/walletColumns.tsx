@@ -78,6 +78,48 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       searchValue: (r) => String(r.value_usd ?? ''),
     },
     {
+      key: 'cost_basis_sol',
+      label: 'Cost Basis',
+      group: 'position',
+      width: '110px',
+      sortable: true,
+      render: (r) =>
+        r.cost_basis_sol != null ? (
+          <span className="tabular-nums text-text-mid">◎{formatCompact(r.cost_basis_sol, 3)}</span>
+        ) : (
+          <span className="text-text-dim">—</span>
+        ),
+      sortValue: (r) => r.cost_basis_sol ?? 0,
+      searchValue: (r) => String(r.cost_basis_sol ?? ''),
+    },
+    {
+      key: 'unrealized_pnl',
+      label: 'Unreal. PnL',
+      group: 'position',
+      width: '135px',
+      sortable: true,
+      render: (r) => {
+        const sol = r.unrealized_pnl_sol;
+        if (sol == null) return <span className="text-text-dim">—</span>;
+        const pct = r.unrealized_pnl_pct;
+        const cls = sol > 0 ? 'text-green' : sol < 0 ? 'text-red' : 'text-text';
+        return (
+          <span className={cn('font-semibold tabular-nums', cls)}>
+            ◎{sol > 0 ? '+' : ''}
+            {formatCompact(sol, 3)}
+            {pct != null && (
+              <span className="ml-1 text-[11px]">
+                ({pct > 0 ? '+' : ''}
+                {pct.toFixed(1)}%)
+              </span>
+            )}
+          </span>
+        );
+      },
+      sortValue: (r) => r.unrealized_pnl_sol ?? 0,
+      searchValue: (r) => String(r.unrealized_pnl_sol ?? ''),
+    },
+    {
       key: 'price_usd',
       label: 'Price',
       group: 'price',
@@ -120,6 +162,30 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <LiquidityCell usd={r.liquidity} />,
       sortValue: (r) => r.liquidity ?? 0,
       searchValue: (r) => String(r.liquidity ?? ''),
+    },
+    {
+      // ⭐ Bot-managed badge: a live strategy holds/exits this same bag, so a
+      // manual Sell-All can race the bot's own exit (double-sell risk). Surfaces
+      // autopilot vs. orphaned; an in-flight exit (`ExitPending`) shows amber.
+      key: 'managed_by',
+      label: 'Managed By',
+      group: 'flags',
+      width: '150px',
+      sortable: true,
+      render: (r) => {
+        const m = r.managed_by;
+        if (!m) return <span className="text-text-dim">—</span>;
+        const exiting = m.status === 'ExitPending';
+        return (
+          <div className="flex flex-col items-start gap-0.5">
+            <Badge variant={exiting ? 'warning' : 'primary'}>{m.rule_name ?? 'bot'}</Badge>
+            <span className="text-[10px] text-text-dim">{m.status}</span>
+          </div>
+        );
+      },
+      sortValue: (r) => r.managed_by?.rule_name ?? '',
+      searchValue: (r) =>
+        r.managed_by ? `${r.managed_by.rule_name ?? ''} ${r.managed_by.status} managed bot` : '',
     },
     {
       key: 'migrated',

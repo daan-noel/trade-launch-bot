@@ -9,6 +9,7 @@ import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { walletColumns } from '@live/components/wallet/walletColumns';
+import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
 import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
 import { toTableRequest, numericColKeys } from 'services/tableRequest';
@@ -356,6 +357,8 @@ export function MyWalletPage() {
           - Manual Sell
         </Button>
       </div>
+
+      {!isLoading && rows.length > 0 && <HoldingsSummaryBar rows={rows} />}
 
       <CashbackCard />
 
