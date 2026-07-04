@@ -148,6 +148,45 @@ pub async fn open_positions(
     Ok(positions)
 }
 
+/// Per-bag cost basis + unrealized PnL. **The only place the service turns a mark
+/// into PnL** — the arithmetic is delegated to
+/// [`trading_core::models::portfolio::unrealized_pnl`] (the SSOT compute site);
+/// this helper only lifts the SOL/raw average entry into UI space to match the
+/// per-UI-token mark. `avg_entry_price` is SOL per raw unit (`AvgEntry`);
+/// `mark_sol_per_ui` is SOL per UI token (Jupiter mark ÷ SOL/USD). Cost basis needs
+/// only the average entry; the mark-to-market fields need a mark too.
+struct HoldingPnl {
+    cost_basis_sol: Option<f64>,
+    unrealized_pnl_sol: Option<f64>,
+    unrealized_pnl_pct: Option<f64>,
+}
+
+fn holding_pnl(
+    avg_entry_price: Option<f64>,
+    mark_sol_per_ui: Option<f64>,
+    decimals: u8,
+    ui_amount: f64,
+) -> HoldingPnl {
+    // SOL/raw → SOL/ui so it shares a unit basis with the per-UI-token mark.
+    let avg_entry_per_ui = avg_entry_price.map(|a| a * 10f64.powi(decimals as i32));
+    match (avg_entry_per_ui, mark_sol_per_ui) {
+        (Some(entry_ui), Some(mark)) => {
+            let p = unrealized_pnl(entry_ui, mark, ui_amount);
+            HoldingPnl {
+                cost_basis_sol: Some(p.cost_basis_sol),
+                unrealized_pnl_sol: Some(p.unrealized_pnl_sol),
+                unrealized_pnl_pct: Some(p.unrealized_pnl_pct),
+            }
+        }
+        // No live mark: we can still show what was paid, but not the PnL.
+        _ => HoldingPnl {
+            cost_basis_sol: avg_entry_per_ui.map(|e| e * ui_amount),
+            unrealized_pnl_sol: None,
+            unrealized_pnl_pct: None,
+        },
+    }
+}
+
 /// Rank open statuses by how much a manual sell would conflict with the bot's own
 /// action — `ExitPending` (sell in flight) is the sharpest double-sell risk.
 fn status_rank(status: &str) -> u8 {
@@ -258,17 +297,13 @@ async fn compose(
             };
             let value_sol = mark_sol_per_ui.map(|m| m * h.ui_amount);
 
-            // Cost basis + unrealized PnL in UI space (avg entry is SOL/raw → SOL/ui
-            // via the decimals factor), so the SOL outputs come out in human SOL.
-            let decimals_factor = 10f64.powi(h.decimals as i32);
-            let avg_entry_per_ui = avg_entries
-                .get(&h.mint)
-                .map(|a| a.avg_entry_price * decimals_factor);
-            let cost_basis_sol = avg_entry_per_ui.map(|e| e * h.ui_amount);
-            let pnl = match (avg_entry_per_ui, mark_sol_per_ui) {
-                (Some(entry_ui), Some(mark)) => Some(unrealized_pnl(entry_ui, mark, h.ui_amount)),
-                _ => None,
-            };
+            // Cost basis + unrealized PnL, delegated to the SSOT compute site.
+            let pnl = holding_pnl(
+                avg_entries.get(&h.mint).map(|a| a.avg_entry_price),
+                mark_sol_per_ui,
+                h.decimals,
+                h.ui_amount,
+            );
 
             let mut token = enrich_row.map(TokenEnrichment::from).unwrap_or_default();
             token.is_migrated = is_migrated;
@@ -291,12 +326,57 @@ async fn compose(
                 price_change_24h: entry.and_then(|e| e.price_change_24h),
                 token_created_at: entry.and_then(|e| e.token_created_at.clone()),
                 value_sol,
-                cost_basis_sol,
-                unrealized_pnl_sol: pnl.map(|p| p.unrealized_pnl_sol),
-                unrealized_pnl_pct: pnl.map(|p| p.unrealized_pnl_pct),
+                cost_basis_sol: pnl.cost_basis_sol,
+                unrealized_pnl_sol: pnl.unrealized_pnl_sol,
+                unrealized_pnl_pct: pnl.unrealized_pnl_pct,
                 managed_by,
                 token,
             }
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SSOT guard (Phase 1.6): the service's PnL composition is the SSOT
+    /// `unrealized_pnl` fed with a UI-space average entry — never a re-implemented
+    /// formula. Fixture: avg entry 1e-9 SOL/raw at 6 decimals = 1e-3 SOL/UI token;
+    /// mark 2e-3 SOL/UI; 1000 UI held ⇒ cost 1.0 SOL, +1.0 SOL, +100%.
+    #[test]
+    fn holding_pnl_matches_known_fixture() {
+        let p = holding_pnl(Some(1e-9), Some(2e-3), 6, 1000.0);
+        assert!((p.cost_basis_sol.unwrap() - 1.0).abs() < 1e-12);
+        assert!((p.unrealized_pnl_sol.unwrap() - 1.0).abs() < 1e-12);
+        assert!((p.unrealized_pnl_pct.unwrap() - 100.0).abs() < 1e-9);
+    }
+
+    /// No live mark (untracked mint / Jupiter miss): cost basis still resolves from
+    /// the recorded buys, but PnL cannot be marked.
+    #[test]
+    fn no_mark_yields_cost_basis_but_no_pnl() {
+        let p = holding_pnl(Some(1e-9), None, 6, 1000.0);
+        assert!((p.cost_basis_sol.unwrap() - 1.0).abs() < 1e-12);
+        assert!(p.unrealized_pnl_sol.is_none());
+        assert!(p.unrealized_pnl_pct.is_none());
+    }
+
+    /// A received/transferred bag with no recorded buys has no cost basis and no PnL.
+    #[test]
+    fn no_recorded_buys_has_no_basis() {
+        let p = holding_pnl(None, Some(2e-3), 6, 1000.0);
+        assert!(p.cost_basis_sol.is_none());
+        assert!(p.unrealized_pnl_sol.is_none());
+        assert!(p.unrealized_pnl_pct.is_none());
+    }
+
+    /// `status_rank` picks the sharpest double-sell risk: an in-flight exit
+    /// outranks a plain hold, which outranks a buy-in-flight / arming.
+    #[test]
+    fn status_rank_orders_by_double_sell_risk() {
+        assert!(status_rank("ExitPending") > status_rank("Holding"));
+        assert!(status_rank("Holding") > status_rank("BuySubmitted"));
+        assert!(status_rank("BuySubmitted") > status_rank("Arming"));
+    }
 }
