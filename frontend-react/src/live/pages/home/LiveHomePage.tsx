@@ -3,6 +3,7 @@ import { usePriceUnit } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
 import { TopHoldingsWidget } from '@live/components/home/TopHoldingsWidget';
 import { LiveTradeFeed } from '@live/components/home/LiveTradeFeed';
+import { StrategyStrip } from '@live/components/home/StrategyStrip';
 import {
   useGetPortfolioSummaryQuery,
   useGetLiveModeQuery,
@@ -77,6 +78,10 @@ export function LiveHomePage() {
           value={live == null ? '—' : live ? 'ON' : 'OFF'}
           tone={live ? 'green' : 'muted'}
         />
+      </div>
+
+      <div className="mt-3">
+        <StrategyStrip />
       </div>
 
       <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
