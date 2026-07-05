@@ -1,21 +1,24 @@
 -- ============================================================================
--- Clean-rebuild schema (live/lab remake, Phase 1) — TimescaleDB, local-first.
+-- Consolidated core schema (single-file init). TimescaleDB, local-first.
 --
--- This replaces the old squashed init entirely. It is the concrete realization
--- of the four storage plans + the TimescaleDB plan:
---   * token-storage-plan.md    — tokens / tokens_info / token_sync_state (mint PK)
---   * trades-storage-plan.md    — trades (integer base units, BYTEA sig, wallet
---                                 interning, hypertable, dedup PK)
---   * raw-txs-storage-plan.md   — raw_txs (BYTEA payload, hypertable, short TTL)
---   * strategy-storage-plan.md  — strategy_rules / runs / run_metrics / positions
---                                 (unified, typed lifecycle + JSONB params)
---   * timescaledb-plan.md       — hypertables + compression + retention policies
+-- This is the squash of the former 0001..0010 core migration chain into one
+-- end-state file — it creates the schema exactly as running the full chain on a
+-- fresh database would leave it (all renames/adds/drops already folded in):
+--   * 0001 init                      base tables, hypertables, views, seeds
+--   * 0002 token_account             strategy_positions.token_account
+--   * 0003 venue-neutral reserves    reserve_sol/reserve_token (already inlined)
+--   * 0004 creation_slot / first-slot  tokens.creation_slot + first-slot lamports
+--   * 0005 token-list pagination     tokens/tokens_info sort indexes
+--   * 0007 drop cohort metric        strategy_run_metrics.n_exit_cohort removed
+--   * 0009 SOL/lamports naming        *_sol/*_lamports unit-in-name renames
+-- The pure data-backfill migrations (0006 snake_case buy-ix keys, 0008 paper
+-- entry backfill, 0010 tpsl2 param cleanup, and 0009's JSONB key rewrite) only
+-- rewrote pre-existing rows — no-ops on a fresh DB — so they are intentionally
+-- omitted here.
 --
--- Optimization levers adopted (storage-plan "open questions", locked this remake):
---   1. tx_signature / raw sig  → BYTEA (64 raw bytes, not 88 base58 TEXT)
---   2. wallet_address          → interned to wallet_id INTEGER (wallet_dict)
---   4. real_*_reserves         → dropped (re-derivable from raw_txs; keep virtual_*)
---   + amounts                  → BIGINT base units (lamports / raw token units)
+-- Naming rule (migration 0009, locked): every column denoting a SOL amount names
+-- its unit — `_lamports` = exact BIGINT, `_sol` = human f64. Ratios keep
+-- `_price`/`_pct`.
 --
 -- TimescaleDB note: hypertable creation + compression/retention policies are
 -- transaction-safe and live here. Continuous aggregates (trades_ohlcv_*) CANNOT
@@ -51,7 +54,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     token_program_id        TEXT,
 
     initial_supply_token    BIGINT,
-    initial_buy_sol         BIGINT,                 -- lamports (exact; display ÷1e9)
+    initial_buy_lamports    BIGINT,                 -- lamports (exact; display ÷1e9)
 
     cu_limit                BIGINT,
     cu_price                BIGINT,
@@ -59,6 +62,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     is_mayhem_mode          BOOLEAN     NOT NULL DEFAULT FALSE,
     is_cashback_enabled     BOOLEAN     NOT NULL DEFAULT FALSE,
 
+    creation_slot           BIGINT,                 -- Solana slot of the create tx
     creation_tx_signature   TEXT        NOT NULL,
     ix_labels               JSONB       NOT NULL DEFAULT '[]',
     initial_buy_instruction JSONB,
@@ -72,6 +76,9 @@ CREATE INDEX IF NOT EXISTS idx_tokens_created_at          ON tokens(created_at D
 CREATE INDEX IF NOT EXISTS idx_tokens_token_program_id    ON tokens(token_program_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_is_mayhem_mode      ON tokens(is_mayhem_mode);
 CREATE INDEX IF NOT EXISTS idx_tokens_is_cashback_enabled ON tokens(is_cashback_enabled);
+-- Default token-list order + stable tiebreak (newest-first, mint tiebreak).
+CREATE INDEX IF NOT EXISTS idx_tokens_created_mint
+    ON tokens (created_at DESC, mint_address DESC);
 
 -- ===========================================================================
 -- tokens_info — live market metrics (hot-updated), PK = FK = mint_address (1:1)
@@ -82,9 +89,13 @@ CREATE TABLE IF NOT EXISTS tokens_info (
     current_price  DOUBLE PRECISION,
     ath_price      DOUBLE PRECISION,
     ath_timestamp  TIMESTAMPTZ,
-    volume         DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    volume_sol     DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     trade_count    BIGINT      NOT NULL DEFAULT 0,
     last_trade_at  TIMESTAMPTZ,
+
+    -- total buy/sell SOL (lamports) across trades in the token's creation slot.
+    first_slot_buy_lamports  BIGINT,
+    first_slot_sell_lamports BIGINT,
 
     is_dead        BOOLEAN     NOT NULL DEFAULT FALSE,
     is_migrated    BOOLEAN     NOT NULL DEFAULT FALSE,
@@ -94,8 +105,18 @@ CREATE TABLE IF NOT EXISTS tokens_info (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tokens_info_is_dead       ON tokens_info(is_dead);
-CREATE INDEX IF NOT EXISTS idx_tokens_info_volume        ON tokens_info(volume DESC);
+CREATE INDEX IF NOT EXISTS idx_tokens_info_volume_sol    ON tokens_info(volume_sol DESC);
 CREATE INDEX IF NOT EXISTS idx_tokens_info_last_trade_at ON tokens_info(last_trade_at DESC);
+-- Sort columns the token table exposes (paged straight from Postgres). NULLS LAST
+-- matches the query's `... NULLS LAST` so the index order serves the sort directly.
+CREATE INDEX IF NOT EXISTS idx_tokens_info_trade_count
+    ON tokens_info (trade_count DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_tokens_info_current_price
+    ON tokens_info (current_price DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_tokens_info_ath_price
+    ON tokens_info (ath_price DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_tokens_info_ath_timestamp
+    ON tokens_info (ath_timestamp DESC NULLS LAST);
 
 -- ===========================================================================
 -- token_sync_state — per-venue ingest watermarks (replaces last_synced_* cols)
@@ -114,11 +135,40 @@ CREATE INDEX IF NOT EXISTS idx_token_sync_state_synced ON token_sync_state(last_
 
 -- Full token picture; age / market_cap derived (never stored). LEFT JOIN so
 -- freshly-created (pre-sync) tokens still appear with NULL metrics.
-CREATE OR REPLACE VIEW token_overview AS
+-- DROP+CREATE (not CREATE OR REPLACE): the latter can only append output columns,
+-- not reorder/rename them, so it breaks re-runs against an older view shape.
+DROP VIEW IF EXISTS token_overview;
+CREATE VIEW token_overview AS
 SELECT
-    t.*,
-    i.current_price, i.ath_price, i.ath_timestamp, i.volume, i.trade_count,
-    i.last_trade_at, i.is_dead, i.is_migrated, i.lifetime_secs,
+    t.mint_address,
+    t.creator_wallet,
+    t.name,
+    t.symbol,
+    t.bonding_curve_address,
+    t.token_program_id,
+    t.initial_supply_token,
+    t.initial_buy_lamports,
+    t.cu_limit,
+    t.cu_price,
+    t.is_mayhem_mode,
+    t.is_cashback_enabled,
+    t.creation_slot,
+    t.creation_tx_signature,
+    t.ix_labels,
+    t.initial_buy_instruction,
+    t.meta,
+    t.created_at,
+    i.current_price,
+    i.ath_price,
+    i.ath_timestamp,
+    i.volume_sol,
+    i.trade_count,
+    i.last_trade_at,
+    i.first_slot_buy_lamports,
+    i.first_slot_sell_lamports,
+    i.is_dead,
+    i.is_migrated,
+    i.lifetime_secs,
     i.updated_at AS metrics_updated_at,
     EXTRACT(EPOCH FROM (now() - t.created_at))::bigint AS age_secs,
     (i.current_price * t.initial_supply_token)         AS market_cap
@@ -139,21 +189,21 @@ CREATE TABLE IF NOT EXISTS raw_txs (
     PRIMARY KEY (block_time, tx_signature)          -- partition col first; IS the dedup key
 );
 
-SELECT create_hypertable('raw_txs', by_range('block_time', INTERVAL '1 day'));
+SELECT create_hypertable('raw_txs', by_range('block_time', INTERVAL '1 day'), if_not_exists => TRUE);
 
 ALTER TABLE raw_txs SET (
     timescaledb.compress,
     timescaledb.compress_orderby = 'slot, tx_index'
 );
-SELECT add_compression_policy('raw_txs', compress_after => INTERVAL '2 days');
-SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '7 days');
+SELECT add_compression_policy('raw_txs', compress_after => INTERVAL '2 days', if_not_exists => TRUE);
+SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '7 days', if_not_exists => TRUE);
 
 -- ===========================================================================
 -- trades — high-volume append-only feed (the LaserStream transport IS this
 --   table). Integer base units, BYTEA signature, interned wallet_id, no
 --   surrogate key (the dedup key is the PK). Reserves stored as a single
---   venue-neutral pair (reserve_sol/reserve_token): curve virtual reserves on
---   curve rows, pool real reserves on amm rows. No separate real_*_reserves.
+--   venue-neutral pair (reserve_lamports/reserve_token): curve virtual reserves
+--   on curve rows, pool real reserves on amm rows. No separate real_*_reserves.
 --
 --   Ordering key (execution order): (slot, tx_index, leg_index).
 --   block_time: wall-clock partition + candle-bucket axis (NOT an order key).
@@ -166,11 +216,11 @@ CREATE TABLE IF NOT EXISTS trades (
                                             CHECK (venue IN ('curve','amm')),
 
     -- amounts as integer base units (exact, matches chain u64)
-    sol_amount             BIGINT      NOT NULL,   -- lamports
+    amount_lamports        BIGINT      NOT NULL,   -- lamports
     token_amount           BIGINT      NOT NULL,   -- raw token units
     -- Reserve pair this row prices from (venue-neutral): curve virtual reserves
     -- on curve rows, PumpSwap pool real reserves on amm rows. spot = sol/token.
-    reserve_sol            BIGINT,
+    reserve_lamports       BIGINT,
     reserve_token          BIGINT,
 
     -- ordering key; block_time = bucket/partition axis
@@ -184,7 +234,7 @@ CREATE TABLE IF NOT EXISTS trades (
     PRIMARY KEY (block_time, tx_signature, leg_index)  -- partition col first; IS the dedup key
 );
 
-SELECT create_hypertable('trades', by_range('block_time', INTERVAL '1 day'));
+SELECT create_hypertable('trades', by_range('block_time', INTERVAL '1 day'), if_not_exists => TRUE);
 
 -- Per-mint chronological reads with exact intra-block order (recent chunks).
 CREATE INDEX IF NOT EXISTS idx_trades_mint_order
@@ -196,14 +246,15 @@ ALTER TABLE trades SET (
     timescaledb.compress_orderby   = 'slot, tx_index, leg_index'
 );
 -- compress_after MUST exceed the sync/backfill lookback horizon.
-SELECT add_compression_policy('trades', compress_after => INTERVAL '7 days');
-SELECT add_retention_policy('trades', drop_after => INTERVAL '30 days');
+SELECT add_compression_policy('trades', compress_after => INTERVAL '7 days', if_not_exists => TRUE);
+SELECT add_retention_policy('trades', drop_after => INTERVAL '30 days', if_not_exists => TRUE);
 
--- Read view — derived price (lamports per raw unit; ×10^decimals at display).
-CREATE OR REPLACE VIEW trades_priced AS
+-- Read view — derived price (SOL per raw token unit; ÷1e9).
+DROP VIEW IF EXISTS trades_priced;
+CREATE VIEW trades_priced AS
 SELECT
     t.*,
-    (t.sol_amount::double precision / NULLIF(t.token_amount, 0)) AS price_per_token
+    (t.amount_lamports::double precision / 1e9 / NULLIF(t.token_amount, 0)) AS price_per_token
 FROM trades t;
 
 -- ===========================================================================
@@ -214,7 +265,7 @@ CREATE TABLE IF NOT EXISTS strategy_rules (
     strategy_id             TEXT        NOT NULL,          -- 'tpsl1' | 'tpsl2' | …
     rule_name               TEXT        NOT NULL,
 
-    buy_amount              DOUBLE PRECISION NOT NULL,
+    buy_amount_sol          DOUBLE PRECISION NOT NULL,
     trade_mode              TEXT        NOT NULL DEFAULT 'paper'
                                 CHECK (trade_mode IN ('paper', 'real')),
     is_active               BOOLEAN     NOT NULL DEFAULT TRUE,
@@ -288,7 +339,6 @@ CREATE TABLE IF NOT EXISTS strategy_run_metrics (
     n_exit_stall        INTEGER     NOT NULL,
     n_exit_time         INTEGER     NOT NULL,
     n_exit_liquidity    INTEGER     NOT NULL,
-    n_exit_cohort       INTEGER     NOT NULL,
     n_exit_open         INTEGER     NOT NULL
 );
 
@@ -308,10 +358,13 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
     mint                    TEXT        NOT NULL,
     wallet                  TEXT        NOT NULL,
     token_program_id        TEXT,
+    -- persisted wallet token account for this mint, so bot buys/sells reuse ONE
+    -- account across restarts (nullable + additive; NULL falls back to resolver).
+    token_account           TEXT,
 
     -- optional trigger trade (scalp-style entry arming)
     -- price = SOL per raw token unit (ratio, float); amounts = exact integers:
-    -- *_token_amount = raw token units (BIGINT), *_sol = lamports (BIGINT).
+    -- *_token_amount = raw token units (BIGINT), *_lamports = lamports (BIGINT).
     target_price            DOUBLE PRECISION,
     target_token_amount     BIGINT,                 -- raw token units
     target_time             TIMESTAMPTZ,
@@ -320,14 +373,14 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
     -- entry fill (NULL until the buy lands)
     entry_price             DOUBLE PRECISION,
     entry_token_amount      BIGINT,                 -- raw token units
-    entry_sol               BIGINT,                 -- lamports
+    entry_lamports          BIGINT,                 -- lamports
     entry_time              TIMESTAMPTZ,
     entry_tx_signatures     JSONB       NOT NULL DEFAULT '[]',
 
     -- exit fill
     exit_price              DOUBLE PRECISION,
     exit_token_amount       BIGINT,                 -- raw token units
-    exit_sol                BIGINT,                 -- lamports
+    exit_lamports           BIGINT,                 -- lamports
     exit_time               TIMESTAMPTZ,
     exit_tx_signatures      JSONB       NOT NULL DEFAULT '[]',
 
@@ -362,12 +415,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_positions_exit_sig0
     WHERE mode = 'real' AND jsonb_array_length(exit_tx_signatures) > 0;
 
 -- Derived per-position PnL (never stored).
-CREATE OR REPLACE VIEW strategy_position_pnl AS
+DROP VIEW IF EXISTS strategy_position_pnl;
+CREATE VIEW strategy_position_pnl AS
 SELECT
     p.*,
-    -- exit_sol/entry_sol are lamports (BIGINT); divide back to human SOL so the
-    -- view's realized_pnl_sol matches StrategyPosition::realized_pnl_sol() (f64 SOL).
-    ((p.exit_sol - p.entry_sol)::float8 / 1e9)                        AS realized_pnl_sol,
+    -- exit_lamports/entry_lamports are lamports (BIGINT); divide back to human SOL
+    -- so realized_pnl_sol matches StrategyPosition::realized_pnl_sol() (f64 SOL).
+    ((p.exit_lamports - p.entry_lamports)::float8 / 1e9)               AS realized_pnl_sol,
     CASE WHEN p.entry_price > 0
          THEN (p.exit_price - p.entry_price) / p.entry_price * 100.0 END AS pnl_pct,
     CASE WHEN p.entry_time IS NOT NULL AND p.exit_time IS NOT NULL
