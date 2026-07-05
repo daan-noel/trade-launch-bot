@@ -24,6 +24,7 @@ import {
 } from '@live/store/liveEndpoints';
 import type { AppDispatch } from '@live/store';
 import type { ManagedBy } from 'types';
+import { parseSlippageBps } from '@live/lib/slippage';
 
 interface BuyDialog {
   mint: string;
@@ -53,19 +54,6 @@ const INITIAL_QUERY: TableQuery = {
   search: '',
   colFilters: {},
 };
-
-/// Parse a slippage percent string into basis points (1% = 100 bps), shared by
-/// the buy and sell dialogs. Blank → `{}` (let the backend use its default);
-/// out-of-range/non-numeric → `{ error }` for the caller to surface.
-function parseSlippageBps(raw: string): { bps?: number; error?: string } {
-  const trimmed = raw.trim();
-  if (!trimmed) return {};
-  const pct = parseFloat(trimmed);
-  if (!Number.isFinite(pct) || pct < 0 || pct > 50) {
-    return { error: 'Enter a valid slippage % between 0 and 50' };
-  }
-  return { bps: Math.round(pct * 100) };
-}
 
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();

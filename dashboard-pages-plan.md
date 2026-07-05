@@ -167,16 +167,16 @@ lazy route in `App.tsx`. Reads `GET /api/portfolio/positions` (Phase 1.5).
 New route `/trade` + nav + lazy route. **Backend `sell(amount)` path is the biggest,
 riskiest change — carries double-sell risk; do last.**
 
-- [ ] **5.1 Trade page shell** — route/nav; mint input → live price/liquidity + **chart
+- [x] **5.1 Trade page shell** — route/nav; mint input → live price/liquidity + **chart
   preview** (reuse `TokenTradeChart`); Buy (SOL + slippage) + Sell forms.
-- [ ] **5.2 Bot-managed interlock** ⭐ — before a manual action, warn if a live strategy
+- [x] **5.2 Bot-managed interlock** ⭐ — before a manual action, warn if a live strategy
   manages the mint (reuse Phase 1.3 correlation). Preserves double-sell safety.
-- [ ] **5.3 Recent manual-trades log**.
-- [ ] **5.4 Backend partial sell** — add a `sell(amount)`/`sell(pct)` path across the `live`
+- [x] **5.3 Recent manual-trades log**.
+- [ ] **5.4 Backend partial sell** *(DEFERRED — real-money sell path; needs feed-confirm design + review)* — add a `sell(amount)`/`sell(pct)` path across the `live`
   bin and `pump-trader`; sell-25/50/75%. **Keep sell-confirm on the `trades` gRPC feed — no new
   RPC poll** (hard constraint; the exit loop polls the full window before retry to avoid
   duplicate sells — preserve `execution/real.rs` behavior).
-- [ ] **5.5 Wire partial sell** into Holdings (2.5) + Trade page.
+- [ ] **5.5 Wire partial sell** *(DEFERRED — depends on 5.4)* into Holdings (2.5) + Trade page.
 - [ ] **DoD:** `cargo check -p live` + `cargo test -p pump-trader` + `npm run build` clean;
   double-sell path re-verified.
 
