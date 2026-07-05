@@ -463,6 +463,37 @@ export interface WalletHolding extends TokenEnrichmentFields {
   managed_by?: ManagedBy | null;
 }
 
+/** Wallet-wide roll-up from `GET /api/portfolio/summary` — the Home KPI row.
+ *  Mirrors the backend `PortfolioSummary`. */
+export interface PortfolioSummary {
+  total_value_sol: number;
+  total_value_usd: number;
+  total_cost_basis_sol: number;
+  total_unrealized_pnl_sol: number;
+  /** Held bags (token accounts with a balance). */
+  position_count: number;
+  /** Realized SOL PnL from real positions that cleanly exited since 00:00 UTC. */
+  realized_pnl_today_sol: number;
+  /** Active real-mode rules. */
+  active_rules: number;
+  /** Open real strategy positions across all rules. */
+  open_position_count: number;
+}
+
+/** One open strategy position from `GET /api/portfolio/positions` — the fields the
+ *  Home per-strategy strip and the Live-Trading roll-up read (a subset of the
+ *  backend `StrategyPosition`). */
+export interface OpenStrategyPosition {
+  strategy_id: string;
+  rule_id: string | null;
+  mint: string;
+  mode: string;
+  status: string;
+  entry_price?: number | null;
+  entry_sol?: number | null;
+  entry_time?: string | null;
+}
+
 /// Live, fast-changing market data for one mint (Jupiter). Fetched separately
 /// from the slow wallet balance read so the wallet table can refresh values on
 /// a poll without re-scanning the chain; merged onto {@link WalletHolding}.

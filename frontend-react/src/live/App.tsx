@@ -10,7 +10,7 @@ import { liveNav } from './nav';
 
 // Code-split each route into its own chunk. Pages export named (not default)
 // components, so map the named export onto `default` in each lazy() call.
-const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default: m.HomePage })));
+const HomePage = lazy(() => import('@live/pages/home/LiveHomePage').then((m) => ({ default: m.LiveHomePage })));
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
 const SyncTokenPage = lazy(() => import('@live/pages/tokens/SyncTokenPage').then((m) => ({ default: m.SyncTokenPage })));
 const MyWalletPage = lazy(() => import('@live/pages/profiles/MyWalletPage').then((m) => ({ default: m.MyWalletPage })));

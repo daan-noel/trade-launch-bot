@@ -2,6 +2,8 @@ import { baseApi } from 'store/baseApi';
 import type {
   WalletHolding,
   WalletPrice,
+  PortfolioSummary,
+  OpenStrategyPosition,
   CashbackStatus,
   CashbackClaimResult,
 } from 'types';
@@ -45,6 +47,18 @@ export const liveApi = baseApi.injectEndpoints({
     // it imperatively via `initiate` and patch the result into the list cache.
     getWalletHolding: builder.query<WalletHolding | null, string>({
       query: (mint) => `/api/solana/wallet/tokens/${encodeURIComponent(mint)}`,
+    }),
+    // Wallet-wide roll-up for the Home KPI row (value/PnL totals + real-money
+    // aggregates). Shares the WalletHoldings tag so a trade refresh invalidates it.
+    getPortfolioSummary: builder.query<PortfolioSummary, void>({
+      query: () => '/api/portfolio/summary',
+      providesTags: ['WalletHoldings'],
+    }),
+    // All open strategy positions across every rule (Home per-strategy strip +
+    // Live-Trading roll-up). `real` defaults to true (real-money monitor).
+    getPortfolioPositions: builder.query<OpenStrategyPosition[], boolean | void>({
+      query: (real = true) => `/api/portfolio/positions?real=${real}`,
+      providesTags: ['WalletHoldings'],
     }),
     // Live prices for the held mints, decoupled from the balance read. Polled
     // on a short interval (see the page) so the value column ticks without
@@ -92,6 +106,8 @@ export const liveApi = baseApi.injectEndpoints({
 
 export const {
   useGetPortfolioHoldingsQuery,
+  useGetPortfolioSummaryQuery,
+  useGetPortfolioPositionsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
