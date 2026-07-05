@@ -1,6 +1,7 @@
 import { StatTile } from 'components/ui/StatTile';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
+import { TopHoldingsWidget } from '@live/components/home/TopHoldingsWidget';
 import {
   useGetPortfolioSummaryQuery,
   useGetLiveModeQuery,
@@ -75,6 +76,10 @@ export function LiveHomePage() {
           value={live == null ? '—' : live ? 'ON' : 'OFF'}
           tone={live ? 'green' : 'muted'}
         />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <TopHoldingsWidget />
       </div>
     </div>
   );
