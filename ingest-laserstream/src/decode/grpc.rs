@@ -134,11 +134,24 @@ impl Decoder {
         let keys = LazyKeys::new(message, meta);
         let logs: Vec<&str> = meta.log_messages.iter().map(String::as_str).collect();
 
-        // Step 1a: TradeEvents from logs (or inner-ix fallback).
+        // Step 1a: TradeEvents. The primary source is the "Program data:" log lines,
+        // but the validator TRUNCATES a transaction's logs past a byte limit — a
+        // multi-buy bundle (several pump buys in one tx) can exceed it and lose its
+        // trailing TradeEvent log lines (observed: 4-buy launch bundles emit only 3
+        // "Program data:" lines + a "Log truncated" marker, so the 4th buy vanished).
+        // The anchor self-CPI event *inner instructions* carry the COMPLETE set (inner
+        // instructions are NOT subject to the log byte limit), so fall back to them
+        // when the log scan is empty OR the logs were truncated, taking whichever
+        // source yields more events. (A plain `is_empty()` fallback missed PARTIAL
+        // truncation — 3 of 4 events is non-empty, so the recovery never ran.)
         let mut decoded_events = decode_trade_events_from_logs(&logs, &p.discriminators.trade_event, p.lamports_per_sol);
-        if decoded_events.is_empty() {
+        let logs_truncated = logs.iter().any(|l| l.contains("Log truncated"));
+        if decoded_events.is_empty() || logs_truncated {
             let pump_ixs = find_pump_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
-            decoded_events = decode_trade_events_from_inner_pb(&pump_ixs, p);
+            let inner_events = decode_trade_events_from_inner_pb(&pump_ixs, p);
+            if inner_events.len() > decoded_events.len() {
+                decoded_events = inner_events;
+            }
         }
 
         let decoded_create_events = decode_create_events_from_logs(&logs, &p.discriminators.create_event);
@@ -269,6 +282,12 @@ impl Decoder {
         };
 
         let logs: Vec<&str> = meta.log_messages.iter().map(String::as_str).collect();
+        // NOTE: same log-truncation exposure as the curve path (see decode_curve_pb
+        // Step 1a) — a multi-swap AMM bundle whose logs exceed the validator byte limit
+        // loses its trailing PumpSwap Buy/Sell "Program data:" lines. Recovering them
+        // needs an inner-instruction PumpSwap-event decoder (the events are also emitted
+        // as anchor self-CPIs); not yet implemented, so a truncated AMM bundle can still
+        // under-count legs. Curve launch bundles (the observed case) are fixed above.
         let resolved: Vec<(DecodedAmmTrade, String)> = decode_pump_swap_trades_from_logs(&logs, p)
             .into_iter()
             .filter(|ev| ev.quote_amount >= p.min_trade_sol)

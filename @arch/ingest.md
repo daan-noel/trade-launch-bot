@@ -43,7 +43,7 @@ Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `s
 | `health.rs` | `HealthState` (atomics), `HealthSnapshot`, `watch::Receiver<HealthSnapshot>` |
 | `transport/mod.rs` | gRPC producer: TLS auth, reconnect w/ backoff, replay from `last_slot`, idle-reconnect timer, backpressure guard; `connect`, `build_subscribe_request`, `TransportConfig` |
 | `decode/mod.rs` | `Decoder` (+ `HeliusDecoder` back-compat alias), `TxRelevance`, `DecodeOutput` |
-| `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys` |
+| `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
 | `decode/instructions.rs` | `InstructionKind`, labeler |
 | `decode/create.rs` | `decode_create_events_from_logs` |
