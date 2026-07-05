@@ -182,12 +182,20 @@ const CHART_STYLE_ICONS: Record<ChartStyle, ReactNode> = {
   line: <LineIcon />,
 };
 
-/** Instant dark tooltip shown below its `group` parent on hover (icon-only controls). */
+/**
+ * Instant dark tooltip shown below its `group` parent on hover (icon-only
+ * controls). Anchored to the right edge (opens leftward), NOT centred: every
+ * control that uses this sits in the toolbar's right-aligned cluster, so a
+ * centred `whitespace-nowrap` tooltip would spill past the viewport's right
+ * edge — and since it stays mounted (only faded via `opacity-0`), that spill
+ * gives every chart page a permanent horizontal scrollbar even when nothing is
+ * hovered. Right-anchoring keeps the whole tooltip on-screen with room to spare.
+ */
 function HoverTooltip({ children }: { children: ReactNode }) {
   return (
     <span
       role="tooltip"
-      className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded px-2 py-1 text-[10px] font-medium opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100"
+      className="pointer-events-none absolute right-0 top-full z-50 mt-1.5 whitespace-nowrap rounded px-2 py-1 text-[10px] font-medium opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100"
       style={{
         backgroundColor: '#0a0a0a',
         color: CHART_COLORS.panelText,
