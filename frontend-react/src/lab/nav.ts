@@ -22,6 +22,7 @@ export const labNav: NavConfig = {
       label: 'Analysis',
       basePath: '/analysis',
       items: [
+        { to: '/analysis/trader', label: 'Trader Analysis' },
         { to: '/analysis/swing-detection', label: 'Swing detection' },
         { to: '/analysis/swing1-detect', label: 'swing1 detect' },
       ],

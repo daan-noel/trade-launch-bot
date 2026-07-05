@@ -84,6 +84,10 @@ export const CHART_COLORS = {
    *  rotating WALLET_MARKER_COLORS palette so it's recognizable at a glance among
    *  other tracked trader/whale/dev wallets. */
   mine: '#fbbf24',
+  /** Glow + outer ring for the focused/highlighted wallet marker (Trader
+   *  Analysis input wallet). Gold, distinct from `mine` so a wallet can be both
+   *  the focus AND one of yours without the two signals colliding. */
+  highlightRing: '#fde047',
   /** Longest swing-chain highlight band (amber wash + solid label chip) */
   chainBandFill: 'rgba(250, 204, 21, 0.12)',
   chainBandBorder: 'rgba(250, 204, 21, 0.6)',

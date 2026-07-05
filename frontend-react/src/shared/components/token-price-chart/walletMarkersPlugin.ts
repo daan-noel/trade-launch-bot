@@ -22,17 +22,25 @@ export interface WalletMarkerDef {
   type: 'buy' | 'sell';
   /** vertical stack index for multiple wallets on same bar+type */
   stackIndex: number;
+  /** Focused wallet (Trader Analysis input) — draws larger with a glow + ring. */
+  highlighted?: boolean;
+  /** Glow/outer-ring color for a highlighted marker. */
+  ringColor?: string;
 }
 
 interface RenderedPoint {
   x: number;
   y: number;
+  radius: number;
   letter: string;
   color: string;
   borderColor: string;
+  highlighted?: boolean;
+  ringColor?: string;
 }
 
-const RADIUS = 7;   // CSS px
+const RADIUS = 7;          // CSS px
+const HIGHLIGHT_RADIUS = 11; // CSS px — focused wallet marker
 const GAP = 5;      // CSS px gap between bar edge and nearest marker center
 const SPACING = 2;  // CSS px between stacked markers
 
@@ -42,25 +50,47 @@ class WalletMarkersRenderer implements IPrimitivePaneRenderer {
   draw(target: CanvasRenderingTarget2D): void {
     target.useBitmapCoordinateSpace(({ context: ctx, horizontalPixelRatio, verticalPixelRatio }) => {
       const s = Math.min(horizontalPixelRatio, verticalPixelRatio);
-      const r = RADIUS * s;
 
       ctx.save();
-      ctx.font = `bold ${Math.round(8 * s)}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
       for (const p of this._pts) {
         const cx = p.x * horizontalPixelRatio;
         const cy = p.y * verticalPixelRatio;
+        const r = p.radius * s;
 
+        // Filled disc — glow only for the focused wallet, isolated in its own
+        // save/restore so the shadow never bleeds onto neighbouring markers.
+        ctx.save();
+        if (p.highlighted) {
+          ctx.shadowColor = p.ringColor ?? p.color;
+          ctx.shadowBlur = 9 * s;
+        }
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
         ctx.fill();
+        ctx.restore();
+
+        // Buy/sell border stays (identity + direction), regardless of highlight.
         ctx.lineWidth = 2 * s;
         ctx.strokeStyle = p.borderColor;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
         ctx.stroke();
 
+        // Highlighted wallet gets an extra gold outer ring so it reads as "the
+        // one you're focused on" without losing its buy/sell border.
+        if (p.highlighted) {
+          ctx.lineWidth = 2 * s;
+          ctx.strokeStyle = p.ringColor ?? '#fff';
+          ctx.beginPath();
+          ctx.arc(cx, cy, r + 3 * s, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.font = `bold ${Math.round((p.highlighted ? 10 : 8) * s)}px sans-serif`;
         ctx.fillStyle = '#fff';
         ctx.fillText(p.letter, cx, cy);
       }
@@ -122,12 +152,24 @@ export class WalletMarkersPlugin
       const baseY = series.priceToCoordinate(d.barEdgePrice);
       if (x == null || baseY == null) continue;
 
+      const radius = d.highlighted ? HIGHLIGHT_RADIUS : RADIUS;
       const dir = d.type === 'sell' ? -1 : 1;
+      // Stack offset uses each marker's own radius so a larger highlighted disc
+      // pushes its neighbours clear instead of overlapping them.
       const y =
         baseY +
-        dir * (GAP + RADIUS + d.stackIndex * (RADIUS * 2 + SPACING));
+        dir * (GAP + radius + d.stackIndex * (RADIUS * 2 + SPACING));
 
-      pts.push({ x, y, letter: d.letter, color: d.color, borderColor: d.borderColor });
+      pts.push({
+        x,
+        y,
+        radius,
+        letter: d.letter,
+        color: d.color,
+        borderColor: d.borderColor,
+        highlighted: d.highlighted,
+        ringColor: d.ringColor,
+      });
     }
     this._pts = pts;
   }
@@ -136,7 +178,7 @@ export class WalletMarkersPlugin
     for (const p of this._pts) {
       const dx = p.x - x;
       const dy = p.y - y;
-      if (dx * dx + dy * dy <= RADIUS * RADIUS) return true;
+      if (dx * dx + dy * dy <= p.radius * p.radius) return true;
     }
     return false;
   }

@@ -1,5 +1,10 @@
 import { useMemo } from 'react';
-import { CHART_COLORS, WALLET_MARKER_COLORS, type ProfileWalletInfo } from 'components/token-price-chart';
+// Import the palette + type from the leaf files, NOT the `token-price-chart`
+// barrel: `TokenPriceChart` itself now consumes this hook (to default its
+// markers), and going through the barrel — which re-exports `TokenPriceChart` —
+// would form an import cycle.
+import { CHART_COLORS, WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
+import type { ProfileWalletInfo } from 'components/token-price-chart/types';
 import { useGetProfilesQuery } from 'store/apiSlice';
 import type { WalletProfile } from 'types';
 

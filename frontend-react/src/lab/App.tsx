@@ -16,6 +16,7 @@ const CreationStatsPage = lazy(() => import('@lab/pages/creation-stats/CreationS
 const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
 const SwingDetectionPage = lazy(() => import('@lab/pages/analysis/SwingDetectionPage').then((m) => ({ default: m.SwingDetectionPage })));
 const Swing1DetectPage = lazy(() => import('@lab/pages/analysis/Swing1DetectPage').then((m) => ({ default: m.Swing1DetectPage })));
+const TraderAnalysisPage = lazy(() => import('@lab/pages/analysis/TraderAnalysisPage').then((m) => ({ default: m.TraderAnalysisPage })));
 const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) => ({ default: m.ProfilesPage })));
 const Tpsl1Page = lazy(() => import('@lab/pages/strategies/Tpsl1Page').then((m) => ({ default: m.Tpsl1Page })));
 const Tpsl2Page = lazy(() => import('@lab/pages/strategies/Tpsl2Page').then((m) => ({ default: m.Tpsl2Page })));
@@ -50,7 +51,8 @@ export default function App() {
                     }
                   />
                   <Route path="tokens" element={<TokensPage />} />
-                  <Route path="analysis" element={<Navigate to="/analysis/swing-detection" replace />} />
+                  <Route path="analysis" element={<Navigate to="/analysis/trader" replace />} />
+                  <Route path="analysis/trader" element={<TraderAnalysisPage />} />
                   <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
                   <Route path="analysis/swing1-detect" element={<Swing1DetectPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />

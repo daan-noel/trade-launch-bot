@@ -39,6 +39,7 @@ import { ChartRangeSlider } from './ChartRangeSlider';
 import { ChartToolbar } from './ChartToolbar';
 import { createChartTimeFormatters } from './chartTimezone';
 import { useTimezone } from 'context/TimezoneContext';
+import { useProfileWallets } from 'hooks/useProfileWallets';
 import { cn } from 'lib/cn';
 import {
   CANDLE_SERIES_OPTIONS,
@@ -340,6 +341,8 @@ function buildWalletMarkerDefs(
         borderColor: CHART_COLORS.up,
         type: 'buy',
         stackIndex: stackIndex++,
+        highlighted: w.isHighlighted,
+        ringColor: CHART_COLORS.highlightRing,
       });
     }
     for (const w of sell) {
@@ -351,6 +354,8 @@ function buildWalletMarkerDefs(
         borderColor: CHART_COLORS.down,
         type: 'sell',
         stackIndex: stackIndex++,
+        highlighted: w.isHighlighted,
+        ringColor: CHART_COLORS.highlightRing,
       });
     }
   }
@@ -475,6 +480,15 @@ export function TokenPriceChart({
   tokenCreatedAt,
   eventMarkers = null,
 }: TokenPriceChartProps) {
+  // Tracked-wallet markers are a project-wide invariant: EVERY token trade chart
+  // renders them. Callers may supply `profileWallets` (e.g. `TokenTradeChart`,
+  // which augments the tracked set with the highlighted/synthetic input wallet);
+  // when a caller omits the prop we fall back to the tracked profile wallets
+  // here, so a token trade chart can never render without them — by construction,
+  // not by convention.
+  const trackedProfileWallets = useProfileWallets();
+  const effectiveProfileWallets = profileWallets ?? trackedProfileWallets;
+
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const onBarClickRef = useRef(onBarClick);
@@ -1291,10 +1305,10 @@ export function TokenPriceChart({
       markers.push(...buildTradeMarkers(trades, groupMode, intervalSec));
     }
 
-    if (profileWallets && profileWallets.length > 0) {
-      const walletDefs = buildWalletMarkerDefs(trades, profileWallets, bars, groupMode, intervalSec);
+    if (effectiveProfileWallets.length > 0) {
+      const walletDefs = buildWalletMarkerDefs(trades, effectiveProfileWallets, bars, groupMode, intervalSec);
       walletMarkersPrimRef.current?.setMarkers(walletDefs);
-      walletActivityMapRef.current = buildWalletBarActivityMap(trades, profileWallets, groupMode, intervalSec);
+      walletActivityMapRef.current = buildWalletBarActivityMap(trades, effectiveProfileWallets, groupMode, intervalSec);
     } else {
       walletMarkersPrimRef.current?.setMarkers([]);
       walletActivityMapRef.current = new Map();
@@ -1350,7 +1364,7 @@ export function TokenPriceChart({
     swingOverlay,
     sortedTrades,
     bars,
-    profileWallets,
+    effectiveProfileWallets,
     eventMarkers,
   ]);
 

@@ -29,6 +29,11 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/tokens/{mint}/swing1-detect",
                 web::post().to(handlers::tokens::detect_token_swing1),
             )
+            // Trader Analysis: mints a wallet traded (recent-first, days+limit)
+            .route(
+                "/wallets/{wallet}/tokens",
+                web::get().to(handlers::wallets::list_wallet_tokens),
+            )
             // Background-job status + control (sweep / simulation / swing)
             .route("/jobs/status", web::get().to(handlers::system::job_status))
             .route(

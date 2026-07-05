@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  CHART_COLORS,
   TokenPriceChart,
   tradeBarSlot,
   tradeBarTime,
@@ -61,6 +62,10 @@ interface TokenTradeChartProps {
   externalSelection?: TokenTradeChartExternalSelection | null;
   /** Passed to DataTable so column visibility is persisted per call-site. */
   tableId?: string;
+  /** Wallet to spotlight (Trader Analysis): its markers render larger with a
+   *  gold glow/ring, standing out among the other tracked wallets. If it isn't
+   *  a saved profile wallet, a synthetic marker entry is injected so it shows. */
+  highlightWallet?: string | null;
 }
 
 /** Maps tx signature → kind for entry/exit row highlighting in the trades table.
@@ -120,6 +125,7 @@ export function TokenTradeChart({
   onConnectSwingsChange,
   externalSelection = null,
   tableId,
+  highlightWallet = null,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
@@ -137,7 +143,30 @@ export function TokenTradeChart({
     error: tradesErrorRaw,
   } = useGetTokenTradesQuery(mint, { skip: !mint });
   const trades = tradesData ?? EMPTY_TRADES;
-  const profileWallets = useProfileWallets();
+  const profileWalletsBase = useProfileWallets();
+  // Spotlight the focused wallet: flag it highlighted if it's already tracked,
+  // otherwise append a synthetic marker entry so an arbitrary input address
+  // still shows its buys/sells. The other tracked wallets ride along unchanged.
+  const profileWallets = useMemo(() => {
+    const addr = highlightWallet?.trim();
+    if (!addr) return profileWalletsBase;
+    let matched = false;
+    const flagged = profileWalletsBase.map((w) => {
+      if (w.address !== addr) return w;
+      matched = true;
+      return { ...w, isHighlighted: true };
+    });
+    if (matched) return flagged;
+    return [
+      ...flagged,
+      {
+        address: addr,
+        label: `${addr.slice(0, 4)}…${addr.slice(-4)}`,
+        color: CHART_COLORS.highlightRing,
+        isHighlighted: true,
+      },
+    ];
+  }, [profileWalletsBase, highlightWallet]);
 
   const toChartValue = useCallback(
     (sol: number) => (unit === 'USD' && usdRate != null ? sol * usdRate : sol),

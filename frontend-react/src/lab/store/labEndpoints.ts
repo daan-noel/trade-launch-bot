@@ -13,6 +13,7 @@ import type {
   MatchedTokensResponse,
   PaperResultResponse,
   SimulatedTokenResult,
+  TraderTokenRow,
 } from 'types';
 
 /** Args for the per-rule strategy result reads (matched / simulate / paper),
@@ -207,6 +208,23 @@ export const labApi = baseApi.injectEndpoints({
       },
       keepUnusedDataFor: 120,
     }),
+    // Trader Analysis: full token rows (+ the wallet's per-mint stats) for every
+    // mint a wallet traded in the last `days`, most-recent-trade first, capped at
+    // `limit`. PG-backed on purpose — the 7-day default window includes today,
+    // which the sealed-days lake lacks. The page renders these through the shared
+    // token columns (client-side sort/filter) + a synced charts grid.
+    getTraderTokens: builder.query<
+      TraderTokenRow[],
+      { wallet: string; days: number; limit: number }
+    >({
+      query: ({ wallet, days, limit }) =>
+        `/api/wallets/${encodeURIComponent(wallet)}/tokens?days=${days}&limit=${limit}`,
+      // Pre-parse created_at to epoch-ms so the shared AgeCell reads it directly
+      // (mirrors the getTokensPage transform).
+      transformResponse: (rows: TraderTokenRow[]) =>
+        rows.map((r) => ({ ...r, created_at_ms: Date.parse(r.created_at) })),
+      keepUnusedDataFor: 60,
+    }),
   }),
 });
 
@@ -219,4 +237,5 @@ export const {
   useDeleteGroupedSweepRunMutation,
   useRenameGroupedSweepRunMutation,
   usePruneGroupedSweepsMutation,
+  useGetTraderTokensQuery,
 } = labApi;

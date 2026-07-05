@@ -572,6 +572,19 @@ export interface TokenDetailRecord {
   last_synced_at: string | null;
 }
 
+/** One row of the Trader Analysis token table — a full {@link TokenRecord} (so it
+ *  renders through the same columns as the All Tokens table) plus the wallet's
+ *  interaction stats on that mint. Returned by `GET /api/wallets/:wallet/tokens`,
+ *  most-recent-trade first. */
+export interface TraderTokenRow extends TokenRecord {
+  /** The wallet's most-recent trade on this mint — the table's default sort. */
+  wallet_last_trade_at: string;
+  /** The wallet's buy/sell counts on this mint within the look-back window.
+   *  Scoped to the window, so a mint the wallet only *exited* can show 0 buys. */
+  wallet_buy_count: number;
+  wallet_sell_count: number;
+}
+
 /** Per-token live stats pushed alongside each trade (backend `live_stats`).
  *  Field names mirror {@link TokenRecord} so they patch straight into a row. */
 export interface TokenLiveStats {

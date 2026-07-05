@@ -487,6 +487,55 @@ impl TradeRepo {
             .collect())
     }
 
+    /// Distinct token mints this wallet traded in the `since..now` window,
+    /// ordered by the wallet's most-recent trade on each mint (recent first) and
+    /// capped at `limit`. Powers the Trader Analysis page's per-wallet token list.
+    ///
+    /// Counts **both** buys and sells, so a mint the wallet only *exited* in the
+    /// window (its buy predates `since`) still appears. An unknown wallet has no
+    /// trades, so returns an empty vec without touching `trades`. Bounded by
+    /// `limit` + the `block_time >= since` window, which rides the hypertable's
+    /// `block_time` partitioning.
+    pub async fn wallet_traded_mints(
+        &self,
+        wallet: &str,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<WalletTradedMint>> {
+        let Some(wallet_id) = WalletDictRepo::new(self.pool.clone()).id_for(wallet).await? else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<(String, DateTime<Utc>, i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT mint_address,
+                   MAX(block_time) AS last_trade_at,
+                   COUNT(*) FILTER (WHERE trade_type = 'buy')  AS buy_count,
+                   COUNT(*) FILTER (WHERE trade_type = 'sell') AS sell_count
+            FROM trades
+            WHERE wallet_id = $1
+              AND block_time >= $2
+            GROUP BY mint_address
+            ORDER BY last_trade_at DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(wallet_id)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(mint_address, last_trade_at, buy_count, sell_count)| WalletTradedMint {
+                mint_address,
+                last_trade_at,
+                buy_count,
+                sell_count,
+            })
+            .collect())
+    }
+
     /// Find all trades for a token in execution order (slot, tx_index, leg_index).
     /// LEFT-joins `wallet_dict` to recover each trade's wallet address (orphaned
     /// wallet ids fall back to the `unknown:<id>` sentinel, never dropping a row).
@@ -878,6 +927,21 @@ pub struct AvgEntry {
     pub total_token_amount: u64,
     /// Σ amount_lamports across the wallet's buy legs — exact integer lamports.
     pub total_cost_lamports: i64,
+}
+
+/// One token a wallet traded in the window, with the wallet's interaction stats
+/// on that mint — the recent-first ordering key + the wallet-specific columns for
+/// the Trader Analysis token table ([`TradeRepo::wallet_traded_mints`]).
+///
+/// `buy_count`/`sell_count` are scoped to the same `block_time >= since` window,
+/// so a mint the wallet only *exited* in the window can show `buy_count = 0` (its
+/// buys predate the window) — matches the "both buys and sells count" semantics.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WalletTradedMint {
+    pub mint_address: String,
+    pub last_trade_at: DateTime<Utc>,
+    pub buy_count: i64,
+    pub sell_count: i64,
 }
 
 impl SigLegs {

@@ -44,6 +44,10 @@ export interface ProfileWalletInfo {
    *  marker color/glyph instead of the rotating tracked-wallet palette, and
    *  drives the "my trade" row highlight in trade tables. */
   isMine?: boolean;
+  /** True for the single wallet the current view is focused on (e.g. the input
+   *  wallet on the Trader Analysis page) — its markers render larger with a
+   *  glow + gold outer ring so they stand out among the other tracked wallets. */
+  isHighlighted?: boolean;
 }
 
 /**
@@ -303,7 +307,11 @@ export interface TokenPriceChartProps {
   /** Chain swing reversal points (default true). */
   connectSwings?: boolean;
   onConnectSwingsChange?: (connected: boolean) => void;
-  /** Tracked profile wallets to render as colored buy/sell markers. */
+  /** Tracked profile wallets to render as colored buy/sell markers. OMIT to get
+   *  the tracked wallets automatically (the chart falls back to `useProfileWallets`
+   *  internally) — every token trade chart shows tracked-wallet markers by
+   *  default. Pass an explicit list to override (e.g. `TokenTradeChart` adds the
+   *  highlighted/synthetic input wallet); pass `[]` to force no markers. */
   profileWallets?: ProfileWalletInfo[];
   /** Token creation time (ISO string) — used to show per-bar tx age in the crosshair tooltip. */
   tokenCreatedAt?: string;

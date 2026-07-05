@@ -126,6 +126,12 @@ interface DataTableProps<R> {
   /** Optional extra className(s) applied to each data `<td>` based on its
    *  column group key. Called once per visible cell; return undefined to skip. */
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
+  /** Fires with the rows currently on screen (the processed + paginated page)
+   *  whenever they change — lets a sibling view (e.g. a synced charts grid)
+   *  mirror the table's current sort/filter/page. Works in client + server mode.
+   *  Pass a stable (useCallback) handler; `pageRows` is memoized so it only fires
+   *  on a real change, not every render. */
+  onVisibleRowsChange?: (rows: R[]) => void;
 }
 
 export function DataTable<R>({
@@ -155,6 +161,7 @@ export function DataTable<R>({
   resetKey,
   rowClassName,
   cellGroupClassName,
+  onVisibleRowsChange,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -428,11 +435,17 @@ export function DataTable<R>({
     : 1;
   const pageVal = paginate ? Math.min(page, totalPages) : 1;
   const start = paginate ? (pageVal - 1) * pageSize : 0;
-  const pageRows = serverSide
-    ? rows
-    : paginate
-      ? processed.slice(start, start + pageSize)
-      : processed;
+  const pageRows = useMemo(
+    () =>
+      serverSide ? rows : paginate ? processed.slice(start, start + pageSize) : processed,
+    [serverSide, rows, paginate, processed, start, pageSize],
+  );
+  // Surface the on-screen rows so a synced sibling (e.g. the Trader Analysis
+  // charts grid) can mirror the current sort/filter/page. Memoized `pageRows`
+  // keeps this from firing every render.
+  useEffect(() => {
+    onVisibleRowsChange?.(pageRows);
+  }, [pageRows, onVisibleRowsChange]);
   const colCount = visCols.length + 1 + (rowActions ? 1 : 0);
 
   const activeFilters = Object.values(colFiltersMap).filter(Boolean).length;

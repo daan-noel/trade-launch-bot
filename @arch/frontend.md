@@ -101,9 +101,28 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   `managed_by` bot badge + double-sell confirm interlock, reads `/api/portfolio/holdings`)
   (+ `InputSyncStatus`, `wallet/`, `transactions/` components; `useTradeStream`,
   `usePositionNotifications`; `syncTokenSlice`).
-- **Lab (`@lab/pages`):** Analysis, SwingDetection, Tpsl{1,2}Page (authoring), Grouped
-  Sweep ×2 (+ `analysis/`, `sweep/`, `strategy/` components; `useStreamedSweepResults`;
-  `swingDetectionSlice`, `strategyResultCache`, `BackgroundJobsContext`).
+- **Lab (`@lab/pages`):** Analysis, SwingDetection, **TraderAnalysis** (paste a wallet →
+  the **standard** full token table — the shared `tokenColumns()`, unchanged, client-side
+  sort/filter/search via `DataTable` — **plus** a synced lazy charts grid below that mirrors
+  the table's current sort/filter/page. The wallet-specific stats (buys / sells / last
+  traded) live in each chart card's header, **not** as table columns, so nothing duplicates
+  the token columns. Each `TokenTradeChart` has the wallet's buys/sells **spotlighted** among
+  the tracked markers; recent-trade-first (backend order, no `defaultSort`);
+  `useGetTraderTokensQuery` → `GET /api/wallets/:wallet/tokens` returns `TraderTokenRow`
+  (full `TokenRecord` + `wallet_{last_trade_at,buy_count,sell_count}`), a PG read since the
+  default 7d window includes today, which the lake lacks. The table→charts sync uses
+  `DataTable`'s `onVisibleRowsChange` callback — fires the memoized on-screen page rows so a
+  sibling view can follow), Tpsl{1,2}Page
+  (authoring), Grouped Sweep ×2 (+ `analysis/`, `sweep/`, `strategy/` components;
+  `useStreamedSweepResults`; `swingDetectionSlice`, `strategyResultCache`, `BackgroundJobsContext`).
+  The shared `TokenTradeChart`/`TokenPriceChart` take an optional `highlightWallet` — its
+  markers render larger with a gold glow+ring (`ProfileWalletInfo.isHighlighted` →
+  `walletMarkersPlugin`), and a non-tracked input address gets a synthetic marker entry.
+  **Tracked-wallet markers are a structural invariant:** `TokenPriceChart` defaults
+  `profileWallets` to `useProfileWallets()` when the prop is omitted, so *every* token trade
+  chart shows tracked-wallet markers by construction (pass an explicit list to override,
+  `[]` to force none). `useProfileWallets` imports the palette/type from the chart's leaf
+  files (not the barrel) to avoid an import cycle now that `TokenPriceChart` consumes it.
 
 ## Rule forms + copy/paste params — `lib/params/` (one engine, one spec/strategy)
 
