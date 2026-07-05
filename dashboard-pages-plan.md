@@ -136,17 +136,17 @@ Current 3 data sources stay (RPC scan, Jupiter 20s poll, token-DB enrichment) �
 Replace the empty `pages/home/HomePage.tsx` with the single pane of glass. Mostly
 aggregation once Phase 1 exists.
 
-- [ ] **3.1 KPI row** — from `/api/portfolio/summary`: wallet value (SOL + USD), unrealized
+- [x] **3.1 KPI row** — from `/api/portfolio/summary`: wallet value (SOL + USD), unrealized
   PnL, realized PnL today, open positions (all strategies), # active rules, **live-mode
   status** (reuse `useGetLiveModeQuery`), SOL balance. Reusable `StatTile` in
   `components/ui/`.
-- [ ] **3.2 Top holdings widget** — top N by value from `/api/portfolio/holdings`, link → Holdings.
-- [ ] **3.3 Live trade feed** — reuse the `trade_executed` SSE (`visibleMintsRef` pattern
+- [x] **3.2 Top holdings widget** — top N by value from `/api/portfolio/holdings`, link → Holdings.
+- [x] **3.3 Live trade feed** — reuse the `trade_executed` SSE (`visibleMintsRef` pattern
   from `TokensPage`); memoize ticks — hot path, no per-tick table re-render.
-- [ ] **3.4 Per-strategy real-P&L strip** — compact per-strategy open/realized from
+- [x] **3.4 Per-strategy real-P&L strip** — compact per-strategy open/realized from
   `/api/portfolio/summary` (or the Phase-4 positions endpoint), link → Live Trading.
-- [ ] **3.5 Docs** — `@arch/frontend.md` (new Home surface + `/api/portfolio/*` hooks).
-- [ ] **DoD:** `npm run build` clean; Home stays glanceable + cheap to render.
+- [x] **3.5 Docs** — `@arch/frontend.md` (new Home surface + `/api/portfolio/*` hooks).
+- [x] **DoD:** `npm run build` clean; Home stays glanceable + cheap to render.
 
 ---
 

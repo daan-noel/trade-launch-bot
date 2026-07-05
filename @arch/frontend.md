@@ -45,8 +45,8 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 - `shared/store/baseApi.ts` — the `createApi` **shell**: `reducerPath:'api'`, `keepUnusedDataFor:300`,
   **all 9 `tagTypes` declared up front** (`injectEndpoints` can't add tag types), `endpoints:()=>({})`.
 - Three `injectEndpoints` modules attach onto it, each bundled only in its app:
-  `shared/store/sharedEndpoints.ts` (tokens, profiles, settings+optimistic, solPrice, creation
-  heatmap), `live/store/liveEndpoints.ts` (wallet holdings/prices, buy/sell,
+  heatmap), `live/store/liveEndpoints.ts` (**portfolio** holdings/summary/positions —
+  `/api/portfolio/*`, the Holdings + Home command-center data; wallet prices, buy/sell,
   cashback, **live-mode**), `lab/store/labEndpoints.ts` (grouped sweeps, strategy
   simulate/paper, grouped creation stats, creators/analysis).
 - `shared/store/apiSlice.ts` is a **barrel re-exporting SHARED endpoints only** (+ `apiErrorMessage`,
@@ -92,10 +92,15 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 
 ## Pages by mode
 
-- **Shared:** Home, Dashboard, Tokens (live-ingest monitor — `token_created`/`trade_executed` SSE),
-  OtherProfiles, Settings, NotFound.
-- **Live (`@live/pages`):** SyncToken, Transactions, MyWallet (+ `InputSyncStatus`, `wallet/`,
-  `transactions/` components; `useTradeStream`, `usePositionNotifications`; `syncTokenSlice`).
+- **Shared:** Home (minimal — lab still uses `pages/home/HomePage`), Dashboard, Tokens
+  (live-ingest monitor — `token_created`/`trade_executed` SSE), OtherProfiles, Settings, NotFound.
+- **Live (`@live/pages`):** **Home command center** (`home/LiveHomePage` — routed at the live
+  index over the shared Home; KPI row + `home/` widgets `TopHoldingsWidget`/`LiveTradeFeed`/
+  `StrategyStrip` over `/api/portfolio/{summary,holdings,positions}`), SyncToken, Transactions,
+  MyWallet (**position manager**: `HoldingsSummaryBar` header + cost-basis/PnL columns +
+  `managed_by` bot badge + double-sell confirm interlock, reads `/api/portfolio/holdings`)
+  (+ `InputSyncStatus`, `wallet/`, `transactions/` components; `useTradeStream`,
+  `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** Analysis, SwingDetection, Tpsl{1,2}Page (authoring), Grouped
   Sweep ×2 (+ `analysis/`, `sweep/`, `strategy/` components; `useStreamedSweepResults`;
   `swingDetectionSlice`, `strategyResultCache`, `BackgroundJobsContext`).
