@@ -28,6 +28,7 @@ export const liveNav: NavConfig = {
         { to: '/strategies/swing1', label: 'Swing 1' },
       ],
     },
+    { kind: 'item', to: '/live-trading', label: 'Live Trading' },
     { kind: 'item', to: '/wallet', label: 'My Wallet' },
     { kind: 'item', to: '/profiles', label: 'Profiles' },
     { kind: 'item', to: '/settings', label: 'Settings' },

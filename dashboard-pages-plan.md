@@ -155,12 +155,12 @@ aggregation once Phase 1 exists.
 Cross-strategy **real** monitor. New route `/live-trading` + `liveNav` item (`nav.ts`) +
 lazy route in `App.tsx`. Reads `GET /api/portfolio/positions` (Phase 1.5).
 
-- [ ] **4.1 Route + nav + page shell** (`live/pages/...`, `nav.ts`, `App.tsx`).
-- [ ] **4.2 Combined open-positions table** across tpsl1/tpsl2/swing1 (reuse `DataTable` +
+- [x] **4.1 Route + nav + page shell** (`live/pages/...`, `nav.ts`, `App.tsx`).
+- [x] **4.2 Combined open-positions table** across tpsl1/tpsl2/swing1 (reuse `DataTable` +
   the strategy position columns); real-only.
-- [ ] **4.3 Realized-P&L over time** + **per-strategy win-rate / comparison** (roll up
+- [x] **4.3 Realized-P&L over time** + **per-strategy win-rate / comparison** (roll up
   `PositionsSummary` per strategy; reuse `SimSummaryCard`-style tiles).
-- [ ] **DoD:** `cargo check -p live` + `npm run build` clean.
+- [x] **DoD:** `cargo check -p live` + `npm run build` clean.
 
 ## Phase 5 — Dedicated Trade page + partial sells (deferred; heaviest, riskiest)
 
