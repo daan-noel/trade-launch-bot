@@ -2,6 +2,7 @@ import { StatTile } from 'components/ui/StatTile';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
 import { TopHoldingsWidget } from '@live/components/home/TopHoldingsWidget';
+import { LiveTradeFeed } from '@live/components/home/LiveTradeFeed';
 import {
   useGetPortfolioSummaryQuery,
   useGetLiveModeQuery,
@@ -80,6 +81,7 @@ export function LiveHomePage() {
 
       <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
         <TopHoldingsWidget />
+        <LiveTradeFeed />
       </div>
     </div>
   );
