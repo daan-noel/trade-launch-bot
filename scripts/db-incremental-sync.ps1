@@ -29,7 +29,7 @@
   the dedup PKs + ON CONFLICT make re-running over an overlapping window a no-op.
   Strategy tables ARE allowed to delete locally (see below), but only rows previously
   observed coming FROM the server -- never a lab-authored row. Conflict policy:
-    wallet_dict      PK(id) / UNIQUE(address)                    -> DO NOTHING (immutable)
+    wallet_dict      PK(id) / UNIQUE(address)                    -> MERGE (server wins by id; local-only old ids kept)
     tokens           PK(mint_address)                            -> DO NOTHING (write-once)
     tokens_info      PK(mint_address)                            -> DO UPDATE (newer updated_at wins)
     token_sync_state PK(mint_address, venue)                     -> DO UPDATE (newer last_synced_at wins)
@@ -41,12 +41,25 @@
     strategy_positions   PK(id)                                  -> DO UPDATE + tombstone delete (server wins)
 
   wallet_dict ids are GENERATED ALWAYS AS IDENTITY. The local DB is a read-mirror of
-  the server's market data (lab has no ingest, so it never mints its own ids), so we
-  copy the server ids verbatim with OVERRIDING SYSTEM VALUE -- trades.wallet_id then
-  resolves against the same dictionary on both boxes. After the copy we setval() the
-  IDENTITY sequence past MAX(id) -- explicit-id inserts don't advance it, and a stale
-  sequence makes the next local intern() collide on wallet_dict_pkey. Order matters
-  for the FKs: wallet_dict + tokens first, then tokens_info / token_sync_state / trades.
+  the server's market data (lab has no ingest -- no intern() anywhere in the lab bin --
+  so it never mints its own ids), so the dictionary must track the server's: trades.
+  wallet_id (server id) resolves via `trades JOIN wallet_dict`, and a missing row makes
+  those reads render the trade with an `unknown:<id>` wallet (a LEFT join + COALESCE in
+  trade_repo.rs) rather than DROP it (there is NO FK on trades.wallet_id, so orphans are
+  allowed to exist). We NON-DESTRUCTIVELY MERGE the server dict each run (one txn):
+  pull it into a temp table, drop local rows whose address the server reassigned to a
+  different id (server wins), then UPSERT every server row by id. Local-only ids the
+  server no longer has are PRESERVED, because the lab retains trade history LONGER than
+  the server's 7-day window and those old trades still need them. Two earlier approaches
+  were wrong: the original `WHERE id > MAX(local id) ON CONFLICT DO NOTHING` silently
+  skipped colliding server rows (after the ~Jul-2026 rebuild re-minted wallet_dict this
+  left ~98k ids missing / 58% of trades invisible); and a TRUNCATE+full-replace fixed
+  recent days but DISCARDED the accumulated old rows the server had already aged out,
+  re-orphaning the oldest retained days on every run. After the merge we setval() the
+  IDENTITY sequence past MAX(id). Order: wallet_dict + tokens first, then tokens_info /
+  token_sync_state / trades. An in-txn completeness guard aborts if any SERVER id is
+  missing locally after the merge; a separate post-trades REPORT (step 7a) just logs the
+  residual orphans (ids absent from BOTH dicts -- pre-remint history that ages out).
 
   Strategy tables (strategy_rules/runs/run_metrics/positions) ARE synced (server wins)
   so the LIVE box's real+paper positions are viewable on the lab. They are copied
@@ -348,7 +361,7 @@ END `$`$;
   $tokensWm  = Get-LocalScalar "SELECT COALESCE(MAX(created_at), '1970-01-01 00:00:00+00')::text FROM tokens"
   $tinfoWm   = Get-LocalScalar "SELECT COALESCE(MAX(updated_at), '1970-01-01 00:00:00+00')::text FROM tokens_info"
   $syncWm    = Get-LocalScalar "SELECT COALESCE(MAX(last_synced_at), '1970-01-01 00:00:00+00')::text FROM token_sync_state"
-  Write-Host "  wallet_dict id >    $walletWm"
+  Write-Host "  wallet_dict         full mirror (local max id $walletWm; informational only)"
   Write-Host "  trades >=           $tradesWm"
   Write-Host "  tokens >=           $tokensWm"
   Write-Host "  tokens_info >=      $tinfoWm"
@@ -373,19 +386,75 @@ WHERE block_time >= '$rawWm'::timestamptz AND block_time < '$sealedCutoff'::time
 ON CONFLICT (block_time, tx_signature) DO NOTHING;
 "@ } else { "\echo 'raw_txs: skipped (pass -IncludeRawTxs to sync)'" }
 
+  # wallet_dict as a NON-DESTRUCTIVE FAITHFUL MERGE of the server (self-healing).
+  #
+  # Was (original): incremental `WHERE id > MAX(local id) ON CONFLICT DO NOTHING`.
+  # That could only ADD a contiguous id-suffix and SILENTLY SKIPPED any server
+  # (id,address) that collided with a stale local row on PK(id)/UNIQUE(address).
+  # After the ~Jul-2026 live-lab schema rebuild re-minted wallet_dict server-side, it
+  # left the local mirror missing ~98k scattered server ids -> 58% of synced trades
+  # referenced a wallet_id with no wallet_dict row, and every `trades JOIN wallet_dict`
+  # read silently DROPPED those trades. (`trades.wallet_id` has NO FK, so orphans are
+  # allowed; `lab` never mints its own ids — no intern() in the lab bin — so the local
+  # dict is meant to track the server's.)
+  #
+  # A naive TRUNCATE + full-replace is ALSO wrong: the server has a 7-day rolling
+  # window and RE-MINTED/AGED-OUT old wallet ids, but the LAB retains trade history
+  # LONGER than 7 days. Replacing wholesale discards the old (id,address) rows the
+  # mirror accumulated for those older days — which the server can no longer supply —
+  # re-orphaning historical trades on every run (observed: it fixed Jul+ but re-broke
+  # Jun 29-30 to ~90% orphaned).
+  #
+  # Correct: a non-destructive merge. Pull the server dict into a temp table once, then
+  #   1. drop any local row whose ADDRESS the server now maps to a DIFFERENT id (a real
+  #      server-side reassignment — server wins; old trades on the dropped id become
+  #      unresolvable, unavoidable for a genuine re-mint), then
+  #   2. UPSERT every server row by id (add missing, correct reassigned addresses).
+  # Local-only ids the server no longer has are PRESERVED, so historical trades stay
+  # resolvable. One server scan/run; all else is local + indexed. Atomic (BEGIN/COMMIT).
+  # `$walletWm` above is now only informational.
+  Write-Host "Merging wallet_dict (non-destructive faithful mirror; server wins, old rows preserved) ..."
   Invoke-LocalSqlFile @"
-\echo '-- wallet_dict (id-preserving mirror)'
+\echo '-- wallet_dict (non-destructive faithful merge; self-healing)'
+BEGIN;
+-- One remote scan into a local temp table so the merge below is all local + indexed.
+CREATE TEMP TABLE wd_src ON COMMIT DROP AS SELECT id, address FROM ec2_sync_src.wallet_dict;
+CREATE INDEX ON wd_src (id);
+CREATE INDEX ON wd_src (address);
+ANALYZE wd_src;
+
+-- (1) Server reassigned an address to a new id → drop the stale local holder so the
+--     server row can land without violating UNIQUE(address). (A merely aged-out old
+--     wallet has NO server row here, so its local row is left untouched below.)
+DELETE FROM wallet_dict l USING wd_src s
+  WHERE l.address = s.address AND l.id <> s.id;
+
+-- (2) Upsert the server set by id: add every missing id, correct the address of any id
+--     the server maps differently. Local-only ids absent from the server are preserved.
 INSERT INTO wallet_dict (id, address)
 OVERRIDING SYSTEM VALUE
-SELECT id, address FROM ec2_sync_src.wallet_dict
-WHERE id > $walletWm
-ON CONFLICT DO NOTHING;
--- OVERRIDING SYSTEM VALUE inserts explicit ids without advancing the IDENTITY
--- sequence. Re-point it past MAX(id) so the next local intern() (token_sync)
--- mints a fresh id instead of colliding on wallet_dict_pkey.
+SELECT id, address FROM wd_src
+ON CONFLICT (id) DO UPDATE SET address = EXCLUDED.address;
+
+-- Re-point the IDENTITY sequence past MAX(id) so any future local intern() mints a
+-- fresh id instead of colliding on wallet_dict_pkey.
 SELECT setval(pg_get_serial_sequence('wallet_dict', 'id'),
               (SELECT GREATEST(MAX(id), 1) FROM wallet_dict));
 
+-- Completeness guard (in-txn): every SERVER id must now be present locally. A non-zero
+-- count means the merge dropped/skipped server rows (a real regression) — abort.
+DO `$`$
+DECLARE gaps bigint;
+BEGIN
+  SELECT COUNT(*) INTO gaps FROM wd_src s LEFT JOIN wallet_dict l ON l.id = s.id WHERE l.id IS NULL;
+  IF gaps > 0 THEN
+    RAISE EXCEPTION 'wallet_dict mirror INCOMPLETE: % server ids missing locally after merge', gaps;
+  END IF;
+END `$`$;
+COMMIT;
+"@
+
+  Invoke-LocalSqlFile @"
 \echo '-- tokens'
 -- created_at>=watermark is the fast path (FDW pushes it down), but server tokens
 -- can arrive with a created_at EARLIER than the local max (out-of-order discovery,
@@ -431,6 +500,32 @@ WHERE block_time >= '$tradesWm'::timestamptz AND block_time < '$sealedCutoff'::t
 ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
 
 $rawTxsSql
+"@
+
+  # ---- 7a. Integrity report: residual orphaned trades ------------------------
+  # The HARD completeness guard (every SERVER id present locally) runs INSIDE the
+  # wallet_dict merge transaction above and aborts on a real mirror regression. Here
+  # we only REPORT the residual: trades whose wallet_id is absent from BOTH dicts —
+  # wallets the server re-minted/aged out of its 7-day window whose historical trades
+  # the lab still retains. These render as `unknown:<id>` in the UI (the LEFT-join
+  # fallback in trade_repo.rs), NOT as dropped rows, and they age out of the lab's own
+  # retention over time. Informational only — a rolling window of old orphans is
+  # EXPECTED (server retention < lab retention) and must not fail the sync.
+  Write-Host "Reporting residual trade->wallet_dict orphans (informational) ..."
+  Invoke-LocalSqlFile @"
+DO `$`$
+DECLARE orphans bigint; oldest timestamptz; newest timestamptz;
+BEGIN
+  SELECT COUNT(*), MIN(t.block_time), MAX(t.block_time) INTO orphans, oldest, newest
+    FROM trades t
+    LEFT JOIN wallet_dict wd ON wd.id = t.wallet_id
+    WHERE wd.id IS NULL;
+  IF orphans > 0 THEN
+    RAISE NOTICE 'Residual orphans: % trades reference wallet ids absent from both dicts (block_time % .. %). Shown as unknown:<id> in the UI; server re-minted/aged out those ids; ages out of lab retention.', orphans, oldest, newest;
+  ELSE
+    RAISE NOTICE 'Integrity OK: every trade resolves to a wallet_dict row.';
+  END IF;
+END `$`$;
 "@
 
   # ---- 7b. Strategy tables (view LIVE positions on the lab) ------------------

@@ -177,7 +177,9 @@ async fn sealed_days(pool: &PgPool, include_today: bool) -> Result<Vec<NaiveDate
 // Trades day export
 // ---------------------------------------------------------------------------
 
-/// One streamed trade row out of the new-schema `trades` joined to `wallet_dict`.
+/// One streamed trade row out of the new-schema `trades`. The lake does NOT carry
+/// the wallet address, so this reads `trades` directly — no `wallet_dict` join (and
+/// so, unlike the PG trade-history reads, it is immune to wallet_dict gaps).
 /// Integer columns; converted to the model's f64 decimal units on write.
 #[derive(sqlx::FromRow)]
 struct LakeTradeRow {

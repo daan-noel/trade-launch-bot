@@ -43,9 +43,12 @@ impl Clone for TradeRepo {
 // `real_*_reserves`) are synthesized on read.
 // ---------------------------------------------------------------------------
 
-/// One row read from the new `trades` table joined to `wallet_dict`. All amounts
-/// are integers (lamports / raw token units); `tx_signature` is the raw 64-byte
-/// signature; `wallet_address` is the joined-in base58 string.
+/// One row read from the new `trades` table LEFT-joined to `wallet_dict`. All
+/// amounts are integers (lamports / raw token units); `tx_signature` is the raw
+/// 64-byte signature; `wallet_address` is the joined-in base58 string, or a
+/// synthetic `unknown:<wallet_id>` sentinel when the interned id has no
+/// `wallet_dict` row (a LEFT join + `COALESCE` so a trade is never dropped just
+/// because its wallet couldn't be resolved — see the read queries below).
 #[derive(sqlx::FromRow)]
 struct TradeDbRow {
     mint_address: String,
@@ -401,12 +404,12 @@ impl TradeRepo {
         };
         let row = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
-            JOIN wallet_dict w ON w.id = t.wallet_id
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.wallet_id = $1 AND t.mint_address = $2 AND t.trade_type = $3
             ORDER BY t.slot DESC, t.tx_index DESC, t.leg_index DESC
             LIMIT 1
@@ -485,16 +488,17 @@ impl TradeRepo {
     }
 
     /// Find all trades for a token in execution order (slot, tx_index, leg_index).
-    /// Joins `wallet_dict` to recover each trade's wallet address.
+    /// LEFT-joins `wallet_dict` to recover each trade's wallet address (orphaned
+    /// wallet ids fall back to the `unknown:<id>` sentinel, never dropping a row).
     pub async fn find_by_mint_all(&self, mint: &str) -> anyhow::Result<Vec<Trade>> {
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
-            JOIN wallet_dict w ON w.id = t.wallet_id
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
             ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
             "#,
@@ -523,12 +527,12 @@ impl TradeRepo {
         // linear pass with no per-mint sort.
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
-            JOIN wallet_dict w ON w.id = t.wallet_id
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = ANY($1)
             ORDER BY t.mint_address ASC, t.slot ASC, t.tx_index ASC, t.leg_index ASC
             "#,
@@ -572,12 +576,12 @@ impl TradeRepo {
     ) -> anyhow::Result<Vec<Trade>> {
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
-            SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+            SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
                    t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
             FROM trades t
-            JOIN wallet_dict w ON w.id = t.wallet_id
+            LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
             ORDER BY t.slot ASC, t.tx_index ASC, t.leg_index ASC
             LIMIT $2 OFFSET $3
@@ -749,7 +753,7 @@ impl TradeRepo {
             let mut stream = sqlx::query_as::<_, SeedTradeRow>(
                 r#"
                 WITH ranked AS (
-                    SELECT t.mint_address, w.address AS wallet_address, t.trade_type, t.venue,
+                    SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                            t.amount_lamports, t.token_amount,
                            t.reserve_lamports, t.reserve_token,
                            t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
@@ -760,7 +764,7 @@ impl TradeRepo {
                            FIRST_VALUE(t.amount_lamports::float8 / NULLIF(t.token_amount, 0)) OVER w AS newest_price,
                            FIRST_VALUE(t.reserve_token::float8) OVER w AS newest_reserves
                     FROM trades t
-                    JOIN wallet_dict w ON w.id = t.wallet_id
+                    LEFT JOIN wallet_dict w ON w.id = t.wallet_id
                     WHERE t.mint_address = ANY($1)
                     WINDOW
                         w  AS (PARTITION BY t.mint_address
@@ -1093,6 +1097,50 @@ mod tests {
                 .expect("query")
                 .is_none(),
             "trade_type filter excludes the sell legs"
+        );
+
+        cleanup(&pool, &mint).await;
+    }
+
+    /// A trade whose `wallet_id` has NO `wallet_dict` row (e.g. a desynced lab
+    /// mirror) must STILL be returned by the read paths — the address join is a
+    /// LEFT join with a `unknown:<id>` fallback, not an INNER join that silently
+    /// drops the row. Regression for the "ingest missed transactions" report that
+    /// was actually the wallet_dict INNER join hiding ~58% of the lab mirror's trades.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn orphaned_wallet_id_trade_is_still_returned() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = TradeRepo::new(pool.clone());
+        let mint = unique("M");
+
+        // A wallet_id guaranteed absent from wallet_dict (max + 100k), inserted
+        // straight into `trades` to simulate an orphaned/desynced interned id.
+        let orphan_id: i32 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) + 100000 FROM wallet_dict")
+                .fetch_one(&pool)
+                .await
+                .expect("max id");
+        sqlx::query(
+            "INSERT INTO trades \
+             (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
+              reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time, tx_signature) \
+             VALUES ($1, $2, 'buy', 'curve', 1000000000, 1000, NULL, NULL, 1, 0, 0, now(), $3) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&mint)
+        .bind(orphan_id)
+        .bind(vec![7u8; 64])
+        .execute(&pool)
+        .await
+        .expect("insert orphan trade");
+
+        let trades = repo.find_by_mint_all(&mint).await.expect("query");
+        assert_eq!(trades.len(), 1, "orphaned-wallet trade must NOT be dropped by the join");
+        assert_eq!(
+            trades[0].wallet_address,
+            format!("unknown:{orphan_id}"),
+            "unresolved wallet_id falls back to the sentinel, not an empty/dropped row"
         );
 
         cleanup(&pool, &mint).await;
