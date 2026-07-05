@@ -830,6 +830,78 @@ const ProfileCard = memo(function ProfileCard({
 });
 
 // ---------------------------------------------------------------------------
+// "Me" profile card — dedicated hero rendering
+// ---------------------------------------------------------------------------
+
+interface MyProfileCardProps {
+  profile: WalletProfile;
+  togglingWalletId?: string | null;
+  onEdit: (p: WalletProfile) => void;
+  onDelete: (p: WalletProfile) => void;
+  onAddWallet: (p: WalletProfile) => void;
+  onEditWallet: (w: WalletEntry) => void;
+  onDeleteWallet: (w: WalletEntry) => void;
+  onToggleWalletTracked: (w: WalletEntry) => void;
+}
+
+// Visually a different object from the tracked-wallet cards: primary-tinted
+// surface + solid colored border + a "You" pill instead of a type badge, and no
+// tags row (you don't tag yourself). Shares the wallet-list chrome with
+// `ProfileCard` but nothing else.
+const MyProfileCard = memo(function MyProfileCard({
+  profile,
+  togglingWalletId,
+  onEdit,
+  onDelete,
+  onAddWallet,
+  onEditWallet,
+  onDeleteWallet,
+  onToggleWalletTracked,
+}: MyProfileCardProps) {
+  return (
+    <div className="rounded-xl border border-primary/50 bg-primary/5">
+      {/* Header */}
+      <div className="flex items-center gap-3 border-b border-primary/20 px-4 py-3">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-2.5 py-1 text-xs font-bold uppercase tracking-wide text-primary">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary" />
+          You
+        </span>
+        <span className="font-semibold text-text text-sm flex-1">{profile.name}</span>
+        <span className="text-xs text-text-dim">{profile.wallets.length} wallet{profile.wallets.length !== 1 ? 's' : ''}</span>
+        <Button size="xs" variant="ghost" onClick={() => onEdit(profile)}>Edit</Button>
+        <Button size="xs" variant="danger" onClick={() => onDelete(profile)}>Delete</Button>
+      </div>
+
+      {/* Wallets list (no tags row) */}
+      <div className="flex flex-col gap-1.5 p-3">
+        {profile.wallets.length === 0 ? (
+          <p className="text-xs text-text-dim px-1">No wallets yet.</p>
+        ) : (
+          profile.wallets.map((w) => (
+            <WalletRow
+              key={w.id}
+              wallet={w}
+              onEdit={onEditWallet}
+              onDelete={onDeleteWallet}
+              onToggleTracked={onToggleWalletTracked}
+              toggling={togglingWalletId === w.id}
+            />
+          ))
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="mt-1 self-start"
+          onClick={() => onAddWallet(profile)}
+        >
+          + Add wallet
+        </Button>
+      </div>
+    </div>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -1021,22 +1093,17 @@ export function ProfilesPage() {
       {/* My profile — pinned above the rest, not mixed into the general list */}
       {!loading && (
         <div className="flex flex-col gap-2">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">Me</span>
           {myProfile ? (
-            <div className="rounded-xl ring-1 ring-primary/40">
-              <ProfileCard
-                profile={myProfile}
-                allTags={allTags}
-                onEdit={handleEditProfile}
-                onDelete={handleDeleteProfile}
-                onAddWallet={handleAddWallet}
-                onEditWallet={handleEditWallet}
-                onDeleteWallet={handleDeleteWallet}
-                onToggleWalletTracked={handleToggleWalletTracked}
-                togglingWalletId={togglingWalletId}
-                onTagToggle={handleTagToggle}
-              />
-            </div>
+            <MyProfileCard
+              profile={myProfile}
+              onEdit={handleEditProfile}
+              onDelete={handleDeleteProfile}
+              onAddWallet={handleAddWallet}
+              onEditWallet={handleEditWallet}
+              onDeleteWallet={handleDeleteWallet}
+              onToggleWalletTracked={handleToggleWalletTracked}
+              togglingWalletId={togglingWalletId}
+            />
           ) : (
             <div className="flex items-center justify-between rounded-xl border border-dashed border-white/12 bg-white/2 px-4 py-4">
               <span className="text-sm text-text-dim">

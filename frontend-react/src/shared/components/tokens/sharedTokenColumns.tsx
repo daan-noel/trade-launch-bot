@@ -11,8 +11,8 @@ import { cn } from 'lib/cn';
 // ---------------------------------------------------------------------------
 // Token enrichment keys that every strategy result row carries after merging.
 // Mirrors the `TokenRecord` fields the batch endpoint provides (excluding
-// `mint_address` — strategy rows use `mint` — and `active_lifetime_secs` — not
-// persisted, excluded per plan).
+// `mint_address` — strategy rows use `mint` — and `lifetime_secs` — not
+// carried on strategy rows, excluded per plan).
 // ---------------------------------------------------------------------------
 
 const TOKEN_ENRICH_FIELDS = [

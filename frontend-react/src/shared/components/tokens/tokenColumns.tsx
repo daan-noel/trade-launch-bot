@@ -131,16 +131,16 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
       width: '72px',
       sortable: true,
       render: (r) =>
-        r.active_lifetime_secs != null ? (
-          <span className={ageClass(r.active_lifetime_secs)}>
-            {formatAge(r.active_lifetime_secs)}
+        r.lifetime_secs != null ? (
+          <span className={ageClass(r.lifetime_secs)}>
+            {formatAge(r.lifetime_secs)}
           </span>
         ) : (
           '-'
         ),
-      sortValue: (r) => r.active_lifetime_secs,
+      sortValue: (r) => r.lifetime_secs,
       searchValue: (r) =>
-        r.active_lifetime_secs != null ? formatAge(r.active_lifetime_secs) : '',
+        r.lifetime_secs != null ? formatAge(r.lifetime_secs) : '',
     },
     c('last_synced'),
     c('trade_count'),

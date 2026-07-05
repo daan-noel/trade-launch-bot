@@ -81,8 +81,9 @@ export interface TokenRecord {
   created_at_ms?: number;
   create_tx_address: string;
   last_trade_at: string | null;
-  /** Gap-aware lifetime in seconds (creation → last non-stray trade); null if no trades. */
-  active_lifetime_secs: number | null;
+  /** Gap-aware lifetime in seconds (creation → last non-stray trade); `Some` only
+   *  when the token is dead, per backend `TokenState::lifetime_secs`. */
+  lifetime_secs: number | null;
   last_synced_at: string | null;
 }
 

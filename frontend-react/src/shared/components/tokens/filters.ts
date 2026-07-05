@@ -215,7 +215,7 @@ const LIFETIME_STALE_MS = 60 * 60 * 1000;
  * can't be determined (no last trade / unparseable timestamps) or when the token is still
  * alive (last trade within LIFETIME_STALE_MS), since a live token's lifetime isn't final.
  *
- * Prefers the backend's gap-aware `active_lifetime_secs` (creation → last non-stray trade,
+ * Prefers the backend's gap-aware `lifetime_secs` (creation → last non-stray trade,
  * stripping lone trades after the token went quiet) and falls back to the raw
  * last-trade − creation span when the field is absent.
  */
@@ -224,7 +224,7 @@ function lifetimeMinutes(t: TokenRecord): number | null {
   const last = Date.parse(t.last_trade_at);
   if (Number.isNaN(last)) return null;
   if (Date.now() - last < LIFETIME_STALE_MS) return null; // still trading → exempt
-  if (t.active_lifetime_secs != null) return t.active_lifetime_secs / 60;
+  if (t.lifetime_secs != null) return t.lifetime_secs / 60;
   const created = Date.parse(t.created_at);
   if (Number.isNaN(created)) return null;
   return (last - created) / 60_000;
