@@ -8,7 +8,7 @@ use platform_core::storage::repositories::{
 use platform_core::models::TokenMarketState;
 use chrono::Utc;
 use pump_trader::{
-    CreateTokenV2Args, PumpFunTrader, TraderConfig,
+    CreateTokenArgs, CreateTokenV2Args, PumpFunTrader, TraderConfig,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -119,32 +119,53 @@ pub async fn execute_launch(
 
     let launch_id = pending.id;
     let finish = async {
-        let create_args = CreateTokenV2Args {
-            name: params.name.clone(),
-            symbol: params.symbol.clone(),
-            uri: params.uri.clone(),
-            creator,
-            is_mayhem_mode: params.is_mayhem_mode,
-            cashback_enabled: params.cashback_enabled,
-        };
-
-        let signature = match template.variant.as_str() {
+        let dev_buy_sol = dev_buy_quote as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
+        let (signature, ix_label) = match template.variant.as_str() {
             "pumpfun.create_v2" | "pumpfun.create_v2_devbuy" => {
-                if dev_buy_quote > 0 {
-                    let dev_buy_sol =
-                        dev_buy_quote as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
+                let args = CreateTokenV2Args {
+                    name: params.name.clone(),
+                    symbol: params.symbol.clone(),
+                    uri: params.uri.clone(),
+                    creator,
+                    is_mayhem_mode: params.is_mayhem_mode,
+                    cashback_enabled: params.cashback_enabled,
+                };
+                let sig = if dev_buy_quote > 0 {
                     trader
                         .create_token_v2_and_dev_buy(
                             &mint,
-                            &create_args,
+                            &args,
                             dev_buy_sol,
                             params.slippage_bps,
                             true,
                         )
                         .await?
                 } else {
-                    trader.create_token_v2(&mint, &create_args, true).await?
-                }
+                    trader.create_token_v2(&mint, &args, true).await?
+                };
+                (sig, "Pump.Fun: Create_v2")
+            }
+            "pumpfun.create_v1" | "pumpfun.create_v1_devbuy" => {
+                let args = CreateTokenArgs {
+                    name: params.name.clone(),
+                    symbol: params.symbol.clone(),
+                    uri: params.uri.clone(),
+                    creator,
+                };
+                let sig = if dev_buy_quote > 0 {
+                    trader
+                        .create_token_and_dev_buy(
+                            &mint,
+                            &args,
+                            dev_buy_sol,
+                            params.slippage_bps,
+                            true,
+                        )
+                        .await?
+                } else {
+                    trader.create_token(&mint, &args, true).await?
+                };
+                (sig, "Pump.Fun: Create")
             }
             other => bail!("unsupported launch variant: {other}"),
         };
@@ -172,10 +193,14 @@ pub async fn execute_launch(
                 },
                 creation_slot: None,
                 creation_tx_signature: signature.clone(),
-                ix_labels: Some(json!(["Pump.Fun: Create_v2"])),
+                ix_labels: Some(json!([ix_label])),
                 meta: Some(json!({
                     "is_mayhem_mode": params.is_mayhem_mode,
-                    "cashback_enabled": params.cashback_enabled,
+                    "cashback_enabled": if template.variant.contains("create_v1") {
+                        false
+                    } else {
+                        params.cashback_enabled
+                    },
                     "template_id": template.id,
                     "launch_id": launch_id,
                 })),
