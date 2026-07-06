@@ -2,18 +2,14 @@
 import { useDispatch } from 'react-redux';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
-import { DataTable } from 'components/table/DataTable';
-import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
-import { walletColumns } from '@live/components/wallet/walletColumns';
+import { walletColumns, WALLET_KEYS } from '@live/components/wallet/walletColumns';
 import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
-import { mergeTokenData } from 'components/tokens/sharedTokenColumns';
-import { toTableRequest, numericColKeys } from 'services/tableRequest';
-import { applyTableRequest, columnResolver } from 'services/tableEval';
+import { TokenTable } from 'components/tokens/TokenTable';
 import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
 import {
   liveApi,
@@ -45,15 +41,6 @@ interface SellDialog {
 
 /// Below-this USD value a holding is treated as dust and hidden when the toggle is on.
 const DUST_USD = 1;
-
-/// Initial table view-state; pageSize matches the DataTable default below (25).
-const INITIAL_QUERY: TableQuery = {
-  page: 1,
-  pageSize: 25,
-  sortKeys: [],
-  search: '',
-  colFilters: {},
-};
 
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
@@ -95,31 +82,32 @@ export function MyWalletPage() {
   );
 
   // Overlay the latest polled prices onto each balance row (falling back to the
-  // load-time price until the first poll lands), then merge in the full token
-  // metadata. `mergeTokenData` does `{...token, ...row}` so the wallet's own
-  // live fields (price, migrated, cashback) always win over the DB copy.
-  const rows = useMemo(() => {
-    const priced = holdings.map((h) => {
-      const p = prices?.[h.mint];
-      if (!p) return h;
-      return {
-        ...h,
-        price_usd: p.price_usd,
-        value_usd: p.price_usd != null ? p.price_usd * h.ui_amount : null,
-        liquidity: p.liquidity,
-        price_change_24h: p.price_change_24h,
-        token_created_at: p.token_created_at,
-      };
-    });
-    return mergeTokenData(priced, tokenMap);
-  }, [holdings, prices, tokenMap]);
+  // load-time price until the first poll lands). Full token-metadata enrichment
+  // (`mergeTokenData`) is owned by `TokenTable` — these rows carry only the wallet's
+  // own fields, which the dust filter + summary bar read.
+  const priced = useMemo(
+    () =>
+      holdings.map((h) => {
+        const p = prices?.[h.mint];
+        if (!p) return h;
+        return {
+          ...h,
+          price_usd: p.price_usd,
+          value_usd: p.price_usd != null ? p.price_usd * h.ui_amount : null,
+          liquidity: p.liquidity,
+          price_change_24h: p.price_change_24h,
+          token_created_at: p.token_created_at,
+        };
+      }),
+    [holdings, prices],
+  );
 
   // Optional dust filter: hide bags worth less than a dollar so the table shows
   // real positions. Applied before both the table eval and the summary totals.
   const [hideDust, setHideDust] = useState(false);
   const visibleRows = useMemo(
-    () => (hideDust ? rows.filter((r) => (r.value_usd ?? 0) >= DUST_USD) : rows),
-    [rows, hideDust],
+    () => (hideDust ? priced.filter((r) => (r.value_usd ?? 0) >= DUST_USD) : priced),
+    [priced, hideDust],
   );
 
   const [actionError, setActionError] = useState<string | null>(null);
@@ -351,20 +339,6 @@ export function MyWalletPage() {
     [handleBuyOpen, handleSell, sellingMint],
   );
 
-  // Wallet Holdings runs the shared server-side table contract, but locally: the
-  // DataTable emits its view-state, we serialize it to the unified `TableRequest`
-  // body and evaluate it in-browser with the same op/sort/search semantics as the
-  // Rust evaluator (Simulated) and the SQL path. The live-only value/price/
-  // liquidity columns can't be server-paged, so the whole evaluation is client-
-  // resident — `columnResolver` derives the grammar straight from the columns.
-  const [tableQuery, setTableQuery] = useState<TableQuery>(INITIAL_QUERY);
-  const numericCols = useMemo(() => numericColKeys(columns), [columns]);
-  const resolver = useMemo(() => columnResolver(columns), [columns]);
-  const { items, total } = useMemo(
-    () => applyTableRequest(visibleRows, toTableRequest(tableQuery, numericCols), resolver),
-    [visibleRows, tableQuery, numericCols, resolver],
-  );
-
   const buyTitle = buyDialog
     ? buyDialog.manual
       ? 'Manual Buy'
@@ -408,13 +382,12 @@ export function MyWalletPage() {
       {isLoading ? (
         <p className="py-10 text-center text-text-dim">Loading wallet holdings from Solana…</p>
       ) : (
-        <DataTable
+        <TokenTable
           columns={columns}
-          rows={items}
+          rows={visibleRows}
+          tokenMap={tokenMap}
+          existingKeys={WALLET_KEYS}
           rowKey={(r) => r.mint}
-          serverSide
-          serverTotal={total}
-          onQueryChange={setTableQuery}
           loading={isFetching}
           searchable
           colFilters

@@ -205,6 +205,16 @@ there are no camelCase/axis/prefix translators.
   server pagination). Wallet no longer forks the table logic, though: it runs the **same** `TableRequest`
   contract locally (see the shared client evaluator below), with `mergeTokenData` reduced to just the
   enrichment-data join (a backend holdings-enrichment join to retire it too is a pending follow-up).
+- **`TokenTable` = the client-enriched composition layer over `DataTable`** (`components/tokens/TokenTable.tsx`).
+  The recurring "token recipe" for a **client-fed** table — append the shared token-info columns
+  (`appendedTokenColumns`), enrich rows (`mergeTokenData`), and run the local `TableRequest` evaluator
+  (`applyTableRequest`/`columnResolver`) — is bundled here so pages pass only `{columns, rows, tokenMap,
+  existingKeys}` + passthrough `DataTable` props. **Wallet Holdings** is the sole consumer today (the
+  page dropped ~20 lines of merge/eval plumbing; `walletColumns` no longer spreads `appendedTokenColumns`,
+  it just exports `WALLET_KEYS`). Server-**enriched** tables (Positions/Matched/Sim) keep rendering on the
+  raw `DataTable` — they need no client merge. `DataTable` itself stays token-agnostic: the dependency is
+  one-way (`tokens/` → `table/`), asserted by the guard test `components/table/DataTable.boundary.test.ts`
+  (fails if any `table/` file imports the token layer or an `@live`/`@lab` tree).
 - **Client-side evaluator = the TS twin of the Rust one (`services/tableEval.ts`).** For token tables
   whose rows are already in the browser (Wallet Holdings today; any future client-fed table),
   `applyTableRequest(rows, body, resolve)` runs the **same** search→filter→sort→page semantics as the
@@ -226,7 +236,7 @@ there are no camelCase/axis/prefix translators.
   `inspectFromPosition` mappers, previously copy-pasted across five pages and both modal forks).
 - **One token-info column SSOT (`tokenInfoColumns()` in `sharedTokenColumns.tsx`).** The ~26 enrichment
   columns are defined **once** (render/sort/search/filter logic); both consumers derive from it —
-  `appendedTokenColumns(existingKeys)` (strategy + wallet tables) overlays `defaultVisible` via
+  `appendedTokenColumns(existingKeys)` (strategy columns, and wallet via `TokenTable`) overlays `defaultVisible` via
   `APPENDED_HIDDEN_KEYS`, and the Tokens page (`tokenColumns.tsx`) pulls each column by key through
   `tokenInfoColumnMap()`, adding only its own presentation (order + `TOKEN_COL_WIDTH` widths) and
   Tokens-only columns (identity/`token_age`/`lifetime`/fep-ratios). Per-view `defaultVisible`/width/order

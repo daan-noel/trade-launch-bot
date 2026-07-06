@@ -5,7 +5,6 @@ import { formatCompact } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { DateCell } from 'components/table/DateCell';
-import { appendedTokenColumns } from 'components/tokens/sharedTokenColumns';
 import { LiquidityCell, PriceCell, ValueCell } from './walletPriceCells';
 
 export interface WalletActions {
@@ -14,14 +13,14 @@ export interface WalletActions {
   sellingMint: string | null;
 }
 
-// Keys the wallet table already renders — excluded from the appended
-// full-token columns so enrichment never duplicates a column. `is_migrated`,
+// Keys the wallet table already renders — passed to `TokenTable` as `existingKeys`
+// so the appended full-token columns never duplicate a column. `is_migrated`,
 // `is_cashback_enabled` and the current `price` come from live wallet/Jupiter
 // state (fresher than the tokens-table copy) — the wallet's own `price_usd`
 // "Price" column supersedes the enrichment `current_price` "Price" (SOL, DB),
 // so we drop the DB one. Everything else in the appended set (creator, ATH,
 // volume, mcap, CU params, ix labels, …) is purely additive.
-const WALLET_KEYS = new Set(['mint', 'symbol', 'migrated', 'cashback', 'current_price']);
+export const WALLET_KEYS = new Set(['mint', 'symbol', 'migrated', 'cashback', 'current_price']);
 
 // `price` is intentionally NOT a parameter: the rate-aware cells read the
 // PriceUnit context themselves, so the column array stays referentially stable
@@ -310,6 +309,5 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       },
       searchValue: () => '',
     },
-    ...appendedTokenColumns(WALLET_KEYS),
   ];
 }
