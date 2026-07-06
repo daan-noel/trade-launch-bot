@@ -25,7 +25,6 @@ pub mod config;
 pub mod decode;
 pub mod error;
 pub mod event;
-pub mod health;
 pub mod pool;
 pub mod protocol;
 
@@ -38,7 +37,6 @@ pub mod raw_tx;
 pub use config::{Commitment, IngestConfig};
 pub use error::{IngestError, Result};
 pub use event::IngestEvent;
-pub use health::HealthSnapshot;
 pub use pool::PoolIndex;
 pub use protocol::Protocol;
 
@@ -49,7 +47,6 @@ use tokio::sync::{mpsc, watch, Notify};
 use tracing::warn;
 
 use decode::{DecodeOutput, Decoder, TxRelevance};
-use health::HealthState;
 use proto::geyser::{CommitmentLevel, SubscribeUpdateTransaction};
 use transport::TransportConfig;
 
@@ -139,9 +136,6 @@ impl Ingest {
         // Live-mode gate.
         let (live_tx, live_rx) = watch::channel(live);
 
-        // Health state.
-        let (health_state, health_rx) = HealthState::new();
-
         // Transport config (extracted from IngestConfig).
         let transport_cfg = Arc::new(TransportConfig {
             connect_timeout: cfg.connect_timeout,
@@ -166,8 +160,6 @@ impl Ingest {
             Arc::new(d)
         };
 
-        let health_state_decode = health_state.clone();
-
         // Gap-replay config channel: host sends (gap_replay_on_reconnect,
         // gap_replay_max_window_secs) whenever the operator changes the settings.
         // Default: off (false, 300 s). The sender is exposed via IngestHandle so
@@ -191,8 +183,6 @@ impl Ingest {
         let event_tx_clone = event_tx.clone();
         tokio::spawn(async move {
             while let Some((update, relevance, received_at)) = update_rx.recv().await {
-                health_state_decode.set_slot(update.slot);
-
                 let output = decoder.decode_relevant_pb(&update, relevance, received_at);
 
                 let events = match output {
@@ -212,9 +202,8 @@ impl Ingest {
 
                 for ev in events {
                     match event_tx_clone.try_send(ev) {
-                        Ok(()) => health_state_decode.on_event_emitted(),
+                        Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(ev)) => {
-                            health_state_decode.on_dropped();
                             warn!("ingest: event channel full — dropping event");
                             // Retry with timeout to avoid silent loss on brief back-pressure.
                             let _ = event_tx_clone.send_timeout(ev, std::time::Duration::from_millis(100)).await;
@@ -233,8 +222,6 @@ impl Ingest {
             pool_index,
             pools_changed,
             protocol: self.protocol,
-            health_state,
-            health_rx,
         };
 
         (event_rx, handle)
@@ -254,8 +241,6 @@ pub struct IngestHandle {
     pool_index: PoolIndex,
     pools_changed: Arc<Notify>,
     protocol: Arc<Protocol>,
-    health_state: Arc<HealthState>,
-    health_rx: watch::Receiver<HealthSnapshot>,
 }
 
 impl IngestHandle {
@@ -297,16 +282,6 @@ impl IngestHandle {
         if removed {
             self.pools_changed.notify_one();
         }
-    }
-
-    /// Point-in-time health snapshot (atomic reads — no contention).
-    pub fn health(&self) -> HealthSnapshot {
-        self.health_state.snapshot()
-    }
-
-    /// Watch receiver for push-based health monitoring (host watchdog).
-    pub fn health_watch(&self) -> watch::Receiver<HealthSnapshot> {
-        self.health_rx.clone()
     }
 
     /// Direct access to the shared pool→mint index (for host backfill paths

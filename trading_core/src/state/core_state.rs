@@ -9,7 +9,7 @@ use crate::storage::repositories::settings_repo::AppSettings;
 use crate::storage::repositories::{
     creation_stats_repo::CreationStatsRepo, raw_tx_repo::RawTxRepo,
     settings_repo::SettingsRepo, strategy_repo::StrategyRepo, token_repo::TokenRepo,
-    token_sync_state_repo::TokenSyncStateRepo, trade_repo::TradeRepo,
+    trade_repo::TradeRepo,
     wallet_dict_repo::WalletDictRepo,
     wallet_profile_repo::WalletProfileRepo,
     wallet_profile_tag_repo::WalletProfileTagRepo, wallet_repo::WalletRepo,
@@ -135,12 +135,6 @@ impl CoreState {
     /// tpsl1/tpsl2 rule/position/paper repos as consumers migrate in Phase 2/3).
     pub fn strategy_repo(&self) -> StrategyRepo {
         StrategyRepo::new(self.db.clone())
-    }
-
-    /// Per-`(mint, venue)` ingest watermarks (`token_sync_state`) — replaces the
-    /// old `tokens_info.last_synced_*` columns.
-    pub fn token_sync_state_repo(&self) -> TokenSyncStateRepo {
-        TokenSyncStateRepo::new(self.db.clone())
     }
 
     /// Source-of-truth raw transaction feed (`raw_txs`, BYTEA payloads).

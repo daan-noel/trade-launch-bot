@@ -6,7 +6,6 @@ pub mod settings_repo;
 pub mod strategy_repo;
 pub mod token_info_repo;
 pub mod token_repo;
-pub mod token_sync_state_repo;
 pub mod trade_repo;
 pub mod wallet_dict_repo;
 // The per-strategy tpsl{1,2}_{paper_trading,position,strategy_rule}_repo modules

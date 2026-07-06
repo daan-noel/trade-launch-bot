@@ -1,34 +1,19 @@
-//! Simulation **kernel** — the single trade-walk + aggregation that turns a
-//! `(StrategyImpl, StrategyParams)` and a token corpus into one [`RunMetrics`]
-//! row. The same kernel backs every replay path: `lab`'s param sweep calls it
-//! per combo, paper-trading replays call it, and live runs aggregate against the
-//! identical metric shape — so live / paper / sweep results stay comparable.
+//! Simulation **kernel** — the shared metric-aggregation primitives that turn a
+//! stream of per-token [`TokenOutcome`]s into one rolled-up [`RunMetrics`] row.
+//! The same primitives back every replay path (`lab`'s param sweep, live/paper
+//! run rollups), so live / paper / sweep results stay comparable.
 //!
-//! The per-token decision sequence is the registry's
-//! [`resolve_entry`](super::registry::StrategyImpl::resolve_entry) /
-//! [`resolve_exit`](super::registry::StrategyImpl::resolve_exit) (which dispatch
-//! to the unchanged tpsl1/tpsl2 fns), so the kernel never re-implements a gate.
-//! PnL is priced through the shared [`CostModel`] so a backtest reflects the
-//! frictions the live trader pays.
-//!
-//! [`RunMetrics`] mirrors the `strategy_run_metrics` columns 1:1 (see
-//! [`StrategyRunMetrics`](crate::models::StrategyRunMetrics)); [`to_run_metrics`]
-//! stamps it onto a run. The bounded `QuantileSketch` + streaming [`RunAgg`] are
-//! the single home for the sketch / robust-score math: `lab`'s per-combo sweep
-//! folds into [`RunAgg`] via its thin `ComboAgg` wrapper (Phase 4), so backtest
-//! and live/paper metrics can never drift to a second copy.
-
-use chrono::Utc;
-use uuid::Uuid;
+//! PnL is priced through the shared [`CostModel`] ([`round_trip_with_costs`]) so
+//! a backtest reflects the frictions the live trader pays. The bounded
+//! `QuantileSketch` + streaming [`RunAgg`] are the single home for the sketch /
+//! robust-score math: `lab`'s per-combo sweep folds into [`RunAgg`] via its thin
+//! `ComboAgg` wrapper, so backtest and live/paper metrics can never drift to a
+//! second copy.
 
 use crate::config::constants::{
     COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
     COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, LAMPORTS_PER_SOL,
 };
-use crate::models::trade::TradeRow;
-use crate::models::StrategyRunMetrics;
-
-use super::registry::{StrategyImpl, StrategyParams};
 
 // ── Per-token outcome ─────────────────────────────────────────────────────────
 
@@ -177,25 +162,11 @@ pub fn weighted_return_pct(sum_pnl_sol: f64, sum_capital_sol: f64) -> f64 {
     }
 }
 
-// ── Run configuration + metrics ───────────────────────────────────────────────
-
-/// What the kernel needs beyond the strategy params: the notional per entry
-/// (`buy_amount_sol`, a universal `StrategyRule` column) and the cost model.
-#[derive(Clone, Copy, Debug)]
-pub struct SimConfig {
-    pub buy_amount_sol: f64,
-    pub costs: CostModel,
-}
-
-impl SimConfig {
-    pub fn new(buy_amount_sol: f64) -> Self {
-        Self { buy_amount_sol, costs: CostModel::pumpfun_default() }
-    }
-}
+// ── Run metrics ────────────────────────────────────────────────────────────────
 
 /// Rolled-up metrics for one run across a token corpus. Field-for-field the
 /// `strategy_run_metrics` columns (plus the sweep's `score`, ignored when
-/// persisting a live/paper run). Use [`to_run_metrics`] to stamp onto a run.
+/// persisting a live/paper run).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunMetrics {
     pub n_fired: u64,
@@ -227,98 +198,6 @@ pub struct RunMetrics {
     /// so `to_run_metrics` drops it — see that fn.
     pub n_exit_next_kill: u32,
     pub n_exit_open: u32,
-}
-
-impl RunMetrics {
-    /// Stamp these metrics onto a run as a persistable [`StrategyRunMetrics`]
-    /// (the `score` field is sweep-only and dropped; floats narrow to `f32`).
-    pub fn to_run_metrics(&self, run_id: Uuid) -> StrategyRunMetrics {
-        StrategyRunMetrics {
-            run_id,
-            rolled_up_at: Utc::now(),
-            n_fired: self.n_fired as i32,
-            n_open: self.n_open as i32,
-            n_closed: self.n_closed as i32,
-            win_rate: self.win_rate as f32,
-            total_pnl_sol: self.total_pnl_sol as f32,
-            expectancy_sol: self.expectancy_sol as f32,
-            mean_pnl_pct: self.mean_pnl_pct as f32,
-            median_pnl_pct: self.median_pnl_pct as f32,
-            p90_pnl_pct: self.p90_pnl_pct as f32,
-            best_pnl_pct: self.best_pnl_pct as f32,
-            worst_pnl_pct: self.worst_pnl_pct as f32,
-            std_pnl_pct: self.std_pnl_pct as f32,
-            profit_factor: self.profit_factor.map(|p| p as f32),
-            avg_holding_secs: self.avg_holding_secs as f32,
-            median_holding_secs: self.median_holding_secs as f32,
-            n_exit_take_profit: self.n_exit_take_profit as i32,
-            n_exit_stop_loss: self.n_exit_stop_loss as i32,
-            n_exit_trailing: self.n_exit_trailing as i32,
-            n_exit_stall: self.n_exit_stall as i32,
-            n_exit_time: self.n_exit_time as i32,
-            n_exit_liquidity: self.n_exit_liquidity as i32,
-            n_exit_open: self.n_exit_open as i32,
-        }
-    }
-}
-
-// ── Public entry point ─────────────────────────────────────────────────────────
-
-/// Simulate one `(strategy, params)` over a token corpus — each `&[T]` is one
-/// token's slot/time-sorted trade history — and aggregate to a single
-/// [`RunMetrics`]. Per token: resolve the entry; if it fires, resolve the exit
-/// (a closed trade) or mark the still-open position to its last price; fold into
-/// the streaming aggregate. Tokens that never enter are recorded as not-fired.
-pub fn simulate_rule<T: TradeRow>(
-    strat: StrategyImpl,
-    params: &StrategyParams,
-    tokens: &[&[T]],
-    cfg: &SimConfig,
-) -> RunMetrics {
-    let mut agg = RunAgg::default();
-    for token_trades in tokens {
-        agg.record(&simulate_token(strat, params, token_trades, cfg));
-    }
-    agg.finalize()
-}
-
-/// The per-token outcome (exposed so callers that need per-position fills, e.g.
-/// paper replay, can drive the same decision sequence the run aggregates).
-pub fn simulate_token<T: TradeRow>(
-    strat: StrategyImpl,
-    params: &StrategyParams,
-    trades: &[T],
-    cfg: &SimConfig,
-) -> TokenOutcome {
-    let Some(entry) = strat.resolve_entry(trades, params) else {
-        return TokenOutcome::no_entry();
-    };
-    match strat.resolve_exit(trades, entry.block_time, entry.price, params) {
-        Some(exit) => {
-            let (pnl_sol, pnl_pct) =
-                round_trip_with_costs(entry.price, exit.price, cfg.buy_amount_sol, &cfg.costs);
-            TokenOutcome {
-                fired: true,
-                holding_secs: (exit.block_time - entry.block_time).num_seconds(),
-                pnl_percent: pnl_pct as f32,
-                pnl_sol: pnl_sol as f32,
-                exit: ExitCode::from_reason(exit.reason),
-            }
-        }
-        None => {
-            // Still open: mark to the last observed price.
-            let last_price = trades.last().map(|t| t.price_per_token()).unwrap_or(entry.price);
-            let (pnl_sol, pnl_pct) =
-                round_trip_with_costs(entry.price, last_price, cfg.buy_amount_sol, &cfg.costs);
-            TokenOutcome {
-                fired: true,
-                holding_secs: 0,
-                pnl_percent: pnl_pct as f32,
-                pnl_sol: pnl_sol as f32,
-                exit: ExitCode::Open,
-            }
-        }
-    }
 }
 
 // ── Streaming aggregate (ported from lab sweep::aggregate) ─────────────────────
@@ -567,37 +446,6 @@ impl QuantileSketch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::trade::{Trade, TradeType};
-    use crate::strategies::registry::{Tpsl1Params, Tpsl2Params};
-    use crate::models::{Tpsl1Rule, Tpsl2Rule};
-    use chrono::{DateTime, Duration, Utc};
-    use serde_json::json;
-
-    fn base_time() -> DateTime<Utc> {
-        DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap()
-    }
-
-    fn buy(price: f64, slot: u64, secs: i64) -> Trade {
-        Trade::new(
-            "mint".into(),
-            "wallet".into(),
-            TradeType::Buy,
-            price,
-            1,
-            format!("sig-{slot}-{secs}"),
-            slot,
-            base_time() + Duration::seconds(secs),
-        )
-    }
-
-    fn tpsl1_params(tp: f64, sl: f64) -> StrategyParams {
-        let mut rule = Tpsl1Rule::new(
-            "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            tp, sl, None, None, None, None, Some(0.0), None, None, None, None,
-        );
-        rule.is_active = true;
-        StrategyParams::Tpsl1(Tpsl1Params::from_rule(&rule))
-    }
 
     // ── round-trip pricing ──────────────────────────────────────────────────
 
@@ -614,106 +462,5 @@ mod tests {
         let friction = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::pumpfun_default()).0;
         let free = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::frictionless()).0;
         assert!(friction < free, "costs must drag PnL down");
-    }
-
-    // ── kernel aggregation parity ────────────────────────────────────────────
-
-    #[test]
-    fn simulate_rule_aggregates_win_and_loss_tokens() {
-        // Token A: take-profit (TP=50%). Token B: stop-loss (SL=20%).
-        // The entry fill is the highest of the first slot + first second-slot buy,
-        // so a benign slot-2 buy (0.9, ≤ entry, −10% so it trips nothing) pins the
-        // entry at 1.0; the decisive move lands in slot 3.
-        let token_a = vec![
-            buy(1.0, 1, 0),   // first block → entry candidate 1.0
-            buy(0.9, 2, 1),   // second block (cap 1), ≤ entry → entry stays 1.0
-            buy(2.0, 3, 2),   // +100% → take profit fires
-            buy(2.0, 4, 3),   // fill slot (F+1)
-        ];
-        let token_b = vec![
-            buy(1.0, 1, 0),   // entry candidate 1.0
-            buy(0.9, 2, 1),   // pins entry at 1.0
-            buy(0.5, 3, 2),   // -50% → stop loss fires
-            buy(0.5, 4, 3),   // fill slot
-        ];
-        let params = tpsl1_params(50.0, 20.0);
-        let cfg = SimConfig { buy_amount_sol: 1.0, costs: CostModel::frictionless() };
-
-        let tokens: Vec<&[Trade]> = vec![&token_a, &token_b];
-        let m = simulate_rule(StrategyImpl::Tpsl1, &params, &tokens, &cfg);
-
-        assert_eq!(m.n_fired, 2);
-        assert_eq!(m.n_closed, 2);
-        assert_eq!(m.n_open, 0);
-        assert_eq!(m.n_exit_take_profit, 1);
-        assert_eq!(m.n_exit_stop_loss, 1);
-        assert!((m.win_rate - 0.5).abs() < 1e-9);
-        // Frictionless: +100% on A (+1 SOL), exit B at 0.5 = −50% (−0.5 SOL).
-        assert!((m.total_pnl_sol - 0.5).abs() < 1e-9);
-        assert_eq!(m.best_pnl_pct, 100.0);
-        assert!((m.worst_pnl_pct - (-50.0)).abs() < 1e-9);
-        assert_eq!(m.profit_factor, Some(2.0)); // 1.0 win / 0.5 loss
-    }
-
-    #[test]
-    fn no_entry_token_is_not_fired() {
-        // Empty trade history → no entry fill → not fired, ignored by the agg.
-        let empty: Vec<Trade> = vec![];
-        let params = tpsl1_params(50.0, 20.0);
-        let cfg = SimConfig::new(1.0);
-        let tokens: Vec<&[Trade]> = vec![&empty];
-        let m = simulate_rule(StrategyImpl::Tpsl1, &params, &tokens, &cfg);
-        assert_eq!(m.n_fired, 0);
-        assert_eq!(m.score, None);
-    }
-
-    #[test]
-    fn open_token_marks_to_last_price() {
-        // Entry at 1.0 (benign slot-2 buy pins it), drifts to 1.1, never hits
-        // TP(1000%)/SL(90%) → Open, marked to last price (1.1) → small +PnL.
-        let token = vec![buy(1.0, 1, 0), buy(0.9, 2, 1), buy(1.1, 3, 2)];
-        let params = tpsl1_params(1000.0, 90.0);
-        let cfg = SimConfig { buy_amount_sol: 1.0, costs: CostModel::frictionless() };
-        let tokens: Vec<&[Trade]> = vec![&token];
-        let m = simulate_rule(StrategyImpl::Tpsl1, &params, &tokens, &cfg);
-        assert_eq!(m.n_fired, 1);
-        assert_eq!(m.n_open, 1);
-        assert_eq!(m.n_closed, 0);
-        assert_eq!(m.n_exit_open, 1);
-        assert!(m.total_pnl_sol > 0.0);
-    }
-
-    #[test]
-    fn run_metrics_maps_to_strategy_run_metrics() {
-        let token = vec![buy(1.0, 1, 0), buy(2.0, 2, 1), buy(2.0, 3, 2)];
-        let params = tpsl1_params(50.0, 20.0);
-        let cfg = SimConfig::new(1.0);
-        let tokens: Vec<&[Trade]> = vec![&token];
-        let m = simulate_rule(StrategyImpl::Tpsl1, &params, &tokens, &cfg);
-        let run_id = uuid::Uuid::new_v4();
-        let srm = m.to_run_metrics(run_id);
-        assert_eq!(srm.run_id, run_id);
-        assert_eq!(srm.n_fired, m.n_fired as i32);
-        assert_eq!(srm.n_exit_take_profit, m.n_exit_take_profit as i32);
-        assert!((srm.win_rate - m.win_rate as f32).abs() < 1e-6);
-    }
-
-    #[test]
-    fn tpsl2_kernel_runs_price_only_exit() {
-        // E5 off: tpsl2 behaves like tpsl1 on a price-driven token. Needs the
-        // scalp entry to fire — use an age gate so the second-window trade enters.
-        let mut rule = Tpsl2Rule::new(
-            "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
-        );
-        rule.is_active = true;
-        let params = StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule));
-        let cfg = SimConfig::new(1.0);
-        // With no scalp gate configured, find_scalp_entry never fires (a rule that
-        // configures no gate must not enter) → not fired. Asserts the safe default.
-        let token = vec![buy(1.0, 1, 0), buy(2.0, 2, 1), buy(2.0, 3, 2)];
-        let tokens: Vec<&[Trade]> = vec![&token];
-        let m = simulate_rule(StrategyImpl::Tpsl2, &params, &tokens, &cfg);
-        assert_eq!(m.n_fired, 0, "no scalp gate configured → no entry");
     }
 }
