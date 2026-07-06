@@ -44,6 +44,8 @@ aes-gcm   = "0.10"
 zeroize   = { version = "1", features = ["zeroize_derive"] }
 sha2      = "0.10"
 base64    = "0.22"
+bs58      = "0.5"
+rand      = "0.8"
 solana-sdk = "1.17.27"
 # NOTE: no solana-sdk on platform-core. The data layer stores on-chain addresses
 # as TEXT/String and depends on NO solana crate — so `lab` is fully solana-free.

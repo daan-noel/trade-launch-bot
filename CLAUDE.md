@@ -14,8 +14,8 @@ multi-launchpad / multi-quote / multi-wallet.
 Data-infrastructure **foundation is complete** (7 phase commits): 6 crates, 2 bins,
 migrations `0001` (Domains A–C) + `0002` (Domain D). §9 open decisions are **resolved**
 (see the ADR). **Phase-2 launcher started:** `pump-trader::create` (`create_v2` +
-create+dev-buy) + `launcher` keystore + `POST /api/launches/execute`. **Next:** Jito
-bundle composer, legacy `create_v1`, wallet-encrypt tooling.
+create+dev-buy) + `launcher` keystore + `POST /api/launches/execute` + `wallet-encrypt` CLI.
+**Next:** launch failure rollback, legacy `create_v1`, Jito bundle composer.
 
 ## Priorities
 
@@ -98,6 +98,7 @@ cargo check --workspace              # typecheck all 6 crates (use --target-dir 
 cargo tree -p live                   # dep-partition check (no duckdb/arrow/parquet)
 cargo tree -p lab                    # dep-partition check (no pump-trader/ingest-laserstream/tonic)
 cargo run -p live                    # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8091
+cargo run -p live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
 cargo run -p lab                     # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8092
 ```
 

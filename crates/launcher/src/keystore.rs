@@ -6,7 +6,7 @@
 //! pump-trader — never stored in Postgres.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
 use anyhow::{bail, Context, Result};
@@ -42,15 +42,6 @@ impl Kek for EnvKek {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct EnvelopeBlob {
-    v: u8,
-    wrapped_dek: String,
-    dek_nonce: String,
-    secret_nonce: String,
-    ciphertext: String,
-}
-
 /// Resolve `key_ref` → signing handle. `key_ref` is relative to `keystore_dir`.
 pub fn resolve_signer(
     keystore_dir: &Path,
@@ -81,6 +72,93 @@ pub fn resolve_signer(
     Ok(Arc::new(kp))
 }
 
+/// Read a 64-byte ed25519 secret from a Solana CLI JSON keypair file or a base58 string file.
+pub fn read_keypair_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read keypair file {}", path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.starts_with('[') {
+        let bytes: Vec<u8> = serde_json::from_str(trimmed).context("parse keypair JSON array")?;
+        if bytes.len() != 64 {
+            bail!("keypair JSON must be 64 bytes, got {}", bytes.len());
+        }
+        return Ok(Zeroizing::new(bytes));
+    }
+    let bytes = bs58::decode(trimmed)
+        .into_vec()
+        .context("decode keypair as base58")?;
+    if bytes.len() != 64 {
+        bail!("keypair base58 must decode to 64 bytes, got {}", bytes.len());
+    }
+    Ok(Zeroizing::new(bytes))
+}
+
+/// Write a v1 envelope blob. `key_ref` is relative to `keystore_dir` when used from
+/// [`write_envelope_to_keystore`]; `path` may also be absolute.
+pub fn write_envelope(path: &Path, secret: &[u8], kek: &dyn Kek) -> Result<()> {
+    if secret.len() != 64 {
+        bail!("ed25519 secret must be 64 bytes");
+    }
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use rand::RngCore;
+
+    let kek_key = kek.derive_aes_key();
+    let dek_cipher = Aes256Gcm::new_from_slice(&kek_key).context("KEK cipher")?;
+    let dek_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let mut dek_raw = [0u8; 32];
+    OsRng.fill_bytes(&mut dek_raw);
+    let wrapped_dek = dek_cipher
+        .encrypt(&dek_nonce, dek_raw.as_ref())
+        .map_err(|e| anyhow::anyhow!("wrap DEK: {e}"))?;
+
+    let secret_cipher = Aes256Gcm::new_from_slice(&dek_raw).context("DEK cipher")?;
+    let secret_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = secret_cipher
+        .encrypt(&secret_nonce, secret)
+        .map_err(|e| anyhow::anyhow!("encrypt secret: {e}"))?;
+
+    let blob = serde_json::json!({
+        "v": 1,
+        "wrapped_dek": STANDARD.encode(wrapped_dek),
+        "dek_nonce": STANDARD.encode(dek_nonce),
+        "secret_nonce": STANDARD.encode(secret_nonce),
+        "ciphertext": STANDARD.encode(ciphertext),
+    });
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&blob)?)?;
+    Ok(())
+}
+
+/// Encrypt `source_keypair` into `keystore_dir` / `key_ref` and return the public address.
+pub fn write_envelope_to_keystore(
+    keystore_dir: &Path,
+    key_ref: &str,
+    source_keypair: &Path,
+    kek: &dyn Kek,
+) -> Result<String> {
+    let secret = read_keypair_bytes(source_keypair)?;
+    let address = Keypair::from_bytes(&secret)
+        .context("invalid keypair bytes")?
+        .pubkey()
+        .to_string();
+    let out = keystore_dir.join(key_ref);
+    write_envelope(&out, &secret, kek)?;
+    Ok(address)
+}
+
+#[derive(Debug, Deserialize)]
+struct EnvelopeBlob {
+    v: u8,
+    wrapped_dek: String,
+    dek_nonce: String,
+    secret_nonce: String,
+    ciphertext: String,
+}
+
 fn decrypt_aes(key: &[u8], nonce_bytes: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     if nonce_bytes.len() != 12 {
         bail!("AES-GCM nonce must be 12 bytes");
@@ -104,5 +182,27 @@ pub fn token_program_for_variant(variant: &str) -> &'static str {
         pump_trader::protocol::TOKEN_PROGRAM_ID
     } else {
         pump_trader::protocol::TOKEN_2022_PROGRAM_ID
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::signature::Keypair;
+    use std::fs;
+
+    #[test]
+    fn envelope_roundtrip_resolves_same_pubkey() {
+        let dir = std::env::temp_dir().join(format!("keystore-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let kp = Keypair::new();
+        let src = dir.join("src.json");
+        fs::write(&src, serde_json::to_string(&kp.to_bytes().to_vec()).unwrap()).unwrap();
+        let kek = EnvKek::from_passphrase("test-passphrase");
+        let key_ref = "dev-test.enc";
+        write_envelope_to_keystore(&dir, key_ref, &src, &kek).unwrap();
+        let signer = resolve_signer(&dir, key_ref, &kek).unwrap();
+        assert_eq!(signer.pubkey(), kp.pubkey());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

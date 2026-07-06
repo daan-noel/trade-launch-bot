@@ -8,7 +8,11 @@
 mod config;
 mod keystore;
 mod service;
+mod wallet_encrypt;
 
 pub use config::LauncherSettings;
-pub use keystore::{EnvKek, Kek};
+pub use keystore::{
+    read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
+};
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
+pub use wallet_encrypt::run_wallet_encrypt;

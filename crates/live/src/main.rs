@@ -26,6 +26,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let settings = Settings::from_env()?;
+
+    // Subcommand: `live -- wallet-encrypt <keypair.json> <key_ref>` (no HTTP/ingest).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("wallet-encrypt") {
+        launcher::run_wallet_encrypt(&args[1..])?;
+        return Ok(());
+    }
+
     let pools = connect(&settings).await?;
     info!("live box: DB connected, migrations applied");
 
