@@ -12,7 +12,7 @@ for the full design.
 
 ## Layout
 
-```
+```text
 solana-launch-platform/
 ├── Cargo.toml            workspace + path deps → ../meme-trading/*
 ├── docker-compose.yml    local Postgres + TimescaleDB (host port 5556)
@@ -77,3 +77,16 @@ cargo run -p lab                  # ANALYSIS box: lake + sweeps (no gRPC, no key
 - **Data flow (analysis):** EC2 PG → DB sync → local PG → `lab -- lake-export` →
   sealed-day Parquet → DuckDB reads/sweeps.
 - **Reuse flow:** edit `../meme-trading/pump-trader`, both projects see it (path dep).
+
+## Tests
+
+`cargo test` is green with no DB — DB-gated tests self-skip. To run the
+generalization proof (a USDC-quoted + a SOL-quoted token through the same
+views, USD-comparable), point it at a **throwaway** database (it runs migrations
+and mutates seed rows):
+
+```sh
+createdb launch_platform_test   # or: psql -c 'CREATE DATABASE launch_platform_test'
+PLATFORM_TEST_DATABASE_URL=postgres://postgres:pass@localhost:5556/launch_platform_test \
+  cargo test -p platform-core --test generality -- --nocapture
+```
