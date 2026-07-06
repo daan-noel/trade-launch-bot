@@ -22,7 +22,7 @@ const PALETTE: RuleColorInfo[] = [
   { fp: 'bg-rose-400/8',    entry: 'bg-rose-400/15'    },
 ];
 
-function fingerprintKey(r: RuleRecord): string {
+export function fingerprintKey(r: RuleRecord): string {
   const labels = Array.isArray(r.p_token_ix_labels)
     ? [...r.p_token_ix_labels].sort().join(',')
     : '';

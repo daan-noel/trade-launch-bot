@@ -135,14 +135,19 @@ export function fetchPaperResultCached(
   return run(dispatch(labApi.endpoints.getStrategyPaperResult.initiate(arg, opts(force))));
 }
 
-/** Drop the cached `matched` + `simulate` results for a rule (they derive from
- *  its entry criteria) so the next open re-runs against the edited rule. */
-export function invalidateStrategyResult(dispatch: AppDispatch, arg: StrategyRuleArg): void {
+/** Drop cached matched results for a rule (fingerprint changed). */
+export function invalidateStrategyMatched(dispatch: AppDispatch, arg: StrategyRuleArg): void {
   dispatch(
     labApi.util.invalidateTags([
       { type: 'StrategyResult', id: `${arg.strategy}:${arg.ruleId}` },
     ]),
   );
+}
+
+/** Drop the cached `matched` + `simulate` results for a rule (they derive from
+ *  its entry criteria) so the next open re-runs against the edited rule. */
+export function invalidateStrategyResult(dispatch: AppDispatch, arg: StrategyRuleArg): void {
+  invalidateStrategyMatched(dispatch, arg);
 }
 
 /** Drop the cached paper-result for a rule (after clearing its run history) so

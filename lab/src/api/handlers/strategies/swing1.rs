@@ -22,9 +22,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::ingest::SseEvent,
     state::local_state::LocalState,
-    state::sim_results::SimOutcome,
     strategies::swing_1::backtest::{BacktestBase, BacktestTokenResult},
     strategies::token_enrich::TokenEnrichment,
 };
@@ -373,54 +371,57 @@ pub async fn get_matched_tokens(
     let req = body.into_inner();
     let (from, to) = req.range.as_ref().map_or((None, None), |r| (r.from, r.to));
 
-    let mints = match app_state.matched_cache.get(rule_id, from, to) {
-        Some(cached) => cached,
-        None => {
-            let strategy_rule = match app_state.strategy_repo().find_rule(rule_id).await {
-                Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
-                Ok(_) => return HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
-                Err(e) => {
-                    tracing::error!("Failed to get rule {rule_id}: {e}");
-                    return HttpResponse::InternalServerError()
-                        .json(json!({"error": "Failed to get rule"}));
-                }
-            };
-            let rule = match trading_core::strategies::registry::swing1_decision_rule(&strategy_rule)
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("invalid swing1 rule params for {rule_id}: {e}");
-                    return HttpResponse::InternalServerError()
-                        .json(json!({"error": "Invalid rule params"}));
-                }
-            };
-            let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(
-                app_state.batch_db.clone(),
-            );
-            let matched = trading_core::strategies::analysis::collect_matching_tokens(
+    let strategy_rule = match app_state.strategy_repo().find_rule(rule_id).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+        Ok(_) => return HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
+        Err(e) => {
+            tracing::error!("Failed to get rule {rule_id}: {e}");
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
+        }
+    };
+    let rule = match trading_core::strategies::registry::swing1_decision_rule(&strategy_rule) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("invalid swing1 rule params for {rule_id}: {e}");
+            return HttpResponse::InternalServerError().json(json!({"error": "Invalid rule params"}));
+        }
+    };
+
+    let batch_db = app_state.batch_db.clone();
+    let rule_scan = rule.clone();
+    let mints = match crate::strategies::matched_mints::resolve_matched_mints(
+        &app_state,
+        &strategy_rule,
+        from,
+        to,
+        Box::pin(async move {
+            let repo = trading_core::storage::repositories::token_repo::TokenRepo::new(batch_db);
+            trading_core::strategies::analysis::collect_matching_tokens(
                 &repo,
                 from,
                 to,
                 |t| {
                     !t.is_mayhem_mode
-                        && trading_core::strategies::swing_1::entry::token_matches_buy_rule(t, &rule)
+                        && trading_core::strategies::swing_1::entry::token_matches_buy_rule(
+                            t, &rule_scan,
+                        )
                 },
             )
-            .await;
-            let tokens = match matched {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::error!("matched-token scan failed: {e}");
-                    return HttpResponse::InternalServerError()
-                        .json(json!({"error": "Failed to build matched tokens"}));
-                }
-            };
-            let mint_set: Vec<String> = tokens.into_iter().map(|t| t.mint_address).collect();
-            app_state.matched_cache.insert(rule_id, from, to, mint_set)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+        }),
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("matched-token scan failed: {e}");
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": "Failed to build matched tokens"}));
         }
     };
 
-    super::tpsl1::matched_page_response(app_state.strategy_repo(), &mints, req).await
+    super::tpsl1::matched_page_response(app_state.strategy_repo(), mints.as_ref(), req).await
 }
 
 /// Start a swing1 rule backtest as a detached background job and return at once.
@@ -436,75 +437,34 @@ pub async fn simulate_swing1_rule(
 ) -> impl Responder {
     let rid = rule_id.into_inner();
     let (since, until) = (range.from, range.to);
-    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let cell = std::sync::Arc::new(crate::state::job_progress::ProgressCell::default());
-    app_state.sim_cancels.insert(rid, cancel.clone());
-    app_state.sim_progress.insert(rid, cell.clone());
-    app_state.sim_results.clear(&rid);
-
-    actix_web::rt::spawn(async move {
-        struct SimGuard {
-            state: web::Data<Arc<LocalState>>,
-            rule_id: Uuid,
-            cancel: Arc<std::sync::atomic::AtomicBool>,
+    let strategy_rule = match app_state.strategy_repo().find_rule(rid).await {
+        Ok(Some(r)) if r.strategy_id == STRATEGY_ID => r,
+        Ok(_) => {
+            return HttpResponse::NotFound().json(json!({"error": "Rule not found"}));
         }
-        impl Drop for SimGuard {
-            fn drop(&mut self) {
-                self.state.sim_cancels.remove(&self.rule_id);
-                self.state.sim_progress.remove(&self.rule_id);
-                let _ = self.state.sse_tx.send(SseEvent::SimulationFinished {
-                    rule_id: self.rule_id,
-                    cancelled: self.cancel.load(std::sync::atomic::Ordering::Acquire),
-                });
-            }
+        Err(e) => {
+            tracing::error!("Failed to get rule {rid}: {e}");
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to get rule"}));
         }
-        let _guard = SimGuard {
-            state: app_state.clone(),
-            rule_id: rid,
-            cancel: cancel.clone(),
-        };
+    };
 
-        let outcome = match crate::strategies::swing_1::run_backtest(
-            app_state.clone(),
-            rid,
-            since,
-            until,
-            cancel,
-            cell,
-        )
-        .await
-        {
-            Ok(summary) => match serde_json::to_value(&summary) {
-                Ok(serde_json::Value::Array(rows)) => {
-                    SimOutcome::Done(std::sync::Arc::new(rows))
-                }
-                Ok(_) => SimOutcome::Failed {
-                    status: 500,
-                    message: "unexpected sim result shape (not an array)".into(),
-                },
-                Err(e) => SimOutcome::Failed {
-                    status: 500,
-                    message: format!("result serialization failed: {e}"),
-                },
-            },
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("cancelled") {
-                    SimOutcome::Cancelled
-                } else if msg.contains("Rule not found") {
-                    SimOutcome::Failed { status: 404, message: msg }
-                } else if msg.contains("All rule criteria are empty") {
-                    SimOutcome::Failed { status: 400, message: msg }
-                } else {
-                    tracing::error!("Simulation failed: {e}");
-                    SimOutcome::Failed { status: 500, message: msg }
-                }
-            }
-        };
-        app_state.sim_results.insert(rid, outcome);
-    });
-
-    HttpResponse::Accepted().json(serde_json::json!({ "started": true }))
+    crate::strategies::sim_spawn::spawn_rule_simulation(
+        app_state,
+        rid,
+        since,
+        until,
+        &strategy_rule,
+        |state, rid, since, until, cancel, cell| {
+            Box::pin(async move {
+                let rows = crate::strategies::swing_1::run_backtest(
+                    state, rid, since, until, cancel, cell,
+                )
+                .await?;
+                crate::strategies::sim_spawn::rows_to_json(rows)
+            })
+        },
+    )
+    .await
 }
 
 /// `POST /api/strategies/swing1/rules/{rule_id}/simulate/cancel` — cooperative

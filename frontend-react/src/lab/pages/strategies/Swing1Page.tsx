@@ -73,7 +73,7 @@ import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import {
   fetchPaperResultCached,
   invalidatePaperResult,
-  invalidateStrategyResult,
+  invalidateStrategyMatched,
 } from '@lab/store/strategyResultCache';
 import { useServerTable } from 'hooks/useServerTable';
 import type { AppDispatch } from '@lab/store';
@@ -88,6 +88,7 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
+import { fingerprintKey } from 'lib/ruleColorGroups';
 
 const SWING1_SPEC = getSpec('swing_1');
 
@@ -570,6 +571,7 @@ export function Swing1Page() {
     total: matchedTotal,
     loading: matchedLoading,
     error: matchedError,
+    reload: reloadMatched,
   } = useServerTable<MatchedTokenRecord>(
     matchedRuleId != null,
     matchedBody,
@@ -652,9 +654,15 @@ export function Swing1Page() {
           buildUpdatePayload(SWING1_SPEC, form, unlocked),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-        // The rule's entry criteria may have changed — drop its cached
-        // matched/simulate results so the next open re-runs.
-        invalidateStrategyResult(dispatch, { strategy: STRATEGY_SEG, ruleId: updated.id });
+        const fpChanged =
+          editRule != null && fingerprintKey(editRule) !== fingerprintKey(updated);
+        if (fpChanged) {
+          invalidateStrategyMatched(dispatch, { strategy: STRATEGY_SEG, ruleId: updated.id });
+          if (matchedRuleId === updated.id) reloadMatched();
+        }
+        if (simRuleId === updated.id) {
+          setSimReady(false);
+        }
       } else {
         const created = await createSwing1Rule(buildCreatePayload(SWING1_SPEC, form));
         setRules((prev) => [...prev, created]);

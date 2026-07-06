@@ -6,9 +6,7 @@ use uuid::Uuid;
 use super::entry;
 use super::exit;
 use super::util::none_if_zero_u64;
-use crate::models::Token;
 use crate::state::local_state::LocalState;
-use crate::strategies::sim_fetch::fetch_sim_histories;
 use crate::strategies::sim_progress::SimProgress;
 use crate::strategies::token_enrich::{self, TokenEnrichment};
 use crate::storage::repositories::token_repo::TokenRepo;
@@ -124,6 +122,13 @@ pub async fn run_backtest(
     let max_concurrent_tokens = none_if_zero_u64(rule.p_max_concurrent_tokens).map(|v| v as usize);
     let max_total_tokens = none_if_zero_u64(rule.p_max_total_tokens).map(|v| v as usize);
 
+    let cache_key = crate::state::analysis_cache::AnalysisCacheKey::new(
+        &strategy_rule.strategy_id,
+        trading_core::strategies::match_keys::fingerprint_key(&strategy_rule),
+        since,
+        until,
+    );
+
     // Candidate tokens are scanned from the **whole** `tokens` table (keyset-
     // streamed within the optional `[since, until)` window), decoupled from the
     // live `token_cache` so an old, evicted-but-matching mint is still simulated.
@@ -134,15 +139,27 @@ pub async fn run_backtest(
     // snipeable edge. Exclude them outright (legacy-only policy, 2026-06 regime).
     // The whole-table token scan runs on the dedicated batch pool so a backtest
     // can't starve dashboard reads; trade histories then come from the lake (no PG).
-    let repo = TokenRepo::new(app_state.batch_db.clone());
-    let tokens: Vec<Token> = crate::strategies::analysis::collect_matching_tokens(
-        &repo,
-        since,
-        until,
-        |t| !t.is_mayhem_mode && entry::token_matches_buy_rule(t, &rule),
+    let rule_scan = rule.clone();
+    let batch_db = app_state.batch_db.clone();
+    let tokens = crate::strategies::candidate_cache::get_or_scan_candidates_state(
+        &app_state,
+        cache_key.clone(),
+        Box::pin(async move {
+            let repo = TokenRepo::new(batch_db);
+            crate::strategies::analysis::collect_matching_tokens(
+                &repo,
+                since,
+                until,
+                |t| {
+                    !t.is_mayhem_mode
+                        && entry::token_matches_buy_rule(t, &rule_scan)
+                },
+            )
+            .await
+            .map_err(|e| anyhow!("candidate token scan failed: {e}"))
+        }),
     )
-    .await
-    .map_err(|e| anyhow!("candidate token scan failed: {e}"))?;
+    .await?;
 
     // One shared lake read for every candidate — the **same** Parquet corpus the
     // grouped sweep loads (`fetch_sim_histories`), so a rule prices identically
@@ -158,14 +175,17 @@ pub async fn run_backtest(
     ));
     progress.start();
 
-    let mints: Vec<String> = tokens.iter().map(|t| t.mint_address.clone()).collect();
-    let histories = fetch_sim_histories(&mints, false)
-        .await
-        .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?;
+    let histories = crate::strategies::candidate_cache::get_or_fetch_histories_state(
+        &app_state,
+        cache_key,
+        &tokens,
+    )
+    .await
+    .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?;
 
     let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> =
         Vec::with_capacity(tokens.len());
-    for token in &tokens {
+    for token in tokens.iter() {
         // Cooperative cancel: stop resolving but keep ticking so the bar reaches
         // `total` (the partial result is discarded below on cancel anyway).
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {

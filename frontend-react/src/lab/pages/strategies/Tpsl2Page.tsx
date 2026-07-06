@@ -63,7 +63,7 @@ import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import {
   fetchPaperResultCached,
   invalidatePaperResult,
-  invalidateStrategyResult,
+  invalidateStrategyMatched,
 } from '@lab/store/strategyResultCache';
 import { useServerTable } from 'hooks/useServerTable';
 import type { AppDispatch } from '@lab/store';
@@ -78,6 +78,7 @@ import type {
   SimulatedTokenResult,
 } from 'types';
 import { cn } from 'lib/cn';
+import { fingerprintKey } from 'lib/ruleColorGroups';
 import { computeRuleColorClasses } from 'lib/ruleColorGroups';
 
 const TPSL2_SPEC = getSpec('tpsl2');
@@ -498,6 +499,7 @@ export function Tpsl2Page() {
     total: matchedTotal,
     loading: matchedLoading,
     error: matchedError,
+    reload: reloadMatched,
   } = useServerTable<MatchedTokenRecord>(
     matchedRuleId != null,
     matchedBody,
@@ -586,9 +588,15 @@ export function Tpsl2Page() {
           buildUpdatePayload(TPSL2_SPEC, form, unlocked),
         );
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-        // The rule's entry criteria may have changed — drop its cached
-        // matched/simulate results so the next open re-runs.
-        invalidateStrategyResult(dispatch, { strategy: 'tpsl2', ruleId: updated.id });
+        const fpChanged =
+          editRule != null && fingerprintKey(editRule) !== fingerprintKey(updated);
+        if (fpChanged) {
+          invalidateStrategyMatched(dispatch, { strategy: 'tpsl2', ruleId: updated.id });
+          if (matchedRuleId === updated.id) reloadMatched();
+        }
+        if (simRuleId === updated.id) {
+          setSimReady(false);
+        }
       } else {
         const created = await createTpsl2Rule(buildCreatePayload(TPSL2_SPEC, form));
         setRules((prev) => [...prev, created]);

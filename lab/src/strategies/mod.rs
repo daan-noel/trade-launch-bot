@@ -5,9 +5,12 @@
 
 pub use trading_core::strategies::analysis;
 
+pub mod candidate_cache;
+pub mod matched_mints;
 pub mod sim_fetch;
 pub mod sim_progress;
 pub mod sim_query;
+pub mod sim_spawn;
 pub mod swing_1;
 pub mod token_enrich;
 pub mod tpsl_sniper_1;

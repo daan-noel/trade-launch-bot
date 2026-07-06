@@ -13,6 +13,7 @@
 pub mod analysis;
 pub mod exit_state;
 pub mod kernel;
+pub mod match_keys;
 pub mod registry;
 pub mod rules;
 pub mod runtime_cache;
