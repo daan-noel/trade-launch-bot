@@ -606,7 +606,7 @@ export function Swing1Page() {
   const handleSellPosition = useCallback(async (mint: string) => {
     setSellingPositionMint(mint);
     setActionError(null);
-    try { await sellToken({ mint }).unwrap(); }
+    try { await sellToken({ mint_address: mint }).unwrap(); }
     catch (e) {
       setActionError(`Sell failed: ${apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'unknown error'}`);
     }

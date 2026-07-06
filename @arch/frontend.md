@@ -216,10 +216,11 @@ there are no camelCase/axis/prefix translators.
   Holdings, **Tokens page**); **client** (default) — rows are the full already-enriched set and
   `DataTable`'s **own** client paging/sort/filter/search runs in-browser (NO separate evaluator — that TS
   twin retired with Wallet), used by tables with no backend paging endpoint (**Trader Analysis**,
-  **Sweep drill-in**). Rows key their mint under `mint` (default) or another field via **`mintOf`** —
-  which drives the charts grid, the default `rowKey`, and the client mint-set pre-filter. Two opt-in
+  **Sweep drill-in**). Every token-data row keys its mint under the one canonical field `mint_address`
+  (SSOT across DB → wire → JS), so the mint accessor is fixed internally — callers no longer pass a
+  `mintOf`; it drives the charts grid, the default `rowKey`, and the client mint-set pre-filter. Two opt-in
   features live here so every token table gets them once: **`mintSetFilter`** — a `<MintSetInput>` paste
-  box (server: an `in` op on `mint` folded into `structuredFilters`; client: a plain row pre-filter);
+  box (server: an `in` op on `mint_address` folded into `structuredFilters`; client: a plain row pre-filter);
   **`charts`** — a toggle rendering `<TokenChartsGrid>` (lazy-mounted, current page only, with
   `renderChartCardExtra`/`titleOf`/`highlightWallet` slots) below the table, fed by the table's
   intercepted `onVisibleRowsChange`. `DataTable` stays token-agnostic: the dependency is one-way

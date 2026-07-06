@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from 'components/table/DataTable';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
@@ -77,7 +77,7 @@ type SyncedRow = SyncResultItem & { token: TokenDetailRecord | null };
 
 /** Stable row-key ref so a SOL/USD or live-trade tick doesn't break DataTable's
  *  row memo by handing it a fresh function identity each render. */
-const syncedRowKey = (r: SyncedRow) => r.mint;
+const syncedRowKey = (r: SyncedRow) => r.mint_address;
 
 /** Compact column set for the synced-tokens picker table. */
 function syncedTokenColumns(
@@ -112,7 +112,7 @@ function syncedTokenColumns(
       sortable: true,
       render: (r) => r.token?.symbol || '-',
       sortValue: (r) => r.token?.symbol ?? null,
-      searchValue: (r) => `${r.token?.symbol ?? ''} ${r.token?.name ?? ''} ${r.mint}`,
+      searchValue: (r) => `${r.token?.symbol ?? ''} ${r.token?.name ?? ''} ${r.mint_address}`,
     },
     {
       key: 'name',
@@ -124,12 +124,12 @@ function syncedTokenColumns(
       searchValue: (r) => r.token?.name ?? '',
     },
     {
-      key: 'mint',
+      key: 'mint_address',
       label: 'Mint',
       width: '165px',
-      render: (r) => <AddressDisplay address={r.mint} kind="token" stopPropagation />,
-      sortValue: (r) => r.mint,
-      searchValue: (r) => r.mint,
+      render: (r) => <AddressDisplay address={r.mint_address} kind="token" stopPropagation />,
+      sortValue: (r) => r.mint_address,
+      searchValue: (r) => r.mint_address,
     },
     {
       key: 'trade_count',
@@ -273,7 +273,7 @@ export function SyncTokenPage() {
     () =>
       results.map((r) => ({
         ...r,
-        token: syncedTokens.find((t) => t.token.mint_address === r.mint)?.token ?? null,
+        token: syncedTokens.find((t) => t.token.mint_address === r.mint_address)?.token ?? null,
       })),
     [results, syncedTokens],
   );
@@ -368,7 +368,7 @@ export function SyncTokenPage() {
           // "To fetch" estimate drops to up-to-date (we just pulled everything).
           dispatch(
             mergeSyncOutput({
-              results: [{ mint: target, ok: true }],
+              results: [{ mint_address: target, ok: true }],
               syncedTokens: [{ token: result.token, trades: result.trades }],
             }),
           );
@@ -390,7 +390,7 @@ export function SyncTokenPage() {
           dispatch(
             mergeSyncOutput({
               results: [
-                { mint: target, ok: false, error: e instanceof Error ? e.message : 'Sync failed' },
+                { mint_address: target, ok: false, error: e instanceof Error ? e.message : 'Sync failed' },
               ],
               syncedTokens: [],
             }),

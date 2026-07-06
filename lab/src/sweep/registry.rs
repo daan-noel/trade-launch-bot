@@ -623,7 +623,7 @@ fn simulate_tpsl2_one_combo(
             .next()
             .unwrap_or_else(crate::sweep::strategy::TokenOutcome::no_entry);
         results.push(ComboTokenResult {
-            mint: tt.mint.clone(),
+            mint_address: tt.mint.clone(),
             symbol: tt.symbol.clone(),
             fired: o.fired,
             pnl_sol: o.pnl_sol,
@@ -666,7 +666,7 @@ fn simulate_tpsl1_one_combo(
             .next()
             .unwrap_or_else(crate::sweep::strategy::TokenOutcome::no_entry);
         results.push(ComboTokenResult {
-            mint: tt.mint.clone(),
+            mint_address: tt.mint.clone(),
             symbol: tt.symbol.clone(),
             fired: o.fired,
             pnl_sol: o.pnl_sol,
@@ -709,7 +709,7 @@ fn simulate_swing1_one_combo(
             .next()
             .unwrap_or_else(crate::sweep::strategy::TokenOutcome::no_entry);
         results.push(ComboTokenResult {
-            mint: tt.mint.clone(),
+            mint_address: tt.mint.clone(),
             symbol: tt.symbol.clone(),
             fired: o.fired,
             pnl_sol: o.pnl_sol,

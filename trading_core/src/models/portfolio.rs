@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// `StrategyRepo::managed_mints`; a mint with no open position is simply absent.
 #[derive(Debug, Clone, Serialize)]
 pub struct ManagedMint {
-    pub mint: String,
+    pub mint_address: String,
     /// Owning rule (`None` only for a malformed/legacy row with no `rule_id`).
     pub rule_id: Option<Uuid>,
     /// Human rule label (`None` if the rule was deleted out from under the position).

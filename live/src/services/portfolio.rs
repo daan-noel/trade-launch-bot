@@ -32,7 +32,7 @@ use crate::trader::WalletHolding;
 #[derive(Debug, Serialize)]
 pub struct PortfolioHolding {
     // Identity + on-chain balance (live — wins over any DB copy).
-    pub mint: String,
+    pub mint_address: String,
     /// Raw token units (exact integer).
     pub amount: u64,
     pub ui_amount: f64,
@@ -325,10 +325,10 @@ async fn compose(
         })
         .into_iter()
         .fold(HashMap::new(), |mut acc, m| {
-            match acc.get(&m.mint) {
+            match acc.get(&m.mint_address) {
                 Some(existing) if status_rank(&existing.status) >= status_rank(&m.status) => {}
                 _ => {
-                    acc.insert(m.mint.clone(), m);
+                    acc.insert(m.mint_address.clone(), m);
                 }
             }
             acc
@@ -384,7 +384,7 @@ async fn compose(
             let managed_by = managed_by_mint.get(&h.mint).cloned();
 
             PortfolioHolding {
-                mint: h.mint,
+                mint_address: h.mint,
                 amount: h.amount,
                 ui_amount: h.ui_amount,
                 decimals: h.decimals,

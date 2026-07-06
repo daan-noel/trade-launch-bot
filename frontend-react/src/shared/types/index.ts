@@ -174,7 +174,7 @@ export interface BulkRuleResult {
 
 export interface RulePositionRecord extends TokenEnrichmentFields {
   id: string;
-  mint: string;
+  mint_address: string;
   wallet: string;
   /** Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
    * this position, distinct from the actual entry fill. null until armed. The
@@ -281,7 +281,7 @@ export interface PositionsSummary {
 }
 
 export interface MatchedTokenRecord extends TokenEnrichmentFields {
-  mint: string;
+  mint_address: string;
   // These are always present on a matched row, so they narrow the optional
   // `TokenEnrichmentFields` members to required (the rest come from the base).
   symbol: string;
@@ -301,7 +301,7 @@ export interface MatchedTokensResponse {
 }
 
 export interface SimulatedTokenResult extends TokenEnrichmentFields {
-  mint: string;
+  mint_address: string;
   symbol: string;
   /** Trigger-trade (scalp signal) snapshot that armed the position, distinct
    * from the worst-case `entry_*` fill. The gap is the modeled adverse
@@ -427,7 +427,7 @@ export interface JobsStatus {
 /** The live (real) strategy managing a held mint — the Holdings bot badge and the
  *  manual-vs-bot double-sell guard. Mirrors the backend `ManagedMint`. */
 export interface ManagedBy {
-  mint: string;
+  mint_address: string;
   rule_id: string | null;
   rule_name: string | null;
   /** `Arming` | `BuySubmitted` | `Holding` | `ExitPending`. */
@@ -443,7 +443,7 @@ export interface ManagedBy {
  *  `symbol` carry the live-authoritative values. PnL fields are `undefined` on the
  *  lean single-mint confirmation response until the next full refresh. */
 export interface WalletHolding extends TokenEnrichmentFields {
-  mint: string;
+  mint_address: string;
   amount: number;
   ui_amount: number;
   decimals: number;
@@ -489,7 +489,7 @@ export interface PortfolioSummary {
 export interface OpenStrategyPosition {
   strategy_id: string;
   rule_id: string | null;
-  mint: string;
+  mint_address: string;
   mode: string;
   status: string;
   entry_price?: number | null;
@@ -600,7 +600,7 @@ export interface TokenLiveStats {
 }
 
 export interface LiveTrade {
-  mint: string;
+  mint_address: string;
   wallet: string;
   trade_type: string;
   amount_sol: number;
@@ -708,7 +708,7 @@ export interface SwingLegRecord {
 }
 
 export interface SwingDetectionResult {
-  mint: string;
+  mint_address: string;
   params: SwingParams;
   count: number;
   swings: SwingLegRecord[];
@@ -716,7 +716,7 @@ export interface SwingDetectionResult {
 
 /** One token's swing ledger inside a batch (multi-token) detection response. */
 export interface SwingBatchEntry {
-  mint: string;
+  mint_address: string;
   count: number;
   swings: SwingLegRecord[];
 }

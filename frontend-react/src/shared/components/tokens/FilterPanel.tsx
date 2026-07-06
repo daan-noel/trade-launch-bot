@@ -275,7 +275,7 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
         <Section title="Identity">
           <TextField label="Symbol" field="symbol" value={draft.symbol} set={set} placeholder="e.g. PEPE" className="w-[130px]" />
           {/* <TextField label="Name" field="name" value={draft.name} set={set} placeholder="name contains…" /> */}
-          <TextField label="Mint" field="mint" value={draft.mint} set={set} placeholder="address substring…" />
+          <TextField label="Mint" field="mint_address" value={draft.mint_address} set={set} placeholder="address substring…" />
           <TextField label="Creator" field="creator" value={draft.creator} set={set} placeholder="address substring…" />
           <TextField label="Create TX" field="create_tx" value={draft.create_tx} set={set} placeholder="signature substring…" />
         </Section>

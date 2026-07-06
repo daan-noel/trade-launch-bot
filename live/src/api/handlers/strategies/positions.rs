@@ -30,7 +30,7 @@ use trading_core::strategies::swing_1::swing::SwingLeg;
 pub struct PositionResponse {
     pub id: Uuid,
     pub run_id: Uuid,
-    pub mint: String,
+    pub mint_address: String,
     pub wallet: String,
     pub entry_price: Option<f64>,
     pub exit_price: Option<f64>,
@@ -98,7 +98,7 @@ impl From<StrategyPosition> for PositionResponse {
         Self {
             id: p.id,
             run_id: p.run_id,
-            mint: p.mint,
+            mint_address: p.mint_address,
             wallet: p.wallet,
             entry_price: p.entry_price,
             exit_price: p.exit_price,
@@ -141,13 +141,13 @@ async fn enrich_position_responses(repo: &StrategyRepo, responses: &mut [Positio
     if responses.is_empty() {
         return;
     }
-    let mints: Vec<String> = responses.iter().map(|r| r.mint.clone()).collect();
+    let mints: Vec<String> = responses.iter().map(|r| r.mint_address.clone()).collect();
     match trading_core::storage::token_enrichment::fetch_by_mints(repo.pool(), &mints).await {
         Ok(rows) => {
             let by_mint: std::collections::HashMap<String, _> =
                 rows.into_iter().map(|r| (r.mint_address.clone(), r)).collect();
             for r in responses.iter_mut() {
-                if let Some(row) = by_mint.get(&r.mint) {
+                if let Some(row) = by_mint.get(&r.mint_address) {
                     r.symbol = row.symbol.clone();
                     r.ath_price = row.ath_price;
                     r.token = row.into();

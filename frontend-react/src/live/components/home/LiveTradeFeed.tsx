@@ -20,7 +20,7 @@ export function LiveTradeFeed() {
   // latest set without re-subscribing on every holdings refresh.
   const heldRef = useRef<Map<string, string | undefined>>(new Map());
   heldRef.current = useMemo(
-    () => new Map(holdings.map((h) => [h.mint, h.symbol ?? undefined])),
+    () => new Map(holdings.map((h) => [h.mint_address, h.symbol ?? undefined])),
     [holdings],
   );
 
@@ -38,7 +38,7 @@ export function LiveTradeFeed() {
     const es = connectTradeStream((raw) => {
       try {
         const t = JSON.parse(raw) as LiveTrade;
-        if (heldRef.current.has(t.mint)) {
+        if (heldRef.current.has(t.mint_address)) {
           buf.push(t);
           if (timer === undefined) timer = window.setTimeout(flush, 400);
         }
@@ -63,7 +63,7 @@ export function LiveTradeFeed() {
         <ul className="flex flex-col gap-1">
           {trades.map((t) => {
             const buy = t.trade_type === 'buy';
-            const symbol = heldRef.current.get(t.mint) ?? t.mint.slice(0, 6);
+            const symbol = heldRef.current.get(t.mint_address) ?? t.mint_address.slice(0, 6);
             return (
               <li
                 key={t.tx_signature}

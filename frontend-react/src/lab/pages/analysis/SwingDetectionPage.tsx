@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { STORAGE_KEYS, getString, setString } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
@@ -448,7 +448,7 @@ export function SwingDetectionPage() {
   const swingsByMint = useMemo(() => {
     const map = new Map<string, SwingLegRecord[]>();
     if (swingAllResults) {
-      for (const entry of swingAllResults) map.set(entry.mint, entry.swings);
+      for (const entry of swingAllResults) map.set(entry.mint_address, entry.swings);
     }
     return map;
   }, [swingAllResults]);
@@ -701,12 +701,12 @@ export function SwingDetectionPage() {
   // `swingResult` (mint matches), so it's left untouched here.
   useEffect(() => {
     if (!selectedMint) return;
-    if (swingResult && swingResult.mint === selectedMint) return;
+    if (swingResult && swingResult.mint_address === selectedMint) return;
     const batch = swingsByMint.get(selectedMint);
     if (!batch) return;
     dispatch(
       setSwingResult({
-        mint: selectedMint,
+        mint_address: selectedMint,
         params: swingParamsFromForm(swingParams),
         count: batch.length,
         swings: batch,
@@ -740,7 +740,7 @@ export function SwingDetectionPage() {
   // after a batch run still shows its swings on the chart.
   const selectedMintSwings = useMemo<SwingLegRecord[] | null>(() => {
     if (!selectedMint) return null;
-    if (swingResult && swingResult.mint === selectedMint) return swingResult.swings;
+    if (swingResult && swingResult.mint_address === selectedMint) return swingResult.swings;
     return swingsByMint.get(selectedMint) ?? null;
   }, [selectedMint, swingResult, swingsByMint]);
 
@@ -788,7 +788,7 @@ export function SwingDetectionPage() {
     if (!selectedMintSwings || !selectedMintSwings.length) return null;
     // The Analysis/Filter panel only applies to the per-token "Run" result; the
     // batch ("Swing Detection All") fallback is shown as a plain connected path.
-    const isRunResult = swingResult != null && swingResult.mint === selectedMint;
+    const isRunResult = swingResult != null && swingResult.mint_address === selectedMint;
     const filterActive =
       isRunResult && swingPanelTab === 'filter' && hasActiveSwingFilter(appliedSwingFilter);
     const legs = filterActive ? filteredSwings : selectedMintSwings;

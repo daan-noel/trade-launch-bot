@@ -1327,8 +1327,8 @@ pub async fn list_token_results(
     let fill_keys: Vec<(String, u64, bool)> = rows
         .iter()
         .flat_map(|r| {
-            let entry = r.entry_slot.map(|s| (r.mint.clone(), s, true));
-            let exit = r.exit_slot.map(|s| (r.mint.clone(), s, false));
+            let entry = r.entry_slot.map(|s| (r.mint_address.clone(), s, true));
+            let exit = r.exit_slot.map(|s| (r.mint_address.clone(), s, false));
             entry.into_iter().chain(exit)
         })
         .collect();
@@ -1338,10 +1338,10 @@ pub async fn list_token_results(
             Ok(sigs) => {
                 for row in &mut rows {
                     if let Some(s) = row.entry_slot {
-                        row.entry_tx = sigs.get(&(row.mint.clone(), s, true)).cloned();
+                        row.entry_tx = sigs.get(&(row.mint_address.clone(), s, true)).cloned();
                     }
                     if let Some(s) = row.exit_slot {
-                        row.exit_tx = sigs.get(&(row.mint.clone(), s, false)).cloned();
+                        row.exit_tx = sigs.get(&(row.mint_address.clone(), s, false)).cloned();
                     }
                 }
             }
@@ -1353,14 +1353,14 @@ pub async fn list_token_results(
     // Matched / Positions / Simulated tables use) so the frontend table shows the
     // full token column set with no per-row or client-side fetch. `created_at`/
     // `ath_price` are row-owned (excluded from `token`); set them off the row too.
-    let mints: Vec<String> = rows.iter().map(|r| r.mint.clone()).collect();
+    let mints: Vec<String> = rows.iter().map(|r| r.mint_address.clone()).collect();
     if !mints.is_empty() {
         match trading_core::storage::token_enrichment::fetch_by_mints(&state.db, &mints).await {
             Ok(meta_rows) => {
                 let by_mint: std::collections::HashMap<String, _> =
                     meta_rows.into_iter().map(|r| (r.mint_address.clone(), r)).collect();
                 for row in &mut rows {
-                    if let Some(m) = by_mint.get(&row.mint) {
+                    if let Some(m) = by_mint.get(&row.mint_address) {
                         row.created_at = Some(m.token_created_at.to_rfc3339());
                         row.ath_price = m.ath_price;
                         row.token = m.into();

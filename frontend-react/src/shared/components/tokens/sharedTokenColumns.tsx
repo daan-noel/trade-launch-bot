@@ -425,8 +425,8 @@ export function coreTokenColumns(existingKeys?: Set<string>): ColumnDef<any>[] {
       label: 'Symbol',
       group: 'identity',
       sortable: true,
-      render: (r: { mint: string; symbol?: string; name?: string }) => (
-        <AddressDisplay address={r.mint} kind="token" display={r.symbol ?? r.mint.slice(0, 6)} />
+      render: (r: { mint_address: string; symbol?: string; name?: string }) => (
+        <AddressDisplay address={r.mint_address} kind="token" display={r.symbol ?? r.mint_address.slice(0, 6)} />
       ),
       sortValue: (r: { symbol?: string }) => r.symbol ?? '',
       searchValue: (r: { symbol?: string; name?: string }) => `${r.symbol ?? ''} ${r.name ?? ''}`,

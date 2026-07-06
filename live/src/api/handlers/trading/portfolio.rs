@@ -29,7 +29,7 @@ fn holdings_resolve(key: &str) -> Option<(&'static str, ColKind)> {
     use ColKind::{Number, Text};
     Some(match key {
         // identity + on-chain balance (row-owned on PortfolioHolding)
-        "mint" => ("mint", Text),
+        "mint_address" => ("mint_address", Text),
         "symbol" => ("symbol", Text),
         "ui_amount" => ("ui_amount", Number),
         "amount" => ("amount", Number),

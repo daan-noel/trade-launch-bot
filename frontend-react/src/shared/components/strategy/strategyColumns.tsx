@@ -176,13 +176,15 @@ export function legColumns<T>(prefix: LegPrefix, acc: LegAccessors<T>, opts: Leg
 }
 
 /** The identity Mint column, shared by every strategy table. */
-function mintColumn<T extends { mint: string }>(): ColumnDef<T> {
+function mintColumn<T extends { mint_address: string }>(): ColumnDef<T> {
   return {
-    key: 'mint',
+    key: 'mint_address',
     label: 'Mint',
     group: 'identity',
-    render: (r) => <AddressDisplay address={r.mint} kind="token" display={r.mint.slice(0, 6)} />,
-    searchValue: (r) => r.mint,
+    render: (r) => (
+      <AddressDisplay address={r.mint_address} kind="token" display={r.mint_address.slice(0, 6)} />
+    ),
+    searchValue: (r) => r.mint_address,
   };
 }
 
@@ -322,7 +324,7 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
     label: 'Symbol',
     group: 'identity',
     sortable: true,
-    render: (r) => <AddressDisplay address={r.mint} kind="token" display={r.symbol} />,
+    render: (r) => <AddressDisplay address={r.mint_address} kind="token" display={r.symbol} />,
     sortValue: (r) => r.symbol,
     searchValue: (r) => `${r.symbol} ${r.name}`,
   },
@@ -353,12 +355,12 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     label: 'Symbol',
     group: 'identity',
     sortable: true,
-    render: (r) => <AddressDisplay address={r.mint} kind="token" display={r.symbol} />,
+    render: (r) => <AddressDisplay address={r.mint_address} kind="token" display={r.symbol} />,
     sortValue: (r) => r.symbol,
     searchValue: (r) => r.symbol,
   },
   mintColumn<SimulatedTokenResult>(),
-  ...coreTokenColumns(new Set(['symbol', 'mint'])),
+  ...coreTokenColumns(new Set(['symbol', 'mint_address'])),
   ...legColumns<SimulatedTokenResult>(
     'target',
     {

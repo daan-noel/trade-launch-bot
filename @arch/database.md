@@ -83,7 +83,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 - `strategy_rules` — `strategy_id` discriminator, `buy_amount_sol`, `trade_mode`, `is_active`, `max_concurrent_tokens`, `max_total_tokens`, `params`(JSONB with strategy-specific gates). See [strategy-storage.md](@plans/database/strategy-storage.md).
 - `strategy_runs` — one activation session; `run_seq` monotonic per `(rule, mode)`; `params_snapshot` frozen at activation
 - `strategy_run_metrics` — 1:1 finalize-time rollup (`win_rate`, `total_pnl_sol`, exit-reason mix, etc.)
-- `strategy_positions` — one bot-opened position; `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery; `token_account TEXT` (nullable, `0002_*.sql`) — the wallet's token account for the mint, persisted on the entry fill so a re-buy reuses one account and the sell reads it from the row (restart-safe, no in-memory-cache dependency)
+- `strategy_positions` — one bot-opened position; `mint_address` (the SPL mint — renamed from `mint` in `0002_strategy_positions_mint_address.sql` so the physical column matches the token-data SSOT key); `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery; `token_account TEXT` (nullable) — the wallet's token account for the mint, persisted on the entry fill so a re-buy reuses one account and the sell reads it from the row (restart-safe, no in-memory-cache dependency)
 
 ### Grouped param-sweep (per-strategy triples; generic table-name-driven repo)
 

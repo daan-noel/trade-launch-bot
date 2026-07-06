@@ -9,7 +9,7 @@ export interface TokenFilters {
   // Identity (case-insensitive substring)
   symbol: string;
   name: string;
-  mint: string;
+  mint_address: string;
   creator: string;
   create_tx: string;
   // Time (datetime-local "YYYY-MM-DDTHH:mm"). Stored as wall-clock in the
@@ -108,7 +108,7 @@ export function saveStoredTokenFilters(f: TokenFilters): void {
 export const defaultFilters = (): TokenFilters => ({
   symbol: '',
   name: '',
-  mint: '',
+  mint_address: '',
   creator: '',
   create_tx: '',
   created_from: '',
@@ -310,7 +310,7 @@ export function activeFilterCount(f: TokenFilters): number {
   const groups = [
     f.symbol,
     f.name,
-    f.mint,
+    f.mint_address,
     f.creator,
     f.create_tx,
     f.created_from || f.created_to,
@@ -424,7 +424,7 @@ export function tokenFiltersToSpecs(f: TokenFilters, timezone: string): Record<s
   for (const [col, field] of [
     ['symbol', 'symbol'],
     ['name', 'name'],
-    ['mint', 'mint'],
+    ['mint_address', 'mint_address'],
     ['creator', 'creator'],
     ['create_tx', 'create_tx'],
   ] as [string, keyof TokenFilters][]) {
@@ -458,7 +458,7 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
   // Identity
   if (!textMatch(t.symbol, f.symbol)) return false;
   if (!textMatch(t.name, f.name)) return false;
-  if (!textMatch(t.mint_address, f.mint)) return false;
+  if (!textMatch(t.mint_address, f.mint_address)) return false;
   if (!textMatch(t.creator_address, f.creator)) return false;
   if (!textMatch(t.create_tx_address, f.create_tx)) return false;
 

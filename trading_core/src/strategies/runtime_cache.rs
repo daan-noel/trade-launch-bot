@@ -725,7 +725,7 @@ impl StrategyRuntimeCache {
                     *pending_by_rule.entry(rid).or_insert(0) += 1;
                 }
             }
-            by_mint.entry(pos.mint.clone()).or_default().push(Arc::new(pos));
+            by_mint.entry(pos.mint_address.clone()).or_default().push(Arc::new(pos));
         }
 
         let live_ids: std::collections::HashSet<Uuid> = by_mint
@@ -1039,7 +1039,7 @@ impl StrategyRuntimeCache {
     fn upsert_in_holding_index(&self, position: &StrategyPosition) {
         let arc = Arc::new(position.clone());
         {
-            let mut entry = self.holding_by_mint.entry(position.mint.clone()).or_default();
+            let mut entry = self.holding_by_mint.entry(position.mint_address.clone()).or_default();
             if let Some(slot) = entry.iter_mut().find(|p| p.id == position.id) {
                 *slot = arc.clone();
             } else {
@@ -1056,11 +1056,11 @@ impl StrategyRuntimeCache {
 
     fn remove_from_holding_index(&self, position: &StrategyPosition) {
         self.time_exit_holding.remove(&position.id);
-        if let Some(mut entry) = self.holding_by_mint.get_mut(&position.mint) {
+        if let Some(mut entry) = self.holding_by_mint.get_mut(&position.mint_address) {
             entry.retain(|p| p.id != position.id);
             if entry.is_empty() {
                 drop(entry);
-                self.holding_by_mint.remove(&position.mint);
+                self.holding_by_mint.remove(&position.mint_address);
             }
         }
     }
@@ -1187,7 +1187,7 @@ mod tests {
             strategy_id: "tpsl_sniper_1".into(),
             rule_id: Some(rule_id),
             mode: "paper".into(),
-            mint: mint.into(),
+            mint_address: mint.into(),
             wallet: "w".into(),
             token_program_id: None,
             token_account: None,
@@ -1291,7 +1291,7 @@ mod tests {
                 assert_eq!(strategy, "tpsl1");
                 assert!(!removed);
                 let p = position.expect("position payload");
-                assert_eq!(p.mint, "MintA");
+                assert_eq!(p.mint_address, "MintA");
                 assert_eq!(p.status.to_string(), "Arming");
                 let snap = rule_snapshot.expect("rule snapshot");
                 assert_eq!(snap.p_exit_take_profit, 50.0);

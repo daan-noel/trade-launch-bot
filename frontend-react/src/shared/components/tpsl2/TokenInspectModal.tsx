@@ -50,11 +50,11 @@ export function TokenInspectModal({ target, swingOverlay = null, onClose }: Toke
     data: detail,
     isFetching,
     error,
-  } = useGetTokenDetailQuery(target.mint, { skip: !target.mint });
+  } = useGetTokenDetailQuery(target.mint_address, { skip: !target.mint_address });
 
   const eventMarkers = useMemo(() => buildEventMarkers(target), [target]);
 
-  const heading = target.symbol || target.mint.slice(0, 8);
+  const heading = target.symbol || target.mint_address.slice(0, 8);
 
   return (
     <Modal title={`${heading} — Trade History`} open onClose={onClose} size="xl">

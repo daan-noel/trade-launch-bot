@@ -20,7 +20,7 @@ export interface WalletActions {
 // "Price" column supersedes the enrichment `current_price` "Price" (SOL, DB),
 // so we drop the DB one. Everything else in the appended set (creator, ATH,
 // volume, mcap, CU params, ix labels, …) is purely additive.
-export const WALLET_KEYS = new Set(['mint', 'symbol', 'migrated', 'cashback', 'current_price']);
+export const WALLET_KEYS = new Set(['mint_address', 'symbol', 'migrated', 'cashback', 'current_price']);
 
 // `price` is intentionally NOT a parameter: the rate-aware cells read the
 // PriceUnit context themselves, so the column array stays referentially stable
@@ -38,21 +38,21 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       searchValue: (r) => r.symbol ?? '',
     },
     {
-      key: 'mint',
+      key: 'mint_address',
       label: 'Mint',
       group: 'identity',
       width: '195px',
       sortable: true,
       render: (r) => (
         <AddressDisplay
-          address={r.mint}
+          address={r.mint_address}
           kind="token"
           truncateLen={12}
           stopPropagation
         />
       ),
-      sortValue: (r) => r.mint,
-      searchValue: (r) => r.mint,
+      sortValue: (r) => r.mint_address,
+      searchValue: (r) => r.mint_address,
     },
     {
       key: 'ui_amount',
@@ -297,12 +297,12 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       width: '160px',
       sortable: false,
       render: (r) => {
-        const isSelling = actions.sellingMint === r.mint;
+        const isSelling = actions.sellingMint === r.mint_address;
         return (
           <div className="flex items-center justify-center gap-1.5" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
-              onClick={() => actions.onBuy(r.mint, r.token_program_id)}
+              onClick={() => actions.onBuy(r.mint_address, r.token_program_id)}
               className="rounded border border-primary/50 bg-primary/12 px-2 py-0.5 text-[11px] font-semibold text-primary hover:bg-primary/22"
             >
               Buy
@@ -310,7 +310,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
             <button
               type="button"
               disabled={isSelling}
-              onClick={() => actions.onSell(r.mint)}
+              onClick={() => actions.onSell(r.mint_address)}
               className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
             >
               {isSelling ? 'Selling…' : 'Sell All'}

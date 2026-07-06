@@ -92,7 +92,7 @@ export function usePositionNotifications() {
       if (!isReal && !prefs.paperEnabled) return;
 
       const ruleName = ruleSnapshot?.rule_name ?? `rule ${delta.ruleId.slice(0, 8)}`;
-      const symbol = position.symbol ?? position.mint.slice(0, 8);
+      const symbol = position.symbol ?? position.mint_address.slice(0, 8);
       const stratLabel = strategy.toUpperCase();
       const modeLabel = isReal ? 'real' : 'paper';
 

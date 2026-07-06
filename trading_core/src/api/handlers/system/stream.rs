@@ -12,7 +12,7 @@ use crate::{
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
-    pub mint: Option<String>,
+    pub mint_address: Option<String>,
 }
 
 /// A single SSE event rendered to wire bytes exactly once. Broadcast as
@@ -52,7 +52,7 @@ fn live_stats(state: &CoreState, mint: &str) -> serde_json::Value {
 fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
     let (mint_scope, event_type, data): (Option<String>, &str, serde_json::Value) = match event {
         SseEvent::TokenCreated {
-            mint,
+            mint_address: mint,
             tx_signature,
             slot,
             timestamp,
@@ -74,7 +74,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 None => ("", "", "", None),
             };
             let data = json!({
-                "mint": mint,
+                "mint_address": mint,
                 "name": name,
                 "symbol": symbol,
                 "creator": creator,
@@ -87,7 +87,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             (Some(mint.clone()), "token_created", data)
         }
         SseEvent::TradeExecuted {
-            mint,
+            mint_address: mint,
             wallet,
             trade_type,
             amount_sol,
@@ -98,7 +98,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             timestamp,
         } => {
             let data = json!({
-                "mint": mint,
+                "mint_address": mint,
                 "wallet": wallet,
                 "trade_type": trade_type,
                 "amount_sol": amount_sol,
@@ -112,7 +112,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             (Some(mint.clone()), "trade_executed", data)
         }
         SseEvent::LiquidityAdded {
-            mint,
+            mint_address: mint,
             wallet,
             amount_sol,
             token_amount,
@@ -121,7 +121,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             timestamp,
         }
         | SseEvent::LiquidityRemoved {
-            mint,
+            mint_address: mint,
             wallet,
             amount_sol,
             token_amount,
@@ -135,7 +135,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 "liquidity_removed"
             };
             let data = json!({
-                "mint": mint,
+                "mint_address": mint,
                 "wallet": wallet,
                 "amount_sol": amount_sol,
                 "token_amount": token_amount,
@@ -296,7 +296,7 @@ pub async fn stream_events(
     query: web::Query<StreamQuery>,
 ) -> impl Responder {
     let frame_rx = state.sse_frame_tx.subscribe();
-    let mint_filter = query.into_inner().mint;
+    let mint_filter = query.into_inner().mint_address;
 
     let sse_stream = stream::unfold(
         (frame_rx, mint_filter),

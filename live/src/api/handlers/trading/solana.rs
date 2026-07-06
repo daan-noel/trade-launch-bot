@@ -23,7 +23,7 @@ const RECONCILE_RETRY_SECS: u64 = 2;
 
 #[derive(Deserialize)]
 pub struct BuyRequest {
-    pub mint: String,
+    pub mint_address: String,
     pub amount_sol: f64,
     /// Optional: when omitted (manual buy by mint), the backend resolves it
     /// on-chain alongside the migration status.
@@ -35,7 +35,7 @@ pub struct BuyRequest {
 
 #[derive(Deserialize)]
 pub struct SellRequest {
-    pub mint: String,
+    pub mint_address: String,
     /// Legacy hint of the wallet's token account for `mint` (row-triggered "Sell
     /// All"). No longer used for routing: `manual_sell` now enumerates EVERY
     /// account the wallet holds for the mint and sweeps each, so a single-account
@@ -116,7 +116,7 @@ pub async fn manual_buy(
     }
     // Validate the mint format before any RPC — rejects a bad/log-injected mint
     // up front instead of wasting a `resolve_buy_routing` round-trip on it.
-    if let Err(e) = validate_solana_address(&body.mint) {
+    if let Err(e) = validate_solana_address(&body.mint_address) {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
     }
@@ -124,10 +124,10 @@ pub async fn manual_buy(
     // Resolve routing facts (creator, token program, migration status) from
     // chain — the source of truth, so a typed-in mint the cache has never seen,
     // a just-migrated token, or a Token-2022 mint all route correctly.
-    let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint).await {
+    let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint_address).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!("manual_buy: resolve_buy_routing failed for {}: {e}", body.mint);
+            tracing::warn!("manual_buy: resolve_buy_routing failed for {}: {e}", body.mint_address);
             return HttpResponse::BadRequest()
                 .json(serde_json::json!({ "error": format!("Could not resolve token: {e}") }));
         }
@@ -147,12 +147,12 @@ pub async fn manual_buy(
     // buy still proceeds; orphaned funds are caught by the next sweep-sell.
     if let Err(e) = app_state
         .trader
-        .consolidate_token_accounts(&body.mint, routing.token_program)
+        .consolidate_token_accounts(&body.mint_address, routing.token_program)
         .await
     {
         tracing::warn!(
             "manual_buy: pre-buy consolidation failed for {} (proceeding with buy): {e}",
-            body.mint
+            body.mint_address
         );
     }
 
@@ -196,13 +196,13 @@ pub async fn manual_buy(
 
     'retry: for attempt in 0..BUY_MAX_ATTEMPTS {
         if attempt > 0 {
-            tracing::info!("manual_buy: retry attempt {attempt} for {}", body.mint);
+            tracing::info!("manual_buy: retry attempt {attempt} for {}", body.mint_address);
         }
         let result = if routing.is_migrated {
             // Migrated → PumpSwap AMM (canonical pool derived).
             app_state
                 .trader
-                .amm_buy(&body.mint, &token_program_id, amount_sol, None, slippage, true)
+                .amm_buy(&body.mint_address, &token_program_id, amount_sol, None, slippage, true)
                 .await
         } else {
             // Still on the bonding curve.
@@ -224,7 +224,7 @@ pub async fn manual_buy(
                 //
                 // We don't have the signature here (confirm_transaction discards it
                 // after the timeout), but the UI can reconcile via wallet balance.
-                tracing::warn!("manual_buy: confirm timeout for {} (attempt {attempt})", body.mint);
+                tracing::warn!("manual_buy: confirm timeout for {} (attempt {attempt})", body.mint_address);
                 sig_on_timeout = Some(String::new()); // sentinel: timed out
                 last_err = Some(pump_trader::TradeError::ConfirmTimeout);
                 break 'retry;
@@ -239,14 +239,14 @@ pub async fn manual_buy(
                 // Proven buy slippage revert with no tokens bought — safe to retry.
                 tracing::warn!(
                     "manual_buy: slippage revert (error {custom:?}) on attempt {attempt} for {}",
-                    body.mint
+                    body.mint_address
                 );
                 last_err = Some(pump_trader::TradeError::Reverted { custom });
                 // continue to next attempt
             }
             Err(e) => {
                 // Any other error (structural revert, RPC failure, etc.) — stop.
-                tracing::warn!("manual_buy failed mint={}: {e}", body.mint);
+                tracing::warn!("manual_buy failed mint={}: {e}", body.mint_address);
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({ "error": e.to_string() }));
             }
@@ -263,7 +263,7 @@ pub async fn manual_buy(
     let err_msg = last_err
         .map(|e| e.to_string())
         .unwrap_or_else(|| "buy failed".to_string());
-    tracing::warn!("manual_buy: all {BUY_MAX_ATTEMPTS} attempts failed for {}: {err_msg}", body.mint);
+    tracing::warn!("manual_buy: all {BUY_MAX_ATTEMPTS} attempts failed for {}: {err_msg}", body.mint_address);
     HttpResponse::InternalServerError().json(serde_json::json!({ "error": err_msg }))
 }
 
@@ -283,7 +283,7 @@ pub async fn manual_sell(
     body: web::Json<SellRequest>,
 ) -> impl Responder {
     // Validate the mint format before any RPC (same as manual_buy).
-    if let Err(e) = validate_solana_address(&body.mint) {
+    if let Err(e) = validate_solana_address(&body.mint_address) {
         return HttpResponse::BadRequest()
             .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
     }
@@ -301,7 +301,7 @@ pub async fn manual_sell(
         for attempt in 1..=ATTEMPTS {
             last = app_state
                 .trader
-                .get_all_token_accounts_for_mint(&body.mint)
+                .get_all_token_accounts_for_mint(&body.mint_address)
                 .await;
             if last.is_ok() {
                 break;
@@ -313,7 +313,7 @@ pub async fn manual_sell(
         match last {
             Ok(a) => a,
             Err(e) => {
-                tracing::warn!("manual_sell: account enumeration failed for {}: {e}", body.mint);
+                tracing::warn!("manual_sell: account enumeration failed for {}: {e}", body.mint_address);
                 return HttpResponse::InternalServerError()
                     .json(serde_json::json!({ "error": format!("Could not list token accounts: {e}") }));
             }
@@ -352,10 +352,10 @@ pub async fn manual_sell(
                 // rejects with BondingCurveComplete (6005). Re-resolving per pass also
                 // keeps `is_cashback` fresh. Retried (B6) so a transient
                 // getMultipleAccounts blip doesn't fail the trade.
-                let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint).await {
+                let routing = match resolve_buy_routing_retry(&app_state.trader, &body.mint_address).await {
                     Ok(r) => r,
                     Err(e) => {
-                        tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint);
+                        tracing::warn!("manual_sell: resolve_buy_routing failed for {}: {e}", body.mint_address);
                         last_err = Some(format!("Could not resolve token: {e}"));
                         break;
                     }
@@ -383,7 +383,7 @@ pub async fn manual_sell(
                     app_state
                         .trader
                         .amm_sell(
-                            &body.mint,
+                            &body.mint_address,
                             amount,
                             &routing.token_program_id,
                             None,
@@ -405,7 +405,7 @@ pub async fn manual_sell(
                     app_state
                         .trader
                         .sell_token(
-                            &body.mint,
+                            &body.mint_address,
                             amount,
                             Some(&routing.creator),
                             is_cashback,
@@ -419,7 +419,7 @@ pub async fn manual_sell(
                     Err(e) => {
                         tracing::warn!(
                             "manual_sell failed mint={} account={account_str} pass={pass}: {e}",
-                            body.mint
+                            body.mint_address
                         );
                         last_err = Some(e.to_string());
                         break;
@@ -434,7 +434,7 @@ pub async fn manual_sell(
         // sub-threshold dust kept the account funded. Mirrors the strategy exit's
         // close step (see tpsl_sniper_* `sell_and_close_position`).
         let trader = app_state.trader.clone();
-        let mint = body.mint.clone();
+        let mint = body.mint_address.clone();
         let account_str = account_pk.to_string();
         tokio::spawn(async move {
             if let Err(err) = trader.close_token_account(&mint, Some(account_str.as_str())).await {
@@ -461,7 +461,7 @@ pub async fn manual_sell(
     {
         use crate::strategies::execution::real::reconcile_externally_cleared_mint;
         let state = app_state.get_ref().clone();
-        let mint = body.mint.clone();
+        let mint = body.mint_address.clone();
         tokio::spawn(async move {
             for _ in 0..RECONCILE_MAX_ATTEMPTS {
                 // One unified reconcile (real positions, both strategies — the repo

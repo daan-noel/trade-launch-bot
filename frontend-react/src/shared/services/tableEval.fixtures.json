@@ -1,12 +1,12 @@
 {
-  "_comment": "Shared Rust<->TS table-evaluator conformance fixtures. Consumed by BOTH `trading_core::api::table_eval` (Rust `conformance` test, via include_str!) and `tableEval.conformance.test.ts` (vitest). Every case's `expected` is the ordered list of `mint` values on the resulting page. Grammar (both sides): mint->mint(text), symbol->symbol(text), reason->exit_reason(text), pnl->pnl_percent(number), trades->trade_count(number). Text values are lowercase ASCII so localeCompare (TS) and lowercased-bytewise (Rust) agree.",
+  "_comment": "Shared Rust<->TS table-evaluator conformance fixtures. Consumed by BOTH `trading_core::api::table_eval` (Rust `conformance` test, via include_str!) and `tableEval.conformance.test.ts` (vitest). Every case's `expected` is the ordered list of `mint_address` values on the resulting page. Grammar (both sides): mint_address->mint_address(text), symbol->symbol(text), reason->exit_reason(text), pnl->pnl_percent(number), trades->trade_count(number). Text values are lowercase ASCII so localeCompare (TS) and lowercased-bytewise (Rust) agree.",
   "rows": [
-    { "mint": "a", "symbol": "bonk", "pnl_percent": 10.0, "trade_count": 3, "exit_reason": "takeprofit" },
-    { "mint": "b", "symbol": "pumpcat", "pnl_percent": -5.0, "trade_count": 9, "exit_reason": "stoploss" },
-    { "mint": "c", "symbol": "wif", "pnl_percent": 50.0, "trade_count": 1, "exit_reason": "takeprofit" },
-    { "mint": "d", "symbol": "pumpdog", "pnl_percent": 10.0, "trade_count": 9, "exit_reason": "stall" },
-    { "mint": "e", "symbol": "doge", "pnl_percent": null, "trade_count": 2, "exit_reason": "timestop" },
-    { "mint": "f", "symbol": "mypump", "pnl_percent": 0.0, "trade_count": 5, "exit_reason": null }
+    { "mint_address": "a", "symbol": "bonk", "pnl_percent": 10.0, "trade_count": 3, "exit_reason": "takeprofit" },
+    { "mint_address": "b", "symbol": "pumpcat", "pnl_percent": -5.0, "trade_count": 9, "exit_reason": "stoploss" },
+    { "mint_address": "c", "symbol": "wif", "pnl_percent": 50.0, "trade_count": 1, "exit_reason": "takeprofit" },
+    { "mint_address": "d", "symbol": "pumpdog", "pnl_percent": 10.0, "trade_count": 9, "exit_reason": "stall" },
+    { "mint_address": "e", "symbol": "doge", "pnl_percent": null, "trade_count": 2, "exit_reason": "timestop" },
+    { "mint_address": "f", "symbol": "mypump", "pnl_percent": 0.0, "trade_count": 5, "exit_reason": null }
   ],
   "cases": [
     {
@@ -71,12 +71,12 @@
     },
     {
       "name": "in_on_mint_set_membership",
-      "request": { "filters": { "mint": { "op": "in", "val": ["a", "c", "f"] } } },
+      "request": { "filters": { "mint_address": { "op": "in", "val": ["a", "c", "f"] } } },
       "expected": ["a", "c", "f"]
     },
     {
       "name": "in_empty_array_is_not_a_constraint",
-      "request": { "filters": { "mint": { "op": "in", "val": [] } } },
+      "request": { "filters": { "mint_address": { "op": "in", "val": [] } } },
       "expected": ["a", "b", "c", "d", "e", "f"]
     },
     {
@@ -86,7 +86,7 @@
     },
     {
       "name": "in_drops_unmatched_and_keeps_page_order",
-      "request": { "filters": { "mint": { "op": "in", "val": ["f", "b", "zzz"] } } },
+      "request": { "filters": { "mint_address": { "op": "in", "val": ["f", "b", "zzz"] } } },
       "expected": ["b", "f"]
     }
   ]

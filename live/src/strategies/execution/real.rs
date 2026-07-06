@@ -131,7 +131,7 @@ pub(crate) async fn close_externally_cleared_position(
     // regardless of whether the DB write below succeeds.
     trader.release_sol_for_position(&position.id.to_string());
     let entry_amount = position.entry_token_amount.unwrap_or(0);
-    let mint = position.mint.clone();
+    let mint = position.mint_address.clone();
     // Rent reclaim: the token account is already empty — fire-and-forget close.
     {
         let trader = trader.clone();
@@ -676,7 +676,7 @@ pub(crate) async fn sell_and_close_position(
 ) {
     // Position is terminal from this point — release the SOL commitment. Idempotent.
     trader.release_sol_for_position(&position.id.to_string());
-    let mint = position.mint.clone();
+    let mint = position.mint_address.clone();
     let target_tokens = position.entry_token_amount.unwrap_or(0);
     let amount = target_tokens;
     let base_token_program = position

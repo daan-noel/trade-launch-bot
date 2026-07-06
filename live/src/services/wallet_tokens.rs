@@ -7,7 +7,7 @@ use crate::trader::WalletHolding;
 
 #[derive(Debug, Serialize)]
 pub struct EnrichedWalletHolding {
-    pub mint: String,
+    pub mint_address: String,
     pub amount: u64,
     pub ui_amount: f64,
     pub decimals: u8,
@@ -107,7 +107,7 @@ async fn enrich_holdings(
                 liquidity: entry.and_then(|e| e.liquidity),
                 price_change_24h: entry.and_then(|e| e.price_change_24h),
                 token_created_at: entry.and_then(|e| e.token_created_at.clone()),
-                mint: h.mint,
+                mint_address: h.mint,
                 amount: h.amount,
                 ui_amount: h.ui_amount,
                 decimals: h.decimals,

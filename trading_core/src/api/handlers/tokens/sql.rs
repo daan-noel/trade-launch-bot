@@ -92,7 +92,7 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     for (expr, key) in [
         ("t.symbol", "symbol"),
         ("t.name", "name"),
-        ("t.mint_address", "mint"),
+        ("t.mint_address", "mint_address"),
         ("t.creator_wallet", "creator"),
         ("t.creation_tx_signature", "create_tx"),
     ] {
@@ -628,7 +628,7 @@ mod tests {
     fn mint_set_lowers_to_any_membership() {
         let b = build_where_and_order(
             &query(serde_json::json!({
-                "filters": {"mint": {"op":"in","val":["MintA","MintB"]}}
+                "filters": {"mint_address": {"op":"in","val":["MintA","MintB"]}}
             })),
             now(),
         );

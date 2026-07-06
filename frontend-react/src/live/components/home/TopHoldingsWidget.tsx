@@ -37,8 +37,8 @@ export function TopHoldingsWidget() {
           {top.map((h) => {
             const pct = h.unrealized_pnl_pct;
             return (
-              <li key={h.mint} className="flex items-center justify-between gap-2 text-xs">
-                <span className="truncate font-semibold text-text">{h.symbol ?? h.mint.slice(0, 6)}</span>
+              <li key={h.mint_address} className="flex items-center justify-between gap-2 text-xs">
+                <span className="truncate font-semibold text-text">{h.symbol ?? h.mint_address.slice(0, 6)}</span>
                 <span className="flex items-center gap-2 tabular-nums">
                   <span className="text-text-mid">{h.value_usd != null ? formatUsd(h.value_usd) : '—'}</span>
                   {pct != null && (

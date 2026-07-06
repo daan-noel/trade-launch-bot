@@ -17,11 +17,11 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
 export function tradeColumns(unit: string): ColumnDef<LiveTrade>[] {
   return [
     {
-      key: 'mint',
+      key: 'mint_address',
       label: 'Mint',
-      render: (ev) => <AddressDisplay address={ev.mint} kind="token" />,
-      sortValue: (ev) => ev.mint,
-      searchValue: (ev) => ev.mint,
+      render: (ev) => <AddressDisplay address={ev.mint_address} kind="token" />,
+      sortValue: (ev) => ev.mint_address,
+      searchValue: (ev) => ev.mint_address,
     },
     {
       key: 'side',

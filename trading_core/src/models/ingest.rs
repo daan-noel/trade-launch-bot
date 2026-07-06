@@ -40,13 +40,13 @@ pub struct RuleNotifSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SseEvent {
     TokenCreated {
-        mint: String,
+        mint_address: String,
         tx_signature: String,
         slot: u64,
         timestamp: DateTime<Utc>,
     },
     TradeExecuted {
-        mint: String,
+        mint_address: String,
         wallet: String,
         trade_type: TradeType,
         amount_sol: f64,
@@ -59,7 +59,7 @@ pub enum SseEvent {
         timestamp: DateTime<Utc>,
     },
     LiquidityAdded {
-        mint: String,
+        mint_address: String,
         wallet: String,
         amount_sol: f64,
         token_amount: f64,
@@ -68,7 +68,7 @@ pub enum SseEvent {
         timestamp: DateTime<Utc>,
     },
     LiquidityRemoved {
-        mint: String,
+        mint_address: String,
         wallet: String,
         amount_sol: f64,
         token_amount: f64,

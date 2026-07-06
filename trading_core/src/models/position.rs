@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub struct Position {
     pub id: Uuid,
     /// Token mint address (SPL token address).
-    pub mint: String,
+    pub mint_address: String,
     /// Wallet address that owns this position.
     pub wallet: String,
     /// Token program id used for this position (SPL legacy or Token-2022).
@@ -144,7 +144,7 @@ impl Position {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
-            mint,
+            mint_address: mint,
             wallet,
             token_program_id: None,
             target_price: None,
@@ -340,7 +340,7 @@ impl Position {
 #[derive(Serialize)]
 pub struct PositionResponse {
     pub id: Uuid,
-    pub mint: String,
+    pub mint_address: String,
     pub wallet: String,
     /// Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
     /// this position, distinct from the actual entry fill. `None` until armed.
@@ -404,7 +404,7 @@ impl From<Position> for PositionResponse {
         let exit_reason = p.exit_reason_or_derived();
         Self {
             id: p.id,
-            mint: p.mint,
+            mint_address: p.mint_address,
             wallet: p.wallet,
             target_price: p.target_price,
             target_token_amount: p.target_token_amount,
@@ -453,7 +453,7 @@ impl From<&crate::models::StrategyPosition> for Position {
     fn from(p: &crate::models::StrategyPosition) -> Self {
         Self {
             id: p.id,
-            mint: p.mint.clone(),
+            mint_address: p.mint_address.clone(),
             wallet: p.wallet.clone(),
             token_program_id: p.token_program_id.clone(),
             target_price: p.target_price,

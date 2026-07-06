@@ -22,7 +22,7 @@ const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 interface LogEntry {
   key: string;
   action: 'Buy' | 'Sell';
-  mint: string;
+  mint_address: string;
   note: string;
   ok: boolean;
 }
@@ -53,7 +53,7 @@ export function TradePage() {
 
   const { data: positions = [] } = useGetPortfolioPositionsQuery(true);
   const managedBy = useMemo(
-    () => positions.find((p) => p.mint === loadedMint) ?? null,
+    () => positions.find((p) => p.mint_address === loadedMint) ?? null,
     [positions, loadedMint],
   );
 
@@ -63,7 +63,7 @@ export function TradePage() {
   const pushLog = useCallback(
     (action: 'Buy' | 'Sell', mint: string, note: string, ok: boolean) => {
       const key = `${logSeq.current++}`;
-      setLog((prev) => [{ key, action, mint, note, ok }, ...prev].slice(0, 20));
+      setLog((prev) => [{ key, action, mint_address: mint, note, ok }, ...prev].slice(0, 20));
     },
     [],
   );
@@ -96,7 +96,7 @@ export function TradePage() {
     }
     setActionError(null);
     try {
-      await buyToken({ mint, amount_sol: sol, ...(bps !== undefined ? { slippage_bps: bps } : {}) }).unwrap();
+      await buyToken({ mint_address: mint, amount_sol: sol, ...(bps !== undefined ? { slippage_bps: bps } : {}) }).unwrap();
       pushLog('Buy', mint, `◎${sol} submitted`, true);
     } catch (e) {
       const msg = apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error';
@@ -115,7 +115,7 @@ export function TradePage() {
     setActionError(null);
     setSelling(true);
     try {
-      await sellToken({ mint, ...(bps !== undefined ? { slippage_bps: bps } : {}) }).unwrap();
+      await sellToken({ mint_address: mint, ...(bps !== undefined ? { slippage_bps: bps } : {}) }).unwrap();
       pushLog('Sell', mint, 'full balance submitted', true);
     } catch (e) {
       const msg = apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error';
@@ -271,7 +271,7 @@ export function TradePage() {
             {log.map((e) => (
               <li key={e.key} className="flex items-center gap-2 text-xs">
                 <Badge variant={e.action === 'Buy' ? 'primary' : 'danger'}>{e.action}</Badge>
-                <span className="font-mono text-text-mid">{e.mint.slice(0, 10)}…</span>
+                <span className="font-mono text-text-mid">{e.mint_address.slice(0, 10)}…</span>
                 <span className={e.ok ? 'text-green' : 'text-red'}>{e.note}</span>
               </li>
             ))}

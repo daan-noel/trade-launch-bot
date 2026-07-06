@@ -73,13 +73,13 @@ async fn enrich_positions(repo: &StrategyRepo, responses: &mut [PositionResponse
     if responses.is_empty() {
         return;
     }
-    let mints: Vec<String> = responses.iter().map(|r| r.mint.clone()).collect();
+    let mints: Vec<String> = responses.iter().map(|r| r.mint_address.clone()).collect();
     match trading_core::storage::token_enrichment::fetch_by_mints(repo.pool(), &mints).await {
         Ok(rows) => {
             let by_mint: std::collections::HashMap<String, _> =
                 rows.into_iter().map(|r| (r.mint_address.clone(), r)).collect();
             for r in responses.iter_mut() {
-                if let Some(row) = by_mint.get(&r.mint) {
+                if let Some(row) = by_mint.get(&r.mint_address) {
                     r.symbol = row.symbol.clone();
                     r.ath_price = row.ath_price;
                     r.token = row.into();

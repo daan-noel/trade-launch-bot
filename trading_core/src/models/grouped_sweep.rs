@@ -127,7 +127,7 @@ pub struct GroupedSweepResult {
 /// slice. Returned by the `GET …/token-results` drill-in endpoint.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComboTokenResult {
-    pub mint: String,
+    pub mint_address: String,
     pub symbol: String,
     pub fired: bool,
     pub pnl_sol: f32,

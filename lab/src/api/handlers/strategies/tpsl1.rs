@@ -369,7 +369,7 @@ where
 /// the shared struct excludes. Field names match the frontend's `MatchedTokenRecord`.
 #[derive(Serialize)]
 pub struct MatchedTokenResult {
-    pub mint: String,
+    pub mint_address: String,
     pub symbol: String,
     /// Token creation time (from `tokens.created_at`).
     pub created_at: DateTime<Utc>,
@@ -481,7 +481,7 @@ pub(super) async fn matched_page_response(
             let tokens: Vec<MatchedTokenResult> = rows
                 .iter()
                 .map(|r| MatchedTokenResult {
-                    mint: r.mint_address.clone(),
+                    mint_address: r.mint_address.clone(),
                     symbol: r.symbol.clone(),
                     created_at: r.token_created_at,
                     ath_price: r.ath_price,
@@ -733,7 +733,7 @@ pub async fn paper_result_tpsl_rule(
         }
     };
 
-    let mints: Vec<String> = positions.iter().map(|p| p.mint.clone()).collect();
+    let mints: Vec<String> = positions.iter().map(|p| p.mint_address.clone()).collect();
     let symbols = app_state
         .token_repo()
         .find_symbols_for(&mints)
@@ -836,12 +836,12 @@ pub(crate) fn paper_position_to_sim_result(
         .exit_price
         .map(|x| x.max(p.entry_price.unwrap_or(0.0)))
         .or(p.entry_price);
-    let symbol = symbols.get(&p.mint).cloned().unwrap_or_default();
+    let symbol = symbols.get(&p.mint_address).cloned().unwrap_or_default();
     let entry_tx = p.entry_tx_sigs().first().cloned().unwrap_or_default();
     let exit_tx = p.exit_tx_sigs().last().cloned();
     BacktestTokenResult {
         symbol,
-        mint: p.mint,
+        mint_address: p.mint_address,
         entry_price: p.entry_price.unwrap_or(0.0),
         ath_price,
         entry_token_amount: p.entry_token_amount.map(|a| a as f64).unwrap_or(0.0),

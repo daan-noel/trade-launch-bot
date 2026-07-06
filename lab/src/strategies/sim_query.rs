@@ -29,7 +29,7 @@ use trading_core::api::table_query::TableRequest;
 fn resolve(key: &str) -> Option<(&'static str, ColKind)> {
     use ColKind::{Number, Text};
     Some(match key {
-        "mint" => ("mint", Text),
+        "mint_address" => ("mint_address", Text),
         "symbol" => ("symbol", Text),
         "reason" | "exit_reason" => ("exit_reason", Text),
         "entry_tx" => ("entry_tx", Text),
@@ -72,9 +72,9 @@ mod tests {
 
     fn rows() -> Vec<Value> {
         vec![
-            json!({"mint":"a","symbol":"BONK","pnl_percent":10.0,"pnl_sol":1.0,"exit_time":"2026-01-01T00:00:00Z"}),
-            json!({"mint":"b","symbol":"pumpcat","pnl_percent":-5.0,"pnl_sol":-0.5,"exit_time":"2026-01-01T00:00:00Z"}),
-            json!({"mint":"c","symbol":"WIF","pnl_percent":50.0,"pnl_sol":2.0,"exit_time":null}),
+            json!({"mint_address":"a","symbol":"BONK","pnl_percent":10.0,"pnl_sol":1.0,"exit_time":"2026-01-01T00:00:00Z"}),
+            json!({"mint_address":"b","symbol":"pumpcat","pnl_percent":-5.0,"pnl_sol":-0.5,"exit_time":"2026-01-01T00:00:00Z"}),
+            json!({"mint_address":"c","symbol":"WIF","pnl_percent":50.0,"pnl_sol":2.0,"exit_time":null}),
         ]
     }
 
@@ -117,8 +117,8 @@ mod tests {
         // Frontend `simColumns` keys (`holding`, `pnl_pct`, `reason`) are friendlier
         // than the backend field names — must resolve identically.
         let rows = vec![
-            json!({"mint":"a","symbol":"BONK","trade_count":3,"exit_reason":"TakeProfit"}),
-            json!({"mint":"b","symbol":"WIF","trade_count":9,"exit_reason":"StopLoss"}),
+            json!({"mint_address":"a","symbol":"BONK","trade_count":3,"exit_reason":"TakeProfit"}),
+            json!({"mint_address":"b","symbol":"WIF","trade_count":9,"exit_reason":"StopLoss"}),
         ];
         let r = req(json!({"filters": {"trade_count": {"op":"gt","val":5}}}));
         let (_, total) = query(&rows, &r);
@@ -127,7 +127,7 @@ mod tests {
         let r = req(json!({"filters": {"reason": {"op":"eq","val":"StopLoss"}}}));
         let (page, total) = query(&rows, &r);
         assert_eq!(total, 1, "'reason' alias must filter on exit_reason");
-        assert_eq!(page[0]["mint"], "b");
+        assert_eq!(page[0]["mint_address"], "b");
 
         let r = req(json!({"sorting": [{"col":"holding","dir":"asc"}]}));
         let (page, _) = query(&rows, &r);
@@ -139,23 +139,23 @@ mod tests {
         // Fields flattened onto the row by `token_enrich::TokenEnrichment` — the
         // frontend's `appendedTokenColumns` display keys must alias to them.
         let rows = vec![
-            json!({"mint":"a","symbol":"BONK","initial_buy_sol":0.5,"cu_price":1000,"is_migrated":true}),
-            json!({"mint":"b","symbol":"WIF","initial_buy_sol":2.0,"cu_price":5000,"is_migrated":false}),
+            json!({"mint_address":"a","symbol":"BONK","initial_buy_sol":0.5,"cu_price":1000,"is_migrated":true}),
+            json!({"mint_address":"b","symbol":"WIF","initial_buy_sol":2.0,"cu_price":5000,"is_migrated":false}),
         ];
 
         let r = req(json!({"filters": {"initial_buy": {"op":"gt","val":1.0}}}));
         let (page, total) = query(&rows, &r);
         assert_eq!(total, 1, "'initial_buy' alias must filter on initial_buy_sol");
-        assert_eq!(page[0]["mint"], "b");
+        assert_eq!(page[0]["mint_address"], "b");
 
         let r = req(json!({"sorting": [{"col":"cu_price","dir":"desc"}]}));
         let (page, _) = query(&rows, &r);
-        assert_eq!(page[0]["mint"], "b", "cu_price sorts desc: WIF(5000) first");
+        assert_eq!(page[0]["mint_address"], "b", "cu_price sorts desc: WIF(5000) first");
 
         // Booleans coerce to 0.0/1.0 for sort — true (migrated) sorts before false.
         let r = req(json!({"sorting": [{"col":"migrated","dir":"desc"}]}));
         let (page, _) = query(&rows, &r);
-        assert_eq!(page[0]["mint"], "a", "'migrated' alias sorts is_migrated true first (desc)");
+        assert_eq!(page[0]["mint_address"], "a", "'migrated' alias sorts is_migrated true first (desc)");
     }
 
     #[test]
@@ -167,8 +167,8 @@ mod tests {
         let (page, total) = query(&rows(), &r);
         assert_eq!(total, 3);
         assert_eq!(page.len(), 2, "page size 2");
-        assert_eq!(page[0]["mint"], "c", "WIF(50) first desc");
-        assert_eq!(page[1]["mint"], "a", "BONK(10) second");
+        assert_eq!(page[0]["mint_address"], "c", "WIF(50) first desc");
+        assert_eq!(page[1]["mint_address"], "a", "BONK(10) second");
     }
 
     #[test]
@@ -176,14 +176,14 @@ mod tests {
         // Three rows share pnl_sol=1.0 — without a tiebreak their order is unstable
         // across page seams. The `mint` ASC tail must pin them to b < m < z.
         let rows = vec![
-            json!({"mint":"z","symbol":"Z","pnl_sol":1.0}),
-            json!({"mint":"b","symbol":"B","pnl_sol":1.0}),
-            json!({"mint":"m","symbol":"M","pnl_sol":1.0}),
+            json!({"mint_address":"z","symbol":"Z","pnl_sol":1.0}),
+            json!({"mint_address":"b","symbol":"B","pnl_sol":1.0}),
+            json!({"mint_address":"m","symbol":"M","pnl_sol":1.0}),
         ];
         let r = req(json!({"sorting": [{"col":"pnl_sol","dir":"desc"}]}));
         let (page, _) = query(&rows, &r);
         assert_eq!(
-            page.iter().map(|r| r["mint"].as_str().unwrap()).collect::<Vec<_>>(),
+            page.iter().map(|r| r["mint_address"].as_str().unwrap()).collect::<Vec<_>>(),
             vec!["b", "m", "z"],
             "equal pnl_sol rows order by mint ASC"
         );
@@ -193,13 +193,13 @@ mod tests {
     fn no_sort_column_still_orders_by_mint() {
         // Default view (no sort levels) must still be deterministic → mint ASC.
         let rows = vec![
-            json!({"mint":"z","symbol":"Z"}),
-            json!({"mint":"a","symbol":"A"}),
-            json!({"mint":"m","symbol":"M"}),
+            json!({"mint_address":"z","symbol":"Z"}),
+            json!({"mint_address":"a","symbol":"A"}),
+            json!({"mint_address":"m","symbol":"M"}),
         ];
         let (page, _) = query(&rows, &req(json!({})));
         assert_eq!(
-            page.iter().map(|r| r["mint"].as_str().unwrap()).collect::<Vec<_>>(),
+            page.iter().map(|r| r["mint_address"].as_str().unwrap()).collect::<Vec<_>>(),
             vec!["a", "m", "z"],
             "no sort key → stable mint ASC order"
         );

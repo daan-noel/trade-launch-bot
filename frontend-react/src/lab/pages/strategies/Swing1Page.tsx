@@ -129,7 +129,7 @@ function simSummaryToCard(s: SimulatedSummary): PositionsSummary {
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
 // memo) skip churn that an inline `(r) => r.x` would trigger every render.
-const keyByMint = (r: { mint: string }) => r.mint;
+const keyByMint = (r: { mint_address: string }) => r.mint_address;
 const keyById = (r: { id: string }) => r.id;
 
 
@@ -264,7 +264,7 @@ function SwingRuleInspectModal({
     setLegs(null);
     const blob = serializeRule(SWING1_SPEC, rule);
     const { params } = blobToDetectParams(blob, SWING1_DETECT_KEYS);
-    fetchSwing1Detect(target.mint, params as Swing1DetectParams, {
+    fetchSwing1Detect(target.mint_address, params as Swing1DetectParams, {
       startMs: null,
       endMs: null,
       // The real backtest/paper-run evaluates ALL trades (curve + AMM, see
@@ -283,7 +283,7 @@ function SwingRuleInspectModal({
     return () => {
       cancelled = true;
     };
-  }, [target.mint, rule, carriedLegs]);
+  }, [target.mint_address, rule, carriedLegs]);
 
   const swingOverlay = useMemo<ChartSwingOverlay | null>(() => {
     if (!legs || !legs.length) return null;
@@ -295,7 +295,7 @@ function SwingRuleInspectModal({
 
 function inspectFromMatched(r: import('types').MatchedTokenRecord): InspectTarget {
   return {
-    mint: r.mint,
+    mint_address: r.mint_address,
     symbol: r.symbol,
     entryTime: null,
     entryPrice: null,
@@ -906,12 +906,12 @@ export function Swing1Page() {
 
   const onSelectSim = useCallback(
     (key: string | null) => {
-      const row = key ? simTokens.find((t) => t.mint === key) ?? null : null;
+      const row = key ? simTokens.find((t) => t.mint_address === key) ?? null : null;
       setInspect(
         row
           ? {
               table: 'sim',
-              key: row.mint,
+              key: row.mint_address,
               target: inspectFromSim(row),
               ruleId: simRuleId,
               carriedLegs: row.swing_legs ?? null,
@@ -924,9 +924,9 @@ export function Swing1Page() {
 
   const onSelectMatched = useCallback(
     (key: string | null) => {
-      const row = key ? matchedTokens.find((t) => t.mint === key) ?? null : null;
+      const row = key ? matchedTokens.find((t) => t.mint_address === key) ?? null : null;
       setInspect(
-        row ? { table: 'matched', key: row.mint, target: inspectFromMatched(row), ruleId: null } : null,
+        row ? { table: 'matched', key: row.mint_address, target: inspectFromMatched(row), ruleId: null } : null,
       );
     },
     [matchedTokens],
@@ -951,7 +951,7 @@ export function Swing1Page() {
       setSellingPositionMint(mint);
       setActionError(null);
       try {
-        await sellToken({ mint }).unwrap();
+        await sellToken({ mint_address: mint }).unwrap();
       } catch (e) {
         setActionError(
           `Sell failed: ${apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'unknown error'}`,

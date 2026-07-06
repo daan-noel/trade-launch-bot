@@ -31,7 +31,7 @@ export function Swing1InspectModal({ target, params, onClose }: Swing1InspectMod
   useEffect(() => {
     let cancelled = false;
     setLegs(null);
-    fetchSwing1Detect(target.mint, params as Swing1DetectParams, {
+    fetchSwing1Detect(target.mint_address, params as Swing1DetectParams, {
       startMs: null,
       endMs: null,
       curveOnly: false,
@@ -46,7 +46,7 @@ export function Swing1InspectModal({ target, params, onClose }: Swing1InspectMod
     return () => {
       cancelled = true;
     };
-  }, [target.mint, params]);
+  }, [target.mint_address, params]);
 
   const swingOverlay = useMemo<ChartSwingOverlay | null>(() => {
     if (!legs || !legs.length) return null;

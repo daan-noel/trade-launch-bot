@@ -2,7 +2,7 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { TokenDetailRecord, TradeRecord } from 'types';
 
 /** A single token's sync outcome. */
-export type SyncResultItem = { mint: string; ok: boolean; error?: string };
+export type SyncResultItem = { mint_address: string; ok: boolean; error?: string };
 
 /** A token that synced successfully, paired with its trades. */
 export type SyncedToken = { token: TokenDetailRecord; trades: TradeRecord[] };
@@ -93,7 +93,7 @@ const syncTokenSlice = createSlice({
     ) {
       // Merge per-mint results: incoming overrides existing, else appended.
       for (const r of action.payload.results) {
-        const idx = state.results.findIndex((x) => x.mint === r.mint);
+        const idx = state.results.findIndex((x) => x.mint_address === r.mint_address);
         if (idx >= 0) state.results[idx] = r;
         else state.results.push(r);
       }
@@ -107,7 +107,7 @@ const syncTokenSlice = createSlice({
       }
       // Grow the mint cache (deduped, first-seen order).
       for (const r of action.payload.results) {
-        if (!state.syncedMints.includes(r.mint)) state.syncedMints.push(r.mint);
+        if (!state.syncedMints.includes(r.mint_address)) state.syncedMints.push(r.mint_address);
       }
       // Cap the heavy output so a long session over many mints can't grow these
       // arrays (and the merge scan above) unbounded. Evict the oldest results
@@ -118,7 +118,7 @@ const syncTokenSlice = createSlice({
           0,
           state.results.length - MAX_RETAINED_TOKENS,
         );
-        const dropped = new Set(evicted.map((r) => r.mint));
+        const dropped = new Set(evicted.map((r) => r.mint_address));
         state.syncedTokens = state.syncedTokens.filter(
           (t) => !dropped.has(t.token.mint_address),
         );

@@ -33,7 +33,7 @@ import type { ManagedBy, WalletHolding } from 'types';
 import { parseSlippageBps } from '@live/lib/slippage';
 
 interface BuyDialog {
-  mint: string;
+  mint_address: string;
   /// Known for row-triggered buys; undefined for manual buys (backend resolves on-chain).
   tokenProgramId?: string;
   solInput: string;
@@ -44,7 +44,7 @@ interface BuyDialog {
 
 interface SellDialog {
   /// Mint to sell; entered by the user (manual sell sells the full balance).
-  mint: string;
+  mint_address: string;
   /// Slippage tolerance as a percent string; blank = use the global default.
   slippageInput: string;
 }
@@ -141,7 +141,7 @@ export function MyWalletPage() {
   // Live prices for the CURRENT page's mints, decoupled from the (slow, RPC-bound)
   // holdings scan and polled on a short interval, so Value/Price tick without a
   // server round-trip. Keyed by the sorted page mints; paused while unfocused.
-  const pageMints = useMemo(() => items.map((h) => h.mint).sort(), [items]);
+  const pageMints = useMemo(() => items.map((h) => h.mint_address).sort(), [items]);
   const { data: prices } = useGetWalletPricesQuery(pageMints, {
     skip: pageMints.length === 0,
     pollingInterval: 20000,
@@ -154,7 +154,7 @@ export function MyWalletPage() {
   const priced = useMemo(
     () =>
       items.map((h) => {
-        const p = prices?.[h.mint];
+        const p = prices?.[h.mint_address];
         if (!p) return h;
         return {
           ...h,
@@ -167,7 +167,7 @@ export function MyWalletPage() {
       }),
     [items, prices],
   );
-  const rowByMint = useMemo(() => new Map(priced.map((r) => [r.mint, r])), [priced]);
+  const rowByMint = useMemo(() => new Map(priced.map((r) => [r.mint_address, r])), [priced]);
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -177,7 +177,7 @@ export function MyWalletPage() {
   // A pending manual sell held back for confirmation because a live strategy
   // manages this bag — selling manually can race the bot's own exit (double-sell).
   const [pendingSell, setPendingSell] = useState<{
-    mint: string;
+    mint_address: string;
     tokenAccount?: string;
     slippageBps?: number;
     prevAmount?: number;
@@ -239,7 +239,7 @@ export function MyWalletPage() {
 
       try {
         await sellToken({
-          mint,
+          mint_address: mint,
           ...(tokenAccount ? { token_account: tokenAccount } : {}),
           ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
         }).unwrap();
@@ -266,7 +266,7 @@ export function MyWalletPage() {
     ) => {
       if (opts.managedBy) {
         setPendingSell({
-          mint,
+          mint_address: mint,
           tokenAccount: opts.tokenAccount,
           slippageBps: opts.slippageBps,
           prevAmount: opts.prevAmount,
@@ -300,18 +300,18 @@ export function MyWalletPage() {
   // Proceed with a sell the user confirmed despite the bot-managed warning.
   const confirmPendingSell = useCallback(() => {
     if (!pendingSell) return;
-    const { mint, tokenAccount, slippageBps, prevAmount } = pendingSell;
+    const { mint_address: mint, tokenAccount, slippageBps, prevAmount } = pendingSell;
     setPendingSell(null);
     void runSell(mint, tokenAccount, slippageBps, prevAmount);
   }, [pendingSell, runSell]);
 
   const handleManualSellOpen = useCallback(() => {
-    setSellDialog({ mint: '', slippageInput: '' });
+    setSellDialog({ mint_address: '', slippageInput: '' });
   }, []);
 
   const handleSellSubmit = useCallback(async () => {
     if (!sellDialog) return;
-    const mint = sellDialog.mint.trim();
+    const mint = sellDialog.mint_address.trim();
     if (!mint) {
       setActionError('Enter a mint address');
       return;
@@ -347,16 +347,16 @@ export function MyWalletPage() {
   }, [sellDialog, requestSell]);
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
-    setBuyDialog({ mint, tokenProgramId, solInput: '0.001', slippageInput: '', manual: false });
+    setBuyDialog({ mint_address: mint, tokenProgramId, solInput: '0.001', slippageInput: '', manual: false });
   }, []);
 
   const handleManualBuyOpen = useCallback(() => {
-    setBuyDialog({ mint: '', solInput: '0.001', slippageInput: '', manual: true });
+    setBuyDialog({ mint_address: '', solInput: '0.001', slippageInput: '', manual: true });
   }, []);
 
   const handleBuySubmit = useCallback(async () => {
     if (!buyDialog) return;
-    const mint = buyDialog.mint.trim();
+    const mint = buyDialog.mint_address.trim();
     if (!mint) {
       setActionError('Enter a mint address');
       return;
@@ -387,7 +387,7 @@ export function MyWalletPage() {
 
     try {
       await buyToken({
-        mint,
+        mint_address: mint,
         amount_sol: solAmount,
         // Omit for manual buys — the backend resolves the token program on-chain.
         ...(buyDialog.tokenProgramId ? { token_program_id: buyDialog.tokenProgramId } : {}),
@@ -415,7 +415,7 @@ export function MyWalletPage() {
   const buyTitle = buyDialog
     ? buyDialog.manual
       ? 'Manual Buy'
-      : `Buy ${rowByMint.get(buyDialog.mint)?.symbol ?? buyDialog.mint}`
+      : `Buy ${rowByMint.get(buyDialog.mint_address)?.symbol ?? buyDialog.mint_address}`
     : '';
 
   return (
@@ -457,7 +457,7 @@ export function MyWalletPage() {
         rows={priced}
         existingKeys={WALLET_KEYS}
         mintSetFilter
-        rowKey={(r) => r.mint}
+        rowKey={(r) => r.mint_address}
         serverSide
         serverTotal={total}
         onQueryChange={setQuery}
@@ -488,7 +488,7 @@ export function MyWalletPage() {
                   type="text"
                   fieldSize="md"
                   placeholder="Token mint address"
-                  value={buyDialog.mint}
+                  value={buyDialog.mint_address}
                   onChange={(e) =>
                     setBuyDialog((d) => (d ? { ...d, mint: e.target.value } : d))
                   }
@@ -496,7 +496,7 @@ export function MyWalletPage() {
                 />
               </label>
             ) : (
-              <p className="mb-4 text-xs text-text-mid">Mint: {buyDialog.mint}</p>
+              <p className="mb-4 text-xs text-text-mid">Mint: {buyDialog.mint_address}</p>
             )}
             <label className="mb-4 flex flex-col gap-1.5">
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
@@ -563,7 +563,7 @@ export function MyWalletPage() {
                 type="text"
                 fieldSize="md"
                 placeholder="Token mint address"
-                value={sellDialog.mint}
+                value={sellDialog.mint_address}
                 onChange={(e) =>
                   setSellDialog((d) => (d ? { ...d, mint: e.target.value } : d))
                 }

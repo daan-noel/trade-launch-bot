@@ -47,13 +47,13 @@ export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
       searchValue: (r) => `${r.strategy_id} ${STRATEGY_LABEL[r.strategy_id] ?? ''}`,
     },
     {
-      key: 'mint',
+      key: 'mint_address',
       label: 'Mint',
       width: '195px',
       sortable: true,
-      render: (r) => <AddressDisplay address={r.mint} kind="token" truncateLen={12} stopPropagation />,
-      sortValue: (r) => r.mint,
-      searchValue: (r) => r.mint,
+      render: (r) => <AddressDisplay address={r.mint_address} kind="token" truncateLen={12} stopPropagation />,
+      sortValue: (r) => r.mint_address,
+      searchValue: (r) => r.mint_address,
     },
     {
       key: 'status',

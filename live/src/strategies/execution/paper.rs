@@ -536,7 +536,7 @@ pub(crate) async fn record_time_exit(
     }
     runtime.sync_position(Some(&prev), &position);
     info!(
-        position_id = %position.id, mint = %position.mint, exit_price,
+        position_id = %position.id, mint = %position.mint_address, exit_price,
         "[PAPER] Time-driven exit recorded"
     );
 

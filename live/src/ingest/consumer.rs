@@ -203,7 +203,7 @@ impl IngestConsumer {
 
         self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
         self.emit_sse(SseEvent::TokenCreated {
-            mint,
+            mint_address: mint,
             tx_signature: signature,
             slot,
             timestamp: block_time,
@@ -281,7 +281,7 @@ impl IngestConsumer {
 
         self.ping_strategy(mint.clone(), IngestKind::Trade);
         self.emit_sse(SseEvent::TradeExecuted {
-            mint,
+            mint_address: mint,
             wallet,
             trade_type,
             amount_sol,
@@ -320,7 +320,7 @@ impl IngestConsumer {
     fn on_liquidity(&self, e: LiquidityEvent) {
         let sse = if e.added {
             SseEvent::LiquidityAdded {
-                mint: e.mint.clone(),
+                mint_address: e.mint.clone(),
                 wallet: e.wallet,
                 amount_sol: e.amount_sol,
                 token_amount: e.token_amount,
@@ -330,7 +330,7 @@ impl IngestConsumer {
             }
         } else {
             SseEvent::LiquidityRemoved {
-                mint: e.mint.clone(),
+                mint_address: e.mint.clone(),
                 wallet: e.wallet,
                 amount_sol: e.amount_sol,
                 token_amount: e.token_amount,

@@ -184,7 +184,7 @@ pub async fn run_backtest(
                 };
 
             let base = BacktestBase {
-                mint: token.mint_address.clone(),
+                mint_address: token.mint_address.clone(),
                 symbol: token.symbol.clone(),
                 entry_price,
                 // Filled from the enrichment batch fetch below (tokens_info ATH).
@@ -233,12 +233,12 @@ pub async fn run_backtest(
     // result set with token metadata (initial buy, CU price, market cap,
     // migrated/dead, ...), so the Simulated-tokens table can sort/filter/search
     // on it server-side (previously only merged client-side, per visible page).
-    let result_mints: Vec<String> = results.iter().map(|r| r.base.mint.clone()).collect();
+    let result_mints: Vec<String> = results.iter().map(|r| r.base.mint_address.clone()).collect();
     let mut enrichment = token_enrich::fetch_enrichment(&app_state.batch_db, &result_mints)
         .await
         .map_err(|e| anyhow!("token enrichment fetch failed: {e}"))?;
     for r in &mut results {
-        if let Some(e) = enrichment.remove(&r.base.mint) {
+        if let Some(e) = enrichment.remove(&r.base.mint_address) {
             // `ath_price` is row-owned (excluded from `TokenEnrichment`); set it
             // off the row, then flatten the rest — mirrors Positions/Sweep.
             r.base.ath_price = e.ath_price;

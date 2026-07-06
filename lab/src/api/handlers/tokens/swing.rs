@@ -18,7 +18,7 @@ use crate::{
 
 #[derive(Serialize)]
 pub struct SwingResponse {
-    pub mint: String,
+    pub mint_address: String,
     pub params: SwingParams,
     pub count: usize,
     pub swings: Vec<SwingLeg>,
@@ -113,7 +113,7 @@ pub(crate) fn filter_trades_to_window<T: TradeRow + Clone>(
 /// One token's swing ledger inside a batch response.
 #[derive(Serialize)]
 pub struct SwingBatchEntry {
-    pub mint: String,
+    pub mint_address: String,
     pub count: usize,
     pub swings: Vec<SwingLeg>,
 }
@@ -166,7 +166,7 @@ pub async fn detect_token_swings(
 
     match result {
         Ok(swings) => HttpResponse::Ok().json(SwingResponse {
-            mint,
+            mint_address: mint,
             params: resp_params,
             count: swings.len(),
             swings,
@@ -323,7 +323,7 @@ pub async fn detect_tokens_swings_batch(
                 // (and re-group at any latency) the chain columns.
                 run_scan.mints.insert(mint.clone(), swings.clone());
                 results.push(SwingBatchEntry {
-                    mint,
+                    mint_address: mint,
                     count: swings.len(),
                     swings,
                 });

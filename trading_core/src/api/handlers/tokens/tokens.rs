@@ -415,7 +415,7 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
         }
         Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
             "error": "token not found",
-            "mint": mint
+            "mint_address": mint
         })),
         Err(e) => {
             tracing::error!("DB error fetching token {mint}: {e}");
@@ -565,7 +565,7 @@ fn build_registry() -> Vec<ColumnSpec> {
             .sortable("t.symbol", true, |t| SortKey::Str(Some(t.symbol.clone()))),
         C::new("name", Some("t.name".into()), |t| t.name.clone())
             .sortable("t.name", true, |t| SortKey::Str(Some(t.name.clone()))),
-        C::new("mint", Some("t.mint_address".into()), |t| t.mint_address.clone())
+        C::new("mint_address", Some("t.mint_address".into()), |t| t.mint_address.clone())
             .sortable("t.mint_address", true, |t| SortKey::Str(Some(t.mint_address.clone()))),
         C::new("creator", Some("t.creator_wallet".into()), |t| t.creator_address.clone())
             .sortable("t.creator_wallet", true, |t| SortKey::Str(Some(t.creator_address.clone()))),
@@ -937,7 +937,7 @@ fn lower_filter(
         // Identity: single-field case-insensitive substring (panel semantics).
         "symbol" => put_str(f, "symbol", &val),
         "name" => put_str(f, "name", &val),
-        "mint" => put_str(f, "mint", &val),
+        "mint_address" => put_str(f, "mint_address", &val),
         "creator" => put_str(f, "creator", &val),
         "create_tx" => put_str(f, "create_tx", &val),
 
@@ -1038,7 +1038,7 @@ impl TokenQuery {
             // The pasted mint-set (`in` op on `mint`) is a set-membership filter, not
             // a substring — lift its array operand here (capped) instead of routing
             // it through `lower_filter` (which handles only single-operand ops).
-            if key == "mint" && spec.op == crate::api::table_query::FilterOp::In {
+            if key == "mint_address" && spec.op == crate::api::table_query::FilterOp::In {
                 if let Value::Array(arr) = &spec.val {
                     mint_in = arr
                         .iter()
@@ -1097,7 +1097,7 @@ impl TokenQuery {
         if !text_match(&t.name, g(f, "name")) {
             return false;
         }
-        if !text_match(&t.mint_address, g(f, "mint")) {
+        if !text_match(&t.mint_address, g(f, "mint_address")) {
             return false;
         }
         if !text_match(&t.creator_address, g(f, "creator")) {
@@ -1786,7 +1786,7 @@ mod grammar_parity_tests {
             .map(|c| c.key)
             .collect();
         let expected: BTreeSet<&str> = [
-            "symbol", "name", "mint", "creator", "token_age", "created", "last_trade", "lifetime",
+            "symbol", "name", "mint_address", "creator", "token_age", "created", "last_trade", "lifetime",
             "last_synced", "trade_count", "ath_price", "ath_timestamp", "ath_fep_ratio",
             "current_price", "current_fep_ratio", "market_cap", "volume", "first_slot_buy",
             "first_slot_sell", "initial_buy", "init_supply", "token_amount", "max_cost_lamports",
@@ -1850,10 +1850,10 @@ mod lowering_tests {
         // The pasted mint-set `in` op becomes the exact-membership `mint_in` list,
         // NOT the `mint` substring panel filter and NOT a `col_filters` entry.
         let q = TokenQuery::from_table_request(&req(json!({
-            "filters": {"mint": {"op":"in","val":["MintA", "MintB", ""]}}
+            "filters": {"mint_address": {"op":"in","val":["MintA", "MintB", ""]}}
         })));
         assert_eq!(q.mint_in(), &["MintA".to_string(), "MintB".to_string()], "blanks dropped");
-        assert!(q.f_get("mint").is_none(), "mint-set doesn't touch the substring panel filter");
+        assert!(q.f_get("mint_address").is_none(), "mint-set doesn't touch the substring panel filter");
         assert!(q.col_filters_slice().is_empty(), "mint-set isn't a per-column predicate");
     }
 
@@ -1862,9 +1862,9 @@ mod lowering_tests {
         // A `contains` on `mint` is the substring identity filter, unaffected by the
         // set path.
         let q = TokenQuery::from_table_request(&req(json!({
-            "filters": {"mint": {"op":"contains","val":"abc"}}
+            "filters": {"mint_address": {"op":"contains","val":"abc"}}
         })));
-        assert_eq!(q.f_get("mint"), Some("abc"));
+        assert_eq!(q.f_get("mint_address"), Some("abc"));
         assert!(q.mint_in().is_empty());
     }
 

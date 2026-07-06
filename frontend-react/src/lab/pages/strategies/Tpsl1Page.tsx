@@ -1,4 +1,4 @@
-﻿import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { Accordion } from 'components/ui/Accordion';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
@@ -116,7 +116,7 @@ const TPSL1_SPEC = getSpec('tpsl1');
 // Module-level, referentially-stable rowKey fns: each only reads the row, so a
 // single shared identity lets DataTable's page/select effects (and the row
 // memo) skip churn that an inline `(r) => r.x` would trigger every render.
-const keyByMint = (r: { mint: string }) => r.mint;
+const keyByMint = (r: { mint_address: string }) => r.mint_address;
 const keyById = (r: { id: string }) => r.id;
 
 
@@ -205,7 +205,7 @@ type InspectState = {
 
 function inspectFromMatched(r: import('types').MatchedTokenRecord): InspectTarget {
   return {
-    mint: r.mint,
+    mint_address: r.mint_address,
     symbol: r.symbol,
     entryTime: null,
     entryPrice: null,
@@ -811,16 +811,16 @@ export function Tpsl1Page() {
 
   const onSelectSim = useCallback(
     (key: string | null) => {
-      const row = key ? simTokens.find((t) => t.mint === key) ?? null : null;
-      setInspect(row ? { table: 'sim', key: row.mint, target: inspectFromSim(row) } : null);
+      const row = key ? simTokens.find((t) => t.mint_address === key) ?? null : null;
+      setInspect(row ? { table: 'sim', key: row.mint_address, target: inspectFromSim(row) } : null);
     },
     [simTokens],
   );
 
   const onSelectMatched = useCallback(
     (key: string | null) => {
-      const row = key ? matchedTokens.find((t) => t.mint === key) ?? null : null;
-      setInspect(row ? { table: 'matched', key: row.mint, target: inspectFromMatched(row) } : null);
+      const row = key ? matchedTokens.find((t) => t.mint_address === key) ?? null : null;
+      setInspect(row ? { table: 'matched', key: row.mint_address, target: inspectFromMatched(row) } : null);
     },
     [matchedTokens],
   );
@@ -840,7 +840,7 @@ export function Tpsl1Page() {
       setSellingPositionMint(mint);
       setActionError(null);
       try {
-        await sellToken({ mint }).unwrap();
+        await sellToken({ mint_address: mint }).unwrap();
       } catch (e) {
         setActionError(
           `Sell failed: ${apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'unknown error'}`,

@@ -27,10 +27,10 @@ function saveChartsPref(tableId: string | undefined, on: boolean) {
 }
 
 /** Build the wrapper-injected `structuredFilters` for an active mint set (empty →
- *  none). The `in`-on-`mint` shape is defined once here. Uses the literal `mint`
- *  **column key** (the backend/grammar key), independent of the row's JS field. */
+ *  none). The `in`-on-`mint_address` shape is defined once here — `mint_address` is
+ *  the single token-data column key across the whole stack (SQL, grammar, JS field). */
 function mintSetFilters(mints: string[]): Record<string, FilterSpec> | undefined {
-  return mints.length ? { mint: { op: 'in', val: mints } } : undefined;
+  return mints.length ? { mint_address: { op: 'in', val: mints } } : undefined;
 }
 
 /**
@@ -54,10 +54,10 @@ function mintSetFilters(mints: string[]): Record<string, FilterSpec> | undefined
  *     pre-filter. Used by tables with no backend paging endpoint (Trader Analysis,
  *     Sweep drill-in).
  *
- * Rows may key their mint under `mint` (default) or another field — pass `mintOf`.
- * That accessor drives the charts grid, the default `rowKey`, and the client mint-set
- * pre-filter; it does NOT change the server mint-set key (always the `mint` column
- * key the backend resolves).
+ * Every token-data row keys its mint under the one canonical field `mint_address`
+ * (SSOT across DB → wire → JS), so the mint accessor is fixed internally — callers no
+ * longer pass a `mintOf`. It drives the charts grid, the default `rowKey`, and the
+ * client mint-set pre-filter, and matches the server mint-set column key.
  *
  * `DataTable` stays a general-purpose primitive with NO token vocabulary; the
  * dependency is one-way (`tokens/` → `table/`), asserted by
@@ -73,11 +73,9 @@ interface TokenTableCommon<R> {
    *  from the appended token columns so enrichment never duplicates a column. Pass
    *  `ALL_TOKEN_INFO_KEYS` to append nothing (tables that own the full layout). */
   existingKeys: Set<string>;
-  /** Row key. Defaults to {@link mintOf}. Override for non-mint keys (e.g. positions
-   *  key by `id`). */
+  /** Row key. Defaults to the row's `mint_address`. Override for non-mint keys (e.g.
+   *  positions key by `id`). */
   rowKey?: (row: R) => string;
-  /** Extract a row's mint (rows key it `mint` by default, or `mint_address`, …). */
-  mintOf?: (row: R) => string;
   /** Change when an external control alters the result set → snap to page 1. */
   resetKey?: string | number;
   /** Opt-in: a paste-a-mint-set box whose set ANDs with the table's filters (server:
@@ -126,15 +124,14 @@ interface TokenTableClientProps<R> extends TokenTableCommon<R> {
 
 export type TokenTableProps<R> = TokenTableServerProps<R> | TokenTableClientProps<R>;
 
-/** Default mint accessor — rows without an explicit `mintOf` are expected to carry a
- *  `mint` string (positions/matched/sim/wallet do). */
-function defaultMintOf<R>(row: R): string {
-  return (row as { mint?: string }).mint ?? '';
+/** The one mint accessor — every token-data row carries `mint_address` (SSOT). */
+function mintAddressOf<R>(row: R): string {
+  return (row as { mint_address?: string }).mint_address ?? '';
 }
 
 export function TokenTable<R>(props: TokenTableProps<R>) {
   const { charts, renderChartCardExtra, titleOf, highlightWallet, tableId, onVisibleRowsChange } = props;
-  const mintOf = props.mintOf ?? defaultMintOf;
+  const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() => (charts ? loadChartsPref(tableId) : false));
   const [visibleRows, setVisibleRows] = useState<R[]>([]);
 
@@ -183,7 +180,6 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
       {showGrid && (
         <TokenChartsGrid
           rows={visibleRows}
-          mintOf={mintOf}
           titleOf={titleOf}
           highlightWallet={highlightWallet}
           chartTableId={tableId ? `${tableId}_charts` : undefined}

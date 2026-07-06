@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
@@ -271,7 +271,7 @@ export function GroupedSweepView({
   }, [activeComboId]);
 
   const selectedTokenResult = selectedTokenMint
-    ? (tokenResults.find((r) => r.mint === selectedTokenMint) ?? null)
+    ? (tokenResults.find((r) => r.mint_address === selectedTokenMint) ?? null)
     : null;
 
   // The drilled-in combo's swept params — fed to the swing1 inspect modal so the
@@ -299,16 +299,16 @@ export function GroupedSweepView({
         sortable: true,
       },
       {
-        key: 'mint',
+        key: 'mint_address',
         label: 'Mint',
         group: 'identity',
         render: (r) => (
-          <span className="font-mono text-xs text-text-dim" title={r.mint}>
-            {r.mint.slice(0, 8)}…{r.mint.slice(-4)}
+          <span className="font-mono text-xs text-text-dim" title={r.mint_address}>
+            {r.mint_address.slice(0, 8)}…{r.mint_address.slice(-4)}
           </span>
         ),
-        searchValue: (r) => r.mint,
-        filterValue: (r) => r.mint,
+        searchValue: (r) => r.mint_address,
+        filterValue: (r) => r.mint_address,
         sortable: false,
       },
       {
@@ -759,7 +759,6 @@ export function GroupedSweepView({
                     columns={tokenColumns}
                     rows={visibleTokenResults}
                     existingKeys={ALL_TOKEN_INFO_KEYS}
-                    mintOf={(r) => r.mint}
                     mintSetFilter
                     charts
                     groupLabels={{
@@ -786,7 +785,7 @@ export function GroupedSweepView({
                   {selectedTokenResult &&
                     (() => {
                       const target = {
-                        mint: selectedTokenResult.mint,
+                        mint_address: selectedTokenResult.mint_address,
                         symbol: selectedTokenResult.symbol,
                         entryTime: selectedTokenResult.entry_time ?? null,
                         entryPrice: selectedTokenResult.entry_price ?? null,

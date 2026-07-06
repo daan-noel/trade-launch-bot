@@ -222,7 +222,7 @@ CREATE INDEX IF NOT EXISTS idx_strategy_positions_run            ON strategy_pos
 CREATE INDEX IF NOT EXISTS idx_strategy_positions_strategy_created
     ON strategy_positions(strategy_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_positions_rule_created   ON strategy_positions(rule_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_strategy_positions_mint_status    ON strategy_positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_strategy_positions_mint_address_status ON strategy_positions(mint_address, status);
 CREATE INDEX IF NOT EXISTS idx_strategy_positions_token_program  ON strategy_positions(token_program_id);
 
 -- In-flight recovery sweep (real mode).

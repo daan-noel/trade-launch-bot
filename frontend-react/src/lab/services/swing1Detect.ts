@@ -74,7 +74,7 @@ export interface Swing1ExitInfo {
 }
 
 export interface Swing1DetectResponse {
-  mint: string;
+  mint_address: string;
   trade_count: number;
   /** `false` ⇒ no entry gate configured; funnel still shows legs/verdicts/latch. */
   gate_configured: boolean;

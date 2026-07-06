@@ -639,7 +639,7 @@ impl StrategyService {
             // path) so the sweep never re-walks the history. `last_price` is the paper
             // fill mark; a not-yet-seeded position seeds from the trade vec just once,
             // inside `exit_state_clock_check`.
-            let (reason, last_price) = match cache.get(&position.mint) {
+            let (reason, last_price) = match cache.get(&position.mint_address) {
                 Some(entry) => {
                     let st = entry.value();
                     let last_price = st.current_price.or(position.entry_price).unwrap_or(0.0);
@@ -658,7 +658,7 @@ impl StrategyService {
                 continue;
             };
 
-            info!(position_id = %position.id, mint = %position.mint,
+            info!(position_id = %position.id, mint = %position.mint_address,
                 "Time-driven exit triggered: {exit_reason}");
 
             let Some(rule) = self.runtime.rule_by_id(rule_id) else {
@@ -710,7 +710,7 @@ impl StrategyService {
             warn!("Failed to mark position {} as ExitPending: {err}", position.id);
         } else {
             self.runtime.sync_position(Some(&prev), &position);
-            info!(position_id = %position.id, mint = %position.mint, "[REAL] Position marked ExitPending");
+            info!(position_id = %position.id, mint = %position.mint_address, "[REAL] Position marked ExitPending");
         }
         self.spawn_real_sell(position, trigger_price, trigger_time, reason, guard);
     }
@@ -860,7 +860,7 @@ impl StrategyService {
             };
             let trigger_price = self
                 .token_cache
-                .get(&position.mint)
+                .get(&position.mint_address)
                 .and_then(|e| e.value().current_price)
                 .or(position.entry_price)
                 .unwrap_or(0.0);
@@ -868,7 +868,7 @@ impl StrategyService {
                 .exit_reason
                 .clone()
                 .unwrap_or_else(|| EXIT_PENDING_RECOVERY_REASON.to_string());
-            info!(position_id = %position.id, mint = %position.mint,
+            info!(position_id = %position.id, mint = %position.mint_address,
                 "[REAL] Re-driving orphaned ExitPending sell");
             self.spawn_real_sell(position, trigger_price, Utc::now(), reason, guard);
         }
@@ -897,7 +897,7 @@ impl StrategyService {
 
             // 1. Adopt: a submitted sig is already indexed → record the entry.
             if real::adopt_existing_fill_if_present(
-                &position.mint,
+                &position.mint_address,
                 &wallet,
                 position.id,
                 &self.repo,
@@ -911,14 +911,14 @@ impl StrategyService {
             )
             .await
             {
-                info!(position_id = %position.id, mint = %position.mint,
+                info!(position_id = %position.id, mint = %position.mint_address,
                     "[REAL] Recovered BuySubmitted position: adopted on-chain fill");
                 continue;
             }
 
             // 2. No fill, no signatures → can't check → wait (never delete).
             if position.submitted_buy_signatures.is_empty() {
-                warn!(position_id = %position.id, mint = %position.mint,
+                warn!(position_id = %position.id, mint = %position.mint_address,
                     "BuySubmitted position has no submitted signatures — leaving for review");
                 continue;
             }
@@ -942,7 +942,7 @@ impl StrategyService {
                         // tracker permanently holds the committed SOL until restart.
                         self.trader.release_sol_for_position(&position.id.to_string());
                         self.runtime.remove_position(&position);
-                        info!(position_id = %position.id, mint = %position.mint,
+                        info!(position_id = %position.id, mint = %position.mint_address,
                             "[REAL] Dropped reverted BuySubmitted position (every buy reverted; no tokens)");
                     }
                     Err(err) => warn!(position_id = %position.id,
@@ -951,7 +951,7 @@ impl StrategyService {
             } else {
                 let age = Utc::now().signed_duration_since(position.updated_at);
                 if age > chrono::Duration::milliseconds(Self::BUY_SUBMITTED_REVIEW_MS as i64) {
-                    warn!(position_id = %position.id, mint = %position.mint,
+                    warn!(position_id = %position.id, mint = %position.mint_address,
                         "BuySubmitted position unresolved past the review window — needs manual \
                          review (a buy may have landed but never indexed); NOT auto-deleting");
                 }
@@ -1092,7 +1092,7 @@ impl StrategyService {
             // a token the WS cache has since evicted.
             let exit_price = self
                 .token_cache
-                .get(&position.mint)
+                .get(&position.mint_address)
                 .and_then(|e| e.value().current_price)
                 .unwrap_or_else(|| position.entry_price.unwrap_or(0.0));
 

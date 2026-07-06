@@ -142,7 +142,7 @@ pub struct Swing1ExitInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Swing1DetectResponse {
-    pub mint: String,
+    pub mint_address: String,
     pub trade_count: usize,
     /// `false` ⇒ the rule configures no entry gate, so `find_phase_entry` bails
     /// immediately (the funnel still shows legs + verdicts + latch for diagnosis).
@@ -216,7 +216,7 @@ fn build_response(mint: String, trades: &[CorpusTrade], rule: &Swing1Rule) -> Sw
     }
 
     Swing1DetectResponse {
-        mint,
+        mint_address: mint,
         trade_count: trades.len(),
         gate_configured: funnel.gate_configured,
         legs: funnel.legs,

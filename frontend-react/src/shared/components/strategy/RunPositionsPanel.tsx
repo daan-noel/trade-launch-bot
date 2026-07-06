@@ -185,13 +185,13 @@ export function RunPositionsPanel({
   const currentRowActions = useCallback(
     (row: RulePositionRecord) => {
       if (!onSellPosition || row.status !== 'Holding') return null;
-      const isSelling = sellingPositionMint === row.mint;
+      const isSelling = sellingPositionMint === row.mint_address;
       return (
         <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
             disabled={isSelling}
-            onClick={() => onSellPosition(row.mint)}
+            onClick={() => onSellPosition(row.mint_address)}
             className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
           >
             {isSelling ? 'Selling…' : 'Sell ALL'}

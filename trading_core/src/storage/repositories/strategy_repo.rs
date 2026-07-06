@@ -162,7 +162,7 @@ struct StrategyPositionDbRow {
     strategy_id: String,
     rule_id: Option<Uuid>,
     mode: String,
-    mint: String,
+    mint_address: String,
     wallet: String,
     token_program_id: Option<String>,
     token_account: Option<String>,
@@ -198,7 +198,7 @@ impl From<StrategyPositionDbRow> for StrategyPosition {
             strategy_id: r.strategy_id,
             rule_id: r.rule_id,
             mode: r.mode,
-            mint: r.mint,
+            mint_address: r.mint_address,
             wallet: r.wallet,
             token_program_id: r.token_program_id,
             token_account: r.token_account,
@@ -303,7 +303,7 @@ const METRICS_COLS: &str = "run_id, rolled_up_at, n_fired, n_open, n_closed, win
     n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, n_exit_stall, n_exit_time, \
     n_exit_liquidity, n_exit_open";
 
-const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint, wallet, \
+const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_address, wallet, \
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
     entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures, \
     exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures, \
@@ -311,7 +311,7 @@ const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint, walle
 
 /// `POSITION_COLS` qualified with the `sp` alias — for the paged read that JOINs
 /// `tokens` (so the server can sort/filter by token-enrichment columns too).
-const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp.mode, sp.mint, \
+const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp.mode, sp.mint_address, \
     sp.wallet, sp.token_program_id, sp.token_account, sp.target_price, sp.target_token_amount, \
     sp.target_time, sp.target_tx, sp.entry_price, sp.entry_token_amount, sp.entry_lamports, \
     sp.entry_time, sp.entry_tx_signatures, sp.exit_price, sp.exit_token_amount, sp.exit_lamports, \
@@ -366,7 +366,7 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
     Some(match key {
         // strategy_positions — the position-owned arms; everything else is a
         // token-enrichment column resolved by the SSOT whitelist below.
-        "mint" => "sp.mint",
+        "mint_address" => "sp.mint_address",
         "entry_price" => "sp.entry_price",
         "entry_time" => "sp.entry_time",
         "exit_price" => "sp.exit_price",
@@ -386,7 +386,7 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
 fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     use FilterKind::{Numeric, Text};
     Some(match key {
-        "mint" => ("sp.mint", Text),
+        "mint_address" => ("sp.mint_address", Text),
         "status" => ("sp.status", Text),
         "exit_reason" => ("sp.exit_reason", Text),
         "entry_price" => ("sp.entry_price", Numeric),
@@ -514,7 +514,7 @@ fn push_position_where(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
     let search = query.search.trim();
     if !search.is_empty() {
         let needle = format!("%{}%", like_escape(search));
-        qb.push(" AND (sp.mint ILIKE ")
+        qb.push(" AND (sp.mint_address ILIKE ")
             .push_bind(needle.clone())
             .push(" OR t.symbol ILIKE ")
             .push_bind(needle)
@@ -559,12 +559,12 @@ fn push_position_order(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, query: &Posi
 // ---------------------------------------------------------------------------
 
 /// Token-scoped filter whitelist. The matched table has no `sp` join, so `mint`
-/// resolves to `t.mint_address` (vs positions' `sp.mint`); everything else falls
+/// resolves to `t.mint_address` (vs positions' `sp.mint_address`); everything else falls
 /// through to the shared [`enrich_filter_sql`][crate::storage::token_enrichment::enrich_filter_sql]
 /// SSOT. `None` = not filterable.
 fn token_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     match key {
-        "mint" => Some(("t.mint_address", FilterKind::Text)),
+        "mint_address" => Some(("t.mint_address", FilterKind::Text)),
         _ => enrich_filter_sql(key),
     }
 }
@@ -573,7 +573,7 @@ fn token_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
 /// [`enrich_sort_sql`][crate::storage::token_enrichment::enrich_sort_sql] SSOT.
 fn token_sort_sql(key: &str) -> Option<&'static str> {
     match key {
-        "mint" => Some("t.mint_address"),
+        "mint_address" => Some("t.mint_address"),
         _ => enrich_sort_sql(key),
     }
 }
@@ -944,7 +944,7 @@ impl StrategyRepo {
         sqlx::query(
             r#"
             INSERT INTO strategy_positions
-                (id, run_id, strategy_id, rule_id, mode, mint, wallet, token_program_id,
+                (id, run_id, strategy_id, rule_id, mode, mint_address, wallet, token_program_id,
                  target_price, target_token_amount, target_time, target_tx,
                  entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures,
                  exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures,
@@ -958,7 +958,7 @@ impl StrategyRepo {
         .bind(&p.strategy_id)
         .bind(p.rule_id)
         .bind(&p.mode)
-        .bind(&p.mint)
+        .bind(&p.mint_address)
         .bind(&p.wallet)
         .bind(p.token_program_id.as_ref())
         .bind(p.target_price)
@@ -994,7 +994,7 @@ impl StrategyRepo {
                 strategy_id = $3,
                 rule_id = $4,
                 mode = $5,
-                mint = $6,
+                mint_address = $6,
                 wallet = $7,
                 token_program_id = $8,
                 target_price = $9,
@@ -1024,7 +1024,7 @@ impl StrategyRepo {
         .bind(&p.strategy_id)
         .bind(p.rule_id)
         .bind(&p.mode)
-        .bind(&p.mint)
+        .bind(&p.mint_address)
         .bind(&p.wallet)
         .bind(p.token_program_id.as_ref())
         .bind(p.target_price)
@@ -1152,8 +1152,8 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<StrategyPosition>> {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
             "SELECT {POSITION_COLS_SP} FROM strategy_positions sp \
-             LEFT JOIN tokens t ON t.mint_address = sp.mint \
-             LEFT JOIN tokens_info i ON i.mint_address = sp.mint WHERE "
+             LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
+             LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE "
         ));
         qb.push(scope_col).push(" = ").push_bind(scope_id);
         if let Some(exclude) = exclude_run {
@@ -1210,8 +1210,8 @@ impl StrategyRepo {
     ) -> anyhow::Result<i64> {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT COUNT(*) FROM strategy_positions sp \
-             LEFT JOIN tokens t ON t.mint_address = sp.mint \
-             LEFT JOIN tokens_info i ON i.mint_address = sp.mint WHERE ",
+             LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
+             LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE ",
         );
         qb.push(scope_col).push(" = ").push_bind(scope_id);
         if let Some(exclude) = exclude_run {
@@ -1475,7 +1475,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
-             WHERE strategy_id = $1 AND mint = $2 \
+             WHERE strategy_id = $1 AND mint_address = $2 \
                AND status IN ('Holding', 'Arming', 'BuySubmitted') \
              ORDER BY created_at DESC LIMIT $3 OFFSET $4"
         ))
@@ -1531,7 +1531,7 @@ impl StrategyRepo {
     /// A mint can have several open positions — the caller picks the one that matters.
     pub async fn managed_mints(&self, real_only: bool) -> anyhow::Result<Vec<ManagedMint>> {
         let rows: Vec<(String, Option<Uuid>, Option<String>, String, String)> = sqlx::query_as(
-            "SELECT p.mint, p.rule_id, r.rule_name, p.status, p.mode \
+            "SELECT p.mint_address, p.rule_id, r.rule_name, p.status, p.mode \
              FROM strategy_positions p \
              LEFT JOIN strategy_rules r ON r.id = p.rule_id \
              WHERE p.status NOT IN ('End', 'ExitFailed') \
@@ -1544,7 +1544,7 @@ impl StrategyRepo {
         Ok(rows
             .into_iter()
             .map(|(mint, rule_id, rule_name, status, mode)| ManagedMint {
-                mint,
+                mint_address: mint,
                 rule_id,
                 rule_name,
                 status,
@@ -1581,7 +1581,7 @@ impl StrategyRepo {
     /// over the unsettled statuses so the predicate stays index-servable.
     pub async fn distinct_unsettled_real_mints(&self) -> anyhow::Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT mint FROM strategy_positions \
+            "SELECT DISTINCT mint_address FROM strategy_positions \
              WHERE mode = 'real' \
                AND status IN ('Holding', 'Arming', 'BuySubmitted', 'ExitPending', 'ExitFailed')",
         )
@@ -1734,7 +1734,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
-             WHERE mint = $1 AND mode = $2 AND status = 'Holding' AND entry_price IS NOT NULL"
+             WHERE mint_address = $1 AND mode = $2 AND status = 'Holding' AND entry_price IS NOT NULL"
         ))
         .bind(mint)
         .bind(mode)
@@ -1757,7 +1757,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Option<String>> {
         let acct: Option<String> = sqlx::query_scalar(
             "SELECT token_account FROM strategy_positions \
-             WHERE wallet = $1 AND mint = $2 AND mode = $3 \
+             WHERE wallet = $1 AND mint_address = $2 AND mode = $3 \
                AND status IN ('Arming','BuySubmitted','Holding') \
                AND token_account IS NOT NULL \
              ORDER BY updated_at DESC LIMIT 1",
@@ -1823,7 +1823,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             r#"
-            SELECT DISTINCT p.mint
+            SELECT DISTINCT p.mint_address
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
             WHERE p.mode = 'real' AND p.status = 'Holding' AND p.entry_price IS NOT NULL
@@ -1831,7 +1831,7 @@ impl StrategyRepo {
               -- the rolling buffer (net = 0, no sell) would be falsely "cleared".
               AND EXISTS (
                     SELECT 1 FROM trades s
-                    WHERE s.wallet_id = w.id AND s.mint_address = p.mint
+                    WHERE s.wallet_id = w.id AND s.mint_address = p.mint_address
                       AND s.trade_type = 'sell'
                   )
               AND COALESCE((
@@ -1839,7 +1839,7 @@ impl StrategyRepo {
                                     WHEN t.trade_type = 'sell' THEN -t.token_amount
                                     ELSE 0 END)
                     FROM trades t
-                    WHERE t.wallet_id = w.id AND t.mint_address = p.mint
+                    WHERE t.wallet_id = w.id AND t.mint_address = p.mint_address
                   ), 0)::bigint <= $1
             "#,
         )

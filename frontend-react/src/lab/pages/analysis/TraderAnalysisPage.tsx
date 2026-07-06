@@ -229,7 +229,6 @@ export function TraderAnalysisPage() {
           columns={columns}
           rows={rows}
           existingKeys={ALL_TOKEN_INFO_KEYS}
-          mintOf={(r) => r.mint_address}
           mintSetFilter
           searchable
           colFilters
@@ -248,7 +247,6 @@ export function TraderAnalysisPage() {
       {visibleRows.length > 0 && query && (
         <TokenChartsGrid
           rows={visibleRows}
-          mintOf={(r) => r.mint_address}
           titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
           highlightWallet={query.wallet}
           chartTableId="trader_analysis_trades"

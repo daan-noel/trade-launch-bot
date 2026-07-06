@@ -25,15 +25,17 @@ asserted by `DataTable.boundary.test.ts`) and owns the "token recipe":
    - **client** (default) — rows are the full already-enriched set; `DataTable`'s **own**
      client paging/sort/filter/search runs in-browser (no separate evaluator). Feeds
      tables with no backend paging endpoint: **Trader Analysis**, **Sweep drill-in**.
-3. **`mintOf`** — rows key their mint under `mint` (default) or another field
-   (`mint_address` on Tokens/Trader Analysis). `mintOf` drives the charts grid, the
-   default `rowKey`, and the client mint-set pre-filter. It does **not** change the
-   server mint-set key (always the `mint` column key the backend resolves).
+3. **Mint accessor** — every token-data row keys its mint under the one canonical field
+   `mint_address` (SSOT across DB → wire → JS: `tokens.mint_address`, `trades.mint_address`,
+   `strategy_positions.mint_address`, and every DTO/grammar key). The accessor is fixed
+   internally to read `.mint_address` — callers no longer pass a `mintOf` prop (removed).
+   It drives the charts grid, the default `rowKey`, and the client mint-set pre-filter, and
+   matches the server mint-set column key.
 
 Two opt-in features live here so every table gets them once:
 - **`mintSetFilter`** — a `<MintSetInput>` paste box (validated/deduped/capped at
   `MAX_MINT_SET` = 500). Server mode folds it into `structuredFilters` as an `in` op on
-  `mint`; client mode applies it as a plain row pre-filter.
+  `mint_address`; client mode applies it as a plain row pre-filter.
 - **`charts`** — a toggle (persisted per `tableId`) rendering `<TokenChartsGrid>`
   (lazy-mounted, **current page only**, with `renderChartCardExtra`/`titleOf`/
   `highlightWallet` slots) below the table, fed by the table's intercepted

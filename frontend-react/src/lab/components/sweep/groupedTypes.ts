@@ -208,7 +208,7 @@ export type GroupedSweepResultRecord = SweepResultRecord;
 
 /** Per-token outcome for a single re-simulated combo (the token-results drill-in). */
 export interface ComboTokenResult {
-  mint: string;
+  mint_address: string;
   symbol: string;
   fired: boolean;
   pnl_sol: number;

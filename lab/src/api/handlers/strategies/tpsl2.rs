@@ -645,7 +645,7 @@ pub async fn paper_result_tpsl_rule(
         }
     };
 
-    let mints: Vec<String> = positions.iter().map(|p| p.mint.clone()).collect();
+    let mints: Vec<String> = positions.iter().map(|p| p.mint_address.clone()).collect();
     let symbols = app_state
         .token_repo()
         .find_symbols_for(&mints)
@@ -746,12 +746,12 @@ pub(crate) fn paper_position_to_sim_result(
         .exit_price
         .map(|x| x.max(p.entry_price.unwrap_or(0.0)))
         .or(p.entry_price);
-    let symbol = symbols.get(&p.mint).cloned().unwrap_or_default();
+    let symbol = symbols.get(&p.mint_address).cloned().unwrap_or_default();
     let entry_tx = p.entry_tx_sigs().first().cloned().unwrap_or_default();
     let exit_tx = p.exit_tx_sigs().last().cloned();
     BacktestTokenResult {
         symbol,
-        mint: p.mint,
+        mint_address: p.mint_address,
         target_price: p.target_price,
         target_token_amount: p.target_token_amount.map(|a| a as f64),
         target_time: p.target_time,

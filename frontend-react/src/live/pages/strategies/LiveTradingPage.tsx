@@ -74,7 +74,7 @@ export function LiveTradingPage() {
         <DataTable
           columns={columns}
           rows={positions}
-          rowKey={(r) => `${r.strategy_id}:${r.mint}:${r.entry_time ?? ''}`}
+          rowKey={(r) => `${r.strategy_id}:${r.mint_address}:${r.entry_time ?? ''}`}
           loading={isFetching}
           searchable
           colFilters

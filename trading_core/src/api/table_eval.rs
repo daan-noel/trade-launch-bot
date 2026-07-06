@@ -44,7 +44,7 @@ impl<F: Fn(&str) -> Option<(&'static str, ColKind)>> ColResolver for F {
 
 /// The two fields free-text search scans, everywhere (locked project decision — see
 /// CLAUDE.md / Phase 6). Kept here so the Rust and TS evaluators can't diverge on it.
-const SEARCH_FIELDS: [&str; 2] = ["mint", "symbol"];
+const SEARCH_FIELDS: [&str; 2] = ["mint_address", "symbol"];
 
 /// Resolve a frontend column key that names a **shared token-enrichment** field
 /// (the `appendedTokenColumns` set flattened from
@@ -117,7 +117,7 @@ fn field_text(row: &Value, field: &str) -> Option<String> {
 /// Raw (case-sensitive) `mint` string for the stable sort tiebreak — mirrors the SQL
 /// `t.mint_address ASC` tail, which does NOT lowercase. `""` when absent.
 fn mint_raw(row: &Value) -> &str {
-    row.get("mint").and_then(Value::as_str).unwrap_or("")
+    row.get("mint_address").and_then(Value::as_str).unwrap_or("")
 }
 
 /// Coerce a filter operand `Value` to `f64` (number or numeric string).
@@ -300,7 +300,7 @@ mod tests {
     fn resolve(key: &str) -> Option<(&'static str, ColKind)> {
         use ColKind::{Number, Text};
         Some(match key {
-            "mint" => ("mint", Text),
+            "mint_address" => ("mint_address", Text),
             "symbol" => ("symbol", Text),
             "reason" => ("exit_reason", Text),
             "pnl" => ("pnl_percent", Number),
@@ -315,9 +315,9 @@ mod tests {
 
     fn rows() -> Vec<Value> {
         vec![
-            json!({"mint":"a","symbol":"BONK","pnl_percent":10.0,"trade_count":3}),
-            json!({"mint":"b","symbol":"pumpcat","pnl_percent":-5.0,"trade_count":9}),
-            json!({"mint":"c","symbol":"WIF","pnl_percent":50.0,"trade_count":1}),
+            json!({"mint_address":"a","symbol":"BONK","pnl_percent":10.0,"trade_count":3}),
+            json!({"mint_address":"b","symbol":"pumpcat","pnl_percent":-5.0,"trade_count":9}),
+            json!({"mint_address":"c","symbol":"WIF","pnl_percent":50.0,"trade_count":1}),
         ]
     }
 
@@ -341,10 +341,10 @@ mod tests {
 
     #[test]
     fn unknown_sort_key_falls_back_to_mint_tail() {
-        let rows = vec![json!({"mint":"z"}), json!({"mint":"a"}), json!({"mint":"m"})];
+        let rows = vec![json!({"mint_address":"z"}), json!({"mint_address":"a"}), json!({"mint_address":"m"})];
         let (page, _) = apply_table_request(&rows, &req(json!({"sorting":[{"col":"nope","dir":"desc"}]})), resolve);
         assert_eq!(
-            page.iter().map(|r| r["mint"].as_str().unwrap()).collect::<Vec<_>>(),
+            page.iter().map(|r| r["mint_address"].as_str().unwrap()).collect::<Vec<_>>(),
             vec!["a", "m", "z"],
             "unknown sort key dropped → stable mint ASC"
         );
@@ -367,7 +367,7 @@ mod tests {
             let request: TableRequest =
                 serde_json::from_value(case["request"].clone()).expect("request");
             let (page, _) = apply_table_request(&rows, &request, resolve);
-            let got: Vec<&str> = page.iter().map(|r| r["mint"].as_str().unwrap()).collect();
+            let got: Vec<&str> = page.iter().map(|r| r["mint_address"].as_str().unwrap()).collect();
             let want: Vec<&str> = case["expected"]
                 .as_array()
                 .expect("expected array")
@@ -383,14 +383,14 @@ mod tests {
         // Two rows tie on pnl; the second sort key (trades ASC) breaks it, and equal
         // on both would fall to mint ASC.
         let rows = vec![
-            json!({"mint":"z","pnl_percent":10.0,"trade_count":5}),
-            json!({"mint":"a","pnl_percent":10.0,"trade_count":2}),
-            json!({"mint":"m","pnl_percent":10.0,"trade_count":5}),
+            json!({"mint_address":"z","pnl_percent":10.0,"trade_count":5}),
+            json!({"mint_address":"a","pnl_percent":10.0,"trade_count":2}),
+            json!({"mint_address":"m","pnl_percent":10.0,"trade_count":5}),
         ];
         let r = req(json!({"sorting":[{"col":"pnl","dir":"desc"},{"col":"trades","dir":"asc"}]}));
         let (page, _) = apply_table_request(&rows, &r, resolve);
         assert_eq!(
-            page.iter().map(|r| r["mint"].as_str().unwrap()).collect::<Vec<_>>(),
+            page.iter().map(|r| r["mint_address"].as_str().unwrap()).collect::<Vec<_>>(),
             vec!["a", "m", "z"],
             "trades ASC breaks the pnl tie (a=2 first); m,z tie on both → mint ASC"
         );

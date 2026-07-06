@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
@@ -230,8 +230,8 @@ export function TokensPage() {
         const t = JSON.parse(raw) as LiveTrade;
         // Skip mints not on the current page: only visible rows can be patched,
         // so buffering the rest just churns the Map and fires no-op cache writes.
-        if (t.live && typeof t.live === 'object' && visibleMintsRef.current.has(t.mint)) {
-          pending.set(t.mint, t.live);
+        if (t.live && typeof t.live === 'object' && visibleMintsRef.current.has(t.mint_address)) {
+          pending.set(t.mint_address, t.live);
           if (timer === undefined) timer = window.setTimeout(flush, 250);
         }
       } catch {
@@ -333,7 +333,6 @@ export function TokensPage() {
           columns={columns}
           rows={tokens}
           existingKeys={ALL_TOKEN_INFO_KEYS}
-          mintOf={(r) => r.mint_address}
           rowKey={tokenRowKey}
           mintSetFilter
           selectedKey={selectedMint}

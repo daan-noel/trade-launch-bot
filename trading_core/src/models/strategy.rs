@@ -137,7 +137,7 @@ pub struct StrategyPosition {
     pub rule_id: Option<Uuid>,
     /// Execution mode: `real` or `paper`.
     pub mode: String,
-    pub mint: String,
+    pub mint_address: String,
     pub wallet: String,
     pub token_program_id: Option<String>,
     /// The wallet's token account address for `mint` (base58). Persisted after the
@@ -245,7 +245,7 @@ impl StrategyPosition {
             strategy_id,
             rule_id: Some(rule_id),
             mode,
-            mint,
+            mint_address: mint,
             wallet,
             token_program_id: None,
             token_account: None,

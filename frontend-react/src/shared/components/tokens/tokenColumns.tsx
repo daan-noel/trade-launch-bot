@@ -89,7 +89,7 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
       searchValue: (r) => r.name,
     },
     {
-      key: 'mint',
+      key: 'mint_address',
       label: 'Mint',
       group: 'identity',
       width: '165px',

@@ -9,7 +9,7 @@ import type {
 } from 'types';
 
 export interface BuyTokenArgs {
-  mint: string;
+  mint_address: string;
   amount_sol: number;
   /// Omitted for manual buys — the backend resolves the token program on-chain.
   token_program_id?: string;
@@ -18,7 +18,7 @@ export interface BuyTokenArgs {
 }
 
 export interface SellTokenArgs {
-  mint: string;
+  mint_address: string;
   /// Optional token-account hint (row "Sell All" supplies it to skip a wallet
   /// scan; a manual sell by mint omits it). The backend always sells the full
   /// live balance, so no amount is sent.

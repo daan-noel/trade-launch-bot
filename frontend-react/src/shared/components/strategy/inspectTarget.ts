@@ -6,7 +6,7 @@ import type { RulePositionRecord, SimulatedTokenResult } from 'types';
 
 /** What the token-inspect chart modal needs to draw entry/exit markers for a run. */
 export interface InspectTarget {
-  mint: string;
+  mint_address: string;
   symbol?: string | null;
   entryTime: string | null;
   /** null for an armed position whose entry hasn't filled yet. */
@@ -22,7 +22,7 @@ export interface InspectTarget {
 /** Map a backtest/simulate result row to an inspect target. */
 export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
   return {
-    mint: r.mint,
+    mint_address: r.mint_address,
     symbol: r.symbol,
     entryTime: r.entry_time,
     entryPrice: r.entry_price,
@@ -37,7 +37,7 @@ export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
 /** Map a live/paper position row to an inspect target. */
 export function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   return {
-    mint: r.mint,
+    mint_address: r.mint_address,
     entryTime: r.entry_time,
     entryPrice: r.entry_price,
     entryTx: r.entry_tx,

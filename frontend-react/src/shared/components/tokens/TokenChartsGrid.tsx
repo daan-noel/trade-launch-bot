@@ -53,7 +53,7 @@ export function LazyMount({ minHeight = 380, children }: { minHeight?: number; c
 }
 
 interface TokenChartCardProps {
-  mint: string;
+  mint_address: string;
   /** Header title; falls back to the fetched detail's symbol/name, then the mint. */
   title?: string;
   highlightWallet?: string | null;
@@ -62,7 +62,7 @@ interface TokenChartCardProps {
   extra?: ReactNode;
 }
 
-function TokenChartCard({ mint, title, highlightWallet, chartTableId, extra }: TokenChartCardProps) {
+function TokenChartCard({ mint_address: mint, title, highlightWallet, chartTableId, extra }: TokenChartCardProps) {
   const { data: detail } = useGetTokenDetailQuery(mint, { skip: !mint });
   const heading = title ?? detail?.symbol ?? detail?.name ?? mint.slice(0, 6);
 
@@ -92,8 +92,6 @@ function TokenChartCard({ mint, title, highlightWallet, chartTableId, extra }: T
 export interface TokenChartsGridProps<R> {
   /** The rows to chart — the table's CURRENT on-screen page, never the full set. */
   rows: R[];
-  /** Extract a row's mint (rows may key it `mint` or `mint_address`). */
-  mintOf: (row: R) => string;
   /** Optional per-row header title (else derived from the fetched detail). */
   titleOf?: (row: R) => string;
   /** Chart-local prefs id (column visibility of the per-chart trades table). */
@@ -106,7 +104,6 @@ export interface TokenChartsGridProps<R> {
 
 export function TokenChartsGrid<R>({
   rows,
-  mintOf,
   titleOf,
   chartTableId = 'token_charts_grid',
   highlightWallet,
@@ -116,11 +113,11 @@ export function TokenChartsGrid<R>({
   return (
     <div className="mt-4 flex flex-col gap-4">
       {rows.map((row) => {
-        const mint = mintOf(row);
+        const mint = (row as { mint_address?: string }).mint_address ?? '';
         return (
           <LazyMount key={mint}>
             <TokenChartCard
-              mint={mint}
+              mint_address={mint}
               title={titleOf?.(row)}
               highlightWallet={highlightWallet}
               chartTableId={chartTableId}
