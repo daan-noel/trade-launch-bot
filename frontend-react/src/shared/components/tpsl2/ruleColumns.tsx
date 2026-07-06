@@ -598,8 +598,9 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
     },
     {
       key: 'avg_pnl_pct',
-      label: 'Avg %',
-      tooltip: 'Average realized PnL % across closed positions.',
+      label: 'Return %',
+      tooltip:
+        'Capital-weighted realized return: total SOL PnL ÷ total SOL deployed across closed positions. Sign always matches PnL ◎.',
       group: 'performance',
       sortable: true,
       render: (r) => (

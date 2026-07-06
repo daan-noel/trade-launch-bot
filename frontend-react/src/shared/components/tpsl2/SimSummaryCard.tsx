@@ -118,10 +118,11 @@ export function SimSummaryCard({
       .filter((t) => (t.pnl_sol ?? 0) < 0)
       .reduce((s, t) => s + Math.abs(t.pnl_sol ?? 0), 0);
     const totalPnl = totalGains - totalLosses;
-    const avgPnl =
-      closed.length > 0
-        ? closed.reduce((s, t) => s + (t.pnl_percent ?? 0), 0) / closed.length
-        : null;
+    // Canonical capital-weighted return: total PnL ÷ SOL deployed on the closed
+    // positions (× 100), so its sign always matches `totalPnl` — never the
+    // mean-of-per-trade-% that could flip against the SOL total under uneven sizing.
+    const closedEntry = closed.reduce((s, t) => s + entrySol(t), 0);
+    const avgPnl = closedEntry > 0 ? (totalPnl / closedEntry) * 100 : null;
     const avgEntry = tokensMatched > 0 ? totalEntry / tokensMatched : null;
     const avgHold =
       closed.length > 0
@@ -169,7 +170,7 @@ export function SimSummaryCard({
       cls: winRate >= 50 ? 'text-primary' : 'text-red',
     },
     {
-      label: 'Avg PnL',
+      label: 'Return %',
       value: avgPnl != null ? `${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}%` : '—',
       cls: avgPnl != null ? (avgPnl >= 0 ? 'text-primary' : 'text-red') : undefined,
     },

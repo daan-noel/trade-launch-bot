@@ -82,7 +82,8 @@ fn rule_to_json(rule: &StrategyRule, cache: &StrategyRuntimeCache) -> Value {
     let stats = cache.closed_stats_by_rule(rule.id);
     let closed = stats.closed();
     let win_rate = if closed > 0 { stats.wins as f64 / closed as f64 * 100.0 } else { 0.0 };
-    let avg_pnl_pct = if closed > 0 { stats.sum_pnl_pct / closed as f64 } else { 0.0 };
+    // Canonical capital-weighted return (sign-locked to `total_pnl_sol`).
+    let avg_pnl_pct = stats.avg_pnl_pct();
 
     obj.insert("open_positions".into(), json!(open));
     obj.insert("pending_positions".into(), json!(pending));

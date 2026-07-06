@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::api::table_query::{FilterOp, FilterSpec, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
+use crate::strategies::kernel::weighted_return_pct;
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
@@ -257,7 +258,9 @@ struct RuleCountersRow {
     win: i64,
     loss: i64,
     total_pnl_lamports: i64,
-    sum_pnl_pct: f64,
+    /// SOL deployed (entry cost) across the closed positions — the capital base for
+    /// the canonical capital-weighted return; paired with `total_pnl_lamports`.
+    closed_entry_lamports: i64,
 }
 
 /// Raw aggregate row behind [`StrategyRepo::positions_summary`]. Lamport sums are
@@ -274,7 +277,10 @@ struct PositionsSummaryRow {
     total_holding_lamports: i64,
     total_gains_lamports: i64,
     total_losses_lamports: i64,
-    sum_pnl_pct: f64,
+    /// SOL deployed (entry cost) across the **closed** positions only — the capital
+    /// base for the canonical capital-weighted return (distinct from
+    /// `total_entry_lamports`, which spans all entered incl. still-open positions).
+    closed_entry_lamports: i64,
     sum_hold_secs: f64,
     best_pct: Option<f64>,
     worst_pct: Option<f64>,
@@ -1288,7 +1294,10 @@ impl StrategyRepo {
         //   open     := status IN ('Holding','Arming','BuySubmitted')
         //   closed   := entry_price IS NOT NULL AND status IN ('End','ExitFailed')
         //   win      := status = 'End' AND exit_lamports > entry_lamports   (SOL basis)
-        // Realized SOL PnL = exit_lamports - entry_lamports (lamports); % = (exit-entry)/entry.
+        // Realized SOL PnL = exit_lamports - entry_lamports (lamports). The headline
+        // return % is capital-weighted (Σ pnl / Σ entry, via `weighted_return_pct`),
+        // so it is sign-locked to the SOL total; `best_pct`/`worst_pct` stay per-trade
+        // price extremes for the distribution tails.
         let sql = format!(
             "SELECT \
                COUNT(*) FILTER (WHERE entry_price IS NOT NULL) AS tokens, \
@@ -1305,9 +1314,8 @@ impl StrategyRepo {
                COALESCE(SUM(entry_lamports - COALESCE(exit_lamports,0)) \
                         FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed') \
                                   AND NOT (status = 'End' AND exit_lamports > entry_lamports)), 0)::BIGINT AS total_losses_lamports, \
-               COALESCE(SUM((exit_price - entry_price) / entry_price * 100.0) \
-                        FILTER (WHERE entry_price IS NOT NULL AND entry_price > 0 \
-                                  AND exit_price IS NOT NULL AND status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_pnl_pct, \
+               COALESCE(SUM(entry_lamports) \
+                        FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports, \
                COALESCE(SUM(EXTRACT(EPOCH FROM (exit_time - entry_time))) \
                         FILTER (WHERE entry_time IS NOT NULL AND exit_time IS NOT NULL \
                                   AND status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_hold_secs, \
@@ -1328,7 +1336,10 @@ impl StrategyRepo {
 
         let closed = row.win + row.loss;
         let win_rate = if closed > 0 { row.win as f64 / closed as f64 * 100.0 } else { 0.0 };
-        let avg_pnl_pct = if closed > 0 { row.sum_pnl_pct / closed as f64 } else { 0.0 };
+        // Canonical capital-weighted return (lamports ratio is scale-invariant), so
+        // this figure's sign is locked to `total_pnl_sol`.
+        let avg_pnl_pct =
+            weighted_return_pct(row.total_pnl_lamports as f64, row.closed_entry_lamports as f64);
         let avg_hold_secs = if closed > 0 { row.sum_hold_secs / closed as f64 } else { 0.0 };
 
         Ok(PositionsSummary {
@@ -1381,9 +1392,8 @@ impl StrategyRepo {
                                    AND NOT (p.status = 'End' AND p.exit_lamports > p.entry_lamports)) AS loss, \
               COALESCE(SUM(COALESCE(p.exit_lamports,0) - p.entry_lamports) \
                        FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
-              COALESCE(SUM((p.exit_price - p.entry_price) / p.entry_price * 100.0) \
-                       FILTER (WHERE p.entry_price IS NOT NULL AND p.entry_price > 0 \
-                                 AND p.exit_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_pnl_pct \
+              COALESCE(SUM(p.entry_lamports) \
+                       FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports \
             FROM latest l \
             LEFT JOIN strategy_positions p ON p.run_id = l.run_id \
             GROUP BY l.rule_id";
@@ -1397,7 +1407,9 @@ impl StrategyRepo {
             .map(|r| {
                 let closed = r.win + r.loss;
                 let win_rate = if closed > 0 { r.win as f64 / closed as f64 * 100.0 } else { 0.0 };
-                let avg_pnl_pct = if closed > 0 { r.sum_pnl_pct / closed as f64 } else { 0.0 };
+                // Canonical capital-weighted return — sign-locked to `total_pnl_sol`.
+                let avg_pnl_pct =
+                    weighted_return_pct(r.total_pnl_lamports as f64, r.closed_entry_lamports as f64);
                 (
                     r.rule_id,
                     RuleCounters {

@@ -74,8 +74,8 @@ pub struct RunRef {
 
 /// Per-rule realized-performance counters, accumulated live on each position close
 /// and warmed from the DB on boot. All-time for real rules; current-run for paper
-/// rules. Raw sums only — the API layer derives win rate / average PnL %, so the
-/// hot path never divides.
+/// rules. Raw sums only — the API layer derives win rate / return % via
+/// [`avg_pnl_pct`](Self::avg_pnl_pct), so the hot path never divides.
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct RuleClosedStats {
     /// Clean `End` exits sold above entry.
@@ -84,14 +84,24 @@ pub struct RuleClosedStats {
     pub losses: i64,
     /// Sum of realized SOL PnL across all closed positions.
     pub sum_pnl_sol: f64,
-    /// Sum of realized PnL % across all closed positions.
-    pub sum_pnl_pct: f64,
+    /// Sum of SOL **deployed** (entry cost) across the same closed positions — the
+    /// capital base for the canonical capital-weighted [`avg_pnl_pct`](Self::avg_pnl_pct).
+    /// Kept paired with `sum_pnl_sol` (accumulated in the same branch) so numerator
+    /// and denominator always cover the identical trade set.
+    pub sum_entry_sol: f64,
 }
 
 impl RuleClosedStats {
     /// Number of closed positions = the win/loss denominator.
     pub fn closed(&self) -> i64 {
         self.wins + self.losses
+    }
+
+    /// Canonical capital-weighted realized return % (`Σ pnl_sol / Σ entry_sol × 100`)
+    /// — the single [`weighted_return_pct`](crate::strategies::kernel::weighted_return_pct)
+    /// definition, so this figure's sign always matches `sum_pnl_sol`.
+    pub fn avg_pnl_pct(&self) -> f64 {
+        crate::strategies::kernel::weighted_return_pct(self.sum_pnl_sol, self.sum_entry_sol)
     }
 
     /// Fold one freshly-closed position into the counters. `sign = 1` adds it,
@@ -105,9 +115,9 @@ impl RuleClosedStats {
         let s = sign as f64;
         if let Some(sol) = p.realized_pnl_sol() {
             self.sum_pnl_sol += s * sol;
-        }
-        if let Some(pct) = p.pnl_pct() {
-            self.sum_pnl_pct += s * pct;
+            // `realized_pnl_sol()` is `Some` only when `entry_sol` is, so the capital
+            // base stays paired with the PnL sum (same trade set, same sign path).
+            self.sum_entry_sol += s * p.entry_sol.unwrap_or(0.0);
         }
     }
 }
@@ -1335,7 +1345,9 @@ mod tests {
         let s = cache.closed_stats_by_rule(rid);
         assert_eq!((s.wins, s.losses), (1, 0));
         assert!((s.sum_pnl_sol - 100.0).abs() < 1e-9);
-        assert!((s.sum_pnl_pct - 100.0).abs() < 1e-9);
+        // Capital-weighted: 100 SOL profit on 100 SOL deployed → +100%.
+        assert!((s.sum_entry_sol - 100.0).abs() < 1e-9);
+        assert!((s.avg_pnl_pct() - 100.0).abs() < 1e-9);
         // Holding count released on close.
         assert_eq!(cache.holding_count_by_rule(rid), 0);
         assert_eq!(cache.total_count_by_rule(rid), 1);
@@ -1355,6 +1367,73 @@ mod tests {
         let s = cache.closed_stats_by_rule(rid);
         assert_eq!((s.wins, s.losses), (1, 1));
         assert!(s.sum_pnl_sol.abs() < 1e-9, "+100 win, -100 failed → 0");
+    }
+
+    #[test]
+    fn return_pct_sign_always_matches_sol_under_variable_sizing() {
+        // The old mean-of-per-trade-% could flip sign vs the summed SOL when
+        // position sizes vary. Capital-weighting makes them agree by construction:
+        // here many small winners + one big loser → the SOL total is NEGATIVE, so
+        // the return % must also be negative (never the `+%`/`−◎` split the UI showed).
+        let cache = StrategyRuntimeCache::new();
+        let rid = Uuid::new_v4();
+
+        // 5 tiny winners: 0.01 SOL each, exit 2× → +0.01 SOL apiece (+0.05 total).
+        for i in 0..5 {
+            let prev = entered(rid, &format!("Win{i}"), 1.0, 0.01);
+            cache.sync_position(None, &prev);
+            let mut win = prev.clone();
+            win.status = "End".into();
+            win.exit_price = Some(2.0);
+            win.exit_sol = Some(0.02);
+            cache.sync_position(Some(&prev), &win);
+        }
+        // 1 big loser: 10 SOL deployed, exit at half → −5 SOL. Dominates the SOL sum.
+        let prev = entered(rid, "BigLoss", 1.0, 10.0);
+        cache.sync_position(None, &prev);
+        let mut loss = prev.clone();
+        loss.status = "End".into();
+        loss.exit_price = Some(0.5);
+        loss.exit_sol = Some(5.0);
+        cache.sync_position(Some(&prev), &loss);
+
+        let s = cache.closed_stats_by_rule(rid);
+        assert!(s.sum_pnl_sol < 0.0, "0.05 gains − 5 loss → negative SOL");
+        assert!(s.avg_pnl_pct() < 0.0, "return % must share the SOL total's sign");
+        assert_eq!(
+            s.sum_pnl_sol.signum(),
+            s.avg_pnl_pct().signum(),
+            "capital-weighted return % is sign-locked to the SOL total"
+        );
+    }
+
+    #[test]
+    fn return_pct_equals_mean_of_percents_under_fixed_notional() {
+        // Parity with the sweep kernel: when every trade deploys the SAME notional,
+        // the capital-weighted return reduces exactly to the mean of per-trade
+        // percents (what a fixed-notional backtest reports). +100% and −50% on 1 SOL
+        // each → mean +25%, and 0.5 SOL profit / 2 SOL deployed = +25%.
+        let cache = StrategyRuntimeCache::new();
+        let rid = Uuid::new_v4();
+
+        let a = entered(rid, "A", 1.0, 1.0);
+        cache.sync_position(None, &a);
+        let mut a_end = a.clone();
+        a_end.status = "End".into();
+        a_end.exit_price = Some(2.0);
+        a_end.exit_sol = Some(2.0); // +100%
+        cache.sync_position(Some(&a), &a_end);
+
+        let b = entered(rid, "B", 1.0, 1.0);
+        cache.sync_position(None, &b);
+        let mut b_end = b.clone();
+        b_end.status = "End".into();
+        b_end.exit_price = Some(0.5);
+        b_end.exit_sol = Some(0.5); // −50%
+        cache.sync_position(Some(&b), &b_end);
+
+        let s = cache.closed_stats_by_rule(rid);
+        assert!((s.avg_pnl_pct() - 25.0).abs() < 1e-9);
     }
 
     #[test]

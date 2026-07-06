@@ -156,6 +156,27 @@ pub fn round_trip_with_costs(
     (pnl_sol, pnl_sol / notional_sol * 100.0)
 }
 
+/// **Canonical "return %"** — the single definition of realized return shared by
+/// the live rules table, the lab rules table, the positions-summary panel, and the
+/// sweep. Capital-weighted: net PnL as a percent of the total SOL *deployed* across
+/// the closed positions, i.e. `Σ pnl_sol / Σ entry_sol × 100`.
+///
+/// Because the denominator is total capital (always ≥ 0), the sign of this figure
+/// **can never disagree** with the sign of the summed SOL PnL — the two headline
+/// columns move together by construction. This replaces the old
+/// `mean(per-trade price %)`, which mixed an equal-weighted mean of size-independent
+/// price ratios with a size-weighted SOL sum and so could show `+%`/`−◎` (or the
+/// reverse) on the same rule. Under a fixed per-trade notional (the sweep) it
+/// reduces exactly to the mean of per-trade percents, so backtest numbers are
+/// unchanged. Returns `0.0` when no capital was deployed.
+pub fn weighted_return_pct(sum_pnl_sol: f64, sum_capital_sol: f64) -> f64 {
+    if sum_capital_sol > 0.0 {
+        sum_pnl_sol / sum_capital_sol * 100.0
+    } else {
+        0.0
+    }
+}
+
 // ── Run configuration + metrics ───────────────────────────────────────────────
 
 /// What the kernel needs beyond the strategy params: the notional per entry

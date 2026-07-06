@@ -78,7 +78,7 @@ export function SimSummaryCard({
       cls: winRate >= 50 ? 'text-primary' : 'text-red',
     },
     {
-      label: 'Avg PnL',
+      label: 'Return %',
       value: avgPnl != null ? `${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}%` : '—',
       cls: avgPnl != null ? (avgPnl >= 0 ? 'text-primary' : 'text-red') : undefined,
     },
