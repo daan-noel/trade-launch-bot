@@ -82,13 +82,17 @@ New high-volume tables (> 1M rows/week projected) must follow this pattern:
 
 Tables that don't need time-based partitioning (strategy rules, positions, sweep results) use standard B-tree PKs + targeted indexes. Sweep results use the `retention.rs` compaction strategy (retain per-metric extremes, ~660 rows/group) instead of time-based deletion.
 
-## Sweep Result Compaction
+## Sweep Result Retention
 
-`grouped_sweep_repo.rs::vacuum_full_results()` runs after each group completes:
+Retention is applied **write-time**, in the grouped-sweep handler, before results are
+persisted — the table never grows unboundedly:
 
-1. `fetch_combo_metrics_for_group(group_id)` — load all result rows for this group
-2. `retained_combo_ids(metrics)` — select: best_by_score, best_by_win_rate, best_by_expectancy, best_by_pnl, global_best_combo → union → ~660 ids max
-3. `delete_combos_except(group_id, retained_ids)` — one DELETE ... WHERE combo_id NOT IN (...)
-4. Result: only ~660 rows remain per group regardless of how many combos were swept
+1. `sweep::retention::retained_combo_ids(metrics, best_combo_id, cfg)` — select:
+   best_by_score, best_by_win_rate, best_by_expectancy, best_by_pnl, global_best_combo
+   → union → ~660 ids max
+2. Only those combos' rows are written for the group; the rest are never inserted.
 
-This runs write-time so the table never grows unboundedly. It also runs at startup for `running` runs that were interrupted (`reconcile_orphaned_runs`).
+`retained_combo_ids` is the SSOT for "which combos survive"; the same pure filter would
+select existing and future data identically. (The old one-time backfill-compaction probe —
+`vacuum_full_results` / `fetch_combo_metrics_for_group` / `delete_combos_except` and the
+never-wired `compact-sweeps` subcommand — was removed; write-time retention makes it moot.)

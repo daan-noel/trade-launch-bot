@@ -1,7 +1,8 @@
 //! DuckDB corpus source (hop 3) — assemble a sweep [`Corpus`] by querying the
 //! Parquet lake instead of Postgres.
 //!
-//! This is the lake-fed analogue of [`crate::sweep::corpus::DbSource`]: same output
+//! This is the **sole** [`CorpusSource`](crate::sweep::corpus::CorpusSource) (the old
+//! Postgres `DbSource` was retired at the lake cutover): it yields the same output
 //! ([`CorpusToken`] with slim [`CorpusTrade`] buffers + a grouping
 //! [`TokenFingerprint`]), but the trades come from the immutable day-partitioned
 //! Parquet files and the fingerprint/symbol from the `tokens` dimension, queried
@@ -14,9 +15,9 @@
 //! uses DuckDB's **row API** (`query_map`) only — never `query_arrow` — and
 //! re-projects into our `CorpusTrade` by hand.
 //!
-//! Runtime-unverified this session (no lake to read). The SQL mirrors the verified
-//! `DbSource` shape; validation against a PG-sourced baseline is the Phase-4
-//! "done-when" gate (needs the DB/EC2 pipeline).
+//! Runtime-unverified this session (no lake to read). The SQL mirrors the
+//! pre-cutover PG-sourced shape; validation against a PG-sourced baseline is the
+//! Phase-4 "done-when" gate (needs the DB/EC2 pipeline).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -76,8 +77,8 @@ fn sql_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// DuckDB partition ordering for the per-mint `ROW_NUMBER` cap. Mirrors
-/// [`DbSource`](crate::sweep::corpus)'s window exactly — `(slot, tx_index, leg_index,
+/// DuckDB partition ordering for the per-mint `ROW_NUMBER` cap. Mirrors the
+/// canonical trade-order window exactly — `(slot, tx_index, leg_index,
 /// block_time)`. `block_time` is the final tiebreaker because ingest leaves
 /// `tx_index`/`leg_index` = 0 for many trades, so the first three columns are NOT a
 /// unique order; without `block_time`, Postgres and DuckDB resolve the ties in
@@ -109,7 +110,7 @@ impl CorpusSource for LakeSource {
 
         // 3. Per-mint capped, ordered trade pull → per-token slim buffers. The SQL
         //    returns tokens in `mint ASC`; reorder to the candidate order
-        //    (`created_at DESC`) so the corpus token order matches `DbSource` exactly
+        //    (`created_at DESC`) so the corpus token order is deterministic
         //    — within-group fold order then matches, down to f64 summation.
         let mut tokens = load_corpus_tokens(&conn, &trades_lit, &candidates, sel)?;
         let rank: HashMap<&str, usize> =

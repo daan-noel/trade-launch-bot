@@ -137,7 +137,7 @@ This means: the sweep continues computing while previous groups persist. DB writ
 
 5. **Crash recovery** — `reconcile_orphaned_runs` runs at startup. Finds `status = 'running'` rows older than `ORPHANED_RUN_THRESHOLD` (1h), marks them `cancelled`. This prevents the UI from showing stale "running" indicators after a backend restart.
 
-6. **Retention filter is idempotent** — `retained_combo_ids` is deterministic given the same `ComboMetrics` input. If `vacuum_full_results` runs twice on the same group (e.g., after a reconcile), the second run is a no-op (all retained ids are already retained).
+6. **Retention filter is idempotent** — `retained_combo_ids` is deterministic given the same `ComboMetrics` input. Applied write-time before results are persisted (only the ~660 retained combos are ever inserted), so re-running a group selects the identical set — no separate compaction pass.
 
 7. **No sweep work on server** — sweeps use the `batch` pool and are CPU-bound (rayon). The deployed EC2 box (2vCPU/4GB) cannot sustain sweep workload without crowding out the ingest pipeline. Sweeps **must** run on local only. The server's batch pool has `max_connections = 1` to make this impossible to violate accidentally.
 
