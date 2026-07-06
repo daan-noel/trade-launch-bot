@@ -128,12 +128,6 @@ export const SWING_LOW_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = 
   color: CHART_COLORS.swingLow,
 };
 
-/** @deprecated Use SWING_HIGH/LOW_OVERLAY_SERIES_OPTIONS — single magenta path */
-export const SWING_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
-  ...SWING_OVERLAY_SERIES_BASE,
-  color: CHART_COLORS.swingOverlay,
-};
-
 /** Pump.fun bonding-curve initial reserves (SOL and raw token units). */
 export const PUMP_INITIAL_VIRTUAL_SOL = 30;
 const PUMP_INITIAL_VIRTUAL_TOKEN = 1_073_000_000_000_000;

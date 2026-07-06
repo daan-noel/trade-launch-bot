@@ -47,7 +47,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
         <AddressDisplay
           address={r.mint_address}
           kind="token"
-          truncateLen={12}
+          truncate={12}
           stopPropagation
         />
       ),
@@ -285,7 +285,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
         <AddressDisplay
           address={r.token_account}
           kind="account"
-          truncateLen={12}
+          truncate={12}
           stopPropagation
         />
       ),

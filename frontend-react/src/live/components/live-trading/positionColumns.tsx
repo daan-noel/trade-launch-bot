@@ -51,7 +51,7 @@ export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
       label: 'Mint',
       width: '195px',
       sortable: true,
-      render: (r) => <AddressDisplay address={r.mint_address} kind="token" truncateLen={12} stopPropagation />,
+      render: (r) => <AddressDisplay address={r.mint_address} kind="token" truncate={12} stopPropagation />,
       sortValue: (r) => r.mint_address,
       searchValue: (r) => r.mint_address,
     },

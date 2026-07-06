@@ -31,8 +31,6 @@ interface AddressDisplayProps {
   actionsPlacement?: AddressActionsPlacement;
   /** Icon-button size. */
   iconSize?: 'sm' | 'lg';
-  /** @deprecated use `truncate` instead */
-  truncateLen?: number;
 }
 
 function CopyIcon({ copied, size = 'sm' }: { copied: boolean; size?: 'sm' | 'lg' }) {
@@ -123,12 +121,11 @@ function AddressDisplayBase({
   truncate: truncateProp,
   actionsPlacement,
   iconSize: iconSizeProp,
-  truncateLen,
 }: AddressDisplayProps) {
-  // Resolve orthogonal props: explicit prop > deprecated alias > preset default.
+  // Resolve orthogonal props: explicit prop > preset default.
   const reveal: AddressReveal = revealProp ?? (mode === 'full' ? 'always' : 'hover');
   const shorten: number | false =
-    truncateProp ?? truncateLen ?? (mode === 'full' ? false : 10);
+    truncateProp ?? (mode === 'full' ? false : 10);
   const placement: AddressActionsPlacement = actionsPlacement ?? 'bottom';
   const iconSize = iconSizeProp ?? (mode === 'full' ? 'lg' : 'sm');
 
