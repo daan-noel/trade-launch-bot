@@ -38,7 +38,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Errors
 anyhow = "1"
-thiserror = "1"
 
 # Shared state
 dashmap = "4.0"
@@ -55,23 +54,13 @@ chrono = { version = "0.4", features = ["serde"] }
 # Async trait
 async-trait = "0.1"
 
-# URL
-url = "2"
-
 # Solana (needed by strategies and trader)
-solana-client = "1.17.27"
 solana-sdk = "1.17.27"
-spl-associated-token-account = "2.2"
-spl-token = "=4.0.0"
-spl-token-2022 = "=1.0.0"
-spl-memo = "=4.0.0"
 
 # Encoding (strategies use these for tx construction)
 bs58 = "0.5"
 base64 = "0.22"
-borsh = { version = "1", features = ["derive"] }
 bincode = "1.3"
-rand = "0.8"
 
 # Reqwest
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }

@@ -38,7 +38,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Errors
 anyhow = "1"
-thiserror = "1"
 
 # Shared state
 dashmap = "4.0"
