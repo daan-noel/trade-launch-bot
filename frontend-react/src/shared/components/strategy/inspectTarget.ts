@@ -102,6 +102,6 @@ export function inspectFromPosition(r: RulePositionRecord): InspectTarget {
     exitTime: r.exit_time,
     exitPrice: r.exit_price,
     exitTx: r.exit_tx,
-    exitLabel: r.status && r.status !== 'Open' ? r.status : null,
+    exitLabel: r.exit_reason ?? null,
   };
 }
