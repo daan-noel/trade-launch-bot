@@ -30,6 +30,7 @@
 
 mod amm;
 mod blockhash;
+mod bundle_buy;
 mod buy;
 mod consolidate;
 mod create;
@@ -53,6 +54,7 @@ use dashmap::DashMap;
 use jito_tip::JitoTipCache;
 use reserves::ReserveCache;
 
+pub use bundle_buy::BundleLegParams;
 pub use buy::BuySignedHook;
 pub use nonce::NonceAuthCheck;
 pub use sim::{AccountDelta, SimOutcome};

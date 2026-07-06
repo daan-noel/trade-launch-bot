@@ -130,6 +130,20 @@ impl PumpFunTrader {
         Ok(tx)
     }
 
+    /// Like [`Self::build_recent_tx`] but uses a caller-supplied blockhash so every
+    /// tx in a Jito bundle shares the same hash.
+    pub(super) async fn build_recent_tx_with_blockhash(
+        &self,
+        instructions: Vec<Instruction>,
+        signer: &(dyn Signer + Send + Sync),
+        blockhash: Hash,
+    ) -> Result<Transaction> {
+        let msg = Message::new(&instructions, Some(&signer.pubkey()));
+        let mut tx = Transaction::new_unsigned(msg);
+        tx.try_sign(&[signer as &dyn Signer], blockhash)?;
+        Ok(tx)
+    }
+
     /// Submit a signed tx to the Helius Sender. With one configured endpoint this
     /// is a single POST; with several the *identical* signed tx is fanned out to
     /// all of them concurrently. Because the signature is identical, the bank

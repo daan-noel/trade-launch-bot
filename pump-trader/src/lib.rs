@@ -44,3 +44,4 @@ pub use trader::{
     CURVE_TOO_LITTLE_SOL_RECEIVED, CURVE_TOO_MUCH_SOL_REQUIRED,
 };
 pub use types::{BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram, WalletHolding};
+pub use trader::BundleLegParams;
