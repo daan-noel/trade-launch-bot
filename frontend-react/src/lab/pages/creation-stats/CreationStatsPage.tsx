@@ -31,10 +31,10 @@ export function CreationStatsPage({
   extraSections?: (ctx: { tz: string; segment: CreationSegment }) => ReactNode;
 }) {
   const { timezone } = useTimezone();
-  const [metric, setMetric] = useLocalStorage<CreationMetric>(STORAGE_KEYS.dashboardMetric, 'migrate_rate');
+  const [metric, setMetric] = useLocalStorage<CreationMetric>(STORAGE_KEYS.dashboardMetric, 'count');
   const [segment, setSegment] = useLocalStorage<CreationSegment>(STORAGE_KEYS.dashboardSegment, 'all');
-  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.dashboardBucket, 'day');
-  const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.dashboardRange, 30);
+  const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.dashboardBucket, 'hour');
+  const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.dashboardRange, 7);
 
   const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
 

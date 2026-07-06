@@ -44,7 +44,7 @@ interface GroupedCreationSectionProps {
 
 /** Default grouping — CU limit + instruction-label set: the two fields that
  *  separate the bulk of launch fingerprints (validated against live data). */
-const DEFAULT_GROUP_BY: GroupField[] = ['cu_limit', 'ix_labels'];
+const DEFAULT_GROUP_BY: GroupField[] = ['cu_limit', 'cu_price', 'ix_labels'];
 
 /** Scalar fingerprint fields that take a comma-separated value filter (numeric).
  *  `is_cashback_enabled` (a tri-state select) and `ix_labels` (a JSON-set textarea)
