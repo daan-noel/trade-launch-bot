@@ -134,6 +134,10 @@ pub struct Tpsl1Params {
     pub p_token_max_sol_cost: Option<f64>,
     #[serde(default)]
     pub p_token_spendable_sol_in: Option<f64>,
+    #[serde(default)]
+    pub p_token_first_slot_buy_sol: Option<f64>,
+    #[serde(default)]
+    pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
     #[serde(default)]
@@ -159,6 +163,8 @@ impl Tpsl1Params {
             p_token_cu_price: r.p_token_cu_price,
             p_token_max_sol_cost: r.p_token_max_sol_cost,
             p_token_spendable_sol_in: r.p_token_spendable_sol_in,
+            p_token_first_slot_buy_sol: r.p_token_first_slot_buy_sol,
+            p_token_first_slot_sell_sol: r.p_token_first_slot_sell_sol,
             p_token_ix_labels: r.p_token_ix_labels.clone(),
             tolerance_pct: r.tolerance_pct,
             p_exit_take_profit: r.p_exit_take_profit,
@@ -195,6 +201,8 @@ impl Tpsl1Params {
             self.p_exit_stall_secs,
             self.p_exit_liquidity_drop_pct,
         );
+        r.p_token_first_slot_buy_sol = self.p_token_first_slot_buy_sol;
+        r.p_token_first_slot_sell_sol = self.p_token_first_slot_sell_sol;
         r.is_active = true;
         r
     }
@@ -214,6 +222,10 @@ pub struct Tpsl2Params {
     pub p_token_max_sol_cost: Option<f64>,
     #[serde(default)]
     pub p_token_spendable_sol_in: Option<f64>,
+    #[serde(default)]
+    pub p_token_first_slot_buy_sol: Option<f64>,
+    #[serde(default)]
+    pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
     #[serde(default)]
@@ -254,6 +266,8 @@ impl Tpsl2Params {
             p_token_cu_price: r.p_token_cu_price,
             p_token_max_sol_cost: r.p_token_max_sol_cost,
             p_token_spendable_sol_in: r.p_token_spendable_sol_in,
+            p_token_first_slot_buy_sol: r.p_token_first_slot_buy_sol,
+            p_token_first_slot_sell_sol: r.p_token_first_slot_sell_sol,
             p_token_ix_labels: r.p_token_ix_labels.clone(),
             tolerance_pct: r.tolerance_pct,
             p_exit_take_profit: r.p_exit_take_profit,
@@ -302,6 +316,8 @@ impl Tpsl2Params {
         r.p_entry_pullback_pct = self.p_entry_pullback_pct;
         r.p_entry_higher_low_secs = self.p_entry_higher_low_secs;
         r.p_entry_min_liquidity_sol = self.p_entry_min_liquidity_sol;
+        r.p_token_first_slot_buy_sol = self.p_token_first_slot_buy_sol;
+        r.p_token_first_slot_sell_sol = self.p_token_first_slot_sell_sol;
         r.is_active = true;
         r
     }
@@ -323,6 +339,10 @@ pub struct Swing1Params {
     pub p_token_max_sol_cost: Option<f64>,
     #[serde(default)]
     pub p_token_spendable_sol_in: Option<f64>,
+    #[serde(default)]
+    pub p_token_first_slot_buy_sol: Option<f64>,
+    #[serde(default)]
+    pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
     #[serde(default)]
@@ -391,6 +411,8 @@ impl Swing1Params {
             p_token_cu_price: r.p_token_cu_price,
             p_token_max_sol_cost: r.p_token_max_sol_cost,
             p_token_spendable_sol_in: r.p_token_spendable_sol_in,
+            p_token_first_slot_buy_sol: r.p_token_first_slot_buy_sol,
+            p_token_first_slot_sell_sol: r.p_token_first_slot_sell_sol,
             p_token_ix_labels: r.p_token_ix_labels.clone(),
             tolerance_pct: r.tolerance_pct,
             p_exit_take_profit: r.p_exit_take_profit,
@@ -463,6 +485,8 @@ impl Swing1Params {
         r.p_entry_min_liquidity_sol = self.p_entry_min_liquidity_sol;
         r.p_exit_next_kill_depth_min_pct = self.p_exit_next_kill_depth_min_pct;
         r.p_exit_next_kill_max_duration_ms = self.p_exit_next_kill_max_duration_ms;
+        r.p_token_first_slot_buy_sol = self.p_token_first_slot_buy_sol;
+        r.p_token_first_slot_sell_sol = self.p_token_first_slot_sell_sol;
         r.is_active = true;
         r
     }
@@ -483,6 +507,24 @@ impl StrategyParams {
             Self::Tpsl1(_) => StrategyImpl::Tpsl1,
             Self::Tpsl2(_) => StrategyImpl::Tpsl2,
             Self::Swing1(_) => StrategyImpl::Swing1,
+        }
+    }
+
+    /// Whether this rule configures a deferred first-slot fingerprint gate.
+    pub fn requires_first_slot_data(&self) -> bool {
+        fn needs(v: Option<f64>) -> bool {
+            t1::util::none_if_zero_f64(v).is_some()
+        }
+        match self {
+            Self::Tpsl1(p) => {
+                needs(p.p_token_first_slot_buy_sol) || needs(p.p_token_first_slot_sell_sol)
+            }
+            Self::Tpsl2(p) => {
+                needs(p.p_token_first_slot_buy_sol) || needs(p.p_token_first_slot_sell_sol)
+            }
+            Self::Swing1(p) => {
+                needs(p.p_token_first_slot_buy_sol) || needs(p.p_token_first_slot_sell_sol)
+            }
         }
     }
 }
@@ -520,6 +562,25 @@ impl StrategyImpl {
             }
             (Self::Swing1, StrategyParams::Swing1(p)) => {
                 sw1::entry::token_matches_buy_rule(token, &p.to_rule())
+            }
+            _ => false,
+        }
+    }
+
+    /// Instant (creation-time) entry gate — skips deferred first-slot criteria.
+    /// Used by the live two-phase entry path before the first-slot window closes.
+    pub fn matches_instant_entry(&self, token: &Token, params: &StrategyParams) -> bool {
+        match (self, params) {
+            (Self::Tpsl1, StrategyParams::Tpsl1(p)) => {
+                t1::entry::token_is_fresh(token)
+                    && t1::entry::token_matches_instant_criteria(token, &p.to_rule())
+            }
+            (Self::Tpsl2, StrategyParams::Tpsl2(p)) => {
+                t2::entry::token_is_fresh(token)
+                    && t2::entry::token_matches_instant_criteria(token, &p.to_rule())
+            }
+            (Self::Swing1, StrategyParams::Swing1(p)) => {
+                sw1::entry::token_matches_instant_criteria(token, &p.to_rule())
             }
             _ => false,
         }
@@ -758,6 +819,8 @@ mod tests {
             p_token_cu_price: None,
             p_token_max_sol_cost: None,
             p_token_spendable_sol_in: None,
+            p_token_first_slot_buy_sol: None,
+            p_token_first_slot_sell_sol: None,
             p_token_ix_labels: json!(["A", "B"]),
             tolerance_pct: 5.0,
             p_exit_take_profit: 40.0,
@@ -827,6 +890,65 @@ mod tests {
         assert_eq!(roundtripped.p_exit_next_kill_max_duration_ms, rule.p_exit_next_kill_max_duration_ms);
     }
 
+    #[test]
+    fn first_slot_params_round_trip_all_strategies() {
+        for (strategy_id, base) in [
+            (
+                "tpsl_sniper_1",
+                json!({
+                    "p_exit_take_profit": 50.0,
+                    "p_exit_stop_loss": 20.0,
+                    "p_token_first_slot_buy_sol": 1.5,
+                    "p_token_first_slot_sell_sol": 0.25,
+                }),
+            ),
+            (
+                "tpsl_sniper_2",
+                json!({
+                    "p_exit_take_profit": 50.0,
+                    "p_exit_stop_loss": 20.0,
+                    "p_token_first_slot_buy_sol": 1.5,
+                    "p_token_first_slot_sell_sol": 0.25,
+                }),
+            ),
+            (
+                "swing_1",
+                json!({
+                    "p_exit_take_profit": 50.0,
+                    "p_exit_stop_loss": 20.0,
+                    "p_token_first_slot_buy_sol": 1.5,
+                    "p_token_first_slot_sell_sol": 0.25,
+                }),
+            ),
+        ] {
+            let strat = StrategyImpl::from_id(strategy_id).expect("strategy");
+            let parsed = strat.parse_params(&base).expect("parse");
+            assert!(parsed.requires_first_slot_data());
+            match &parsed {
+                StrategyParams::Tpsl1(p) => {
+                    assert_eq!(p.p_token_first_slot_buy_sol, Some(1.5));
+                    assert_eq!(p.p_token_first_slot_sell_sol, Some(0.25));
+                }
+                StrategyParams::Tpsl2(p) => {
+                    assert_eq!(p.p_token_first_slot_buy_sol, Some(1.5));
+                    assert_eq!(p.p_token_first_slot_sell_sol, Some(0.25));
+                }
+                StrategyParams::Swing1(p) => {
+                    assert_eq!(p.p_token_first_slot_buy_sol, Some(1.5));
+                    assert_eq!(p.p_token_first_slot_sell_sol, Some(0.25));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn requires_first_slot_data_false_when_unset() {
+        let p = StrategyImpl::Tpsl1
+            .parse_params(&json!({ "p_exit_take_profit": 50.0, "p_exit_stop_loss": 20.0 }))
+            .unwrap();
+        assert!(!p.requires_first_slot_data());
+    }
+
     // ── decision parity vs the direct tpsl1/2 fns ────────────────────────────
 
     #[test]
@@ -870,6 +992,8 @@ mod tests {
             p_token_cu_price: None,
             p_token_max_sol_cost: None,
             p_token_spendable_sol_in: None,
+            p_token_first_slot_buy_sol: None,
+            p_token_first_slot_sell_sol: None,
             p_token_ix_labels: json!([]),
             tolerance_pct: 0.0,
             p_exit_take_profit: 50.0,

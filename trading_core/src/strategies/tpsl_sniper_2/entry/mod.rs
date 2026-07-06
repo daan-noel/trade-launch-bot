@@ -41,6 +41,15 @@ enum CriterionOutcome {
 /// freshness gate is deliberately **not** here — it's a live-only safety rail
 /// (see [`token_is_fresh`]), so the shared matcher can be reused by the historical
 /// matched/simulate scan without rejecting every non-live token.
+const INSTANT_CRITERIA: &[fn(&Token, &Tpsl2Rule) -> CriterionOutcome] = &[
+    check_initial_buy_sol,
+    check_compute_unit_limit,
+    check_compute_unit_price,
+    check_max_sol_cost,
+    check_spendable_sol_in,
+    check_instruction_labels,
+];
+
 const CRITERIA: &[fn(&Token, &Tpsl2Rule) -> CriterionOutcome] = &[
     check_initial_buy_sol,
     check_compute_unit_limit,
@@ -48,6 +57,8 @@ const CRITERIA: &[fn(&Token, &Tpsl2Rule) -> CriterionOutcome] = &[
     check_max_sol_cost,
     check_spendable_sol_in,
     check_instruction_labels,
+    check_first_slot_buy_sol,
+    check_first_slot_sell_sol,
 ];
 
 /// Whether a token satisfies a rule's buy criteria. A rule must configure at
@@ -73,6 +84,18 @@ pub fn token_matches_buy_rule(token: &Token, rule: &Tpsl2Rule) -> bool {
 pub fn token_criteria_satisfied(token: &Token, rule: &Tpsl2Rule) -> bool {
     for check in CRITERIA {
         if let CriterionOutcome::Rejected = check(token, rule) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether a token passes every **instant** (creation-time) criterion. Deferred
+/// first-slot checks are skipped — used by the live two-phase entry gate before
+/// the first-slot window closes.
+pub fn token_matches_instant_criteria(token: &Token, rule: &Tpsl2Rule) -> bool {
+    for check in INSTANT_CRITERIA {
+        if matches!(check(token, rule), CriterionOutcome::Rejected) {
             return false;
         }
     }
@@ -127,6 +150,8 @@ pub fn rule_configures_any_criterion(rule: &Tpsl2Rule) -> bool {
         || none_if_zero_u64(rule.p_token_cu_price).is_some()
         || none_if_zero_f64(rule.p_token_max_sol_cost).is_some()
         || none_if_zero_f64(rule.p_token_spendable_sol_in).is_some()
+        || none_if_zero_f64(rule.p_token_first_slot_buy_sol).is_some()
+        || none_if_zero_f64(rule.p_token_first_slot_sell_sol).is_some()
         || rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty())
 }
 
@@ -211,6 +236,30 @@ fn check_instruction_labels(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome
         CriterionOutcome::Satisfied
     } else {
         CriterionOutcome::Rejected
+    }
+}
+
+fn check_first_slot_buy_sol(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
+    let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_buy_sol) else {
+        return CriterionOutcome::NotConfigured;
+    };
+    match token.first_slot_buy_sol {
+        Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {
+            CriterionOutcome::Satisfied
+        }
+        _ => CriterionOutcome::Rejected,
+    }
+}
+
+fn check_first_slot_sell_sol(token: &Token, rule: &Tpsl2Rule) -> CriterionOutcome {
+    let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_sell_sol) else {
+        return CriterionOutcome::NotConfigured;
+    };
+    match token.first_slot_sell_sol {
+        Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {
+            CriterionOutcome::Satisfied
+        }
+        _ => CriterionOutcome::Rejected,
     }
 }
 

@@ -64,6 +64,14 @@ const PAPER_POLL_CONCURRENCY: usize = 64;
 /// the oldest un-entered armer. Bounded (max-age) armers don't count against this.
 const MAX_UNTIL_DEAD_ARMERS: usize = 32;
 
+/// Max concurrent deferred first-slot entry gates waiting for the creation-slot
+/// window to close. Mirrors [`MAX_UNTIL_DEAD_ARMERS`]'s bounded pending-set shape.
+const MAX_FIRST_SLOT_PENDING: usize = 32;
+
+/// Backstop timeout for deferred first-slot entry gates (seconds). Resolves with
+/// whatever first-slot totals have accumulated so far.
+pub const FIRST_SLOT_GATE_TIMEOUT_SECS: i64 = 5;
+
 /// Pointer to a rule's current run — the run new positions are stamped with and the
 /// run the result view surfaces. Both modes carry a run now (real *and* paper), so
 /// this is mode-agnostic.
@@ -189,6 +197,13 @@ struct UntilDeadArmerSlot {
     cancelled: Arc<AtomicBool>,
 }
 
+/// A deferred first-slot entry gate queued at token creation.
+#[derive(Clone, Debug)]
+pub struct PendingFirstSlotEntry {
+    pub queued_at: DateTime<Utc>,
+    seq: u64,
+}
+
 /// In-memory strategy state for the hot path (rules + parsed params + open
 /// positions + per-rule counters), shared across all strategies.
 ///
@@ -239,6 +254,11 @@ pub struct StrategyRuntimeCache {
     until_dead_armers: Arc<DashMap<Uuid, UntilDeadArmerSlot>>,
     /// Monotonic counter assigning each until-dead armer its eviction-order `seq`.
     armer_seq: Arc<AtomicU64>,
+    /// Deferred first-slot entry gates keyed by `(mint, rule_id)`. Bounded to
+    /// [`MAX_FIRST_SLOT_PENDING`]: when full, the oldest pending entry is evicted.
+    pending_first_slot: Arc<DashMap<(String, Uuid), PendingFirstSlotEntry>>,
+    /// Monotonic counter assigning each pending first-slot entry its eviction `seq`.
+    first_slot_seq: Arc<AtomicU64>,
     /// Optional cold-lane SSE sender for `tpsl_positions_changed` deltas, set once at
     /// boot by the live edge ([`set_sse_sender`](Self::set_sse_sender)). Unset in unit
     /// tests and the `lab` bin, where [`emit_position_delta`](Self::emit_position_delta)
@@ -290,6 +310,8 @@ impl StrategyRuntimeCache {
             entering: Arc::new(DashSet::new()),
             until_dead_armers: Arc::new(DashMap::new()),
             armer_seq: Arc::new(AtomicU64::new(0)),
+            pending_first_slot: Arc::new(DashMap::new()),
+            first_slot_seq: Arc::new(AtomicU64::new(0)),
             sse_tx: OnceLock::new(),
         }
     }
@@ -558,6 +580,89 @@ impl StrategyRuntimeCache {
             position_id,
             cancelled,
         }
+    }
+
+    // ── Deferred first-slot entry gate ────────────────────────────────────────
+
+    /// Whether any deferred first-slot entry gate is queued.
+    pub fn has_first_slot_pending(&self) -> bool {
+        !self.pending_first_slot.is_empty()
+    }
+
+    /// Whether this mint has at least one deferred first-slot entry gate queued.
+    pub fn has_first_slot_pending_for_mint(&self, mint: &str) -> bool {
+        self.pending_first_slot.iter().any(|e| e.key().0 == mint)
+    }
+
+    /// Queue a deferred first-slot entry gate for `(mint, rule_id)`. Re-queueing the
+    /// same key refreshes its slot. Bounded to [`MAX_FIRST_SLOT_PENDING`]: when full,
+    /// the oldest pending entry is evicted.
+    pub fn queue_first_slot_pending(&self, mint: &str, rule_id: Uuid) {
+        let key = (mint.to_string(), rule_id);
+        self.pending_first_slot.remove(&key);
+        while self.pending_first_slot.len() >= MAX_FIRST_SLOT_PENDING {
+            let oldest = self
+                .pending_first_slot
+                .iter()
+                .min_by_key(|e| e.value().seq)
+                .map(|e| e.key().clone());
+            match oldest {
+                Some(k) => {
+                    self.pending_first_slot.remove(&k);
+                    tracing::warn!(
+                        mint = %k.0,
+                        rule_id = %k.1,
+                        cap = MAX_FIRST_SLOT_PENDING,
+                        "first-slot pending cap reached; evicting the oldest pending entry"
+                    );
+                }
+                None => break,
+            }
+        }
+        let seq = self.first_slot_seq.fetch_add(1, Ordering::Relaxed);
+        self.pending_first_slot.insert(
+            key,
+            PendingFirstSlotEntry { queued_at: Utc::now(), seq },
+        );
+    }
+
+    /// Remove and return every pending first-slot rule id for `mint`.
+    pub fn take_first_slot_pending(&self, mint: &str) -> Vec<Uuid> {
+        let keys: Vec<(String, Uuid)> = self
+            .pending_first_slot
+            .iter()
+            .filter(|e| e.key().0 == mint)
+            .map(|e| e.key().clone())
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| {
+                self.pending_first_slot.remove(&k)?;
+                Some(k.1)
+            })
+            .collect()
+    }
+
+    /// Expire pending first-slot entries older than `timeout_secs`, removing them
+    /// from the map and returning the evicted `(mint, rule_id)` pairs.
+    pub fn expire_first_slot_pending(
+        &self,
+        now: DateTime<Utc>,
+        timeout_secs: i64,
+    ) -> Vec<(String, Uuid)> {
+        let cutoff = now - chrono::Duration::seconds(timeout_secs);
+        let stale: Vec<(String, Uuid)> = self
+            .pending_first_slot
+            .iter()
+            .filter(|e| e.value().queued_at <= cutoff)
+            .map(|e| e.key().clone())
+            .collect();
+        stale
+            .into_iter()
+            .filter_map(|k| {
+                self.pending_first_slot.remove(&k)?;
+                Some(k)
+            })
+            .collect()
     }
 
     // ── Holding index + counters ──────────────────────────────────────────────
@@ -1643,5 +1748,23 @@ mod tests {
         });
         assert!(handle.await.is_err());
         assert!(!cache.is_exiting(id), "guard freed on panic unwind");
+    }
+
+    #[test]
+    fn first_slot_pending_queue_and_take() {
+        let cache = StrategyRuntimeCache::new();
+        let rule_a = Uuid::new_v4();
+        let rule_b = Uuid::new_v4();
+        cache.queue_first_slot_pending("mint1", rule_a);
+        cache.queue_first_slot_pending("mint1", rule_b);
+        assert!(cache.has_first_slot_pending());
+        assert!(cache.has_first_slot_pending_for_mint("mint1"));
+
+        let taken = cache.take_first_slot_pending("mint1");
+        assert_eq!(taken.len(), 2);
+        assert!(taken.contains(&rule_a));
+        assert!(taken.contains(&rule_b));
+        assert!(!cache.has_first_slot_pending_for_mint("mint1"));
+        assert!(!cache.has_first_slot_pending());
     }
 }

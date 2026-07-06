@@ -15,7 +15,7 @@
 //! ExitPending/BuySubmitted/unentered reapers — is identical across strategies
 //! (including swing1's `NextKill` exit priority) and lives here once.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,14 +29,14 @@ use uuid::Uuid;
 use pump_trader::constants::LAMPORTS_PER_SOL;
 use trading_core::config::constants::{resolve_buy_slippage_bps, resolve_sell_slippage_bps};
 use trading_core::models::ingest::SseEvent;
-use trading_core::models::{StrategyPosition, StrategyRule};
+use trading_core::models::{StrategyPosition, StrategyRule, Token};
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 use trading_core::strategies::exit_state::clock_entry_time;
 use trading_core::strategies::registry::{StrategyImpl, StrategyParams};
 use trading_core::strategies::rules::{self, RuleDraft, RuleError};
-use trading_core::strategies::runtime_cache::{ExitGuard, StrategyRuntimeCache};
+use trading_core::strategies::runtime_cache::{ExitGuard, StrategyRuntimeCache, FIRST_SLOT_GATE_TIMEOUT_SECS};
 
 use crate::state::token_cache::TokenCache;
 use crate::state::trade_signals::TradeSignals;
@@ -213,9 +213,11 @@ impl StrategyService {
             return;
         }
 
-        // Token-creation entry gate, dispatched per rule by its strategy. Collect the
-        // matched (rule, params, strategy) tuples (cheap clones) before any await.
+        // Token-creation entry gate, dispatched per rule by its strategy. Rules with
+        // deferred first-slot criteria queue a pending gate instead of entering
+        // immediately; everything else keeps the zero-latency instant path.
         let mut matched = Vec::new();
+        let mut queued_deferred = false;
         for rule in rules.iter() {
             let Some(strat) = StrategyImpl::from_id(&rule.strategy_id) else {
                 continue;
@@ -223,18 +225,110 @@ impl StrategyService {
             let Some(params) = self.runtime.params_by_id(rule.id) else {
                 continue;
             };
-            if strat.matches_entry(&token, &params) {
+            if params.requires_first_slot_data() {
+                if strat.matches_instant_entry(&token, &params) {
+                    self.runtime.queue_first_slot_pending(mint, rule.id);
+                    queued_deferred = true;
+                    debug!(
+                        "Token {mint} passed instant criteria for deferred rule {}; \
+                         queued first-slot gate",
+                        rule.id
+                    );
+                }
+            } else if strat.matches_entry(&token, &params) {
                 matched.push((rule.clone(), params, strat));
             }
         }
-        if matched.is_empty() {
+        if matched.is_empty() && !queued_deferred {
             debug!("Token {mint} does not match any strategy buy entry rule");
             return;
         }
 
         for (rule, params, strat) in matched {
-            let rule_id = rule.id;
-            info!("Token {mint} matches strategy buy entry rule {rule_id}");
+            self.try_entry_for_match(mint, &token, rule, params, strat).await;
+        }
+    }
+
+    /// Resolve deferred first-slot entry gates for `mint` once the creation-slot
+    /// window has closed or the backstop timeout fires.
+    async fn resolve_first_slot_entries(
+        &self,
+        mint: &str,
+        cache: &TokenCache,
+        rule_ids: Vec<Uuid>,
+    ) {
+        if rule_ids.is_empty() {
+            return;
+        }
+        let token = match cache.get(mint) {
+            Some(entry) => {
+                let state = entry.value();
+                let mut token = state.token.clone();
+                token.first_slot_buy_sol = Some(state.first_slot_buy_sol);
+                token.first_slot_sell_sol = Some(state.first_slot_sell_sol);
+                token
+            }
+            None => {
+                debug!("Token {mint} not in cache — skipping deferred first-slot resolve");
+                return;
+            }
+        };
+
+        for rule_id in rule_ids {
+            let Some(rule) = self.runtime.rule_by_id(rule_id) else {
+                continue;
+            };
+            let Some(params) = self.runtime.params_by_id(rule_id) else {
+                continue;
+            };
+            let Some(strat) = StrategyImpl::from_id(&rule.strategy_id) else {
+                continue;
+            };
+            if strat.matches_entry(&token, &params) {
+                info!("Token {mint} matches deferred first-slot rule {rule_id}");
+                self.try_entry_for_match(mint, &token, rule, params, strat).await;
+            } else {
+                debug!("Token {mint} failed deferred first-slot rule {rule_id}");
+            }
+        }
+    }
+
+    async fn resolve_first_slot_for_mint(&self, mint: &str, cache: &TokenCache) {
+        let rule_ids = self.runtime.take_first_slot_pending(mint);
+        self.resolve_first_slot_entries(mint, cache, rule_ids).await;
+    }
+
+    /// Backstop sweep for deferred first-slot gates — resolves expired pending
+    /// entries with whatever totals have accumulated so far.
+    pub async fn sweep_first_slot_pending(&self, cache: &TokenCache) {
+        if !self.runtime.has_first_slot_pending() {
+            return;
+        }
+        let expired = self
+            .runtime
+            .expire_first_slot_pending(Utc::now(), FIRST_SLOT_GATE_TIMEOUT_SECS);
+        if expired.is_empty() {
+            return;
+        }
+        let mut by_mint: HashMap<String, Vec<Uuid>> = HashMap::new();
+        for (mint, rule_id) in expired {
+            by_mint.entry(mint).or_default().push(rule_id);
+        }
+        for (mint, rule_ids) in by_mint {
+            self.resolve_first_slot_entries(&mint, cache, rule_ids).await;
+        }
+    }
+
+    async fn try_entry_for_match(
+        &self,
+        mint: &str,
+        token: &Token,
+        rule: StrategyRule,
+        params: StrategyParams,
+        strat: StrategyImpl,
+    ) {
+        let rule_id = rule.id;
+        info!("Token {mint} matches strategy buy entry rule {rule_id}");
 
             let is_real = rule.trade_mode == "real";
             let max_concurrent = rule.max_concurrent_tokens.filter(|&c| c > 0);
@@ -250,7 +344,7 @@ impl StrategyService {
                     Ok(run) => run.id,
                     Err(err) => {
                         warn!("Failed to start run for rule {rule_id}: {err}");
-                        continue;
+                        return;
                     }
                 },
             };
@@ -259,14 +353,14 @@ impl StrategyService {
                 let current_holding = self.runtime.holding_count_by_rule(rule_id);
                 if current_holding >= cap {
                     debug!("Rule {rule_id} at max concurrent ({current_holding}/{cap}), skipping {mint}");
-                    continue;
+                    return;
                 }
             }
             if let Some(total_max) = max_total {
                 let total_traded = self.runtime.total_count_by_rule(rule_id);
                 if total_traded >= total_max {
                     debug!("Rule {rule_id} at max total ({total_traded}/{total_max}), skipping {mint}");
-                    continue;
+                    return;
                 }
             }
 
@@ -294,14 +388,14 @@ impl StrategyService {
                 if !self.trader.can_commit_buy(buy_lamports) {
                     warn!("[REAL] SOL balance-floor guard blocked snipe of {buy_amount_sol:.4} SOL \
                            for {mint} rule {rule_id}");
-                    continue;
+                    return;
                 }
                 if let Some(max_sol) = self.settings.borrow().max_committed_sol {
                     let max_lamports = (max_sol * LAMPORTS_PER_SOL as f64) as u64;
                     if self.trader.committed_lamports().saturating_add(buy_lamports) > max_lamports {
                         warn!("[REAL] max_committed_sol guard blocked snipe of {buy_amount_sol:.4} SOL \
                                for {mint} rule {rule_id}");
-                        continue;
+                        return;
                     }
                 }
                 self.trader.commit_sol_for_position(position_id.to_string(), buy_lamports);
@@ -503,10 +597,21 @@ impl StrategyService {
                     );
                 }
             });
-        }
     }
 
     pub async fn on_trade_executed(&self, mint: &str, cache: &TokenCache) {
+        // Deferred first-slot entry gates: resolve when the creation-slot window
+        // closes. Cheap bail-out when no pending entries exist anywhere.
+        if self.runtime.has_first_slot_pending() {
+            if self.runtime.has_first_slot_pending_for_mint(mint) {
+                if let Some(entry) = cache.get(mint) {
+                    if !entry.value().first_slot_window_open {
+                        self.resolve_first_slot_for_mint(mint, cache).await;
+                    }
+                }
+            }
+        }
+
         // Cheap holding-index lookup first: the vast majority of trade pings are for
         // mints we hold no position in, so probe the index on the borrowed `&str` and
         // bail before allocating an owned mint or touching the trade history.

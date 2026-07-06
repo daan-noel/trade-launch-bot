@@ -36,6 +36,16 @@ enum CriterionOutcome {
 /// freshness gate is deliberately **not** here — it's a live-only safety rail
 /// (see [`token_is_fresh`]), so the shared matcher can be reused by the historical
 /// matched/simulate scan without rejecting every non-live token.
+const INSTANT_CRITERIA: &[fn(&Token, &Tpsl1Rule) -> CriterionOutcome] = &[
+    check_initial_buy_sol,
+    check_compute_unit_limit,
+    check_compute_unit_price,
+    check_max_sol_cost,
+    check_spendable_sol_in,
+    check_instruction_labels,
+];
+
+/// Every entry criterion (instant + deferred).
 const CRITERIA: &[fn(&Token, &Tpsl1Rule) -> CriterionOutcome] = &[
     check_initial_buy_sol,
     check_compute_unit_limit,
@@ -43,6 +53,8 @@ const CRITERIA: &[fn(&Token, &Tpsl1Rule) -> CriterionOutcome] = &[
     check_max_sol_cost,
     check_spendable_sol_in,
     check_instruction_labels,
+    check_first_slot_buy_sol,
+    check_first_slot_sell_sol,
 ];
 
 /// Whether a token satisfies a rule's buy criteria. A rule must configure at
@@ -58,6 +70,18 @@ pub fn token_matches_buy_rule(token: &Token, rule: &Tpsl1Rule) -> bool {
         }
     }
     any_configured
+}
+
+/// Whether a token passes every **instant** (creation-time) criterion. Deferred
+/// first-slot checks are skipped — used by the live two-phase entry gate before
+/// the first-slot window closes.
+pub fn token_matches_instant_criteria(token: &Token, rule: &Tpsl1Rule) -> bool {
+    for check in INSTANT_CRITERIA {
+        if matches!(check(token, rule), CriterionOutcome::Rejected) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Live-only freshness gate: reject tokens whose `created_at` is more than
@@ -109,6 +133,8 @@ fn rule_configures_any_criterion(rule: &Tpsl1Rule) -> bool {
         || none_if_zero_u64(rule.p_token_cu_price).is_some()
         || none_if_zero_f64(rule.p_token_max_sol_cost).is_some()
         || none_if_zero_f64(rule.p_token_spendable_sol_in).is_some()
+        || none_if_zero_f64(rule.p_token_first_slot_buy_sol).is_some()
+        || none_if_zero_f64(rule.p_token_first_slot_sell_sol).is_some()
         || rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty())
 }
 
@@ -192,6 +218,30 @@ fn check_instruction_labels(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome
         CriterionOutcome::Satisfied
     } else {
         CriterionOutcome::Rejected
+    }
+}
+
+fn check_first_slot_buy_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+    let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_buy_sol) else {
+        return CriterionOutcome::NotConfigured;
+    };
+    match token.first_slot_buy_sol {
+        Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {
+            CriterionOutcome::Satisfied
+        }
+        _ => CriterionOutcome::Rejected,
+    }
+}
+
+fn check_first_slot_sell_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
+    let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_sell_sol) else {
+        return CriterionOutcome::NotConfigured;
+    };
+    match token.first_slot_sell_sol {
+        Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {
+            CriterionOutcome::Satisfied
+        }
+        _ => CriterionOutcome::Rejected,
     }
 }
 
@@ -441,6 +491,25 @@ mod tests {
             find_all_matching_buy_rules(&token, &rules),
             vec![active1.id, active2.id]
         );
+    }
+
+    #[test]
+    fn first_slot_buy_sol_within_tolerance() {
+        let mut rule = rule_with_entry(None, None, None, json!([]), None, None, 10.0);
+        rule.p_token_first_slot_buy_sol = Some(2.0);
+        let mut near = token_with(None, None, None, None, json!([]));
+        near.first_slot_buy_sol = Some(2.1);
+        let mut far = token_with(None, None, None, None, json!([]));
+        far.first_slot_buy_sol = Some(3.0);
+        assert!(token_matches_buy_rule(&near, &rule));
+        assert!(!token_matches_buy_rule(&far, &rule));
+    }
+
+    #[test]
+    fn first_slot_not_configured_is_inert() {
+        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let token = token_with(Some(1.0), None, None, None, json!([]));
+        assert!(token_matches_buy_rule(&token, &rule));
     }
 
     #[test]

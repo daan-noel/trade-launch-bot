@@ -65,6 +65,9 @@ impl StrategyRunner {
                     // Time-driven exits (TimeStop / Stall) that come due while a token
                     // is silent — no trade ping would otherwise fire them.
                     self.service.sweep_time_exits(self.token_cache.as_ref()).await;
+                    self.service
+                        .sweep_first_slot_pending(self.token_cache.as_ref())
+                        .await;
                 }
             }
         }

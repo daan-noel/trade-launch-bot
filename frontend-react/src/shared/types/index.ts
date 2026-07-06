@@ -96,6 +96,8 @@ export interface RuleRecord {
   id: string;
   rule_name: string;
   p_token_initial_buy_sol: number | null;
+  p_token_first_slot_buy_sol: number | null;
+  p_token_first_slot_sell_sol: number | null;
   p_token_cu_limit: number | null;
   p_token_cu_price: number | null;
   p_token_max_sol_cost: number | null;
@@ -226,6 +228,8 @@ export interface RuleNotifSnapshot {
   rule_name: string;
   trade_mode: string;
   p_token_initial_buy_sol: number | null;
+  p_token_first_slot_buy_sol: number | null;
+  p_token_first_slot_sell_sol: number | null;
   tolerance_pct: number;
   p_token_cu_limit: number | null;
   p_token_cu_price: number | null;

@@ -40,6 +40,15 @@ pub struct Token {
     /// `TokenCreated`; enables the same-slot buy/sell activity sums on
     /// `tokens_info` (`first_slot_buy_sol`/`first_slot_sell_sol`).
     pub creation_slot: Option<u64>,
+    /// Same-creation-slot buy SOL total. Populated at first-slot gate resolution
+    /// (live) or from a `tokens_info` join (backtest/simulate scan) — not a
+    /// `tokens` column.
+    #[serde(default)]
+    pub first_slot_buy_sol: Option<f64>,
+    /// Same-creation-slot sell SOL total — same population rules as
+    /// [`first_slot_buy_sol`](Self::first_slot_buy_sol).
+    #[serde(default)]
+    pub first_slot_sell_sol: Option<f64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -81,6 +90,8 @@ impl Token {
             instruction_labels,
             creation_tx_signature,
             creation_slot,
+            first_slot_buy_sol: None,
+            first_slot_sell_sol: None,
             created_at,
         }
     }

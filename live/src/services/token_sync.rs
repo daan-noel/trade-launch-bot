@@ -1457,6 +1457,8 @@ fn token_from_ingest_event(e: ingest_laserstream::event::TokenCreated) -> Token 
         instruction_labels: serde_json::json!(e.instruction_labels),
         creation_tx_signature: e.signature,
         creation_slot: Some(e.slot),
+        first_slot_buy_sol: None,
+        first_slot_sell_sol: None,
         created_at: e.block_time,
     }
 }

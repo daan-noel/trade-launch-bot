@@ -31,16 +31,21 @@ use crate::strategies::tpsl_sniper_2::util::{none_if_zero_f64, none_if_zero_u64}
 use super::swing::detect_swing_legs_raw;
 use super::{classifier, phase_profile_from_rule, rule_configures_any_entry_gate, swing_params_from_rule};
 
-/// swing1's token-creation pre-filter. Unlike tpsl1/tpsl2 the dev fingerprint is
-/// **optional** here (the swing latch is the real gate), so this is the
-/// **vacuous-true** variant: a token is admitted unless it *fails* a
-/// **configured** fingerprint criterion. A rule that sets no fingerprint admits
-/// every token — the trade-stream latch (`find_phase_entry`) then decides.
+/// swing1's token-creation pre-filter. The dev fingerprint is **optional**
+/// (the swing latch is the real gate), so this is the **vacuous-true** variant:
+/// a token is admitted unless it *fails* a **configured** fingerprint criterion.
+/// A rule that sets no fingerprint admits every token — the trade-stream latch
+/// (`find_phase_entry`) then decides.
 ///
 /// Criterion semantics match tpsl2 exactly (same tolerance band, same
 /// instruction-arg reads) so an authored fingerprint means the same thing across
 /// strategies.
 pub fn token_matches_buy_rule(token: &Token, rule: &Swing1Rule) -> bool {
+    token_matches_instant_criteria(token, rule) && token_matches_deferred_criteria(token, rule)
+}
+
+/// Instant (creation-time) fingerprint axes only — skips first-slot checks.
+pub fn token_matches_instant_criteria(token: &Token, rule: &Swing1Rule) -> bool {
     // initial_buy_sol — tolerance band around the configured value.
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_initial_buy_sol) {
         match token.initial_buy_sol {
@@ -83,6 +88,23 @@ pub fn token_matches_buy_rule(token: &Token, rule: &Swing1Rule) -> bool {
             || !rule_labels.iter().zip(token_labels.iter()).all(|(r, t)| r == t)
         {
             return false;
+        }
+    }
+    true
+}
+
+/// Deferred first-slot fingerprint axes only.
+pub fn token_matches_deferred_criteria(token: &Token, rule: &Swing1Rule) -> bool {
+    if let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_buy_sol) {
+        match token.first_slot_buy_sol {
+            Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {}
+            _ => return false,
+        }
+    }
+    if let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_sell_sol) {
+        match token.first_slot_sell_sol {
+            Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {}
+            _ => return false,
         }
     }
     true

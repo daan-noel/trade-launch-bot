@@ -20,14 +20,20 @@ use uuid::Uuid;
 pub struct Swing1Rule {
     pub id: Uuid,
     pub rule_name: String,
-    // Token-filter fingerprint fields are retained for symmetry with the unified
-    // schema (and so the lab UI can author them), but swing1 does NOT gate token
-    // creation on them — the fingerprint filter is applied upstream.
+    // Token-filter fingerprint fields — optional pre-filter before the swing latch.
+    // Live/backtest gate via the shared `on_token_created` → `matches_entry` path
+    // (same as tpsl1/tpsl2); unset axes are vacuous-true here.
     pub p_token_initial_buy_sol: Option<f64>,
     pub p_token_cu_limit: Option<u64>,
     pub p_token_cu_price: Option<u64>,
     pub p_token_max_sol_cost: Option<f64>,
     pub p_token_spendable_sol_in: Option<f64>,
+    /// Filter: match the token's same-creation-slot buy SOL total (optional).
+    #[serde(default)]
+    pub p_token_first_slot_buy_sol: Option<f64>,
+    /// Filter: match the token's same-creation-slot sell SOL total (optional).
+    #[serde(default)]
+    pub p_token_first_slot_sell_sol: Option<f64>,
     pub p_max_concurrent_tokens: Option<u64>,
     pub p_max_total_tokens: Option<u64>,
     pub p_token_ix_labels: Value,
@@ -147,6 +153,8 @@ impl Swing1Rule {
             p_exit_next_kill_max_duration_ms: None,
             p_token_max_sol_cost,
             p_token_spendable_sol_in,
+            p_token_first_slot_buy_sol: None,
+            p_token_first_slot_sell_sol: None,
             p_max_concurrent_tokens,
             p_max_total_tokens,
             tolerance_pct: tolerance_pct.unwrap_or(0.0),

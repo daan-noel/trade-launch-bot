@@ -77,6 +77,59 @@ struct TokenDbRow {
     created_at: DateTime<Utc>,
 }
 
+/// `tokens` row plus deferred first-slot fingerprint columns from `tokens_info`.
+/// Used only by the analysis whole-table scan ([`TokenRepo::find_page_before`]).
+#[derive(sqlx::FromRow)]
+struct TokenScanDbRow {
+    mint_address: String,
+    creator_wallet: String,
+    name: String,
+    symbol: String,
+    token_program_id: Option<String>,
+    bonding_curve_address: Option<String>,
+    initial_supply_token: Option<i64>,
+    initial_buy_lamports: Option<i64>,
+    initial_buy_instruction: Option<Json<Value>>,
+    cu_limit: Option<i64>,
+    cu_price: Option<i64>,
+    is_mayhem_mode: bool,
+    is_cashback_enabled: bool,
+    ix_labels: Json<Value>,
+    creation_tx_signature: String,
+    creation_slot: Option<i64>,
+    created_at: DateTime<Utc>,
+    first_slot_buy_sol: Option<f64>,
+    first_slot_sell_sol: Option<f64>,
+}
+
+impl From<TokenScanDbRow> for Token {
+    fn from(r: TokenScanDbRow) -> Self {
+        let base = TokenDbRow {
+            mint_address: r.mint_address,
+            creator_wallet: r.creator_wallet,
+            name: r.name,
+            symbol: r.symbol,
+            token_program_id: r.token_program_id,
+            bonding_curve_address: r.bonding_curve_address,
+            initial_supply_token: r.initial_supply_token,
+            initial_buy_lamports: r.initial_buy_lamports,
+            initial_buy_instruction: r.initial_buy_instruction,
+            cu_limit: r.cu_limit,
+            cu_price: r.cu_price,
+            is_mayhem_mode: r.is_mayhem_mode,
+            is_cashback_enabled: r.is_cashback_enabled,
+            ix_labels: r.ix_labels,
+            creation_tx_signature: r.creation_tx_signature,
+            creation_slot: r.creation_slot,
+            created_at: r.created_at,
+        };
+        let mut token: Token = base.into();
+        token.first_slot_buy_sol = r.first_slot_buy_sol;
+        token.first_slot_sell_sol = r.first_slot_sell_sol;
+        token
+    }
+}
+
 /// A joined `tokens` + `tokens_info` row, shaped to build a `TokenSummary`
 /// directly (so the list endpoint can serve mints no longer resident in the live
 /// cache). All `tokens_info` columns are `Option` because the join is a LEFT JOIN
@@ -146,6 +199,8 @@ impl From<TokenDbRow> for Token {
             instruction_labels: r.ix_labels.0,
             creation_tx_signature: r.creation_tx_signature,
             creation_slot: r.creation_slot.map(|v| v as u64),
+            first_slot_buy_sol: None,
+            first_slot_sell_sol: None,
             created_at: r.created_at,
         }
     }
@@ -166,6 +221,15 @@ const TOKEN_COLS: &str = "mint_address, creator_wallet, name, symbol, token_prog
     bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, \
     cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, \
     creation_slot, created_at";
+
+/// Same as [`TOKEN_COLS`] but prefixed for a `tokens t` join and extended with
+/// first-slot fingerprint columns from `tokens_info`.
+const TOKEN_SCAN_SELECT: &str = "t.mint_address, t.creator_wallet, t.name, t.symbol, \
+    t.token_program_id, t.bonding_curve_address, t.initial_supply_token, t.initial_buy_lamports, \
+    t.initial_buy_instruction, t.cu_limit, t.cu_price, t.is_mayhem_mode, t.is_cashback_enabled, \
+    t.ix_labels, t.creation_tx_signature, t.creation_slot, t.created_at, \
+    ti.first_slot_buy_lamports::float8 / 1e9 AS first_slot_buy_sol, \
+    ti.first_slot_sell_lamports::float8 / 1e9 AS first_slot_sell_sol";
 
 impl TokenRepo {
     pub fn new(pool: PgPool) -> Self {
@@ -352,12 +416,13 @@ impl TokenRepo {
             Some((at, mint)) => (Some(at), Some(mint)),
             None => (None, None),
         };
-        let rows = sqlx::query_as::<_, TokenDbRow>(&format!(
-            "SELECT {TOKEN_COLS} FROM tokens \
-             WHERE ($1::timestamptz IS NULL OR (created_at, mint_address) < ($1, $2)) \
-               AND ($3::timestamptz IS NULL OR created_at >= $3) \
-               AND ($4::timestamptz IS NULL OR created_at < $4) \
-             ORDER BY created_at DESC, mint_address DESC \
+        let rows = sqlx::query_as::<_, TokenScanDbRow>(&format!(
+            "SELECT {TOKEN_SCAN_SELECT} FROM tokens t \
+             LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address \
+             WHERE ($1::timestamptz IS NULL OR (t.created_at, t.mint_address) < ($1, $2)) \
+               AND ($3::timestamptz IS NULL OR t.created_at >= $3) \
+               AND ($4::timestamptz IS NULL OR t.created_at < $4) \
+             ORDER BY t.created_at DESC, t.mint_address DESC \
              LIMIT $5"
         ))
         .bind(cursor_at)

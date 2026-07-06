@@ -36,9 +36,9 @@ strategy-specific gates live in `params`. `StrategyPosition` gained PnL/status h
 `StrategyService` (which dispatches each per-rule decision through `StrategyImpl` keyed by
 `rule.strategy_id` — no more per-strategy services):
 
-- `on_token_created(mint)` → entry gating (`matches_entry`) + run ensured + inline cap/holding-index claim → tpsl1 immediate buy / tpsl2 scalp-arm then buy / swing1 phase-entry-arm then buy
-- `on_trade_executed(mint)` → exit evaluation via the core exit-state memo → paper close / real sell
-- 1s clock tick → `sweep_time_exits()` (deadline exits that come due in silence)
+- `on_token_created(mint)` → entry gating (`matches_entry` / deferred `pending_first_slot`) + run ensured + inline cap/holding-index claim → tpsl1 immediate buy / tpsl2 scalp-arm then buy / swing1 phase-entry-arm then buy
+- `on_trade_executed(mint)` → **deferred first-slot gate resolve** (when window closes) + exit evaluation via the core exit-state memo → paper close / real sell
+- 1s clock tick → `sweep_time_exits()` (deadline exits that come due in silence) + `sweep_first_slot_pending()` (5s backstop for deferred entry gates)
 
 The `select!` **serializes** all position transitions (no Holding→ExitPending interleave). In-memory transitions happen inline; slow DB/chain work is spawned.
 
@@ -83,7 +83,7 @@ paper entry resolvers and backtests call, so live honors the identical entry mom
 | File | Responsibility |
 | --- | --- |
 | `mod.rs` | `TPSL1StrategyHandler`, `Tpsl1RuntimeCache`, `Tpsl1StrategyService`, `run_backtest`, `activate_rule`, `pause_rule`, `stop_and_close_rule` |
-| `entry/mod.rs` | `token_matches_buy_rule`, `find_first_matching_buy_rule`, `find_entry_fill_in_trades` — all configured criteria must pass. `token_is_fresh` (30s `MAX_SNIPE_AGE_SECS` gate) is **live-only**, applied by `find_all_matching_buy_rules`/`matches_entry`, NOT by the shared matcher — so the historical matched/simulate scan isn't emptied by token age |
+| `entry/mod.rs` | `token_matches_buy_rule`, `token_matches_instant_criteria` (skips deferred first-slot checks), `find_first_matching_buy_rule`, `find_entry_fill_in_trades` — all configured criteria must pass. `p_token_first_slot_buy_sol` / `p_token_first_slot_sell_sol` are **deferred** live (see below). `token_is_fresh` (30s `MAX_SNIPE_AGE_SECS` gate) is **live-only**, applied by `find_all_matching_buy_rules`/`matches_entry`, NOT by the shared matcher — so the historical matched/simulate scan isn't emptied by token age |
 | `exit/mod.rs` | `ExitWalkState`, `CachedExitState`, `LadderParams`, `find_trade_driven_exit`, `find_clock_driven_exit` — incremental ladder eval |
 | `handler.rs` | Thin rule holder over `Arc<Vec<Rule>>`, rebuilt per token |
 | `execution/mod.rs` | Dispatch real vs paper by `rule.trade_mode`; retry consts |
@@ -97,6 +97,15 @@ paper entry resolvers and backtests call, so live honors the identical entry mom
 | `util.rs` | `none_if_zero_f64/u64` |
 
 `tpsl_sniper_2/` adds `entry/scalp.rs` (per-trade scalp-continuation entry gates — age/liveness/net-buy-demand/liquidity/pullback).
+
+## Two-phase token fingerprint entry gate (first-slot SOL)
+
+`p_token_first_slot_buy_sol` / `p_token_first_slot_sell_sol` live on all three strategies' fingerprint param group. Unlike `p_token_initial_buy_sol` (known at `TokenCreated`), first-slot totals stream in over same-slot trades and close when a later-slot trade arrives (`TokenState::first_slot_window_open` latch in `token_cache.rs`).
+
+- **Instant criteria** (creation-time fingerprint axes) — still evaluated synchronously in `on_token_created` via `StrategyImpl::matches_instant_entry`.
+- **Deferred criteria** (first-slot buy/sell) — when `StrategyParams::requires_first_slot_data()`, instant pass queues `(mint, rule_id)` in `StrategyRuntimeCache::pending_first_slot` (bounded like `until_dead_armers`, cap 32) instead of buying immediately.
+- **Resolve triggers:** (1) primary — `on_trade_executed` when `first_slot_window_open` flips false for a mint with pending entries; (2) backstop — `sweep_first_slot_pending` on the existing 1s runner tick (`FIRST_SLOT_GATE_TIMEOUT_SECS = 5`). One-shot: resolved or expired entries never retry.
+- **Backtest/matched/simulate** — no deferral; `TokenRepo::find_page_before` LEFT JOINs `tokens_info` so `Token.first_slot_buy_sol`/`first_slot_sell_sol` are populated before `token_matches_buy_rule` runs.
 
 ## Buy guards (service.rs)
 

@@ -23,6 +23,12 @@ pub struct Tpsl1Rule {
     pub p_token_max_sol_cost: Option<f64>,
     /// Filter: match the token's creation-instruction spendable_sol_in (optional).
     pub p_token_spendable_sol_in: Option<f64>,
+    /// Filter: match the token's same-creation-slot buy SOL total (optional).
+    #[serde(default)]
+    pub p_token_first_slot_buy_sol: Option<f64>,
+    /// Filter: match the token's same-creation-slot sell SOL total (optional).
+    #[serde(default)]
+    pub p_token_first_slot_sell_sol: Option<f64>,
     /// Concurrency cap: max tokens held open at the same time.
     pub p_max_concurrent_tokens: Option<u64>,
     /// Total cap: max tokens this rule may trade over the whole run.
@@ -99,6 +105,8 @@ impl Tpsl1Rule {
             p_exit_liquidity_drop_pct,
             p_token_max_sol_cost,
             p_token_spendable_sol_in,
+            p_token_first_slot_buy_sol: None,
+            p_token_first_slot_sell_sol: None,
             p_max_concurrent_tokens,
             p_max_total_tokens,
             tolerance_pct: tolerance_pct.unwrap_or(0.0),

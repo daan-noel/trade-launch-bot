@@ -19,6 +19,8 @@ const FIELDS: ParamField[] = [
 
   // ── Token fingerprint (optional pre-filter · p_token_*) ──
   { column: 'p_token_initial_buy_sol', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Initial Buy SOL', unit: '◎', step: '0.001', nullable: true },
+  { column: 'p_token_first_slot_buy_sol', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'First-slot Buy SOL', unit: '◎', step: '0.001', nullable: true },
+  { column: 'p_token_first_slot_sell_sol', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'First-slot Sell SOL', unit: '◎', step: '0.001', nullable: true },
   { column: 'tolerance_pct', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, createBlankZero: true, label: 'Tolerance %', unit: '%', step: '0.1', min: 0, max: 100, nullable: true },
   { column: 'p_token_cu_limit', group: 'fingerprint', section: 'fingerprint', kind: 'int', required: false, label: 'CU Limit', nullable: true },
   { column: 'p_token_cu_price', group: 'fingerprint', section: 'fingerprint', kind: 'int', required: false, label: 'CU Price', nullable: true },

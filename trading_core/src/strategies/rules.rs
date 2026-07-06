@@ -253,6 +253,8 @@ mod tests {
             p_token_cu_price: None,
             p_token_max_sol_cost: None,
             p_token_spendable_sol_in: None,
+            p_token_first_slot_buy_sol: None,
+            p_token_first_slot_sell_sol: None,
             p_token_ix_labels: json!([]),
             tolerance_pct: 5.0,
             p_exit_take_profit: tp,

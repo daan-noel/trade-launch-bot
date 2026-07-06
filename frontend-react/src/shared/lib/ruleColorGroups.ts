@@ -28,6 +28,8 @@ function fingerprintKey(r: RuleRecord): string {
     : '';
   return [
     r.p_token_initial_buy_sol ?? '',
+    r.p_token_first_slot_buy_sol ?? '',
+    r.p_token_first_slot_sell_sol ?? '',
     r.p_token_cu_limit ?? '',
     r.p_token_cu_price ?? '',
     r.p_token_max_sol_cost ?? '',
