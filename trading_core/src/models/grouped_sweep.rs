@@ -165,7 +165,7 @@ pub struct ComboTokenResult {
     pub created_at: Option<String>,
     /// All-time-high price from `tokens_info`; row-owned (excluded from `token`).
     pub ath_price: Option<f64>,
-    /// Full shared token enrichment (`creator_address`, `market_cap`, `trade_count`,
+    /// Full shared token enrichment (`creator_wallet`, `market_cap`, `trade_count`,
     /// `is_migrated`, `cu_price`, …) — the same SSOT the Matched / Positions /
     /// Simulated tables use, attached server-side after the re-sim. Default until the
     /// batch join runs.

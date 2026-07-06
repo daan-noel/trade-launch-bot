@@ -283,7 +283,7 @@ mod tests {
             is_dead: false,
             age_seconds: 0,
             created_at,
-            creator_address: String::new(),
+            creator_wallet: String::new(),
             creation_tx_signature: String::new(),
             name: String::new(),
             trade_count: 0,

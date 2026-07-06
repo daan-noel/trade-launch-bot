@@ -459,7 +459,7 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
   if (!textMatch(t.symbol, f.symbol)) return false;
   if (!textMatch(t.name, f.name)) return false;
   if (!textMatch(t.mint_address, f.mint_address)) return false;
-  if (!textMatch(t.creator_address, f.creator)) return false;
+  if (!textMatch(t.creator_wallet, f.creator)) return false;
   if (!textMatch(t.creation_tx_signature, f.create_tx)) return false;
 
   // Time

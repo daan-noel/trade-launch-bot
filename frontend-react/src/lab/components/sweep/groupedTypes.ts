@@ -231,10 +231,10 @@ export interface ComboTokenResult {
   // Token metadata — `created_at`/`ath_price` are row-owned; the rest arrive
   // flattened from the shared `TokenEnrichment` SSOT (same as the Matched /
   // Positions / Simulated tables), so the names match `TOKEN_ENRICH_FIELDS`
-  // (`creator_address`, `volume_sol_total`, …).
+  // (`creator_wallet`, `volume_sol_total`, …).
   created_at: string | null;
   ath_price: number | null;
-  creator_address: string;
+  creator_wallet: string;
   ath_timestamp: string | null;
   current_price: number | null;
   market_cap: number | null;

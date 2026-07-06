@@ -243,7 +243,7 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
             <div className="grid grid-cols-4 gap-1">
               <AddrCard
                 label="Creator"
-                full={detail.creator_address}
+                full={detail.creator_wallet}
                 kind="account"
               />
               <AddrCard

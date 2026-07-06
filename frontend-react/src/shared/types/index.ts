@@ -16,7 +16,7 @@ export interface PriceUnitState {
 export interface TokenEnrichmentFields {
   symbol?: string;
   name?: string;
-  creator_address?: string;
+  creator_wallet?: string;
   initial_buy_sol?: number | null;
   initial_supply_token?: number | null;
   token_amount?: number | null;
@@ -48,7 +48,7 @@ export interface TokenRecord {
   mint_address: string;
   name: string;
   symbol: string;
-  creator_address: string;
+  creator_wallet: string;
   trade_count: number;
   current_price: number | null;
   volume_sol_total: number;
@@ -543,7 +543,7 @@ export interface TokenDetailRecord {
   mint_address: string;
   name: string;
   symbol: string;
-  creator_address: string;
+  creator_wallet: string;
   bonding_curve_address: string | null;
   initial_supply_token: number | null;
   initial_buy_sol: number | null;

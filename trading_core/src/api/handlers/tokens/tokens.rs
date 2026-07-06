@@ -67,7 +67,7 @@ pub struct TokenSummary {
     #[serde(skip)]
     pub age_seconds: i64,
     pub created_at: DateTime<Utc>,
-    pub creator_address: String,
+    pub creator_wallet: String,
     pub creation_tx_signature: String,
     pub name: String,
     pub trade_count: u64,
@@ -118,7 +118,7 @@ impl From<&TokenState> for TokenSummary {
             is_dead,
             age_seconds,
             created_at: s.token.created_at,
-            creator_address: s.token.creator_wallet.clone(),
+            creator_wallet: s.token.creator_wallet.clone(),
             creation_tx_signature: s.token.creation_tx_signature.clone(),
             name: s.token.name.clone(),
             trade_count: s.trade_count,
@@ -172,7 +172,7 @@ impl From<crate::storage::repositories::token_repo::TokenListRow> for TokenSumma
             is_dead: r.is_dead.unwrap_or(false),
             age_seconds,
             created_at: r.created_at,
-            creator_address: r.creator_wallet,
+            creator_wallet: r.creator_wallet,
             creation_tx_signature: r.creation_tx_signature,
             name: r.name,
             trade_count: r.trade_count.unwrap_or(0) as u64,
@@ -189,7 +189,7 @@ pub struct TokenDetail {
     pub mint_address: String,
     pub name: String,
     pub symbol: String,
-    pub creator_address: String,
+    pub creator_wallet: String,
     pub bonding_curve_address: Option<String>,
     pub initial_supply_token: Option<u64>,
     pub initial_buy_sol: Option<f64>,
@@ -226,7 +226,7 @@ impl From<&TokenState> for TokenDetail {
             mint_address: s.token.mint_address.clone(),
             name: s.token.name.clone(),
             symbol: s.token.symbol.clone(),
-            creator_address: s.token.creator_wallet.clone(),
+            creator_wallet: s.token.creator_wallet.clone(),
             bonding_curve_address: s.token.bonding_curve_address.clone(),
             initial_supply_token: s.token.initial_supply_token,
             initial_buy_sol: s.token.initial_buy_sol,
@@ -384,7 +384,7 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
                 "mint_address": token.mint_address,
                 "name": token.name,
                 "symbol": token.symbol,
-                "creator_address": token.creator_wallet,
+                "creator_wallet": token.creator_wallet,
                 "bonding_curve_address": token.bonding_curve_address,
                 "initial_supply_token": token.initial_supply_token,
                 "initial_buy_sol": token.initial_buy_sol,
@@ -567,8 +567,8 @@ fn build_registry() -> Vec<ColumnSpec> {
             .sortable("t.name", true, |t| SortKey::Str(Some(t.name.clone()))),
         C::new("mint_address", Some("t.mint_address".into()), |t| t.mint_address.clone())
             .sortable("t.mint_address", true, |t| SortKey::Str(Some(t.mint_address.clone()))),
-        C::new("creator", Some("t.creator_wallet".into()), |t| t.creator_address.clone())
-            .sortable("t.creator_wallet", true, |t| SortKey::Str(Some(t.creator_address.clone()))),
+        C::new("creator", Some("t.creator_wallet".into()), |t| t.creator_wallet.clone())
+            .sortable("t.creator_wallet", true, |t| SortKey::Str(Some(t.creator_wallet.clone()))),
         C::new("create_tx", Some("t.creation_tx_signature".into()), |t| t.creation_tx_signature.clone()),
         C::new("token_age", Some("EXTRACT(EPOCH FROM (now() - t.created_at))::bigint::text".into()),
                 |t| t.age_seconds.to_string())
@@ -1100,7 +1100,7 @@ impl TokenQuery {
         if !text_match(&t.mint_address, g(f, "mint_address")) {
             return false;
         }
-        if !text_match(&t.creator_address, g(f, "creator")) {
+        if !text_match(&t.creator_wallet, g(f, "creator")) {
             return false;
         }
         if !text_match(&t.creation_tx_signature, g(f, "create_tx")) {

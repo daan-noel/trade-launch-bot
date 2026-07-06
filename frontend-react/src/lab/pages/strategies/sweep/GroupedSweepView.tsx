@@ -312,20 +312,20 @@ export function GroupedSweepView({
         sortable: false,
       },
       {
-        key: 'creator_address',
+        key: 'creator_wallet',
         label: 'Creator',
         group: 'identity',
         render: (r) =>
-          r.creator_address ? (
-            <span className="font-mono text-xs text-text-dim" title={r.creator_address}>
-              {r.creator_address.slice(0, 6)}…{r.creator_address.slice(-4)}
+          r.creator_wallet ? (
+            <span className="font-mono text-xs text-text-dim" title={r.creator_wallet}>
+              {r.creator_wallet.slice(0, 6)}…{r.creator_wallet.slice(-4)}
             </span>
           ) : (
             <span className="text-text-dim">—</span>
           ),
-        searchValue: (r) => r.creator_address ?? '',
-        filterValue: (r) => r.creator_address ?? '',
-        sortValue: (r) => r.creator_address ?? '',
+        searchValue: (r) => r.creator_wallet ?? '',
+        filterValue: (r) => r.creator_wallet ?? '',
+        sortValue: (r) => r.creator_wallet ?? '',
         sortable: true,
       },
       // --- Activity ---

@@ -82,13 +82,13 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       key: 'creator',
       label: 'Creator',
       group: 'identity',
-      render: (r: { creator_address?: string }) =>
-        r.creator_address ? (
-          <AddressDisplay address={r.creator_address} kind="account" stopPropagation />
+      render: (r: { creator_wallet?: string }) =>
+        r.creator_wallet ? (
+          <AddressDisplay address={r.creator_wallet} kind="account" stopPropagation />
         ) : (
           '—'
         ),
-      searchValue: (r: { creator_address?: string }) => r.creator_address ?? '',
+      searchValue: (r: { creator_wallet?: string }) => r.creator_wallet ?? '',
     },
     {
       key: 'create_tx',

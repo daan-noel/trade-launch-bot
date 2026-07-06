@@ -107,7 +107,7 @@ fn buy_arg_u64(value: &Option<Value>, field: &str) -> Option<u64> {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TokenEnrichment {
     pub name: String,
-    pub creator_address: String,
+    pub creator_wallet: String,
     pub creation_tx_signature: String,
     pub initial_buy_sol: Option<f64>,
     pub initial_supply_token: Option<u64>,
@@ -143,7 +143,7 @@ impl From<&TokenEnrichmentRow> for TokenEnrichment {
         let buy_ix = r.initial_buy_instruction.as_ref().map(|j| j.0.clone());
         Self {
             name: r.name.clone(),
-            creator_address: r.creator_wallet.clone(),
+            creator_wallet: r.creator_wallet.clone(),
             creation_tx_signature: r.creation_tx_signature.clone(),
             initial_buy_sol: r.initial_buy_sol,
             initial_supply_token: r.initial_supply_token.map(|v| v as u64),

@@ -64,7 +64,7 @@ pub fn resolve_token_enrichment_key(key: &str) -> Option<(&'static str, ColKind)
     use ColKind::{Number, Text};
     Some(match key {
         "name" => ("name", Text),
-        "creator" | "creator_address" => ("creator_address", Text),
+        "creator" | "creator_wallet" => ("creator_wallet", Text),
         "create_tx" | "creation_tx_signature" => ("creation_tx_signature", Text),
         "trade_count" => ("trade_count", Number),
         "last_trade" | "last_trade_at" => ("last_trade_at", Text),
