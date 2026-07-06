@@ -58,6 +58,25 @@
     height: 100%;
   }
 
+  /* Both apps are dark-only. Declaring the scheme at the root tells the
+   * browser to paint native controls (the <select> option popup, date/time
+   * pickers, form widgets) in dark mode instead of the OS light default —
+   * fixing the white-background / grey-text <select> dropdown. SSOT: makes
+   * the per-field `scheme-dark` hack (Input.tsx datetime-local) redundant. */
+  :root {
+    color-scheme: dark;
+  }
+
+  /* Explicitly darken the native <select> dropdown popup. `color-scheme`
+   * above already hints the browser, but styling the option list directly
+   * guarantees a dark background + readable text everywhere the browser
+   * honors it (Chromium/Firefox), using the same palette tokens as panels. */
+  option,
+  optgroup {
+    background-color: var(--color-bg-panel);
+    color: var(--color-text);
+  }
+
   body {
     margin: 0;
     background: var(--color-bg);
