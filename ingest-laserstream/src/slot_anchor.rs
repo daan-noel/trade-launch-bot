@@ -36,11 +36,4 @@ impl SlotAnchor {
         let delta_slots = tx_slot as i64 - self.slot as i64;
         self.time + Duration::milliseconds(delta_slots * SLOT_MS)
     }
-
-    /// True when `tx_slot` is significantly behind the anchor — i.e. this frame
-    /// is a replay, not live. "Significant" is defined as more than one Solana
-    /// epoch (~2 s) to avoid mis-classifying a legitimately slow tip update.
-    pub fn is_replay(&self, tx_slot: u64) -> bool {
-        self.slot.saturating_sub(tx_slot) > 5
-    }
 }

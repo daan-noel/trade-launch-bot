@@ -9,16 +9,7 @@ use super::protocol::LAMPORTS_PER_SOL;
 
 pub const INITIAL_VIRTUAL_TOKEN_RESERVES: f64 = 1073000000000000.0;
 pub const INITIAL_VIRTUAL_SOL_RESERVES: f64 = 30000000000.0;
-pub const INITIAL_REAL_TOKEN_RESERVES: f64 = 793100000000000.0;
 pub const TOKEN_TOTAL_SUPPLY: f64 = 1000000000000000.0;
-
-/// Bonding-curve genesis spot price in whole SOL per raw token unit
-/// (`virtual_sol / virtual_token` at curve genesis). Constant for every
-/// Pump.fun mint. Used as the dead-token launch baseline when a token has no
-/// recorded dev buy, so a no-dev-buy mint is still evaluated against a real
-/// floor instead of being silently immune to deadness.
-pub const PUMPFUN_GENESIS_PRICE_PER_RAW_TOKEN: f64 =
-    INITIAL_VIRTUAL_SOL_RESERVES / LAMPORTS_PER_SOL as f64 / INITIAL_VIRTUAL_TOKEN_RESERVES;
 
 /// Initial virtual SOL the pump.fun curve is seeded with, in **whole SOL**
 /// (`INITIAL_VIRTUAL_SOL_RESERVES` lamports ÷ `LAMPORTS_PER_SOL` = 30.0). The

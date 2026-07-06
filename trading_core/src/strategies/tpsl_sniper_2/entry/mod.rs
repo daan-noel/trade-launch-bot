@@ -94,6 +94,7 @@ pub fn token_is_fresh(token: &Token) -> bool {
 /// rule that configures no criterion is skipped with a warning rather than
 /// matching every token. This is a **live** entry path, so the [`token_is_fresh`]
 /// safety gate applies.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn find_all_matching_buy_rules(token: &Token, rules: &[Tpsl2Rule]) -> Vec<Uuid> {
     let mut matched = Vec::new();
     if !token_is_fresh(token) {

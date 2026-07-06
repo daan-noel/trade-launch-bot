@@ -552,6 +552,7 @@ pub fn should_position_exit_on_trade(
 /// the deadlines against `now`. `state` is the position's memoized walk state
 /// ([`CachedExitState`]), kept current by the trade path — the sweep no longer
 /// rebuilds it from history per tick.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn should_position_exit_on_clock(
     position: &Position,
     state: &ExitWalkState,

@@ -5,7 +5,6 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct Settings {
     // --- Helius ---
-    #[allow(dead_code)]
     pub helius_api_key: String,
     pub helius_rpc_url: String,
     /// One or more Helius Sender endpoints. The signed tx is fanned out to all of

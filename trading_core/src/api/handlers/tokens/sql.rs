@@ -45,7 +45,7 @@ pub enum SqlArg {
 /// Accumulates positional binds while the WHERE/ORDER fragment is built, so `$n`
 /// placeholders and the bind vec stay in lockstep.
 #[derive(Default)]
-pub struct SqlArgs {
+pub(crate) struct SqlArgs {
     args: Vec<SqlArg>,
 }
 
@@ -58,14 +58,6 @@ impl SqlArgs {
 
     pub fn into_vec(self) -> Vec<SqlArg> {
         self.args
-    }
-
-    pub fn len(&self) -> usize {
-        self.args.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.args.is_empty()
     }
 }
 

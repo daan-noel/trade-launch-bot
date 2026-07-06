@@ -18,8 +18,6 @@ pub enum TradeError {
     // --- semantic — callers branch on these ---
     #[error("invalid buy amount: {0}")]
     InvalidBuyAmount(String),
-    #[error("slippage exceeded")]
-    SlippageExceeded,
     /// A tx that LANDED on-chain and reverted (as opposed to one that never
     /// landed). `custom` is the program's Anchor error code when present. The
     /// retry path branches on this: a landed-revert on a min_out=1 sell is
@@ -30,8 +28,6 @@ pub enum TradeError {
     ConfirmTimeout,
     #[error("not initialized")]
     NotInitialized,
-    #[error("account/pool not found: {0}")]
-    NotFound(String),
 
     // --- source wrappers — replace anyhow's context chains ---
     // `ClientError` / `nonce_utils::Error` are large (hundreds of bytes); box them

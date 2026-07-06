@@ -78,21 +78,6 @@ impl WalletDictRepo {
         Ok(out)
     }
 
-    /// Reverse lookup for a set of ids → `id -> address` map (`id = ANY($1)`).
-    /// Empty input is a no-op; ids with no row are simply absent.
-    pub async fn addresses_for(&self, ids: &[i32]) -> anyhow::Result<HashMap<i32, String>> {
-        if ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let rows: Vec<(i32, String)> =
-            sqlx::query_as("SELECT id, address FROM wallet_dict WHERE id = ANY($1)")
-                .bind(ids)
-                .fetch_all(&self.pool)
-                .await?;
-
-        Ok(rows.into_iter().collect())
-    }
-
     /// Look up the `id` for a single address without interning it.
     pub async fn id_for(&self, address: &str) -> anyhow::Result<Option<i32>> {
         let id: Option<i32> = sqlx::query_scalar("SELECT id FROM wallet_dict WHERE address = $1")

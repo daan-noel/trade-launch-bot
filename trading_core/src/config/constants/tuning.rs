@@ -16,20 +16,6 @@ pub const SLIPPAGE_MAX_BPS: u64 = 5_000;
 /// so an explicit sub-floor value is raised to this minimum. 10 bps = 0.1%.
 pub const SLIPPAGE_MIN_BPS: u64 = 10;
 
-/// Resolve the effective slippage (bps) for a trade from the two configured
-/// sources, clamped to the hard `[SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS]` range:
-/// per-request override → persisted global default (`AppSettings.slippage_bps`)
-/// → built-in `DEFAULT_SLIPPAGE_BPS`. Shared by the manual buy/sell handlers
-/// (which pass a per-request `request`) and the strategy snipe/exit paths (which
-/// pass `None`, taking the persisted default). The clamp guarantees a non-zero
-/// floor so a `0` setting can't force a guaranteed revert.
-pub fn resolve_slippage_bps(setting: Option<u64>, request: Option<u64>) -> u64 {
-    request
-        .or(setting)
-        .unwrap_or(DEFAULT_SLIPPAGE_BPS)
-        .clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)
-}
-
 /// Resolve buy slippage: per-request → `buy_slippage_bps` → legacy
 /// `slippage_bps` → built-in 5% default. Returns `None` when the resolved
 /// value is `0` (explicit "no floor, accept any fill"); otherwise clamped
@@ -101,8 +87,6 @@ pub const MIN_TRADE_SOL: f64 = MIN_TRADE_LAMPORTS as f64 / LAMPORTS_PER_SOL as f
 /// only if it has traded within this window. Quiet pools are re-added when
 /// fresh activity appears. Tune up to keep slower pools live.
 pub const POOL_SUBSCRIBE_ACTIVITY_WINDOW_SECONDS: i64 = 3 * 3600; // 3 hours
-/// How often the pool-subscription refresh re-evaluates token liveness.
-pub const POOL_REFRESH_INTERVAL_SECONDS: u64 = 120; // 2 minutes
 
 /// Upper bound on how many tokens the live startup cache seed pulls from the
 /// `tokens` table into the in-RAM strategy `TokenCache`. Startup time + resident

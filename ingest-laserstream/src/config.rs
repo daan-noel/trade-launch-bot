@@ -50,13 +50,6 @@ pub struct IngestConfig {
     // ── pool tracking (AMM, post-migration) ──────────────────────────────────
     /// When false: never subscribe to AMM pools, skip AMM decode entirely.
     pub track_amm: bool,
-    /// Hint: how often the host should re-seed known-active pools via
-    /// `IngestHandle::track_pools`. Used only for documentation / tuning
-    /// references; the crate itself does not poll on this interval.
-    pub pool_refresh_interval: Duration,
-    /// A migrated token's PumpSwap pool is kept in the subscription set only
-    /// when it has traded within this window.
-    pub pool_activity_window: Duration,
 }
 
 impl Default for IngestConfig {
@@ -76,8 +69,6 @@ impl Default for IngestConfig {
             update_channel_cap: 4096,
             event_channel_cap: 4096,
             track_amm: true,
-            pool_refresh_interval: Duration::from_secs(120),
-            pool_activity_window: Duration::from_secs(3 * 3600),
         }
     }
 }

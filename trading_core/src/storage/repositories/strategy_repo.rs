@@ -97,65 +97,6 @@ impl From<StrategyRunDbRow> for StrategyRun {
 }
 
 #[derive(sqlx::FromRow)]
-struct StrategyRunMetricsDbRow {
-    run_id: Uuid,
-    rolled_up_at: DateTime<Utc>,
-    n_fired: i32,
-    n_open: i32,
-    n_closed: i32,
-    win_rate: f32,
-    total_pnl_sol: f32,
-    expectancy_sol: f32,
-    mean_pnl_pct: f32,
-    median_pnl_pct: f32,
-    p90_pnl_pct: f32,
-    best_pnl_pct: f32,
-    worst_pnl_pct: f32,
-    std_pnl_pct: f32,
-    profit_factor: Option<f32>,
-    avg_holding_secs: f32,
-    median_holding_secs: f32,
-    n_exit_take_profit: i32,
-    n_exit_stop_loss: i32,
-    n_exit_trailing: i32,
-    n_exit_stall: i32,
-    n_exit_time: i32,
-    n_exit_liquidity: i32,
-    n_exit_open: i32,
-}
-
-impl From<StrategyRunMetricsDbRow> for StrategyRunMetrics {
-    fn from(r: StrategyRunMetricsDbRow) -> Self {
-        Self {
-            run_id: r.run_id,
-            rolled_up_at: r.rolled_up_at,
-            n_fired: r.n_fired,
-            n_open: r.n_open,
-            n_closed: r.n_closed,
-            win_rate: r.win_rate,
-            total_pnl_sol: r.total_pnl_sol,
-            expectancy_sol: r.expectancy_sol,
-            mean_pnl_pct: r.mean_pnl_pct,
-            median_pnl_pct: r.median_pnl_pct,
-            p90_pnl_pct: r.p90_pnl_pct,
-            best_pnl_pct: r.best_pnl_pct,
-            worst_pnl_pct: r.worst_pnl_pct,
-            std_pnl_pct: r.std_pnl_pct,
-            profit_factor: r.profit_factor,
-            avg_holding_secs: r.avg_holding_secs,
-            median_holding_secs: r.median_holding_secs,
-            n_exit_take_profit: r.n_exit_take_profit,
-            n_exit_stop_loss: r.n_exit_stop_loss,
-            n_exit_trailing: r.n_exit_trailing,
-            n_exit_stall: r.n_exit_stall,
-            n_exit_time: r.n_exit_time,
-            n_exit_liquidity: r.n_exit_liquidity,
-            n_exit_open: r.n_exit_open,
-        }
-    }
-}
-
-#[derive(sqlx::FromRow)]
 struct StrategyPositionDbRow {
     id: Uuid,
     run_id: Uuid,
@@ -296,12 +237,6 @@ const RULE_COLS: &str = "id, strategy_id, rule_name, buy_amount_sol, trade_mode,
 
 const RUN_COLS: &str = "id, strategy_id, rule_id, mode, run_seq, status, params_snapshot, \
     max_total_tokens, started_at, finished_at";
-
-const METRICS_COLS: &str = "run_id, rolled_up_at, n_fired, n_open, n_closed, win_rate, \
-    total_pnl_sol, expectancy_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
-    worst_pnl_pct, std_pnl_pct, profit_factor, avg_holding_secs, median_holding_secs, \
-    n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, n_exit_stall, n_exit_time, \
-    n_exit_liquidity, n_exit_open";
 
 const POSITION_COLS: &str = "id, run_id, strategy_id, rule_id, mode, mint_address, wallet, \
     token_program_id, token_account, target_price, target_token_amount, target_time, target_tx, \
@@ -928,16 +863,6 @@ impl StrategyRepo {
         Ok(())
     }
 
-    pub async fn find_metrics(&self, run_id: Uuid) -> anyhow::Result<Option<StrategyRunMetrics>> {
-        let row = sqlx::query_as::<_, StrategyRunMetricsDbRow>(&format!(
-            "SELECT {METRICS_COLS} FROM strategy_run_metrics WHERE run_id = $1"
-        ))
-        .bind(run_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(StrategyRunMetrics::from))
-    }
-
     // -- Positions ------------------------------------------------------------
 
     pub async fn insert_position(&self, p: &StrategyPosition) -> anyhow::Result<()> {
@@ -1069,22 +994,6 @@ impl StrategyRepo {
              ORDER BY created_at DESC"
         ))
         .bind(run_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(StrategyPosition::from).collect())
-    }
-
-    pub async fn find_positions_by_rule(
-        &self,
-        rule_id: Uuid,
-        limit: i64,
-    ) -> anyhow::Result<Vec<StrategyPosition>> {
-        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
-            "SELECT {POSITION_COLS} FROM strategy_positions WHERE rule_id = $1 \
-             ORDER BY created_at DESC LIMIT $2"
-        ))
-        .bind(rule_id)
-        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())

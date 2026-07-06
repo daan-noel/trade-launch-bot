@@ -85,7 +85,7 @@ use tokio::sync::{Mutex, Notify};
 /// (free fn so the unit tests can drive it with an explicit ceiling); the method
 /// [`PumpFunTrader::buy_lamports_checked`] supplies `config.limits.max_buy_sol`.
 ///
-/// The public buy entry points (`buy_token`, `buy_token_snipe`, `amm_buy`) take
+/// The public buy entry points (`buy_token`, `buy_token_snipe_write_ahead`, `amm_buy`) take
 /// an `f64` straight from the caller, so every value that would corrupt the real
 /// spend is rejected — the crate's last-line guard, independent of any API check:
 /// non-finite (casts to garbage), non-positive (wastes tip+fee), above

@@ -128,12 +128,6 @@ impl LadderParams {
     pub fn stall_secs(&self) -> Option<u64> {
         self.stall_secs
     }
-
-    /// Whether the rule carries any wall-clock exit (TimeStop or Stall) — the
-    /// time-exit secondary-index membership gate.
-    pub fn has_time_exit(&self) -> bool {
-        self.time_stop_secs.is_some() || self.stall_secs.is_some()
-    }
 }
 
 /// Running peaks accumulated while walking post-entry trades.

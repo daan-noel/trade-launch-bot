@@ -57,44 +57,13 @@ impl PumpFunTrader {
             .await
     }
 
-    /// Latency-optimized buy for fresh-token snipes. Identical to [`buy_token`]
-    /// but skips the ATA-existence RPC round-trip. Safe only when the wallet
-    /// provably holds no account for `token_mint` yet — e.g. a token just seen
-    /// via the pump.fun create event — because the check would return "missing"
-    /// regardless. If that assumption is ever wrong, the only consequence is one
-    /// extra create-with-seed token account (a few thousand lamports of rent),
-    /// never a failed or misrouted trade.
-    ///
-    /// Returns the submitted transaction signature *without* blocking on RPC
-    /// confirmation — the caller confirms via the WS/DB trade feed and may use
-    /// `signature_state` to classify a send that the feed never surfaces.
-    ///
-    /// `reserves` is the curve's virtual `(token, quote=lamports)` reserves the
-    /// caller already has in hand from the triggering trade event — threaded
-    /// straight into the slippage `min_out` so this hot path never makes an inline
-    /// reserve RPC. `None` (no snapshot available) yields `min_out=1` (no
-    /// protection) rather than blocking the snipe on a network read.
-    pub async fn buy_token_snipe(
-        &self,
-        token_mint: &str,
-        creator: &str,
-        token_program_id: &str,
-        sol_amount: f64,
-        slippage_bps: Option<u64>,
-        reserves: Option<(u128, u128)>,
-        cashback_enabled: bool,
-    ) -> Result<String> {
-        // Parse the feed/DB strings once here (the snipe path's only source is
-        // strings); `buy_token_inner` then works purely in parsed forms.
-        let mint = Pubkey::from_str(token_mint)?;
-        let creator_pubkey = Pubkey::from_str(creator)?;
-        let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, None, cashback_enabled, None)
-            .await
-    }
-
-    /// As [`buy_token_snipe`], but invokes `on_signed` with the buy's signature
-    /// the instant the tx is signed and **before** it is submitted — the Phase 2
+    /// Latency-optimized write-ahead buy for fresh-token snipes. Identical to
+    /// [`buy_token`] but skips the ATA-existence RPC round-trip (safe only when the
+    /// wallet provably holds no account for `token_mint` yet — e.g. a token just
+    /// seen via the pump.fun create event; the only consequence if that assumption
+    /// is ever wrong is one extra create-with-seed token account, never a failed or
+    /// misrouted trade) and invokes `on_signed` with the buy's signature the instant
+    /// the tx is signed and **before** it is submitted — the Phase 2
     /// *write-ahead* entry point. Because the buy is signed against a durable
     /// nonce, the signature is fixed locally before the network round-trip, so a
     /// caller can persist a durable "buy in flight" marker keyed on that signature
@@ -164,7 +133,7 @@ impl PumpFunTrader {
     ) -> Result<String> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
-        // (`buy_token`, `buy_token_snipe`) funnel through here, so this single
+        // (`buy_token`, `buy_token_snipe_write_ahead`) funnel through here, so this single
         // check rejects a NaN/∞, non-positive, oversized, or rounds-to-zero
         // `sol_amount` for both. API callers are also validated up front; this
         // is the crate's own backstop.

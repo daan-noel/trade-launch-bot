@@ -4,8 +4,6 @@
 //! uses `ON CONFLICT (block_time, tx_signature) DO NOTHING`. See
 //! [`crate::models::raw_tx::RawTx`].
 
-use chrono::{DateTime, Utc};
-
 use sqlx::PgPool;
 
 use crate::models::raw_tx::RawTx;
@@ -15,39 +13,8 @@ pub struct RawTxRepo {
 }
 
 // ---------------------------------------------------------------------------
-// DB row — keeps sqlx derives out of domain models
-// ---------------------------------------------------------------------------
-
-#[derive(sqlx::FromRow)]
-struct RawTxDbRow {
-    tx_signature: Vec<u8>,
-    slot: i64,
-    block_time: DateTime<Utc>,
-    tx_index: i32,
-    payload: Vec<u8>,
-    source: i16,
-}
-
-impl From<RawTxDbRow> for RawTx {
-    fn from(r: RawTxDbRow) -> Self {
-        Self {
-            tx_signature: r.tx_signature,
-            slot: r.slot,
-            block_time: r.block_time,
-            tx_index: r.tx_index,
-            payload: r.payload,
-            source: r.source,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Repo
 // ---------------------------------------------------------------------------
-
-/// Columns selected for `RawTxDbRow`, in struct order. Explicit (not `SELECT *`)
-/// so the read's wire contract is decoupled from the physical table layout.
-const RAW_TX_COLS: &str = "tx_signature, slot, block_time, tx_index, payload, source";
 
 /// Max rows per multi-row insert batch. With 6 bind params per row this stays
 /// well under sqlx 0.6's 65535 bind-param ceiling (sqlx silently wraps the
@@ -107,22 +74,5 @@ impl RawTxRepo {
             qb.build().execute(&self.pool).await?;
         }
         Ok(())
-    }
-
-    /// Primary-key lookup by `(block_time, tx_signature)`.
-    pub async fn find_by_signature(
-        &self,
-        block_time: DateTime<Utc>,
-        tx_signature: &[u8],
-    ) -> anyhow::Result<Option<RawTx>> {
-        let row = sqlx::query_as::<_, RawTxDbRow>(&format!(
-            "SELECT {RAW_TX_COLS} FROM raw_txs WHERE block_time = $1 AND tx_signature = $2"
-        ))
-        .bind(block_time)
-        .bind(tx_signature)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.map(RawTx::from))
     }
 }

@@ -187,20 +187,6 @@ impl SettingsRepo {
         Ok(AppSettings::from_map(&map))
     }
 
-    /// Read one typed setting, falling back to its default if unset/undecodable.
-    /// Part of the typed key-value API; callers today load the whole view via
-    /// [`Self::load_all`], so this is unused until a single-key read is needed.
-    #[allow(dead_code)]
-    pub async fn get_one<T: DeserializeOwned>(&self, setting: &Setting<T>) -> anyhow::Result<T> {
-        let row = sqlx::query_as::<_, (Value,)>("SELECT value FROM app_settings WHERE key = $1")
-            .bind(setting.key)
-            .fetch_optional(&self.pool)
-            .await?;
-        Ok(row
-            .and_then(|(v,)| serde_json::from_value(v).ok())
-            .unwrap_or_else(|| setting.default_value()))
-    }
-
     /// Atomically upsert one typed setting's row. Touches only this key.
     pub async fn set_one<T: Serialize>(
         &self,
