@@ -14,7 +14,6 @@ import {
 } from 'components/token-price-chart';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
-import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useTimezone } from 'context/TimezoneContext';

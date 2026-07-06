@@ -5,11 +5,14 @@ import { tokenColumns } from 'components/tokens/tokenColumns';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
+import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatTimestampMs } from 'utils/date';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
+import { useProfileWallets } from 'hooks/useProfileWallets';
+import type { ProfileWalletInfo } from 'components/token-price-chart/types';
 import type { TraderTokenRow } from 'types';
 import { AddressDisplay } from '@shared/components/ui/AddressDisplay';
 
@@ -32,6 +35,26 @@ interface TraderQuery {
 }
 
 const shortAddr = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+
+/** The tracked wallets grouped by their profile name, for the picker's optgroups.
+ *  `mine`-profile wallets sort first so your own wallet is easy to reach. */
+function groupByProfile(wallets: ProfileWalletInfo[]): { profileName: string; wallets: ProfileWalletInfo[] }[] {
+  const order: string[] = [];
+  const byName = new Map<string, ProfileWalletInfo[]>();
+  for (const w of wallets) {
+    const name = w.profileName ?? 'Untitled';
+    let bucket = byName.get(name);
+    if (!bucket) {
+      bucket = [];
+      byName.set(name, bucket);
+      order.push(name);
+    }
+    bucket.push(w);
+  }
+  return order
+    .map((profileName) => ({ profileName, wallets: byName.get(profileName)! }))
+    .sort((a, b) => Number(b.wallets[0]?.isMine) - Number(a.wallets[0]?.isMine));
+}
 
 const clampInt = (raw: string, fallback: number, min: number, max: number) => {
   const n = parseInt(raw, 10);
@@ -128,6 +151,14 @@ export function TraderAnalysisPage() {
   // charts grid so both stay in sync. Fed by DataTable's onVisibleRowsChange.
   const [visibleRows, setVisibleRows] = useState<TraderTokenRow[]>(EMPTY_ROWS);
 
+  // Tracked wallets from the shared profiles cache (same SSOT the chart markers
+  // read) — a picker to fill the wallet input from a saved profile wallet.
+  const profileWallets = useProfileWallets();
+  const profileGroups = useMemo(() => groupByProfile(profileWallets), [profileWallets]);
+  // Reflect the picker's selection only while the input still holds a known
+  // tracked address; typing a custom address falls back to the placeholder.
+  const pickedWallet = profileWallets.some((w) => w.address === walletInput) ? walletInput : '';
+
   const {
     data,
     isFetching,
@@ -147,14 +178,22 @@ export function TraderAnalysisPage() {
     [],
   );
 
-  const run = () => {
-    const wallet = walletInput.trim();
+  const run = (walletOverride?: string) => {
+    const wallet = (walletOverride ?? walletInput).trim();
     if (!wallet) return;
     setQuery({
       wallet,
       days: clampInt(daysInput, DEFAULT_DAYS, 1, MAX_DAYS),
       limit: clampInt(limitInput, DEFAULT_LIMIT, 1, MAX_LIMIT),
     });
+  };
+
+  // Picking a tracked wallet fills the input and analyzes it immediately (state
+  // is async, so pass the address straight to `run`).
+  const handlePickWallet = (address: string) => {
+    if (!address) return;
+    setWalletInput(address);
+    run(address);
   };
 
   // Stable identity so DataTable's memoized pageRows effect doesn't churn.
@@ -185,6 +224,27 @@ export function TraderAnalysisPage() {
             className="min-w-[420px] font-mono font-normal normal-case tracking-normal"
           />
         </label>
+        {profileWallets.length > 0 && (
+          <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
+            Tracked wallet
+            <Select
+              value={pickedWallet}
+              onChange={(e) => handlePickWallet(e.target.value)}
+              className="min-w-[200px] font-normal normal-case tracking-normal"
+            >
+              <option value="">Pick a profile wallet…</option>
+              {profileGroups.map((group) => (
+                <optgroup key={group.profileName} label={group.profileName}>
+                  {group.wallets.map((w) => (
+                    <option key={w.address} value={w.address}>
+                      {shortAddr(w.address)}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </Select>
+          </label>
+        )}
         <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-text-dim">
           Days
           <Input
@@ -213,7 +273,7 @@ export function TraderAnalysisPage() {
             className="w-[110px] font-normal normal-case tracking-normal"
           />
         </label>
-        <Button variant="primary" onClick={run} disabled={isFetching || !walletInput.trim()}>
+        <Button variant="primary" onClick={() => run()} disabled={isFetching || !walletInput.trim()}>
           {isFetching ? 'Loading…' : 'Analyze'}
         </Button>
       </div>
