@@ -196,28 +196,6 @@ export function fetchSimulatedSummary(
   );
 }
 
-export async function fetchTokens(
-  search: string,
-  limit: number,
-  offset: number,
-): Promise<{ total: number; items: import('types').TokenRecord[] }> {
-  let url = `${API_BASE}/api/tokens?limit=${limit}&offset=${offset}`;
-  if (search) url += `&search=${encodeURIComponent(search)}`;
-  return request(url);
-}
-
-export async function fetchTokenDetail(
-  mint: string,
-): Promise<import('types').TokenDetailRecord> {
-  return request(`${API_BASE}/api/tokens/${mint}`);
-}
-
-export async function fetchTokenTrades(
-  mint: string,
-): Promise<import('types').TradeRecord[]> {
-  return request(`${API_BASE}/api/tokens/${encodeURIComponent(mint)}/trades`);
-}
-
 /**
  * Run swing detection over a single token.
  *
@@ -364,24 +342,6 @@ export async function stopAllTpsl1Rules(mode: 'real' | 'paper'): Promise<import(
   return request(`${API_BASE}/api/strategies/tpsl1/rules/stop-all?mode=${mode}`, { method: 'POST' });
 }
 
-export async function simulateTpsl1Rule(
-  ruleId: string,
-): Promise<import('types').SimulatedTokenResult[]> {
-  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/simulate`);
-}
-
-
-/**
- * Latest paper-test run for a rule: run metadata + recorded positions aggregated
- * into a simulation-shaped result. `run` is null if the rule has never run in
- * paper mode.
- */
-export async function fetchTpsl1PaperResult(
-  ruleId: string,
-): Promise<import('types').PaperResultResponse> {
-  return request(`${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/paper-result`);
-}
-
 /** Clear a paper rule's recorded run history (runs + positions). Paper-only and
  *  only valid while the rule is idle; the backend rejects live rules. */
 export async function clearTpsl1PaperResult(ruleId: string): Promise<void> {
@@ -409,39 +369,6 @@ export async function fetchTpsl1RulePositionsSummary(
     `${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
     { signal },
   );
-}
-
-/**
- * All recorded positions for the tpsl1 strategy (the `tpsl1_real_positions`
- * table, tagged `strategy = 'TPSL1'`) — not scoped to a single rule.
- */
-export async function fetchTpsl1Positions(): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl1/positions`);
-}
-
-/** Holding tpsl1 positions for a token (mint). */
-export async function fetchTpsl1PositionsByMint(
-  mint: string,
-): Promise<import('types').RulePositionRecord[]> {
-  return request(
-    `${API_BASE}/api/strategies/tpsl1/positions/mint/${encodeURIComponent(mint)}`,
-  );
-}
-
-/** Holding tpsl1 positions for a wallet. */
-export async function fetchTpsl1PositionsByWallet(
-  wallet: string,
-): Promise<import('types').RulePositionRecord[]> {
-  return request(
-    `${API_BASE}/api/strategies/tpsl1/positions/wallet/${encodeURIComponent(wallet)}`,
-  );
-}
-
-/** A single tpsl1 position by id. */
-export async function fetchTpsl1Position(
-  positionId: string,
-): Promise<import('types').RulePositionRecord> {
-  return request(`${API_BASE}/api/strategies/tpsl1/positions/${positionId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -515,19 +442,6 @@ export async function stopAllTpsl2Rules(mode: 'real' | 'paper'): Promise<import(
   return request(`${API_BASE}/api/strategies/tpsl2/rules/stop-all?mode=${mode}`, { method: 'POST' });
 }
 
-export async function simulateTpsl2Rule(
-  ruleId: string,
-): Promise<import('types').SimulatedTokenResult[]> {
-  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/simulate`);
-}
-
-
-export async function fetchTpsl2PaperResult(
-  ruleId: string,
-): Promise<import('types').PaperResultResponse> {
-  return request(`${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/paper-result`);
-}
-
 /** Clear a paper rule's recorded run history (runs + positions). Paper-only and
  *  only valid while the rule is idle; the backend rejects live rules. */
 export async function clearTpsl2PaperResult(ruleId: string): Promise<void> {
@@ -555,39 +469,6 @@ export async function fetchTpsl2RulePositionsSummary(
     `${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
     { signal },
   );
-}
-
-/**
- * All recorded positions for the tpsl2 strategy (the `tpsl2_real_positions`
- * table, tagged `strategy = 'TPSL2'`) — not scoped to a single rule.
- */
-export async function fetchTpsl2Positions(): Promise<import('types').RulePositionRecord[]> {
-  return request(`${API_BASE}/api/strategies/tpsl2/positions`);
-}
-
-/** Holding tpsl2 positions for a token (mint). */
-export async function fetchTpsl2PositionsByMint(
-  mint: string,
-): Promise<import('types').RulePositionRecord[]> {
-  return request(
-    `${API_BASE}/api/strategies/tpsl2/positions/mint/${encodeURIComponent(mint)}`,
-  );
-}
-
-/** Holding tpsl2 positions for a wallet. */
-export async function fetchTpsl2PositionsByWallet(
-  wallet: string,
-): Promise<import('types').RulePositionRecord[]> {
-  return request(
-    `${API_BASE}/api/strategies/tpsl2/positions/wallet/${encodeURIComponent(wallet)}`,
-  );
-}
-
-/** A single tpsl2 position by id. */
-export async function fetchTpsl2Position(
-  positionId: string,
-): Promise<import('types').RulePositionRecord> {
-  return request(`${API_BASE}/api/strategies/tpsl2/positions/${positionId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -677,12 +558,6 @@ export async function fetchSwing1RulePositionsSummary(
   );
 }
 
-export async function fetchSwing1PaperResult(
-  ruleId: string,
-): Promise<import('types').PaperResultResponse> {
-  return request(`${API_BASE}/api/strategies/swing1/rules/${ruleId}/paper-result`);
-}
-
 /** Clear a swing1 paper rule's recorded run history (runs + positions). Paper-only
  *  and only valid while the rule is idle; the backend rejects live rules. */
 export async function clearSwing1PaperResult(ruleId: string): Promise<void> {
@@ -694,10 +569,6 @@ export async function clearSwing1PaperResult(ruleId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Profiles & Wallets
 // ---------------------------------------------------------------------------
-
-export async function fetchProfiles(): Promise<import('types').WalletProfile[]> {
-  return request(`${API_BASE}/api/profiles`);
-}
 
 export async function createProfile(req: {
   name: string;
@@ -833,10 +704,6 @@ export async function cancelSimulation(ruleId: string): Promise<void> {
  *  the progress UI after a page load — SSE only delivers future frames. */
 export async function getJobsStatus(): Promise<import('types').JobsStatus> {
   return request(`${API_BASE}/api/jobs/status`);
-}
-
-export function sseUrl(): string {
-  return `${API_BASE}/api/stream`;
 }
 
 /** Estimate (signatures only) how many transactions a sync would download. */
