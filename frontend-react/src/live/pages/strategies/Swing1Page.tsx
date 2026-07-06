@@ -8,7 +8,7 @@ import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
-import { positionColumns, POSITION_KEYS } from 'components/tpsl1/tableColumns';
+import { positionColumns, POSITION_KEYS } from 'components/strategy/strategyColumns';
 import type { ChartSwingOverlay } from 'components/token-price-chart';
 import { ruleColumns as ruleCols1, RuleRowProvider } from 'components/tpsl1/ruleColumns';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';

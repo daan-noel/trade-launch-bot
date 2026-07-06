@@ -3,8 +3,7 @@ import type { OpenStrategyPosition } from 'types';
 import type { BadgeVariant } from 'components/ui/Badge';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
-import { DateCell } from 'components/table/DateCell';
-import { formatCompact, formatPrice } from 'utils/format';
+import { legColumns } from 'components/strategy/strategyColumns';
 
 /** Friendly labels for the canonical strategy ids. */
 const STRATEGY_LABEL: Record<string, string> = {
@@ -28,7 +27,12 @@ function statusVariant(status: string): BadgeVariant {
 }
 
 /** Columns for the cross-strategy open-positions monitor. Lean (the positions
- *  endpoint returns raw strategy positions with no token enrichment). */
+ *  endpoint returns raw strategy positions with no token enrichment). The entry
+ *  leg is built by the shared `legColumns` builder — the same one that emits the
+ *  entry columns in the TPSL/Swing Positions and Sim tables — so the leg's
+ *  Price/Size/Time cells stay identical across every position table. This record
+ *  carries only an entry leg (no target/exit, no per-fill token count or tx), and
+ *  `entry_sol` is a real SOL field rather than a derived price × tokens. */
 export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
   return [
     {
@@ -60,42 +64,17 @@ export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
       sortValue: (r) => r.status,
       searchValue: (r) => r.status,
     },
-    {
-      key: 'entry_price',
-      label: 'Entry Price',
-      width: '120px',
-      sortable: true,
-      render: (r) =>
-        r.entry_price != null ? (
-          <span className="tabular-nums text-text-mid">◎{formatPrice(r.entry_price)}</span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        ),
-      sortValue: (r) => r.entry_price ?? 0,
-      searchValue: (r) => String(r.entry_price ?? ''),
-    },
-    {
-      key: 'entry_sol',
-      label: 'Entry SOL',
-      width: '110px',
-      sortable: true,
-      render: (r) =>
-        r.entry_sol != null ? (
-          <span className="tabular-nums text-text">◎{formatCompact(r.entry_sol, 3)}</span>
-        ) : (
-          <span className="text-text-dim">—</span>
-        ),
-      sortValue: (r) => r.entry_sol ?? 0,
-      searchValue: (r) => String(r.entry_sol ?? ''),
-    },
-    {
-      key: 'entry_time',
-      label: 'Entered',
-      width: '120px',
-      sortable: true,
-      render: (r) => (r.entry_time ? <DateCell iso={r.entry_time} /> : <span className="text-text-dim">—</span>),
-      sortValue: (r) => r.entry_time ?? '',
-      searchValue: (r) => r.entry_time ?? '',
-    },
+    ...legColumns<OpenStrategyPosition>(
+      'entry',
+      {
+        price: (r) => r.entry_price ?? null,
+        size: (r) => r.entry_sol ?? null,
+        time: (r) => r.entry_time ?? null,
+      },
+      {
+        fields: ['price', 'size', 'time'],
+        width: { price: '120px', size: '110px', time: '120px' },
+      },
+    ),
   ];
 }

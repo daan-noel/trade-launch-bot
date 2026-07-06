@@ -38,7 +38,7 @@ import {
   POSITION_KEYS,
   MATCHED_KEYS,
   SIM_KEYS,
-} from 'components/tpsl1/tableColumns';
+} from 'components/strategy/strategyColumns';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { useTimezone } from 'context/TimezoneContext';

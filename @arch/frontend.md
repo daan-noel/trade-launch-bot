@@ -208,7 +208,8 @@ there are no camelCase/axis/prefix translators.
 - **`TokenTable` = the ONE wrapper for every token-row table** (`components/tokens/TokenTable.tsx`).
   It owns the "token recipe" over `DataTable`: (1) append the shared token-info columns
   (`appendedTokenColumns`, so callers export only their bespoke columns + an `existingKeys` set — see
-  `tpsl1/tpsl2 tableColumns` `POSITION_KEYS`/`MATCHED_KEYS`/`SIM_KEYS`; a table that owns its full layout
+  `components/strategy/strategyColumns` `POSITION_KEYS`/`MATCHED_KEYS`/`SIM_KEYS`, each derived straight from
+  its column array so keys can't drift from what's rendered; a table that owns its full layout
   passes `ALL_TOKEN_INFO_KEYS` to append nothing); (2) own the table wiring. **Two modes:** **server**
   (`serverSide` + `serverTotal`/`onQueryChange`/`resetKey`) — rows arrive backend-enriched one page at a
   time, paging/sort/filter round-trip (Positions via `RunPositionsPanel`, Paper, Matched, Sim, Wallet
@@ -242,6 +243,17 @@ there are no camelCase/axis/prefix translators.
   is shared under `shared/components/strategy/`: `cellFormat.ts` (the former byte-identical
   `tpsl1/2 utils.ts`), `inspectTarget.ts` (the `InspectTarget` type + `inspectFromSim`/
   `inspectFromPosition` mappers, previously copy-pasted across five pages and both modal forks).
+- **One strategy-table column SSOT (`strategyColumns.tsx` in `shared/components/strategy/`).** The
+  Positions / Matched / Sim tables' `positionColumns`/`matchedColumns`/`simColumns` (+ their
+  `POSITION_KEYS`/`MATCHED_KEYS`/`SIM_KEYS`) + `exitReasonBadge` live here **once**. The
+  **target/entry/exit** trade legs — each with **Price · Tokens · Size · Time · Tx** — are emitted by one
+  `legColumns(prefix, accessors, opts)` builder (`Size` = `solOf(price, tokens)` unless a real SOL field is
+  given; Tokens/Tx columns drop when their accessor is absent). This replaced the two copy-pasted
+  `tpsl1/tpsl2 tableColumns.tsx` files that had **drifted** (tpsl1 had lost the whole target leg +
+  tokens/size/tx; tpsl2's sim showed only price/time on entry/exit). All five strategy pages
+  (lab tpsl1/tpsl2/swing1, live tpsl/swing1) and the live cross-strategy monitor
+  (`live-trading/positionColumns.tsx`, entry-leg only via the same builder) now share this one source.
+  The sim's exit leg still omits Tokens/Size because the sim result payload carries no `exit_token_amount`.
 - **One token-info column SSOT (`tokenInfoColumns()` in `sharedTokenColumns.tsx`).** The ~26 enrichment
   columns are defined **once** (render/sort/search/filter logic); both consumers derive from it —
   `appendedTokenColumns(existingKeys)` (strategy columns, and wallet via `TokenTable`) overlays `defaultVisible` via

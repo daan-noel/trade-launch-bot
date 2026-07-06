@@ -8,7 +8,7 @@ import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
-import { positionColumns, POSITION_KEYS } from 'components/tpsl1/tableColumns';
+import { positionColumns, POSITION_KEYS } from 'components/strategy/strategyColumns';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
   buildCreatePayload,
