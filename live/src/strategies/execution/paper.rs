@@ -30,6 +30,7 @@ use trading_core::strategies::tpsl_sniper_1::entry as t1_entry;
 use trading_core::strategies::tpsl_sniper_2::entry as t2_entry;
 
 use super::scalp::scalp_watch_window;
+use super::swing::swing_watch_window;
 use crate::state::token_cache::{CachedTrade, TokenCache};
 
 /// Snapshot the mint's retained trade window from the in-memory token cache
@@ -312,10 +313,7 @@ async fn resolve_paper_entry_swing1(
     let rule = params.to_rule();
     // A set entry-window ceiling self-limits the watch; without one, take a bounded
     // armer slot so a never-dying token can't pin the `paper_poll_sem` permit forever.
-    let window = params
-        .p_entry_max_age_secs
-        .filter(|&s| s != 0)
-        .map(Duration::from_secs);
+    let window = swing_watch_window(params);
     let _armer_guard = match window {
         Some(_) => None,
         None => Some(runtime.begin_until_dead_armer(position_id)),

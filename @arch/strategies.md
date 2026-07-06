@@ -36,7 +36,7 @@ strategy-specific gates live in `params`. `StrategyPosition` gained PnL/status h
 `StrategyService` (which dispatches each per-rule decision through `StrategyImpl` keyed by
 `rule.strategy_id` — no more per-strategy services):
 
-- `on_token_created(mint)` → entry gating (`matches_entry`) + run ensured + inline cap/holding-index claim → tpsl1 immediate buy / tpsl2 scalp-arm then buy
+- `on_token_created(mint)` → entry gating (`matches_entry`) + run ensured + inline cap/holding-index claim → tpsl1 immediate buy / tpsl2 scalp-arm then buy / swing1 phase-entry-arm then buy
 - `on_trade_executed(mint)` → exit evaluation via the core exit-state memo → paper close / real sell
 - 1s clock tick → `sweep_time_exits()` (deadline exits that come due in silence)
 
@@ -46,8 +46,11 @@ The `select!` **serializes** all position transitions (no Holding→ExitPending 
 
 **Live orchestration files** (`live/src/strategies/`): `service.rs` (the unified service: entry gate,
 trade/time exit ladder, real sell, manual-sell close, recovery reapers, rule CRUD + activate/pause/
-stop lifecycle), `runner.rs` (the `select!` dispatch), `execution/{real,paper,scalp}.rs` (real on-chain
-exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-arming).
+stop lifecycle), `runner.rs` (the `select!` dispatch), `execution/{real,paper,scalp,swing}.rs` (real
+on-chain exec + double-buy/sell invariants · paper mirror fill-poll · tpsl2 scalp-arming · swing1
+phase-entry arming). `scalp.rs`/`swing.rs` are thin live-watch wrappers around the shared
+`tpsl_sniper_2::entry::find_scalp_entry` / `swing_1::entry::find_phase_entry` gates — the same fns the
+paper entry resolvers and backtests call, so live honors the identical entry moment.
 
 ## Shared — `sim_progress.rs` + `sim_fetch.rs` + token-enrichment SSOT
 

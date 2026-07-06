@@ -1,23 +1,23 @@
 //! Unified trade execution — *how* a matched position is opened and closed,
 //! strategy-agnostic over [`StrategyPosition`] / [`StrategyRepo`] /
 //! [`StrategyRuntimeCache`]. Replaces the per-strategy `tpsl_sniper_{1,2}/execution`
-//! clones; the only strategy-specific entry orchestration (tpsl2's scalp-arming +
-//! until-dead armers) is dispatched in via the service's `EntryOrchestration`.
+//! clones; the only strategy-specific entry orchestration (tpsl2's scalp-arming,
+//! swing1's phase-entry arming — both until-dead-armer-bounded) is dispatched in
+//! via the service's entry-orchestration match.
 //!
 //!   - `real` — on-chain buys/sells (snipe buy + sell-with-retries + recovery).
 //!   - `paper` — the same lifecycle against the WS/DB trade feed, no transactions.
+//!   - `scalp` — tpsl2's scalp-continuation entry watch.
+//!   - `swing` — swing1's kill→volume phase-entry watch.
 //!
 //! [`StrategyPosition`]: trading_core::models::StrategyPosition
 //! [`StrategyRepo`]: trading_core::storage::repositories::strategy_repo::StrategyRepo
 //! [`StrategyRuntimeCache`]: trading_core::strategies::runtime_cache::StrategyRuntimeCache
 
-// Built ahead of the runner/service rewire (T4). Until the unified runner replaces
-// `tpsl_sniper_{1,2}`, these are unreferenced — the `allow` is removed in T4/T6.
-#![allow(dead_code)]
-
 pub mod paper;
 pub mod real;
 pub mod scalp;
+pub mod swing;
 
 // Shared buy/sell retry + poll timing — referenced by `real` execution and the
 // paper entry/exit polls, so they live at the module root rather than on a service.

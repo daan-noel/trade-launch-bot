@@ -8,10 +8,12 @@
 //! The only strategy-specific orchestration is the **entry** path in
 //! [`on_token_created`](StrategyService::on_token_created): tpsl1 buys immediately on
 //! a token match; tpsl2 first arms on the scalp-entry signal
-//! ([`scalp::await_scalp_entry_signal`]) and records the target before buying.
-//! Everything else — the trade/time exit ladder (via the core exit-state memo), the
-//! real sell + manual-sell close, and the ExitPending/BuySubmitted/unentered reapers
-//! — is identical across strategies and lives here once.
+//! ([`scalp::await_scalp_entry_signal`]) and swing1 first arms on the kill→volume
+//! phase-entry signal ([`swing::await_swing_entry_signal`]), both recording the
+//! target before buying. Everything else — the trade/time exit ladder (via the core
+//! exit-state memo), the real sell + manual-sell close, and the
+//! ExitPending/BuySubmitted/unentered reapers — is identical across strategies
+//! (including swing1's `NextKill` exit priority) and lives here once.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -40,7 +42,7 @@ use crate::state::token_cache::TokenCache;
 use crate::state::trade_signals::TradeSignals;
 use crate::trader::PumpFunTrader;
 
-use super::execution::{paper, real, scalp};
+use super::execution::{paper, real, scalp, swing};
 
 /// Exit reason stamped on a position re-driven out of an orphaned `ExitPending`
 /// state (its original trigger reason wasn't persisted), so the recovered close is
@@ -346,9 +348,11 @@ impl StrategyService {
                     // task ends OR panics.
                     let _entry_guard = runtime.try_begin_entry(position_id);
 
-                    // Entry orchestration: tpsl2 arms on the scalp signal first and
-                    // records the target; tpsl1 buys immediately. `proceed` is false
-                    // only when tpsl2's arming window closed without a signal.
+                    // Entry orchestration: tpsl2 arms on the scalp signal first,
+                    // swing1 arms on the kill→volume phase-entry signal, both
+                    // recording the target before buying; tpsl1 buys immediately.
+                    // `proceed` is false only when an arming window closed without
+                    // a signal.
                     let proceed = match (strat, &params) {
                         (StrategyImpl::Tpsl2, StrategyParams::Tpsl2(p)) => {
                             match scalp::await_scalp_entry_signal(
@@ -393,6 +397,47 @@ impl StrategyService {
                                 }
                             }
                         }
+                        (StrategyImpl::Swing1, StrategyParams::Swing1(p)) => {
+                            match swing::await_swing_entry_signal(
+                                &mint,
+                                p,
+                                position_id,
+                                &token_cache,
+                                &trade_signals,
+                                &runtime,
+                                swing::SwingWaitCfg::for_params(p),
+                            )
+                            .await
+                            {
+                                Some(target) => {
+                                    // Same target-before-buy persistence as tpsl2 —
+                                    // `find_phase_entry` is already worst-case-spot-
+                                    // priced at the trigger, so this doubles as the
+                                    // recorded entry target for comparison against
+                                    // the real fill.
+                                    let prev = position.clone();
+                                    position.set_target(
+                                        target.price,
+                                        target.amount_tokens.round() as u64,
+                                        target.block_time,
+                                        target.tx_signature,
+                                    );
+                                    if let Err(err) = repo.update_position(&position).await {
+                                        warn!("[REAL] Failed to record target for position {position_id}: {err}");
+                                    } else {
+                                        runtime.sync_position(Some(&prev), &position);
+                                    }
+                                    true
+                                }
+                                None => {
+                                    info!(
+                                        "[REAL] Swing1 phase-entry signal never fired for mint {mint} \
+                                         within the arming window; dropping unentered position {position_id}"
+                                    );
+                                    false
+                                }
+                            }
+                        }
                         // tpsl1 (and any mismatch, defensively) buys immediately.
                         _ => true,
                     };
@@ -431,15 +476,27 @@ impl StrategyService {
                             cashback_enabled,
                         )
                         .await;
+                        // Do NOT inline-delete unentered positions after a buy attempt.
+                        // A buy that lands on-chain but isn't yet indexed returns
+                        // unentered from `buy_until_filled_or_give_up`, and deleting
+                        // it would orphan real tokens with no position tracking them.
+                        // The periodic `redrive_orphaned_buy_submitted` reaper is the
+                        // safe owner: it adopts indexed fills and only drops when
+                        // EVERY submitted sig is a confirmed revert. SOL is released
+                        // there on confirmed revert.
+                    } else {
+                        // Arming window closed with no signal — no buy was ever sent,
+                        // so the row is safe to drop immediately (mirrors paper's
+                        // "no entry fill" cleanup). Release the SOL commitment taken
+                        // before spawn so the wallet budget isn't pinned for 10 min.
+                        trader.release_sol_for_position(&position_id.to_string());
+                        match repo.delete_position(position_id).await {
+                            Ok(()) => runtime.remove_position(&position),
+                            Err(err) => warn!(
+                                "[REAL] Failed to drop unentered position {position_id} after arming timeout: {err}"
+                            ),
+                        }
                     }
-
-                    // Do NOT inline-delete unentered positions here. A buy that lands
-                    // on-chain but isn't yet indexed returns unentered from
-                    // buy_until_filled_or_give_up, and deleting it would orphan real
-                    // tokens with no position tracking them. The periodic
-                    // redrive_orphaned_buy_submitted reaper is the safe owner: it
-                    // adopts indexed fills and only drops when EVERY submitted sig is a
-                    // confirmed revert. SOL is released there on confirmed revert.
                 } else {
                     paper::spawn_entry_fill_poll(
                         repo, runtime, token_cache, mint, position_id, rule, params,
