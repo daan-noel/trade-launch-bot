@@ -873,9 +873,8 @@ export function Swing1Page() {
   const isPaperRuleSelected = selectedRuleId != null && selectedRuleMode != null && !isRealRuleSelected;
 
   // Split the single rule list into real vs paper so each renders in its own
-  // table (real on top, flagged as live). swing1 is paper-only today, so the
-  // real partition is empty and its accordion is skipped — but the split is kept
-  // generic so a future `real` mode drops in without page changes.
+  // table (real on top, flagged as live). Lab never executes real rules — the
+  // partition only fills if a rule was authored/synced with trade_mode=real.
   const realRules = useMemo(() => rules.filter((r) => r.trade_mode === 'real'), [rules]);
   const paperRules = useMemo(() => rules.filter((r) => r.trade_mode !== 'real'), [rules]);
 

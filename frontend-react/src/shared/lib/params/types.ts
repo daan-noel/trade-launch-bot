@@ -97,7 +97,7 @@ export interface StrategySpec {
   title: string;
   /** Full ordered field list. */
   fields: ParamField[];
-  /** Selectable trade modes: `['paper','real']` for tpsl, `['paper']` for swing1. */
+  /** Selectable trade modes — all three strategies expose paper + real on live. */
   modeOptions: string[];
   /** Accordion sections in render order (excludes the always-visible mode+name row). */
   sections: SpecSection[];

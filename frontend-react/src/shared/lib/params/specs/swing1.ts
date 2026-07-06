@@ -10,7 +10,7 @@
 
 import type { ParamField, SpecSection, StrategySpec } from '../types';
 
-// swing1 is paper-only; TP/SL are the two required axes.
+// TP/SL are the two required axes; real mode is live on the deploy box (phase-entry arming).
 const FIELDS: ParamField[] = [
   // ── Sizing & limits (universal) ──
   { column: 'buy_amount_sol', group: 'sizing', section: 'sizing', kind: 'float', required: true, label: 'Buy Amount (SOL)', unit: '◎', step: '0.001' },
@@ -81,6 +81,6 @@ export const SWING1_SPEC: StrategySpec = {
   strategy: 'swing_1',
   title: 'Swing 1',
   fields: FIELDS,
-  modeOptions: ['paper'],
+  modeOptions: ['paper', 'real'],
   sections: SECTIONS,
 };
