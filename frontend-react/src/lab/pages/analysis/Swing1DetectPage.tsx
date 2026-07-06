@@ -585,8 +585,6 @@ function LowVerdictTable({
       rowKey={rowKey}
       // Show lows in chronological order (the backend may emit them unsorted).
       defaultSort={{ col: 'leg_index', dir: 'asc' }}
-      defaultPageSize={5}
-      pageSizeOptions={[5,10,20,50]}
       selectedKey={selectedRowKey}
       onSelect={handleRowSelect}
       rowClassName={rowClassName}

@@ -241,7 +241,6 @@ export function TraderAnalysisPage() {
           colToggle
           hoverable
           loading={isFetching}
-          defaultPageSize={50}
           tableId="trader_analysis_tokens"
           onVisibleRowsChange={handleVisibleRows}
           emptyMessage="No tokens match the filters"

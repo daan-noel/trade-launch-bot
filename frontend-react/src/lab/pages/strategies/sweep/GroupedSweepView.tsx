@@ -668,8 +668,6 @@ export function GroupedSweepView({
             selectable
             selectedKey={activeGroupId}
             onSelect={setActiveGroupId}
-            defaultPageSize={5}
-            pageSizeOptions={[5, 10, 25]}
             tableId={`${strategyId}_sweep_groups`}
             resetKey={activeRunId ?? ''}
             loading={groupsQuery.isFetching}
@@ -715,8 +713,6 @@ export function GroupedSweepView({
                 serverSide
                 serverTotal={resultsTotal}
                 onQueryChange={onComboQueryChange}
-                defaultPageSize={COMBO_PAGE_SIZE}
-                pageSizeOptions={[100, 200, 500]}
                 tableId={`${strategyId}_sweep_combos`}
                 resetKey={activeGroupId ?? ''}
                 loading={resultsLoading}
@@ -771,8 +767,6 @@ export function GroupedSweepView({
                     selectedKey={selectedTokenMint}
                     onSelect={setSelectedTokenMint}
                     defaultSort={{ col: 'pnl_sol', dir: 'desc' }}
-                    defaultPageSize={25}
-                    pageSizeOptions={[25, 50, 100]}
                     tableId={`${strategyId}_combo_tokens`}
                     resetKey={`${activeComboId}_${showNotFired}`}
                     loading={tokenResultsQuery.isFetching}

@@ -1581,7 +1581,6 @@ export function SwingDetectionPage() {
                         rowKey={swingLegKey}
                         selectedKey={selectedSwingKey}
                         onSelect={handleSwingSelect}
-                        defaultPageSize={5}
                         searchable
                         colFilters
                         hoverable
@@ -1644,7 +1643,6 @@ export function SwingDetectionPage() {
                           rowKey={swingLegKey}
                           selectedKey={selectedSwingKey}
                           onSelect={handleSwingSelect}
-                          defaultPageSize={5}
                           searchable
                           colFilters
                           hoverable

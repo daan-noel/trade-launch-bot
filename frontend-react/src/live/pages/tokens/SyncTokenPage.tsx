@@ -565,7 +565,6 @@ export function SyncTokenPage() {
             rowKey={syncedRowKey}
             selectedKey={selectedMint}
             onSelect={handleSelectSynced}
-            defaultPageSize={25}
             searchable
             hoverable
             emptyMessage="No tokens"

@@ -225,8 +225,6 @@ export function RunPositionsPanel({
             onQueryChange={setCurrentQuery}
             loading={current.loading}
             resetKey={selectedRuleId ?? ''}
-            defaultPageSize={20}
-            pageSizeOptions={[20, 50, 100]}
             colFilters
             colToggle
             tableId={`${strategy}_positions_current`}
@@ -259,8 +257,6 @@ export function RunPositionsPanel({
               onQueryChange={setHistoryQuery}
               loading={history.loading}
               resetKey={selectedRuleId ?? ''}
-              defaultPageSize={20}
-              pageSizeOptions={[20, 50, 100]}
               colFilters
               colToggle
               tableId={`${strategy}_positions_history`}

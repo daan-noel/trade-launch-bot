@@ -699,7 +699,6 @@ export function Swing1Page() {
                 columns={ruleColumns} rows={realRules} rowKey={keyById}
                 rowActions={ruleActions} selectedKey={selectedRuleId}
                 onSelect={setSelectedRuleId}
-                defaultPageSize={10} pageSizeOptions={[10, 25, 50]}
                 searchable colFilters colToggle
                 tableId={`${STRATEGY}_rules_real`} emptyMessage="No real rules"
               />
@@ -733,7 +732,6 @@ export function Swing1Page() {
               columns={ruleColumns} rows={paperRules} rowKey={keyById}
               rowActions={ruleActions} selectedKey={selectedRuleId}
               onSelect={setSelectedRuleId}
-              defaultPageSize={10} pageSizeOptions={[10, 25, 50]}
               searchable colFilters colToggle
               tableId={`${STRATEGY}_rules_paper`} emptyMessage="No paper rules"
             />

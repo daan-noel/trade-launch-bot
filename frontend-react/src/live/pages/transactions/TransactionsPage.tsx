@@ -29,7 +29,6 @@ export function TransactionsPage() {
           columns={columns}
           rows={events}
           rowKey={tradeRowKey}
-          defaultPageSize={25}
           searchable
           colFilters
           hoverable

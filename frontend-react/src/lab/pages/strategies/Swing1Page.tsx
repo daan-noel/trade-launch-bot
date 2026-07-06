@@ -1094,8 +1094,6 @@ export function Swing1Page() {
                 rowActions={ruleActions}
                 selectedKey={selectedRuleId}
                 onSelect={setSelectedRuleId}
-                defaultPageSize={10}
-                pageSizeOptions={[10, 25, 50]}
                 searchable
                 colFilters
                 colToggle
@@ -1128,8 +1126,6 @@ export function Swing1Page() {
               rowActions={ruleActions}
               selectedKey={selectedRuleId}
               onSelect={setSelectedRuleId}
-              defaultPageSize={10}
-              pageSizeOptions={[10, 25, 50]}
               searchable
               colFilters
               colToggle
@@ -1174,8 +1170,6 @@ export function Swing1Page() {
             onQueryChange={setMatchedQuery}
             loading={matchedLoading}
             resetKey={matchedRuleId}
-            defaultPageSize={5}
-            pageSizeOptions={[5, 10, 20, 50]}
             searchable
             colFilters
             colToggle
@@ -1221,8 +1215,6 @@ export function Swing1Page() {
               onQueryChange={setSimQuery}
               loading={simTableLoading}
               resetKey={simRuleId ?? ''}
-              defaultPageSize={20}
-              pageSizeOptions={[20, 50, 100]}
               searchable
               colFilters
               colToggle

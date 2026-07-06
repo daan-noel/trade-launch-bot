@@ -326,7 +326,6 @@ export function TokenTradeChart({
             columns={tradeColumns}
             rows={selectionTrades}
             rowKey={(t) => t.id}
-            defaultPageSize={25}
             searchable
             colFilters
             hoverable

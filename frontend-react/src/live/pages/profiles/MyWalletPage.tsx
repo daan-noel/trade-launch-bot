@@ -416,8 +416,6 @@ export function MyWalletPage() {
           serverTotal={total}
           onQueryChange={setTableQuery}
           loading={isFetching}
-          defaultPageSize={25}
-          pageSizeOptions={[25, 50, 100]}
           searchable
           colFilters
           colToggle

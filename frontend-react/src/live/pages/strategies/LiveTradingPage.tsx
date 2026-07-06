@@ -76,8 +76,6 @@ export function LiveTradingPage() {
           rows={positions}
           rowKey={(r) => `${r.strategy_id}:${r.mint}:${r.entry_time ?? ''}`}
           loading={isFetching}
-          defaultPageSize={25}
-          pageSizeOptions={[25, 50, 100]}
           searchable
           colFilters
           hoverable
