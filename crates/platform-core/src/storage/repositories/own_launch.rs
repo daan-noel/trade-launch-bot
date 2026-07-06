@@ -131,6 +131,15 @@ impl LaunchRepo {
             .await?;
         Ok(())
     }
+
+    pub async fn set_bundle_id(pool: &PgPool, id: Uuid, bundle_id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("UPDATE launches SET bundle_id = $2 WHERE id = $1")
+            .bind(id)
+            .bind(bundle_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
 }
 
 /// `bundles` — phase-2 Jito bundle seam.
@@ -144,7 +153,7 @@ impl BundleRepo {
         legs: serde_json::Value,
     ) -> anyhow::Result<Bundle> {
         Ok(sqlx::query_as::<_, Bundle>(
-            "INSERT INTO bundles (launch_id, tip_quote, legs) VALUES ($1,$2,$3) RETURNING *",
+            "INSERT INTO bundles (launch_id, tip_quote, legs, status) VALUES ($1,$2,$3,'planned') RETURNING *",
         )
         .bind(launch_id)
         .bind(tip_quote)

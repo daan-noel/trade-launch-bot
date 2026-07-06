@@ -5,10 +5,16 @@
 //! row. The per-leg structure composer (variant + params + budget/tip) lives here,
 //! not in pump-trader.
 
+mod bundle;
 mod config;
 mod keystore;
 mod service;
 mod wallet_encrypt;
+
+pub use bundle::{
+    compose_bundle_legs, legs_to_json, BuyVariant, BundledLegPlan, LegStructure,
+    LegStructureRecipe,
+};
 
 pub use config::LauncherSettings;
 pub use keystore::{

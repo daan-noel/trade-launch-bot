@@ -3,7 +3,8 @@
 use anyhow::{bail, Context, Result};
 use platform_core::models::{NewLaunch, NewToken};
 use platform_core::storage::repositories::{
-    LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, TokenMarketStateRepo, TokenRepo,
+    BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, TokenMarketStateRepo,
+    TokenRepo,
 };
 use platform_core::models::TokenMarketState;
 use chrono::Utc;
@@ -37,6 +38,17 @@ pub struct PumpfunTemplateParams {
     pub is_mayhem_mode: bool,
     #[serde(default)]
     pub cashback_enabled: bool,
+    /// Optional post-create sniper bundle (composer draws from `leg_structures`).
+    #[serde(default)]
+    pub bundle_leg_count: Option<u32>,
+    #[serde(default)]
+    pub bundle_wallet_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub bundle_quote_per_leg: Option<i64>,
+    #[serde(default)]
+    pub bundle_tip_quote: Option<i64>,
+    #[serde(default)]
+    pub leg_structures: Option<Vec<crate::bundle::LegStructureRecipe>>,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +237,27 @@ pub async fn execute_launch(
             },
         )
         .await?;
+
+        if let Some((leg_count, wallets, quote_per_leg, tip_quote)) =
+            crate::bundle::parse_bundle_plan(&params)?
+        {
+            let recipes = params
+                .leg_structures
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .context("bundle_leg_count requires leg_structures pool")?;
+            let composed =
+                crate::bundle::compose_bundle_legs(recipes, leg_count, &wallets, quote_per_leg)?;
+            let bundle = BundleRepo::insert(
+                pool,
+                launch_id,
+                tip_quote,
+                crate::bundle::legs_to_json(&composed),
+            )
+            .await?;
+            LaunchRepo::set_bundle_id(pool, launch_id, bundle.id).await?;
+            info!(launch_id = %launch_id, bundle_id = %bundle.id, legs = leg_count, "bundle planned");
+        }
 
         info!(
             launch_id = %launch_id,
