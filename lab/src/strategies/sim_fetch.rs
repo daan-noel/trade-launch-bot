@@ -21,8 +21,10 @@ use chrono::{NaiveDate, Utc};
 
 use crate::lake::duck::LakeSource;
 use crate::lake::{lake_root, trades_dir};
+use crate::models::trade::{Trade, TradeRow};
+use crate::storage::repositories::trade_repo::TradeRepo;
 use crate::sweep::corpus::{CorpusSource, Selection, TradeWindow};
-use crate::sweep::projection::CorpusTrade;
+use crate::sweep::projection::{project_trades, CorpusTrade};
 
 /// Uncapped per-mint history for simulate: keeps each token's **full** trade history so
 /// ATH/exit match today's PG `find_by_mints_all`. Same as the grouped sweep's default
@@ -82,6 +84,57 @@ pub async fn fetch_sim_histories(
 pub async fn fetch_sim_history_one(mint: &str, curve_only: bool) -> Result<Arc<Vec<CorpusTrade>>> {
     let mut map = fetch_sim_histories(std::slice::from_ref(&mint.to_string()), curve_only).await?;
     Ok(map.remove(mint).unwrap_or_default())
+}
+
+/// A token's **full** trade history for per-token analysis — the sealed Parquet lake
+/// (deep past) unioned with the Postgres fresh tail (recent trades not yet exported).
+///
+/// The lake is sealed-days-only and frozen at the last `lake-export`, so a token
+/// created/traded *after* that export is absent from it — the reason a fresh live
+/// position's swing-detect overlay went blank while its entry/exit markers (read from
+/// PG fills) still showed. PG keeps a rolling ~30-day window (its retention), so
+/// appending every PG row on a slot the lake never reached fills that gap. The split
+/// is symmetric: a brand-new token is PG-only, a token older than PG retention is
+/// lake-only, and a token straddling the export boundary is stitched from both.
+///
+/// Spliced by **slot** (not row identity): the lake IS an export of PG, so keeping all
+/// lake rows + only the PG rows on higher slots unions the two with no double-count and
+/// no per-row dedup key. `curve_only` is applied on both sides — the lake at load, PG by
+/// `venue` here (the projected [`CorpusTrade`] has dropped `venue`).
+pub async fn fetch_full_history_one(
+    repo: &TradeRepo,
+    mint: &str,
+    curve_only: bool,
+) -> Result<Arc<Vec<CorpusTrade>>> {
+    let lake = fetch_sim_history_one(mint, curve_only).await?;
+
+    // PG fresh tail: full per-mint history (`limit <= 0` ⇒ unbounded), venue-filtered
+    // to match the lake's `curve_only`.
+    let mut pg: Vec<Trade> = repo.find_by_mint_paged(mint, 0, 0).await?;
+    if curve_only {
+        pg.retain(|t| t.venue == "curve");
+    }
+
+    // Keep every lake row, then append the PG rows on slots the lake never reached.
+    let tail = pg_tail_beyond_lake(&lake, pg);
+    if tail.is_empty() {
+        return Ok(lake); // no fresh tail — reuse the lake Arc, no copy
+    }
+    let mut merged = (*lake).clone();
+    merged.extend(project_trades(&tail));
+    Ok(Arc::new(merged))
+}
+
+/// The PG rows to splice onto the lake: those on a **slot beyond the lake's newest**.
+/// The lake is an export of PG, so within the lake's slot range the two hold the same
+/// rows — taking only higher slots unions them with no double-count and no per-row
+/// dedup key. An empty lake (`None` max) ⇒ the whole PG history is the tail. Pure so
+/// the slot-splice is unit-testable without a live PG/lake.
+fn pg_tail_beyond_lake(lake: &[CorpusTrade], pg: Vec<Trade>) -> Vec<Trade> {
+    match lake.iter().map(|t| t.slot).max() {
+        Some(s) => pg.into_iter().filter(|t| t.slot() > s).collect(),
+        None => pg,
+    }
 }
 
 /// Log a non-fatal warning if the lake looks stale. The lake is **sealed-days-only**
@@ -146,5 +199,61 @@ mod tests {
     fn newest_lake_day_is_none_when_absent() {
         let root = std::env::temp_dir().join("sim-fetch-test-definitely-absent-xyz");
         assert_eq!(newest_lake_day(&root), None);
+    }
+
+    fn corpus_at_slot(slot: u64) -> CorpusTrade {
+        CorpusTrade {
+            block_time: Utc::now(),
+            amount_sol: 1.0,
+            token_amount: 100.0,
+            price_per_token: 0.01,
+            reserve_sol: None,
+            reserve_token: None,
+            real_reserve_sol: None,
+            real_token_reserves: None,
+            slot,
+            leg_index: 0,
+            is_buy: true,
+            tx_signature: None,
+        }
+    }
+
+    fn pg_trade_at_slot(slot: u64) -> Trade {
+        use trading_core::models::trade::TradeType;
+        Trade::new(
+            "mint".into(),
+            "wallet".into(),
+            TradeType::Buy,
+            1.0,
+            100,
+            "sig".into(),
+            slot,
+            Utc::now(),
+        )
+    }
+
+    /// The splice takes only PG rows on slots beyond the lake's newest — the lake
+    /// already holds everything up to its max slot (it's a PG export), so the shared
+    /// slot 20 must NOT be re-appended.
+    #[test]
+    fn pg_tail_takes_only_slots_beyond_lake() {
+        let lake = vec![corpus_at_slot(10), corpus_at_slot(20)];
+        let pg = vec![
+            pg_trade_at_slot(15),
+            pg_trade_at_slot(20),
+            pg_trade_at_slot(25),
+            pg_trade_at_slot(30),
+        ];
+        let tail: Vec<u64> = pg_tail_beyond_lake(&lake, pg).iter().map(|t| t.slot()).collect();
+        assert_eq!(tail, vec![25, 30], "only slots past the lake max (20) splice in");
+    }
+
+    /// Empty lake (token created after the last export, or older than the lake's
+    /// coverage) ⇒ the whole PG history is the tail. This is the reported-bug case:
+    /// a fresh token is PG-only, so the overlay must still get every trade.
+    #[test]
+    fn pg_tail_is_whole_pg_when_lake_empty() {
+        let pg = vec![pg_trade_at_slot(5), pg_trade_at_slot(6)];
+        assert_eq!(pg_tail_beyond_lake(&[], pg).len(), 2, "empty lake ⇒ entire PG history");
     }
 }

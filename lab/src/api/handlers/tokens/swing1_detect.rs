@@ -1,13 +1,16 @@
 //! `POST /api/tokens/{mint}/swing1-detect` — the swing1 classification funnel for
 //! ONE token, surfaced for the UI's per-token detection page.
 //!
-//! Reads the **same uncapped Parquet-lake corpus the backtest/sweep price on**
-//! (`fetch_sim_history_one`) and runs the shared [`build_swing1_funnel`] +
-//! `find_phase_entry` + `find_trade_driven_exit` — so the funnel shown is identical
-//! to the sim's decision for this token *by construction* (one corpus, one builder),
-//! not merely "should match". Full history, no `MAX_TRADES_RETAINED` cap — that
-//! constant is the live in-RAM cache trim, never an analysis bound. It is the JSON
-//! twin of `lab swing-probe` (`lab/src/swing_probe.rs`); both call the shared funnel.
+//! Reads the token's **full history = sealed Parquet lake ∪ Postgres fresh tail**
+//! (`fetch_full_history_one`) and runs the shared [`build_swing1_funnel`] +
+//! `find_phase_entry` + `find_trade_driven_exit`. The lake alone is sealed-days-only
+//! and frozen at the last `lake-export`, so a token created/traded after that export
+//! had an empty funnel here — the overlay went blank while entry/exit markers (from
+//! PG fills) still showed; unioning the PG tail closes that gap (and the lake covers
+//! the deep past PG's ~30-day retention has dropped). Over the lake's own range the
+//! funnel is still identical to the sim's decision *by construction* (one corpus, one
+//! builder). Full history, no `MAX_TRADES_RETAINED` cap — that constant is the live
+//! in-RAM cache trim, never an analysis bound. JSON twin of `lab swing-probe`.
 //!
 //! No new strategy logic lives here — only the per-low verdicts + latch + entry +
 //! exit are collected into one response so the page can render the table + chart
@@ -28,7 +31,7 @@ use trading_core::strategies::swing_1::{
 };
 
 use crate::sweep::projection::CorpusTrade;
-use crate::{state::local_state::LocalState, strategies::sim_fetch::fetch_sim_history_one};
+use crate::{state::local_state::LocalState, strategies::sim_fetch::fetch_full_history_one};
 
 /// The page-editable swing1 params (the 24 swept knobs), all optional. A `None`
 /// means "inert / no bound" — identical to a sweep axis left blank. `take_profit`/
@@ -229,7 +232,7 @@ fn build_response(mint: String, trades: &[CorpusTrade], rule: &Swing1Rule) -> Sw
 
 /// `POST /api/tokens/{mint}/swing1-detect` — see module docs.
 pub async fn detect_token_swing1(
-    _state: web::Data<Arc<LocalState>>,
+    state: web::Data<Arc<LocalState>>,
     path: web::Path<String>,
     body: web::Json<Swing1DetectRequest>,
 ) -> impl Responder {
@@ -238,16 +241,19 @@ pub async fn detect_token_swing1(
         body.into_inner();
     let rule = params.to_rule();
 
-    // Uncapped, full-history read from the SAME lake corpus the backtest prices on —
-    // `curve_only` is applied at load (the projected `CorpusTrade` has no `venue`).
-    let trades: Arc<Vec<CorpusTrade>> = match fetch_sim_history_one(&mint, curve_only).await {
-        Ok(trades) => trades,
-        Err(e) => {
-            tracing::error!("lake trade fetch failed for swing1 detect {mint}: {e}");
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({ "error": "lake trade fetch failed" }));
-        }
-    };
+    // Full history = sealed lake (deep past) ∪ PG fresh tail (recent, not yet exported).
+    // Lake-only would blank the overlay for a token created after the last `lake-export`
+    // (the reported bug); PG-only would blank it for a token older than PG retention.
+    // `curve_only` is honored on both sides (lake at load, PG by `venue`).
+    let trades: Arc<Vec<CorpusTrade>> =
+        match fetch_full_history_one(&state.trade_repo(), &mint, curve_only).await {
+            Ok(trades) => trades,
+            Err(e) => {
+                tracing::error!("trade fetch failed for swing1 detect {mint}: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({ "error": "trade fetch failed" }));
+            }
+        };
 
     let result = web::block(move || {
         let windowed = window_corpus_trades(&trades, window_start_ms, window_end_ms);
