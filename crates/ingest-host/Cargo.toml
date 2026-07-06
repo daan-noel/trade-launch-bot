@@ -16,3 +16,8 @@ tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 sqlx.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+# Decode the base58 tx signature the decoded Trade event carries into the raw
+# BYTEA the trades table stores (RawTx already carries raw bytes).
+bs58 = "0.5"

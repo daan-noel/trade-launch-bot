@@ -2370,8 +2370,11 @@ name = "ingest-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bs58 0.5.1",
+ "chrono",
  "ingest-laserstream",
  "platform-core",
+ "serde_json",
  "sqlx",
  "tokio",
  "tracing",
@@ -2627,6 +2630,9 @@ dependencies = [
  "ingest-host",
  "launcher",
  "platform-core",
+ "serde",
+ "serde_json",
+ "sqlx",
  "tokio",
  "tracing",
  "tracing-subscriber",

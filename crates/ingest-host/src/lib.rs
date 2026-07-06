@@ -2,13 +2,19 @@
 //!
 //! `ingest-laserstream` is a standalone gRPC transport that emits raw
 //! `IngestEvent`s; this crate is the host adapter that bridges those onto
-//! platform-core's `raw_txs` / `trades` schema through the pump.fun/SOL venue
-//! adapter (`launchpad_id = pump_fun`, `quote_asset_id = SOL`, venue-neutral
-//! reserve pair). Wired in Phase 6.
+//! platform-core's `raw_txs` / `trades` / `tokens` schema through the pump.fun/SOL
+//! venue adapter (`launchpad_id = pump_fun`, `quote_asset_id = SOL`, venue-neutral
+//! reserve pair).
+//!
+//! - `pumpfun`  — the `LaunchpadAdapter` impl (resolves interned dimension ids).
+//! - `map`      — pure event → row mappers (unit-testable, no DB/network).
+//! - `consumer` — `spawn_ingest` + the batched ingest → DB pipeline.
 //!
 //! Dep partition: LIVE only. Must NOT appear in `lab`'s dep graph.
 
-/// Phase-6 seam: build the transport and spawn the ingest → DB pipeline.
-pub fn spawn_ingest() {
-    todo!("Phase 6: bridge ingest-laserstream IngestEvents onto raw_txs/trades")
-}
+pub mod consumer;
+pub mod map;
+pub mod pumpfun;
+
+pub use consumer::spawn_ingest;
+pub use pumpfun::PumpFunAdapter;
