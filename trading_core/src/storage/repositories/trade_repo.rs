@@ -614,15 +614,22 @@ impl TradeRepo {
         Ok(grouped)
     }
 
-    /// Find trades for a token in execution order, bounded by `limit`/`offset`.
-    /// Same ordering as `find_by_mint_all` but paged so a high-volume token can't
-    /// produce an unbounded response (the API never has to materialise every row).
+    /// Find trades for a token in execution order, paged by `limit`/`offset`.
+    /// Same ordering as `find_by_mint_all`. `limit <= 0` returns the FULL history
+    /// (unbounded) — the inspect charts (Positions / Sim / grouped-sweep) resolve
+    /// their entry/exit markers and swing legs against this trade set, so a first-N
+    /// cap left the tail of a high-volume token off the chart. A positive `limit`
+    /// still bounds the response.
     pub async fn find_by_mint_paged(
         &self,
         mint: &str,
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Trade>> {
+        // `LIMIT NULL` = all rows; a positive cap passes through unchanged. Binding
+        // an `Option<i64>` lets one SQL string serve both the capped and full-history
+        // callers without string-building the query.
+        let limit_opt: Option<i64> = if limit <= 0 { None } else { Some(limit) };
         let rows = sqlx::query_as::<_, TradeDbRow>(
             r#"
             SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
@@ -637,7 +644,7 @@ impl TradeRepo {
             "#,
         )
         .bind(mint)
-        .bind(limit)
+        .bind(limit_opt)
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
@@ -1206,6 +1213,38 @@ mod tests {
             format!("unknown:{orphan_id}"),
             "unresolved wallet_id falls back to the sentinel, not an empty/dropped row"
         );
+
+        cleanup(&pool, &mint).await;
+    }
+
+    /// `find_by_mint_paged(limit <= 0)` returns the token's FULL history (no cap),
+    /// while a positive `limit` still bounds the page. Regression for the inspect
+    /// charts' entry/exit markers + swing legs mis-snapping when a first-N cap left
+    /// the tail of a high-volume token off the chart.
+    #[tokio::test]
+    #[ignore = "requires a local Postgres (DATABASE_URL); run with --ignored"]
+    async fn find_by_mint_paged_zero_limit_is_unbounded() {
+        let Some(pool) = test_pool().await else { return };
+        let repo = TradeRepo::new(pool.clone());
+        let (wallet, mint) = (unique("W"), unique("M"));
+
+        // More rows than the old 5000 first-N cap would have returned in one page —
+        // keep it modest here (distinct legs of one tx differ only by leg_index).
+        const ROWS: u32 = 12;
+        let sig = unique("bulk-");
+        for i in 0..ROWS {
+            insert_leg(&repo, &wallet, &mint, TradeType::Buy, &sig, i, 0.1, 100).await;
+        }
+
+        // `0` (and any non-positive limit) ⇒ every row, no LIMIT clause.
+        let all = repo.find_by_mint_paged(&mint, 0, 0).await.expect("query");
+        assert_eq!(all.len() as u32, ROWS, "limit <= 0 returns the full history");
+        let neg = repo.find_by_mint_paged(&mint, -1, 0).await.expect("query");
+        assert_eq!(neg.len() as u32, ROWS, "a negative limit is also unbounded");
+
+        // A positive limit still caps the page (paging contract preserved).
+        let capped = repo.find_by_mint_paged(&mint, 5, 0).await.expect("query");
+        assert_eq!(capped.len(), 5, "positive limit bounds the response");
 
         cleanup(&pool, &mint).await;
     }

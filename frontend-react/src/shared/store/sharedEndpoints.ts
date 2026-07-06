@@ -60,14 +60,6 @@ export interface TokensPageArgs {
  */
 export const TOKENS_LIST_LIMIT = 20_000;
 
-/**
- * Upper bound on the per-token trade history pulled for the price chart. The
- * backend `get_trades` handler already caps the response at 5000; requesting it
- * explicitly makes the guardrail visible at the call site (rather than relying
- * on a silent server default) and keeps the chart's working set bounded.
- */
-export const TOKEN_TRADES_LIMIT = 5_000;
-
 export interface TokensResponse {
   total: number;
   /** Filtered count restricted to the live, cache-tracked subset (≤ `total`).
@@ -158,10 +150,11 @@ export const sharedApi = baseApi.injectEndpoints({
       query: (mint) => `/api/tokens/${encodeURIComponent(mint)}`,
     }),
     getTokenTrades: builder.query<TradeRecord[], string>({
-      // Explicitly bounded (see TOKEN_TRADES_LIMIT) so a high-volume token never
-      // pulls an unbounded list into the chart's memory.
-      query: (mint) =>
-        `/api/tokens/${encodeURIComponent(mint)}/trades?limit=${TOKEN_TRADES_LIMIT}`,
+      // Full history (no `limit` ⇒ backend returns every trade): the inspect charts
+      // resolve their entry/exit markers and swing legs against this trade set, so a
+      // first-N cap left the tail of a high-volume token off the chart and mis-snapped
+      // the exit / later swing legs. This is a cold, deliberately-opened path.
+      query: (mint) => `/api/tokens/${encodeURIComponent(mint)}/trades`,
     }),
     // Wallet profiles — read by the chart-marker consumers (Swing detection,
     // Sync token) to overlay tracked wallets. Folded into the cache so those two

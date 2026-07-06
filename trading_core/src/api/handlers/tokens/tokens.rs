@@ -426,19 +426,18 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
     }
 }
 
-/// Query params for `get_trades`. Bounds the response so a high-volume token
-/// can't return an unbounded list (which would block a request thread on the
-/// clone/serialize). Chronological order is preserved; page with `offset`.
+/// Query params for `get_trades`. `limit <= 0` (the default) returns the token's
+/// FULL trade history: the inspect charts (Positions / Sim / grouped-sweep) resolve
+/// their entry/exit markers and swing legs against this trade set, so a first-N cap
+/// left the tail of a high-volume token off the chart and mis-snapped the exit /
+/// later swing legs. A positive `limit` still bounds the response; page with `offset`.
 #[derive(Deserialize)]
 pub struct TradesPageParams {
-    #[serde(default = "default_trades_limit")]
+    /// `<= 0` ⇒ unbounded (full history). Positive ⇒ capped to that many rows.
+    #[serde(default)]
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
-}
-
-fn default_trades_limit() -> i64 {
-    5_000
 }
 
 /// Hard cap on `offset` for the DB-fallback path. `find_by_mint_paged` uses
@@ -451,18 +450,21 @@ const MAX_TRADES_OFFSET: i64 = 50_000;
 
 /// `GET /api/tokens/:mint/trades`
 ///
-/// Returns full `Trade` rows for a token in chronological order from the DB,
-/// bounded by `limit` (default & cap 5000) and `offset`. Reads from Postgres
-/// rather than the live cache: the `TokenCache` now retains only a slimmed
-/// `CachedTrade` projection (missing the `id`/`instruction_labels`/… fields this
-/// endpoint serializes), and this is a cold, paginated path off the hot loop.
+/// Returns full `Trade` rows for a token in chronological order from the DB. By
+/// default (`limit` omitted or `<= 0`) the response is the token's ENTIRE history
+/// so the inspect charts can align every marker/leg against a real bar; a positive
+/// `limit` bounds it. Reads from Postgres rather than the live cache: the
+/// `TokenCache` now retains only a slimmed `CachedTrade` projection (missing the
+/// `id`/`instruction_labels`/… fields this endpoint serializes), and this is a
+/// cold, deliberately-opened path off the hot loop.
 pub async fn get_trades(
     state: web::Data<Arc<CoreState>>,
     path: web::Path<String>,
     query: web::Query<TradesPageParams>,
 ) -> impl Responder {
     let mint = path.into_inner();
-    let limit = query.limit.clamp(1, 5_000);
+    // `<= 0` ⇒ unbounded (see `find_by_mint_paged`); positive stays capped as asked.
+    let limit = if query.limit <= 0 { 0 } else { query.limit };
     let offset = query.offset.clamp(0, MAX_TRADES_OFFSET);
 
     let repo = state.trade_repo();
