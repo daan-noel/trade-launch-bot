@@ -51,8 +51,8 @@ function formatFpGroups(snapshot: RuleNotifSnapshot, fpParams: string[]): string
 
   if (fpParams.includes('cost')) {
     const segs: string[] = [];
-    if (snapshot.p_token_max_cost_lamports != null) segs.push(`max:${fmtSol(snapshot.p_token_max_cost_lamports)}`);
-    if (snapshot.p_token_spendable_lamports_in != null) segs.push(`spnd:${fmtSol(snapshot.p_token_spendable_lamports_in)}`);
+    if (snapshot.p_token_max_sol_cost != null) segs.push(`max:${fmtSol(snapshot.p_token_max_sol_cost)}`);
+    if (snapshot.p_token_spendable_sol_in != null) segs.push(`spnd:${fmtSol(snapshot.p_token_spendable_sol_in)}`);
     if (segs.length) parts.push(segs.join(' '));
   }
 

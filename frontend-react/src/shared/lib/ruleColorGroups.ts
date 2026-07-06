@@ -30,8 +30,8 @@ function fingerprintKey(r: RuleRecord): string {
     r.p_token_initial_buy_sol ?? '',
     r.p_token_cu_limit ?? '',
     r.p_token_cu_price ?? '',
-    r.p_token_max_cost_lamports ?? '',
-    r.p_token_spendable_lamports_in ?? '',
+    r.p_token_max_sol_cost ?? '',
+    r.p_token_spendable_sol_in ?? '',
     labels,
     r.tolerance_pct,
   ].join('|');

@@ -348,6 +348,8 @@ pub struct Swing1Params {
     pub p_swing_low_to_high_pct: Option<f64>,
     #[serde(default)]
     pub p_swing_min_leg_trades: Option<u32>,
+    #[serde(default)]
+    pub p_dust_frac: Option<f64>,
     // Kill profile.
     #[serde(default)]
     pub p_kill_depth_min_pct: Option<f64>,
@@ -402,6 +404,7 @@ impl Swing1Params {
             p_swing_low_to_high_sol: r.p_swing_low_to_high_sol,
             p_swing_low_to_high_pct: r.p_swing_low_to_high_pct,
             p_swing_min_leg_trades: r.p_swing_min_leg_trades,
+            p_dust_frac: r.p_dust_frac,
             p_kill_depth_min_pct: r.p_kill_depth_min_pct,
             p_kill_max_duration_ms: r.p_kill_max_duration_ms,
             p_kill_min_net_flow_per_sec: r.p_kill_min_net_flow_per_sec,
@@ -446,6 +449,7 @@ impl Swing1Params {
         r.p_swing_low_to_high_sol = self.p_swing_low_to_high_sol;
         r.p_swing_low_to_high_pct = self.p_swing_low_to_high_pct;
         r.p_swing_min_leg_trades = self.p_swing_min_leg_trades;
+        r.p_dust_frac = self.p_dust_frac;
         r.p_kill_depth_min_pct = self.p_kill_depth_min_pct;
         r.p_kill_max_duration_ms = self.p_kill_max_duration_ms;
         r.p_kill_min_net_flow_per_sec = self.p_kill_min_net_flow_per_sec;
@@ -766,6 +770,61 @@ mod tests {
         let v = serde_json::to_value(&p).unwrap();
         let back: Tpsl1Params = serde_json::from_value(v).unwrap();
         assert_eq!(p, back);
+    }
+
+    /// Guards the whole-struct drift class (a `Swing1Rule` field silently missing
+    /// from `Swing1Params`, so it round-trips through the `params` JSONB as
+    /// `None` forever regardless of what the caller set — this is exactly how
+    /// `p_dust_frac` went dead: present on `Swing1Rule` and read by the swing
+    /// analyzer, but absent from `Swing1Params` so `from_rule`/`to_rule` never
+    /// carried it). Every swing1-specific axis must survive `from_rule` → `to_rule`.
+    #[test]
+    fn swing1_params_from_rule_to_rule_preserves_every_axis() {
+        let mut rule = Swing1Rule::new(
+            "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
+            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
+        );
+        rule.p_swing_high_to_low_sol = Some(1.0);
+        rule.p_swing_high_to_low_pct = Some(2.0);
+        rule.p_swing_low_to_high_sol = Some(3.0);
+        rule.p_swing_low_to_high_pct = Some(4.0);
+        rule.p_swing_min_leg_trades = Some(5);
+        rule.p_dust_frac = Some(0.05);
+        rule.p_kill_depth_min_pct = Some(0.6);
+        rule.p_kill_max_duration_ms = Some(1000);
+        rule.p_kill_min_net_flow_per_sec = Some(0.5);
+        rule.p_vol_depth_max_pct = Some(0.2);
+        rule.p_vol_min_duration_ms = Some(2000);
+        rule.p_vol_min_up_duration_ms = Some(500);
+        rule.p_min_kills_before_volume = Some(1);
+        rule.p_entry_pullback_pct = Some(10.0);
+        rule.p_entry_higher_low_secs = Some(30);
+        rule.p_entry_max_age_secs = Some(600);
+        rule.p_entry_min_liquidity_sol = Some(2.5);
+        rule.p_exit_next_kill_depth_min_pct = Some(0.7);
+        rule.p_exit_next_kill_max_duration_ms = Some(1500);
+
+        let roundtripped = Swing1Params::from_rule(&rule).to_rule();
+
+        assert_eq!(roundtripped.p_swing_high_to_low_sol, rule.p_swing_high_to_low_sol);
+        assert_eq!(roundtripped.p_swing_high_to_low_pct, rule.p_swing_high_to_low_pct);
+        assert_eq!(roundtripped.p_swing_low_to_high_sol, rule.p_swing_low_to_high_sol);
+        assert_eq!(roundtripped.p_swing_low_to_high_pct, rule.p_swing_low_to_high_pct);
+        assert_eq!(roundtripped.p_swing_min_leg_trades, rule.p_swing_min_leg_trades);
+        assert_eq!(roundtripped.p_dust_frac, rule.p_dust_frac);
+        assert_eq!(roundtripped.p_kill_depth_min_pct, rule.p_kill_depth_min_pct);
+        assert_eq!(roundtripped.p_kill_max_duration_ms, rule.p_kill_max_duration_ms);
+        assert_eq!(roundtripped.p_kill_min_net_flow_per_sec, rule.p_kill_min_net_flow_per_sec);
+        assert_eq!(roundtripped.p_vol_depth_max_pct, rule.p_vol_depth_max_pct);
+        assert_eq!(roundtripped.p_vol_min_duration_ms, rule.p_vol_min_duration_ms);
+        assert_eq!(roundtripped.p_vol_min_up_duration_ms, rule.p_vol_min_up_duration_ms);
+        assert_eq!(roundtripped.p_min_kills_before_volume, rule.p_min_kills_before_volume);
+        assert_eq!(roundtripped.p_entry_pullback_pct, rule.p_entry_pullback_pct);
+        assert_eq!(roundtripped.p_entry_higher_low_secs, rule.p_entry_higher_low_secs);
+        assert_eq!(roundtripped.p_entry_max_age_secs, rule.p_entry_max_age_secs);
+        assert_eq!(roundtripped.p_entry_min_liquidity_sol, rule.p_entry_min_liquidity_sol);
+        assert_eq!(roundtripped.p_exit_next_kill_depth_min_pct, rule.p_exit_next_kill_depth_min_pct);
+        assert_eq!(roundtripped.p_exit_next_kill_max_duration_ms, rule.p_exit_next_kill_max_duration_ms);
     }
 
     // ── decision parity vs the direct tpsl1/2 fns ────────────────────────────

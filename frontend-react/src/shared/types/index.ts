@@ -98,8 +98,8 @@ export interface RuleRecord {
   p_token_initial_buy_sol: number | null;
   p_token_cu_limit: number | null;
   p_token_cu_price: number | null;
-  p_token_max_cost_lamports: number | null;
-  p_token_spendable_lamports_in: number | null;
+  p_token_max_sol_cost: number | null;
+  p_token_spendable_sol_in: number | null;
   p_max_concurrent_tokens: number | null;
   p_max_total_tokens: number | null;
   p_token_ix_labels: unknown;
@@ -229,8 +229,8 @@ export interface RuleNotifSnapshot {
   tolerance_pct: number;
   p_token_cu_limit: number | null;
   p_token_cu_price: number | null;
-  p_token_max_cost_lamports: number | null;
-  p_token_spendable_lamports_in: number | null;
+  p_token_max_sol_cost: number | null;
+  p_token_spendable_sol_in: number | null;
   p_token_ix_labels: string[];
   p_exit_take_profit: number;
   p_exit_stop_loss: number;
