@@ -50,6 +50,20 @@ impl PumpFunTrader {
         self.create_token_inner(mint, args, None, confirm).await
     }
 
+    /// Legacy `create` followed by a dev-wallet buy in the **same** transaction.
+    pub async fn create_token_and_dev_buy(
+        &self,
+        mint: &Keypair,
+        args: &CreateTokenArgs,
+        dev_buy_sol: f64,
+        slippage_bps: Option<u64>,
+        confirm: bool,
+    ) -> Result<String> {
+        let buy_lamports = (dev_buy_sol * LAMPORTS_PER_SOL as f64) as u64;
+        self.create_token_inner(mint, args, Some((dev_buy_sol, buy_lamports, slippage_bps)), confirm)
+            .await
+    }
+
     /// Token-2022 `create_v2` — the current pump.fun default. Returns the tx signature.
     pub async fn create_token_v2(
         &self,
