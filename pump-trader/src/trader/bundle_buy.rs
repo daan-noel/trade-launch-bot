@@ -96,6 +96,20 @@ impl PumpFunTrader {
             .await
     }
 
+    /// Recent blockhash for a Jito bundle — reads the warmed cache or fetches once.
+    pub async fn fresh_blockhash(&self) -> Result<Hash> {
+        use std::time::Duration;
+        if let Some(hash) = self.blockhash_cache.get_fresh(Duration::from_millis(
+            self.config.cache.blockhash_max_age_ms,
+        )) {
+            return Ok(hash);
+        }
+        self.rpc
+            .get_latest_blockhash()
+            .await
+            .map_err(|e| crate::error::TradeError::Other(format!("fetch blockhash: {e}")))
+    }
+
     fn build_bundle_curve_buy_ixs(
         &self,
         signer: &(dyn Signer + Send + Sync),
