@@ -94,13 +94,13 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       key: 'create_tx',
       label: 'Create TX',
       group: 'identity',
-      render: (r: { create_tx_address?: string }) =>
-        r.create_tx_address ? (
-          <AddressDisplay address={r.create_tx_address} kind="transaction" stopPropagation />
+      render: (r: { creation_tx_signature?: string }) =>
+        r.creation_tx_signature ? (
+          <AddressDisplay address={r.creation_tx_signature} kind="transaction" stopPropagation />
         ) : (
           '—'
         ),
-      searchValue: (r: { create_tx_address?: string }) => r.create_tx_address ?? '',
+      searchValue: (r: { creation_tx_signature?: string }) => r.creation_tx_signature ?? '',
     },
     // activity
     {

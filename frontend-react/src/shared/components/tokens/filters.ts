@@ -460,7 +460,7 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
   if (!textMatch(t.name, f.name)) return false;
   if (!textMatch(t.mint_address, f.mint_address)) return false;
   if (!textMatch(t.creator_address, f.creator)) return false;
-  if (!textMatch(t.create_tx_address, f.create_tx)) return false;
+  if (!textMatch(t.creation_tx_signature, f.create_tx)) return false;
 
   // Time
   if (!dateInRange(t.created_at, f.created_from, f.created_to)) return false;

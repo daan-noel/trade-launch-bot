@@ -253,7 +253,7 @@ export function TokenDetailPanel({ detail, loading, error }: TokenDetailPanelPro
               />
               <AddrCard
                 label="Create TX"
-                full={detail.create_tx_address}
+                full={detail.creation_tx_signature}
                 kind="transaction"
               />
               {detail.bonding_curve_address ? (

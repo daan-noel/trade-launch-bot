@@ -68,7 +68,7 @@ pub struct TokenSummary {
     pub age_seconds: i64,
     pub created_at: DateTime<Utc>,
     pub creator_address: String,
-    pub create_tx_address: String,
+    pub creation_tx_signature: String,
     pub name: String,
     pub trade_count: u64,
     pub last_trade_at: Option<DateTime<Utc>>,
@@ -119,7 +119,7 @@ impl From<&TokenState> for TokenSummary {
             age_seconds,
             created_at: s.token.created_at,
             creator_address: s.token.creator_wallet.clone(),
-            create_tx_address: s.token.creation_tx_signature.clone(),
+            creation_tx_signature: s.token.creation_tx_signature.clone(),
             name: s.token.name.clone(),
             trade_count: s.trade_count,
             last_trade_at: s.last_trade_at,
@@ -173,7 +173,7 @@ impl From<crate::storage::repositories::token_repo::TokenListRow> for TokenSumma
             age_seconds,
             created_at: r.created_at,
             creator_address: r.creator_wallet,
-            create_tx_address: r.creation_tx_signature,
+            creation_tx_signature: r.creation_tx_signature,
             name: r.name,
             trade_count: r.trade_count.unwrap_or(0) as u64,
             last_trade_at: r.last_trade_at,
@@ -202,7 +202,7 @@ pub struct TokenDetail {
     pub is_mayhem_mode: bool,
     pub is_cashback_enabled: bool,
     pub instruction_labels: serde_json::Value,
-    pub create_tx_address: String,
+    pub creation_tx_signature: String,
     pub created_at: DateTime<Utc>,
     // Non-null (coalesced to 0), matching `TokenSummary`/the list endpoint — the
     // detail modal and the list agree on these two counters' shape (SSOT reconcile).
@@ -242,7 +242,7 @@ impl From<&TokenState> for TokenDetail {
             is_mayhem_mode: s.token.is_mayhem_mode,
             is_cashback_enabled: s.token.is_cashback_enabled,
             instruction_labels: s.token.instruction_labels.clone(),
-            create_tx_address: s.token.creation_tx_signature.clone(),
+            creation_tx_signature: s.token.creation_tx_signature.clone(),
             created_at: s.token.created_at,
             trade_count: s.trade_count,
             volume_sol_total: s.volume_sol_total,
@@ -397,7 +397,7 @@ pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>
                 "is_mayhem_mode": token.is_mayhem_mode,
                 "is_cashback_enabled": token.is_cashback_enabled,
                 "instruction_labels": token.ix_labels,
-                "create_tx_address": token.creation_tx_signature,
+                "creation_tx_signature": token.creation_tx_signature,
                 "created_at": token.created_at,
                 "trade_count": token.trade_count,
                 "volume_sol_total": token.volume_sol,
@@ -569,7 +569,7 @@ fn build_registry() -> Vec<ColumnSpec> {
             .sortable("t.mint_address", true, |t| SortKey::Str(Some(t.mint_address.clone()))),
         C::new("creator", Some("t.creator_wallet".into()), |t| t.creator_address.clone())
             .sortable("t.creator_wallet", true, |t| SortKey::Str(Some(t.creator_address.clone()))),
-        C::new("create_tx", Some("t.creation_tx_signature".into()), |t| t.create_tx_address.clone()),
+        C::new("create_tx", Some("t.creation_tx_signature".into()), |t| t.creation_tx_signature.clone()),
         C::new("token_age", Some("EXTRACT(EPOCH FROM (now() - t.created_at))::bigint::text".into()),
                 |t| t.age_seconds.to_string())
             .sortable("EXTRACT(EPOCH FROM (now() - t.created_at))", false,
@@ -1103,7 +1103,7 @@ impl TokenQuery {
         if !text_match(&t.creator_address, g(f, "creator")) {
             return false;
         }
-        if !text_match(&t.create_tx_address, g(f, "create_tx")) {
+        if !text_match(&t.creation_tx_signature, g(f, "create_tx")) {
             return false;
         }
 

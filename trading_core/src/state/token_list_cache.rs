@@ -284,7 +284,7 @@ mod tests {
             age_seconds: 0,
             created_at,
             creator_address: String::new(),
-            create_tx_address: String::new(),
+            creation_tx_signature: String::new(),
             name: String::new(),
             trade_count: 0,
             last_trade_at: None,

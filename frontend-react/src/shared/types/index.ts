@@ -27,7 +27,7 @@ export interface TokenEnrichmentFields {
   cu_price?: number | null;
   is_mayhem_mode?: boolean;
   is_cashback_enabled?: boolean;
-  create_tx_address?: string;
+  creation_tx_signature?: string;
   ix_labels_count?: number;
   instruction_labels?: unknown;
   trade_count?: number;
@@ -79,7 +79,7 @@ export interface TokenRecord {
   /** `created_at` pre-parsed to epoch-ms once at ingest (see apiSlice transform),
    *  so age cells never re-parse the ISO string per render/tick. */
   created_at_ms?: number;
-  create_tx_address: string;
+  creation_tx_signature: string;
   last_trade_at: string | null;
   /** Gap-aware lifetime in seconds (creation → last non-stray trade); `Some` only
    *  when the token is dead, per backend `TokenState::lifetime_secs`. */
@@ -556,7 +556,7 @@ export interface TokenDetailRecord {
   instruction_labels: unknown;
   is_mayhem_mode: boolean;
   is_cashback_enabled: boolean;
-  create_tx_address: string;
+  creation_tx_signature: string;
   created_at: string;
   // Coalesced to 0 by the backend (matches the list endpoint), so never null —
   // unlike the other tokens_info-derived fields below.
