@@ -1,0 +1,23 @@
+[package]
+name = "platform-core"
+version.workspace = true
+edition.workspace = true
+description = "Data layer for the launch platform: config, models, storage (Postgres/TimescaleDB), repositories, venue trait contracts. Venue- and quote-asset-generalized. NO ingest/trader/lake deps."
+
+[lib]
+name = "platform_core"
+path = "src/lib.rs"
+
+[dependencies]
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+dashmap.workspace = true
+dotenvy.workspace = true
+# NOTE: no solana-sdk. Addresses are TEXT/String in the data layer; on-chain types
+# live behind the live-side crates (`launcher`/`ingest-host`), never here.

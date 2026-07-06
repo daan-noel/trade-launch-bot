@@ -1,0 +1,18 @@
+[package]
+name = "lake"
+version.workspace = true
+edition.workspace = true
+description = "Cold OLAP tier: sealed-day Parquet mirror of trades + a tokens dimension, DuckDB reader, sweeps/backtests. LAB ONLY — never a live dep. DuckDB/arrow/parquet/rayon added when filled."
+
+[lib]
+name = "lake"
+path = "src/lib.rs"
+
+[dependencies]
+platform-core = { path = "../platform-core" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+# NOTE: duckdb / arrow / parquet / rayon land here when the cold tier is filled
+# (Phase 7 scaffolds the crate empty). These deps must NEVER reach EC2 — enforced
+# by `lake` being a `lab`-only dependency (verify: `cargo tree -p live`).

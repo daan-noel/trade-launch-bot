@@ -1,0 +1,18 @@
+# Rust
+/target
+/target-check
+**/*.rs.bk
+
+# Env / secrets
+.env
+.env.backup
+*.pem
+
+# Lake data (workstation-local Parquet; never committed)
+/lake-data
+*.parquet
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini

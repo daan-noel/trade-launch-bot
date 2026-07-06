@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "crates/platform-core",
+    "crates/ingest-host",
+    "crates/launcher",
+    "crates/lake",
+    "crates/live",
+    "crates/lab",
+]
+# resolver "1" mirrors meme-trading — the borrowed crates pin solana 1.17.27, and
+# "1"'s additive feature unification is the combination those crates were built
+# against. Revisit only if a dep genuinely needs "2".
+resolver = "1"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+# ---------------------------------------------------------------------------
+# Borrowed standalone crates from the sibling meme-trading repo (path deps now →
+# pinned git rev once stable). They have NO workspace deps of their own, so they
+# drop into any workspace. `launcher` uses pump-trader; `ingest-host` uses
+# ingest-laserstream. NEITHER may appear in `lab`'s dep graph (verify with
+# `cargo tree -p lab`). See README "Dep partition".
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+pump-trader        = { path = "../meme-trading/pump-trader" }
+ingest-laserstream = { path = "../meme-trading/ingest-laserstream", features = ["raw-tx"] }
+
+# Shared third-party versions pinned once here (mirrors meme-trading's set).
+tokio     = { version = "1", features = ["full"] }
+sqlx      = { version = "0.6", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid", "migrate"] }
+serde     = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+chrono    = { version = "0.4", features = ["serde"] }
+uuid      = { version = "1", features = ["v4", "serde"] }
+anyhow    = "1"
+tracing   = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dashmap   = "4.0"
+actix-web = "4"
+dotenvy   = "0.15"
+# NOTE: no solana-sdk here. The data layer (`platform-core`) stores on-chain
+# addresses as TEXT/String and depends on NO solana crate — so `lab` is fully
+# solana-free. Only the live-side borrowed crates (pump-trader / ingest-laserstream)
+# pull solana, at their own pinned 1.17.27. A launcher/live crate that needs
+# solana types gets them transitively from pump-trader.
+
+[profile.dev]
+debug = true

@@ -1,0 +1,22 @@
+[package]
+name = "live"
+version.workspace = true
+edition.workspace = true
+description = "LIVE box (ships to EC2): ingest + launcher + trading + thin HTTP. Links ingest-host + launcher (+ pump-trader + ingest-laserstream). MUST NOT link lake / duckdb / arrow / parquet."
+
+[[bin]]
+name = "live"
+path = "src/main.rs"
+
+[dependencies]
+platform-core = { path = "../platform-core" }
+ingest-host   = { path = "../ingest-host" }
+launcher      = { path = "../launcher" }
+tokio.workspace = true
+actix-web.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+dotenvy.workspace = true
+# NOTE: `lake` is intentionally absent. Adding it here drags DuckDB/arrow/parquet
+# onto the 2vCPU/4GB EC2 box — verify with `cargo tree -p live` (no duckdb).
