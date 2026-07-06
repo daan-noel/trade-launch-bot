@@ -1,8 +1,12 @@
 //! Storage layer.
 //!
-//! - `timescale` — continuous-aggregate boot (idempotent, run after `migrate!`).
-//! - `postgres` (Phase 3) — workload-isolated pools (hot/api/batch) + `sqlx::migrate!`.
-//! - `repositories` (Phase 3) — one repo per table, converting `amount_*` base-unit
-//!   columns to human `_*` model fields at the boundary via [`crate::units`].
+//! - `postgres`     — workload-isolated pools (hot/api/batch) + `sqlx::migrate!` + cagg boot.
+//! - `timescale`    — continuous-aggregate boot (idempotent, run after `migrate!`).
+//! - `repositories` — one repo per table; converts `amount_*` base-unit columns to
+//!   human values with the quote/base decimals via [`crate::units`] at the boundary.
 
+pub mod postgres;
+pub mod repositories;
 pub mod timescale;
+
+pub use postgres::{connect, DbPools};
