@@ -1,71 +1,12 @@
 import { useMemo, useState, type MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
-import type { TokenRecord } from 'types';
 import { DateCell } from 'components/table/DateCell';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { AmountCell, CompactCell, CurrentPriceCell, PriceCell } from 'components/tokens/priceCells';
+import { numericColKeys } from 'services/tableRequest';
 import { formatCompact, formatDecimalTrim, formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
-
-// ---------------------------------------------------------------------------
-// Token enrichment keys that every strategy result row carries after merging.
-// Mirrors the `TokenRecord` fields the batch endpoint provides (excluding
-// `mint_address` — strategy rows use `mint` — and `lifetime_secs` — not
-// carried on strategy rows, excluded per plan).
-// ---------------------------------------------------------------------------
-
-const TOKEN_ENRICH_FIELDS = [
-  'symbol',
-  'name',
-  'created_at',
-  'creator_address',
-  'initial_buy_sol',
-  'initial_supply_token',
-  'token_amount',
-  'max_cost_lamports',
-  'spendable_lamports_in',
-  'min_tokens_out',
-  'cu_limit',
-  'cu_price',
-  'is_mayhem_mode',
-  'is_cashback_enabled',
-  'create_tx_address',
-  'ix_labels_count',
-  'instruction_labels',
-  'trade_count',
-  'current_price',
-  'volume_sol_total',
-  'first_slot_buy_sol',
-  'first_slot_sell_sol',
-  'market_cap',
-  'ath_price',
-  'ath_timestamp',
-  'is_migrated',
-  'is_dead',
-  'last_trade_at',
-  'last_synced_at',
-] as const;
-
-type EnrichField = (typeof TOKEN_ENRICH_FIELDS)[number];
-
-/** Merge token-info fields from `tokenMap` into each row, preserving the
- * row's own fields (they win on overlap). Used by strategy pages before passing
- * rows to DataTable. */
-export function mergeTokenData<T extends { mint: string }>(
-  rows: T[],
-  tokenMap: Map<string, TokenRecord>,
-): T[] {
-  return rows.map((r) => {
-    const tok = tokenMap.get(r.mint);
-    if (!tok) return r;
-    const patch: Partial<Record<EnrichField, unknown>> = {};
-    for (const f of TOKEN_ENRICH_FIELDS) {
-      patch[f] = (tok as unknown as Record<string, unknown>)[f];
-    }
-    return { ...patch, ...r } as T;
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Instruction-labels helpers + the copy-on-click IX-count cell. Shared by the
@@ -529,4 +470,35 @@ export function appendedTokenColumns(existingKeys: Set<string>): ColumnDef<any>[
   return tokenInfoColumns()
     .filter((c) => !existingKeys.has(c.key))
     .map((c) => ({ ...c, defaultVisible: !APPENDED_HIDDEN_KEYS.has(c.key) }));
+}
+
+/**
+ * Every column key the shared token-info set contributes. Pass this as a token
+ * table's `existingKeys` to append NOTHING (the Tokens page lays out the full
+ * field set itself, in its own order) while still routing through `TokenTable`
+ * for the shared features.
+ */
+export const ALL_TOKEN_INFO_KEYS: Set<string> = new Set(
+  tokenInfoColumns().map((c) => c.key),
+);
+
+/**
+ * The subset of token-info column keys that filter numerically (declare
+ * `filterNumber`). These columns are appended by `TokenTable`, so a table's own
+ * `numericColKeys(baseColumns)` misses them — union this in when serializing the
+ * view-state, or use {@link tokenNumericColKeys}.
+ */
+export const TOKEN_INFO_NUMERIC_KEYS: ReadonlySet<string> = numericColKeys(
+  tokenInfoColumns(),
+);
+
+/**
+ * Numeric-filtering keys for a token table: the base columns' numeric keys PLUS
+ * the appended token-info numeric keys. Use this (not `numericColKeys(base)`) for
+ * the `numericCols` a token table serializes with, so numeric filters on the
+ * appended enrichment columns (`>5`/`1..10`) still lower to structured ops.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function tokenNumericColKeys(baseColumns: ColumnDef<any>[]): Set<string> {
+  return new Set([...numericColKeys(baseColumns), ...TOKEN_INFO_NUMERIC_KEYS]);
 }

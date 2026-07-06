@@ -65,6 +65,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       ),
       sortValue: (r) => r.ui_amount,
       searchValue: (r) => String(r.ui_amount),
+      filterNumber: (r) => r.ui_amount,
     },
     {
       key: 'value_usd',
@@ -75,6 +76,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <ValueCell usd={r.value_usd} />,
       sortValue: (r) => r.value_usd ?? 0,
       searchValue: (r) => String(r.value_usd ?? ''),
+      filterNumber: (r) => r.value_usd ?? null,
     },
     {
       key: 'cost_basis_sol',
@@ -90,6 +92,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
         ),
       sortValue: (r) => r.cost_basis_sol ?? 0,
       searchValue: (r) => String(r.cost_basis_sol ?? ''),
+      filterNumber: (r) => r.cost_basis_sol ?? null,
     },
     {
       key: 'unrealized_pnl',
@@ -117,6 +120,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       },
       sortValue: (r) => r.unrealized_pnl_sol ?? 0,
       searchValue: (r) => String(r.unrealized_pnl_sol ?? ''),
+      filterNumber: (r) => r.unrealized_pnl_sol ?? null,
     },
     {
       key: 'price_usd',
@@ -127,6 +131,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <PriceCell usd={r.price_usd} />,
       sortValue: (r) => r.price_usd ?? 0,
       searchValue: (r) => String(r.price_usd ?? ''),
+      filterNumber: (r) => r.price_usd ?? null,
     },
     {
       key: 'price_change_24h',
@@ -151,6 +156,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       },
       sortValue: (r) => r.price_change_24h ?? 0,
       searchValue: (r) => String(r.price_change_24h ?? ''),
+      filterNumber: (r) => r.price_change_24h ?? null,
     },
     {
       key: 'liquidity',
@@ -161,6 +167,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <LiquidityCell usd={r.liquidity} />,
       sortValue: (r) => r.liquidity ?? 0,
       searchValue: (r) => String(r.liquidity ?? ''),
+      filterNumber: (r) => r.liquidity ?? null,
     },
     {
       // ⭐ Bot-managed badge: a live strategy holds/exits this same bag, so a
@@ -170,7 +177,9 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       label: 'Managed By',
       group: 'flags',
       width: '150px',
-      sortable: true,
+      // Nested object — the server-side evaluator can't compare it, so it's
+      // display-only (not sortable/filterable), unlike the scalar columns.
+      sortable: false,
       render: (r) => {
         const m = r.managed_by;
         if (!m) return <span className="text-text-dim">—</span>;
@@ -237,6 +246,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <span className="tabular-nums text-text-dim">{r.amount}</span>,
       sortValue: (r) => r.amount,
       searchValue: (r) => String(r.amount),
+      filterNumber: (r) => r.amount,
     },
     {
       key: 'decimals',
@@ -248,6 +258,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <span className="text-text-dim">{r.decimals}</span>,
       sortValue: (r) => r.decimals,
       searchValue: (r) => String(r.decimals),
+      filterNumber: (r) => r.decimals,
     },
     {
       key: 'token_program',

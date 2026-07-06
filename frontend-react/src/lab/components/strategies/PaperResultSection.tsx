@@ -1,5 +1,5 @@
 import { useCallback, useState, type ReactNode } from 'react';
-import { DataTable } from 'components/table/DataTable';
+import { TokenTable } from 'components/tokens/TokenTable';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
@@ -67,6 +67,7 @@ function SectionHeading({
 export function PaperResultSection({
   data,
   positionColumns,
+  positionKeys,
   positions,
   positionsTotal,
   positionsSummary,
@@ -84,6 +85,9 @@ export function PaperResultSection({
 }: {
   data: PaperResultResponse;
   positionColumns: ColumnDef<RulePositionRecord>[];
+  /** Keys the bespoke `positionColumns` already render — passed to `TokenTable`
+   *  so it skips them when appending the shared token-info columns. */
+  positionKeys: Set<string>;
   /** Current page of the run's positions (server-side window). */
   positions: RulePositionRecord[];
   /** Run-wide total for the pager (from `X-Total-Count`). */
@@ -213,8 +217,11 @@ export function PaperResultSection({
           count={positionsTotal}
           subtitle={data.rule_name}
         />
-        <DataTable
+        <TokenTable
           columns={positionColumns}
+          existingKeys={positionKeys}
+          mintSetFilter
+          charts
           rows={positions}
           rowKey={keyById}
           selectedKey={selectedKey}

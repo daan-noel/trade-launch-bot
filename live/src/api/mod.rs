@@ -102,6 +102,8 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             // holdings with cost basis/PnL/bot tag, the wallet summary, and the
             // cross-strategy open-positions roll-up.
             .route("/portfolio/holdings", web::get().to(handlers::trading::get_portfolio_holdings))
+            .route("/portfolio/holdings/query", web::post().to(handlers::trading::query_portfolio_holdings))
+            .route("/portfolio/holdings/summary", web::post().to(handlers::trading::portfolio_holdings_summary))
             .route("/portfolio/summary", web::get().to(handlers::trading::get_portfolio_summary))
             .route("/portfolio/positions", web::get().to(handlers::trading::get_portfolio_positions))
             // On-chain Solana queries

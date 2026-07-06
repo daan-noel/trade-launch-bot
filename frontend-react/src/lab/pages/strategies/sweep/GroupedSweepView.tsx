@@ -2,6 +2,8 @@
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
@@ -748,10 +750,18 @@ export function GroupedSweepView({
                     <InlineAlert variant="error">{tokenResultsErr}</InlineAlert>
                   )}
 
-                  <DataTable
+                  {/* Routed through the shared `TokenTable` (client mode — the
+                      combo's per-token results are already resident; `DataTable`
+                      pages in-browser). The bespoke columns already lay out the full
+                      set, so append nothing (`ALL_TOKEN_INFO_KEYS`); the mint-set
+                      paste box + per-token charts toggle come for free. */}
+                  <TokenTable
                     columns={tokenColumns}
                     rows={visibleTokenResults}
-                    rowKey={(r) => r.mint}
+                    existingKeys={ALL_TOKEN_INFO_KEYS}
+                    mintOf={(r) => r.mint}
+                    mintSetFilter
+                    charts
                     groupLabels={{
                       identity: 'Identity',
                       activity: 'Activity',

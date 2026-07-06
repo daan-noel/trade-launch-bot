@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
-import { DataTable } from 'components/table/DataTable';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { FilterPanel } from 'components/tokens/FilterPanel';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
@@ -82,6 +83,9 @@ export function TokensPage() {
       sortKeys: tableQuery.sortKeys,
       search: tableQuery.search,
       colFilters: tableQuery.colFilters,
+      // The mint-set paste box (TokenTable) rides here so it reaches the backend
+      // `filters` map as the `in`-on-`mint` op.
+      structuredFilters: tableQuery.structuredFilters,
       filters,
       timezone,
       trackedOnly,
@@ -147,7 +151,8 @@ export function TokensPage() {
   const anyActive =
     filterCount > 0 ||
     !!tableQuery.search ||
-    Object.values(tableQuery.colFilters).some(Boolean);
+    Object.values(tableQuery.colFilters).some(Boolean) ||
+    Object.keys(tableQuery.structuredFilters ?? {}).length > 0;
 
   // Per-mint detail cached by mint, so re-selecting a token is instant.
   const {
@@ -324,10 +329,13 @@ export function TokensPage() {
 
       {error && <p className="text-red">{error}</p>}
       {!error && (
-        <DataTable
+        <TokenTable
           columns={columns}
           rows={tokens}
+          existingKeys={ALL_TOKEN_INFO_KEYS}
+          mintOf={(r) => r.mint_address}
           rowKey={tokenRowKey}
+          mintSetFilter
           selectedKey={selectedMint}
           onSelect={setSelectedMint}
           serverSide

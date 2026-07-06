@@ -127,6 +127,63 @@ export function fetchSimulatedPage(
   );
 }
 
+/** Whole-population roll-up for the Holdings summary bar (server-computed over the
+ *  filtered set). Mirrors the Rust `HoldingsTableSummary`. */
+export interface HoldingsTableSummary {
+  positions: number;
+  total_value_sol: number | null;
+  total_value_usd: number | null;
+  total_cost_basis_sol: number;
+  total_unrealized_pnl_sol: number | null;
+  change_24h_pct: number | null;
+}
+
+/** POST one page of the wallet Holdings table (server-side search/sort/filter/paging
+ *  over the composed holdings). `fresh` busts the server's short-TTL scan cache — the
+ *  page sends it once after a confirmed trade so the reload reflects the new balance.
+ *  Response body is a bare holdings array (like positions). */
+export function fetchHoldingsPage(
+  body: TableRequestBody,
+  signal?: AbortSignal,
+  fresh = false,
+): Promise<{ items: import('types').WalletHolding[]; total: number }> {
+  return postTablePage(
+    `/api/portfolio/holdings/query${fresh ? '?fresh=1' : ''}`,
+    body,
+    (json) => json as import('types').WalletHolding[],
+    signal,
+  );
+}
+
+/** One composed holding by mint (or `null` if unheld) — reuses the warm holdings
+ *  scan via the `in` filter, so the manual buy/sell dialogs get the authoritative
+ *  `managed_by` / `token_account` / balance without a separate RPC. */
+export async function fetchHoldingByMint(
+  mint: string,
+): Promise<import('types').WalletHolding | null> {
+  const { items } = await fetchHoldingsPage({
+    pagination: { page: 1, pageSize: 1 },
+    sorting: [],
+    search: '',
+    filters: { mint: { op: 'in', val: [mint] } },
+  });
+  return items[0] ?? null;
+}
+
+/** GET-shaped POST for the Holdings summary bar — same filter body as the table so
+ *  the totals cover exactly the filtered population (pagination/sorting ignored). */
+export function fetchHoldingsSummary(
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<HoldingsTableSummary> {
+  return request(`${API_BASE}/api/portfolio/holdings/summary`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
 /** GET the whole-run aggregate for a rule's Simulated summary card. */
 export function fetchSimulatedSummary(
   strategySeg: string,

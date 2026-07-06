@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useState } from 'react';
-import { DataTable } from 'components/table/DataTable';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
 import { InlineAlert } from 'components/ui/Modal';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
-import { numericColKeys } from 'services/tableRequest';
 import type { PositionScope } from 'services/api';
 import type { TableRequestBody } from 'services/tableRequest';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
@@ -53,6 +53,9 @@ interface RunPositionsPanelProps {
   rules: RuleRecord[];
   /** Positions table columns (the old-runs table prepends a run column). */
   columns: ColumnDef<RulePositionRecord>[];
+  /** Keys the bespoke `columns` already render — passed to `TokenTable` so it
+   *  skips them when appending the shared token-info columns. */
+  existingKeys: Set<string>;
   /** Scope-aware page fetch (accepts `'current'`/`'history'`). */
   fetchPositions: (
     ruleId: string,
@@ -118,6 +121,7 @@ export function RunPositionsPanel({
   selectedRuleName,
   rules,
   columns,
+  existingKeys,
   fetchPositions,
   fetchSummary,
   price,
@@ -127,7 +131,9 @@ export function RunPositionsPanel({
   sellingPositionMint,
   onSellPosition,
 }: RunPositionsPanelProps) {
-  const numericCols = useMemo(() => numericColKeys(columns), [columns]);
+  // Numeric-filtering keys must include the token-info columns `TokenTable`
+  // appends, so `>5`/`1..10` on an enrichment column still lowers to a structured op.
+  const numericCols = useMemo(() => tokenNumericColKeys(columns), [columns]);
   const historyColumns = useMemo(() => [RUN_COLUMN, ...columns], [columns]);
 
   // Independent view-state per section (each table pages/sorts/filters on its own).
@@ -213,8 +219,11 @@ export function RunPositionsPanel({
           <SimSummaryCard title="Current run" ruleName={ruleName} summary={current.summary} price={price} />
         )}
         {!current.error && (
-          <DataTable
+          <TokenTable
             columns={columns}
+            existingKeys={existingKeys}
+            mintSetFilter
+            charts
             rows={currentRows}
             rowKey={keyById}
             selectedKey={selectedKey}
@@ -245,8 +254,11 @@ export function RunPositionsPanel({
             <SimSummaryCard title="Old runs" ruleName={ruleName} summary={history.summary} price={price} />
           )}
           {!history.error && (
-            <DataTable
+            <TokenTable
               columns={historyColumns}
+              existingKeys={existingKeys}
+              mintSetFilter
+              charts
               rows={historyRows}
               rowKey={keyById}
               rowClassName={historyRowClass}

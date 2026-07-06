@@ -815,6 +815,10 @@ pub struct TokenQuery {
     sort_levels: Vec<(String, bool)>,
     /// (column key, raw expression)
     col_filters: Vec<(String, String)>,
+    /// Pasted mint-set filter (the `<MintSetInput>` `in` op on `mint`): exact,
+    /// case-sensitive membership over `mint_address`. Empty ⇒ no constraint. Both
+    /// eval engines (`matches`, `sql.rs`) honor it identically (parity-guarded).
+    mint_in: Vec<String>,
     /// global filter values keyed by TokenFilters field name (non-empty only)
     f: HashMap<&'static str, String>,
     /// Swing run to read chain stats from when sorting a chain column.
@@ -1012,6 +1016,12 @@ impl TokenQuery {
         &self.col_filters
     }
 
+    /// The pasted mint-set (exact, case-sensitive membership over `mint_address`);
+    /// empty ⇒ no constraint. Read by the SQL builder to emit `= ANY($n)`.
+    pub fn mint_in(&self) -> &[String] {
+        &self.mint_in
+    }
+
     /// Lower the unified [`TableRequest`] body onto the internal query. Each
     /// `FilterSpec` in `req.filters` (keyed by frontend/registry column) is folded via
     /// [`lower_filter`] onto EITHER the global panel map `f` (identity / date /
@@ -1023,7 +1033,26 @@ impl TokenQuery {
     pub fn from_table_request(req: &TableRequest) -> Self {
         let mut f: HashMap<&'static str, String> = HashMap::new();
         let mut col_filters: Vec<(String, String)> = Vec::new();
+        let mut mint_in: Vec<String> = Vec::new();
         for (key, spec) in &req.filters {
+            // The pasted mint-set (`in` op on `mint`) is a set-membership filter, not
+            // a substring — lift its array operand here (capped) instead of routing
+            // it through `lower_filter` (which handles only single-operand ops).
+            if key == "mint" && spec.op == crate::api::table_query::FilterOp::In {
+                if let Value::Array(arr) = &spec.val {
+                    mint_in = arr
+                        .iter()
+                        .filter_map(|v| match v {
+                            Value::String(s) => Some(s.trim().to_string()),
+                            Value::Number(n) => Some(n.to_string()),
+                            _ => None,
+                        })
+                        .filter(|s| !s.is_empty())
+                        .take(crate::api::table_query::MAX_FILTER_IN_VALUES)
+                        .collect();
+                }
+                continue;
+            }
             lower_filter(key, spec, &mut f, &mut col_filters);
         }
 
@@ -1031,6 +1060,7 @@ impl TokenQuery {
             search: req.search.clone(),
             sort_levels: sort_levels_from_specs(&req.sorting),
             col_filters,
+            mint_in,
             f,
             swing_run_id: req.swing_run_id.clone().filter(|s| !s.is_empty()),
             swing_chain_latency_ms: req.swing_chain_latency_ms.unwrap_or(DEFAULT_CHAIN_LATENCY_MS),
@@ -1074,6 +1104,11 @@ impl TokenQuery {
             return false;
         }
         if !text_match(&t.create_tx_address, g(f, "create_tx")) {
+            return false;
+        }
+
+        // Pasted mint set (exact membership) — mirrors the SQL `= ANY($n)`.
+        if !self.mint_in.is_empty() && !self.mint_in.iter().any(|m| m == &t.mint_address) {
             return false;
         }
 
@@ -1808,6 +1843,29 @@ mod lowering_tests {
             "filters": {"market_cap": {"op":"between","min":5,"max":50}}
         })));
         assert_eq!(q.col_filters_slice(), &[("market_cap".to_string(), "5..50".to_string())]);
+    }
+
+    #[test]
+    fn mint_set_in_op_lifts_to_mint_in() {
+        // The pasted mint-set `in` op becomes the exact-membership `mint_in` list,
+        // NOT the `mint` substring panel filter and NOT a `col_filters` entry.
+        let q = TokenQuery::from_table_request(&req(json!({
+            "filters": {"mint": {"op":"in","val":["MintA", "MintB", ""]}}
+        })));
+        assert_eq!(q.mint_in(), &["MintA".to_string(), "MintB".to_string()], "blanks dropped");
+        assert!(q.f_get("mint").is_none(), "mint-set doesn't touch the substring panel filter");
+        assert!(q.col_filters_slice().is_empty(), "mint-set isn't a per-column predicate");
+    }
+
+    #[test]
+    fn mint_substring_op_still_lowers_to_panel() {
+        // A `contains` on `mint` is the substring identity filter, unaffected by the
+        // set path.
+        let q = TokenQuery::from_table_request(&req(json!({
+            "filters": {"mint": {"op":"contains","val":"abc"}}
+        })));
+        assert_eq!(q.f_get("mint"), Some("abc"));
+        assert!(q.mint_in().is_empty());
     }
 
     #[test]

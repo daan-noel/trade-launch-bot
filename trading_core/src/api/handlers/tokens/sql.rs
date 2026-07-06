@@ -101,6 +101,12 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
         }
     }
 
+    // --- Pasted mint set (exact membership; mirrors the in-RAM `mint_in` check) ---
+    if !q.mint_in().is_empty() {
+        let ph = a.push(SqlArg::StrArray(q.mint_in().to_vec()));
+        clauses.push(format!("t.mint_address = ANY({ph})"));
+    }
+
     // --- Time (date_in_range over an Option<timestamptz>) ---
     push_date_range(&mut clauses, "t.created_at", q.f_get("created_from"), q.f_get("created_to"), &mut a);
     push_date_range(&mut clauses, "i.last_trade_at", q.f_get("last_trade_from"), q.f_get("last_trade_to"), &mut a);
@@ -616,6 +622,21 @@ mod tests {
         assert!(!b.where_sql.contains("i.trade_count, 0)::text"));
         assert!(!b.where_sql.contains("t.name"));
         assert!(!b.where_sql.contains("creator_wallet"));
+    }
+
+    #[test]
+    fn mint_set_lowers_to_any_membership() {
+        let b = build_where_and_order(
+            &query(serde_json::json!({
+                "filters": {"mint": {"op":"in","val":["MintA","MintB"]}}
+            })),
+            now(),
+        );
+        assert!(b.where_sql.contains("t.mint_address = ANY($1)"), "mint set → = ANY");
+        match &b.args[0] {
+            SqlArg::StrArray(v) => assert_eq!(v, &vec!["MintA".to_string(), "MintB".to_string()]),
+            other => panic!("expected StrArray, got {other:?}"),
+        }
     }
 
     #[test]

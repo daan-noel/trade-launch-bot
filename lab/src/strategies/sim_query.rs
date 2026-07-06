@@ -16,7 +16,7 @@
 
 use serde_json::Value;
 
-use trading_core::api::table_eval::{apply_table_request, ColKind};
+use trading_core::api::table_eval::{apply_table_request, resolve_token_enrichment_key, ColKind};
 use trading_core::api::table_query::TableRequest;
 
 /// Resolve a frontend column key to the JSON field it reads + its type. `None` =
@@ -47,37 +47,13 @@ fn resolve(key: &str) -> Option<(&'static str, ColKind)> {
         "entry_time" => ("entry_time", Text),
         "exit_time" => ("exit_time", Text),
         "target_time" => ("target_time", Text),
-
-        // --- token_enrich::TokenEnrichment fields (appendedTokenColumns) ---
-        "name" => ("name", Text),
+        // The sim row owns its own `created_at` (the token's), so it maps `created`
+        // here rather than through the shared enrichment resolver (which excludes it).
         "created" | "created_at" => ("created_at", Text),
-        "creator" | "creator_address" => ("creator_address", Text),
-        "create_tx" | "create_tx_address" => ("create_tx_address", Text),
-        "trade_count" => ("trade_count", Number),
-        "last_trade" | "last_trade_at" => ("last_trade_at", Text),
-        "last_synced" | "last_synced_at" => ("last_synced_at", Text),
-        "current_price" => ("current_price", Number),
-        "ath_timestamp" => ("ath_timestamp", Text),
-        "market_cap" => ("market_cap", Number),
-        "volume" | "volume_sol_total" => ("volume_sol_total", Number),
-        "first_slot_buy" | "first_slot_buy_sol" => ("first_slot_buy_sol", Number),
-        "first_slot_sell" | "first_slot_sell_sol" => ("first_slot_sell_sol", Number),
-        "initial_buy" | "init_buy" | "initial_buy_sol" => ("initial_buy_sol", Number),
-        "init_supply" | "initial_supply_token" => ("initial_supply_token", Number),
-        "token_amount" => ("token_amount", Number),
-        "max_cost_lamports" => ("max_cost_lamports", Number),
-        "spendable_lamports_in" => ("spendable_lamports_in", Number),
-        "min_tokens_out" => ("min_tokens_out", Number),
-        "cu_limit" => ("cu_limit", Number),
-        "cu_price" => ("cu_price", Number),
-        "ix_count" | "ix_labels_count" => ("ix_labels_count", Number),
-        // Booleans sort via the evaluator's bool→0/1 coercion (no dedicated filter
-        // UI for these columns client-side, same as the SQL-backed tables).
-        "migrated" | "is_migrated" => ("is_migrated", Number),
-        "dead" | "is_dead" => ("is_dead", Number),
-        "mayhem_mode" | "is_mayhem_mode" => ("is_mayhem_mode", Number),
-        "cashback" | "is_cashback_enabled" => ("is_cashback_enabled", Number),
-        _ => return None,
+
+        // --- shared token_enrich::TokenEnrichment fields (appendedTokenColumns) ---
+        // Single-sourced with the live Holdings table via `resolve_token_enrichment_key`.
+        _ => return resolve_token_enrichment_key(key),
     })
 }
 

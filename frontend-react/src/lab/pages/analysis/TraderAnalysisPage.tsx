@@ -1,20 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { DataTable } from 'components/table/DataTable';
+import { useCallback, useMemo, useState } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import { tokenColumns } from 'components/tokens/tokenColumns';
-import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
+import { TokenChartsGrid } from 'components/tokens/TokenChartsGrid';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatTimestampMs } from 'utils/date';
-import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
+import { apiErrorMessage } from 'store/apiSlice';
 import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import type { ProfileWalletInfo } from 'components/token-price-chart/types';
 import type { TraderTokenRow } from 'types';
-import { AddressDisplay } from '@shared/components/ui/AddressDisplay';
 
 // Look-back + token-count bounds mirror the backend clamps so the UI can't ask
 // for more than the endpoint will return.
@@ -62,76 +62,6 @@ const clampInt = (raw: string, fallback: number, min: number, max: number) => {
 };
 
 /**
- * Defer mounting `children` until the placeholder scrolls near the viewport.
- * Each token chart fires its own detail + trades fetch on mount, so with up to
- * `MAX_LIMIT` tokens on the page we must NOT mount them all at once — this keeps
- * the fan-out to what's on screen (plus a 400px pre-load margin). Once shown, it
- * stays mounted (a re-sort reorders the DOM but keeps charts mounted via key).
- */
-function LazyMount({ minHeight = 380, children }: { minHeight?: number; children: ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [shown, setShown] = useState(false);
-
-  useEffect(() => {
-    if (shown) return;
-    const el = ref.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setShown(true);
-          obs.disconnect();
-        }
-      },
-      { rootMargin: '400px' },
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [shown]);
-
-  return (
-    <div ref={ref} style={shown ? undefined : { minHeight }}>
-      {shown ? children : null}
-    </div>
-  );
-}
-
-/** One token's card: its trade-history chart with the input wallet's markers
- *  spotlighted (plus every other tracked wallet's markers, via TokenTradeChart).
- *  Fetches its own detail on mount — only mounted once scrolled into view. */
-function TraderTokenCard({ row, wallet }: { row: TraderTokenRow; wallet: string }) {
-  const { timezone } = useTimezone();
-  const { data: detail } = useGetTokenDetailQuery(row.mint_address, {
-    skip: !row.mint_address,
-  });
-  const title = row.symbol || row.name || shortAddr(row.mint_address);
-  const lastTraded = formatTimestampMs(Date.parse(row.wallet_last_trade_at), timezone);
-
-  return (
-    <div className="rounded-lg border border-white/8 bg-bg-card/40 p-4">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="text-sm font-bold text-text">{title}</span>
-        <AddressDisplay address={row.mint_address} kind="token" truncate={false} actionsPlacement='right' iconSize='sm' />
-        {/* Wallet-specific stats live here (not in the token table) — the trader
-            dimension for this token. */}
-        <span className="ml-auto inline-flex items-center gap-2 rounded-md border border-white/8 bg-white/3 px-2 py-0.5 text-[11px]">
-          <span className="font-bold uppercase tracking-wide text-text-dim">This wallet</span>
-          <span className="text-green">{row.wallet_buy_count} buys</span>
-          <span className="text-red">{row.wallet_sell_count} sells</span>
-          <span className="text-text-dim">last {lastTraded}</span>
-        </span>
-      </div>
-      <TokenTradeChart
-        key={row.mint_address}
-        detail={detail ?? null}
-        highlightWallet={wallet}
-        tableId="trader_analysis_trades"
-      />
-    </div>
-  );
-}
-
-/**
  * Trader Analysis — paste a wallet address and see every token it traded in the
  * look-back window as the standard full token table (client-side sort / filter /
  * search — identical columns to every other token table), plus a synced charts
@@ -143,6 +73,7 @@ function TraderTokenCard({ row, wallet }: { row: TraderTokenRow; wallet: string 
  * that was never tracked won't show. Charts are lazily mounted on scroll.
  */
 export function TraderAnalysisPage() {
+  const { timezone } = useTimezone();
   const [walletInput, setWalletInput] = useState('');
   const [daysInput, setDaysInput] = useState(String(DEFAULT_DAYS));
   const [limitInput, setLimitInput] = useState(String(DEFAULT_LIMIT));
@@ -288,14 +219,18 @@ export function TraderAnalysisPage() {
         </p>
       )}
 
-      {/* Token table — the standard shared token columns, client-side sort /
-          filter / search. Rows arrive recent-first from the backend (no
-          defaultSort, so that order holds until the user sorts). */}
+      {/* Token table — routed through the shared `TokenTable` (client mode: rows are
+          the full set, `DataTable` pages in-browser). Standard shared token columns
+          (append nothing — `tokenColumns()` already lays out the full set). Rows
+          arrive recent-first from the backend (no defaultSort). The synced charts
+          grid below is fed by the table's current on-screen rows. */}
       {query && rows.length > 0 && (
-        <DataTable
+        <TokenTable
           columns={columns}
           rows={rows}
-          rowKey={(r) => r.mint_address}
+          existingKeys={ALL_TOKEN_INFO_KEYS}
+          mintOf={(r) => r.mint_address}
+          mintSetFilter
           searchable
           colFilters
           colToggle
@@ -307,15 +242,27 @@ export function TraderAnalysisPage() {
         />
       )}
 
-      {/* Charts grid — mirrors the table's current sort/filter/page */}
+      {/* Charts grid — the shared grid, mirroring the table's current sort/filter/
+          page. The per-wallet buys/sells/last stats ride the card-header slot so the
+          trader dimension never duplicates the token columns. */}
       {visibleRows.length > 0 && query && (
-        <div className="mt-4 flex flex-col gap-4">
-          {visibleRows.map((row) => (
-            <LazyMount key={row.mint_address}>
-              <TraderTokenCard row={row} wallet={query.wallet} />
-            </LazyMount>
-          ))}
-        </div>
+        <TokenChartsGrid
+          rows={visibleRows}
+          mintOf={(r) => r.mint_address}
+          titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
+          highlightWallet={query.wallet}
+          chartTableId="trader_analysis_trades"
+          renderChartCardExtra={(row) => (
+            <span className="ml-auto inline-flex items-center gap-2 rounded-md border border-white/8 bg-white/3 px-2 py-0.5 text-[11px]">
+              <span className="font-bold uppercase tracking-wide text-text-dim">This wallet</span>
+              <span className="text-green">{row.wallet_buy_count} buys</span>
+              <span className="text-red">{row.wallet_sell_count} sells</span>
+              <span className="text-text-dim">
+                last {formatTimestampMs(Date.parse(row.wallet_last_trade_at), timezone)}
+              </span>
+            </span>
+          )}
+        />
       )}
     </div>
   );

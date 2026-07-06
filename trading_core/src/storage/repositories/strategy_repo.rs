@@ -4,7 +4,7 @@ use sqlx::{types::Json, PgPool};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::api::table_query::{FilterOp, FilterSpec, TableRequest};
+use crate::api::table_query::{FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::strategies::kernel::weighted_return_pct;
 use crate::models::portfolio::ManagedMint;
@@ -456,10 +456,27 @@ fn push_filter_predicate(
             let Some(text) = as_text(&spec.val) else { return };
             qb.push(" AND ").push(col).push(" ILIKE ").push_bind(like_escape(&text));
         }
+        // Set membership: `val` is a JSON array → `col = ANY($n::text[])`. Operands
+        // are trimmed/non-empty and capped (backstop; the UI caps too). An empty or
+        // non-array operand drops the predicate.
+        (FilterKind::Text, FilterOp::In) => {
+            let Some(arr) = spec.val.as_array() else { return };
+            let vals: Vec<String> = arr
+                .iter()
+                .filter_map(as_text)
+                .take(MAX_FILTER_IN_VALUES)
+                .collect();
+            if vals.is_empty() {
+                return;
+            }
+            qb.push(" AND ").push(col).push(" = ANY(").push_bind(vals).push("::text[])");
+        }
         // A numeric op on a text column is meaningless → drop.
         (FilterKind::Text, _) => {}
 
         // -- Numeric columns: numeric comparisons -------------------------------
+        // `In` is a text-only set op; on a numeric column it's a no-op.
+        (FilterKind::Numeric, FilterOp::In) => {}
         (FilterKind::Numeric, FilterOp::Between) => {
             let (Some(min), Some(max)) = (as_number(&spec.min), as_number(&spec.max)) else {
                 return;
@@ -483,6 +500,7 @@ fn push_filter_predicate(
                 // number typed into a numeric column filter).
                 FilterOp::Contains => "=",
                 FilterOp::Between => unreachable!("handled above"),
+                FilterOp::In => unreachable!("handled by the numeric In arm above"),
             };
             qb.push(" AND ").push(col).push(' ').push(sql_op).push(' ').push_bind(val);
         }

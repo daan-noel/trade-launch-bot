@@ -8,7 +8,7 @@ import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
-import { positionColumns } from 'components/tpsl1/tableColumns';
+import { positionColumns, POSITION_KEYS } from 'components/tpsl1/tableColumns';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
   buildCreatePayload,
@@ -648,6 +648,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
       selectedRuleName={selectedRuleName}
       rules={rules}
       columns={positionColumns}
+      existingKeys={POSITION_KEYS}
       fetchPositions={fetchPositions}
       fetchSummary={fetchSummary}
       price={price}

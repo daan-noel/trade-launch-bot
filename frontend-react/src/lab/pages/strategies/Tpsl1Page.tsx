@@ -28,21 +28,25 @@ import {
   matchedColumns,
   positionColumns,
   simColumns,
+  POSITION_KEYS,
+  MATCHED_KEYS,
+  SIM_KEYS,
 } from 'components/tpsl1/tableColumns';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { useTimezone } from 'context/TimezoneContext';
 import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
-import { numericColKeys } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 
 /** Positions columns that filter numerically (`>5`/`1..10` → structured ops). */
-const POSITION_NUMERIC_COLS = numericColKeys(positionColumns);
+const POSITION_NUMERIC_COLS = tokenNumericColKeys(positionColumns);
 /** Matched / Simulated columns that filter numerically — same server-side contract
  *  as Positions, so the same `>5`/`1..10` → structured-op parsing applies. */
-const MATCHED_NUMERIC_COLS = numericColKeys(matchedColumns);
-const SIM_NUMERIC_COLS = numericColKeys(simColumns);
+const MATCHED_NUMERIC_COLS = tokenNumericColKeys(matchedColumns);
+const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 
 /** Adapt the server's Simulated whole-run aggregate (`SimulatedSummary`, 5 fields)
  *  onto the shape `SimSummaryCard` renders (`PositionsSummary`). Only the fields the
@@ -858,6 +862,7 @@ export function Tpsl1Page() {
       selectedRuleName={selectedRuleName}
       rules={rules}
       columns={posCols}
+      existingKeys={POSITION_KEYS}
       fetchPositions={fetchTpsl1RulePositions}
       fetchSummary={fetchTpsl1RulePositionsSummary}
       price={price}
@@ -1049,8 +1054,11 @@ export function Tpsl1Page() {
               </button>
             }
           />
-          <DataTable
+          <TokenTable
             columns={matchedColumns}
+            existingKeys={MATCHED_KEYS}
+            mintSetFilter
+            charts
             rows={matchedTokens}
             rowKey={keyByMint}
             selectedKey={inspect?.table === 'matched' ? inspect.key : null}
@@ -1094,8 +1102,11 @@ export function Tpsl1Page() {
               count={simTotal}
               subtitle={simRuleName}
             />
-            <DataTable
+            <TokenTable
               columns={simCols}
+              existingKeys={SIM_KEYS}
+              mintSetFilter
+              charts
               rows={simTokens}
               rowKey={keyByMint}
               selectedKey={inspect?.table === 'sim' ? inspect.key : null}
@@ -1122,6 +1133,7 @@ export function Tpsl1Page() {
         <PaperResultSection
           data={paperResult.data}
           positionColumns={posCols}
+          positionKeys={POSITION_KEYS}
           positions={paperPositions}
           positionsTotal={paperPositionsTotal}
           positionsSummary={paperPositionsSummary}

@@ -112,6 +112,13 @@ impl SortDir {
 /// `serde_json::Value` so a numeric op can read a JSON number and a text op a
 /// string from the **same** field — the SQL builder validates the shape per op and
 /// drops mismatches (e.g. a numeric op with a non-number `val`).
+/// Hard cap on the number of operands honored by an `In` filter (e.g. a pasted
+/// mint set). A backstop against a pathological paste blowing up the SQL bind list
+/// / the in-memory membership set; the frontend `<MintSetInput>` caps to the same
+/// value and surfaces a "dropped N" note. Single-sourced here so SQL + in-memory +
+/// UI can't drift.
+pub const MAX_FILTER_IN_VALUES: usize = 500;
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FilterSpec {
     #[serde(default)]
@@ -125,14 +132,17 @@ pub struct FilterSpec {
 }
 
 /// The comparison operator for a [`FilterSpec`]. `Contains` is the default and the
-/// only op allowed on text columns (current `ILIKE '%…%'` behavior); the numeric
-/// ops require a numeric-typed column (see `strategy_repo` whitelists).
+/// only substring op on text columns (current `ILIKE '%…%'` behavior); the numeric
+/// ops require a numeric-typed column (see `strategy_repo` whitelists). `In` is a
+/// set-membership op on a **text** column — its operand is a JSON **array** in
+/// `val` (e.g. a pasted mint set), lowered to `col = ANY($n::text[])`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FilterOp {
     #[default]
     Contains,
     Eq,
+    In,
     Gt,
     Gte,
     Lt,

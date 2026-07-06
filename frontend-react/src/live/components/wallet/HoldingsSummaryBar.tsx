@@ -1,17 +1,17 @@
-import { memo, useMemo } from 'react';
-import type { WalletHolding } from 'types';
-import { usePriceUnit } from 'context/PriceUnitContext';
+import { memo } from 'react';
+import type { HoldingsTableSummary } from 'services/api';
 import { cn } from 'lib/cn';
 import { formatCompact, formatUsd } from 'utils/format';
 
 /**
- * Portfolio header stat row for the Holdings page (Phase 2.2). Totals are derived
- * from the already-priced rows, so the row updates on the 20s Jupiter tick (value
- * moves) without touching the table. Own component so its re-render never forces
- * the DataTable to re-render.
+ * Portfolio header stat row for the Holdings page. Since the Holdings table moved
+ * server-side (Phase 4), the totals are computed by the backend over the whole
+ * **filtered** population (not just the current page) and handed in as `summary`, so
+ * the bar always agrees with the table under any filter / dust toggle / mint set.
  *
- * Value totals are live (value_usd ticks); cost basis / unrealized PnL are the
- * server-computed SSOT numbers (load-time, refreshed on manual refresh or trade).
+ * Values are the composition's scan-time marks (refreshed on the ~8s scan / manual
+ * refresh / trade), not the 20s display poll — the poll only overlays fresher
+ * per-row display values on the current page.
  */
 function pnlClass(v: number | null): string {
   if (v == null || v === 0) return 'text-text';
@@ -40,51 +40,16 @@ const Tile = memo(function Tile({
 });
 
 export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
-  rows,
+  summary,
 }: {
-  rows: WalletHolding[];
+  summary: HoldingsTableSummary;
 }) {
-  const { usdRate } = usePriceUnit();
-
-  const totals = useMemo(() => {
-    let totalValueUsd = 0;
-    let hasValue = false;
-    let weightedChange = 0;
-    let changeWeight = 0;
-    let totalCostBasisSol = 0;
-    let totalUnrealizedSol = 0;
-    let hasPnl = false;
-    for (const r of rows) {
-      if (r.value_usd != null) {
-        totalValueUsd += r.value_usd;
-        hasValue = true;
-        if (r.price_change_24h != null) {
-          weightedChange += r.value_usd * r.price_change_24h;
-          changeWeight += r.value_usd;
-        }
-      }
-      if (r.cost_basis_sol != null) totalCostBasisSol += r.cost_basis_sol;
-      if (r.unrealized_pnl_sol != null) {
-        totalUnrealizedSol += r.unrealized_pnl_sol;
-        hasPnl = true;
-      }
-    }
-    return {
-      positions: rows.length,
-      totalValueUsd: hasValue ? totalValueUsd : null,
-      change24hPct: changeWeight > 0 ? weightedChange / changeWeight : null,
-      totalCostBasisSol,
-      totalUnrealizedSol: hasPnl ? totalUnrealizedSol : null,
-    };
-  }, [rows]);
-
-  const valueSol =
-    totals.totalValueUsd != null && usdRate != null && usdRate > 0
-      ? totals.totalValueUsd / usdRate
-      : null;
+  const valueSol = summary.total_value_sol;
+  const valueUsd = summary.total_value_usd;
+  const unrealizedSol = summary.total_unrealized_pnl_sol;
   const pnlPct =
-    totals.totalUnrealizedSol != null && totals.totalCostBasisSol > 0
-      ? (totals.totalUnrealizedSol / totals.totalCostBasisSol) * 100
+    unrealizedSol != null && summary.total_cost_basis_sol > 0
+      ? (unrealizedSol / summary.total_cost_basis_sol) * 100
       : null;
 
   return (
@@ -92,36 +57,32 @@ export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
       <Tile label="Total Value">
         <span className="text-text">
           {valueSol != null ? `◎${formatCompact(valueSol, 2)}` : '—'}
-          {totals.totalValueUsd != null && (
-            <span className="ml-1.5 text-xs text-text-dim">
-              {formatUsd(totals.totalValueUsd)}
-            </span>
+          {valueUsd != null && (
+            <span className="ml-1.5 text-xs text-text-dim">{formatUsd(valueUsd)}</span>
           )}
         </span>
       </Tile>
       <Tile label="Unrealized PnL">
-        {totals.totalUnrealizedSol != null ? (
-          <span className={cn('font-semibold', pnlClass(totals.totalUnrealizedSol))}>
-            ◎{signed(totals.totalUnrealizedSol, 3)}
-            {pnlPct != null && (
-              <span className="ml-1 text-xs">({signed(pnlPct, 1)}%)</span>
-            )}
+        {unrealizedSol != null ? (
+          <span className={cn('font-semibold', pnlClass(unrealizedSol))}>
+            ◎{signed(unrealizedSol, 3)}
+            {pnlPct != null && <span className="ml-1 text-xs">({signed(pnlPct, 1)}%)</span>}
           </span>
         ) : (
           <span className="text-text-dim">—</span>
         )}
       </Tile>
       <Tile label="24h Change">
-        {totals.change24hPct != null ? (
-          <span className={cn('font-semibold', pnlClass(totals.change24hPct))}>
-            {signed(totals.change24hPct, 2)}%
+        {summary.change_24h_pct != null ? (
+          <span className={cn('font-semibold', pnlClass(summary.change_24h_pct))}>
+            {signed(summary.change_24h_pct, 2)}%
           </span>
         ) : (
           <span className="text-text-dim">—</span>
         )}
       </Tile>
       <Tile label="Positions">
-        <span className="text-text">{totals.positions}</span>
+        <span className="text-text">{summary.positions}</span>
       </Tile>
     </div>
   );

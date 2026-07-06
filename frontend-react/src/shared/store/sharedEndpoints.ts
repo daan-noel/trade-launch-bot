@@ -2,6 +2,7 @@ import { baseApi } from './baseApi';
 import type { AppSettings } from 'services/api';
 import { tokenFiltersToSpecs, type TokenFilters } from 'components/tokens/filters';
 import type { SortEntry } from 'components/table/types';
+import type { FilterSpec } from 'components/table/numericFilter';
 import { toTableRequest } from 'services/tableRequest';
 import type {
   CreationStatsArgs,
@@ -27,6 +28,9 @@ export interface TokensPageArgs {
   sortKeys: SortEntry[];
   search: string;
   colFilters: Record<string, string>;
+  /** Wrapper-injected structured filters (e.g. the `<MintSetInput>` `in` op on
+   *  `mint`); merged into the request `filters` map (panel-wins on key collision). */
+  structuredFilters?: Record<string, FilterSpec>;
   filters: TokenFilters;
   /**
    * Selected project timezone. Exists to normalize the datetime-range `f_*`
@@ -112,7 +116,14 @@ export const sharedApi = baseApi.injectEndpoints({
         // per-column predicate string, so an empty `numericCols` here yields the
         // identical lowered filter (see `lower_filter`).
         const body = toTableRequest(
-          { page: a.page, pageSize: a.pageSize, sortKeys: a.sortKeys, search: a.search, colFilters: a.colFilters },
+          {
+            page: a.page,
+            pageSize: a.pageSize,
+            sortKeys: a.sortKeys,
+            search: a.search,
+            colFilters: a.colFilters,
+            structuredFilters: a.structuredFilters,
+          },
           new Set(),
         );
         // Fold the global panel into the same filters map (panel-wins on collision).
@@ -141,19 +152,6 @@ export const sharedApi = baseApi.injectEndpoints({
         if (from) p.set('from', from);
         return `/api/tokens/creation-stats?${p.toString()}`;
       },
-      keepUnusedDataFor: 120,
-    }),
-    // Batch token lookup by mint list — used by strategy pages to enrich their
-    // result tables without extending the strategy response structs. Keyed by
-    // the sorted, comma-joined mint string so the same set of mints always hits
-    // the same cache entry regardless of the order they were collected in.
-    // `keepUnusedDataFor: 120` matches the per-token refresh cadence.
-    getTokensByMints: builder.query<TokenRecord[], string[]>({
-      query: (mints) => ({
-        url: '/api/tokens/batch',
-        method: 'POST',
-        body: { mints: [...mints].sort() },
-      }),
       keepUnusedDataFor: 120,
     }),
     getTokenDetail: builder.query<TokenDetailRecord, string>({
@@ -220,7 +218,6 @@ export const sharedApi = baseApi.injectEndpoints({
 });
 
 export const {
-  useGetTokensByMintsQuery,
   useGetTokensPageQuery,
   useGetCreationStatsQuery,
   useGetTokenDetailQuery,

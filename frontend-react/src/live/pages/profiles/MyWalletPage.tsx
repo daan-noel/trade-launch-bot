@@ -1,4 +1,4 @@
-﻿import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
@@ -10,16 +10,26 @@ import { walletColumns, WALLET_KEYS } from '@live/components/wallet/walletColumn
 import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
 import { TokenTable } from 'components/tokens/TokenTable';
-import { apiErrorMessage, useGetTokensByMintsQuery } from 'store/apiSlice';
+import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
+import { DEFAULT_PAGE_SIZE } from 'components/table/Pagination';
+import type { TableQuery } from 'components/table/types';
+import { useServerTable } from 'hooks/useServerTable';
+import { toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import {
+  fetchHoldingsPage,
+  fetchHoldingsSummary,
+  fetchHoldingByMint,
+  type HoldingsTableSummary,
+} from 'services/api';
+import { apiErrorMessage } from 'store/apiSlice';
 import {
   liveApi,
-  useGetPortfolioHoldingsQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
 } from '@live/store/liveEndpoints';
 import type { AppDispatch } from '@live/store';
-import type { ManagedBy } from 'types';
+import type { ManagedBy, WalletHolding } from 'types';
 import { parseSlippageBps } from '@live/lib/slippage';
 
 interface BuyDialog {
@@ -42,52 +52,108 @@ interface SellDialog {
 /// Below-this USD value a holding is treated as dust and hidden when the toggle is on.
 const DUST_USD = 1;
 
+const INITIAL_QUERY: TableQuery = {
+  page: 1,
+  pageSize: DEFAULT_PAGE_SIZE,
+  sortKeys: [],
+  search: '',
+  colFilters: {},
+};
+
 export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
-  // RTK Query owns the fetch, the cache, and StrictMode/dedup. Navigating back
-  // to this page reuses the cached holdings (keepUnusedDataFor) instead of
-  // re-scanning the chain; a manual trade refreshes a single row (see below).
-  const {
-    data: holdings = [],
-    isLoading,
-    isFetching,
-    error: holdingsError,
-    refetch,
-  } = useGetPortfolioHoldingsQuery();
   const [buyToken] = useBuyTokenMutation();
   const [sellToken] = useSellTokenMutation();
 
-  // Live prices are fetched separately from the (slow, RPC-bound) balances and
-  // polled on a short interval, so the Value/Price columns tick without ever
-  // re-scanning the wallet. Keyed by the sorted held mints for a stable cache
-  // key; paused while the tab is unfocused.
-  const mints = useMemo(() => holdings.map((h) => h.mint).sort(), [holdings]);
-  const { data: prices } = useGetWalletPricesQuery(mints, {
-    skip: mints.length === 0,
+  // Server-side table view-state (paging/sort/filter). `TokenTable` emits the
+  // query (already folding in the mint-set filter) and we serialize it to the
+  // unified request body.
+  const [query, setQuery] = useState<TableQuery>(INITIAL_QUERY);
+  const [hideDust, setHideDust] = useState(false);
+
+  // Numeric-filtering keys must include the appended token-info columns so
+  // `>5`/`1..10` on any column lowers to a structured op server-side.
+  const baseColumnsForKeys = useMemo(
+    () => walletColumns({ onBuy: () => {}, onSell: () => {}, sellingMint: null }),
+    [],
+  );
+  const numericCols = useMemo(
+    () => tokenNumericColKeys(baseColumnsForKeys),
+    [baseColumnsForKeys],
+  );
+
+  // Dust hiding is a server-side filter on the scan-time value (`value_usd ≥ $1`),
+  // so paging stays correct (full pages) and the summary agrees with the table.
+  const tableBody = useMemo<TableRequestBody>(() => {
+    const structuredFilters = {
+      ...query.structuredFilters,
+      ...(hideDust ? { value_usd: { op: 'gte' as const, val: DUST_USD } } : {}),
+    };
+    return toTableRequest({ ...query, structuredFilters }, numericCols);
+  }, [query, hideDust, numericCols]);
+
+  // `fresh` (post-trade) busts the server scan cache for the next page fetch only;
+  // the summary reads the freshly-warmed cache. Reset after each read.
+  const freshRef = useRef(false);
+  const fetchPage = useCallback((body: unknown, signal: AbortSignal) => {
+    const fresh = freshRef.current;
+    freshRef.current = false;
+    return fetchHoldingsPage(body as TableRequestBody, signal, fresh);
+  }, []);
+
+  const {
+    items,
+    total,
+    loading,
+    error: tableError,
+    reload,
+  } = useServerTable<WalletHolding>(true, tableBody, fetchPage);
+
+  // Summary bar totals over the whole *filtered* population (server-computed) —
+  // refetched only when the filter-relevant body changes or after a trade.
+  const [summary, setSummary] = useState<HoldingsTableSummary | null>(null);
+  const [summaryNonce, setSummaryNonce] = useState(0);
+  const summaryBody = useMemo<TableRequestBody>(
+    () => ({
+      pagination: { page: 1, pageSize: 1000 },
+      sorting: [],
+      search: tableBody.search,
+      filters: tableBody.filters,
+    }),
+    [tableBody.search, tableBody.filters],
+  );
+  const summaryKey = useMemo(() => JSON.stringify(summaryBody), [summaryBody]);
+  const refreshSummary = useCallback(() => setSummaryNonce((n) => n + 1), []);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchHoldingsSummary(summaryBody, ctrl.signal)
+      .then((s) => {
+        if (!ctrl.signal.aborted) setSummary(s);
+      })
+      .catch(() => {
+        /* non-blocking; keep last-known summary */
+      });
+    return () => ctrl.abort();
+    // `summaryBody` is captured via `summaryKey`; refetch on filter change or trade.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryKey, summaryNonce]);
+
+  // Live prices for the CURRENT page's mints, decoupled from the (slow, RPC-bound)
+  // holdings scan and polled on a short interval, so Value/Price tick without a
+  // server round-trip. Keyed by the sorted page mints; paused while unfocused.
+  const pageMints = useMemo(() => items.map((h) => h.mint).sort(), [items]);
+  const { data: prices } = useGetWalletPricesQuery(pageMints, {
+    skip: pageMints.length === 0,
     pollingInterval: 20000,
     skipPollingIfUnfocused: true,
   });
 
-  // Full token metadata for the held mints — enriches the holdings table with
-  // the same complete field set the All-Tokens / strategy tables show (creator,
-  // ATH, volume, mcap, CU params, ix labels, …). One batch fetch keyed on the
-  // held mints; cached across visits by RTK Query. Not a hot path — refreshes
-  // on wallet poll, not per trade.
-  const { data: tokenBatch } = useGetTokensByMintsQuery(mints, {
-    skip: mints.length === 0,
-  });
-  const tokenMap = useMemo(
-    () => new Map((tokenBatch ?? []).map((t) => [t.mint_address, t])),
-    [tokenBatch],
-  );
-
-  // Overlay the latest polled prices onto each balance row (falling back to the
-  // load-time price until the first poll lands). Full token-metadata enrichment
-  // (`mergeTokenData`) is owned by `TokenTable` — these rows carry only the wallet's
-  // own fields, which the dust filter + summary bar read.
+  // Overlay the latest polled prices onto the current page rows for DISPLAY only
+  // (server sort/filter/dust use the scan-time snapshot). Falls back to the
+  // scan-time price until the first poll lands.
   const priced = useMemo(
     () =>
-      holdings.map((h) => {
+      items.map((h) => {
         const p = prices?.[h.mint];
         if (!p) return h;
         return {
@@ -99,16 +165,9 @@ export function MyWalletPage() {
           token_created_at: p.token_created_at,
         };
       }),
-    [holdings, prices],
+    [items, prices],
   );
-
-  // Optional dust filter: hide bags worth less than a dollar so the table shows
-  // real positions. Applied before both the table eval and the summary totals.
-  const [hideDust, setHideDust] = useState(false);
-  const visibleRows = useMemo(
-    () => (hideDust ? priced.filter((r) => (r.value_usd ?? 0) >= DUST_USD) : priced),
-    [priced, hideDust],
-  );
+  const rowByMint = useMemo(() => new Map(priced.map((r) => [r.mint, r])), [priced]);
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -121,18 +180,25 @@ export function MyWalletPage() {
     mint: string;
     tokenAccount?: string;
     slippageBps?: number;
+    prevAmount?: number;
     managedBy: ManagedBy;
   } | null>(null);
 
-  const error = apiErrorMessage(holdingsError);
+  const error = tableError;
+
+  // Refresh the server-paged table + summary + Home widgets from the fresh scan.
+  const refreshAll = useCallback(() => {
+    freshRef.current = true;
+    reload();
+    refreshSummary();
+    dispatch(liveApi.util.invalidateTags(['WalletHoldings']));
+  }, [reload, refreshSummary, dispatch]);
 
   // After a confirmed trade the wallet's new on-chain balance can lag the RPC
-  // read by a moment. Rather than re-fetching (and re-pricing) the entire
-  // wallet repeatedly, poll just the traded mint — one cheap RPC + price each
-  // attempt — until its raw amount actually moves (buy → up / new token
-  // appears, sell → down), then patch that single row into the cached list.
-  // No full wallet re-scan. If the change never lands within the window, fall
-  // back to one authoritative refresh so the table can't sit on stale data.
+  // read by a moment. Poll just the traded mint — one cheap RPC + price each
+  // attempt — until its raw amount actually moves, then reload the current page
+  // + summary from a fresh scan (no full wallet re-scan per attempt). If the
+  // change never lands within the window, refresh anyway so we can't sit stale.
   const confirmTrade = useCallback(
     async (mint: string, prevAmount: number | undefined, label: string) => {
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -143,44 +209,30 @@ export function MyWalletPage() {
         try {
           const holding = await sub.unwrap();
           if ((holding?.amount ?? undefined) !== prevAmount) {
-            dispatch(
-              liveApi.util.updateQueryData('getPortfolioHoldings', undefined, (draft) => {
-                const idx = draft.findIndex((h) => h.mint === mint);
-                if (holding) {
-                  if (idx >= 0) draft[idx] = holding;
-                  else draft.unshift(holding);
-                } else if (idx >= 0) {
-                  draft.splice(idx, 1);
-                }
-              }),
-            );
+            refreshAll();
             setActionSuccess(`${label} successful — holdings updated.`);
             return;
           }
         } catch {
           // Transient RPC/Jupiter error during confirmation; keep retrying.
         } finally {
-          // Drop the imperative subscription so the single-mint cache entry
-          // doesn't linger past its purpose.
           sub.unsubscribe();
         }
       }
-      dispatch(liveApi.util.invalidateTags(['WalletHoldings']));
+      refreshAll();
       setActionSuccess(
         `${label} confirmed. Balances took a moment to update on-chain — refreshed.`,
       );
     },
-    [dispatch],
+    [dispatch, refreshAll],
   );
 
   // Shared "sell all" submit for both the row button and the manual dialog. The
   // backend always sells the full live balance, so no amount is sent; the token
   // account is passed only as a hint when known (row sells) to skip a wallet
-  // scan. Snapshots the pre-sell balance so confirmTrade can detect the drop
-  // (and the row's removal once the account is closed).
+  // scan. `prevAmount` is the pre-sell balance so confirmTrade can detect the drop.
   const runSell = useCallback(
-    async (mint: string, tokenAccount?: string, slippageBps?: number) => {
-      const prevAmount = holdings.find((h) => h.mint === mint)?.amount;
+    async (mint: string, tokenAccount?: string, slippageBps?: number, prevAmount?: number) => {
       setSellingMint(mint);
       setActionError(null);
       setActionSuccess(null);
@@ -201,42 +253,56 @@ export function MyWalletPage() {
         setSellingMint(null);
       }
     },
-    [holdings, sellToken, confirmTrade],
+    [sellToken, confirmTrade],
   );
 
   // Gate every manual sell on the bot-managed check: if a live strategy holds
   // this bag, hold the sell for an explicit confirm (double-sell interlock);
   // otherwise sell straight through.
   const requestSell = useCallback(
-    (mint: string, tokenAccount?: string, slippageBps?: number) => {
-      const managedBy = holdings.find((h) => h.mint === mint)?.managed_by;
-      if (managedBy) {
-        setPendingSell({ mint, tokenAccount, slippageBps, managedBy });
+    (
+      mint: string,
+      opts: { tokenAccount?: string; slippageBps?: number; prevAmount?: number; managedBy?: ManagedBy | null },
+    ) => {
+      if (opts.managedBy) {
+        setPendingSell({
+          mint,
+          tokenAccount: opts.tokenAccount,
+          slippageBps: opts.slippageBps,
+          prevAmount: opts.prevAmount,
+          managedBy: opts.managedBy,
+        });
         return;
       }
-      void runSell(mint, tokenAccount, slippageBps);
+      void runSell(mint, opts.tokenAccount, opts.slippageBps, opts.prevAmount);
     },
-    [holdings, runSell],
+    [runSell],
   );
 
+  // Row "Sell All": the row is on the current page, so its composed holding
+  // (managed_by / token account / balance) is in hand.
   const handleSell = useCallback(
     (mint: string) => {
-      const holding = holdings.find((h) => h.mint === mint);
-      if (!holding) {
+      const row = rowByMint.get(mint);
+      if (!row) {
         setActionError('Token account not found for mint');
         return;
       }
-      requestSell(mint, holding.token_account);
+      requestSell(mint, {
+        tokenAccount: row.token_account,
+        prevAmount: row.amount,
+        managedBy: row.managed_by,
+      });
     },
-    [holdings, requestSell],
+    [rowByMint, requestSell],
   );
 
   // Proceed with a sell the user confirmed despite the bot-managed warning.
   const confirmPendingSell = useCallback(() => {
     if (!pendingSell) return;
-    const { mint, tokenAccount, slippageBps } = pendingSell;
+    const { mint, tokenAccount, slippageBps, prevAmount } = pendingSell;
     setPendingSell(null);
-    void runSell(mint, tokenAccount, slippageBps);
+    void runSell(mint, tokenAccount, slippageBps, prevAmount);
   }, [pendingSell, runSell]);
 
   const handleManualSellOpen = useCallback(() => {
@@ -250,28 +316,35 @@ export function MyWalletPage() {
       setActionError('Enter a mint address');
       return;
     }
-    // Validate held-status against the loaded holdings before submitting: a sell
-    // of a mint the wallet holds none of would only no-op (or revert) on-chain
-    // after paying for a wasted resolve. The holdings list already enumerates
-    // every non-zero token account, so a miss here means no balance to sell.
-    const holding = holdings.find((h) => h.mint === mint);
-    if (!holding) {
-      setActionError('Wallet holds no balance of this mint');
-      return;
-    }
     const { bps: slippageBps, error: slipError } = parseSlippageBps(sellDialog.slippageInput);
     if (slipError) {
       setActionError(slipError);
       return;
     }
 
+    // Resolve the composed holding (authoritative managed_by / token account /
+    // balance) from the warm scan — the typed mint may not be on the current page.
+    let holding: WalletHolding | null = null;
+    try {
+      holding = await fetchHoldingByMint(mint);
+    } catch {
+      /* fall through to the not-held guard */
+    }
+    if (!holding || !holding.amount) {
+      setActionError('Wallet holds no balance of this mint');
+      return;
+    }
+
     setActionError(null);
     setActionSuccess(null);
     setSellDialog(null);
-    // Pass the known token account as a hint so the backend skips a wallet scan.
-    // Routes through the bot-managed interlock like the row Sell-All.
-    requestSell(mint, holding.token_account, slippageBps);
-  }, [sellDialog, holdings, requestSell]);
+    requestSell(mint, {
+      tokenAccount: holding.token_account,
+      slippageBps,
+      prevAmount: holding.amount,
+      managedBy: holding.managed_by,
+    });
+  }, [sellDialog, requestSell]);
 
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
     setBuyDialog({ mint, tokenProgramId, solInput: '0.001', slippageInput: '', manual: false });
@@ -303,8 +376,10 @@ export function MyWalletPage() {
     }
 
     // Snapshot the pre-buy balance (undefined for a token we don't hold yet) so
-    // the confirmation can tell when the new tokens have landed.
-    const prevAmount = holdings.find((h) => h.mint === mint)?.amount;
+    // the confirmation can tell when the new tokens have landed. Read from the
+    // current page if present, else the warm scan.
+    const prevAmount =
+      rowByMint.get(mint)?.amount ?? (await fetchHoldingByMint(mint).catch(() => null))?.amount;
 
     setActionError(null);
     setActionSuccess(null);
@@ -315,19 +390,17 @@ export function MyWalletPage() {
         mint,
         amount_sol: solAmount,
         // Omit for manual buys — the backend resolves the token program on-chain.
-        ...(buyDialog.tokenProgramId
-          ? { token_program_id: buyDialog.tokenProgramId }
-          : {}),
+        ...(buyDialog.tokenProgramId ? { token_program_id: buyDialog.tokenProgramId } : {}),
         ...(slippageBps !== undefined ? { slippage_bps: slippageBps } : {}),
       }).unwrap();
       setActionSuccess('Buy submitted — confirming on-chain…');
-      void confirmTrade(mint, prevAmount, 'Buy');
+      void confirmTrade(mint, prevAmount ?? undefined, 'Buy');
     } catch (e) {
       setActionError(
         `Buy failed: ${apiErrorMessage(e as FetchBaseQueryError | SerializedError) ?? 'unknown error'}`,
       );
     }
-  }, [buyDialog, holdings, buyToken, confirmTrade]);
+  }, [buyDialog, rowByMint, buyToken, confirmTrade]);
 
   const columns = useMemo(
     () =>
@@ -342,7 +415,7 @@ export function MyWalletPage() {
   const buyTitle = buyDialog
     ? buyDialog.manual
       ? 'Manual Buy'
-      : `Buy ${holdings.find((h) => h.mint === buyDialog.mint)?.symbol ?? buyDialog.mint}`
+      : `Buy ${rowByMint.get(buyDialog.mint)?.symbol ?? buyDialog.mint}`
     : '';
 
   return (
@@ -350,10 +423,10 @@ export function MyWalletPage() {
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-extrabold text-text">Wallet Holdings</h2>
         <Badge variant="primary" className="font-mono">
-          {holdings.length} tokens
+          {total} tokens
         </Badge>
-        <Button variant="subtle" size="sm" onClick={() => refetch()} disabled={isFetching}>
-          {isFetching ? 'Loading…' : '↻ Refresh'}
+        <Button variant="subtle" size="sm" onClick={refreshAll} disabled={loading}>
+          {loading ? 'Loading…' : '↻ Refresh'}
         </Button>
         <Button
           variant={hideDust ? 'primary' : 'subtle'}
@@ -371,7 +444,7 @@ export function MyWalletPage() {
         </Button>
       </div>
 
-      {!isLoading && visibleRows.length > 0 && <HoldingsSummaryBar rows={visibleRows} />}
+      {summary && summary.positions > 0 && <HoldingsSummaryBar summary={summary} />}
 
       <CashbackCard />
 
@@ -379,25 +452,25 @@ export function MyWalletPage() {
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {actionSuccess && <InlineAlert variant="success">{actionSuccess}</InlineAlert>}
 
-      {isLoading ? (
-        <p className="py-10 text-center text-text-dim">Loading wallet holdings from Solana…</p>
-      ) : (
-        <TokenTable
-          columns={columns}
-          rows={visibleRows}
-          tokenMap={tokenMap}
-          existingKeys={WALLET_KEYS}
-          rowKey={(r) => r.mint}
-          loading={isFetching}
-          searchable
-          colFilters
-          colToggle
-          hoverable
-          tableId="wallet"
-          emptyMessage="No token holdings found in wallet."
-          selectable={false}
-        />
-      )}
+      <TokenTable
+        columns={columns}
+        rows={priced}
+        existingKeys={WALLET_KEYS}
+        mintSetFilter
+        rowKey={(r) => r.mint}
+        serverSide
+        serverTotal={total}
+        onQueryChange={setQuery}
+        resetKey={hideDust ? 'dust' : 'all'}
+        loading={loading}
+        searchable
+        colFilters
+        colToggle
+        hoverable
+        tableId="wallet"
+        emptyMessage="No token holdings found in wallet."
+        selectable={false}
+      />
 
       <Modal
         title={buyTitle}

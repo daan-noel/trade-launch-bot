@@ -10,8 +10,11 @@
 //! are both tiny, so every join here is over a handful of rows.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use tokio::sync::Mutex;
 use tracing::warn;
 
 use trading_core::models::portfolio::{unrealized_pnl, ManagedMint};
@@ -81,22 +84,90 @@ pub struct PortfolioSummary {
     pub open_position_count: usize,
 }
 
-/// Enriched holdings + cost basis + unrealized PnL + bot tag for the bot wallet.
+/// How long a composed holdings scan stays warm. The composition is a full wallet
+/// RPC scan + Jupiter batch + several DB reads, so a short TTL lets the server-side
+/// Holdings table page/sort/filter over many POSTs from **one** scan instead of
+/// re-scanning per request — honoring the hot-path "no new RPC" budget. A confirmed
+/// trade (`?fresh=1` on the query endpoint) busts it so post-trade reads are fresh.
+const HOLDINGS_TTL: Duration = Duration::from_secs(8);
+
+/// Short-TTL cache of the composed holdings (see [`HOLDINGS_TTL`]). Held on
+/// [`DeployState`]; there is exactly one bot wallet per process, so a single slot
+/// suffices. `Default` = empty (cold).
+#[derive(Default)]
+pub struct HoldingsCache {
+    inner: Mutex<Option<(Instant, Arc<Vec<PortfolioHolding>>)>>,
+}
+
+impl HoldingsCache {
+    async fn get_fresh(&self) -> Option<Arc<Vec<PortfolioHolding>>> {
+        match self.inner.lock().await.as_ref() {
+            Some((at, v)) if at.elapsed() < HOLDINGS_TTL => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    async fn put(&self, v: Arc<Vec<PortfolioHolding>>) {
+        *self.inner.lock().await = Some((Instant::now(), v));
+    }
+
+    /// Drop the cached scan so the next read re-scans (called after a confirmed trade).
+    pub async fn invalidate(&self) {
+        *self.inner.lock().await = None;
+    }
+}
+
+/// Whole-population roll-up for the server-paged Holdings table's summary bar,
+/// measured over the **filtered** set (all matching rows, not one page) so the bar
+/// agrees with the table. Values are scan-time (the client price-poll overlays
+/// fresher display marks on the current page only); `*_usd`/`*_sol`/PnL are `None`
+/// when no row in the set had a live mark.
+#[derive(Debug, Default, Serialize)]
+pub struct HoldingsTableSummary {
+    pub positions: usize,
+    pub total_value_sol: Option<f64>,
+    pub total_value_usd: Option<f64>,
+    pub total_cost_basis_sol: f64,
+    pub total_unrealized_pnl_sol: Option<f64>,
+    /// Value-weighted 24h price change across rows that have both a value and a 24h.
+    pub change_24h_pct: Option<f64>,
+}
+
+/// Enriched holdings + cost basis + unrealized PnL + bot tag for the bot wallet —
+/// **one live scan**, uncached. Prefer [`list_holdings_cached`] on read paths.
 pub async fn list_holdings(state: &DeployState) -> anyhow::Result<Vec<PortfolioHolding>> {
     let holdings = state.trader.get_all_token_accounts().await?;
     compose(state, holdings).await
 }
 
+/// Cache-first holdings: reuse a warm scan (< [`HOLDINGS_TTL`]) or run one and warm
+/// the cache. Shared by the Home widgets (full list), the server-paged Holdings
+/// table, and the summary — so paging/sorting a table costs at most one scan per TTL
+/// window. Pass `force = true` (post-trade) to bypass + refresh the cache.
+pub async fn list_holdings_cached(
+    state: &DeployState,
+    force: bool,
+) -> anyhow::Result<Arc<Vec<PortfolioHolding>>> {
+    if force {
+        state.holdings_cache.invalidate().await;
+    } else if let Some(v) = state.holdings_cache.get_fresh().await {
+        return Ok(v);
+    }
+    let fresh = Arc::new(list_holdings(state).await?);
+    state.holdings_cache.put(fresh.clone()).await;
+    Ok(fresh)
+}
+
 /// Wallet-wide summary (Home KPIs). Reuses [`list_holdings`] for the value/PnL
 /// totals, then layers the real-money strategy aggregates on top.
 pub async fn summary(state: &DeployState) -> anyhow::Result<PortfolioSummary> {
-    let holdings = list_holdings(state).await?;
+    let holdings = list_holdings_cached(state, false).await?;
 
     let mut total_value_sol = 0.0;
     let mut total_value_usd = 0.0;
     let mut total_cost_basis_sol = 0.0;
     let mut total_unrealized_pnl_sol = 0.0;
-    for h in &holdings {
+    for h in holdings.iter() {
         total_value_sol += h.value_sol.unwrap_or(0.0);
         total_value_usd += h.value_usd.unwrap_or(0.0);
         total_cost_basis_sol += h.cost_basis_sol.unwrap_or(0.0);

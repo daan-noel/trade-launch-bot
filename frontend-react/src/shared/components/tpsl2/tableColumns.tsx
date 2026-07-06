@@ -5,7 +5,7 @@ import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
-import { appendedTokenColumns, coreTokenColumns } from 'components/tokens/sharedTokenColumns';
+import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
  * and simulation-result tables. Falsy/unknown reasons (e.g. a still-open
@@ -39,8 +39,8 @@ const solOf = (price?: number | null, tokens?: number | null): number | null =>
   price != null && tokens != null ? price * tokens : null;
 
 // Keys already present in each table — used to filter out duplicates from the
-// appended token-info columns.
-const POSITION_KEYS = new Set([
+// appended token-info columns. Exported so the pages pass them to `TokenTable`.
+export const POSITION_KEYS = new Set([
   'mint', 'symbol', 'name', 'created',
   'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
   'entry_price', 'entry_tokens', 'entry_sol', 'entry_time', 'entry_tx',
@@ -51,8 +51,8 @@ const POSITION_KEYS = new Set([
 // (`initial_buy`/`cu_limit`/`cu_price`) — no hand columns to suppress. Only the
 // identity columns are table-owned (they aren't enrichment keys, so listing them
 // is documentation, not suppression).
-const MATCHED_KEYS = new Set(['symbol', 'mint', 'name', 'created']);
-const SIM_KEYS = new Set([
+export const MATCHED_KEYS = new Set(['symbol', 'mint', 'name', 'created']);
+export const SIM_KEYS = new Set([
   'symbol', 'mint', 'created',
   'target_price', 'target_tokens', 'target_sol', 'target_time', 'target_tx',
   'entry_price', 'entry_tokens', 'entry_sol', 'entry_time', 'ath_price', 'exit_price', 'exit_time',
@@ -311,7 +311,6 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       sortValue: (r) => r.exit_reason ?? '',
       searchValue: (r) => r.exit_reason ?? '',
     },
-  ...appendedTokenColumns(POSITION_KEYS),
 ];
 
 export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
@@ -353,7 +352,6 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
     sortValue: (r) => r.created_at,
     searchValue: (r) => r.created_at,
   },
-  ...appendedTokenColumns(MATCHED_KEYS),
 ];
 
 export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
@@ -539,6 +537,5 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       searchValue: (r) => r.exit_reason,
     },
   // Trade count comes from the shared "Token Trades" enrichment column
-  // (`trade_count`) appended below — the sim no longer carries its own count.
-  ...appendedTokenColumns(SIM_KEYS),
+  // (`trade_count`), appended by `TokenTable` — the sim no longer carries its own.
 ];

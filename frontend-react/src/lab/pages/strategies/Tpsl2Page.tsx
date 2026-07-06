@@ -29,13 +29,18 @@ import {
   matchedColumns,
   positionColumns,
   simColumns,
+  POSITION_KEYS,
+  MATCHED_KEYS,
+  SIM_KEYS,
 } from 'components/tpsl2/tableColumns';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { useTimezone } from 'context/TimezoneContext';
 import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
-import { numericColKeys, toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import { toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 import { useDispatch } from 'react-redux';
 import {
@@ -78,9 +83,9 @@ import { computeRuleColorClasses } from 'lib/ruleColorGroups';
 const TPSL2_SPEC = getSpec('tpsl2');
 /** Matched / Simulated columns that filter numerically (same server-side contract
  *  as Positions — `>5`/`1..10` → structured ops). */
-const MATCHED_NUMERIC_COLS = numericColKeys(matchedColumns);
-const SIM_NUMERIC_COLS = numericColKeys(simColumns);
-const POSITION_NUMERIC_COLS = numericColKeys(positionColumns);
+const MATCHED_NUMERIC_COLS = tokenNumericColKeys(matchedColumns);
+const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
+const POSITION_NUMERIC_COLS = tokenNumericColKeys(positionColumns);
 
 /** Adapt the server's Simulated whole-run aggregate onto the shape `SimSummaryCard`
  *  renders (`PositionsSummary`); only the fields the sim summary reports are set. */
@@ -866,6 +871,7 @@ export function Tpsl2Page() {
       selectedRuleName={selectedRuleName}
       rules={rules}
       columns={posCols}
+      existingKeys={POSITION_KEYS}
       fetchPositions={fetchTpsl2RulePositions}
       fetchSummary={fetchTpsl2RulePositionsSummary}
       price={price}
@@ -1059,8 +1065,11 @@ export function Tpsl2Page() {
               </button>
             }
           />
-          <DataTable
+          <TokenTable
             columns={matchedColumns}
+            existingKeys={MATCHED_KEYS}
+            mintSetFilter
+            charts
             rows={matchedTokens}
             rowKey={keyByMint}
             selectedKey={inspect?.table === 'matched' ? inspect.key : null}
@@ -1105,8 +1114,11 @@ export function Tpsl2Page() {
               count={simTotal}
               subtitle={simRuleName}
             />
-            <DataTable
+            <TokenTable
               columns={simCols}
+              existingKeys={SIM_KEYS}
+              mintSetFilter
+              charts
               rows={simTokens}
               rowKey={keyByMint}
               selectedKey={inspect?.table === 'sim' ? inspect.key : null}
@@ -1133,6 +1145,7 @@ export function Tpsl2Page() {
         <PaperResultSection
           data={paperResult.data}
           positionColumns={posCols}
+          positionKeys={POSITION_KEYS}
           positions={paperPositions}
           positionsTotal={paperPositionsTotal}
           positionsSummary={paperPositionsSummary}

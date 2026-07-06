@@ -46,6 +46,53 @@ impl<F: Fn(&str) -> Option<(&'static str, ColKind)>> ColResolver for F {
 /// CLAUDE.md / Phase 6). Kept here so the Rust and TS evaluators can't diverge on it.
 const SEARCH_FIELDS: [&str; 2] = ["mint", "symbol"];
 
+/// Resolve a frontend column key that names a **shared token-enrichment** field
+/// (the `appendedTokenColumns` set flattened from
+/// [`crate::storage::token_enrichment::TokenEnrichment`]) to its JSON field name +
+/// [`ColKind`]. `None` = not an enrichment key.
+///
+/// This is the SSOT for the in-memory-evaluator half of the enrichment grammar:
+/// every in-RAM token table that flattens `TokenEnrichment` (the lab Simulated
+/// table, the live Holdings table) resolves its enrichment columns through here,
+/// then layers its own row-owned keys on top via `.or_else(...)`. Field names match
+/// the serialized `TokenEnrichment` JSON (and the frontend `TOKEN_ENRICH_FIELDS`
+/// exactly); the accepted display-key aliases mirror the frontend
+/// `appendedTokenColumns` keys. `created`/`created_at` is deliberately **not** here
+/// — it's row-owned and diverges per table (a position's vs. a token's date), so
+/// each host maps it itself.
+pub fn resolve_token_enrichment_key(key: &str) -> Option<(&'static str, ColKind)> {
+    use ColKind::{Number, Text};
+    Some(match key {
+        "name" => ("name", Text),
+        "creator" | "creator_address" => ("creator_address", Text),
+        "create_tx" | "create_tx_address" => ("create_tx_address", Text),
+        "trade_count" => ("trade_count", Number),
+        "last_trade" | "last_trade_at" => ("last_trade_at", Text),
+        "last_synced" | "last_synced_at" => ("last_synced_at", Text),
+        "current_price" => ("current_price", Number),
+        "ath_timestamp" => ("ath_timestamp", Text),
+        "market_cap" => ("market_cap", Number),
+        "volume" | "volume_sol_total" => ("volume_sol_total", Number),
+        "first_slot_buy" | "first_slot_buy_sol" => ("first_slot_buy_sol", Number),
+        "first_slot_sell" | "first_slot_sell_sol" => ("first_slot_sell_sol", Number),
+        "initial_buy" | "init_buy" | "initial_buy_sol" => ("initial_buy_sol", Number),
+        "init_supply" | "initial_supply_token" => ("initial_supply_token", Number),
+        "token_amount" => ("token_amount", Number),
+        "max_cost_lamports" => ("max_cost_lamports", Number),
+        "spendable_lamports_in" => ("spendable_lamports_in", Number),
+        "min_tokens_out" => ("min_tokens_out", Number),
+        "cu_limit" => ("cu_limit", Number),
+        "cu_price" => ("cu_price", Number),
+        "ix_count" | "ix_labels_count" => ("ix_labels_count", Number),
+        // Booleans sort/filter via the evaluator's bool→0/1 coercion.
+        "migrated" | "is_migrated" => ("is_migrated", Number),
+        "dead" | "is_dead" => ("is_dead", Number),
+        "mayhem_mode" | "is_mayhem_mode" => ("is_mayhem_mode", Number),
+        "cashback" | "is_cashback_enabled" => ("is_cashback_enabled", Number),
+        _ => return None,
+    })
+}
+
 /// Read a JSON field as `f64` (number, numeric string, or bool as 0.0/1.0); `None`
 /// if absent/null.
 fn field_num(row: &Value, field: &str) -> Option<f64> {
@@ -108,7 +155,21 @@ fn row_matches(row: &Value, field: &str, kind: ColKind, spec: &FilterSpec) -> bo
             }
             _ => true,
         },
-        // Numeric op on a text field → not a constraint.
+        // Set membership: `val` is a JSON array; the row's field must equal one of
+        // its (trimmed, lowercased) entries. An empty/absent/non-array operand is
+        // not a constraint (keeps the row), mirroring the SQL side dropping it.
+        (ColKind::Text, FilterOp::In) => match spec.val.as_array() {
+            Some(arr) => {
+                let set: Vec<String> = arr.iter().filter_map(operand_text).collect();
+                if set.is_empty() {
+                    true
+                } else {
+                    field_text(row, field).is_some_and(|hay| set.iter().any(|s| *s == hay))
+                }
+            }
+            None => true,
+        },
+        // Other numeric op on a text field → not a constraint.
         (ColKind::Text, _) => true,
 
         (ColKind::Number, FilterOp::Between) => {
@@ -291,9 +352,11 @@ mod tests {
 
     #[test]
     fn conformance_shared_fixtures() {
-        // The SAME fixture file drives the TS `tableEval.conformance.test.ts` (vitest),
-        // so the Rust and TS evaluators can't drift on op/sort/search/tiebreak/paging.
-        // See the JSON's `_comment` for the shared grammar (it matches `resolve` above).
+        // Golden fixtures pinning this evaluator's op/sort/search/tiebreak/paging
+        // semantics. Originally shared with a TS twin (`tableEval.conformance.test.ts`)
+        // that retired when Wallet Holdings moved server-side (Phase 4) — the JSON
+        // stays a **Rust-only** fixture (do not delete it: this test `include_str!`s
+        // it). See the JSON's `_comment` for the grammar (it matches `resolve` above).
         let data: Value = serde_json::from_str(include_str!(
             "../../../frontend-react/src/shared/services/tableEval.fixtures.json"
         ))

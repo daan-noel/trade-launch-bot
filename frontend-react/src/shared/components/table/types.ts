@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { FilterSpec } from './numericFilter';
 
 export type SortDir = 'asc' | 'desc';
 
@@ -20,6 +21,13 @@ export interface TableQuery {
   sortKeys: SortEntry[];
   search: string;
   colFilters: Record<string, string>;
+  /**
+   * Pre-structured filters injected by a wrapper around the table (NOT typed into
+   * the per-column text inputs) — e.g. a pasted mint set as an `in` op. Merged into
+   * the request `filters` alongside the parsed `colFilters` (structured wins on key
+   * collision). `DataTable` never sets this itself; it stays token-agnostic.
+   */
+  structuredFilters?: Record<string, FilterSpec>;
 }
 
 /**

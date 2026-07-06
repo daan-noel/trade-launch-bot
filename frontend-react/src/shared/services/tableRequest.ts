@@ -55,6 +55,13 @@ export function toTableRequest(
     const spec = numericCols.has(key) ? parseFilterSpec(text) : null;
     filters[key] = spec ?? { op: 'contains', val: text };
   }
+  // Wrapper-injected structured filters (e.g. a mint-set `in` op) AND with the
+  // per-column filters; on a key collision the structured spec wins.
+  if (query.structuredFilters) {
+    for (const [key, spec] of Object.entries(query.structuredFilters)) {
+      filters[key] = spec;
+    }
+  }
   const body: TableRequestBody = {
     pagination: { page: query.page, pageSize: query.pageSize },
     sorting: query.sortKeys.map((s) => ({ col: s.col, dir: s.dir })),

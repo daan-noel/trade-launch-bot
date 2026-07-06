@@ -98,7 +98,10 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   index over the shared Home; KPI row + `home/` widgets `TopHoldingsWidget`/`LiveTradeFeed`/
   `StrategyStrip` over `/api/portfolio/{summary,holdings,positions}`), SyncToken, Transactions,
   MyWallet (**position manager**: `HoldingsSummaryBar` header + cost-basis/PnL columns +
-  `managed_by` bot badge + double-sell confirm interlock, reads `/api/portfolio/holdings`)
+  `managed_by` bot badge + double-sell confirm interlock; the holdings table is **server-side**
+  via `POST /api/portfolio/holdings/query` + `/summary` (short-TTL scan cache) with a client
+  price-poll overlaying live value/price on the current page; Home widgets still read the full
+  `GET /api/portfolio/holdings`)
   (+ `InputSyncStatus`, `wallet/`, `transactions/` components; `useTradeStream`,
   `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** Analysis, SwingDetection, **TraderAnalysis** (paste a wallet →
@@ -195,37 +198,42 @@ there are no camelCase/axis/prefix translators.
   backtest's rows **in memory** on the server (already resident — lab is single-user), with a whole-run
   `/simulate/result/summary` aggregate for its card; `reload()` refetches on the `simulation_finished`
   SSE (collect → fetch-first-page).
-- **Token enrichment is server-side, not client-merged.** Every token-result table (Matched,
-  Positions current/history, lab paper positions, Simulated, Sweep drill-in) receives the full
-  `TOKEN_ENRICH_FIELDS` set **in the response body** — the backend attaches it from one shared
-  `trading_core::storage::token_enrichment` SSOT — so sort/filter/search on enrichment columns works
-  across the whole result set. `mergeTokenData(rows, tokenMap)` + the per-table
-  `useGetTokensByMintsQuery` batch call were **removed** from those tables; `mergeTokenData` survives
-  **only** for **Wallet Holdings** (`MyWalletPage`), whose rows are a client-side on-chain scan (no
-  server pagination). Wallet no longer forks the table logic, though: it runs the **same** `TableRequest`
-  contract locally (see the shared client evaluator below), with `mergeTokenData` reduced to just the
-  enrichment-data join (a backend holdings-enrichment join to retire it too is a pending follow-up).
-- **`TokenTable` = the client-enriched composition layer over `DataTable`** (`components/tokens/TokenTable.tsx`).
-  The recurring "token recipe" for a **client-fed** table — append the shared token-info columns
-  (`appendedTokenColumns`), enrich rows (`mergeTokenData`), and run the local `TableRequest` evaluator
-  (`applyTableRequest`/`columnResolver`) — is bundled here so pages pass only `{columns, rows, tokenMap,
-  existingKeys}` + passthrough `DataTable` props. **Wallet Holdings** is the sole consumer today (the
-  page dropped ~20 lines of merge/eval plumbing; `walletColumns` no longer spreads `appendedTokenColumns`,
-  it just exports `WALLET_KEYS`). Server-**enriched** tables (Positions/Matched/Sim) keep rendering on the
-  raw `DataTable` — they need no client merge. `DataTable` itself stays token-agnostic: the dependency is
-  one-way (`tokens/` → `table/`), asserted by the guard test `components/table/DataTable.boundary.test.ts`
-  (fails if any `table/` file imports the token layer or an `@live`/`@lab` tree).
-- **Client-side evaluator = the TS twin of the Rust one (`services/tableEval.ts`).** For token tables
-  whose rows are already in the browser (Wallet Holdings today; any future client-fed table),
-  `applyTableRequest(rows, body, resolve)` runs the **same** search→filter→sort→page semantics as the
-  Rust `trading_core::api::table_eval` (mint/symbol search, numeric-op-on-text drop, null-numeric
-  exclude, contains-on-number→eq, all sort keys + raw-`mint` ASC tiebreak, `Page::bounds` paging). It's
-  generic over a `ColResolver`; `columnResolver(columns)` derives the grammar from a table's
-  `ColumnDef[]` (numeric iff `filterNumber`; sort via `sortValue` with `DataTable`'s `compareSort`), so
-  there's zero sort regression. Wallet's `DataTable` runs `serverSide` but is fed by this evaluator
-  **locally**. The Rust and TS evaluators are pinned to one shared fixture file
-  (`tableEval.fixtures.json`) by the Rust `table_eval::conformance_shared_fixtures` test + the vitest
-  `tableEval.conformance.test.ts` (run `npm test`), so they can't drift.
+- **Token enrichment is server-side, not client-merged — for EVERY token table.** Every token-result
+  table (Matched, Positions current/history, lab paper positions, Simulated, Sweep drill-in, **and, since
+  Phase 4, Wallet Holdings**) receives the full `TOKEN_ENRICH_FIELDS` set **in the response body** — the
+  backend attaches it from one shared `trading_core::storage::token_enrichment` SSOT — so sort/filter/
+  search on enrichment columns works across the whole result set. `mergeTokenData` + the per-table
+  `useGetTokensByMintsQuery` batch call are **gone** (the wallet was the last client-merged table; both
+  were deleted with its server migration).
+- **`TokenTable` = the ONE wrapper for every token-row table** (`components/tokens/TokenTable.tsx`).
+  It owns the "token recipe" over `DataTable`: (1) append the shared token-info columns
+  (`appendedTokenColumns`, so callers export only their bespoke columns + an `existingKeys` set — see
+  `tpsl1/tpsl2 tableColumns` `POSITION_KEYS`/`MATCHED_KEYS`/`SIM_KEYS`; a table that owns its full layout
+  passes `ALL_TOKEN_INFO_KEYS` to append nothing); (2) own the table wiring. **Two modes:** **server**
+  (`serverSide` + `serverTotal`/`onQueryChange`/`resetKey`) — rows arrive backend-enriched one page at a
+  time, paging/sort/filter round-trip (Positions via `RunPositionsPanel`, Paper, Matched, Sim, Wallet
+  Holdings, **Tokens page**); **client** (default) — rows are the full already-enriched set and
+  `DataTable`'s **own** client paging/sort/filter/search runs in-browser (NO separate evaluator — that TS
+  twin retired with Wallet), used by tables with no backend paging endpoint (**Trader Analysis**,
+  **Sweep drill-in**). Rows key their mint under `mint` (default) or another field via **`mintOf`** —
+  which drives the charts grid, the default `rowKey`, and the client mint-set pre-filter. Two opt-in
+  features live here so every token table gets them once: **`mintSetFilter`** — a `<MintSetInput>` paste
+  box (server: an `in` op on `mint` folded into `structuredFilters`; client: a plain row pre-filter);
+  **`charts`** — a toggle rendering `<TokenChartsGrid>` (lazy-mounted, current page only, with
+  `renderChartCardExtra`/`titleOf`/`highlightWallet` slots) below the table, fed by the table's
+  intercepted `onVisibleRowsChange`. `DataTable` stays token-agnostic: the dependency is one-way
+  (`tokens/` → `table/`), asserted by `components/table/DataTable.boundary.test.ts`. **Every** token-row
+  table now renders through `TokenTable`. (Trader Analysis keeps its always-on external `<TokenChartsGrid>`
+  fed by the table's `onVisibleRowsChange` rather than the toggle, being chart-centric.)
+- **One in-memory evaluator, in Rust only.** Token tables whose rows are RAM-resident on the backend (the
+  lab Simulated table; the live Holdings composition) page/sort/filter through
+  `trading_core::api::table_eval::apply_table_request` with a per-table `ColResolver` grammar; the shared
+  enrichment half of that grammar is `resolve_token_enrichment_key` (SSOT — the Simulated and Holdings
+  resolvers both delegate to it). The **TS twin** (`services/tableEval.ts` + `columnResolver` +
+  `mergeTokenData`) that used to drive Wallet client-side is **deleted** — the wallet is server-side now.
+  The golden fixture `tableEval.fixtures.json` and the Rust `table_eval::conformance_shared_fixtures`
+  test are **kept** (now Rust-only) so the evaluator's op/sort/search/tiebreak/paging semantics stay
+  pinned.
 - **Shared enrichment type + strategy primitives.** The ~28 enrichment fields the backend
   `TokenEnrichment` flattens onto result rows are declared **once** in TS as
   `TokenEnrichmentFields` (`shared/types`); `RulePositionRecord`/`MatchedTokenRecord`/
@@ -245,9 +253,9 @@ there are no camelCase/axis/prefix translators.
   columns.
 - **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`): every numeric column declares `filterNumber`.
   The `DataTable` emits raw filter text; the serializer (`toTableRequest` via `parseFilterSpec`) turns a
-  numeric-column expression into a structured op that compares **numerically** (server-side for the
-  paged tables; via `tableEval.ts` client-side for Wallet). `!=` has no server op and maps to `eq`; the
-  legacy `parseNumericPredicate` (still used by any fully client-side table) keeps the real `!=` negation.
+  numeric-column expression into a structured op that compares **numerically** server-side (all token
+  tables, Wallet included). `!=` has no server op and maps to `eq`; the legacy `parseNumericPredicate`
+  (still used by any fully client-side table) keeps the real `!=` negation.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 

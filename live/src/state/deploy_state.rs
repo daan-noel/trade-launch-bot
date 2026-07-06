@@ -44,6 +44,10 @@ pub struct DeployState {
     /// Used by token-sync replay paths to estimate accurate `block_time` for
     /// historical frames that carry only a slot number (not a real blockTime).
     pub slot_anchor: Arc<RwLock<Option<SlotAnchor>>>,
+    /// Short-TTL cache of the composed wallet holdings so the server-paged Holdings
+    /// table pages/sorts/filters over one scan per window (see
+    /// [`crate::services::portfolio::HoldingsCache`]).
+    pub holdings_cache: crate::services::portfolio::HoldingsCache,
 }
 
 impl DeployState {
@@ -67,6 +71,7 @@ impl DeployState {
             sync_gate: Arc::new(SyncGate::new(MAX_CONCURRENT_SYNCS)),
             live_mode,
             slot_anchor: Arc::new(RwLock::new(None)),
+            holdings_cache: Default::default(),
         }
     }
 
