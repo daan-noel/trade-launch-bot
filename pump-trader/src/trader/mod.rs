@@ -32,6 +32,7 @@ mod amm;
 mod blockhash;
 mod buy;
 mod consolidate;
+mod create;
 #[cfg(feature = "claim")]
 pub mod claim;
 mod init;
@@ -202,6 +203,7 @@ pub struct PumpFunTrader {
     // swaps — see constants::COMPUTE_UNIT_LIMIT_*.
     cu_ixs_curve_buy: Vec<Instruction>,
     cu_ixs_curve_sell: Vec<Instruction>,
+    cu_ixs_curve_create: Vec<Instruction>,
     cu_ixs_amm: Vec<Instruction>,
     // Jito tip: a fixed tip account (chosen once per instance) plus a
     // background-refreshed tip-floor cache that sizes the tip amount per trade.
@@ -347,6 +349,7 @@ impl PumpFunTrader {
             global_account: None,
             cu_ixs_curve_buy: Vec::new(),
             cu_ixs_curve_sell: Vec::new(),
+            cu_ixs_curve_create: Vec::new(),
             cu_ixs_amm: Vec::new(),
             jito_tip_account,
             jito_tip_cache: Arc::new(JitoTipCache::new(jito_cfg)),

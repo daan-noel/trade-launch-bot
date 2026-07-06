@@ -61,16 +61,25 @@ impl PumpFunTrader {
             ComputeBudgetInstruction::set_compute_unit_limit(compute.curve_sell_cu),
             price_ix.clone(),
         ];
+        let cu_ixs_curve_create = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(compute.curve_create_cu),
+            price_ix.clone(),
+        ];
         let cu_ixs_amm = vec![
             ComputeBudgetInstruction::set_compute_unit_limit(compute.amm_cu),
             price_ix,
         ];
         info!(
-            "⚡ Priority fee: {} µlamports/cu | CU limit (buy/sell/amm): {}/{}/{}",
-            compute.price_micro_lamports, compute.curve_buy_cu, compute.curve_sell_cu, compute.amm_cu,
+            "⚡ Priority fee: {} µlamports/cu | CU limit (buy/sell/create/amm): {}/{}/{}/{}",
+            compute.price_micro_lamports,
+            compute.curve_buy_cu,
+            compute.curve_sell_cu,
+            compute.curve_create_cu,
+            compute.amm_cu,
         );
         self.cu_ixs_curve_buy = cu_ixs_curve_buy;
         self.cu_ixs_curve_sell = cu_ixs_curve_sell;
+        self.cu_ixs_curve_create = cu_ixs_curve_create;
         self.cu_ixs_amm = cu_ixs_amm;
 
         // 4. Jito tip — sized per trade from Jito's live tip-floor feed (see

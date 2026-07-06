@@ -98,6 +98,27 @@ pub struct CurveFacts {
     pub cashback_enabled: bool,
 }
 
+/// Metadata for a legacy pump.fun `create` (SPL Token mint + Metaplex metadata).
+#[derive(Debug, Clone)]
+pub struct CreateTokenArgs {
+    pub name: String,
+    pub symbol: String,
+    pub uri: String,
+    /// On-chain creator — usually the dev wallet (`user` signer).
+    pub creator: Pubkey,
+}
+
+/// Metadata for pump.fun `create_v2` (Token-2022 mint; current default).
+#[derive(Debug, Clone)]
+pub struct CreateTokenV2Args {
+    pub name: String,
+    pub symbol: String,
+    pub uri: String,
+    pub creator: Pubkey,
+    pub is_mayhem_mode: bool,
+    pub cashback_enabled: bool,
+}
+
 /// On-chain token balance for a wallet + mint pair.
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenBalance {

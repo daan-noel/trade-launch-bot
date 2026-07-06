@@ -18,6 +18,10 @@ use std::sync::Arc;
 pub struct ComputeBudgetCfg {
     /// Curve buy CU limit (may include create-with-seed + initialize + buy).
     pub curve_buy_cu: u32,
+    /// Token `create` / `create_v2` CU limit (metadata / mayhem CPIs are heavy).
+    pub curve_create_cu: u32,
+    /// `create_v2` + dev-buy in one tx (create + ATA + buy).
+    pub curve_create_buy_cu: u32,
     /// Curve sell CU limit (sell + tip; no account creation).
     pub curve_sell_cu: u32,
     /// PumpSwap AMM swap CU limit (heaviest path — many accounts/CPIs).
@@ -30,6 +34,8 @@ impl Default for ComputeBudgetCfg {
     fn default() -> Self {
         Self {
             curve_buy_cu: 150_000,
+            curve_create_cu: 250_000,
+            curve_create_buy_cu: 350_000,
             curve_sell_cu: 100_000,
             amm_cu: 180_000,
             price_micro_lamports: 200_000,

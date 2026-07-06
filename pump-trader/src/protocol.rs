@@ -41,6 +41,24 @@ pub const TOKEN_2022: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPx
 /// Associated-token-account program.
 pub const ASSOCIATED_TOKEN_PROGRAM: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+/// Metaplex Token Metadata program (legacy `create` CPI).
+pub const MPL_TOKEN_METADATA: Pubkey =
+    pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+/// Pump.mayhem program (`create_v2` mayhem-mode accounts).
+pub const MAYHEM_PROGRAM: Pubkey = pubkey!("MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e");
+
+// ---------------------------------------------------------------------------
+// Create instruction discriminators (Anchor sha256("global:<name>")[..8])
+// ---------------------------------------------------------------------------
+
+/// Legacy SPL-Token `create` instruction.
+pub const CREATE_DISC: [u8; 8] = [24, 30, 200, 40, 5, 28, 7, 119];
+/// Token-2022 `create_v2` instruction (current pump.fun default).
+pub const CREATE_V2_DISC: [u8; 8] = [214, 144, 76, 236, 95, 139, 49, 180];
+
+/// Fresh bonding-curve virtual reserves at creation (protocol constants).
+pub const INITIAL_VIRTUAL_TOKEN_RESERVES: u128 = 1_073_000_000_000_000;
+pub const INITIAL_VIRTUAL_SOL_RESERVES: u128 = 30_000_000_000;
 
 /// Classic SPL Token program — base58 string form (for JSON-RPC `programId`
 /// params and the `TokenProgram` string classifier, which compare in string

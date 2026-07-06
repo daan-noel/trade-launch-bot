@@ -43,4 +43,4 @@ pub use trader::{
     CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT, CURVE_MISSING_USER_VOLUME_ACCUMULATOR,
     CURVE_TOO_LITTLE_SOL_RECEIVED, CURVE_TOO_MUCH_SOL_REQUIRED,
 };
-pub use types::{BuyRouting, TokenBalance, TokenProgram, WalletHolding};
+pub use types::{BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram, WalletHolding};

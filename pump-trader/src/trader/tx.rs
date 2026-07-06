@@ -100,6 +100,36 @@ impl PumpFunTrader {
         Ok(tx)
     }
 
+    /// Build + sign a legacy tx against a recent blockhash with multiple signers.
+    /// Used by token `create` (wallet + fresh mint keypair). `signers[0]` is the
+    /// fee payer.
+    pub(super) async fn build_recent_tx_multi(
+        &self,
+        instructions: Vec<Instruction>,
+        signers: &[&(dyn Signer + Send + Sync)],
+    ) -> Result<Transaction> {
+        if signers.is_empty() {
+            bail!("build_recent_tx_multi requires at least one signer");
+        }
+        let blockhash = match self
+            .blockhash_cache
+            .get_fresh(Duration::from_millis(self.config.cache.blockhash_max_age_ms))
+        {
+            Some(hash) => hash,
+            None => self
+                .rpc
+                .get_latest_blockhash()
+                .await
+                .context("fetch recent blockhash")?,
+        };
+        let fee_payer = signers[0].pubkey();
+        let msg = Message::new(&instructions, Some(&fee_payer));
+        let mut tx = Transaction::new_unsigned(msg);
+        let refs: Vec<&dyn Signer> = signers.iter().map(|s| *s as &dyn Signer).collect();
+        tx.try_sign(&refs, blockhash)?;
+        Ok(tx)
+    }
+
     /// Submit a signed tx to the Helius Sender. With one configured endpoint this
     /// is a single POST; with several the *identical* signed tx is fanned out to
     /// all of them concurrently. Because the signature is identical, the bank

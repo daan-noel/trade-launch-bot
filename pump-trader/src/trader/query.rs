@@ -421,6 +421,29 @@ impl PumpFunTrader {
         }
     }
 
+    /// Seed per-mint caches after a successful create so the next dev-buy / sell
+    /// reuses warm PDAs and routing facts without an RPC round-trip.
+    pub(super) fn warm_post_create_cache(
+        &self,
+        mint: &Pubkey,
+        creator: &Pubkey,
+        token_program: &Pubkey,
+        cashback_enabled: bool,
+    ) {
+        let mint_str = mint.to_string();
+        let pdas = self.derive_token_pdas(mint, creator, token_program, cashback_enabled);
+        self.token_pdas.insert(mint_str.clone(), pdas);
+        self.curve_routing_cache.insert(
+            mint_str,
+            CurveRouting {
+                creator: *creator,
+                token_program: *token_program,
+                is_migrated: false,
+                cashback_enabled,
+            },
+        );
+    }
+
     /// Read a mint's bonding-curve PDA and mint account in one
     /// `getMultipleAccounts` request and parse the routing facts both trade
     /// paths need. BondingCurve layout after the 8-byte Anchor discriminator:
