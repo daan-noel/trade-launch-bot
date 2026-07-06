@@ -122,6 +122,15 @@ impl LaunchRepo {
             .await?;
         Ok(())
     }
+
+    pub async fn set_failed(pool: &PgPool, id: Uuid, status: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE launches SET status = $2 WHERE id = $1")
+            .bind(id)
+            .bind(status)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
 }
 
 /// `bundles` — phase-2 Jito bundle seam.

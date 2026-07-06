@@ -40,11 +40,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dashmap   = "4.0"
 actix-web = "4"
 dotenvy   = "0.15"
-# NOTE: no solana-sdk here. The data layer (`platform-core`) stores on-chain
-# addresses as TEXT/String and depends on NO solana crate — so `lab` is fully
-# solana-free. Only the live-side borrowed crates (pump-trader / ingest-laserstream)
-# pull solana, at their own pinned 1.17.27. A launcher/live crate that needs
-# solana types gets them transitively from pump-trader.
+aes-gcm   = "0.10"
+zeroize   = { version = "1", features = ["zeroize_derive"] }
+sha2      = "0.10"
+base64    = "0.22"
+solana-sdk = "1.17.27"
+# NOTE: no solana-sdk on platform-core. The data layer stores on-chain addresses
+# as TEXT/String and depends on NO solana crate — so `lab` is fully solana-free.
+# Only the live-side borrowed crates (pump-trader / ingest-laserstream) pull solana,
+# at their own pinned 1.17.27. Launcher/live crates that need solana types use
+# this workspace pin or get them transitively from pump-trader.
 
 [profile.dev]
 debug = true

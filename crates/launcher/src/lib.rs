@@ -2,13 +2,13 @@
 //!
 //! Orchestrates: `launch_templates` spec → pump.fun create tx → dev-buy (a
 //! pump-trader buy) → optional Jito bundle of N buy legs → confirm → `launches`
-//! row. The per-leg structure composer (§3e: variant + params + budget/tip drawn
-//! from audited builders — never an arbitrary account list) lives here, not in
-//! pump-trader. Wired in a later phase; the schema seams land in Phase 5.
-//!
-//! Dep partition: LIVE only (pulls pump-trader). Must NOT appear in `lab`'s graph.
+//! row. The per-leg structure composer (variant + params + budget/tip) lives here,
+//! not in pump-trader.
 
-/// Later-phase seam: execute an authored launch template.
-pub fn run_launch() {
-    todo!("Phase 2 of the platform: template → create → dev-buy → bundle → confirm")
-}
+mod config;
+mod keystore;
+mod service;
+
+pub use config::LauncherSettings;
+pub use keystore::{EnvKek, Kek};
+pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};

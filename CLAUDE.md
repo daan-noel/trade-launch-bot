@@ -13,8 +13,9 @@ multi-launchpad / multi-quote / multi-wallet.
 
 Data-infrastructure **foundation is complete** (7 phase commits): 6 crates, 2 bins,
 migrations `0001` (Domains A–C) + `0002` (Domain D). §9 open decisions are **resolved**
-(see the ADR). **Next milestone = the phase-2 launcher** (`create.rs` on `pump-trader`
-+ dev-buy + the `bundles` composer/executor).
+(see the ADR). **Phase-2 launcher started:** `pump-trader::create` (`create_v2` +
+create+dev-buy) + `launcher` keystore + `POST /api/launches/execute`. **Next:** Jito
+bundle composer, legacy `create_v1`, wallet-encrypt tooling.
 
 ## Priorities
 
