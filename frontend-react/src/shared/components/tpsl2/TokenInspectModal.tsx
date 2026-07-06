@@ -2,36 +2,13 @@ import { useMemo } from 'react';
 import { Modal } from 'components/ui/Modal';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
-import type { ChartEventMarker, ChartSwingOverlay } from 'components/token-price-chart';
+import type { ChartSwingOverlay } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 
 // `InspectTarget` is defined once in the shared strategy module and re-exported here
 // so existing `import { type InspectTarget } from '.../TokenInspectModal'` keeps working.
-import type { InspectTarget } from 'components/strategy/inspectTarget';
+import { buildEventMarkers, type InspectTarget } from 'components/strategy/inspectTarget';
 export type { InspectTarget };
-
-function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
-  const markers: ChartEventMarker[] = [];
-  if (target.entryTime != null && target.entryPrice != null) {
-    markers.push({
-      kind: 'entry',
-      time: target.entryTime,
-      priceInSol: target.entryPrice,
-      txSignature: target.entryTx ?? null,
-      label: 'Entry',
-    });
-  }
-  if (target.exitTime != null && target.exitPrice != null) {
-    markers.push({
-      kind: 'exit',
-      time: target.exitTime,
-      priceInSol: target.exitPrice,
-      txSignature: target.exitTx ?? null,
-      label: target.exitLabel ? `Exit · ${target.exitLabel}` : 'Exit',
-    });
-  }
-  return markers;
-}
 
 interface TokenInspectModalProps {
   target: InspectTarget;

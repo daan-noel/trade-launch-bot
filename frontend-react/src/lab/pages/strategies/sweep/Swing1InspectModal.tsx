@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
 import {
   TokenInspectModal,
   type InspectTarget,
 } from 'components/tpsl2/TokenInspectModal';
-import type { ChartSwingLeg, ChartSwingOverlay } from 'components/token-price-chart';
-import { fetchSwing1Detect, type Swing1DetectParams } from '@lab/services/swing1Detect';
+import type { Swing1DetectParams } from '@lab/services/swing1Detect';
+import { useSwing1DetectOverlay } from '@lab/hooks/useSwing1DetectOverlay';
 
 interface Swing1InspectModalProps {
   target: InspectTarget;
@@ -26,32 +25,6 @@ interface Swing1InspectModalProps {
  * the wrong graph.
  */
 export function Swing1InspectModal({ target, params, onClose }: Swing1InspectModalProps) {
-  const [legs, setLegs] = useState<ChartSwingLeg[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLegs(null);
-    fetchSwing1Detect(target.mint_address, params as Swing1DetectParams, {
-      startMs: null,
-      endMs: null,
-      curveOnly: false,
-    })
-      .then((res) => {
-        if (!cancelled) setLegs(res.legs as unknown as ChartSwingLeg[]);
-      })
-      .catch(() => {
-        // Overlay is best-effort: on failure the modal still shows entry/exit.
-        if (!cancelled) setLegs(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [target.mint_address, params]);
-
-  const swingOverlay = useMemo<ChartSwingOverlay | null>(() => {
-    if (!legs || !legs.length) return null;
-    return { legs, segmentMode: 'perLeg' as const, perLegFullSpanEnd: true };
-  }, [legs]);
-
+  const swingOverlay = useSwing1DetectOverlay(target.mint_address, params as Swing1DetectParams);
   return <TokenInspectModal target={target} swingOverlay={swingOverlay} onClose={onClose} />;
 }

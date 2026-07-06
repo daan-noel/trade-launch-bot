@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { TokenTable } from 'components/tokens/TokenTable';
+import type { ChartOverlayHook } from 'components/tokens/TokenChartsGrid';
 import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
@@ -73,6 +74,10 @@ interface RunPositionsPanelProps {
   /** Inspect highlight + open. */
   selectedKey: string | null;
   onInspect: (row: RulePositionRecord | null) => void;
+  /** Per-row overlay for the charts grid — entry/exit (+ swing legs for swing1),
+   *  matching what the inspect modal draws. Supplied by the owning page since the
+   *  overlay is strategy-specific (tpsl = markers; swing1 = legs). */
+  useRowOverlay?: ChartOverlayHook<RulePositionRecord>;
   /** Real-rule sell wiring — enables the "Sell ALL" action on the current-run table
    *  only (old runs are closed). Omit for paper/lab, where there's nothing to sell. */
   isReal?: boolean;
@@ -127,6 +132,7 @@ export function RunPositionsPanel({
   price,
   selectedKey,
   onInspect,
+  useRowOverlay,
   isReal = false,
   sellingPositionMint,
   onSellPosition,
@@ -224,6 +230,7 @@ export function RunPositionsPanel({
             existingKeys={existingKeys}
             mintSetFilter
             charts
+            useRowOverlay={useRowOverlay}
             rows={currentRows}
             rowKey={keyById}
             selectedKey={selectedKey}
@@ -259,6 +266,7 @@ export function RunPositionsPanel({
               existingKeys={existingKeys}
               mintSetFilter
               charts
+              useRowOverlay={useRowOverlay}
               rows={historyRows}
               rowKey={keyById}
               rowClassName={historyRowClass}

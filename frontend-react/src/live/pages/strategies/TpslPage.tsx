@@ -7,7 +7,7 @@ import { Button } from 'components/ui/Button';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
-import { inspectFromPosition } from 'components/strategy/inspectTarget';
+import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
 import { positionColumns, POSITION_KEYS } from 'components/strategy/strategyColumns';
 import { SpecRuleForm } from 'components/strategy/SpecRuleForm';
 import {
@@ -60,6 +60,9 @@ type RuleMode = 'real' | 'paper';
 
 // Stable row-key functions (no inline lambdas — keeps DataTable memoization clean).
 const keyById = (r: { id: string }) => r.id;
+
+/** Charts-grid overlay: tpsl positions mark entry/exit only (no swing legs). */
+const tpslRowOverlay = markerRowOverlay(inspectFromPosition);
 
 function SectionHeading({
   title,
@@ -654,6 +657,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
       price={price}
       selectedKey={inspect?.key ?? null}
       onInspect={handleInspect}
+      useRowOverlay={tpslRowOverlay}
       isReal={isRealRuleSelected}
       sellingPositionMint={sellingPositionMint}
       onSellPosition={handleSellPosition}

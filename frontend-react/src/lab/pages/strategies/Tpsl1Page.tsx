@@ -23,7 +23,7 @@ import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { PaperResultSection } from '@lab/components/strategies/PaperResultSection';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
-import { inspectFromPosition, inspectFromSim } from 'components/strategy/inspectTarget';
+import { inspectFromPosition, inspectFromSim, markerRowOverlay } from 'components/strategy/inspectTarget';
 import {
   matchedColumns,
   positionColumns,
@@ -213,6 +213,12 @@ function inspectFromMatched(r: import('types').MatchedTokenRecord): InspectTarge
     exitPrice: null,
   };
 }
+
+// Charts-grid overlays: tpsl1 tables mark entry/exit only (no swing legs). Matched
+// rows carry no run, so their markers are empty — same as the inspect modal.
+const positionRowOverlay = markerRowOverlay(inspectFromPosition);
+const simRowOverlay = markerRowOverlay(inspectFromSim);
+const matchedRowOverlay = markerRowOverlay(inspectFromMatched);
 
 
 
@@ -868,6 +874,7 @@ export function Tpsl1Page() {
       price={price}
       selectedKey={inspect?.table === 'positions' ? inspect.key : null}
       onInspect={onInspectPosition}
+      useRowOverlay={positionRowOverlay}
       isReal={isRealRuleSelected}
       sellingPositionMint={sellingPositionMint}
       onSellPosition={handleSellPosition}
@@ -1059,6 +1066,7 @@ export function Tpsl1Page() {
             existingKeys={MATCHED_KEYS}
             mintSetFilter
             charts
+            useRowOverlay={matchedRowOverlay}
             rows={matchedTokens}
             rowKey={keyByMint}
             selectedKey={inspect?.table === 'matched' ? inspect.key : null}
@@ -1107,6 +1115,7 @@ export function Tpsl1Page() {
               existingKeys={SIM_KEYS}
               mintSetFilter
               charts
+              useRowOverlay={simRowOverlay}
               rows={simTokens}
               rowKey={keyByMint}
               selectedKey={inspect?.table === 'sim' ? inspect.key : null}
@@ -1151,6 +1160,7 @@ export function Tpsl1Page() {
           onClear={handleClearPaperResult}
           clearing={paperClearing}
           canClear={paperCanClear}
+          useRowOverlay={positionRowOverlay}
         />
       )}
 

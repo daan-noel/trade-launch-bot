@@ -4,7 +4,7 @@ import type { ColumnDef, SortDir, TableQuery } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { appendedTokenColumns } from './sharedTokenColumns';
 import { MintSetInput } from './MintSetInput';
-import { TokenChartsGrid } from './TokenChartsGrid';
+import { TokenChartsGrid, type ChartOverlayHook } from './TokenChartsGrid';
 import { cn } from 'lib/cn';
 
 /** Persist the charts-grid toggle per `tableId` (localStorage; SSR/test safe). */
@@ -84,6 +84,10 @@ interface TokenTableCommon<R> {
   /** Opt-in: a "Charts" toggle rendering a per-token trade-chart grid for the CURRENT
    *  page below the table (lazy-mounted). Persisted per `tableId`. */
   charts?: boolean;
+  /** Per-row entry/exit + swing overlay for the charts grid (when `charts` is on),
+   *  matching the row's inspect modal. Called as a hook per card — see
+   *  {@link ChartOverlayHook}. */
+  useRowOverlay?: ChartOverlayHook<R>;
   /** Per-row extra rendered in a chart card's header when `charts` is on. */
   renderChartCardExtra?: (row: R) => ReactNode;
   /** Per-row chart-card title (else derived from the fetched detail). */
@@ -130,7 +134,7 @@ function mintAddressOf<R>(row: R): string {
 }
 
 export function TokenTable<R>(props: TokenTableProps<R>) {
-  const { charts, renderChartCardExtra, titleOf, highlightWallet, tableId, onVisibleRowsChange } = props;
+  const { charts, useRowOverlay, renderChartCardExtra, titleOf, highlightWallet, tableId, onVisibleRowsChange } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() => (charts ? loadChartsPref(tableId) : false));
   const [visibleRows, setVisibleRows] = useState<R[]>([]);
@@ -183,6 +187,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           titleOf={titleOf}
           highlightWallet={highlightWallet}
           chartTableId={tableId ? `${tableId}_charts` : undefined}
+          useRowOverlay={useRowOverlay}
           renderChartCardExtra={renderChartCardExtra}
         />
       )}

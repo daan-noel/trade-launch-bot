@@ -17,6 +17,10 @@ import { SweepConfigForm } from '@lab/components/sweep/SweepConfigForm';
 import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory';
 import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
 import { Swing1InspectModal } from '@lab/pages/strategies/sweep/Swing1InspectModal';
+import type { InspectTarget } from 'components/strategy/inspectTarget';
+import { makeSwing1DetectRowOverlay } from '@lab/hooks/useSwing1DetectOverlay';
+import type { ChartOverlayHook } from 'components/tokens/TokenChartsGrid';
+import type { Swing1DetectParams } from '@lab/services/swing1Detect';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import {
   type AxisDef,
@@ -43,6 +47,22 @@ import type { SweepResultRecord } from '@lab/components/sweep/types';
  *  strategy supplies its own keys + axes via a thin child page (see this
  *  folder's `Tpsl1GroupedSweepPage` / `Tpsl2GroupedSweepPage`). */
 
+
+/** Map a combo token-result row to an inspect target — one SSOT for the inspect
+ *  modal and the charts-grid overlay (both mark the same entry/exit). */
+function comboTarget(r: ComboTokenResult): InspectTarget {
+  return {
+    mint_address: r.mint_address,
+    symbol: r.symbol,
+    entryTime: r.entry_time ?? null,
+    entryPrice: r.entry_price ?? null,
+    entryTx: r.entry_tx ?? null,
+    exitTime: r.exit_time ?? null,
+    exitPrice: r.exit_price ?? null,
+    exitTx: r.exit_tx ?? null,
+    exitLabel: r.fired ? r.exit : null,
+  };
+}
 
 /** Run-picker groups label: a completed run shows its full group count; a running
  *  or cancelled (partial) run shows "done / total" so the picker reveals at a
@@ -283,6 +303,18 @@ export function GroupedSweepView({
         ? (results.find((r) => r.combo_id === activeComboId)?.params ?? null)
         : null,
     [results, activeComboId],
+  );
+
+  // Charts-grid overlay for the combo's token results: entry/exit always; swing1
+  // combos also draw their detected legs (keyed off the combo's swept params, the
+  // same ones its inspect modal fetches). Always the detect factory so the card's
+  // hook shape is constant — `null` params (non-swing, or params not yet loaded)
+  // just no-ops the detect fetch, leaving entry/exit markers.
+  const comboSwingParams =
+    strategyId === 'swing_1' ? (activeComboParams as Swing1DetectParams | null) : null;
+  const comboRowOverlay = useMemo<ChartOverlayHook<ComboTokenResult>>(
+    () => makeSwing1DetectRowOverlay(comboTarget, comboSwingParams),
+    [comboSwingParams],
   );
 
   const tokenColumns = useMemo<ColumnDef<ComboTokenResult>[]>(
@@ -761,6 +793,7 @@ export function GroupedSweepView({
                     existingKeys={ALL_TOKEN_INFO_KEYS}
                     mintSetFilter
                     charts
+                    useRowOverlay={comboRowOverlay}
                     groupLabels={{
                       identity: 'Identity',
                       activity: 'Activity',
@@ -784,17 +817,7 @@ export function GroupedSweepView({
 
                   {selectedTokenResult &&
                     (() => {
-                      const target = {
-                        mint_address: selectedTokenResult.mint_address,
-                        symbol: selectedTokenResult.symbol,
-                        entryTime: selectedTokenResult.entry_time ?? null,
-                        entryPrice: selectedTokenResult.entry_price ?? null,
-                        entryTx: selectedTokenResult.entry_tx ?? null,
-                        exitTime: selectedTokenResult.exit_time ?? null,
-                        exitPrice: selectedTokenResult.exit_price ?? null,
-                        exitTx: selectedTokenResult.exit_tx ?? null,
-                        exitLabel: selectedTokenResult.fired ? selectedTokenResult.exit : null,
-                      };
+                      const target = comboTarget(selectedTokenResult);
                       const onClose = () => setSelectedTokenMint(null);
                       // swing1 combos overlay their detected swing legs on the
                       // chart; other strategies use the plain modal.

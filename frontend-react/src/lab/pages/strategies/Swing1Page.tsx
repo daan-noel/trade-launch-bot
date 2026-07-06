@@ -29,8 +29,12 @@ import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { PaperResultSection } from '@lab/components/strategies/PaperResultSection';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
 import { inspectFromPosition, inspectFromSim } from 'components/strategy/inspectTarget';
-import type { ChartSwingLeg, ChartSwingOverlay } from 'components/token-price-chart';
-import { fetchSwing1Detect, type Swing1DetectParams } from '@lab/services/swing1Detect';
+import type { ChartSwingLeg } from 'components/token-price-chart';
+import { type Swing1DetectParams } from '@lab/services/swing1Detect';
+import {
+  makeSwing1DetectRowOverlay,
+  useSwing1DetectOverlay,
+} from '@lab/hooks/useSwing1DetectOverlay';
 import {
   matchedColumns,
   positionColumns,
@@ -229,11 +233,21 @@ const SWING1_DETECT_KEYS = new Set(
   SWING1_SPEC.fields.filter((f) => f.detectKey).map((f) => f.detectKey!),
 );
 
+/** Resolve a swing1 rule's detect params (the axes the sim ran). The chart's
+ *  `swing1-detect` overlay is keyed off these so its legs match the row's
+ *  entry/exit. Returns null for an unknown rule (overlay then draws nothing). */
+function swing1ParamsFromRule(rule: RuleRecord | undefined): Swing1DetectParams | null {
+  if (!rule) return null;
+  const blob = serializeRule(SWING1_SPEC, rule);
+  const { params } = blobToDetectParams(blob, SWING1_DETECT_KEYS);
+  return params as Swing1DetectParams;
+}
+
 /** Wraps the shared {@link TokenInspectModal} with the swing1 leg overlay for a
  *  rule/sim/paper/position result row. Runs the same detect funnel the rule's
- *  own params drove (curve-only, full history) so the chart's swing legs match
- *  what produced this row's entry/exit — mirrors the sweep's
- *  {@link Swing1InspectModal} but keyed off a rule instead of a combo. */
+ *  own params drove (full history) so the chart's swing legs match what produced
+ *  this row's entry/exit — mirrors the sweep's {@link Swing1InspectModal} but
+ *  keyed off a rule instead of a combo. `carriedLegs` (sim rows) skip the fetch. */
 function SwingRuleInspectModal({
   target,
   rule,
@@ -248,48 +262,8 @@ function SwingRuleInspectModal({
   carriedLegs?: ChartSwingLeg[] | null;
   onClose: () => void;
 }) {
-  const [legs, setLegs] = useState<ChartSwingLeg[] | null>(null);
-
-  useEffect(() => {
-    // Carried legs win — same corpus + params the row's sim used, so no fetch.
-    if (carriedLegs && carriedLegs.length) {
-      setLegs(carriedLegs);
-      return;
-    }
-    if (!rule) {
-      setLegs(null);
-      return;
-    }
-    let cancelled = false;
-    setLegs(null);
-    const blob = serializeRule(SWING1_SPEC, rule);
-    const { params } = blobToDetectParams(blob, SWING1_DETECT_KEYS);
-    fetchSwing1Detect(target.mint_address, params as Swing1DetectParams, {
-      startMs: null,
-      endMs: null,
-      // The real backtest/paper-run evaluates ALL trades (curve + AMM, see
-      // `find_by_mints_all` — no venue filter) — curve-only here would only see
-      // the pre-graduation trickle and miss the legs that actually drove this
-      // row's entry/exit for tokens that graduated to AMM.
-      curveOnly: false,
-    })
-      .then((res) => {
-        if (!cancelled) setLegs(res.legs as unknown as ChartSwingLeg[]);
-      })
-      .catch(() => {
-        // Overlay is best-effort: on failure the modal still shows entry/exit.
-        if (!cancelled) setLegs(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [target.mint_address, rule, carriedLegs]);
-
-  const swingOverlay = useMemo<ChartSwingOverlay | null>(() => {
-    if (!legs || !legs.length) return null;
-    return { legs, segmentMode: 'perLeg' as const, perLegFullSpanEnd: true };
-  }, [legs]);
-
+  const params = useMemo(() => swing1ParamsFromRule(rule), [rule]);
+  const swingOverlay = useSwing1DetectOverlay(target.mint_address, params, carriedLegs);
   return <TokenInspectModal target={target} swingOverlay={swingOverlay} onClose={onClose} />;
 }
 
@@ -963,6 +937,32 @@ export function Swing1Page() {
     [sellToken],
   );
 
+  // Charts-grid overlays: each section draws entry/exit + the swing legs the
+  // `swing1-detect` funnel reconstructs from that section's rule params (the same
+  // legs its inspect modal shows). Sim rows carry their own legs, so those skip
+  // the fetch. Keyed off the section's rule so a rule switch re-detects.
+  const positionRowOverlay = useMemo(
+    () => makeSwing1DetectRowOverlay(inspectFromPosition, swing1ParamsFromRule(rules.find((r) => r.id === selectedRuleId))),
+    [rules, selectedRuleId],
+  );
+  const paperRowOverlay = useMemo(
+    () => makeSwing1DetectRowOverlay(inspectFromPosition, swing1ParamsFromRule(rules.find((r) => r.id === paperResult?.ruleId))),
+    [rules, paperResult],
+  );
+  const matchedRowOverlay = useMemo(
+    () => makeSwing1DetectRowOverlay(inspectFromMatched, swing1ParamsFromRule(rules.find((r) => r.id === matchedRuleId))),
+    [rules, matchedRuleId],
+  );
+  const simRowOverlay = useMemo(
+    () =>
+      makeSwing1DetectRowOverlay(
+        inspectFromSim,
+        swing1ParamsFromRule(rules.find((r) => r.id === simRuleId)),
+        (r) => r.swing_legs ?? null,
+      ),
+    [rules, simRuleId],
+  );
+
   // Positions for the selected rule — split into Current run + Old runs. Rendered
   // under whichever table owns the rule (real → below Real, paper → below Paper);
   // only one of isReal/isPaperRuleSelected is true at a time, so it renders once.
@@ -979,6 +979,7 @@ export function Swing1Page() {
       price={price}
       selectedKey={inspect?.table === 'positions' ? inspect.key : null}
       onInspect={onInspectPosition}
+      useRowOverlay={positionRowOverlay}
       isReal={isRealRuleSelected}
       sellingPositionMint={sellingPositionMint}
       onSellPosition={handleSellPosition}
@@ -1170,6 +1171,7 @@ export function Swing1Page() {
             existingKeys={MATCHED_KEYS}
             mintSetFilter
             charts
+            useRowOverlay={matchedRowOverlay}
             rows={matchedTokens}
             rowKey={keyByMint}
             selectedKey={inspect?.table === 'matched' ? inspect.key : null}
@@ -1218,6 +1220,7 @@ export function Swing1Page() {
               existingKeys={SIM_KEYS}
               mintSetFilter
               charts
+              useRowOverlay={simRowOverlay}
               rows={simTokens}
               rowKey={keyByMint}
               selectedKey={inspect?.table === 'sim' ? inspect.key : null}
@@ -1262,6 +1265,7 @@ export function Swing1Page() {
           onClear={handleClearPaperResult}
           clearing={paperClearing}
           canClear={paperCanClear}
+          useRowOverlay={paperRowOverlay}
         />
       )}
 

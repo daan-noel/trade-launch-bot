@@ -223,7 +223,14 @@ there are no camelCase/axis/prefix translators.
   box (server: an `in` op on `mint_address` folded into `structuredFilters`; client: a plain row pre-filter);
   **`charts`** — a toggle rendering `<TokenChartsGrid>` (lazy-mounted, current page only, with
   `renderChartCardExtra`/`titleOf`/`highlightWallet` slots) below the table, fed by the table's
-  intercepted `onVisibleRowsChange`. `DataTable` stays token-agnostic: the dependency is one-way
+  intercepted `onVisibleRowsChange`. Strategy-result tables also pass **`useRowOverlay`** — a per-row
+  hook (`ChartOverlayHook`) resolving the same **entry/exit markers + swing legs** the row's inspect
+  modal shows, so the inline charts match the modal. It's built from the shared `inspectTarget` helpers
+  (`markerRowOverlay` for tpsl entry/exit; `carriedSwingRowOverlay` for `live` swing1 positions whose
+  legs ride the row) or `@lab/hooks/useSwing1DetectOverlay`'s `makeSwing1DetectRowOverlay` (lab swing1
+  positions/matched/sim + grouped-sweep combos, which re-run `swing1-detect` per card keyed off the
+  section's rule/combo params — sim rows carry their legs and skip the fetch). `DataTable` stays
+  token-agnostic: the dependency is one-way
   (`tokens/` → `table/`), asserted by `components/table/DataTable.boundary.test.ts`. **Every** token-row
   table now renders through `TokenTable`. (Trader Analysis keeps its always-on external `<TokenChartsGrid>`
   fed by the table's `onVisibleRowsChange` rather than the toggle, being chart-centric.)

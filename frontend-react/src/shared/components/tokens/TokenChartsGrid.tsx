@@ -1,7 +1,29 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useGetTokenDetailQuery } from 'store/sharedEndpoints';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import type { ChartEventMarker, ChartSwingOverlay } from 'components/token-price-chart';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+
+/** Per-row chart overlay — the entry/exit markers and/or swing-detection legs a
+ *  caller wants drawn on that row's inline chart, matching what its inspect modal
+ *  shows. */
+export interface RowChartOverlay {
+  eventMarkers?: ChartEventMarker[] | null;
+  swingOverlay?: ChartSwingOverlay | null;
+}
+
+/**
+ * Resolve a row's chart overlay. Called once per chart card as a **hook** (so an
+ * implementation may run its own `useState`/`useEffect` — e.g. the swing1 charts
+ * fetch their legs per token via `swing1-detect`), so obey the rules of hooks:
+ * always call the same hooks in the same order regardless of the row. Entry/exit
+ * overlays that just derive from row data call no hooks and are trivially safe.
+ */
+export type ChartOverlayHook<R> = (row: R, mint: string) => RowChartOverlay;
+
+const NO_OVERLAY: RowChartOverlay = {};
+/** Stable default so cards always call a hook (rules-of-hooks) when none passed. */
+const useNoRowOverlay: ChartOverlayHook<unknown> = () => NO_OVERLAY;
 
 /**
  * A grid of per-token trade-history charts, one card per row — the generalized
@@ -52,19 +74,31 @@ export function LazyMount({ minHeight = 380, children }: { minHeight?: number; c
   );
 }
 
-interface TokenChartCardProps {
+interface TokenChartCardProps<R> {
+  row: R;
   mint_address: string;
   /** Header title; falls back to the fetched detail's symbol/name, then the mint. */
   title?: string;
   highlightWallet?: string | null;
   chartTableId: string;
+  /** Resolves this row's entry/exit + swing overlay (called as a hook). */
+  useOverlay: ChartOverlayHook<R>;
   /** Extra content rendered in the card header (per-row context). */
   extra?: ReactNode;
 }
 
-function TokenChartCard({ mint_address: mint, title, highlightWallet, chartTableId, extra }: TokenChartCardProps) {
+function TokenChartCard<R>({
+  row,
+  mint_address: mint,
+  title,
+  highlightWallet,
+  chartTableId,
+  useOverlay,
+  extra,
+}: TokenChartCardProps<R>) {
   const { data: detail } = useGetTokenDetailQuery(mint, { skip: !mint });
   const heading = title ?? detail?.symbol ?? detail?.name ?? mint.slice(0, 6);
+  const { eventMarkers, swingOverlay } = useOverlay(row, mint);
 
   return (
     <div className="rounded-lg border border-white/8 bg-bg-card/40 p-4">
@@ -82,6 +116,8 @@ function TokenChartCard({ mint_address: mint, title, highlightWallet, chartTable
       <TokenTradeChart
         key={mint}
         detail={detail ?? null}
+        eventMarkers={eventMarkers ?? null}
+        swingOverlay={swingOverlay ?? null}
         highlightWallet={highlightWallet ?? null}
         tableId={chartTableId}
       />
@@ -98,6 +134,9 @@ export interface TokenChartsGridProps<R> {
   chartTableId?: string;
   /** Wallet to spotlight on every chart (Trader Analysis). */
   highlightWallet?: string | null;
+  /** Per-row entry/exit + swing overlay (matches the row's inspect modal). Called
+   *  as a hook per card — see {@link ChartOverlayHook}. Omit for a plain chart. */
+  useRowOverlay?: ChartOverlayHook<R>;
   /** Extra header content per card (e.g. per-wallet buys/sells). */
   renderChartCardExtra?: (row: R) => ReactNode;
 }
@@ -107,8 +146,10 @@ export function TokenChartsGrid<R>({
   titleOf,
   chartTableId = 'token_charts_grid',
   highlightWallet,
+  useRowOverlay,
   renderChartCardExtra,
 }: TokenChartsGridProps<R>) {
+  const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
   if (rows.length === 0) return null;
   return (
     <div className="mt-4 flex flex-col gap-4">
@@ -117,10 +158,12 @@ export function TokenChartsGrid<R>({
         return (
           <LazyMount key={mint}>
             <TokenChartCard
+              row={row}
               mint_address={mint}
               title={titleOf?.(row)}
               highlightWallet={highlightWallet}
               chartTableId={chartTableId}
+              useOverlay={useOverlay}
               extra={renderChartCardExtra?.(row)}
             />
           </LazyMount>

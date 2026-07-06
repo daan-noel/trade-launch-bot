@@ -1,5 +1,6 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { TokenTable } from 'components/tokens/TokenTable';
+import type { ChartOverlayHook } from 'components/tokens/TokenChartsGrid';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
@@ -82,6 +83,7 @@ export function PaperResultSection({
   onClear,
   clearing,
   canClear,
+  useRowOverlay,
 }: {
   data: PaperResultResponse;
   positionColumns: ColumnDef<RulePositionRecord>[];
@@ -106,6 +108,8 @@ export function PaperResultSection({
   onClear: () => void;
   clearing: boolean;
   canClear: boolean;
+  /** Per-row charts-grid overlay (entry/exit + swing legs), matching the modal. */
+  useRowOverlay?: ChartOverlayHook<RulePositionRecord>;
 }) {
   const { timezone } = useTimezone();
   const { run } = data;
@@ -222,6 +226,7 @@ export function PaperResultSection({
           existingKeys={positionKeys}
           mintSetFilter
           charts
+          useRowOverlay={useRowOverlay}
           rows={positions}
           rowKey={keyById}
           selectedKey={selectedKey}

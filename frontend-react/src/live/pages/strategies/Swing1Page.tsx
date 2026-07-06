@@ -7,7 +7,11 @@ import { Button } from 'components/ui/Button';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
-import { inspectFromPosition } from 'components/strategy/inspectTarget';
+import {
+  carriedSwingRowOverlay,
+  inspectFromPosition,
+  swingOverlayFromLegs,
+} from 'components/strategy/inspectTarget';
 import { positionColumns, POSITION_KEYS } from 'components/strategy/strategyColumns';
 import type { ChartSwingOverlay } from 'components/token-price-chart';
 import { ruleColumns as ruleCols1, RuleRowProvider } from 'components/tpsl1/ruleColumns';
@@ -53,6 +57,10 @@ const SWING1_SPEC = getSpec('swing_1');
 
 // Stable row-key functions (no inline lambdas — keeps DataTable memoization clean).
 const keyById = (r: { id: string }) => r.id;
+
+/** Charts-grid overlay: entry/exit + the swing legs carried on the position row
+ *  (harvested from the live exit memo at close — no detect-endpoint fetch on live). */
+const swing1RowOverlay = carriedSwingRowOverlay(inspectFromPosition, (r: RulePositionRecord) => r.swing_legs);
 
 function SectionHeading({
   title,
@@ -617,10 +625,7 @@ export function Swing1Page() {
     if (!row) { setInspect(null); return; }
     // Legs arrived with the position row itself (harvested from the live exit
     // memo at close) — no detect-endpoint fetch needed on `live`.
-    const swingOverlay: ChartSwingOverlay | null =
-      row.swing_legs && row.swing_legs.length > 0
-        ? { legs: row.swing_legs, segmentMode: 'perLeg', perLegFullSpanEnd: true }
-        : null;
+    const swingOverlay = swingOverlayFromLegs(row.swing_legs);
     setInspect({ key: row.id, target: inspectFromPosition(row), swingOverlay });
   }, []);
 
@@ -636,6 +641,7 @@ export function Swing1Page() {
       fetchPositions={fetchSwing1RulePositions}
       fetchSummary={fetchSwing1RulePositionsSummary}
       price={price}
+      useRowOverlay={swing1RowOverlay}
       selectedKey={inspect?.key ?? null}
       onInspect={handleInspect}
       isReal={isRealRuleSelected}
