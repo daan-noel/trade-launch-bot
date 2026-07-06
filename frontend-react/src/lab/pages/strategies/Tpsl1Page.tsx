@@ -97,7 +97,7 @@ import {
   invalidateStrategyResult,
 } from '@lab/store/strategyResultCache';
 import { useServerTable } from 'hooks/useServerTable';
-import { toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import type { AppDispatch } from '@lab/store';
 import type {
   MatchedTokenRecord,
@@ -498,6 +498,10 @@ export function Tpsl1Page() {
     () => toTableRequest(simQuery, SIM_NUMERIC_COLS, analysisRangeExtras),
     [simQuery, analysisRangeExtras],
   );
+  const simSummaryBody = useMemo(
+    () => toSummaryBody(simQuery, SIM_NUMERIC_COLS, analysisRangeExtras),
+    [simQuery.search, simQuery.colFilters, simQuery.structuredFilters, analysisRangeExtras],
+  );
 
   // Matched table: enabled while its view is open for the active rule. First POST
   // runs the scan server-side + caches the mint set; later pages are cheap.
@@ -528,7 +532,9 @@ export function Tpsl1Page() {
     simBody,
     (body, signal) =>
       fetchSimulatedPage('tpsl1', simRuleId ?? '', body as TableRequestBody, signal),
-    (signal) => fetchSimulatedSummary('tpsl1', simRuleId ?? '', signal),
+    (summaryBody, signal) =>
+      fetchSimulatedSummary('tpsl1', simRuleId ?? '', summaryBody as TableRequestBody, signal),
+    simSummaryBody,
   );
 
   const simCardSummary = useMemo(
@@ -1091,7 +1097,7 @@ export function Tpsl1Page() {
       )}
       {simReady && !simError && (
         <>
-          {/* Summary is server-computed over the whole run (not the visible page). */}
+          {/* Summary is server-computed over the filtered cohort (not the visible page). */}
           {simCardSummary && (
             <SimSummaryCard
               ruleName={simRuleName}

@@ -40,7 +40,7 @@ import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
-import { toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 import { useDispatch } from 'react-redux';
 import {
@@ -487,6 +487,10 @@ export function Tpsl2Page() {
     () => toTableRequest(simQuery, SIM_NUMERIC_COLS, analysisRangeExtras),
     [simQuery, analysisRangeExtras],
   );
+  const simSummaryBody = useMemo(
+    () => toSummaryBody(simQuery, SIM_NUMERIC_COLS, analysisRangeExtras),
+    [simQuery.search, simQuery.colFilters, simQuery.structuredFilters, analysisRangeExtras],
+  );
 
   // Matched table: enabled while its view is open for the active rule.
   const {
@@ -514,7 +518,9 @@ export function Tpsl2Page() {
     simBody,
     (body, signal) =>
       fetchSimulatedPage('tpsl2', simRuleId ?? '', body as TableRequestBody, signal),
-    (signal) => fetchSimulatedSummary('tpsl2', simRuleId ?? '', signal),
+    (summaryBody, signal) =>
+      fetchSimulatedSummary('tpsl2', simRuleId ?? '', summaryBody as TableRequestBody, signal),
+    simSummaryBody,
   );
 
   const simCardSummary = useMemo(
@@ -1102,7 +1108,7 @@ export function Tpsl2Page() {
       )}
       {simReady && !simError && (
         <>
-          {/* Summary is server-computed over the whole run (not the visible page). */}
+          {/* Summary is server-computed over the filtered cohort (not the visible page). */}
           {simCardSummary && (
             <SimSummaryCard
               ruleName={simRuleName}

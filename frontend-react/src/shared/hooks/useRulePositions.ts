@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTpslPositionsChanged } from 'services/sse';
 import { useVisiblePolling } from './useVisiblePolling';
-import { toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 import type {
   PositionsSummary,
@@ -21,8 +21,8 @@ const REFRESH_DEBOUNCE_MS = 200;
  *  pagination the page is a fixed window, so a delta for a row not on this page has
  *  nowhere to land — it's picked up by the page refetch / fallback poll instead.
  *  This keeps the visible rows live (fill→exit transitions) without corrupting the
- *  page window or double-counting; the summary panel (which needs the whole run) is
- *  refreshed separately from its own aggregate endpoint. */
+ *  page window or double-counting; the summary panel is refreshed separately from its
+ *  own aggregate endpoint over the current filter cohort. */
 function applyDeltas(
   prev: RulePositionRecord[],
   batch: TpslPositionDelta[],
@@ -61,22 +61,23 @@ export interface RulePositions {
   positions: RulePositionRecord[];
   /** Run/rule-wide total (from `X-Total-Count`) for the pager to size itself. */
   total: number;
-  /** Run/rule-wide aggregates for the Positions Summary panel (null until loaded). */
+  /** Filtered-population aggregates for the Positions Summary panel (null until loaded). */
   summary: PositionsSummary | null;
   loading: boolean;
   error: string | null;
 }
 
 /**
- * Owns the current *page* of the selected rule's positions plus the run-wide
+ * Owns the current *page* of the selected rule's positions plus the filtered
  * summary. Fetches the page on select / page change (with a spinner), then keeps
  * the visible rows live from the backend's `tpsl_positions_changed` push
  * (in-place, only for rows on the page), with a slow visibility-gated poll as a
  * safety net. The **summary** is fetched from its own aggregate endpoint over the
- * whole run — independent of which page is shown — and refetched (debounced) on the
- * same delta signal so its counts stay correct. Polling/patching stop once the rule
- * is settled. Each fetch is abortable so switching rules/pages quickly can't let a
- * stale response overwrite a newer one.
+ * table's current search/filters (mint-set included) — independent of which page
+ * is shown — and refetched (debounced) on the same delta signal so its counts stay
+ * correct while a run is live. Polling/patching stop once the rule is settled. Each
+ * fetch is abortable so switching rules/pages quickly can't let a stale response
+ * overwrite a newer one.
  */
 export function useRulePositions(
   selectedRuleId: string | null,
@@ -86,7 +87,11 @@ export function useRulePositions(
     body: TableRequestBody,
     signal?: AbortSignal,
   ) => Promise<RulePositionsPage>,
-  fetchSummary: (ruleId: string, signal?: AbortSignal) => Promise<PositionsSummary>,
+  fetchSummary: (
+    ruleId: string,
+    body: TableRequestBody,
+    signal?: AbortSignal,
+  ) => Promise<PositionsSummary>,
   strategy: 'tpsl1' | 'tpsl2' | 'swing_1',
   query: TableQuery,
   /** Column keys that filter numerically (so `>5`/`1..10` become structured ops).
@@ -97,29 +102,33 @@ export function useRulePositions(
    *  the settle reconcile. Only the fetch-on-select/query path runs. Default true. */
   live: boolean = true,
 ): RulePositions {
-  // Serialize the table view-state into the unified POST body. Numeric columns get
-  // structured `{op,val}` filters; the server whitelist drops any unknown key.
   const numericKey = numericCols ? [...numericCols].sort().join(',') : '';
+  const filterKey = useMemo(
+    () =>
+      JSON.stringify({
+        search: query.search,
+        colFilters: query.colFilters,
+        structuredFilters: query.structuredFilters,
+      }),
+    [query.search, query.colFilters, query.structuredFilters],
+  );
   const body = useMemo(
     () => toTableRequest(query, numericCols ?? new Set()),
-    // Rebuild only when the view-state or the numeric-col set actually changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      query.page,
-      query.pageSize,
-      query.search,
-      JSON.stringify(query.sortKeys),
-      JSON.stringify(query.colFilters),
-      numericKey,
-    ],
+    [query.page, query.pageSize, query.search, JSON.stringify(query.sortKeys), filterKey, numericKey],
   );
+  const summaryBody = useMemo(
+    () => toSummaryBody(query, numericCols ?? new Set()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filterKey, numericKey],
+  );
+  const summaryKey = JSON.stringify(summaryBody);
   const [positions, setPositions] = useState<RulePositionRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<PositionsSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const failures = useRef(0);
-  // Latest in-flight page request; aborted when rule/page changes or we unmount.
   const inflight = useRef<AbortController | null>(null);
   const summaryInflight = useRef<AbortController | null>(null);
 
@@ -146,8 +155,6 @@ export function useRulePositions(
         const msg = e instanceof Error ? e.message : 'Failed to load positions';
         if (!silent || ++failures.current >= MAX_SILENT_FAILURES) setError(msg);
       } finally {
-        // Clear the spinner only when THIS request is still the latest one — a
-        // superseded (aborted) request must not touch it.
         if (inflight.current === ctrl) setLoading(false);
       }
     },
@@ -160,18 +167,15 @@ export function useRulePositions(
       const ctrl = new AbortController();
       summaryInflight.current = ctrl;
       try {
-        const s = await fetchSummary(ruleId, ctrl.signal);
+        const s = await fetchSummary(ruleId, summaryBody, ctrl.signal);
         if (!ctrl.signal.aborted) setSummary(s);
       } catch (e) {
-        // Summary is non-blocking: a failure just leaves the last-known value
-        // (or null). Swallow aborts; ignore transient errors (poll/delta retries).
         if (e instanceof DOMException && e.name === 'AbortError') return;
       }
     },
-    [fetchSummary],
+    [fetchSummary, summaryBody],
   );
 
-  // Reset + non-silent fetch whenever the selection or the page window changes.
   useEffect(() => {
     failures.current = 0;
     if (!selectedRuleId) {
@@ -188,17 +192,12 @@ export function useRulePositions(
     return () => inflight.current?.abort();
   }, [selectedRuleId, loadPage]);
 
-  // Summary follows the selected rule (not the page) — refetch on rule change only.
   useEffect(() => {
     if (!selectedRuleId) return;
     void loadSummary(selectedRuleId);
     return () => summaryInflight.current?.abort();
-  }, [selectedRuleId, loadSummary]);
+  }, [selectedRuleId, summaryKey, loadSummary]);
 
-  // Primary live path: patch visible rows from position deltas + refresh the
-  // summary. Deltas for the selected rule are buffered and flushed together
-  // (coalescing fill/exit bursts). Skipped once the rule is settled; the fallback
-  // poll below reconciles dropped frames.
   useEffect(() => {
     if (!selectedRuleId || settled || !live) return;
     const pending: TpslPositionDelta[] = [];
@@ -208,8 +207,6 @@ export function useRulePositions(
       if (!pending.length) return;
       const batch = pending.splice(0);
       setPositions((prev) => applyDeltas(prev, batch));
-      // Any transition can change the run-wide aggregates — refresh them once per
-      // coalesced burst (cheap COUNT/SUM, no rows shipped).
       void loadSummary(selectedRuleId);
     };
     const handle = connectTpslPositionsChanged(strategy, (delta) => {
@@ -223,9 +220,6 @@ export function useRulePositions(
     };
   }, [strategy, selectedRuleId, settled, live, loadSummary]);
 
-  // Reconcile once when the rule transitions to settled: the terminal exit delta
-  // can race the settle-driven unsubscribe above, so do one final silent page +
-  // summary fetch so both always land on the terminal state.
   const wasSettled = useRef(settled);
   const reconcileRuleId = useRef<string | null>(null);
   useEffect(() => {
@@ -241,8 +235,6 @@ export function useRulePositions(
     wasSettled.current = settled;
   }, [settled, selectedRuleId, live, loadPage, loadSummary]);
 
-  // Safety net: a slow visibility-gated poll catches dropped/lagged SSE frames.
-  // No leading call (the effects above did the first fetch); off once settled.
   useVisiblePolling(
     () => {
       if (selectedRuleId) {

@@ -64,9 +64,10 @@ interface RunPositionsPanelProps {
     signal?: AbortSignal,
     scope?: PositionScope,
   ) => Promise<RulePositionsPage>;
-  /** Scope-aware summary fetch. */
+  /** Scope-aware summary fetch (accepts filter body + `'current'`/`'history'`). */
   fetchSummary: (
     ruleId: string,
+    body: TableRequestBody,
     signal?: AbortSignal,
     scope?: PositionScope,
   ) => Promise<PositionsSummary>;
@@ -114,7 +115,7 @@ function SectionHeading({
 /**
  * Renders a rule's positions as two sections — **Current run** (the latest run;
  * live) and **Old runs** (every prior run; static, banded by run) — each with its
- * own server-side table + run-wide summary. The current section keeps the live
+ * own server-side table + filtered summary. The current section keeps the live
  * SSE/poll path; the history section is fetch-only (immutable) and only appears when
  * there's actually a prior run. Both scope their own paging + summary via the
  * `scope` query param, so the two summaries measure different populations (unrealized
@@ -153,7 +154,8 @@ export function RunPositionsPanel({
     [fetchPositions],
   );
   const fetchCurrentSummary = useCallback(
-    (id: string, signal?: AbortSignal) => fetchSummary(id, signal, 'current'),
+    (id: string, body: TableRequestBody, signal?: AbortSignal) =>
+      fetchSummary(id, body, signal, 'current'),
     [fetchSummary],
   );
   const fetchHistory = useCallback(
@@ -162,7 +164,8 @@ export function RunPositionsPanel({
     [fetchPositions],
   );
   const fetchHistorySummary = useCallback(
-    (id: string, signal?: AbortSignal) => fetchSummary(id, signal, 'history'),
+    (id: string, body: TableRequestBody, signal?: AbortSignal) =>
+      fetchSummary(id, body, signal, 'history'),
     [fetchSummary],
   );
 
@@ -221,7 +224,7 @@ export function RunPositionsPanel({
           subtitle={selectedRuleName ?? undefined}
         />
         {current.error && <InlineAlert variant="error">{current.error}</InlineAlert>}
-        {!current.error && current.summary && current.summary.tokens > 0 && (
+        {!current.error && current.summary && (
           <SimSummaryCard title="Current run" ruleName={ruleName} summary={current.summary} price={price} />
         )}
         {!current.error && (
@@ -257,7 +260,7 @@ export function RunPositionsPanel({
             subtitle="Previous runs of this rule"
           />
           {history.error && <InlineAlert variant="error">{history.error}</InlineAlert>}
-          {!history.error && history.summary && history.summary.tokens > 0 && (
+          {!history.error && history.summary && (
             <SimSummaryCard title="Old runs" ruleName={ruleName} summary={history.summary} price={price} />
           )}
           {!history.error && (

@@ -183,21 +183,22 @@ there are no camelCase/axis/prefix translators.
   per-column representation (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM)
   engines are unchanged and identical (DB parity test). The old bespoke `f_*`/`cf` `URLSearchParams`
   builder and the dead simple `getTokens` GET endpoint were removed.
-- **Positions/Paper = server-side paged, summary decoupled** (`useRulePositions`): the positions
+- **Positions/Paper = server-side paged, summary tracks filters** (`useRulePositions`): the positions
   `DataTable` runs in `serverSide` mode; the hook serializes its `TableQuery` (+ `numericCols`) into
   the POST body, fetches one page, and reads the total off `X-Total-Count`; live SSE deltas patch only
   rows *already on the page*. The **Positions Summary** panel renders a **separate** server-computed
-  aggregate (`/rules/{id}/positions/summary`, GET) over the *whole* run. All five strategy pages (live
-  `TpslPage`/`Swing1Page` + the 3 lab pages) share this path; the Paper Test section is a second
-  `useRulePositions` instance scoped to the paper rule.
+  aggregate (`POST /rules/{id}/positions/summary`, filter/search body via `toSummaryBody`) over the
+  table's current filtered cohort (mint-set included). All five strategy pages (live `TpslPage`/
+  `Swing1Page` + the 3 lab pages) share this path; the Paper Test section is a second `useRulePositions`
+  instance scoped to the paper rule.
 - **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
   (no SSE-delta patching / settle-poll — these results are static once computed) drives the two tables
   over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**
   materializes server-side: the first POST scans the whole `tokens` table for the matched mint set,
   caches it, and pages the DB restricted to it (no 5,000-row cap). **Simulated** pages the finished
-  backtest's rows **in memory** on the server (already resident — lab is single-user), with a whole-run
-  `/simulate/result/summary` aggregate for its card; `reload()` refetches on the `simulation_finished`
-  SSE (collect → fetch-first-page).
+  backtest's rows **in memory** on the server (already resident — lab is single-user), with a matching
+  `POST /simulate/result/summary` aggregate (`toSummaryBody`) for its card; `reload()` refetches on
+  the `simulation_finished` SSE (collect → fetch-first-page).
 - **Token enrichment is server-side, not client-merged — for EVERY token table.** Every token-result
   table (Matched, Positions current/history, lab paper positions, Simulated, Sweep drill-in, **and, since
   Phase 4, Wallet Holdings**) receives the full `TOKEN_ENRICH_FIELDS` set **in the response body** — the

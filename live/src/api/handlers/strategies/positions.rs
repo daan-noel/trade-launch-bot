@@ -385,17 +385,16 @@ pub async fn get_positions_by_rule(
     }
 }
 
-/// GET /api/strategies/{strategy}/rules/{rule_id}/positions/summary
+/// POST /api/strategies/{strategy}/rules/{rule_id}/positions/summary
 ///
-/// Run/rule-wide position aggregates for the page's **Positions Summary** panel,
-/// computed server-side in SQL over the *entire* population (never a page) with the
-/// same win/closed/open semantics as the per-rule runtime counters — so the summary
-/// panel and the strategy-table row always agree. Paper rules aggregate their latest
-/// run; real rules aggregate all their positions.
+/// Position aggregates for the page's **Positions Summary** panel over the same
+/// filtered population its table pages (pagination/sort ignored), with the same
+/// win/closed/open semantics as the per-rule runtime counters.
 pub async fn get_positions_summary_by_rule(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
     scope: web::Query<ScopeParam>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
     let (strategy, rule_id) = path.into_inner();
     if let Err(resp) = strategy_id(&strategy) {
@@ -403,6 +402,7 @@ pub async fn get_positions_summary_by_rule(
     }
     let scope = scope.into_inner().scope;
     let repo = repo(&app_state);
+    let pq = PositionQuery::from(body.into_inner());
 
     let rule = match repo.find_rule(rule_id).await {
         Ok(Some(rule)) => rule,
@@ -414,22 +414,22 @@ pub async fn get_positions_summary_by_rule(
     // aggregates exactly the population its table pages.
     let result = match scope {
         Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
-            Ok(Some(run)) => repo.positions_summary_by_run(run.id).await,
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load current run", e),
         },
         Some(PositionScope::History) => match repo.latest_run(rule_id, &rule.trade_mode).await {
             // Exclude the current run; a lone run yields an empty (tokens=0) summary.
-            Ok(Some(run)) => repo.positions_summary_by_rule_excluding_run(rule_id, run.id).await,
+            Ok(Some(run)) => repo.positions_summary_by_rule_excluding_run(rule_id, run.id, &pq).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load current run", e),
         },
         None if rule.trade_mode == "paper" => match repo.latest_run(rule_id, "paper").await {
-            Ok(Some(run)) => repo.positions_summary_by_run(run.id).await,
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load paper run", e),
         },
-        None => repo.positions_summary_by_rule(rule_id).await,
+        None => repo.positions_summary_by_rule(rule_id, &pq).await,
     };
 
     match result {

@@ -341,8 +341,9 @@ export interface SimulatedTokenResult extends TokenEnrichmentFields {
   created_at?: string;
 }
 
-/** Whole-run aggregate for the Simulated summary card (server-side over the
- *  finished backtest's rows). Mirrors the lab `sim_result_summary` handler. */
+/** Filtered-population aggregate for the Simulated summary card (server-side over
+ *  rows matching the table's search/filters). Mirrors the lab `sim_result_summary`
+ *  handler. */
 export interface SimulatedSummary {
   total_tokens: number;
   closed_tokens: number;

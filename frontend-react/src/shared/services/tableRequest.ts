@@ -72,6 +72,27 @@ export function toTableRequest(
   return body;
 }
 
+/** Filter/search-only slice of a table POST body — for summary endpoints that
+ *  aggregate the whole filtered population (pagination/sort ignored). */
+export function toSummaryBody(
+  query: TableQuery,
+  numericCols: ReadonlySet<string>,
+  extras?: TableRequestExtras,
+): TableRequestBody {
+  const full = toTableRequest(
+    { ...query, page: 1, pageSize: 1, sortKeys: [] },
+    numericCols,
+    extras,
+  );
+  return {
+    pagination: { page: 1, pageSize: 1000 },
+    sorting: [],
+    search: full.search,
+    filters: full.filters,
+    ...(full.range ? { range: full.range } : {}),
+  };
+}
+
 /** The set of column keys that filter numerically (declare `filterNumber`) — the
  *  `numericCols` argument to {@link toTableRequest}. */
 export function numericColKeys<R>(columns: ColumnDef<R>[]): Set<string> {

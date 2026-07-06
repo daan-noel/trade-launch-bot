@@ -291,6 +291,27 @@ pub fn apply_table_request<R: ColResolver>(
     (page, total)
 }
 
+/// Apply only the search + per-column filters from a [`TableRequest`] — no sort, no
+/// page. Returns every matching row (cloned) for whole-population roll-ups (summary
+/// bars/cards) that must agree with the table's filtered cohort.
+pub fn filter_table_request<R: ColResolver>(
+    rows: &[Value],
+    req: &TableRequest,
+    resolve: R,
+) -> Vec<Value> {
+    let needle = req.search.trim().to_lowercase();
+    let filters: Vec<(&'static str, ColKind, &FilterSpec)> = req
+        .filters
+        .iter()
+        .filter_map(|(key, spec)| resolve.resolve(key).map(|(field, kind)| (field, kind, spec)))
+        .collect();
+    rows.iter()
+        .filter(|row| matches_search(row, &needle))
+        .filter(|row| filters.iter().all(|(field, kind, spec)| row_matches(row, field, *kind, spec)))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

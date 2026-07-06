@@ -19,9 +19,9 @@ export interface UseServerTable<R, S> {
 
 /**
  * Generic server-side table driver: owns the current *page* + total + optional
- * whole-result summary, refetching whenever `body` (the serialized `TableQuery` +
- * extras) changes, with stale-response protection so quick paging/sorting can't
- * let an older response overwrite a newer one.
+ * filtered-population summary, refetching whenever `body` (the serialized
+ * `TableQuery` + extras) changes, with stale-response protection so quick
+ * paging/sorting can't let an older response overwrite a newer one.
  *
  * The SSE-delta live-patching + settle-gated polling of `useRulePositions` is
  * deliberately NOT here — Matched/Simulated results are static once computed. This
@@ -30,13 +30,15 @@ export interface UseServerTable<R, S> {
  * `enabled` gates fetching (e.g. no rule selected, or the sim hasn't run yet);
  * when false the hook clears to empty. `body` should be referentially stable for
  * an unchanged view-state — callers memoize it (e.g. `useMemo(toTableRequest…)`)
- * or pass its JSON key via `bodyKey`.
+ * or pass its JSON key via `bodyKey`. Pass `summaryBody` when the summary
+ * endpoint ignores pagination/sort (defaults to `body`).
  */
 export function useServerTable<R, S = unknown>(
   enabled: boolean,
   body: unknown,
   fetchPage: (body: unknown, signal: AbortSignal) => Promise<ServerPage<R>>,
-  fetchSummary?: (signal: AbortSignal) => Promise<S>,
+  fetchSummary?: (summaryBody: unknown, signal: AbortSignal) => Promise<S>,
+  summaryBody?: unknown,
 ): UseServerTable<R, S> {
   const [items, setItems] = useState<R[]>([]);
   const [total, setTotal] = useState(0);
@@ -45,9 +47,8 @@ export function useServerTable<R, S = unknown>(
   const [error, setError] = useState<string | null>(null);
   const inflight = useRef<AbortController | null>(null);
   const summaryInflight = useRef<AbortController | null>(null);
-  // Re-fetch key: the serialized body. Summary is body-independent (whole result),
-  // so it refetches only when the reload nonce or `enabled` flips.
   const bodyKey = JSON.stringify(body);
+  const summaryKey = JSON.stringify(summaryBody ?? body);
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
@@ -91,9 +92,10 @@ export function useServerTable<R, S = unknown>(
     summaryInflight.current?.abort();
     const ctrl = new AbortController();
     summaryInflight.current = ctrl;
+    const payload = summaryBody ?? body;
     void (async () => {
       try {
-        const s = await fetchSummary(ctrl.signal);
+        const s = await fetchSummary(payload, ctrl.signal);
         if (!ctrl.signal.aborted) setSummary(s);
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -102,7 +104,7 @@ export function useServerTable<R, S = unknown>(
     })();
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, nonce]);
+  }, [enabled, summaryKey, nonce]);
 
   return { items, total, summary, loading, error, reload };
 }

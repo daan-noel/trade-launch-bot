@@ -167,29 +167,31 @@ pub async fn positions_by_rule_paged(
     }
 }
 
-/// GET `.../rules/{rule_id}/positions/summary` — aggregates for the Positions Summary
-/// panel, over the same population its table pages: `current`/absent → latest paper
+/// POST `.../rules/{rule_id}/positions/summary` — aggregates for the Positions Summary
+/// panel over the same filtered population its table pages: `current`/absent → latest paper
 /// run; `history` → every prior run. Empty summary when there's no matching run.
 pub async fn positions_summary_by_rule(
     repo: &StrategyRepo,
     rule_id: Uuid,
     strategy_id: &str,
     scope: Option<PositionScope>,
+    req: TableRequest,
 ) -> HttpResponse {
     let empty = || HttpResponse::Ok().json(trading_core::models::PositionsSummary::default());
+    let pq = PositionQuery::from(req);
 
     let result = if matches!(scope, Some(PositionScope::History)) {
         // Exclude the latest run; a lone run yields an empty (tokens=0) summary.
         match latest_paper_run(repo, rule_id, strategy_id).await {
             Ok(Some(latest_run_id)) => {
-                repo.positions_summary_by_rule_excluding_run(rule_id, latest_run_id).await
+                repo.positions_summary_by_rule_excluding_run(rule_id, latest_run_id, &pq).await
             }
             Ok(None) => return empty(),
             Err(resp) => return resp,
         }
     } else {
         match latest_paper_run(repo, rule_id, strategy_id).await {
-            Ok(Some(run_id)) => repo.positions_summary_by_run(run_id).await,
+            Ok(Some(run_id)) => repo.positions_summary_by_run(run_id, &pq).await,
             Ok(None) => return empty(),
             Err(resp) => return resp,
         }
@@ -274,24 +276,25 @@ pub fn sim_result_page(state: &LocalState, rule_id: Uuid, req: TableRequest) -> 
         .json(json!({ "tokens": page }))
 }
 
-/// GET `.../rules/{rule_id}/simulate/result/summary` — whole-run aggregate over the
-/// finished sim's rows (unfiltered) for the Simulated summary card. Shared by
-/// tpsl1/tpsl2/swing1.
-pub fn sim_result_summary(state: &LocalState, rule_id: Uuid) -> HttpResponse {
+/// POST `.../rules/{rule_id}/simulate/result/summary` — aggregate over the finished
+/// sim's rows matching the request's search + filters (pagination/sort ignored) for
+/// the Simulated summary card. Shared by tpsl1/tpsl2/swing1.
+pub fn sim_result_summary(state: &LocalState, rule_id: Uuid, req: TableRequest) -> HttpResponse {
     let rows = match peek_sim_rows(state, rule_id) {
         Ok(rows) => rows,
         Err(resp) => return resp,
     };
+    let filtered = crate::strategies::sim_query::filter_rows(&rows, &req);
     let num = |row: &serde_json::Value, k: &str| -> Option<f64> {
         row.get(k).and_then(serde_json::Value::as_f64)
     };
-    let total = rows.len();
+    let total = filtered.len();
     let mut closed = 0usize;
     let mut wins = 0usize;
     let mut pnl_pct_sum = 0.0;
     let mut pnl_pct_n = 0usize;
     let mut pnl_sol_sum = 0.0;
-    for row in rows.iter() {
+    for row in filtered.iter() {
         let is_closed = row.get("exit_time").map(|v| !v.is_null()).unwrap_or(false);
         if is_closed {
             closed += 1;

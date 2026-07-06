@@ -16,7 +16,7 @@
 
 use serde_json::Value;
 
-use trading_core::api::table_eval::{apply_table_request, resolve_token_enrichment_key, ColKind};
+use trading_core::api::table_eval::{apply_table_request, filter_table_request, resolve_token_enrichment_key, ColKind};
 use trading_core::api::table_query::TableRequest;
 
 /// Resolve a frontend column key to the JSON field it reads + its type. `None` =
@@ -65,6 +65,11 @@ pub fn query(rows: &[Value], req: &TableRequest) -> (Vec<Value>, usize) {
     apply_table_request(rows, req, resolve)
 }
 
+/// Every row matching `req`'s search + filters (no sort/page) — for summary roll-ups.
+pub fn filter_rows(rows: &[Value], req: &TableRequest) -> Vec<Value> {
+    filter_table_request(rows, req, resolve)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +85,15 @@ mod tests {
 
     fn req(json: serde_json::Value) -> TableRequest {
         serde_json::from_value(json).expect("TableRequest")
+    }
+
+    #[test]
+    fn filter_rows_matches_query_total_without_paging() {
+        let r = req(json!({"filters": {"pnl_percent": {"op":"gt","val":5}}}));
+        let (_, total) = query(&rows(), &r);
+        let filtered = filter_rows(&rows(), &r);
+        assert_eq!(filtered.len(), total, "filter_rows count must match query total");
+        assert_eq!(filtered.len(), 2);
     }
 
     #[test]

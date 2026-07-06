@@ -76,7 +76,7 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             // before the paginated list route (distinct `/summary` suffix, no clash).
             .route(
                 "/strategies/{strategy}/rules/{rule_id}/positions/summary",
-                web::get().to(handlers::strategies::positions::get_positions_summary_by_rule),
+                web::post().to(handlers::strategies::positions::get_positions_summary_by_rule),
             )
             .route(
                 "/strategies/{strategy}/rules/{rule_id}/positions",

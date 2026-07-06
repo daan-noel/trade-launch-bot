@@ -89,7 +89,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/positions/summary",
-                web::get().to(handlers::strategies::tpsl1::get_positions_summary_tpsl1),
+                web::post().to(handlers::strategies::tpsl1::get_positions_summary_tpsl1),
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/positions",
@@ -97,7 +97,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/simulate/result/summary",
-                web::get().to(handlers::strategies::tpsl1::get_simulate_result_summary_tpsl1),
+                web::post().to(handlers::strategies::tpsl1::get_simulate_result_summary_tpsl1),
             )
             .route(
                 "/strategies/tpsl1/rules/{rule_id}/simulate/result",
@@ -146,7 +146,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/positions/summary",
-                web::get().to(handlers::strategies::tpsl2::get_positions_summary_tpsl2),
+                web::post().to(handlers::strategies::tpsl2::get_positions_summary_tpsl2),
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/positions",
@@ -154,7 +154,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/simulate/result/summary",
-                web::get().to(handlers::strategies::tpsl2::get_simulate_result_summary_tpsl2),
+                web::post().to(handlers::strategies::tpsl2::get_simulate_result_summary_tpsl2),
             )
             .route(
                 "/strategies/tpsl2/rules/{rule_id}/simulate/result",
@@ -203,7 +203,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/swing1/rules/{rule_id}/positions/summary",
-                web::get().to(handlers::strategies::swing1::get_positions_summary_swing1),
+                web::post().to(handlers::strategies::swing1::get_positions_summary_swing1),
             )
             .route(
                 "/strategies/swing1/rules/{rule_id}/positions",
@@ -211,7 +211,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route(
                 "/strategies/swing1/rules/{rule_id}/simulate/result/summary",
-                web::get().to(handlers::strategies::swing1::get_simulate_result_summary_swing1),
+                web::post().to(handlers::strategies::swing1::get_simulate_result_summary_swing1),
             )
             .route(
                 "/strategies/swing1/rules/{rule_id}/simulate/result",

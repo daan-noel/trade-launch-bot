@@ -627,15 +627,16 @@ pub async fn get_positions_by_rule_tpsl1(
     .await
 }
 
-/// GET /api/strategies/tpsl1/rules/{rule_id}/positions/summary — run-wide aggregates.
+/// GET /api/strategies/tpsl1/rules/{rule_id}/positions/summary — filtered aggregates.
 pub async fn get_positions_summary_tpsl1(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
     scope: web::Query<super::positions::ScopeParam>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
     let repo = app_state.strategy_repo();
     super::positions::positions_summary_by_rule(
-        &repo, rule_id.into_inner(), STRATEGY_ID, scope.into_inner().scope,
+        &repo, rule_id.into_inner(), STRATEGY_ID, scope.into_inner().scope, body.into_inner(),
     )
     .await
 }
@@ -650,13 +651,14 @@ pub async fn get_simulate_result_tpsl1(
     super::positions::sim_result_page(&app_state, rule_id.into_inner(), body.into_inner())
 }
 
-/// GET /api/strategies/tpsl1/rules/{rule_id}/simulate/result/summary — whole-run
+/// POST /api/strategies/tpsl1/rules/{rule_id}/simulate/result/summary — filtered
 /// aggregate over the finished backtest's rows for the Simulated summary card.
 pub async fn get_simulate_result_summary_tpsl1(
     app_state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
+    body: web::Json<TableRequest>,
 ) -> impl Responder {
-    super::positions::sim_result_summary(&app_state, rule_id.into_inner())
+    super::positions::sim_result_summary(&app_state, rule_id.into_inner(), body.into_inner())
 }
 
 // ---------------------------------------------------------------------------

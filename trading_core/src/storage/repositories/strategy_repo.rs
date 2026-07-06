@@ -261,9 +261,8 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
 /// frontend `DataTable`'s emitted view-state. Only **whitelisted** column keys are
 /// honored — see [`position_sort_sql`] / [`position_filter_sql`]; anything else is
 /// dropped (never interpolated), so no user text ever reaches a SQL identifier.
-/// Text values bind as parameters. Applies to the paged list + its count so the
-/// pager stays consistent with the filtered view; the **summary** is intentionally
-/// left whole-run (it mirrors the strategy-table row).
+/// Text values bind as parameters. Applies to the paged list + its count + the
+/// summary aggregate so the pager and summary card always describe the same cohort.
 #[derive(Debug, Clone, Default)]
 pub struct PositionQuery {
     /// Free-text search over mint / symbol (ILIKE). Empty = no search.
@@ -1181,16 +1180,18 @@ impl StrategyRepo {
     pub async fn positions_summary_by_run(
         &self,
         run_id: Uuid,
+        query: &PositionQuery,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("run_id", run_id, None).await
+        self.positions_summary("sp.run_id", run_id, None, query).await
     }
 
     /// Rule-wide position aggregates across all runs (real-rule lifetime history).
     pub async fn positions_summary_by_rule(
         &self,
         rule_id: Uuid,
+        query: &PositionQuery,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("rule_id", rule_id, None).await
+        self.positions_summary("sp.rule_id", rule_id, None, query).await
     }
 
     /// Rule-wide aggregates across all runs except one (the run-history view) —
@@ -1199,22 +1200,25 @@ impl StrategyRepo {
         &self,
         rule_id: Uuid,
         exclude_run_id: Uuid,
+        query: &PositionQuery,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("rule_id", rule_id, Some(exclude_run_id)).await
+        self.positions_summary("sp.rule_id", rule_id, Some(exclude_run_id), query).await
     }
 
-    /// Shared aggregate query behind the summary views. `filter_col` is a
-    /// trusted literal (`"run_id"` / `"rule_id"`), never user input — no injection
+    /// Shared aggregate query behind the summary views. `scope_col` is a trusted
+    /// literal (`"sp.run_id"` / `"sp.rule_id"`), never user input — no injection
     /// surface. `exclude_run` (when set) drops that run from the scope (run-history).
+    /// LEFT-JOINs `tokens` so `query`'s search/filters match the paged list exactly.
     /// All aggregation happens in Postgres (`COUNT/SUM FILTER`), so no rows
     /// are shipped. The win rule mirrors [`StrategyPosition::is_win`]: a clean `End`
     /// exit with positive realized SOL (`exit_lamports > entry_lamports`); every other closed
     /// position is a loss. SOL columns are lamports → divided to human SOL here.
     async fn positions_summary(
         &self,
-        filter_col: &str,
-        id: Uuid,
+        scope_col: &str,
+        scope_id: Uuid,
         exclude_run: Option<Uuid>,
+        query: &PositionQuery,
     ) -> anyhow::Result<PositionsSummary> {
         // Predicates (kept in one place so the two summary views can't drift):
         //   entered  := entry_price IS NOT NULL
@@ -1225,41 +1229,43 @@ impl StrategyRepo {
         // return % is capital-weighted (Σ pnl / Σ entry, via `weighted_return_pct`),
         // so it is sign-locked to the SOL total; `best_pct`/`worst_pct` stay per-trade
         // price extremes for the distribution tails.
-        let sql = format!(
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT \
-               COUNT(*) FILTER (WHERE entry_price IS NOT NULL) AS tokens, \
-               COUNT(*) FILTER (WHERE status IN ('Holding','Arming','BuySubmitted')) AS open, \
-               COUNT(*) FILTER (WHERE status = 'End' AND exit_lamports > entry_lamports) AS win, \
-               COUNT(*) FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed') \
-                                  AND NOT (status = 'End' AND exit_lamports > entry_lamports)) AS loss, \
-               COALESCE(SUM(COALESCE(exit_lamports,0) - entry_lamports) \
-                        FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
-               COALESCE(SUM(entry_lamports) FILTER (WHERE entry_price IS NOT NULL), 0)::BIGINT AS total_entry_lamports, \
-               COALESCE(SUM(entry_lamports) FILTER (WHERE status IN ('Holding','Arming','BuySubmitted')), 0)::BIGINT AS total_holding_lamports, \
-               COALESCE(SUM(COALESCE(exit_lamports,0) - entry_lamports) \
-                        FILTER (WHERE status = 'End' AND exit_lamports > entry_lamports), 0)::BIGINT AS total_gains_lamports, \
-               COALESCE(SUM(entry_lamports - COALESCE(exit_lamports,0)) \
-                        FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed') \
-                                  AND NOT (status = 'End' AND exit_lamports > entry_lamports)), 0)::BIGINT AS total_losses_lamports, \
-               COALESCE(SUM(entry_lamports) \
-                        FILTER (WHERE entry_price IS NOT NULL AND status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports, \
-               COALESCE(SUM(EXTRACT(EPOCH FROM (exit_time - entry_time))) \
-                        FILTER (WHERE entry_time IS NOT NULL AND exit_time IS NOT NULL \
-                                  AND status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_hold_secs, \
-               MAX((exit_price - entry_price) / entry_price * 100.0) \
-                        FILTER (WHERE entry_price IS NOT NULL AND entry_price > 0 \
-                                  AND exit_price IS NOT NULL AND status IN ('End','ExitFailed'))::DOUBLE PRECISION AS best_pct, \
-               MIN((exit_price - entry_price) / entry_price * 100.0) \
-                        FILTER (WHERE entry_price IS NOT NULL AND entry_price > 0 \
-                                  AND exit_price IS NOT NULL AND status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct \
-             FROM strategy_positions WHERE {filter_col} = $1{exclude_clause}",
-            exclude_clause = if exclude_run.is_some() { " AND run_id <> $2" } else { "" },
+               COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL) AS tokens, \
+               COUNT(*) FILTER (WHERE sp.status IN ('Holding','Arming','BuySubmitted')) AS open, \
+               COUNT(*) FILTER (WHERE sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports) AS win, \
+               COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed') \
+                                  AND NOT (sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports)) AS loss, \
+               COALESCE(SUM(COALESCE(sp.exit_lamports,0) - sp.entry_lamports) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
+               COALESCE(SUM(sp.entry_lamports) FILTER (WHERE sp.entry_price IS NOT NULL), 0)::BIGINT AS total_entry_lamports, \
+               COALESCE(SUM(sp.entry_lamports) FILTER (WHERE sp.status IN ('Holding','Arming','BuySubmitted')), 0)::BIGINT AS total_holding_lamports, \
+               COALESCE(SUM(COALESCE(sp.exit_lamports,0) - sp.entry_lamports) \
+                        FILTER (WHERE sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports), 0)::BIGINT AS total_gains_lamports, \
+               COALESCE(SUM(sp.entry_lamports - COALESCE(sp.exit_lamports,0)) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed') \
+                                  AND NOT (sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports)), 0)::BIGINT AS total_losses_lamports, \
+               COALESCE(SUM(sp.entry_lamports) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports, \
+               COALESCE(SUM(EXTRACT(EPOCH FROM (sp.exit_time - sp.entry_time))) \
+                        FILTER (WHERE sp.entry_time IS NOT NULL AND sp.exit_time IS NOT NULL \
+                                  AND sp.status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_hold_secs, \
+               MAX((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
+                                  AND sp.exit_price IS NOT NULL AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS best_pct, \
+               MIN((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
+                                  AND sp.exit_price IS NOT NULL AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct \
+             FROM strategy_positions sp \
+             LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
+             LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE ",
         );
-        let mut q = sqlx::query_as::<_, PositionsSummaryRow>(&sql).bind(id);
+        qb.push(scope_col).push(" = ").push_bind(scope_id);
         if let Some(exclude) = exclude_run {
-            q = q.bind(exclude);
+            qb.push(" AND sp.run_id <> ").push_bind(exclude);
         }
-        let row = q.fetch_one(&self.pool).await?;
+        push_position_where(&mut qb, query);
+        let row: PositionsSummaryRow = qb.build_query_as().fetch_one(&self.pool).await?;
 
         let closed = row.win + row.loss;
         let win_rate = if closed > 0 { row.win as f64 / closed as f64 * 100.0 } else { 0.0 };

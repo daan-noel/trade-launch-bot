@@ -184,15 +184,21 @@ export function fetchHoldingsSummary(
   });
 }
 
-/** GET the whole-run aggregate for a rule's Simulated summary card. */
+/** POST the filtered aggregate for a rule's Simulated summary card. */
 export function fetchSimulatedSummary(
   strategySeg: string,
   ruleId: string,
+  body: TableRequestBody,
   signal?: AbortSignal,
 ): Promise<import('types').SimulatedSummary> {
   return request(
     `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/simulate/result/summary`,
-    { signal },
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    },
   );
 }
 
@@ -359,21 +365,33 @@ export function fetchTpsl1RulePositions(
   return fetchRulePositionsPage('tpsl1', ruleId, body, signal, scope);
 }
 
-/** Run/rule-wide position aggregates for the tpsl1 Positions Summary panel. */
-export async function fetchTpsl1RulePositionsSummary(
+/** Filtered position aggregates for the Positions / Paper summary panel. */
+function fetchRulePositionsSummary(
+  strategySeg: string,
   ruleId: string,
+  body: TableRequestBody,
   signal?: AbortSignal,
   scope?: PositionScope,
 ): Promise<import('types').PositionsSummary> {
   return request(
-    `${API_BASE}/api/strategies/tpsl1/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
-    { signal },
+    `${API_BASE}/api/strategies/${strategySeg}/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    },
   );
 }
 
-// ---------------------------------------------------------------------------
-// Strategy: tpsl_sniper_2 (clone of tpsl, separate /strategies/tpsl2 endpoints)
-// ---------------------------------------------------------------------------
+export function fetchTpsl1RulePositionsSummary(
+  ruleId: string,
+  body: TableRequestBody,
+  signal?: AbortSignal,
+  scope?: PositionScope,
+): Promise<import('types').PositionsSummary> {
+  return fetchRulePositionsSummary('tpsl1', ruleId, body, signal, scope);
+}
 
 export async function fetchTpsl2Rules(): Promise<import('types').RuleRecord[]> {
   return request(`${API_BASE}/api/strategies/tpsl2/rules`);
@@ -459,16 +477,14 @@ export function fetchTpsl2RulePositions(
   return fetchRulePositionsPage('tpsl2', ruleId, body, signal, scope);
 }
 
-/** Run/rule-wide position aggregates for the tpsl2 Positions Summary panel. */
-export async function fetchTpsl2RulePositionsSummary(
+/** Filtered position aggregates for the tpsl2 Positions Summary panel. */
+export function fetchTpsl2RulePositionsSummary(
   ruleId: string,
+  body: TableRequestBody,
   signal?: AbortSignal,
   scope?: PositionScope,
 ): Promise<import('types').PositionsSummary> {
-  return request(
-    `${API_BASE}/api/strategies/tpsl2/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
-    { signal },
-  );
+  return fetchRulePositionsSummary('tpsl2', ruleId, body, signal, scope);
 }
 
 // ---------------------------------------------------------------------------
@@ -546,16 +562,14 @@ export function fetchSwing1RulePositions(
   return fetchRulePositionsPage('swing1', ruleId, body, signal, scope);
 }
 
-/** Run/rule-wide position aggregates for the swing1 Positions Summary panel. */
-export async function fetchSwing1RulePositionsSummary(
+/** Filtered position aggregates for the swing1 Positions Summary panel. */
+export function fetchSwing1RulePositionsSummary(
   ruleId: string,
+  body: TableRequestBody,
   signal?: AbortSignal,
   scope?: PositionScope,
 ): Promise<import('types').PositionsSummary> {
-  return request(
-    `${API_BASE}/api/strategies/swing1/rules/${ruleId}/positions/summary${scopeQuery(scope)}`,
-    { signal },
-  );
+  return fetchRulePositionsSummary('swing1', ruleId, body, signal, scope);
 }
 
 /** Clear a swing1 paper rule's recorded run history (runs + positions). Paper-only

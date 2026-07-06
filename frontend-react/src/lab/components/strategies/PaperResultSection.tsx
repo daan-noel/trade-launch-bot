@@ -94,7 +94,7 @@ export function PaperResultSection({
   positions: RulePositionRecord[];
   /** Run-wide total for the pager (from `X-Total-Count`). */
   positionsTotal: number;
-  /** Run-wide aggregates for the summary card (null until loaded). */
+  /** Filtered-population aggregates for the summary card (null until loaded). */
   positionsSummary: PositionsSummary | null;
   positionsLoading: boolean;
   price: ReturnType<typeof usePriceDisplay>;
@@ -204,8 +204,8 @@ export function PaperResultSection({
         )}
       </div>
 
-      {/* Summary is server-computed over the whole run (not the visible page). */}
-      {positionsSummary && positionsSummary.tokens > 0 && (
+      {/* Summary is server-computed over the filtered cohort (not the visible page). */}
+      {positionsSummary && (
         <SimSummaryCard
           title="Paper Test Results"
           ruleName={data.rule_name}

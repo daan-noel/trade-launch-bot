@@ -12,9 +12,9 @@ interface SimSummaryCardProps {
   onClose?: () => void;
   /** Card heading; defaults to "Simulation Results". */
   title?: string;
-  /** Server-computed run/rule-wide aggregates the card renders — correct over the
-   *  whole run (not just the current page) and using the backend win rule. All SOL
-   *  fields are already human SOL. */
+  /** Server-computed aggregates over the table's filtered cohort — correct over the
+   *  whole matching population (not just the current page). All SOL fields are
+   *  already human SOL. */
   summary: PositionsSummary;
 }
 
@@ -25,7 +25,7 @@ export function SimSummaryCard({
   title = 'Simulation Results',
   summary,
 }: SimSummaryCardProps) {
-  // The server `summary` is the source of truth — correct over the whole run
+  // The server `summary` is the source of truth — correct over the filtered cohort
   // (not just the current page) and already in human SOL. Derive the display
   // aggregates once and memoize so these don't recompute on price-unit ticks.
   const {
