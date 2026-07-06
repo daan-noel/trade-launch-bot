@@ -14,6 +14,7 @@ import {
 } from 'components/token-price-chart';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { useTimezone } from 'context/TimezoneContext';
@@ -273,9 +274,6 @@ export function TokenTradeChart({
 
   return (
     <div className="border-t border-white/7 pt-2">
-      <div className="mb-1.5 text-[9px] font-bold uppercase tracking-widest text-text-dim">
-        Trade History
-      </div>
       <TokenPriceChart
         symbol={symbol}
         id={mint}

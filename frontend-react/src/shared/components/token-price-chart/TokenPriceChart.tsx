@@ -61,7 +61,7 @@ import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
 import { ChainHighlightTooltip, type ChainTradeCounts } from './ChainHighlightTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
-import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef } from './walletMarkersPlugin';
+import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
 import { ChainHighlightPlugin, asChainPrimitive } from './chainHighlightPlugin';
 import { RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
 import {
@@ -289,8 +289,27 @@ function sortSeriesMarkers(
   return [...markers].sort((a, b) => (a.time as number) - (b.time as number));
 }
 
+/** Silhouette per wallet CLASS: `mine` → diamond (identity wins, permanent),
+ *  else focused/input → hexagon, else circle. Focus still layers its gold ring on
+ *  top of whatever shape, so a focused `mine` wallet stays a diamond. */
+function walletShape(w: ProfileWalletInfo): MarkerShape {
+  if (w.isMine) return 'diamond';
+  if (w.isHighlighted) return 'hexagon';
+  return 'circle';
+}
+
+function walletGlyph(w: ProfileWalletInfo): string {
+  return w.isMine ? '★' : (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase();
+}
+
+/** Below this fraction of the episode's peak balance, a sell is treated as a full
+ *  exit (fee/rounding dust rarely leaves the balance at exactly zero). */
+const SELL_ALL_DUST_FRACTION = 0.02;
+
 function buildWalletMarkerDefs(
-  trades: ChartTrade[],
+  // Must be in canonical order (`slot → tx_index → leg_index`) — position tracking
+  // for first_buy/sell_all replays each wallet's trades in execution order.
+  sortedTrades: ChartTrade[],
   profileWallets: ProfileWalletInfo[],
   bars: OhlcBar[],
   groupMode: ChartGroupMode,
@@ -303,7 +322,15 @@ function buildWalletMarkerDefs(
   const groups = new Map<number, { buy: ProfileWalletInfo[]; sell: ProfileWalletInfo[] }>();
   const seen = new Set<string>(); // `${address}:${barTime}:${type}`
 
-  for (const trade of trades) {
+  // Lifecycle roles keyed `${address}:${barTime}:${type}`. Computed by replaying
+  // each wallet's running token balance in canonical order, so first_buy/sell_all
+  // land on the bucket that actually opened/closed the position.
+  const roles = new Map<string, 'first_buy' | 'sell_all'>();
+  const pos = new Map<string, number>();   // running balance (raw token units)
+  const peak = new Map<string, number>();  // peak balance in the current holding episode
+  const firstBuyDone = new Set<string>();
+
+  for (const trade of sortedTrades) {
     if (!trade.wallet_address) continue;
     const wallet = walletMap.get(trade.wallet_address);
     if (!wallet) continue;
@@ -313,11 +340,35 @@ function buildWalletMarkerDefs(
         : tradeBarTime(trade.block_time, intervalSec);
     if (time == null) continue;
     const t = time as number;
+    const addr = trade.wallet_address;
     const type = trade.trade_type === 'buy' ? 'buy' : 'sell';
-    const key = `${trade.wallet_address}:${t}:${type}`;
+
+    // Lifecycle role — replay position before the per-bucket dedup below (every
+    // trade must advance the balance, not just the first of its bucket).
+    const amt = trade.token_amount ?? 0;
+    if (type === 'buy') {
+      if (!firstBuyDone.has(addr)) {
+        firstBuyDone.add(addr);
+        roles.set(`${addr}:${t}:buy`, 'first_buy');
+      }
+      const next = (pos.get(addr) ?? 0) + amt;
+      pos.set(addr, next);
+      peak.set(addr, Math.max(peak.get(addr) ?? 0, next));
+    } else {
+      const next = Math.max(0, (pos.get(addr) ?? 0) - amt);
+      pos.set(addr, next);
+      const pk = peak.get(addr) ?? 0;
+      if (pk > 0 && next <= pk * SELL_ALL_DUST_FRACTION) {
+        roles.set(`${addr}:${t}:sell`, 'sell_all');
+        peak.set(addr, 0); // episode closed; a later re-accumulation can flag again
+        pos.set(addr, 0);
+      }
+    }
+
+    // One marker per wallet per type per bar.
+    const key = `${addr}:${t}:${type}`;
     if (seen.has(key)) continue;
     seen.add(key);
-
     let group = groups.get(t);
     if (!group) { group = { buy: [], sell: [] }; groups.set(t, group); }
     group[type].push(wallet);
@@ -329,31 +380,36 @@ function buildWalletMarkerDefs(
     if (!bar) continue;
     const barTime = t as UTCTimestamp;
 
-    // Always render tracked markers above the candle/line, stacking buys then
-    // sells with a continuous index so they never overlap or fall below the bar.
-    let stackIndex = 0;
+    // Buys stack downward below the bar low, sells stack upward above the bar high
+    // — the two sides never collide, so each restarts its own stack index at 0.
+    let buyStack = 0;
     for (const w of buy) {
       defs.push({
         barTime,
-        barEdgePrice: bar.high,
-        letter: w.isMine ? '★' : (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
+        barEdgePrice: bar.low,
+        letter: walletGlyph(w),
         color: w.color,
         borderColor: CHART_COLORS.up,
         type: 'buy',
-        stackIndex: stackIndex++,
+        stackIndex: buyStack++,
+        shape: walletShape(w),
+        role: roles.get(`${w.address}:${t}:buy`),
         highlighted: w.isHighlighted,
         ringColor: CHART_COLORS.highlightRing,
       });
     }
+    let sellStack = 0;
     for (const w of sell) {
       defs.push({
         barTime,
         barEdgePrice: bar.high,
-        letter: w.isMine ? '★' : (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase(),
+        letter: walletGlyph(w),
         color: w.color,
         borderColor: CHART_COLORS.down,
         type: 'sell',
-        stackIndex: stackIndex++,
+        stackIndex: sellStack++,
+        shape: walletShape(w),
+        role: roles.get(`${w.address}:${t}:sell`),
         highlighted: w.isHighlighted,
         ringColor: CHART_COLORS.highlightRing,
       });
@@ -1306,7 +1362,7 @@ export function TokenPriceChart({
     }
 
     if (effectiveProfileWallets.length > 0) {
-      const walletDefs = buildWalletMarkerDefs(trades, effectiveProfileWallets, bars, groupMode, intervalSec);
+      const walletDefs = buildWalletMarkerDefs(sortedTrades, effectiveProfileWallets, bars, groupMode, intervalSec);
       walletMarkersPrimRef.current?.setMarkers(walletDefs);
       walletActivityMapRef.current = buildWalletBarActivityMap(trades, effectiveProfileWallets, groupMode, intervalSec);
     } else {

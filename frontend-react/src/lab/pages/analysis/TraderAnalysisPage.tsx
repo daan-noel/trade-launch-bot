@@ -11,6 +11,7 @@ import { formatTimestampMs } from 'utils/date';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { useGetTraderTokensQuery } from '@lab/store/labEndpoints';
 import type { TraderTokenRow } from 'types';
+import { AddressDisplay } from '@shared/components/ui/AddressDisplay';
 
 // Look-back + token-count bounds mirror the backend clamps so the UI can't ask
 // for more than the endpoint will return.
@@ -87,7 +88,7 @@ function TraderTokenCard({ row, wallet }: { row: TraderTokenRow; wallet: string 
     <div className="rounded-lg border border-white/8 bg-bg-card/40 p-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="text-sm font-bold text-text">{title}</span>
-        <span className="font-mono text-[11px] text-text-dim">{shortAddr(row.mint_address)}</span>
+        <AddressDisplay address={row.mint_address} kind="token" truncate={false} actionsPlacement='right' iconSize='sm' />
         {/* Wallet-specific stats live here (not in the token table) — the trader
             dimension for this token. */}
         <span className="ml-auto inline-flex items-center gap-2 rounded-md border border-white/8 bg-white/3 px-2 py-0.5 text-[11px]">

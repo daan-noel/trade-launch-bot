@@ -1,19 +1,38 @@
 import { memo, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { cn } from 'lib/cn';
-import { truncate } from 'utils/format';
+import { truncate as truncateStr } from 'utils/format';
 import { getAddressExplorerLinks, type AddressKind } from 'utils/addressLinks';
+
+/** When the copy/explorer icon buttons become visible. */
+export type AddressReveal = 'hover' | 'always';
+/** Where the icon-button row sits relative to the label. `bottom` is always centered. */
+export type AddressActionsPlacement = 'bottom' | 'right';
 
 interface AddressDisplayProps {
   address: string;
   kind: AddressKind;
-  /** Shown label; defaults to truncated address */
+  /** Shown label; defaults to the (optionally shortened) address */
   display?: string;
-  truncateLen?: number;
   className?: string;
   /** Prevent table row selection when interacting with controls */
   stopPropagation?: boolean;
-  /** default: truncated + hover actions; full: full address + always-visible larger actions */
+  /**
+   * Convenience preset that seeds the defaults for the orthogonal props below.
+   * Any explicit prop still wins over the preset.
+   * - `default`: truncated + hover actions + small icons, actions below (centered)
+   * - `full`: full address + always-visible larger icons, actions below (centered)
+   */
   mode?: 'default' | 'full';
+  /** When the icon buttons appear. */
+  reveal?: AddressReveal;
+  /** How the label is shortened: character budget, or `false` for the full address. */
+  truncate?: number | false;
+  /** Where the icon row sits relative to the label. */
+  actionsPlacement?: AddressActionsPlacement;
+  /** Icon-button size. */
+  iconSize?: 'sm' | 'lg';
+  /** @deprecated use `truncate` instead */
+  truncateLen?: number;
 }
 
 function CopyIcon({ copied, size = 'sm' }: { copied: boolean; size?: 'sm' | 'lg' }) {
@@ -97,20 +116,37 @@ function AddressDisplayBase({
   address,
   kind,
   display,
-  truncateLen = 10,
   className,
   stopPropagation = true,
   mode = 'default',
+  reveal: revealProp,
+  truncate: truncateProp,
+  actionsPlacement,
+  iconSize: iconSizeProp,
+  truncateLen,
 }: AddressDisplayProps) {
-  const isFull = mode === 'full';
+  // Resolve orthogonal props: explicit prop > deprecated alias > preset default.
+  const reveal: AddressReveal = revealProp ?? (mode === 'full' ? 'always' : 'hover');
+  const shorten: number | false =
+    truncateProp ?? truncateLen ?? (mode === 'full' ? false : 10);
+  const placement: AddressActionsPlacement = actionsPlacement ?? 'bottom';
+  const iconSize = iconSizeProp ?? (mode === 'full' ? 'lg' : 'sm');
+
+  const showFull = shorten === false;
+  const alwaysShow = reveal === 'always';
+  const isRight = placement === 'right';
+  // Hover-reveal on the inline `right` placement floats the actions as an overlay
+  // so revealing them never reflows a dense table row; `bottom` animates max-height.
+  const overlay = isRight && !alwaysShow;
+
   const [copied, setCopied] = useState(false);
-  const [showActions, setShowActions] = useState(isFull);
+  const [showActions, setShowActions] = useState(alwaysShow);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const links = getAddressExplorerLinks(kind, address);
-  const label = isFull ? address : (display ?? truncate(address, truncateLen));
-  const iconSize = isFull ? 'lg' : 'sm';
-  const iconBtn = isFull ? iconBtnLg : iconBtnSm;
+  const label = display ?? (showFull ? address : truncateStr(address, shorten));
+  const iconBtn = iconSize === 'lg' ? iconBtnLg : iconBtnSm;
+  const visible = alwaysShow || showActions;
 
   const clearHoverTimer = () => {
     if (hoverTimerRef.current) {
@@ -120,13 +156,13 @@ function AddressDisplayBase({
   };
 
   const onMouseEnter = () => {
-    if (isFull) return;
+    if (alwaysShow) return;
     clearHoverTimer();
     hoverTimerRef.current = setTimeout(() => setShowActions(true), HOVER_DELAY_MS);
   };
 
   const onMouseLeave = () => {
-    if (isFull) return;
+    if (alwaysShow) return;
     clearHoverTimer();
     setShowActions(false);
   };
@@ -165,8 +201,10 @@ function AddressDisplayBase({
   return (
     <div
       className={cn(
-        'inline-flex min-w-0 flex-col gap-0.5',
-        isFull ? 'items-start' : 'items-center',
+        'inline-flex min-w-0',
+        isRight
+          ? 'relative flex-row items-center gap-1'
+          : cn('flex-col gap-0.5', showFull ? 'items-start' : 'items-center'),
         className,
       )}
       onClick={stopPropagation ? stop : undefined}
@@ -176,18 +214,25 @@ function AddressDisplayBase({
       <span
         className={cn(
           'max-w-full font-mono text-text-mid',
-          isFull ? 'text-[10px] leading-snug break-all' : 'truncate text-[11px]',
+          showFull ? 'text-[10px] leading-snug break-all' : 'truncate text-[11px]',
         )}
-        title={isFull ? undefined : address}
+        title={showFull ? undefined : address}
       >
         {label}
       </span>
       <div
         className={cn(
           'flex items-center gap-0.5',
-          !isFull && 'justify-center overflow-hidden transition-[max-height,opacity] duration-150',
-          isFull || showActions ? 'opacity-100' : 'max-h-0 opacity-0 pointer-events-none',
-          !isFull && (showActions ? 'max-h-6' : 'max-h-0'),
+          overlay &&
+            cn(
+              'absolute left-full top-1/2 z-10 -translate-y-1/2 transition-opacity duration-150',
+              visible ? 'opacity-100' : 'pointer-events-none opacity-0',
+            ),
+          !isRight &&
+            cn(
+              'justify-center overflow-hidden transition-[max-height,opacity] duration-150',
+              visible ? 'max-h-6 opacity-100' : 'max-h-0 pointer-events-none opacity-0',
+            ),
         )}
       >
         <button
@@ -196,7 +241,7 @@ function AddressDisplayBase({
           title={copied ? 'Copied!' : 'Copy address'}
           aria-label={copied ? 'Copied' : 'Copy address'}
           className={cn(iconBtn, copied && 'text-primary')}
-          tabIndex={isFull || showActions ? 0 : -1}
+          tabIndex={visible ? 0 : -1}
         >
           <CopyIcon copied={copied} size={iconSize} />
         </button>
