@@ -18,9 +18,11 @@ use platform_core::storage::connect;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "lab=info,sqlx=error".into()),
         )
         .init();
 
