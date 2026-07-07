@@ -146,6 +146,15 @@ pub async fn execute_bundle(
         let jito_bundle_id = submit_jito_bundle(&settings.jito_block_engine_url, &txs).await?;
         BundleRepo::set_submitted(pool, bundle_id, &jito_bundle_id, &leg_signatures).await?;
 
+        // Wallet-pool lifecycle: reserved bundler wallets are now consumed
+        // (terminal — never re-claimable). A no-op for wallets not currently
+        // `reserved` (today's free-form-selected wallets, until Phase 3 wires
+        // pool claiming into bundle wallet selection).
+        let leg_wallet_ids: Vec<Uuid> = legs.iter().map(|leg| leg.wallet_id).collect();
+        if let Err(e) = ManagedWalletRepo::mark_used(pool, &leg_wallet_ids).await {
+            tracing::warn!(%bundle_id, %e, "failed to mark bundler wallets used");
+        }
+
         info!(
             bundle_id = %bundle_id,
             launch_id = %bundle.launch_id,

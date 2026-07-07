@@ -17,7 +17,7 @@ ON CONFLICT (address) DO UPDATE SET
     label = EXCLUDED.label,
     role = EXCLUDED.role,
     key_ref = EXCLUDED.key_ref,
-    is_active = TRUE;
+    status = 'funded';
 
 DELETE FROM launch_templates WHERE template_name = 'dev-sniper-2leg';
 
@@ -71,4 +71,4 @@ COMMIT;
 
 -- Quick sanity:
 -- SELECT id, template_name, params->'bundle_leg_count' FROM launch_templates;
--- SELECT id, label, role, address FROM managed_wallets WHERE is_active;
+-- SELECT id, label, role, address, status FROM managed_wallets WHERE status != 'retired';

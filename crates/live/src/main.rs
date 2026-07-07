@@ -16,6 +16,7 @@ use actix_web::{web, App, HttpServer};
 use std::sync::Arc;
 use tracing::{info, warn};
 
+use launcher::LauncherSettings;
 use platform_core::config::Settings;
 use platform_core::storage::connect;
 
@@ -70,6 +71,23 @@ async fn main() -> anyhow::Result<()> {
     // needed; it only reads `bundles`/`trades` from the already-connected pool).
     let bundle_confirm_task = launcher::spawn_bundle_confirm_watcher(pools.hot.clone());
 
+    // Fresh-wallet pool: balance poller (generated -> funded) + reservation TTL
+    // sweep (docs/wallet-pool-plan.md Phase 1). Needs the same launcher config as
+    // the rest of the launch flow (RPC URL, keystore) — skip cleanly if unset.
+    let (wallet_balance_task, wallet_sweep_task) = match LauncherSettings::from_env() {
+        Ok(launcher_settings) => (
+            Some(launcher::spawn_balance_poller(
+                pools.hot.clone(),
+                launcher_settings.rpc_url.clone(),
+            )),
+            Some(launcher::spawn_reservation_sweep(pools.hot.clone())),
+        ),
+        Err(e) => {
+            warn!("wallet pool background tasks disabled — launcher not configured: {e}");
+            (None, None)
+        }
+    };
+
     // Ingest (optional): spawn only when Helius creds are present.
     let ingest_task = match (
         std::env::var("HELIUS_LASERSTREAM_URL"),
@@ -98,6 +116,26 @@ async fn main() -> anyhow::Result<()> {
     info!(%host, port, "live HTTP listening");
     let http_task = tokio::spawn(server);
 
+    // Optional tasks become always-pollable futures (pending forever when absent)
+    // so they can join the single `tokio::select!` below without duplicating it
+    // per combination of enabled tasks.
+    let wallet_balance = async {
+        match wallet_balance_task {
+            Some(h) => {
+                let _ = h.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    let wallet_sweep = async {
+        match wallet_sweep_task {
+            Some(h) => {
+                let _ = h.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+
     match ingest_task {
         Some(ingest) => {
             tokio::select! {
@@ -105,6 +143,8 @@ async fn main() -> anyhow::Result<()> {
                 r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
                 r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
                 r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
+                _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
+                _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
             }
         }
         None => {
@@ -112,6 +152,8 @@ async fn main() -> anyhow::Result<()> {
                 r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
                 r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
                 r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
+                _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
+                _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
             }
         }
     }

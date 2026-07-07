@@ -107,15 +107,20 @@ single seam a future oracle writes to.
 
 ---
 
-## D5 — Wallet-funding obfuscation — **DEFERRED** (parallel workstream, post-launcher)
+## D5 — Wallet-funding obfuscation — **PARTIALLY BUILT** (hop graph still deferred)
 
-**Choice:** not built now; recorded so it isn't lost. Per-leg instruction variation
-(§3e) defeats naive "identical-tx" fingerprinting but **not** funding-graph/timing
-analysis (N fresh wallets funded from one source, same mint, same slot).
+**Choice:** per-leg instruction variation (§3e) defeats naive "identical-tx"
+fingerprinting but **not** funding-graph/timing analysis (N fresh wallets funded
+from one source, same mint, same slot). The full automated hop-graph fan-out is
+still not built — manual funding is the deliberate choice for now (see
+`docs/wallet-pool-plan.md` Phase 5+).
 
-**What `managed_wallets` must eventually record** to support it: **funding source**
-and a **hop graph** (which wallet funded which, when). Revisit alongside the bundler
-in phase 2; it is a distinct concern from instruction-structure variation.
+**What `managed_wallets` records today:** `funding_source` (free-text audit note)
+landed in the wallet-pool Phase 1 migration (`0004_wallet_pool.sql`), alongside the
+full `status` lifecycle (`generated`/`funded`/`reserved`/`used`/`retired`) that
+replaces the old `is_active` flag. The **hop graph** (which wallet funded which,
+when) is still **deferred** — `docs/wallet-pool-plan.md` Phase 5+, "Automated
+multi-hop funding fan-out."
 
 ---
 

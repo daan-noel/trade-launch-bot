@@ -14,6 +14,7 @@ mod probe;
 mod service;
 mod trader_config;
 mod wallet_encrypt;
+mod wallet_pool;
 
 pub use bundle::{
     compose_bundle_legs, leg_params, legs_from_json, legs_to_json, BuyVariant, BundledLegPlan,
@@ -29,3 +30,4 @@ pub use keystore::{
 pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;
+pub use wallet_pool::{generate_wallets, spawn_balance_poller, spawn_reservation_sweep};

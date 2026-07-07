@@ -1,5 +1,6 @@
 //! Domain D repos: managed wallets, launch templates, launches, bundles.
 
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -8,7 +9,10 @@ use crate::models::{
     Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,
 };
 
-/// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key.
+/// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key. Lifecycle
+/// (`status`) queries below back the fresh-wallet pool (docs/wallet-pool-plan.md
+/// Phase 1): batch generation lands rows as `generated`; the rest of this repo is
+/// the state machine `generated -> funded -> reserved -> used -> retired`.
 pub struct ManagedWalletRepo;
 
 impl ManagedWalletRepo {
@@ -26,21 +30,23 @@ impl ManagedWalletRepo {
         .await?)
     }
 
+    /// Not-retired wallets for a role — used by the launch console's wallet
+    /// pickers. Broader than "claimable" (see [`Self::claim_funded`] for that).
     pub async fn by_role(pool: &PgPool, role: &str) -> anyhow::Result<Vec<ManagedWallet>> {
         Ok(sqlx::query_as::<_, ManagedWallet>(
-            "SELECT * FROM managed_wallets WHERE role = $1 AND is_active ORDER BY created_at",
+            "SELECT * FROM managed_wallets WHERE role = $1 AND status != 'retired' ORDER BY created_at",
         )
         .bind(role)
         .fetch_all(pool)
         .await?)
     }
 
-    /// Active wallets, optionally filtered by `role` (`dev` | `bundler` | …).
+    /// Not-retired wallets, optionally filtered by `role` (`dev` | `bundler` | …).
     pub async fn list(pool: &PgPool, role: Option<&str>) -> anyhow::Result<Vec<ManagedWallet>> {
         match role {
             Some(r) => Self::by_role(pool, r).await,
             None => Ok(sqlx::query_as::<_, ManagedWallet>(
-                "SELECT * FROM managed_wallets WHERE is_active ORDER BY role, created_at",
+                "SELECT * FROM managed_wallets WHERE status != 'retired' ORDER BY role, created_at",
             )
             .fetch_all(pool)
             .await?),
@@ -52,6 +58,111 @@ impl ManagedWalletRepo {
             .bind(id)
             .fetch_optional(pool)
             .await?)
+    }
+
+    /// Wallets in a given lifecycle `status`, optionally scoped to `role`. Backs
+    /// the balance poller's bounded scan (`status = 'generated'`, partial index)
+    /// and the Phase 2 pool admin view.
+    pub async fn find_by_status(
+        pool: &PgPool,
+        status: &str,
+        role: Option<&str>,
+    ) -> anyhow::Result<Vec<ManagedWallet>> {
+        Ok(match role {
+            Some(r) => sqlx::query_as::<_, ManagedWallet>(
+                "SELECT * FROM managed_wallets WHERE status = $1 AND role = $2 ORDER BY created_at",
+            )
+            .bind(status)
+            .bind(r)
+            .fetch_all(pool)
+            .await?,
+            None => sqlx::query_as::<_, ManagedWallet>(
+                "SELECT * FROM managed_wallets WHERE status = $1 ORDER BY created_at",
+            )
+            .bind(status)
+            .fetch_all(pool)
+            .await?,
+        })
+    }
+
+    /// Record an observed on-chain balance; auto-promotes `generated` -> `funded`
+    /// once the balance clears `min_funded_lamports` (balance-driven detection —
+    /// never a manual "mark funded" toggle, avoids bookkeeping drift). A no-op
+    /// promotion for wallets already past `generated`.
+    pub async fn record_balance(
+        pool: &PgPool,
+        id: Uuid,
+        balance_lamports: i64,
+        min_funded_lamports: i64,
+    ) -> anyhow::Result<ManagedWallet> {
+        Ok(sqlx::query_as::<_, ManagedWallet>(
+            "UPDATE managed_wallets SET balance_lamports = $2, balance_checked_at = now(), \
+             status = CASE WHEN status = 'generated' AND $2 >= $3 THEN 'funded' ELSE status END \
+             WHERE id = $1 RETURNING *",
+        )
+        .bind(id)
+        .bind(balance_lamports)
+        .bind(min_funded_lamports)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Atomically claim up to `count` `funded` wallets of `role` for `launch_id`
+    /// (`FOR UPDATE SKIP LOCKED` — safe under concurrent launches, same principle
+    /// as `BundleRepo::find_awaiting_confirmation`'s bounded scan). May return
+    /// fewer than `count` if the pool is short.
+    pub async fn claim_funded(
+        pool: &PgPool,
+        role: &str,
+        count: i64,
+        launch_id: Uuid,
+    ) -> anyhow::Result<Vec<ManagedWallet>> {
+        Ok(sqlx::query_as::<_, ManagedWallet>(
+            "WITH claimed AS ( \
+                SELECT id FROM managed_wallets \
+                WHERE role = $1 AND status = 'funded' \
+                ORDER BY random() LIMIT $2 \
+                FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE managed_wallets SET status = 'reserved', reserved_by_launch_id = $3, reserved_at = now() \
+             WHERE id IN (SELECT id FROM claimed) \
+             RETURNING *",
+        )
+        .bind(role)
+        .bind(count)
+        .bind(launch_id)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Release `reserved` wallets whose reservation predates `cutoff` back to
+    /// `funded` (TTL sweep — an aborted launch shouldn't strand wallets forever).
+    /// Returns the number released.
+    pub async fn release_expired_reservations(
+        pool: &PgPool,
+        cutoff: DateTime<Utc>,
+    ) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE managed_wallets SET status = 'funded', reserved_by_launch_id = NULL, reserved_at = NULL \
+             WHERE status = 'reserved' AND reserved_at < $1",
+        )
+        .bind(cutoff)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Terminal `reserved` -> `used` transition on launch/bundle completion.
+    /// Never re-selectable afterward. A no-op (`WHERE status = 'reserved'` guard)
+    /// for ids not currently reserved. Returns the number transitioned.
+    pub async fn mark_used(pool: &PgPool, ids: &[Uuid]) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE managed_wallets SET status = 'used' WHERE id = ANY($1) AND status = 'reserved'",
+        )
+        .bind(ids)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 

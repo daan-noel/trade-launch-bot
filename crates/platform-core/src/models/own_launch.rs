@@ -9,6 +9,10 @@ use serde_json::Value as Json;
 use uuid::Uuid;
 
 /// One of OUR wallets. `role` ∈ dev | bundler | treasury | trading.
+///
+/// `status` is the fresh-wallet-pool lifecycle (docs/wallet-pool-plan.md Phase 1):
+/// `generated` -> `funded` -> `reserved` -> `used` -> `retired`. `used` and
+/// `retired` are terminal — never re-selectable by the atomic claim query.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ManagedWallet {
     pub id: Uuid,
@@ -19,7 +23,16 @@ pub struct ManagedWallet {
     #[serde(skip_serializing)]
     pub key_ref: String,
     pub derivation_index: Option<i32>,
-    pub is_active: bool,
+    pub status: String,
+    /// Free-text funding audit note (manual funding only — no hop graph yet).
+    pub funding_source: Option<String>,
+    pub reserved_by_launch_id: Option<Uuid>,
+    pub reserved_at: Option<DateTime<Utc>>,
+    /// Last observed native SOL balance (lamports) — pool bookkeeping, not a
+    /// trade `amount_quote`/`amount_base` (no quote asset applies to a wallet's
+    /// own gas balance).
+    pub balance_lamports: Option<i64>,
+    pub balance_checked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 

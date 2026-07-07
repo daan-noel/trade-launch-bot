@@ -191,6 +191,14 @@ pub async fn execute_launch(
 
         LaunchRepo::set_created(pool, launch_id, &signature, "created").await?;
 
+        // Wallet-pool lifecycle: a reserved dev wallet is now consumed (terminal —
+        // never re-claimable). A no-op for wallets not currently `reserved` (e.g.
+        // today's free-form-selected wallets, until Phase 3 wires pool claiming
+        // into wallet selection).
+        if let Err(e) = ManagedWalletRepo::mark_used(pool, &[dev_wallet.id]).await {
+            tracing::warn!(%launch_id, dev_wallet_id = %dev_wallet.id, %e, "failed to mark dev wallet used");
+        }
+
         let token_program = keystore::token_program_for_variant(&template.variant);
         TokenRepo::insert(
             pool,
