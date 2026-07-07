@@ -119,6 +119,12 @@ export interface LaunchStatus {
   trades: TradePriced[];
 }
 
+export interface IngestStatus {
+  // `false` when the box booted without Helius creds — nothing to toggle.
+  configured: boolean;
+  live: boolean;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
   if (!res.ok) {
@@ -131,6 +137,19 @@ async function getJson<T>(path: string): Promise<T> {
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${res.status} ${path}: ${text}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -163,6 +182,8 @@ export const api = {
   metadataTemplates: () => getJson<MetadataTemplate[]>('/api/metadata_templates'),
   createMetadataTemplate: (req: NewMetadataTemplate) =>
     postJson<MetadataTemplate>('/api/metadata_templates', req),
+  ingestStatus: () => getJson<IngestStatus>('/api/ingest'),
+  setIngest: (live: boolean) => putJson<IngestStatus>('/api/ingest', { live }),
 };
 
 // Reads a File as base64 (strips the `data:<mime>;base64,` prefix) for the

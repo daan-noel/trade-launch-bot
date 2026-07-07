@@ -17,4 +17,5 @@ pub mod map;
 pub mod pumpfun;
 
 pub use consumer::spawn_ingest;
+pub use ingest_laserstream::IngestHandle;
 pub use pumpfun::PumpFunAdapter;

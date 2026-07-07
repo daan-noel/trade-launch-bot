@@ -94,17 +94,20 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-    // Ingest (optional): spawn only when Helius creds are present.
-    let ingest_task = match (
+    // Ingest (optional): spawn only when Helius creds are present. `ingest_handle`
+    // is kept for the process lifetime and exposed over HTTP so an operator can
+    // pause/resume the stream at runtime without a redeploy.
+    let (ingest_task, ingest_handle) = match (
         std::env::var("HELIUS_LASERSTREAM_URL"),
         std::env::var("HELIUS_API_KEY"),
     ) {
         (Ok(endpoint), Ok(api_key)) if !endpoint.is_empty() && !api_key.is_empty() => {
-            Some(ingest_host::spawn_ingest(pools.hot.clone(), endpoint, api_key).await?)
+            let (task, handle) = ingest_host::spawn_ingest(pools.hot.clone(), endpoint, api_key).await?;
+            (Some(task), Some(handle))
         }
         _ => {
             warn!("ingest disabled — HELIUS_LASERSTREAM_URL / HELIUS_API_KEY not set; serving HTTP only");
-            None
+            (None, None)
         }
     };
 
@@ -115,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
     let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(api_pool.clone()))
+            .app_data(web::Data::new(ingest_handle.clone()))
             .configure(http::configure)
     })
     .bind((host.as_str(), port))?

@@ -143,6 +143,31 @@ button:disabled {
   font-weight: 600;
 }
 
+.tabs-spacer {
+  flex: 1;
+}
+
+.ingest-toggle {
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.ingest-toggle.live {
+  background: #1b3d2a;
+  border-color: #2f6e4a;
+  color: #6ee7a0;
+}
+
+.ingest-toggle.paused {
+  background: #3d1b1b;
+  border-color: #6e2f2f;
+  color: #f58a8a;
+}
+
 .banner-warning {
   background: #3d341b;
   border-color: #f5d565;

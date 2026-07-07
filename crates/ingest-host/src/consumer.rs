@@ -14,6 +14,7 @@
 //! replay (PK `ON CONFLICT DO NOTHING`) hold today.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ingest_laserstream::{Ingest, IngestConfig, IngestEvent, IngestHandle, Protocol};
@@ -37,13 +38,14 @@ const FLUSH_EVERY: usize = 256;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Build the transport and spawn the ingest → DB pipeline task. Streams live
-/// immediately (`start(true)`). Returns the consumer's join handle; the control
-/// handle is kept alive inside the task.
+/// immediately (`start(true)`). Returns the consumer's join handle plus the
+/// control handle (the caller owns it for the process lifetime — e.g. to
+/// expose a runtime pause/resume toggle over HTTP).
 pub async fn spawn_ingest(
     pool: PgPool,
     endpoint: String,
     api_key: String,
-) -> anyhow::Result<JoinHandle<()>> {
+) -> anyhow::Result<(JoinHandle<()>, Arc<IngestHandle>)> {
     let adapter = PumpFunAdapter::resolve(&pool).await?;
     let (event_rx, handle) = Ingest::builder()
         .endpoint(endpoint)
@@ -52,14 +54,15 @@ pub async fn spawn_ingest(
         .config(IngestConfig::default())
         .build()?
         .start(true);
+    let handle = Arc::new(handle);
     info!("ingest transport started (pump.fun/SOL adapter)");
-    Ok(tokio::spawn(run_consumer(pool, adapter, handle, event_rx)))
+    let join = tokio::spawn(run_consumer(pool, adapter, event_rx));
+    Ok((join, handle))
 }
 
 async fn run_consumer(
     pool: PgPool,
     adapter: PumpFunAdapter,
-    _handle: IngestHandle, // kept alive for the task's lifetime
     mut event_rx: Receiver<IngestEvent>,
 ) {
     let mut trades: Vec<NewTrade> = Vec::new();

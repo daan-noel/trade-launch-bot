@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   api,
   formatSig,
+  IngestStatus,
   LaunchResult,
   LaunchStatus,
   LaunchTemplate,
@@ -17,6 +18,57 @@ import WalletPool from './WalletPool';
 function StatusPill({ status }: { status: string }) {
   const cls = status.toLowerCase().replace(/[^a-z]/g, '');
   return <span className={`status-pill ${cls}`}>{status}</span>;
+}
+
+// Runtime pause/resume for the LIVE box's Helius ingest stream — see
+// `GET/PUT /api/ingest` (`crates/live/src/http.rs`). Polls every 5s so the
+// button reflects a toggle made from another tab or a watchdog auto-pause.
+function IngestToggle() {
+  const [status, setStatus] = useState<IngestStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const s = await api.ingestStatus();
+        if (!cancelled) setStatus(s);
+      } catch {
+        // Transient fetch error — keep the last known status, retry next tick.
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  if (!status || !status.configured) return null;
+
+  const onToggle = async () => {
+    setBusy(true);
+    try {
+      setStatus(await api.setIngest(!status.live));
+    } catch {
+      // Leave status as-is; next poll will resync.
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={`ingest-toggle ${status.live ? 'live' : 'paused'}`}
+      disabled={busy}
+      onClick={onToggle}
+      title="Pause/resume the Helius ingest stream"
+    >
+      Ingest: {status.live ? 'LIVE' : 'PAUSED'}
+    </button>
+  );
 }
 
 type View = 'launch' | 'wallets' | 'metadata';
@@ -164,6 +216,8 @@ export default function App() {
         >
           Metadata Templates
         </button>
+        <div className="tabs-spacer" />
+        <IngestToggle />
       </div>
 
       {view === 'wallets' && <WalletPool />}

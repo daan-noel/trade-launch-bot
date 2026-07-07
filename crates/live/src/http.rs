@@ -1,6 +1,7 @@
 //! Thin HTTP surface for the LIVE box: health + data-layer reads + launch trigger.
 
 use actix_web::{web, HttpResponse};
+use ingest_host::IngestHandle;
 use launcher::{
     create_metadata_template, execute_bundle, execute_launch, LaunchRequest, LauncherSettings,
     NewMetadataTemplateRequest,
@@ -8,6 +9,7 @@ use launcher::{
 use platform_core::models::{Bundle, Launch, TradePriced};
 use serde::Serialize;
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use platform_core::storage::repositories::{
@@ -27,6 +29,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // JSON body here is large enough to make a higher ceiling a real risk.
     cfg.app_data(web::JsonConfig::default().limit(10 * 1024 * 1024));
     cfg.route("/health", web::get().to(health))
+        .route("/api/ingest", web::get().to(ingest_status))
+        .route("/api/ingest", web::put().to(ingest_toggle))
         .route("/api/quote_assets", web::get().to(quote_assets))
         .route("/api/launchpads", web::get().to(launchpads))
         .route("/api/launch_templates", web::get().to(launch_templates_list))
@@ -49,6 +53,44 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
 async fn health() -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({ "status": "ok", "service": "live" }))
+}
+
+#[derive(Debug, Serialize)]
+struct IngestStatusResponse {
+    /// `false` when the box booted without Helius creds — no handle exists to toggle.
+    configured: bool,
+    live: bool,
+}
+
+async fn ingest_status(handle: web::Data<Option<Arc<IngestHandle>>>) -> HttpResponse {
+    let live = handle.as_ref().as_ref().map(|h| h.is_live()).unwrap_or(false);
+    HttpResponse::Ok().json(IngestStatusResponse {
+        configured: handle.is_some(),
+        live,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct SetIngestBody {
+    live: bool,
+}
+
+async fn ingest_toggle(
+    handle: web::Data<Option<Arc<IngestHandle>>>,
+    body: web::Json<SetIngestBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    match handle.as_ref() {
+        Some(h) => {
+            h.set_live(body.live);
+            Ok(HttpResponse::Ok().json(IngestStatusResponse {
+                configured: true,
+                live: h.is_live(),
+            }))
+        }
+        None => Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "error": "ingest not configured — HELIUS_LASERSTREAM_URL / HELIUS_API_KEY not set"
+        }))),
+    }
 }
 
 async fn quote_assets(pool: web::Data<PgPool>) -> Result<HttpResponse, actix_web::Error> {
