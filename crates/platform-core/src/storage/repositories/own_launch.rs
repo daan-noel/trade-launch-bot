@@ -186,4 +186,44 @@ impl BundleRepo {
             .await?;
         Ok(())
     }
+
+    /// Record the Jito submit result: status → `submitted`, stamps
+    /// `submitted_at` (the confirm watcher's timeout window starts here).
+    pub async fn set_submitted(
+        pool: &PgPool,
+        id: Uuid,
+        jito_bundle_id: &str,
+        leg_signatures: &[String],
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE bundles SET status = 'submitted', jito_bundle_id = $2, \
+             leg_signatures = $3, submitted_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(jito_bundle_id)
+        .bind(leg_signatures)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Terminal confirm-watcher outcome (`landed` | `dropped` | `partial`).
+    pub async fn set_confirmed(pool: &PgPool, id: Uuid, status: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE bundles SET status = $2, confirmed_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(status)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Bundles awaiting landing confirmation — bounded to the tiny in-flight
+    /// set via the partial index on `status = 'submitted'`.
+    pub async fn find_awaiting_confirmation(pool: &PgPool) -> anyhow::Result<Vec<Bundle>> {
+        Ok(sqlx::query_as::<_, Bundle>(
+            "SELECT * FROM bundles WHERE status = 'submitted' ORDER BY submitted_at",
+        )
+        .fetch_all(pool)
+        .await?)
+    }
 }

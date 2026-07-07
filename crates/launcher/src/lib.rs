@@ -7,6 +7,7 @@
 
 mod bundle;
 mod bundle_execute;
+mod confirm;
 mod config;
 mod keystore;
 mod service;
@@ -17,6 +18,7 @@ pub use bundle::{
     LegStructure, LegStructureRecipe, StoredBundleLeg,
 };
 pub use bundle_execute::{execute_bundle, BundleExecuteResult};
+pub use confirm::spawn_bundle_confirm_watcher;
 
 pub use config::LauncherSettings;
 pub use keystore::{

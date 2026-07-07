@@ -6,6 +6,7 @@ non-SOL-quote-generalized Solana launch + trading + analytics platform (sibling 
 multi-launchpad / multi-quote / multi-wallet.
 
 **Full design:** [../and-about-the-instructions-shimmying-shore.md](../and-about-the-instructions-shimmying-shore.md).
+**Phases & tasks:** [@docs/roadmap-plan.md](@docs/roadmap-plan.md).
 **Decisions (ADR):** [@docs/decisions.md](@docs/decisions.md).
 **Overview + layout:** [@README.md](@README.md). **Analysis pipeline:** [@docs/analysis-workflow.md](@docs/analysis-workflow.md).
 
@@ -15,8 +16,10 @@ Data-infrastructure **foundation is complete** (7 phase commits): 6 crates, 2 bi
 migrations `0001` (Domains A–C) + `0002` (Domain D). §9 open decisions are **resolved**
 (see the ADR). **Phase-2 launcher:** create (`v1`/`v2` + dev-buy), keystore,
 `wallet-encrypt` CLI, launch failure rollback, bundle leg composer (`planned` bundles),
-`POST /api/bundles/{id}/execute` (Jito submit).
-**Next:** auto-submit bundle after launch, bundle landing confirmation, `create_v1` on mainnet if still needed.
+`POST /api/bundles/{id}/execute` (Jito submit), **feed-based bundle-landing
+confirmation** (migration `0003`; always-on watcher in `live/main.rs` checks leg
+signatures against ingested `trades`, no RPC poll; `GET /api/bundles/{id}` for status).
+**Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — auto-submit bundle after launch, ingest E2E, multi-variant bundle legs.
 
 ## Priorities
 

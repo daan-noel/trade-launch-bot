@@ -6,7 +6,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use platform_core::storage::repositories::{
-    LaunchRepo, LaunchpadRepo, QuoteAssetRepo, TokenRepo, TradeRepo,
+    BundleRepo, LaunchRepo, LaunchpadRepo, QuoteAssetRepo, TokenRepo, TradeRepo,
 };
 
 /// Map any error to a 500 without leaking a panic.
@@ -21,6 +21,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/launchpads", web::get().to(launchpads))
         .route("/api/launches/{id}", web::get().to(launch_get))
         .route("/api/launches/execute", web::post().to(launch_execute))
+        .route("/api/bundles/{id}", web::get().to(bundle_get))
         .route("/api/bundles/{id}/execute", web::post().to(bundle_execute))
         .route("/api/tokens/{mint}/overview", web::get().to(token_overview))
         .route("/api/tokens/{mint}/trades", web::get().to(token_trades));
@@ -77,6 +78,16 @@ async fn bundle_execute(
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(result))
+}
+
+async fn bundle_get(
+    pool: web::Data<PgPool>,
+    id: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    match BundleRepo::get(pool.get_ref(), *id).await.map_err(e500)? {
+        Some(row) => Ok(HttpResponse::Ok().json(row)),
+        None => Ok(HttpResponse::NotFound().json(serde_json::json!({ "error": "not found" }))),
+    }
 }
 
 async fn launch_get(

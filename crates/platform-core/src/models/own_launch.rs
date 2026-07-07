@@ -94,5 +94,12 @@ pub struct Bundle {
     pub status: String,
     pub tip_quote: Option<i64>,
     pub legs: Json,
+    /// Jito `sendBundle` result id (set at submit time).
+    pub jito_bundle_id: Option<String>,
+    /// Base58 tx signature per leg, in leg order (set at submit time) — the
+    /// confirm watcher checks each against the ingested `trades` feed.
+    pub leg_signatures: Vec<String>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub confirmed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }

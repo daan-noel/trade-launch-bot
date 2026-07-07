@@ -37,6 +37,10 @@ async fn main() -> anyhow::Result<()> {
     let pools = connect(&settings).await?;
     info!("live box: DB connected, migrations applied");
 
+    // Feed-based bundle-landing confirmation — cheap, always on (no RPC/keys
+    // needed; it only reads `bundles`/`trades` from the already-connected pool).
+    let bundle_confirm_task = launcher::spawn_bundle_confirm_watcher(pools.hot.clone());
+
     // Ingest (optional): spawn only when Helius creds are present.
     let ingest_task = match (
         std::env::var("HELIUS_LASERSTREAM_URL"),
@@ -68,12 +72,16 @@ async fn main() -> anyhow::Result<()> {
     match ingest_task {
         Some(ingest) => {
             tokio::select! {
-                r = ingest    => warn!(?r, "ingest task ended — shutting down"),
-                r = http_task => warn!(?r, "HTTP server ended — shutting down"),
+                r = ingest              => warn!(?r, "ingest task ended — shutting down"),
+                r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
+                r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
             }
         }
         None => {
-            let _ = http_task.await;
+            tokio::select! {
+                r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
+                r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
+            }
         }
     }
     Ok(())

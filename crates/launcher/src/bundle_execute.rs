@@ -152,7 +152,7 @@ pub async fn execute_bundle(
         }
 
         let jito_bundle_id = submit_jito_bundle(&settings.jito_block_engine_url, &txs).await?;
-        BundleRepo::set_status(pool, bundle_id, "submitted").await?;
+        BundleRepo::set_submitted(pool, bundle_id, &jito_bundle_id, &leg_signatures).await?;
 
         info!(
             bundle_id = %bundle_id,

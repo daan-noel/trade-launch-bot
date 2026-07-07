@@ -116,6 +116,28 @@ impl TradeRepo {
         Ok(res.rows_affected())
     }
 
+    /// Which of `signatures` already appear in `trades` for `mint_address` —
+    /// the feed-based landing check (never a fresh RPC poll). Bounded to a
+    /// handful of signatures (one bundle's legs), mint-scoped.
+    pub async fn find_signatures_present(
+        pool: &PgPool,
+        mint_address: &str,
+        signatures: &[Vec<u8>],
+    ) -> anyhow::Result<std::collections::HashSet<Vec<u8>>> {
+        if signatures.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
+            "SELECT DISTINCT tx_signature FROM trades \
+             WHERE mint_address = $1 AND tx_signature = ANY($2::bytea[])",
+        )
+        .bind(mint_address)
+        .bind(signatures)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(sig,)| sig).collect())
+    }
+
     /// Priced read for a mint (newest-first). `limit <= 0` ⇒ no LIMIT (the full
     /// mint-scoped history the inspect charts need). Still mint-scoped, never the
     /// whole table.
