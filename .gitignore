@@ -11,6 +11,7 @@ frontend/dist/
 frontend/build/
 frontend/node_modules/
 frontend/.vite/
+package-lock.json
 
 # Strategy sweep output (corpus parquet cache + run artifacts)
 sweep-out/
