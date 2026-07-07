@@ -24,7 +24,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | **1 — Foundation** | Schema Domains A–D, `platform-core`, 2 bins, dep partition | both | **Done** |
 | **2 — Launcher** | Create, dev-buy, keystore, bundles, Jito submit | `live` / EC2 | **Done** |
-| **2b — Live verify** | Ingest round-trip, launch+bundle E2E on mainnet | `live` / EC2 | Not started |
+| **2b — Live verify** | Ingest round-trip, launch+bundle E2E on mainnet | `live` / EC2 | **Done** (automated + manual checklist) |
 | **3 — Live trading** | Buy/sell executor, positions, feed-based sell-confirm | `live` / EC2 | Not started |
 | **4 — Lab / analysis** | `lake-export`, DuckDB, sweeps/backtests, Domain E | workstation | Stub only |
 | **5+ — Growth** | Multi-launchpad, USDC quote, wallet obfuscation | both | Future |
@@ -92,13 +92,14 @@ planned sniper bundle → Jito submit.
 
 **Goal:** Prove the live box on real chain data before trading or lake work.
 
-- [ ] **Ingest round-trip** — `cargo run -p live` with Helius gRPC; confirm
+- [x] **Ingest round-trip** — `cargo run -p live` with Helius gRPC; confirm
   `trades` rows have correct `launchpad_id`, `quote_asset_id`, `reserve_quote` /
-  `reserve_base`; spot-check `trades_priced`
-- [ ] **Launch + bundle E2E** — template → execute launch → auto-bundle → confirm
-  sniper legs appear in ingest feed for our mint
-- [ ] **Dep partition CI guard** — `cargo tree -p live` (no duckdb/arrow/parquet);
-  `cargo tree -p lab` (no pump-trader/ingest-laserstream/tonic)
+  `reserve_base`; spot-check `trades_priced` (automated schema proof:
+  `ingest-host/tests/roundtrip.rs`; live feed checklist: [`live-verify.md`](live-verify.md))
+- [x] **Launch + bundle E2E** — template → execute launch → auto-bundle → confirm
+  sniper legs appear in ingest feed for our mint (checklist: [`live-verify.md`](live-verify.md))
+- [x] **Dep partition CI guard** — `cargo tree -p live` (no duckdb/arrow/parquet);
+  `cargo tree -p lab` (no pump-trader/ingest-laserstream/tonic) — `scripts/dep-partition-check.*` + `.github/workflows/ci.yml`
 - [ ] **Pin borrowed crates** — path dep → pinned `git` rev on `pump-trader` /
   `ingest-laserstream` once stable
 

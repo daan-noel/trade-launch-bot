@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: platform
+          POSTGRES_PASSWORD: platform
+          POSTGRES_DB: platform_test
+        ports:
+          - 5556:5432
+        options: >-
+          --health-cmd "pg_isready -U platform -d platform_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout solana-launch-platform
+        uses: actions/checkout@v4
+        with:
+          path: solana-launch-platform
+
+      - name: Checkout meme-trading (path dep sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/meme-trading
+          path: meme-trading
+          # Best-effort: private forks may need a PAT; local dev uses ../meme-trading.
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Dep partition + typecheck
+        working-directory: solana-launch-platform
+        run: bash scripts/dep-partition-check.sh
+
+      - name: Ingest round-trip (schema proof)
+        working-directory: solana-launch-platform
+        env:
+          PLATFORM_TEST_DATABASE_URL: postgres://platform:platform@localhost:5556/platform_test
+          DATABASE_URL: postgres://platform:platform@localhost:5556/platform_test
+        run: |
+          cargo test -p ingest-host --test roundtrip -- --nocapture
+          cargo test -p platform-core --test generality -- --nocapture

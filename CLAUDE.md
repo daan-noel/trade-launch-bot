@@ -19,7 +19,10 @@ migrations `0001` (Domains A–C) + `0002` (Domain D). §9 open decisions are **
 `POST /api/bundles/{id}/execute` (Jito submit), **feed-based bundle-landing
 confirmation** (migration `0003`; always-on watcher in `live/main.rs` checks leg
 signatures against ingested `trades`, no RPC poll; `GET /api/bundles/{id}` for status).
-**Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — auto-submit bundle after launch, ingest E2E, multi-variant bundle legs.
+**Auto-submit** after launch, multi-variant bundle legs, SOL/USD poller. Phase-2b:
+ingest round-trip test + dep-partition CI + [`docs/live-verify.md`](docs/live-verify.md)
+mainnet checklist.
+**Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — Phase 3 live trading.
 
 ## Priorities
 
