@@ -90,7 +90,9 @@ pub struct RuleClosedStats {
     pub wins: i64,
     /// Every other closed position (breakeven, loss, failed exit).
     pub losses: i64,
-    /// Sum of realized SOL PnL across all closed positions.
+    /// Sum of realized SOL PnL across all closed positions. A failed exit
+    /// (`ExitFailed`, no `exit_sol`) is booked as a full loss of deployed capital
+    /// (`−entry`), matching the `positions_summary` SQL.
     pub sum_pnl_sol: f64,
     /// Sum of SOL **deployed** (entry cost) across the same closed positions — the
     /// capital base for the canonical capital-weighted [`avg_pnl_pct`](Self::avg_pnl_pct).
@@ -120,12 +122,20 @@ impl RuleClosedStats {
         } else {
             self.losses = (self.losses + sign).max(0);
         }
-        let s = sign as f64;
-        if let Some(sol) = p.realized_pnl_sol() {
-            self.sum_pnl_sol += s * sol;
-            // `realized_pnl_sol()` is `Some` only when `entry_sol` is, so the capital
-            // base stays paired with the PnL sum (same trade set, same sign path).
-            self.sum_entry_sol += s * p.entry_sol.unwrap_or(0.0);
+        // Capital-weighted realized PnL over closed positions. A failed exit
+        // (`ExitFailed`) never records `exit_sol` — the sell never landed — so it is
+        // booked as a FULL loss of deployed capital (`pnl = −entry`), exactly the
+        // `SUM(COALESCE(exit_lamports,0) − entry_lamports)` the `positions_summary`
+        // SQL uses. This keeps the live rule-row (fed by this cache) and the
+        // current-run summary card (fed by that SQL) booking failed exits identically;
+        // silently dropping them from the PnL math here was the row-vs-card divergence.
+        // Guarded on `entry_sol` (mirrors the SQL's `entry_price IS NOT NULL`) so the
+        // capital base always stays paired with the PnL sum (same trade set, same sign).
+        if let Some(entry) = p.entry_sol {
+            let s = sign as f64;
+            let pnl = p.exit_sol.unwrap_or(0.0) - entry;
+            self.sum_pnl_sol += s * pnl;
+            self.sum_entry_sol += s * entry;
         }
     }
 }
@@ -1461,17 +1471,23 @@ mod tests {
         cache.sync_position(Some(&win), &win);
         assert_eq!(cache.closed_stats_by_rule(rid).wins, 1);
 
-        // Failed exit on a second position → a loss with a SOL loss.
+        // Failed exit on a second position → a loss booked as a FULL loss of the
+        // deployed capital. Use the real `mark_exit_failed` path (records a
+        // hypothetical exit price but NO `exit_sol`) — the production shape that the
+        // old `realized_pnl_sol()`-gated code silently dropped from the PnL math,
+        // making the live rule-row disagree with the current-run summary card.
         let prev2 = entered(rid, "MintFail", 1.0, 100.0);
         cache.sync_position(None, &prev2);
         let mut fail = prev2.clone();
-        fail.status = "ExitFailed".into();
-        fail.exit_sol = Some(0.0);
+        fail.mark_exit_failed(0.5, Utc::now());
+        assert!(fail.exit_sol.is_none(), "failed exit records no SOL fill");
         cache.sync_position(Some(&prev2), &fail);
 
         let s = cache.closed_stats_by_rule(rid);
         assert_eq!((s.wins, s.losses), (1, 1));
+        // +100 win, −100 failed (full loss of 100 SOL deployed) → 0 net.
         assert!(s.sum_pnl_sol.abs() < 1e-9, "+100 win, -100 failed → 0");
+        assert!((s.sum_entry_sol - 200.0).abs() < 1e-9, "both entries in capital base");
     }
 
     #[test]

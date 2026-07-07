@@ -1225,10 +1225,13 @@ impl StrategyRepo {
         //   open     := status IN ('Holding','Arming','BuySubmitted')
         //   closed   := entry_price IS NOT NULL AND status IN ('End','ExitFailed')
         //   win      := status = 'End' AND exit_lamports > entry_lamports   (SOL basis)
-        // Realized SOL PnL = exit_lamports - entry_lamports (lamports). The headline
-        // return % is capital-weighted (Σ pnl / Σ entry, via `weighted_return_pct`),
-        // so it is sign-locked to the SOL total; `best_pct`/`worst_pct` stay per-trade
-        // price extremes for the distribution tails.
+        // Realized SOL PnL = COALESCE(exit_lamports,0) - entry_lamports (lamports) —
+        // a failed exit (`ExitFailed`, no exit fill) books as a full loss of deployed
+        // capital. The headline return % is capital-weighted (Σ pnl / Σ entry, via
+        // `weighted_return_pct`), so it is sign-locked to the SOL total; `best_pct`/
+        // `worst_pct` are per-trade price extremes for the distribution tails, and a
+        // failed exit contributes −100% (its capital was lost) so the tails agree with
+        // the PnL sums instead of using the never-realized hypothetical exit price.
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL) AS tokens, \
@@ -1250,12 +1253,14 @@ impl StrategyRepo {
                COALESCE(SUM(EXTRACT(EPOCH FROM (sp.exit_time - sp.entry_time))) \
                         FILTER (WHERE sp.entry_time IS NOT NULL AND sp.exit_time IS NOT NULL \
                                   AND sp.status IN ('End','ExitFailed')), 0)::DOUBLE PRECISION AS sum_hold_secs, \
-               MAX((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
+               MAX(CASE WHEN sp.status = 'ExitFailed' THEN -100.0 \
+                        ELSE (sp.exit_price - sp.entry_price) / sp.entry_price * 100.0 END) \
                         FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
-                                  AND sp.exit_price IS NOT NULL AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS best_pct, \
-               MIN((sp.exit_price - sp.entry_price) / sp.entry_price * 100.0) \
+                                  AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS best_pct, \
+               MIN(CASE WHEN sp.status = 'ExitFailed' THEN -100.0 \
+                        ELSE (sp.exit_price - sp.entry_price) / sp.entry_price * 100.0 END) \
                         FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
-                                  AND sp.exit_price IS NOT NULL AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct \
+                                  AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct \
              FROM strategy_positions sp \
              LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE ",
