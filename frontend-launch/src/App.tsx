@@ -12,6 +12,7 @@ import {
   solscanMint,
   solscanTx,
 } from './api';
+import LaunchTemplates from './LaunchTemplates';
 import MetadataTemplates from './MetadataTemplates';
 import WalletPool from './WalletPool';
 
@@ -71,7 +72,7 @@ function IngestToggle() {
   );
 }
 
-type View = 'launch' | 'wallets' | 'metadata';
+type View = 'launch' | 'wallets' | 'metadata' | 'templates';
 
 export default function App() {
   const [view, setView] = useState<View>('launch');
@@ -100,30 +101,38 @@ export default function App() {
   // `reserved`/`used` one would just fail the balance check downstream.
   const fundedDevWallets = wallets.filter((w) => w.role === 'dev' && w.status === 'funded');
 
+  // Extracted so the Templates tab can refresh the Launch Console's picker
+  // right after a create/edit, instead of requiring a manual page reload.
+  const loadTemplates = async () => {
+    try {
+      const t = await api.templates();
+      setTemplates(t);
+      setTemplateId((prev) => prev || t[0]?.id || '');
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   useEffect(() => {
+    loadTemplates();
     (async () => {
       try {
-        const [t, w, m] = await Promise.all([
-          api.templates(),
-          api.walletPool('dev'),
-          api.metadataTemplates(),
-        ]);
-        setTemplates(t);
+        const [w, m] = await Promise.all([api.walletPool('dev'), api.metadataTemplates()]);
         setWallets(w);
         setMetadataTemplates(m);
-        if (t[0]) setTemplateId(t[0].id);
         const firstFunded = w.find((wallet) => wallet.status === 'funded');
         if (firstFunded) setWalletId(firstFunded.id);
       } catch (e) {
         setError(String(e));
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     const t = templates.find((tpl) => tpl.id === templateId);
     if (!t) return;
-    const p = t.params as { name?: string; symbol?: string; uri?: string; bundle_leg_count?: number };
+    const p = t.params;
     setMetaName(p.name ?? '');
     setMetaSymbol(p.symbol ?? '');
     setMetaUri(p.uri ?? '');
@@ -216,12 +225,20 @@ export default function App() {
         >
           Metadata Templates
         </button>
+        <button
+          type="button"
+          className={`tab${view === 'templates' ? ' active' : ''}`}
+          onClick={() => setView('templates')}
+        >
+          Launch Templates
+        </button>
         <div className="tabs-spacer" />
         <IngestToggle />
       </div>
 
       {view === 'wallets' && <WalletPool />}
       {view === 'metadata' && <MetadataTemplates />}
+      {view === 'templates' && <LaunchTemplates onChange={loadTemplates} />}
 
       {view === 'launch' && (
     <>

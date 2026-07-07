@@ -17,6 +17,7 @@ pub use dimensions::{Launchpad, Market, QuoteAsset};
 pub use metadata::{MetadataTemplate, NewMetadataTemplate};
 pub use own_launch::{
     Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,
+    UpdateLaunchTemplate,
 };
 pub use token::{NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState};
 pub use trade::{NewTrade, RawTx, Trade, TradePriced};

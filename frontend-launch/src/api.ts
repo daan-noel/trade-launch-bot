@@ -3,8 +3,73 @@ import bs58 from 'bs58';
 export interface LaunchTemplate {
   id: string;
   template_name: string;
+  launchpad_id: number;
+  quote_asset_id: number;
   variant: string;
-  params: Record<string, unknown>;
+  params: PumpfunTemplateParams;
+  created_at: string;
+  updated_at: string;
+}
+
+// Audited pump.fun buy discriminator surface (`crates/launcher/src/bundle.rs`
+// `BuyVariant`) — never an arbitrary account list.
+export type BuyVariant = 'buy' | 'buy_exact_sol_in' | 'buy_v2' | 'buy_exact_quote_in';
+
+// One entry in `params.leg_structures` — ranges the composer randomizes within
+// per leg (`crates/launcher/src/bundle.rs` `LegStructureRecipe`). All amounts are
+// quote base units (lamports for SOL).
+export interface LegStructureRecipe {
+  variant: BuyVariant;
+  slippage_bps_min?: number;
+  slippage_bps_max?: number;
+  cu_limit_min?: number;
+  cu_limit_max?: number;
+  cu_price_min?: number;
+  cu_price_max?: number;
+  tip_quote_min?: number;
+  tip_quote_max?: number;
+}
+
+// `crates/launcher/src/service.rs` `PumpfunTemplateParams` — the parsed
+// `launch_templates.params` JSONB brain, server-validated on create/update
+// against this exact shape.
+export interface PumpfunTemplateParams {
+  name: string;
+  symbol: string;
+  uri: string;
+  dev_buy_quote?: number;
+  slippage_bps?: number;
+  is_mayhem_mode?: boolean;
+  cashback_enabled?: boolean;
+  bundle_leg_count?: number;
+  bundle_quote_per_leg?: number;
+  bundle_tip_quote?: number;
+  leg_structures?: LegStructureRecipe[];
+}
+
+// Create/update body — full-replace, mirrors the backend's
+// `NewLaunchTemplate`/`UpdateLaunchTemplate` (same 5-field shape).
+export interface NewLaunchTemplateInput {
+  template_name: string;
+  launchpad_id: number;
+  variant: string;
+  quote_asset_id: number;
+  params: PumpfunTemplateParams;
+}
+
+export interface Launchpad {
+  id: number;
+  key: string;
+  display_name: string;
+  default_quote_asset_id: number;
+}
+
+export interface QuoteAsset {
+  id: number;
+  mint: string;
+  symbol: string;
+  decimals: number;
+  is_native: boolean;
 }
 
 export interface ManagedWallet {
@@ -162,6 +227,12 @@ async function putJson<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   templates: () => getJson<LaunchTemplate[]>('/api/launch_templates'),
+  createLaunchTemplate: (req: NewLaunchTemplateInput) =>
+    postJson<LaunchTemplate>('/api/launch_templates', req),
+  updateLaunchTemplate: (id: string, req: NewLaunchTemplateInput) =>
+    putJson<LaunchTemplate>(`/api/launch_templates/${id}`, req),
+  launchpads: () => getJson<Launchpad[]>('/api/launchpads'),
+  quoteAssets: () => getJson<QuoteAsset[]>('/api/quote_assets'),
   wallets: (role?: string) =>
     getJson<ManagedWallet[]>(
       role ? `/api/managed_wallets?role=${encodeURIComponent(role)}` : '/api/managed_wallets',

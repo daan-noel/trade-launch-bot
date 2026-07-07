@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::models::{
     Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,
+    UpdateLaunchTemplate,
 };
 
 /// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key. Lifecycle
@@ -250,6 +251,27 @@ impl LaunchTemplateRepo {
             "SELECT * FROM launch_templates ORDER BY created_at DESC",
         )
         .fetch_all(pool)
+        .await?)
+    }
+
+    /// Full-replace update. `updated_at` isn't trigger-maintained anywhere in
+    /// this schema, so it's set explicitly here.
+    pub async fn update(
+        pool: &PgPool,
+        id: Uuid,
+        t: &UpdateLaunchTemplate,
+    ) -> anyhow::Result<Option<LaunchTemplate>> {
+        Ok(sqlx::query_as::<_, LaunchTemplate>(
+            "UPDATE launch_templates SET template_name=$2, launchpad_id=$3, variant=$4, quote_asset_id=$5, \
+             params=$6, updated_at=now() WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(&t.template_name)
+        .bind(t.launchpad_id)
+        .bind(&t.variant)
+        .bind(t.quote_asset_id)
+        .bind(t.params.clone().unwrap_or_else(|| json!({})))
+        .fetch_optional(pool)
         .await?)
     }
 }

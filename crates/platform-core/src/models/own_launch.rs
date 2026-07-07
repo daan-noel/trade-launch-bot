@@ -83,8 +83,19 @@ pub struct LaunchTemplate {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct NewLaunchTemplate {
+    pub template_name: String,
+    pub launchpad_id: i16,
+    pub variant: String,
+    pub quote_asset_id: i16,
+    pub params: Option<Json>,
+}
+
+/// Full-replace update — same shape as [`NewLaunchTemplate`], no partial-field
+/// PATCH (matches this codebase's fixed-shape update pattern).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateLaunchTemplate {
     pub template_name: String,
     pub launchpad_id: i16,
     pub variant: String,

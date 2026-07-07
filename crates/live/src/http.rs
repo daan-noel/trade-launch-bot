@@ -4,9 +4,9 @@ use actix_web::{web, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
     create_metadata_template, execute_bundle, execute_launch, LaunchRequest, LauncherSettings,
-    NewMetadataTemplateRequest,
+    NewMetadataTemplateRequest, PumpfunTemplateParams,
 };
-use platform_core::models::{Bundle, Launch, TradePriced};
+use platform_core::models::{Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate};
 use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -34,6 +34,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/quote_assets", web::get().to(quote_assets))
         .route("/api/launchpads", web::get().to(launchpads))
         .route("/api/launch_templates", web::get().to(launch_templates_list))
+        .route("/api/launch_templates", web::post().to(launch_templates_create))
+        .route(
+            "/api/launch_templates/{id}",
+            web::put().to(launch_templates_update),
+        )
         .route("/api/managed_wallets", web::get().to(managed_wallets_list))
         .route("/api/wallet_pool", web::get().to(wallet_pool_list))
         .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
@@ -108,6 +113,41 @@ async fn launch_templates_list(
 ) -> Result<HttpResponse, actix_web::Error> {
     let rows = LaunchTemplateRepo::all(pool.get_ref()).await.map_err(e500)?;
     Ok(HttpResponse::Ok().json(rows))
+}
+
+/// Validate `params` against the one struct that actually consumes it at
+/// launch-execute time (`launcher::PumpfunTemplateParams`) — reuses that shape
+/// as the single source of truth instead of duplicating a JSON schema here, and
+/// stops a malformed template from only failing much later, mid-launch.
+fn validate_params(params: &Option<serde_json::Value>) -> Result<(), actix_web::Error> {
+    let value = params.clone().unwrap_or_else(|| serde_json::json!({}));
+    serde_json::from_value::<PumpfunTemplateParams>(value)
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("invalid template params: {e}")))?;
+    Ok(())
+}
+
+async fn launch_templates_create(
+    pool: web::Data<PgPool>,
+    body: web::Json<NewLaunchTemplate>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let body = body.into_inner();
+    validate_params(&body.params)?;
+    let row = LaunchTemplateRepo::insert(pool.get_ref(), &body).await.map_err(e500)?;
+    Ok(HttpResponse::Ok().json(row))
+}
+
+async fn launch_templates_update(
+    pool: web::Data<PgPool>,
+    path: web::Path<Uuid>,
+    body: web::Json<UpdateLaunchTemplate>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let body = body.into_inner();
+    validate_params(&body.params)?;
+    let row = LaunchTemplateRepo::update(pool.get_ref(), path.into_inner(), &body)
+        .await
+        .map_err(e500)?
+        .ok_or_else(|| actix_web::error::ErrorNotFound("template not found"))?;
+    Ok(HttpResponse::Ok().json(row))
 }
 
 #[derive(serde::Deserialize)]
