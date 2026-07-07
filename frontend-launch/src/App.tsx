@@ -10,6 +10,7 @@ import {
   solscanMint,
   solscanTx,
 } from './api';
+import MetadataTemplates from './MetadataTemplates';
 import WalletPool from './WalletPool';
 
 function StatusPill({ status }: { status: string }) {
@@ -17,7 +18,7 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`status-pill ${cls}`}>{status}</span>;
 }
 
-type View = 'launch' | 'wallets';
+type View = 'launch' | 'wallets' | 'metadata';
 
 export default function App() {
   const [view, setView] = useState<View>('launch');
@@ -134,9 +135,17 @@ export default function App() {
         >
           Wallet Pool
         </button>
+        <button
+          type="button"
+          className={`tab${view === 'metadata' ? ' active' : ''}`}
+          onClick={() => setView('metadata')}
+        >
+          Metadata Templates
+        </button>
       </div>
 
       {view === 'wallets' && <WalletPool />}
+      {view === 'metadata' && <MetadataTemplates />}
 
       {view === 'launch' && (
     <>

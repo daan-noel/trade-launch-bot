@@ -19,6 +19,10 @@ pub struct LauncherSettings {
     /// post-generation backup entirely; there's no safe default location to
     /// assume, so this stays opt-in rather than required.
     pub backup_dir: Option<PathBuf>,
+    /// Pinata JWT for pinning token-metadata images/JSON to IPFS (see
+    /// `metadata_upload`) — `None` disables metadata-template authoring with a
+    /// clear error rather than a required-at-boot var; nothing else needs it.
+    pub pinata_jwt: Option<String>,
 }
 
 impl LauncherSettings {
@@ -51,6 +55,7 @@ impl LauncherSettings {
             "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
         });
         let backup_dir = std::env::var("WALLET_BACKUP_DIR").ok().map(PathBuf::from);
+        let pinata_jwt = std::env::var("PINATA_JWT").ok().filter(|s| !s.is_empty());
         Ok(Self {
             rpc_url,
             sender_urls,
@@ -59,6 +64,7 @@ impl LauncherSettings {
             kek_passphrase,
             jito_block_engine_url,
             backup_dir,
+            pinata_jwt,
         })
     }
 }

@@ -36,6 +36,36 @@ export interface ManagedWalletPool {
   created_at: string;
 }
 
+// Authored token-metadata content, pinned to IPFS via Pinata — the resulting
+// `uri` is the same shape a launch template's `params.uri` / a per-launch
+// override consumes.
+export interface MetadataTemplate {
+  id: string;
+  template_name: string;
+  name: string;
+  symbol: string;
+  description: string | null;
+  twitter: string | null;
+  telegram: string | null;
+  website: string | null;
+  image_uri: string;
+  uri: string;
+  created_at: string;
+}
+
+export interface NewMetadataTemplate {
+  template_name: string;
+  name: string;
+  symbol: string;
+  description?: string;
+  twitter?: string;
+  telegram?: string;
+  website?: string;
+  image_base64: string;
+  image_filename: string;
+  image_content_type: string;
+}
+
 export interface LaunchResult {
   launch_id: string;
   mint_address: string;
@@ -130,7 +160,25 @@ export const api = {
       count,
       label_prefix: labelPrefix || undefined,
     }),
+  metadataTemplates: () => getJson<MetadataTemplate[]>('/api/metadata_templates'),
+  createMetadataTemplate: (req: NewMetadataTemplate) =>
+    postJson<MetadataTemplate>('/api/metadata_templates', req),
 };
+
+// Reads a File as base64 (strips the `data:<mime>;base64,` prefix) for the
+// metadata-template image field — kept a plain JSON POST rather than adding
+// multipart handling for this one low-volume admin form.
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.slice(result.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('file read failed'));
+    reader.readAsDataURL(file);
+  });
+}
 
 export function solscanTx(sig: string) {
   return `https://solscan.io/tx/${sig}`;

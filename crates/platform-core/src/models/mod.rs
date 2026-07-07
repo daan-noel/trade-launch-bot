@@ -8,11 +8,13 @@
 //! hard-coded. Ratio fields (prices) stay `f64`.
 
 pub mod dimensions;
+pub mod metadata;
 pub mod own_launch;
 pub mod token;
 pub mod trade;
 
 pub use dimensions::{Launchpad, Market, QuoteAsset};
+pub use metadata::{MetadataTemplate, NewMetadataTemplate};
 pub use own_launch::{
     Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,
 };

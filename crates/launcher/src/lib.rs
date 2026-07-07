@@ -12,6 +12,7 @@ mod confirm;
 mod config;
 mod dust_sweep;
 mod keystore;
+mod metadata_upload;
 mod probe;
 mod service;
 mod trader_config;
@@ -32,6 +33,7 @@ pub use dust_sweep::spawn_dust_sweep;
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
+pub use metadata_upload::{create_metadata_template, NewMetadataTemplateRequest};
 pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;

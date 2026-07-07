@@ -1,15 +1,18 @@
 //! Thin HTTP surface for the LIVE box: health + data-layer reads + launch trigger.
 
 use actix_web::{web, HttpResponse};
-use launcher::{execute_bundle, execute_launch, LaunchRequest, LauncherSettings};
+use launcher::{
+    create_metadata_template, execute_bundle, execute_launch, LaunchRequest, LauncherSettings,
+    NewMetadataTemplateRequest,
+};
 use platform_core::models::{Bundle, Launch, TradePriced};
 use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManagedWalletRepo, QuoteAssetRepo,
-    TokenRepo, TradeRepo,
+    BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManagedWalletRepo,
+    MetadataTemplateRepo, QuoteAssetRepo, TokenRepo, TradeRepo,
 };
 
 /// Map any error to a 500 without leaking a panic.
@@ -19,6 +22,10 @@ fn e500<E: std::fmt::Debug>(e: E) -> actix_web::Error {
 
 /// Register the routes. `api` pool is shared via `app_data`.
 pub fn configure(cfg: &mut web::ServiceConfig) {
+    // Default actix JSON limit (32KB) is too small for a base64-encoded token
+    // image (`POST /api/metadata_templates`) — raised app-wide since no other
+    // JSON body here is large enough to make a higher ceiling a real risk.
+    cfg.app_data(web::JsonConfig::default().limit(10 * 1024 * 1024));
     cfg.route("/health", web::get().to(health))
         .route("/api/quote_assets", web::get().to(quote_assets))
         .route("/api/launchpads", web::get().to(launchpads))
@@ -26,6 +33,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/managed_wallets", web::get().to(managed_wallets_list))
         .route("/api/wallet_pool", web::get().to(wallet_pool_list))
         .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
+        .route("/api/metadata_templates", web::get().to(metadata_templates_list))
+        .route(
+            "/api/metadata_templates",
+            web::post().to(metadata_templates_create),
+        )
         .route("/api/launches/{id}", web::get().to(launch_get))
         .route("/api/launches/{id}/status", web::get().to(launch_status))
         .route("/api/launches/execute", web::post().to(launch_execute))
@@ -124,6 +136,62 @@ async fn wallet_pool_generate(
     }
 
     Ok(HttpResponse::Ok().json(wallets))
+}
+
+async fn metadata_templates_list(pool: web::Data<PgPool>) -> Result<HttpResponse, actix_web::Error> {
+    let rows = MetadataTemplateRepo::all(pool.get_ref()).await.map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+#[derive(serde::Deserialize)]
+struct CreateMetadataTemplateBody {
+    template_name: String,
+    name: String,
+    symbol: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    twitter: Option<String>,
+    #[serde(default)]
+    telegram: Option<String>,
+    #[serde(default)]
+    website: Option<String>,
+    /// Base64 image bytes (the frontend's file picker read as a data URL, with
+    /// the `data:<mime>;base64,` prefix stripped).
+    image_base64: String,
+    image_filename: String,
+    image_content_type: String,
+}
+
+/// Pin the image + build/pin the standard off-chain JSON to Pinata, then
+/// persist as a reusable template — `launcher::create_metadata_template`.
+async fn metadata_templates_create(
+    pool: web::Data<PgPool>,
+    body: web::Json<CreateMetadataTemplateBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = LauncherSettings::from_env().map_err(|e| {
+        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
+    })?;
+    let body = body.into_inner();
+    let template = create_metadata_template(
+        pool.get_ref(),
+        &settings,
+        NewMetadataTemplateRequest {
+            template_name: body.template_name,
+            name: body.name,
+            symbol: body.symbol,
+            description: body.description,
+            twitter: body.twitter,
+            telegram: body.telegram,
+            website: body.website,
+            image_base64: body.image_base64,
+            image_filename: body.image_filename,
+            image_content_type: body.image_content_type,
+        },
+    )
+    .await
+    .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(template))
 }
 
 #[derive(Debug, Serialize)]
