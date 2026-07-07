@@ -40,10 +40,11 @@ pub struct PumpfunTemplateParams {
     #[serde(default)]
     pub cashback_enabled: bool,
     /// Optional post-create sniper bundle (composer draws from `leg_structures`).
+    /// Default leg count when the launch request doesn't override it (see
+    /// `LaunchRequest::bundler_count` / the Wallet Management "use N bundlers"
+    /// control) — a template can still pre-configure a default.
     #[serde(default)]
     pub bundle_leg_count: Option<u32>,
-    #[serde(default)]
-    pub bundle_wallet_ids: Option<Vec<Uuid>>,
     #[serde(default)]
     pub bundle_quote_per_leg: Option<i64>,
     #[serde(default)]
@@ -56,6 +57,16 @@ pub struct PumpfunTemplateParams {
 pub struct LaunchRequest {
     pub template_id: Uuid,
     pub dev_wallet_id: Uuid,
+    /// Per-launch metadata overrides — the Launch Console's editing panel.
+    /// Falls back to the template's stored `name`/`symbol`/`uri` when unset, so
+    /// a template still works as a bare reusable preset.
+    pub name: Option<String>,
+    pub symbol: Option<String>,
+    pub uri: Option<String>,
+    /// Overrides the template's `bundle_leg_count` when set (the Launch
+    /// Console's "use N bundlers" control) — bundler wallets are then a
+    /// server-side atomic claim from the `funded` pool, never a client pick.
+    pub bundler_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -84,8 +95,20 @@ pub async fn execute_launch(
         bail!("wallet {} is role={}, expected dev", dev_wallet.id, dev_wallet.role);
     }
 
-    let params: PumpfunTemplateParams =
+    let mut params: PumpfunTemplateParams =
         serde_json::from_value(template.params.clone()).context("parse template params")?;
+    // Per-launch metadata overrides (the Launch Console's editing panel) — the
+    // template stays a reusable preset; only this launch's on-chain create uses
+    // the overridden values.
+    if let Some(name) = &req.name {
+        params.name = name.clone();
+    }
+    if let Some(symbol) = &req.symbol {
+        params.symbol = symbol.clone();
+    }
+    if let Some(uri) = &req.uri {
+        params.uri = uri.clone();
+    }
 
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
     let signer = keystore::resolve_signer(
@@ -253,27 +276,6 @@ pub async fn execute_launch(
         )
         .await?;
 
-        if let Some((leg_count, wallets, quote_per_leg, tip_quote)) =
-            crate::bundle::parse_bundle_plan(&params)?
-        {
-            let recipes = params
-                .leg_structures
-                .as_deref()
-                .filter(|p| !p.is_empty())
-                .context("bundle_leg_count requires leg_structures pool")?;
-            let composed =
-                crate::bundle::compose_bundle_legs(recipes, leg_count, &wallets, quote_per_leg)?;
-            let bundle = BundleRepo::insert(
-                pool,
-                launch_id,
-                tip_quote,
-                crate::bundle::legs_to_json(&composed),
-            )
-            .await?;
-            LaunchRepo::set_bundle_id(pool, launch_id, bundle.id).await?;
-            info!(launch_id = %launch_id, bundle_id = %bundle.id, legs = leg_count, "bundle planned");
-        }
-
         info!(
             launch_id = %launch_id,
             mint = %mint_address,
@@ -300,6 +302,60 @@ pub async fn execute_launch(
     }
 
     let mut result = finish?;
+
+    // Bundle planning runs AFTER `finish` resolves, not inside it: the create is
+    // already on-chain at this point, so a planning problem (missing
+    // leg_structures/bundle_quote_per_leg, or a short bundler pool) must not
+    // retroactively flip the launch's status back to `failed` — that would hide
+    // a real, successful on-chain create. Matches how bundle auto-submit below
+    // already treats post-create bundle failures as non-fatal to the launch row.
+    if let Some(leg_count) = crate::bundle::resolve_leg_count(req.bundler_count, &params) {
+        let recipes = params
+            .leg_structures
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .context("bundle requested but template leg_structures pool is empty")?;
+        let (quote_per_leg, tip_quote) = crate::bundle::resolve_bundle_quote(&params)?;
+
+        // Server-side atomic claim from the `funded` bundler pool (wallet-pool
+        // Phase 3) — never a client-side wallet pick. May return fewer than
+        // `leg_count` if the pool is short; plan exactly that many legs rather
+        // than erroring or reusing a wallet across legs.
+        let claimed =
+            ManagedWalletRepo::claim_funded(pool, "bundler", leg_count as i64, launch_id).await?;
+        if claimed.is_empty() {
+            tracing::warn!(
+                launch_id = %launch_id,
+                requested = leg_count,
+                "no funded bundler wallets available — skipping sniper bundle"
+            );
+        } else {
+            if claimed.len() < leg_count as usize {
+                tracing::warn!(
+                    launch_id = %launch_id,
+                    requested = leg_count,
+                    claimed = claimed.len(),
+                    "bundler pool short — planning a smaller bundle"
+                );
+            }
+            let wallet_ids: Vec<Uuid> = claimed.iter().map(|w| w.id).collect();
+            let composed = crate::bundle::compose_bundle_legs(
+                recipes,
+                wallet_ids.len(),
+                &wallet_ids,
+                quote_per_leg,
+            )?;
+            let bundle = BundleRepo::insert(
+                pool,
+                launch_id,
+                tip_quote,
+                crate::bundle::legs_to_json(&composed),
+            )
+            .await?;
+            LaunchRepo::set_bundle_id(pool, launch_id, bundle.id).await?;
+            info!(launch_id = %launch_id, bundle_id = %bundle.id, legs = wallet_ids.len(), "bundle planned");
+        }
+    }
 
     // Auto-submit a planned sniper bundle — no second HTTP call when the template
     // has `bundle_leg_count`. Launch is already on-chain; bundle failure does not

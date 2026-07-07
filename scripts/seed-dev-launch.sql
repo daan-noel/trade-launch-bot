@@ -21,6 +21,11 @@ ON CONFLICT (address) DO UPDATE SET
 
 DELETE FROM launch_templates WHERE template_name = 'dev-sniper-2leg';
 
+-- Bundler wallets are no longer template-listed: launch execution claims N
+-- `funded` `role=bundler` wallets atomically from the pool (wallet-pool Phase 3,
+-- ManagedWalletRepo::claim_funded). `bundle_leg_count` here is just the
+-- template's default leg count; the Launch Console's "use N bundlers" control
+-- can override it per launch.
 INSERT INTO launch_templates (
     template_name,
     launchpad_id,
@@ -28,7 +33,7 @@ INSERT INTO launch_templates (
     quote_asset_id,
     params
 )
-SELECT
+VALUES (
     'dev-sniper-2leg',
     1,
     'pumpfun.create_v2',
@@ -42,7 +47,6 @@ SELECT
         'is_mayhem_mode', false,
         'cashback_enabled', false,
         'bundle_leg_count', 2,
-        'bundle_wallet_ids', jsonb_build_array(b.id),
         'bundle_quote_per_leg', 50000000,
         'bundle_tip_quote', 100000,
         'leg_structures', jsonb_build_array(
@@ -64,8 +68,7 @@ SELECT
             )
         )
     )
-FROM managed_wallets b
-WHERE b.label = 'bundler-01';
+);
 
 COMMIT;
 

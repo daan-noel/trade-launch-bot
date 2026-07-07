@@ -16,7 +16,7 @@ launches per day, local encrypted keystore (single machine, no remote signer yet
 | --- | --- | --- |
 | **1 — Wallet lifecycle & storage** | Status states, atomic claim, balance-driven funding detection | Done |
 | **2 — Wallet Management page** | Frontend: generate, view pool, low-pool alert | Done |
-| **3 — Token Launch integration** | Metadata + creator/bundler wallet selection wired into launch flow | Not started |
+| **3 — Token Launch integration** | Metadata + creator/bundler wallet selection wired into launch flow | Done |
 | **4 — Cleanup & backup infra** | Dust sweep, encrypted-store backup, restore runbook | Not started |
 | **5+ — Deferred** | Automated multi-hop funding, instruction/CU/slippage fingerprint picker | Explicitly deferred by user, not now |
 
@@ -78,18 +78,50 @@ No router added — the launch console (`frontend-launch/src/App.tsx`) gained a
 simple `view` tab-state switcher between "Launch Console" and "Wallet Pool"
 rather than pulling in a routing dependency for a two-view app.
 
-## Phase 3 — Token Launch page integration
+## Phase 3 — Token Launch page integration ✅
 
 **Goal:** launch flow consumes the pool instead of a free-form wallet picker.
 
-- [ ] Metadata editing panel (name/symbol/image/description/etc.)
-- [ ] Creator wallet select: dropdown over `funded` `role=dev` wallets
-- [ ] Bundler wallet allocation: "use N bundlers" → server-side random claim from
-  `funded` `role=bundler` pool (reuses Phase 1 claim query, not a client-side pick)
-- [ ] Wire claimed wallet ids into existing create/bundle execute flow
-- [ ] On launch completion (landed/dropped/partial), transition claimed wallets
-  `reserved` → `used`; on launch failure before submit, let the TTL sweep release
-  them back to `funded`
+- [x] Metadata editing panel (name/symbol/uri) — `App.tsx`'s Launch card gained
+  editable name/symbol/metadata-URI fields, pre-filled from the selected
+  template but sent as per-launch overrides (`LaunchRequest.name/symbol/uri` in
+  `service.rs`; the template row itself is never mutated). **Scope note:** no
+  image upload/hosting was built — pump.fun's on-chain create only takes
+  `name`/`symbol`/`uri` (the URI already points at an off-chain JSON with
+  description/image), and this repo has no existing pinning/upload
+  infrastructure to build that on; wiring an image host is a separate,
+  unscoped decision left for later.
+- [x] Creator wallet select: dropdown over `funded` `role=dev` wallets —
+  `App.tsx` now fetches `api.walletPool('dev')` and filters to
+  `status === 'funded'` client-side (reuses the Phase 2 endpoint instead of a
+  new query param on `/api/managed_wallets`)
+- [x] Bundler wallet allocation: "use N bundlers" input on the Launch card →
+  `LaunchRequest.bundler_count` → `ManagedWalletRepo::claim_funded(pool,
+  "bundler", n, launch_id)` in `service.rs` — a server-side atomic
+  `FOR UPDATE SKIP LOCKED` claim, never a client-side pick. `bundle_wallet_ids`
+  removed from `PumpfunTemplateParams`/the seed script (templates no longer
+  list bundler wallets at all); `bundle_leg_count` stays as the template's
+  *default* leg count when a launch doesn't override it. A short pool plans a
+  smaller bundle (exactly as many legs as wallets claimed) rather than erroring
+  or reusing one wallet across legs.
+- [x] Wire claimed wallet ids into existing create/bundle execute flow — claimed
+  ids feed `compose_bundle_legs`/`bundles.legs` exactly as the old free-form
+  `bundle_wallet_ids` did, so `bundle_execute.rs`/Jito submission are unchanged.
+- [x] On launch completion (landed/dropped/partial), transition claimed wallets
+  `reserved` → `used`; on launch failure before submit, let the TTL sweep
+  release them back to `funded`. Moved the dev-wallet's own `mark_used` call
+  unchanged from Phase 1 (still correct — the dev wallet's job ends at
+  create-success, independent of any bundle); moved the *bundler* legs'
+  `mark_used` out of `bundle_execute.rs`'s submit-success path (too early —
+  submit isn't completion) into `launcher::confirm`'s three terminal branches
+  (landed/dropped/partial all transition to `used`, matching this checklist's
+  own wording — a dropped/partial bundle still consumed a real submit attempt).
+  Also fixed a pre-existing bug while restructuring this exact code: bundle
+  *planning* (not just execute) now runs after `finish` resolves, not inside
+  it, so a planning error (missing `leg_structures`, empty bundler pool) can no
+  longer retroactively flip an already-succeeded launch's status back to
+  `failed` — matches how bundle auto-submit already treated post-create bundle
+  problems as non-fatal to the launch row.
 
 ## Phase 4 — Cleanup & backup infra
 

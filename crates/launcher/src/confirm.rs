@@ -19,7 +19,9 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 
 use platform_core::models::Bundle;
-use platform_core::storage::repositories::{BundleRepo, LaunchRepo, TradeRepo};
+use platform_core::storage::repositories::{BundleRepo, LaunchRepo, ManagedWalletRepo, TradeRepo};
+
+use crate::bundle::legs_from_json;
 
 /// How often to re-check bundles awaiting confirmation.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
@@ -66,6 +68,7 @@ async fn confirm_one(pool: &PgPool, bundle: Bundle) -> anyhow::Result<()> {
     if sigs.is_empty() {
         warn!(bundle_id = %bundle.id, "submitted bundle has no leg signatures — marking dropped");
         BundleRepo::set_confirmed(pool, bundle.id, "dropped").await?;
+        mark_bundle_wallets_used(pool, &bundle).await;
         return Ok(());
     }
 
@@ -74,6 +77,7 @@ async fn confirm_one(pool: &PgPool, bundle: Bundle) -> anyhow::Result<()> {
 
     if landed.len() == sigs.len() {
         BundleRepo::set_confirmed(pool, bundle.id, "landed").await?;
+        mark_bundle_wallets_used(pool, &bundle).await;
         info!(bundle_id = %bundle.id, legs = sigs.len(), "bundle landed");
         return Ok(());
     }
@@ -98,5 +102,25 @@ async fn confirm_one(pool: &PgPool, bundle: Bundle) -> anyhow::Result<()> {
             "bundle partially landed — Jito atomicity anomaly, investigate"
         );
     }
+    mark_bundle_wallets_used(pool, &bundle).await;
     Ok(())
+}
+
+/// Wallet-pool lifecycle: a bundle's leg wallets are terminal (`used`) once the
+/// bundle reaches ANY terminal outcome (landed/dropped/partial) — a dropped or
+/// partial bundle still spent its legs' fees/nonces on a real submit attempt, so
+/// they're not safely re-claimable. A no-op (`WHERE status = 'reserved'` guard in
+/// `mark_used`) for wallets not currently reserved, i.e. today's free-form
+/// template-selected legs, until launch execution claims via `claim_funded`.
+async fn mark_bundle_wallets_used(pool: &PgPool, bundle: &Bundle) {
+    let wallet_ids = match legs_from_json(&bundle.legs) {
+        Ok(legs) => legs.iter().map(|leg| leg.wallet_id).collect::<Vec<_>>(),
+        Err(e) => {
+            warn!(bundle_id = %bundle.id, %e, "failed to parse bundle legs for wallet-used transition");
+            return;
+        }
+    };
+    if let Err(e) = ManagedWalletRepo::mark_used(pool, &wallet_ids).await {
+        warn!(bundle_id = %bundle.id, %e, "failed to mark bundler wallets used");
+    }
 }

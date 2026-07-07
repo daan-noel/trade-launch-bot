@@ -47,6 +47,15 @@ export interface LaunchResult {
   };
 }
 
+// Metadata editing panel overrides + "use N bundlers" — unset fields fall back
+// to the template's stored params (wallet-pool Phase 3).
+export interface LaunchOverrides {
+  name?: string;
+  symbol?: string;
+  uri?: string;
+  bundler_count?: number;
+}
+
 export interface Launch {
   id: string;
   mint_address: string;
@@ -108,8 +117,8 @@ export const api = {
     getJson<ManagedWallet[]>(
       role ? `/api/managed_wallets?role=${encodeURIComponent(role)}` : '/api/managed_wallets',
     ),
-  executeLaunch: (template_id: string, dev_wallet_id: string) =>
-    postJson<LaunchResult>('/api/launches/execute', { template_id, dev_wallet_id }),
+  executeLaunch: (template_id: string, dev_wallet_id: string, overrides?: LaunchOverrides) =>
+    postJson<LaunchResult>('/api/launches/execute', { template_id, dev_wallet_id, ...overrides }),
   launchStatus: (id: string) => getJson<LaunchStatus>(`/api/launches/${id}/status`),
   walletPool: (role?: string) =>
     getJson<ManagedWalletPool[]>(

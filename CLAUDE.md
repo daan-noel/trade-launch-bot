@@ -31,8 +31,15 @@ TTL sweep; `ManagedWalletRepo` adds the atomic `claim_funded` (`FOR UPDATE SKIP
 LOCKED`) + `mark_used` transitions. Phase 2 done — `GET /api/wallet_pool` +
 `POST /api/wallet_pool/generate`; `frontend-launch/src/WalletPool.tsx` (list,
 generate, status counts, low-pool banner), tab-switched from the launch console.
+Phase 3 done — launch flow now consumes the pool: dev-wallet dropdown filters to
+`funded`, bundler legs are claimed via `claim_funded` (no more template
+`bundle_wallet_ids`), a metadata editing panel overrides name/symbol/uri per
+launch, and `mark_used` for bundler legs moved to `launcher::confirm`'s
+landed/dropped/partial outcomes (bundle *planning* also moved outside
+`execute_launch`'s failure-reset scope, fixing a pre-existing bug where a
+post-create bundle problem could flip an already-succeeded launch to `failed`).
 **Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — Phase 3 live trading;
-wallet-pool Phase 3 (Token Launch integration) in parallel.
+wallet-pool Phase 4 (cleanup & backup infra) in parallel.
 
 ## Priorities
 

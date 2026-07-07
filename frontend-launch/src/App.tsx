@@ -5,7 +5,7 @@ import {
   LaunchResult,
   LaunchStatus,
   LaunchTemplate,
-  ManagedWallet,
+  ManagedWalletPool,
   shouldKeepPolling,
   solscanMint,
   solscanTx,
@@ -22,7 +22,7 @@ type View = 'launch' | 'wallets';
 export default function App() {
   const [view, setView] = useState<View>('launch');
   const [templates, setTemplates] = useState<LaunchTemplate[]>([]);
-  const [wallets, setWallets] = useState<ManagedWallet[]>([]);
+  const [wallets, setWallets] = useState<ManagedWalletPool[]>([]);
   const [templateId, setTemplateId] = useState('');
   const [walletId, setWalletId] = useState('');
   const [loading, setLoading] = useState(false);
@@ -30,19 +30,41 @@ export default function App() {
   const [result, setResult] = useState<LaunchResult | null>(null);
   const [status, setStatus] = useState<LaunchStatus | null>(null);
 
+  // Metadata editing panel — pre-filled from the selected template, editable
+  // per launch (overrides sent to the backend; the template itself is unchanged).
+  const [metaName, setMetaName] = useState('');
+  const [metaSymbol, setMetaSymbol] = useState('');
+  const [metaUri, setMetaUri] = useState('');
+  const [bundlerCount, setBundlerCount] = useState('');
+
+  // Only `funded` dev wallets are launch-ready — a `generated` (unfunded) or
+  // `reserved`/`used` one would just fail the balance check downstream.
+  const fundedDevWallets = wallets.filter((w) => w.role === 'dev' && w.status === 'funded');
+
   useEffect(() => {
     (async () => {
       try {
-        const [t, w] = await Promise.all([api.templates(), api.wallets('dev')]);
+        const [t, w] = await Promise.all([api.templates(), api.walletPool('dev')]);
         setTemplates(t);
         setWallets(w);
         if (t[0]) setTemplateId(t[0].id);
-        if (w[0]) setWalletId(w[0].id);
+        const firstFunded = w.find((wallet) => wallet.status === 'funded');
+        if (firstFunded) setWalletId(firstFunded.id);
       } catch (e) {
         setError(String(e));
       }
     })();
   }, []);
+
+  useEffect(() => {
+    const t = templates.find((tpl) => tpl.id === templateId);
+    if (!t) return;
+    const p = t.params as { name?: string; symbol?: string; uri?: string; bundle_leg_count?: number };
+    setMetaName(p.name ?? '');
+    setMetaSymbol(p.symbol ?? '');
+    setMetaUri(p.uri ?? '');
+    setBundlerCount(p.bundle_leg_count != null ? String(p.bundle_leg_count) : '');
+  }, [templateId, templates]);
 
   const launchId = result?.launch_id;
 
@@ -81,7 +103,12 @@ export default function App() {
     setResult(null);
     setStatus(null);
     try {
-      const r = await api.executeLaunch(templateId, walletId);
+      const r = await api.executeLaunch(templateId, walletId, {
+        name: metaName || undefined,
+        symbol: metaSymbol || undefined,
+        uri: metaUri || undefined,
+        bundler_count: bundlerCount ? Number(bundlerCount) : undefined,
+      });
       setResult(r);
     } catch (e) {
       setError(String(e));
@@ -89,8 +116,6 @@ export default function App() {
       setLoading(false);
     }
   };
-
-  const selectedTemplate = templates.find((t) => t.id === templateId);
 
   return (
     <div className="app">
@@ -140,12 +165,14 @@ export default function App() {
             </select>
           </div>
           <div className="field">
-            <label htmlFor="wallet">Dev wallet</label>
+            <label htmlFor="wallet">Dev wallet (funded only)</label>
             <select id="wallet" value={walletId} onChange={(e) => setWalletId(e.target.value)}>
-              {wallets.length === 0 && <option value="">No dev wallets — run seed script</option>}
-              {wallets.map((w) => (
+              {fundedDevWallets.length === 0 && (
+                <option value="">No funded dev wallets — fund one in the Wallet Pool tab</option>
+              )}
+              {fundedDevWallets.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.label ?? w.address.slice(0, 8)} ({w.role})
+                  {w.label ?? w.address.slice(0, 8)}
                 </option>
               ))}
             </select>
@@ -159,12 +186,41 @@ export default function App() {
             {loading ? 'Launching…' : 'Launch'}
           </button>
         </div>
-        {selectedTemplate && (
-          <p className="muted">
-            Bundle legs:{' '}
-            {String((selectedTemplate.params as { bundle_leg_count?: number }).bundle_leg_count ?? 0)}
-          </p>
-        )}
+
+        <div className="row">
+          <div className="field">
+            <label htmlFor="meta-name">Name</label>
+            <input id="meta-name" type="text" value={metaName} onChange={(e) => setMetaName(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="meta-symbol">Symbol</label>
+            <input
+              id="meta-symbol"
+              type="text"
+              value={metaSymbol}
+              onChange={(e) => setMetaSymbol(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="meta-uri">Metadata URI</label>
+            <input id="meta-uri" type="text" value={metaUri} onChange={(e) => setMetaUri(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="bundler-count">Use N bundlers</label>
+            <input
+              id="bundler-count"
+              type="number"
+              min={0}
+              value={bundlerCount}
+              onChange={(e) => setBundlerCount(e.target.value)}
+            />
+          </div>
+        </div>
+        <p className="muted">
+          Name/symbol/metadata URI default from the template but are editable per launch. Bundler
+          legs are claimed server-side from the <code>funded</code> <code>bundler</code> wallet pool
+          — never a manual wallet pick.
+        </p>
         {error && <p className="error">{error}</p>}
       </div>
 

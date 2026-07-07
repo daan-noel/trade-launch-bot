@@ -192,21 +192,28 @@ fn pick_i64(rng: &mut impl Rng, min: i64, max: i64) -> i64 {
     }
 }
 
-/// Validate template bundle fields and return `(leg_count, wallets, quote_per_leg, tip)`.
-pub fn parse_bundle_plan(params: &super::service::PumpfunTemplateParams) -> Result<Option<(usize, Vec<Uuid>, i64, Option<i64>)>> {
-    let Some(leg_count) = params.bundle_leg_count.filter(|&n| n > 0) else {
-        return Ok(None);
-    };
-    let wallets = params
-        .bundle_wallet_ids
-        .clone()
-        .filter(|w| !w.is_empty())
-        .context("bundle_leg_count set but bundle_wallet_ids is empty")?;
+/// How many bundler legs to plan: the launch request's explicit override (the
+/// Wallet Management "use N bundlers" control) if set, else the template's
+/// default `bundle_leg_count`. `None`/`0` means no bundle.
+pub fn resolve_leg_count(
+    requested: Option<u32>,
+    params: &super::service::PumpfunTemplateParams,
+) -> Option<u32> {
+    requested.or(params.bundle_leg_count).filter(|&n| n > 0)
+}
+
+/// Validate the template's static per-leg SOL amount + tip. Bundler *wallets* are
+/// no longer template-configured — they come from `ManagedWalletRepo::claim_funded`
+/// (wallet-pool Phase 3), a random atomic claim from the `funded` bundler pool
+/// rather than a client-side pick.
+pub fn resolve_bundle_quote(
+    params: &super::service::PumpfunTemplateParams,
+) -> Result<(i64, Option<i64>)> {
     let quote = params
         .bundle_quote_per_leg
         .filter(|&q| q > 0)
-        .context("bundle_leg_count set but bundle_quote_per_leg missing")?;
-    Ok(Some((leg_count as usize, wallets, quote, params.bundle_tip_quote)))
+        .context("bundle requested but template bundle_quote_per_leg is missing")?;
+    Ok((quote, params.bundle_tip_quote))
 }
 
 #[cfg(test)]

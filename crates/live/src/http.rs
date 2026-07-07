@@ -157,6 +157,17 @@ async fn launch_status(
 struct LaunchExecuteBody {
     template_id: Uuid,
     dev_wallet_id: Uuid,
+    /// Metadata editing panel overrides — unset falls back to the template.
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    uri: Option<String>,
+    /// "Use N bundlers" override — unset falls back to the template's
+    /// `bundle_leg_count` default.
+    #[serde(default)]
+    bundler_count: Option<u32>,
 }
 
 async fn launch_execute(
@@ -166,12 +177,17 @@ async fn launch_execute(
     let settings = LauncherSettings::from_env().map_err(|e| {
         actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
     })?;
+    let body = body.into_inner();
     let result = execute_launch(
         pool.get_ref(),
         &settings,
         LaunchRequest {
             template_id: body.template_id,
             dev_wallet_id: body.dev_wallet_id,
+            name: body.name,
+            symbol: body.symbol,
+            uri: body.uri,
+            bundler_count: body.bundler_count,
         },
     )
     .await
