@@ -26,9 +26,6 @@ use crate::keystore::{self, EnvKek};
 
 /// Only sweep wallets holding more than this — not worth a signed tx + fee for dust.
 const SWEEP_MIN_LAMPORTS: u64 = 100_000; // 0.0001 SOL
-/// Leave this many lamports behind to cover the transfer's own fee (a swept,
-/// about-to-be-retired wallet never needs to stay rent-exempt again).
-const SWEEP_FEE_RESERVE_LAMPORTS: u64 = 10_000;
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// Spawn the dust sweep as a long-lived task. Cheap when idle — bounded to the
@@ -92,12 +89,31 @@ async fn sweep_wallet(
         return Ok(());
     }
 
-    let send_lamports = balance - SWEEP_FEE_RESERVE_LAMPORTS;
-    let signer = keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, kek)?;
-
     let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
+
+    // The transfer amount is a fixed-width u64 in the instruction data, so a
+    // probe message (any amount) has the exact same serialized size — and
+    // therefore the exact same fee — as the final one. Query it first so we
+    // can send the true remainder and land the source account at exactly 0
+    // lamports: leaving any non-zero balance below the rent-exempt minimum
+    // makes the runtime reject the transfer outright.
+    let probe_ix = system_instruction::transfer(&address, &treasury, balance);
+    let probe_msg = Message::new_with_blockhash(&[probe_ix], Some(&address), &blockhash);
+    let fee = rpc
+        .get_fee_for_message(&probe_msg)
+        .await
+        .context("fetch dust-sweep transfer fee")?;
+
+    if balance <= fee {
+        ManagedWalletRepo::retire(pool, wallet.id).await?;
+        info!(wallet_id = %wallet.id, balance, fee, "wallet balance below fee — retired without sweep");
+        return Ok(());
+    }
+    let send_lamports = balance - fee;
+
+    let signer = keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, kek)?;
     let ix = system_instruction::transfer(&address, &treasury, send_lamports);
-    let msg = Message::new(&[ix], Some(&address));
+    let msg = Message::new_with_blockhash(&[ix], Some(&address), &blockhash);
     let mut tx = Transaction::new_unsigned(msg);
     tx.try_sign(&[signer.as_ref() as &dyn Signer], blockhash)
         .context("sign dust-sweep transfer")?;

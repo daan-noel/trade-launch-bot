@@ -161,6 +161,16 @@ pub async fn execute_launch(
 
     let launch_id = pending.id;
     let finish = async {
+        // Reserve the dev wallet to this launch before it's spent from — closes
+        // the race where two concurrent launches both pick the same `funded`
+        // dev wallet from the dropdown and both build/submit a create+dev-buy
+        // from it. Also what makes the `mark_used` transition below a real
+        // reserved->used move instead of a permanent no-op, so dev wallets
+        // reach `used` and are picked up by the dust sweep like bundler legs.
+        ManagedWalletRepo::claim_specific(pool, dev_wallet.id, launch_id)
+            .await?
+            .context("dev wallet is no longer funded (claimed by another launch)")?;
+
         let dev_buy_sol = dev_buy_quote as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
         let (signature, ix_label) = match template.variant.as_str() {
             "pumpfun.create_v2" | "pumpfun.create_v2_devbuy" => {
@@ -214,10 +224,8 @@ pub async fn execute_launch(
 
         LaunchRepo::set_created(pool, launch_id, &signature, "created").await?;
 
-        // Wallet-pool lifecycle: a reserved dev wallet is now consumed (terminal —
-        // never re-claimable). A no-op for wallets not currently `reserved` (e.g.
-        // today's free-form-selected wallets, until Phase 3 wires pool claiming
-        // into wallet selection).
+        // Wallet-pool lifecycle: the dev wallet claimed above is now consumed
+        // (terminal — never re-claimable, and now eligible for the dust sweep).
         if let Err(e) = ManagedWalletRepo::mark_used(pool, &[dev_wallet.id]).await {
             tracing::warn!(%launch_id, dev_wallet_id = %dev_wallet.id, %e, "failed to mark dev wallet used");
         }

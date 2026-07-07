@@ -126,6 +126,29 @@ impl ManagedWalletRepo {
         .await?)
     }
 
+    /// Atomically claim ONE specific `funded` wallet by id for `launch_id` — the
+    /// dev-wallet path, where the operator (not the pool) picks which wallet to
+    /// use via the launch console dropdown, so there's no "any N of many" to
+    /// pick from. A plain conditional `UPDATE` is still concurrency-safe for a
+    /// single targeted row: a second claim of the same id blocks on the row
+    /// lock, then re-evaluates `status = 'funded'` after the first commits and
+    /// correctly finds no match. Returns `None` if the wallet wasn't `funded`
+    /// (already claimed by another launch, or never funded).
+    pub async fn claim_specific(
+        pool: &PgPool,
+        id: Uuid,
+        launch_id: Uuid,
+    ) -> anyhow::Result<Option<ManagedWallet>> {
+        Ok(sqlx::query_as::<_, ManagedWallet>(
+            "UPDATE managed_wallets SET status = 'reserved', reserved_by_launch_id = $2, reserved_at = now() \
+             WHERE id = $1 AND status = 'funded' RETURNING *",
+        )
+        .bind(id)
+        .bind(launch_id)
+        .fetch_optional(pool)
+        .await?)
+    }
+
     /// Atomically claim up to `count` `funded` wallets of `role` for `launch_id`
     /// (`FOR UPDATE SKIP LOCKED` — safe under concurrent launches, same principle
     /// as `BundleRepo::find_awaiting_confirmation`'s bounded scan). May return

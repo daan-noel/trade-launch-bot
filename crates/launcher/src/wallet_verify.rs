@@ -3,7 +3,6 @@
 //! address matches before trusting the pool" step.
 
 use anyhow::{bail, Context, Result};
-use solana_sdk::signature::Signer;
 
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};

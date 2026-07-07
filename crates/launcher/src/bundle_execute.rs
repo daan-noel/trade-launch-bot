@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use platform_core::models::ManagedWallet;
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, ManagedWalletRepo, TokenRepo,
 };
@@ -64,13 +65,7 @@ pub async fn execute_bundle(
     let first_wallet = ManagedWalletRepo::get(pool, legs[0].wallet_id)
         .await?
         .context("bundler wallet not found")?;
-    if first_wallet.role != "bundler" {
-        bail!(
-            "wallet {} is role={}, expected bundler",
-            first_wallet.id,
-            first_wallet.role
-        );
-    }
+    check_wallet_reserved_to_bundle(&first_wallet, bundle.launch_id)?;
 
     let primary_signer = keystore::resolve_signer(
         &settings.keystore_dir,
@@ -115,13 +110,7 @@ pub async fn execute_bundle(
             let wallet = ManagedWalletRepo::get(pool, leg.wallet_id)
                 .await?
                 .context("bundler wallet not found")?;
-            if wallet.role != "bundler" {
-                bail!(
-                    "wallet {} is role={}, expected bundler",
-                    wallet.id,
-                    wallet.role
-                );
-            }
+            check_wallet_reserved_to_bundle(&wallet, bundle.launch_id)?;
             let signer =
                 keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, &kek)?;
             let buy_lamports = leg.quote_amount.max(0) as u64;
@@ -173,6 +162,31 @@ pub async fn execute_bundle(
     }
 
     finish
+}
+
+/// Guards against spending from a wallet whose reservation lapsed (TTL sweep)
+/// or was claimed by another launch since this bundle was planned — e.g. a
+/// stale `planned` bundle (process crashed before it reached `submitting`)
+/// manually retried via `POST /bundles/:id/execute` long after its wallets
+/// were released and re-claimed elsewhere.
+fn check_wallet_reserved_to_bundle(wallet: &ManagedWallet, launch_id: Uuid) -> Result<()> {
+    if wallet.role != "bundler" {
+        bail!(
+            "wallet {} is role={}, expected bundler",
+            wallet.id,
+            wallet.role
+        );
+    }
+    if wallet.status != "reserved" || wallet.reserved_by_launch_id != Some(launch_id) {
+        bail!(
+            "wallet {} is not reserved to launch {} (status={}, reserved_by_launch_id={:?})",
+            wallet.id,
+            launch_id,
+            wallet.status,
+            wallet.reserved_by_launch_id
+        );
+    }
+    Ok(())
 }
 
 async fn submit_jito_bundle(url: &str, txs: &[Transaction]) -> Result<String> {
