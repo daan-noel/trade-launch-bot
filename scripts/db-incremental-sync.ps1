@@ -32,7 +32,6 @@
     wallet_dict      PK(id) / UNIQUE(address)                    -> MERGE (server wins by id; local-only old ids kept)
     tokens           PK(mint_address)                            -> DO NOTHING (write-once)
     tokens_info      PK(mint_address)                            -> DO UPDATE (newer updated_at wins)
-    token_sync_state PK(mint_address, venue)                     -> DO UPDATE (newer last_synced_at wins)
     trades           PK(block_time, tx_signature, leg_index)     -> DO NOTHING (append-only)
     raw_txs          PK(block_time, tx_signature)                -> DO NOTHING (append-only; opt-in)
     strategy_rules       PK(id)                                  -> DO UPDATE + tombstone delete (server wins)
@@ -57,7 +56,7 @@
   recent days but DISCARDED the accumulated old rows the server had already aged out,
   re-orphaning the oldest retained days on every run. After the merge we setval() the
   IDENTITY sequence past MAX(id). Order: wallet_dict + tokens first, then tokens_info /
-  token_sync_state / trades. An in-txn completeness guard aborts if any SERVER id is
+  trades. An in-txn completeness guard aborts if any SERVER id is
   missing locally after the merge; a separate post-trades REPORT (step 7a) just logs the
   residual orphans (ids absent from BOTH dicts -- pre-remint history that ages out).
 
@@ -185,7 +184,8 @@ function Initialize-SshPassphrase {
 Initialize-SshPassphrase
 
 # Tables to mirror, in FK-safe order. raw_txs is appended only with -IncludeRawTxs.
-$syncTables = @('wallet_dict', 'tokens', 'tokens_info', 'token_sync_state', 'trades')
+# token_sync_state was dropped server-side (2026-07-07, unused) -- not synced.
+$syncTables = @('wallet_dict', 'tokens', 'tokens_info', 'trades')
 if ($IncludeRawTxs) { $syncTables += 'raw_txs' }
 # Strategy tables (FK chain: rules -> runs -> run_metrics -> positions). Copied
 # full-table each run with DO UPDATE (server wins) so live's real+paper positions
@@ -326,14 +326,24 @@ IMPORT FOREIGN SCHEMA public
   # Build the table-array literal from $syncTables so it tracks -IncludeRawTxs.
   $parityArray = "ARRAY[" + (($syncTables | ForEach-Object { "'$_'" }) -join ',') + "]"
   Invoke-LocalSqlFile @"
+-- Ordered by column_name, NOT ordinal_position: a column added later via ALTER
+-- TABLE ADD COLUMN always appends at the end on whichever side received it, so
+-- local (recreated fresh from the squashed 0001_init.sql, columns in CREATE-TABLE
+-- order) and the server (incrementally altered) can have the SAME columns in a
+-- DIFFERENT physical order without being a real drift. All the inserts below now
+-- reference columns BY NAME (never `SELECT *`), so physical order no longer
+-- matters for correctness -- this guard only needs to catch a genuinely
+-- missing/extra column (a real schema drift), not a benign reordering. (Confirmed
+-- 2026-07-07: tokens/tokens_info/strategy_positions all had a same-set,
+-- different-order false-positive here from exactly this cause.)
 DO `$`$
 DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY $parityArray LOOP
-    IF (SELECT string_agg(column_name, ',' ORDER BY ordinal_position)
+    IF (SELECT string_agg(column_name, ',' ORDER BY column_name)
           FROM information_schema.columns WHERE table_schema='public' AND table_name=t)
        IS DISTINCT FROM
-       (SELECT string_agg(column_name, ',' ORDER BY ordinal_position)
+       (SELECT string_agg(column_name, ',' ORDER BY column_name)
           FROM information_schema.columns WHERE table_schema='ec2_sync_src' AND table_name=t)
     THEN RAISE EXCEPTION 'Column mismatch local vs server for table %; aborting (schema drift)', t;
     END IF;
@@ -360,12 +370,10 @@ END `$`$;
   $tradesWm  = Get-LocalScalar "SELECT COALESCE(MAX(block_time), '1970-01-01 00:00:00+00')::text FROM trades"
   $tokensWm  = Get-LocalScalar "SELECT COALESCE(MAX(created_at), '1970-01-01 00:00:00+00')::text FROM tokens"
   $tinfoWm   = Get-LocalScalar "SELECT COALESCE(MAX(updated_at), '1970-01-01 00:00:00+00')::text FROM tokens_info"
-  $syncWm    = Get-LocalScalar "SELECT COALESCE(MAX(last_synced_at), '1970-01-01 00:00:00+00')::text FROM token_sync_state"
   Write-Host "  wallet_dict         full mirror (local max id $walletWm; informational only)"
   Write-Host "  trades >=           $tradesWm"
   Write-Host "  tokens >=           $tokensWm"
   Write-Host "  tokens_info >=      $tinfoWm"
-  Write-Host "  token_sync_state >= $syncWm"
   if ($IncludeRawTxs) {
     $rawWm = Get-LocalScalar "SELECT COALESCE(MAX(block_time), '1970-01-01 00:00:00+00')::text FROM raw_txs"
     Write-Host "  raw_txs >=          $rawWm"
@@ -381,7 +389,11 @@ END `$`$;
 
   $rawTxsSql = if ($IncludeRawTxs) { @"
 \echo '-- raw_txs ($windowLabel)'
-INSERT INTO raw_txs SELECT * FROM ec2_sync_src.raw_txs
+-- Explicit, name-matched column list -- see the tokens/trades comments above for
+-- why positional SELECT * is unsafe once local/server column order can diverge.
+INSERT INTO raw_txs (tx_signature, slot, block_time, tx_index, payload, source)
+SELECT r.tx_signature, r.slot, r.block_time, r.tx_index, r.payload, r.source
+FROM ec2_sync_src.raw_txs r
 WHERE block_time >= '$rawWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
 ON CONFLICT (block_time, tx_signature) DO NOTHING;
 "@ } else { "\echo 'raw_txs: skipped (pass -IncludeRawTxs to sync)'" }
@@ -460,7 +472,22 @@ COMMIT;
 -- can arrive with a created_at EARLIER than the local max (out-of-order discovery,
 -- backfills). Those would be skipped, yet their tokens_info row may still be pulled
 -- below -> FK violation. So also pull any server token whose mint is missing locally.
-INSERT INTO tokens SELECT t.* FROM ec2_sync_src.tokens t
+-- Explicit, name-matched column list (not `SELECT t.*`): local and server can hold
+-- the SAME columns in a DIFFERENT physical order (e.g. creation_slot was appended
+-- last on the server via ALTER TABLE ADD COLUMN, but sits mid-table locally after
+-- the migration squash) -- a positional SELECT * would silently misalign columns.
+INSERT INTO tokens (
+  mint_address, creator_wallet, name, symbol, bonding_curve_address, token_program_id,
+  initial_supply_token, initial_buy_lamports, cu_limit, cu_price, is_mayhem_mode,
+  is_cashback_enabled, creation_slot, creation_tx_signature, ix_labels,
+  initial_buy_instruction, meta, created_at
+)
+SELECT
+  t.mint_address, t.creator_wallet, t.name, t.symbol, t.bonding_curve_address, t.token_program_id,
+  t.initial_supply_token, t.initial_buy_lamports, t.cu_limit, t.cu_price, t.is_mayhem_mode,
+  t.is_cashback_enabled, t.creation_slot, t.creation_tx_signature, t.ix_labels,
+  t.initial_buy_instruction, t.meta, t.created_at
+FROM ec2_sync_src.tokens t
 WHERE t.created_at >= '$tokensWm'::timestamptz
    OR NOT EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = t.mint_address)
 ON CONFLICT (mint_address) DO NOTHING;
@@ -471,7 +498,18 @@ ON CONFLICT (mint_address) DO NOTHING;
 -- parent that doesn't exist). Only insert info rows whose mint is present in LOCAL
 -- tokens (which by now holds everything pullable); skip server-side orphans instead
 -- of aborting the whole sync on a single tokens_info_mint_address_fkey violation.
-INSERT INTO tokens_info SELECT i.* FROM ec2_sync_src.tokens_info i
+-- Explicit, name-matched column list -- same column-order-drift reason as tokens
+-- above (first_slot_buy/sell_lamports sit last on the server, mid-table locally).
+INSERT INTO tokens_info (
+  mint_address, current_price, ath_price, ath_timestamp, volume_sol, trade_count,
+  last_trade_at, first_slot_buy_lamports, first_slot_sell_lamports, is_dead,
+  is_migrated, lifetime_secs, updated_at
+)
+SELECT
+  i.mint_address, i.current_price, i.ath_price, i.ath_timestamp, i.volume_sol, i.trade_count,
+  i.last_trade_at, i.first_slot_buy_lamports, i.first_slot_sell_lamports, i.is_dead,
+  i.is_migrated, i.lifetime_secs, i.updated_at
+FROM ec2_sync_src.tokens_info i
 WHERE i.updated_at >= '$tinfoWm'::timestamptz
   AND EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = i.mint_address)
 ON CONFLICT (mint_address) DO UPDATE SET
@@ -484,18 +522,18 @@ ON CONFLICT (mint_address) DO UPDATE SET
   first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports
 WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
 
-\echo '-- token_sync_state'
--- Same FK guard as tokens_info: skip rows whose mint isn't in local tokens.
-INSERT INTO token_sync_state SELECT s.* FROM ec2_sync_src.token_sync_state s
-WHERE s.last_synced_at >= '$syncWm'::timestamptz
-  AND EXISTS (SELECT 1 FROM tokens l WHERE l.mint_address = s.mint_address)
-ON CONFLICT (mint_address, venue) DO UPDATE SET
-  last_sig = EXCLUDED.last_sig, last_slot = EXCLUDED.last_slot,
-  last_synced_at = EXCLUDED.last_synced_at
-WHERE EXCLUDED.last_synced_at >= token_sync_state.last_synced_at;
-
 \echo '-- trades ($windowLabel)'
-INSERT INTO trades SELECT * FROM ec2_sync_src.trades
+-- Explicit, name-matched column list -- trades is the highest-stakes table here
+-- (financial data); a positional SELECT * would silently miswire columns on any
+-- future one-sided ALTER TABLE, same failure mode as tokens/tokens_info above.
+INSERT INTO trades (
+  mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
+  reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time, tx_signature
+)
+SELECT
+  tr.mint_address, tr.wallet_id, tr.trade_type, tr.venue, tr.amount_lamports, tr.token_amount,
+  tr.reserve_lamports, tr.reserve_token, tr.slot, tr.tx_index, tr.leg_index, tr.block_time, tr.tx_signature
+FROM ec2_sync_src.trades tr
 WHERE block_time >= '$tradesWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
 ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
 
@@ -531,10 +569,11 @@ END `$`$;
   # ---- 7b. Strategy tables (view LIVE positions on the lab) ------------------
   # Full-table copy each run, server wins. FK-safe order: rules -> runs ->
   # run_metrics -> positions. These tables are tiny vs trades, so no watermark:
-  # we SELECT * the whole remote table and upsert. The DO UPDATE SET clause is
-  # BUILT AT RUNTIME from information_schema (all non-PK columns) so it stays
-  # correct after future migrations add columns (e.g. 0002's token_account) --
-  # no hand-maintained column list to rot. Both real + paper rows are pulled.
+  # we pull the whole remote table and upsert, with an explicit name-matched
+  # column list on both the INSERT and the DO UPDATE SET (see the tokens/trades
+  # comments above -- a positional SELECT * would silently misalign columns the
+  # moment local/server column order diverges, e.g. a future migration's ALTER
+  # TABLE ADD COLUMN). Both real + paper rows are pulled.
   #
   # Tombstone deletes: an upsert alone can only ADD/refresh rows -- it can never
   # clean up a row the server genuinely deleted (rule delete, "clear paper
@@ -573,7 +612,16 @@ WHERE s.table_name = 'strategy_rules' AND s.id = q.id
   AND NOT EXISTS (SELECT 1 FROM ec2_sync_src.strategy_rules r WHERE r.id = q.id);
 
 \echo '-- strategy_rules'
-INSERT INTO strategy_rules SELECT * FROM ec2_sync_src.strategy_rules
+-- Explicit, name-matched column list -- see the tokens/trades comments above for
+-- why positional SELECT * is unsafe once local/server column order can diverge.
+INSERT INTO strategy_rules (
+  id, strategy_id, rule_name, buy_amount_sol, trade_mode, is_active,
+  max_concurrent_tokens, max_total_tokens, params, created_at, updated_at
+)
+SELECT
+  r.id, r.strategy_id, r.rule_name, r.buy_amount_sol, r.trade_mode, r.is_active,
+  r.max_concurrent_tokens, r.max_total_tokens, r.params, r.created_at, r.updated_at
+FROM ec2_sync_src.strategy_rules r
 ON CONFLICT (id) DO UPDATE SET
   strategy_id = EXCLUDED.strategy_id, rule_name = EXCLUDED.rule_name,
   buy_amount_sol = EXCLUDED.buy_amount_sol, trade_mode = EXCLUDED.trade_mode,
@@ -603,7 +651,16 @@ USING ec2_sync_src.strategy_runs r
 WHERE l.rule_id IS NOT DISTINCT FROM r.rule_id
   AND l.mode = r.mode AND l.run_seq = r.run_seq
   AND l.id <> r.id;
-INSERT INTO strategy_runs SELECT * FROM ec2_sync_src.strategy_runs
+-- Explicit, name-matched column list -- see the tokens/trades comments above for
+-- why positional SELECT * is unsafe once local/server column order can diverge.
+INSERT INTO strategy_runs (
+  id, strategy_id, rule_id, mode, run_seq, status, params_snapshot,
+  max_total_tokens, started_at, finished_at
+)
+SELECT
+  u.id, u.strategy_id, u.rule_id, u.mode, u.run_seq, u.status, u.params_snapshot,
+  u.max_total_tokens, u.started_at, u.finished_at
+FROM ec2_sync_src.strategy_runs u
 ON CONFLICT (id) DO UPDATE SET
   strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
   mode = EXCLUDED.mode, run_seq = EXCLUDED.run_seq, status = EXCLUDED.status,
@@ -621,7 +678,22 @@ WHERE s.table_name = 'strategy_run_metrics' AND s.id = m.run_id
   AND NOT EXISTS (SELECT 1 FROM ec2_sync_src.strategy_run_metrics r WHERE r.run_id = m.run_id);
 
 \echo '-- strategy_run_metrics'
-INSERT INTO strategy_run_metrics SELECT * FROM ec2_sync_src.strategy_run_metrics
+-- Explicit, name-matched column list -- see the tokens/trades comments above for
+-- why positional SELECT * is unsafe once local/server column order can diverge.
+INSERT INTO strategy_run_metrics (
+  run_id, rolled_up_at, n_fired, n_open, n_closed, win_rate, total_pnl_sol,
+  expectancy_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct,
+  worst_pnl_pct, std_pnl_pct, profit_factor, avg_holding_secs, median_holding_secs,
+  n_exit_take_profit, n_exit_stop_loss, n_exit_trailing, n_exit_stall, n_exit_time,
+  n_exit_liquidity, n_exit_open
+)
+SELECT
+  m.run_id, m.rolled_up_at, m.n_fired, m.n_open, m.n_closed, m.win_rate, m.total_pnl_sol,
+  m.expectancy_sol, m.mean_pnl_pct, m.median_pnl_pct, m.p90_pnl_pct, m.best_pnl_pct,
+  m.worst_pnl_pct, m.std_pnl_pct, m.profit_factor, m.avg_holding_secs, m.median_holding_secs,
+  m.n_exit_take_profit, m.n_exit_stop_loss, m.n_exit_trailing, m.n_exit_stall, m.n_exit_time,
+  m.n_exit_liquidity, m.n_exit_open
+FROM ec2_sync_src.strategy_run_metrics m
 ON CONFLICT (run_id) DO UPDATE SET
   rolled_up_at = EXCLUDED.rolled_up_at, n_fired = EXCLUDED.n_fired,
   n_open = EXCLUDED.n_open, n_closed = EXCLUDED.n_closed, win_rate = EXCLUDED.win_rate,
@@ -647,7 +719,22 @@ WHERE s.table_name = 'strategy_positions' AND s.id = p.id
   AND NOT EXISTS (SELECT 1 FROM ec2_sync_src.strategy_positions r WHERE r.id = p.id);
 
 \echo '-- strategy_positions'
-INSERT INTO strategy_positions SELECT * FROM ec2_sync_src.strategy_positions
+-- Explicit, name-matched column list -- same column-order-drift reason as tokens
+-- above (token_account sits last on the server, mid-table locally).
+INSERT INTO strategy_positions (
+  id, run_id, strategy_id, rule_id, mode, mint_address, wallet, token_program_id,
+  token_account, target_price, target_token_amount, target_time, target_tx,
+  entry_price, entry_token_amount, entry_lamports, entry_time, entry_tx_signatures,
+  exit_price, exit_token_amount, exit_lamports, exit_time, exit_tx_signatures,
+  submitted_buy_signatures, status, exit_reason, extra, created_at, updated_at
+)
+SELECT
+  p.id, p.run_id, p.strategy_id, p.rule_id, p.mode, p.mint_address, p.wallet, p.token_program_id,
+  p.token_account, p.target_price, p.target_token_amount, p.target_time, p.target_tx,
+  p.entry_price, p.entry_token_amount, p.entry_lamports, p.entry_time, p.entry_tx_signatures,
+  p.exit_price, p.exit_token_amount, p.exit_lamports, p.exit_time, p.exit_tx_signatures,
+  p.submitted_buy_signatures, p.status, p.exit_reason, p.extra, p.created_at, p.updated_at
+FROM ec2_sync_src.strategy_positions p
 ON CONFLICT (id) DO UPDATE SET
   run_id = EXCLUDED.run_id, strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
   mode = EXCLUDED.mode, mint_address = EXCLUDED.mint_address, wallet = EXCLUDED.wallet,
