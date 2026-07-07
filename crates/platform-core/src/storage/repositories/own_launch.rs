@@ -170,4 +170,20 @@ impl BundleRepo {
                 .await?,
         )
     }
+
+    pub async fn get(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<Bundle>> {
+        Ok(sqlx::query_as::<_, Bundle>("SELECT * FROM bundles WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?)
+    }
+
+    pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE bundles SET status = $2 WHERE id = $1")
+            .bind(id)
+            .bind(status)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
 }

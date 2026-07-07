@@ -13,9 +13,10 @@ multi-launchpad / multi-quote / multi-wallet.
 
 Data-infrastructure **foundation is complete** (7 phase commits): 6 crates, 2 bins,
 migrations `0001` (Domains A–C) + `0002` (Domain D). §9 open decisions are **resolved**
-(see the ADR). **Phase-2 launcher started:** `pump-trader::create` (`create_v2` +
-create+dev-buy) + `launcher` keystore + `POST /api/launches/execute` + `wallet-encrypt` CLI.
-**Next:** launch failure rollback, legacy `create_v1`, Jito bundle composer.
+(see the ADR). **Phase-2 launcher:** create (`v1`/`v2` + dev-buy), keystore,
+`wallet-encrypt` CLI, launch failure rollback, bundle leg composer (`planned` bundles),
+`POST /api/bundles/{id}/execute` (Jito submit).
+**Next:** auto-submit bundle after launch, bundle landing confirmation, `create_v1` on mainnet if still needed.
 
 ## Priorities
 

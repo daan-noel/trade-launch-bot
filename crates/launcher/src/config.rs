@@ -13,6 +13,8 @@ pub struct LauncherSettings {
     pub keystore_dir: PathBuf,
     /// Passphrase for [`super::keystore::EnvKek`] (wraps ed25519 secrets at rest).
     pub kek_passphrase: String,
+    /// Jito block-engine JSON-RPC base (defaults to mainnet).
+    pub jito_block_engine_url: String,
 }
 
 impl LauncherSettings {
@@ -41,12 +43,16 @@ impl LauncherSettings {
         let kek_passphrase = std::env::var("LAUNCHER_KEK_PASSPHRASE")
             .or_else(|_| std::env::var("WALLET_KEK_PASSPHRASE"))
             .context("LAUNCHER_KEK_PASSPHRASE (or WALLET_KEK_PASSPHRASE) required")?;
+        let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").unwrap_or_else(|_| {
+            "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
+        });
         Ok(Self {
             rpc_url,
             sender_urls,
             nonce_accounts,
             keystore_dir,
             kek_passphrase,
+            jito_block_engine_url,
         })
     }
 }

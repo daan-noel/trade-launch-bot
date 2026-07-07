@@ -6,15 +6,17 @@
 //! not in pump-trader.
 
 mod bundle;
+mod bundle_execute;
 mod config;
 mod keystore;
 mod service;
 mod wallet_encrypt;
 
 pub use bundle::{
-    compose_bundle_legs, legs_to_json, BuyVariant, BundledLegPlan, LegStructure,
-    LegStructureRecipe,
+    compose_bundle_legs, leg_params, legs_from_json, legs_to_json, BuyVariant, BundledLegPlan,
+    LegStructure, LegStructureRecipe, StoredBundleLeg,
 };
+pub use bundle_execute::{execute_bundle, BundleExecuteResult};
 
 pub use config::LauncherSettings;
 pub use keystore::{

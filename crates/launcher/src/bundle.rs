@@ -107,6 +107,27 @@ pub fn compose_bundle_legs(
     Ok(legs)
 }
 
+/// Persisted leg row in `bundles.legs` JSONB.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StoredBundleLeg {
+    pub wallet_id: Uuid,
+    pub quote_amount: i64,
+    pub structure: LegStructure,
+}
+
+pub fn legs_from_json(value: &Json) -> Result<Vec<StoredBundleLeg>> {
+    serde_json::from_value(value.clone()).context("parse bundles.legs")
+}
+
+pub fn leg_params(structure: &LegStructure) -> pump_trader::BundleLegParams {
+    pump_trader::BundleLegParams {
+        slippage_bps: structure.slippage_bps,
+        cu_limit: structure.cu_limit,
+        cu_price: structure.cu_price,
+        tip_lamports: structure.tip_quote.max(0) as u64,
+    }
+}
+
 pub fn legs_to_json(legs: &[BundledLegPlan]) -> Json {
     json!(legs
         .iter()

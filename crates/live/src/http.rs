@@ -1,7 +1,7 @@
 //! Thin HTTP surface for the LIVE box: health + data-layer reads + launch trigger.
 
 use actix_web::{web, HttpResponse};
-use launcher::{execute_launch, LaunchRequest, LauncherSettings};
+use launcher::{execute_bundle, execute_launch, LaunchRequest, LauncherSettings};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -21,6 +21,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/launchpads", web::get().to(launchpads))
         .route("/api/launches/{id}", web::get().to(launch_get))
         .route("/api/launches/execute", web::post().to(launch_execute))
+        .route("/api/bundles/{id}/execute", web::post().to(bundle_execute))
         .route("/api/tokens/{mint}/overview", web::get().to(token_overview))
         .route("/api/tokens/{mint}/trades", web::get().to(token_trades));
 }
@@ -62,6 +63,19 @@ async fn launch_execute(
     )
     .await
     .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(result))
+}
+
+async fn bundle_execute(
+    pool: web::Data<PgPool>,
+    id: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = LauncherSettings::from_env().map_err(|e| {
+        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
+    })?;
+    let result = execute_bundle(pool.get_ref(), &settings, *id)
+        .await
+        .map_err(e500)?;
     Ok(HttpResponse::Ok().json(result))
 }
 
