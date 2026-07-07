@@ -10,13 +10,17 @@ import {
   solscanMint,
   solscanTx,
 } from './api';
+import WalletPool from './WalletPool';
 
 function StatusPill({ status }: { status: string }) {
   const cls = status.toLowerCase().replace(/[^a-z]/g, '');
   return <span className={`status-pill ${cls}`}>{status}</span>;
 }
 
+type View = 'launch' | 'wallets';
+
 export default function App() {
+  const [view, setView] = useState<View>('launch');
   const [templates, setTemplates] = useState<LaunchTemplate[]>([]);
   const [wallets, setWallets] = useState<ManagedWallet[]>([]);
   const [templateId, setTemplateId] = useState('');
@@ -90,6 +94,27 @@ export default function App() {
 
   return (
     <div className="app">
+      <div className="tabs">
+        <button
+          type="button"
+          className={`tab${view === 'launch' ? ' active' : ''}`}
+          onClick={() => setView('launch')}
+        >
+          Launch Console
+        </button>
+        <button
+          type="button"
+          className={`tab${view === 'wallets' ? ' active' : ''}`}
+          onClick={() => setView('wallets')}
+        >
+          Wallet Pool
+        </button>
+      </div>
+
+      {view === 'wallets' && <WalletPool />}
+
+      {view === 'launch' && (
+    <>
       <h1>Launch Console</h1>
       <p className="muted">
         Create on pump.fun + auto-submit Jito sniper bundle. Requires <code>cargo run -p live</code>{' '}
@@ -244,6 +269,8 @@ export default function App() {
             </tbody>
           </table>
         </div>
+      )}
+    </>
       )}
     </div>
   );

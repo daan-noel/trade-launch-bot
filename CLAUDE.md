@@ -28,9 +28,11 @@ explicit `status` lifecycle (`generated`/`funded`/`reserved`/`used`/`retired`) +
 `funding_source`/`reserved_by_launch_id`/`reserved_at`/`balance_lamports`;
 `launcher::wallet_pool` adds batch generation, a balance poller, and a reservation
 TTL sweep; `ManagedWalletRepo` adds the atomic `claim_funded` (`FOR UPDATE SKIP
-LOCKED`) + `mark_used` transitions.
+LOCKED`) + `mark_used` transitions. Phase 2 done — `GET /api/wallet_pool` +
+`POST /api/wallet_pool/generate`; `frontend-launch/src/WalletPool.tsx` (list,
+generate, status counts, low-pool banner), tab-switched from the launch console.
 **Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — Phase 3 live trading;
-wallet-pool Phase 2 (Wallet Management page) in parallel.
+wallet-pool Phase 3 (Token Launch integration) in parallel.
 
 ## Priorities
 

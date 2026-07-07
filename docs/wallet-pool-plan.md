@@ -15,7 +15,7 @@ launches per day, local encrypted keystore (single machine, no remote signer yet
 | Phase | Scope | Status |
 | --- | --- | --- |
 | **1 — Wallet lifecycle & storage** | Status states, atomic claim, balance-driven funding detection | Done |
-| **2 — Wallet Management page** | Frontend: generate, view pool, low-pool alert | Not started |
+| **2 — Wallet Management page** | Frontend: generate, view pool, low-pool alert | Done |
 | **3 — Token Launch integration** | Metadata + creator/bundler wallet selection wired into launch flow | Not started |
 | **4 — Cleanup & backup infra** | Dust sweep, encrypted-store backup, restore runbook | Not started |
 | **5+ — Deferred** | Automated multi-hop funding, instruction/CU/slippage fingerprint picker | Explicitly deferred by user, not now |
@@ -53,16 +53,30 @@ active/inactive flag.
   also moves the bundle-wallet transition to the confirm watcher's
   landed/dropped/partial outcomes per its own checklist below.
 
-## Phase 2 — Wallet Management page
+## Phase 2 — Wallet Management page ✅
 
 **Goal:** operate the pool without touching the DB directly.
 
-- [ ] List view: address, label, role (dev/bundler), status, balance, age
-- [ ] "Generate N wallets" action (calls Phase 1 batch generation)
-- [ ] Status counts summary (generated / funded / reserved / used / retired)
-- [ ] Low-pool banner: warn when `funded` count for a role drops below a
-  threshold (manual funding won't refill itself)
-- [ ] Never expose private keys or `key_ref` contents to the frontend at any point
+- [x] List view: address, label, role (dev/bundler), status, balance, age
+  (`frontend-launch/src/WalletPool.tsx`, backed by `GET /api/wallet_pool` →
+  `ManagedWalletRepo::list_all`, a role filter, no separate pagination yet —
+  fine at "hundreds of wallets" scale)
+- [x] "Generate N wallets" action (calls Phase 1 batch generation) —
+  `POST /api/wallet_pool/generate` → `launcher::generate_wallets`
+- [x] Status counts summary (generated / funded / reserved / used / retired) —
+  computed client-side from the one pool fetch, not a separate aggregate
+  endpoint (avoids a second query that could drift from the list)
+- [x] Low-pool banner: warns when `funded` count for a role drops below
+  `LOW_POOL_THRESHOLD` (3, in `WalletPool.tsx`) — manual funding won't refill
+  itself
+- [x] Never expose private keys or `key_ref` contents to the frontend at any
+  point — enforced at the model level (`ManagedWallet.key_ref` is
+  `#[serde(skip_serializing)]`), and the frontend's `ManagedWalletPool`
+  TS interface has no `key_ref` field at all
+
+No router added — the launch console (`frontend-launch/src/App.tsx`) gained a
+simple `view` tab-state switcher between "Launch Console" and "Wallet Pool"
+rather than pulling in a routing dependency for a two-view app.
 
 ## Phase 3 — Token Launch page integration
 

@@ -60,6 +60,25 @@ impl ManagedWalletRepo {
             .await?)
     }
 
+    /// Every wallet regardless of lifecycle status (including `retired`),
+    /// optionally scoped to `role` — the Phase 2 Wallet Management admin view.
+    /// Unlike [`Self::list`], this is the full pool, not just the not-retired set.
+    pub async fn list_all(pool: &PgPool, role: Option<&str>) -> anyhow::Result<Vec<ManagedWallet>> {
+        Ok(match role {
+            Some(r) => sqlx::query_as::<_, ManagedWallet>(
+                "SELECT * FROM managed_wallets WHERE role = $1 ORDER BY created_at DESC",
+            )
+            .bind(r)
+            .fetch_all(pool)
+            .await?,
+            None => sqlx::query_as::<_, ManagedWallet>(
+                "SELECT * FROM managed_wallets ORDER BY created_at DESC",
+            )
+            .fetch_all(pool)
+            .await?,
+        })
+    }
+
     /// Wallets in a given lifecycle `status`, optionally scoped to `role`. Backs
     /// the balance poller's bounded scan (`status = 'generated'`, partial index)
     /// and the Phase 2 pool admin view.

@@ -24,6 +24,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/launchpads", web::get().to(launchpads))
         .route("/api/launch_templates", web::get().to(launch_templates_list))
         .route("/api/managed_wallets", web::get().to(managed_wallets_list))
+        .route("/api/wallet_pool", web::get().to(wallet_pool_list))
+        .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
         .route("/api/launches/{id}", web::get().to(launch_get))
         .route("/api/launches/{id}/status", web::get().to(launch_status))
         .route("/api/launches/execute", web::post().to(launch_execute))
@@ -67,6 +69,48 @@ async fn managed_wallets_list(
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(rows))
+}
+
+/// Full pool (every lifecycle status, including `retired`) for the Wallet
+/// Management page — `ManagedWallet.key_ref` is `#[serde(skip_serializing)]`, so
+/// no raw key material or keystore path ever reaches the frontend.
+async fn wallet_pool_list(
+    pool: web::Data<PgPool>,
+    q: web::Query<WalletsQuery>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let rows = ManagedWalletRepo::list_all(pool.get_ref(), q.role.as_deref())
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+#[derive(serde::Deserialize)]
+struct GenerateWalletsBody {
+    role: String,
+    count: u32,
+    #[serde(default)]
+    label_prefix: Option<String>,
+}
+
+/// Batch-generate N fresh wallets for a role (envelope-encrypted keystore write +
+/// `generated` DB rows) — `launcher::generate_wallets` (wallet-pool Phase 1).
+async fn wallet_pool_generate(
+    pool: web::Data<PgPool>,
+    body: web::Json<GenerateWalletsBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = LauncherSettings::from_env().map_err(|e| {
+        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
+    })?;
+    let wallets = launcher::generate_wallets(
+        pool.get_ref(),
+        &settings,
+        &body.role,
+        body.count,
+        body.label_prefix.as_deref(),
+    )
+    .await
+    .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(wallets))
 }
 
 #[derive(Debug, Serialize)]
