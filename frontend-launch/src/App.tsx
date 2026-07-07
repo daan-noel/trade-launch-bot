@@ -6,6 +6,7 @@ import {
   LaunchStatus,
   LaunchTemplate,
   ManagedWalletPool,
+  MetadataTemplate,
   shouldKeepPolling,
   solscanMint,
   solscanTx,
@@ -24,6 +25,7 @@ export default function App() {
   const [view, setView] = useState<View>('launch');
   const [templates, setTemplates] = useState<LaunchTemplate[]>([]);
   const [wallets, setWallets] = useState<ManagedWalletPool[]>([]);
+  const [metadataTemplates, setMetadataTemplates] = useState<MetadataTemplate[]>([]);
   const [templateId, setTemplateId] = useState('');
   const [walletId, setWalletId] = useState('');
   const [loading, setLoading] = useState(false);
@@ -31,11 +33,15 @@ export default function App() {
   const [result, setResult] = useState<LaunchResult | null>(null);
   const [status, setStatus] = useState<LaunchStatus | null>(null);
 
-  // Metadata editing panel — pre-filled from the selected template, editable
-  // per launch (overrides sent to the backend; the template itself is unchanged).
+  // Metadata editing panel — pre-filled from the selected launch template,
+  // editable per launch (overrides sent to the backend; the template itself is
+  // unchanged). `metaTemplateId` is a one-shot "load from" picker over the
+  // Metadata Templates tab's saved content, not a stored selection — picking a
+  // different launch template still resets these fields from its own params.
   const [metaName, setMetaName] = useState('');
   const [metaSymbol, setMetaSymbol] = useState('');
   const [metaUri, setMetaUri] = useState('');
+  const [metaTemplateId, setMetaTemplateId] = useState('');
   const [bundlerCount, setBundlerCount] = useState('');
 
   // Only `funded` dev wallets are launch-ready — a `generated` (unfunded) or
@@ -45,9 +51,14 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [t, w] = await Promise.all([api.templates(), api.walletPool('dev')]);
+        const [t, w, m] = await Promise.all([
+          api.templates(),
+          api.walletPool('dev'),
+          api.metadataTemplates(),
+        ]);
         setTemplates(t);
         setWallets(w);
+        setMetadataTemplates(m);
         if (t[0]) setTemplateId(t[0].id);
         const firstFunded = w.find((wallet) => wallet.status === 'funded');
         if (firstFunded) setWalletId(firstFunded.id);
@@ -64,8 +75,19 @@ export default function App() {
     setMetaName(p.name ?? '');
     setMetaSymbol(p.symbol ?? '');
     setMetaUri(p.uri ?? '');
+    setMetaTemplateId('');
     setBundlerCount(p.bundle_leg_count != null ? String(p.bundle_leg_count) : '');
   }, [templateId, templates]);
+
+  const onLoadMetadataTemplate = (id: string) => {
+    setMetaTemplateId(id);
+    const mt = metadataTemplates.find((m) => m.id === id);
+    if (mt) {
+      setMetaName(mt.name);
+      setMetaSymbol(mt.symbol);
+      setMetaUri(mt.uri);
+    }
+  };
 
   const launchId = result?.launch_id;
 
@@ -194,6 +216,24 @@ export default function App() {
           >
             {loading ? 'Launching…' : 'Launch'}
           </button>
+        </div>
+
+        <div className="row">
+          <div className="field">
+            <label htmlFor="meta-template-picker">Load from metadata template</label>
+            <select
+              id="meta-template-picker"
+              value={metaTemplateId}
+              onChange={(e) => onLoadMetadataTemplate(e.target.value)}
+            >
+              <option value="">— none (edit fields directly) —</option>
+              {metadataTemplates.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.template_name} ({m.symbol})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="row">
