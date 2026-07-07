@@ -5,7 +5,8 @@ Living task list for **solana-launch-platform**. The foundation design lives in
 ADRs in [`decisions.md`](decisions.md). Update this file when a phase advances
 or tasks are added/dropped.
 
-**Last updated:** 2026-07-06 (post bundle-landing confirmation).
+**Last updated:** 2026-07-07 (wallet-pool plan finished — Phases 1–4 done; its
+plan doc is retired, see below).
 
 ---
 
@@ -107,6 +108,19 @@ See also §8 verification checklist in the foundation design doc.
 
 ---
 
+## Wallet pool (parallel workstream) ✅
+
+Fresh-wallet pool for launch/bundler wallets — full lifecycle (`generated` →
+`funded` → `reserved` → `used` → `retired`), batch keygen, balance-driven
+funding detection, atomic pool claiming, launch-flow integration, dust sweep,
+and encrypted-store backup/restore. All 4 tracked phases done; see the
+`CLAUDE.md` Status section for the phase-by-phase summary (the plan doc itself
+was retired since every tracked phase shipped — full detail is in git history
+at `docs/wallet-pool-plan.md` as of commit `7f0526f`). Its two explicitly-deferred
+items are folded into Phase 5+ below.
+
+---
+
 ## Phase 3 — Live trading
 
 **Goal:** Automated buy/sell on observed + own tokens; sell-confirm from feed.
@@ -146,7 +160,13 @@ Recorded so they are not forgotten; no schedule.
 
 - [ ] Multi-launchpad venue adapters (beyond pump.fun `LaunchpadAdapter`)
 - [ ] USDC-quoted tokens end-to-end (quote asset row + ingest + launch)
-- [ ] Wallet-funding obfuscation — `managed_wallets` funding source + hop graph (ADR §5)
+- [ ] Wallet-funding obfuscation — `managed_wallets` funding source + hop graph (ADR §5);
+  automated multi-hop fan-out (treasury → intermediate hops → pool wallets, randomized
+  timing/amounts) — manual funding chosen for now (from the retired wallet-pool plan)
+- [ ] Frontend picker for per-launch instruction fingerprint params (CU limit/price,
+  slippage, instruction variant) — the randomization engine (`leg_structures` /
+  `materialize_leg`) already exists server-side; just needs exposing as editable UI
+  (from the retired wallet-pool plan)
 - [ ] Multi-RPC health / latency hypertable (Domain F)
 - [ ] Frontend SPA (`frontend-react` split live/lab — mirror meme-trading)
 - [ ] AWS KMS KEK backend (replace env passphrase for keystore)
