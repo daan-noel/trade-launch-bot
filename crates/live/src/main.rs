@@ -10,8 +10,10 @@
 //! is inspectable without a live feed.
 
 mod http;
+mod sol_price;
 
 use actix_web::{web, App, HttpServer};
+use std::sync::Arc;
 use tracing::{info, warn};
 
 use platform_core::config::Settings;
@@ -36,6 +38,27 @@ async fn main() -> anyhow::Result<()> {
 
     let pools = connect(&settings).await?;
     info!("live box: DB connected, migrations applied");
+
+    // SOL/USD poller — keeps quote_assets.usd_rate fresh for trades_priced views.
+    let price_pool = Arc::new(pools.hot.clone());
+    match sol_price::fetch_latest_sol_price().await {
+        Ok(price) => {
+            if let Err(e) =
+                platform_core::storage::repositories::QuoteAssetRepo::set_usd_rate(
+                    &pools.hot,
+                    1,
+                    price,
+                )
+                .await
+            {
+                warn!("initial SOL/USD DB write failed: {e}");
+            } else {
+                info!("SOL/USD seeded: ${price:.2}");
+            }
+        }
+        Err(e) => warn!("initial SOL/USD fetch failed (poller will retry): {e}"),
+    }
+    let price_task = tokio::spawn(sol_price::run_poller(price_pool));
 
     // Feed-based bundle-landing confirmation — cheap, always on (no RPC/keys
     // needed; it only reads `bundles`/`trades` from the already-connected pool).
@@ -75,12 +98,14 @@ async fn main() -> anyhow::Result<()> {
                 r = ingest              => warn!(?r, "ingest task ended — shutting down"),
                 r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
                 r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
+                r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
             }
         }
         None => {
             tokio::select! {
                 r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
                 r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
+                r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
             }
         }
     }

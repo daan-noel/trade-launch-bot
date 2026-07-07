@@ -23,7 +23,7 @@ flowchart LR
 | Phase | Scope | Ships to | Status |
 | --- | --- | --- | --- |
 | **1 — Foundation** | Schema Domains A–D, `platform-core`, 2 bins, dep partition | both | **Done** |
-| **2 — Launcher** | Create, dev-buy, keystore, bundles, Jito submit | `live` / EC2 | **In progress** |
+| **2 — Launcher** | Create, dev-buy, keystore, bundles, Jito submit | `live` / EC2 | **Done** |
 | **2b — Live verify** | Ingest round-trip, launch+bundle E2E on mainnet | `live` / EC2 | Not started |
 | **3 — Live trading** | Buy/sell executor, positions, feed-based sell-confirm | `live` / EC2 | Not started |
 | **4 — Lab / analysis** | `lake-export`, DuckDB, sweeps/backtests, Domain E | workstation | Stub only |
@@ -46,7 +46,7 @@ flowchart LR
 
 ---
 
-## Phase 2 — Launcher 🔄
+## Phase 2 — Launcher ✅
 
 **Goal:** Own-launch flow end-to-end on pump.fun — create → optional dev-buy →
 planned sniper bundle → Jito submit.
@@ -73,9 +73,9 @@ planned sniper bundle → Jito submit.
 - [x] **Multi-variant bundle legs** — execute only supports `"buy"` today; wire
   `buy_exact_sol_in`, `buy_v2`, `buy_exact_quote_in` in `bundle_execute` +
   `pump-trader::bundle_buy`
-- [ ] **SOL/USD poller** — update `quote_assets.usd_rate` for SOL (USDC ≈ 1.0);
+- [x] **SOL/USD poller** — update `quote_assets.usd_rate` for SOL (USDC ≈ 1.0);
   USD stays derived in views only (ADR D4)
-- [ ] **`create_v1` on mainnet** — only if still required (v2 path exists)
+- [x] **`create_v1` on mainnet** — only if still required (v2 path exists)
 
 ### Crate touchpoints
 
