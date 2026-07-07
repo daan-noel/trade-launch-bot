@@ -183,6 +183,18 @@ impl ManagedWalletRepo {
         .await?;
         Ok(result.rows_affected())
     }
+
+    /// Terminal transition to `retired` (dust swept, or manually decommissioned)
+    /// — the wallet-pool Phase 4 dust sweep, and the final stop for any wallet.
+    /// Unlike the other transitions this has no status guard: a wallet can be
+    /// retired from any state.
+    pub async fn retire(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("UPDATE managed_wallets SET status = 'retired' WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
 }
 
 /// `launch_templates` — authored launch specs.

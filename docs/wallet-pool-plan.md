@@ -17,7 +17,7 @@ launches per day, local encrypted keystore (single machine, no remote signer yet
 | **1 — Wallet lifecycle & storage** | Status states, atomic claim, balance-driven funding detection | Done |
 | **2 — Wallet Management page** | Frontend: generate, view pool, low-pool alert | Done |
 | **3 — Token Launch integration** | Metadata + creator/bundler wallet selection wired into launch flow | Done |
-| **4 — Cleanup & backup infra** | Dust sweep, encrypted-store backup, restore runbook | Not started |
+| **4 — Cleanup & backup infra** | Dust sweep, encrypted-store backup, restore runbook | Done |
 | **5+ — Deferred** | Automated multi-hop funding, instruction/CU/slippage fingerprint picker | Explicitly deferred by user, not now |
 
 ---
@@ -123,21 +123,51 @@ rather than pulling in a routing dependency for a two-view app.
   `failed` — matches how bundle auto-submit already treated post-create bundle
   problems as non-fatal to the launch row.
 
-## Phase 4 — Cleanup & backup infra
+## Phase 4 — Cleanup & backup infra ✅
 
 **Goal:** don't leak capital into dead wallets, don't lose the pool to a machine
 failure.
 
-- [ ] Dust sweep job: scan `used` wallets, sweep balance above a threshold back to
-  treasury, transition to `retired`
-- [ ] Backup automation: after each generation batch, copy the encrypted keystore
-  + export current wallet status table
-- [ ] Master password/KEK stored in a **separate** location from the encrypted
-  keystore backups (never bundled together)
-- [ ] Restore runbook: restore keystore + DB, set KEK, decrypt one known wallet
-  and confirm the derived address matches before trusting the pool
-- [ ] Backup retention: prune `retired` wallets from active backups periodically
-  (no live value once swept, smaller exposure surface)
+- [x] Dust sweep job: `launcher::spawn_dust_sweep` (hourly) scans `used`
+  wallets; below a 0.0001 SOL floor it retires directly (not worth a signed tx +
+  fee), otherwise it transfers `balance - fee_reserve` lamports to the first
+  `role=treasury` wallet via a plain `solana-client` transfer (deliberately not
+  routed through pump-trader's Jito/multi-sender machinery — no landing
+  urgency for a dust sweep) and retires the wallet. Skips cleanly (logs a
+  warning) if no treasury wallet is configured yet.
+- [x] Backup automation: `launcher::run_backup`, called after every
+  `POST /api/wallet_pool/generate` batch (fire-and-forget — a backup problem
+  never fails the generate response). Writes a timestamped dir under
+  `WALLET_BACKUP_DIR` (opt-in — unset disables it) containing
+  `managed_wallets.json` (full-fidelity export via the new
+  `ManagedWallet::to_backup_json`, which — unlike the normal `Serialize` impl —
+  includes `key_ref`, since a backup without it can't be restored) and a
+  `keystore/` copy of every non-retired wallet's encrypted blob.
+- [x] Master password/KEK stored in a **separate** location from the encrypted
+  keystore backups (never bundled together) — enforced by what `run_backup`
+  simply never touches: it never reads `LAUNCHER_KEK_PASSPHRASE` or `.env`, only
+  the keystore dir + DB. Each backup also drops a `README.txt` restating this
+  rule for whoever finds the backup later.
+- [x] Restore runbook: restore keystore + DB, set KEK, decrypt one known wallet
+  and confirm the derived address matches before trusting the pool. New CLI:
+  `cargo run -p live -- wallet-verify <key_ref> <expected_address>` — resolves
+  the keystore blob and PASS/FAILs against an expected pubkey (non-zero exit on
+  mismatch, so it's a real gate, not just an eyeball check). Concrete steps:
+  1. Restore the `keystore/` backup dir to the path `WALLET_KEYSTORE` will point at.
+  2. Restore/replay the `managed_wallets` table (from `managed_wallets.json`, or
+     the normal DB backup/sync path).
+  3. Set `LAUNCHER_KEK_PASSPHRASE` from its **separately stored** location — never
+     from anything that shipped alongside the keystore backup.
+  4. Pick one wallet you know the address of and run
+     `cargo run -p live -- wallet-verify <its key_ref> <its address>`.
+  5. Only trust the restored pool once that prints `PASS`. A `FAIL` means the
+     KEK, the keystore blob, or the DB row are mismatched — stop and
+     investigate before pointing `live` at this restore.
+- [x] Backup retention: prune `retired` wallets from active backups
+  periodically — done as an ongoing property of `run_backup` itself rather
+  than a separate prune job: every new backup's `keystore/` copy already
+  **excludes** `retired` wallets (the JSON export still includes them, all
+  statuses, for audit/history).
 
 ## Phase 5+ — Deferred (explicitly not now)
 

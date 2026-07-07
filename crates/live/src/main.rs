@@ -38,6 +38,10 @@ async fn main() -> anyhow::Result<()> {
         launcher::run_wallet_encrypt(&args[1..])?;
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("wallet-verify") {
+        launcher::run_wallet_verify(&args[1..])?;
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("launch-probe") {
         launcher::run_launch_probe(&settings, &args[1..]).await?;
         return Ok(());
@@ -72,21 +76,23 @@ async fn main() -> anyhow::Result<()> {
     let bundle_confirm_task = launcher::spawn_bundle_confirm_watcher(pools.hot.clone());
 
     // Fresh-wallet pool: balance poller (generated -> funded) + reservation TTL
-    // sweep (docs/wallet-pool-plan.md Phase 1). Needs the same launcher config as
-    // the rest of the launch flow (RPC URL, keystore) — skip cleanly if unset.
-    let (wallet_balance_task, wallet_sweep_task) = match LauncherSettings::from_env() {
-        Ok(launcher_settings) => (
-            Some(launcher::spawn_balance_poller(
-                pools.hot.clone(),
-                launcher_settings.rpc_url.clone(),
-            )),
-            Some(launcher::spawn_reservation_sweep(pools.hot.clone())),
-        ),
-        Err(e) => {
-            warn!("wallet pool background tasks disabled — launcher not configured: {e}");
-            (None, None)
-        }
-    };
+    // sweep (Phase 1) + dust sweep (used -> retired, Phase 4). Needs the same
+    // launcher config as the rest of the launch flow — skip cleanly if unset.
+    let (wallet_balance_task, wallet_sweep_task, wallet_dust_sweep_task) =
+        match LauncherSettings::from_env() {
+            Ok(launcher_settings) => (
+                Some(launcher::spawn_balance_poller(
+                    pools.hot.clone(),
+                    launcher_settings.rpc_url.clone(),
+                )),
+                Some(launcher::spawn_reservation_sweep(pools.hot.clone())),
+                Some(launcher::spawn_dust_sweep(pools.hot.clone(), launcher_settings)),
+            ),
+            Err(e) => {
+                warn!("wallet pool background tasks disabled — launcher not configured: {e}");
+                (None, None, None)
+            }
+        };
 
     // Ingest (optional): spawn only when Helius creds are present.
     let ingest_task = match (
@@ -135,6 +141,14 @@ async fn main() -> anyhow::Result<()> {
             None => std::future::pending::<()>().await,
         }
     };
+    let wallet_dust_sweep = async {
+        match wallet_dust_sweep_task {
+            Some(h) => {
+                let _ = h.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
 
     match ingest_task {
         Some(ingest) => {
@@ -145,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
                 r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
                 _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
                 _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
+                _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
             }
         }
         None => {
@@ -154,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
                 r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
                 _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
                 _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
+                _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
             }
         }
     }

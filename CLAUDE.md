@@ -38,8 +38,16 @@ launch, and `mark_used` for bundler legs moved to `launcher::confirm`'s
 landed/dropped/partial outcomes (bundle *planning* also moved outside
 `execute_launch`'s failure-reset scope, fixing a pre-existing bug where a
 post-create bundle problem could flip an already-succeeded launch to `failed`).
-**Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — Phase 3 live trading;
-wallet-pool Phase 4 (cleanup & backup infra) in parallel.
+Phase 4 done (wallet-pool plan fully implemented) — `launcher::spawn_dust_sweep`
+(hourly: sweeps `used` wallets' balance to a `role=treasury` wallet via a plain
+`solana-client` transfer, then retires them); `launcher::run_backup` (opt-in via
+`WALLET_BACKUP_DIR`, fires after every generate batch — non-retired keystore
+blobs + a full `managed_wallets.json` export, KEK never included); new
+`wallet-verify` CLI backs the restore runbook (decrypt + confirm a derived
+address before trusting a restored pool).
+**Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — Phase 3 live trading.
+Wallet-pool Phase 5+ (automated multi-hop funding, fingerprint picker UI, KMS
+KEK) is explicitly deferred per the plan.
 
 ## Priorities
 
@@ -123,6 +131,7 @@ cargo tree -p live                   # dep-partition check (no duckdb/arrow/parq
 cargo tree -p lab                    # dep-partition check (no pump-trader/ingest-laserstream/tonic)
 cargo run -p live                    # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8091
 cargo run -p live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
+cargo run -p live -- wallet-verify <key_ref> <expected_address>  # restore runbook: confirm a keystore blob decrypts to the expected pubkey
 cargo run -p lab                     # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8092
 ```
 

@@ -36,6 +36,30 @@ pub struct ManagedWallet {
     pub created_at: DateTime<Utc>,
 }
 
+impl ManagedWallet {
+    /// Full-fidelity export INCLUDING `key_ref` — for the wallet-pool Phase 4
+    /// backup/restore file ONLY (a local disk write, never an HTTP response).
+    /// Every other consumer must go through the normal `Serialize` impl above,
+    /// which skips `key_ref`.
+    pub fn to_backup_json(&self) -> Json {
+        serde_json::json!({
+            "id": self.id,
+            "address": self.address,
+            "label": self.label,
+            "role": self.role,
+            "key_ref": self.key_ref,
+            "derivation_index": self.derivation_index,
+            "status": self.status,
+            "funding_source": self.funding_source,
+            "reserved_by_launch_id": self.reserved_by_launch_id,
+            "reserved_at": self.reserved_at,
+            "balance_lamports": self.balance_lamports,
+            "balance_checked_at": self.balance_checked_at,
+            "created_at": self.created_at,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NewManagedWallet {
     pub address: String,

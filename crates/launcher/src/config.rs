@@ -15,6 +15,10 @@ pub struct LauncherSettings {
     pub kek_passphrase: String,
     /// Jito block-engine JSON-RPC base (defaults to mainnet).
     pub jito_block_engine_url: String,
+    /// Wallet-pool backup root (wallet-pool Phase 4) — `None` disables the
+    /// post-generation backup entirely; there's no safe default location to
+    /// assume, so this stays opt-in rather than required.
+    pub backup_dir: Option<PathBuf>,
 }
 
 impl LauncherSettings {
@@ -46,6 +50,7 @@ impl LauncherSettings {
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").unwrap_or_else(|_| {
             "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
         });
+        let backup_dir = std::env::var("WALLET_BACKUP_DIR").ok().map(PathBuf::from);
         Ok(Self {
             rpc_url,
             sender_urls,
@@ -53,6 +58,7 @@ impl LauncherSettings {
             keystore_dir,
             kek_passphrase,
             jito_block_engine_url,
+            backup_dir,
         })
     }
 }

@@ -110,6 +110,19 @@ async fn wallet_pool_generate(
     )
     .await
     .map_err(e500)?;
+
+    // Best-effort backup after each generation batch (wallet-pool Phase 4) —
+    // fire-and-forget so a backup problem never fails the generate response;
+    // no-op when WALLET_BACKUP_DIR isn't configured.
+    if let Some(backup_dir) = settings.backup_dir.clone() {
+        let backup_pool = pool.get_ref().clone();
+        tokio::spawn(async move {
+            if let Err(e) = launcher::run_backup(&backup_pool, &settings, &backup_dir).await {
+                tracing::warn!(%e, "wallet-pool backup failed after generation batch");
+            }
+        });
+    }
+
     Ok(HttpResponse::Ok().json(wallets))
 }
 
