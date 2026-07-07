@@ -249,6 +249,11 @@ impl IngestHandle {
         let _ = self.live_tx.send(live);
     }
 
+    /// Current live-mode state (`true` = streaming, `false` = paused).
+    pub fn is_live(&self) -> bool {
+        *self.live_tx.borrow()
+    }
+
     /// Push updated gap-replay settings to the transport. Takes effect on the
     /// next reconnect; no-op if the transport task has already stopped.
     pub fn set_gap_replay(&self, on: bool, max_window_secs: u64) {
