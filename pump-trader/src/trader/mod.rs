@@ -54,7 +54,7 @@ use dashmap::DashMap;
 use jito_tip::JitoTipCache;
 use reserves::ReserveCache;
 
-pub use bundle_buy::BundleLegParams;
+pub use bundle_buy::{BundleBuyVariant, BundleLegParams};
 pub use buy::BuySignedHook;
 pub use nonce::NonceAuthCheck;
 pub use sim::{AccountDelta, SimOutcome};

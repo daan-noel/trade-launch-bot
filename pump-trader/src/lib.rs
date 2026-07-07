@@ -45,3 +45,4 @@ pub use trader::{
 };
 pub use types::{BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram, WalletHolding};
 pub use trader::BundleLegParams;
+pub use trader::BundleBuyVariant;
