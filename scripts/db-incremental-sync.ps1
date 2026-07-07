@@ -650,7 +650,7 @@ WHERE s.table_name = 'strategy_positions' AND s.id = p.id
 INSERT INTO strategy_positions SELECT * FROM ec2_sync_src.strategy_positions
 ON CONFLICT (id) DO UPDATE SET
   run_id = EXCLUDED.run_id, strategy_id = EXCLUDED.strategy_id, rule_id = EXCLUDED.rule_id,
-  mode = EXCLUDED.mode, mint = EXCLUDED.mint, wallet = EXCLUDED.wallet,
+  mode = EXCLUDED.mode, mint_address = EXCLUDED.mint_address, wallet = EXCLUDED.wallet,
   token_program_id = EXCLUDED.token_program_id, target_price = EXCLUDED.target_price,
   target_token_amount = EXCLUDED.target_token_amount, target_time = EXCLUDED.target_time,
   target_tx = EXCLUDED.target_tx, entry_price = EXCLUDED.entry_price,
