@@ -1,6 +1,6 @@
 # Rust
 /target
-/target-check
+target-check
 **/*.rs.bk
 
 # Env / secrets
@@ -8,8 +8,8 @@
 .env.backup
 *.pem
 keystore/
-.dev.json
-.bundler.json
+package-lock.json
+
 
 # Lake data (workstation-local Parquet; never committed)
 /lake-data
