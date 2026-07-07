@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   api,
   formatSig,
@@ -86,16 +86,16 @@ export default function App() {
   const [result, setResult] = useState<LaunchResult | null>(null);
   const [status, setStatus] = useState<LaunchStatus | null>(null);
 
-  // Metadata editing panel — pre-filled from the selected launch template,
-  // editable per launch (overrides sent to the backend; the template itself is
-  // unchanged). `metaTemplateId` is a one-shot "load from" picker over the
-  // Metadata Templates tab's saved content, not a stored selection — picking a
-  // different launch template still resets these fields from its own params.
-  const [metaName, setMetaName] = useState('');
-  const [metaSymbol, setMetaSymbol] = useState('');
-  const [metaUri, setMetaUri] = useState('');
+  // Token identity is a single choice: which metadata_templates row to launch
+  // with. Defaults to the selected launch template's own `metadata_template_id`;
+  // picking a different one here overrides it for this one launch (the template
+  // itself is unchanged). No more free-text name/symbol/uri — those live in the
+  // metadata template, the single source of truth.
   const [metaTemplateId, setMetaTemplateId] = useState('');
   const [bundlerCount, setBundlerCount] = useState('');
+
+  const selectedTemplate = templates.find((t) => t.id === templateId);
+  const effectiveMetadata = metadataTemplates.find((m) => m.id === metaTemplateId);
 
   // Only `funded` dev wallets are launch-ready — a `generated` (unfunded) or
   // `reserved`/`used` one would just fail the balance check downstream.
@@ -129,26 +129,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reseed the per-launch overrides ONLY when the selected template's identity or
+  // content actually changes — keyed off `${id}@${updated_at}`. `templates` is in
+  // the dep array so a late-arriving list still seeds the initial selection, but
+  // an unrelated background refresh (e.g. the Templates tab saving, which swaps
+  // the array reference) must NOT clobber an in-progress override choice.
+  const appliedTemplateRef = useRef('');
   useEffect(() => {
     const t = templates.find((tpl) => tpl.id === templateId);
     if (!t) return;
-    const p = t.params;
-    setMetaName(p.name ?? '');
-    setMetaSymbol(p.symbol ?? '');
-    setMetaUri(p.uri ?? '');
-    setMetaTemplateId('');
-    setBundlerCount(p.bundle_leg_count != null ? String(p.bundle_leg_count) : '');
+    const sig = `${t.id}@${t.updated_at}`;
+    if (appliedTemplateRef.current === sig) return;
+    appliedTemplateRef.current = sig;
+    setMetaTemplateId(t.metadata_template_id ?? '');
+    setBundlerCount(t.params.bundle_leg_count != null ? String(t.params.bundle_leg_count) : '');
   }, [templateId, templates]);
-
-  const onLoadMetadataTemplate = (id: string) => {
-    setMetaTemplateId(id);
-    const mt = metadataTemplates.find((m) => m.id === id);
-    if (mt) {
-      setMetaName(mt.name);
-      setMetaSymbol(mt.symbol);
-      setMetaUri(mt.uri);
-    }
-  };
 
   const launchId = result?.launch_id;
 
@@ -188,9 +183,7 @@ export default function App() {
     setStatus(null);
     try {
       const r = await api.executeLaunch(templateId, walletId, {
-        name: metaName || undefined,
-        symbol: metaSymbol || undefined,
-        uri: metaUri || undefined,
+        metadata_template_id: metaTemplateId || undefined,
         bundler_count: bundlerCount ? Number(bundlerCount) : undefined,
       });
       setResult(r);
@@ -282,7 +275,7 @@ export default function App() {
           <button
             type="button"
             className="primary"
-            disabled={loading || !templateId || !walletId}
+            disabled={loading || !templateId || !walletId || !metaTemplateId}
             onClick={onLaunch}
           >
             {loading ? 'Launching…' : 'Launch'}
@@ -291,39 +284,21 @@ export default function App() {
 
         <div className="row">
           <div className="field">
-            <label htmlFor="meta-template-picker">Load from metadata template</label>
+            <label htmlFor="meta-template-picker">Metadata</label>
             <select
               id="meta-template-picker"
               value={metaTemplateId}
-              onChange={(e) => onLoadMetadataTemplate(e.target.value)}
+              onChange={(e) => setMetaTemplateId(e.target.value)}
             >
-              <option value="">— none (edit fields directly) —</option>
+              {metadataTemplates.length === 0 && (
+                <option value="">No metadata templates — create one in the Metadata tab</option>
+              )}
               {metadataTemplates.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.template_name} ({m.symbol})
+                  {m.template_name} ({m.name} / {m.symbol})
                 </option>
               ))}
             </select>
-          </div>
-        </div>
-
-        <div className="row">
-          <div className="field">
-            <label htmlFor="meta-name">Name</label>
-            <input id="meta-name" type="text" value={metaName} onChange={(e) => setMetaName(e.target.value)} />
-          </div>
-          <div className="field">
-            <label htmlFor="meta-symbol">Symbol</label>
-            <input
-              id="meta-symbol"
-              type="text"
-              value={metaSymbol}
-              onChange={(e) => setMetaSymbol(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="meta-uri">Metadata URI</label>
-            <input id="meta-uri" type="text" value={metaUri} onChange={(e) => setMetaUri(e.target.value)} />
           </div>
           <div className="field">
             <label htmlFor="bundler-count">Use N bundlers</label>
@@ -336,10 +311,20 @@ export default function App() {
             />
           </div>
         </div>
+        {effectiveMetadata && (
+          <p className="muted">
+            Launching as <strong>{effectiveMetadata.name}</strong> ({effectiveMetadata.symbol}) —{' '}
+            <code>{effectiveMetadata.uri}</code>
+            {selectedTemplate && metaTemplateId !== (selectedTemplate.metadata_template_id ?? '')
+              ? ' · overriding the template default for this launch'
+              : ''}
+            .
+          </p>
+        )}
         <p className="muted">
-          Name/symbol/metadata URI default from the template but are editable per launch. Bundler
-          legs are claimed server-side from the <code>funded</code> <code>bundler</code> wallet pool
-          — never a manual wallet pick.
+          Token identity (name/symbol/URI) comes from the selected metadata template — the single
+          source of truth. Bundler legs are claimed server-side from the <code>funded</code>{' '}
+          <code>bundler</code> wallet pool — never a manual wallet pick.
         </p>
         {error && <p className="error">{error}</p>}
       </div>

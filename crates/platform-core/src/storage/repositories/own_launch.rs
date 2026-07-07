@@ -42,18 +42,6 @@ impl ManagedWalletRepo {
         .await?)
     }
 
-    /// Not-retired wallets, optionally filtered by `role` (`dev` | `bundler` | …).
-    pub async fn list(pool: &PgPool, role: Option<&str>) -> anyhow::Result<Vec<ManagedWallet>> {
-        match role {
-            Some(r) => Self::by_role(pool, r).await,
-            None => Ok(sqlx::query_as::<_, ManagedWallet>(
-                "SELECT * FROM managed_wallets WHERE status != 'retired' ORDER BY role, created_at",
-            )
-            .fetch_all(pool)
-            .await?),
-        }
-    }
-
     pub async fn get(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<ManagedWallet>> {
         Ok(sqlx::query_as::<_, ManagedWallet>("SELECT * FROM managed_wallets WHERE id = $1")
             .bind(id)
@@ -62,8 +50,8 @@ impl ManagedWalletRepo {
     }
 
     /// Every wallet regardless of lifecycle status (including `retired`),
-    /// optionally scoped to `role` — the Phase 2 Wallet Management admin view.
-    /// Unlike [`Self::list`], this is the full pool, not just the not-retired set.
+    /// optionally scoped to `role` — the Phase 2 Wallet Management admin view
+    /// (the full pool, not just the not-retired set).
     pub async fn list_all(pool: &PgPool, role: Option<&str>) -> anyhow::Result<Vec<ManagedWallet>> {
         Ok(match role {
             Some(r) => sqlx::query_as::<_, ManagedWallet>(
@@ -227,13 +215,15 @@ pub struct LaunchTemplateRepo;
 impl LaunchTemplateRepo {
     pub async fn insert(pool: &PgPool, t: &NewLaunchTemplate) -> anyhow::Result<LaunchTemplate> {
         Ok(sqlx::query_as::<_, LaunchTemplate>(
-            "INSERT INTO launch_templates (template_name, launchpad_id, variant, quote_asset_id, params) \
-             VALUES ($1,$2,$3,$4,$5) RETURNING *",
+            "INSERT INTO launch_templates \
+                (template_name, launchpad_id, variant, quote_asset_id, metadata_template_id, params) \
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
         )
         .bind(&t.template_name)
         .bind(t.launchpad_id)
         .bind(&t.variant)
         .bind(t.quote_asset_id)
+        .bind(t.metadata_template_id)
         .bind(t.params.clone().unwrap_or_else(|| json!({})))
         .fetch_one(pool)
         .await?)
@@ -263,13 +253,14 @@ impl LaunchTemplateRepo {
     ) -> anyhow::Result<Option<LaunchTemplate>> {
         Ok(sqlx::query_as::<_, LaunchTemplate>(
             "UPDATE launch_templates SET template_name=$2, launchpad_id=$3, variant=$4, quote_asset_id=$5, \
-             params=$6, updated_at=now() WHERE id=$1 RETURNING *",
+             metadata_template_id=$6, params=$7, updated_at=now() WHERE id=$1 RETURNING *",
         )
         .bind(id)
         .bind(&t.template_name)
         .bind(t.launchpad_id)
         .bind(&t.variant)
         .bind(t.quote_asset_id)
+        .bind(t.metadata_template_id)
         .bind(t.params.clone().unwrap_or_else(|| json!({})))
         .fetch_optional(pool)
         .await?)

@@ -19,29 +19,38 @@ ON CONFLICT (address) DO UPDATE SET
     key_ref = EXCLUDED.key_ref,
     status = 'funded';
 
-DELETE FROM launch_templates WHERE template_name = 'dev-sniper-2leg';
+-- Unlink templates first (FK is ON DELETE SET NULL), then re-seed their metadata
+-- presets. Token identity (name/symbol/uri) now lives in `metadata_templates`
+-- and a launch template REFERENCES one via `metadata_template_id` — no inlined
+-- name/symbol/uri in `params` (migration 0007).
+DELETE FROM launch_templates  WHERE template_name IN ('dev-sniper-2leg', 'my-first-launch');
+DELETE FROM metadata_templates WHERE template_name IN ('Dev Sniper Test', 'test');
 
 -- Bundler wallets are no longer template-listed: launch execution claims N
 -- `funded` `role=bundler` wallets atomically from the pool (wallet-pool Phase 3,
 -- ManagedWalletRepo::claim_funded). `bundle_leg_count` here is just the
 -- template's default leg count; the Launch Console's "use N bundlers" control
 -- can override it per launch.
+WITH md AS (
+    INSERT INTO metadata_templates (template_name, name, symbol, uri)
+    VALUES ('Dev Sniper Test', 'Dev Sniper Test', 'SNIP', 'https://example.com/meta.json')
+    RETURNING id
+)
 INSERT INTO launch_templates (
     template_name,
     launchpad_id,
     variant,
     quote_asset_id,
+    metadata_template_id,
     params
 )
-VALUES (
+SELECT
     'dev-sniper-2leg',
     1,
     'pumpfun.create_v2',
     1,
+    md.id,
     jsonb_build_object(
-        'name', 'Dev Sniper Test',
-        'symbol', 'SNIP',
-        'uri', 'https://example.com/meta.json',
         'dev_buy_quote', 0,
         'slippage_bps', 500,
         'is_mayhem_mode', false,
@@ -68,28 +77,29 @@ VALUES (
             )
         )
     )
-);
+FROM md;
 
-DELETE FROM launch_templates WHERE template_name = 'my-first-launch';
-
--- Sample template built from the 'test' metadata_templates row (name/symbol/uri
--- copied in, same way the "Load from metadata template" picker does in the UI).
+-- Sample template linked to the 'test' metadata preset.
+WITH md AS (
+    INSERT INTO metadata_templates (template_name, name, symbol, uri)
+    VALUES ('test', 'test', 'test', 'ipfs://QmTNUVzpKjTMfYXVAQtFYZ81vj4cR99XbWiNKfk58Kod47')
+    RETURNING id
+)
 INSERT INTO launch_templates (
     template_name,
     launchpad_id,
     variant,
     quote_asset_id,
+    metadata_template_id,
     params
 )
-VALUES (
+SELECT
     'my-first-launch',
     1,
     'pumpfun.create_v2_devbuy',
     1,
+    md.id,
     jsonb_build_object(
-        'name', 'test',
-        'symbol', 'test',
-        'uri', 'ipfs://QmTNUVzpKjTMfYXVAQtFYZ81vj4cR99XbWiNKfk58Kod47',
         'dev_buy_quote', 50000000,
         'slippage_bps', 500,
         'is_mayhem_mode', false,
@@ -114,7 +124,7 @@ VALUES (
             )
         )
     )
-);
+FROM md;
 
 COMMIT;
 

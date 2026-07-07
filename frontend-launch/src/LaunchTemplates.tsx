@@ -110,13 +110,9 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
   const [launchpadId, setLaunchpadId] = useState('');
   const [quoteAssetId, setQuoteAssetId] = useState('');
   const [variant, setVariant] = useState<string>(VARIANTS[0]);
-  const [name, setName] = useState('');
-  const [symbol, setSymbol] = useState('');
-  const [uri, setUri] = useState('');
-  // One-shot "load from" picker over the Metadata Templates tab's saved
-  // content — not a stored selection, matches the Launch Console's picker
-  // (App.tsx). Re-picking just overwrites name/symbol/uri once.
-  const [metaTemplateId, setMetaTemplateId] = useState('');
+  // The metadata_templates row this template launches with — the single source
+  // of truth for token identity (name/symbol/uri). Stored as an FK, not inlined.
+  const [metadataTemplateId, setMetadataTemplateId] = useState('');
   const [devBuyQuote, setDevBuyQuote] = useState('');
   const [slippageBps, setSlippageBps] = useState('');
   const [isMayhemMode, setIsMayhemMode] = useState(false);
@@ -165,10 +161,7 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
     setEditingId(null);
     setTemplateName('');
     setVariant(VARIANTS[0]);
-    setName('');
-    setSymbol('');
-    setUri('');
-    setMetaTemplateId('');
+    setMetadataTemplateId('');
     setDevBuyQuote('');
     setSlippageBps('');
     setIsMayhemMode(false);
@@ -189,10 +182,7 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
     setLaunchpadId(String(t.launchpad_id));
     setQuoteAssetId(String(t.quote_asset_id));
     setVariant(t.variant);
-    setName(t.params.name ?? '');
-    setSymbol(t.params.symbol ?? '');
-    setUri(t.params.uri ?? '');
-    setMetaTemplateId('');
+    setMetadataTemplateId(t.metadata_template_id ?? '');
     setDevBuyQuote(toHumanUnits(t.params.dev_buy_quote, legDecimals));
     setSlippageBps(t.params.slippage_bps?.toString() ?? '');
     setIsMayhemMode(t.params.is_mayhem_mode ?? false);
@@ -203,22 +193,13 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
     setLegRows((t.params.leg_structures ?? []).map((r) => recipeToLegRow(r, legDecimals)));
   };
 
-  const onLoadMetadataTemplate = (id: string) => {
-    setMetaTemplateId(id);
-    const mt = metadataTemplates.find((m) => m.id === id);
-    if (mt) {
-      setName(mt.name);
-      setSymbol(mt.symbol);
-      setUri(mt.uri);
-    }
-  };
-
   const addLegRow = () => setLegRows((rows) => [...rows, emptyLegRow()]);
   const removeLegRow = (i: number) => setLegRows((rows) => rows.filter((_, idx) => idx !== i));
   const updateLegRow = (i: number, patch: Partial<LegRow>) =>
     setLegRows((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
-  const canSubmit = templateName && launchpadId && quoteAssetId && variant && name && symbol && uri;
+  const canSubmit =
+    templateName && launchpadId && quoteAssetId && variant && metadataTemplateId;
 
   const onSubmit = async () => {
     if (!canSubmit) return;
@@ -230,10 +211,8 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
         launchpad_id: Number(launchpadId),
         variant,
         quote_asset_id: Number(quoteAssetId),
+        metadata_template_id: metadataTemplateId,
         params: {
-          name,
-          symbol,
-          uri,
           dev_buy_quote: toBaseUnits(devBuyQuote, decimals),
           slippage_bps: toInt(slippageBps),
           is_mayhem_mode: isMayhemMode,
@@ -318,35 +297,23 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
         </div>
 
         <div className="row">
-          <div className="field">
-            <label htmlFor="lt-meta-template-picker">Load from metadata template</label>
+          <div className="field" style={{ flex: 1 }}>
+            <label htmlFor="lt-metadata-template">Metadata template (name/symbol/URI)</label>
             <select
-              id="lt-meta-template-picker"
-              value={metaTemplateId}
-              onChange={(e) => onLoadMetadataTemplate(e.target.value)}
+              id="lt-metadata-template"
+              value={metadataTemplateId}
+              onChange={(e) => setMetadataTemplateId(e.target.value)}
             >
-              <option value="">— none (edit fields directly) —</option>
+              <option value="">— select a metadata template —</option>
               {metadataTemplates.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.template_name} ({m.symbol})
+                  {m.template_name} ({m.name} / {m.symbol})
                 </option>
               ))}
             </select>
-          </div>
-        </div>
-
-        <div className="row">
-          <div className="field">
-            <label htmlFor="lt-name">Name</label>
-            <input id="lt-name" type="text" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div className="field">
-            <label htmlFor="lt-symbol">Symbol</label>
-            <input id="lt-symbol" type="text" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
-          </div>
-          <div className="field" style={{ flex: 1 }}>
-            <label htmlFor="lt-uri">Metadata URI</label>
-            <input id="lt-uri" type="text" value={uri} onChange={(e) => setUri(e.target.value)} />
+            {metadataTemplates.length === 0 && (
+              <p className="muted">No metadata templates yet — create one in the Metadata tab first.</p>
+            )}
           </div>
         </div>
 
@@ -532,6 +499,7 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
             <thead>
               <tr>
                 <th>Template</th>
+                <th>Metadata</th>
                 <th>Variant</th>
                 <th>Launchpad</th>
                 <th>Quote</th>
@@ -544,6 +512,12 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
               {templates.map((t) => (
                 <tr key={t.id}>
                   <td>{t.template_name}</td>
+                  <td>
+                    {(() => {
+                      const m = metadataTemplates.find((x) => x.id === t.metadata_template_id);
+                      return m ? `${m.name} / ${m.symbol}` : <span className="muted">— unlinked —</span>;
+                    })()}
+                  </td>
                   <td>{t.variant}</td>
                   <td>{launchpads.find((lp) => lp.id === t.launchpad_id)?.display_name ?? t.launchpad_id}</td>
                   <td>{quoteAssets.find((qa) => qa.id === t.quote_asset_id)?.symbol ?? t.quote_asset_id}</td>
@@ -558,7 +532,7 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
               ))}
               {templates.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="muted">
+                  <td colSpan={8} className="muted">
                     No launch templates yet — author one above.
                   </td>
                 </tr>

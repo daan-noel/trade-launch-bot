@@ -1,9 +1,10 @@
 //! Token-metadata authoring: pin an image + the standard off-chain JSON to
 //! Pinata (IPFS), then persist the result as a reusable `metadata_templates`
-//! row. The resulting `uri` is exactly what `launch_templates.params.uri` /
-//! a per-launch `LaunchRequest.uri` override consumes (see
-//! `service::PumpfunTemplateParams`) — a metadata template is a content preset,
-//! not itself part of the create-tx path.
+//! row. This row is the single source of truth for token identity: a
+//! `launch_templates.metadata_template_id` FK points at it and the launcher
+//! resolves name/symbol/uri from it at create time
+//! (`service::execute_launch`) — the metadata template is a content preset, not
+//! itself part of the create-tx path.
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -107,7 +108,7 @@ pub async fn create_metadata_template(
             twitter: req.twitter,
             telegram: req.telegram,
             website: req.website,
-            image_uri,
+            image_uri: Some(image_uri),
             uri,
         },
     )

@@ -10,10 +10,12 @@
 pub mod dimensions;
 pub mod metadata;
 pub mod own_launch;
+pub mod status;
 pub mod token;
 pub mod trade;
 
 pub use dimensions::{Launchpad, Market, QuoteAsset};
+pub use status::{BundleStatus, LaunchStatus};
 pub use metadata::{MetadataTemplate, NewMetadataTemplate};
 pub use own_launch::{
     Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,

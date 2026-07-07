@@ -39,7 +39,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             "/api/launch_templates/{id}",
             web::put().to(launch_templates_update),
         )
-        .route("/api/managed_wallets", web::get().to(managed_wallets_list))
         .route("/api/wallet_pool", web::get().to(wallet_pool_list))
         .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
         .route("/api/metadata_templates", web::get().to(metadata_templates_list))
@@ -153,16 +152,6 @@ async fn launch_templates_update(
 #[derive(serde::Deserialize)]
 struct WalletsQuery {
     role: Option<String>,
-}
-
-async fn managed_wallets_list(
-    pool: web::Data<PgPool>,
-    q: web::Query<WalletsQuery>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let rows = ManagedWalletRepo::list(pool.get_ref(), q.role.as_deref())
-        .await
-        .map_err(e500)?;
-    Ok(HttpResponse::Ok().json(rows))
 }
 
 /// Full pool (every lifecycle status, including `retired`) for the Wallet
@@ -320,13 +309,10 @@ async fn launch_status(
 struct LaunchExecuteBody {
     template_id: Uuid,
     dev_wallet_id: Uuid,
-    /// Metadata editing panel overrides — unset falls back to the template.
+    /// Per-launch metadata override — pick a different `metadata_templates` row;
+    /// unset falls back to the template's own `metadata_template_id`.
     #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    symbol: Option<String>,
-    #[serde(default)]
-    uri: Option<String>,
+    metadata_template_id: Option<Uuid>,
     /// "Use N bundlers" override — unset falls back to the template's
     /// `bundle_leg_count` default.
     #[serde(default)]
@@ -347,9 +333,7 @@ async fn launch_execute(
         LaunchRequest {
             template_id: body.template_id,
             dev_wallet_id: body.dev_wallet_id,
-            name: body.name,
-            symbol: body.symbol,
-            uri: body.uri,
+            metadata_template_id: body.metadata_template_id,
             bundler_count: body.bundler_count,
         },
     )

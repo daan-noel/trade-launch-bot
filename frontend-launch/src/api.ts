@@ -6,6 +6,9 @@ export interface LaunchTemplate {
   launchpad_id: number;
   quote_asset_id: number;
   variant: string;
+  // Token identity (name/symbol/uri) resolves from this metadata_templates row —
+  // the single source of truth. null only for an unlinked legacy row.
+  metadata_template_id: string | null;
   params: PumpfunTemplateParams;
   created_at: string;
   updated_at: string;
@@ -34,9 +37,6 @@ export interface LegStructureRecipe {
 // `launch_templates.params` JSONB brain, server-validated on create/update
 // against this exact shape.
 export interface PumpfunTemplateParams {
-  name: string;
-  symbol: string;
-  uri: string;
   dev_buy_quote?: number;
   slippage_bps?: number;
   is_mayhem_mode?: boolean;
@@ -54,6 +54,7 @@ export interface NewLaunchTemplateInput {
   launchpad_id: number;
   variant: string;
   quote_asset_id: number;
+  metadata_template_id: string | null;
   params: PumpfunTemplateParams;
 }
 
@@ -70,13 +71,6 @@ export interface QuoteAsset {
   symbol: string;
   decimals: number;
   is_native: boolean;
-}
-
-export interface ManagedWallet {
-  id: string;
-  address: string;
-  label: string | null;
-  role: string;
 }
 
 // Fresh-wallet pool lifecycle (docs/wallet-pool-plan.md Phase 1):
@@ -113,7 +107,9 @@ export interface MetadataTemplate {
   twitter: string | null;
   telegram: string | null;
   website: string | null;
-  image_uri: string;
+  // null for a preset authored outside the pin flow (e.g. one backfilled from a
+  // legacy launch template) — the image is embedded in the JSON at `uri`.
+  image_uri: string | null;
   uri: string;
   created_at: string;
 }
@@ -142,12 +138,10 @@ export interface LaunchResult {
   };
 }
 
-// Metadata editing panel overrides + "use N bundlers" — unset fields fall back
-// to the template's stored params (wallet-pool Phase 3).
+// Per-launch overrides + "use N bundlers" — unset fields fall back to the
+// template's own metadata_template_id / bundle_leg_count (wallet-pool Phase 3).
 export interface LaunchOverrides {
-  name?: string;
-  symbol?: string;
-  uri?: string;
+  metadata_template_id?: string;
   bundler_count?: number;
 }
 
@@ -233,10 +227,6 @@ export const api = {
     putJson<LaunchTemplate>(`/api/launch_templates/${id}`, req),
   launchpads: () => getJson<Launchpad[]>('/api/launchpads'),
   quoteAssets: () => getJson<QuoteAsset[]>('/api/quote_assets'),
-  wallets: (role?: string) =>
-    getJson<ManagedWallet[]>(
-      role ? `/api/managed_wallets?role=${encodeURIComponent(role)}` : '/api/managed_wallets',
-    ),
   executeLaunch: (template_id: string, dev_wallet_id: string, overrides?: LaunchOverrides) =>
     postJson<LaunchResult>('/api/launches/execute', { template_id, dev_wallet_id, ...overrides }),
   launchStatus: (id: string) => getJson<LaunchStatus>(`/api/launches/${id}/status`),

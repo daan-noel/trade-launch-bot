@@ -1,10 +1,10 @@
 //! Launch execution: template + dev wallet → create (+ dev-buy) → DB rows.
 
 use anyhow::{bail, Context, Result};
-use platform_core::models::{NewLaunch, NewToken};
+use platform_core::models::{BundleStatus, LaunchStatus, NewLaunch, NewToken};
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, TokenMarketStateRepo,
-    TokenRepo,
+    BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, MetadataTemplateRepo,
+    TokenMarketStateRepo, TokenRepo,
 };
 use platform_core::models::TokenMarketState;
 use chrono::Utc;
@@ -25,12 +25,11 @@ use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
 use crate::trader_config::build_launch_trader_config;
 
-/// Parsed `launch_templates.params` brain for pump.fun create_v2.
+/// Parsed `launch_templates.params` brain for pump.fun create_v2. Token identity
+/// (name/symbol/uri) is NOT here — it lives in the linked `metadata_templates`
+/// row (`launch_templates.metadata_template_id`), the single source of truth.
 #[derive(Debug, Deserialize)]
 pub struct PumpfunTemplateParams {
-    pub name: String,
-    pub symbol: String,
-    pub uri: String,
     #[serde(default)]
     pub dev_buy_quote: Option<i64>,
     #[serde(default)]
@@ -57,12 +56,11 @@ pub struct PumpfunTemplateParams {
 pub struct LaunchRequest {
     pub template_id: Uuid,
     pub dev_wallet_id: Uuid,
-    /// Per-launch metadata overrides — the Launch Console's editing panel.
-    /// Falls back to the template's stored `name`/`symbol`/`uri` when unset, so
-    /// a template still works as a bare reusable preset.
-    pub name: Option<String>,
-    pub symbol: Option<String>,
-    pub uri: Option<String>,
+    /// Per-launch metadata override — pick a different `metadata_templates` row
+    /// for this one launch. Falls back to the template's own
+    /// `metadata_template_id` when unset, so a template still works as a bare
+    /// reusable preset.
+    pub metadata_template_id: Option<Uuid>,
     /// Overrides the template's `bundle_leg_count` when set (the Launch
     /// Console's "use N bundlers" control) — bundler wallets are then a
     /// server-side atomic claim from the `funded` pool, never a client pick.
@@ -95,20 +93,21 @@ pub async fn execute_launch(
         bail!("wallet {} is role={}, expected dev", dev_wallet.id, dev_wallet.role);
     }
 
-    let mut params: PumpfunTemplateParams =
+    let params: PumpfunTemplateParams =
         serde_json::from_value(template.params.clone()).context("parse template params")?;
-    // Per-launch metadata overrides (the Launch Console's editing panel) — the
-    // template stays a reusable preset; only this launch's on-chain create uses
-    // the overridden values.
-    if let Some(name) = &req.name {
-        params.name = name.clone();
-    }
-    if let Some(symbol) = &req.symbol {
-        params.symbol = symbol.clone();
-    }
-    if let Some(uri) = &req.uri {
-        params.uri = uri.clone();
-    }
+
+    // Resolve token identity from the linked metadata template (single source of
+    // truth). A per-launch `metadata_template_id` overrides the template's own for
+    // this one launch; the template stays a reusable preset.
+    let metadata_template_id = req
+        .metadata_template_id
+        .or(template.metadata_template_id)
+        .context("launch template has no metadata_template_id and none was provided")?;
+    let metadata = MetadataTemplateRepo::get(pool, metadata_template_id)
+        .await?
+        .context("metadata template not found")?;
+    let (meta_name, meta_symbol, meta_uri) =
+        (metadata.name, metadata.symbol, metadata.uri);
 
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
     let signer = keystore::resolve_signer(
@@ -154,7 +153,7 @@ pub async fn execute_launch(
             } else {
                 None
             },
-            status: Some("pending".into()),
+            status: Some(LaunchStatus::Pending.as_str().into()),
         },
     )
     .await?;
@@ -175,9 +174,9 @@ pub async fn execute_launch(
         let (signature, ix_label) = match template.variant.as_str() {
             "pumpfun.create_v2" | "pumpfun.create_v2_devbuy" => {
                 let args = CreateTokenV2Args {
-                    name: params.name.clone(),
-                    symbol: params.symbol.clone(),
-                    uri: params.uri.clone(),
+                    name: meta_name.clone(),
+                    symbol: meta_symbol.clone(),
+                    uri: meta_uri.clone(),
                     creator,
                     is_mayhem_mode: params.is_mayhem_mode,
                     cashback_enabled: params.cashback_enabled,
@@ -199,9 +198,9 @@ pub async fn execute_launch(
             }
             "pumpfun.create_v1" | "pumpfun.create_v1_devbuy" => {
                 let args = CreateTokenArgs {
-                    name: params.name.clone(),
-                    symbol: params.symbol.clone(),
-                    uri: params.uri.clone(),
+                    name: meta_name.clone(),
+                    symbol: meta_symbol.clone(),
+                    uri: meta_uri.clone(),
                     creator,
                 };
                 let sig = if dev_buy_quote > 0 {
@@ -222,7 +221,8 @@ pub async fn execute_launch(
             other => bail!("unsupported launch variant: {other}"),
         };
 
-        LaunchRepo::set_created(pool, launch_id, &signature, "created").await?;
+        LaunchRepo::set_created(pool, launch_id, &signature, LaunchStatus::Created.as_str())
+            .await?;
 
         // Wallet-pool lifecycle: the dev wallet claimed above is now consumed
         // (terminal — never re-claimable, and now eligible for the dust sweep).
@@ -239,8 +239,8 @@ pub async fn execute_launch(
                 quote_asset_id: template.quote_asset_id,
                 creator_wallet: creator.to_string(),
                 is_own_launch: true,
-                name: params.name.clone(),
-                symbol: params.symbol.clone(),
+                name: meta_name.clone(),
+                symbol: meta_symbol.clone(),
                 decimals: 6,
                 token_program_id: Some(token_program.to_string()),
                 initial_supply_base: None,
@@ -301,7 +301,9 @@ pub async fn execute_launch(
     .await;
 
     if let Err(e) = finish {
-        if let Err(mark_err) = LaunchRepo::set_failed(pool, launch_id, "failed").await {
+        if let Err(mark_err) =
+            LaunchRepo::set_failed(pool, launch_id, LaunchStatus::Failed.as_str()).await
+        {
             tracing::warn!(%launch_id, %mark_err, "failed to mark launch failed after chain error");
         } else {
             tracing::warn!(%launch_id, error = %e, "launch failed after pending row inserted");
@@ -374,7 +376,7 @@ pub async fn execute_launch(
     {
         if BundleRepo::get(pool, bundle_id)
             .await?
-            .is_some_and(|b| b.status == "planned")
+            .is_some_and(|b| b.status == BundleStatus::Planned.as_str())
         {
             let bundle_result = execute_bundle(pool, settings, bundle_id)
                 .await

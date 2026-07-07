@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use platform_core::models::ManagedWallet;
+use platform_core::models::{BundleStatus, ManagedWallet};
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, ManagedWalletRepo, TokenRepo,
 };
@@ -37,7 +37,7 @@ pub async fn execute_bundle(
     let bundle = BundleRepo::get(pool, bundle_id)
         .await?
         .context("bundle not found")?;
-    if bundle.status != "planned" {
+    if bundle.status != BundleStatus::Planned.as_str() {
         bail!(
             "bundle {} is status={}, expected planned",
             bundle_id,
@@ -98,7 +98,7 @@ pub async fn execute_bundle(
 
     let blockhash = trader.fresh_blockhash().await?;
 
-    BundleRepo::set_status(pool, bundle_id, "submitting").await?;
+    BundleRepo::set_status(pool, bundle_id, BundleStatus::Submitting.as_str()).await?;
 
     let finish = async {
         let mut txs = Vec::with_capacity(legs.len());
@@ -156,7 +156,9 @@ pub async fn execute_bundle(
     .await;
 
     if finish.is_err() {
-        if let Err(mark_err) = BundleRepo::set_status(pool, bundle_id, "failed").await {
+        if let Err(mark_err) =
+            BundleRepo::set_status(pool, bundle_id, BundleStatus::Failed.as_str()).await
+        {
             tracing::warn!(%bundle_id, %mark_err, "failed to mark bundle failed");
         }
     }

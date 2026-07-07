@@ -3,7 +3,9 @@
 use anyhow::{bail, Context, Result};
 use platform_core::config::Settings;
 use platform_core::storage::connect;
-use platform_core::storage::repositories::{LaunchTemplateRepo, ManagedWalletRepo};
+use platform_core::storage::repositories::{
+    LaunchTemplateRepo, ManagedWalletRepo, MetadataTemplateRepo,
+};
 use pump_trader::{CreateTokenV2Args, PumpFunTrader};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
@@ -45,6 +47,15 @@ pub async fn run_launch_probe(settings: &Settings, args: &[String]) -> Result<()
     let params: PumpfunTemplateParams =
         serde_json::from_value(template.params.clone()).context("parse template params")?;
 
+    // Token identity comes from the linked metadata template (single source of
+    // truth), same as launcher::service::execute_launch.
+    let metadata_template_id = template
+        .metadata_template_id
+        .context("launch template has no metadata_template_id — link one before probing")?;
+    let metadata = MetadataTemplateRepo::get(&pools.hot, metadata_template_id)
+        .await?
+        .context("metadata template not found")?;
+
     let kek = EnvKek::from_passphrase(&launcher.kek_passphrase);
     let signer = keystore::resolve_signer(
         &launcher.keystore_dir,
@@ -78,9 +89,9 @@ pub async fn run_launch_probe(settings: &Settings, args: &[String]) -> Result<()
 
     let mint = Keypair::new();
     let args = CreateTokenV2Args {
-        name: params.name.clone(),
-        symbol: params.symbol.clone(),
-        uri: params.uri.clone(),
+        name: metadata.name.clone(),
+        symbol: metadata.symbol.clone(),
+        uri: metadata.uri.clone(),
         creator,
         is_mayhem_mode: params.is_mayhem_mode,
         cashback_enabled: params.cashback_enabled,

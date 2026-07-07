@@ -171,9 +171,17 @@ export default function MetadataTemplates() {
                   <td>{t.name}</td>
                   <td>{t.symbol}</td>
                   <td>
-                    <a href={t.image_uri.replace('ipfs://', 'https://ipfs.io/ipfs/')} target="_blank" rel="noreferrer">
-                      view
-                    </a>
+                    {t.image_uri ? (
+                      <a
+                        href={t.image_uri.replace('ipfs://', 'https://ipfs.io/ipfs/')}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        view
+                      </a>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
                   </td>
                   <td>
                     <code>{t.uri}</code>

@@ -18,7 +18,7 @@ use chrono::Utc;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-use platform_core::models::Bundle;
+use platform_core::models::{Bundle, BundleStatus};
 use platform_core::storage::repositories::{BundleRepo, LaunchRepo, ManagedWalletRepo, TradeRepo};
 
 use crate::bundle::legs_from_json;
@@ -67,7 +67,7 @@ async fn confirm_one(pool: &PgPool, bundle: Bundle) -> anyhow::Result<()> {
         .context("decode leg signature")?;
     if sigs.is_empty() {
         warn!(bundle_id = %bundle.id, "submitted bundle has no leg signatures — marking dropped");
-        BundleRepo::set_confirmed(pool, bundle.id, "dropped").await?;
+        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Dropped.as_str()).await?;
         mark_bundle_wallets_used(pool, &bundle).await;
         return Ok(());
     }
@@ -76,7 +76,7 @@ async fn confirm_one(pool: &PgPool, bundle: Bundle) -> anyhow::Result<()> {
         TradeRepo::find_signatures_present(pool, &launch.mint_address, &sigs).await?;
 
     if landed.len() == sigs.len() {
-        BundleRepo::set_confirmed(pool, bundle.id, "landed").await?;
+        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Landed.as_str()).await?;
         mark_bundle_wallets_used(pool, &bundle).await;
         info!(bundle_id = %bundle.id, legs = sigs.len(), "bundle landed");
         return Ok(());
@@ -90,11 +90,11 @@ async fn confirm_one(pool: &PgPool, bundle: Bundle) -> anyhow::Result<()> {
     }
 
     if landed.is_empty() {
-        BundleRepo::set_confirmed(pool, bundle.id, "dropped").await?;
+        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Dropped.as_str()).await?;
         warn!(bundle_id = %bundle.id, "bundle dropped — no legs landed within timeout");
     } else {
         // Atomicity anomaly: a Jito bundle should never land partially.
-        BundleRepo::set_confirmed(pool, bundle.id, "partial").await?;
+        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Partial.as_str()).await?;
         warn!(
             bundle_id = %bundle.id,
             landed = landed.len(),

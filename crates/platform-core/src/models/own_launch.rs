@@ -70,7 +70,10 @@ pub struct NewManagedWallet {
 }
 
 /// An authored launch spec (typed + JSONB brain). `variant` selects an audited
-/// create builder; `params` carries metadata + dev-buy + the leg_structures pool.
+/// create builder; `params` carries dev-buy + the leg_structures pool. Token
+/// identity (name/symbol/uri) lives in the referenced `metadata_templates` row —
+/// [`metadata_template_id`](Self::metadata_template_id) — not inlined in `params`,
+/// so metadata has a single source of truth (see migration `0007`).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct LaunchTemplate {
     pub id: Uuid,
@@ -78,6 +81,10 @@ pub struct LaunchTemplate {
     pub launchpad_id: i16,
     pub variant: String,
     pub quote_asset_id: i16,
+    /// The token metadata (name/symbol/uri) this template launches with. `None`
+    /// only for a legacy row whose metadata couldn't be backfilled — such a
+    /// template can't launch until it's linked.
+    pub metadata_template_id: Option<Uuid>,
     pub params: Json,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -89,6 +96,7 @@ pub struct NewLaunchTemplate {
     pub launchpad_id: i16,
     pub variant: String,
     pub quote_asset_id: i16,
+    pub metadata_template_id: Option<Uuid>,
     pub params: Option<Json>,
 }
 
@@ -100,6 +108,7 @@ pub struct UpdateLaunchTemplate {
     pub launchpad_id: i16,
     pub variant: String,
     pub quote_asset_id: i16,
+    pub metadata_template_id: Option<Uuid>,
     pub params: Option<Json>,
 }
 

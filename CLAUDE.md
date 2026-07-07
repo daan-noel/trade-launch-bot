@@ -35,8 +35,9 @@ LOCKED`) + `mark_used` transitions. Phase 2 done — `GET /api/wallet_pool` +
 generate, status counts, low-pool banner), tab-switched from the launch console.
 Phase 3 done — launch flow now consumes the pool: dev-wallet dropdown filters to
 `funded`, bundler legs are claimed via `claim_funded` (no more template
-`bundle_wallet_ids`), a metadata editing panel overrides name/symbol/uri per
-launch, and `mark_used` for bundler legs moved to `launcher::confirm`'s
+`bundle_wallet_ids`), token identity is a single `metadata_template_id` choice
+(the launch template links one; the console can override it per launch — see
+Metadata SSOT below), and `mark_used` for bundler legs moved to `launcher::confirm`'s
 landed/dropped/partial outcomes (bundle *planning* also moved outside
 `execute_launch`'s failure-reset scope, fixing a pre-existing bug where a
 post-create bundle problem could flip an already-succeeded launch to `failed`).
@@ -101,6 +102,20 @@ the thing being redesigned); only tiny pure SSOT files were copied (IDLs, unit c
   (`trades_priced`, `token_overview`) — never stored. Ratios keep `_price`/`_pct`.
 - **SSOT keys:** `mint_address`, `launchpad_id`, `quote_asset_id`, `market_id`. A new
   launchpad or quote asset is a new dimension **ROW**, never a schema migration.
+- **Metadata SSOT:** token identity (name/symbol/uri) lives in
+  ONE place — a `metadata_templates` row. `launch_templates.metadata_template_id`
+  (FK, `ON DELETE SET NULL`) references it; `launcher::service::execute_launch`
+  (and `probe`) resolve name/symbol/uri from that row at create time. NEVER inline
+  name/symbol/uri in `launch_templates.params` or a launch request — the per-launch
+  override is a *different* `metadata_template_id`, not free text. `image_uri` is
+  nullable (a preset authored/backfilled outside the pin flow embeds the image in
+  the JSON at `uri`). Migration `0007`; the frontend `Metadata` dropdown is the
+  single authoring surface.
+- **Status vocabularies are enums + CHECK, never loose strings:** `LaunchStatus`
+  / `BundleStatus` (`platform_core::models::status`) own the `launches.status` /
+  `bundles.status` values; each `as_str()` must equal the SQL `CHECK` in migration
+  `0006` (roundtrip test pins the strings), same pattern as `MarketKind`. A new
+  state is a code + CHECK edit.
 - **Extensibility via rows, not columns**; interned small-int dimensions
   (`quote_assets`, `launchpads`) + `wallet_dict` (soft ref, no FK on the hot insert;
   read paths LEFT JOIN with a COALESCE fallback). Hot tables (`raw_txs`, `trades`) are
