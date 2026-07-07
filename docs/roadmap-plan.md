@@ -156,9 +156,9 @@ Recorded so they are not forgotten; no schedule.
 
 ## Immediate next (suggested order)
 
-1. Auto-submit bundle after launch
-2. Ingest round-trip smoke test on live pump.fun feed
-3. Multi-variant bundle legs (`bundle_execute` only supports `"buy"` today)
+1. Phase 3 — trading executor + feed-based sell-confirm (Domain E migration first)
+2. Pin borrowed crates to git rev once pump-trader/ingest-laserstream stabilize
+3. Phase 4 — `lake-export` implementation
 
 ---
 
