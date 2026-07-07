@@ -6,19 +6,19 @@ use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, ManagedWalletRepo, TokenRepo,
 };
 use pump_trader::types::TokenProgram;
-use pump_trader::{PumpFunTrader, TraderConfig};
+use pump_trader::{PumpFunTrader};
 use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::transaction::Transaction;
 use sqlx::PgPool;
 use std::str::FromStr;
-use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::bundle::{leg_params, legs_from_json};
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
+use crate::trader_config::build_launch_trader_config;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BundleExecuteResult {
@@ -84,12 +84,7 @@ pub async fn execute_bundle(
         .map(|s| Pubkey::from_str(s).with_context(|| format!("parse nonce pubkey {s}")))
         .collect::<Result<_>>()?;
 
-    let trader_config = Arc::new(TraderConfig::new(
-        settings.rpc_url.clone(),
-        settings.sender_urls.clone(),
-        primary_signer,
-        nonce_accounts,
-    ));
+    let trader_config = build_launch_trader_config(settings, primary_signer, nonce_accounts);
     let mut trader = PumpFunTrader::new(trader_config);
     trader.initialize().await.context("initialize pump-trader")?;
 

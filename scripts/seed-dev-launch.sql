@@ -37,7 +37,7 @@ SELECT
         'name', 'Dev Sniper Test',
         'symbol', 'SNIP',
         'uri', 'https://example.com/meta.json',
-        'dev_buy_quote', 100000000,
+        'dev_buy_quote', 0,
         'slippage_bps', 500,
         'is_mayhem_mode', false,
         'cashback_enabled', false,

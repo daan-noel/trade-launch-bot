@@ -9,7 +9,7 @@ use platform_core::storage::repositories::{
 use platform_core::models::TokenMarketState;
 use chrono::Utc;
 use pump_trader::{
-    CreateTokenArgs, CreateTokenV2Args, PumpFunTrader, TraderConfig,
+    CreateTokenArgs, CreateTokenV2Args, PumpFunTrader,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -17,13 +17,13 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use sqlx::PgPool;
 use std::str::FromStr;
-use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::bundle_execute::{execute_bundle, BundleExecuteResult};
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
+use crate::trader_config::build_launch_trader_config;
 
 /// Parsed `launch_templates.params` brain for pump.fun create_v2.
 #[derive(Debug, Deserialize)]
@@ -101,14 +101,17 @@ pub async fn execute_launch(
         .map(|s| Pubkey::from_str(s).with_context(|| format!("parse nonce pubkey {s}")))
         .collect::<Result<_>>()?;
 
-    let trader_config = Arc::new(TraderConfig::new(
-        settings.rpc_url.clone(),
-        settings.sender_urls.clone(),
-        signer,
-        nonce_accounts,
-    ));
+    let trader_config = build_launch_trader_config(settings, signer, nonce_accounts);
     let mut trader = PumpFunTrader::new(trader_config);
     trader.initialize().await.context("initialize pump-trader")?;
+
+    let balance = trader.get_sol_balance().await.context("fetch dev wallet balance")?;
+    if balance < 20_000_000 {
+        bail!(
+            "dev wallet {creator} has only {:.4} SOL — fund with at least 0.05 SOL before launching",
+            balance as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64
+        );
+    }
 
     let mint = Keypair::new();
     let mint_address = mint.pubkey().to_string();

@@ -10,7 +10,9 @@ mod bundle_execute;
 mod confirm;
 mod config;
 mod keystore;
+mod probe;
 mod service;
+mod trader_config;
 mod wallet_encrypt;
 
 pub use bundle::{
@@ -24,5 +26,6 @@ pub use config::LauncherSettings;
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
+pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;

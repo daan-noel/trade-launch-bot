@@ -7,6 +7,9 @@
 .env
 .env.backup
 *.pem
+keystore/
+.dev.json
+.bundler.json
 
 # Lake data (workstation-local Parquet; never committed)
 /lake-data

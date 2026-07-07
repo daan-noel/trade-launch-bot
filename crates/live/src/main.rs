@@ -37,6 +37,10 @@ async fn main() -> anyhow::Result<()> {
         launcher::run_wallet_encrypt(&args[1..])?;
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("launch-probe") {
+        launcher::run_launch_probe(&settings, &args[1..]).await?;
+        return Ok(());
+    }
 
     let pools = connect(&settings).await?;
     info!("live box: DB connected, migrations applied");
