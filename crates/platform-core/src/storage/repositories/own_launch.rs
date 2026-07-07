@@ -35,6 +35,18 @@ impl ManagedWalletRepo {
         .await?)
     }
 
+    /// Active wallets, optionally filtered by `role` (`dev` | `bundler` | …).
+    pub async fn list(pool: &PgPool, role: Option<&str>) -> anyhow::Result<Vec<ManagedWallet>> {
+        match role {
+            Some(r) => Self::by_role(pool, r).await,
+            None => Ok(sqlx::query_as::<_, ManagedWallet>(
+                "SELECT * FROM managed_wallets WHERE is_active ORDER BY role, created_at",
+            )
+            .fetch_all(pool)
+            .await?),
+        }
+    }
+
     pub async fn get(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<ManagedWallet>> {
         Ok(sqlx::query_as::<_, ManagedWallet>("SELECT * FROM managed_wallets WHERE id = $1")
             .bind(id)

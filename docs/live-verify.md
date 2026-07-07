@@ -63,3 +63,21 @@ ORDER BY slot;
 ```
 
 CI runs the same guard on every push (`.github/workflows/ci.yml`).
+
+## 4. Launch console UI
+
+```powershell
+# Terminal 1 — backend
+cargo run -p live
+
+# Terminal 2 — seed once (edit pubkeys in script first)
+# psql $env:DATABASE_URL -f scripts/seed-dev-launch.sql
+
+# Terminal 3 — UI (proxies /api → :8091)
+cd frontend-launch
+npm install
+npm run dev
+```
+
+Open http://127.0.0.1:5175 — pick template + dev wallet, click **Launch**, watch bundle
+status + ingested trades poll every 3s.

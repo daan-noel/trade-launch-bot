@@ -2759,6 +2759,7 @@ dependencies = [
  "ingest-host",
  "launcher",
  "platform-core",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

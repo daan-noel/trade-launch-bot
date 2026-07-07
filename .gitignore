@@ -16,3 +16,8 @@
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Frontend
+frontend-launch/node_modules
+frontend-launch/dist
+frontend-launch/tsconfig.tsbuildinfo

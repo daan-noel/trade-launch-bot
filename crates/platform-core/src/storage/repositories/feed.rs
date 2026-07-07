@@ -141,6 +141,14 @@ impl TradeRepo {
     /// Priced read for a mint (newest-first). `limit <= 0` ⇒ no LIMIT (the full
     /// mint-scoped history the inspect charts need). Still mint-scoped, never the
     /// whole table.
+    pub async fn count_by_mint(pool: &PgPool, mint_address: &str) -> anyhow::Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM trades WHERE mint_address = $1")
+            .bind(mint_address)
+            .fetch_one(pool)
+            .await?;
+        Ok(count)
+    }
+
     pub async fn find_priced_by_mint(
         pool: &PgPool,
         mint_address: &str,

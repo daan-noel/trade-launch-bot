@@ -1,0 +1,162 @@
+:root {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  line-height: 1.5;
+  color: #e8eaed;
+  background: #0f1115;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+a {
+  color: #7eb8ff;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+}
+
+input,
+select,
+button {
+  border-radius: 6px;
+  border: 1px solid #3a3f4b;
+  background: #1a1d24;
+  color: inherit;
+  padding: 0.5rem 0.75rem;
+}
+
+button.primary {
+  background: #2d6cdf;
+  border-color: #2d6cdf;
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.card {
+  background: #161a22;
+  border: 1px solid #2a2f3a;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9aa3b2;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 200px;
+  flex: 1;
+}
+
+.field label {
+  font-size: 0.8rem;
+  color: #9aa3b2;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-pill.created,
+.status-pill.landed {
+  background: #1b3d2a;
+  color: #6ee7a0;
+}
+
+.status-pill.submitted,
+.status-pill.submitting,
+.status-pill.planned,
+.status-pill.pending {
+  background: #3d341b;
+  color: #f5d565;
+}
+
+.status-pill.failed,
+.status-pill.dropped,
+.status-pill.partial {
+  background: #3d1b1b;
+  color: #f58a8a;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 0.35rem 1rem;
+  font-size: 0.9rem;
+}
+
+.kv dt {
+  color: #9aa3b2;
+}
+
+.kv dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.error {
+  color: #f58a8a;
+  white-space: pre-wrap;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid #2a2f3a;
+}
+
+th {
+  color: #9aa3b2;
+  font-weight: 500;
+}
+
+.muted {
+  color: #9aa3b2;
+  font-size: 0.85rem;
+}
