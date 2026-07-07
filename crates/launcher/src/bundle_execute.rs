@@ -115,12 +115,8 @@ pub async fn execute_bundle(
         let mut leg_signatures = Vec::with_capacity(legs.len());
 
         for leg in &legs {
-            if leg.structure.variant != "buy" {
-                bail!(
-                    "bundle execute only supports buy variant legs today, got {}",
-                    leg.structure.variant
-                );
-            }
+            let variant = pump_trader::BundleBuyVariant::parse(&leg.structure.variant)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let wallet = ManagedWalletRepo::get(pool, leg.wallet_id)
                 .await?
                 .context("bundler wallet not found")?;
@@ -144,6 +140,7 @@ pub async fn execute_bundle(
                     token_program,
                     buy_lamports,
                     cashback_enabled,
+                    variant,
                     &params,
                 )
                 .await?;

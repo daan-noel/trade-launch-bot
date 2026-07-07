@@ -70,7 +70,7 @@ planned sniper bundle → Jito submit.
 
 - [x] **Auto-submit bundle after launch** — when template has `bundle_leg_count`,
   invoke bundle execute immediately after create lands (no second HTTP call)
-- [ ] **Multi-variant bundle legs** — execute only supports `"buy"` today; wire
+- [x] **Multi-variant bundle legs** — execute only supports `"buy"` today; wire
   `buy_exact_sol_in`, `buy_v2`, `buy_exact_quote_in` in `bundle_execute` +
   `pump-trader::bundle_buy`
 - [ ] **SOL/USD poller** — update `quote_assets.usd_rate` for SOL (USDC ≈ 1.0);
