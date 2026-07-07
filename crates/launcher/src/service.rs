@@ -21,6 +21,7 @@ use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::bundle_execute::{execute_bundle, BundleExecuteResult};
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
 
@@ -62,6 +63,9 @@ pub struct LaunchResult {
     pub launch_id: Uuid,
     pub mint_address: String,
     pub create_signature: String,
+    /// Present when the template planned a bundle and auto-submit succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<BundleExecuteResult>,
 }
 
 /// Execute one launch from a stored template + dev wallet.
@@ -270,6 +274,7 @@ pub async fn execute_launch(
             launch_id,
             mint_address,
             create_signature: signature,
+            bundle: None,
         })
     }
     .await;
@@ -283,5 +288,31 @@ pub async fn execute_launch(
         return Err(e);
     }
 
-    finish
+    let mut result = finish?;
+
+    // Auto-submit a planned sniper bundle — no second HTTP call when the template
+    // has `bundle_leg_count`. Launch is already on-chain; bundle failure does not
+    // roll back the create.
+    if let Some(bundle_id) = LaunchRepo::get(pool, launch_id)
+        .await?
+        .and_then(|l| l.bundle_id)
+    {
+        if BundleRepo::get(pool, bundle_id)
+            .await?
+            .is_some_and(|b| b.status == "planned")
+        {
+            let bundle_result = execute_bundle(pool, settings, bundle_id)
+                .await
+                .context("launch created on-chain but bundle auto-submit failed")?;
+            info!(
+                launch_id = %launch_id,
+                bundle_id = %bundle_id,
+                jito_bundle_id = %bundle_result.jito_bundle_id,
+                "bundle auto-submitted after launch"
+            );
+            result.bundle = Some(bundle_result);
+        }
+    }
+
+    Ok(result)
 }
