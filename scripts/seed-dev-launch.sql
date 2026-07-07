@@ -70,6 +70,52 @@ VALUES (
     )
 );
 
+DELETE FROM launch_templates WHERE template_name = 'my-first-launch';
+
+-- Sample template built from the 'test' metadata_templates row (name/symbol/uri
+-- copied in, same way the "Load from metadata template" picker does in the UI).
+INSERT INTO launch_templates (
+    template_name,
+    launchpad_id,
+    variant,
+    quote_asset_id,
+    params
+)
+VALUES (
+    'my-first-launch',
+    1,
+    'pumpfun.create_v2_devbuy',
+    1,
+    jsonb_build_object(
+        'name', 'test',
+        'symbol', 'test',
+        'uri', 'ipfs://QmTNUVzpKjTMfYXVAQtFYZ81vj4cR99XbWiNKfk58Kod47',
+        'dev_buy_quote', 50000000,
+        'slippage_bps', 500,
+        'is_mayhem_mode', false,
+        'cashback_enabled', false,
+        'bundle_leg_count', 2,
+        'bundle_quote_per_leg', 50000000,
+        'bundle_tip_quote', 100000,
+        'leg_structures', jsonb_build_array(
+            jsonb_build_object(
+                'variant', 'buy_exact_sol_in',
+                'slippage_bps_min', 300,
+                'slippage_bps_max', 800,
+                'cu_limit_min', 120000,
+                'cu_limit_max', 180000,
+                'cu_price_min', 150000,
+                'cu_price_max', 400000,
+                'tip_quote_min', 10000,
+                'tip_quote_max', 100000
+            ),
+            jsonb_build_object(
+                'variant', 'buy'
+            )
+        )
+    )
+);
+
 COMMIT;
 
 -- Quick sanity:
