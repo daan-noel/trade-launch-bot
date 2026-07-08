@@ -151,6 +151,24 @@ export interface ManageAction {
   completed_at: string | null;
 }
 
+// ---- Sell ladders (token-management-plan.md Phase 4) ----
+export interface LadderRung {
+  metric: string; // 'market_cap_usd' | 'price_usd'
+  threshold: number;
+  pct: number; // % of holdings to sell when crossed
+  fired?: boolean;
+}
+
+export interface SellLadder {
+  id: string;
+  mint_address: string;
+  selection: WalletSelection;
+  rungs: LadderRung[];
+  status: string; // armed | done | cancelled
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ManagedWalletPool {
   id: string;
   address: string;

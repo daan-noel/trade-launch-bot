@@ -362,6 +362,40 @@ impl FromStr for ManageStatus {
     }
 }
 
+/// `sell_ladders.status` lifecycle: `armed` (evaluating) → `done` (all rungs
+/// fired) | `cancelled` (operator). CHECK in migration `0012`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LadderStatus {
+    Armed,
+    Done,
+    Cancelled,
+}
+
+impl LadderStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LadderStatus::Armed => "armed",
+            LadderStatus::Done => "done",
+            LadderStatus::Cancelled => "cancelled",
+        }
+    }
+
+    pub const ALL: [LadderStatus; 3] =
+        [LadderStatus::Armed, LadderStatus::Done, LadderStatus::Cancelled];
+}
+
+impl FromStr for LadderStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "armed" => Ok(LadderStatus::Armed),
+            "done" => Ok(LadderStatus::Done),
+            "cancelled" => Ok(LadderStatus::Cancelled),
+            other => Err(format!("unknown ladder status: {other}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +469,15 @@ mod tests {
             assert_eq!(ManageStatus::from_str(s.as_str()).unwrap(), s);
         }
         assert_eq!(ManageStatus::Completed.as_str(), "completed");
-        assert!(ManageStatus::from_str("done").is_err());
+        assert!(ManageStatus::from_str("nope").is_err());
+    }
+
+    #[test]
+    fn ladder_status_roundtrips() {
+        for s in LadderStatus::ALL {
+            assert_eq!(LadderStatus::from_str(s.as_str()).unwrap(), s);
+        }
+        assert_eq!(LadderStatus::Armed.as_str(), "armed");
+        assert!(LadderStatus::from_str("firing").is_err());
     }
 }

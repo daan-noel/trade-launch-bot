@@ -211,6 +211,21 @@ pub struct ManageAction {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// An armed take-profit sell ladder (token-management-plan.md Phase 4). `rungs` is
+/// a JSONB array of `{ metric, threshold, pct, fired }`; the background evaluator
+/// flips a rung's `fired` when the token crosses its milestone and fires a sell of
+/// `pct` across `selection`. Never a FK to `tokens`.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct SellLadder {
+    pub id: Uuid,
+    pub mint_address: String,
+    pub selection: Json,
+    pub rungs: Json,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Phase-2 seam — atomic Jito bundle of a launch's buy legs. `legs` is the
 /// per-leg structure descriptor pool (audited variant + budget/tip).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

@@ -12,9 +12,12 @@ import type {
   LaunchResult,
   LaunchStatus,
   LaunchTemplate,
+  LadderRung,
   ManageAction,
   ManageRequest,
   ManagedWalletPool,
+  SellLadder,
+  WalletSelection,
   MetadataTemplate,
   NewLaunchTemplateInput,
   NewMetadataTemplate,
@@ -199,6 +202,27 @@ export const api = baseApi.injectEndpoints({
       query: ({ mint, limit }) => `/api/tokens/${mint}/manage/actions${q({ limit })}`,
       providesTags: ['ManageActions'],
     }),
+
+    // ---- Sell ladders ----
+    ladders: build.query<SellLadder[], string>({
+      query: (mint) => `/api/tokens/${mint}/manage/ladders`,
+      providesTags: ['Ladders'],
+    }),
+    armLadder: build.mutation<
+      SellLadder,
+      { mint: string; selection?: WalletSelection; rungs: LadderRung[] }
+    >({
+      query: ({ mint, selection, rungs }) => ({
+        url: `/api/tokens/${mint}/manage/ladders`,
+        method: 'POST',
+        body: { selection, rungs },
+      }),
+      invalidatesTags: ['Ladders'],
+    }),
+    cancelLadder: build.mutation<void, string>({
+      query: (id) => ({ url: `/api/manage/ladders/${id}`, method: 'DELETE' }),
+      invalidatesTags: ['Ladders'],
+    }),
   }),
   overrideExisting: false,
 });
@@ -233,4 +257,7 @@ export const {
   useManagePreviewMutation,
   useManageExecuteMutation,
   useManageActionsQuery,
+  useLaddersQuery,
+  useArmLadderMutation,
+  useCancelLadderMutation,
 } = api;

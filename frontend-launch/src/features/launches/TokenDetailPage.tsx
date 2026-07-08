@@ -18,6 +18,7 @@ import {
 } from '@shared/components/ui';
 import { PriceChart } from '@shared/components/PriceChart';
 import { ManagePanel } from './ManagePanel';
+import { LadderPanel } from './LadderPanel';
 import { ageFromSecs, formatCount, formatSig, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { TokenOverview, TokenPosition, TradePriced } from '@shared/types';
 
@@ -100,6 +101,8 @@ export function TokenDetailPage() {
       </Card>
 
       {positions.length > 0 && <ManagePanel mint={mint} overview={overview} />}
+
+      {positions.length > 0 && <LadderPanel mint={mint} />}
 
       <Card title={`Trades (${trades.length})`}>
         <TradesTable trades={trades} loading={tradesLoading} overview={overview} />

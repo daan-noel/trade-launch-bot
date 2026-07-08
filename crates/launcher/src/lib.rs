@@ -41,7 +41,8 @@ pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
 pub use manage::{
-    build_plan, execute_action, load_positions, ActionPlan, ManageRequest, PlanLeg, WalletSelection,
+    arm_ladder, build_plan, execute_action, load_positions, spawn_ladder_evaluator, ActionPlan,
+    LadderRung, ManageRequest, PlanLeg, WalletSelection,
 };
 pub use metadata_upload::{
     create_metadata_template, update_metadata_template, NewMetadataTemplateRequest,

@@ -10,11 +10,13 @@
 //! Phase 2 wires **Sell**; Buy/Consolidate/ladders/volume land in later phases.
 
 mod execute;
+mod ladder;
 mod model;
 mod plan;
 mod positions;
 
 pub use execute::execute_action;
+pub use ladder::{arm_ladder, spawn_ladder_evaluator, LadderRung};
 pub use model::{ActionPlan, ManageRequest, PlanLeg, WalletSelection};
 pub use plan::build_plan;
 pub use positions::load_positions;

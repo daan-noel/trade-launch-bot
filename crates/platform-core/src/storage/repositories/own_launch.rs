@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::models::{
     Bundle, Launch, LaunchTemplate, ManageAction, ManagedWallet, NewLaunch, NewLaunchTemplate,
-    NewManagedWallet, TokenPosition, UpdateLaunchTemplate,
+    NewManagedWallet, SellLadder, TokenPosition, UpdateLaunchTemplate,
 };
 
 /// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key. Lifecycle
@@ -745,5 +745,81 @@ impl ManageActionRepo {
         .bind(limit.max(1))
         .fetch_all(pool)
         .await?)
+    }
+}
+
+/// `sell_ladders` — armed take-profit ladders + the background evaluator's scan.
+pub struct SellLadderRepo;
+
+impl SellLadderRepo {
+    /// Arm a new ladder (status `armed`). `rungs` is the `{metric,threshold,pct,
+    /// fired}` array; `selection` the wallet pick each fired rung sells across.
+    pub async fn insert(
+        pool: &PgPool,
+        mint_address: &str,
+        selection: serde_json::Value,
+        rungs: serde_json::Value,
+    ) -> anyhow::Result<SellLadder> {
+        Ok(sqlx::query_as::<_, SellLadder>(
+            "INSERT INTO sell_ladders (mint_address, selection, rungs) \
+             VALUES ($1,$2,$3) RETURNING *",
+        )
+        .bind(mint_address)
+        .bind(selection)
+        .bind(rungs)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Every ladder for a mint (any status), newest first — the token detail list.
+    pub async fn by_mint(pool: &PgPool, mint_address: &str) -> anyhow::Result<Vec<SellLadder>> {
+        Ok(sqlx::query_as::<_, SellLadder>(
+            "SELECT * FROM sell_ladders WHERE mint_address = $1 ORDER BY created_at DESC",
+        )
+        .bind(mint_address)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// All ARMED ladders across mints — the evaluator's scan. Bounded to the tiny
+    /// armed set by the partial index in migration `0012`.
+    pub async fn list_armed(pool: &PgPool) -> anyhow::Result<Vec<SellLadder>> {
+        Ok(sqlx::query_as::<_, SellLadder>(
+            "SELECT * FROM sell_ladders WHERE status = 'armed' ORDER BY created_at",
+        )
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Persist the evaluator's rung updates + (possibly) a terminal status. Stamps
+    /// `updated_at`.
+    pub async fn update(
+        pool: &PgPool,
+        id: Uuid,
+        rungs: serde_json::Value,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE sell_ladders SET rungs = $2, status = $3, updated_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(rungs)
+        .bind(status)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Cancel an armed ladder (operator). Guarded to `armed` so a done ladder
+    /// isn't reopened. Returns whether a row changed.
+    pub async fn cancel(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE sell_ladders SET status = 'cancelled', updated_at = now() \
+             WHERE id = $1 AND status = 'armed'",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
     }
 }

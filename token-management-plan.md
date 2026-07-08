@@ -190,8 +190,19 @@ the full path placing no trades.
    (migrated/AMM = later gap); token consolidation (moving SPL tokens between wallets) is NOT
    included — "consolidate" here means SOL-to-treasury. Verified: `cargo check -p live` + clippy +
    `vite build` clean. **Not exercised against a live chain/DB here.**
-4. **Simple-threshold ladders** *(later)* — arm a rule (sell X% at price/mcap milestone), evaluated
-   by a background task on the ingested `trades` feed; reuses the phase-2 sell primitive.
+4. **Simple-threshold ladders** ✅ **DONE** (2026-07-08) — the subsystem's first automation.
+   Migration `0012_sell_ladders.sql`; `LadderStatus` enum (+ roundtrip test); `SellLadder` model +
+   `SellLadderRepo` (insert / by_mint / `list_armed` via partial index / update / cancel);
+   `launcher::manage::ladder` — `LadderRung {metric, threshold, pct, fired}`, `arm_ladder`
+   (validates rungs), and `spawn_ladder_evaluator` (15s task: scan armed ladders → read
+   `token_overview` → fire any crossed rung's sell via the **Phase 2 `execute_action` pipeline**).
+   Metrics: `market_cap_usd` / `price_usd`. Gated: the evaluator **no-ops when `MANAGE_ENABLED` is
+   off** (ladders stay armed, rungs untouched) so nothing silently burns without selling; a fired
+   rung is marked `fired` regardless of trade outcome to avoid a 15s re-fire loop (audit row records
+   success/failure). `POST/GET .../manage/ladders`, `DELETE /api/manage/ladders/{id}`; wired into
+   `live/main.rs`'s `select!`. Frontend `LadderPanel` (rung builder → arm → list with fired
+   strikethrough + cancel). Verified: `cargo check -p live` + `cargo test -p platform-core` + clippy
+   + `vite build` clean. **Not exercised against a live chain/DB here.**
 5. **Volume-making** *(later)* — fresh-wallet rotation + buy/sell loop scheduler over the buy/sell
    primitives + wallet pool/funding.
 

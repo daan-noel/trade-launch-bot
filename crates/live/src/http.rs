@@ -3,10 +3,10 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
-    create_metadata_template, execute_action, execute_bundle, execute_launch, export_wallet_base58,
-    fund_for_launch, fund_once, update_metadata_template, FundMode, FundScope, LaunchRequest,
-    LauncherSettings, ManageRequest, NewMetadataTemplateRequest, PumpfunTemplateParams,
-    UpdateMetadataTemplateRequest,
+    arm_ladder, create_metadata_template, execute_action, execute_bundle, execute_launch,
+    export_wallet_base58, fund_for_launch, fund_once, update_metadata_template, FundMode, FundScope,
+    LadderRung, LaunchRequest, LauncherSettings, ManageRequest, NewMetadataTemplateRequest,
+    PumpfunTemplateParams, UpdateMetadataTemplateRequest, WalletSelection,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManageActionRepo, ManagedWalletRepo,
-    MetadataTemplateRepo, QuoteAssetRepo, TokenRepo, TradeRepo,
+    MetadataTemplateRepo, QuoteAssetRepo, SellLadderRepo, TokenRepo, TradeRepo,
 };
 
 /// Map any error to a 500 without leaking a panic.
@@ -106,7 +106,16 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route(
             "/api/tokens/{mint}/manage/actions",
             web::get().to(manage_actions),
-        );
+        )
+        .route(
+            "/api/tokens/{mint}/manage/ladders",
+            web::get().to(ladders_list),
+        )
+        .route(
+            "/api/tokens/{mint}/manage/ladders",
+            web::post().to(ladder_arm),
+        )
+        .route("/api/manage/ladders/{id}", web::delete().to(ladder_cancel));
 }
 
 async fn health() -> HttpResponse {
@@ -817,4 +826,53 @@ async fn manage_actions(
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(rows))
+}
+
+#[derive(serde::Deserialize)]
+struct ArmLadderBody {
+    #[serde(default)]
+    selection: WalletSelection,
+    rungs: Vec<LadderRung>,
+}
+
+/// Arm a take-profit sell ladder (post-launch management, Phase 4). Arming is
+/// always allowed (it places no trade); the background evaluator only FIRES a rung
+/// when `MANAGE_ENABLED=true` — until then armed ladders simply wait. Rungs are
+/// validated here, so a bad rung 400s at arm time.
+async fn ladder_arm(
+    pool: web::Data<PgPool>,
+    mint: web::Path<String>,
+    body: web::Json<ArmLadderBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let body = body.into_inner();
+    let ladder = arm_ladder(pool.get_ref(), &mint, body.selection, body.rungs)
+        .await
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("{e:?}")))?;
+    Ok(HttpResponse::Ok().json(ladder))
+}
+
+/// A mint's ladders (any status, newest first).
+async fn ladders_list(
+    pool: web::Data<PgPool>,
+    mint: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let rows = SellLadderRepo::by_mint(pool.get_ref(), &mint)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+/// Cancel an armed ladder. 404 if it wasn't armed (already fired out or cancelled).
+async fn ladder_cancel(
+    pool: web::Data<PgPool>,
+    id: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    if SellLadderRepo::cancel(pool.get_ref(), id.into_inner())
+        .await
+        .map_err(e500)?
+    {
+        Ok(HttpResponse::NoContent().finish())
+    } else {
+        Err(actix_web::error::ErrorNotFound("no armed ladder with that id"))
+    }
 }
