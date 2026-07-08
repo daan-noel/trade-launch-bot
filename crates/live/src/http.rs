@@ -343,18 +343,19 @@ async fn launch_status(
         }
     };
 
-    let bundle = if let Some(bundle_id) = launch.bundle_id {
-        BundleRepo::get(pool.get_ref(), bundle_id).await.map_err(e500)?
-    } else {
-        None
+    // The bundle (if any) and the priced trades + count are independent given the
+    // launch row — fetch them concurrently, and get the count from the same query
+    // as the page (one windowed read instead of a separate count scan).
+    let bundle_fut = async {
+        match launch.bundle_id {
+            Some(bundle_id) => BundleRepo::get(pool.get_ref(), bundle_id).await,
+            None => Ok(None),
+        }
     };
-
-    let trade_count = TradeRepo::count_by_mint(pool.get_ref(), &launch.mint_address)
-        .await
-        .map_err(e500)?;
-    let trades = TradeRepo::find_priced_by_mint(pool.get_ref(), &launch.mint_address, 50)
-        .await
-        .map_err(e500)?;
+    let trades_fut =
+        TradeRepo::find_priced_page_with_count(pool.get_ref(), &launch.mint_address, 50);
+    let (bundle, (trades, trade_count)) =
+        tokio::try_join!(bundle_fut, trades_fut).map_err(e500)?;
 
     Ok(HttpResponse::Ok().json(LaunchStatusResponse {
         launch,

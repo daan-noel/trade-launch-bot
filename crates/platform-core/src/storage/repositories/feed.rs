@@ -141,14 +141,6 @@ impl TradeRepo {
     /// Priced read for a mint (newest-first). `limit <= 0` ⇒ no LIMIT (the full
     /// mint-scoped history the inspect charts need). Still mint-scoped, never the
     /// whole table.
-    pub async fn count_by_mint(pool: &PgPool, mint_address: &str) -> anyhow::Result<i64> {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM trades WHERE mint_address = $1")
-            .bind(mint_address)
-            .fetch_one(pool)
-            .await?;
-        Ok(count)
-    }
-
     pub async fn find_priced_by_mint(
         pool: &PgPool,
         mint_address: &str,
@@ -169,5 +161,36 @@ impl TradeRepo {
                 .await?
         };
         Ok(rows)
+    }
+
+    /// Newest-first priced page for a mint PLUS the full mint-scoped trade count,
+    /// in ONE query via `count(*) OVER()` (the count is over all matching rows,
+    /// before `LIMIT`). Serves the launch-status poll, which needs both — folds
+    /// what were a separate count query + page fetch into one round trip. `limit`
+    /// is clamped to `>= 1` (the status view is always paged).
+    pub async fn find_priced_page_with_count(
+        pool: &PgPool,
+        mint_address: &str,
+        limit: i64,
+    ) -> anyhow::Result<(Vec<TradePriced>, i64)> {
+        use sqlx::{FromRow, Row};
+        let rows = sqlx::query(
+            "SELECT *, count(*) OVER() AS total_count FROM trades_priced \
+             WHERE mint_address = $1 \
+             ORDER BY slot DESC, tx_index DESC, leg_index DESC LIMIT $2",
+        )
+        .bind(mint_address)
+        .bind(limit.max(1))
+        .fetch_all(pool)
+        .await?;
+        let total = match rows.first() {
+            Some(r) => r.try_get::<i64, _>("total_count")?,
+            None => 0,
+        };
+        let trades = rows
+            .iter()
+            .map(TradePriced::from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((trades, total))
     }
 }
