@@ -6,6 +6,7 @@ import {
   useMetadataTemplatesQuery,
   useCreateTemplateMutation,
   useUpdateTemplateMutation,
+  useDeleteTemplateMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
@@ -40,6 +41,7 @@ export function LaunchTemplatesPage() {
   const { data: metadataTemplates = [] } = useMetadataTemplatesQuery();
   const [create, createState] = useCreateTemplateMutation();
   const [update, updateState] = useUpdateTemplateMutation();
+  const [remove, removeState] = useDeleteTemplateMutation();
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [templateName, setTemplateName] = useState('');
@@ -106,6 +108,16 @@ export function LaunchTemplatesPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const onDelete = async (t: LaunchTemplate) => {
+    if (!window.confirm(`Delete launch template "${t.template_name}"? Past launches are unaffected.`)) return;
+    if (editingId === t.id) resetForm();
+    try {
+      await remove(t.id).unwrap();
+    } catch {
+      /* surfaced below */
+    }
+  };
+
   const addLegRow = () => setLegRows((r) => [...r, emptyLegRow()]);
   const removeLegRow = (i: number) => setLegRows((r) => r.filter((_, idx) => idx !== i));
   const updateLegRow = (i: number, patch: Partial<LegRow>) =>
@@ -158,10 +170,29 @@ export function LaunchTemplatesPage() {
     { header: 'Quote', render: (t) => quoteAssets.find((qa) => qa.id === t.quote_asset_id)?.symbol ?? t.quote_asset_id },
     { header: 'Legs', align: 'right', render: (t) => t.params.leg_structures?.length ?? t.params.bundle_leg_count ?? 0 },
     { header: 'Updated', align: 'right', render: (t) => formatAge(t.updated_at) },
-    { header: '', render: (t) => <Button size="sm" onClick={() => onEdit(t)}>Edit</Button> },
+    {
+      header: '',
+      align: 'right',
+      render: (t) => (
+        <div className="flex justify-end gap-2">
+          <Button size="sm" onClick={() => onEdit(t)}>Edit</Button>
+          <Button
+            size="sm"
+            variant="danger"
+            loading={removeState.isLoading && removeState.originalArgs === t.id}
+            onClick={() => onDelete(t)}
+          >
+            Delete
+          </Button>
+        </div>
+      ),
+    },
   ];
 
-  const error = apiErrorMessage(createState.error) ?? apiErrorMessage(updateState.error);
+  const error =
+    apiErrorMessage(createState.error) ??
+    apiErrorMessage(updateState.error) ??
+    apiErrorMessage(removeState.error);
   const saving = createState.isLoading || updateState.isLoading;
 
   return (

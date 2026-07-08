@@ -38,7 +38,10 @@ pub use funding_plan::{
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
-pub use metadata_upload::{create_metadata_template, NewMetadataTemplateRequest};
+pub use metadata_upload::{
+    create_metadata_template, update_metadata_template, NewMetadataTemplateRequest,
+    UpdateMetadataTemplateRequest,
+};
 pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;

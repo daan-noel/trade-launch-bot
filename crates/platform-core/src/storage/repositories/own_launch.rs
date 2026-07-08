@@ -360,6 +360,16 @@ impl LaunchTemplateRepo {
         .fetch_optional(pool)
         .await?)
     }
+
+    /// Delete by id; `false` when no row matched. `launches.template_id` is
+    /// `ON DELETE SET NULL` (migration `0002`), so past launch records survive.
+    pub async fn delete(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+        let r = sqlx::query("DELETE FROM launch_templates WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
+    }
 }
 
 /// `launches` — executed launch records.

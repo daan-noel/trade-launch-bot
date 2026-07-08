@@ -3,8 +3,9 @@
 use actix_web::{web, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
-    create_metadata_template, execute_bundle, execute_launch, fund_for_launch, fund_once, FundMode,
-    FundScope, LaunchRequest, LauncherSettings, NewMetadataTemplateRequest, PumpfunTemplateParams,
+    create_metadata_template, execute_bundle, execute_launch, fund_for_launch, fund_once,
+    update_metadata_template, FundMode, FundScope, LaunchRequest, LauncherSettings,
+    NewMetadataTemplateRequest, PumpfunTemplateParams, UpdateMetadataTemplateRequest,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -56,6 +57,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             "/api/launch_templates/{id}",
             web::put().to(launch_templates_update),
         )
+        .route(
+            "/api/launch_templates/{id}",
+            web::delete().to(launch_templates_delete),
+        )
         .route("/api/wallet_pool", web::get().to(wallet_pool_list))
         .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
         .route("/api/wallet_pool/fund", web::post().to(wallet_pool_fund))
@@ -67,6 +72,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route(
             "/api/metadata_templates",
             web::post().to(metadata_templates_create),
+        )
+        .route(
+            "/api/metadata_templates/{id}",
+            web::put().to(metadata_templates_update),
+        )
+        .route(
+            "/api/metadata_templates/{id}",
+            web::delete().to(metadata_templates_delete),
         )
         .route("/api/launches", web::get().to(launches_list))
         .route("/api/launches/{id}", web::get().to(launch_get))
@@ -187,6 +200,20 @@ async fn launch_templates_update(
         .map_err(e500)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("template not found"))?;
     Ok(HttpResponse::Ok().json(row))
+}
+
+async fn launch_templates_delete(
+    pool: web::Data<PgPool>,
+    path: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    if LaunchTemplateRepo::delete(pool.get_ref(), path.into_inner())
+        .await
+        .map_err(e500)?
+    {
+        Ok(HttpResponse::NoContent().finish())
+    } else {
+        Err(actix_web::error::ErrorNotFound("template not found"))
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -388,6 +415,78 @@ async fn metadata_templates_create(
     .await
     .map_err(e500)?;
     Ok(HttpResponse::Ok().json(template))
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateMetadataTemplateBody {
+    template_name: String,
+    name: String,
+    symbol: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    twitter: Option<String>,
+    #[serde(default)]
+    telegram: Option<String>,
+    #[serde(default)]
+    website: Option<String>,
+    /// Optional replacement image (base64, prefix stripped). Omit all three
+    /// image fields to keep the existing pinned image and only re-pin the JSON.
+    #[serde(default)]
+    image_base64: Option<String>,
+    #[serde(default)]
+    image_filename: Option<String>,
+    #[serde(default)]
+    image_content_type: Option<String>,
+}
+
+/// Re-pin (image only if replaced) + full-replace an existing metadata
+/// template — `launcher::update_metadata_template`.
+async fn metadata_templates_update(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    path: web::Path<Uuid>,
+    body: web::Json<UpdateMetadataTemplateBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    let body = body.into_inner();
+    let template = update_metadata_template(
+        pool.get_ref(),
+        settings,
+        path.into_inner(),
+        UpdateMetadataTemplateRequest {
+            template_name: body.template_name,
+            name: body.name,
+            symbol: body.symbol,
+            description: body.description,
+            twitter: body.twitter,
+            telegram: body.telegram,
+            website: body.website,
+            image_base64: body.image_base64,
+            image_filename: body.image_filename,
+            image_content_type: body.image_content_type,
+        },
+    )
+    .await
+    .map_err(e500)?
+    .ok_or_else(|| actix_web::error::ErrorNotFound("metadata template not found"))?;
+    Ok(HttpResponse::Ok().json(template))
+}
+
+/// Delete a metadata template. Launch templates referencing it keep working —
+/// their `metadata_template_id` is unset by the FK `ON DELETE SET NULL`.
+async fn metadata_templates_delete(
+    pool: web::Data<PgPool>,
+    path: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    if MetadataTemplateRepo::delete(pool.get_ref(), path.into_inner())
+        .await
+        .map_err(e500)?
+    {
+        Ok(HttpResponse::NoContent().finish())
+    } else {
+        Err(actix_web::error::ErrorNotFound("metadata template not found"))
+    }
 }
 
 #[derive(Debug, Serialize)]

@@ -137,6 +137,20 @@ export interface NewMetadataTemplate {
   image_content_type: string;
 }
 
+export interface UpdateMetadataTemplate {
+  template_name: string;
+  name: string;
+  symbol: string;
+  description?: string;
+  twitter?: string;
+  telegram?: string;
+  website?: string;
+  // Omit all three image fields to keep the existing pinned image.
+  image_base64?: string;
+  image_filename?: string;
+  image_content_type?: string;
+}
+
 export interface LaunchResult {
   launch_id: string;
   mint_address: string;

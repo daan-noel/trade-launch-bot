@@ -2,36 +2,73 @@ import { useState } from 'react';
 import {
   useMetadataTemplatesQuery,
   useCreateMetadataTemplateMutation,
+  useUpdateMetadataTemplateMutation,
+  useDeleteMetadataTemplateMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import { Banner, Button, Card, Column, DataTable, Field, Input } from '@shared/components/ui';
 import { fileToBase64, formatAge } from '@shared/lib/format';
 import type { MetadataTemplate } from '@shared/types';
 
+const emptyForm = {
+  templateName: '',
+  name: '',
+  symbol: '',
+  description: '',
+  twitter: '',
+  telegram: '',
+  website: '',
+};
+
 export function MetadataTemplatesPage() {
   const { data: templates = [], isFetching } = useMetadataTemplatesQuery();
-  const [create, { isLoading, error }] = useCreateMetadataTemplateMutation();
+  const [create, createState] = useCreateMetadataTemplateMutation();
+  const [update, updateState] = useUpdateMetadataTemplateMutation();
+  const [remove, removeState] = useDeleteMetadataTemplateMutation();
 
-  const [f, setF] = useState({
-    templateName: '',
-    name: '',
-    symbol: '',
-    description: '',
-    twitter: '',
-    telegram: '',
-    website: '',
-  });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [f, setF] = useState({ ...emptyForm });
   const [imageFile, setImageFile] = useState<File | null>(null);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF((p) => ({ ...p, [k]: e.target.value }));
 
-  const canSubmit = f.templateName && f.name && f.symbol && imageFile;
+  // A new image is required to author a template, but optional when editing —
+  // omitting it keeps the row's already-pinned image and only re-pins the JSON.
+  const canSubmit = f.templateName && f.name && f.symbol && (editingId || imageFile);
+  const saving = createState.isLoading || updateState.isLoading;
 
-  const onCreate = async () => {
-    if (!canSubmit || !imageFile) return;
+  const resetForm = () => {
+    setEditingId(null);
+    setF({ ...emptyForm });
+    setImageFile(null);
+  };
+
+  const onEdit = (t: MetadataTemplate) => {
+    setEditingId(t.id);
+    setF({
+      templateName: t.template_name,
+      name: t.name,
+      symbol: t.symbol,
+      description: t.description ?? '',
+      twitter: t.twitter ?? '',
+      telegram: t.telegram ?? '',
+      website: t.website ?? '',
+    });
+    setImageFile(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const onSubmit = async () => {
+    if (!canSubmit) return;
     try {
-      const image_base64 = await fileToBase64(imageFile);
-      await create({
+      const image = imageFile
+        ? {
+            image_base64: await fileToBase64(imageFile),
+            image_filename: imageFile.name,
+            image_content_type: imageFile.type || 'application/octet-stream',
+          }
+        : undefined;
+      const fields = {
         template_name: f.templateName,
         name: f.name,
         symbol: f.symbol,
@@ -39,12 +76,29 @@ export function MetadataTemplatesPage() {
         twitter: f.twitter || undefined,
         telegram: f.telegram || undefined,
         website: f.website || undefined,
-        image_base64,
-        image_filename: imageFile.name,
-        image_content_type: imageFile.type || 'application/octet-stream',
-      }).unwrap();
-      setF({ templateName: '', name: '', symbol: '', description: '', twitter: '', telegram: '', website: '' });
-      setImageFile(null);
+      };
+      if (editingId) {
+        await update({ id: editingId, body: { ...fields, ...image } }).unwrap();
+      } else {
+        // create requires an image — canSubmit guarantees `image` here.
+        await create({ ...fields, ...image! }).unwrap();
+      }
+      resetForm();
+    } catch {
+      /* surfaced below */
+    }
+  };
+
+  const onDelete = async (t: MetadataTemplate) => {
+    if (
+      !window.confirm(
+        `Delete metadata template "${t.template_name}"? Launch templates using it will be unlinked.`,
+      )
+    )
+      return;
+    if (editingId === t.id) resetForm();
+    try {
+      await remove(t.id).unwrap();
     } catch {
       /* surfaced below */
     }
@@ -67,13 +121,42 @@ export function MetadataTemplatesPage() {
     },
     { header: 'URI', render: (t) => <code className="mono text-xs break-all">{t.uri}</code> },
     { header: 'Age', align: 'right', render: (t) => formatAge(t.created_at) },
+    {
+      header: '',
+      align: 'right',
+      render: (t) => (
+        <div className="flex justify-end gap-2">
+          <Button size="sm" onClick={() => onEdit(t)}>Edit</Button>
+          <Button
+            size="sm"
+            variant="danger"
+            loading={removeState.isLoading && removeState.originalArgs === t.id}
+            onClick={() => onDelete(t)}
+          >
+            Delete
+          </Button>
+        </div>
+      ),
+    },
   ];
+
+  const error =
+    apiErrorMessage(createState.error) ??
+    apiErrorMessage(updateState.error) ??
+    apiErrorMessage(removeState.error);
 
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold">Metadata Templates</h1>
 
-      <Card title="Author metadata template">
+      <Card title={editingId ? 'Edit metadata template' : 'Author metadata template'}>
+        {editingId && (
+          <Banner tone="warn" className="mb-3" actions={<Button size="sm" onClick={resetForm}>Cancel</Button>}>
+            Editing <strong>{f.templateName}</strong> — re-pins the off-chain JSON. Past launches are
+            unaffected.
+          </Banner>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Field label="Template name" htmlFor="m-tn">
             <Input id="m-tn" value={f.templateName} onChange={set('templateName')} placeholder="e.g. dog-coin-v1" />
@@ -96,7 +179,11 @@ export function MetadataTemplatesPage() {
           <Field label="Website (optional)" htmlFor="m-w">
             <Input id="m-w" value={f.website} onChange={set('website')} />
           </Field>
-          <Field label="Image" htmlFor="m-img" className="md:col-span-2">
+          <Field
+            label={editingId ? 'Image (optional — keeps current if blank)' : 'Image'}
+            htmlFor="m-img"
+            className="md:col-span-2"
+          >
             <Input
               id="m-img"
               type="file"
@@ -105,8 +192,8 @@ export function MetadataTemplatesPage() {
             />
           </Field>
           <div className="flex items-end">
-            <Button variant="primary" loading={isLoading} disabled={!canSubmit} onClick={onCreate}>
-              {isLoading ? 'Pinning to IPFS…' : 'Create template'}
+            <Button variant="primary" loading={saving} disabled={!canSubmit} onClick={onSubmit}>
+              {saving ? 'Pinning to IPFS…' : editingId ? 'Save changes' : 'Create template'}
             </Button>
           </div>
         </div>
@@ -116,7 +203,7 @@ export function MetadataTemplatesPage() {
           identity a launch template references via <code>metadata_template_id</code> — the single
           source of truth.
         </p>
-        {error && <Banner tone="bad" className="mt-3">{apiErrorMessage(error)}</Banner>}
+        {error && <Banner tone="bad" className="mt-3">{error}</Banner>}
       </Card>
 
       <Card title={`Templates (${templates.length})`}>

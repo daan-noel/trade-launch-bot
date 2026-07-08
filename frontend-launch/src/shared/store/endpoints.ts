@@ -15,6 +15,7 @@ import type {
   MetadataTemplate,
   NewLaunchTemplateInput,
   NewMetadataTemplate,
+  UpdateMetadataTemplate,
   QuoteAsset,
   TokenOverview,
   TradePriced,
@@ -69,6 +70,10 @@ export const api = baseApi.injectEndpoints({
       query: ({ id, body }) => ({ url: `/api/launch_templates/${id}`, method: 'PUT', body }),
       invalidatesTags: ['Templates', 'Bootstrap'],
     }),
+    deleteTemplate: build.mutation<void, string>({
+      query: (id) => ({ url: `/api/launch_templates/${id}`, method: 'DELETE' }),
+      invalidatesTags: ['Templates', 'Bootstrap'],
+    }),
 
     // ---- Metadata templates ----
     metadataTemplates: build.query<MetadataTemplate[], void>({
@@ -78,6 +83,18 @@ export const api = baseApi.injectEndpoints({
     createMetadataTemplate: build.mutation<MetadataTemplate, NewMetadataTemplate>({
       query: (body) => ({ url: '/api/metadata_templates', method: 'POST', body }),
       invalidatesTags: ['MetadataTemplates', 'Bootstrap'],
+    }),
+    updateMetadataTemplate: build.mutation<
+      MetadataTemplate,
+      { id: string; body: UpdateMetadataTemplate }
+    >({
+      query: ({ id, body }) => ({ url: `/api/metadata_templates/${id}`, method: 'PUT', body }),
+      invalidatesTags: ['MetadataTemplates', 'Bootstrap'],
+    }),
+    deleteMetadataTemplate: build.mutation<void, string>({
+      query: (id) => ({ url: `/api/metadata_templates/${id}`, method: 'DELETE' }),
+      // Launch templates lose their link (FK SET NULL) — refresh Templates too.
+      invalidatesTags: ['MetadataTemplates', 'Templates', 'Bootstrap'],
     }),
 
     // ---- Wallet pool ----
@@ -151,8 +168,11 @@ export const {
   useTemplatesQuery,
   useCreateTemplateMutation,
   useUpdateTemplateMutation,
+  useDeleteTemplateMutation,
   useMetadataTemplatesQuery,
   useCreateMetadataTemplateMutation,
+  useUpdateMetadataTemplateMutation,
+  useDeleteMetadataTemplateMutation,
   useWalletPoolQuery,
   useGenerateWalletsMutation,
   useFundPoolMutation,

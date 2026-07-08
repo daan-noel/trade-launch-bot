@@ -70,33 +70,18 @@ pub async fn create_metadata_template(
     .await
     .context("pin image to Pinata")?;
 
-    let mut metadata = serde_json::Map::new();
-    metadata.insert("name".into(), json!(req.name));
-    metadata.insert("symbol".into(), json!(req.symbol));
-    metadata.insert(
-        "description".into(),
-        json!(req.description.clone().unwrap_or_default()),
+    let content = build_offchain_json(
+        &req.name,
+        &req.symbol,
+        req.description.as_deref(),
+        &image_uri,
+        req.twitter.as_deref(),
+        req.telegram.as_deref(),
+        req.website.as_deref(),
     );
-    metadata.insert("image".into(), json!(image_uri));
-    metadata.insert("showName".into(), json!(true));
-    if let Some(v) = &req.twitter {
-        metadata.insert("twitter".into(), json!(v));
-    }
-    if let Some(v) = &req.telegram {
-        metadata.insert("telegram".into(), json!(v));
-    }
-    if let Some(v) = &req.website {
-        metadata.insert("website".into(), json!(v));
-    }
-
-    let uri = pin_json(
-        &client,
-        jwt,
-        &serde_json::Value::Object(metadata),
-        &req.template_name,
-    )
-    .await
-    .context("pin metadata JSON to Pinata")?;
+    let uri = pin_json(&client, jwt, &content, &req.template_name)
+        .await
+        .context("pin metadata JSON to Pinata")?;
 
     MetadataTemplateRepo::insert(
         pool,
@@ -113,6 +98,126 @@ pub async fn create_metadata_template(
         },
     )
     .await
+}
+
+/// Edit-form input for an existing metadata template. The image is optional: a
+/// blank picker keeps the row's already-pinned image, and only the off-chain
+/// JSON is re-pinned so `uri` stays consistent with the (possibly edited)
+/// name/symbol/socials — the row's single-source-of-truth invariant.
+#[derive(Debug, Clone)]
+pub struct UpdateMetadataTemplateRequest {
+    pub template_name: String,
+    pub name: String,
+    pub symbol: String,
+    pub description: Option<String>,
+    pub twitter: Option<String>,
+    pub telegram: Option<String>,
+    pub website: Option<String>,
+    /// New image (base64). `None` keeps the existing pinned `image_uri`.
+    pub image_base64: Option<String>,
+    pub image_filename: Option<String>,
+    pub image_content_type: Option<String>,
+}
+
+/// Re-pin (image only if replaced, JSON always) and full-replace the row.
+/// Returns `None` when `id` doesn't exist. Like `create`, nothing is written
+/// unless every required pin succeeds.
+pub async fn update_metadata_template(
+    pool: &PgPool,
+    settings: &LauncherSettings,
+    id: uuid::Uuid,
+    req: UpdateMetadataTemplateRequest,
+) -> Result<Option<MetadataTemplate>> {
+    let Some(existing) = MetadataTemplateRepo::get(pool, id).await? else {
+        return Ok(None);
+    };
+
+    let jwt = settings
+        .pinata_jwt
+        .as_deref()
+        .context("PINATA_JWT not configured — required to pin token metadata")?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("build reqwest client for Pinata upload")?;
+
+    // Re-pin the image only when a new one was supplied; otherwise keep the
+    // row's existing pin.
+    let image_uri = match (
+        req.image_base64.as_deref(),
+        req.image_filename.as_deref(),
+        req.image_content_type.as_deref(),
+    ) {
+        (Some(b64), Some(filename), Some(content_type)) => {
+            let image_bytes = STANDARD.decode(b64.as_bytes()).context("decode image_base64")?;
+            Some(
+                pin_file(&client, jwt, image_bytes, filename, content_type)
+                    .await
+                    .context("pin image to Pinata")?,
+            )
+        }
+        _ => existing.image_uri.clone(),
+    };
+
+    let content = build_offchain_json(
+        &req.name,
+        &req.symbol,
+        req.description.as_deref(),
+        image_uri.as_deref().unwrap_or_default(),
+        req.twitter.as_deref(),
+        req.telegram.as_deref(),
+        req.website.as_deref(),
+    );
+    let uri = pin_json(&client, jwt, &content, &req.template_name)
+        .await
+        .context("pin metadata JSON to Pinata")?;
+
+    MetadataTemplateRepo::update(
+        pool,
+        id,
+        &NewMetadataTemplate {
+            template_name: req.template_name,
+            name: req.name,
+            symbol: req.symbol,
+            description: req.description,
+            twitter: req.twitter,
+            telegram: req.telegram,
+            website: req.website,
+            image_uri,
+            uri,
+        },
+    )
+    .await
+}
+
+/// Build the standard Metaplex/pump.fun off-chain JSON — the single site both
+/// create and update use so the two paths can't drift.
+fn build_offchain_json(
+    name: &str,
+    symbol: &str,
+    description: Option<&str>,
+    image_uri: &str,
+    twitter: Option<&str>,
+    telegram: Option<&str>,
+    website: Option<&str>,
+) -> serde_json::Value {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("name".into(), json!(name));
+    metadata.insert("symbol".into(), json!(symbol));
+    metadata.insert("description".into(), json!(description.unwrap_or_default()));
+    metadata.insert("image".into(), json!(image_uri));
+    metadata.insert("showName".into(), json!(true));
+    if let Some(v) = twitter {
+        metadata.insert("twitter".into(), json!(v));
+    }
+    if let Some(v) = telegram {
+        metadata.insert("telegram".into(), json!(v));
+    }
+    if let Some(v) = website {
+        metadata.insert("website".into(), json!(v));
+    }
+    serde_json::Value::Object(metadata)
 }
 
 async fn pin_file(
