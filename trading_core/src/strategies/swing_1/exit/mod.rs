@@ -484,16 +484,36 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     entry_price: f64,
     rule: &Swing1Rule,
 ) -> Option<ExitFill> {
-    find_trade_driven_exit_with_slot(trades, entry_time, entry_price, rule).map(|(f, _)| f)
+    // Analysis path (backtest / grouped sweep / detect): market-fill at the first
+    // firing trade when no firing's window ever holds a fill, so a token that
+    // provably crossed an exit isn't mislabeled `Open` (see tpsl2's twin).
+    exit_walk(trades, entry_time, entry_price, rule, true).map(|(f, _)| f)
 }
 
 /// [`find_trade_driven_exit`] that also returns the **firing slot** (for the live
-/// paper fill-poll window), matching the tpsl2 resolver shape.
+/// paper fill-poll window), matching the tpsl2 resolver shape. **Strict**: no
+/// market-fill fallback, so an unfilled firing stays `None` and the poll waits the
+/// real fill out (booking the exit at the trigger price on timeout).
 pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
     trades: &[T],
     entry_time: DateTime<Utc>,
     entry_price: f64,
     rule: &Swing1Rule,
+) -> Option<(ExitFill, u64)> {
+    exit_walk(trades, entry_time, entry_price, rule, false)
+}
+
+/// Shared post-entry walk behind [`find_trade_driven_exit`] (analysis, `true`) and
+/// [`find_trade_driven_exit_with_slot`] (live poll, `false`).
+/// `market_fill_on_empty_window` chooses the fallback when the ladder fired but no
+/// firing's window held a fill: `true` fills at the first firing trade (market exit),
+/// `false` returns `None`.
+fn exit_walk<T: TradeRow>(
+    trades: &[T],
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    rule: &Swing1Rule,
+    market_fill_on_empty_window: bool,
 ) -> Option<(ExitFill, u64)> {
     if entry_price <= 0.0 {
         return None;
@@ -501,6 +521,8 @@ pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
     let params = LadderParams::from_rule(rule);
     let next_kill_ms = next_kill_fire_ms(trades, rule, entry_time);
     let mut state = WalkState::starting_at(entry_price, entry_time);
+    // First firing trade + reason + its slot — the market-exit fallback below.
+    let mut first_fire: Option<(&T, ExitReason, u64)> = None;
 
     for (fire_idx, t) in trades.iter().enumerate().filter(|(_, t)| t.block_time() > entry_time) {
         state.update_with_trade(t);
@@ -513,6 +535,9 @@ pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
         // Worst-case fill window: trigger slot F + the next observed slot within
         // MAX_FILL_WAIT_SLOTS; fill = lowest price in the window (worst for a sell).
         let exit_slot = t.slot();
+        if first_fire.is_none() {
+            first_fire = Some((t, reason, exit_slot));
+        }
         let post = &trades[fire_idx + 1..];
         let next_slot = post
             .iter()
@@ -537,6 +562,23 @@ pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
                     tx_signature: et.tx_signature().to_string(),
                     slot: et.slot(),
                     block_time: et.block_time(),
+                    reason,
+                },
+                exit_slot,
+            ));
+        }
+    }
+
+    // No firing ever filled. The analysis path market-fills at the FIRST firing trade
+    // (matching tpsl2); the live poll leaves it `None` to keep waiting.
+    if market_fill_on_empty_window {
+        if let Some((t, reason, exit_slot)) = first_fire {
+            return Some((
+                ExitFill {
+                    price: spot_price(t),
+                    tx_signature: t.tx_signature().to_string(),
+                    slot: t.slot(),
+                    block_time: t.block_time(),
                     reason,
                 },
                 exit_slot,
@@ -617,6 +659,19 @@ mod tests {
         ];
         let f = find_trade_driven_exit(&trades, base(), 1.0, &rule).expect("exit");
         assert_eq!(f.reason, ExitReason::NextKill);
+    }
+
+    #[test]
+    fn exit_market_fills_at_firing_trade_when_window_empty() {
+        // TP fires at slot 3 (2.0 = +100%) but no subsequent trade → no firing ever
+        // fills. Analysis market-fills at the firing trade; live stays `None`.
+        let rule = rule_tp_sl(50.0, 90.0);
+        let trades = vec![tr(TradeType::Buy, 1, 1.0, 2), tr(TradeType::Buy, 2, 2.0, 3)];
+        let f = find_trade_driven_exit(&trades, base(), 1.0, &rule)
+            .expect("analysis path market-fills the fired exit at the firing trade");
+        assert_eq!(f.reason, ExitReason::TakeProfit);
+        assert!((f.price - 2.0).abs() < 1e-9, "fills at the firing trade, got {}", f.price);
+        assert!(find_trade_driven_exit_with_slot(&trades, base(), 1.0, &rule).is_none());
     }
 
     // ── Incremental memo parity (Phase A DoD gate) ───────────────────────────

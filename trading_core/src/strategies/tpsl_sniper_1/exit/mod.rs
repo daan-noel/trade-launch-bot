@@ -371,11 +371,45 @@ fn time_stop_triggered(entry_time: DateTime<Utc>, at: DateTime<Utc>, time_stop_s
 /// Walk a position's post-entry trades chronologically and return the first exit
 /// the ladder fires, or `None` if the position is still open. Trades are assumed
 /// slot/time-sorted upstream.
+///
+/// **Analysis entry** (backtest / grouped sweep): if the ladder fires but *no*
+/// firing's worst-case fill window ever holds a trade, this market-fills at the
+/// first firing trade (a market exit) rather than dropping the exit to `Open` — the
+/// same fix as tpsl2's `find_trade_driven_exit`, so a token that provably crossed an
+/// exit at a sparse, gappy stretch isn't mislabeled. Unlike tpsl2 the walk **does
+/// rescan** every later firing first, so this fallback only fires when the whole TP
+/// region is un-fillable. The live poll uses [`find_trade_driven_exit_live`].
 pub fn find_trade_driven_exit<T: TradeRow>(
     trades: &[T],
     entry_time: DateTime<Utc>,
     entry_price: f64,
     rule: &Tpsl1Rule,
+) -> Option<ExitFill> {
+    exit_walk(trades, entry_time, entry_price, rule, true)
+}
+
+/// Strict variant for the **live paper poll**: no market-fill fallback, so an
+/// unfilled firing returns `None` and the poll keeps waiting for the real fill to
+/// index (booking the exit at the trigger price on timeout — never inventing a fill
+/// mid-poll). Identical to [`find_trade_driven_exit`] in every window-has-a-fill case.
+pub fn find_trade_driven_exit_live<T: TradeRow>(
+    trades: &[T],
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    rule: &Tpsl1Rule,
+) -> Option<ExitFill> {
+    exit_walk(trades, entry_time, entry_price, rule, false)
+}
+
+/// Shared post-entry walk behind [`find_trade_driven_exit`] (analysis, `true`) and
+/// [`find_trade_driven_exit_live`] (live poll, `false`). `market_fill_on_empty_window`
+/// chooses the fallback when the ladder fired but no firing's window held a fill.
+fn exit_walk<T: TradeRow>(
+    trades: &[T],
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    rule: &Tpsl1Rule,
+    market_fill_on_empty_window: bool,
 ) -> Option<ExitFill> {
     if entry_price <= 0.0 {
         return None;
@@ -384,6 +418,8 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     let params = LadderParams::from_rule(rule);
 
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
+    // First firing trade + reason — the market-exit fallback if no window ever fills.
+    let mut first_fire: Option<(&T, ExitReason)> = None;
 
     // Single pass over the post-entry trades — no intermediate `Vec<&Trade>`.
     // enumerate() on the base slice so `fire_idx` is the true position in `trades`.
@@ -395,6 +431,9 @@ pub fn find_trade_driven_exit<T: TradeRow>(
         let Some(reason) = ladder_reason(&state, t, entry_time, entry_price, &params) else {
             continue;
         };
+        if first_fire.is_none() {
+            first_fire = Some((t, reason));
+        }
 
         // Exit fill window: trigger slot F (always) + the next observed slot after F
         // if it's within MAX_FILL_WAIT_SLOTS. Only trades after the firing tx in the
@@ -430,6 +469,20 @@ pub fn find_trade_driven_exit<T: TradeRow>(
                 tx_signature: et.tx_signature().to_string(),
                 slot: et.slot(),
                 block_time: et.block_time(),
+                reason,
+            });
+        }
+    }
+
+    // No firing ever filled. The analysis path market-fills at the FIRST firing trade
+    // (matching tpsl2); the live poll leaves it `None` to keep waiting.
+    if market_fill_on_empty_window {
+        if let Some((t, reason)) = first_fire {
+            return Some(ExitFill {
+                price: t.price_per_token(),
+                tx_signature: t.tx_signature().to_string(),
+                slot: t.slot(),
+                block_time: t.block_time(),
                 reason,
             });
         }
@@ -649,11 +702,17 @@ mod tests {
     }
 
     #[test]
-    fn exit_no_fill_when_window_empty() {
-        // SL fires at slot 3 but no subsequent trades → no fill → None.
+    fn exit_market_fills_at_firing_trade_when_window_empty() {
+        // SL fires at slot 3 but no subsequent trades → no firing ever fills. The
+        // ANALYSIS path market-fills at the firing trade; the LIVE path stays `None`
+        // so the poll waits the fill out.
         let trades = vec![buy(0.7, 3, 10)];
         let rule = rule_with(1000.0, 20.0, None, None, None, None);
-        assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
+        let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule)
+            .expect("analysis path market-fills the fired exit at the firing trade");
+        assert_eq!(exit.reason, ExitReason::StopLoss);
+        assert!((exit.price - 0.7).abs() < 1e-9, "fills at the firing trade, got {}", exit.price);
+        assert!(find_trade_driven_exit_live(&trades, base_time(), 1.0, &rule).is_none());
     }
 
     fn flat_series() -> Vec<Trade> {

@@ -410,7 +410,6 @@ pub(crate) fn spawn_exit_fill_poll(
         let strategy = StrategyImpl::from_id(&rule.strategy_id);
         let rule_id = rule.id;
         let max_total = run_cap(&rule);
-        let is_tpsl2 = strategy == Some(StrategyImpl::Tpsl2);
 
         // Worst-case fill modelling (tpsl2): once the ladder first fires at slot S, the
         // fill is the lowest price in {S, next_slot} where next_slot ≤ S + MAX_FILL_WAIT_SLOTS.
@@ -473,11 +472,14 @@ pub(crate) fn spawn_exit_fill_poll(
                 position_id, price, exit_tx, reason
             );
         } else {
-            // No confirming exit trade was indexed within the poll window. tpsl2 books a
-            // worst-case TOTAL LOSS (`exit_price=0` ⇒ −100% PnL) so paper stays a
-            // worst-case-faithful proxy; tpsl1 books the hypothetical trigger price.
-            // Status is terminal ExitFailed either way; never reverts to Holding.
-            let fail_price = if is_tpsl2 { 0.0 } else { trigger_price };
+            // No confirming exit trade was indexed within the poll window. Book the
+            // exit at the **trigger price** (the price at which the ladder fired) — a
+            // market exit modelling the bot's own sell, mirroring the backtest's
+            // empty-window market-fill. Status stays terminal ExitFailed (the fill was
+            // never confirmed by a real trade, so it is NOT counted as a clean win),
+            // just no longer zeroed to a −100% total loss for tpsl2. Never reverts to
+            // Holding.
+            let fail_price = trigger_price;
             if let Ok(Some(mut pos)) = repo.find_position(position_id).await {
                 let prev = pos.clone();
                 pos.mark_exit_failed(fail_price, trigger_time);

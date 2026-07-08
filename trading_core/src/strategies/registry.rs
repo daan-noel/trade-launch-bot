@@ -705,7 +705,9 @@ impl StrategyImpl {
     ) -> Option<(ResolvedExit, Option<u64>)> {
         match (self, params) {
             (Self::Tpsl1, StrategyParams::Tpsl1(p)) => {
-                let f = t1::exit::find_trade_driven_exit(
+                // Live poll: strict (no market-fill) so an unfilled firing stays
+                // `None` and the poll waits the real fill out.
+                let f = t1::exit::find_trade_driven_exit_live(
                     trades,
                     entry_time,
                     entry_price,

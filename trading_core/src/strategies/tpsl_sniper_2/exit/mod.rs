@@ -377,7 +377,21 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     entry_price: f64,
     rule: &Tpsl2Rule,
 ) -> Option<ExitFill> {
-    find_trade_driven_exit_with_slot(trades, entry_time, entry_price, rule).map(|(fill, _)| fill)
+    if entry_price <= 0.0 {
+        return None;
+    }
+    let params = LadderParams::from_rule(rule);
+    // Analysis path (backtest / sweep / detect): when the ladder fires but its
+    // worst-case fill window holds no trade, fill at the **firing trade itself** —
+    // a market exit modelling the bot's own sell — instead of dropping the exit.
+    // Without this, a token whose price provably crossed TP/SL right at a sparse,
+    // gappy stretch (classically the curve blow-off just before migration, where
+    // the next curve trade is > MAX_FILL_WAIT_SLOTS away and the post-migration AMM
+    // fills are absent from the corpus) was mislabeled `Open`. The live paper poll
+    // (`find_trade_driven_exit_with_slot`) deliberately keeps the strict window: an
+    // empty window there means the fill has not indexed yet, so the poll waits it
+    // out (booking a failed exit on timeout) rather than inventing a fill.
+    run_exit_walk(trades, entry_time, entry_price, &params, true).map(|(fill, _)| fill)
 }
 
 /// [`find_trade_driven_exit`] that also returns the **firing slot** `S` — the slot
@@ -395,15 +409,24 @@ pub fn find_trade_driven_exit_with_slot<T: TradeRow>(
         return None;
     }
     let params = LadderParams::from_rule(rule);
-    run_exit_walk(trades, entry_time, entry_price, &params)
+    // Live paper poll: NO market fill — the empty-window case must stay `None` so the
+    // poll keeps waiting for the real fill to index (see `find_trade_driven_exit`).
+    run_exit_walk(trades, entry_time, entry_price, &params, false)
 }
 
 /// The shared post-entry walk behind [`find_trade_driven_exit`].
+///
+/// `market_fill_on_empty_window` chooses what happens when the ladder fires but the
+/// worst-case fill window `{S, next_slot}` contains no trade: `true` (analysis) fills
+/// at the firing trade itself (a market exit), `false` (live paper poll) returns
+/// `None` so the caller waits the fill out. In every non-empty-window case the two
+/// are byte-identical.
 fn run_exit_walk<T: TradeRow>(
     trades: &[T],
     entry_time: DateTime<Utc>,
     entry_price: f64,
     params: &LadderParams,
+    market_fill_on_empty_window: bool,
 ) -> Option<(ExitFill, u64)> {
     let mut state = ExitWalkState::starting_at(entry_price, entry_time);
 
@@ -418,6 +441,7 @@ fn run_exit_walk<T: TradeRow>(
     let mut fill_min: Option<&T> = None;
     let mut pending: Option<ExitReason> = None;
     let mut fire_slot: u64 = 0;
+    let mut fired_at: Option<&T> = None; // the firing trade — market-fill fallback
     let mut next_slot: Option<u64> = None; // first slot > fire_slot seen after firing
 
     let is_lower = |t: &T, cur: Option<&T>| {
@@ -451,7 +475,10 @@ fn run_exit_walk<T: TradeRow>(
             };
 
             if window_closed {
-                return fill_min.map(|et| (
+                // Empty window on the analysis path falls back to the firing trade
+                // (market exit); the live poll passes `false` and keeps it `None`.
+                let et = fill_min.or(if market_fill_on_empty_window { fired_at } else { None });
+                return et.map(|et| (
                     ExitFill {
                         price: et.price_per_token(),
                         tx_signature: et.tx_signature().to_string(),
@@ -484,15 +511,18 @@ fn run_exit_walk<T: TradeRow>(
         if let Some(reason) = ladder_reason(&state, t, entry_time, entry_price, params) {
             pending = Some(reason);
             fire_slot = slot;
+            fired_at = Some(t); // capture for the empty-window market-fill fallback
             fill_min = None; // reset; window starts fresh after firing tx
             next_slot = None;
         }
     }
 
-    // History ended while a pending exit's window was still open.
-    // If no fill-window trade arrived, exit is not taken.
+    // History ended while a pending exit's window was still open. The analysis path
+    // then market-fills at the firing trade; the live poll (fallback `None`) leaves
+    // the exit un-taken so it can keep waiting for the fill to index.
     pending.and_then(|reason| {
-        fill_min.map(|et| (
+        let et = fill_min.or(if market_fill_on_empty_window { fired_at } else { None });
+        et.map(|et| (
             ExitFill {
                 price: et.price_per_token(),
                 tx_signature: et.tx_signature().to_string(),
@@ -722,11 +752,22 @@ mod tests {
     }
 
     #[test]
-    fn exit_no_fill_when_window_empty() {
-        // SL fires at slot 3 but no subsequent trades → no fill → None.
+    fn exit_market_fills_at_firing_trade_when_window_empty() {
+        // SL fires at slot 3 but no subsequent trades → the strict fill window is
+        // empty. The ANALYSIS path (`find_trade_driven_exit`) market-fills at the
+        // firing trade itself so a provably-crossed exit isn't mislabeled `Open`
+        // (the migrated-token / sparse-blow-off case).
         let trades = vec![buy(0.7, 3, 10)];
         let rule = rule_with(1000.0, 20.0, None, None, None, None);
-        assert!(find_trade_driven_exit(&trades, base_time(), 1.0, &rule).is_none());
+        let exit = find_trade_driven_exit(&trades, base_time(), 1.0, &rule)
+            .expect("analysis path market-fills the fired exit at the firing trade");
+        assert_eq!(exit.reason, ExitReason::StopLoss);
+        assert!((exit.price - 0.7).abs() < 1e-9, "fills at the firing trade, got {}", exit.price);
+
+        // The LIVE paper resolver keeps the strict empty-window semantics: `None`, so
+        // the fill-poll waits the real fill out (and books a failed exit on timeout)
+        // rather than inventing a fill.
+        assert!(find_trade_driven_exit_with_slot(&trades, base_time(), 1.0, &rule).is_none());
     }
 
     fn flat_series() -> Vec<Trade> {
