@@ -69,4 +69,7 @@ rand = "0.8"
 # DuckDB query engine over the Parquet lake (Phase 4 corpus layer). `bundled`
 # compiles libduckdb in-tree so there's no system dependency — lab is
 # workstation-only (never shipped to EC2), so the heavy native build is local-only.
-duckdb = { version = "1", features = ["bundled"] }
+# `parquet` statically links the parquet extension into the binary so `read_parquet`
+# never tries to autoload/download it at runtime (that download fails offline / when
+# extensions.duckdb.org is blocked — "Failed to download extension parquet").
+duckdb = { version = "1", features = ["bundled", "parquet"] }
