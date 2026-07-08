@@ -33,6 +33,7 @@ use trading_core::models::{StrategyPosition, StrategyRule, Token};
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
+use trading_core::strategies::death;
 use trading_core::strategies::exit_state::clock_entry_time;
 use trading_core::strategies::registry::{StrategyImpl, StrategyParams};
 use trading_core::strategies::rules::{self, RuleDraft, RuleError};
@@ -843,6 +844,94 @@ impl StrategyService {
                 self.trigger_real_exit(position, last_price, now, exit_reason.to_string())
                     .await;
             }
+        }
+    }
+
+    /// Paper-only **death-close** sweep — the live analogue of the analysis
+    /// `find_death_point` fallback ([`trading_core::strategies::death`]). A paper rule
+    /// with no wall-clock exit (neither TimeStop nor Stall) never closes a token that
+    /// pumps then goes silent: the trade ladder needs a trade to fire, and
+    /// [`sweep_time_exits`](Self::sweep_time_exits) skips a rule with no time exit. The
+    /// position would sit `Holding` forever at a stale mark — the exact "Open at a
+    /// stale price" case the sim path closes at the death point. This closes such
+    /// positions at the **death point** (last meaningful post-entry trade) with
+    /// `ExitReason::Dead`, so paper and sim agree on dead tokens.
+    ///
+    /// Runs AFTER `sweep_time_exits` in the same sweep tick, so a time-exit rule still
+    /// books its Stall/TimeStop first (matching the sim ladder, where the death
+    /// fallback only fires when nothing else did) — a position closed there has already
+    /// left the holding index and is skipped here. Real positions are deliberately
+    /// untouched: a dead pool has no liquidity to sell into, so force-closing on a
+    /// deadness verdict is out of scope (see `strategies::death`). Same task as
+    /// `on_trade_executed`, so it can't race a Holding→ExitPending transition.
+    pub async fn sweep_dead_paper_exits(&self, cache: &TokenCache) {
+        let now = Utc::now();
+
+        for position in self.runtime.all_holding_positions() {
+            if position.mode != "paper" {
+                continue;
+            }
+            let Some(rule_id) = position.rule_id else {
+                continue;
+            };
+            // Entered + Holding only; a 0-entry row is gated out of every exit path.
+            let Some(entry_time) = clock_entry_time(&position) else {
+                continue;
+            };
+
+            // O(1) deadness pre-gate off the cached reserve/quiet snapshot, so the O(n)
+            // death-point walk runs only for a token that already looks dead. The walk
+            // then re-verifies against post-entry-only data and yields the death price.
+            let death = {
+                let Some(entry) = cache.get(&position.mint_address) else {
+                    continue;
+                };
+                let st = entry.value();
+                if !st.is_dead(now) {
+                    continue;
+                }
+                death::find_death_point(&st.trades, entry_time, now)
+            };
+            let Some(death) = death else {
+                continue;
+            };
+
+            let Some(rule) = self.runtime.rule_by_id(rule_id) else {
+                continue;
+            };
+            // Claim the shared exit guard so this can't race a concurrent trade-driven
+            // exit poll into a double-close; skip if an exit is already in flight.
+            let Some(_guard) = self.runtime.try_begin_exit(position.id) else {
+                continue;
+            };
+            let mut position = (*position).clone();
+            // Peek (not evict) swing1's exit memo so its legs land in the close write,
+            // mirroring the ladder/time exit paths (no-op for tpsl1/tpsl2).
+            if let Some(legs) = self.runtime.peek_swing_legs(position.id) {
+                trading_core::strategies::runtime_cache::merge_swing_legs_into_extra(
+                    &mut position,
+                    legs,
+                );
+            }
+            info!(
+                position_id = %position.id, mint = %position.mint_address, death_price = death.price,
+                "[PAPER] Death-close at death point"
+            );
+            // Synthetic close at the death point — the same shape as a paper time exit
+            // (no confirming on-chain trade), booked at the death-point price/time with
+            // reason `Dead` so `ExitCode::from_reason` maps it to `ExitCode::Dead`.
+            paper::record_time_exit(
+                &self.repo,
+                &self.runtime,
+                &self.sse_tx,
+                position,
+                death.price,
+                death.block_time,
+                "Dead".to_string(),
+                &rule,
+            )
+            .await;
+            // `record_time_exit` closes synchronously; `_guard` drops here.
         }
     }
 

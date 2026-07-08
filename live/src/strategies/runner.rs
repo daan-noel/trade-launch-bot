@@ -65,6 +65,10 @@ impl StrategyRunner {
                     // Time-driven exits (TimeStop / Stall) that come due while a token
                     // is silent — no trade ping would otherwise fire them.
                     self.service.sweep_time_exits(self.token_cache.as_ref()).await;
+                    // Paper-only death-close for silently-dead tokens the ladder/time
+                    // sweep left Holding (mirrors the sim `find_death_point` fallback).
+                    // Runs after the time sweep so a time-exit still wins for its rule.
+                    self.service.sweep_dead_paper_exits(self.token_cache.as_ref()).await;
                     self.service
                         .sweep_first_slot_pending(self.token_cache.as_ref())
                         .await;

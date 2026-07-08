@@ -3,13 +3,17 @@
 //! **death point** — the last meaningful trade before the token went quiet — rather
 //! than leaving it mislabeled `Open`/`Holding` and marked-to-a-stale last price.
 //!
-//! This mirrors, for the backtest / grouped-sweep / detect paths, what the live box
-//! already does via its 1s wall-clock exit sweep (which fires Stall/TimeStop on
-//! silent tokens). It is deliberately **not** used by the live paper poll — live
-//! closes silent positions through its clock, and force-closing real positions on a
-//! deadness verdict is a separate behavior. The verdict itself is single-sourced
-//! with live via [`is_dead_verdict`], so sim and live can never disagree on *which*
-//! tokens are dead.
+//! This is the analysis fallback behind the backtest / grouped-sweep / detect paths.
+//! Live consumes the **same** [`find_death_point`] two ways: its 1s wall-clock exit
+//! sweep fires Stall/TimeStop on silent tokens for rules that carry a time exit, and
+//! `live`'s `sweep_dead_paper_exits` closes **paper** positions the ladder/time sweep
+//! left `Holding` (rules with no time exit) at the death point with `ExitReason::Dead`
+//! — the direct analogue of this fallback, so paper and sim agree on dead tokens. It
+//! is deliberately **not** used by the live paper *poll* (which stays strict, waiting
+//! for a real fill) nor by **real** positions: force-closing a real bag on a deadness
+//! verdict is out of scope — a dead pool has no liquidity to sell into. The verdict
+//! itself is single-sourced with live via [`is_dead_verdict`], so sim and live can
+//! never disagree on *which* tokens are dead.
 
 use chrono::{DateTime, Utc};
 

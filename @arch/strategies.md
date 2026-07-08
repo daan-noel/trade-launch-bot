@@ -38,7 +38,7 @@ strategy-specific gates live in `params`. `StrategyPosition` gained PnL/status h
 
 - `on_token_created(mint)` → entry gating (`matches_entry` / deferred `pending_first_slot`) + run ensured + inline cap/holding-index claim → tpsl1 immediate buy / tpsl2 scalp-arm then buy / swing1 phase-entry-arm then buy
 - `on_trade_executed(mint)` → **deferred first-slot gate resolve** (when window closes) + exit evaluation via the core exit-state memo → paper close / real sell
-- 1s clock tick → `sweep_time_exits()` (deadline exits that come due in silence) + `sweep_first_slot_pending()` (5s backstop for deferred entry gates)
+- 1s clock tick → `sweep_time_exits()` (deadline exits that come due in silence) + `sweep_dead_paper_exits()` (paper-only death-close: closes `Holding` paper bags the ladder/time sweep left open — rules with no TimeStop/Stall — at the death point with reason `Dead`, via the shared `strategies::death::find_death_point`, so paper matches the sim; real bags untouched) + `sweep_first_slot_pending()` (5s backstop for deferred entry gates)
 
 The `select!` **serializes** all position transitions (no Holding→ExitPending interleave). In-memory transitions happen inline; slow DB/chain work is spawned.
 
