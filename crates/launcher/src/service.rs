@@ -32,6 +32,12 @@ use crate::trader_config::build_launch_trader_config;
 /// value equal to `ingest_host::map::PUMP_TOKEN_DECIMALS`.
 const PUMP_TOKEN_DECIMALS: i16 = 6;
 
+/// Minimum dev-wallet balance (lamports) to cover a create's rent + fees + Jito
+/// tip, on top of any dev-buy spend. Named so the pre-launch balance check and
+/// its error message can't drift — the message used to claim 0.05 SOL while the
+/// gate was actually 0.02.
+const MIN_DEV_LAUNCH_LAMPORTS: u64 = 20_000_000; // 0.02 SOL
+
 /// Parsed `launch_templates.params` brain for pump.fun create_v2. Token identity
 /// (name/symbol/uri) is NOT here — it lives in the linked `metadata_templates`
 /// row (`launch_templates.metadata_template_id`), the single source of truth.
@@ -134,18 +140,26 @@ pub async fn execute_launch(
     let mut trader = PumpFunTrader::new(trader_config);
     trader.initialize().await.context("initialize pump-trader")?;
 
+    // Fail fast before building anything on-chain: the dev wallet must cover the
+    // create's rent + fees + tip (MIN_DEV_LAUNCH_LAMPORTS) on top of the dev-buy
+    // spend, if any.
+    let dev_buy_quote = params.dev_buy_quote.unwrap_or(0);
     let balance = trader.get_sol_balance().await.context("fetch dev wallet balance")?;
-    if balance < 20_000_000 {
+    let required_lamports = MIN_DEV_LAUNCH_LAMPORTS + dev_buy_quote.max(0) as u64;
+    if balance < required_lamports {
+        let per_sol = pump_trader::protocol::LAMPORTS_PER_SOL as f64;
         bail!(
-            "dev wallet {creator} has only {:.4} SOL — fund with at least 0.05 SOL before launching",
-            balance as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64
+            "dev wallet {creator} has {:.4} SOL — needs at least {:.4} SOL \
+             (create floor {:.4} + dev-buy {:.4}) before launching",
+            balance as f64 / per_sol,
+            required_lamports as f64 / per_sol,
+            MIN_DEV_LAUNCH_LAMPORTS as f64 / per_sol,
+            dev_buy_quote.max(0) as f64 / per_sol,
         );
     }
 
     let mint = Keypair::new();
     let mint_address = mint.pubkey().to_string();
-
-    let dev_buy_quote = params.dev_buy_quote.unwrap_or(0);
     let pending = LaunchRepo::insert(
         pool,
         &NewLaunch {
