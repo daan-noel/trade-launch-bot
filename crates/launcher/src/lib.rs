@@ -11,6 +11,7 @@ mod bundle_execute;
 mod confirm;
 mod config;
 mod dust_sweep;
+mod funding_plan;
 mod keystore;
 mod metadata_upload;
 mod probe;
@@ -31,6 +32,9 @@ pub use confirm::spawn_bundle_confirm_watcher;
 
 pub use config::{FundingConfig, LauncherSettings};
 pub use dust_sweep::spawn_dust_sweep;
+pub use funding_plan::{
+    dev_launch_required_lamports, leg_required_lamports, FundPlan, FUNDING_HEADROOM_LAMPORTS,
+};
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
@@ -39,8 +43,8 @@ pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;
 pub use wallet_funding::{
-    fund_once, spawn_wallet_funding, DirectJittered, FundMode, FundReport, FundScope,
-    FundingStrategy, StrategyParams, Transfer, WalletFundOutcome,
+    fund_for_launch, fund_once, spawn_wallet_funding, DirectJittered, FundMode, FundReport,
+    FundScope, FundingStrategy, StrategyParams, Transfer, WalletFundOutcome,
 };
 pub use wallet_pool::{generate_wallets, spawn_balance_poller, spawn_reservation_sweep};
 pub use wallet_verify::run_wallet_verify;

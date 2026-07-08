@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import {
   api,
   formatSig,
+  formatSol,
+  FundReport,
   IngestStatus,
   LaunchResult,
   LaunchStatus,
@@ -89,13 +91,20 @@ export default function App() {
   // metadata template, the single source of truth.
   const [metaTemplateId, setMetaTemplateId] = useState('');
   const [bundlerCount, setBundlerCount] = useState('');
+  const [funding, setFunding] = useState(false);
+  const [fundReport, setFundReport] = useState<FundReport | null>(null);
 
   const selectedTemplate = templates.find((t) => t.id === templateId);
   const effectiveMetadata = metadataTemplates.find((m) => m.id === metaTemplateId);
 
-  // Only `funded` dev wallets are launch-ready — a `generated` (unfunded) or
-  // `reserved`/`used` one would just fail the balance check downstream.
-  const fundedDevWallets = wallets.filter((w) => w.role === 'dev' && w.status === 'funded');
+  // JIT funding can top up a `generated` dev wallet just before launch, so the
+  // picker offers both `funded` (launch-ready now) and `generated` (fund first).
+  // A `reserved`/`used`/`retired` one is never selectable.
+  const selectableDevWallets = wallets.filter(
+    (w) => w.role === 'dev' && (w.status === 'funded' || w.status === 'generated'),
+  );
+  const selectedDevWallet = wallets.find((w) => w.id === walletId);
+  const devWalletReady = selectedDevWallet?.status === 'funded';
 
   // Extracted so the Templates tab can refresh the Launch Console's picker
   // right after a create/edit, instead of requiring a manual page reload.
@@ -119,8 +128,12 @@ export default function App() {
         setTemplateId((prev) => prev || templates[0]?.id || '');
         setWallets(dev_wallets);
         setMetadataTemplates(metadata_templates);
-        const firstFunded = dev_wallets.find((wallet) => wallet.status === 'funded');
-        if (firstFunded) setWalletId(firstFunded.id);
+        // Prefer a launch-ready `funded` wallet; fall back to a `generated` one
+        // the operator can JIT-fund before launching.
+        const seed =
+          dev_wallets.find((wallet) => wallet.status === 'funded') ??
+          dev_wallets.find((wallet) => wallet.status === 'generated');
+        if (seed) setWalletId(seed.id);
       } catch (e) {
         setError(String(e));
       }
@@ -173,6 +186,39 @@ export default function App() {
       if (timer) clearInterval(timer);
     };
   }, [launchId]);
+
+  // Re-read the dev wallet pool so a JIT top-up's `generated -> funded` promotion
+  // reflects in the picker (and enables the Launch button) without a page reload.
+  const reloadDevWallets = async () => {
+    try {
+      setWallets(await api.walletPool('dev'));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // JIT, template-driven pre-launch funding: top the chosen dev wallet + the
+  // template's bundler legs up to what THIS launch will spend, then refresh so
+  // the dev wallet shows `funded` and Launch unlocks.
+  const onFundForLaunch = async () => {
+    if (!templateId || !walletId) return;
+    setFunding(true);
+    setError(null);
+    setFundReport(null);
+    try {
+      const report = await api.fundForLaunch(
+        templateId,
+        walletId,
+        bundlerCount ? Number(bundlerCount) : undefined,
+      );
+      setFundReport(report);
+      await reloadDevWallets();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFunding(false);
+    }
+  };
 
   const onLaunch = async () => {
     if (!templateId || !walletId) return;
@@ -259,23 +305,33 @@ export default function App() {
             </select>
           </div>
           <div className="field">
-            <label htmlFor="wallet">Dev wallet (funded only)</label>
+            <label htmlFor="wallet">Dev wallet</label>
             <select id="wallet" value={walletId} onChange={(e) => setWalletId(e.target.value)}>
-              {fundedDevWallets.length === 0 && (
-                <option value="">No funded dev wallets — fund one in the Wallet Pool tab</option>
+              {selectableDevWallets.length === 0 && (
+                <option value="">No dev wallets — generate one in the Wallet Pool tab</option>
               )}
-              {fundedDevWallets.map((w) => (
+              {selectableDevWallets.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.label ?? w.address.slice(0, 8)}
+                  {(w.label ?? w.address.slice(0, 8)) +
+                    (w.status === 'funded' ? ' · funded' : ' · needs funding')}
                 </option>
               ))}
             </select>
           </div>
           <button
             type="button"
+            disabled={funding || !templateId || !walletId}
+            onClick={onFundForLaunch}
+            title="Top the dev wallet + bundler legs up to this template's amounts"
+          >
+            {funding ? 'Funding…' : 'Fund for launch'}
+          </button>
+          <button
+            type="button"
             className="primary"
-            disabled={loading || !templateId || !walletId || !metaTemplateId}
+            disabled={loading || !templateId || !walletId || !metaTemplateId || !devWalletReady}
             onClick={onLaunch}
+            title={devWalletReady ? '' : 'Dev wallet not funded yet — Fund for launch first'}
           >
             {loading ? 'Launching…' : 'Launch'}
           </button>
@@ -327,6 +383,52 @@ export default function App() {
         </p>
         {error && <p className="error">{error}</p>}
       </div>
+
+      {fundReport && (
+        <div className="card">
+          <h2>Fund-for-launch result</h2>
+          <p className="muted">
+            Spent <strong>{formatSol(fundReport.spent_lamports)}</strong> across{' '}
+            {fundReport.outcomes.length} wallet(s) from the treasury pool.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th>Address</th>
+                <th>Amount</th>
+                <th>Result</th>
+                <th>Tx</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fundReport.outcomes.map((o) => (
+                <tr key={o.wallet_id}>
+                  <td>{o.role}</td>
+                  <td>{o.address.slice(0, 8)}…</td>
+                  <td>{formatSol(o.amount_lamports)}</td>
+                  <td>{o.result}</td>
+                  <td>
+                    {o.signature ? (
+                      <a href={solscanTx(o.signature)} target="_blank" rel="noreferrer">
+                        {o.signature.slice(0, 12)}…
+                      </a>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {fundReport.outcomes.some((o) => o.result === 'skipped_cap') && (
+            <p className="error">
+              A safety rail stopped funding before completing — the launch may be under-funded. Check
+              treasury balances / FUND_MAX_SPEND_PER_INTERVAL_LAMPORTS.
+            </p>
+          )}
+        </div>
+      )}
 
       {result && (
         <div className="card">

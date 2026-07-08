@@ -91,7 +91,13 @@ export interface WalletFundOutcome {
   address: string;
   role: string;
   amount_lamports: number;
-  result: 'sent' | 'dry_run' | 'failed' | 'skipped_cap' | 'skipped_bad_address';
+  result:
+    | 'sent'
+    | 'dry_run'
+    | 'failed'
+    | 'skipped_cap'
+    | 'skipped_bad_address'
+    | 'skipped_funded';
   signature: string | null;
   error: string | null;
 }
@@ -280,6 +286,16 @@ export const api = {
     postJson<FundReport>('/api/wallet_pool/fund', {
       role: role || undefined,
       count: count ?? undefined,
+    }),
+  // JIT, template-driven pre-launch funding: tops the chosen dev wallet + the
+  // template's bundler legs up to the amounts THIS launch will spend (dev-buy +
+  // per-leg), drawing from the treasury pool. Confirms each send, so the wallets
+  // are `funded` and launch-ready when it resolves. Requires FUND_ENABLED.
+  fundForLaunch: (template_id: string, dev_wallet_id: string, bundler_count?: number) =>
+    postJson<FundReport>('/api/wallet_pool/fund_for_launch', {
+      template_id,
+      dev_wallet_id,
+      bundler_count: bundler_count ?? undefined,
     }),
   metadataTemplates: () => getJson<MetadataTemplate[]>('/api/metadata_templates'),
   createMetadataTemplate: (req: NewMetadataTemplate) =>

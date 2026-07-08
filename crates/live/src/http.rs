@@ -3,8 +3,8 @@
 use actix_web::{web, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
-    create_metadata_template, execute_bundle, execute_launch, fund_once, FundMode, FundScope,
-    LaunchRequest, LauncherSettings, NewMetadataTemplateRequest, PumpfunTemplateParams,
+    create_metadata_template, execute_bundle, execute_launch, fund_for_launch, fund_once, FundMode,
+    FundScope, LaunchRequest, LauncherSettings, NewMetadataTemplateRequest, PumpfunTemplateParams,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -59,6 +59,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/wallet_pool", web::get().to(wallet_pool_list))
         .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
         .route("/api/wallet_pool/fund", web::post().to(wallet_pool_fund))
+        .route(
+            "/api/wallet_pool/fund_for_launch",
+            web::post().to(wallet_pool_fund_for_launch),
+        )
         .route("/api/metadata_templates", web::get().to(metadata_templates_list))
         .route(
             "/api/metadata_templates",
@@ -281,6 +285,49 @@ async fn wallet_pool_fund(
         settings,
         FundScope { role, count: body.count },
         FundMode::Manual,
+    )
+    .await
+    .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
+#[derive(serde::Deserialize)]
+struct FundForLaunchBody {
+    /// The launch template whose dev-buy + per-leg amounts drive the funding.
+    template_id: Uuid,
+    /// The specific dev wallet this launch will use (funded to the launch gate).
+    dev_wallet_id: Uuid,
+    /// "Use N bundlers" override — unset falls back to the template's
+    /// `bundle_leg_count`. Must match what the subsequent launch passes.
+    #[serde(default)]
+    bundler_count: Option<u32>,
+}
+
+/// Just-in-time, template-driven pre-launch funding (docs/jit-funding-plan.md):
+/// tops the chosen dev wallet + `leg_count` bundler wallets up to the amounts the
+/// selected template will actually spend, drawing from the treasury pool. Runs in
+/// `FundMode::Background` (confirms each send) so the wallets are `funded` — and
+/// so claimable by `execute_launch` — the moment this returns. Requires
+/// `FUND_ENABLED=true` (503 otherwise).
+async fn wallet_pool_fund_for_launch(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    body: web::Json<FundForLaunchBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    if settings.funding.is_none() {
+        return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "error": "wallet funding disabled — set FUND_ENABLED=true to enable"
+        })));
+    }
+    let body = body.into_inner();
+    let report = fund_for_launch(
+        pool.get_ref(),
+        settings,
+        body.template_id,
+        body.bundler_count,
+        body.dev_wallet_id,
+        FundMode::Background,
     )
     .await
     .map_err(e500)?;

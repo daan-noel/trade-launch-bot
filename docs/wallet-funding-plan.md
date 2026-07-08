@@ -71,11 +71,18 @@ funder / post-restart run can't double-fund it (real SOL loss). The existing bal
   (mirror `spawn_dust_sweep`). Wire in `crates/live/src/main.rs:81-89`.
 
 ### P3 — Safety rails (non-negotiable — autonomous real-SOL spend)
-- **Treasury reserve floor** `FUND_TREASURY_RESERVE_LAMPORTS`: never spend treasury below it.
-- **Per-interval spend cap** `FUND_MAX_SPEND_PER_INTERVAL_LAMPORTS`: hard stop mid-batch when hit.
-- **Per-wallet amount** `FUND_AMOUNT_DEV_LAMPORTS` / `FUND_AMOUNT_BUNDLER_LAMPORTS` (defaults: dev
-  0.05 SOL — funds the 0.02 SOL launch gate `service.rs::MIN_DEV_LAUNCH_LAMPORTS` plus dev-buy
-  headroom; bundler 0.03 SOL = leg buy + Jito tip + fees).
+> **Superseded (2026-07-08) by `jit-funding-plan.md` for amounts + treasury sourcing:**
+> the flat `FUND_AMOUNT_*` per-wallet amounts below are now the **warm-pool
+> default only** — the JIT `fund_for_launch` path derives amounts per launch from
+> the template (`FundPlan`), and both paths now draw from the **whole** treasury
+> pool (`TreasuryPool`), not just the oldest `role=treasury` wallet. The reserve
+> floor is applied **per treasury**.
+- **Treasury reserve floor** `FUND_TREASURY_RESERVE_LAMPORTS`: never spend any one treasury below it.
+- **Per-interval spend cap** `FUND_MAX_SPEND_PER_INTERVAL_LAMPORTS`: hard stop mid-batch when hit
+  (checked against the **aggregate** spend across all source treasuries).
+- **Per-wallet amount** `FUND_AMOUNT_DEV_LAMPORTS` / `FUND_AMOUNT_BUNDLER_LAMPORTS` (warm-pool flat
+  defaults: dev 0.05 SOL — funds the 0.02 SOL launch gate `service.rs::MIN_DEV_LAUNCH_LAMPORTS` plus
+  dev-buy headroom; bundler 0.03 SOL = leg buy + Jito tip + fees). JIT overrides these per launch.
 - **Jitter** `FUND_AMOUNT_JITTER_PCT`, `FUND_MAX_DELAY_MS`.
 - **Top-up target** `FUND_TARGET_FUNDED_{DEV,BUNDLER}`.
 - **Kill switch** `FUND_ENABLED` (default false) + **dry-run** `FUND_DRY_RUN` (log intended transfers,

@@ -146,7 +146,10 @@ pub async fn execute_launch(
     // spend, if any.
     let dev_buy_quote = params.dev_buy_quote.unwrap_or(0);
     let balance = trader.get_sol_balance().await.context("fetch dev wallet balance")?;
-    let required_lamports = MIN_DEV_LAUNCH_LAMPORTS + dev_buy_quote.max(0) as u64;
+    // SSOT: the exact figure `funding_plan::FundPlan` funds the dev wallet to, so
+    // the JIT funder's target and this gate can never drift (they were inlined
+    // separately before).
+    let required_lamports = crate::funding_plan::dev_launch_required_lamports(&params);
     if balance < required_lamports {
         let per_sol = pump_trader::protocol::LAMPORTS_PER_SOL as f64;
         bail!(

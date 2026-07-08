@@ -173,6 +173,28 @@ impl ManagedWalletRepo {
         .await?)
     }
 
+    /// Atomically claim ONE specific `generated` wallet by id for funding — the
+    /// JIT dev-wallet path (`wallet_funding::fund_for_launch`), where the operator
+    /// picks the exact dev wallet in the launch console rather than the funder
+    /// draining any-N-of-role. Flips `generated -> funding` + stamps
+    /// `funding_source`; the single-row conditional `UPDATE` is concurrency-safe
+    /// the same way [`Self::claim_specific`] is. Returns `None` if the wallet
+    /// wasn't `generated` (already funding/funded, or claimed elsewhere).
+    pub async fn claim_specific_for_funding(
+        pool: &PgPool,
+        id: Uuid,
+        funding_source: &str,
+    ) -> anyhow::Result<Option<ManagedWallet>> {
+        Ok(sqlx::query_as::<_, ManagedWallet>(
+            "UPDATE managed_wallets SET status = 'funding', funding_source = $2 \
+             WHERE id = $1 AND status = 'generated' RETURNING *",
+        )
+        .bind(id)
+        .bind(funding_source)
+        .fetch_optional(pool)
+        .await?)
+    }
+
     /// Revert `funding` wallets back to `generated` (a treasury send failed, or a
     /// dry-run claim) and clear the tentative `funding_source`. Guarded no-op for
     /// ids not currently `funding` (mirror [`Self::mark_used`] shape). Returns the
