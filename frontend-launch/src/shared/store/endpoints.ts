@@ -17,6 +17,8 @@ import type {
   ManageRequest,
   ManagedWalletPool,
   SellLadder,
+  VolumeBot,
+  VolumeConfig,
   WalletSelection,
   MetadataTemplate,
   NewLaunchTemplateInput,
@@ -223,6 +225,35 @@ export const api = baseApi.injectEndpoints({
       query: (id) => ({ url: `/api/manage/ladders/${id}`, method: 'DELETE' }),
       invalidatesTags: ['Ladders'],
     }),
+
+    // ---- Volume-making bots ----
+    volumeBots: build.query<VolumeBot[], string>({
+      query: (mint) => `/api/tokens/${mint}/manage/volume`,
+      providesTags: ['Volume'],
+    }),
+    startVolumeBot: build.mutation<
+      VolumeBot,
+      { mint: string; selection?: WalletSelection; config: VolumeConfig }
+    >({
+      query: ({ mint, selection, config }) => ({
+        url: `/api/tokens/${mint}/manage/volume`,
+        method: 'POST',
+        body: { selection, config },
+      }),
+      invalidatesTags: ['Volume'],
+    }),
+    pauseVolumeBot: build.mutation<void, string>({
+      query: (id) => ({ url: `/api/manage/volume/${id}/pause`, method: 'POST' }),
+      invalidatesTags: ['Volume'],
+    }),
+    resumeVolumeBot: build.mutation<void, string>({
+      query: (id) => ({ url: `/api/manage/volume/${id}/resume`, method: 'POST' }),
+      invalidatesTags: ['Volume'],
+    }),
+    stopVolumeBot: build.mutation<void, string>({
+      query: (id) => ({ url: `/api/manage/volume/${id}`, method: 'DELETE' }),
+      invalidatesTags: ['Volume'],
+    }),
   }),
   overrideExisting: false,
 });
@@ -260,4 +291,9 @@ export const {
   useLaddersQuery,
   useArmLadderMutation,
   useCancelLadderMutation,
+  useVolumeBotsQuery,
+  useStartVolumeBotMutation,
+  usePauseVolumeBotMutation,
+  useResumeVolumeBotMutation,
+  useStopVolumeBotMutation,
 } = api;

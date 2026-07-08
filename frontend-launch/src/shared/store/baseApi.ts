@@ -23,6 +23,7 @@ export const baseApi = createApi({
     'Positions',
     'ManageActions',
     'Ladders',
+    'Volume',
   ],
   endpoints: () => ({}),
 });

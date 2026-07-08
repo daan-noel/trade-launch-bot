@@ -4,9 +4,10 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
     arm_ladder, create_metadata_template, execute_action, execute_bundle, execute_launch,
-    export_wallet_base58, fund_for_launch, fund_once, update_metadata_template, FundMode, FundScope,
-    LadderRung, LaunchRequest, LauncherSettings, ManageRequest, NewMetadataTemplateRequest,
-    PumpfunTemplateParams, UpdateMetadataTemplateRequest, WalletSelection,
+    export_wallet_base58, fund_for_launch, fund_once, start_volume_bot, update_metadata_template,
+    FundMode, FundScope, LadderRung, LaunchRequest, LauncherSettings, ManageRequest,
+    NewMetadataTemplateRequest, PumpfunTemplateParams, UpdateMetadataTemplateRequest, VolumeConfig,
+    WalletSelection,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -19,7 +20,7 @@ use uuid::Uuid;
 
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManageActionRepo, ManagedWalletRepo,
-    MetadataTemplateRepo, QuoteAssetRepo, SellLadderRepo, TokenRepo, TradeRepo,
+    MetadataTemplateRepo, QuoteAssetRepo, SellLadderRepo, TokenRepo, TradeRepo, VolumeBotRepo,
 };
 
 /// Map any error to a 500 without leaking a panic.
@@ -115,7 +116,21 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             "/api/tokens/{mint}/manage/ladders",
             web::post().to(ladder_arm),
         )
-        .route("/api/manage/ladders/{id}", web::delete().to(ladder_cancel));
+        .route("/api/manage/ladders/{id}", web::delete().to(ladder_cancel))
+        .route(
+            "/api/tokens/{mint}/manage/volume",
+            web::get().to(volume_list),
+        )
+        .route(
+            "/api/tokens/{mint}/manage/volume",
+            web::post().to(volume_start),
+        )
+        .route("/api/manage/volume/{id}/pause", web::post().to(volume_pause))
+        .route(
+            "/api/manage/volume/{id}/resume",
+            web::post().to(volume_resume),
+        )
+        .route("/api/manage/volume/{id}", web::delete().to(volume_stop));
 }
 
 async fn health() -> HttpResponse {
@@ -874,5 +889,84 @@ async fn ladder_cancel(
         Ok(HttpResponse::NoContent().finish())
     } else {
         Err(actix_web::error::ErrorNotFound("no armed ladder with that id"))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct StartVolumeBody {
+    #[serde(default)]
+    selection: WalletSelection,
+    config: VolumeConfig,
+}
+
+/// Start a volume-making bot (post-launch management, Phase 5). Starting is always
+/// allowed (it places no trade); the background scheduler only trades a `running`
+/// bot when `MANAGE_ENABLED=true` — until then it sits idle. The config is
+/// validated here, so a bad config 400s at start time.
+async fn volume_start(
+    pool: web::Data<PgPool>,
+    mint: web::Path<String>,
+    body: web::Json<StartVolumeBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let body = body.into_inner();
+    let bot = start_volume_bot(pool.get_ref(), &mint, body.selection, body.config)
+        .await
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("{e:?}")))?;
+    Ok(HttpResponse::Ok().json(bot))
+}
+
+/// A mint's volume bots (any status, newest first).
+async fn volume_list(
+    pool: web::Data<PgPool>,
+    mint: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let rows = VolumeBotRepo::by_mint(pool.get_ref(), &mint)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+/// Pause a running bot. 404 if it wasn't running (already paused/stopped).
+async fn volume_pause(
+    pool: web::Data<PgPool>,
+    id: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    if VolumeBotRepo::pause(pool.get_ref(), id.into_inner())
+        .await
+        .map_err(e500)?
+    {
+        Ok(HttpResponse::NoContent().finish())
+    } else {
+        Err(actix_web::error::ErrorNotFound("no running bot with that id"))
+    }
+}
+
+/// Resume a paused bot (due immediately). 404 if it wasn't paused.
+async fn volume_resume(
+    pool: web::Data<PgPool>,
+    id: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    if VolumeBotRepo::resume(pool.get_ref(), id.into_inner())
+        .await
+        .map_err(e500)?
+    {
+        Ok(HttpResponse::NoContent().finish())
+    } else {
+        Err(actix_web::error::ErrorNotFound("no paused bot with that id"))
+    }
+}
+
+/// Stop a bot (terminal, operator). 404 if it was already stopped.
+async fn volume_stop(
+    pool: web::Data<PgPool>,
+    id: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    if VolumeBotRepo::stop(pool.get_ref(), id.into_inner(), Some("stopped by operator"))
+        .await
+        .map_err(e500)?
+    {
+        Ok(HttpResponse::NoContent().finish())
+    } else {
+        Err(actix_web::error::ErrorNotFound("no active bot with that id"))
     }
 }

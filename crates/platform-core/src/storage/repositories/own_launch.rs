@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::models::{
     Bundle, Launch, LaunchTemplate, ManageAction, ManagedWallet, NewLaunch, NewLaunchTemplate,
-    NewManagedWallet, SellLadder, TokenPosition, UpdateLaunchTemplate,
+    NewManagedWallet, SellLadder, TokenPosition, UpdateLaunchTemplate, VolumeBot,
 };
 
 /// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key. Lifecycle
@@ -818,6 +818,123 @@ impl SellLadderRepo {
              WHERE id = $1 AND status = 'armed'",
         )
         .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
+    }
+}
+
+/// `volume_bots` — autonomous volume-making bots + the scheduler's due scan.
+pub struct VolumeBotRepo;
+
+impl VolumeBotRepo {
+    /// Start a new bot (status `running`, due immediately). `config` is a
+    /// `VolumeConfig` JSON; `selection` the wallet pool it rotates across.
+    pub async fn insert(
+        pool: &PgPool,
+        mint_address: &str,
+        selection: serde_json::Value,
+        config: serde_json::Value,
+    ) -> anyhow::Result<VolumeBot> {
+        Ok(sqlx::query_as::<_, VolumeBot>(
+            "INSERT INTO volume_bots (mint_address, selection, config) \
+             VALUES ($1,$2,$3) RETURNING *",
+        )
+        .bind(mint_address)
+        .bind(selection)
+        .bind(config)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Every bot for a mint (any status), newest first — the token detail list.
+    pub async fn by_mint(pool: &PgPool, mint_address: &str) -> anyhow::Result<Vec<VolumeBot>> {
+        Ok(sqlx::query_as::<_, VolumeBot>(
+            "SELECT * FROM volume_bots WHERE mint_address = $1 ORDER BY created_at DESC",
+        )
+        .bind(mint_address)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// RUNNING bots whose next cycle is due (`next_run_at <= now()`) — the
+    /// scheduler's scan. Bounded to the due set by the partial index in migration
+    /// `0013`. Oldest-due first so a backlog drains fairly.
+    pub async fn list_due(pool: &PgPool) -> anyhow::Result<Vec<VolumeBot>> {
+        Ok(sqlx::query_as::<_, VolumeBot>(
+            "SELECT * FROM volume_bots \
+             WHERE status = 'running' AND next_run_at <= now() ORDER BY next_run_at",
+        )
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Record one executed cycle: bump `cycles_done`, add the cycle's buy spend +
+    /// traded notional to the running totals, stamp the next due time, and set (or
+    /// clear) the last error. Stamps `updated_at`.
+    pub async fn record_cycle(
+        pool: &PgPool,
+        id: Uuid,
+        spent_quote_delta: i64,
+        volume_quote_delta: i64,
+        next_run_at: DateTime<Utc>,
+        last_error: Option<&str>,
+    ) -> anyhow::Result<VolumeBot> {
+        Ok(sqlx::query_as::<_, VolumeBot>(
+            "UPDATE volume_bots SET \
+                 cycles_done = cycles_done + 1, \
+                 spent_quote = spent_quote + $2, \
+                 volume_quote = volume_quote + $3, \
+                 next_run_at = $4, \
+                 last_error = $5, \
+                 updated_at = now() \
+             WHERE id = $1 RETURNING *",
+        )
+        .bind(id)
+        .bind(spent_quote_delta)
+        .bind(volume_quote_delta)
+        .bind(next_run_at)
+        .bind(last_error)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Pause a running bot (operator) — the scheduler then skips it. Guarded to
+    /// `running`. Returns whether a row changed.
+    pub async fn pause(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE volume_bots SET status = 'paused', updated_at = now() \
+             WHERE id = $1 AND status = 'running'",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// Resume a paused bot (operator), due immediately. Guarded to `paused` so a
+    /// stopped bot can't be reopened. Returns whether a row changed.
+    pub async fn resume(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE volume_bots SET status = 'running', next_run_at = now(), updated_at = now() \
+             WHERE id = $1 AND status = 'paused'",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    /// Terminal stop (operator, budget/max reached). Unlike pause/resume this has
+    /// no source-status guard — a bot can be stopped from any live state. Idempotent
+    /// (`WHERE status != 'stopped'`). Returns whether a row changed.
+    pub async fn stop(pool: &PgPool, id: Uuid, reason: Option<&str>) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE volume_bots SET status = 'stopped', last_error = COALESCE($2, last_error), \
+                 updated_at = now() WHERE id = $1 AND status != 'stopped'",
+        )
+        .bind(id)
+        .bind(reason)
         .execute(pool)
         .await?;
         Ok(r.rows_affected() > 0)

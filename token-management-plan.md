@@ -130,6 +130,13 @@ GET  /api/tokens/:mint/positions            -> per-wallet holdings + PnL (reads 
 POST /api/tokens/:mint/manage/preview       -> ActionPlan (no execution) from a ManageRequest       [DONE P2]
 POST /api/tokens/:mint/manage/execute       -> recompute + execute the plan (gated)                 [DONE P2]
 GET  /api/tokens/:mint/manage/actions       -> manage_actions history                               [DONE P2]
+GET  /api/tokens/:mint/manage/ladders        -> list sell ladders                                    [DONE P4]
+POST /api/tokens/:mint/manage/ladders        -> arm a sell ladder                                    [DONE P4]
+DELETE /api/manage/ladders/:id               -> cancel an armed ladder                               [DONE P4]
+GET  /api/tokens/:mint/manage/volume         -> list volume bots                                     [DONE P5]
+POST /api/tokens/:mint/manage/volume         -> start a volume bot                                   [DONE P5]
+POST /api/manage/volume/:id/pause|resume     -> pause / resume a bot                                 [DONE P5]
+DELETE /api/manage/volume/:id                -> stop a bot (terminal)                                [DONE P5]
 ```
 
 Buy + consolidate are the **same** `manage/preview` + `manage/execute` endpoints with
@@ -203,8 +210,30 @@ the full path placing no trades.
    `live/main.rs`'s `select!`. Frontend `LadderPanel` (rung builder → arm → list with fired
    strikethrough + cancel). Verified: `cargo check -p live` + `cargo test -p platform-core` + clippy
    + `vite build` clean. **Not exercised against a live chain/DB here.**
-5. **Volume-making** *(later)* — fresh-wallet rotation + buy/sell loop scheduler over the buy/sell
-   primitives + wallet pool/funding.
+5. **Volume-making** ✅ **DONE** (2026-07-08) — the subsystem's autonomous buy/sell loop, built
+   entirely over the Phase 2/3 primitives (NO second trade engine). Migration `0013_volume_bots.sql`;
+   `VolumeBotStatus` enum (`running`/`paused`/`stopped`, + roundtrip test); `VolumeBot` model +
+   `VolumeBotRepo` (`insert` / `by_mint` / `list_due` via partial index / `record_cycle` / `pause` /
+   `resume` / `stop`); `launcher::manage::volume` — `VolumeConfig` (buy-SOL band, interval band,
+   `sell_back_pct`, hard `budget_sol`, optional `max_cycles`), `start_volume_bot` (validates config),
+   and `spawn_volume_scheduler` (5s poll: for each due `running` bot, run one cycle then jitter
+   `next_run_at` forward). **A cycle** = pick the next wallet in the rotation (`cycles_done %
+   candidates`, over the selection's `wallet_ids` or role — default the `trading` pool, kept warm by
+   the existing funder), buy a jittered SOL amount through it via the **Phase 3 buy pipeline**, then
+   (optionally) sell `sell_back_pct` of the fresh balance back via the **Phase 2 sell pipeline**.
+   Spend/volume are counted from CONFIRMED legs only (a failed buy costs nothing against the budget);
+   the bot self-stops on budget/max-cycle. Gated: the scheduler **no-ops when `MANAGE_ENABLED` is
+   off** (bots stay `running`-but-idle) — same kill switch as ladders. A transient cycle failure
+   (e.g. no funded wallet) records `last_error` and retries next interval rather than stopping.
+   `GET/POST .../manage/volume`, `POST /api/manage/volume/{id}/{pause,resume}`, `DELETE
+   /api/manage/volume/{id}`; wired into `live/main.rs`'s `select!`. Frontend `VolumePanel` (config
+   builder → Start; running/past bots with cycles/spent/volume + pause/resume/stop). **Deviations
+   from this plan, by design:** wallet "rotation" reuses the pool by round-robin over the role's
+   not-retired wallets (NOT the launch reservation lifecycle — reservation is a launch concept; a
+   volume wallet is reused every cycle); buy/sell-back happen in the SAME cycle invocation (a
+   deferred-sell state machine is a later refinement); buy is curve-only (inherits the Phase 3 gap).
+   Verified: `cargo check -p live` + `cargo test -p platform-core` + clippy + `vite build` clean.
+   **Not exercised against a live chain/DB here** (no keys/DB in this env).
 
 ## SSOT / budget cautions
 

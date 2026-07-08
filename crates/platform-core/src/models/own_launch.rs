@@ -226,6 +226,29 @@ pub struct SellLadder {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A volume-making bot (token-management-plan.md Phase 5). The background
+/// scheduler cycles a jittered buy (+ optional sell-back) across `selection`'s
+/// wallets on a jittered interval, generating trade volume until its SOL budget or
+/// max-cycle cap is hit. `config` is a `VolumeConfig` JSONB (size/interval ranges,
+/// sell-back pct, budget); the row is the bot's SSOT. Never a FK to `tokens`.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct VolumeBot {
+    pub id: Uuid,
+    pub mint_address: String,
+    pub status: String,
+    pub selection: Json,
+    pub config: Json,
+    pub cycles_done: i32,
+    /// Cumulative SOL (lamports) spent on buys — checked against the budget.
+    pub spent_quote: i64,
+    /// Cumulative notional (lamports) traded (buys + sell-backs) — the volume stat.
+    pub volume_quote: i64,
+    pub next_run_at: DateTime<Utc>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Phase-2 seam — atomic Jito bundle of a launch's buy legs. `legs` is the
 /// per-leg structure descriptor pool (audited variant + budget/tip).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

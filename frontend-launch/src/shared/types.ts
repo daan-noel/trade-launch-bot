@@ -169,6 +169,32 @@ export interface SellLadder {
   updated_at: string;
 }
 
+// ---- Volume-making bots (token-management-plan.md Phase 5) ----
+export interface VolumeConfig {
+  buy_sol_min: number;
+  buy_sol_max: number;
+  interval_secs_min: number;
+  interval_secs_max: number;
+  sell_back_pct: number; // 0 = accumulate (buy-only)
+  budget_sol: number; // hard cumulative buy-spend cap
+  max_cycles?: number | null;
+}
+
+export interface VolumeBot {
+  id: string;
+  mint_address: string;
+  status: string; // running | paused | stopped
+  selection: WalletSelection;
+  config: VolumeConfig;
+  cycles_done: number;
+  spent_quote: number; // lamports spent on buys
+  volume_quote: number; // lamports traded (buys + sell-backs)
+  next_run_at: string;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ManagedWalletPool {
   id: string;
   address: string;

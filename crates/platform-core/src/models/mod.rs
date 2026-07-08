@@ -17,12 +17,13 @@ pub mod trade;
 pub use dimensions::{Launchpad, Market, QuoteAsset};
 pub use status::{
     BundleStatus, LadderStatus, LaunchStatus, ManageKind, ManageSizing, ManageStatus,
-    PositionStatus, WalletRole, WalletStatus,
+    PositionStatus, VolumeBotStatus, WalletRole, WalletStatus,
 };
 pub use metadata::{MetadataTemplate, NewMetadataTemplate};
 pub use own_launch::{
     Bundle, Launch, LaunchListRow, LaunchTemplate, ManageAction, ManagedWallet, NewLaunch,
     NewLaunchTemplate, NewManagedWallet, SellLadder, TokenPosition, UpdateLaunchTemplate,
+    VolumeBot,
 };
 pub use token::{NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState};
 pub use trade::{NewTrade, RawTx, Trade, TradePriced};

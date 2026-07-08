@@ -396,6 +396,44 @@ impl FromStr for LadderStatus {
     }
 }
 
+/// `volume_bots.status` lifecycle: `running` (the scheduler cycles it) →
+/// `paused` (operator; scheduler skips it) → `stopped` (terminal: budget/max
+/// cycles reached, or operator-stopped). CHECK in migration `0013`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeBotStatus {
+    Running,
+    Paused,
+    Stopped,
+}
+
+impl VolumeBotStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VolumeBotStatus::Running => "running",
+            VolumeBotStatus::Paused => "paused",
+            VolumeBotStatus::Stopped => "stopped",
+        }
+    }
+
+    pub const ALL: [VolumeBotStatus; 3] = [
+        VolumeBotStatus::Running,
+        VolumeBotStatus::Paused,
+        VolumeBotStatus::Stopped,
+    ];
+}
+
+impl FromStr for VolumeBotStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "running" => Ok(VolumeBotStatus::Running),
+            "paused" => Ok(VolumeBotStatus::Paused),
+            "stopped" => Ok(VolumeBotStatus::Stopped),
+            other => Err(format!("unknown volume bot status: {other}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,5 +517,14 @@ mod tests {
         }
         assert_eq!(LadderStatus::Armed.as_str(), "armed");
         assert!(LadderStatus::from_str("firing").is_err());
+    }
+
+    #[test]
+    fn volume_bot_status_roundtrips() {
+        for s in VolumeBotStatus::ALL {
+            assert_eq!(VolumeBotStatus::from_str(s.as_str()).unwrap(), s);
+        }
+        assert_eq!(VolumeBotStatus::Running.as_str(), "running");
+        assert!(VolumeBotStatus::from_str("halted").is_err());
     }
 }

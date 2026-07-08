@@ -19,6 +19,7 @@ import {
 import { PriceChart } from '@shared/components/PriceChart';
 import { ManagePanel } from './ManagePanel';
 import { LadderPanel } from './LadderPanel';
+import { VolumePanel } from './VolumePanel';
 import { ageFromSecs, formatCount, formatSig, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { TokenOverview, TokenPosition, TradePriced } from '@shared/types';
 
@@ -103,6 +104,8 @@ export function TokenDetailPage() {
       {positions.length > 0 && <ManagePanel mint={mint} overview={overview} />}
 
       {positions.length > 0 && <LadderPanel mint={mint} />}
+
+      {positions.length > 0 && <VolumePanel mint={mint} />}
 
       <Card title={`Trades (${trades.length})`}>
         <TradesTable trades={trades} loading={tradesLoading} overview={overview} />

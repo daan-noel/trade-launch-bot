@@ -14,9 +14,11 @@ mod ladder;
 mod model;
 mod plan;
 mod positions;
+mod volume;
 
 pub use execute::execute_action;
 pub use ladder::{arm_ladder, spawn_ladder_evaluator, LadderRung};
 pub use model::{ActionPlan, ManageRequest, PlanLeg, WalletSelection};
 pub use plan::build_plan;
 pub use positions::load_positions;
+pub use volume::{spawn_volume_scheduler, start_volume_bot, VolumeConfig};

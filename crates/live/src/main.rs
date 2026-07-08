@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         wallet_dust_sweep_task,
         wallet_funding_task,
         ladder_task,
+        volume_task,
     ) = match launcher_settings.as_ref() {
         Some(s) => {
             let funding_task = if s.funding.is_some() {
@@ -128,9 +129,10 @@ async fn main() -> anyhow::Result<()> {
                 Some(launcher::spawn_dust_sweep(pools.hot.clone(), s.clone())),
                 funding_task,
                 Some(launcher::spawn_ladder_evaluator(pools.hot.clone(), s.clone())),
+                Some(launcher::spawn_volume_scheduler(pools.hot.clone(), s.clone())),
             )
         }
-        None => (None, None, None, None, None),
+        None => (None, None, None, None, None, None),
     };
 
     // Ingest (optional): spawn only when Helius creds are present. `ingest_handle`
@@ -209,6 +211,14 @@ async fn main() -> anyhow::Result<()> {
             None => std::future::pending::<()>().await,
         }
     };
+    let volume = async {
+        match volume_task {
+            Some(h) => {
+                let _ = h.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
 
     match ingest_task {
         Some(ingest) => {
@@ -222,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
                 _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
                 _ = wallet_funding      => warn!("wallet funding task ended — shutting down"),
                 _ = ladder              => warn!("ladder evaluator ended — shutting down"),
+                _ = volume              => warn!("volume scheduler ended — shutting down"),
             }
         }
         None => {
@@ -234,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
                 _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
                 _ = wallet_funding      => warn!("wallet funding task ended — shutting down"),
                 _ = ladder              => warn!("ladder evaluator ended — shutting down"),
+                _ = volume              => warn!("volume scheduler ended — shutting down"),
             }
         }
     }
