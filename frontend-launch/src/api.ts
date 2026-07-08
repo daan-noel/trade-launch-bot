@@ -208,6 +208,15 @@ export interface IngestStatus {
   live: boolean;
 }
 
+// The launch console's initial load in one round trip (GET /api/bootstrap) —
+// replaces three separate GETs on mount. `dev_wallets` is the pool filtered to
+// the `dev` role server-side (all the console's wallet picker needs).
+export interface BootstrapPayload {
+  templates: LaunchTemplate[];
+  dev_wallets: ManagedWalletPool[];
+  metadata_templates: MetadataTemplate[];
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
   if (!res.ok) {
@@ -244,6 +253,7 @@ async function putJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
+  bootstrap: () => getJson<BootstrapPayload>('/api/bootstrap'),
   templates: () => getJson<LaunchTemplate[]>('/api/launch_templates'),
   createLaunchTemplate: (req: NewLaunchTemplateInput) =>
     postJson<LaunchTemplate>('/api/launch_templates', req),

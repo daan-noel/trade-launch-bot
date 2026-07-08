@@ -109,14 +109,17 @@ export default function App() {
     }
   };
 
+  // One composite request on mount instead of three separate GETs. `loadTemplates`
+  // stays for the Templates tab's onChange (a targeted templates-only refresh).
   useEffect(() => {
-    loadTemplates();
     (async () => {
       try {
-        const [w, m] = await Promise.all([api.walletPool('dev'), api.metadataTemplates()]);
-        setWallets(w);
-        setMetadataTemplates(m);
-        const firstFunded = w.find((wallet) => wallet.status === 'funded');
+        const { templates, dev_wallets, metadata_templates } = await api.bootstrap();
+        setTemplates(templates);
+        setTemplateId((prev) => prev || templates[0]?.id || '');
+        setWallets(dev_wallets);
+        setMetadataTemplates(metadata_templates);
+        const firstFunded = dev_wallets.find((wallet) => wallet.status === 'funded');
         if (firstFunded) setWalletId(firstFunded.id);
       } catch (e) {
         setError(String(e));

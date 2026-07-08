@@ -47,6 +47,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.route("/health", web::get().to(health))
         .route("/api/ingest", web::get().to(ingest_status))
         .route("/api/ingest", web::put().to(ingest_toggle))
+        .route("/api/bootstrap", web::get().to(bootstrap))
         .route("/api/quote_assets", web::get().to(quote_assets))
         .route("/api/launchpads", web::get().to(launchpads))
         .route("/api/launch_templates", web::get().to(launch_templates_list))
@@ -112,6 +113,23 @@ async fn ingest_toggle(
             "error": "ingest not configured — HELIUS_LASERSTREAM_URL / HELIUS_API_KEY not set"
         }))),
     }
+}
+
+/// One-shot composite for the launch console's initial load: templates + dev
+/// wallets + metadata templates in a single round trip (fetched concurrently),
+/// instead of the frontend firing three separate GETs on mount.
+async fn bootstrap(pool: web::Data<PgPool>) -> Result<HttpResponse, actix_web::Error> {
+    let (templates, dev_wallets, metadata_templates) = tokio::try_join!(
+        LaunchTemplateRepo::all(pool.get_ref()),
+        ManagedWalletRepo::list_all(pool.get_ref(), Some(WalletRole::Dev.as_str())),
+        MetadataTemplateRepo::all(pool.get_ref()),
+    )
+    .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "templates": templates,
+        "dev_wallets": dev_wallets,
+        "metadata_templates": metadata_templates,
+    })))
 }
 
 async fn quote_assets(pool: web::Data<PgPool>) -> Result<HttpResponse, actix_web::Error> {
