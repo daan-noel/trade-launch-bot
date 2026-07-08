@@ -20,7 +20,7 @@ use std::str::FromStr;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::bundle_execute::{execute_bundle, BundleExecuteResult};
+use crate::bundle_execute::{execute_bundle_with_trader, BundleExecuteResult};
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
 use crate::trader_config::build_launch_trader_config;
@@ -390,7 +390,9 @@ pub async fn execute_launch(
             .await?
             .is_some_and(|b| b.status == BundleStatus::Planned.as_str())
         {
-            let bundle_result = execute_bundle(pool, settings, bundle_id)
+            // Reuse the create trader built above — the auto-submit no longer
+            // stands up (and initialize()s) a second trader in the same request.
+            let bundle_result = execute_bundle_with_trader(pool, settings, &trader, bundle_id)
                 .await
                 .context("launch created on-chain but bundle auto-submit failed")?;
             info!(

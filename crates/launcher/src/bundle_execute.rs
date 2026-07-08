@@ -28,11 +28,39 @@ pub struct BundleExecuteResult {
     pub leg_signatures: Vec<String>,
 }
 
-/// Build + submit a `planned` bundle's buy legs to Jito.
+/// Build + submit a `planned` bundle's buy legs to Jito, standing up a fresh
+/// trader from the first leg's bundler wallet. Standalone retry entrypoint
+/// (`POST /bundles/:id/execute`).
 pub async fn execute_bundle(
     pool: &PgPool,
     settings: &LauncherSettings,
     bundle_id: Uuid,
+) -> Result<BundleExecuteResult> {
+    execute_bundle_inner(pool, settings, bundle_id, None).await
+}
+
+/// Same as [`execute_bundle`], but reuse a trader the caller already built and
+/// initialized (the launch's create trader). Every leg is signed by its own
+/// bundler wallet, and the cached global account is wallet-independent for the
+/// fields the legs read (`build_bundle_leg_tx` re-derives each leg's
+/// `user_volume_accumulator` from that leg's signer), so the trader's own signer
+/// identity is irrelevant here. This avoids standing up a second trader — a full
+/// `initialize()` (≈8-12 RPC/HTTP round trips plus two background refresher
+/// tasks) — for the auto-submit that already follows a create in the same request.
+pub(crate) async fn execute_bundle_with_trader(
+    pool: &PgPool,
+    settings: &LauncherSettings,
+    trader: &PumpFunTrader,
+    bundle_id: Uuid,
+) -> Result<BundleExecuteResult> {
+    execute_bundle_inner(pool, settings, bundle_id, Some(trader)).await
+}
+
+async fn execute_bundle_inner(
+    pool: &PgPool,
+    settings: &LauncherSettings,
+    bundle_id: Uuid,
+    existing_trader: Option<&PumpFunTrader>,
 ) -> Result<BundleExecuteResult> {
     let bundle = BundleRepo::get(pool, bundle_id)
         .await?
@@ -67,21 +95,30 @@ pub async fn execute_bundle(
         .context("bundler wallet not found")?;
     check_wallet_reserved_to_bundle(&first_wallet, bundle.launch_id)?;
 
-    let primary_signer = keystore::resolve_signer(
-        &settings.keystore_dir,
-        &first_wallet.key_ref,
-        &kek,
-    )?;
-
-    let nonce_accounts: Vec<Pubkey> = settings
-        .nonce_accounts
-        .iter()
-        .map(|s| Pubkey::from_str(s).with_context(|| format!("parse nonce pubkey {s}")))
-        .collect::<Result<_>>()?;
-
-    let trader_config = build_launch_trader_config(settings, primary_signer, nonce_accounts);
-    let mut trader = PumpFunTrader::new(trader_config);
-    trader.initialize().await.context("initialize pump-trader")?;
+    // Reuse the caller's already-initialized trader when given one (the launch's
+    // create trader); otherwise stand up a fresh one from the first bundler
+    // wallet (the standalone retry path).
+    let built_trader;
+    let trader: &PumpFunTrader = match existing_trader {
+        Some(t) => t,
+        None => {
+            let primary_signer = keystore::resolve_signer(
+                &settings.keystore_dir,
+                &first_wallet.key_ref,
+                &kek,
+            )?;
+            let nonce_accounts: Vec<Pubkey> = settings
+                .nonce_accounts
+                .iter()
+                .map(|s| Pubkey::from_str(s).with_context(|| format!("parse nonce pubkey {s}")))
+                .collect::<Result<_>>()?;
+            let trader_config = build_launch_trader_config(settings, primary_signer, nonce_accounts);
+            let mut t = PumpFunTrader::new(trader_config);
+            t.initialize().await.context("initialize pump-trader")?;
+            built_trader = t;
+            &built_trader
+        }
+    };
 
     let mint = Pubkey::from_str(&launch.mint_address).context("parse mint")?;
     let creator = Pubkey::from_str(&token.creator_wallet).context("parse creator")?;
