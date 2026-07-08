@@ -1,10 +1,11 @@
 import type { BuyVariant, LegStructureRecipe } from '@shared/types';
 
+// The dev-buy is NOT a separate variant — it's driven purely by the template's
+// `dev_buy_quote` (> 0 ⇒ create+dev-buy, else plain create), so `create_v2` and
+// the old `create_v2_devbuy` behaved identically. One variant per builder.
 export const VARIANTS = [
   'pumpfun.create_v2',
-  'pumpfun.create_v2_devbuy',
   'pumpfun.create_v1',
-  'pumpfun.create_v1_devbuy',
 ] as const;
 
 export const BUY_VARIANTS: BuyVariant[] = [

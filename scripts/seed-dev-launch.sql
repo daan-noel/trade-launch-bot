@@ -96,7 +96,7 @@ INSERT INTO launch_templates (
 SELECT
     'my-first-launch',
     1,
-    'pumpfun.create_v2_devbuy',
+    'pumpfun.create_v2',
     1,
     md.id,
     jsonb_build_object(

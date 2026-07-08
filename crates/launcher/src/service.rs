@@ -196,8 +196,12 @@ pub async fn execute_launch(
             .context("dev wallet is no longer funded (claimed by another launch)")?;
 
         let dev_buy_sol = dev_buy_quote as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
+        // The dev-buy is NOT encoded in the variant — it's `dev_buy_quote > 0`
+        // below. `create_v2`/`create_v1` are the only variants (the legacy
+        // `_devbuy` spellings were collapsed away; migration 0009 rewrites any
+        // remaining rows).
         let (signature, ix_label) = match template.variant.as_str() {
-            "pumpfun.create_v2" | "pumpfun.create_v2_devbuy" => {
+            "pumpfun.create_v2" => {
                 let args = CreateTokenV2Args {
                     name: meta_name.clone(),
                     symbol: meta_symbol.clone(),
@@ -221,7 +225,7 @@ pub async fn execute_launch(
                 };
                 (sig, "Pump.Fun: Create_v2")
             }
-            "pumpfun.create_v1" | "pumpfun.create_v1_devbuy" => {
+            "pumpfun.create_v1" => {
                 let args = CreateTokenArgs {
                     name: meta_name.clone(),
                     symbol: meta_symbol.clone(),
