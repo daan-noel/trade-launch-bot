@@ -3,9 +3,10 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
-    create_metadata_template, execute_bundle, execute_launch, export_wallet_base58, fund_for_launch,
-    fund_once, update_metadata_template, FundMode, FundScope, LaunchRequest, LauncherSettings,
-    NewMetadataTemplateRequest, PumpfunTemplateParams, UpdateMetadataTemplateRequest,
+    create_metadata_template, execute_action, execute_bundle, execute_launch, export_wallet_base58,
+    fund_for_launch, fund_once, update_metadata_template, FundMode, FundScope, LaunchRequest,
+    LauncherSettings, ManageRequest, NewMetadataTemplateRequest, PumpfunTemplateParams,
+    UpdateMetadataTemplateRequest,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -17,7 +18,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManagedWalletRepo,
+    BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManageActionRepo, ManagedWalletRepo,
     MetadataTemplateRepo, QuoteAssetRepo, TokenRepo, TradeRepo,
 };
 
@@ -93,7 +94,19 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/bundles/{id}/execute", web::post().to(bundle_execute))
         .route("/api/tokens/{mint}/overview", web::get().to(token_overview))
         .route("/api/tokens/{mint}/trades", web::get().to(token_trades))
-        .route("/api/tokens/{mint}/positions", web::get().to(token_positions));
+        .route("/api/tokens/{mint}/positions", web::get().to(token_positions))
+        .route(
+            "/api/tokens/{mint}/manage/preview",
+            web::post().to(manage_preview),
+        )
+        .route(
+            "/api/tokens/{mint}/manage/execute",
+            web::post().to(manage_execute),
+        )
+        .route(
+            "/api/tokens/{mint}/manage/actions",
+            web::get().to(manage_actions),
+        );
 }
 
 async fn health() -> HttpResponse {
@@ -737,6 +750,70 @@ async fn token_positions(
     mint: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let rows = launcher::load_positions(pool.get_ref(), settings.get_ref().as_ref(), &mint)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+/// Dry-run a management action (post-launch management, Phase 2): seed + reconcile
+/// the mint's positions, then compute the per-wallet `ActionPlan` WITHOUT placing
+/// any trade. Always allowed (reading + previewing are safe); executing is the
+/// gated step.
+async fn manage_preview(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    mint: web::Path<String>,
+    body: web::Json<ManageRequest>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let mint = mint.into_inner();
+    // Freshen positions so the preview sizes off current on-chain balances.
+    launcher::load_positions(pool.get_ref(), settings.get_ref().as_ref(), &mint)
+        .await
+        .map_err(e500)?;
+    let plan = launcher::build_plan(pool.get_ref(), &mint, &body)
+        .await
+        .map_err(|e| actix_web::error::ErrorBadRequest(format!("{e:?}")))?;
+    Ok(HttpResponse::Ok().json(plan))
+}
+
+/// Execute a management action (DANGER: places real sells). Requires the launcher
+/// to be configured AND `MANAGE_ENABLED=true` (503 otherwise) — the kill switch,
+/// mirroring `FUND_ENABLED`. Returns the finalized audit row (per-leg outcomes).
+async fn manage_execute(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    mint: web::Path<String>,
+    body: web::Json<ManageRequest>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    if settings.manage.is_none() {
+        return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "error": "token management disabled — set MANAGE_ENABLED=true to enable"
+        })));
+    }
+    let mint = mint.into_inner();
+    let action = execute_action(pool.get_ref(), settings, &mint, &body)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(action))
+}
+
+#[derive(serde::Deserialize)]
+struct ManageActionsQuery {
+    #[serde(default = "default_manage_actions_limit")]
+    limit: i64,
+}
+fn default_manage_actions_limit() -> i64 {
+    50
+}
+
+/// A mint's management-action history (newest first).
+async fn manage_actions(
+    pool: web::Data<PgPool>,
+    mint: web::Path<String>,
+    q: web::Query<ManageActionsQuery>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let rows = ManageActionRepo::by_mint(pool.get_ref(), &mint, q.limit.clamp(1, 200))
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(rows))

@@ -1,5 +1,6 @@
 import { baseApi } from './baseApi';
 import type {
+  ActionPlan,
   BootstrapPayload,
   Bundle,
   FundReport,
@@ -11,6 +12,8 @@ import type {
   LaunchResult,
   LaunchStatus,
   LaunchTemplate,
+  ManageAction,
+  ManageRequest,
   ManagedWalletPool,
   MetadataTemplate,
   NewLaunchTemplateInput,
@@ -173,6 +176,29 @@ export const api = baseApi.injectEndpoints({
       query: (mint) => `/api/tokens/${mint}/positions`,
       providesTags: ['Positions'],
     }),
+
+    // ---- Post-launch management ----
+    // Preview is a mutation (POST, no cache) — a fresh dry-run each click.
+    managePreview: build.mutation<ActionPlan, { mint: string; body: ManageRequest }>({
+      query: ({ mint, body }) => ({
+        url: `/api/tokens/${mint}/manage/preview`,
+        method: 'POST',
+        body,
+      }),
+    }),
+    // DANGER: places real sells. Refreshes holdings + action history on success.
+    manageExecute: build.mutation<ManageAction, { mint: string; body: ManageRequest }>({
+      query: ({ mint, body }) => ({
+        url: `/api/tokens/${mint}/manage/execute`,
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['Positions', 'ManageActions'],
+    }),
+    manageActions: build.query<ManageAction[], { mint: string; limit?: number }>({
+      query: ({ mint, limit }) => `/api/tokens/${mint}/manage/actions${q({ limit })}`,
+      providesTags: ['ManageActions'],
+    }),
   }),
   overrideExisting: false,
 });
@@ -204,4 +230,7 @@ export const {
   useTokenOverviewQuery,
   useTokenTradesQuery,
   useTokenPositionsQuery,
+  useManagePreviewMutation,
+  useManageExecuteMutation,
+  useManageActionsQuery,
 } = api;

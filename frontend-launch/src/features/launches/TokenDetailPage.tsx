@@ -17,6 +17,7 @@ import {
   StatusPill,
 } from '@shared/components/ui';
 import { PriceChart } from '@shared/components/PriceChart';
+import { ManagePanel } from './ManagePanel';
 import { ageFromSecs, formatCount, formatSig, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { TokenOverview, TokenPosition, TradePriced } from '@shared/types';
 
@@ -97,6 +98,8 @@ export function TokenDetailPage() {
       <Card title={`Our holdings (${positions.length})`}>
         <HoldingsTable positions={positions} loading={positionsLoading} overview={overview} />
       </Card>
+
+      {positions.length > 0 && <ManagePanel mint={mint} overview={overview} />}
 
       <Card title={`Trades (${trades.length})`}>
         <TradesTable trades={trades} loading={tradesLoading} overview={overview} />

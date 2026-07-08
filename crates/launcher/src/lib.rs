@@ -32,7 +32,7 @@ pub use bundle::{
 pub use bundle_execute::{execute_bundle, BundleExecuteResult};
 pub use confirm::spawn_bundle_confirm_watcher;
 
-pub use config::{FundingConfig, LauncherSettings};
+pub use config::{FundingConfig, LauncherSettings, ManageConfig};
 pub use dust_sweep::spawn_dust_sweep;
 pub use funding_plan::{
     dev_launch_required_lamports, leg_required_lamports, FundPlan, FUNDING_HEADROOM_LAMPORTS,
@@ -40,7 +40,9 @@ pub use funding_plan::{
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
-pub use manage::load_positions;
+pub use manage::{
+    build_plan, execute_action, load_positions, ActionPlan, ManageRequest, PlanLeg, WalletSelection,
+};
 pub use metadata_upload::{
     create_metadata_template, update_metadata_template, NewMetadataTemplateRequest,
     UpdateMetadataTemplateRequest,

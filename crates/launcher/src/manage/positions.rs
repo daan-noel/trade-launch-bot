@@ -1,16 +1,13 @@
-//! Post-launch token management (token-management-plan.md).
-//!
-//! Phase 1 is the read model only: resolve a launched token back to the wallets
-//! that hold it (dev + bundle legs), seed their cost-basis rows, and reconcile
-//! each against the on-chain SPL token balance. No trades are placed here — the
-//! sell/buy/consolidate primitives land in later phases on top of these rows.
+//! The holdings read model: seed a mint's positions from its launch/bundle fills,
+//! then reconcile each against chain (balance + canonical token account) and the
+//! ingested feed (realized proceeds). Cold, operator-triggered path.
 
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use platform_core::models::{TokenPosition, WalletRole};
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo,
+    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
 };
 use sqlx::PgPool;
 use tracing::warn;
@@ -21,11 +18,9 @@ use crate::config::LauncherSettings;
 
 /// Load the per-wallet holdings for a launched mint. Seeds any missing cost-basis
 /// rows from the launch's dev buy + bundle legs (idempotent), then — when RPC is
-/// configured — reconciles each row's on-chain token balance best-effort (a
-/// reconcile failure is logged, never fatal: seeded rows still return).
-///
-/// Cold, operator-triggered path (the token detail panel), not the hot ingest
-/// loop — a handful of RPC calls per token is fine here.
+/// configured — reconciles each row's on-chain balance + feed realized proceeds
+/// best-effort (a reconcile failure is logged, never fatal: seeded rows still
+/// return).
 pub async fn load_positions(
     pool: &PgPool,
     settings: Option<&LauncherSettings>,
@@ -35,7 +30,7 @@ pub async fn load_positions(
 
     if let Some(settings) = settings {
         if let Err(e) = reconcile_positions(pool, settings, mint_address).await {
-            warn!(%mint_address, ?e, "position balance reconcile failed — returning seeded rows");
+            warn!(%mint_address, ?e, "position reconcile failed — returning seeded rows");
         }
     }
 
@@ -43,14 +38,13 @@ pub async fn load_positions(
 }
 
 /// Seed cost-basis rows for the dev wallet + every bundle leg of a mint's launch.
-/// Idempotent (each `seed` is `ON CONFLICT DO NOTHING`), so it's safe to call on
-/// every read. No-op when the mint isn't one of our launches.
+/// Idempotent, so it's safe to call on every read. No-op when the mint isn't one
+/// of our launches.
 async fn seed_positions(pool: &PgPool, mint_address: &str) -> Result<()> {
     let Some(launch) = LaunchRepo::find_by_mint(pool, mint_address).await? else {
         return Ok(());
     };
 
-    // Dev wallet: cost basis = its dev-buy amount (quote base units).
     if let Some(dev_wallet_id) = launch.dev_wallet_id {
         TokenPositionRepo::seed(
             pool,
@@ -62,7 +56,6 @@ async fn seed_positions(pool: &PgPool, mint_address: &str) -> Result<()> {
         .await?;
     }
 
-    // Bundle legs: each leg's wallet + planned quote amount (cost basis).
     if let Some(bundle_id) = launch.bundle_id {
         if let Some(bundle) = BundleRepo::get(pool, bundle_id).await? {
             for leg in legs_from_json(&bundle.legs)? {
@@ -81,9 +74,10 @@ async fn seed_positions(pool: &PgPool, mint_address: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reconcile every open position's `balance_base` + canonical token account
-/// against chain via `getTokenAccountsByOwner` (one call per holder wallet).
-async fn reconcile_positions(
+/// Reconcile every position's on-chain balance (`getTokenAccountsByOwner`) and its
+/// feed-accurate realized proceeds (sum of the wallet's sell fills for the mint).
+/// Public so the sell executor can refresh positions immediately after a sell.
+pub async fn reconcile_positions(
     pool: &PgPool,
     settings: &LauncherSettings,
     mint_address: &str,
@@ -93,7 +87,6 @@ async fn reconcile_positions(
         return Ok(());
     }
 
-    // Resolve holder wallet_id -> address in one round trip.
     let wallet_ids: Vec<Uuid> = positions.iter().map(|p| p.wallet_id).collect();
     let wallets = ManagedWalletRepo::get_many(pool, &wallet_ids).await?;
     let addr_of = |id: Uuid| wallets.iter().find(|w| w.id == id).map(|w| w.address.clone());
@@ -108,18 +101,26 @@ async fn reconcile_positions(
             warn!(wallet_id = %pos.wallet_id, "position wallet missing from managed_wallets — skipped");
             continue;
         };
+        // On-chain balance + canonical account.
         let (balance_base, token_account) =
             fetch_token_holding(&client, &settings.rpc_url, &owner, mint_address).await?;
         TokenPositionRepo::set_balance(pool, pos.id, balance_base, token_account.as_deref()).await?;
+
+        // Feed-accurate realized proceeds (sum of this wallet's sells for the
+        // mint) — authoritative from `trades`, never a fabricated estimate. Lags
+        // one ingest cycle behind a just-fired sell; the next read picks it up.
+        let realized = TradeRepo::sum_side_quote_by_address(pool, mint_address, &owner, "sell")
+            .await
+            .unwrap_or(0);
+        TokenPositionRepo::set_realized(pool, pos.id, realized).await?;
     }
 
     Ok(())
 }
 
 /// Sum an owner's SPL balance for a mint, and pick the largest token account as
-/// the canonical one. Works across the SPL Token + Token-2022 programs (the RPC
-/// resolves the program from the mint filter). A never-created ATA comes back as
-/// an empty account list → `(0, None)`.
+/// the canonical one. Works across SPL Token + Token-2022 (the RPC resolves the
+/// program from the mint filter). A never-created ATA ⇒ `(0, None)`.
 async fn fetch_token_holding(
     client: &reqwest::Client,
     rpc_url: &str,

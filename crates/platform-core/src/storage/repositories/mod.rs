@@ -14,6 +14,7 @@ pub use dimensions::{LaunchpadRepo, MarketRepo, QuoteAssetRepo};
 pub use feed::{RawTxRepo, TradeRepo, WalletDictRepo};
 pub use metadata::MetadataTemplateRepo;
 pub use own_launch::{
-    BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, TokenPositionRepo,
+    BundleRepo, LaunchRepo, LaunchTemplateRepo, ManageActionRepo, ManagedWalletRepo,
+    TokenPositionRepo,
 };
 pub use token::{TokenMarketStateRepo, TokenRepo, TokenSyncStateRepo};

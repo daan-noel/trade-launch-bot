@@ -6,8 +6,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::{
-    Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,
-    TokenPosition, UpdateLaunchTemplate,
+    Bundle, Launch, LaunchTemplate, ManageAction, ManagedWallet, NewLaunch, NewLaunchTemplate,
+    NewManagedWallet, TokenPosition, UpdateLaunchTemplate,
 };
 
 /// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key. Lifecycle
@@ -658,5 +658,92 @@ impl TokenPositionRepo {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// Set the feed-derived realized proceeds (sum of the wallet's sell fills for
+    /// this mint, quote base units) — authoritative from `trades`, never a
+    /// fabricated estimate. Stamps `updated_at`.
+    pub async fn set_realized(pool: &PgPool, id: Uuid, realized_quote: i64) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE token_positions SET realized_quote = $2, updated_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(realized_quote)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
+
+/// `manage_actions` — audit log of executed post-launch management actions.
+pub struct ManageActionRepo;
+
+impl ManageActionRepo {
+    /// Record an action about to run (status `executing`). `plan` is the executed
+    /// leg set; `selection` the operator's pick. Returns the inserted row.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_executing(
+        pool: &PgPool,
+        mint_address: &str,
+        kind: &str,
+        sizing: &str,
+        selection: serde_json::Value,
+        plan: serde_json::Value,
+        legs_total: i32,
+    ) -> anyhow::Result<ManageAction> {
+        Ok(sqlx::query_as::<_, ManageAction>(
+            "INSERT INTO manage_actions \
+                (mint_address, kind, sizing, selection, plan, status, legs_total) \
+             VALUES ($1,$2,$3,$4,$5,'executing',$6) RETURNING *",
+        )
+        .bind(mint_address)
+        .bind(kind)
+        .bind(sizing)
+        .bind(selection)
+        .bind(plan)
+        .bind(legs_total)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Terminal outcome: status + confirmed-leg count + optional error + the
+    /// executed plan (now carrying per-leg signatures/outcomes). Stamps
+    /// `completed_at`.
+    pub async fn set_result(
+        pool: &PgPool,
+        id: Uuid,
+        status: &str,
+        legs_confirmed: i32,
+        plan: serde_json::Value,
+        error: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE manage_actions SET status = $2, legs_confirmed = $3, plan = $4, \
+                 error = $5, completed_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(legs_confirmed)
+        .bind(plan)
+        .bind(error)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// A mint's action history, newest first (backed by the mint+created_at index).
+    pub async fn by_mint(
+        pool: &PgPool,
+        mint_address: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<ManageAction>> {
+        Ok(sqlx::query_as::<_, ManageAction>(
+            "SELECT * FROM manage_actions WHERE mint_address = $1 \
+             ORDER BY created_at DESC LIMIT $2",
+        )
+        .bind(mint_address)
+        .bind(limit.max(1))
+        .fetch_all(pool)
+        .await?)
     }
 }

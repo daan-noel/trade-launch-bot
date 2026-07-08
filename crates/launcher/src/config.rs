@@ -32,6 +32,36 @@ pub struct LauncherSettings {
     /// the endpoint — it returns 403. Opt-in per deployment; the endpoint hands
     /// out spendable keys, so it is off unless a secret is set. Serve over TLS.
     pub export_secret: Option<String>,
+    /// Post-launch token management (token-management-plan.md) — `None` (the
+    /// default: `MANAGE_ENABLED` unset/false) hard-disables the destructive
+    /// `POST /api/tokens/{mint}/manage/execute` endpoint (503). The kill switch:
+    /// previewing a plan and reading holdings are always allowed; firing real
+    /// sells/buys is not, unless explicitly enabled. Mirrors `funding`.
+    pub manage: Option<ManageConfig>,
+}
+
+/// Config for executing post-launch management actions (real sells/buys). Only
+/// constructed when `MANAGE_ENABLED=true`.
+#[derive(Debug, Clone)]
+pub struct ManageConfig {
+    /// Slippage floor (bps) applied to each management sell — protects proceeds
+    /// against a thin curve. Default 10% (managed tokens are often low-liquidity).
+    pub sell_slippage_bps: u64,
+    /// Log intended actions and place NO real trades. Test before live.
+    pub dry_run: bool,
+}
+
+impl ManageConfig {
+    /// `None` unless `MANAGE_ENABLED=true`.
+    pub fn from_env() -> Option<Self> {
+        if !env_flag("MANAGE_ENABLED", false) {
+            return None;
+        }
+        Some(Self {
+            sell_slippage_bps: env_u64("MANAGE_SELL_SLIPPAGE_BPS", 1_000),
+            dry_run: env_flag("MANAGE_DRY_RUN", false),
+        })
+    }
 }
 
 /// Safety-railed config for autonomous real-SOL funding (docs/wallet-funding-plan.md
@@ -132,6 +162,7 @@ impl LauncherSettings {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let manage = ManageConfig::from_env();
         Ok(Self {
             rpc_url,
             sender_urls,
@@ -143,6 +174,7 @@ impl LauncherSettings {
             pinata_jwt,
             funding,
             export_secret,
+            manage,
         })
     }
 }

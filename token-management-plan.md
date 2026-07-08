@@ -126,16 +126,18 @@ not from the intended amount.
 ## HTTP endpoints (`crates/live/src/http.rs`)
 
 ```
-GET  /api/tokens/:mint/positions            -> per-wallet holdings + PnL (reads token_positions)
-POST /api/tokens/:mint/manage/preview       -> ActionPlan (no execution) from a ManageRequest
-POST /api/tokens/:mint/manage/execute       -> execute a previously previewed plan (by plan id)
-POST /api/tokens/:mint/consolidate          -> sweep tokens/SOL -> treasury
-GET  /api/tokens/:mint/manage/actions       -> manage_actions history
+GET  /api/tokens/:mint/positions            -> per-wallet holdings + PnL (reads token_positions)   [DONE P1]
+POST /api/tokens/:mint/manage/preview       -> ActionPlan (no execution) from a ManageRequest       [DONE P2]
+POST /api/tokens/:mint/manage/execute       -> recompute + execute the plan (gated)                 [DONE P2]
+GET  /api/tokens/:mint/manage/actions       -> manage_actions history                               [DONE P2]
+POST /api/tokens/:mint/consolidate          -> sweep tokens/SOL -> treasury                         [P3]
 ```
 
-`ManageRequest { kind, sizing, size, selection }`. Preview and execute are split so the UI can
-show the plan and the operator confirms. Guard destructive execution behind an explicit
-`confirm: true` + the existing settings gate (a `MANAGE_ENABLED` kill switch, mirroring `FUND_ENABLED`).
+`ManageRequest { kind, sizing, size, selection }`. Preview and execute both take a `ManageRequest`
+and recompute the plan from current positions (no stale plan-id hand-off) — execute always sizes
+off fresh on-chain balances, which is what a "sell all" needs. Destructive execution is behind the
+`MANAGE_ENABLED` kill switch (mirrors `FUND_ENABLED`) + a UI double-confirm; `MANAGE_DRY_RUN` runs
+the full path placing no trades.
 
 ## Frontend (`frontend-launch/`)
 
@@ -158,9 +160,20 @@ show the plan and the operator confirms. Guard destructive execution behind an e
    yet; just see everything.* Verified: `cargo check -p live` + `cargo test -p platform-core` +
    `vite build` all clean. **Operator step:** migration `0010` applies on next `live` boot (`connect`
    runs migrations) — no manual step, but the DB must be reachable.
-2. **Sell primitive** — `plan/preview/execute` split, wallet-group selection, sizing
-   (pct / to_sol_target / fixed_base), feed-confirm, `manage_actions` audit. Ship "sell all" +
-   "sell %" with double-confirm. **Safety-critical — do first.**
+2. **Sell primitive** ✅ **DONE** (2026-07-08) — migration `0011_manage_actions.sql`; `ManageKind`
+   /`ManageSizing`/`ManageStatus` enums (+ roundtrip tests); `ManageAction` model + `ManageActionRepo`;
+   `launcher::manage::{model,plan,execute}` — `build_plan` (pure, sizing `pct_of_holdings`) →
+   `execute_action` (seed+reconcile → audit row → **sequential** per-wallet `sell_token_once`
+   retry, escalating tip, RPC-confirmed → reconcile). Realized PnL is **feed-accurate**
+   (`TradeRepo::sum_side_quote_by_address` sums each wallet's sell fills; no fabricated proceeds).
+   `POST .../manage/preview` (always allowed), `POST .../manage/execute` (gated by `MANAGE_ENABLED`,
+   `MANAGE_DRY_RUN` for a no-trade rehearsal), `GET .../manage/actions`. Frontend `ManagePanel`
+   (group → % → Preview → double-confirm Execute + history). **Deviations from this plan, by design:**
+   preview/execute recompute the plan fresh (no plan-id hand-off) so a "sell all" always sizes off
+   current balances; sizing is `pct_of_holdings` only for now (`to_sol_target`/`fixed_base` typed but
+   not wired); sells are curve-only (migrated/AMM tokens error per-leg — a known Phase 3+ gap).
+   Verified: `cargo check -p live`/`-p lab` + `cargo test -p platform-core` + clippy + `vite build`
+   all clean. **Not exercised against a live chain/DB here** (no keys/DB in this env).
 3. **Buy + consolidate** — fixed-size buys from dev/bundlers; generalize `dust_sweep` to tokens+SOL.
 4. **Simple-threshold ladders** *(later)* — arm a rule (sell X% at price/mcap milestone), evaluated
    by a background task on the ingested `trades` feed; reuses the phase-2 sell primitive.

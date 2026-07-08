@@ -138,6 +138,30 @@ impl TradeRepo {
         Ok(rows.into_iter().map(|(sig,)| sig).collect())
     }
 
+    /// Sum a wallet's fills of one side (`buy`/`sell`) for a mint, in quote base
+    /// units — the feed-accurate realized-proceeds / actual-cost figure for a
+    /// managed wallet's position. Joins `wallet_dict` by address (the interned
+    /// `wallet_id` is keyed there, never stored on the managed wallet). Mint- and
+    /// wallet-scoped — never a table scan. Returns 0 when nothing's ingested yet.
+    pub async fn sum_side_quote_by_address(
+        pool: &PgPool,
+        mint_address: &str,
+        address: &str,
+        trade_type: &str,
+    ) -> anyhow::Result<i64> {
+        let (sum,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(t.amount_quote), 0) FROM trades t \
+             JOIN wallet_dict w ON w.id = t.wallet_id \
+             WHERE t.mint_address = $1 AND w.address = $2 AND t.trade_type = $3",
+        )
+        .bind(mint_address)
+        .bind(address)
+        .bind(trade_type)
+        .fetch_one(pool)
+        .await?;
+        Ok(sum)
+    }
+
     /// Priced read for a mint (newest-first). `limit <= 0` ⇒ no LIMIT (the full
     /// mint-scoped history the inspect charts need). Still mint-scoped, never the
     /// whole table.

@@ -190,6 +190,27 @@ pub struct TokenPosition {
     pub updated_at: DateTime<Utc>,
 }
 
+/// One executed post-launch management action — the audit row for a sell / buy /
+/// consolidate (token-management-plan.md Phase 2). `plan` is the per-wallet legs
+/// that actually ran (with their confirmed signatures); `selection` is what the
+/// operator picked. Never a FK to `tokens` — an action can target a launch before
+/// its create tx is ingested.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ManageAction {
+    pub id: Uuid,
+    pub mint_address: String,
+    pub kind: String,
+    pub sizing: String,
+    pub selection: Json,
+    pub plan: Json,
+    pub status: String,
+    pub legs_total: i32,
+    pub legs_confirmed: i32,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
 /// Phase-2 seam — atomic Jito bundle of a launch's buy legs. `legs` is the
 /// per-leg structure descriptor pool (audited variant + budget/tip).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

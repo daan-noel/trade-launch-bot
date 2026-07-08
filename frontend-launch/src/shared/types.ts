@@ -96,6 +96,60 @@ export interface TokenPosition {
   updated_at: string;
 }
 
+// ---- Post-launch management (token-management-plan.md Phase 2) ----
+
+export interface WalletSelection {
+  role?: string | null;
+  wallet_ids?: string[];
+}
+
+// One planned/executed per-wallet leg of a management action.
+export interface PlanLeg {
+  wallet_id: string;
+  role: WalletRole;
+  token_account: string | null;
+  side: string; // 'sell' | 'buy'
+  amount_base: number;
+  est_quote: number;
+  status?: string; // 'confirmed' | 'failed' (execution outcome)
+  signature?: string;
+  error?: string;
+}
+
+// A previewable action plan — `POST /api/tokens/:mint/manage/preview`.
+export interface ActionPlan {
+  mint_address: string;
+  kind: string;
+  sizing: string;
+  legs: PlanLeg[];
+  total_amount_base: number;
+  total_est_quote: number;
+}
+
+// The operator's action request body.
+export interface ManageRequest {
+  kind: string; // 'sell'
+  sizing: string; // 'pct_of_holdings'
+  size: number; // percent for pct_of_holdings
+  selection?: WalletSelection;
+}
+
+// Audit row — `POST .../manage/execute` result + `GET .../manage/actions`.
+export interface ManageAction {
+  id: string;
+  mint_address: string;
+  kind: string;
+  sizing: string;
+  selection: unknown;
+  plan: PlanLeg[];
+  status: string; // planned | executing | completed | partial | failed
+  legs_total: number;
+  legs_confirmed: number;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export interface ManagedWalletPool {
   id: string;
   address: string;

@@ -21,6 +21,7 @@ export const baseApi = createApi({
     'Ingest',
     'Dimensions',
     'Positions',
+    'ManageActions',
   ],
   endpoints: () => ({}),
 });

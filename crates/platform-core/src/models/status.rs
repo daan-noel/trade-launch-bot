@@ -231,6 +231,137 @@ impl FromStr for PositionStatus {
     }
 }
 
+/// `manage_actions.kind` — which post-launch management primitive an action ran.
+/// The full set is defined now (Phase 2 wires `Sell`; `Buy`/`Consolidate` land in
+/// Phase 3) so the CHECK never needs re-migrating. CHECK in migration `0011`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManageKind {
+    Sell,
+    Buy,
+    Consolidate,
+}
+
+impl ManageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ManageKind::Sell => "sell",
+            ManageKind::Buy => "buy",
+            ManageKind::Consolidate => "consolidate",
+        }
+    }
+
+    pub const ALL: [ManageKind; 3] = [ManageKind::Sell, ManageKind::Buy, ManageKind::Consolidate];
+}
+
+impl FromStr for ManageKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "sell" => Ok(ManageKind::Sell),
+            "buy" => Ok(ManageKind::Buy),
+            "consolidate" => Ok(ManageKind::Consolidate),
+            other => Err(format!("unknown manage kind: {other}")),
+        }
+    }
+}
+
+/// `manage_actions.sizing` — how a plan's per-wallet leg sizes were computed.
+/// Full set defined now (Phase 2 wires `PctOfHoldings`); the rest land with their
+/// primitives. CHECK in migration `0011`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManageSizing {
+    /// Sell a percentage of each selected wallet's holdings (0–100).
+    PctOfHoldings,
+    /// Sell across wallets until an approximate SOL proceeds target is met.
+    ToSolTarget,
+    /// A fixed token base-unit amount per wallet.
+    FixedBase,
+    /// A fixed SOL (lamports) spend per wallet (buy side).
+    FixedSol,
+    /// Full-balance sweep (consolidate).
+    Sweep,
+}
+
+impl ManageSizing {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ManageSizing::PctOfHoldings => "pct_of_holdings",
+            ManageSizing::ToSolTarget => "to_sol_target",
+            ManageSizing::FixedBase => "fixed_base",
+            ManageSizing::FixedSol => "fixed_sol",
+            ManageSizing::Sweep => "sweep",
+        }
+    }
+
+    pub const ALL: [ManageSizing; 5] = [
+        ManageSizing::PctOfHoldings,
+        ManageSizing::ToSolTarget,
+        ManageSizing::FixedBase,
+        ManageSizing::FixedSol,
+        ManageSizing::Sweep,
+    ];
+}
+
+impl FromStr for ManageSizing {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pct_of_holdings" => Ok(ManageSizing::PctOfHoldings),
+            "to_sol_target" => Ok(ManageSizing::ToSolTarget),
+            "fixed_base" => Ok(ManageSizing::FixedBase),
+            "fixed_sol" => Ok(ManageSizing::FixedSol),
+            "sweep" => Ok(ManageSizing::Sweep),
+            other => Err(format!("unknown manage sizing: {other}")),
+        }
+    }
+}
+
+/// `manage_actions.status` lifecycle: `planned` (previewed/recorded) → `executing`
+/// → terminal `completed` (all legs confirmed) | `partial` (some legs failed) |
+/// `failed` (setup failed, no leg landed). CHECK in migration `0011`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManageStatus {
+    Planned,
+    Executing,
+    Completed,
+    Partial,
+    Failed,
+}
+
+impl ManageStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ManageStatus::Planned => "planned",
+            ManageStatus::Executing => "executing",
+            ManageStatus::Completed => "completed",
+            ManageStatus::Partial => "partial",
+            ManageStatus::Failed => "failed",
+        }
+    }
+
+    pub const ALL: [ManageStatus; 5] = [
+        ManageStatus::Planned,
+        ManageStatus::Executing,
+        ManageStatus::Completed,
+        ManageStatus::Partial,
+        ManageStatus::Failed,
+    ];
+}
+
+impl FromStr for ManageStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "planned" => Ok(ManageStatus::Planned),
+            "executing" => Ok(ManageStatus::Executing),
+            "completed" => Ok(ManageStatus::Completed),
+            "partial" => Ok(ManageStatus::Partial),
+            "failed" => Ok(ManageStatus::Failed),
+            other => Err(format!("unknown manage status: {other}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +409,32 @@ mod tests {
         }
         assert_eq!(PositionStatus::Open.as_str(), "open");
         assert!(PositionStatus::from_str("done").is_err());
+    }
+
+    #[test]
+    fn manage_kind_roundtrips() {
+        for k in ManageKind::ALL {
+            assert_eq!(ManageKind::from_str(k.as_str()).unwrap(), k);
+        }
+        assert_eq!(ManageKind::Sell.as_str(), "sell");
+        assert!(ManageKind::from_str("burn").is_err());
+    }
+
+    #[test]
+    fn manage_sizing_roundtrips() {
+        for s in ManageSizing::ALL {
+            assert_eq!(ManageSizing::from_str(s.as_str()).unwrap(), s);
+        }
+        assert_eq!(ManageSizing::PctOfHoldings.as_str(), "pct_of_holdings");
+        assert!(ManageSizing::from_str("half").is_err());
+    }
+
+    #[test]
+    fn manage_status_roundtrips() {
+        for s in ManageStatus::ALL {
+            assert_eq!(ManageStatus::from_str(s.as_str()).unwrap(), s);
+        }
+        assert_eq!(ManageStatus::Completed.as_str(), "completed");
+        assert!(ManageStatus::from_str("done").is_err());
     }
 }
