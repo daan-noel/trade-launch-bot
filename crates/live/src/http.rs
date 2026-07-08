@@ -1,10 +1,10 @@
 //! Thin HTTP surface for the LIVE box: health + data-layer reads + launch trigger.
 
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
-    create_metadata_template, execute_bundle, execute_launch, fund_for_launch, fund_once,
-    update_metadata_template, FundMode, FundScope, LaunchRequest, LauncherSettings,
+    create_metadata_template, execute_bundle, execute_launch, export_wallet_base58, fund_for_launch,
+    fund_once, update_metadata_template, FundMode, FundScope, LaunchRequest, LauncherSettings,
     NewMetadataTemplateRequest, PumpfunTemplateParams, UpdateMetadataTemplateRequest,
 };
 use platform_core::models::{
@@ -67,6 +67,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route(
             "/api/wallet_pool/fund_for_launch",
             web::post().to(wallet_pool_fund_for_launch),
+        )
+        .route(
+            "/api/wallet_pool/{id}/export",
+            web::post().to(wallet_pool_export),
         )
         .route("/api/metadata_templates", web::get().to(metadata_templates_list))
         .route(
@@ -360,6 +364,71 @@ async fn wallet_pool_fund_for_launch(
     .await
     .map_err(e500)?;
     Ok(HttpResponse::Ok().json(report))
+}
+
+/// Constant-time byte comparison — avoids leaking the secret length/prefix via
+/// early-exit timing on a remote brute-force.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// `POST /api/wallet_pool/{id}/export` — DANGER: returns a wallet's raw base58
+/// private key. Gated on `WALLET_EXPORT_SECRET` (via `X-Export-Secret`); 403 when
+/// the secret is unset (endpoint hard-disabled) or the header doesn't match. The
+/// response is `no-store` and the key is never logged. Serve over TLS only — the
+/// body is spendable key material.
+async fn wallet_pool_export(
+    req: HttpRequest,
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    path: web::Path<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+
+    // Endpoint is disabled unless an export secret is configured.
+    let Some(expected) = settings.export_secret.as_deref() else {
+        return Ok(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "wallet export disabled — set WALLET_EXPORT_SECRET to enable"
+        })));
+    };
+
+    let presented = req
+        .headers()
+        .get("X-Export-Secret")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !ct_eq(presented.as_bytes(), expected.as_bytes()) {
+        // Throttle brute-force: a fixed delay caps guess rate to a crawl even
+        // over a fast remote link. Constant regardless of where the mismatch is.
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+        let wallet_id = path.into_inner();
+        tracing::warn!(%wallet_id, "wallet export rejected — bad or missing X-Export-Secret");
+        return Ok(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "invalid export secret"
+        })));
+    }
+
+    let wallet_id = path.into_inner();
+    let exported = export_wallet_base58(pool.get_ref(), settings, wallet_id)
+        .await
+        .map_err(e500)?;
+
+    // Never log the key; never let a cache retain it.
+    tracing::info!(%wallet_id, address = %exported.address, "wallet private key exported");
+    Ok(HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-store"))
+        .json(serde_json::json!({
+            "address": exported.address,
+            "private_key_base58": exported.private_key_base58.as_str(),
+        })))
 }
 
 async fn metadata_templates_list(pool: web::Data<PgPool>) -> Result<HttpResponse, actix_web::Error> {

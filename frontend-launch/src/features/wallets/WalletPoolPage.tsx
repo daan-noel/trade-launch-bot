@@ -3,6 +3,7 @@ import {
   useWalletPoolQuery,
   useGenerateWalletsMutation,
   useFundPoolMutation,
+  useExportWalletKeyMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
@@ -38,6 +39,41 @@ export function WalletPoolPage() {
   });
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();
+
+  // Private-key export dialog. The secret + revealed key live ONLY in local
+  // state (never Redux/RTK cache) and are wiped when the dialog closes.
+  const [exportTarget, setExportTarget] = useState<ManagedWalletPool | null>(null);
+  const [exportSecret, setExportSecret] = useState('');
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+  const [exportErr, setExportErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [exportKey, exporting] = useExportWalletKeyMutation();
+
+  const closeExport = () => {
+    setExportTarget(null);
+    setExportSecret('');
+    setRevealedKey(null);
+    setExportErr(null);
+    setCopied(false);
+  };
+
+  const onExport = async () => {
+    if (!exportTarget || !exportSecret) return;
+    setExportErr(null);
+    try {
+      const res = await exportKey({ id: exportTarget.id, secret: exportSecret }).unwrap();
+      setRevealedKey(res.private_key_base58);
+    } catch (e) {
+      setRevealedKey(null);
+      setExportErr(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'Export failed.');
+    }
+  };
+
+  const onCopyKey = async () => {
+    if (!revealedKey) return;
+    await navigator.clipboard.writeText(revealedKey);
+    setCopied(true);
+  };
 
   const counts = useMemo(() => {
     const c: Record<string, Record<string, number>> = {};
@@ -92,6 +128,22 @@ export function WalletPoolPage() {
     { header: 'Status', render: (w) => <StatusPill status={w.status} /> },
     { header: 'Balance', align: 'right', render: (w) => <span className="mono">{formatSol(w.balance_lamports)}</span> },
     { header: 'Age', align: 'right', render: (w) => formatAge(w.created_at) },
+    {
+      header: '',
+      align: 'right',
+      render: (w) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            closeExport();
+            setExportTarget(w);
+          }}
+        >
+          Export key
+        </Button>
+      ),
+    },
   ];
 
   const mutationError = apiErrorMessage(gen.error) ?? apiErrorMessage(funding.error) ?? apiErrorMessage(error);
@@ -210,6 +262,71 @@ export function WalletPoolPage() {
           empty="No wallets yet — generate a batch above."
         />
       </Card>
+
+      {exportTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={closeExport}
+        >
+          <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <Card title="Export private key">
+              <Banner tone="bad">
+                <strong>Danger:</strong> this reveals the raw private key for{' '}
+                <span className="mono">{exportTarget.address}</span>. Anyone with this key controls
+                the wallet's funds. Only export to import into a wallet you control, over a trusted
+                connection.
+              </Banner>
+
+              {!revealedKey ? (
+                <div className="mt-3 space-y-3">
+                  <Field label="Export secret" htmlFor="export-secret">
+                    <Input
+                      id="export-secret"
+                      type="password"
+                      autoComplete="off"
+                      value={exportSecret}
+                      onChange={(e) => setExportSecret(e.target.value)}
+                      placeholder="WALLET_EXPORT_SECRET"
+                    />
+                  </Field>
+                  {exportErr && <Banner tone="bad">{exportErr}</Banner>}
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" onClick={closeExport}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      loading={exporting.isLoading}
+                      disabled={!exportSecret}
+                      onClick={onExport}
+                    >
+                      Reveal key
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  <Field label="Private key (base58)" htmlFor="export-key">
+                    <Input id="export-key" readOnly value={revealedKey} className="mono" />
+                  </Field>
+                  <p className="text-xs muted">
+                    Copy it now — it is not stored anywhere and disappears when you close this
+                    dialog.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" onClick={onCopyKey}>
+                      {copied ? 'Copied' : 'Copy'}
+                    </Button>
+                    <Button variant="primary" onClick={closeExport}>
+                      Done
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

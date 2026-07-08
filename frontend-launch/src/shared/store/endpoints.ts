@@ -120,6 +120,19 @@ export const api = baseApi.injectEndpoints({
       query: (body) => ({ url: '/api/wallet_pool/fund_for_launch', method: 'POST', body }),
       invalidatesTags: ['Wallets', 'Bootstrap'],
     }),
+    // DANGER: returns raw base58 private key. Secret goes in the X-Export-Secret
+    // header (never the URL/body cache). No tag invalidation — pure read, and we
+    // do NOT want the key retained anywhere in the RTK cache.
+    exportWalletKey: build.mutation<
+      { address: string; private_key_base58: string },
+      { id: string; secret: string }
+    >({
+      query: ({ id, secret }) => ({
+        url: `/api/wallet_pool/${id}/export`,
+        method: 'POST',
+        headers: { 'X-Export-Secret': secret },
+      }),
+    }),
 
     // ---- Launches ----
     launches: build.query<LaunchesPage, { limit?: number; offset?: number } | void>({
@@ -177,6 +190,7 @@ export const {
   useGenerateWalletsMutation,
   useFundPoolMutation,
   useFundForLaunchMutation,
+  useExportWalletKeyMutation,
   useLaunchesQuery,
   useExecuteLaunchMutation,
   useLaunchQuery,

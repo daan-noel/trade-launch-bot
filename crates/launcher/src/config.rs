@@ -27,6 +27,11 @@ pub struct LauncherSettings {
     /// (the default: `FUND_ENABLED` unset/false) disables the background funder
     /// AND the manual `POST /api/wallet_pool/fund` endpoint. The kill switch.
     pub funding: Option<FundingConfig>,
+    /// Shared secret gating `POST /api/wallet_pool/{id}/export` (raw private-key
+    /// export). `None` (the default: `WALLET_EXPORT_SECRET` unset) hard-disables
+    /// the endpoint — it returns 403. Opt-in per deployment; the endpoint hands
+    /// out spendable keys, so it is off unless a secret is set. Serve over TLS.
+    pub export_secret: Option<String>,
 }
 
 /// Safety-railed config for autonomous real-SOL funding (docs/wallet-funding-plan.md
@@ -123,6 +128,10 @@ impl LauncherSettings {
         let backup_dir = std::env::var("WALLET_BACKUP_DIR").ok().map(PathBuf::from);
         let pinata_jwt = std::env::var("PINATA_JWT").ok().filter(|s| !s.is_empty());
         let funding = FundingConfig::from_env();
+        let export_secret = std::env::var("WALLET_EXPORT_SECRET")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         Ok(Self {
             rpc_url,
             sender_urls,
@@ -133,6 +142,7 @@ impl LauncherSettings {
             backup_dir,
             pinata_jwt,
             funding,
+            export_secret,
         })
     }
 }
