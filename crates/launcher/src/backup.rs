@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use platform_core::models::ManagedWallet;
+use platform_core::models::{ManagedWallet, WalletStatus};
 use platform_core::storage::repositories::ManagedWalletRepo;
 use sqlx::PgPool;
 use tracing::{info, warn};
@@ -54,7 +54,7 @@ pub async fn run_backup(
     let mut copied = 0usize;
     let mut skipped_retired = 0usize;
     for wallet in &wallets {
-        if wallet.status == "retired" {
+        if wallet.status == WalletStatus::Retired.as_str() {
             skipped_retired += 1;
             continue;
         }

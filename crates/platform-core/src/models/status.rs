@@ -1,9 +1,11 @@
-//! Launch/bundle lifecycle status enums — the ONE place these string values are
-//! defined in Rust. Mirrors [`crate::venue::MarketKind`]: each `as_str()` must
-//! match the SQL `CHECK` constraint on the corresponding column (see migration
-//! `0006_status_check.sql`), and the roundtrip test pins the exact strings.
+//! CHECK-constrained vocabularies — the ONE place these column string values are
+//! defined in Rust: launch/bundle lifecycle status, plus the managed-wallet role
+//! and lifecycle status. Mirrors [`crate::venue::MarketKind`]: each `as_str()`
+//! must match the SQL `CHECK` constraint on the corresponding column (launch/
+//! bundle status → migration `0006`; wallet `role` → `0002`, wallet `status` →
+//! `0004`), and each roundtrip test pins the exact strings.
 //!
-//! These are stored as `TEXT` (not a PG enum) so a new state is a code + CHECK
+//! These are stored as `TEXT` (not a PG enum) so a new value is a code + CHECK
 //! edit, never an `ALTER TYPE`; the enum + CHECK are the drift guard.
 
 use std::str::FromStr;
@@ -99,6 +101,96 @@ impl FromStr for BundleStatus {
     }
 }
 
+/// `managed_wallets.role` — what a wallet is for. CHECK in migration `0002`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletRole {
+    Dev,
+    Bundler,
+    Treasury,
+    Trading,
+}
+
+impl WalletRole {
+    /// The exact DB string (must match the SQL CHECK constraint).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WalletRole::Dev => "dev",
+            WalletRole::Bundler => "bundler",
+            WalletRole::Treasury => "treasury",
+            WalletRole::Trading => "trading",
+        }
+    }
+
+    /// Every variant — the SSOT list the CHECK-constraint parity test iterates.
+    pub const ALL: [WalletRole; 4] = [
+        WalletRole::Dev,
+        WalletRole::Bundler,
+        WalletRole::Treasury,
+        WalletRole::Trading,
+    ];
+}
+
+impl FromStr for WalletRole {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "dev" => Ok(WalletRole::Dev),
+            "bundler" => Ok(WalletRole::Bundler),
+            "treasury" => Ok(WalletRole::Treasury),
+            "trading" => Ok(WalletRole::Trading),
+            other => Err(format!("unknown wallet role: {other}")),
+        }
+    }
+}
+
+/// `managed_wallets.status` — fresh-wallet-pool lifecycle: `generated` →
+/// `funded` → `reserved` → `used`; `retired` is terminal. CHECK in migration
+/// `0004`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletStatus {
+    Generated,
+    Funded,
+    Reserved,
+    Used,
+    Retired,
+}
+
+impl WalletStatus {
+    /// The exact DB string (must match the SQL CHECK constraint).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WalletStatus::Generated => "generated",
+            WalletStatus::Funded => "funded",
+            WalletStatus::Reserved => "reserved",
+            WalletStatus::Used => "used",
+            WalletStatus::Retired => "retired",
+        }
+    }
+
+    /// Every variant — the SSOT list the CHECK-constraint parity test iterates.
+    pub const ALL: [WalletStatus; 5] = [
+        WalletStatus::Generated,
+        WalletStatus::Funded,
+        WalletStatus::Reserved,
+        WalletStatus::Used,
+        WalletStatus::Retired,
+    ];
+}
+
+impl FromStr for WalletStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "generated" => Ok(WalletStatus::Generated),
+            "funded" => Ok(WalletStatus::Funded),
+            "reserved" => Ok(WalletStatus::Reserved),
+            "used" => Ok(WalletStatus::Used),
+            "retired" => Ok(WalletStatus::Retired),
+            other => Err(format!("unknown wallet status: {other}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +211,23 @@ mod tests {
         }
         assert_eq!(BundleStatus::Planned.as_str(), "planned");
         assert!(BundleStatus::from_str("pending").is_err());
+    }
+
+    #[test]
+    fn wallet_role_roundtrips() {
+        for r in WalletRole::ALL {
+            assert_eq!(WalletRole::from_str(r.as_str()).unwrap(), r);
+        }
+        assert_eq!(WalletRole::Dev.as_str(), "dev");
+        assert!(WalletRole::from_str("admin").is_err());
+    }
+
+    #[test]
+    fn wallet_status_roundtrips() {
+        for s in WalletStatus::ALL {
+            assert_eq!(WalletStatus::from_str(s.as_str()).unwrap(), s);
+        }
+        assert_eq!(WalletStatus::Generated.as_str(), "generated");
+        assert!(WalletStatus::from_str("pending").is_err());
     }
 }

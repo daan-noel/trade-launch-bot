@@ -15,11 +15,7 @@ import {
 import LaunchTemplates from './LaunchTemplates';
 import MetadataTemplates from './MetadataTemplates';
 import WalletPool from './WalletPool';
-
-function StatusPill({ status }: { status: string }) {
-  const cls = status.toLowerCase().replace(/[^a-z]/g, '');
-  return <span className={`status-pill ${cls}`}>{status}</span>;
-}
+import { StatusPill } from './components/StatusPill';
 
 // Runtime pause/resume for the LIVE box's Helius ingest stream — see
 // `GET/PUT /api/ingest` (`crates/live/src/http.rs`). Polls every 5s so the

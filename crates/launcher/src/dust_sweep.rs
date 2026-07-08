@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use platform_core::models::ManagedWallet;
+use platform_core::models::{ManagedWallet, WalletRole, WalletStatus};
 use platform_core::storage::repositories::ManagedWalletRepo;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -43,7 +43,7 @@ pub fn spawn_dust_sweep(pool: PgPool, settings: LauncherSettings) -> tokio::task
 }
 
 async fn sweep_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()> {
-    let Some(treasury) = ManagedWalletRepo::by_role(pool, "treasury")
+    let Some(treasury) = ManagedWalletRepo::by_role(pool, WalletRole::Treasury.as_str())
         .await?
         .into_iter()
         .next()
@@ -54,7 +54,7 @@ async fn sweep_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()> {
     let treasury_address =
         Pubkey::from_str(&treasury.address).context("parse treasury wallet address")?;
 
-    let used = ManagedWalletRepo::find_by_status(pool, "used", None).await?;
+    let used = ManagedWalletRepo::find_by_status(pool, WalletStatus::Used.as_str(), None).await?;
     if used.is_empty() {
         return Ok(());
     }

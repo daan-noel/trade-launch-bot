@@ -22,6 +22,19 @@ impl QuoteAssetRepo {
             .await?)
     }
 
+    /// The native quote asset (SOL) row — the SSOT for its interned `id` + `mint`
+    /// so callers (e.g. the SOL/USD poller) never hardcode `id = 1` or the WSOL
+    /// mint. Fails loudly if the seed is missing (migrations not run), matching
+    /// `PumpFunAdapter::resolve`'s DB-resolve discipline.
+    pub async fn native(pool: &PgPool) -> anyhow::Result<QuoteAsset> {
+        sqlx::query_as::<_, QuoteAsset>(
+            "SELECT * FROM quote_assets WHERE is_native = true ORDER BY id LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("quote_assets native (is_native) row missing — run migrations"))
+    }
+
     /// Poller entry point: set the USD numeraire for a quote (USDC pinned ≈ 1,
     /// SOL updated from the price feed). Stamps `usd_rate_at = now()`.
     pub async fn set_usd_rate(pool: &PgPool, id: i16, usd_rate: f64) -> anyhow::Result<()> {

@@ -51,13 +51,16 @@ async fn main() -> anyhow::Result<()> {
     info!("live box: DB connected, migrations applied");
 
     // SOL/USD poller — keeps quote_assets.usd_rate fresh for trades_priced views.
+    // Resolve the native quote's interned id + mint from the DB (never hardcoded).
     let price_pool = Arc::new(pools.hot.clone());
-    match sol_price::fetch_latest_sol_price().await {
+    let native_quote =
+        platform_core::storage::repositories::QuoteAssetRepo::native(&pools.hot).await?;
+    match sol_price::fetch_latest_sol_price(&native_quote.mint).await {
         Ok(price) => {
             if let Err(e) =
                 platform_core::storage::repositories::QuoteAssetRepo::set_usd_rate(
                     &pools.hot,
-                    1,
+                    native_quote.id,
                     price,
                 )
                 .await
@@ -69,7 +72,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(e) => warn!("initial SOL/USD fetch failed (poller will retry): {e}"),
     }
-    let price_task = tokio::spawn(sol_price::run_poller(price_pool));
+    let price_task = tokio::spawn(sol_price::run_poller(
+        price_pool,
+        native_quote.id,
+        native_quote.mint,
+    ));
 
     // Feed-based bundle-landing confirmation — cheap, always on (no RPC/keys
     // needed; it only reads `bundles`/`trades` from the already-connected pool).

@@ -65,6 +65,9 @@ pub struct LegStructure {
     pub ix_order: u8,
 }
 
+/// One composed bundle leg — also the exact persisted shape of a `bundles.legs`
+/// JSONB row (write via [`legs_to_json`], read back via [`legs_from_json`]), so
+/// the plan and its stored form are ONE type that can't drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundledLegPlan {
     pub wallet_id: Uuid,
@@ -107,15 +110,7 @@ pub fn compose_bundle_legs(
     Ok(legs)
 }
 
-/// Persisted leg row in `bundles.legs` JSONB.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct StoredBundleLeg {
-    pub wallet_id: Uuid,
-    pub quote_amount: i64,
-    pub structure: LegStructure,
-}
-
-pub fn legs_from_json(value: &Json) -> Result<Vec<StoredBundleLeg>> {
+pub fn legs_from_json(value: &Json) -> Result<Vec<BundledLegPlan>> {
     serde_json::from_value(value.clone()).context("parse bundles.legs")
 }
 
@@ -129,16 +124,9 @@ pub fn leg_params(structure: &LegStructure) -> pump_trader::BundleLegParams {
 }
 
 pub fn legs_to_json(legs: &[BundledLegPlan]) -> Json {
-    json!(legs
-        .iter()
-        .map(|leg| {
-            json!({
-                "wallet_id": leg.wallet_id,
-                "quote_amount": leg.quote_amount,
-                "structure": leg.structure,
-            })
-        })
-        .collect::<Vec<_>>())
+    // `BundledLegPlan` derives `Serialize`, so this IS the persisted shape
+    // `legs_from_json` reads back — no hand-rolled field map to drift.
+    json!(legs)
 }
 
 fn materialize_leg(recipe: &LegStructureRecipe, ix_order: u8, rng: &mut impl Rng) -> LegStructure {

@@ -10,6 +10,7 @@ import {
   NewLaunchTemplateInput,
   QuoteAsset,
 } from './api';
+import { Column, DataTable } from './components/DataTable';
 
 const VARIANTS = [
   'pumpfun.create_v2',
@@ -197,6 +198,36 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
   const removeLegRow = (i: number) => setLegRows((rows) => rows.filter((_, idx) => idx !== i));
   const updateLegRow = (i: number, patch: Partial<LegRow>) =>
     setLegRows((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  const columns: Column<LaunchTemplate>[] = [
+    { header: 'Template', render: (t) => t.template_name },
+    {
+      header: 'Metadata',
+      render: (t) => {
+        const m = metadataTemplates.find((x) => x.id === t.metadata_template_id);
+        return m ? `${m.name} / ${m.symbol}` : <span className="muted">— unlinked —</span>;
+      },
+    },
+    { header: 'Variant', render: (t) => t.variant },
+    {
+      header: 'Launchpad',
+      render: (t) => launchpads.find((lp) => lp.id === t.launchpad_id)?.display_name ?? t.launchpad_id,
+    },
+    {
+      header: 'Quote',
+      render: (t) => quoteAssets.find((qa) => qa.id === t.quote_asset_id)?.symbol ?? t.quote_asset_id,
+    },
+    { header: 'Created', render: (t) => formatAge(t.created_at) },
+    { header: 'Updated', render: (t) => formatAge(t.updated_at) },
+    {
+      header: '',
+      render: (t) => (
+        <button type="button" onClick={() => onEdit(t)}>
+          Edit
+        </button>
+      ),
+    },
+  ];
 
   const canSubmit =
     templateName && launchpadId && quoteAssetId && variant && metadataTemplateId;
@@ -492,54 +523,13 @@ export default function LaunchTemplates({ onChange }: { onChange?: () => void })
 
       <div className="card">
         <h2>Templates ({templates.length})</h2>
-        {loading ? (
-          <p className="muted">Loading…</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Template</th>
-                <th>Metadata</th>
-                <th>Variant</th>
-                <th>Launchpad</th>
-                <th>Quote</th>
-                <th>Created</th>
-                <th>Updated</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {templates.map((t) => (
-                <tr key={t.id}>
-                  <td>{t.template_name}</td>
-                  <td>
-                    {(() => {
-                      const m = metadataTemplates.find((x) => x.id === t.metadata_template_id);
-                      return m ? `${m.name} / ${m.symbol}` : <span className="muted">— unlinked —</span>;
-                    })()}
-                  </td>
-                  <td>{t.variant}</td>
-                  <td>{launchpads.find((lp) => lp.id === t.launchpad_id)?.display_name ?? t.launchpad_id}</td>
-                  <td>{quoteAssets.find((qa) => qa.id === t.quote_asset_id)?.symbol ?? t.quote_asset_id}</td>
-                  <td>{formatAge(t.created_at)}</td>
-                  <td>{formatAge(t.updated_at)}</td>
-                  <td>
-                    <button type="button" onClick={() => onEdit(t)}>
-                      Edit
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {templates.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="muted">
-                    No launch templates yet — author one above.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        )}
+        <DataTable
+          columns={columns}
+          rows={templates}
+          rowKey={(t) => t.id}
+          loading={loading}
+          empty="No launch templates yet — author one above."
+        />
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 //! Launch execution: template + dev wallet → create (+ dev-buy) → DB rows.
 
 use anyhow::{bail, Context, Result};
-use platform_core::models::{BundleStatus, LaunchStatus, NewLaunch, NewToken};
+use platform_core::models::{BundleStatus, LaunchStatus, NewLaunch, NewToken, WalletRole};
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, MetadataTemplateRepo,
     TokenMarketStateRepo, TokenRepo,
@@ -24,6 +24,13 @@ use crate::bundle_execute::{execute_bundle, BundleExecuteResult};
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
 use crate::trader_config::build_launch_trader_config;
+
+/// pump.fun mints are always 6 decimals. Deliberately a launcher-local const:
+/// `launcher` and `ingest-host` (which has its own `map::PUMP_TOKEN_DECIMALS`)
+/// share only the venue-neutral `platform-core`, so this pump-specific fact can't
+/// live in one shared home without coupling the two decoupled crates. Keep this
+/// value equal to `ingest_host::map::PUMP_TOKEN_DECIMALS`.
+const PUMP_TOKEN_DECIMALS: i16 = 6;
 
 /// Parsed `launch_templates.params` brain for pump.fun create_v2. Token identity
 /// (name/symbol/uri) is NOT here — it lives in the linked `metadata_templates`
@@ -89,7 +96,7 @@ pub async fn execute_launch(
     let dev_wallet = ManagedWalletRepo::get(pool, req.dev_wallet_id)
         .await?
         .context("dev wallet not found")?;
-    if dev_wallet.role != "dev" {
+    if dev_wallet.role != WalletRole::Dev.as_str() {
         bail!("wallet {} is role={}, expected dev", dev_wallet.id, dev_wallet.role);
     }
 
@@ -241,7 +248,7 @@ pub async fn execute_launch(
                 is_own_launch: true,
                 name: meta_name.clone(),
                 symbol: meta_symbol.clone(),
-                decimals: 6,
+                decimals: PUMP_TOKEN_DECIMALS,
                 token_program_id: Some(token_program.to_string()),
                 initial_supply_base: None,
                 initial_buy_quote: if dev_buy_quote > 0 {
@@ -331,8 +338,13 @@ pub async fn execute_launch(
         // Phase 3) — never a client-side wallet pick. May return fewer than
         // `leg_count` if the pool is short; plan exactly that many legs rather
         // than erroring or reusing a wallet across legs.
-        let claimed =
-            ManagedWalletRepo::claim_funded(pool, "bundler", leg_count as i64, launch_id).await?;
+        let claimed = ManagedWalletRepo::claim_funded(
+            pool,
+            WalletRole::Bundler.as_str(),
+            leg_count as i64,
+            launch_id,
+        )
+        .await?;
         if claimed.is_empty() {
             tracing::warn!(
                 launch_id = %launch_id,

@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use platform_core::models::NewManagedWallet;
+use platform_core::models::{NewManagedWallet, WalletRole, WalletStatus};
 use platform_core::storage::repositories::ManagedWalletRepo;
+use std::str::FromStr;
 use solana_sdk::signature::{Keypair, Signer};
 use sqlx::PgPool;
 use tracing::{info, warn};
@@ -42,7 +43,7 @@ pub async fn generate_wallets(
     if count == 0 {
         bail!("wallet generation count must be positive");
     }
-    if !matches!(role, "dev" | "bundler" | "treasury" | "trading") {
+    if WalletRole::from_str(role).is_err() {
         bail!("unknown managed_wallets role: {role}");
     }
 
@@ -93,7 +94,8 @@ pub fn spawn_balance_poller(pool: PgPool, rpc_url: String) -> tokio::task::JoinH
 }
 
 async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &str) -> Result<()> {
-    let generated = ManagedWalletRepo::find_by_status(pool, "generated", None).await?;
+    let generated =
+        ManagedWalletRepo::find_by_status(pool, WalletStatus::Generated.as_str(), None).await?;
     if generated.is_empty() {
         return Ok(());
     }
@@ -106,7 +108,7 @@ async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &s
             let updated =
                 ManagedWalletRepo::record_balance(pool, wallet.id, balance, MIN_FUNDED_LAMPORTS)
                     .await?;
-            if updated.status == "funded" {
+            if updated.status == WalletStatus::Funded.as_str() {
                 info!(
                     wallet_id = %wallet.id,
                     address = %wallet.address,

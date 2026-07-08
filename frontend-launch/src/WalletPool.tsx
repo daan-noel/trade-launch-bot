@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api, formatAge, formatSol, ManagedWalletPool, WalletStatus } from './api';
+import { StatusPill } from './components/StatusPill';
+import { useResource } from './components/useResource';
+import { Column, DataTable } from './components/DataTable';
+import { Field } from './components/Field';
 
 // Below this many `funded` wallets for a role, manual funding won't refill
 // itself in time for a launch — surface it instead of finding out mid-launch.
@@ -8,37 +12,20 @@ const LOW_POOL_THRESHOLD = 3;
 const ROLES = ['dev', 'bundler', 'treasury', 'trading'] as const;
 const STATUSES: WalletStatus[] = ['generated', 'funded', 'reserved', 'used', 'retired'];
 
-function StatusPill({ status }: { status: string }) {
-  return <span className={`status-pill ${status}`}>{status}</span>;
-}
-
 export default function WalletPool() {
-  const [wallets, setWallets] = useState<ManagedWalletPool[]>([]);
   const [roleFilter, setRoleFilter] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: wallets = [],
+    loading,
+    error,
+    reload,
+    setError,
+  } = useResource(() => api.walletPool(roleFilter || undefined), [roleFilter]);
 
   const [genRole, setGenRole] = useState<(typeof ROLES)[number]>('bundler');
   const [genCount, setGenCount] = useState(5);
   const [genLabel, setGenLabel] = useState('');
   const [generating, setGenerating] = useState(false);
-
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setWallets(await api.walletPool(roleFilter || undefined));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roleFilter]);
 
   const onGenerate = async () => {
     if (genCount < 1) return;
@@ -46,13 +33,22 @@ export default function WalletPool() {
     setError(null);
     try {
       await api.generateWallets(genRole, genCount, genLabel);
-      await load();
+      await reload();
     } catch (e) {
       setError(String(e));
     } finally {
       setGenerating(false);
     }
   };
+
+  const columns: Column<ManagedWalletPool>[] = [
+    { header: 'Address', render: (w) => `${w.address.slice(0, 6)}…${w.address.slice(-6)}` },
+    { header: 'Label', render: (w) => w.label ?? '—' },
+    { header: 'Role', render: (w) => w.role },
+    { header: 'Status', render: (w) => <StatusPill status={w.status} /> },
+    { header: 'Balance', render: (w) => formatSol(w.balance_lamports) },
+    { header: 'Age', render: (w) => formatAge(w.created_at) },
+  ];
 
   // Status counts summary + low-pool banner, both derived client-side from the
   // one pool fetch — no separate aggregate endpoint to keep in sync.
@@ -82,8 +78,7 @@ export default function WalletPool() {
       <div className="card">
         <h2>Generate wallets</h2>
         <div className="row">
-          <div className="field">
-            <label htmlFor="gen-role">Role</label>
+          <Field label="Role" htmlFor="gen-role">
             <select
               id="gen-role"
               value={genRole}
@@ -95,9 +90,8 @@ export default function WalletPool() {
                 </option>
               ))}
             </select>
-          </div>
-          <div className="field">
-            <label htmlFor="gen-count">Count</label>
+          </Field>
+          <Field label="Count" htmlFor="gen-count">
             <input
               id="gen-count"
               type="number"
@@ -106,9 +100,8 @@ export default function WalletPool() {
               value={genCount}
               onChange={(e) => setGenCount(Number(e.target.value))}
             />
-          </div>
-          <div className="field">
-            <label htmlFor="gen-label">Label prefix (optional)</label>
+          </Field>
+          <Field label="Label prefix (optional)" htmlFor="gen-label">
             <input
               id="gen-label"
               type="text"
@@ -116,7 +109,7 @@ export default function WalletPool() {
               onChange={(e) => setGenLabel(e.target.value)}
               placeholder="e.g. batch-07"
             />
-          </div>
+          </Field>
           <button type="button" className="primary" disabled={generating} onClick={onGenerate}>
             {generating ? 'Generating…' : 'Generate'}
           </button>
@@ -167,43 +160,13 @@ export default function WalletPool() {
           </div>
         </div>
         {error && <p className="error">{error}</p>}
-        {loading ? (
-          <p className="muted">Loading…</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Address</th>
-                <th>Label</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Balance</th>
-                <th>Age</th>
-              </tr>
-            </thead>
-            <tbody>
-              {wallets.map((w) => (
-                <tr key={w.id}>
-                  <td>{`${w.address.slice(0, 6)}…${w.address.slice(-6)}`}</td>
-                  <td>{w.label ?? '—'}</td>
-                  <td>{w.role}</td>
-                  <td>
-                    <StatusPill status={w.status} />
-                  </td>
-                  <td>{formatSol(w.balance_lamports)}</td>
-                  <td>{formatAge(w.created_at)}</td>
-                </tr>
-              ))}
-              {wallets.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="muted">
-                    No wallets yet — generate a batch above.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        )}
+        <DataTable
+          columns={columns}
+          rows={wallets}
+          rowKey={(w) => w.id}
+          loading={loading}
+          empty="No wallets yet — generate a batch above."
+        />
       </div>
     </div>
   );

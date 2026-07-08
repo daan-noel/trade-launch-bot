@@ -22,8 +22,8 @@ mod wallet_verify;
 
 pub use backup::run_backup;
 pub use bundle::{
-    compose_bundle_legs, leg_params, legs_from_json, legs_to_json, BuyVariant, BundledLegPlan,
-    LegStructure, LegStructureRecipe, StoredBundleLeg,
+    compose_bundle_legs, leg_params, legs_from_json, legs_to_json, BundledLegPlan, BuyVariant,
+    LegStructure, LegStructureRecipe,
 };
 pub use bundle_execute::{execute_bundle, BundleExecuteResult};
 pub use confirm::spawn_bundle_confirm_watcher;

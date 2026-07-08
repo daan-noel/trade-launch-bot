@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 use platform_core::config::Settings;
 use platform_core::storage::connect;
+use platform_core::models::WalletRole;
 use platform_core::storage::repositories::{
     LaunchTemplateRepo, ManagedWalletRepo, MetadataTemplateRepo,
 };
@@ -29,7 +30,7 @@ pub async fn run_launch_probe(settings: &Settings, args: &[String]) -> Result<()
         )
     } else {
         let templates = LaunchTemplateRepo::all(&pools.hot).await?;
-        let devs = ManagedWalletRepo::by_role(&pools.hot, "dev").await?;
+        let devs = ManagedWalletRepo::by_role(&pools.hot, WalletRole::Dev.as_str()).await?;
         let template = templates
             .first()
             .context("no launch_templates — run scripts/seed-dev-launch.sql")?;

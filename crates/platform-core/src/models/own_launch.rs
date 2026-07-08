@@ -100,17 +100,10 @@ pub struct NewLaunchTemplate {
     pub params: Option<Json>,
 }
 
-/// Full-replace update — same shape as [`NewLaunchTemplate`], no partial-field
-/// PATCH (matches this codebase's fixed-shape update pattern).
-#[derive(Debug, Clone, Deserialize)]
-pub struct UpdateLaunchTemplate {
-    pub template_name: String,
-    pub launchpad_id: i16,
-    pub variant: String,
-    pub quote_asset_id: i16,
-    pub metadata_template_id: Option<Uuid>,
-    pub params: Option<Json>,
-}
+/// Full-replace update — identical shape to [`NewLaunchTemplate`] (no partial
+/// PATCH; matches this codebase's fixed-shape update pattern). A type alias so
+/// the create/update bodies can't drift apart.
+pub type UpdateLaunchTemplate = NewLaunchTemplate;
 
 /// An executed launch record. `dev_buy_quote` is quote base units; `bundle_id` is
 /// the phase-2 soft ref; `status` is open text (default 'pending').

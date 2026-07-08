@@ -15,7 +15,7 @@ pub mod token;
 pub mod trade;
 
 pub use dimensions::{Launchpad, Market, QuoteAsset};
-pub use status::{BundleStatus, LaunchStatus};
+pub use status::{BundleStatus, LaunchStatus, WalletRole, WalletStatus};
 pub use metadata::{MetadataTemplate, NewMetadataTemplate};
 pub use own_launch::{
     Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,

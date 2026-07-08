@@ -1,10 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api, fileToBase64, formatAge, MetadataTemplate } from './api';
+import { useResource } from './components/useResource';
+import { Column, DataTable } from './components/DataTable';
+import { Field } from './components/Field';
 
 export default function MetadataTemplates() {
-  const [templates, setTemplates] = useState<MetadataTemplate[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: templates = [],
+    loading,
+    error,
+    reload,
+    setError,
+  } = useResource(() => api.metadataTemplates(), []);
 
   const [templateName, setTemplateName] = useState('');
   const [name, setName] = useState('');
@@ -15,22 +22,6 @@ export default function MetadataTemplates() {
   const [website, setWebsite] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [creating, setCreating] = useState(false);
-
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setTemplates(await api.metadataTemplates());
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-  }, []);
 
   const onCreate = async () => {
     if (!templateName || !name || !symbol || !imageFile) return;
@@ -58,7 +49,7 @@ export default function MetadataTemplates() {
       setTelegram('');
       setWebsite('');
       setImageFile(null);
-      await load();
+      await reload();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -66,13 +57,35 @@ export default function MetadataTemplates() {
     }
   };
 
+  const columns: Column<MetadataTemplate>[] = [
+    { header: 'Template', render: (t) => t.template_name },
+    { header: 'Name', render: (t) => t.name },
+    { header: 'Symbol', render: (t) => t.symbol },
+    {
+      header: 'Image',
+      render: (t) =>
+        t.image_uri ? (
+          <a
+            href={t.image_uri.replace('ipfs://', 'https://ipfs.io/ipfs/')}
+            target="_blank"
+            rel="noreferrer"
+          >
+            view
+          </a>
+        ) : (
+          <span className="muted">—</span>
+        ),
+    },
+    { header: 'URI', render: (t) => <code>{t.uri}</code> },
+    { header: 'Age', render: (t) => formatAge(t.created_at) },
+  ];
+
   return (
     <div>
       <div className="card">
         <h2>Author metadata template</h2>
         <div className="row">
-          <div className="field">
-            <label htmlFor="meta-template-name">Template name</label>
+          <Field label="Template name" htmlFor="meta-template-name">
             <input
               id="meta-template-name"
               type="text"
@@ -80,56 +93,49 @@ export default function MetadataTemplates() {
               onChange={(e) => setTemplateName(e.target.value)}
               placeholder="e.g. dog-coin-v1"
             />
-          </div>
-          <div className="field">
-            <label htmlFor="meta-name">Name</label>
+          </Field>
+          <Field label="Name" htmlFor="meta-name">
             <input id="meta-name" type="text" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div className="field">
-            <label htmlFor="meta-symbol">Symbol</label>
+          </Field>
+          <Field label="Symbol" htmlFor="meta-symbol">
             <input id="meta-symbol" type="text" value={symbol} onChange={(e) => setSymbol(e.target.value)} />
-          </div>
+          </Field>
         </div>
         <div className="row">
-          <div className="field" style={{ flex: 1 }}>
-            <label htmlFor="meta-description">Description</label>
+          <Field label="Description" htmlFor="meta-description" style={{ flex: 1 }}>
             <input
               id="meta-description"
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
-          </div>
+          </Field>
         </div>
         <div className="row">
-          <div className="field">
-            <label htmlFor="meta-twitter">Twitter (optional)</label>
+          <Field label="Twitter (optional)" htmlFor="meta-twitter">
             <input id="meta-twitter" type="text" value={twitter} onChange={(e) => setTwitter(e.target.value)} />
-          </div>
-          <div className="field">
-            <label htmlFor="meta-telegram">Telegram (optional)</label>
+          </Field>
+          <Field label="Telegram (optional)" htmlFor="meta-telegram">
             <input
               id="meta-telegram"
               type="text"
               value={telegram}
               onChange={(e) => setTelegram(e.target.value)}
             />
-          </div>
-          <div className="field">
-            <label htmlFor="meta-website">Website (optional)</label>
+          </Field>
+          <Field label="Website (optional)" htmlFor="meta-website">
             <input id="meta-website" type="text" value={website} onChange={(e) => setWebsite(e.target.value)} />
-          </div>
+          </Field>
         </div>
         <div className="row">
-          <div className="field">
-            <label htmlFor="meta-image">Image</label>
+          <Field label="Image" htmlFor="meta-image">
             <input
               id="meta-image"
               type="file"
               accept="image/*"
               onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
             />
-          </div>
+          </Field>
           <button
             type="button"
             className="primary"
@@ -141,64 +147,22 @@ export default function MetadataTemplates() {
         </div>
         <p className="muted">
           Pins the image, then the standard off-chain JSON, to IPFS via Pinata (requires{' '}
-          <code>PINATA_JWT</code> configured on the live box). The resulting <code>uri</code> is what
-          a launch template's <code>uri</code> field / the Launch Console's metadata-URI override
-          consumes.
+          <code>PINATA_JWT</code> configured on the live box). The resulting <code>uri</code> is the
+          token identity a launch template references via <code>metadata_template_id</code> (the
+          single source of truth) and the launcher resolves at create time.
         </p>
         {error && <p className="error">{error}</p>}
       </div>
 
       <div className="card">
         <h2>Templates ({templates.length})</h2>
-        {loading ? (
-          <p className="muted">Loading…</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Template</th>
-                <th>Name</th>
-                <th>Symbol</th>
-                <th>Image</th>
-                <th>URI</th>
-                <th>Age</th>
-              </tr>
-            </thead>
-            <tbody>
-              {templates.map((t) => (
-                <tr key={t.id}>
-                  <td>{t.template_name}</td>
-                  <td>{t.name}</td>
-                  <td>{t.symbol}</td>
-                  <td>
-                    {t.image_uri ? (
-                      <a
-                        href={t.image_uri.replace('ipfs://', 'https://ipfs.io/ipfs/')}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        view
-                      </a>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td>
-                    <code>{t.uri}</code>
-                  </td>
-                  <td>{formatAge(t.created_at)}</td>
-                </tr>
-              ))}
-              {templates.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="muted">
-                    No metadata templates yet — author one above.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        )}
+        <DataTable
+          columns={columns}
+          rows={templates}
+          rowKey={(t) => t.id}
+          loading={loading}
+          empty="No metadata templates yet — author one above."
+        />
       </div>
     </div>
   );

@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use platform_core::models::{BundleStatus, ManagedWallet};
+use platform_core::models::{BundleStatus, ManagedWallet, WalletRole, WalletStatus};
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, ManagedWalletRepo, TokenRepo,
 };
@@ -172,14 +172,16 @@ pub async fn execute_bundle(
 /// manually retried via `POST /bundles/:id/execute` long after its wallets
 /// were released and re-claimed elsewhere.
 fn check_wallet_reserved_to_bundle(wallet: &ManagedWallet, launch_id: Uuid) -> Result<()> {
-    if wallet.role != "bundler" {
+    if wallet.role != WalletRole::Bundler.as_str() {
         bail!(
             "wallet {} is role={}, expected bundler",
             wallet.id,
             wallet.role
         );
     }
-    if wallet.status != "reserved" || wallet.reserved_by_launch_id != Some(launch_id) {
+    if wallet.status != WalletStatus::Reserved.as_str()
+        || wallet.reserved_by_launch_id != Some(launch_id)
+    {
         bail!(
             "wallet {} is not reserved to launch {} (status={}, reserved_by_launch_id={:?})",
             wallet.id,

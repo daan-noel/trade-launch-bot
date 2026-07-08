@@ -111,11 +111,13 @@ the thing being redesigned); only tiny pure SSOT files were copied (IDLs, unit c
   nullable (a preset authored/backfilled outside the pin flow embeds the image in
   the JSON at `uri`). Migration `0007`; the frontend `Metadata` dropdown is the
   single authoring surface.
-- **Status vocabularies are enums + CHECK, never loose strings:** `LaunchStatus`
-  / `BundleStatus` (`platform_core::models::status`) own the `launches.status` /
-  `bundles.status` values; each `as_str()` must equal the SQL `CHECK` in migration
-  `0006` (roundtrip test pins the strings), same pattern as `MarketKind`. A new
-  state is a code + CHECK edit.
+- **CHECK-constrained vocabularies are enums, never loose strings:** `LaunchStatus`
+  / `BundleStatus` / `WalletRole` / `WalletStatus` (`platform_core::models::status`)
+  own the `launches.status` / `bundles.status` / `managed_wallets.role` /
+  `managed_wallets.status` values; each `as_str()` must equal the SQL `CHECK`
+  (launch/bundle → migration `0006`; wallet role → `0002`, wallet status → `0004`;
+  roundtrip tests pin the strings), same pattern as `MarketKind`. A new value is a
+  code + CHECK edit — never a bare string literal at a call site.
 - **Extensibility via rows, not columns**; interned small-int dimensions
   (`quote_assets`, `launchpads`) + `wallet_dict` (soft ref, no FK on the hot insert;
   read paths LEFT JOIN with a COALESCE fallback). Hot tables (`raw_txs`, `trades`) are
