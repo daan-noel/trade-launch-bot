@@ -82,18 +82,28 @@ async fn main() -> anyhow::Result<()> {
     // needed; it only reads `bundles`/`trades` from the already-connected pool).
     let bundle_confirm_task = launcher::spawn_bundle_confirm_watcher(pools.hot.clone());
 
+    // Launcher settings — built ONCE at boot (single source of truth) and shared
+    // by BOTH the wallet-pool background tasks below AND the HTTP handlers (via
+    // `app_data`), instead of each HTTP request re-parsing ~15 env vars.
+    let launcher_settings: Option<LauncherSettings> = match LauncherSettings::from_env() {
+        Ok(s) => Some(s),
+        Err(e) => {
+            warn!(
+                "launcher not configured — launch/fund/generate/metadata endpoints \
+                 and wallet-pool background tasks disabled: {e}"
+            );
+            None
+        }
+    };
+
     // Fresh-wallet pool: balance poller (generated/funding -> funded) +
     // reservation TTL sweep (Phase 1) + dust sweep (used -> retired, Phase 4) +
-    // treasury->pool funder (wallet-funding-plan; only when FUND_ENABLED). Needs
-    // the same launcher config as the rest of the launch flow — skip if unset.
+    // treasury->pool funder (wallet-funding-plan; only when FUND_ENABLED).
     let (wallet_balance_task, wallet_sweep_task, wallet_dust_sweep_task, wallet_funding_task) =
-        match LauncherSettings::from_env() {
-            Ok(launcher_settings) => {
-                let funding_task = if launcher_settings.funding.is_some() {
-                    Some(launcher::spawn_wallet_funding(
-                        pools.hot.clone(),
-                        launcher_settings.clone(),
-                    ))
+        match launcher_settings.as_ref() {
+            Some(s) => {
+                let funding_task = if s.funding.is_some() {
+                    Some(launcher::spawn_wallet_funding(pools.hot.clone(), s.clone()))
                 } else {
                     warn!("wallet funding disabled — set FUND_ENABLED=true to enable");
                     None
@@ -101,17 +111,14 @@ async fn main() -> anyhow::Result<()> {
                 (
                     Some(launcher::spawn_balance_poller(
                         pools.hot.clone(),
-                        launcher_settings.rpc_url.clone(),
+                        s.rpc_url.clone(),
                     )),
                     Some(launcher::spawn_reservation_sweep(pools.hot.clone())),
-                    Some(launcher::spawn_dust_sweep(pools.hot.clone(), launcher_settings)),
+                    Some(launcher::spawn_dust_sweep(pools.hot.clone(), s.clone())),
                     funding_task,
                 )
             }
-            Err(e) => {
-                warn!("wallet pool background tasks disabled — launcher not configured: {e}");
-                (None, None, None, None)
-            }
+            None => (None, None, None, None),
         };
 
     // Ingest (optional): spawn only when Helius creds are present. `ingest_handle`
@@ -139,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         App::new()
             .app_data(web::Data::new(api_pool.clone()))
             .app_data(web::Data::new(ingest_handle.clone()))
+            .app_data(web::Data::new(launcher_settings.clone()))
             .configure(http::configure)
     })
     .bind((host.as_str(), port))?

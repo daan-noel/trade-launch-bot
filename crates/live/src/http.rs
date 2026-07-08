@@ -25,6 +25,19 @@ fn e500<E: std::fmt::Debug>(e: E) -> actix_web::Error {
     actix_web::error::ErrorInternalServerError(format!("{e:?}"))
 }
 
+/// Borrow the boot-time launcher settings out of `app_data`, or 503 if the box
+/// booted without a launcher config (missing RPC/keystore/nonce env). Built once
+/// in `main.rs`; handlers no longer re-parse env per request.
+fn launcher_settings(
+    data: &web::Data<Option<LauncherSettings>>,
+) -> Result<&LauncherSettings, actix_web::Error> {
+    data.get_ref().as_ref().ok_or_else(|| {
+        actix_web::error::ErrorServiceUnavailable(
+            "launcher not configured (missing RPC/keystore/nonce env)",
+        )
+    })
+}
+
 /// Register the routes. `api` pool is shared via `app_data`.
 pub fn configure(cfg: &mut web::ServiceConfig) {
     // Default actix JSON limit (32KB) is too small for a base64-encoded token
@@ -183,14 +196,13 @@ struct GenerateWalletsBody {
 /// `generated` DB rows) — `launcher::generate_wallets` (wallet-pool Phase 1).
 async fn wallet_pool_generate(
     pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
     body: web::Json<GenerateWalletsBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = LauncherSettings::from_env().map_err(|e| {
-        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
-    })?;
+    let settings = launcher_settings(&settings)?;
     let wallets = launcher::generate_wallets(
         pool.get_ref(),
-        &settings,
+        settings,
         &body.role,
         body.count,
         body.label_prefix.as_deref(),
@@ -203,6 +215,7 @@ async fn wallet_pool_generate(
     // no-op when WALLET_BACKUP_DIR isn't configured.
     if let Some(backup_dir) = settings.backup_dir.clone() {
         let backup_pool = pool.get_ref().clone();
+        let settings = settings.clone();
         tokio::spawn(async move {
             if let Err(e) = launcher::run_backup(&backup_pool, &settings, &backup_dir).await {
                 tracing::warn!(%e, "wallet-pool backup failed after generation batch");
@@ -228,11 +241,10 @@ struct FundWalletsBody {
 /// per-wallet outcome for every wallet the pass touched.
 async fn wallet_pool_fund(
     pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
     body: web::Json<FundWalletsBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = LauncherSettings::from_env().map_err(|e| {
-        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
-    })?;
+    let settings = launcher_settings(&settings)?;
     if settings.funding.is_none() {
         return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
             "error": "wallet funding disabled — set FUND_ENABLED=true to enable"
@@ -246,7 +258,7 @@ async fn wallet_pool_fund(
         ),
         None => None,
     };
-    let report = fund_once(pool.get_ref(), &settings, FundScope { role, count: body.count })
+    let report = fund_once(pool.get_ref(), settings, FundScope { role, count: body.count })
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(report))
@@ -281,15 +293,14 @@ struct CreateMetadataTemplateBody {
 /// persist as a reusable template — `launcher::create_metadata_template`.
 async fn metadata_templates_create(
     pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
     body: web::Json<CreateMetadataTemplateBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = LauncherSettings::from_env().map_err(|e| {
-        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
-    })?;
+    let settings = launcher_settings(&settings)?;
     let body = body.into_inner();
     let template = create_metadata_template(
         pool.get_ref(),
-        &settings,
+        settings,
         NewMetadataTemplateRequest {
             template_name: body.template_name,
             name: body.name,
@@ -364,15 +375,14 @@ struct LaunchExecuteBody {
 
 async fn launch_execute(
     pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
     body: web::Json<LaunchExecuteBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = LauncherSettings::from_env().map_err(|e| {
-        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
-    })?;
+    let settings = launcher_settings(&settings)?;
     let body = body.into_inner();
     let result = execute_launch(
         pool.get_ref(),
-        &settings,
+        settings,
         LaunchRequest {
             template_id: body.template_id,
             dev_wallet_id: body.dev_wallet_id,
@@ -387,12 +397,11 @@ async fn launch_execute(
 
 async fn bundle_execute(
     pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
     id: web::Path<Uuid>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = LauncherSettings::from_env().map_err(|e| {
-        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
-    })?;
-    let result = execute_bundle(pool.get_ref(), &settings, *id)
+    let settings = launcher_settings(&settings)?;
+    let result = execute_bundle(pool.get_ref(), settings, *id)
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(result))
