@@ -142,6 +142,9 @@ pub enum FilterOp {
     #[default]
     Contains,
     Eq,
+    /// Not-equal (`!=`) — a numeric-column op, the negation of `Eq`. On a text
+    /// column it's dropped like any other non-text op.
+    Neq,
     In,
     Gt,
     Gte,

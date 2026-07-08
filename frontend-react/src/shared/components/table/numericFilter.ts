@@ -10,7 +10,7 @@ const CMP_RE = /^(>=|<=|==|!=|>|<|=)\s*(-?\d+(?:\.\d+)?)$/;
 const RANGE_RE = /^(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)$/;
 
 /** The backend `FilterOp` set (see `trading_core::api::table_query::FilterOp`). */
-export type FilterOp = 'contains' | 'eq' | 'in' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
+export type FilterOp = 'contains' | 'eq' | 'neq' | 'in' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
 
 /** A structured per-column filter — the parsed shape sent to the server. `between`
  *  carries `min`/`max`; `in` carries an array in `val` (set membership, e.g. a pasted
@@ -28,10 +28,8 @@ export type FilterSpec =
  * for the server, or `null` when the text isn't a recognized numeric expression
  * (so the caller falls back to `{op:'contains', val:text}`).
  *
- * `!=` has no server-side operator, so it maps to `eq` here (the closure in
- * {@link parseNumericPredicate} still negates for the legacy client path). The
- * mapping mirrors the backend numeric ops: `>`→gt, `>=`→gte, `<`→lt, `<=`→lte,
- * `=`/`==`→eq, `lo..hi`→between.
+ * The mapping mirrors the backend numeric ops: `>`→gt, `>=`→gte, `<`→lt, `<=`→lte,
+ * `=`/`==`→eq, `!=`→neq, `lo..hi`→between.
  */
 export function parseFilterSpec(text: string): FilterSpec | null {
   const range = RANGE_RE.exec(text);
@@ -53,8 +51,9 @@ export function parseFilterSpec(text: string): FilterSpec | null {
         return { op: 'lt', val: v };
       case '<=':
         return { op: 'lte', val: v };
-      // `!=` has no server operator; approximate as `eq` (rare in practice).
-      default: // '=', '==', '!='
+      case '!=':
+        return { op: 'neq', val: v };
+      default: // '=', '=='
         return { op: 'eq', val: v };
     }
   }

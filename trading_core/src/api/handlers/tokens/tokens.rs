@@ -869,6 +869,7 @@ fn numeric_pred_expr(spec: &FilterSpec, val: &str, min: &str, max: &str) -> Opti
         FilterOp::Lt if !val.is_empty() => format!("<{val}"),
         FilterOp::Lte if !val.is_empty() => format!("<={val}"),
         FilterOp::Eq if !val.is_empty() => format!("={val}"),
+        FilterOp::Neq if !val.is_empty() => format!("!={val}"),
         _ => return None,
     })
 }

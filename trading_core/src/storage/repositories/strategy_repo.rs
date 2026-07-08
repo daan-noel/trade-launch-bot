@@ -289,6 +289,22 @@ impl From<TableRequest> for PositionQuery {
     }
 }
 
+/// Canonical SQL for the position **PnL%** column, in the same **percentage** units
+/// the frontend cell shows (`Position::pnl_percentage` = `(exit-entry)/entry × 100`).
+/// Single-sourced so the sort whitelist, the filter whitelist, and the displayed
+/// value can't drift — a `>0` filter and the column ordering both agree with the cell
+/// (the `× 100` is monotonic, so it doesn't change sort order vs. the bare ratio).
+const PNL_PCT_SQL: &str = "(((sp.exit_price - sp.entry_price) / NULLIF(sp.entry_price, 0)) * 100)";
+
+/// Canonical SQL for the position **realized SOL PnL** column, mirroring
+/// `Position::pnl_sol` exactly: `exit_price × COALESCE(exit_token_amount, 0) −
+/// entry_price × entry_token_amount` (price is SOL per raw token unit, counts are raw
+/// units, so the product is human SOL). Single-sourced across the sort + filter
+/// whitelists. NULL (→ excluded by any compare) whenever `entry_price`,
+/// `entry_token_amount`, or `exit_price` is absent — matching the model's `None`.
+const PNL_SOL_SQL: &str =
+    "(sp.exit_price * COALESCE(sp.exit_token_amount, 0) - sp.entry_price * sp.entry_token_amount)";
+
 /// Map a frontend column key to its **trusted** SQL sort expression (with table
 /// alias). `None` for keys that aren't sortable server-side. Aliases:
 ///   `sp` = strategy_positions, `t` = LEFT-JOINed `tokens`, `i` = `tokens_info`.
@@ -305,7 +321,10 @@ fn position_sort_sql(key: &str) -> Option<&'static str> {
         "entry_time" => "sp.entry_time",
         "exit_price" => "sp.exit_price",
         "exit_time" => "sp.exit_time",
-        "pnl_pct" => "((sp.exit_price - sp.entry_price) / NULLIF(sp.entry_price, 0))",
+        "pnl_pct" => PNL_PCT_SQL,
+        "pnl_sol" => PNL_SOL_SQL,
+        // The positions "Holding" column shows the raw exit-token count held.
+        "holding" => "sp.exit_token_amount",
         "status" => "sp.status",
         "exit_reason" => "sp.exit_reason",
         _ => return enrich_sort_sql(key),
@@ -325,6 +344,9 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
         "exit_reason" => ("sp.exit_reason", Text),
         "entry_price" => ("sp.entry_price", Numeric),
         "exit_price" => ("sp.exit_price", Numeric),
+        "pnl_pct" => (PNL_PCT_SQL, Numeric),
+        "pnl_sol" => (PNL_SOL_SQL, Numeric),
+        "holding" => ("sp.exit_token_amount", Numeric),
         _ => return enrich_filter_sql(key),
     })
 }
@@ -426,6 +448,7 @@ fn push_filter_predicate(
             let Some(val) = as_number(&spec.val) else { return };
             let sql_op = match op {
                 FilterOp::Eq => "=",
+                FilterOp::Neq => "!=",
                 FilterOp::Gt => ">",
                 FilterOp::Gte => ">=",
                 FilterOp::Lt => "<",
@@ -1843,6 +1866,39 @@ mod filter_sql_tests {
         };
         let sql = where_sql("volume", spec);
         assert!(!sql.contains(" AND "), "non-numeric val on numeric op must be dropped: {sql}");
+    }
+
+    #[test]
+    fn neq_on_numeric_col_emits_not_equal() {
+        // `!=333333` on a numeric column must compare with `!=`, not collapse to `=`.
+        let sql = where_sql("cu_price", num(FilterOp::Neq, 333333.0));
+        assert!(sql.contains(" != "), "expected `!=` compare, got: {sql}");
+        assert!(!sql.contains(" = "), "neq must not emit an equality: {sql}");
+    }
+
+    #[test]
+    fn pnl_pct_is_numeric_filterable_in_percent_units() {
+        // `pnl_pct` is a computed column — `>0` must lower to a numeric compare over
+        // the shared percentage expression (× 100), not be dropped.
+        let sql = where_sql("pnl_pct", num(FilterOp::Gt, 0.0));
+        assert!(sql.contains("* 100"), "pnl_pct filter must use the percent expr: {sql}");
+        assert!(sql.contains(" > "), "pnl_pct `>0` must emit a numeric compare: {sql}");
+    }
+
+    #[test]
+    fn pnl_sol_is_numeric_filterable() {
+        // `pnl_sol` is computed from the fill prices × token counts; a `>0` filter must
+        // lower to a numeric compare over that expression, not be dropped.
+        let sql = where_sql("pnl_sol", num(FilterOp::Gt, 0.0));
+        assert!(sql.contains("exit_token_amount"), "pnl_sol filter must use the proceeds expr: {sql}");
+        assert!(sql.contains(" > "), "pnl_sol `>0` must emit a numeric compare: {sql}");
+    }
+
+    #[test]
+    fn holding_is_numeric_filterable() {
+        // The "Holding" column is the raw exit-token count — numeric-filterable.
+        let sql = where_sql("holding", num(FilterOp::Gte, 1000.0));
+        assert!(sql.contains("sp.exit_token_amount >="), "holding must compare on the token count: {sql}");
     }
 
     #[test]

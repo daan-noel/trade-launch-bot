@@ -187,6 +187,7 @@ fn row_matches(row: &Value, field: &str, kind: ColKind, spec: &FilterSpec) -> bo
                     FilterOp::Gte => v >= target,
                     FilterOp::Lt => v < target,
                     FilterOp::Lte => v <= target,
+                    FilterOp::Neq => v != target,
                     // `eq`/`contains` on a numeric field → equality.
                     _ => v == target,
                 },

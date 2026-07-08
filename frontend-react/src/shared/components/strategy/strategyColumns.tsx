@@ -107,6 +107,7 @@ export function legColumns<T>(prefix: LegPrefix, acc: LegAccessors<T>, opts: Leg
           },
           sortValue: (r) => acc.price(r),
           searchValue: (r) => String(acc.price(r) ?? ''),
+          filterNumber: (r) => acc.price(r),
         });
         break;
       case 'tokens':
@@ -251,9 +252,12 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     key: 'holding',
     label: 'Holding',
     group: 'pnl',
+    sortable: true,
     render: (r) =>
       r.exit_token_amount != null ? formatDecimalTrim(r.exit_token_amount, 3) : '—',
+    sortValue: (r) => r.exit_token_amount ?? null,
     searchValue: () => '',
+    filterNumber: (r) => r.exit_token_amount ?? null,
   },
   {
     key: 'pnl_pct',
@@ -271,11 +275,13 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     },
     sortValue: (r) => r.pnl_percent,
     searchValue: (r) => String(r.pnl_percent ?? ''),
+    filterNumber: (r) => r.pnl_percent ?? null,
   },
   {
     key: 'pnl_sol',
     label: 'PnL',
     group: 'pnl',
+    sortable: true,
     render: (r) => {
       if (r.exit_price == null || r.pnl_sol == null)
         return <span className="text-text-dim">—</span>;
@@ -290,7 +296,9 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
         </span>
       );
     },
+    sortValue: (r) => r.pnl_sol ?? null,
     searchValue: () => '',
+    filterNumber: (r) => r.pnl_sol ?? null,
   },
   {
     key: 'status',
@@ -417,6 +425,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
       ),
     sortValue: (r) => r.holding_secs,
     searchValue: () => '',
+    filterNumber: (r) => r.holding_secs ?? null,
   },
   {
     key: 'pnl_pct',
@@ -434,6 +443,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     },
     sortValue: (r) => r.pnl_percent,
     searchValue: (r) => String(r.pnl_percent ?? ''),
+    filterNumber: (r) => r.pnl_percent ?? null,
   },
   {
     key: 'pnl_sol',
@@ -450,6 +460,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     },
     sortValue: (r) => r.pnl_sol,
     searchValue: () => '',
+    filterNumber: (r) => r.pnl_sol ?? null,
   },
   {
     key: 'reason',
