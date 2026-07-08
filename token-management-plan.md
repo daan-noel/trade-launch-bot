@@ -130,8 +130,11 @@ GET  /api/tokens/:mint/positions            -> per-wallet holdings + PnL (reads 
 POST /api/tokens/:mint/manage/preview       -> ActionPlan (no execution) from a ManageRequest       [DONE P2]
 POST /api/tokens/:mint/manage/execute       -> recompute + execute the plan (gated)                 [DONE P2]
 GET  /api/tokens/:mint/manage/actions       -> manage_actions history                               [DONE P2]
-POST /api/tokens/:mint/consolidate          -> sweep tokens/SOL -> treasury                         [P3]
 ```
+
+Buy + consolidate are the **same** `manage/preview` + `manage/execute` endpoints with
+`kind: "buy"` / `"consolidate"` (not separate routes) — one plan/preview/execute pipeline for all
+three primitives.
 
 `ManageRequest { kind, sizing, size, selection }`. Preview and execute both take a `ManageRequest`
 and recompute the plan from current positions (no stale plan-id hand-off) — execute always sizes
@@ -174,7 +177,19 @@ the full path placing no trades.
    not wired); sells are curve-only (migrated/AMM tokens error per-leg — a known Phase 3+ gap).
    Verified: `cargo check -p live`/`-p lab` + `cargo test -p platform-core` + clippy + `vite build`
    all clean. **Not exercised against a live chain/DB here** (no keys/DB in this env).
-3. **Buy + consolidate** — fixed-size buys from dev/bundlers; generalize `dust_sweep` to tokens+SOL.
+3. **Buy + consolidate** ✅ **DONE** (2026-07-08) — wired `ManageKind::Buy` (`fixed_sol` sizing —
+   a fixed SOL spend per selected managed wallet, resolved by role/ids **not** positions, so fresh
+   buyers work; via `PumpFunTrader::buy_token`, RPC-confirmed; new buyers get seeded positions on
+   the post-action reconcile) and `ManageKind::Consolidate` (`sweep` sizing — sweep each selected
+   wallet's SOL to the treasury via a plain `solana-client` transfer, balance−fee → source lands at
+   0, treasury wallets excluded, **not** retired unlike `dust_sweep`). `PlanLeg` gained `spend_quote`
+   (SOL lamports to spend/sweep). `execute_action` now dispatches per leg-side with a per-kind
+   `ExecContext` (buy: token creator+program from `tokens`; consolidate: treasury + RPC) resolved
+   once. `ManagePanel` gained an action selector (Sell/Buy/Consolidate) with kind-appropriate inputs
+   + plan columns. **Note:** buy/consolidate require a wallet group (no "all"); buy is curve-only
+   (migrated/AMM = later gap); token consolidation (moving SPL tokens between wallets) is NOT
+   included — "consolidate" here means SOL-to-treasury. Verified: `cargo check -p live` + clippy +
+   `vite build` clean. **Not exercised against a live chain/DB here.**
 4. **Simple-threshold ladders** *(later)* — arm a rule (sell X% at price/mcap milestone), evaluated
    by a background task on the ingested `trades` feed; reuses the phase-2 sell primitive.
 5. **Volume-making** *(later)* — fresh-wallet rotation + buy/sell loop scheduler over the buy/sell

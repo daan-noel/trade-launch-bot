@@ -57,12 +57,17 @@ pub struct PlanLeg {
     pub role: String,
     /// Canonical token account the sell routes through (from the position row).
     pub token_account: Option<String>,
-    /// `sell` | `buy`.
+    /// `sell` | `buy` | `consolidate`.
     pub side: String,
-    /// Tokens to sell (sell side), token base units.
+    /// Tokens to sell (sell side), token base units. `0` for buy/consolidate.
     pub amount_base: i64,
-    /// Estimated proceeds at the current spot price (quote base units) — preview
-    /// display only; realized proceeds come from the feed after execution.
+    /// Quote (SOL lamports) to SPEND on this leg — the buy amount, or the SOL a
+    /// consolidate sweeps to treasury. `0` on the sell side.
+    #[serde(default)]
+    pub spend_quote: i64,
+    /// Estimated proceeds (sell) at the current spot price, quote base units —
+    /// preview display only; realized proceeds come from the feed after
+    /// execution. `0` on the buy/consolidate side (see `spend_quote`).
     pub est_quote: i64,
     /// `confirmed` | `failed`, set by the executor.
     #[serde(default, skip_serializing_if = "Option::is_none")]

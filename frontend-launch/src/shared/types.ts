@@ -108,8 +108,9 @@ export interface PlanLeg {
   wallet_id: string;
   role: WalletRole;
   token_account: string | null;
-  side: string; // 'sell' | 'buy'
+  side: string; // 'sell' | 'buy' | 'consolidate'
   amount_base: number;
+  spend_quote: number;
   est_quote: number;
   status?: string; // 'confirmed' | 'failed' (execution outcome)
   signature?: string;
