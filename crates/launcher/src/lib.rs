@@ -18,6 +18,7 @@ mod probe;
 mod service;
 mod trader_config;
 mod wallet_encrypt;
+mod wallet_export;
 mod wallet_funding;
 mod wallet_pool;
 mod wallet_verify;
@@ -45,6 +46,7 @@ pub use metadata_upload::{
 pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;
+pub use wallet_export::run_wallet_export;
 pub use wallet_funding::{
     fund_for_launch, fund_once, spawn_wallet_funding, DirectJittered, FundMode, FundReport,
     FundScope, FundingStrategy, StrategyParams, Transfer, WalletFundOutcome,

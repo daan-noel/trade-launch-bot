@@ -42,6 +42,10 @@ async fn main() -> anyhow::Result<()> {
         launcher::run_wallet_verify(&args[1..])?;
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("wallet-export") {
+        launcher::run_wallet_export(&settings, &args[1..]).await?;
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("launch-probe") {
         launcher::run_launch_probe(&settings, &args[1..]).await?;
         return Ok(());

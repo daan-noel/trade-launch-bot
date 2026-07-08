@@ -72,6 +72,41 @@ pub fn resolve_signer(
     Ok(Arc::new(kp))
 }
 
+/// Resolve `key_ref` → the raw 64-byte ed25519 secret (scrubbed on drop).
+///
+/// DANGER: this returns unwrapped private-key material. Only the `wallet-export`
+/// CLI path uses it; every runtime signing path must use [`resolve_signer`],
+/// which keeps the secret wrapped in `Arc<dyn Signer>` and never exposes bytes.
+pub fn resolve_secret_bytes(
+    keystore_dir: &Path,
+    key_ref: &str,
+    kek: &dyn Kek,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let path = keystore_dir.join(key_ref);
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("read keystore blob {}", path.display()))?;
+    let blob: EnvelopeBlob =
+        serde_json::from_str(&raw).context("parse envelope JSON keystore blob")?;
+    if blob.v != 1 {
+        bail!("unsupported keystore envelope version {}", blob.v);
+    }
+    let kek_key = kek.derive_aes_key();
+    let dek = decrypt_aes(
+        &kek_key,
+        &decode_b64(&blob.dek_nonce)?,
+        &decode_b64(&blob.wrapped_dek)?,
+    )
+    .context("unwrap DEK")?;
+    let secret = Zeroizing::new(decrypt_aes(
+        dek.as_ref(),
+        &decode_b64(&blob.secret_nonce)?,
+        &decode_b64(&blob.ciphertext)?,
+    )?);
+    // Validate length + that it forms a real ed25519 keypair before handing back.
+    Keypair::from_bytes(secret.as_ref()).context("invalid ed25519 secret length")?;
+    Ok(Zeroizing::new(secret.to_vec()))
+}
+
 /// Read a 64-byte ed25519 secret from a Solana CLI JSON keypair file or a base58 string file.
 pub fn read_keypair_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     let raw = std::fs::read_to_string(path)
