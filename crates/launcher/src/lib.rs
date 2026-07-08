@@ -17,6 +17,7 @@ mod probe;
 mod service;
 mod trader_config;
 mod wallet_encrypt;
+mod wallet_funding;
 mod wallet_pool;
 mod wallet_verify;
 
@@ -28,7 +29,7 @@ pub use bundle::{
 pub use bundle_execute::{execute_bundle, BundleExecuteResult};
 pub use confirm::spawn_bundle_confirm_watcher;
 
-pub use config::LauncherSettings;
+pub use config::{FundingConfig, LauncherSettings};
 pub use dust_sweep::spawn_dust_sweep;
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
@@ -37,5 +38,9 @@ pub use metadata_upload::{create_metadata_template, NewMetadataTemplateRequest};
 pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;
+pub use wallet_funding::{
+    fund_once, spawn_wallet_funding, DirectJittered, FundReport, FundScope, FundingStrategy,
+    StrategyParams, Transfer, WalletFundOutcome,
+};
 pub use wallet_pool::{generate_wallets, spawn_balance_poller, spawn_reservation_sweep};
 pub use wallet_verify::run_wallet_verify;

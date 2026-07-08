@@ -94,13 +94,14 @@ pub fn spawn_balance_poller(pool: PgPool, rpc_url: String) -> tokio::task::JoinH
 }
 
 async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &str) -> Result<()> {
-    let generated =
-        ManagedWalletRepo::find_by_status(pool, WalletStatus::Generated.as_str(), None).await?;
-    if generated.is_empty() {
+    // Both `generated` (manual funding) and `funding` (an automated treasury send
+    // in flight) are watched — either promotes to `funded` when SOL lands.
+    let pollable = ManagedWalletRepo::find_pollable(pool).await?;
+    if pollable.is_empty() {
         return Ok(());
     }
 
-    for chunk in generated.chunks(RPC_BATCH_SIZE) {
+    for chunk in pollable.chunks(RPC_BATCH_SIZE) {
         let addresses: Vec<String> = chunk.iter().map(|w| w.address.clone()).collect();
         let balances = fetch_balances(client, rpc_url, &addresses).await?;
         for (wallet, balance) in chunk.iter().zip(balances) {
@@ -108,12 +109,15 @@ async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &s
             let updated =
                 ManagedWalletRepo::record_balance(pool, wallet.id, balance, MIN_FUNDED_LAMPORTS)
                     .await?;
-            if updated.status == WalletStatus::Funded.as_str() {
+            if updated.status == WalletStatus::Funded.as_str()
+                && wallet.status != WalletStatus::Funded.as_str()
+            {
                 info!(
                     wallet_id = %wallet.id,
                     address = %wallet.address,
+                    prev = %wallet.status,
                     balance,
-                    "wallet funded — promoted generated -> funded"
+                    "wallet funded — promoted to funded"
                 );
             }
         }

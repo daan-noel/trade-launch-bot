@@ -5,12 +5,12 @@ import { useResource } from './components/useResource';
 import { Column, DataTable } from './components/DataTable';
 import { Field } from './components/Field';
 
-// Below this many `funded` wallets for a role, manual funding won't refill
-// itself in time for a launch — surface it instead of finding out mid-launch.
+// Below this many `funded` wallets for a role, the pool can't refill itself in
+// time for a launch — surface it instead of finding out mid-launch.
 const LOW_POOL_THRESHOLD = 3;
 
 const ROLES = ['dev', 'bundler', 'treasury', 'trading'] as const;
-const STATUSES: WalletStatus[] = ['generated', 'funded', 'reserved', 'used', 'retired'];
+const STATUSES: WalletStatus[] = ['generated', 'funding', 'funded', 'reserved', 'used', 'retired'];
 
 export default function WalletPool() {
   const [roleFilter, setRoleFilter] = useState('');
@@ -27,6 +27,9 @@ export default function WalletPool() {
   const [genLabel, setGenLabel] = useState('');
   const [generating, setGenerating] = useState(false);
 
+  const [funding, setFunding] = useState(false);
+  const [fundMsg, setFundMsg] = useState<string | null>(null);
+
   const onGenerate = async () => {
     if (genCount < 1) return;
     setGenerating(true);
@@ -38,6 +41,38 @@ export default function WalletPool() {
       setError(String(e));
     } finally {
       setGenerating(false);
+    }
+  };
+
+  // Trigger a treasury -> pool funding pass. No role = top every fundable role
+  // (dev + bundler) up to its warm target. Requires FUND_ENABLED on the box.
+  const onFund = async (role?: string) => {
+    setFunding(true);
+    setError(null);
+    setFundMsg(null);
+    try {
+      const report = await api.fundPool(role);
+      if (report.outcomes.length === 0) {
+        setFundMsg('Nothing to fund — pool already warm (or no treasury configured).');
+      } else {
+        const by = (r: string) => report.outcomes.filter((o) => o.result === r).length;
+        const parts = [
+          by('sent') && `${by('sent')} sent`,
+          by('dry_run') && `${by('dry_run')} dry-run`,
+          by('failed') && `${by('failed')} failed`,
+          by('skipped_cap') && `${by('skipped_cap')} skipped (safety cap)`,
+        ].filter(Boolean);
+        setFundMsg(
+          `Funding pass: ${parts.join(', ') || 'no transfers'} — ${formatSol(
+            report.spent_lamports,
+          )} spent.`,
+        );
+      }
+      await reload();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFunding(false);
     }
   };
 
@@ -66,14 +101,22 @@ export default function WalletPool() {
     <div>
       {lowPoolRoles.length > 0 && (
         <div className="card banner-warning">
-          <strong>Low pool:</strong>{' '}
-          {lowPoolRoles
-            .map(([role, byStatus]) => `${role} (${byStatus.funded ?? 0} funded)`)
-            .join(', ')}{' '}
-          — below {LOW_POOL_THRESHOLD}. Manual funding won't refill itself; fund more
-          `generated` wallets or generate + fund a new batch.
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <strong>Low pool:</strong>{' '}
+              {lowPoolRoles
+                .map(([role, byStatus]) => `${role} (${byStatus.funded ?? 0} funded)`)
+                .join(', ')}{' '}
+              — below {LOW_POOL_THRESHOLD}. Fund from the treasury to top up.
+            </div>
+            <button type="button" className="primary" disabled={funding} onClick={() => onFund()}>
+              {funding ? 'Funding…' : 'Fund pool'}
+            </button>
+          </div>
         </div>
       )}
+
+      {fundMsg && <div className="card banner-info">{fundMsg}</div>}
 
       <div className="card">
         <h2>Generate wallets</h2>
@@ -122,7 +165,18 @@ export default function WalletPool() {
       </div>
 
       <div className="card">
-        <h2>Status counts</h2>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0 }}>Status counts</h2>
+          <button type="button" disabled={funding} onClick={() => onFund()}>
+            {funding ? 'Funding…' : 'Fund pool'}
+          </button>
+        </div>
+        <p className="muted">
+          Sends SOL from the <code>treasury</code> wallet to top <code>dev</code> +{' '}
+          <code>bundler</code> up to their warm targets. Wallets show <code>funding</code> while a
+          transfer is in flight, then flip to <code>funded</code> when it lands. Requires{' '}
+          <code>FUND_ENABLED</code> on the box.
+        </p>
         <table>
           <thead>
             <tr>

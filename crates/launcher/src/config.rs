@@ -23,6 +23,72 @@ pub struct LauncherSettings {
     /// `metadata_upload`) — `None` disables metadata-template authoring with a
     /// clear error rather than a required-at-boot var; nothing else needs it.
     pub pinata_jwt: Option<String>,
+    /// Automated treasury→pool funding (docs/wallet-funding-plan.md) — `None`
+    /// (the default: `FUND_ENABLED` unset/false) disables the background funder
+    /// AND the manual `POST /api/wallet_pool/fund` endpoint. The kill switch.
+    pub funding: Option<FundingConfig>,
+}
+
+/// Safety-railed config for autonomous real-SOL funding (docs/wallet-funding-plan.md
+/// P3). Every field is a guard against draining the treasury; all overridable via
+/// env, with conservative defaults. Only constructed when `FUND_ENABLED=true`.
+#[derive(Debug, Clone)]
+pub struct FundingConfig {
+    /// Never spend the treasury below this floor (lamports).
+    pub treasury_reserve_lamports: u64,
+    /// Hard stop mid-batch once this much has been sent in one funding pass (lamports).
+    pub max_spend_per_interval_lamports: u64,
+    /// Per-wallet target amount by role (jittered at send time).
+    pub amount_dev_lamports: u64,
+    pub amount_bundler_lamports: u64,
+    /// Amount jitter fraction: each transfer is `amount * (1 ± jitter)`.
+    pub amount_jitter_pct: f64,
+    /// Max random inter-send delay (ms) — timing de-correlation.
+    pub max_delay_ms: u64,
+    /// Keep at least this many `funded` wallets warm per role (top-up target).
+    pub target_funded_dev: i64,
+    pub target_funded_bundler: i64,
+    /// Log intended transfers and send NOTHING (revert claims). Test before live.
+    pub dry_run: bool,
+}
+
+impl FundingConfig {
+    /// `None` unless `FUND_ENABLED=true`. Reads every `FUND_*` var with a
+    /// conservative default so a partial config can't silently over-spend.
+    pub fn from_env() -> Option<Self> {
+        if !env_flag("FUND_ENABLED", false) {
+            return None;
+        }
+        Some(Self {
+            treasury_reserve_lamports: env_u64("FUND_TREASURY_RESERVE_LAMPORTS", 50_000_000),
+            max_spend_per_interval_lamports: env_u64(
+                "FUND_MAX_SPEND_PER_INTERVAL_LAMPORTS",
+                1_000_000_000,
+            ),
+            amount_dev_lamports: env_u64("FUND_AMOUNT_DEV_LAMPORTS", 50_000_000),
+            amount_bundler_lamports: env_u64("FUND_AMOUNT_BUNDLER_LAMPORTS", 30_000_000),
+            amount_jitter_pct: env_f64("FUND_AMOUNT_JITTER_PCT", 0.15),
+            max_delay_ms: env_u64("FUND_MAX_DELAY_MS", 8_000),
+            target_funded_dev: env_u64("FUND_TARGET_FUNDED_DEV", 2) as i64,
+            target_funded_bundler: env_u64("FUND_TARGET_FUNDED_BUNDLER", 5) as i64,
+            dry_run: env_flag("FUND_DRY_RUN", false),
+        })
+    }
+}
+
+fn env_flag(key: &str, default: bool) -> bool {
+    match std::env::var(key) {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        Err(_) => default,
+    }
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+}
+
+fn env_f64(key: &str, default: f64) -> f64 {
+    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
 }
 
 impl LauncherSettings {
@@ -56,6 +122,7 @@ impl LauncherSettings {
         });
         let backup_dir = std::env::var("WALLET_BACKUP_DIR").ok().map(PathBuf::from);
         let pinata_jwt = std::env::var("PINATA_JWT").ok().filter(|s| !s.is_empty());
+        let funding = FundingConfig::from_env();
         Ok(Self {
             rpc_url,
             sender_urls,
@@ -65,6 +132,7 @@ impl LauncherSettings {
             jito_block_engine_url,
             backup_dir,
             pinata_jwt,
+            funding,
         })
     }
 }

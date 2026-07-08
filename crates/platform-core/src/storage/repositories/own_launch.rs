@@ -93,10 +93,24 @@ impl ManagedWalletRepo {
         })
     }
 
-    /// Record an observed on-chain balance; auto-promotes `generated` -> `funded`
-    /// once the balance clears `min_funded_lamports` (balance-driven detection —
-    /// never a manual "mark funded" toggle, avoids bookkeeping drift). A no-op
-    /// promotion for wallets already past `generated`.
+    /// The balance poller's bounded scan: wallets whose balance must be watched
+    /// to drive a promotion — both `generated` (manual funding) and `funding` (an
+    /// automated treasury send in flight). Backed by the partial index
+    /// `idx_managed_wallets_pollable` (migration `0008`).
+    pub async fn find_pollable(pool: &PgPool) -> anyhow::Result<Vec<ManagedWallet>> {
+        Ok(sqlx::query_as::<_, ManagedWallet>(
+            "SELECT * FROM managed_wallets \
+             WHERE status IN ('generated','funding') ORDER BY created_at",
+        )
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Record an observed on-chain balance; auto-promotes to `funded` once the
+    /// balance clears `min_funded_lamports` (balance-driven detection — never a
+    /// manual "mark funded" toggle, avoids bookkeeping drift). Promotes from
+    /// **both** `generated` (manual funding) and `funding` (an automated treasury
+    /// send that just landed). A no-op promotion for wallets already past those.
     pub async fn record_balance(
         pool: &PgPool,
         id: Uuid,
@@ -105,7 +119,7 @@ impl ManagedWalletRepo {
     ) -> anyhow::Result<ManagedWallet> {
         Ok(sqlx::query_as::<_, ManagedWallet>(
             "UPDATE managed_wallets SET balance_lamports = $2, balance_checked_at = now(), \
-             status = CASE WHEN status = 'generated' AND $2 >= $3 THEN 'funded' ELSE status END \
+             status = CASE WHEN status IN ('generated','funding') AND $2 >= $3 THEN 'funded' ELSE status END \
              WHERE id = $1 RETURNING *",
         )
         .bind(id)
@@ -113,6 +127,65 @@ impl ManagedWalletRepo {
         .bind(min_funded_lamports)
         .fetch_one(pool)
         .await?)
+    }
+
+    /// Count `funded` (claimable) wallets of `role` — the top-up target check for
+    /// the funding orchestrator (`n = target - funded_count`). Uses the
+    /// `idx_managed_wallets_role_funded` partial index.
+    pub async fn funded_count(pool: &PgPool, role: &str) -> anyhow::Result<i64> {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM managed_wallets WHERE role = $1 AND status = 'funded'",
+        )
+        .bind(role)
+        .fetch_one(pool)
+        .await?;
+        Ok(n)
+    }
+
+    /// Atomically claim up to `count` `generated` wallets of `role` for funding,
+    /// flipping them to `funding` and stamping `funding_source` (provenance).
+    /// `FOR UPDATE SKIP LOCKED` — safe under a concurrent funder / post-restart
+    /// run: a wallet claimed here can't be claimed again until it either lands
+    /// (`funding` -> `funded`, poller) or reverts (`funding` -> `generated`, on
+    /// send failure). Mirrors [`Self::claim_funded`]. May return fewer than
+    /// `count` if the `generated` pool is short.
+    pub async fn claim_for_funding(
+        pool: &PgPool,
+        role: &str,
+        count: i64,
+        funding_source: &str,
+    ) -> anyhow::Result<Vec<ManagedWallet>> {
+        Ok(sqlx::query_as::<_, ManagedWallet>(
+            "WITH claimed AS ( \
+                SELECT id FROM managed_wallets \
+                WHERE role = $1 AND status = 'generated' \
+                ORDER BY created_at LIMIT $2 \
+                FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE managed_wallets SET status = 'funding', funding_source = $3 \
+             WHERE id IN (SELECT id FROM claimed) \
+             RETURNING *",
+        )
+        .bind(role)
+        .bind(count)
+        .bind(funding_source)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Revert `funding` wallets back to `generated` (a treasury send failed, or a
+    /// dry-run claim) and clear the tentative `funding_source`. Guarded no-op for
+    /// ids not currently `funding` (mirror [`Self::mark_used`] shape). Returns the
+    /// number reverted.
+    pub async fn revert_funding(pool: &PgPool, ids: &[Uuid]) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE managed_wallets SET status = 'generated', funding_source = NULL \
+             WHERE id = ANY($1) AND status = 'funding'",
+        )
+        .bind(ids)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     /// Atomically claim ONE specific `funded` wallet by id for `launch_id` — the

@@ -144,11 +144,15 @@ impl FromStr for WalletRole {
 }
 
 /// `managed_wallets.status` — fresh-wallet-pool lifecycle: `generated` →
-/// `funded` → `reserved` → `used`; `retired` is terminal. CHECK in migration
-/// `0004`.
+/// `funding` → `funded` → `reserved` → `used`; `retired` is terminal. `funding`
+/// = a treasury→wallet SOL send is in flight (the wallet is atomically claimed
+/// out of `generated` so a concurrent funder can't double-fund it); the balance
+/// poller promotes `funding` → `funded` when the SOL lands. CHECK extended in
+/// migration `0008` (originally `0004`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WalletStatus {
     Generated,
+    Funding,
     Funded,
     Reserved,
     Used,
@@ -160,6 +164,7 @@ impl WalletStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             WalletStatus::Generated => "generated",
+            WalletStatus::Funding => "funding",
             WalletStatus::Funded => "funded",
             WalletStatus::Reserved => "reserved",
             WalletStatus::Used => "used",
@@ -168,8 +173,9 @@ impl WalletStatus {
     }
 
     /// Every variant — the SSOT list the CHECK-constraint parity test iterates.
-    pub const ALL: [WalletStatus; 5] = [
+    pub const ALL: [WalletStatus; 6] = [
         WalletStatus::Generated,
+        WalletStatus::Funding,
         WalletStatus::Funded,
         WalletStatus::Reserved,
         WalletStatus::Used,
@@ -182,6 +188,7 @@ impl FromStr for WalletStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "generated" => Ok(WalletStatus::Generated),
+            "funding" => Ok(WalletStatus::Funding),
             "funded" => Ok(WalletStatus::Funded),
             "reserved" => Ok(WalletStatus::Reserved),
             "used" => Ok(WalletStatus::Used),

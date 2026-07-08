@@ -82,22 +82,35 @@ async fn main() -> anyhow::Result<()> {
     // needed; it only reads `bundles`/`trades` from the already-connected pool).
     let bundle_confirm_task = launcher::spawn_bundle_confirm_watcher(pools.hot.clone());
 
-    // Fresh-wallet pool: balance poller (generated -> funded) + reservation TTL
-    // sweep (Phase 1) + dust sweep (used -> retired, Phase 4). Needs the same
-    // launcher config as the rest of the launch flow — skip cleanly if unset.
-    let (wallet_balance_task, wallet_sweep_task, wallet_dust_sweep_task) =
+    // Fresh-wallet pool: balance poller (generated/funding -> funded) +
+    // reservation TTL sweep (Phase 1) + dust sweep (used -> retired, Phase 4) +
+    // treasury->pool funder (wallet-funding-plan; only when FUND_ENABLED). Needs
+    // the same launcher config as the rest of the launch flow — skip if unset.
+    let (wallet_balance_task, wallet_sweep_task, wallet_dust_sweep_task, wallet_funding_task) =
         match LauncherSettings::from_env() {
-            Ok(launcher_settings) => (
-                Some(launcher::spawn_balance_poller(
-                    pools.hot.clone(),
-                    launcher_settings.rpc_url.clone(),
-                )),
-                Some(launcher::spawn_reservation_sweep(pools.hot.clone())),
-                Some(launcher::spawn_dust_sweep(pools.hot.clone(), launcher_settings)),
-            ),
+            Ok(launcher_settings) => {
+                let funding_task = if launcher_settings.funding.is_some() {
+                    Some(launcher::spawn_wallet_funding(
+                        pools.hot.clone(),
+                        launcher_settings.clone(),
+                    ))
+                } else {
+                    warn!("wallet funding disabled — set FUND_ENABLED=true to enable");
+                    None
+                };
+                (
+                    Some(launcher::spawn_balance_poller(
+                        pools.hot.clone(),
+                        launcher_settings.rpc_url.clone(),
+                    )),
+                    Some(launcher::spawn_reservation_sweep(pools.hot.clone())),
+                    Some(launcher::spawn_dust_sweep(pools.hot.clone(), launcher_settings)),
+                    funding_task,
+                )
+            }
             Err(e) => {
                 warn!("wallet pool background tasks disabled — launcher not configured: {e}");
-                (None, None, None)
+                (None, None, None, None)
             }
         };
 
@@ -160,6 +173,14 @@ async fn main() -> anyhow::Result<()> {
             None => std::future::pending::<()>().await,
         }
     };
+    let wallet_funding = async {
+        match wallet_funding_task {
+            Some(h) => {
+                let _ = h.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
 
     match ingest_task {
         Some(ingest) => {
@@ -171,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
                 _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
                 _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
                 _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
+                _ = wallet_funding      => warn!("wallet funding task ended — shutting down"),
             }
         }
         None => {
@@ -181,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
                 _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
                 _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
                 _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
+                _ = wallet_funding      => warn!("wallet funding task ended — shutting down"),
             }
         }
     }

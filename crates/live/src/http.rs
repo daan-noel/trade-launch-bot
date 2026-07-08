@@ -3,12 +3,15 @@
 use actix_web::{web, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
-    create_metadata_template, execute_bundle, execute_launch, LaunchRequest, LauncherSettings,
-    NewMetadataTemplateRequest, PumpfunTemplateParams,
+    create_metadata_template, execute_bundle, execute_launch, fund_once, FundScope, LaunchRequest,
+    LauncherSettings, NewMetadataTemplateRequest, PumpfunTemplateParams,
 };
-use platform_core::models::{Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate};
+use platform_core::models::{
+    Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
+};
 use serde::Serialize;
 use sqlx::PgPool;
+use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -41,6 +44,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         )
         .route("/api/wallet_pool", web::get().to(wallet_pool_list))
         .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
+        .route("/api/wallet_pool/fund", web::post().to(wallet_pool_fund))
         .route("/api/metadata_templates", web::get().to(metadata_templates_list))
         .route(
             "/api/metadata_templates",
@@ -207,6 +211,45 @@ async fn wallet_pool_generate(
     }
 
     Ok(HttpResponse::Ok().json(wallets))
+}
+
+#[derive(serde::Deserialize)]
+struct FundWalletsBody {
+    /// Restrict the pass to one role (unset = both fundable roles: dev + bundler).
+    #[serde(default)]
+    role: Option<String>,
+    /// Fund exactly this many (unset = top each role up to its warm target).
+    #[serde(default)]
+    count: Option<i64>,
+}
+
+/// On-demand treasury -> pool funding pass (docs/wallet-funding-plan.md P4).
+/// Requires `FUND_ENABLED=true` (503 otherwise). Best-effort: returns the
+/// per-wallet outcome for every wallet the pass touched.
+async fn wallet_pool_fund(
+    pool: web::Data<PgPool>,
+    body: web::Json<FundWalletsBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = LauncherSettings::from_env().map_err(|e| {
+        actix_web::error::ErrorServiceUnavailable(format!("launcher not configured: {e}"))
+    })?;
+    if settings.funding.is_none() {
+        return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "error": "wallet funding disabled — set FUND_ENABLED=true to enable"
+        })));
+    }
+    let body = body.into_inner();
+    let role = match body.role.as_deref() {
+        Some(r) => Some(
+            WalletRole::from_str(r)
+                .map_err(|e| actix_web::error::ErrorBadRequest(format!("invalid role: {e}")))?,
+        ),
+        None => None,
+    };
+    let report = fund_once(pool.get_ref(), &settings, FundScope { role, count: body.count })
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(report))
 }
 
 async fn metadata_templates_list(pool: web::Data<PgPool>) -> Result<HttpResponse, actix_web::Error> {

@@ -73,9 +73,33 @@ export interface QuoteAsset {
   is_native: boolean;
 }
 
-// Fresh-wallet pool lifecycle (docs/wallet-pool-plan.md Phase 1):
-// generated -> funded -> reserved -> used -> retired.
-export type WalletStatus = 'generated' | 'funded' | 'reserved' | 'used' | 'retired';
+// Fresh-wallet pool lifecycle (docs/wallet-pool-plan.md Phase 1 +
+// wallet-funding-plan.md): generated -> funding -> funded -> reserved -> used
+// -> retired. `funding` = a treasury->wallet SOL send is in flight.
+export type WalletStatus =
+  | 'generated'
+  | 'funding'
+  | 'funded'
+  | 'reserved'
+  | 'used'
+  | 'retired';
+
+// Per-wallet result of a funding pass (POST /api/wallet_pool/fund) — mirrors the
+// backend `launcher::WalletFundOutcome`.
+export interface WalletFundOutcome {
+  wallet_id: string;
+  address: string;
+  role: string;
+  amount_lamports: number;
+  result: 'sent' | 'dry_run' | 'failed' | 'skipped_cap' | 'skipped_bad_address';
+  signature: string | null;
+  error: string | null;
+}
+
+export interface FundReport {
+  spent_lamports: number;
+  outcomes: WalletFundOutcome[];
+}
 
 // Full pool row (Wallet Management page) — note there is no key_ref field here:
 // the backend model marks it #[serde(skip_serializing)], so it never reaches
@@ -239,6 +263,13 @@ export const api = {
       role,
       count,
       label_prefix: labelPrefix || undefined,
+    }),
+  // On-demand treasury -> pool funding. Unset role/count = top every fundable
+  // role (dev + bundler) up to its warm target. Requires FUND_ENABLED on the box.
+  fundPool: (role?: string, count?: number) =>
+    postJson<FundReport>('/api/wallet_pool/fund', {
+      role: role || undefined,
+      count: count ?? undefined,
     }),
   metadataTemplates: () => getJson<MetadataTemplate[]>('/api/metadata_templates'),
   createMetadataTemplate: (req: NewMetadataTemplate) =>

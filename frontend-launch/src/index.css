@@ -107,6 +107,7 @@ button:disabled {
 .status-pill.submitting,
 .status-pill.planned,
 .status-pill.pending,
+.status-pill.funding,
 .status-pill.reserved {
   background: #3d341b;
   color: #f5d565;
@@ -172,6 +173,12 @@ button:disabled {
   background: #3d341b;
   border-color: #f5d565;
   color: #f5d565;
+}
+
+.banner-info {
+  background: #1b2a3d;
+  border-color: #5aa0f5;
+  color: #9ac4f5;
 }
 
 .kv {
