@@ -39,8 +39,8 @@ pub use probe::run_launch_probe;
 pub use service::{execute_launch, LaunchRequest, LaunchResult, PumpfunTemplateParams};
 pub use wallet_encrypt::run_wallet_encrypt;
 pub use wallet_funding::{
-    fund_once, spawn_wallet_funding, DirectJittered, FundReport, FundScope, FundingStrategy,
-    StrategyParams, Transfer, WalletFundOutcome,
+    fund_once, spawn_wallet_funding, DirectJittered, FundMode, FundReport, FundScope,
+    FundingStrategy, StrategyParams, Transfer, WalletFundOutcome,
 };
 pub use wallet_pool::{generate_wallets, spawn_balance_poller, spawn_reservation_sweep};
 pub use wallet_verify::run_wallet_verify;

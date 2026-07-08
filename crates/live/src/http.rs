@@ -3,8 +3,8 @@
 use actix_web::{web, HttpResponse};
 use ingest_host::IngestHandle;
 use launcher::{
-    create_metadata_template, execute_bundle, execute_launch, fund_once, FundScope, LaunchRequest,
-    LauncherSettings, NewMetadataTemplateRequest, PumpfunTemplateParams,
+    create_metadata_template, execute_bundle, execute_launch, fund_once, FundMode, FundScope,
+    LaunchRequest, LauncherSettings, NewMetadataTemplateRequest, PumpfunTemplateParams,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -258,9 +258,14 @@ async fn wallet_pool_fund(
         ),
         None => None,
     };
-    let report = fund_once(pool.get_ref(), settings, FundScope { role, count: body.count })
-        .await
-        .map_err(e500)?;
+    let report = fund_once(
+        pool.get_ref(),
+        settings,
+        FundScope { role, count: body.count },
+        FundMode::Manual,
+    )
+    .await
+    .map_err(e500)?;
     Ok(HttpResponse::Ok().json(report))
 }
 

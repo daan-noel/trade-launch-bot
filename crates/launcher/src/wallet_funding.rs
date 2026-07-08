@@ -107,6 +107,22 @@ pub struct FundScope {
     pub count: Option<i64>,
 }
 
+/// Delivery mode for a funding pass — how each transfer is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FundMode {
+    /// Autonomous background funder: confirm each send and apply the timing
+    /// jitter between them (de-correlates the transfers — Tier-1 obfuscation).
+    Background,
+    /// Operator-triggered manual pass (`POST /api/wallet_pool/fund`): submit each
+    /// transfer without blocking on confirmation and skip the timing jitter, so
+    /// the endpoint returns promptly instead of serially awaiting N confirmations
+    /// (plus up to N jitter sleeps). The balance poller still promotes
+    /// `funding -> funded` when the SOL lands; a rare accepted-but-dropped tx
+    /// leaves the wallet in `funding` (its SOL never left the treasury), which is
+    /// acceptable on this supervised path.
+    Manual,
+}
+
 /// What happened to one wallet in a funding pass — the manual endpoint's
 /// per-wallet response, and the log detail for the background pass.
 #[derive(Debug, Serialize)]
@@ -147,6 +163,7 @@ pub async fn fund_once(
     pool: &PgPool,
     settings: &LauncherSettings,
     scope: FundScope,
+    mode: FundMode,
 ) -> Result<FundReport> {
     let Some(cfg) = settings.funding.as_ref() else {
         bail!("wallet funding not configured (FUND_ENABLED not set)");
@@ -279,7 +296,18 @@ pub async fn fund_once(
                 continue;
             }
 
-            match send_transfer(&rpc, &treasury_signer, treasury_pk, t.target, t.lamports).await {
+            // Background pass confirms each send (so a failed send reverts the
+            // claim); the manual pass fires and returns (the poller confirms via
+            // balance arrival) — see `FundMode`.
+            let send_result = match mode {
+                FundMode::Background => {
+                    send_transfer(&rpc, &treasury_signer, treasury_pk, t.target, t.lamports).await
+                }
+                FundMode::Manual => {
+                    submit_transfer(&rpc, &treasury_signer, treasury_pk, t.target, t.lamports).await
+                }
+            };
+            match send_result {
                 Ok(sig) => {
                     report.spent_lamports += t.lamports;
                     info!(
@@ -314,9 +342,10 @@ pub async fn fund_once(
                 }
             }
 
-            // Timing jitter — de-correlate the sends in time. Compute the delay in
-            // a tight scope so the (non-Send) RNG never crosses the await.
-            if cfg.max_delay_ms > 0 {
+            // Timing jitter — de-correlate the sends in time (background funder
+            // only; the manual pass skips it for a snappy response). Compute the
+            // delay in a tight scope so the (non-Send) RNG never crosses the await.
+            if mode == FundMode::Background && cfg.max_delay_ms > 0 {
                 let delay = rand::thread_rng().gen_range(0..=cfg.max_delay_ms);
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
@@ -338,8 +367,27 @@ fn bad_address_outcome(w: &ManagedWallet) -> WalletFundOutcome {
     }
 }
 
-/// Plain treasury-signed SOL transfer (fee paid by the treasury). No retry — the
-/// caller reverts the claim on error and the next pass re-attempts.
+/// Build + sign a plain treasury-signed SOL transfer (fee paid by the treasury).
+/// The one place the funding transfer tx is assembled — both the confirmed and
+/// fire-and-forget senders below reuse it.
+async fn sign_transfer(
+    rpc: &RpcClient,
+    treasury_signer: &Arc<dyn Signer + Send + Sync>,
+    from: Pubkey,
+    to: Pubkey,
+    lamports: u64,
+) -> Result<Transaction> {
+    let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
+    let ix = system_instruction::transfer(&from, &to, lamports);
+    let msg = Message::new_with_blockhash(&[ix], Some(&from), &blockhash);
+    let mut tx = Transaction::new_unsigned(msg);
+    tx.try_sign(&[treasury_signer.as_ref() as &dyn Signer], blockhash)
+        .context("sign funding transfer")?;
+    Ok(tx)
+}
+
+/// Send + confirm a funding transfer (background pass). No retry — the caller
+/// reverts the claim on error and the next pass re-attempts.
 async fn send_transfer(
     rpc: &RpcClient,
     treasury_signer: &Arc<dyn Signer + Send + Sync>,
@@ -347,15 +395,26 @@ async fn send_transfer(
     to: Pubkey,
     lamports: u64,
 ) -> Result<Signature> {
-    let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
-    let ix = system_instruction::transfer(&from, &to, lamports);
-    let msg = Message::new_with_blockhash(&[ix], Some(&from), &blockhash);
-    let mut tx = Transaction::new_unsigned(msg);
-    tx.try_sign(&[treasury_signer.as_ref() as &dyn Signer], blockhash)
-        .context("sign funding transfer")?;
+    let tx = sign_transfer(rpc, treasury_signer, from, to, lamports).await?;
     rpc.send_and_confirm_transaction(&tx)
         .await
         .context("send funding transfer")
+}
+
+/// Submit a funding transfer WITHOUT waiting for confirmation (manual pass):
+/// returns as soon as the RPC accepts the tx. The balance poller promotes
+/// `funding -> funded` when the SOL lands — see [`FundMode::Manual`].
+async fn submit_transfer(
+    rpc: &RpcClient,
+    treasury_signer: &Arc<dyn Signer + Send + Sync>,
+    from: Pubkey,
+    to: Pubkey,
+    lamports: u64,
+) -> Result<Signature> {
+    let tx = sign_transfer(rpc, treasury_signer, from, to, lamports).await?;
+    rpc.send_transaction(&tx)
+        .await
+        .context("submit funding transfer")
 }
 
 /// Spawn the background funder. Long-lived; keeps every fundable role warm. Gate
@@ -366,7 +425,7 @@ pub fn spawn_wallet_funding(pool: PgPool, settings: LauncherSettings) -> JoinHan
         let mut tick = tokio::time::interval(FUND_INTERVAL);
         loop {
             tick.tick().await;
-            match fund_once(&pool, &settings, FundScope::default()).await {
+            match fund_once(&pool, &settings, FundScope::default(), FundMode::Background).await {
                 Ok(report) if report.outcomes.is_empty() => {}
                 Ok(report) => info!(
                     spent_lamports = report.spent_lamports,
