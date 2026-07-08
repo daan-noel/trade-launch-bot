@@ -168,7 +168,13 @@ Recorded so they are not forgotten; no schedule.
   `materialize_leg`) already exists server-side; just needs exposing as editable UI
   (from the retired wallet-pool plan)
 - [ ] Multi-RPC health / latency hypertable (Domain F)
-- [ ] Frontend SPA (`frontend-react` split live/lab — mirror meme-trading)
+- [x] **Frontend SPA rebuilt** — `frontend-launch` is now a proper React-Router +
+  RTK-Query + Tailwind operator dashboard (mirrors meme-trading's stack): a
+  persistent nav shell over `shared`/`app`/`features` trees, a shared `ui/` kit,
+  Dashboard + Launch Console + Launched-Tokens list + per-token detail (spot-price
+  chart via `lightweight-charts`) + Wallet Pool + Launch/Metadata template editors.
+  Backed by a new `GET /api/launches` (paged, enriched `LaunchListRow`). Single app
+  for now (live-only); the two-entry `live`/`lab` split waits on Phase 4.
 - [ ] AWS KMS KEK backend (replace env passphrase for keystore)
 - [ ] Promote `pump-trader` + `ingest-laserstream` to shared git repo if third consumer appears
 

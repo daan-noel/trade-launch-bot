@@ -31,8 +31,13 @@ explicit `status` lifecycle (`generated`/`funded`/`reserved`/`used`/`retired`) +
 `launcher::wallet_pool` adds batch generation, a balance poller, and a reservation
 TTL sweep; `ManagedWalletRepo` adds the atomic `claim_funded` (`FOR UPDATE SKIP
 LOCKED`) + `mark_used` transitions. Phase 2 done — `GET /api/wallet_pool` +
-`POST /api/wallet_pool/generate`; `frontend-launch/src/WalletPool.tsx` (list,
-generate, status counts, low-pool banner), tab-switched from the launch console.
+`POST /api/wallet_pool/generate`; the Wallet Pool page (list, generate, status
+counts, low-pool banner). **Frontend note:** `frontend-launch` was rebuilt as a
+React-Router + RTK-Query + Tailwind operator dashboard (`src/app` shell, `src/shared`
+ui-kit/store/lib, `src/features/*` pages — e.g. `features/wallets/WalletPoolPage.tsx`,
+`features/launches/{LaunchesPage,TokenDetailPage}.tsx`); the old single `App.tsx`/`api.ts`
+is gone. New `GET /api/launches` (paged enriched `LaunchListRow`) backs the launched-tokens
+list. See `docs/roadmap-plan.md` Phase 5+.
 Phase 3 done — launch flow now consumes the pool: dev-wallet dropdown filters to
 `funded`, bundler legs are claimed via `claim_funded` (no more template
 `bundle_wallet_ids`), token identity is a single `metadata_template_id` choice

@@ -392,6 +392,45 @@ impl LaunchRepo {
             .await?)
     }
 
+    /// Newest-first page of launches enriched for the "launched tokens" list —
+    /// each launch LEFT JOINed to its `tokens` identity, the `token_overview`
+    /// derived view (trade count / USD price / USD market cap — the SSOT for
+    /// display+USD, never recomputed here), and its bundle status. LEFT JOINs so a
+    /// launch still lists before its create tx is ingested (name/market are then
+    /// `NULL`). Bounded by `limit`/`offset` — never an unbounded scan.
+    pub async fn list_page(
+        pool: &PgPool,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<crate::models::LaunchListRow>> {
+        Ok(sqlx::query_as::<_, crate::models::LaunchListRow>(
+            "SELECT l.id, l.template_id, l.mint_address, l.variant, l.status, \
+                    l.create_signature, l.dev_buy_quote, l.bundle_id, \
+                    b.status AS bundle_status, l.created_at, \
+                    t.name, t.symbol, \
+                    ov.trade_count, ov.is_migrated, ov.is_dead, \
+                    ov.price_usd, ov.market_cap_usd \
+             FROM launches l \
+             LEFT JOIN tokens t ON t.mint_address = l.mint_address \
+             LEFT JOIN token_overview ov ON ov.mint_address = l.mint_address \
+             LEFT JOIN bundles b ON b.id = l.bundle_id \
+             ORDER BY l.created_at DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Total launch count — pairs with [`Self::list_page`] for pagination.
+    pub async fn count(pool: &PgPool) -> anyhow::Result<i64> {
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM launches")
+            .fetch_one(pool)
+            .await?;
+        Ok(n)
+    }
+
     /// Record the create tx signature + status once the launch lands on-chain.
     pub async fn set_created(
         pool: &PgPool,

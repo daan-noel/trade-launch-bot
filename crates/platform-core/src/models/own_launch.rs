@@ -123,6 +123,33 @@ pub struct Launch {
     pub created_at: DateTime<Utc>,
 }
 
+/// Enriched launch row for the "launched tokens" list — a [`Launch`] LEFT JOINed
+/// to token identity + the `token_overview` derived view + the launch's bundle
+/// status, so the frontend renders the list without N per-row follow-up fetches.
+/// Read-only projection (no insert form); the derived display/USD fields come
+/// straight from `token_overview` (the SSOT for decimals + USD), never recomputed.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct LaunchListRow {
+    pub id: Uuid,
+    pub template_id: Option<Uuid>,
+    pub mint_address: String,
+    pub variant: String,
+    pub status: String,
+    pub create_signature: Option<String>,
+    pub dev_buy_quote: Option<i64>,
+    pub bundle_id: Option<Uuid>,
+    pub bundle_status: Option<String>,
+    pub created_at: DateTime<Utc>,
+    /// Token identity — `None` until the create tx is ingested into `tokens`.
+    pub name: Option<String>,
+    pub symbol: Option<String>,
+    pub trade_count: Option<i64>,
+    pub is_migrated: Option<bool>,
+    pub is_dead: Option<bool>,
+    pub price_usd: Option<f64>,
+    pub market_cap_usd: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewLaunch {
     pub template_id: Option<Uuid>,

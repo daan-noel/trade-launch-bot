@@ -68,6 +68,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             "/api/metadata_templates",
             web::post().to(metadata_templates_create),
         )
+        .route("/api/launches", web::get().to(launches_list))
         .route("/api/launches/{id}", web::get().to(launch_get))
         .route("/api/launches/{id}/status", web::get().to(launch_status))
         .route("/api/launches/execute", web::post().to(launch_execute))
@@ -486,6 +487,35 @@ async fn bundle_get(
         Some(row) => Ok(HttpResponse::Ok().json(row)),
         None => Ok(HttpResponse::NotFound().json(serde_json::json!({ "error": "not found" }))),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct LaunchesQuery {
+    #[serde(default = "default_launches_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+fn default_launches_limit() -> i64 {
+    100
+}
+
+/// Newest-first page of enriched launch rows for the "launched tokens" list +
+/// the total count (for pagination). One round trip: the page and count run
+/// concurrently. `limit` is clamped to a sane ceiling so a bad query param can't
+/// ask for an unbounded scan.
+async fn launches_list(
+    pool: web::Data<PgPool>,
+    q: web::Query<LaunchesQuery>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let limit = q.limit.clamp(1, 500);
+    let offset = q.offset.max(0);
+    let (launches, total) = tokio::try_join!(
+        LaunchRepo::list_page(pool.get_ref(), limit, offset),
+        LaunchRepo::count(pool.get_ref()),
+    )
+    .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "launches": launches, "total": total })))
 }
 
 async fn launch_get(
