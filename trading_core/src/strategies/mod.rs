@@ -11,6 +11,7 @@
 //! gates) and are intentional clones — a fix in one usually belongs in both.
 
 pub mod analysis;
+pub mod death;
 pub mod exit_state;
 pub mod kernel;
 pub mod match_keys;

@@ -39,6 +39,10 @@ pub enum ExitReason {
     TimeStop,
     /// E4 · **real** SOL reserves crashed `p_exit_liquidity_drop_pct`% below their peak.
     LiquidityExit,
+    /// Analysis-only death-close: the ladder never fired but the token is provably
+    /// dead (liquidity gone + gone silent). Closed at the last meaningful trade.
+    /// Never produced by the live paper poll. See [`crate::strategies::death`].
+    Dead,
 }
 
 impl ExitReason {
@@ -52,6 +56,7 @@ impl ExitReason {
             Self::Stall => "Stall",
             Self::TimeStop => "TimeStop",
             Self::LiquidityExit => "LiquidityExit",
+            Self::Dead => "Dead",
         }
     }
 }
@@ -391,7 +396,23 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     // (`find_trade_driven_exit_with_slot`) deliberately keeps the strict window: an
     // empty window there means the fill has not indexed yet, so the poll waits it
     // out (booking a failed exit on timeout) rather than inventing a fill.
-    run_exit_walk(trades, entry_time, entry_price, &params, true).map(|(fill, _)| fill)
+    run_exit_walk(trades, entry_time, entry_price, &params, true)
+        .map(|(fill, _)| fill)
+        // Death-close fallback: the ladder never fired but the token is provably dead
+        // (liquidity gone + silent) → close the bag at the last meaningful trade rather
+        // than leave it `Open` marked to a stale price. Analysis-only; live closes
+        // silent tokens via its clock sweep. See `strategies::death`.
+        .or_else(|| {
+            crate::strategies::death::find_death_point(trades, entry_time, Utc::now()).map(|d| {
+                ExitFill {
+                    price: d.price,
+                    tx_signature: d.tx_signature,
+                    slot: d.slot,
+                    block_time: d.block_time,
+                    reason: ExitReason::Dead,
+                }
+            })
+        })
 }
 
 /// [`find_trade_driven_exit`] that also returns the **firing slot** `S` — the slot

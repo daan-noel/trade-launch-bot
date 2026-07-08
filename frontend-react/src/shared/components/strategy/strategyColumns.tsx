@@ -39,6 +39,8 @@ export function exitReasonBadge(reason: string | null | undefined) {
       return <span className="font-bold text-red">FAIL</span>;
     case 'ManualClose':
       return <span className="font-bold text-text-dim">MANUAL</span>;
+    case 'Dead':
+      return <span className="font-bold text-red">DEAD</span>;
     default:
       return <span className="text-text-dim">Open</span>;
   }

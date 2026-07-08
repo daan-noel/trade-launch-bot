@@ -247,6 +247,9 @@ export function buildSweepColumns(
     count('n_exit_next_kill', 'NextKill', 'exits', 'text-text-mid', (r) => r.n_exit_next_kill, {
       tooltip: 'Exited on swing1 symmetric next-kill flee',
     }),
+    count('n_exit_dead', 'Dead', 'exits', 'text-red', (r) => r.n_exit_dead, {
+      tooltip: 'Analysis death-close: token died silent (liquidity gone), booked at the last meaningful trade',
+    }),
     count('n_exit_open', 'Still open', 'exits', 'text-text-dim', (r) => r.n_exit_open, { defaultVisible: false }),
   ];
 

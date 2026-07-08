@@ -261,6 +261,7 @@ fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
         "n_exit_time"         => "n_exit_time",
         "n_exit_liquidity"    => "n_exit_liquidity",
         "n_exit_next_kill"    => "n_exit_next_kill",
+        "n_exit_dead"         => "n_exit_dead",
         "n_exit_open"         => "n_exit_open",
         _                     => return None,
     };
@@ -911,6 +912,7 @@ fn metrics_to_result(m: &ComboMetrics) -> GroupedSweepResult {
         n_exit_time: m.n_exit_time as i32,
         n_exit_liquidity: m.n_exit_liquidity as i32,
         n_exit_next_kill: m.n_exit_next_kill as i32,
+        n_exit_dead: m.n_exit_dead as i32,
         n_exit_open: m.n_exit_open as i32,
     }
 }

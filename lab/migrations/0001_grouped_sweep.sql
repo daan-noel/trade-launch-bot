@@ -7,6 +7,8 @@
 --   * 0001 grouped_sweep        tpsl1/tpsl2 four-table sets
 --   * 0002 swing1 + next_kill    swing_1 set + shared n_exit_next_kill column
 --   * 0003 drop cohort           n_exit_cohort removed from every _results table
+-- (0004 `n_exit_dead` — the analysis death-close counter — is applied on top of
+--  this squash as its own file, mirroring the 0002 next_kill column append.)
 --
 -- Written **only by `lab`** (the workstation analysis box); `live`/EC2 never
 -- touches them, which is why they live in the lab-owned migration set (applied

@@ -23,6 +23,29 @@ pub use crate::config::constants::MAX_TRADES_RETAINED;
 /// runs at most once per `TRADES_TRIM_SLACK` trades instead of on every push.
 pub const TRADES_TRIM_SLACK: usize = 1_000;
 
+/// The pure dead-token decision, single-sourced so live ([`TokenState::is_dead`])
+/// and the analysis death-close ([`crate::strategies::death`]) can never drift.
+///
+/// A token is dead at `now` when BOTH hold:
+///   1. `reserves` (newest real SOL reserves) `< DEAD_MAX_LIQUIDITY_SOL` — liquidity
+///      gone. `None` (no reserve snapshot yet) ⇒ alive.
+///   2. no meaningful trade for at least `DEAD_QUIET_SECS` — `last_meaningful` is the
+///      newest `amount_sol >= DEAD_MEANINGFUL_TRADE_SOL` trade time (callers fall back
+///      to `created_at` when none has arrived).
+pub fn is_dead_verdict(
+    reserves: Option<f64>,
+    last_meaningful: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    // Signal 1: liquidity depleted. None → no reserve snapshot yet → alive.
+    let reserves_depleted = matches!(reserves, Some(sol) if sol < DEAD_MAX_LIQUIDITY_SOL);
+    if !reserves_depleted {
+        return false;
+    }
+    // Signal 2: silent for DEAD_QUIET_SECS (dust ignored by the caller's clock).
+    now.signed_duration_since(last_meaningful).num_seconds() >= DEAD_QUIET_SECS
+}
+
 // ---------------------------------------------------------------------------
 // CachedTrade
 // ---------------------------------------------------------------------------
@@ -294,20 +317,10 @@ impl TokenState {
     /// prematurely. Once both conditions hold, the token stays dead.
     /// Pure + reads only in-memory state; cheap enough to recompute per flush.
     pub fn is_dead(&self, now: DateTime<Utc>) -> bool {
-        // Signal 1: liquidity depleted. None → no reserve snapshot yet → alive.
-        let reserves_depleted = matches!(
-            self.current_real_sol_reserves,
-            Some(sol) if sol < DEAD_MAX_LIQUIDITY_SOL
-        );
-        if !reserves_depleted {
-            return false;
-        }
-
-        // Signal 2: silent for DEAD_QUIET_SECS (dust ignored).
         let last_meaningful = self
             .last_meaningful_trade_at
             .unwrap_or(self.token.created_at);
-        now.signed_duration_since(last_meaningful).num_seconds() >= DEAD_QUIET_SECS
+        is_dead_verdict(self.current_real_sol_reserves, last_meaningful, now)
     }
 
     /// Seconds from token creation to the last meaningful trade. `Some` only when

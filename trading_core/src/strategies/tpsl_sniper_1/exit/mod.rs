@@ -39,6 +39,10 @@ pub enum ExitReason {
     TimeStop,
     /// E4 · virtual SOL reserves crashed `p_exit_liquidity_drop_pct`% below their peak.
     LiquidityExit,
+    /// Analysis-only death-close: the ladder never fired but the token is provably
+    /// dead (liquidity gone + gone silent). Closed at the last meaningful trade.
+    /// Never produced by the live paper poll. See [`crate::strategies::death`].
+    Dead,
 }
 
 impl ExitReason {
@@ -52,6 +56,7 @@ impl ExitReason {
             Self::Stall => "Stall",
             Self::TimeStop => "TimeStop",
             Self::LiquidityExit => "LiquidityExit",
+            Self::Dead => "Dead",
         }
     }
 }
@@ -386,6 +391,21 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     rule: &Tpsl1Rule,
 ) -> Option<ExitFill> {
     exit_walk(trades, entry_time, entry_price, rule, true)
+        // Death-close fallback: ladder never fired but the token is provably dead
+        // (liquidity gone + silent) → close at the last meaningful trade rather than
+        // leave it `Open`. Analysis-only; live closes silent tokens via its clock
+        // sweep. See `strategies::death`.
+        .or_else(|| {
+            crate::strategies::death::find_death_point(trades, entry_time, Utc::now()).map(|d| {
+                ExitFill {
+                    price: d.price,
+                    tx_signature: d.tx_signature,
+                    slot: d.slot,
+                    block_time: d.block_time,
+                    reason: ExitReason::Dead,
+                }
+            })
+        })
 }
 
 /// Strict variant for the **live paper poll**: no market-fill fallback, so an

@@ -52,6 +52,10 @@ pub enum ExitReason {
     Stall,
     TimeStop,
     LiquidityExit,
+    /// Analysis-only death-close: the ladder never fired but the token is provably
+    /// dead (liquidity gone + gone silent). Closed at the last meaningful trade.
+    /// Never produced by the live paper poll. See [`crate::strategies::death`].
+    Dead,
 }
 
 impl ExitReason {
@@ -65,6 +69,7 @@ impl ExitReason {
             Self::Stall => "Stall",
             Self::TimeStop => "TimeStop",
             Self::LiquidityExit => "LiquidityExit",
+            Self::Dead => "Dead",
         }
     }
 }
@@ -487,7 +492,23 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     // Analysis path (backtest / grouped sweep / detect): market-fill at the first
     // firing trade when no firing's window ever holds a fill, so a token that
     // provably crossed an exit isn't mislabeled `Open` (see tpsl2's twin).
-    exit_walk(trades, entry_time, entry_price, rule, true).map(|(f, _)| f)
+    exit_walk(trades, entry_time, entry_price, rule, true)
+        .map(|(f, _)| f)
+        // Death-close fallback: ladder never fired but the token is provably dead
+        // (liquidity gone + silent) → close at the last meaningful trade rather than
+        // leave it `Open`. Analysis-only; live closes silent tokens via its clock
+        // sweep. See `strategies::death`.
+        .or_else(|| {
+            crate::strategies::death::find_death_point(trades, entry_time, Utc::now()).map(|d| {
+                ExitFill {
+                    price: d.price,
+                    tx_signature: d.tx_signature,
+                    slot: d.slot,
+                    block_time: d.block_time,
+                    reason: ExitReason::Dead,
+                }
+            })
+        })
 }
 
 /// [`find_trade_driven_exit`] that also returns the **firing slot** (for the live

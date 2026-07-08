@@ -133,6 +133,7 @@ Two background tasks fire once at boot then every 60 s:
 - Trade-driven (`find_trade_driven_exit`, each new trade) and clock-driven (`find_clock_driven_exit`, 1s sweep, Stall/TimeStop only) share feature predicates.
 - Optional features (0/None = off): trailing stop (E1), time stop (E2), stall (E3), liquidity drop (E4). TakeProfit + StopLoss always on.
 - All `p_*_pct` params stored whole-percent, divided by 100 at the comparison site.
+- **Analysis-only death-close (`ExitReason::Dead`, `ExitCode::Dead=9`):** the analysis entry point of `find_trade_driven_exit` (all three strategies) appends one fallback after the ladder — `.or_else(|| strategies::death::find_death_point(trades, entry_time, Utc::now()))`. When the ladder never fires but the token is provably dead (liquidity gone + gone silent, per the shared `token_cache::is_dead_verdict` that also backs live `TokenState::is_dead`), the bag closes at the **death point** (last meaningful post-entry trade, `DEAD_MEANINGFUL_TRADE_SOL`) instead of booking `Open` at a stale price. Counts as **closed** in the rollup (`RunMetrics.n_exit_dead`, grouped-sweep `n_exit_dead` column via migration `lab/migrations/0004`). Live's strict `find_trade_driven_exit_with_slot` paper poll is **not** touched — live closes silent tokens through its 1s clock sweep.
 
 ## Real vs paper
 

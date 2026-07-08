@@ -34,6 +34,12 @@ pub enum ExitCode {
     /// profile (deep + short) — the dev starting another intentional kill/rug.
     /// Top-priority in the swing1 ladder.
     NextKill = 8,
+    /// Analysis-only death-close: the ladder never fired but the token is provably
+    /// dead (liquidity gone + gone silent), so the sim closes the bag at the last
+    /// meaningful trade instead of leaving it `Open` at a stale price. Live never
+    /// produces this (it closes silent tokens via its clock sweep). Counts as a
+    /// **closed** loss in the rollup. See [`crate::strategies::death`].
+    Dead = 9,
 }
 
 impl ExitCode {
@@ -48,6 +54,7 @@ impl ExitCode {
             "TimeStop" => ExitCode::TimeStop,
             "LiquidityExit" => ExitCode::LiquidityExit,
             "NextKill" => ExitCode::NextKill,
+            "Dead" => ExitCode::Dead,
             "Open" => ExitCode::Open,
             _ => ExitCode::Open,
         }
@@ -197,6 +204,10 @@ pub struct RunMetrics {
     /// column (NextKill only fires from swing1, which is backtest-only in Phase 1),
     /// so `to_run_metrics` drops it — see that fn.
     pub n_exit_next_kill: u32,
+    /// Analysis-only death-closes (`ExitCode::Dead`): positions closed at the last
+    /// meaningful trade because the token died silent. 0 in live rollups. Counts as
+    /// closed (loss), so it lifts `n_closed` and lowers `n_open`.
+    pub n_exit_dead: u32,
     pub n_exit_open: u32,
 }
 
@@ -229,7 +240,7 @@ pub struct RunAgg {
     closed_pct_sum_sq: f64,
     holding_sum: i64,
     holding_sketch: QuantileSketch,
-    exit_counts: [u32; 8],
+    exit_counts: [u32; 9],
 }
 
 impl Default for RunAgg {
@@ -249,7 +260,7 @@ impl Default for RunAgg {
             closed_pct_sum_sq: 0.0,
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
-            exit_counts: [0; 8],
+            exit_counts: [0; 9],
         }
     }
 }
@@ -336,6 +347,7 @@ impl RunAgg {
             n_exit_liquidity: self.exit_counts[5],
             n_exit_open: self.exit_counts[6],
             n_exit_next_kill: self.exit_counts[7],
+            n_exit_dead: self.exit_counts[8],
         }
     }
 }
@@ -364,6 +376,7 @@ fn exit_index(e: ExitCode) -> usize {
         ExitCode::LiquidityExit => 5,
         ExitCode::Open | ExitCode::NoEntry => 6,
         ExitCode::NextKill => 7,
+        ExitCode::Dead => 8,
     }
 }
 

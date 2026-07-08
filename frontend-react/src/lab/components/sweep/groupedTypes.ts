@@ -215,7 +215,8 @@ export interface ComboTokenResult {
   pnl_pct: number;
   holding_secs: number;
   /** `"TakeProfit"` | `"StopLoss"` | `"TrailingStop"` | `"Stall"` |
-   *  `"TimeStop"` | `"LiquidityExit"` | `"Open"` | `"NoEntry"` */
+   *  `"TimeStop"` | `"LiquidityExit"` | `"NextKill"` | `"Dead"` | `"Open"` |
+   *  `"NoEntry"` */
   exit: string;
   // Simulation fill details
   entry_time: string | null;

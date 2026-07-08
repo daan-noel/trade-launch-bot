@@ -11,6 +11,7 @@ const EXIT_REASON_META: { key: string; label: string; cls: string }[] = [
   { key: 'Stall', label: 'Stall', cls: 'text-text-mid' },
   { key: 'TimeStop', label: 'Time', cls: 'text-text-mid' },
   { key: 'LiquidityExit', label: 'Liq', cls: 'text-text-mid' },
+  { key: 'Dead', label: 'Dead', cls: 'text-red' },
   { key: 'Open', label: 'Open', cls: 'text-text-dim' },
 ];
 
