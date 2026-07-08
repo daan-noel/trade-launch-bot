@@ -35,8 +35,9 @@ const PUMP_TOKEN_DECIMALS: i16 = 6;
 /// Minimum dev-wallet balance (lamports) to cover a create's rent + fees + Jito
 /// tip, on top of any dev-buy spend. Named so the pre-launch balance check and
 /// its error message can't drift — the message used to claim 0.05 SOL while the
-/// gate was actually 0.02.
-const MIN_DEV_LAUNCH_LAMPORTS: u64 = 20_000_000; // 0.02 SOL
+/// gate was actually 0.02. `pub(crate)` so the `probe` pre-launch check reuses
+/// the same floor instead of hardcoding (and re-drifting) its own copy.
+pub(crate) const MIN_DEV_LAUNCH_LAMPORTS: u64 = 20_000_000; // 0.02 SOL
 
 /// Parsed `launch_templates.params` brain for pump.fun create_v2. Token identity
 /// (name/symbol/uri) is NOT here — it lives in the linked `metadata_templates`

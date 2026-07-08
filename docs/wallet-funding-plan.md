@@ -74,7 +74,8 @@ funder / post-restart run can't double-fund it (real SOL loss). The existing bal
 - **Treasury reserve floor** `FUND_TREASURY_RESERVE_LAMPORTS`: never spend treasury below it.
 - **Per-interval spend cap** `FUND_MAX_SPEND_PER_INTERVAL_LAMPORTS`: hard stop mid-batch when hit.
 - **Per-wallet amount** `FUND_AMOUNT_DEV_LAMPORTS` / `FUND_AMOUNT_BUNDLER_LAMPORTS` (defaults: dev
-  ≥ 0.05 SOL per the existing launch gate text at service.rs:131; bundler = leg buy + Jito tip + fees).
+  0.05 SOL — funds the 0.02 SOL launch gate `service.rs::MIN_DEV_LAUNCH_LAMPORTS` plus dev-buy
+  headroom; bundler 0.03 SOL = leg buy + Jito tip + fees).
 - **Jitter** `FUND_AMOUNT_JITTER_PCT`, `FUND_MAX_DELAY_MS`.
 - **Top-up target** `FUND_TARGET_FUNDED_{DEV,BUNDLER}`.
 - **Kill switch** `FUND_ENABLED` (default false) + **dry-run** `FUND_DRY_RUN` (log intended transfers,

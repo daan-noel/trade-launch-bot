@@ -40,6 +40,7 @@ use uuid::Uuid;
 
 use crate::config::{FundingConfig, LauncherSettings};
 use crate::keystore::{self, EnvKek};
+use crate::wallet_pool::MIN_FUNDED_LAMPORTS;
 
 /// How often the background funder tops the pool up. Cheap when idle — a single
 /// `funded_count` per fundable role, no work when every role is already warm.
@@ -349,6 +350,22 @@ pub async fn fund_once(
                 let delay = rand::thread_rng().gen_range(0..=cfg.max_delay_ms);
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
+        }
+    }
+
+    // Reflect the spend on the treasury's cached balance immediately, so the
+    // Wallet Pool page shows the drop right after the pass instead of a stale
+    // pre-send number until the next poll. Optimistic (ignores tx fees); the
+    // balance poller reconciles the exact on-chain value within one cycle. Safe
+    // to write regardless of mode — `record_balance`'s promotion CASE only fires
+    // for `generated`/`funding`, so it never mutates the treasury's status.
+    if report.spent_lamports > 0 && !cfg.dry_run {
+        let projected = treasury_balance.saturating_sub(report.spent_lamports) as i64;
+        if let Err(e) =
+            ManagedWalletRepo::record_balance(pool, treasury.id, projected, MIN_FUNDED_LAMPORTS)
+                .await
+        {
+            warn!(?e, "wallet funding: failed to refresh treasury cached balance");
         }
     }
 

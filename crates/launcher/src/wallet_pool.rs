@@ -21,7 +21,8 @@ use crate::keystore::{self, EnvKek};
 
 /// Balance a `generated` wallet must clear before it's promoted to `funded`.
 /// Small enough to not gate on gas-only floats, large enough to reject dust.
-const MIN_FUNDED_LAMPORTS: i64 = 1_000_000; // 0.001 SOL
+/// `pub(crate)` so the funding write-back reuses the same threshold (SSOT).
+pub(crate) const MIN_FUNDED_LAMPORTS: i64 = 1_000_000; // 0.001 SOL
 
 /// Steady-state cadence when no wallet is awaiting SOL — keeps idle RPC cost on
 /// the EC2 box unchanged (the 4GB/2vCPU guardrail: don't raise steady polling).
@@ -114,14 +115,28 @@ pub fn spawn_balance_poller(pool: PgPool, rpc_url: String) -> tokio::task::JoinH
 /// so the caller can pick the active vs idle cadence.
 async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &str) -> Result<usize> {
     // Both `generated` (manual funding) and `funding` (an automated treasury send
-    // in flight) are watched — either promotes to `funded` when SOL lands.
+    // in flight) are watched — either promotes to `funded` when SOL lands. Only
+    // this set drives the fast/idle cadence (`pending`).
     let pollable = ManagedWalletRepo::find_pollable(pool).await?;
-    if pollable.is_empty() {
-        return Ok(0);
-    }
     let pending = pollable.len();
 
-    for chunk in pollable.chunks(RPC_BATCH_SIZE) {
+    // Also refresh the treasury's cached balance every pass so the Wallet Pool
+    // page reflects outbound spends (funding sends, launch bundles) instead of a
+    // stale pre-send number. The treasury is the SOL *source* — never promoted —
+    // so it stays OUT of `pending`: a single always-present wallet must not pin
+    // the poller to the 5s active interval (EC2 idle-cost guardrail).
+    let mut wallets = pollable;
+    for t in ManagedWalletRepo::by_role(pool, WalletRole::Treasury.as_str()).await? {
+        // Skip if it's mid-funding and thus already in `pollable`.
+        if !wallets.iter().any(|w| w.id == t.id) {
+            wallets.push(t);
+        }
+    }
+    if wallets.is_empty() {
+        return Ok(0);
+    }
+
+    for chunk in wallets.chunks(RPC_BATCH_SIZE) {
         let addresses: Vec<String> = chunk.iter().map(|w| w.address.clone()).collect();
         let balances = fetch_balances(client, rpc_url, &addresses).await?;
         for (wallet, balance) in chunk.iter().zip(balances) {
