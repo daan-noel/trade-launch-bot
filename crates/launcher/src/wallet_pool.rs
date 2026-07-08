@@ -23,7 +23,14 @@ use crate::keystore::{self, EnvKek};
 /// Small enough to not gate on gas-only floats, large enough to reject dust.
 const MIN_FUNDED_LAMPORTS: i64 = 1_000_000; // 0.001 SOL
 
-const BALANCE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// Steady-state cadence when no wallet is awaiting SOL — keeps idle RPC cost on
+/// the EC2 box unchanged (the 4GB/2vCPU guardrail: don't raise steady polling).
+const BALANCE_POLL_IDLE_INTERVAL: Duration = Duration::from_secs(30);
+/// Faster cadence WHILE wallets are mid-funding (`generated`/`funding`), so the
+/// `funding -> funded` promotion — and a dev wallet becoming launch-ready —
+/// doesn't lag up to 30s after a treasury send lands. Only active during the
+/// short window a funding pass is settling, so steady-state cost is unaffected.
+const BALANCE_POLL_ACTIVE_INTERVAL: Duration = Duration::from_secs(5);
 const RESERVATION_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 /// An aborted/crashed launch shouldn't strand claimed wallets forever.
 const RESERVATION_TTL: chrono::Duration = chrono::Duration::minutes(15);
@@ -83,23 +90,36 @@ pub fn spawn_balance_poller(pool: PgPool, rpc_url: String) -> tokio::task::JoinH
             .timeout(Duration::from_secs(10))
             .build()
             .expect("build reqwest client for wallet balance poller");
-        let mut tick = tokio::time::interval(BALANCE_POLL_INTERVAL);
         loop {
-            tick.tick().await;
-            if let Err(e) = poll_balances_once(&pool, &client, &rpc_url).await {
-                warn!(?e, "wallet balance poll failed");
-            }
+            let pending = match poll_balances_once(&pool, &client, &rpc_url).await {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!(?e, "wallet balance poll failed");
+                    0
+                }
+            };
+            // Poll fast only while wallets are actively awaiting SOL; fall back to
+            // the idle cadence the moment the pool settles.
+            let wait = if pending > 0 {
+                BALANCE_POLL_ACTIVE_INTERVAL
+            } else {
+                BALANCE_POLL_IDLE_INTERVAL
+            };
+            tokio::time::sleep(wait).await;
         }
     })
 }
 
-async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &str) -> Result<()> {
+/// Returns the number of pollable (`generated`/`funding`) wallets this pass saw,
+/// so the caller can pick the active vs idle cadence.
+async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &str) -> Result<usize> {
     // Both `generated` (manual funding) and `funding` (an automated treasury send
     // in flight) are watched — either promotes to `funded` when SOL lands.
     let pollable = ManagedWalletRepo::find_pollable(pool).await?;
     if pollable.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
+    let pending = pollable.len();
 
     for chunk in pollable.chunks(RPC_BATCH_SIZE) {
         let addresses: Vec<String> = chunk.iter().map(|w| w.address.clone()).collect();
@@ -122,7 +142,7 @@ async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &s
             }
         }
     }
-    Ok(())
+    Ok(pending)
 }
 
 /// `getMultipleAccounts` lamport balances, in the same order as `addresses`.

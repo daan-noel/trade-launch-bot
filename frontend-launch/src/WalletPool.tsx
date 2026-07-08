@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, formatAge, formatSol, ManagedWalletPool, WalletStatus } from './api';
 import { StatusPill } from './components/StatusPill';
 import { useResource } from './components/useResource';
@@ -19,8 +19,25 @@ export default function WalletPool() {
     loading,
     error,
     reload,
+    refresh,
     setError,
   } = useResource(() => api.walletPool(roleFilter || undefined), [roleFilter]);
+
+  // Auto-refresh while any wallet is mid-lifecycle (a treasury send in flight or
+  // awaiting manual funding). A `funding`/`generated` wallet flips to `funded`
+  // when the balance poller sees the SOL land, so poll silently until the pool
+  // settles — no manual reload to see it become launch-ready. Stops (no timer)
+  // once every wallet is terminal.
+  const hasPendingWallets = wallets.some(
+    (w) => w.status === 'generated' || w.status === 'funding',
+  );
+  useEffect(() => {
+    if (!hasPendingWallets) return;
+    const timer = setInterval(() => {
+      refresh();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [hasPendingWallets, refresh]);
 
   const [genRole, setGenRole] = useState<(typeof ROLES)[number]>('bundler');
   const [genCount, setGenCount] = useState(5);

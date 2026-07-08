@@ -4,8 +4,13 @@ export interface Resource<T> {
   data: T | undefined;
   loading: boolean;
   error: string | null;
-  /** Re-run the fetcher (e.g. after a mutation). */
+  /** Re-run the fetcher (e.g. after a mutation) — toggles `loading`. */
   reload: () => Promise<void>;
+  /**
+   * Silent re-fetch: refresh `data` in place WITHOUT flipping `loading`, so a
+   * background poll doesn't flash the table's loading state every tick.
+   */
+  refresh: () => Promise<void>;
   /** Surface a mutation error through the same channel as load errors. */
   setError: (e: string | null) => void;
 }
@@ -34,9 +39,18 @@ export function useResource<T>(fetcher: () => Promise<T>, deps: unknown[] = []):
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
+  const refresh = useCallback(async () => {
+    try {
+      setData(await fetcher());
+    } catch (e) {
+      setError(String(e));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
   useEffect(() => {
     reload();
   }, [reload]);
 
-  return { data, loading, error, reload, setError };
+  return { data, loading, error, reload, refresh, setError };
 }
