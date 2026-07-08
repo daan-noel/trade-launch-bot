@@ -291,6 +291,23 @@ pub struct PumpFunTrader {
     // `None` until the first refresh completes; `can_commit_buy` fails open (allows)
     // when the cache is empty so a stale cache doesn't block all trades.
     balance_lamports_cache: Arc<std::sync::Mutex<Option<(u64, std::time::Instant)>>>,
+
+    // Background refresher tasks spawned in `initialize()` (Jito tip-floor +
+    // recent-blockhash). Held here so `Drop` can abort them: a short-lived trader
+    // (e.g. one built per launch, then dropped) would otherwise leak a
+    // forever-looping task hammering RPC/Jito every couple of seconds. Harmless
+    // for the long-lived live-trading trader, which is dropped only at shutdown.
+    background_tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for PumpFunTrader {
+    /// Abort the `initialize()`-spawned refresher loops so a dropped trader
+    /// leaves no orphaned RPC/Jito pollers behind.
+    fn drop(&mut self) {
+        for task in &self.background_tasks {
+            task.abort();
+        }
+    }
 }
 
 impl PumpFunTrader {
@@ -385,6 +402,7 @@ impl PumpFunTrader {
             committed_lamports: AtomicU64::new(0),
             position_commitments: Arc::new(DashMap::new()),
             balance_lamports_cache: Arc::new(std::sync::Mutex::new(None)),
+            background_tasks: Vec::new(),
         }
     }
 

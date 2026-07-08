@@ -92,7 +92,7 @@ impl PumpFunTrader {
             let http = self.http.clone();
             let cache = self.jito_tip_cache.clone();
             let refresh_ms = self.config.jito.floor_refresh_ms;
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(refresh_ms)).await;
                     if let Err(e) = refresh_tip_floor(&http, &cache).await {
@@ -100,6 +100,7 @@ impl PumpFunTrader {
                     }
                 }
             });
+            self.background_tasks.push(handle);
         }
         info!(
             "💸 Jito tip: dynamic — p{} of live tip-floor, clamped {}–{} SOL → {}",
@@ -157,7 +158,7 @@ impl PumpFunTrader {
             let rpc = self.rpc.clone();
             let cache = self.blockhash_cache.clone();
             let refresh_ms = self.config.cache.blockhash_refresh_ms;
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(refresh_ms)).await;
                     match rpc.get_latest_blockhash().await {
@@ -166,6 +167,7 @@ impl PumpFunTrader {
                     }
                 }
             });
+            self.background_tasks.push(handle);
         }
         info!("✅ Blockhash refresher started");
 
