@@ -92,7 +92,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/bundles/{id}", web::get().to(bundle_get))
         .route("/api/bundles/{id}/execute", web::post().to(bundle_execute))
         .route("/api/tokens/{mint}/overview", web::get().to(token_overview))
-        .route("/api/tokens/{mint}/trades", web::get().to(token_trades));
+        .route("/api/tokens/{mint}/trades", web::get().to(token_trades))
+        .route("/api/tokens/{mint}/positions", web::get().to(token_positions));
 }
 
 async fn health() -> HttpResponse {
@@ -721,6 +722,21 @@ async fn token_trades(
     q: web::Query<TradesQuery>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let rows = TradeRepo::find_priced_by_mint(pool.get_ref(), &mint, q.limit)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+/// Per-wallet holdings for a launched token (post-launch management, Phase 1).
+/// Seeds cost-basis rows from the launch/bundle and — when the launcher (RPC) is
+/// configured — reconciles each against the on-chain token balance. Reconcile is
+/// best-effort: with no launcher config, seeded rows still return (unreconciled).
+async fn token_positions(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    mint: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let rows = launcher::load_positions(pool.get_ref(), settings.get_ref().as_ref(), &mint)
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(rows))

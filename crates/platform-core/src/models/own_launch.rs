@@ -162,6 +162,34 @@ pub struct NewLaunch {
     pub status: Option<String>,
 }
 
+/// One wallet's holding of one launched token — the post-launch management read
+/// model (token-management-plan.md Phase 1). Seeded from the launch/bundle fills,
+/// reconciled against the on-chain token balance.
+///
+/// Amounts are exact base-unit integers (never baked-in floats): `balance_base`
+/// is token base units held; `cost_quote` / `realized_quote` are quote base units
+/// (the generalization of `_lamports`). PnL/USD is derived by the caller from the
+/// token's price + decimals, never stored.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct TokenPosition {
+    pub id: Uuid,
+    pub mint_address: String,
+    pub wallet_id: Uuid,
+    /// Denormalized `managed_wallets.role` (dev | bundler | …) so the holdings
+    /// table can group by wallet class without a join.
+    pub role: String,
+    /// Canonical ATA the buys/sells route through (restart-safe reuse); `None`
+    /// until first reconciled.
+    pub token_account: Option<String>,
+    pub balance_base: i64,
+    pub cost_quote: i64,
+    pub realized_quote: i64,
+    pub balance_checked_at: Option<DateTime<Utc>>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Phase-2 seam — atomic Jito bundle of a launch's buy legs. `legs` is the
 /// per-leg structure descriptor pool (audited variant + budget/tip).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

@@ -1,5 +1,9 @@
 import { Link, useParams } from 'react-router-dom';
-import { useTokenOverviewQuery, useTokenTradesQuery } from '@shared/store/endpoints';
+import {
+  useTokenOverviewQuery,
+  useTokenPositionsQuery,
+  useTokenTradesQuery,
+} from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
   AddressDisplay,
@@ -14,7 +18,7 @@ import {
 } from '@shared/components/ui';
 import { PriceChart } from '@shared/components/PriceChart';
 import { ageFromSecs, formatCount, formatSig, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
-import type { TokenOverview, TradePriced } from '@shared/types';
+import type { TokenOverview, TokenPosition, TradePriced } from '@shared/types';
 
 export function TokenDetailPage() {
   const { mint = '' } = useParams();
@@ -23,6 +27,9 @@ export function TokenDetailPage() {
     { mint },
     { skip: !mint, pollingInterval: 10_000 },
   );
+  const { data: positions = [], isFetching: positionsLoading } = useTokenPositionsQuery(mint, {
+    skip: !mint,
+  });
 
   return (
     <div className="space-y-4">
@@ -87,10 +94,91 @@ export function TokenDetailPage() {
         </Card>
       )}
 
+      <Card title={`Our holdings (${positions.length})`}>
+        <HoldingsTable positions={positions} loading={positionsLoading} overview={overview} />
+      </Card>
+
       <Card title={`Trades (${trades.length})`}>
         <TradesTable trades={trades} loading={tradesLoading} overview={overview} />
       </Card>
     </div>
+  );
+}
+
+/** Per-wallet holdings + derived PnL. Value/PnL are computed here from the token's
+ *  raw price + decimals (never stored server-side): all quote amounts are quote
+ *  base units, `current_price_quote` is quote base units per token base unit. */
+function HoldingsTable({
+  positions,
+  loading,
+  overview,
+}: {
+  positions: TokenPosition[];
+  loading: boolean;
+  overview: TokenOverview | undefined;
+}) {
+  const qd = overview?.quote_decimals ?? 9;
+  const td = overview?.decimals ?? 6;
+  const price = overview?.current_price_quote ?? null; // quote base units / token base unit
+  const usdRate = overview?.quote_usd_rate ?? null;
+
+  // value_quote (quote base units) = balance_base * price; PnL folds realized in.
+  const valueQuote = (p: TokenPosition) => (price == null ? null : p.balance_base * price);
+  const pnlQuote = (p: TokenPosition) => {
+    const v = valueQuote(p);
+    return v == null ? null : p.realized_quote + v - p.cost_quote;
+  };
+  const usd = (quoteBase: number | null) =>
+    quoteBase == null || usdRate == null ? null : (quoteBase / 10 ** qd) * usdRate;
+
+  const columns: Column<TokenPosition>[] = [
+    { header: 'Role', render: (p) => <StatusPill status={p.role} /> },
+    {
+      header: 'Wallet',
+      render: (p) => <span className="mono text-xs muted">{p.wallet_id.slice(0, 8)}</span>,
+    },
+    {
+      header: 'Balance',
+      align: 'right',
+      render: (p) => <span className="mono">{(p.balance_base / 10 ** td).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>,
+    },
+    {
+      header: `Cost (${overview?.quote_symbol ?? 'quote'})`,
+      align: 'right',
+      render: (p) => <span className="mono">{quoteToHuman(p.cost_quote, qd)}</span>,
+    },
+    {
+      header: `Value (${overview?.quote_symbol ?? 'quote'})`,
+      align: 'right',
+      render: (p) => <span className="mono">{quoteToHuman(valueQuote(p), qd)}</span>,
+    },
+    {
+      header: 'PnL',
+      align: 'right',
+      render: (p) => {
+        const pnl = pnlQuote(p);
+        if (pnl == null) return <span className="muted">—</span>;
+        const pct = p.cost_quote > 0 ? (pnl / p.cost_quote) * 100 : null;
+        const tone = pnl >= 0 ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]';
+        return (
+          <span className={`mono ${tone}`}>
+            {formatUsd(usd(pnl))}
+            {pct != null && <span className="text-xs muted"> ({pct >= 0 ? '+' : ''}{pct.toFixed(0)}%)</span>}
+          </span>
+        );
+      },
+    },
+    { header: 'Status', render: (p) => <StatusPill status={p.status} /> },
+  ];
+
+  return (
+    <DataTable
+      columns={columns}
+      rows={positions}
+      rowKey={(p) => p.id}
+      loading={loading}
+      empty="No tracked holdings — this token isn't one of our launches, or its positions aren't seeded yet."
+    />
   );
 }
 

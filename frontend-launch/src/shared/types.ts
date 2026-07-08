@@ -74,6 +74,28 @@ export type WalletStatus =
 
 export type WalletRole = 'dev' | 'bundler' | 'treasury' | 'trading';
 
+export type PositionStatus = 'open' | 'closed';
+
+// Per-wallet holding of a launched token — `GET /api/tokens/:mint/positions`
+// (TokenPosition in platform-core). Amounts are exact base-unit integers:
+// `balance_base` token base units, `cost_quote`/`realized_quote` quote base units
+// (lamports for a SOL-quoted token). PnL/value is derived on the client from the
+// token's price + decimals.
+export interface TokenPosition {
+  id: string;
+  mint_address: string;
+  wallet_id: string;
+  role: WalletRole;
+  token_account: string | null;
+  balance_base: number;
+  cost_quote: number;
+  realized_quote: number;
+  balance_checked_at: string | null;
+  status: PositionStatus;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ManagedWalletPool {
   id: string;
   address: string;

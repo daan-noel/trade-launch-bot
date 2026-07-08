@@ -20,6 +20,7 @@ export const baseApi = createApi({
     'Launches',
     'Ingest',
     'Dimensions',
+    'Positions',
   ],
   endpoints: () => ({}),
 });

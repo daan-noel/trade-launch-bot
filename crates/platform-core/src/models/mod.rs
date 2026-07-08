@@ -15,11 +15,11 @@ pub mod token;
 pub mod trade;
 
 pub use dimensions::{Launchpad, Market, QuoteAsset};
-pub use status::{BundleStatus, LaunchStatus, WalletRole, WalletStatus};
+pub use status::{BundleStatus, LaunchStatus, PositionStatus, WalletRole, WalletStatus};
 pub use metadata::{MetadataTemplate, NewMetadataTemplate};
 pub use own_launch::{
     Bundle, Launch, LaunchListRow, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate,
-    NewManagedWallet, UpdateLaunchTemplate,
+    NewManagedWallet, TokenPosition, UpdateLaunchTemplate,
 };
 pub use token::{NewToken, Token, TokenMarketState, TokenOverview, TokenSyncState};
 pub use trade::{NewTrade, RawTx, Trade, TradePriced};

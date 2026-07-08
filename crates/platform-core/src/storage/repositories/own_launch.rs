@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::models::{
     Bundle, Launch, LaunchTemplate, ManagedWallet, NewLaunch, NewLaunchTemplate, NewManagedWallet,
-    UpdateLaunchTemplate,
+    TokenPosition, UpdateLaunchTemplate,
 };
 
 /// `managed_wallets` — OUR wallets. Stores a key_ref, never a raw key. Lifecycle
@@ -46,6 +46,19 @@ impl ManagedWalletRepo {
         Ok(sqlx::query_as::<_, ManagedWallet>("SELECT * FROM managed_wallets WHERE id = $1")
             .bind(id)
             .fetch_optional(pool)
+            .await?)
+    }
+
+    /// Fetch many wallets by id in ONE round trip (order unspecified) — the
+    /// position reconciler resolving a mint's holder set to on-chain addresses
+    /// without N per-wallet `get`s.
+    pub async fn get_many(pool: &PgPool, ids: &[Uuid]) -> anyhow::Result<Vec<ManagedWallet>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_as::<_, ManagedWallet>("SELECT * FROM managed_wallets WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(pool)
             .await?)
     }
 
@@ -402,6 +415,18 @@ impl LaunchRepo {
             .await?)
     }
 
+    /// Most-recent launch for a mint — the entry point for post-launch management
+    /// (resolve a token back to the dev wallet + bundle that seeded it). A mint is
+    /// launched once in practice; `ORDER BY created_at DESC LIMIT 1` is defensive.
+    pub async fn find_by_mint(pool: &PgPool, mint_address: &str) -> anyhow::Result<Option<Launch>> {
+        Ok(sqlx::query_as::<_, Launch>(
+            "SELECT * FROM launches WHERE mint_address = $1 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(mint_address)
+        .fetch_optional(pool)
+        .await?)
+    }
+
     /// Newest-first page of launches enriched for the "launched tokens" list —
     /// each launch LEFT JOINed to its `tokens` identity, the `token_overview`
     /// derived view (trade count / USD price / USD market cap — the SSOT for
@@ -559,5 +584,79 @@ impl BundleRepo {
         )
         .fetch_all(pool)
         .await?)
+    }
+}
+
+/// `token_positions` — per-wallet holdings of our launched tokens (post-launch
+/// management read model). Seed writes are idempotent; balance writes come from
+/// the on-chain reconcile.
+pub struct TokenPositionRepo;
+
+impl TokenPositionRepo {
+    /// Seed the cost-basis row for a (mint, wallet) the FIRST time it's observed
+    /// (dev buy / bundle leg). Idempotent: a re-seed is a no-op (`ON CONFLICT DO
+    /// NOTHING`) so it never clobbers a later, more-accurate `cost_quote` or the
+    /// reconciled balance. Returns the row (freshly inserted or pre-existing).
+    pub async fn seed(
+        pool: &PgPool,
+        mint_address: &str,
+        wallet_id: Uuid,
+        role: &str,
+        cost_quote: i64,
+    ) -> anyhow::Result<TokenPosition> {
+        // Two statements rather than `INSERT ... RETURNING` because a conflicting
+        // insert returns no row — always end with a SELECT of the final state.
+        sqlx::query(
+            "INSERT INTO token_positions (mint_address, wallet_id, role, cost_quote) \
+             VALUES ($1,$2,$3,$4) ON CONFLICT (mint_address, wallet_id) DO NOTHING",
+        )
+        .bind(mint_address)
+        .bind(wallet_id)
+        .bind(role)
+        .bind(cost_quote)
+        .execute(pool)
+        .await?;
+        Ok(sqlx::query_as::<_, TokenPosition>(
+            "SELECT * FROM token_positions WHERE mint_address = $1 AND wallet_id = $2",
+        )
+        .bind(mint_address)
+        .bind(wallet_id)
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// All positions for a mint (the token detail holdings panel), newest-seeded
+    /// first. Bounded to one mint's small holder set — never a table scan.
+    pub async fn by_mint(pool: &PgPool, mint_address: &str) -> anyhow::Result<Vec<TokenPosition>> {
+        Ok(sqlx::query_as::<_, TokenPosition>(
+            "SELECT * FROM token_positions WHERE mint_address = $1 ORDER BY role, created_at",
+        )
+        .bind(mint_address)
+        .fetch_all(pool)
+        .await?)
+    }
+
+    /// Write a reconciled on-chain balance + the canonical token account. Auto
+    /// `closed` once the balance hits 0 (drained), back to `open` if it's non-zero
+    /// (a later buy re-opened it). Stamps `balance_checked_at` + `updated_at`.
+    pub async fn set_balance(
+        pool: &PgPool,
+        id: Uuid,
+        balance_base: i64,
+        token_account: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE token_positions SET balance_base = $2, \
+                 token_account = COALESCE($3, token_account), \
+                 status = CASE WHEN $2 > 0 THEN 'open' ELSE 'closed' END, \
+                 balance_checked_at = now(), updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(balance_base)
+        .bind(token_account)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }

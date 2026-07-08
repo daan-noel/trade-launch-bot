@@ -13,5 +13,7 @@ pub mod token;
 pub use dimensions::{LaunchpadRepo, MarketRepo, QuoteAssetRepo};
 pub use feed::{RawTxRepo, TradeRepo, WalletDictRepo};
 pub use metadata::MetadataTemplateRepo;
-pub use own_launch::{BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo};
+pub use own_launch::{
+    BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, TokenPositionRepo,
+};
 pub use token::{TokenMarketStateRepo, TokenRepo, TokenSyncStateRepo};

@@ -198,6 +198,39 @@ impl FromStr for WalletStatus {
     }
 }
 
+/// `token_positions.status` — post-launch holdings lifecycle: `open` (we hold, or
+/// have partially sold) → `closed` (balance fully drained to 0). CHECK in
+/// migration `0010`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionStatus {
+    Open,
+    Closed,
+}
+
+impl PositionStatus {
+    /// The exact DB string (must match the SQL CHECK constraint).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PositionStatus::Open => "open",
+            PositionStatus::Closed => "closed",
+        }
+    }
+
+    /// Every variant — the SSOT list the CHECK-constraint parity test iterates.
+    pub const ALL: [PositionStatus; 2] = [PositionStatus::Open, PositionStatus::Closed];
+}
+
+impl FromStr for PositionStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(PositionStatus::Open),
+            "closed" => Ok(PositionStatus::Closed),
+            other => Err(format!("unknown position status: {other}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +269,14 @@ mod tests {
         }
         assert_eq!(WalletStatus::Generated.as_str(), "generated");
         assert!(WalletStatus::from_str("pending").is_err());
+    }
+
+    #[test]
+    fn position_status_roundtrips() {
+        for s in PositionStatus::ALL {
+            assert_eq!(PositionStatus::from_str(s.as_str()).unwrap(), s);
+        }
+        assert_eq!(PositionStatus::Open.as_str(), "open");
+        assert!(PositionStatus::from_str("done").is_err());
     }
 }

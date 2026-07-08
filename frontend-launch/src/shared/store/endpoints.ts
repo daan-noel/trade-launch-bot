@@ -18,6 +18,7 @@ import type {
   UpdateMetadataTemplate,
   QuoteAsset,
   TokenOverview,
+  TokenPosition,
   TradePriced,
 } from '@shared/types';
 
@@ -168,6 +169,10 @@ export const api = baseApi.injectEndpoints({
     tokenTrades: build.query<TradePriced[], { mint: string; limit?: number }>({
       query: ({ mint, limit }) => `/api/tokens/${mint}/trades${q({ limit })}`,
     }),
+    tokenPositions: build.query<TokenPosition[], string>({
+      query: (mint) => `/api/tokens/${mint}/positions`,
+      providesTags: ['Positions'],
+    }),
   }),
   overrideExisting: false,
 });
@@ -198,4 +203,5 @@ export const {
   useExecuteBundleMutation,
   useTokenOverviewQuery,
   useTokenTradesQuery,
+  useTokenPositionsQuery,
 } = api;

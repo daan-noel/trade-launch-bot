@@ -13,6 +13,7 @@ mod config;
 mod dust_sweep;
 mod funding_plan;
 mod keystore;
+mod manage;
 mod metadata_upload;
 mod probe;
 mod service;
@@ -39,6 +40,7 @@ pub use funding_plan::{
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
+pub use manage::load_positions;
 pub use metadata_upload::{
     create_metadata_template, update_metadata_template, NewMetadataTemplateRequest,
     UpdateMetadataTemplateRequest,
