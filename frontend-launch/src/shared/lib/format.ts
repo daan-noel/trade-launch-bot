@@ -76,6 +76,10 @@ export function solscanAddr(addr: string): string {
   return `https://solscan.io/account/${addr}`;
 }
 
+export function gmgnMint(mint: string): string {
+  return `https://gmgn.ai/sol/token/${mint}`;
+}
+
 /** `trades_priced.tx_signature` arrives as a byte array — base58-encode it. */
 export function formatSig(tx: number[] | string | null | undefined): string {
   if (typeof tx === 'string') return tx;

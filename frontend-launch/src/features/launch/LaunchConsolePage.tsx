@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   useBootstrapQuery,
+  useQuoteAssetsQuery,
   useFundForLaunchMutation,
   useExecuteLaunchMutation,
   useLaunchStatusQuery,
@@ -22,7 +23,18 @@ import {
   StatusPill,
 } from '@shared/components/ui';
 import { formatSig, formatSol, solscanTx } from '@shared/lib/format';
-import type { FundReport, LaunchResult, LaunchStatus, TradePriced, WalletFundOutcome } from '@shared/types';
+import { toHumanUnits } from '@features/templates/legForm';
+import type {
+  FundReport,
+  LaunchResult,
+  LaunchStatus,
+  LaunchTemplate,
+  ManagedWalletPool,
+  MetadataTemplate,
+  QuoteAsset,
+  TradePriced,
+  WalletFundOutcome,
+} from '@shared/types';
 
 const TERMINAL_BUNDLE = new Set(['landed', 'dropped', 'partial', 'failed']);
 function shouldKeepPolling(status: LaunchStatus | undefined): boolean {
@@ -35,6 +47,7 @@ function shouldKeepPolling(status: LaunchStatus | undefined): boolean {
 
 export function LaunchConsolePage() {
   const { data: boot } = useBootstrapQuery();
+  const { data: quoteAssets = [] } = useQuoteAssetsQuery();
   const templates = boot?.templates ?? [];
   const metadataTemplates = boot?.metadata_templates ?? [];
   const devWallets = boot?.dev_wallets ?? [];
@@ -85,6 +98,7 @@ export function LaunchConsolePage() {
   const selectedDevWallet = devWallets.find((w) => w.id === walletId);
   const devWalletReady = selectedDevWallet?.status === 'funded';
   const effectiveMetadata = metadataTemplates.find((m) => m.id === metaTemplateId);
+  const quoteAsset = quoteAssets.find((q) => q.id === selectedTemplate?.quote_asset_id);
 
   // Status polling: keep the query alive after a launch, polling every 3s until
   // the bundle reaches a terminal state, then stop (interval → 0).
@@ -162,10 +176,24 @@ export function LaunchConsolePage() {
               {selectableDevWallets.length === 0 && <option value="">No dev wallets — generate one</option>}
               {selectableDevWallets.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {(w.label ?? w.address.slice(0, 8)) + (w.status === 'funded' ? ' · funded' : ' · needs funding')}
+                  {devWalletOptionLabel(w)}
                 </option>
               ))}
             </Select>
+            {selectedDevWallet && (
+              <p className="mt-1 text-xs">
+                {devWalletReady ? (
+                  <span style={{ color: 'var(--color-good)' }}>
+                    Funded · <span className="mono">{formatSol(selectedDevWallet.balance_lamports)}</span>
+                  </span>
+                ) : (
+                  <span className="muted">
+                    <StatusPill status={selectedDevWallet.status} /> · balance{' '}
+                    <span className="mono">{formatSol(selectedDevWallet.balance_lamports)}</span>
+                  </span>
+                )}
+              </p>
+            )}
           </Field>
           <Field label="Metadata (token identity)" htmlFor="lc-m">
             <Select id="lc-m" value={metaTemplateId} onChange={(e) => setMetaTemplateId(e.target.value)}>
@@ -180,14 +208,24 @@ export function LaunchConsolePage() {
           </Field>
         </div>
 
-        {effectiveMetadata && (
-          <p className="mt-3 text-xs muted">
-            Launching as <strong>{effectiveMetadata.name}</strong> ({effectiveMetadata.symbol}) —{' '}
-            <code className="mono">{effectiveMetadata.uri}</code>
-            {selectedTemplate && metaTemplateId !== (selectedTemplate.metadata_template_id ?? '')
-              ? ' · overriding the template default for this launch'
-              : ''}
-          </p>
+        {(selectedTemplate || effectiveMetadata) && (
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            {selectedTemplate && (
+              <TemplateSummary
+                template={selectedTemplate}
+                quoteAsset={quoteAsset}
+                bundlerCountOverride={bundlerCount}
+              />
+            )}
+            {effectiveMetadata && (
+              <MetadataSummary
+                metadata={effectiveMetadata}
+                overriding={
+                  !!selectedTemplate && metaTemplateId !== (selectedTemplate.metadata_template_id ?? '')
+                }
+              />
+            )}
+          </div>
         )}
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -254,6 +292,112 @@ export function LaunchConsolePage() {
         </Card>
       )}
     </div>
+  );
+}
+
+/** Dropdown label: funded wallets show their SOL balance, others show they need funding. */
+function devWalletOptionLabel(w: ManagedWalletPool): string {
+  const name = w.label ?? w.address.slice(0, 8);
+  return w.status === 'funded'
+    ? `${name} · ${formatSol(w.balance_lamports)}`
+    : `${name} · needs funding`;
+}
+
+/** Static, at-a-glance view of the selected launch template's economics. */
+function TemplateSummary({
+  template,
+  quoteAsset,
+  bundlerCountOverride,
+}: {
+  template: LaunchTemplate;
+  quoteAsset: QuoteAsset | undefined;
+  bundlerCountOverride: string;
+}) {
+  const decimals = quoteAsset?.decimals ?? 9;
+  const sym = quoteAsset?.symbol ?? 'SOL';
+  const amt = (v: number | null | undefined) =>
+    v == null ? '—' : `${toHumanUnits(v, decimals)} ${sym}`;
+  const p = template.params;
+  const baseLegs = p.leg_structures?.length ?? p.bundle_leg_count ?? 0;
+  const legCount = bundlerCountOverride !== '' ? Number(bundlerCountOverride) : baseLegs;
+  const legsOverridden = bundlerCountOverride !== '' && Number(bundlerCountOverride) !== baseLegs;
+  return (
+    <Card title="Launch template">
+      <KV>
+        <KVRow label="Name">
+          {template.template_name} <span className="muted">({template.variant})</span>
+        </KVRow>
+        <KVRow label="Dev buy">
+          <span className="mono">{amt(p.dev_buy_quote)}</span>
+        </KVRow>
+        <KVRow label="Slippage">{p.slippage_bps != null ? `${p.slippage_bps} bps` : '—'}</KVRow>
+        <KVRow label="Bundle legs">
+          <span className="mono">{legCount}</span>
+          {legsOverridden && <span className="muted"> · overridden</span>}
+          {p.bundle_quote_per_leg != null && (
+            <span className="muted"> × {amt(p.bundle_quote_per_leg)}/leg</span>
+          )}
+        </KVRow>
+        <KVRow label="Bundle tip">
+          <span className="mono">{amt(p.bundle_tip_quote)}</span>
+        </KVRow>
+        {(p.is_mayhem_mode || p.cashback_enabled) && (
+          <KVRow label="Flags">
+            {p.is_mayhem_mode && <span className="badge badge-warn">mayhem</span>}{' '}
+            {p.cashback_enabled && <span className="badge badge-info">cashback</span>}
+          </KVRow>
+        )}
+      </KV>
+    </Card>
+  );
+}
+
+/** Static, at-a-glance view of the token identity that will be minted. */
+function MetadataSummary({
+  metadata,
+  overriding,
+}: {
+  metadata: MetadataTemplate;
+  overriding: boolean;
+}) {
+  const socials = ([
+    ['Twitter', metadata.twitter],
+    ['Telegram', metadata.telegram],
+    ['Website', metadata.website],
+  ] as [string, string | null][]).filter((s): s is [string, string] => !!s[1]);
+  return (
+    <Card
+      title="Token metadata"
+      actions={overriding ? <span className="badge badge-warn">override</span> : undefined}
+    >
+      <div className="flex gap-3">
+        {metadata.image_uri && (
+          <img
+            src={metadata.image_uri}
+            alt=""
+            className="h-14 w-14 shrink-0 rounded-md border border-[var(--color-line)] object-cover"
+          />
+        )}
+        <div className="min-w-0 flex-1">
+          <KV>
+            <KVRow label="Name">
+              <strong>{metadata.name}</strong> <span className="muted">({metadata.symbol})</span>
+            </KVRow>
+            {metadata.description && <KVRow label="Description">{metadata.description}</KVRow>}
+            {socials.map(([k, v]) => (
+              <KVRow key={k} label={k}>
+                <a href={v} target="_blank" rel="noreferrer" className="mono text-xs">
+                  {v}
+                </a>
+              </KVRow>
+            ))}
+            <KVRow label="URI">
+              <code className="mono text-xs">{metadata.uri}</code>
+            </KVRow>
+          </KV>
+        </div>
+      </div>
+    </Card>
   );
 }
 

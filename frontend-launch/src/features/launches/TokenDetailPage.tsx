@@ -13,7 +13,7 @@ import {
   StatusPill,
 } from '@shared/components/ui';
 import { PriceChart } from '@shared/components/PriceChart';
-import { ageFromSecs, formatCount, formatSig, formatUsd, quoteToHuman } from '@shared/lib/format';
+import { ageFromSecs, formatCount, formatSig, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { TokenOverview, TradePriced } from '@shared/types';
 
 export function TokenDetailPage() {
@@ -43,6 +43,14 @@ export function TokenDetailPage() {
             {overview.is_migrated && <span className="badge badge-info">migrated</span>}
             {overview.is_dead && <span className="badge badge-bad">dead</span>}
             <AddressDisplay value={overview.mint_address} kind="token" lead={6} tail={6} />
+            <a
+              href={gmgnMint(overview.mint_address)}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs"
+            >
+              GMGN ↗
+            </a>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

@@ -22,6 +22,16 @@
   --color-info: #9ac4f5;
   --color-info-bg: #1b2a3d;
 
+  /* Wallet role hues — one distinct color per role, SSOT for RolePill + summary cards. */
+  --color-role-dev: #c39bf5;
+  --color-role-dev-bg: #2e2140;
+  --color-role-bundler: #7eb8ff;
+  --color-role-bundler-bg: #1b2a3d;
+  --color-role-treasury: #f5c065;
+  --color-role-treasury-bg: #3d301b;
+  --color-role-trading: #6ee7c8;
+  --color-role-trading-bg: #163a33;
+
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 }
 
@@ -160,6 +170,26 @@ a:hover {
   .badge-info {
     background: var(--color-info-bg);
     color: var(--color-info);
+  }
+  .badge-role-dev {
+    background: var(--color-role-dev-bg);
+    color: var(--color-role-dev);
+  }
+  .badge-role-bundler {
+    background: var(--color-role-bundler-bg);
+    color: var(--color-role-bundler);
+  }
+  .badge-role-treasury {
+    background: var(--color-role-treasury-bg);
+    color: var(--color-role-treasury);
+  }
+  .badge-role-trading {
+    background: var(--color-role-trading-bg);
+    color: var(--color-role-trading);
+  }
+  .badge-role-unknown {
+    background: #262b35;
+    color: var(--color-muted);
   }
 
   /* Tables */

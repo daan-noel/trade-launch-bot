@@ -49,3 +49,20 @@ export function StatusPill({ status }: { status: string | null | undefined }) {
   if (!status) return <span className="muted">—</span>;
   return <Badge tone={statusTone(status)}>{status}</Badge>;
 }
+
+// Single source of truth for wallet-role → color. Each known role gets a distinct
+// hue (see --color-role-* in index.css); unknown roles fall back to muted.
+const KNOWN_ROLES = new Set(['dev', 'bundler', 'treasury', 'trading']);
+
+/** CSS var holding a role's accent color — for tinting summary cards, bars, etc. */
+export function roleColorVar(role: string): string {
+  const r = role.toLowerCase();
+  return KNOWN_ROLES.has(r) ? `var(--color-role-${r})` : 'var(--color-muted)';
+}
+
+export function RolePill({ role }: { role: string | null | undefined }) {
+  if (!role) return <span className="muted">—</span>;
+  const r = role.toLowerCase();
+  const key = KNOWN_ROLES.has(r) ? r : 'unknown';
+  return <span className={clsx('badge', `badge-role-${key}`)}>{role}</span>;
+}

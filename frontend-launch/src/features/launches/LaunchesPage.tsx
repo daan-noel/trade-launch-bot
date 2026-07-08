@@ -11,7 +11,7 @@ import {
   DataTable,
   StatusPill,
 } from '@shared/components/ui';
-import { formatAge, formatCount, formatUsd } from '@shared/lib/format';
+import { formatAge, formatCount, formatUsd, gmgnMint } from '@shared/lib/format';
 import type { LaunchListRow } from '@shared/types';
 
 const PAGE = 100;
@@ -48,6 +48,24 @@ export function LaunchesPage() {
     { header: 'Mkt cap', align: 'right', render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span> },
     { header: 'Variant', render: (l) => <span className="mono text-xs muted">{l.variant}</span> },
     { header: 'Age', align: 'right', render: (l) => formatAge(l.created_at) },
+    {
+      header: '',
+      align: 'right',
+      render: (l) =>
+        l.mint_address ? (
+          <a
+            href={gmgnMint(l.mint_address)}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            GMGN ↗
+          </a>
+        ) : (
+          <span className="muted">—</span>
+        ),
+    },
   ];
 
   return (

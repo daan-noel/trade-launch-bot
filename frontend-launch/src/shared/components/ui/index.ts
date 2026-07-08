@@ -1,5 +1,5 @@
 export { Button } from './Button';
-export { Badge, StatusPill, statusTone } from './Badge';
+export { Badge, StatusPill, statusTone, RolePill, roleColorVar } from './Badge';
 export type { Tone } from './Badge';
 export { Field, Input, Textarea, Select, Checkbox } from './form';
 export { Card, Banner } from './Card';

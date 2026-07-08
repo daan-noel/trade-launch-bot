@@ -16,6 +16,9 @@ import {
   Input,
   Select,
   StatusPill,
+  RolePill,
+  roleColorVar,
+  statusTone,
   AddressDisplay,
 } from '@shared/components/ui';
 import { formatAge, formatSol } from '@shared/lib/format';
@@ -24,6 +27,87 @@ import type { ManagedWalletPool, WalletRole, WalletStatus } from '@shared/types'
 const LOW_POOL_THRESHOLD = 3;
 const ROLES: WalletRole[] = ['dev', 'bundler', 'treasury', 'trading'];
 const STATUSES: WalletStatus[] = ['generated', 'funding', 'funded', 'reserved', 'used', 'retired'];
+
+// Tone → color var, so the per-role status bar segments match the StatusPill palette.
+const TONE_COLOR: Record<string, string> = {
+  good: 'var(--color-good)',
+  warn: 'var(--color-warn)',
+  bad: 'var(--color-bad)',
+  info: 'var(--color-info)',
+  neutral: 'var(--color-line-2)',
+};
+
+/**
+ * At-a-glance card for one role: big funded count (red when below threshold),
+ * a proportional status bar, and per-status chips. Clickable to filter the pool.
+ */
+function RoleSummaryCard({
+  role,
+  counts,
+  total,
+  active,
+  onSelect,
+}: {
+  role: string;
+  counts: Record<string, number>;
+  total: number;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const funded = counts.funded ?? 0;
+  const low = funded < LOW_POOL_THRESHOLD;
+  const accent = roleColorVar(role);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="panel px-3.5 py-3 text-left transition-colors hover:border-[var(--color-line-2)]"
+      style={{
+        borderLeft: `3px solid ${accent}`,
+        outline: active ? `1px solid ${accent}` : undefined,
+      }}
+    >
+      <div className="flex items-center justify-between">
+        <RolePill role={role} />
+        <span className="text-xs muted">{total} total</span>
+      </div>
+
+      <div className="mt-2 flex items-baseline gap-1.5">
+        <span
+          className="text-2xl font-semibold leading-none"
+          style={{ color: low ? 'var(--color-bad)' : undefined }}
+        >
+          {funded}
+        </span>
+        <span className="text-xs muted">funded{low ? ` · low (<${LOW_POOL_THRESHOLD})` : ''}</span>
+      </div>
+
+      {total > 0 && (
+        <div className="mt-2 flex h-1.5 overflow-hidden rounded-full bg-[var(--color-line)]">
+          {STATUSES.map((s) => {
+            const n = counts[s] ?? 0;
+            if (n === 0) return null;
+            return (
+              <div
+                key={s}
+                title={`${s}: ${n}`}
+                style={{ width: `${(n / total) * 100}%`, background: TONE_COLOR[statusTone(s)] }}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-2 flex flex-wrap gap-x-2.5 gap-y-0.5 text-xs">
+        {STATUSES.filter((s) => (counts[s] ?? 0) > 0).map((s) => (
+          <span key={s} className="muted">
+            <span style={{ color: TONE_COLOR[statusTone(s)] }}>●</span> {counts[s]} {s}
+          </span>
+        ))}
+      </div>
+    </button>
+  );
+}
 
 export function WalletPoolPage() {
   const [roleFilter, setRoleFilter] = useState('');
@@ -85,6 +169,21 @@ export function WalletPoolPage() {
     return c;
   }, [wallets]);
 
+  // Cluster the flat pool by role (in canonical ROLES order) so same-role wallets
+  // read as a group even without filtering; status/age keep a stable sub-order.
+  const sortedWallets = useMemo(() => {
+    const roleIdx = (r: string) => {
+      const i = ROLES.indexOf(r as WalletRole);
+      return i === -1 ? ROLES.length : i;
+    };
+    return [...wallets].sort(
+      (a, b) =>
+        roleIdx(a.role) - roleIdx(b.role) ||
+        STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) ||
+        (a.label ?? '').localeCompare(b.label ?? ''),
+    );
+  }, [wallets]);
+
   const lowPoolRoles = Object.entries(counts).filter(
     ([, s]) => (s.funded ?? 0) < LOW_POOL_THRESHOLD,
   );
@@ -124,7 +223,7 @@ export function WalletPoolPage() {
   const columns: Column<ManagedWalletPool>[] = [
     { header: 'Address', render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} /> },
     { header: 'Label', render: (w) => w.label ?? <span className="muted">—</span> },
-    { header: 'Role', render: (w) => w.role },
+    { header: 'Role', render: (w) => <RolePill role={w.role} /> },
     { header: 'Status', render: (w) => <StatusPill status={w.status} /> },
     { header: 'Balance', align: 'right', render: (w) => <span className="mono">{formatSol(w.balance_lamports)}</span> },
     { header: 'Age', align: 'right', render: (w) => formatAge(w.created_at) },
@@ -214,32 +313,22 @@ export function WalletPoolPage() {
         </p>
       </Card>
 
-      <Card title="Status counts">
-        <table className="dt">
-          <thead>
-            <tr>
-              <th>Role</th>
-              {STATUSES.map((s) => (
-                <th key={s} className="text-right">
-                  {s}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(counts).map(([role, s]) => (
-              <tr key={role}>
-                <td className="font-medium">{role}</td>
-                {STATUSES.map((st) => (
-                  <td key={st} className="text-right mono">
-                    {s[st] ?? 0}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {ROLES.map((role) => {
+          const s = counts[role] ?? {};
+          const total = STATUSES.reduce((n, st) => n + (s[st] ?? 0), 0);
+          return (
+            <RoleSummaryCard
+              key={role}
+              role={role}
+              counts={s}
+              total={total}
+              active={roleFilter === role}
+              onSelect={() => setRoleFilter(roleFilter === role ? '' : role)}
+            />
+          );
+        })}
+      </div>
 
       <Card
         title={`Pool (${wallets.length})`}
@@ -256,7 +345,7 @@ export function WalletPoolPage() {
       >
         <DataTable
           columns={columns}
-          rows={wallets}
+          rows={sortedWallets}
           rowKey={(w) => w.id}
           loading={isFetching}
           empty="No wallets yet — generate a batch above."

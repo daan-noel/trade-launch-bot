@@ -15,7 +15,7 @@ import {
   StatCard,
   StatusPill,
 } from '@shared/components/ui';
-import { formatAge, formatCount, formatSol } from '@shared/lib/format';
+import { formatAge, formatCount, formatSol, gmgnMint } from '@shared/lib/format';
 import type { LaunchListRow, ManagedWalletPool } from '@shared/types';
 
 const ROLES = ['dev', 'bundler', 'treasury', 'trading'] as const;
@@ -48,6 +48,24 @@ export function DashboardPage() {
     { header: 'Bundle', render: (l) => <StatusPill status={l.bundle_status ?? undefined} /> },
     { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
     { header: 'Age', align: 'right', render: (l) => formatAge(l.created_at) },
+    {
+      header: '',
+      align: 'right',
+      render: (l) =>
+        l.mint_address ? (
+          <a
+            href={gmgnMint(l.mint_address)}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            GMGN ↗
+          </a>
+        ) : (
+          <span className="muted">—</span>
+        ),
+    },
   ];
 
   return (
