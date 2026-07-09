@@ -1,0 +1,1059 @@
+//! Token Swing Analyzer (generic over [`TradeRow`]).
+//!
+//! Detects alternating buy-dominant (swing high) and sell-dominant (swing low)
+//! legs in a token's trade history. Moved here from `lab/src/analyzers/swing_analyzer.rs`
+//! (swing1 Phase 1a) and made generic over `T: TradeRow` so the SAME analyzer
+//! runs in the lab swing endpoint (`Trade`), the backtest sweep (`CorpusTrade`),
+//! and — later — live (`CachedTrade`). Pricing is the single shared GMGN spot
+//! ([`TradeRow::chart_spot_price`]), so a leg detected offline is the leg
+//! detected live.
+//!
+//! See `@project_plans/token_swing_analyzer_spec_using_TA_terms.md` for the full
+//! specification this implementation follows.
+
+use serde::{Deserialize, Serialize};
+
+use crate::models::trade::TradeRow;
+
+// ---------------------------------------------------------------------------
+// Parameters
+// ---------------------------------------------------------------------------
+
+/// Tunable parameters for swing detection. All fields are optional in the JSON
+/// body and fall back to the defaults below.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwingParams {
+    // Reversal thresholds: Swing High -> Swing Low (0 = no bound)
+    #[serde(default = "default_high_to_low_sol")]
+    pub high_to_low_threshold_sol: f64,
+    #[serde(default = "default_pct")]
+    pub high_to_low_threshold_pct: f64, // 0-100 (real percent), 0 = no bound
+
+    // Reversal thresholds: Swing Low -> Swing High (0 = no bound)
+    #[serde(default = "default_low_to_high_sol")]
+    pub low_to_high_threshold_sol: f64,
+    #[serde(default = "default_pct")]
+    pub low_to_high_threshold_pct: f64, // 0-100 (real percent), 0 = no bound
+
+    // Leg quality filters (min: 0 disables volume/duration/net_flow; max: 0 = no cap)
+    #[serde(default = "default_min_leg_trades")]
+    pub min_leg_trades: u32,
+    #[serde(default)]
+    pub min_leg_duration_ms: i64,
+    #[serde(default)]
+    pub min_leg_volume: f64,
+    #[serde(default)]
+    pub min_leg_net_flow: f64,
+    #[serde(default)]
+    pub max_leg_trades: u32,
+    #[serde(default)]
+    pub max_leg_duration_ms: i64,
+    #[serde(default)]
+    pub max_leg_volume: f64,
+    #[serde(default)]
+    pub max_leg_net_flow: f64,
+
+    // Per-leg-type delta % and net-flow-per-second bounds, compared by MAGNITUDE
+    // (absolute value) so swing lows — whose delta % and net flow are negative —
+    // use the same positive thresholds as swing highs. 0 = no bound.
+    // Delta % magnitude: |(end_price - start_price)/start_price*100|.
+    // Net flow per second: |net_flow / (duration_ms/1000)|; skipped for 0-duration legs.
+    #[serde(default)]
+    pub swing_high_min_delta_pct: f64,
+    #[serde(default)]
+    pub swing_high_max_delta_pct: f64,
+    #[serde(default)]
+    pub swing_high_min_net_flow_per_sec: f64,
+    #[serde(default)]
+    pub swing_high_max_net_flow_per_sec: f64,
+    #[serde(default)]
+    pub swing_low_min_delta_pct: f64,
+    #[serde(default)]
+    pub swing_low_max_delta_pct: f64,
+    #[serde(default)]
+    pub swing_low_min_net_flow_per_sec: f64,
+    #[serde(default)]
+    pub swing_low_max_net_flow_per_sec: f64,
+
+    // "Big transaction" threshold (SOL). 0 = disabled. When > 0, a single tx with
+    // `amount_sol >= big_tx_sol` (a) confirms a reversal immediately, regardless of
+    // the net-flow reversal threshold, and (b) anchors a leg's terminal pivot
+    // (`pivot_end_*`) to the LAST such same-side tx — the real pump/dump point —
+    // instead of the chronologically last (possibly dust) trade.
+    #[serde(default)]
+    pub big_tx_sol: f64,
+
+    // Dynamic "dust" floor as a FRACTION of the active leg's largest same-side
+    // trade. 0 = disabled (off). When > 0, a same-side trade is dropped during the
+    // scan if `amount_sol < dust_frac * active_leg.max_sol` — i.e. it's trivially
+    // small *relative to that leg's own real activity*. Scale-free (no per-token
+    // SOL amount to guess): on a 200-SOL token and a 2-SOL token the same
+    // `dust_frac` adapts automatically. This keeps a leg's endpoints anchored to
+    // real trades — a low ends at the last real SELL before a dust-only breakage,
+    // the next high starts at the first real BUY after it — and stops a stray dust
+    // trade from opening a spurious bridge leg across the gap. Each leg's first
+    // trade seeds `max_sol`, so it is never itself treated as dust.
+    #[serde(default)]
+    pub dust_frac: f64,
+}
+
+fn default_high_to_low_sol() -> f64 {
+    5.0
+}
+fn default_low_to_high_sol() -> f64 {
+    5.0
+}
+fn default_pct() -> f64 {
+    50.0
+}
+fn default_min_leg_trades() -> u32 {
+    2
+}
+
+impl Default for SwingParams {
+    fn default() -> Self {
+        Self {
+            high_to_low_threshold_sol: default_high_to_low_sol(),
+            high_to_low_threshold_pct: default_pct(),
+            low_to_high_threshold_sol: default_low_to_high_sol(),
+            low_to_high_threshold_pct: default_pct(),
+            min_leg_trades: default_min_leg_trades(),
+            min_leg_duration_ms: 0,
+            min_leg_volume: 0.0,
+            min_leg_net_flow: 0.0,
+            max_leg_trades: 0,
+            max_leg_duration_ms: 0,
+            max_leg_volume: 0.0,
+            max_leg_net_flow: 0.0,
+            swing_high_min_delta_pct: 0.0,
+            swing_high_max_delta_pct: 0.0,
+            swing_high_min_net_flow_per_sec: 0.0,
+            swing_high_max_net_flow_per_sec: 0.0,
+            swing_low_min_delta_pct: 0.0,
+            swing_low_max_delta_pct: 0.0,
+            swing_low_min_net_flow_per_sec: 0.0,
+            swing_low_max_net_flow_per_sec: 0.0,
+            big_tx_sol: 0.0,
+            dust_frac: 0.0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwingType {
+    SwingHigh,
+    SwingLow,
+}
+
+/// A finalized swing leg, ready for serialization. `Deserialize` round-trips it
+/// back out of a position's `extra` JSONB (see `runtime_cache::merge_swing_legs_into_extra`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwingLeg {
+    #[serde(rename = "type")]
+    pub leg_type: SwingType,
+    pub start_at: i64,
+    pub end_at: i64,
+    pub duration_ms: i64,
+    pub start_price: f64,
+    pub end_price: f64,
+    /// Terminal pivot for charting: timestamp/price of the leg's last "big" same-side
+    /// tx (`amount_sol >= big_tx_sol`), falling back to the leg's price extreme
+    /// (max spot for highs, min spot for lows) when the leg has no big tx. Distinct
+    /// from `end_*`, which stays the full-leg span used by stats/filters.
+    pub pivot_end_at: i64,
+    pub pivot_end_price: f64,
+    pub inflow: f64,
+    pub outflow: f64,
+    pub net_flow: f64,
+    pub trade_count: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Internal representation
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Buy,
+    Sell,
+}
+
+pub(crate) struct Tx {
+    timestamp_ms: i64,
+    side: Side,
+    amount_sol: f64,
+    /// Post-trade GMGN spot (`reserve_sol / reserve_token` → pool → execution),
+    /// used for `end_price`.
+    price: f64,
+    /// GMGN spot immediately BEFORE this trade (the previous trade's post-trade
+    /// spot, since the curve is unchanged between trades). Used for `start_price`.
+    pre_spot: f64,
+}
+
+impl Tx {
+    /// Build the internal [`Tx`] for one trade given the previous trade's post-trade
+    /// spot (`None` for the very first trade, which falls back to its own post spot).
+    /// The single-tx analogue of the per-row body of [`sanitize_and_order`], so the
+    /// live-incremental exit memo folds a stream of trades into the SAME `Tx`s the
+    /// batch builds. Returns `None` for a literally-non-positive trade (dropped by
+    /// [`sanitize_and_order`]'s `amount_sol() > 0.0` filter) so the two agree on
+    /// which trades exist at all.
+    pub(crate) fn from_trade<T: TradeRow>(t: &T, prev_post_spot: Option<f64>) -> Option<Self> {
+        if t.amount_sol() <= 0.0 {
+            return None;
+        }
+        let post_spot = t.chart_spot_price().unwrap_or_else(|| t.execution_price());
+        Some(Self {
+            timestamp_ms: t.block_time().timestamp_millis(),
+            side: if t.is_buy() { Side::Buy } else { Side::Sell },
+            amount_sol: t.amount_sol(),
+            price: post_spot,
+            pre_spot: prev_post_spot.unwrap_or(post_spot),
+        })
+    }
+
+    /// This trade's post-trade GMGN spot — the `prev_post_spot` seed for the next
+    /// [`from_trade`](Self::from_trade) in the incremental fold.
+    pub(crate) fn post_spot(&self) -> f64 {
+        self.price
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    SwingHigh,
+    TempSwingLow,
+    SwingLow,
+    TempSwingHigh,
+}
+
+/// Mutable leg accumulator used during the scan.
+#[derive(Clone)]
+pub(crate) struct LegAcc {
+    leg_type: SwingType,
+    start_at: i64,
+    end_at: i64,
+    start_price: f64,
+    end_price: f64,
+    inflow: f64,
+    outflow: f64,
+    trade_count: u32,
+    // Terminal-pivot tracking (does not affect stats/filters). `last_big_*` is the
+    // last same-side tx with `amount_sol >= big_tx_sol`; `extreme_*` is the price
+    // extreme (max spot for highs, min spot for lows) used as the fallback when the
+    // leg contains no big tx.
+    last_big_at: Option<i64>,
+    last_big_price: Option<f64>,
+    extreme_at: i64,
+    extreme_price: f64,
+    /// Largest same-side `amount_sol` seen on this leg so far. The dynamic dust
+    /// floor is `dust_frac * max_sol`: a same-side trade smaller than that is dust
+    /// *relative to this leg's own real activity* and is skipped by the scan. Only
+    /// grows, so the decision is causal/stable (never rescans). Seeded by the
+    /// leg's first trade, which is therefore never treated as dust.
+    max_sol: f64,
+}
+
+impl LegAcc {
+    /// Create a swing-high leg seeded from a BUY (fully consumes the tx).
+    fn seed_high(tx: &Tx, big_tx_sol: f64) -> Self {
+        let mut leg = Self {
+            leg_type: SwingType::SwingHigh,
+            start_at: tx.timestamp_ms,
+            end_at: tx.timestamp_ms,
+            start_price: tx.pre_spot,
+            end_price: tx.price,
+            inflow: tx.amount_sol,
+            outflow: 0.0,
+            trade_count: 1,
+            last_big_at: None,
+            last_big_price: None,
+            extreme_at: tx.timestamp_ms,
+            extreme_price: tx.price,
+            max_sol: tx.amount_sol,
+        };
+        leg.consider_pivot(tx, big_tx_sol);
+        leg
+    }
+
+    /// Create a swing-low leg seeded from a SELL (fully consumes the tx).
+    fn seed_low(tx: &Tx, big_tx_sol: f64) -> Self {
+        let mut leg = Self {
+            leg_type: SwingType::SwingLow,
+            start_at: tx.timestamp_ms,
+            end_at: tx.timestamp_ms,
+            start_price: tx.pre_spot,
+            end_price: tx.price,
+            inflow: 0.0,
+            outflow: tx.amount_sol,
+            trade_count: 1,
+            last_big_at: None,
+            last_big_price: None,
+            extreme_at: tx.timestamp_ms,
+            extreme_price: tx.price,
+            max_sol: tx.amount_sol,
+        };
+        leg.consider_pivot(tx, big_tx_sol);
+        leg
+    }
+
+    fn net_flow(&self) -> f64 {
+        self.inflow - self.outflow
+    }
+
+    /// Update the terminal-pivot trackers from a same-side tx: advance the price
+    /// extreme, record this tx as the last big one when it clears `big_tx_sol`, and
+    /// grow the leg's `max_sol` (the baseline for the dynamic dust floor).
+    fn consider_pivot(&mut self, tx: &Tx, big_tx_sol: f64) {
+        if tx.amount_sol > self.max_sol {
+            self.max_sol = tx.amount_sol;
+        }
+        let beats_extreme = match self.leg_type {
+            SwingType::SwingHigh => tx.price > self.extreme_price,
+            SwingType::SwingLow => tx.price < self.extreme_price,
+        };
+        if beats_extreme {
+            self.extreme_at = tx.timestamp_ms;
+            self.extreme_price = tx.price;
+        }
+        if big_tx_sol > 0.0 && tx.amount_sol >= big_tx_sol {
+            self.last_big_at = Some(tx.timestamp_ms);
+            self.last_big_price = Some(tx.price);
+        }
+    }
+
+    /// Apply a same-side BUY to a swing-high leg.
+    fn apply_buy(&mut self, tx: &Tx, big_tx_sol: f64) {
+        self.inflow += tx.amount_sol;
+        self.end_at = tx.timestamp_ms;
+        self.end_price = tx.price;
+        self.trade_count += 1;
+        self.consider_pivot(tx, big_tx_sol);
+    }
+
+    /// Apply a same-side SELL to a swing-low leg.
+    fn apply_sell(&mut self, tx: &Tx, big_tx_sol: f64) {
+        self.outflow += tx.amount_sol;
+        self.end_at = tx.timestamp_ms;
+        self.end_price = tx.price;
+        self.trade_count += 1;
+        self.consider_pivot(tx, big_tx_sol);
+    }
+
+    pub(crate) fn finalize(self) -> SwingLeg {
+        // Terminal pivot: last big same-side tx, else the leg's price extreme.
+        let (pivot_end_at, pivot_end_price) = match (self.last_big_at, self.last_big_price) {
+            (Some(at), Some(price)) => (at, price),
+            _ => (self.extreme_at, self.extreme_price),
+        };
+        SwingLeg {
+            leg_type: self.leg_type,
+            start_at: self.start_at,
+            end_at: self.end_at,
+            duration_ms: self.end_at - self.start_at,
+            start_price: self.start_price,
+            end_price: self.end_price,
+            pivot_end_at,
+            pivot_end_price,
+            inflow: self.inflow,
+            outflow: self.outflow,
+            net_flow: self.net_flow(),
+            trade_count: self.trade_count,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/// Combine the absolute (SOL) and relative (percent of the previous leg's net
+/// flow) reversal bounds into a single trigger threshold. A value of `0` means
+/// "no bound" for that term: it becomes `+inf` so it drops out of the `min` and
+/// lets the other term govern. If both terms are `0`, the threshold is `+inf`
+/// and no threshold-driven reversal can fire.
+fn reversal_threshold(sol: f64, pct: f64, prev_leg_net_flow_abs: f64) -> f64 {
+    let sol_bound = if sol > 0.0 { sol } else { f64::INFINITY };
+    let pct_bound = if pct > 0.0 {
+        pct / 100.0 * prev_leg_net_flow_abs
+    } else {
+        f64::INFINITY
+    };
+    sol_bound.min(pct_bound)
+}
+
+/// Run swing detection over a token's trades, returning the filtered ledger.
+///
+/// Generic over any [`TradeRow`] so the lab endpoint (`Trade`), the sweep
+/// (`CorpusTrade`), and live (`CachedTrade`) all run the identical scan.
+pub fn detect_swings<T: TradeRow>(trades: &[T], params: &SwingParams) -> Vec<SwingLeg> {
+    let txs = sanitize_and_order(trades);
+    let ledger = scan(&txs, params);
+    apply_quality_filter(ledger, params)
+}
+
+/// Run swing detection and return the **raw, unfiltered** alternating ledger
+/// (the [`scan`] output finalized to [`SwingLeg`]s, WITHOUT
+/// [`apply_quality_filter`]'s non-causal pair-drop). This is the input the swing1
+/// phase classifier walks — keeping it causal so the live-incremental machine and
+/// the backtest-batch run produce identical legs.
+pub fn detect_swing_legs_raw<T: TradeRow>(trades: &[T], params: &SwingParams) -> Vec<SwingLeg> {
+    let txs = sanitize_and_order(trades);
+    scan(&txs, params).into_iter().map(LegAcc::finalize).collect()
+}
+
+/// Map trades to internal transactions, skip invalid ones, and apply the **one
+/// canonical trade order** used project-wide: `slot ASC → tx_index ASC →
+/// leg_index ASC` (identical to the DB `ORDER BY`, the Parquet lake, and the
+/// frontend chart). `tx_index` is the real intra-block position of the tx; the
+/// DB shows it reproduces true on-chain execution order for ~99% of same-slot
+/// pairs, so it's the authoritative intra-slot key — no reserve-chain
+/// reconstruction. `block_time` is second-precision and a last-resort tiebreak.
+/// (A tiny minority of early-backfilled tokens carry a mis-stamped `tx_index`;
+/// the fix for those is a re-sync, not a read-time workaround.)
+///
+/// Only literally-non-positive trades are dropped here. The *dynamic* dust floor
+/// (`SwingParams.dust_frac`) is applied inside [`scan`], because "dust" is defined
+/// relative to the active leg's running max — which only exists during the scan.
+pub(crate) fn sanitize_and_order<T: TradeRow>(trades: &[T]) -> Vec<Tx> {
+    let mut ordered: Vec<&T> = trades.iter().filter(|t| t.amount_sol() > 0.0).collect();
+
+    ordered.sort_by(|a, b| {
+        a.slot()
+            .cmp(&b.slot())
+            .then(a.tx_index().cmp(&b.tx_index()))
+            .then(a.leg_index().cmp(&b.leg_index()))
+            .then(a.block_time().cmp(&b.block_time()))
+    });
+
+    // Post-trade GMGN spot via the single shared definition (reserve pair → pool →
+    // execution). Identical to the chart, live strategies, and the sweep, so a leg
+    // detected here is the leg detected live. The `amount_sol() > 0.0` filter above
+    // already dropped non-positive rows, so `Tx::from_trade` never returns `None`
+    // here — but the incremental exit memo relies on that same drop, so both go
+    // through the one constructor.
+    let mut prev_post_spot: Option<f64> = None;
+    ordered
+        .into_iter()
+        .filter_map(|t| {
+            let tx = Tx::from_trade(t, prev_post_spot)?;
+            prev_post_spot = Some(tx.post_spot());
+            Some(tx)
+        })
+        .collect()
+}
+
+/// The incremental swing-scan machine — the exact FSM `scan()` runs, extracted so
+/// the batch and the live-incremental exit memo (`swing_1::exit::CachedSwingExitState`)
+/// share ONE state machine and can never drift.
+///
+/// A [`ScanState`] carries the whole scan context (`current_high`/`current_low`/`temp`
+/// legs, the `phase` FSM, the `frozen_threshold`, and — implicitly through each leg's
+/// own `max_sol` — the per-leg dust floor). Feed it trades one at a time via
+/// [`step`](Self::step); once fed, [`snapshot_ledger`](Self::snapshot_ledger)
+/// reproduces the ledger `scan()` would return had history ended at the last fed tx
+/// (the finalized reversals in order + the open leg(s) trailing).
+///
+/// **Parity contract:** `scan(txs, params)` == folding every tx of `txs` through a
+/// fresh `ScanState` then calling `snapshot_ledger`. Pinned by
+/// [`scan_stepper_matches_batch`](tests::scan_stepper_matches_batch).
+#[derive(Clone)]
+pub(crate) struct ScanState {
+    current_high: Option<LegAcc>,
+    current_low: Option<LegAcc>,
+    temp: Option<LegAcc>,
+    frozen_threshold: f64,
+    /// `None` until the first tx seeds the FSM.
+    phase: Option<Phase>,
+    /// Count of finalized reversals already pushed to `finalized`. The stepper only
+    /// ever appends, so this is the live-incremental cursor into the finalized legs.
+    finalized: Vec<LegAcc>,
+}
+
+impl ScanState {
+    pub(crate) fn new() -> Self {
+        Self {
+            current_high: None,
+            current_low: None,
+            temp: None,
+            frozen_threshold: 0.0,
+            phase: None,
+            finalized: Vec::new(),
+        }
+    }
+
+    /// The finalized reversals pushed so far, in order (each a completed swing leg).
+    /// The still-open trailing leg(s) are NOT included — use
+    /// [`snapshot_ledger`](Self::snapshot_ledger) for the end-of-history view.
+    pub(crate) fn finalized(&self) -> &[LegAcc] {
+        &self.finalized
+    }
+
+    /// Fold one transaction into the machine, appending to `finalized` when a
+    /// reversal completes. Byte-identical to the body of `scan`'s loop (plus the
+    /// first-tx seeding), so the two never drift.
+    pub(crate) fn step(&mut self, tx: &Tx, params: &SwingParams) {
+        let big = params.big_tx_sol;
+        // A single tx clearing the big-tx threshold confirms a reversal on its own,
+        // independent of the accumulated net-flow threshold.
+        let is_big = |tx: &Tx| big > 0.0 && tx.amount_sol >= big;
+
+        // Seed the FSM from the first transaction.
+        let Some(phase) = self.phase else {
+            self.phase = Some(match tx.side {
+                Side::Buy => {
+                    self.current_high = Some(LegAcc::seed_high(tx, big));
+                    Phase::SwingHigh
+                }
+                Side::Sell => {
+                    self.current_low = Some(LegAcc::seed_low(tx, big));
+                    Phase::SwingLow
+                }
+            });
+            return;
+        };
+
+        // Dynamic dust floor: a trade is dust when it's a tiny fraction of the active
+        // real leg's largest trade so far (`dust_frac * leg.max_sol`). Scale-free, so
+        // no per-token SOL amount to guess. `0` (or no open leg yet) ⇒ off.
+        let dust_frac = params.dust_frac;
+        let active = match phase {
+            Phase::SwingHigh | Phase::TempSwingLow => self.current_high.as_ref(),
+            Phase::SwingLow | Phase::TempSwingHigh => self.current_low.as_ref(),
+        };
+        if dust_frac > 0.0 && active.is_some_and(|leg| tx.amount_sol < dust_frac * leg.max_sol) {
+            return;
+        }
+
+        match phase {
+            Phase::SwingHigh => match tx.side {
+                Side::Buy => self.current_high.as_mut().unwrap().apply_buy(tx, big),
+                Side::Sell => {
+                    let snapshot = self.current_high.as_ref().unwrap().net_flow();
+                    self.frozen_threshold = reversal_threshold(
+                        params.high_to_low_threshold_sol,
+                        params.high_to_low_threshold_pct,
+                        snapshot.abs(),
+                    );
+                    self.temp = Some(LegAcc::seed_low(tx, big));
+                    self.phase = Some(Phase::TempSwingLow);
+
+                    if self.temp.as_ref().unwrap().outflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_high.take().unwrap());
+                        self.current_low = self.temp.take();
+                        self.phase = Some(Phase::SwingLow);
+                    }
+                }
+            },
+
+            Phase::TempSwingLow => match tx.side {
+                Side::Sell => {
+                    let t = self.temp.as_mut().unwrap();
+                    t.apply_sell(tx, big);
+                    if t.outflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_high.take().unwrap());
+                        self.current_low = self.temp.take();
+                        self.phase = Some(Phase::SwingLow);
+                    }
+                }
+                Side::Buy => {
+                    // Sub-threshold: merge temp SELLs back into the swing high.
+                    let t = self.temp.take().unwrap();
+                    let h = self.current_high.as_mut().unwrap();
+                    h.outflow += t.outflow;
+                    h.trade_count += t.trade_count;
+                    self.phase = Some(Phase::SwingHigh);
+                    // The triggering BUY is then counted exactly once here.
+                    h.apply_buy(tx, big);
+                }
+            },
+
+            Phase::SwingLow => match tx.side {
+                Side::Sell => self.current_low.as_mut().unwrap().apply_sell(tx, big),
+                Side::Buy => {
+                    let snapshot = self.current_low.as_ref().unwrap().net_flow(); // negative
+                    self.frozen_threshold = reversal_threshold(
+                        params.low_to_high_threshold_sol,
+                        params.low_to_high_threshold_pct,
+                        snapshot.abs(),
+                    );
+                    self.temp = Some(LegAcc::seed_high(tx, big));
+                    self.phase = Some(Phase::TempSwingHigh);
+
+                    if self.temp.as_ref().unwrap().inflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_low.take().unwrap());
+                        self.current_high = self.temp.take();
+                        self.phase = Some(Phase::SwingHigh);
+                    }
+                }
+            },
+
+            Phase::TempSwingHigh => match tx.side {
+                Side::Buy => {
+                    let t = self.temp.as_mut().unwrap();
+                    t.apply_buy(tx, big);
+                    if t.inflow >= self.frozen_threshold || is_big(tx) {
+                        self.finalized.push(self.current_low.take().unwrap());
+                        self.current_high = self.temp.take();
+                        self.phase = Some(Phase::SwingHigh);
+                    }
+                }
+                Side::Sell => {
+                    // Sub-threshold: merge temp BUYs back into the swing low.
+                    let t = self.temp.take().unwrap();
+                    let l = self.current_low.as_mut().unwrap();
+                    l.inflow += t.inflow;
+                    l.trade_count += t.trade_count;
+                    self.phase = Some(Phase::SwingLow);
+                    // The triggering SELL is then counted exactly once here.
+                    l.apply_sell(tx, big);
+                }
+            },
+        }
+    }
+
+    /// The ledger `scan()` would return had history ended at the last fed tx: the
+    /// finalized reversals plus the open leg(s) trailing the current phase.
+    pub(crate) fn snapshot_ledger(&self) -> Vec<LegAcc> {
+        let mut ledger = self.finalized.clone();
+        match self.phase {
+            None => {}
+            Some(Phase::SwingHigh) => {
+                if let Some(h) = &self.current_high {
+                    ledger.push(h.clone());
+                }
+            }
+            Some(Phase::TempSwingLow) => {
+                if let Some(h) = &self.current_high {
+                    ledger.push(h.clone());
+                }
+                if let Some(t) = &self.temp {
+                    ledger.push(t.clone());
+                }
+            }
+            Some(Phase::SwingLow) => {
+                if let Some(l) = &self.current_low {
+                    ledger.push(l.clone());
+                }
+            }
+            Some(Phase::TempSwingHigh) => {
+                if let Some(l) = &self.current_low {
+                    ledger.push(l.clone());
+                }
+                if let Some(t) = &self.temp {
+                    ledger.push(t.clone());
+                }
+            }
+        }
+        ledger
+    }
+}
+
+/// Core phase machine. Produces the pre-filter, strictly-alternating ledger.
+/// Finalized reversals are pushed during the scan; the active leg and any temp
+/// leg still open at end-of-history are appended as well. A thin driver over the
+/// shared [`ScanState`] stepper (the batch and the live-incremental exit memo run
+/// the identical FSM).
+pub(crate) fn scan(txs: &[Tx], params: &SwingParams) -> Vec<LegAcc> {
+    let mut state = ScanState::new();
+    for tx in txs {
+        state.step(tx, params);
+    }
+    state.snapshot_ledger()
+}
+
+/// Post-processing pair-based quality filter. Forms fixed, non-overlapping
+/// `(swing_high, swing_low)` pairs and discards a pair if one of the legs fail
+/// Unpaired legs (leading low / trailing high) are kept as-is.
+///
+/// NOTE: this pair-drop is **non-causal** (a leg's fate depends on its partner),
+/// so the swing1 phase classifier deliberately does NOT use it — it walks the
+/// raw [`scan`] ledger with causal per-leg gates only. This filter is retained
+/// for the lab swing-chart endpoint, which is a cold batch path.
+fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingLeg> {
+    let fails = |leg: &LegAcc| -> bool {
+        let duration_ms = leg.end_at - leg.start_at;
+
+        // Per-leg-type delta % and net-flow-per-second bounds (0 = no bound).
+        let (min_delta_pct, max_delta_pct, min_nf_per_sec, max_nf_per_sec) = match leg.leg_type {
+            SwingType::SwingHigh => (
+                params.swing_high_min_delta_pct,
+                params.swing_high_max_delta_pct,
+                params.swing_high_min_net_flow_per_sec,
+                params.swing_high_max_net_flow_per_sec,
+            ),
+            SwingType::SwingLow => (
+                params.swing_low_min_delta_pct,
+                params.swing_low_max_delta_pct,
+                params.swing_low_min_net_flow_per_sec,
+                params.swing_low_max_net_flow_per_sec,
+            ),
+        };
+        // Compared by magnitude so swing-low legs (negative delta/net flow) use
+        // the same positive thresholds as swing highs.
+        let delta_pct_abs = if leg.start_price != 0.0 {
+            ((leg.end_price - leg.start_price) / leg.start_price * 100.0).abs()
+        } else {
+            0.0
+        };
+        // Rate is undefined for instantaneous (0-duration) legs, so the ratio
+        // bounds are simply skipped for them rather than dividing by zero.
+        let net_flow_per_sec_abs = if duration_ms > 0 {
+            Some((leg.net_flow() / (duration_ms as f64 / 1000.0)).abs())
+        } else {
+            None
+        };
+
+        leg.trade_count < params.min_leg_trades
+            || duration_ms < params.min_leg_duration_ms
+            || leg.net_flow().abs() < params.min_leg_net_flow
+            || (leg.inflow + leg.outflow) < params.min_leg_volume
+            || (params.max_leg_trades > 0 && leg.trade_count > params.max_leg_trades)
+            || (params.max_leg_duration_ms > 0 && duration_ms > params.max_leg_duration_ms)
+            || (params.max_leg_net_flow > 0.0 && leg.net_flow().abs() > params.max_leg_net_flow)
+            || (params.max_leg_volume > 0.0 && (leg.inflow + leg.outflow) > params.max_leg_volume)
+            || (min_delta_pct > 0.0 && delta_pct_abs < min_delta_pct)
+            || (max_delta_pct > 0.0 && delta_pct_abs > max_delta_pct)
+            || (min_nf_per_sec > 0.0 && net_flow_per_sec_abs.is_some_and(|r| r < min_nf_per_sec))
+            || (max_nf_per_sec > 0.0 && net_flow_per_sec_abs.is_some_and(|r| r > max_nf_per_sec))
+    };
+
+    let mut out: Vec<SwingLeg> = Vec::with_capacity(ledger.len());
+    let mut i = 0;
+    while i < ledger.len() {
+        let is_pair = i + 1 < ledger.len()
+            && ledger[i].leg_type == SwingType::SwingHigh
+            && ledger[i + 1].leg_type == SwingType::SwingLow;
+
+        if is_pair {
+            if !(fails(&ledger[i]) || fails(&ledger[i + 1])) {
+                out.push(ledger[i].clone().finalize());
+                out.push(ledger[i + 1].clone().finalize());
+            }
+            i += 2;
+        } else {
+            // Unpaired leg: ignored by the filter, kept as-is.
+            out.push(ledger[i].clone().finalize());
+            i += 1;
+        }
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Chain-of-swings stats
+// ---------------------------------------------------------------------------
+
+// `ChainStats` lives in `trading_core::analyzers` (shared with the core token-list
+// sort); re-exported so `swing_analyzer::ChainStats` paths resolve.
+pub use crate::analyzers::ChainStats;
+
+/// Reduce a token's alternating legs to high→low pairs and group them into
+/// chains, mirroring the frontend exactly: legs are walked in `start_at` order; a
+/// *pair* is a `SwingHigh` immediately followed by a `SwingLow` (unpaired legs are
+/// skipped); two consecutive pairs *link* when the idle gap
+/// (`next.start_at − current.end_at`) is within `chain_latency_ms`; a *chain* is a
+/// maximal run of ≥ 2 linked pairs.
+pub fn compute_chain_stats(swings: &[SwingLeg], chain_latency_ms: i64) -> ChainStats {
+    // (high start_at, low end_at) per pair, in time order.
+    let mut sorted: Vec<&SwingLeg> = swings.iter().collect();
+    sorted.sort_by_key(|s| s.start_at);
+    let mut pairs: Vec<(i64, i64)> = Vec::new();
+    let mut i = 0;
+    while i < sorted.len() {
+        let high = sorted[i];
+        if high.leg_type == SwingType::SwingHigh
+            && matches!(sorted.get(i + 1), Some(low) if low.leg_type == SwingType::SwingLow)
+        {
+            pairs.push((high.start_at, sorted[i + 1].end_at));
+            i += 2; // consume the pair
+        } else {
+            i += 1; // unpaired leg — skip
+        }
+    }
+
+    let mut max_run: u32 = 0;
+    let mut cur_run: u32 = 0; // 0 = no chain currently open
+    let mut chain_count: u32 = 0;
+    for k in 0..pairs.len().saturating_sub(1) {
+        let gap = pairs[k + 1].0 - pairs[k].1;
+        if gap <= chain_latency_ms {
+            if cur_run == 0 {
+                cur_run = 2; // this link joins pairs k and k+1 — a new chain opens
+                chain_count += 1;
+            } else {
+                cur_run += 1; // extend the chain by one more pair
+            }
+            if cur_run > max_run {
+                max_run = cur_run;
+            }
+        } else {
+            cur_run = 0; // gap too large — chain breaks here
+        }
+    }
+
+    ChainStats {
+        swing_pairs: pairs.len() as u32,
+        max_seq_pairs: max_run,
+        chain_count,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::trade::{Trade, TradeType};
+    use chrono::Utc;
+
+    fn buy(ms: i64, sol: f64, tokens: f64, _vsol_post: f64, _vtok_post: f64, leg: u32) -> Trade {
+        let mut t = Trade::new(
+            "mint".into(),
+            "user".into(),
+            TradeType::Buy,
+            sol,
+            tokens as u64,
+            "sig".into(),
+            1,
+            Utc::now(),
+        );
+        t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
+        t.leg_index = leg;
+        t
+    }
+
+    fn sell(ms: i64, sol: f64, tokens: f64, _vsol_post: f64, _vtok_post: f64) -> Trade {
+        let mut t = Trade::new(
+            "mint".into(),
+            "user".into(),
+            TradeType::Sell,
+            sol,
+            tokens as u64,
+            "sig".into(),
+            1,
+            Utc::now(),
+        );
+        t.block_time = chrono::DateTime::from_timestamp_millis(ms).unwrap();
+        t
+    }
+
+    /// The `ScanState` stepper, fed tx-by-tx, must reproduce `scan()` exactly —
+    /// the parity contract the live-incremental exit memo rests on.
+    fn assert_stepper_matches_batch(trades: &[Trade], params: &SwingParams) {
+        let txs = sanitize_and_order(trades);
+        let batch: Vec<SwingLeg> = scan(&txs, params).into_iter().map(LegAcc::finalize).collect();
+
+        let mut state = ScanState::new();
+        for tx in &txs {
+            state.step(tx, params);
+        }
+        let stepped: Vec<SwingLeg> =
+            state.snapshot_ledger().into_iter().map(LegAcc::finalize).collect();
+
+        assert_eq!(batch.len(), stepped.len(), "leg count differs");
+        for (b, s) in batch.iter().zip(&stepped) {
+            assert_eq!(b.leg_type, s.leg_type);
+            assert_eq!(b.start_at, s.start_at);
+            assert_eq!(b.end_at, s.end_at);
+            assert_eq!(b.pivot_end_at, s.pivot_end_at);
+            assert!((b.pivot_end_price - s.pivot_end_price).abs() < 1e-12);
+            assert!((b.net_flow - s.net_flow).abs() < 1e-12);
+            assert_eq!(b.trade_count, s.trade_count);
+        }
+    }
+
+    #[test]
+    fn scan_stepper_matches_batch() {
+        // A varied chain: reversals, sub-threshold merges, a big-tx confirm, dust,
+        // and trailing open legs — every FSM path the stepper must mirror.
+        let params = SwingParams {
+            high_to_low_threshold_sol: 1.0,
+            high_to_low_threshold_pct: 0.0,
+            low_to_high_threshold_sol: 1.0,
+            low_to_high_threshold_pct: 0.0,
+            min_leg_trades: 1,
+            big_tx_sol: 10.0,
+            dust_frac: 0.05,
+            ..Default::default()
+        };
+        let trades = vec![
+            buy(1_000, 3.0, 300_000.0, 0.0, 0.0, 0),
+            buy(2_000, 2.0, 200_000.0, 0.0, 0.0, 0),
+            sell(3_000, 0.5, 50_000.0, 0.0, 0.0), // sub-threshold sell → merges back
+            buy(4_000, 1.0, 100_000.0, 0.0, 0.0, 0),
+            sell(5_000, 2.0, 200_000.0, 0.0, 0.0), // crosses 1.0 → reversal to low
+            sell(6_000, 0.01, 900.0, 0.0, 0.0),    // dust vs leg max
+            buy(7_000, 12.0, 1_200_000.0, 0.0, 0.0, 0), // big tx → instant reversal to high
+            sell(8_000, 0.6, 60_000.0, 0.0, 0.0),  // opens a trailing temp low
+        ];
+        assert_stepper_matches_batch(&trades, &params);
+    }
+
+    #[test]
+    fn dust_frac_drops_dust_relative_to_leg_max() {
+        // A real swing low (max real sell = 2.0 SOL) followed by DUST sells that
+        // would, without a dust floor, extend the leg's `end_at`/`trade_count` onto
+        // the dust tail. The dust floor is a FRACTION of the leg's biggest trade
+        // (2.0), so it adapts without a per-token SOL amount.
+        let trades = vec![
+            sell(1_000, 2.0, 100_000.0, 0.0, 0.0),
+            sell(2_000, 1.5, 80_000.0, 0.0, 0.0),
+            sell(3_000, 0.01, 500.0, 0.0, 0.0), // dust: 0.01 < 0.05*2.0 = 0.1
+            sell(4_000, 0.02, 900.0, 0.0, 0.0), // dust
+        ];
+        let mut params = SwingParams { min_leg_trades: 1, ..Default::default() };
+
+        // OFF (0): the dust extends the leg to t=4_000, 4 trades.
+        params.dust_frac = 0.0;
+        let off = detect_swings(&trades, &params);
+        let low_off = off.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(low_off.end_at, 4_000, "dust extends the leg when the floor is off");
+        assert_eq!(low_off.trade_count, 4);
+
+        // ON (0.05): floor = 0.05 * leg_max(2.0) = 0.1, so the 0.01/0.02 trades are
+        // dust and skipped — the leg ends at the last real sell (t=2_000), 2 trades.
+        params.dust_frac = 0.05;
+        let on = detect_swings(&trades, &params);
+        let low_on = on.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(low_on.end_at, 2_000, "dust no longer extends the leg");
+        assert_eq!(low_on.trade_count, 2);
+    }
+
+    #[test]
+    fn dust_frac_scale_free_across_token_sizes() {
+        // Same dust_frac works on a big-trade token and a small-trade token — the
+        // floor scales with the leg's own max, so no per-token amount is needed.
+        let mk = |big: f64, dust: f64| {
+            vec![
+                sell(1_000, big, 100_000.0, 0.0, 0.0),
+                sell(2_000, big * 0.75, 80_000.0, 0.0, 0.0),
+                sell(3_000, dust, 500.0, 0.0, 0.0), // < 0.05 * big ⇒ dust on both
+            ]
+        };
+        let params = SwingParams { min_leg_trades: 1, dust_frac: 0.05, ..Default::default() };
+
+        // 200-SOL token: dust at 1.0 SOL (still < 0.05*200 = 10) is dropped.
+        let big = detect_swings(&mk(200.0, 1.0), &params);
+        let big_low = big.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(big_low.trade_count, 2, "1 SOL is dust on a 200-SOL-trade token");
+
+        // 2-SOL token: dust at 0.05 SOL (< 0.05*2 = 0.1) is dropped — same frac.
+        let small = detect_swings(&mk(2.0, 0.05), &params);
+        let small_low = small.iter().find(|l| l.leg_type == SwingType::SwingLow).unwrap();
+        assert_eq!(small_low.trade_count, 2, "0.05 SOL is dust on a 2-SOL-trade token");
+    }
+
+    #[test]
+    fn swing_high_first_trade_start_falls_back_to_execution_price() {
+        // The very first trade has no prior curve state, so `start_price` falls
+        // back to its own execution price.
+        let trades = vec![buy(1_000, 10.0, 1_000_000.0, 110.0, 900_000.0, 0)];
+        let legs = detect_swings(&trades, &SwingParams::default());
+        assert_eq!(legs.len(), 1);
+        assert!((legs[0].start_price - trades[0].execution_price()).abs() < 1e-15);
+        assert!((legs[0].end_price - trades[0].price_per_token).abs() < 1e-15);
+    }
+
+    #[test]
+    fn confirmed_swing_high_start_uses_pre_trade_spot() {
+        let params = SwingParams {
+            high_to_low_threshold_sol: 1.0,
+            high_to_low_threshold_pct: 100.0,
+            low_to_high_threshold_sol: 1.0,
+            low_to_high_threshold_pct: 100.0,
+            min_leg_trades: 1,
+            ..Default::default()
+        };
+        // Distinct execution prices so pre-trade spot (= prior trade's post spot)
+        // differs from the opening buy's own execution price.
+        let trades = vec![
+            buy(1_000, 5.0, 500_000.0, 105.0, 950_000.0, 0),
+            sell(2_000, 2.0, 100_000.0, 103.0, 1_150_000.0),
+            buy(3_000, 3.0, 300_000.0, 106.0, 850_000.0, 0),
+        ];
+        let legs = detect_swings(&trades, &params);
+        let high = legs
+            .iter()
+            .filter(|l| l.leg_type == SwingType::SwingHigh)
+            .find(|l| l.start_at == 3_000)
+            .unwrap();
+        let opener = &trades[2];
+        let prev = &trades[1];
+        // start_at is the opening buy's timestamp; start_price is the spot just
+        // before it (the previous trade's post-trade spot), not its execution.
+        assert!((high.start_price - prev.price_per_token).abs() < 1e-15);
+        assert!((high.start_price - opener.execution_price()).abs() > 1e-15);
+        assert!((high.end_price - opener.price_per_token).abs() < 1e-15);
+    }
+
+    fn leg(leg_type: SwingType, start_at: i64, end_at: i64) -> SwingLeg {
+        SwingLeg {
+            leg_type,
+            start_at,
+            end_at,
+            duration_ms: end_at - start_at,
+            start_price: 0.0,
+            end_price: 0.0,
+            pivot_end_at: end_at,
+            pivot_end_price: 0.0,
+            inflow: 0.0,
+            outflow: 0.0,
+            net_flow: 0.0,
+            trade_count: 1,
+        }
+    }
+
+    #[test]
+    fn chain_stats_link_pairs_within_latency() {
+        use SwingType::{SwingHigh, SwingLow};
+        // Three high→low pairs. Pair0 ends @200, pair1 starts @300 (gap 100);
+        // pair1 ends @500, pair2 starts @560 (gap 60). With latency 100 all three
+        // link into ONE chain of 3 pairs.
+        let swings = vec![
+            leg(SwingHigh, 100, 150),
+            leg(SwingLow, 160, 200),
+            leg(SwingHigh, 300, 350),
+            leg(SwingLow, 360, 500),
+            leg(SwingHigh, 560, 600),
+            leg(SwingLow, 610, 700),
+        ];
+        let s = compute_chain_stats(&swings, 100);
+        assert_eq!(s.swing_pairs, 3);
+        assert_eq!(s.max_seq_pairs, 3);
+        assert_eq!(s.chain_count, 1);
+
+        // Tighten the latency so only the second gap (60) links → one chain of 2,
+        // the first pair left isolated.
+        let s = compute_chain_stats(&swings, 60);
+        assert_eq!(s.swing_pairs, 3);
+        assert_eq!(s.max_seq_pairs, 2);
+        assert_eq!(s.chain_count, 1);
+
+        // No gap links → no chains.
+        let s = compute_chain_stats(&swings, 0);
+        assert_eq!(s.swing_pairs, 3);
+        assert_eq!(s.max_seq_pairs, 0);
+        assert_eq!(s.chain_count, 0);
+    }
+
+    #[test]
+    fn chain_stats_skip_unpaired_legs() {
+        use SwingType::{SwingHigh, SwingLow};
+        // Leading lone low + trailing lone high are not part of any pair.
+        let swings = vec![
+            leg(SwingLow, 50, 80),
+            leg(SwingHigh, 100, 150),
+            leg(SwingLow, 160, 200),
+            leg(SwingHigh, 900, 950),
+        ];
+        let s = compute_chain_stats(&swings, 1_000);
+        assert_eq!(s.swing_pairs, 1);
+        assert_eq!(s.max_seq_pairs, 0);
+        assert_eq!(s.chain_count, 0);
+    }
+}

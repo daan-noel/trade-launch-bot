@@ -1,0 +1,11 @@
+# Keep the lockfile byte-identical across Windows (dev) and Linux (EC2/Docker)
+# so cargo-chef's recipe.json — and therefore the dependency build cache — is
+# stable regardless of which machine last touched it.
+Cargo.lock -text
+
+# Docker reads .dockerignore line-by-line; a CRLF leaves a trailing \r on every
+# pattern (so `target/\r` never matches `target/`) and the whole build context —
+# incl. the multi-GB target/ dirs — gets shipped. Force LF. Same for Dockerfiles.
+.dockerignore text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf

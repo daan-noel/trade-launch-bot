@@ -1,0 +1,241 @@
+﻿import { baseApi } from 'store/baseApi';
+import type {
+  GroupedSweepRunRecord,
+  GroupedSweepGroupRecord,
+  GroupedSweepStartArgs,
+  ComboTokenResult,
+} from '@lab/components/sweep/groupedTypes';
+import type {
+  GroupedCreationArgs,
+  GroupedCreationResponse,
+} from 'components/creation-stats/groupedCreationStats';
+import type {
+  MatchedTokensResponse,
+  PaperResultResponse,
+  SimulatedTokenResult,
+  TraderTokenRow,
+} from 'types';
+
+/** Args for the per-rule strategy result reads (matched / simulate / paper),
+ *  shared by both strategy pages so tpsl1 and tpsl2 keep distinct cache keys. */
+export interface StrategyRuleArg {
+  strategy: 'tpsl1' | 'tpsl2' | 'swing1';
+  ruleId: string;
+  /**
+   * Optional transient creation-time window for `matched` / `simulate` only
+   * (ISO strings; empty = all-time). Not persisted on the rule — it scopes the
+   * backend's full-`tokens`-table scan. Part of the arg, so different ranges
+   * cache separately while a rule edit still invalidates the whole pair.
+   * Ignored by `paper-result`.
+   */
+  from?: string;
+  to?: string;
+}
+
+/** Append `?from=&to=` (only the bounds that are set) to an analysis-endpoint URL. */
+const withAnalysisRange = (url: string, { from, to }: StrategyRuleArg): string => {
+  const qs = new URLSearchParams();
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  const s = qs.toString();
+  return s ? `${url}?${s}` : url;
+};
+
+/** Cache tag for a rule's `matched` + `simulate` results — both derive from the
+ *  rule's entry criteria, so editing the rule invalidates the pair. */
+const strategyResultTag = (a: StrategyRuleArg) =>
+  ({ type: 'StrategyResult', id: `${a.strategy}:${a.ruleId}` }) as const;
+
+/**
+ * Lab-only RTK Query endpoints — bundled exclusively in the lab
+ * (local) build: grouped param-sweeps, per-rule strategy simulate/paper reads,
+ * grouped creation stats, and the creators/analysis page lists. The live
+ * backend serves none of these.
+ */
+export const labApi = baseApi.injectEndpoints({
+  endpoints: (builder) => ({
+    // Per-rule strategy result reads. Driven imperatively from the strategy
+    // pages via `endpoints.X.initiate` (the pages keep their own open/toggle
+    // state), so folding them into RTK Query buys dedupe + structural sharing +
+    // a short retention: re-opening a view or switching rules and back reuses
+    // the cache instead of re-hitting the backend. `matched`/`simulate` are
+    // tagged by rule so a rule edit can invalidate them; `paper-result` is
+    // force-refetched on the paper-finished SSE event.
+    getStrategyMatched: builder.query<MatchedTokensResponse, StrategyRuleArg>({
+      query: (a) =>
+        withAnalysisRange(
+          `/api/strategies/${a.strategy}/rules/${encodeURIComponent(a.ruleId)}/matched`,
+          a,
+        ),
+      providesTags: (_r, _e, a) => [strategyResultTag(a)],
+      keepUnusedDataFor: 60,
+    }),
+    // Collect a finished backtest's result. The simulation is started separately
+    // (`startSimulation`, a detached job) and its result stored server-side, so
+    // this endpoint just picks it up once the `simulation_finished` SSE fires —
+    // no long-held connection that a minutes-long run could fail with a
+    // `FETCH_ERROR`. Strategy-agnostic URL (keyed by `rule_id`), but the cache key
+    // / tag stays per `strategy:ruleId` so a rule edit invalidates it and tpsl1 /
+    // tpsl2 don't share an entry. A cancelled run resolves to `{ cancelled: true }`;
+    // callers type-guard on the shape. Driven imperatively from
+    // `fetchSimulateCached` — see `store/strategyResultCache.ts`.
+    getStrategySimulateResult: builder.query<
+      SimulatedTokenResult[] | { cancelled: true },
+      StrategyRuleArg
+    >({
+      query: (a) => `/api/jobs/simulations/${encodeURIComponent(a.ruleId)}/result`,
+      providesTags: (_r, _e, a) => [strategyResultTag(a)],
+      keepUnusedDataFor: 60,
+    }),
+    getStrategyPaperResult: builder.query<PaperResultResponse, StrategyRuleArg>({
+      query: ({ strategy, ruleId }) =>
+        `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/paper-result`,
+      providesTags: (_r, _e, a) => [
+        { type: 'StrategyPaper', id: `${a.strategy}:${a.ruleId}` },
+      ],
+    }),
+    // Grouped param-sweeps (generic across strategies; `strategy_id` resolves the
+    // per-strategy tables). A run partitions its corpus by a fingerprint key and
+    // ranks combos PER group. Runs/groups are bounded, so the page pulls them
+    // whole; a group's combo rows are fetched lazily on drill-in. Cached so
+    // flipping between runs/groups reuses the data.
+    getGroupedSweepRuns: builder.query<
+      GroupedSweepRunRecord[],
+      { strategyId: string; limit?: number }
+    >({
+      query: ({ strategyId, limit }) =>
+        `/api/strategies/sweeps?strategy_id=${encodeURIComponent(strategyId)}&limit=${limit ?? 50}`,
+      providesTags: ['GroupedSweep'],
+      keepUnusedDataFor: 120,
+    }),
+    getGroupedSweepGroups: builder.query<
+      GroupedSweepGroupRecord[],
+      { strategyId: string; runId: string }
+    >({
+      query: ({ strategyId, runId }) =>
+        `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups?strategy_id=${encodeURIComponent(strategyId)}`,
+      keepUnusedDataFor: 120,
+    }),
+    // NOTE: per-group results are read via the NDJSON streaming reader in
+    // `useStreamedSweepResults` (the backend `results` route streams
+    // application/x-ndjson and needs page/limit/sort) — not an RTK query.
+    getComboTokenResults: builder.query<
+      ComboTokenResult[],
+      { strategyId: string; runId: string; groupId: string; comboId: number }
+    >({
+      query: ({ strategyId, runId, groupId, comboId }) =>
+        `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups/${encodeURIComponent(groupId)}/token-results?strategy_id=${encodeURIComponent(strategyId)}&combo_id=${comboId}`,
+      keepUnusedDataFor: 60,
+    }),
+    // Trigger a grouped DB-range sweep (single-flight on the backend — a 409 means
+    // a sweep is already running). Invalidating `GroupedSweep` refetches the runs.
+    // Returns AS SOON AS the run is admitted (`202 { run_id }`) rather than holding
+    // the request open for the whole sweep — that prevented a concurrent cancel POST
+    // from queueing behind it on the browser's per-host connection cap. The run then
+    // fills in live via per-group writes + SSE; its terminal state (done / cancelled)
+    // arrives over the `SweepFinished` SSE frame, which refetches `GroupedSweep`.
+    startGroupedSweep: builder.mutation<
+      { run_id: string; status: string },
+      GroupedSweepStartArgs
+    >({
+      query: (body) => ({
+        url: '/api/strategies/sweeps',
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['GroupedSweep'],
+    }),
+    // Delete one run by id; refetches the (now shorter) runs list.
+    deleteGroupedSweepRun: builder.mutation<
+      { deleted: number },
+      { strategyId: string; runId: string }
+    >({
+      query: ({ strategyId, runId }) => ({
+        url: `/api/strategies/sweeps/${encodeURIComponent(runId)}?strategy_id=${encodeURIComponent(strategyId)}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['GroupedSweep'],
+    }),
+    // Rename one run (set/clear its label). A blank label clears the name.
+    // Refetches the runs list so the picker + history panel show the new name.
+    renameGroupedSweepRun: builder.mutation<
+      { label: string | null },
+      { strategyId: string; runId: string; label: string }
+    >({
+      query: ({ strategyId, runId, label }) => ({
+        url: `/api/strategies/sweeps/${encodeURIComponent(runId)}?strategy_id=${encodeURIComponent(strategyId)}`,
+        method: 'PATCH',
+        body: { label },
+      }),
+      invalidatesTags: ['GroupedSweep'],
+    }),
+    // Prune all runs created strictly before `before` (ISO timestamp). `before`
+    // is required server-side so this can't wipe the whole history by accident.
+    pruneGroupedSweeps: builder.mutation<
+      { deleted: number },
+      { strategyId: string; before: string }
+    >({
+      query: ({ strategyId, before }) => ({
+        url: `/api/strategies/sweeps?strategy_id=${encodeURIComponent(strategyId)}&before=${encodeURIComponent(before)}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['GroupedSweep'],
+    }),
+    // Per-fingerprint creation activity (dashboard "Creation by token group").
+    // Server-side partition by a compound fingerprint key + top-N by volume;
+    // returns each group's day×hour fold + calendar trend (count only). Cached
+    // 120s; the page floors `from` to the hour so the cache key stays stable.
+    getGroupedCreationStats: builder.query<
+      GroupedCreationResponse,
+      GroupedCreationArgs
+    >({
+      query: ({ bucket, tz, from, segment, groupBy, top, fieldFilters, ixLabelsFilter }) => {
+        const p = new URLSearchParams();
+        p.set('bucket', bucket);
+        p.set('tz', tz);
+        p.set('segment', segment);
+        p.set('group_by', groupBy.join(','));
+        p.set('top', String(top));
+        if (from) p.set('from', from);
+        // Only attach filter params when non-empty so the cache key stays stable.
+        if (fieldFilters && Object.keys(fieldFilters).length > 0) {
+          p.set('field_filters', JSON.stringify(fieldFilters));
+        }
+        if (ixLabelsFilter && ixLabelsFilter.length > 0) {
+          p.set('ix_labels_filter', JSON.stringify(ixLabelsFilter));
+        }
+        return `/api/tokens/creation-stats/grouped?${p.toString()}`;
+      },
+      keepUnusedDataFor: 120,
+    }),
+    // Trader Analysis: full token rows (+ the wallet's per-mint stats) for every
+    // mint a wallet traded in the last `days`, most-recent-trade first, capped at
+    // `limit`. PG-backed on purpose — the 7-day default window includes today,
+    // which the sealed-days lake lacks. The page renders these through the shared
+    // token columns (client-side sort/filter) + a synced charts grid.
+    getTraderTokens: builder.query<
+      TraderTokenRow[],
+      { wallet: string; days: number; limit: number }
+    >({
+      query: ({ wallet, days, limit }) =>
+        `/api/wallets/${encodeURIComponent(wallet)}/tokens?days=${days}&limit=${limit}`,
+      // Pre-parse created_at to epoch-ms so the shared AgeCell reads it directly
+      // (mirrors the getTokensPage transform).
+      transformResponse: (rows: TraderTokenRow[]) =>
+        rows.map((r) => ({ ...r, created_at_ms: Date.parse(r.created_at) })),
+      keepUnusedDataFor: 60,
+    }),
+  }),
+});
+
+export const {
+  useGetGroupedCreationStatsQuery,
+  useGetGroupedSweepRunsQuery,
+  useGetGroupedSweepGroupsQuery,
+  useGetComboTokenResultsQuery,
+  useStartGroupedSweepMutation,
+  useDeleteGroupedSweepRunMutation,
+  useRenameGroupedSweepRunMutation,
+  usePruneGroupedSweepsMutation,
+  useGetTraderTokensQuery,
+} = labApi;

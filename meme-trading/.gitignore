@@ -1,0 +1,87 @@
+# Rust build output
+/target/
+target-check
+# NOTE: Cargo.lock is intentionally COMMITTED. This is a binary/app, not a
+# library, so the lockfile must be tracked — it keeps the dependency graph
+# deterministic across machines and lets cargo-chef's Docker layer cache hit
+# on EC2 (otherwise every redeploy re-downloads & recompiles all crates).
+
+# Frontend - React/Vite
+frontend/dist/
+frontend/build/
+frontend/node_modules/
+frontend/.vite/
+package-lock.json
+
+# Strategy sweep output (corpus parquet cache + run artifacts)
+sweep-out/
+tpsl2-sweep-out/
+venv
+
+# Environment secrets
+.env
+.env.backup
+.env.local
+.env.*.local
+
+# TLS cert + private key (self-signed, generated locally — regenerate via openssl;
+# see nginx/tls/README.md). Required locally before `docker compose up --build`.
+nginx/tls/*.pem
+
+# SSH keys — never commit
+*.pem
+*.ppk
+aws.pub
+
+# Editor
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# IDE
+.DS_Store
+Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+
+# Compressed files
+*.rar
+*.zip
+*.7z
+
+# Misc
+.cache/
+dist/
+build/
+# MCP config (contains DB credentials)
+.mcp.json
+
+
+# DB dump files
+/*.dump
+
+/snapshots
+
+# Claude Code internal worktrees
+.claude/worktrees/

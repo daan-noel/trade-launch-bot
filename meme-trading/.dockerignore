@@ -1,0 +1,35 @@
+# Rust build output (rebuilt inside the image)
+target/
+**/target/
+target-check/
+**/target-check/
+
+# Node deps & build output (reinstalled/rebuilt inside the image)
+node_modules/
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Secrets — never copy into the build context
+.env
+.env.*
+!.env.example
+
+# Large archives / VCS / editor noise
+*.7z
+*.zip
+*.rar
+.git/
+.vscode/
+.idea/
+*.log
+
+# Parquet lake / local data (never part of an image build)
+.lake/
+**/*.parquet
+
+# Docs / plans not needed for the build (excluded so a docs edit doesnt bust
+# the builders source-copy layer and force a recompile)
+@plans/
+@arch/
+*.md

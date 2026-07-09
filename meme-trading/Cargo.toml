@@ -1,0 +1,9 @@
+[workspace]
+members = ["trading_core", "live", "lab", "ingest-laserstream", "ingest-websocket", "pump-trader"]
+resolver = "1"
+
+[workspace.package]
+edition = "2021"
+
+[profile.dev]
+debug = true

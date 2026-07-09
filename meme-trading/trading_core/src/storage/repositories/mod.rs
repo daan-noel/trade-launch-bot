@@ -1,0 +1,16 @@
+pub mod creation_stats_repo;
+// `grouped_sweep_repo` stays in `backend`: it depends on the sweep engine's
+// `ComboMetrics` aggregate (local), so it lands in `lab`, not core.
+pub mod raw_tx_repo;
+pub mod settings_repo;
+pub mod strategy_repo;
+pub mod token_info_repo;
+pub mod token_repo;
+pub mod trade_repo;
+pub mod wallet_dict_repo;
+// The per-strategy tpsl{1,2}_{paper_trading,position,strategy_rule}_repo modules
+// were removed with the strategy-table merge — everything now lives on the unified
+// `strategy_repo` over `strategy_rules`/`strategy_runs`/`strategy_positions`.
+pub mod wallet_profile_repo;
+pub mod wallet_profile_tag_repo;
+pub mod wallet_repo;

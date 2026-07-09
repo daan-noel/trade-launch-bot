@@ -1,0 +1,107 @@
+import { useState } from 'react';
+import { cn } from 'lib/cn';
+
+interface AccordionProps {
+  /** Simple text/node title — the entire header row is the collapse toggle. Chevron on right. */
+  title?: React.ReactNode;
+  /** Extra content rendered inline with the title (badges, info icons). Only used with `title`. */
+  badge?: React.ReactNode;
+  /** Full custom header content. The chevron button is prepended at the left edge
+   *  and is the *only* collapse trigger — interactive controls inside `header`
+   *  (selects, buttons, inputs) are not affected. */
+  header?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+  className?: string;
+  /** Draw the outer border and the header/content divider. Default true. */
+  bordered?: boolean;
+  /** Header + content spacing. Default 'default' (matches legacy look). */
+  padding?: 'default' | 'sm' | 'none';
+}
+
+const PAD = {
+  default: { row: 'min-h-[48px]', header: 'px-3 py-2', title: 'px-4 py-3', body: 'px-4 py-4' },
+  sm: { row: 'min-h-0', header: 'px-2 py-1', title: 'px-2 py-1.5', body: 'px-2 py-2' },
+  none: { row: 'min-h-0', header: 'p-0', title: 'p-0', body: 'pt-2' },
+} as const;
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={cn(
+        'h-5 w-5 shrink-0 text-text-dim transition-transform duration-200',
+        open && 'rotate-90',
+      )}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <polyline points="7,4 13,10 7,16" />
+    </svg>
+  );
+}
+
+export function Accordion({
+  title,
+  badge,
+  header,
+  defaultOpen = true,
+  children,
+  className,
+  bordered = true,
+  padding = 'default',
+}: AccordionProps) {
+  const [open, setOpen] = useState(defaultOpen);
+  const toggle = () => setOpen((o) => !o);
+  const pad = PAD[padding];
+
+  return (
+    <div
+      className={cn(
+        'overflow-hidden rounded-lg',
+        bordered && 'border border-white/10',
+        className,
+      )}
+    >
+      {header !== undefined ? (
+        // Interactive-header mode: only the chevron button toggles collapse.
+        <div className={cn('flex items-center gap-2', pad.row, pad.header)}>
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={toggle}
+            className="flex shrink-0 items-center rounded-md p-1 text-text-dim hover:bg-white/8 hover:text-text"
+          >
+            <Chevron open={open} />
+          </button>
+          {header}
+        </div>
+      ) : (
+        // Title mode: entire header row is the collapse button, chevron on right (MUI style).
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={toggle}
+          className={cn(
+            'flex w-full items-center justify-between gap-3 text-left hover:bg-white/5',
+            pad.row,
+            pad.title,
+          )}
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-text">{title}</span>
+            {badge}
+          </span>
+          <Chevron open={open} />
+        </button>
+      )}
+      {open && (
+        <div className={cn(bordered && 'border-t border-white/10', pad.body)}>{children}</div>
+      )}
+    </div>
+  );
+}

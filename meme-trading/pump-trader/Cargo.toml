@@ -1,0 +1,69 @@
+[package]
+name = "pump-trader"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone Pump.fun trader: pre-built nonce/seed pools, Jito tips, confirmation polling."
+
+[lib]
+name = "pump_trader"
+path = "src/lib.rs"
+
+[features]
+# Off-hot-path tools, off by default so a minimal consumer compiles only the
+# buy/sell core. `live` enables both. `sim` stays in core (shares the ix builders).
+default = []
+probe = []
+claim = []
+
+[dependencies]
+# Tier-1 protocol invariants live in `src/protocol.rs` (const Pubkeys via the
+# `pubkey!` macro); Tier-2 tuning in `src/config.rs`. `src/constants.rs` is a thin
+# back-compat shim for external string consumers.
+
+# Async runtime (consumer provides the runtime; the trader spawns background tasks).
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+
+# Error handling — a crate-owned `thiserror` boundary (no `anyhow` leak).
+thiserror = "1"
+
+# Serialization (WalletHolding / TokenBalance derive Serialize)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+
+# Encodings for transaction submission
+base64 = "0.22"
+bincode = "1.3"
+# base58: decode instruction data (swap discriminator) when reading a recent
+# on-chain swap to recover the per-coin fee-share marker account.
+bs58 = "0.5"
+
+# Random Jito tip-account selection
+rand = "0.8"
+
+# Concurrent maps for the per-token / reserve caches. Sharded internally, so the
+# WS-ingest writer and the trade readers no longer contend on one global mutex.
+# Pinned to 4.0 to match the workspace (solana 1.17 already pulls dashmap 4.0.2).
+dashmap = "4.0"
+
+# HTTP client for the Helius sender JSON-RPC
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+# Solana on-chain transaction construction and RPC
+solana-client = "1.17.27"
+solana-sdk = "1.17.27"
+# Decode the post-execution account states simulateTransaction returns (the
+# `accounts` field) into balances/token amounts for the simulation engine.
+solana-account-decoder = "1.17.27"
+
+# Token program account-initialization helpers (versions pinned to match solana 1.17)
+spl-associated-token-account = "2.2"
+spl-token = "=4.0.0"
+spl-token-2022 = "=1.0.0"
+
+[dev-dependencies]
+# Mock TCP sender endpoints for the multi-endpoint fan-out test (tx.rs). Adds
+# only the socket + io features needed by the test; not compiled for downstream.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

@@ -1,0 +1,203 @@
+//! Cross-cutting status + control for long-running background jobs (grouped
+//! sweep, rule simulation), so a freshly-loaded or reconnecting dashboard can
+//! recover the in-flight progress that SSE (future-only) can't replay.
+//!
+//! - `GET  /api/jobs/status` — what's running right now + its `processed/total`.
+//! - `POST /api/jobs/simulations/{rule_id}/cancel` — strategy-agnostic cancel for
+//!   a rule's backtest. `sim_cancels` is keyed by `rule_id` across both tpsl
+//!   snipers, so one endpoint serves both (the per-strategy cancel routes remain
+//!   for back-compat).
+
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use actix_web::http::StatusCode;
+use actix_web::{web, HttpResponse, Responder};
+use serde::Serialize;
+use uuid::Uuid;
+
+use crate::state::local_state::LocalState;
+use crate::state::sim_results::SimOutcome;
+use crate::state::swing_results::SwingOutcome;
+
+#[derive(Serialize)]
+struct SweepStatus {
+    processed: u64,
+    total: u64,
+}
+
+#[derive(Serialize)]
+struct SimulationStatus {
+    rule_id: Uuid,
+    processed: u64,
+    total: u64,
+}
+
+#[derive(Serialize)]
+struct SwingStatus {
+    run_id: String,
+    processed: u64,
+    total: u64,
+}
+
+#[derive(Serialize)]
+struct JobsStatus {
+    /// Present iff the single-flight grouped sweep is running.
+    sweep: Option<SweepStatus>,
+    /// One entry per in-flight rule simulation.
+    simulations: Vec<SimulationStatus>,
+    /// One entry per in-flight "Swing Detection All" run.
+    swings: Vec<SwingStatus>,
+}
+
+/// `GET /api/jobs/status` — snapshot of every running background job.
+pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
+    let sweep = if state.sweep_running.load(Ordering::Acquire) {
+        let (processed, total) = state.sweep_progress.snapshot();
+        Some(SweepStatus { processed, total })
+    } else {
+        None
+    };
+
+    let simulations = state
+        .sim_progress
+        .iter()
+        .map(|e| {
+            let (processed, total) = e.value().snapshot();
+            SimulationStatus {
+                rule_id: *e.key(),
+                processed,
+                total,
+            }
+        })
+        .collect();
+
+    let swings = state
+        .swing_progress
+        .iter()
+        .map(|e| {
+            let (processed, total) = e.value().snapshot();
+            SwingStatus {
+                run_id: e.key().clone(),
+                processed,
+                total,
+            }
+        })
+        .collect();
+
+    HttpResponse::Ok().json(JobsStatus {
+        sweep,
+        simulations,
+        swings,
+    })
+}
+
+/// `POST /api/jobs/simulations/{rule_id}/cancel` — strategy-agnostic cooperative
+/// cancel for a rule's in-flight simulation. A no-op (`{"cancelling": false}`)
+/// when no simulation is running for that rule.
+pub async fn cancel_simulation(
+    state: web::Data<Arc<LocalState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rid = rule_id.into_inner();
+    let cancelling = match state.sim_cancels.get(&rid) {
+        Some(flag) => {
+            flag.store(true, Ordering::Release);
+            true
+        }
+        None => false,
+    };
+    HttpResponse::Ok().json(serde_json::json!({ "cancelling": cancelling }))
+}
+
+/// `GET /api/jobs/simulations/{rule_id}/result` — collect the terminal outcome of
+/// a finished simulation (started via the per-strategy `POST .../simulate`). The
+/// detached run stores its result in [`LocalState::sim_results`] on completion and
+/// the client fetches it here after the `simulation_finished` SSE, so a long
+/// backtest's result is never tied to the lifetime of the starting request —
+/// the structural source of the old `FETCH_ERROR`. Strategy-agnostic (keyed by
+/// `rule_id` like the cancel route). Removes the entry on read — single delivery.
+///
+/// - 200 + `[BacktestTokenResult, …]` — success
+/// - 200 + `{"cancelled": true}` — the run was cancelled
+/// - 400 / 404 / 500 + `{"error": …}` — the run failed (status mirrors the cause)
+/// - 404 + `{"error": …}` — no result (still running, not started, or expired)
+pub async fn simulation_result(
+    state: web::Data<Arc<LocalState>>,
+    rule_id: web::Path<Uuid>,
+) -> impl Responder {
+    let rid = rule_id.into_inner();
+    match state.sim_results.take(&rid) {
+        // Legacy whole-blob collector — serialize the parsed rows back to a JSON
+        // array. (The Simulated table now prefers the paged POST endpoint; this
+        // stays for backward compatibility during the frontend transition.)
+        Some(SimOutcome::Done(rows)) => HttpResponse::Ok().json(&*rows),
+        Some(SimOutcome::Cancelled) => {
+            HttpResponse::Ok().json(serde_json::json!({ "cancelled": true }))
+        }
+        Some(SimOutcome::Failed { status, message }) => {
+            let code =
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            HttpResponse::build(code).json(serde_json::json!({ "error": message }))
+        }
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "no simulation result (still running, not started, or expired)"
+        })),
+    }
+}
+
+/// `POST /api/jobs/swings/{run_id}/cancel` — cooperative cancel for an in-flight
+/// "Swing Detection All" run. The swing twin of [`cancel_simulation`], keyed by
+/// the client run id (`String`). A no-op (`{"cancelling": false}`) when no run is
+/// in flight for that id.
+pub async fn cancel_swing(
+    state: web::Data<Arc<LocalState>>,
+    run_id: web::Path<String>,
+) -> impl Responder {
+    let rid = run_id.into_inner();
+    let cancelling = match state.swing_cancels.get(&rid) {
+        Some(flag) => {
+            flag.store(true, Ordering::Release);
+            true
+        }
+        None => false,
+    };
+    HttpResponse::Ok().json(serde_json::json!({ "cancelling": cancelling }))
+}
+
+/// `GET /api/jobs/swings/{run_id}/result` — collect the terminal outcome of a
+/// finished "Swing Detection All" run (started via `POST /api/tokens/swings/batch`).
+/// The detached scan stores its result in [`LocalState::swing_results`] on completion
+/// and the client fetches it here after the `swing_detection_finished` SSE, so a
+/// long run's result is never tied to the lifetime of the starting request — the
+/// structural source of the old `FETCH_ERROR`. The swing twin of
+/// [`simulation_result`]; removes the entry on read — single delivery.
+///
+/// - 200 + `SwingBatchResponse` — success
+/// - 200 + `{"cancelled": true}` — the run was cancelled
+/// - 500 + `{"error": …}` — the run failed
+/// - 404 + `{"error": …}` — no result (still running, not started, or expired)
+pub async fn swing_result(
+    state: web::Data<Arc<LocalState>>,
+    run_id: web::Path<String>,
+) -> impl Responder {
+    let rid = run_id.into_inner();
+    match state.swing_results.take(&rid) {
+        // Serialized once at completion — return the bytes verbatim (no re-encode
+        // of a potentially large payload).
+        Some(SwingOutcome::Done(json)) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(json),
+        Some(SwingOutcome::Cancelled) => {
+            HttpResponse::Ok().json(serde_json::json!({ "cancelled": true }))
+        }
+        Some(SwingOutcome::Failed { status, message }) => {
+            let code =
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            HttpResponse::build(code).json(serde_json::json!({ "error": message }))
+        }
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "no swing result (still running, not started, or expired)"
+        })),
+    }
+}

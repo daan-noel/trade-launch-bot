@@ -1,0 +1,112 @@
+# Slippage Logic in the Buy/Sell Flow
+
+## The two code paths
+
+The trader has two venues, each with its own slippage handling:
+
+| | **Bonding curve** (pre-migration) | **PumpSwap AMM** (post-migration) |
+| --- | --- | --- |
+| Buy | `buy.rs` (~159-174) | `amm.rs` (~203-207) |
+| Sell | `sell.rs` (~211-224) | `amm.rs` (~276-278) |
+
+> Line numbers below are approximate (the files drift); the named symbols are the
+> source of truth. All paths are in the `pump-trader/src/trader/` crate.
+
+Both take `slippage_bps: Option<u64>`, and in every case slippage is enforced
+**on-chain** by encoding a `min_out` floor into the instruction data — the
+pump / pump_amm program reverts the tx if the actual fill falls below it. The
+Rust code only *computes* that floor; the chain enforces it.
+
+## Bonding curve
+
+The key design choice is that **`None` = no slippage protection**, and it's
+deliberate — it's the latency-critical snipe path.
+
+**Buy** (`buy.rs:166`) sets `min_tokens_out` in the
+`buy_exact_sol_in(spendable, min_tokens_out)` instruction:
+
+- `None` → `min_out = 1` (effectively "fill at any price"), and **skips the
+  reserve read** entirely.
+- `Some(slip)` → computes expected tokens with the constant-product formula, then
+  haircuts by slippage:
+
+  ```
+  net      = buy_lamports * (10000 - CURVE_FEE_BUFFER_BPS) / 10000
+  expected = vt * net / (vq + net)               // tokens out at current reserves
+  min_out  = expected * (10000 - slip) / 10000   (floored at 1)
+  ```
+
+  The reserve source for `(vt, vq)` depends on the caller (`buy_token_inner`'s
+  `snipe_reserves: Option<(u128,u128)>` arg):
+  - **Snipe path** (`buy_token_snipe`, 1B): the strategy passes the triggering
+    event's virtual `(token, quote=lamports)` reserves — read from the in-memory
+    `token_cache`, **not** an inline RPC. A snipe with no snapshot in hand falls
+    back to `min_out = 1` (still no inline read) rather than blocking the buy.
+  - **Manual path** (`buy_token`): no event reserves in hand, so it reads the
+    curve on-chain via `curve_reserves` (the WS-cache-then-RPC fast path).
+
+**Sell** (`sell.rs:190`) is the mirror image, setting `min_sol_output` in
+`sell(amount, min_sol_output)`:
+
+```
+gross   = vq * token_amount / (vt + token_amount)   // SOL out
+net     = gross * (10000 - CURVE_FEE_BUFFER_BPS) / 10000
+min_out = net * (10000 - slip) / 10000   (floored at 1)
+```
+
+Two safety behaviors worth noting:
+
+- **`CURVE_FEE_BUFFER_BPS = 200`** (`constants.rs`, ~L180) — a conservative 2% fee
+  allowance subtracted before the slippage haircut. It deliberately
+  *over*-estimates the fee so a fee misestimate only loosens protection, never
+  causes a false revert (the real curve fee is ~1%).
+- **Fail-open on read error**: if `curve_reserves` fails, both paths log a
+  warning and fall back to `min_out = 1`, so a flaky RPC read never blocks a
+  trade (`buy.rs:176`, `sell.rs:199`).
+
+## PumpSwap AMM
+
+Same semantics as the curve: **`None` → `min_out = 1`** (no floor). There is no
+AMM-specific default slippage — `AMM_DEFAULT_SLIPPAGE_BPS` was removed as dead
+code. Manual buys always pass `Some(500)` (5%) via the API layer; bot/manual
+sells intentionally pass `None` (fill at any price) via `resolve_sell_slippage_bps`.
+
+The AMM accounts for the full fee stack —
+`lp_fee_bps + protocol_fee_bps + coin_creator_fee_bps` — read from on-chain
+config, rather than the curve's fixed buffer.
+
+**Buy** (`amm.rs:201-206`) is **exact-base-out**: it computes `base_amount_out`
+(min tokens) and passes `spendable` as `max_quote_amount_in` (the spend cap).
+The slippage haircut makes it *request fewer tokens* so the actual SOL cost
+stays under the cap:
+
+```
+quote_net       = spendable * (10000 - fee_bps) / 10000
+base_out        = cp_amount_out(quote_net, quote_res, base_res)
+base_amount_out = base_out * (10000 - slip) / 10000
+```
+
+**Sell** (`amm.rs:275-277`) computes `min_quote_out`:
+
+```
+gross         = cp_amount_out(token_amount, base_res, quote_res)
+net           = gross * (10000 - fee_bps) / 10000
+min_quote_out = net * (10000 - slip) / 10000
+```
+
+where `cp_amount_out` (`amm.rs:761`) is the standard constant-product output:
+`reserve_out * amount_in / (reserve_in + amount_in)`.
+
+## Summary
+
+**`slippage_bps = None` means the same thing on both venues: `min_out = 1` (no
+floor).** There is no AMM default — the constant was removed. Callers that want
+a floor must pass `Some(bps)` explicitly; the API layer ensures manual buy/sell
+calls always supply one.
+
+Note the **API layer floors the value before it reaches the trader**: the
+manual buy/sell endpoints (`resolve_slippage` in `api/handlers/trading/solana.rs`)
+and the settings write both `clamp(SLIPPAGE_MIN_BPS, SLIPPAGE_MAX_BPS)` (10 bps
+.. 5000 bps), so an explicit `Some(0)` — which would compute a `min_out` ≈
+`expected` and revert on any movement at all — can't be supplied through the
+HTTP API. `None` (no protection) is still distinct from `Some(0)` and unaffected.
