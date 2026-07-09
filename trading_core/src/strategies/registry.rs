@@ -77,6 +77,18 @@ fn default_bucket_width() -> f64 {
     crate::grouping::SOL_BUCKET_WIDTH
 }
 
+/// Deserialize `bucket_width_sol`, treating an explicit JSON `null` the same as an
+/// absent key: fall back to [`default_bucket_width`]. `#[serde(default)]` alone only
+/// covers the *absent* case — the rule form sends a blank bucket field as `null`
+/// (see `params/engine.ts` `buildCreatePayload`), which would otherwise fail with
+/// "invalid type: null, expected f64".
+fn de_bucket_width<'de, D>(d: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<f64>::deserialize(d)?.unwrap_or_else(default_bucket_width))
+}
+
 /// Rebuild the `Tpsl1Rule` the tpsl1 decision/backtest layer consumes from a
 /// unified [`StrategyRule`]: the gate params come from the `params` JSONB (via
 /// [`Tpsl1Params::to_rule`]); the universal knobs (`id`, name, `buy_amount_sol`,
@@ -148,7 +160,7 @@ pub struct Tpsl1Params {
     pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
-    #[serde(default = "default_bucket_width")]
+    #[serde(default = "default_bucket_width", deserialize_with = "de_bucket_width")]
     pub bucket_width_sol: f64,
     pub p_exit_take_profit: f64,
     pub p_exit_stop_loss: f64,
@@ -236,7 +248,7 @@ pub struct Tpsl2Params {
     pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
-    #[serde(default = "default_bucket_width")]
+    #[serde(default = "default_bucket_width", deserialize_with = "de_bucket_width")]
     pub bucket_width_sol: f64,
     pub p_exit_take_profit: f64,
     pub p_exit_stop_loss: f64,
@@ -353,7 +365,7 @@ pub struct Swing1Params {
     pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
-    #[serde(default = "default_bucket_width")]
+    #[serde(default = "default_bucket_width", deserialize_with = "de_bucket_width")]
     pub bucket_width_sol: f64,
     pub p_exit_take_profit: f64,
     pub p_exit_stop_loss: f64,
@@ -820,6 +832,27 @@ mod tests {
         assert_eq!(p.p_token_ix_labels, json!([]));
         // Omitted bucket_width_sol falls back to the shared default width (pre-backfill rows).
         assert_eq!(p.bucket_width_sol, crate::grouping::SOL_BUCKET_WIDTH);
+    }
+
+    #[test]
+    fn bucket_width_null_falls_back_to_default() {
+        // The rule form sends a blank bucket field as an explicit `null` (not an
+        // absent key). It must parse to the default width, not error with
+        // "invalid type: null, expected f64".
+        for strat in [StrategyImpl::Tpsl1, StrategyImpl::Tpsl2, StrategyImpl::Swing1] {
+            let v = json!({
+                "bucket_width_sol": null,
+                "p_exit_take_profit": 50.0,
+                "p_exit_stop_loss": 20.0,
+            });
+            let parsed = strat.parse_params(&v).expect("null bucket_width_sol must parse");
+            let width = match parsed {
+                StrategyParams::Tpsl1(p) => p.bucket_width_sol,
+                StrategyParams::Tpsl2(p) => p.bucket_width_sol,
+                StrategyParams::Swing1(p) => p.bucket_width_sol,
+            };
+            assert_eq!(width, crate::grouping::SOL_BUCKET_WIDTH);
+        }
     }
 
     #[test]
