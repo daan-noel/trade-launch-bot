@@ -1,0 +1,83 @@
+# ============================================================================
+# Monorepo root .gitignore — merges meme-trading + solana-launch-platform.
+# Each product folder also keeps its own nested .gitignore (comes in via the
+# subtree import); this root file is the cross-cutting superset + safety net.
+# NOTE: Cargo.lock is intentionally COMMITTED (binary/app, deterministic deps,
+# cargo-chef Docker layer cache) — do NOT ignore it.
+# ============================================================================
+
+# --- Rust build output ---
+target/
+target-check/
+**/*.rs.bk
+
+# --- Node / frontend ---
+node_modules/
+dist/
+build/
+.vite/
+package-lock.json
+*.tsbuildinfo
+.pnp
+.pnp.js
+coverage/
+
+# --- Env / secrets / keys ---
+.env
+.env.backup
+.env.local
+.env.*.local
+*.pem
+*.ppk
+aws.pub
+.mcp.json
+keystore/
+wallet-backups/**/keystore/
+
+# --- Data lake / parquet / sweep artifacts ---
+*.parquet
+/lake-data
+.lake/
+sweep-out/
+tpsl2-sweep-out/
+venv
+
+# --- TLS (self-signed, generated locally) ---
+nginx/tls/*.pem
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Claude Code internal worktrees ---
+.claude/worktrees/
+
+# --- DB dumps / snapshots ---
+/*.dump
+/snapshots
+*.rar
+*.zip
+*.7z
+.cache/
+
+# --- Monorepo migration backup (local only, never commit) ---
+/_monorepo-backup/
