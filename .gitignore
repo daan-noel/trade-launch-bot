@@ -32,6 +32,7 @@ coverage/
 aws.pub
 .mcp.json
 keystore/
+wallet-backups/
 wallet-backups/**/keystore/
 
 # --- Data lake / parquet / sweep artifacts ---
