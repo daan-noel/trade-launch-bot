@@ -24,17 +24,27 @@ first because it carries the overflow-bug fix and the forge cutover.
 
 ---
 
-## PART 0 — Prep & safety (do first, once)
+## PART 0 — Prep & safety (do first, once) — ✅ DONE (2026-07-09)
 
-- [ ] **0.1 Branch.** Create a working branch off `master` for the restructure (e.g.
-      `feat/restructure-hunter-forge`). Do not do this on `master`.
-- [ ] **0.2 Inventory.** Record current `[workspace] members`, every path-dep, every `[[bin]]`,
-      and each deploy `--bin`/Dockerfile so the rename map has a checklist to diff against.
-- [ ] **0.3 Security cleanup — move OUT of the repo, never re-commit:**
-  - [ ] `meme-trading/aws-ec2-key.pem` → `~/.ssh/`
-  - [ ] `solana-launch-platform/keystore/`, `wallet-backups/` → offline / OS keychain
-  - [ ] Confirm `.gitignore` still covers these paths post-move; `git status` clean of secrets.
-- **Gate 0:** working branch exists; no secret files tracked; inventory captured.
+- [x] **0.1 Branch.** Working branch `feat/restructure-hunter-forge` created off `master`.
+- [x] **0.2 Inventory.** Members / path-deps / `[[bin]]` / Dockerfiles + the rename map recorded in
+      `docs/restructure-inventory.md`.
+- [x] **0.3 Security cleanup — move OUT of the repo, never re-commit:**
+  - [x] `meme-trading/aws-ec2-key.pem` → `~/.ssh/` (was untracked/gitignored).
+  - [x] `wallet-backups/` → `~/restructure-secrets-offline/`. Its `managed_wallets.json`
+        exports were **tracked** (only `wallet-backups/**/keystore/` was ignored) → `git rm --cached`
+        + `.gitignore` now covers `wallet-backups/`. No private-key material was in the JSON.
+  - [~] `keystore/` → **LEFT IN PLACE** (deliberate deviation): already gitignored and read by the
+        app at runtime, so moving it offline would break local signing. Moved with its product to
+        `forge/keystore/` in 1.4 (still gitignored/untracked).
+  - [x] `.gitignore` covers all these paths post-move; `git status` clean of secrets.
+- **Gate 0:** ✅ branch exists; no secret files tracked; inventory captured.
+
+> **Convention adopted for all of Part 1** (keeps it a true no-behavior-change reshuffle):
+> rename `[package] name` ONLY; KEEP every `[lib]`/`[[bin]]` target name (lib `trading_core`/
+> `platform_core`/`launcher`; bins `live`/`lab`/`slp-live`/`slp-lab`) so the ~120 source
+> `use trading_core::`/`use platform_core::` refs and all Docker `--bin` flags need ZERO edits.
+> Dependents keep the old dependency KEY + `package = "<new>"` + updated `path`.
 
 ---
 
@@ -45,56 +55,66 @@ hunter, then forge, then deploy/docs. The two big `shared/` crate *splits* (`pum
 `ingest-laserstream`) are **owned by Parts 2 & 3**, not here — Part 1 only positions the
 `shared/ingest/` parent and moves the websocket stub.
 
-### Phase 1.1 — `shared/` skeleton (shared-first)
-- [ ] Move `meme-trading/ingest-websocket` → `shared/ingest/websocket` (pkg `ingest-websocket`),
-      creating `shared/ingest/` as its parent folder.
-- [ ] Leave `shared/pump-trader` and `shared/ingest-laserstream` **in place** (their split into
-      `shared/executor/{core,pumpfun}` and `shared/ingest/{core,pumpfun}` happens in Parts 2 & 3).
-- [ ] Update `[workspace] members` + any path-deps for the websocket move.
-- **Gate 1.1:** `cargo build` of the whole workspace green; `git status` clean.
+### Phase 1.1 — `shared/` skeleton (shared-first) — ✅ DONE
+- [x] Moved `meme-trading/ingest-websocket` → `shared/ingest/websocket`, creating `shared/ingest/`.
+- [x] Left `shared/pump-trader` and `shared/ingest-laserstream` **in place** (splits owned by Parts 2 & 3).
+- [x] Updated `[workspace] members` + the websocket crate's `trading_core` path-dep.
+- **Gate 1.1:** ✅ workspace metadata resolves; moved crate builds; `git status` clean.
 
-### Phase 1.2 — `hunter/` (was `meme-trading`)
-- [ ] Move the three crates together and repoint workspace + path-deps + `[[bin]]`:
-  - `meme-trading/trading_core` → `hunter/core` (pkg `hunter-core`)
-  - `meme-trading/live` → `hunter/live` (pkg `hunter-live`)
-  - `meme-trading/lab` → `hunter/lab` (pkg `hunter-lab`)
-- [ ] Move `meme-trading/frontend-react` → `hunter/frontend`.
-- [ ] Move `meme-trading/{@arch,@plans,*-plan.md}` → `hunter/docs/{arch,plans}` (drop `@` prefixes;
-      fix `CLAUDE.md` `@`-import paths).
-- [ ] Move `meme-trading/scripts` → `hunter/scripts` (e.g. `db-incremental-sync.ps1`).
-- **Gate 1.2:** `cargo build -p hunter-live -p hunter-lab` green; hunter frontend build green;
-      `cargo run -p hunter-live` self-describing; `git status` clean.
+### Phase 1.2 — `hunter/` (was `meme-trading`) — ✅ DONE
+- [x] Moved + repointed the three crates (pkg-name-only rename per the convention above):
+  - `meme-trading/trading_core` → `hunter/core` (pkg `hunter-core`, lib target `trading_core`)
+  - `meme-trading/live` → `hunter/live` (pkg `hunter-live`, bin `live`)
+  - `meme-trading/lab` → `hunter/lab` (pkg `hunter-lab`, bin `lab`)
+- [x] Moved `meme-trading/frontend-react` → `hunter/frontend`.
+- [x] Moved `@arch`/`@plans`/`*-plan.md` → `hunter/docs/{arch,plans}`; `CLAUDE.md` `@arch/`/`@plans/`
+      imports rewritten to `docs/arch/`/`docs/plans/` (the `@live`/`@lab` Vite aliases left untouched).
+- [x] Moved `meme-trading/scripts` → `hunter/scripts`.
+- **Gate 1.2:** ✅ `cargo build -p hunter-live -p hunter-lab` green; hunter frontend `npm run build`
+      green; `git status` clean. (`cargo run -p hunter-live` not booted — needs live DB/Helius env;
+      the successful `-p hunter-live` build proves the target resolves.)
 
-### Phase 1.3 — `forge/` (was `solana-launch-platform`)
-- [ ] Move the crates and repoint workspace + path-deps + `[[bin]]`:
-  - `.../crates/platform-core` → `forge/core` (pkg `forge-core`)
-  - `.../crates/slp-live` → `forge/live` (pkg `forge-live`)
-  - `.../crates/slp-lab` → `forge/lab` (pkg `forge-lab`)
-  - `.../crates/launcher` → `forge/launcher` (pkg `forge-launcher`)
-- [ ] Fold `.../crates/lake` → `forge/lab/src/lake` **module** (mirror `hunter/lab/src/lake`); the
-      `live`/`lab` bin boundary — not a crate — keeps DuckDB/arrow/parquet off EC2.
-- [ ] Fold `.../crates/ingest-host` → `forge/live/src/ingest/` **host-adapter module** (mirror
-      `hunter/live/src/ingest/`). `forge/live` will depend on the shared ingest stack directly
-      (wired for real in Part 3).
-- [ ] Move `solana-launch-platform/frontend-launch` → `forge/frontend`.
-- [ ] Move `forge/idl/`, `forge/migrations/`, and `.../docs` → `forge/docs/{arch,plans}`.
-- **Gate 1.3:** `cargo build -p forge-live -p forge-lab` green; `cargo tree -p forge-live` shows
-      **no** `forge-lab`/lake heavy deps (DuckDB/arrow/parquet); forge frontend build green.
+### Phase 1.3 — `forge/` (was `solana-launch-platform`) — ✅ DONE
+- [x] Moved + repointed the crates (pkg-name-only rename; lib/bin targets kept):
+  - `platform-core` → `forge/core` (pkg `forge-core`, lib `platform_core`)
+  - `slp-live` → `forge/live` (pkg `forge-live`, bin `slp-live`)
+  - `slp-lab` → `forge/lab` (pkg `forge-lab`, bin `slp-lab`)
+  - `launcher` → `forge/launcher` (pkg `forge-launcher`, lib `launcher`)
+- [x] Folded `lake` → `forge/lab/src/lake` **module** (`mod lake;`); dropped the crate + member
+      (its deps were already a subset of `forge-lab`).
+- [x] Folded `ingest-host` → `forge/live/src/ingest/` **module** (`mod ingest;`); absorbed its deps
+      (`ingest-laserstream`, `chrono`, `bs58`), rewrote internal `crate::`→`super::`, and preserved
+      its DB-gated roundtrip test as `#[cfg(test)] mod roundtrip_test`. Fixed the compile-time
+      `sqlx::migrate!("../../migrations")` → `("../migrations")` for the new `forge/core` depth.
+- [x] Moved `frontend-launch` → `forge/frontend`.
+- [x] Moved `idl/` → `forge/idl`, `migrations/` → `forge/migrations`, `docs/` → `forge/docs`.
+- **Gate 1.3:** ✅ `cargo build -p forge-live -p forge-lab` green; `cargo tree` shows `forge-live`
+      free of DuckDB/arrow/parquet and `forge-lab` free of pump-trader/ingest-laserstream; forge
+      frontend `vite build` green. ⚠ the frontend `tsc` step fails on a **pre-existing** TS6
+      `ignoreDeprecations: "6.0"` config quirk (not caused by this move; tsconfig is byte-identical).
 
-### Phase 1.4 — `deploy/` + root cleanup + docs
-- [ ] Create one folder per shipped artifact with self-contained Dockerfile + `compose.yml`
-      (+ `nginx.conf` where used): `deploy/{hunter-live, hunter-lab, forge-live, forge-lab}`.
-      Move the `{meme,slp}` Dockerfiles/compose/`nginx/` in.
-- [ ] Each `compose.yml` carries both `image:` (ECR ref) and `build.context: ../..` +
-      `dockerfile:` so it builds on the workstation and pulls on EC2 unchanged. `*-lab` compose
-      omits the registry (local only).
-- [ ] Root cleanup — nothing at root but products (`hunter/`,`forge/`), `shared/`, `deploy/`, and
-      repo meta (`docs/`, `scripts/`, `Cargo.toml`, `CLAUDE.md`). Sweep loose `*-plan.md`,
-      `nginx/`, `run.bat`, `*.pem`, etc.
-- [ ] Cross-product docs (these plans, migration notes) → root `docs/`.
-- **Gate 1.4 (Part 1 exit):** full-workspace `cargo build` green; both frontends build;
-      `docker compose build` (ctx=root) succeeds for each `deploy/*-live`; `git status` clean;
-      root contains only the four allowed kinds of thing.
+### Phase 1.4 — `deploy/` + root cleanup + docs — ✅ DONE
+- [x] Created `deploy/{hunter-live, hunter-lab, forge-live, forge-lab}`, each self-contained:
+      hunter-live has backend `Dockerfile` + `web.Dockerfile` + `nginx/` + `compose.yml`; the others
+      have `Dockerfile` + `compose.yml`. Moved the Dockerfiles/nginx in and repointed the frontend
+      `web.Dockerfile` COPY paths (`hunter/frontend`, `deploy/hunter-live/nginx`); fixed the forge
+      Dockerfile `-p slp-live` → `-p forge-live` package selector. Authored a new `forge-lab` Dockerfile.
+- [x] Each `*-live` `compose.yml` carries both `image:` (ECR ref) and `build.context: ../..` +
+      `dockerfile:`; `*-lab` composes omit the registry (local only).
+- [x] Root cleanup — `meme-trading/` and `solana-launch-platform/` are **gone**. Old
+      `docker-compose*.yml` deleted; `run.bat` → `hunter/scripts`; `dep-partition-check.{sh,ps1}` +
+      `db-incremental-sync.ps1` + `seed-dev-launch.sql` → `forge/scripts` (partition check updated
+      to `forge-live`/`forge-lab`); per-product `.env.example`/`.gitignore`/`.gitattributes` →
+      product folders. Root holds only `hunter/ forge/ shared/ deploy/ docs/` + repo meta.
+- [x] Cross-product docs (`executor-redesign-plan.md`, `monorepo-structure-plan.md`,
+      `restructure-execution-plan.md`) → `docs/`.
+- **Gate 1.4 (Part 1 exit):** ✅ full-workspace `cargo build` green; both frontends build; all four
+      `docker compose config` valid **and** `docker compose build` produced both `deploy/*-live`
+      images (`forge/forge-live`, `hunter/hunter-live` + `hunter/hunter-web`, exit 0); `git status`
+      clean; root contains only the allowed kinds.
+
+> **Part 1 landed on branch `feat/restructure-hunter-forge` (5 commits, one per group); not yet
+> merged to `master`. Parts 2 & 3 not started.**
 
 ---
 
