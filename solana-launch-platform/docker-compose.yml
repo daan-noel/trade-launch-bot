@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Local Postgres + TimescaleDB for the launch platform.
+#
+# Up:    docker compose up -d
+# Logs:  docker compose logs -f postgres
+# Down:  docker compose down            (data persists in the pgdata volume)
+#
+# Host port defaults to 5556 so it coexists with the sibling meme-trading stack
+# (which uses 5555). Override via POSTGRES_HOST_PORT in .env.
+#
+# Only Postgres is dockerized here — `live` / `lab` run on the host during
+# co-development (cargo run). A live Dockerfile lands with the EC2 cutover.
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    # Standard TimescaleDB image (NOT -ha: the -ha image relocates PGDATA and the
+    # volume mount below would not persist). Same choice as meme-trading.
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    # Tuning tuned for the 2vCPU/4GB EC2 target (carried from meme-trading): keep
+    # max_connections low (each backend ~26MB vs the 1GB buffer pool), bias the
+    # planner toward index scans on SSD/EBS, cap parallel workers off the ingest
+    # cores. Every value is env-overridable to dial per box size.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=timescaledb"
+      - "-c"
+      - "timescaledb.max_background_workers=${TIMESCALEDB_MAX_BG_WORKERS:-2}"
+      - "-c"
+      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-80}"
+      - "-c"
+      - "shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}"
+      - "-c"
+      - "effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-2GB}"
+      - "-c"
+      - "work_mem=${POSTGRES_WORK_MEM:-16MB}"
+      - "-c"
+      - "maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}"
+      - "-c"
+      - "random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}"
+      - "-c"
+      - "effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}"
+      - "-c"
+      - "max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_PER_GATHER:-1}"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "min_wal_size=80MB"
+      - "-c"
+      - "wal_compression=on"
+      - "-c"
+      # Safe here: PG stays up when the app restarts, and the gRPC feed is
+      # replayable — worst-case power-loss drops <1 WAL buffer of commits.
+      - "synchronous_commit=off"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-launch_platform}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_HOST_PORT:-5556}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-launch_platform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

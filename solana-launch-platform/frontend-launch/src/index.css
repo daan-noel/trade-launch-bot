@@ -1,0 +1,246 @@
+@import 'tailwindcss';
+
+/* Dense dark operator theme. Tokens mirror the old hand-rolled palette so the
+   look is preserved, now driven through Tailwind. */
+@theme {
+  --color-bg: #0f1115;
+  --color-panel: #161a22;
+  --color-panel-2: #1a1d24;
+  --color-line: #2a2f3a;
+  --color-line-2: #3a3f4b;
+  --color-ink: #e8eaed;
+  --color-muted: #9aa3b2;
+  --color-accent: #2d6cdf;
+  --color-accent-ink: #7eb8ff;
+
+  --color-good: #6ee7a0;
+  --color-good-bg: #1b3d2a;
+  --color-warn: #f5d565;
+  --color-warn-bg: #3d341b;
+  --color-bad: #f58a8a;
+  --color-bad-bg: #3d1b1b;
+  --color-info: #9ac4f5;
+  --color-info-bg: #1b2a3d;
+
+  /* Wallet role hues — one distinct color per role, SSOT for RolePill + summary cards. */
+  --color-role-dev: #c39bf5;
+  --color-role-dev-bg: #2e2140;
+  --color-role-bundler: #7eb8ff;
+  --color-role-bundler-bg: #1b2a3d;
+  --color-role-treasury: #f5c065;
+  --color-role-treasury-bg: #3d301b;
+  --color-role-trading: #6ee7c8;
+  --color-role-trading-bg: #163a33;
+
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100vh;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+  color: var(--color-ink);
+  background: var(--color-bg);
+}
+
+a {
+  color: var(--color-accent-ink);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+@layer components {
+  /* Surface */
+  .panel {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    border-radius: 10px;
+  }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    border-radius: 6px;
+    border: 1px solid var(--color-line-2);
+    background: var(--color-panel-2);
+    color: var(--color-ink);
+    padding: 0.45rem 0.8rem;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: filter 0.12s ease, background 0.12s ease;
+  }
+  .btn:hover:not(:disabled) {
+    filter: brightness(1.15);
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    font-weight: 600;
+    color: #fff;
+  }
+  .btn-danger {
+    background: var(--color-bad-bg);
+    border-color: #6e2f2f;
+    color: var(--color-bad);
+  }
+  .btn-sm {
+    padding: 0.25rem 0.55rem;
+    font-size: 0.78rem;
+  }
+  .btn-ghost {
+    background: transparent;
+  }
+
+  /* Inputs */
+  .input,
+  .select {
+    width: 100%;
+    border-radius: 6px;
+    border: 1px solid var(--color-line-2);
+    background: var(--color-panel-2);
+    color: var(--color-ink);
+    padding: 0.45rem 0.6rem;
+    font: inherit;
+    font-size: 0.85rem;
+  }
+  .input:focus,
+  .select:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+  .field-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-muted);
+    margin-bottom: 0.25rem;
+    display: block;
+  }
+
+  /* Badges / status pills */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.12rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .badge-good {
+    background: var(--color-good-bg);
+    color: var(--color-good);
+  }
+  .badge-warn {
+    background: var(--color-warn-bg);
+    color: var(--color-warn);
+  }
+  .badge-bad {
+    background: var(--color-bad-bg);
+    color: var(--color-bad);
+  }
+  .badge-neutral {
+    background: #262b35;
+    color: var(--color-muted);
+  }
+  .badge-info {
+    background: var(--color-info-bg);
+    color: var(--color-info);
+  }
+  .badge-role-dev {
+    background: var(--color-role-dev-bg);
+    color: var(--color-role-dev);
+  }
+  .badge-role-bundler {
+    background: var(--color-role-bundler-bg);
+    color: var(--color-role-bundler);
+  }
+  .badge-role-treasury {
+    background: var(--color-role-treasury-bg);
+    color: var(--color-role-treasury);
+  }
+  .badge-role-trading {
+    background: var(--color-role-trading-bg);
+    color: var(--color-role-trading);
+  }
+  .badge-role-unknown {
+    background: #262b35;
+    color: var(--color-muted);
+  }
+
+  /* Tables */
+  .dt {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  .dt th {
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    color: var(--color-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid var(--color-line);
+    position: sticky;
+    top: 0;
+    background: var(--color-panel);
+    z-index: 1;
+  }
+  .dt td {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--color-line);
+    vertical-align: middle;
+  }
+  .dt tbody tr:hover {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .dt tr.clickable {
+    cursor: pointer;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+  }
+  .muted {
+    color: var(--color-muted);
+  }
+}
+
+/* Thin scrollbars for the dense layout */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2f3a;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

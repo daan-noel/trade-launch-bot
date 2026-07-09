@@ -1,0 +1,26 @@
+# Rust
+/target
+target-check
+**/*.rs.bk
+
+# Env / secrets
+.env
+.env.backup
+*.pem
+keystore/
+package-lock.json
+
+
+# Lake data (workstation-local Parquet; never committed)
+/lake-data
+*.parquet
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Frontend
+frontend-launch/node_modules
+frontend-launch/dist
+frontend-launch/tsconfig.tsbuildinfo

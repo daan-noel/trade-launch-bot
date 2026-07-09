@@ -1,0 +1,25 @@
+[package]
+name = "lab"
+version.workspace = true
+edition.workspace = true
+description = "ANALYSIS box (workstation only): lake export + sweeps + backtests + wallet analytics + thin HTTP. Links `lake`. MUST NOT link pump-trader / ingest-laserstream / ingest-host / launcher."
+
+[[bin]]
+name = "lab"
+path = "src/main.rs"
+
+[dependencies]
+platform-core = { path = "../platform-core" }
+lake          = { path = "../lake" }
+tokio.workspace = true
+actix-web.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+dotenvy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+# NOTE: no ingest-host / launcher / pump-trader / ingest-laserstream. Verify with
+# `cargo tree -p lab` (no pump-trader / ingest-laserstream / tonic). lab runs with
+# NO signing keys and NO gRPC.
