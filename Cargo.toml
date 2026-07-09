@@ -26,8 +26,8 @@ members = [
     "solana-launch-platform/crates/ingest-host",
     "solana-launch-platform/crates/launcher",
     "solana-launch-platform/crates/lake",
-    "solana-launch-platform/crates/live",
-    "solana-launch-platform/crates/lab",
+    "solana-launch-platform/crates/slp-live",
+    "solana-launch-platform/crates/slp-lab",
 ]
 resolver = "1"
 

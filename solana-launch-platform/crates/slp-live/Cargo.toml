@@ -1,11 +1,11 @@
 [package]
-name = "live"
+name = "slp-live"
 version.workspace = true
 edition.workspace = true
 description = "LIVE box (ships to EC2): ingest + launcher + trading + thin HTTP. Links ingest-host + launcher (+ pump-trader + ingest-laserstream). MUST NOT link lake / duckdb / arrow / parquet."
 
 [[bin]]
-name = "live"
+name = "slp-live"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,11 +1,11 @@
 [package]
-name = "lab"
+name = "slp-lab"
 version.workspace = true
 edition.workspace = true
 description = "ANALYSIS box (workstation only): lake export + sweeps + backtests + wallet analytics + thin HTTP. Links `lake`. MUST NOT link pump-trader / ingest-laserstream / ingest-host / launcher."
 
 [[bin]]
-name = "lab"
+name = "slp-lab"
 path = "src/main.rs"
 
 [dependencies]

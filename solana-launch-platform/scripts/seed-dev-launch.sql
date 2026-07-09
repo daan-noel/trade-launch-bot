@@ -1,7 +1,7 @@
 -- Dev launch seed — run AFTER wallet-encrypt + updating addresses below.
 --
---   1. cargo run -p live -- wallet-encrypt .\dev.json dev-01.enc
---   2. cargo run -p live -- wallet-encrypt .\bundler.json bundler-01.enc
+--   1. cargo run -p slp-live -- wallet-encrypt .\dev.json dev-01.enc
+--   2. cargo run -p slp-live -- wallet-encrypt .\bundler.json bundler-01.enc
 --   3. Replace DEV_PUBKEY and BUNDLER_PUBKEY with the pubkey strings from those keypairs.
 --   4. psql $DATABASE_URL -f scripts/seed-dev-launch.sql
 --
