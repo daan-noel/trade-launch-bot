@@ -12,20 +12,30 @@
 //! (lean snipe, no plan/disguise), and neither lab links it.
 //!
 //! Phase map (executor-redesign-plan.md):
-//!   - **C (here):** `Operation`/`Plan` + providers + dry-run.
-//!   - **D:** `macros` (fund / bundle_launch / volume_make / exit / consolidate)
-//!     + `disguise`/`personas`.
+//!   - **C:** `Operation`/`Plan` + providers + dry-run.
+//!   - **D (here):** `macros` (fund / bundle_launch / volume_make / exit /
+//!     consolidate) + `personas`/`disguise` (forge-only sticky-persona sampling).
 //!   - **E:** `audit` (fingerprint auditor).
 //!   - **F:** wire the launcher/manage flows onto `Plan` and build real txs
 //!     through an initialized `PumpFunTrader`.
 
+pub mod disguise;
 pub mod dryrun;
+pub mod macros;
+pub mod personas;
 pub mod plan;
 pub mod provider;
+pub mod rng;
 
 pub use plan::{
-    Amount, Funding, FundingEdge, Intent, OpId, OpKind, Operation, Plan, Role, Schedule,
+    Amount, Funding, FundingEdge, IdSeq, Intent, OpId, OpKind, Operation, Plan, Role, Schedule,
     ScheduleSlot, VenueId, WalletRef,
 };
 pub use provider::{prepare, MinOut, PlanError, PreparedOp, PreparedPlan};
 pub use dryrun::{dry_run, DryRunOp, DryRunReport};
+pub use macros::{
+    bundle_launch, consolidate, exit, fund, volume_make, BundleLaunch, BundlerLeg, ExitLeg,
+    FundTarget, Sweep, VolumeLeg,
+};
+pub use personas::{JitterRange, Persona, PersonaSet};
+pub use disguise::{disguise_ops, Disguise};

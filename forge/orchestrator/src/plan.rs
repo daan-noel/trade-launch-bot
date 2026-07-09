@@ -274,13 +274,30 @@ impl Operation {
         slippage_bps: Option<u64>,
         deps: Vec<OpId>,
     ) -> Self {
+        Self::sell_with(id, variant, role, Intent::Exit, wallet, mint, tokens_base, slippage_bps, deps)
+    }
+
+    /// A sell leg with an explicit intent — an `Exit` close vs a `MakeVolume`
+    /// churn leg are the same mechanism (`Sell`), differing only in *why*.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sell_with(
+        id: OpId,
+        variant: &str,
+        role: Role,
+        intent: Intent,
+        wallet: WalletRef,
+        mint: impl Into<String>,
+        tokens_base: u64,
+        slippage_bps: Option<u64>,
+        deps: Vec<OpId>,
+    ) -> Self {
         Self {
             id,
             kind: OpKind::Sell,
             venue: VenueId::PumpFun,
             variant: variant.to_string(),
             role,
-            intent: Intent::Exit,
+            intent,
             amount: Amount::ExactBaseIn(tokens_base),
             slippage_bps,
             wallet,
@@ -291,7 +308,10 @@ impl Operation {
 
     /// A typed native-SOL move — the ONE shape both funding-out (`Fund`) and
     /// consolidate-in (`Consolidate`) use, replacing the three raw
-    /// `system_instruction::transfer` bypasses (auditable, never bare ixs).
+    /// `system_instruction::transfer` bypasses (auditable, never bare ixs). The
+    /// acting (signing) wallet is `from`, so its role defaults to `Treasury` (a
+    /// treasury→pool fund); a consolidate sweeps a *used* wallet whose role the
+    /// caller knows — use [`Operation::transfer_sol_as`] to record it.
     pub fn transfer_sol(
         id: OpId,
         variant: &str,
@@ -301,10 +321,23 @@ impl Operation {
         lamports: u64,
         deps: Vec<OpId>,
     ) -> Self {
-        let role = match intent {
-            Intent::Consolidate => Role::Treasury,
-            _ => Role::Treasury,
-        };
+        Self::transfer_sol_as(id, variant, Role::Treasury, intent, from, to, lamports, deps)
+    }
+
+    /// A native-SOL move recording the acting wallet's `role` explicitly — a
+    /// consolidate sweep signs as the *swept* wallet (`Volume`/`Bundler`), which
+    /// the auditor reads when it looks for a star-shaped own-graph funding tell.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transfer_sol_as(
+        id: OpId,
+        variant: &str,
+        role: Role,
+        intent: Intent,
+        from: WalletRef,
+        to: impl Into<String>,
+        lamports: u64,
+        deps: Vec<OpId>,
+    ) -> Self {
         Self {
             id,
             kind: OpKind::TransferSol,
@@ -318,6 +351,35 @@ impl Operation {
             target: Some(to.into()),
             deps,
         }
+    }
+}
+
+/// A monotonic op-id allocator so macros can be composed into one plan without id
+/// collisions — `fund` then `bundle_launch` then `exit` all draw from the same
+/// sequence, and each op's `deps` reference ids from the same space.
+#[derive(Debug, Clone)]
+pub struct IdSeq(OpId);
+
+impl IdSeq {
+    /// Start allocating from `start` (usually `0` for a fresh plan).
+    pub fn new(start: OpId) -> Self {
+        IdSeq(start)
+    }
+    /// The next unused id.
+    pub fn next(&mut self) -> OpId {
+        let id = self.0;
+        self.0 += 1;
+        id
+    }
+    /// The id that will be handed out next (without consuming it).
+    pub fn peek(&self) -> OpId {
+        self.0
+    }
+}
+
+impl Default for IdSeq {
+    fn default() -> Self {
+        IdSeq(0)
     }
 }
 

@@ -63,4 +63,6 @@ pub use types::{
 
 // The variant catalog (SSOT for on-chain instruction selection) — the orchestrator
 // providers draw legal variants from here.
-pub use catalog::{is_valid, spec, valid_variants, Denom, Stage, VariantKind, VariantSpec};
+pub use catalog::{
+    is_valid, spec, valid_of_kind, valid_variants, Denom, Stage, VariantKind, VariantSpec,
+};

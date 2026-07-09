@@ -210,8 +210,10 @@ fn prepare_op<'a>(plan: &Plan, op: &'a Operation) -> Result<PreparedOp<'a>, Plan
 
 /// Can a variant denominated `denom` encode this `amount`? The variant ⊥ amount
 /// rule as a compatibility check (a SOL-in buy takes an `ExactQuote`, a tokens-out
-/// buy takes an `ExactBase`, and neither takes the other).
-fn denom_accepts(denom: Denom, amount: Amount) -> bool {
+/// buy takes an `ExactBase`, and neither takes the other). Public so the disguise
+/// sampler (Phase D) never draws a variant whose denom can't encode the op's amount
+/// (a disguise that broke `prepare` would be a bug, not a disguise).
+pub fn denom_accepts(denom: Denom, amount: Amount) -> bool {
     matches!(
         (denom, amount),
         (Denom::ExactQuoteIn, Amount::ExactQuote(_))

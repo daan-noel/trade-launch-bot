@@ -238,21 +238,38 @@ Target crates: **`executor-core`** (`shared/executor/core/`, third-party deps on
       `PumpFunTrader` (on-chain `Global` read) → deferred to Phase F, same as prior phases' live-only
       gate portions.
 
-### Phase D — Macros + personas (disguise, forge-only)
-- [ ] `orchestrator/macros.rs`: `fund`, `bundle_launch`, `volume_make`, `exit`, `consolidate` —
-      each expands to `Vec<Operation>` with correct `deps`. Consolidate emits a typed `TransferSol`
-      op, **not** raw `system_instruction`.
-- [ ] `disguise.rs` + `personas.rs` (forge-only): per-wallet **sticky persona** → draw a landing
-      `Disguise` (variant from `valid_*`, CU/tip jitter within persona ranges). Every disguise
-      guaranteed to land (CU ≥ real consumption; `cu_price` never dropped on a snipe). **Personas,
-      not independent per-field jitter.**
-- [ ] **Offline persona derivation** = a `forge/lab` clustering job over real pump traffic →
-      persona templates → `personas.config` shipped to `forge/live`. Never on a hot path. Consume
-      `funding` + `schedule` from the existing unlinkability workstream. Sells default un-bundled /
-      direct-send, `tip: None`.
-- [ ] Keep disguise **forge-only** — hunter/live keeps its lean snipe path, no per-tx sampling.
-- **Gate D:** `volume_make`/`exit` produce Plans where a wallet's ops share its persona but differ
-      in jittered CU/tip/variant; sells default `tip: None`.
+### Phase D — Macros + personas (disguise, forge-only) — ✅ DONE (2026-07-09)
+- [x] `orchestrator/macros.rs`: `fund`, `bundle_launch`, `volume_make`, `exit`, `consolidate` —
+      each expands to `Vec<Operation>` with correct `deps`, drawing ids from a shared `plan::IdSeq`
+      so several macros compose into ONE plan without id collisions (bundler buys `deps` the create;
+      consolidate `deps` the exits). Consolidate + fund emit a typed `TransferSol` op (via new
+      `Operation::transfer_sol_as`, which records the acting wallet's role), **not** raw
+      `system_instruction`. Added `Operation::sell_with` (explicit intent) so a `MakeVolume` sell and
+      an `Exit` sell are the same mechanism, different `intent`.
+- [x] `personas.rs` + `disguise.rs` + a deterministic `rng.rs` (SplitMix64 + FNV-1a, **no `rand`
+      dep**): per-wallet **sticky persona** (`PersonaSet::assign` = stable `fnv1a(pubkey) % n`) →
+      `disguise::draw` a landing `Disguise { variant, cu_limit, cu_price, tip }`. Variant drawn from
+      the persona's pool intersected with the catalog encodings the op's `Amount`+stage can take
+      (denom-safe — a disguise never breaks `prepare`). Landing guarantees: `cu_limit =
+      real_consumption_cu(cfg, spec) + persona_headroom` where the floor reads the executor
+      `ComputeBudgetCfg` **SSOT** (can't drift), and `cu_price ≥ persona.cu_price.min > 0` (a snipe
+      never zero-fees). **Personas, not independent per-field jitter** — jitter seeded per
+      `(wallet, op.id)` so a wallet's ops share its persona yet differ op-to-op (reproducible/replayable).
+- [x] **Offline persona derivation seam:** `PersonaSet::from_config(json)` loads a `forge/lab`
+      clustering job's `personas.config` (validated against the catalog at load — an off-catalog or
+      zero-cu-price template is rejected); `PersonaSet::builtin()` is a 3-archetype starter set
+      (`aggressive_sniper`/`patient_accumulator`/`balanced_churner`) for forge/live before that job
+      ships. `funding`/`schedule` remain typed `Plan` inputs from the unlinkability workstream. Sells
+      default un-bundled / direct-send, **`tip: None`**.
+- [x] Disguise stays **forge-only** — the module lives in `forge/orchestrator` (neither lab nor
+      hunter links it); hunter/live keeps its lean snipe path, no per-tx sampling.
+- **Gate D:** ✅ `cargo test -p forge-orchestrator` green (22, +16 new: rng/personas/disguise/macros);
+      `gate_d_persona_coherence_and_sell_no_tip` builds a `volume_make`+`exit` plan for one wallet,
+      asserts every op shares that wallet's persona, the three volume buys' disguises are **not**
+      byte-identical (jitter varies), and the exit sell's `tip` is `None`; `composed_plan_shares_idseq
+      _and_validates` runs fund→launch→volume→exit→consolidate through one IdSeq (unique ids) +
+      `dry_run`. `cargo check --workspace` = 0 errors; executor tests still green (18+34);
+      `cargo tree -p forge-lab`/`-p hunter-lab` link **none** of orchestrator/executor.
 
 ### Phase E — Fingerprint auditor (mandatory)
 - [ ] `orchestrator/audit.rs` — each rule a unit-testable fn over the `Plan`: star funding, equal
