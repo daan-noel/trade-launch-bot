@@ -87,7 +87,9 @@ pub struct Swing1Rule {
     pub p_exit_next_kill_depth_min_pct: Option<f64>,
     pub p_exit_next_kill_max_duration_ms: Option<i64>,
 
-    pub tolerance_pct: f64,
+    /// Fingerprint bucket width (SOL) — the continuous SOL axes match by
+    /// [`crate::grouping::same_bucket`] membership at this width.
+    pub bucket_width_sol: f64,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -109,7 +111,7 @@ impl Swing1Rule {
         p_token_spendable_sol_in: Option<f64>,
         p_max_concurrent_tokens: Option<u64>,
         p_max_total_tokens: Option<u64>,
-        tolerance_pct: Option<f64>,
+        bucket_width_sol: Option<f64>,
         p_exit_trailing_stop_pct: Option<f64>,
         p_exit_time_stop_secs: Option<u64>,
         p_exit_stall_secs: Option<u64>,
@@ -157,7 +159,7 @@ impl Swing1Rule {
             p_token_first_slot_sell_sol: None,
             p_max_concurrent_tokens,
             p_max_total_tokens,
-            tolerance_pct: tolerance_pct.unwrap_or(0.0),
+            bucket_width_sol: bucket_width_sol.unwrap_or(crate::grouping::SOL_BUCKET_WIDTH),
             is_active: false,
             created_at: now,
             updated_at: now,

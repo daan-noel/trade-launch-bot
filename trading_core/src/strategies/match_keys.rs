@@ -62,7 +62,7 @@ fn fingerprint_canonical(params: &StrategyParams) -> String {
         max_sol,
         spendable,
         labels,
-        tolerance,
+        bucket_width,
     ) = match params {
         StrategyParams::Tpsl1(p) => (
             opt_f64(p.p_token_initial_buy_sol),
@@ -73,7 +73,7 @@ fn fingerprint_canonical(params: &StrategyParams) -> String {
             opt_f64(p.p_token_max_sol_cost),
             opt_f64(p.p_token_spendable_sol_in),
             canonical_ix_labels(&p.p_token_ix_labels),
-            p.tolerance_pct.to_string(),
+            p.bucket_width_sol.to_string(),
         ),
         StrategyParams::Tpsl2(p) => (
             opt_f64(p.p_token_initial_buy_sol),
@@ -84,7 +84,7 @@ fn fingerprint_canonical(params: &StrategyParams) -> String {
             opt_f64(p.p_token_max_sol_cost),
             opt_f64(p.p_token_spendable_sol_in),
             canonical_ix_labels(&p.p_token_ix_labels),
-            p.tolerance_pct.to_string(),
+            p.bucket_width_sol.to_string(),
         ),
         StrategyParams::Swing1(p) => (
             opt_f64(p.p_token_initial_buy_sol),
@@ -95,7 +95,7 @@ fn fingerprint_canonical(params: &StrategyParams) -> String {
             opt_f64(p.p_token_max_sol_cost),
             opt_f64(p.p_token_spendable_sol_in),
             canonical_ix_labels(&p.p_token_ix_labels),
-            p.tolerance_pct.to_string(),
+            p.bucket_width_sol.to_string(),
         ),
     };
     [
@@ -107,7 +107,7 @@ fn fingerprint_canonical(params: &StrategyParams) -> String {
         max_sol,
         spendable,
         labels,
-        tolerance,
+        bucket_width,
     ]
     .join("|")
 }
@@ -149,7 +149,7 @@ mod fingerprint_key_parity_tests {
         max_sol: Option<f64>,
         spendable: Option<f64>,
         labels: &[&str],
-        tolerance: f64,
+        bucket_width: f64,
     ) -> String {
         let mut sorted: Vec<&str> = labels.to_vec();
         sorted.sort_unstable();
@@ -162,7 +162,7 @@ mod fingerprint_key_parity_tests {
             max_sol.map(|v| v.to_string()).unwrap_or_default(),
             spendable.map(|v| v.to_string()).unwrap_or_default(),
             sorted.join(","),
-            tolerance.to_string(),
+            bucket_width.to_string(),
         ]
         .join("|")
     }
@@ -178,7 +178,7 @@ mod fingerprint_key_parity_tests {
             p_token_first_slot_buy_sol: Some(0.1),
             p_token_first_slot_sell_sol: None,
             p_token_ix_labels: json!(["B", "A"]),
-            tolerance_pct: 10.0,
+            bucket_width_sol: 0.1,
             p_exit_take_profit: 50.0,
             p_exit_stop_loss: 20.0,
             p_exit_trailing_stop_pct: None,
@@ -196,7 +196,7 @@ mod fingerprint_key_parity_tests {
             None,
             Some(0.5),
             &["B", "A"],
-            10.0,
+            0.1,
         );
         assert_eq!(canonical, expected);
     }
@@ -217,7 +217,7 @@ mod fingerprint_key_parity_tests {
             max_total_tokens: None,
             params: json!({
                 "p_token_initial_buy_sol": 1.0,
-                "tolerance_pct": 5.0,
+                "bucket_width_sol": 0.1,
                 "p_exit_take_profit": 50.0,
                 "p_exit_stop_loss": 20.0,
             }),

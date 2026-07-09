@@ -23,8 +23,9 @@ use chrono::Duration;
 
 use crate::models::trade::TradeRow;
 use crate::models::{Swing1Rule, Token};
+use crate::grouping::same_bucket;
 use crate::strategies::tpsl_sniper_2::entry::{
-    higher_low_confirmed_index, instruction_arg_as_sol, within_tolerance, EntryFill,
+    higher_low_confirmed_index, instruction_arg_as_sol, EntryFill,
 };
 use crate::strategies::tpsl_sniper_2::util::{none_if_zero_f64, none_if_zero_u64};
 
@@ -37,19 +38,19 @@ use super::{classifier, phase_profile_from_rule, rule_configures_any_entry_gate,
 /// A rule that sets no fingerprint admits every token — the trade-stream latch
 /// (`find_phase_entry`) then decides.
 ///
-/// Criterion semantics match tpsl2 exactly (same tolerance band, same
-/// instruction-arg reads) so an authored fingerprint means the same thing across
-/// strategies.
+/// Criterion semantics match tpsl2 exactly (same fingerprint bucket membership,
+/// same instruction-arg reads) so an authored fingerprint means the same thing
+/// across strategies.
 pub fn token_matches_buy_rule(token: &Token, rule: &Swing1Rule) -> bool {
     token_matches_instant_criteria(token, rule) && token_matches_deferred_criteria(token, rule)
 }
 
 /// Instant (creation-time) fingerprint axes only — skips first-slot checks.
 pub fn token_matches_instant_criteria(token: &Token, rule: &Swing1Rule) -> bool {
-    // initial_buy_sol — tolerance band around the configured value.
+    // initial_buy_sol — same fingerprint bucket as the configured value.
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_initial_buy_sol) {
         match token.initial_buy_sol {
-            Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {}
+            Some(v) if same_bucket(v, rule_val, rule.bucket_width_sol) => {}
             _ => return false,
         }
     }
@@ -65,16 +66,16 @@ pub fn token_matches_instant_criteria(token: &Token, rule: &Swing1Rule) -> bool 
         }
     }
     // max_sol_cost / spendable_sol_in — read from the creation-instruction args,
-    // tolerance band.
+    // same fingerprint bucket.
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_max_sol_cost) {
         match instruction_arg_as_sol(token, "max_cost_lamports") {
-            Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {}
+            Some(sol) if same_bucket(sol, rule_val, rule.bucket_width_sol) => {}
             _ => return false,
         }
     }
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_spendable_sol_in) {
         match instruction_arg_as_sol(token, "spendable_lamports_in") {
-            Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {}
+            Some(sol) if same_bucket(sol, rule_val, rule.bucket_width_sol) => {}
             _ => return false,
         }
     }
@@ -97,13 +98,13 @@ pub fn token_matches_instant_criteria(token: &Token, rule: &Swing1Rule) -> bool 
 pub fn token_matches_deferred_criteria(token: &Token, rule: &Swing1Rule) -> bool {
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_buy_sol) {
         match token.first_slot_buy_sol {
-            Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {}
+            Some(v) if same_bucket(v, rule_val, rule.bucket_width_sol) => {}
             _ => return false,
         }
     }
     if let Some(rule_val) = none_if_zero_f64(rule.p_token_first_slot_sell_sol) {
         match token.first_slot_sell_sol {
-            Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {}
+            Some(v) if same_bucket(v, rule_val, rule.bucket_width_sol) => {}
             _ => return false,
         }
     }
@@ -282,19 +283,19 @@ mod tests {
         assert!(token_matches_buy_rule(&token_with(Some(9.9), Some(7), Some(3), serde_json::json!(["X"])), &rule));
     }
 
-    /// A configured fingerprint gates the token — `initial_buy_sol` within
-    /// tolerance passes, outside the band rejects. `cu_limit` mismatch rejects.
+    /// A configured fingerprint gates the token — `initial_buy_sol` in the same
+    /// bucket passes, a different bucket rejects. `cu_limit` mismatch rejects.
     #[test]
     fn configured_fingerprint_gates_token() {
-        // init_buy_sol=1.0, tolerance=10% ⇒ band [0.9, 1.1]; cu_limit=100_000 exact.
+        // init_buy_sol=1.0, width=0.1 ⇒ bucket [1.0, 1.1); cu_limit=100_000 exact.
         let mut rule = Swing1Rule::new(
             "r".into(), Some(1.0), Some(100_000), None, serde_json::json!([]), "paper".into(),
-            1.0, 50.0, 20.0, None, None, None, None, Some(10.0), None, None, None, None,
+            1.0, 50.0, 20.0, None, None, None, None, Some(0.1), None, None, None, None,
         );
         rule.is_active = true;
-        // In band + exact cu_limit ⇒ pass.
+        // Same bucket + exact cu_limit ⇒ pass.
         assert!(token_matches_buy_rule(&token_with(Some(1.05), Some(100_000), None, serde_json::json!([])), &rule));
-        // init_buy_sol outside band ⇒ reject.
+        // init_buy_sol in a different bucket ⇒ reject.
         assert!(!token_matches_buy_rule(&token_with(Some(1.2), Some(100_000), None, serde_json::json!([])), &rule));
         // cu_limit mismatch ⇒ reject.
         assert!(!token_matches_buy_rule(&token_with(Some(1.0), Some(99_999), None, serde_json::json!([])), &rule));

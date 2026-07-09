@@ -88,8 +88,9 @@ pub struct Tpsl2Rule {
     /// Minimum **real** SOL reserves at entry. `None`/`0` disables.
     pub p_entry_min_liquidity_sol: Option<f64>,
 
-    /// Price tolerance percent when matching p_token_initial_buy_sol.
-    pub tolerance_pct: f64,
+    /// Fingerprint bucket width (SOL) — the continuous SOL axes match by
+    /// [`crate::grouping::same_bucket`] membership at this width.
+    pub bucket_width_sol: f64,
     /// Whether this rule is currently active.
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -112,7 +113,7 @@ impl Tpsl2Rule {
         p_token_spendable_sol_in: Option<f64>,
         p_max_concurrent_tokens: Option<u64>,
         p_max_total_tokens: Option<u64>,
-        tolerance_pct: Option<f64>,
+        bucket_width_sol: Option<f64>,
         p_exit_trailing_stop_pct: Option<f64>,
         p_exit_time_stop_secs: Option<u64>,
         p_exit_stall_secs: Option<u64>,
@@ -149,7 +150,7 @@ impl Tpsl2Rule {
             p_token_first_slot_sell_sol: None,
             p_max_concurrent_tokens,
             p_max_total_tokens,
-            tolerance_pct: tolerance_pct.unwrap_or(0.0),
+            bucket_width_sol: bucket_width_sol.unwrap_or(crate::grouping::SOL_BUCKET_WIDTH),
             is_active: false,
             created_at: now,
             updated_at: now,

@@ -25,7 +25,7 @@ pub struct RuleNotifSnapshot {
     pub rule_name: String,
     pub trade_mode: String,
     pub p_token_initial_buy_sol: Option<f64>,
-    pub tolerance_pct: f64,
+    pub bucket_width_sol: f64,
     pub p_token_cu_limit: Option<u64>,
     pub p_token_cu_price: Option<u64>,
     pub p_token_max_sol_cost: Option<f64>,

@@ -14,7 +14,7 @@ export type PositionStatus = (typeof ALL_POSITION_STATUSES)[number];
 
 /** Each group is one checkbox in the Settings UI and one formatted segment in the toast body. */
 export const FP_PARAM_GROUPS = [
-  { key: 'buy_tol',  label: 'Initial buy + Tolerance',  hint: 'ib:0.1◎ tol:2%'      },
+  { key: 'buy_tol',  label: 'Initial buy + Bucket size', hint: 'ib:0.1◎ bw:0.1◎'      },
   { key: 'cu',       label: 'CU limit + price',          hint: 'lim:200K cu:1M'       },
   { key: 'cost',     label: 'Max cost + Spendable SOL',  hint: 'max:0.15◎ spnd:0.1◎'  },
   { key: 'ix',       label: 'IX labels',                 hint: '[pump,amm]'            },

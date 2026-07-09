@@ -66,9 +66,9 @@ fn validate_tpsl1(p: &Tpsl1Params) -> Result<(), String> {
     if p.p_exit_take_profit <= 0.0 {
         return Err("Take Profit % must be greater than 0".into());
     }
+    check_bucket_width(p.bucket_width_sol)?;
     check_bounded(&[
         ("Stop Loss %", p.p_exit_stop_loss),
-        ("Tolerance %", p.tolerance_pct),
         ("Trailing Stop %", p.p_exit_trailing_stop_pct.unwrap_or(0.0)),
         ("Liquidity Drop %", p.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
     ])
@@ -81,9 +81,9 @@ fn validate_tpsl2(p: &Tpsl2Params) -> Result<(), String> {
     if p.p_exit_take_profit <= 0.0 {
         return Err("Take Profit % must be greater than 0".into());
     }
+    check_bucket_width(p.bucket_width_sol)?;
     check_bounded(&[
         ("Stop Loss %", p.p_exit_stop_loss),
-        ("Tolerance %", p.tolerance_pct),
         ("Trailing Stop %", p.p_exit_trailing_stop_pct.unwrap_or(0.0)),
         ("Liquidity Drop %", p.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
         ("Pullback %", p.p_entry_pullback_pct.unwrap_or(0.0)),
@@ -112,9 +112,9 @@ fn validate_swing1(p: &Swing1Params) -> Result<(), String> {
     if p.p_exit_take_profit <= 0.0 {
         return Err("Take Profit % must be greater than 0".into());
     }
+    check_bucket_width(p.bucket_width_sol)?;
     check_bounded(&[
         ("Stop Loss %", p.p_exit_stop_loss),
-        ("Tolerance %", p.tolerance_pct),
         ("Trailing Stop %", p.p_exit_trailing_stop_pct.unwrap_or(0.0)),
         ("Liquidity Drop %", p.p_exit_liquidity_drop_pct.unwrap_or(0.0)),
         ("Pullback %", p.p_entry_pullback_pct.unwrap_or(0.0)),
@@ -191,6 +191,19 @@ fn check_bounded(fields: &[(&str, f64)]) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate the fingerprint bucket width (SOL): finite and `> 0`, floored at
+/// `MIN_BUCKET_WIDTH_SOL` so the `1e-9` ratio-epsilon in [`crate::grouping::bucket_index`]
+/// stays valid and edge labels don't explode in decimals.
+fn check_bucket_width(w: f64) -> Result<(), String> {
+    if !w.is_finite() || w < crate::grouping::MIN_BUCKET_WIDTH_SOL {
+        return Err(format!(
+            "Bucket size (SOL) must be finite and ≥ {}",
+            crate::grouping::MIN_BUCKET_WIDTH_SOL
+        ));
+    }
+    Ok(())
+}
+
 /// Validate + assemble a new (unpersisted) [`StrategyRule`] from a draft. The new
 /// rule is inactive (`is_active = false`); a lifecycle endpoint activates it.
 pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
@@ -256,7 +269,7 @@ mod tests {
             p_token_first_slot_buy_sol: None,
             p_token_first_slot_sell_sol: None,
             p_token_ix_labels: json!([]),
-            tolerance_pct: 5.0,
+            bucket_width_sol: 0.1,
             p_exit_take_profit: tp,
             p_exit_stop_loss: sl,
             p_exit_trailing_stop_pct: None,
@@ -320,7 +333,7 @@ mod tests {
     fn tpsl2_requires_a_scalp_gate() {
         let mut rule = crate::models::Tpsl2Rule::new(
             "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
+            50.0, 20.0, None, None, None, None, Some(0.1), None, None, None, None,
         );
         rule.is_active = true;
         // No scalp gate configured → rejected.
@@ -338,7 +351,7 @@ mod tests {
     fn swing1_rule_min() -> crate::models::Swing1Rule {
         let mut r = crate::models::Swing1Rule::new(
             "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
+            50.0, 20.0, None, None, None, None, Some(0.1), None, None, None, None,
         );
         // A minimal valid config: one swing axis, kill+volume axes, entry pullback.
         r.p_swing_min_leg_trades = Some(2);
@@ -407,7 +420,7 @@ mod tests {
     fn tpsl2_empty_entry_window_rejected() {
         let mut rule = crate::models::Tpsl2Rule::new(
             "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
+            50.0, 20.0, None, None, None, None, Some(0.1), None, None, None, None,
         );
         rule.p_entry_min_age_secs = Some(60);
         rule.p_entry_max_age_secs = Some(30); // max <= min → empty window

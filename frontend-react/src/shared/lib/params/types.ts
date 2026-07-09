@@ -2,7 +2,7 @@
 // form, shared by all 3 strategies (tpsl1, tpsl2, swing_1).
 //
 // The single source of truth is the backend **column** name (`p_exit_take_profit`,
-// `buy_amount_sol`, `tolerance_pct`, `trade_mode`, …). Form state, the clipboard blob,
+// `buy_amount_sol`, `bucket_width_sol`, `trade_mode`, …). Form state, the clipboard blob,
 // and the create/update payloads are ALL keyed by these columns, so the engine is
 // a set of mechanical passes over a spec — no camelCase maps, no nested `axes`, no
 // per-representation key translators. See `copy-params-unify-plan.md`.
@@ -29,7 +29,7 @@ export type ParamSection = 'swing' | 'kill' | 'volume' | 'confirm' | 'ladder' | 
  *  serialize / apply / build-payload / render it without any per-strategy code. */
 export interface ParamField {
   /** Canonical backend column — the key everywhere (form state, blob, payload).
-   *  e.g. `p_exit_take_profit`, `buy_amount_sol`, `tolerance_pct`, `trade_mode`. */
+   *  e.g. `p_exit_take_profit`, `buy_amount_sol`, `bucket_width_sol`, `trade_mode`. */
   column: string;
   /** Role bucket (lock-group + coarse layout). */
   group: ParamGroup;
@@ -42,7 +42,7 @@ export interface ParamField {
    *  otherwise blank→null/0. Only TP/SL and `buy_amount_sol`. */
   required: boolean;
   /** On CREATE, a blank optional field normally serializes to `null`. Set this to
-   *  emit `0` instead (swing1's `tolerance_pct` is `0`-defaulted, not null). Ignored
+   *  emit `0` instead for fields whose backend default is `0`, not null. Ignored
    *  for `required` fields. */
   createBlankZero?: boolean;
   /** The sweep combo's bare key for this field, IF it's a swept axis

@@ -10,7 +10,7 @@ const FIELDS: ParamField[] = [
   { column: 'p_token_initial_buy_sol', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Initial Buy SOL', helpKey: 'initialBuy', unit: '◎', step: '0.001', nullable: true },
   { column: 'p_token_first_slot_buy_sol', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'First-slot Buy SOL', unit: '◎', step: '0.001', nullable: true },
   { column: 'p_token_first_slot_sell_sol', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'First-slot Sell SOL', unit: '◎', step: '0.001', nullable: true },
-  { column: 'tolerance_pct', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Tolerance %', helpKey: 'tolerance', unit: '%', step: '0.1', min: 0, max: 100, nullable: true },
+  { column: 'bucket_width_sol', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Bucket Size (SOL)', helpKey: 'bucketWidth', unit: '◎', step: '0.01', min: 0, nullable: true },
   { column: 'p_token_cu_limit', group: 'fingerprint', section: 'fingerprint', kind: 'int', required: false, label: 'CU Limit', helpKey: 'cuLimit', nullable: true },
   { column: 'p_token_cu_price', group: 'fingerprint', section: 'fingerprint', kind: 'int', required: false, label: 'CU Price', helpKey: 'cuPrice', nullable: true },
   { column: 'p_token_max_sol_cost', group: 'fingerprint', section: 'fingerprint', kind: 'float', required: false, label: 'Max SOL Cost', helpKey: 'maxSolCost', unit: '◎', step: '0.001', nullable: true },

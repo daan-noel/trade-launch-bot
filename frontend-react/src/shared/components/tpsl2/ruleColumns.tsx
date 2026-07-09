@@ -324,15 +324,15 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
         Array.isArray(r.p_token_ix_labels) ? r.p_token_ix_labels.map(String).join(' ') : '',
     },
     {
-      key: 'tol',
-      label: 'Tolerance',
+      key: 'bw',
+      label: 'Bucket ◎',
       tooltip:
-        'Match tolerance (%) applied to the numeric token-fingerprint filters (Init Buy, CU Lim, CU Price, Max SOL, Spendable).',
+        'Bucket size (SOL) for matching the continuous SOL fingerprint filters (Init Buy, First-slot Buy/Sell, Max SOL, Spendable). A token matches when it lands in the same [lo, hi) bucket.',
       group: 'token_fingerprint',
       sortable: true,
-      render: (r) => dashPercent(r.tolerance_pct),
-      sortValue: (r) => r.tolerance_pct,
-      searchValue: (r) => String(r.tolerance_pct),
+      render: (r) => dashF(r.bucket_width_sol, 3),
+      sortValue: (r) => r.bucket_width_sol,
+      searchValue: (r) => String(r.bucket_width_sol),
     },
     {
       key: 'max_concurrent_tokens',

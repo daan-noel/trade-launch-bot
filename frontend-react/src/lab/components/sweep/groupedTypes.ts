@@ -50,7 +50,7 @@ export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
 // --- bucketed (binned) fields ----------------------------------------------
 
 /** Bucket width (SOL) the backend groups the continuous SOL-amount fields by.
- *  Mirrors `trading_core` `grouping::SOL_BIN_WIDTH` — keep the two in sync. */
+ *  Mirrors `trading_core` `grouping::SOL_BUCKET_WIDTH` — keep the two in sync. */
 export const SOL_BUCKET_WIDTH = 0.1;
 
 /** Fields the backend groups into `SOL_BUCKET_WIDTH`-wide **ranges** (group chips

@@ -69,6 +69,14 @@ fn empty_array() -> Value {
     json!([])
 }
 
+/// Default fingerprint bucket width (SOL) when a rule's params omit
+/// `bucket_width_sol` (old rows pre-backfill / a partial payload). Single-sourced
+/// from [`crate::grouping::SOL_BUCKET_WIDTH`] so the matcher, sweep, and dashboard
+/// share one default.
+fn default_bucket_width() -> f64 {
+    crate::grouping::SOL_BUCKET_WIDTH
+}
+
 /// Rebuild the `Tpsl1Rule` the tpsl1 decision/backtest layer consumes from a
 /// unified [`StrategyRule`]: the gate params come from the `params` JSONB (via
 /// [`Tpsl1Params::to_rule`]); the universal knobs (`id`, name, `buy_amount_sol`,
@@ -140,8 +148,8 @@ pub struct Tpsl1Params {
     pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
-    #[serde(default)]
-    pub tolerance_pct: f64,
+    #[serde(default = "default_bucket_width")]
+    pub bucket_width_sol: f64,
     pub p_exit_take_profit: f64,
     pub p_exit_stop_loss: f64,
     #[serde(default)]
@@ -166,7 +174,7 @@ impl Tpsl1Params {
             p_token_first_slot_buy_sol: r.p_token_first_slot_buy_sol,
             p_token_first_slot_sell_sol: r.p_token_first_slot_sell_sol,
             p_token_ix_labels: r.p_token_ix_labels.clone(),
-            tolerance_pct: r.tolerance_pct,
+            bucket_width_sol: r.bucket_width_sol,
             p_exit_take_profit: r.p_exit_take_profit,
             p_exit_stop_loss: r.p_exit_stop_loss,
             p_exit_trailing_stop_pct: r.p_exit_trailing_stop_pct,
@@ -195,7 +203,7 @@ impl Tpsl1Params {
             self.p_token_spendable_sol_in,
             None,
             None,
-            Some(self.tolerance_pct),
+            Some(self.bucket_width_sol),
             self.p_exit_trailing_stop_pct,
             self.p_exit_time_stop_secs,
             self.p_exit_stall_secs,
@@ -228,8 +236,8 @@ pub struct Tpsl2Params {
     pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
-    #[serde(default)]
-    pub tolerance_pct: f64,
+    #[serde(default = "default_bucket_width")]
+    pub bucket_width_sol: f64,
     pub p_exit_take_profit: f64,
     pub p_exit_stop_loss: f64,
     #[serde(default)]
@@ -269,7 +277,7 @@ impl Tpsl2Params {
             p_token_first_slot_buy_sol: r.p_token_first_slot_buy_sol,
             p_token_first_slot_sell_sol: r.p_token_first_slot_sell_sol,
             p_token_ix_labels: r.p_token_ix_labels.clone(),
-            tolerance_pct: r.tolerance_pct,
+            bucket_width_sol: r.bucket_width_sol,
             p_exit_take_profit: r.p_exit_take_profit,
             p_exit_stop_loss: r.p_exit_stop_loss,
             p_exit_trailing_stop_pct: r.p_exit_trailing_stop_pct,
@@ -303,7 +311,7 @@ impl Tpsl2Params {
             self.p_token_spendable_sol_in,
             None,
             None,
-            Some(self.tolerance_pct),
+            Some(self.bucket_width_sol),
             self.p_exit_trailing_stop_pct,
             self.p_exit_time_stop_secs,
             self.p_exit_stall_secs,
@@ -345,8 +353,8 @@ pub struct Swing1Params {
     pub p_token_first_slot_sell_sol: Option<f64>,
     #[serde(default = "empty_array")]
     pub p_token_ix_labels: Value,
-    #[serde(default)]
-    pub tolerance_pct: f64,
+    #[serde(default = "default_bucket_width")]
+    pub bucket_width_sol: f64,
     pub p_exit_take_profit: f64,
     pub p_exit_stop_loss: f64,
     #[serde(default)]
@@ -414,7 +422,7 @@ impl Swing1Params {
             p_token_first_slot_buy_sol: r.p_token_first_slot_buy_sol,
             p_token_first_slot_sell_sol: r.p_token_first_slot_sell_sol,
             p_token_ix_labels: r.p_token_ix_labels.clone(),
-            tolerance_pct: r.tolerance_pct,
+            bucket_width_sol: r.bucket_width_sol,
             p_exit_take_profit: r.p_exit_take_profit,
             p_exit_stop_loss: r.p_exit_stop_loss,
             p_exit_trailing_stop_pct: r.p_exit_trailing_stop_pct,
@@ -460,7 +468,7 @@ impl Swing1Params {
             self.p_token_spendable_sol_in,
             None,
             None,
-            Some(self.tolerance_pct),
+            Some(self.bucket_width_sol),
             self.p_exit_trailing_stop_pct,
             self.p_exit_time_stop_secs,
             self.p_exit_stall_secs,
@@ -799,7 +807,6 @@ mod tests {
     fn tpsl1_params_parse_from_jsonb() {
         let v = json!({
             "p_token_initial_buy_sol": 1.0,
-            "tolerance_pct": 10.0,
             "p_exit_take_profit": 50.0,
             "p_exit_stop_loss": 20.0,
             "p_exit_trailing_stop_pct": 30.0
@@ -811,6 +818,8 @@ mod tests {
         // Omitted optionals default to None; labels default to empty array.
         assert_eq!(p.p_exit_stall_secs, None);
         assert_eq!(p.p_token_ix_labels, json!([]));
+        // Omitted bucket_width_sol falls back to the shared default width (pre-backfill rows).
+        assert_eq!(p.bucket_width_sol, crate::grouping::SOL_BUCKET_WIDTH);
     }
 
     #[test]
@@ -824,7 +833,7 @@ mod tests {
             p_token_first_slot_buy_sol: None,
             p_token_first_slot_sell_sol: None,
             p_token_ix_labels: json!(["A", "B"]),
-            tolerance_pct: 5.0,
+            bucket_width_sol: 5.0,
             p_exit_take_profit: 40.0,
             p_exit_stop_loss: 15.0,
             p_exit_trailing_stop_pct: Some(25.0),
@@ -847,7 +856,7 @@ mod tests {
     fn swing1_params_from_rule_to_rule_preserves_every_axis() {
         let mut rule = Swing1Rule::new(
             "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
+            50.0, 20.0, None, None, None, None, Some(0.1), None, None, None, None,
         );
         rule.p_swing_high_to_low_sol = Some(1.0);
         rule.p_swing_high_to_low_pct = Some(2.0);
@@ -965,7 +974,7 @@ mod tests {
         ];
         let mut rule = Tpsl1Rule::new(
             "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            1000.0, 90.0, None, None, None, None, Some(0.0),
+            1000.0, 90.0, None, None, None, None, Some(0.1),
             Some(30.0), None, None, None,
         );
         rule.is_active = true;
@@ -997,7 +1006,7 @@ mod tests {
             p_token_first_slot_buy_sol: None,
             p_token_first_slot_sell_sol: None,
             p_token_ix_labels: json!([]),
-            tolerance_pct: 0.0,
+            bucket_width_sol: 0.1,
             p_exit_take_profit: 50.0,
             p_exit_stop_loss: 20.0,
             p_exit_trailing_stop_pct: None,
@@ -1018,7 +1027,7 @@ mod tests {
         let trades = vec![buy(3.0, 2, 1), buy(0.05, 3, 2), buy(0.05, 4, 3)];
         let mut rule = Tpsl2Rule::new(
             "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            1000.0, 90.0, None, None, None, None, Some(0.0),
+            1000.0, 90.0, None, None, None, None, Some(0.1),
             Some(30.0), None, None, None,
         );
         rule.is_active = true;
@@ -1041,7 +1050,7 @@ mod tests {
         let trades = vec![buy(1.0, 2, 1)];
         let params = StrategyParams::Tpsl2(Tpsl2Params::from_rule(&Tpsl2Rule::new(
             "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
-            50.0, 20.0, None, None, None, None, Some(0.0), None, None, None, None,
+            50.0, 20.0, None, None, None, None, Some(0.1), None, None, None, None,
         )));
         // Tpsl1 impl fed Tpsl2 params → None, never a panic.
         assert!(StrategyImpl::Tpsl1.resolve_entry(&trades, &params).is_none());

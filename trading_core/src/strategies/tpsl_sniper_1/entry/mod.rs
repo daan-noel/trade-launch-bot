@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::util::{none_if_zero_f64, none_if_zero_u64};
 use crate::config::constants::{LAMPORTS_PER_SOL, MAX_SNIPE_AGE_SECS};
+use crate::grouping::same_bucket;
 use crate::models::trade::TradeRow;
 use crate::models::{Tpsl1Rule, Token};
 
@@ -138,20 +139,12 @@ fn rule_configures_any_criterion(rule: &Tpsl1Rule) -> bool {
         || rule.p_token_ix_labels.as_array().map_or(false, |a| !a.is_empty())
 }
 
-/// True when `token_val` is within the rule's tolerance band around `rule_val`.
-fn within_tolerance(token_val: f64, rule_val: f64, tolerance_pct: f64, eps: f64) -> bool {
-    let tol = rule_val.abs() * (tolerance_pct * 0.01);
-    (token_val - rule_val).abs() <= tol + eps
-}
-
 fn check_initial_buy_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
     let Some(rule_val) = none_if_zero_f64(rule.p_token_initial_buy_sol) else {
         return CriterionOutcome::NotConfigured;
     };
     match token.initial_buy_sol {
-        Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {
-            CriterionOutcome::Satisfied
-        }
+        Some(v) if same_bucket(v, rule_val, rule.bucket_width_sol) => CriterionOutcome::Satisfied,
         _ => CriterionOutcome::Rejected,
     }
 }
@@ -181,9 +174,7 @@ fn check_max_sol_cost(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
         return CriterionOutcome::NotConfigured;
     };
     match instruction_arg_as_sol(token, "max_cost_lamports") {
-        Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {
-            CriterionOutcome::Satisfied
-        }
+        Some(sol) if same_bucket(sol, rule_val, rule.bucket_width_sol) => CriterionOutcome::Satisfied,
         _ => CriterionOutcome::Rejected,
     }
 }
@@ -193,9 +184,7 @@ fn check_spendable_sol_in(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome {
         return CriterionOutcome::NotConfigured;
     };
     match instruction_arg_as_sol(token, "spendable_lamports_in") {
-        Some(sol) if within_tolerance(sol, rule_val, rule.tolerance_pct, 1e-15) => {
-            CriterionOutcome::Satisfied
-        }
+        Some(sol) if same_bucket(sol, rule_val, rule.bucket_width_sol) => CriterionOutcome::Satisfied,
         _ => CriterionOutcome::Rejected,
     }
 }
@@ -226,9 +215,7 @@ fn check_first_slot_buy_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcome
         return CriterionOutcome::NotConfigured;
     };
     match token.first_slot_buy_sol {
-        Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {
-            CriterionOutcome::Satisfied
-        }
+        Some(v) if same_bucket(v, rule_val, rule.bucket_width_sol) => CriterionOutcome::Satisfied,
         _ => CriterionOutcome::Rejected,
     }
 }
@@ -238,9 +225,7 @@ fn check_first_slot_sell_sol(token: &Token, rule: &Tpsl1Rule) -> CriterionOutcom
         return CriterionOutcome::NotConfigured;
     };
     match token.first_slot_sell_sol {
-        Some(v) if within_tolerance(v, rule_val, rule.tolerance_pct, 1e-9) => {
-            CriterionOutcome::Satisfied
-        }
+        Some(v) if same_bucket(v, rule_val, rule.bucket_width_sol) => CriterionOutcome::Satisfied,
         _ => CriterionOutcome::Rejected,
     }
 }
@@ -365,7 +350,7 @@ mod tests {
         p_token_ix_labels: Value,
         p_token_max_sol_cost: Option<f64>,
         p_token_spendable_sol_in: Option<f64>,
-        tolerance_pct: f64,
+        bucket_width_sol: f64,
     ) -> Tpsl1Rule {
         let mut r = Tpsl1Rule::new(
             "test".into(),
@@ -381,7 +366,7 @@ mod tests {
             p_token_spendable_sol_in,
             None,
             None,
-            Some(tolerance_pct),
+            Some(bucket_width_sol),
             None,
             None,
             None,
@@ -405,8 +390,9 @@ mod tests {
     }
 
     #[test]
-    fn matches_initial_buy_sol_within_tolerance() {
-        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+    fn matches_initial_buy_sol_within_bucket() {
+        // width 0.1 → rule 1.0 defines bucket [1.0, 1.1). 1.05 shares it; 1.2 doesn't.
+        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 0.1);
         let near = token_with(Some(1.05), None, None, None, json!([]));
         let far = token_with(Some(1.2), None, None, None, json!([]));
         assert!(token_matches_buy_rule(&near, &rule));
@@ -416,7 +402,7 @@ mod tests {
     #[test]
     fn freshness_is_live_only_not_a_matcher_criterion() {
         use chrono::Duration;
-        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 0.1);
         let mut old = token_with(Some(1.0), None, None, None, json!([]));
         old.created_at = Utc::now() - Duration::seconds(MAX_SNIPE_AGE_SECS + 60);
         assert!(token_matches_buy_rule(&old, &rule));
@@ -432,14 +418,14 @@ mod tests {
 
     #[test]
     fn rejects_when_token_field_missing() {
-        let rule = rule_with_entry(None, Some(100_000), None, json!([]), None, None, 10.0);
+        let rule = rule_with_entry(None, Some(100_000), None, json!([]), None, None, 0.1);
         let token = token_with(Some(1.0), None, None, None, json!([])); // cu_limit None
         assert!(!token_matches_buy_rule(&token, &rule));
     }
 
     #[test]
     fn max_sol_cost_read_from_instruction_args() {
-        let rule = rule_with_entry(None, None, None, json!([]), Some(1.0), None, 0.0);
+        let rule = rule_with_entry(None, None, None, json!([]), Some(1.0), None, 0.1);
         let ix = json!({ "max_cost_lamports": 1_000_000_000u64 }); // 1 SOL
         let token = token_with(None, None, None, Some(ix), json!([]));
         assert!(token_matches_buy_rule(&token, &rule));
@@ -447,7 +433,7 @@ mod tests {
 
     #[test]
     fn instruction_labels_exact_ordered_match() {
-        let rule = rule_with_entry(None, None, None, json!(["A", "B", "C"]), None, None, 0.0);
+        let rule = rule_with_entry(None, None, None, json!(["A", "B", "C"]), None, None, 0.1);
         // Exact match passes.
         let exact = token_with(None, None, None, None, json!(["A", "B", "C"]));
         assert!(token_matches_buy_rule(&exact, &rule));
@@ -468,11 +454,11 @@ mod tests {
         assert!(!token_matches_buy_rule(&diff, &rule));
     }
 
-    // The degenerate-case fix: a rule with only a tolerance and no real criteria
+    // The degenerate-case fix: a rule with only a bucket width and no real criteria
     // must NOT match every token (the old inline check_buy_entry did).
     #[test]
     fn rule_with_no_criteria_never_matches() {
-        let rule = rule_with_entry(None, None, None, json!([]), None, None, 10.0);
+        let rule = rule_with_entry(None, None, None, json!([]), None, None, 0.1);
         let token = token_with(Some(1.0), Some(100_000), None, None, json!([]));
         assert!(!token_matches_buy_rule(&token, &rule));
         assert!(find_all_matching_buy_rules(&token, std::slice::from_ref(&rule)).is_empty());
@@ -481,10 +467,10 @@ mod tests {
     #[test]
     fn find_all_matching_skips_inactive_and_returns_all_matches() {
         let token = token_with(Some(1.0), None, None, None, json!([]));
-        let mut inactive = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let mut inactive = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 0.1);
         inactive.is_active = false;
-        let active1 = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
-        let active2 = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let active1 = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 0.1);
+        let active2 = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 0.1);
 
         let rules = vec![inactive, active1.clone(), active2.clone()];
         assert_eq!(
@@ -494,11 +480,12 @@ mod tests {
     }
 
     #[test]
-    fn first_slot_buy_sol_within_tolerance() {
-        let mut rule = rule_with_entry(None, None, None, json!([]), None, None, 10.0);
+    fn first_slot_buy_sol_within_bucket() {
+        // width 0.1 → rule 2.0 defines bucket [2.0, 2.1). 2.05 shares it; 2.1 and 3.0 don't.
+        let mut rule = rule_with_entry(None, None, None, json!([]), None, None, 0.1);
         rule.p_token_first_slot_buy_sol = Some(2.0);
         let mut near = token_with(None, None, None, None, json!([]));
-        near.first_slot_buy_sol = Some(2.1);
+        near.first_slot_buy_sol = Some(2.05);
         let mut far = token_with(None, None, None, None, json!([]));
         far.first_slot_buy_sol = Some(3.0);
         assert!(token_matches_buy_rule(&near, &rule));
@@ -507,7 +494,7 @@ mod tests {
 
     #[test]
     fn first_slot_not_configured_is_inert() {
-        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 10.0);
+        let rule = rule_with_entry(Some(1.0), None, None, json!([]), None, None, 0.1);
         let token = token_with(Some(1.0), None, None, None, json!([]));
         assert!(token_matches_buy_rule(&token, &rule));
     }

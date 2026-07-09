@@ -97,14 +97,14 @@ Two tokens with the same `GroupKey` are in the same group.
 **Exact-value vs binned rendering (`render_field`).** Discrete fields (program id,
 CU limit/price, cashback, ix-labels) render their exact value. The continuous
 SOL-amount fields (`initial_buy_sol`, `max_cost_lamports`, `spendable_lamports_in`,
-`first_slot_{buy,sell}_sol`) are **binned** into fixed `SOL_BIN_WIDTH`-wide ranges via
-`bin_sol_label`, rendered `"lo–hi"` (e.g. `"1.0–1.1"`) — exact-value grouping there
-would make every token its own group. **Tuning constant:** `SOL_BIN_WIDTH = 0.1` SOL,
-`SOL_BIN_DECIMALS = 1`. Lamports-native fields (`max_cost`/`spendable`) are ÷1e9 to
-SOL first so the label reads in SOL. `0.1` is not f64-exact, so `bin_sol_label` adds a
+`first_slot_{buy,sell}_sol`) are **bucketed** into fixed `SOL_BUCKET_WIDTH`-wide ranges via
+`bucket_sol_label`, rendered `"lo–hi"` (e.g. `"1.0–1.1"`) — exact-value grouping there
+would make every token its own group. **Tuning constant:** `SOL_BUCKET_WIDTH = 0.1` SOL,
+`SOL_BUCKET_DECIMALS = 1`. Lamports-native fields (`max_cost`/`spendable`) are ÷1e9 to
+SOL first so the label reads in SOL. `0.1` is not f64-exact, so `bucket_sol_label` adds a
 `+1e-9` epsilon on the ratio before `floor` — an on-edge value (e.g. `0.3`) lands in
 the upper bucket, and the nudge (0.1 lamport in ratio units) can never promote a
-genuinely sub-edge value. The dashboard mirror `creation_stats_repo::sol_bin_sql`
+genuinely sub-edge value. The dashboard mirror `creation_stats_repo::sol_bucket_sql`
 applies the identical epsilon + 1-decimal `to_char` rounding so sweep and dashboard
 produce byte-identical labels. Making the width runtime-configurable is
 [dynamic-bucket-size-plan.md](../../dynamic-bucket-size-plan.md).

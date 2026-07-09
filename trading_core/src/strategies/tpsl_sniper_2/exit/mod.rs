@@ -687,7 +687,7 @@ mod tests {
             None,
             None,
             None,
-            Some(0.0),
+            Some(0.1),
             trailing,
             time_stop_secs,
             stall_secs,

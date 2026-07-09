@@ -35,7 +35,7 @@ export function fingerprintKey(r: RuleRecord): string {
     r.p_token_max_sol_cost ?? '',
     r.p_token_spendable_sol_in ?? '',
     labels,
-    r.tolerance_pct,
+    r.bucket_width_sol,
   ].join('|');
 }
 

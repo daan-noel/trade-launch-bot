@@ -28,12 +28,11 @@ export const TRADE_MODE_KEY = 'trade_mode';
 // ── form construction ───────────────────────────────────────────────────────
 
 /** Blank form: every field '' plus the admin fields. `trade_mode` defaults to the
- *  first mode option; `tolerance_pct` seeds '0' to mirror the old `emptyForm`
- *  (tolerance is a required match-band with a 0 default, shown not blank). */
+ *  first mode option. `bucket_width_sol` is left blank → serializes to `null` → the
+ *  backend fills the default bucket width (`grouping::SOL_BUCKET_WIDTH`, 0.1 SOL). */
 export function emptyForm(spec: StrategySpec): FormState {
   const out: FormState = { [RULE_NAME_KEY]: '', [TRADE_MODE_KEY]: spec.modeOptions[0] };
   for (const f of spec.fields) out[f.column] = '';
-  if ('tolerance_pct' in out) out.tolerance_pct = '0';
   return out;
 }
 

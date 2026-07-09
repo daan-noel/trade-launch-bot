@@ -20,7 +20,7 @@
 //! cashback, ix-labels) and **binned** for the continuous SOL-amount fields (initial
 //! buy, max cost, spendable-in, first-slot buy/sell) — these are effectively
 //! continuous, so exact grouping would make every token its own group. Binning lives
-//! entirely inside [`render_field`] (via [`bin_sol_label`]) at width [`SOL_BIN_WIDTH`]
+//! entirely inside [`render_field`] (via [`bucket_sol_label`]) at width [`SOL_BUCKET_WIDTH`]
 //! — no engine, schema, or API change. See `creation_stats_repo` for the matching
 //! dashboard SQL bin (kept in lockstep so both surfaces produce identical labels).
 
@@ -37,34 +37,73 @@ const MISSING: &str = "∅";
 /// values, so exact-value grouping yields one token per group; binning them into
 /// fixed-width ranges makes them useful group keys. Must stay in lockstep with the
 /// dashboard SQL bin in `creation_stats_repo` (both render the same `"lo–hi"` label).
-pub const SOL_BIN_WIDTH: f64 = 0.1;
+pub const SOL_BUCKET_WIDTH: f64 = 0.1;
 
-/// Decimal places to render each bucket edge at — derived from [`SOL_BIN_WIDTH`]
+/// Decimal places to render each bucket edge at — derived from [`SOL_BUCKET_WIDTH`]
 /// (0.1 → 1 place). Mirrored by the dashboard SQL `to_char` format.
-pub const SOL_BIN_DECIMALS: usize = 1;
+pub const SOL_BUCKET_DECIMALS: usize = 1;
 
-/// Render a SOL value as its half-open bucket label `"lo–hi"` — e.g. with
-/// `width = 0.1`, `2.34 → "2.3–2.4"`. The bucket is `[lo, hi)` where
-/// `lo = floor(v / width) * width`.
+/// The `[lo, hi)` bucket ratio-epsilon (see [`bucket_index`]). Shared by the
+/// dashboard SQL bin so both sides place on-edge values identically.
+pub const BUCKET_EPS: f64 = 1e-9;
+
+/// Smallest legal bucket width (SOL). Below this the `1e-9` ratio-epsilon stops
+/// being negligible and labels blow up in decimals, so rule validation rejects
+/// anything smaller. `1e-6 SOL = 1000 lamports`, far finer than any real config.
+pub const MIN_BUCKET_WIDTH_SOL: f64 = 1e-6;
+
+/// **The one bucketing primitive.** Maps a value to its half-open bucket index
+/// `floor(v / width)`, where bucket `i` covers `[i·width, (i+1)·width)`. Every
+/// bucket label, membership test, and dashboard bin derives from this so they
+/// can never disagree.
 ///
 /// **Boundary robustness:** `0.1` is not exactly representable in f64, so a naive
 /// `floor(v / 0.1)` misplaces edge values (e.g. `0.3 / 0.1 == 2.9999999996 →`
-/// wrong bucket). The `+ 1e-9` nudge on the ratio absorbs that float noise so an
-/// on-edge value lands in the upper bucket. `1e-9` (in ratio units = 0.1 lamport)
-/// is far below the 1-lamport quantum of any real SOL amount, so it never promotes
-/// a genuinely sub-edge value. The dashboard SQL applies the identical epsilon +
-/// `to_char` rounding, so sweep and dashboard produce byte-identical labels.
-fn bin_sol_label(v: f64, width: f64, decimals: usize) -> String {
-    let lo = ((v / width) + 1e-9).floor() * width;
+/// wrong bucket). The `+ BUCKET_EPS` nudge on the ratio absorbs that float noise
+/// so an on-edge value lands in the upper bucket. `1e-9` (in ratio units = 0.1
+/// lamport at width 0.1) is far below the 1-lamport quantum of any real SOL
+/// amount, so it never promotes a genuinely sub-edge value. The dashboard SQL
+/// applies the identical epsilon so sweep and dashboard bin identically.
+pub fn bucket_index(v: f64, width: f64) -> i64 {
+    ((v / width) + BUCKET_EPS).floor() as i64
+}
+
+/// Whether two values fall in the same [`bucket_index`] bucket at `width`. This
+/// is the **matcher** membership test — the live `on_token_created` hot path — so
+/// it is alloc-free (no label string), unlike [`bucket_sol_label`].
+pub fn same_bucket(a: f64, b: f64, width: f64) -> bool {
+    bucket_index(a, width) == bucket_index(b, width)
+}
+
+/// Decimal places needed to render a bucket edge at `width` without loss:
+/// `1.0 → 0`, `0.5 → 1`, `0.1 → 1`, `0.25 → 2`, `0.05 → 2`, `5.0 → 0`. The
+/// dashboard SQL derives the same precision so labels stay byte-identical.
+pub fn decimals_for(width: f64) -> usize {
+    let mut d = 0usize;
+    let mut w = width.abs();
+    while d < 12 && w.fract().abs() > BUCKET_EPS {
+        w *= 10.0;
+        d += 1;
+    }
+    d
+}
+
+/// Render a SOL value as its half-open bucket label `"lo–hi"` — e.g. with
+/// `width = 0.1`, `2.34 → "2.3–2.4"`. The bucket is `[lo, hi)` where
+/// `lo = bucket_index(v, width) · width`. Built on [`bucket_index`] so the label
+/// and the [`same_bucket`] membership test can never drift. The dashboard SQL
+/// applies the identical epsilon + `to_char` rounding for byte-identical labels.
+fn bucket_sol_label(v: f64, width: f64, decimals: usize) -> String {
+    let lo = bucket_index(v, width) as f64 * width;
     let hi = lo + width;
     format!("{lo:.decimals$}–{hi:.decimals$}")
 }
 
 /// Bucket a lamports amount by converting to human SOL first, so the label reads in
 /// SOL (matching the field's "SOL cost"/"SOL in" display name) rather than raw
-/// lamports. Same binning as [`bin_sol_label`].
-fn bin_lamports_as_sol(lamports: i64) -> String {
-    bin_sol_label(lamports as f64 / 1_000_000_000.0, SOL_BIN_WIDTH, SOL_BIN_DECIMALS)
+/// lamports. Same binning as [`bucket_sol_label`].
+fn bucket_lamports_as_sol(lamports: i64) -> String {
+    bucket_sol_label(lamports as f64 / 1_000_000_000.0, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS)
 }
 
 /// Token-creation metadata used **only** for grouping — never read by any
@@ -203,7 +242,7 @@ pub fn group_key(fp: &TokenFingerprint, fields: &[GroupField]) -> GroupKey {
 ///
 /// Discrete fields (program id, CU limit/price, cashback, ix-labels) render their
 /// **exact** value. The continuous SOL-amount fields (initial buy, max cost,
-/// spendable-in, first-slot buy/sell) are **binned** into [`SOL_BIN_WIDTH`]-wide
+/// spendable-in, first-slot buy/sell) are **binned** into [`SOL_BUCKET_WIDTH`]-wide
 /// ranges — this is the single seam where a value becomes a coarse, groupable key.
 fn render_field(fp: &TokenFingerprint, f: GroupField) -> String {
     let opt = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_else(|| MISSING.to_string());
@@ -217,21 +256,21 @@ fn render_field(fp: &TokenFingerprint, f: GroupField) -> String {
         GroupField::IsCashbackEnabled => fp.is_cashback_enabled.to_string(),
         // Continuous SOL amounts → binned SOL ranges. Lamports fields convert to SOL
         // first so the label reads in SOL (matching their "SOL cost"/"SOL in" name).
-        GroupField::MaxCostLamports => fp.max_cost_lamports.map(bin_lamports_as_sol).unwrap_or_else(miss),
+        GroupField::MaxCostLamports => fp.max_cost_lamports.map(bucket_lamports_as_sol).unwrap_or_else(miss),
         GroupField::SpendableLamportsIn => {
-            fp.spendable_lamports_in.map(bin_lamports_as_sol).unwrap_or_else(miss)
+            fp.spendable_lamports_in.map(bucket_lamports_as_sol).unwrap_or_else(miss)
         }
         GroupField::InitialBuySol => fp
             .initial_buy_sol
-            .map(|v| bin_sol_label(v, SOL_BIN_WIDTH, SOL_BIN_DECIMALS))
+            .map(|v| bucket_sol_label(v, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS))
             .unwrap_or_else(miss),
         GroupField::FirstSlotBuySol => fp
             .first_slot_buy_sol
-            .map(|v| bin_sol_label(v, SOL_BIN_WIDTH, SOL_BIN_DECIMALS))
+            .map(|v| bucket_sol_label(v, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS))
             .unwrap_or_else(miss),
         GroupField::FirstSlotSellSol => fp
             .first_slot_sell_sol
-            .map(|v| bin_sol_label(v, SOL_BIN_WIDTH, SOL_BIN_DECIMALS))
+            .map(|v| bucket_sol_label(v, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS))
             .unwrap_or_else(miss),
         GroupField::IxLabels => {
             if fp.ix_labels.is_empty() {
@@ -339,6 +378,30 @@ mod tests {
         let mut none = fp();
         none.initial_buy_sol = None;
         assert_eq!(group_key(&none, &[GroupField::InitialBuySol]).0[0].1, MISSING);
+    }
+
+    #[test]
+    fn decimals_for_matches_width() {
+        for (w, d) in [(1.0, 0), (5.0, 0), (0.5, 1), (0.1, 1), (0.25, 2), (0.05, 2)] {
+            assert_eq!(decimals_for(w), d, "width {w}");
+        }
+    }
+
+    #[test]
+    fn same_bucket_agrees_with_label() {
+        // The matcher's alloc-free membership test must agree with the label form
+        // for every pair — both derive from bucket_index.
+        let w = SOL_BUCKET_WIDTH;
+        for a in [0.0, 0.05, 0.1, 0.3, 1.0, 1.05, 1.09, 1.1, 2.34, 8.0] {
+            for b in [0.0, 0.05, 0.1, 0.3, 1.0, 1.05, 1.09, 1.1, 2.34, 8.0] {
+                let via_label = bucket_sol_label(a, w, SOL_BUCKET_DECIMALS)
+                    == bucket_sol_label(b, w, SOL_BUCKET_DECIMALS);
+                assert_eq!(same_bucket(a, b, w), via_label, "a={a} b={b}");
+            }
+        }
+        // On-edge lands in the upper bucket, matching bucket_sol_label's behavior.
+        assert!(same_bucket(0.3, 0.35, w));
+        assert!(!same_bucket(0.29, 0.3, w));
     }
 
     #[test]

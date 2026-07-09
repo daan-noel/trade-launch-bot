@@ -355,7 +355,7 @@ fn sweep_base_rule_tpsl2(buy_amount_sol: f64) -> Tpsl2Rule {
         None,                  // p_token_spendable_sol_in — unused in sweep
         None,                  // p_max_concurrent_tokens — unused in grouped sweep
         None,                  // p_max_total_tokens      — unused in grouped sweep
-        None,                  // tolerance_pct           — unused in sweep
+        None,                  // bucket_width_sol           — default 0.1; run width wired Stage 3 in sweep
         None,                  // p_exit_trailing_stop_pct — overlaid per combo
         None,                  // p_exit_time_stop_secs    — overlaid per combo
         None,                  // p_exit_stall_secs        — overlaid per combo
@@ -468,7 +468,7 @@ fn sweep_base_rule_swing1(buy_amount_sol: f64) -> Swing1Rule {
         None,                  // p_token_spendable_sol_in — unused
         None,                  // p_max_concurrent_tokens — unused in grouped sweep
         None,                  // p_max_total_tokens      — unused in grouped sweep
-        None,                  // tolerance_pct           — unused
+        None,                  // bucket_width_sol           — default 0.1; run width wired Stage 3
         None,                  // p_exit_trailing_stop_pct — overlaid per combo
         None,                  // p_exit_time_stop_secs    — overlaid per combo
         None,                  // p_exit_stall_secs        — overlaid per combo
@@ -753,7 +753,7 @@ fn sweep_base_rule_tpsl1(buy_amount_sol: f64) -> Tpsl1Rule {
         None,                  // p_token_spendable_sol_in — unused in sweep
         None,                  // p_max_concurrent_tokens — unused in grouped sweep
         None,                  // p_max_total_tokens      — unused in grouped sweep
-        None,                  // tolerance_pct           — unused in sweep
+        None,                  // bucket_width_sol           — default 0.1; run width wired Stage 3 in sweep
         None,                  // p_exit_trailing_stop_pct — overlaid per combo
         None,                  // p_exit_time_stop_secs    — overlaid per combo
         None,                  // p_exit_stall_secs        — overlaid per combo

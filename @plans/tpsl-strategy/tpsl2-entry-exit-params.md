@@ -34,14 +34,15 @@ All configured params must pass. A rule with zero configured params never matche
 
 | Param | What it checks | Match rule |
 | --- | --- | --- |
-| `p_token_initial_buy_sol` | SOL size of the token's very first buy | within `tolerance_pct`% band |
+| `p_token_initial_buy_sol` | SOL size of the token's very first buy | same `bucket_width_sol` bucket |
+| `p_token_first_slot_buy_sol` / `..._sell_sol` | total buy/sell SOL in the creation slot | same `bucket_width_sol` bucket |
 | `p_token_cu_limit` | Compute unit limit on the creation tx | exact |
 | `p_token_cu_price` | Compute unit price on the creation tx | exact |
-| `p_token_max_sol_cost` | `max_sol_cost` field from the creation instruction args (lamports → SOL) | within `tolerance_pct`% band |
-| `p_token_spendable_sol_in` | `spendable_sol_in` field from the creation instruction args (lamports → SOL) | within `tolerance_pct`% band |
+| `p_token_max_sol_cost` | `max_sol_cost` field from the creation instruction args (lamports → SOL) | same `bucket_width_sol` bucket |
+| `p_token_spendable_sol_in` | `spendable_sol_in` field from the creation instruction args (lamports → SOL) | same `bucket_width_sol` bucket |
 | `p_token_ix_labels` | Ordered list of instruction labels on the creation tx | exact ordered match, same length |
 
-**`tolerance_pct`** applies to the three SOL-value params above. A 10% tolerance on a 1 SOL target accepts 0.9–1.1 SOL. It does NOT apply to CU or label params.
+**`bucket_width_sol`** (default 0.1) is the half-open bucket width applied to every continuous SOL param above: a token matches when it lands in the same `[lo, hi)` bucket as the rule value (`floor(v/width)` equality, via `trading_core::grouping::same_bucket`). Example: Initial Buy 1.0 with width 0.1 matches `[1.0, 1.1)`. It is the SAME width the grouped sweep + creation-stats dashboard bucket by, so "what you swept = what you run". It does NOT apply to CU or label params (exact). Replaces the old `tolerance_pct` ±% band (migration `0003_bucket_width_sol.sql`); see [`bucket-matcher-unify-plan.md`](../../bucket-matcher-unify-plan.md).
 
 **Purpose:** filter tokens whose creation transaction matches a known profitable bot/deployer signature (CU config, instruction shape, dev buy size).
 

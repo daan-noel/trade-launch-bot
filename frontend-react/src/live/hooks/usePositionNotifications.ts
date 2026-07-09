@@ -38,7 +38,7 @@ function formatFpGroups(snapshot: RuleNotifSnapshot, fpParams: string[]): string
   if (fpParams.includes('buy_tol')) {
     const segs: string[] = [];
     if (snapshot.p_token_initial_buy_sol != null) segs.push(`ib:${fmtSol(snapshot.p_token_initial_buy_sol)}`);
-    segs.push(`tol:${snapshot.tolerance_pct}%`);
+    segs.push(`bw:${fmtSol(snapshot.bucket_width_sol)}`);
     if (segs.length) parts.push(segs.join(' '));
   }
 

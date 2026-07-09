@@ -138,7 +138,7 @@ export interface RuleRecord {
   p_min_kills_before_volume?: number | null;
   p_exit_next_kill_depth_min_pct?: number | null;
   p_exit_next_kill_max_duration_ms?: number | null;
-  tolerance_pct: number;
+  bucket_width_sol: number;
   is_active: boolean;
   /** Derived lifecycle for the UI: 'Active' | 'Draining' | 'Idle' | 'Finished'.
    *  `is_active` gates entries only, so an inactive rule with open positions is
@@ -230,7 +230,7 @@ export interface RuleNotifSnapshot {
   p_token_initial_buy_sol: number | null;
   p_token_first_slot_buy_sol: number | null;
   p_token_first_slot_sell_sol: number | null;
-  tolerance_pct: number;
+  bucket_width_sol: number;
   p_token_cu_limit: number | null;
   p_token_cu_price: number | null;
   p_token_max_sol_cost: number | null;

@@ -468,7 +468,7 @@ mod tests {
             "paper".into(),
             0.05, 20.0, 25.0,
             None, None, None, None,
-            Some(0.0),
+            Some(0.1),
             None, None, None, None,
         )
     }

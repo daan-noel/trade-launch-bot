@@ -18,32 +18,32 @@ export const TPSL_PARAM_HELP = {
   initialBuy: {
     title: 'Initial Buy (SOL)',
     body:
-      "Picks tokens by how much SOL was spent on the token's very first buy (the creator's launch buy). Only tokens whose first buy is close to this number will match — how close is set by Tolerance. Leave blank to ignore this filter.",
+      "Picks tokens by how much SOL was spent on the token's very first buy (the creator's launch buy). A token matches when its first buy falls in the same bucket as this value — bucket size is set by Bucket Size (SOL). Leave blank to ignore this filter.",
   },
-  tolerance: {
-    title: 'Tolerance %',
+  bucketWidth: {
+    title: 'Bucket Size (SOL)',
     body:
-      'Match band (±%) around each numeric token-fingerprint filter. Whole-percent, 0–100. Example: Initial Buy 1.0 with 10 matches first buys between 0.9 and 1.1 SOL; 0 means an exact match. Applies to Initial Buy, CU Limit, CU Price, Max SOL Cost and Spendable SOL In.',
+      'Bucket width (in SOL) used to match every continuous SOL fingerprint filter. Values are grouped into fixed [lo, hi) ranges of this width; a token matches when it lands in the SAME bucket as the rule value. Example: Initial Buy 1.0 with Bucket Size 0.1 matches first buys in [1.0, 1.1). This is the SAME width the grouped sweep and creation-stats dashboard bin by, so what you swept is what you run. Applies to Initial Buy, First-slot Buy/Sell, Max SOL Cost and Spendable SOL In. Leave blank for the default 0.1 SOL.',
   },
   cuLimit: {
     title: 'CU Limit',
     body:
-      'Matches tokens by the compute-unit limit set in their creation transaction (how much processing the launch tx asked for). Acts as a fingerprint to recognise tokens launched by a particular bot or tool. Matched within Tolerance. Leave blank to ignore.',
+      'Matches tokens by the compute-unit limit set in their creation transaction (how much processing the launch tx asked for). Acts as a fingerprint to recognise tokens launched by a particular bot or tool. Matched exactly. Leave blank to ignore.',
   },
   cuPrice: {
     title: 'CU Price',
     body:
-      'Matches tokens by the compute-unit price (the priority fee per unit, in micro-lamports) paid on the creation transaction. Higher means the creator paid more to land first — a fingerprint of how aggressively the token was sniped at launch. Matched within Tolerance. Leave blank to ignore.',
+      'Matches tokens by the compute-unit price (the priority fee per unit, in micro-lamports) paid on the creation transaction. Higher means the creator paid more to land first — a fingerprint of how aggressively the token was sniped at launch. Matched exactly. Leave blank to ignore.',
   },
   maxSolCost: {
     title: 'Max SOL Cost',
     body:
-      "Matches tokens by the 'max SOL cost' the creator set in the launch instruction — the most SOL they were willing to spend on the first buy. Read straight from the creation transaction and matched within Tolerance. Leave blank to ignore.",
+      "Matches tokens by the 'max SOL cost' the creator set in the launch instruction — the most SOL they were willing to spend on the first buy. Read straight from the creation transaction and matched by Bucket Size (same [lo, hi) bucket). Leave blank to ignore.",
   },
   spendableSolIn: {
     title: 'Spendable SOL In',
     body:
-      "Matches tokens by the 'spendable SOL' recorded in the launch instruction — roughly the SOL the creator's wallet had available at launch. A fingerprint of the creator's starting funds. Matched within Tolerance. Leave blank to ignore.",
+      "Matches tokens by the 'spendable SOL' recorded in the launch instruction — roughly the SOL the creator's wallet had available at launch. A fingerprint of the creator's starting funds. Matched by Bucket Size (same [lo, hi) bucket). Leave blank to ignore.",
   },
   ixLabels: {
     title: 'Instruction Labels',
