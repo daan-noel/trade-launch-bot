@@ -13,9 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 trading_core = { path = "../trading_core" }
-ingest-laserstream = { path = "../ingest-laserstream", features = ["raw-tx", "rpc-backfill"] }
+ingest-laserstream = { path = "../../shared/ingest-laserstream", features = ["raw-tx", "rpc-backfill"] }
 # `probe`/`claim` are off by default in the crate; the live box uses both.
-pump-trader = { path = "../pump-trader", features = ["probe", "claim"] }
+pump-trader = { path = "../../shared/pump-trader", features = ["probe", "claim"] }
 
 # Tokio
 tokio = { version = "1", features = ["full"] }

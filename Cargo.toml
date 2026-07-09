@@ -17,9 +17,10 @@ members = [
     "meme-trading/trading_core",
     "meme-trading/live",
     "meme-trading/lab",
-    "meme-trading/ingest-laserstream",
     "meme-trading/ingest-websocket",
-    "meme-trading/pump-trader",
+    # shared standalone crates (used by BOTH products)
+    "shared/pump-trader",
+    "shared/ingest-laserstream",
     # solana-launch-platform
     "solana-launch-platform/crates/platform-core",
     "solana-launch-platform/crates/ingest-host",
@@ -52,8 +53,8 @@ version = "0.1.0"
 # graph (verify with `cargo tree -p lab` / `-p slp-lab`).
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
-pump-trader        = { path = "meme-trading/pump-trader" }
-ingest-laserstream = { path = "meme-trading/ingest-laserstream", features = ["raw-tx"] }
+pump-trader        = { path = "shared/pump-trader" }
+ingest-laserstream = { path = "shared/ingest-laserstream", features = ["raw-tx"] }
 
 # Shared third-party versions pinned once (mirrors meme-trading's set).
 tokio     = { version = "1", features = ["full"] }
