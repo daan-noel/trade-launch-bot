@@ -23,9 +23,11 @@ import type { ChartOverlayHook } from 'components/tokens/TokenChartsGrid';
 import type { Swing1DetectParams } from '@lab/services/swing1Detect';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import {
+  serializeGroupFingerprintJson,
   type AxisDef,
   type GroupedSweepStartArgs,
   type GroupedSweepRunRecord,
+  type GroupedSweepGroupRecord,
   type ComboTokenResult,
 } from '@lab/components/sweep/groupedTypes';
 import { apiErrorMessage } from 'store/apiSlice';
@@ -148,6 +150,34 @@ export function GroupedSweepView({
       );
     },
     [copiedComboId, strategyId],
+  );
+
+  // Copy a group's fingerprint as a paste-able rule-params blob (Token
+  // Fingerprint section on the rules page). Mirrors the combo ⎘ button.
+  const [copiedGroupId, setCopiedGroupId] = useState<string | null>(null);
+  const groupRowActions = useCallback(
+    (group: GroupedSweepGroupRecord): ReactNode => {
+      const isCopied = copiedGroupId === group.id;
+      return (
+        <button
+          type="button"
+          onClick={async (e) => {
+            e.stopPropagation();
+            const json = serializeGroupFingerprintJson(strategyId as Strategy, group);
+            try {
+              await navigator.clipboard.writeText(json);
+              setCopiedGroupId(group.id);
+              setTimeout(() => setCopiedGroupId(null), 1500);
+            } catch { /* ignore */ }
+          }}
+          title="Copy this group's fingerprint as rule params (paste into a rule)"
+          className={isCopied ? 'text-green' : 'text-text-dim hover:text-text'}
+        >
+          {isCopied ? '✓' : '⎘'}
+        </button>
+      );
+    },
+    [copiedGroupId, strategyId],
   );
 
   const [startSweep, startState] = useStartGroupedSweepMutation();
@@ -694,6 +724,7 @@ export function GroupedSweepView({
             columns={groupColumns}
             rows={groups}
             rowKey={(g) => g.id}
+            rowActions={groupRowActions}
             groupLabels={{ metrics: 'Metrics', entry: 'Entry', exit: 'Exit' }}
             defaultSort={{ col: 'best_score', dir: 'desc' }}
             searchable

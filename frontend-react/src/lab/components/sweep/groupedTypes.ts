@@ -5,6 +5,7 @@
 // renders them unchanged.
 
 import type { SweepResultRecord } from './types';
+import type { RuleParamsBlob, Strategy } from 'lib/params';
 // swing1 axis metadata + the generic `AxisDef`/`AxisSubgroup` shapes now live in
 // `@shared` so the live swing1 rule page can import them (a `@live` page can't
 // import `@lab`). Re-exported below so existing `@lab` imports keep working.
@@ -65,6 +66,73 @@ export const BUCKETED_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField
   'first_slot_buy_sol',
   'first_slot_sell_sol',
 ]);
+
+// --- fingerprint → rule blob (copy a group into the rules page) -------------
+
+/** GroupField → the rule's fingerprint column it pins. Fields with no rule
+ *  column (`is_cashback_enabled` — no fingerprint gate exists for it) are absent
+ *  and skipped when serializing. Mirrors the tpsl1/tpsl2/swing1 spec fingerprint
+ *  columns (`p_token_*`). */
+const GROUP_FIELD_TO_COLUMN: Partial<Record<GroupField, string>> = {
+  cu_limit: 'p_token_cu_limit',
+  cu_price: 'p_token_cu_price',
+  max_cost_lamports: 'p_token_max_sol_cost',
+  spendable_lamports_in: 'p_token_spendable_sol_in',
+  initial_buy_sol: 'p_token_initial_buy_sol',
+  first_slot_buy_sol: 'p_token_first_slot_buy_sol',
+  first_slot_sell_sol: 'p_token_first_slot_sell_sol',
+  ix_labels: 'p_token_ix_labels',
+};
+
+/** Backend `grouping::MISSING` sentinel — the group_key value for a token that
+ *  lacked the field. A rule can't express "field absent" via a fingerprint gate
+ *  (blank = match any), so such fields are skipped. */
+const MISSING_SENTINEL = '∅';
+
+/**
+ * Serialize a grouped-sweep group's fingerprint key into a rule-params blob —
+ * the same clipboard format the rule form's "Paste params" section consumes, so
+ * a group can be copied straight into a rule's Token Fingerprint. Discrete fields
+ * (CU limit/price) copy their exact value; the binned SOL fields copy the bucket's
+ * lower edge plus the shared `bucket_width_sol`, so the rule matches the same
+ * bucket the group was formed on (`grouping::same_bucket`); `ix_labels` splits its
+ * `" | "`-joined chip back into the array. `∅` / column-less fields are omitted.
+ */
+export function serializeGroupFingerprint(
+  strategy: Strategy,
+  group: GroupedSweepGroupRecord,
+): RuleParamsBlob {
+  const params: Record<string, unknown> = {};
+  let hasBucketed = false;
+  for (const [field, raw] of Object.entries(group.group_key) as [GroupField, string][]) {
+    const col = GROUP_FIELD_TO_COLUMN[field];
+    if (!col || raw === MISSING_SENTINEL) continue;
+    if (field === 'ix_labels') {
+      params[col] = raw.split(' | ').map((s) => s.trim()).filter(Boolean);
+    } else if (BUCKETED_GROUP_FIELDS.has(field)) {
+      // Chip reads as a `"lo–hi"` SOL range; parseFloat stops at the dash → lo.
+      const lo = parseFloat(raw);
+      if (!Number.isNaN(lo)) {
+        params[col] = lo;
+        hasBucketed = true;
+      }
+    } else {
+      const n = Number(raw);
+      if (!Number.isNaN(n)) params[col] = n;
+    }
+  }
+  // Bucket width only matters when a binned SOL field is present.
+  if (hasBucketed) params.bucket_width_sol = SOL_BUCKET_WIDTH;
+  return { strategy, version: 1, params };
+}
+
+/** JSON text of {@link serializeGroupFingerprint}, for the group ⎘ copy button. */
+export function serializeGroupFingerprintJson(
+  strategy: Strategy,
+  group: GroupedSweepGroupRecord,
+): string {
+  return JSON.stringify(serializeGroupFingerprint(strategy, group), null, 2);
+}
 
 // --- TPSL2 editable axes ----------------------------------------------------
 
