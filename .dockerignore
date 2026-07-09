@@ -1,0 +1,51 @@
+# ============================================================================
+# Monorepo build-context excludes. BOTH product stacks now build with
+# context = repo root (the cargo workspace lives here), so this single file is
+# shared by the meme-trading and solana-launch-platform image builds. Patterns
+# are recursive (**/) because each product's tree is one level down.
+# ============================================================================
+
+# --- Rust build output (rebuilt inside the image) ---
+**/target/
+**/target-check/
+
+# --- Node deps & build output (reinstalled/rebuilt inside the image) ---
+**/node_modules/
+**/dist/
+**/.vite/
+
+# --- VCS / migration backup / archives / editor noise ---
+.git/
+_monorepo-backup/
+*.7z
+*.zip
+*.rar
+.vscode/
+.idea/
+*.log
+
+# --- Secrets — never copy into an image (runtime env arrives via compose env_file) ---
+.env
+.env.*
+**/.env
+**/.env.*
+**/keystore/
+**/wallet-backups/
+**/*.enc
+*.ppk
+aws-ec2-key.pem
+.mcp.json
+# NOTE: nginx/tls/*.pem is deliberately NOT excluded — the frontend image COPYs
+# the self-signed cert/key. The SLP keystores / *.enc above are the secret set.
+
+# --- Parquet lake / local data (never part of an image build) ---
+**/.lake/
+**/*.parquet
+**/lake-data/
+
+# --- Docs / plans (not needed to build; keep a docs edit from busting the
+#     builder's source-copy layer and forcing a recompile) ---
+**/*.md
+**/@plans/
+**/@arch/
+**/docs/

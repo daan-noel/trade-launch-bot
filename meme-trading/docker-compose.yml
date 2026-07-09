@@ -100,8 +100,10 @@ services:
   # analysis bin (`lab`) is workstation-only and never built here.
   backend:
     build:
-      context: .
-      dockerfile: live/Dockerfile
+      # Monorepo: context is the repo root (cargo workspace + shared/ crates live
+      # there); the Dockerfile path is relative to that root.
+      context: ..
+      dockerfile: meme-trading/live/Dockerfile
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM to the binary (the kernel ignores SIGTERM for
     # PID 1 with no handler), so `docker stop`/redeploy kills it promptly instead of
@@ -121,8 +123,8 @@ services:
 
   web:
     build:
-      context: .
-      dockerfile: frontend-react/Dockerfile
+      context: ..
+      dockerfile: meme-trading/frontend-react/Dockerfile
       args:
         # Empty => SPA uses relative /api, proxied to backend by nginx.
         VITE_API_BASE: ""

@@ -10,8 +10,9 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
 
-# Install deps first for layer caching.
-COPY frontend-react/package*.json ./
+# Install deps first for layer caching. Paths are relative to the monorepo root
+# (the build context) — hence the meme-trading/ prefix.
+COPY meme-trading/frontend-react/package*.json ./
 # package-lock.json is written by npm 11 (local toolchain), but node:22-slim
 # ships npm 10, whose stricter `npm ci` sync-check rejects it. Match the major
 # so `npm ci` stays deterministic.
@@ -24,7 +25,7 @@ ARG VITE_POLL_INTERVAL_MS=5000
 ENV VITE_API_BASE=$VITE_API_BASE
 ENV VITE_POLL_INTERVAL_MS=$VITE_POLL_INTERVAL_MS
 
-COPY frontend-react/ ./
+COPY meme-trading/frontend-react/ ./
 RUN npm run build
 
 # --- Serve -----------------------------------------------------------------
@@ -35,10 +36,10 @@ FROM nginx:1.27-alpine AS runtime
 # env var by docker-compose) into the /api proxy's bearer header without baking
 # the secret into the image. NGINX_ENVSUBST_FILTER (set in compose) limits
 # substitution to API_AUTH_TOKEN so nginx's own $-variables survive.
-COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
-COPY nginx/.htpasswd /etc/nginx/.htpasswd
+COPY meme-trading/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY meme-trading/nginx/.htpasswd /etc/nginx/.htpasswd
 # Self-signed TLS cert+key for local/testing. The .pem files are gitignored —
 # you must generate them before building (see nginx/tls/README.md).
-COPY nginx/tls/cert.pem nginx/tls/key.pem /etc/nginx/tls/
+COPY meme-trading/nginx/tls/cert.pem meme-trading/nginx/tls/key.pem /etc/nginx/tls/
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80 443

@@ -8,12 +8,14 @@
 # Host port defaults to 5556 so it coexists with the sibling meme-trading stack
 # (which uses 5555). Override via POSTGRES_HOST_PORT in .env.
 #
-# Only Postgres is dockerized here — `live` / `lab` run on the host during
-# co-development (cargo run). A live Dockerfile lands with the EC2 cutover.
+# Monorepo: image builds use context = repo root (the single cargo workspace +
+# shared/ crates). `slp-lab` stays workstation-only (duckdb/arrow/parquet) and is
+# never containerised — see the SLP CLAUDE.md "Dep partition".
 # ---------------------------------------------------------------------------
 
 services:
   postgres:
+    container_name: slp-postgres
     # Standard TimescaleDB image (NOT -ha: the -ha image relocates PGDATA and the
     # volume mount below would not persist). Same choice as meme-trading.
     image: timescale/timescaledb:latest-pg16
@@ -69,6 +71,31 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # LIVE bin (`slp-live`): ingest + launcher + trading + thin HTTP API. The
+  # analysis bin (`slp-lab`) is workstation-only and never built here. Image
+  # builds from the monorepo root (shared/ crates live outside this folder).
+  slp-live:
+    container_name: slp-live
+    build:
+      context: ..
+      dockerfile: solana-launch-platform/crates/slp-live/Dockerfile
+    restart: unless-stopped
+    # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
+    init: true
+    env_file: .env
+    environment:
+      # OVERRIDE .env (compose `environment` wins): bind all interfaces + point
+      # at the postgres service, not localhost.
+      HOST: 0.0.0.0
+      PORT: 8081
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-launch_platform}
+    # Distinct host port from the meme-trading stack (which publishes 8081 in dev).
+    ports:
+      - "${SLP_LIVE_HOST_PORT:-8091}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:
