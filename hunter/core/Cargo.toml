@@ -1,5 +1,5 @@
 [package]
-name = "trading_core"
+name = "hunter-core"
 version = "0.1.0"
 edition = "2021"
 description = "Shared core for the meme-trading backends: config, models, storage, core services/state, api framework, core handlers, strategy domain."

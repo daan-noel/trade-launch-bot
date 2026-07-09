@@ -17,7 +17,7 @@ Meme-coin trading bot — **massive token + trade volume**. Performance outranks
 
 **Monorepo:** `meme-trading/` is now one product folder inside the `Bot/` monorepo (single Cargo `[workspace]`, `resolver = "1"`, root `Bot/Cargo.toml`) alongside `solana-launch-platform/`. The two **standalone drop-in** crates (`pump-trader`, `ingest-laserstream`) moved to a neutral **`shared/`** home (`Bot/shared/…`) so both products consume them as intra-workspace deps — meme-trading's `live` links them via `path = "../../shared/…"`. A bare `cargo build` at the root builds only meme-trading's bins (`default-members`); target SLP crates with `-p`. See `../monorepo-trader-plan.md` (Part 1).
 
-Six Rust crates + `frontend-react` SPA. The old single `backend` crate was split into two bins over a shared core, then renamed to the `live`/`lab` topology (see [@plans/modes/crate-split.md](@plans/modes/crate-split.md) and [live-lab-remake-plan.md](live-lab-remake-plan.md)):
+Six Rust crates + `frontend-react` SPA. The old single `backend` crate was split into two bins over a shared core, then renamed to the `live`/`lab` topology (see [docs/plans/modes/crate-split.md](docs/plans/modes/crate-split.md) and [live-lab-remake-plan.md](live-lab-remake-plan.md)):
 
 | Crate | Kind | Role |
 | --- | --- | --- |
@@ -32,17 +32,17 @@ The transport-agnostic ingest contract (`IngestHandles`, `TraderHook`, re-export
 
 Each bin is its own composition root (`tokio::select!` over long-lived tasks). `live/main.rs` starts ingest via `live::ingest::spawn_ingest` (host adapter over `ingest_laserstream::Ingest`) + trading + strategy + HTTP; `lab/main.rs` is thin (SOL-price poller + token-cache seed + HTTP, no ingest/trader). Helius LaserStream (gRPC) is the **sole** live transport; the `trades` table *is* that feed. Both serve `configure_core_routes` plus their own route config. The frontend split is build-time, so there is no runtime capability advertisement — each bin builds into its own SPA with a static nav. **The frontend uses `live`/`lab` vocabulary throughout** (`@live`/`@lab` aliases, `src/live`/`src/lab` trees, `liveApi`/`labApi`).
 
-**Read `@arch/` docs instead of re-exploring source. Deep-dive detail lives in `@plans/`.**
+**Read `docs/arch/` docs instead of re-exploring source. Deep-dive detail lives in `docs/plans/`.**
 
 | Doc | Covers |
 | --- | --- |
-| [@arch/architecture.md](@arch/architecture.md) | crate map, two bins' `main.rs` wiring, three state structs, ingest interface |
-| [@arch/ingest.md](@arch/ingest.md) | `ingest_laserstream/`: client→pipeline→db_writer, file map |
-| [@arch/strategies.md](@arch/strategies.md) | `strategies/`: StrategyRunner, tpsl1/tpsl2 module map, exit ladder |
-| [@arch/trade-execution.md](@arch/trade-execution.md) | `pump-trader/`: module map, key behaviors |
-| [@arch/database.md](@arch/database.md) | Postgres schema, pools, every repo→table→fns |
-| [@arch/frontend.md](@arch/frontend.md) | `frontend-react/src/`: pages, components, hooks, RTK Query/SSE |
-| [@arch/sweep.md](@arch/sweep.md) | `sweep/`: param-sweep engine, grouping, persistence, API |
+| [docs/arch/architecture.md](docs/arch/architecture.md) | crate map, two bins' `main.rs` wiring, three state structs, ingest interface |
+| [docs/arch/ingest.md](docs/arch/ingest.md) | `ingest_laserstream/`: client→pipeline→db_writer, file map |
+| [docs/arch/strategies.md](docs/arch/strategies.md) | `strategies/`: StrategyRunner, tpsl1/tpsl2 module map, exit ladder |
+| [docs/arch/trade-execution.md](docs/arch/trade-execution.md) | `pump-trader/`: module map, key behaviors |
+| [docs/arch/database.md](docs/arch/database.md) | Postgres schema, pools, every repo→table→fns |
+| [docs/arch/frontend.md](docs/arch/frontend.md) | `frontend-react/src/`: pages, components, hooks, RTK Query/SSE |
+| [docs/arch/sweep.md](docs/arch/sweep.md) | `sweep/`: param-sweep engine, grouping, persistence, API |
 
 ## Commands
 
@@ -72,7 +72,7 @@ or both at once (`dev`). Mode is build-time, not runtime — no `useCapabilities
 **live** build to EC2 (`npm run build` emits lab-free `dist/index.html`). One split `createApi`:
 `baseApi` shell + per-mode `injectEndpoints`; import mode hooks from `@live|@lab/store/*Endpoints`,
 never the shared `store/apiSlice` barrel, so a mode's side effect never leaks across builds. See
-[@arch/frontend.md](@arch/frontend.md).
+[docs/arch/frontend.md](docs/arch/frontend.md).
 
 Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` / `ingest-websocket` / `live` / `lab`). Use `--target-dir target-check` if a bin `.exe` is running (locks `target/`). Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 
@@ -105,8 +105,8 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 - **Frontend:** `npm run build` clean; no extra re-render on SOL/USD tick or live-trade stream
 - **Docs — update ALL affected tiers:**
   - Rules/commands/constraints changed → **CLAUDE.md**
-  - Module structure/data flow/behavior changed → **@arch/[subsystem].md** *(high-level map: crates, files, data flow)*
-  - Implementation detail/algorithm/decision changed → **@plans/[subsystem]/[topic].md** *(deep-dive: column rationale, invariants, tuning constants, design decisions — permanent reference docs, not temporary plans)*
+  - Module structure/data flow/behavior changed → **docs/arch/[subsystem].md** *(high-level map: crates, files, data flow)*
+  - Implementation detail/algorithm/decision changed → **docs/plans/[subsystem]/[topic].md** *(deep-dive: column rationale, invariants, tuning constants, design decisions — permanent reference docs, not temporary plans)*
 - Stayed in the owning crate, no new warnings, no secrets in code
 
 ## .env management
@@ -125,7 +125,7 @@ Every field/column/variable that denotes an amount of SOL names its unit. `_lamp
 
 - **Deferred entry fingerprint gates:** a criterion whose source data isn't settled at `TokenCreated` (today: `p_token_first_slot_buy_sol` / `p_token_first_slot_sell_sol`) must defer via `StrategyRuntimeCache::pending_first_slot` + the existing 1s runner sweep — never block the hot path with sleep/poll. Instant fingerprint axes still match synchronously in `on_token_created`; only rules that opt into the deferred fields wait for window-close (or the 5s backstop).
 - **Sell-confirm timing:** the exit loop polls the **full** window before retrying — buffers the gRPC feed's index lag. Without it, duplicate sells fire. Preserve when editing `execution/real.rs` or the sell retry path.
-- **Stale-creator `ConstraintSeeds` (2006) self-heal is unified**, not sell-only: `pump-trader::trader::swap_retry::classify_swap_revert` is the one SSOT decision (route × direction × error code) both crates use. `pump-trader` self-heals in-call on every `confirm=true` swap (`sell_token`/`buy_token`/`amm_sell`/`amm_buy` — manual + AMM buy/sell are now covered, not just curve sell), retrying once only when the refresh reports the creator/`coin_creator` actually changed. `live`'s feed-confirmed bot sell loop and curve-buy snipe retry import the same classifier instead of keeping a local copy — see `@arch/trade-execution.md` and `stale-creator-2006-unify-plan.md`.
+- **Stale-creator `ConstraintSeeds` (2006) self-heal is unified**, not sell-only: `pump-trader::trader::swap_retry::classify_swap_revert` is the one SSOT decision (route × direction × error code) both crates use. `pump-trader` self-heals in-call on every `confirm=true` swap (`sell_token`/`buy_token`/`amm_sell`/`amm_buy` — manual + AMM buy/sell are now covered, not just curve sell), retrying once only when the refresh reports the creator/`coin_creator` actually changed. `live`'s feed-confirmed bot sell loop and curve-buy snipe retry import the same classifier instead of keeping a local copy — see `docs/arch/trade-execution.md` and `stale-creator-2006-unify-plan.md`.
 - `tpsl_sniper_1`/`tpsl_sniper_2` **decision** modules (`entry`/`exit`, in `trading_core`) are intentional clones — a fix in one usually belongs in both. (The live *orchestration* is no longer cloned: Phase 3 unified it into one registry-dispatched `live/src/strategies/{service,runner,execution}`.)
 - **Analysis-only death-close (`ExitReason::Dead`):** sim/grouped-sweep/detect mislabeled silent-death tokens as `Open` at a stale price — the analysis ladder only fires on an observed trade, and a token that dies by going quiet has none. The **analysis** `find_trade_driven_exit` (all 3 strategies) appends `.or_else(|| strategies::death::find_death_point(trades, entry_time, Utc::now()))`, closing the bag at the **death point** (last meaningful post-entry trade, `DEAD_MEANINGFUL_TRADE_SOL`). Deadness is the shared `token_cache::is_dead_verdict` SSOT — the SAME verdict live's `TokenState::is_dead` uses, so they can't drift. **Live paper reuses the SAME `find_death_point`**: `live`'s `StrategyService::sweep_dead_paper_exits` (runner 1s sweep, AFTER `sweep_time_exits`) closes **paper** `Holding` positions the ladder/time sweep left open (rules with no TimeStop/Stall) at the death point with reason `Dead`, so paper matches sim; the paper *poll* stays strict (`find_trade_driven_exit_live`, waits for a real fill). **Real is untouched** — force-closing a real bag on a deadness verdict is out of scope (a dead pool has no liquidity to sell into); real silent tokens still close only via the Stall/TimeStop clock sweep. Booked closed, not Open: `RunMetrics.n_exit_dead`, grouped-sweep `n_exit_dead` column (folded into `lab/migrations/0001_grouped_sweep.sql`), `ExitCode::Dead=9`.
 - **Truncated logs drop trade legs:** the validator truncates a tx's logs past a byte limit, so the curve decoder's primary "Program data:" TradeEvent scan under-counts legs on multi-buy **bundle** txs (a 4-buy launch bundle logged only 3 events + "Log truncated"). `decode_curve_pb` (`ingest-laserstream`) recovers them from the **inner-instruction self-CPI events** (complete, not log-limited) when logs are empty OR truncated — never revert this to an `is_empty()`-only fallback (partial truncation slips through). The **AMM** path (`decode_pump_swap_trades_from_logs`) is still log-only and has the same latent gap.

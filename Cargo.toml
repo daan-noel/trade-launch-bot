@@ -13,10 +13,10 @@
 # for exactly those two — that collision is the ONLY expected error here.
 # ---------------------------------------------------------------------------
 members = [
-    # meme-trading
-    "meme-trading/trading_core",
-    "meme-trading/live",
-    "meme-trading/lab",
+    # hunter (was meme-trading)
+    "hunter/core",
+    "hunter/live",
+    "hunter/lab",
     # shared standalone crates (used by BOTH products)
     "shared/pump-trader",
     "shared/ingest-laserstream",
@@ -31,11 +31,11 @@ members = [
 ]
 resolver = "1"
 
-# A bare `cargo build` at the root builds only the meme-trading bins, not both
+# A bare `cargo build` at the root builds only the hunter bins, not both
 # products' entire graphs. Target specific crates with `-p <name>` / `--bin`.
 default-members = [
-    "meme-trading/live",
-    "meme-trading/lab",
+    "hunter/live",
+    "hunter/lab",
 ]
 
 [workspace.package]

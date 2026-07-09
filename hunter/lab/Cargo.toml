@@ -1,5 +1,5 @@
 [package]
-name = "lab"
+name = "hunter-lab"
 version = "0.1.0"
 edition = "2021"
 
@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 # Sweep CU cost-model constants come from `trading_core::config::constants`, so
 # the analysis bin never pulls the trading/RPC stack (`pump-trader`).
-trading_core = { path = "../trading_core" }
+trading_core = { path = "../core", package = "hunter-core" }
 
 # Tokio
 tokio = { version = "1", features = ["full"] }
