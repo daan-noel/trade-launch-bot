@@ -28,13 +28,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 # --- Build: cook deps (cached), then compile just the slp-live binary --------
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-# NOTE: `-p slp-live` is REQUIRED. The root workspace sets default-members to the
-# meme-trading bins only, so a bare `--bin slp-live` resolves against those and
-# errors "no bin target named slp-live in default-run packages". Scope by package.
+# NOTE: `-p forge-live` is REQUIRED. The root workspace sets default-members to the
+# hunter bins only, so a bare `--bin slp-live` resolves against those and errors
+# "no bin target named slp-live in default-run packages". Scope by package
+# (package = forge-live; the bin target is still named `slp-live`).
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json -p slp-live --bin slp-live
+    cargo chef cook --release --recipe-path recipe.json -p forge-live --bin slp-live
 # Now bring in the real source and build only the slp-live bin.
 COPY . .
 # target/ is a cache mount (not persisted into the layer) — copy the finished
@@ -42,7 +43,7 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release -p slp-live --bin slp-live \
+    cargo build --release -p forge-live --bin slp-live \
     && cp /app/target/release/slp-live /usr/local/bin/slp-live
 
 # --- Runtime: slim image with just the binary -------------------------------

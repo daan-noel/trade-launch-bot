@@ -1,29 +1,23 @@
 # ---------------------------------------------------------------------------
-# Local Postgres + TimescaleDB for the launch platform.
+# forge-live — production stack: postgres + forge LIVE bin (package
+# `forge-live`, bin `slp-live`): ingest + launcher + trading + thin HTTP.
+# Ships to EC2. The analysis bin (`slp-lab`) is workstation-only (see
+# deploy/forge-lab/) and never built here.
 #
-# Up:    docker compose up -d
-# Logs:  docker compose logs -f postgres
-# Down:  docker compose down            (data persists in the pgdata volume)
+# Image carries BOTH `image:` (ECR ref, pulled on EC2) and `build:` (context =
+# repo root, builds on the workstation).
 #
-# Host port defaults to 5556 so it coexists with the sibling meme-trading stack
-# (which uses 5555). Override via POSTGRES_HOST_PORT in .env.
-#
-# Monorepo: image builds use context = repo root (the single cargo workspace +
-# shared/ crates). `slp-lab` stays workstation-only (duckdb/arrow/parquet) and is
-# never containerised — see the SLP CLAUDE.md "Dep partition".
+# Up:    docker compose -f deploy/forge-live/compose.yml up -d --build
+# Config: forge/.env (see forge/.env.example). Host port 5556 (coexists with
+# hunter's 5555); live published on 8091.
 # ---------------------------------------------------------------------------
 
 services:
   postgres:
-    container_name: slp-postgres
-    # Standard TimescaleDB image (NOT -ha: the -ha image relocates PGDATA and the
-    # volume mount below would not persist). Same choice as meme-trading.
+    container_name: forge-postgres
     image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
-    # Tuning tuned for the 2vCPU/4GB EC2 target (carried from meme-trading): keep
-    # max_connections low (each backend ~26MB vs the 1GB buffer pool), bias the
-    # planner toward index scans on SSD/EBS, cap parallel workers off the ingest
-    # cores. Every value is env-overridable to dial per box size.
+    # EC2 (2vCPU/4GB) tuning, carried from hunter.
     command:
       - "postgres"
       - "-c"
@@ -55,8 +49,6 @@ services:
       - "-c"
       - "wal_compression=on"
       - "-c"
-      # Safe here: PG stays up when the app restarts, and the gRPC feed is
-      # replayable — worst-case power-loss drops <1 WAL buffer of commits.
       - "synchronous_commit=off"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -72,25 +64,19 @@ services:
       timeout: 5s
       retries: 10
 
-  # LIVE bin (`slp-live`): ingest + launcher + trading + thin HTTP API. The
-  # analysis bin (`slp-lab`) is workstation-only and never built here. Image
-  # builds from the monorepo root (shared/ crates live outside this folder).
   slp-live:
-    container_name: slp-live
+    container_name: forge-live
+    image: ${ECR_REGISTRY:-forge}/forge-live:${IMAGE_TAG:-latest}
     build:
-      context: ..
-      dockerfile: solana-launch-platform/crates/slp-live/Dockerfile
+      context: ../..
+      dockerfile: deploy/forge-live/Dockerfile
     restart: unless-stopped
-    # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
-    env_file: .env
+    env_file: ../../forge/.env
     environment:
-      # OVERRIDE .env (compose `environment` wins): bind all interfaces + point
-      # at the postgres service, not localhost.
       HOST: 0.0.0.0
       PORT: 8081
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-launch_platform}
-    # Distinct host port from the meme-trading stack (which publishes 8081 in dev).
     ports:
       - "${SLP_LIVE_HOST_PORT:-8091}:8081"
     depends_on:

@@ -1,0 +1,104 @@
+# ---------------------------------------------------------------------------
+# hunter-live — production stack: postgres + Rust backend (`live`) + nginx
+# (frontend static + /api proxy). Ships to EC2.
+#
+# Each image carries BOTH `image:` (ECR ref, pulled on EC2) and `build:`
+# (context = repo root, so it builds on the workstation). `docker compose build`
+# builds + tags; `docker compose up` on EC2 pulls the tag.
+#
+# Up / update:   docker compose -f deploy/hunter-live/compose.yml up -d --build
+# Secrets/config: hunter/.env (see hunter/.env.example). Only nginx is published.
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    # EC2 (2vCPU/4GB) tuning: keep max_connections low, bias planner to index
+    # scans on SSD/EBS, cap parallel workers off the ingest cores. Every value
+    # is env-overridable to dial per box size.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=timescaledb"
+      - "-c"
+      - "timescaledb.max_background_workers=${TIMESCALEDB_MAX_BG_WORKERS:-2}"
+      - "-c"
+      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-80}"
+      - "-c"
+      - "shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}"
+      - "-c"
+      - "effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-2GB}"
+      - "-c"
+      - "work_mem=${POSTGRES_WORK_MEM:-16MB}"
+      - "-c"
+      - "maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}"
+      - "-c"
+      - "random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}"
+      - "-c"
+      - "effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}"
+      - "-c"
+      - "max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_PER_GATHER:-1}"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "min_wal_size=80MB"
+      - "-c"
+      - "wal_compression=on"
+      - "-c"
+      - "synchronous_commit=off"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-meme_bot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_HOST_PORT:-5555}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-meme_bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # The live trading bin (`live`). Service stays named `backend` so nginx's
+  # `proxy_pass http://backend:8081` keeps working.
+  backend:
+    image: ${ECR_REGISTRY:-hunter}/hunter-live:${IMAGE_TAG:-latest}
+    build:
+      context: ../..
+      dockerfile: deploy/hunter-live/Dockerfile
+    restart: unless-stopped
+    # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
+    init: true
+    env_file: ../../hunter/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8081
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-meme_bot}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: ${ECR_REGISTRY:-hunter}/hunter-web:${IMAGE_TAG:-latest}
+    build:
+      context: ../..
+      dockerfile: deploy/hunter-live/web.Dockerfile
+      args:
+        VITE_API_BASE: ""
+        VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
+    restart: unless-stopped
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?API_AUTH_TOKEN is required (see hunter/.env.example)}
+      NGINX_ENVSUBST_FILTER: API_AUTH_TOKEN
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

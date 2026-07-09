@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# hunter-lab — LOCAL DEV ONLY: postgres (TimescaleDB) + analysis bin (`lab`).
+# The lab bin (arrow/parquet/rayon + bundled duckdb) is workstation-only and
+# NEVER ships to EC2 — so this compose omits the ECR registry ref (build only).
+#
+# Run:   docker compose -f deploy/hunter-lab/compose.yml up -d --build
+# Lake export (batch): docker compose -f deploy/hunter-lab/compose.yml run --rm lab lab lake-export
+# Config: hunter/.env (see hunter/.env.example). Published on 8082.
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=timescaledb"
+      - "-c"
+      - "timescaledb.max_background_workers=${TIMESCALEDB_MAX_BG_WORKERS:-2}"
+      - "-c"
+      - "max_connections=${POSTGRES_MAX_CONNECTIONS:-80}"
+      - "-c"
+      - "shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}"
+      - "-c"
+      - "effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-2GB}"
+      - "-c"
+      - "work_mem=${POSTGRES_WORK_MEM:-16MB}"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-meme_bot}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_HOST_PORT:-5555}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-meme_bot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  lab:
+    build:
+      context: ../..
+      dockerfile: deploy/hunter-lab/Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file: ../../hunter/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8082
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-meme_bot}
+      SWEEP_LAKE_DIR: /lake
+    volumes:
+      - lakedata:/lake
+    ports:
+      - "${LAB_HOST_PORT:-8082}:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  lakedata:
