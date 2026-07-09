@@ -17,10 +17,10 @@ members = [
     "meme-trading/trading_core",
     "meme-trading/live",
     "meme-trading/lab",
-    "meme-trading/ingest-websocket",
     # shared standalone crates (used by BOTH products)
     "shared/pump-trader",
     "shared/ingest-laserstream",
+    "shared/ingest/websocket",
     # solana-launch-platform
     "solana-launch-platform/crates/platform-core",
     "solana-launch-platform/crates/ingest-host",

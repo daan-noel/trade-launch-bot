@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Transport-agnostic ingest contract (IngestHandles, TraderHook) + shared models.
-trading_core = { path = "../trading_core" }
+trading_core = { path = "../../../meme-trading/trading_core" }
 
 # Runtime + channel types named in the spawn signature.
 tokio = { version = "1", features = ["full"] }
