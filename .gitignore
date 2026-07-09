@@ -68,8 +68,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# --- Claude Code internal worktrees ---
-.claude/worktrees/
+# --- Claude Code (project-local settings + worktrees) ---
+.claude/
 
 # --- DB dumps / snapshots ---
 /*.dump
