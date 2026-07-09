@@ -1,16 +1,15 @@
 [package]
-name = "slp-lab"
+name = "forge-lab"
 version.workspace = true
 edition.workspace = true
-description = "ANALYSIS box (workstation only): lake export + sweeps + backtests + wallet analytics + thin HTTP. Links `lake`. MUST NOT link pump-trader / ingest-laserstream / ingest-host / launcher."
+description = "ANALYSIS box (workstation only): lake export + sweeps + backtests + wallet analytics + thin HTTP. The Parquet/DuckDB cold tier is now the in-crate `src/lake/` module (was the lake crate). MUST NOT link pump-trader / ingest-laserstream / launcher."
 
 [[bin]]
 name = "slp-lab"
 path = "src/main.rs"
 
 [dependencies]
-platform-core = { path = "../platform-core" }
-lake          = { path = "../lake" }
+platform-core = { path = "../core", package = "forge-core" }
 tokio.workspace = true
 actix-web.workspace = true
 tracing.workspace = true

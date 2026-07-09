@@ -29,8 +29,8 @@ use platform_core::storage::repositories::dimensions::NewMarket;
 use platform_core::storage::repositories::{MarketRepo, RawTxRepo, TokenRepo, TradeRepo, WalletDictRepo};
 use platform_core::venue::{LaunchpadAdapter, MarketKind};
 
-use crate::map;
-use crate::pumpfun::{PumpFunAdapter, CURVE_PROGRAM_ID};
+use super::map;
+use super::pumpfun::{PumpFunAdapter, CURVE_PROGRAM_ID};
 
 /// Flush when a buffer reaches this many rows (or on the interval, whichever first).
 const FLUSH_EVERY: usize = 256;

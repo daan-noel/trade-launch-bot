@@ -9,6 +9,7 @@
 //! ingest-host / launcher / pump-trader / ingest-laserstream.
 
 mod http;
+mod lake;
 
 use actix_web::{web, App, HttpServer};
 use tracing::info;

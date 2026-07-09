@@ -77,9 +77,10 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPools> {
     )
     .await?;
 
-    // Migrations live at the repo root (`migrations/`), one level above the crate;
-    // the `sqlx migrate` CLI and this embedded runner read the same directory.
-    sqlx::migrate!("../../migrations")
+    // Migrations live in the forge product root (`forge/migrations/`), one level
+    // above this crate; the `sqlx migrate` CLI and this embedded runner read the
+    // same directory.
+    sqlx::migrate!("../migrations")
         .run(&hot)
         .await
         .map_err(|e| anyhow::anyhow!("Migration failed: {e}"))?;

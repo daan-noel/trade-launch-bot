@@ -1,5 +1,5 @@
 [package]
-name = "platform-core"
+name = "forge-core"
 version.workspace = true
 edition.workspace = true
 description = "Data layer for the launch platform: config, models, storage (Postgres/TimescaleDB), repositories, venue trait contracts. Venue- and quote-asset-generalized. NO ingest/trader/lake deps."

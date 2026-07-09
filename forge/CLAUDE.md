@@ -6,10 +6,10 @@ non-SOL-quote-generalized Solana launch + trading + analytics platform (sibling 
 separate git repos). Starts with pump.fun token creation; grows into
 multi-launchpad / multi-quote / multi-wallet.
 
-**Full design:** [../and-about-the-instructions-shimmying-shore.md](../and-about-the-instructions-shimmying-shore.md).
-**Phases & tasks:** [@docs/roadmap-plan.md](@docs/roadmap-plan.md).
-**Decisions (ADR):** [@docs/decisions.md](@docs/decisions.md).
-**Overview + layout:** [@README.md](@README.md). **Analysis pipeline:** [@docs/analysis-workflow.md](@docs/analysis-workflow.md).
+**Full design:** [docs/and-about-the-instructions-shimmying-shore.md](docs/and-about-the-instructions-shimmying-shore.md).
+**Phases & tasks:** [docs/roadmap-plan.md](docs/roadmap-plan.md).
+**Decisions (ADR):** [docs/decisions.md](docs/decisions.md).
+**Overview + layout:** [README.md](README.md). **Analysis pipeline:** [docs/analysis-workflow.md](docs/analysis-workflow.md).
 
 ## Status
 
@@ -24,7 +24,7 @@ signatures against ingested `trades`, no RPC poll; `GET /api/bundles/{id}` for s
 ingest round-trip test + dep-partition CI + [`docs/live-verify.md`](docs/live-verify.md)
 mainnet checklist.
 **Wallet pool (parallel workstream, plan finished & retired — see
-[@docs/roadmap-plan.md](@docs/roadmap-plan.md) or `git show 7f0526f:docs/wallet-pool-plan.md`
+[docs/roadmap-plan.md](docs/roadmap-plan.md) or `git show 7f0526f:docs/wallet-pool-plan.md`
 for full history):**
 Phase 1 done — migration `0004` replaces `managed_wallets.is_active` with an
 explicit `status` lifecycle (`generated`/`funded`/`reserved`/`used`/`retired`) +
@@ -54,7 +54,7 @@ Phase 4 done (wallet-pool plan fully implemented) — `launcher::spawn_dust_swee
 blobs + a full `managed_wallets.json` export, KEK never included); new
 `wallet-verify` CLI backs the restore runbook (decrypt + confirm a derived
 address before trusting a restored pool).
-**Next:** see [@docs/roadmap-plan.md](@docs/roadmap-plan.md) — Phase 3 live trading.
+**Next:** see [docs/roadmap-plan.md](docs/roadmap-plan.md) — Phase 3 live trading.
 Wallet-pool Phase 5+ (automated multi-hop funding, fingerprint picker UI, KMS
 KEK) is explicitly deferred — see `docs/roadmap-plan.md`'s Phase 5+ Growth section.
 

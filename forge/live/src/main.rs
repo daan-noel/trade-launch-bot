@@ -10,6 +10,7 @@
 //! is inspectable without a live feed.
 
 mod http;
+mod ingest;
 mod sol_price;
 
 use actix_web::{web, App, HttpServer};
@@ -143,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("HELIUS_API_KEY"),
     ) {
         (Ok(endpoint), Ok(api_key)) if !endpoint.is_empty() && !api_key.is_empty() => {
-            let (task, handle) = ingest_host::spawn_ingest(pools.hot.clone(), endpoint, api_key).await?;
+            let (task, handle) = ingest::spawn_ingest(pools.hot.clone(), endpoint, api_key).await?;
             (Some(task), Some(handle))
         }
         _ => {

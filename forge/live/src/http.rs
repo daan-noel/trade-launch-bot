@@ -1,7 +1,7 @@
 //! Thin HTTP surface for the LIVE box: health + data-layer reads + launch trigger.
 
 use actix_web::{web, HttpRequest, HttpResponse};
-use ingest_host::IngestHandle;
+use crate::ingest::IngestHandle;
 use launcher::{
     arm_ladder, create_metadata_template, execute_action, execute_bundle, execute_launch,
     export_wallet_base58, fund_for_launch, fund_once, start_volume_bot, update_metadata_template,

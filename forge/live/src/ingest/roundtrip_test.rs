@@ -11,8 +11,8 @@ use chrono::Utc;
 
 use ingest_laserstream::event::{RawTx as IlRawTx, Reserves, Side, TokenCreated, Trade, Venue};
 
-use ingest_host::map;
-use ingest_host::pumpfun::PumpFunAdapter;
+use super::map;
+use super::pumpfun::PumpFunAdapter;
 use platform_core::config::Settings;
 use platform_core::storage::connect;
 use platform_core::storage::repositories::{

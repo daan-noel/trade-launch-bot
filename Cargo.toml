@@ -1,16 +1,17 @@
 [workspace]
 # ---------------------------------------------------------------------------
-# Monorepo: ONE workspace over both products (meme-trading + solana-launch-
-# platform). The two former sub-workspace Cargo.tomls are gone; this is the
-# single [workspace] manifest.
+# Monorepo: ONE workspace over both products — `hunter/` (was meme-trading) and
+# `forge/` (was solana-launch-platform) — plus `shared/`. This is the single
+# [workspace] manifest.
 #
 # `resolver = "1"` stays — the borrowed standalone crates pin solana 1.17.27
 # and "1"'s additive feature unification is what they were built against.
 #
-# NOTE (pre-Phase 4): meme-trading and solana-launch-platform each still ship a
-# package literally named `live` and `lab`. Until Phase 4 renames SLP's to
-# `slp-live`/`slp-lab`, `cargo metadata` reports a duplicate-package-name error
-# for exactly those two — that collision is the ONLY expected error here.
+# Packages are namespaced by product (`hunter-*` / `forge-*`), so there is no
+# duplicate-package-name collision. `[lib]`/`[[bin]]` TARGET names are kept from
+# the pre-rename crates (lib `trading_core`/`platform_core`/`launcher`; bins
+# `live`/`lab`/`slp-live`/`slp-lab`) so source `use` paths + Docker `--bin`
+# flags stay valid; dependents map them via the `package = "..."` rename form.
 # ---------------------------------------------------------------------------
 members = [
     # hunter (was meme-trading)
@@ -21,13 +22,12 @@ members = [
     "shared/pump-trader",
     "shared/ingest-laserstream",
     "shared/ingest/websocket",
-    # solana-launch-platform
-    "solana-launch-platform/crates/platform-core",
-    "solana-launch-platform/crates/ingest-host",
-    "solana-launch-platform/crates/launcher",
-    "solana-launch-platform/crates/lake",
-    "solana-launch-platform/crates/slp-live",
-    "solana-launch-platform/crates/slp-lab",
+    # forge (was solana-launch-platform); lake -> forge/lab/src/lake module,
+    # ingest-host -> forge/live/src/ingest module (both folded, no longer crates)
+    "forge/core",
+    "forge/launcher",
+    "forge/live",
+    "forge/lab",
 ]
 resolver = "1"
 

@@ -16,7 +16,7 @@ use platform_core::models::{NewToken, NewTrade, RawTx};
 use platform_core::units::sol_to_lamports;
 use platform_core::venue::{LaunchpadAdapter, MarketKind};
 
-use crate::pumpfun::PumpFunAdapter;
+use super::pumpfun::PumpFunAdapter;
 
 /// pump.fun tokens mint with 6 decimals (protocol constant).
 pub const PUMP_TOKEN_DECIMALS: i16 = 6;
