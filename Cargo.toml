@@ -1,0 +1,81 @@
+[workspace]
+# ---------------------------------------------------------------------------
+# Monorepo: ONE workspace over both products (meme-trading + solana-launch-
+# platform). The two former sub-workspace Cargo.tomls are gone; this is the
+# single [workspace] manifest.
+#
+# `resolver = "1"` stays — the borrowed standalone crates pin solana 1.17.27
+# and "1"'s additive feature unification is what they were built against.
+#
+# NOTE (pre-Phase 4): meme-trading and solana-launch-platform each still ship a
+# package literally named `live` and `lab`. Until Phase 4 renames SLP's to
+# `slp-live`/`slp-lab`, `cargo metadata` reports a duplicate-package-name error
+# for exactly those two — that collision is the ONLY expected error here.
+# ---------------------------------------------------------------------------
+members = [
+    # meme-trading
+    "meme-trading/trading_core",
+    "meme-trading/live",
+    "meme-trading/lab",
+    "meme-trading/ingest-laserstream",
+    "meme-trading/ingest-websocket",
+    "meme-trading/pump-trader",
+    # solana-launch-platform
+    "solana-launch-platform/crates/platform-core",
+    "solana-launch-platform/crates/ingest-host",
+    "solana-launch-platform/crates/launcher",
+    "solana-launch-platform/crates/lake",
+    "solana-launch-platform/crates/live",
+    "solana-launch-platform/crates/lab",
+]
+resolver = "1"
+
+# A bare `cargo build` at the root builds only the meme-trading bins, not both
+# products' entire graphs. Target specific crates with `-p <name>` / `--bin`.
+default-members = [
+    "meme-trading/live",
+    "meme-trading/lab",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+# ---------------------------------------------------------------------------
+# Shared crate versions, pinned once. meme-trading's packages declare their deps
+# directly (no `workspace = true`); solana-launch-platform's packages consume
+# these via `<dep>.workspace = true`. Both patterns coexist fine.
+#
+# The two borrowed standalone crates now live in the same repo, so their paths
+# are rebased to the monorepo root (they move to shared/ in Phase 3). They have
+# NO workspace deps of their own and MUST NOT appear in any `lab`/`slp-lab` dep
+# graph (verify with `cargo tree -p lab` / `-p slp-lab`).
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+pump-trader        = { path = "meme-trading/pump-trader" }
+ingest-laserstream = { path = "meme-trading/ingest-laserstream", features = ["raw-tx"] }
+
+# Shared third-party versions pinned once (mirrors meme-trading's set).
+tokio     = { version = "1", features = ["full"] }
+sqlx      = { version = "0.6", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid", "migrate"] }
+serde     = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+chrono    = { version = "0.4", features = ["serde"] }
+uuid      = { version = "1", features = ["v4", "serde"] }
+anyhow    = "1"
+tracing   = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dashmap   = "4.0"
+actix-web = "4"
+dotenvy   = "0.15"
+aes-gcm   = "0.10"
+zeroize   = { version = "1", features = ["zeroize_derive"] }
+sha2      = "0.10"
+base64    = "0.22"
+bs58      = "0.5"
+rand      = "0.8"
+solana-sdk = "1.17.27"
+solana-client = "1.17.27"
+
+[profile.dev]
+debug = true
