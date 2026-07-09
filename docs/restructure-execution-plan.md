@@ -155,20 +155,44 @@ Target crates: **`executor-core`** (`shared/executor/core/`, third-party deps on
       executor-core -p executor-pumpfun` green (18+27); `cargo tree -p hunter-lab`/`-p forge-lab`
       link **none** of `executor-core`/`executor-pumpfun`; full `cargo check --workspace` = 0 errors.
 
-### Phase B — Variant catalog = SSOT + structural overflow fix
-- [ ] Add the const `VariantSpec` catalog to `executor-pumpfun/catalog.rs` — one row per on-chain
-      ix (`buy`, `buy_v2`, `buy_exact_sol_in`, `buy_exact_quote_in`, `buy_exact_quote_in_v2`,
-      `sell`, `sell_v2`, AMM `sell`, `create`, `create_v2`, `transfer_with_seed`, SPL
-      `transfer`/`transfer_checked`) carrying `disc / venue / denom / needs_wsol`. `valid_*(venue)`
-      returns the legal subset. Kills the three inconsistent variant paths.
-- [ ] **Fix overflow (R4):** every buy `min_out` — **including the dev-buy launch leg** — computes
-      from **live reserves** via the one shared slippage calc in `executor-pumpfun/price.rs`. Delete
-      the hardcoded `INITIAL_VIRTUAL_*_RESERVES` path at `create.rs:199-208`.
-- [ ] **Variant ⊥ amount:** builders take a canonical `Amount` + live `QuoteCtx`; choosing a
-      variant changes encoding only, never the economic spend.
-- **Gate B:** catalog test asserts `valid_*(venue)` lists only legal variants; two buy variants
-      over the same `Amount` produce the same on-chain economic effect; dev-buy `min_out` derives
-      from live reserves (unit test over `price.rs`). Zero SOL.
+### Phase B — Variant catalog = SSOT + structural overflow fix — ✅ DONE (2026-07-09)
+- [x] Added the const `VariantSpec` catalog to `executor-pumpfun/catalog.rs` — rows for `buy`,
+      `buy_exact_sol_in`, `buy_v2`, `buy_exact_quote_in_v2`, `sell`, `amm_buy`, `amm_sell`,
+      `create`, `create_v2`, `transfer_with_seed`, `spl_transfer`, `spl_transfer_checked` carrying
+      `venue / stage(Curve|Amm|NA) / kind / denom / disc / needs_wsol / v2_accounts`.
+      `valid_variants(venue)` / `valid_of_kind` / `is_valid` / `spec` return the legal subset so an
+      off-catalog `(venue, name)` is unrepresentable. (`buy_exact_quote_in` non-v2 + `sell_v2` are
+      not real pump ixs — the `BuyExactQuoteIn` variant aliases to sol-in/v2-quote — so they're
+      absent by design; `is_valid` rejects them.)
+- [x] **Discriminator SSOT:** promoted the scattered buy/sell discriminators (were inline in
+      `buy.rs`/`sell.rs` + local consts in `bundle_buy.rs`/`amm.rs`) to `protocol.rs`
+      (`BUY_DISC`/`BUY_EXACT_SOL_IN_DISC`/`BUY_V2_DISC`/`BUY_EXACT_QUOTE_IN_V2_DISC`/`SELL_DISC`);
+      every builder + the catalog now reference them. `catalog::tests` guards catalog≡protocol.
+      Curve+AMM `buy`/`sell` share one Anchor disc (program disambiguates) — so `VenueId`+`stage`
+      are load-bearing axes. Identical bytes ⇒ zero behavior change (all 27 prior tests still pass).
+- [x] **Slippage SSOT (`price.rs`):** the two `compute_curve_{buy,sell}_min_out` copies (were in
+      `buy.rs`/`sell.rs`) collapsed into ONE `crate::price::curve_{buy,sell}_min_out`; the old names
+      are zero-churn re-export aliases so every call site (sim/create/bundle) + test is unchanged.
+- [x] **Dev-buy min_out:** `create.rs` no longer hand-inlines `INITIAL_VIRTUAL_*_RESERVES` — it
+      derives the floor through the SAME `price::curve_buy_min_out` seeded by a named
+      `price::fresh_curve_reserves()` (documented: the curve is created in the same tx, so the
+      protocol-constant initial reserves ARE its live reserves for that first buy — a curve that
+      already exists reads live reserves as before). Removes the drift-prone inline tuple; behavior
+      unchanged (still `slippage=None ⇒ min_out=1` for the launch leg).
+- [x] **Variant ⊥ amount** expressed in the catalog (`denom` axis: two buy encodings, same `Buy`
+      kind, different `denom`) + a `price.rs` unit test showing the dev-buy floor rises with tighter
+      slippage over the fresh-curve reserves. The full "builders take a canonical `Amount`+`QuoteCtx`"
+      generalization is deferred to Phase C's `Plan` model (which owns `Amount`).
+- **Gate B:** ✅ `cargo test -p executor-pumpfun` green (35, +8 new catalog/price); catalog test
+      asserts `valid_variants` is pump-only + rejects off-catalog names; dev-buy floor unit-tested
+      over `price.rs`; `cargo check --workspace` = 0 errors.
+- **⚠ Overflow caveat (honest):** the curve buy is ALREADY `buy_exact_sol_in` (fixed SOL in,
+      `min_out` a floor) — that leg cannot overflow the program's cost calc, so the plan's on-chain
+      `MathOverflow (6025)` is NOT caused by this file. Its likely origin is the **launcher's**
+      divergent variant/amount paths (free-text `template.variant`, the `BuyVariant` round-trip,
+      the equal-`quote_per_leg` bundler) — cured in **Phase F** when those are wired onto the
+      catalog + `Plan`. Phase B delivers the SSOT + structural prerequisites; a live mainnet repro
+      is still needed to confirm the class is gone (Gate F).
 
 ### Phase C — `orchestrator` crate: `Operation`/`Plan` + providers + dry-run
 - [ ] Create `forge/orchestrator/` (deps `executor-core` + `executor-pumpfun`).

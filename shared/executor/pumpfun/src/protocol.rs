@@ -56,6 +56,28 @@ pub const CREATE_DISC: [u8; 8] = [24, 30, 200, 40, 5, 28, 7, 119];
 /// Token-2022 `create_v2` instruction (current pump.fun default).
 pub const CREATE_V2_DISC: [u8; 8] = [214, 144, 76, 236, 95, 139, 49, 180];
 
+// ---------------------------------------------------------------------------
+// Buy / sell instruction discriminators — the SSOT the ix builders AND the
+// `catalog` reference (Anchor sha256("global:<name>")[..8]). The plain `buy` /
+// `sell` names hash the same on the pump.fun **curve** and the PumpSwap **AMM**
+// programs, so those two discriminators are shared across both venues and
+// disambiguated only by `program_id` — which is exactly why `VenueId` is a
+// load-bearing catalog axis. Kept here (not inline in each builder) so a program
+// upgrade re-points every builder + the catalog in one edit; `catalog::tests`
+// guards them equal.
+// ---------------------------------------------------------------------------
+
+/// `buy` — exact BASE (tokens) out, ≤ max quote. Curve **and** AMM (`global:buy`).
+pub const BUY_DISC: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
+/// `buy_exact_sol_in` — spend exact QUOTE (lamports), ≥ min base. Curve only.
+pub const BUY_EXACT_SOL_IN_DISC: [u8; 8] = [56, 252, 116, 8, 158, 223, 205, 95];
+/// `buy_v2` — v2 curve account layout, exact base out. Curve only.
+pub const BUY_V2_DISC: [u8; 8] = [184, 23, 238, 97, 103, 197, 211, 61];
+/// `buy_exact_quote_in` (v2) — spend exact QUOTE, v2 layout (cashback). Curve only.
+pub const BUY_EXACT_QUOTE_IN_V2_DISC: [u8; 8] = [194, 171, 28, 70, 104, 77, 91, 47];
+/// `sell` — exact BASE (tokens) in, ≥ min quote. Curve **and** AMM (`global:sell`).
+pub const SELL_DISC: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
+
 /// Fresh bonding-curve virtual reserves at creation (protocol constants).
 pub const INITIAL_VIRTUAL_TOKEN_RESERVES: u128 = 1_073_000_000_000_000;
 pub const INITIAL_VIRTUAL_SOL_RESERVES: u128 = 30_000_000_000;

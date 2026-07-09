@@ -196,10 +196,12 @@ impl PumpFunTrader {
             &token_program_pk,
         ));
         let pdas = self.derive_token_pdas(mint, &creator, &token_program_pk, cashback_enabled);
-        let reserves = Some((
-            protocol::INITIAL_VIRTUAL_TOKEN_RESERVES,
-            protocol::INITIAL_VIRTUAL_SOL_RESERVES,
-        ));
+        // The curve is created in THIS tx, so it has no on-chain state to read —
+        // its live reserves are the protocol-constant fresh-curve reserves. Feed
+        // those through the SAME shared `curve_buy_min_out` every other buy uses
+        // (no hand-inlined reserve tuple that could drift). `slippage_bps = None`
+        // keeps the historical unprotected launch behaviour (min_out = 1).
+        let reserves = Some(crate::price::fresh_curve_reserves());
         let min_out = compute_curve_buy_min_out(
             buy_lamports,
             slippage_bps,

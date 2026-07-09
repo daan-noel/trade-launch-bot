@@ -65,10 +65,12 @@ pub struct BundleLegParams {
     pub tip_lamports: u64,
 }
 
-const DISC_BUY: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
-const DISC_BUY_EXACT_SOL_IN: [u8; 8] = [56, 252, 116, 8, 158, 223, 205, 95];
-const DISC_BUY_V2: [u8; 8] = [184, 23, 238, 97, 103, 197, 211, 61];
-const DISC_BUY_EXACT_QUOTE_IN_V2: [u8; 8] = [194, 171, 28, 70, 104, 77, 91, 47];
+// SSOT: the buy-variant discriminators live in `crate::protocol`; aliased here so
+// the per-variant dispatch below reads unchanged. `catalog::tests` guards equality.
+const DISC_BUY: [u8; 8] = crate::protocol::BUY_DISC;
+const DISC_BUY_EXACT_SOL_IN: [u8; 8] = crate::protocol::BUY_EXACT_SOL_IN_DISC;
+const DISC_BUY_V2: [u8; 8] = crate::protocol::BUY_V2_DISC;
+const DISC_BUY_EXACT_QUOTE_IN_V2: [u8; 8] = crate::protocol::BUY_EXACT_QUOTE_IN_V2_DISC;
 
 impl PumpFunTrader {
     /// Build one signed legacy buy tx for a Jito bundle leg. `signer` is the

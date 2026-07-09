@@ -474,7 +474,7 @@ impl PumpFunTrader {
         // 8-byte discriminator + two u64 args: size up front so the two extends
         // below don't reallocate on the sell hot path.
         let mut sell_data = Vec::with_capacity(24);
-        sell_data.extend_from_slice(&[0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad]);
+        sell_data.extend_from_slice(&protocol::SELL_DISC);
         sell_data.extend_from_slice(&token_amount.to_le_bytes());
         sell_data.extend_from_slice(&min_sol_output.to_le_bytes()); // min_sol_output (slippage floor)
 
@@ -526,30 +526,10 @@ impl PumpFunTrader {
 /// so slippage never blocks a sell. `reserves` is the curve's virtual
 /// `(token, quote=lamports)` reserves; the math mirrors the on-chain
 /// constant-product fill, net of the curve fee buffer.
-pub(super) fn compute_curve_sell_min_out(
-    token_amount: u64,
-    slippage_bps: Option<u64>,
-    reserves: Option<(u128, u128)>,
-    curve_fee_buffer_bps: u128,
-) -> u64 {
-    match (slippage_bps, reserves) {
-        (Some(slip), Some((vt, vq))) => {
-            // Saturating throughout on untrusted reserve reads; a zero
-            // denominator falls back to the unprotected min_out=1.
-            let denom = vt.saturating_add(token_amount as u128);
-            if denom == 0 {
-                1
-            } else {
-                let gross = vq.saturating_mul(token_amount as u128) / denom;
-                let net = gross.saturating_mul(10_000u128.saturating_sub(curve_fee_buffer_bps))
-                    / 10_000;
-                ((net.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000) as u64)
-                    .max(1)
-            }
-        }
-        _ => 1,
-    }
-}
+// The curve-sell slippage floor is single-sourced in `crate::price`; re-export it
+// under the historical name so `super::sell::compute_curve_sell_min_out` (the
+// simulate caller) and the tests below resolve unchanged.
+pub(super) use crate::price::curve_sell_min_out as compute_curve_sell_min_out;
 
 #[cfg(test)]
 mod tests {

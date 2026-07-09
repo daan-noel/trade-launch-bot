@@ -47,8 +47,10 @@ use tracing::info;
 // Overflow in fee accounting. That block is appended in `amm_swap_accounts`;
 // the full layout (buy = 26 accounts, sell = 24) is verified against on-chain
 // swaps and a `simulateTransaction` dry-run.
-const BUY_DISC: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
-const SELL_DISC: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
+// SSOT: shared with the curve `buy`/`sell` (same Anchor name) in `crate::protocol`;
+// aliased here so the AMM swap builders + tests read unchanged.
+const BUY_DISC: [u8; 8] = crate::protocol::BUY_DISC;
+const SELL_DISC: [u8; 8] = crate::protocol::SELL_DISC;
 
 const BPS_DENOM: u128 = 10_000;
 

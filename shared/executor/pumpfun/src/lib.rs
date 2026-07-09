@@ -25,9 +25,11 @@
 //! trader.buy_token(&mint, &creator, token_program, sol_amount, slippage, cashback_enabled).await?;
 //! ```
 
+pub mod catalog;
 pub mod constants;
 pub mod protocol;
 pub mod types;
+mod price;
 mod trader;
 
 // Re-export the engine's `config` + `error` modules at this crate's root so both
@@ -58,3 +60,7 @@ pub use trader::{BundleBuyVariant, BundleLegParams, BuySignedHook, PumpFunTrader
 pub use types::{
     BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram, WalletHolding,
 };
+
+// The variant catalog (SSOT for on-chain instruction selection) — the orchestrator
+// providers draw legal variants from here.
+pub use catalog::{is_valid, spec, valid_variants, Denom, Stage, VariantKind, VariantSpec};

@@ -402,7 +402,7 @@ impl PumpFunTrader {
         // 8-byte discriminator + two u64 args: size up front so the two
         // extends below don't reallocate on the buy hot path.
         let mut buy_data = Vec::with_capacity(24);
-        buy_data.extend_from_slice(&[0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f]);
+        buy_data.extend_from_slice(&protocol::BUY_EXACT_SOL_IN_DISC);
         buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
         buy_data.extend_from_slice(&min_tokens_out.to_le_bytes());
         ixs.push(Instruction {
@@ -438,38 +438,10 @@ impl PumpFunTrader {
     }
 }
 
-/// Curve-buy slippage floor: the minimum tokens the `buy` must return or revert.
-/// Pure (no RPC) so both the live buy path and the simulate path derive the floor
-/// identically. `None` slippage (or missing/zero reserves) yields `1` — no
-/// protection — rather than blocking on a reserve read. `reserves` is the curve's
-/// virtual `(token, quote=lamports)` reserves; the math mirrors the on-chain
-/// constant-product fill, net of the curve fee buffer.
-pub(super) fn compute_curve_buy_min_out(
-    buy_lamports: u64,
-    slippage_bps: Option<u64>,
-    reserves: Option<(u128, u128)>,
-    curve_fee_buffer_bps: u128,
-) -> u64 {
-    match (slippage_bps, reserves) {
-        (Some(slip), Some((vt, vq))) => {
-            let net = (buy_lamports as u128)
-                .saturating_mul(10_000u128.saturating_sub(curve_fee_buffer_bps))
-                / 10_000;
-            // Saturating throughout on untrusted reserve reads; a zero
-            // denominator (both reserves read as 0) falls back to the
-            // unprotected min_out=1 rather than panicking.
-            let denom = vq.saturating_add(net);
-            if denom == 0 {
-                1
-            } else {
-                let expected = vt.saturating_mul(net) / denom;
-                ((expected.saturating_mul(10_000u128.saturating_sub(slip as u128)) / 10_000) as u64)
-                    .max(1)
-            }
-        }
-        _ => 1,
-    }
-}
+// The curve-buy slippage floor is single-sourced in `crate::price`; re-export it
+// under the historical name so `super::buy::compute_curve_buy_min_out` (the
+// simulate/create/bundle callers) and the tests below resolve unchanged.
+pub(super) use crate::price::curve_buy_min_out as compute_curve_buy_min_out;
 
 #[cfg(test)]
 mod tests {
