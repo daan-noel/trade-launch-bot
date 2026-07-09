@@ -5,10 +5,10 @@
 //  - send_transaction:   submit base64 tx to the Helius sender (skipPreflight).
 //  - confirm_transaction: poll signature status until confirmed or timeout.
 //
-// All `pub(super)` — internal to the trader module, called from buy.rs/sell.rs.
+// All `pub` — internal to the trader module, called from buy.rs/sell.rs.
 // ============================================================
 
-use super::PumpFunTrader;
+use crate::engine::Engine;
 use crate::error::{bail, Context, Result, TradeError};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::json;
@@ -45,12 +45,12 @@ const FANOUT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// be unique per request, not a clock).
 static SEND_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-impl PumpFunTrader {
+impl Engine {
     // The signer is `&(dyn Signer + Send + Sync)` (not bare `&dyn Signer`) so a
     // `&signer` held across the `.await` in `build_recent_tx` stays `Send` — i.e.
     // the trade futures remain spawnable. The `as &dyn Signer` cast picks the
     // `Signers for [&dyn Signer; 1]` impl when signing.
-    pub(super) fn build_nonce_tx(
+    pub fn build_nonce_tx(
         &self,
         instructions: Vec<Instruction>,
         nonce_account: &Pubkey,
@@ -78,7 +78,7 @@ impl PumpFunTrader {
     /// cache and only fetches on-chain when it's empty/stale, so the AMM buy
     /// avoids a `getLatestBlockhash` RPC on the hot path without ever riding an
     /// expired hash.
-    pub(super) async fn build_recent_tx(
+    pub async fn build_recent_tx(
         &self,
         instructions: Vec<Instruction>,
         signer: &(dyn Signer + Send + Sync),
@@ -103,7 +103,7 @@ impl PumpFunTrader {
     /// Build + sign a legacy tx against a recent blockhash with multiple signers.
     /// Used by token `create` (wallet + fresh mint keypair). `signers[0]` is the
     /// fee payer.
-    pub(super) async fn build_recent_tx_multi(
+    pub async fn build_recent_tx_multi(
         &self,
         instructions: Vec<Instruction>,
         signers: &[&(dyn Signer + Send + Sync)],
@@ -132,7 +132,7 @@ impl PumpFunTrader {
 
     /// Like [`Self::build_recent_tx`] but uses a caller-supplied blockhash so every
     /// tx in a Jito bundle shares the same hash.
-    pub(super) async fn build_recent_tx_with_blockhash(
+    pub async fn build_recent_tx_with_blockhash(
         &self,
         instructions: Vec<Instruction>,
         signer: &(dyn Signer + Send + Sync),
@@ -154,7 +154,7 @@ impl PumpFunTrader {
     /// Encode a signed tx into the `sendTransaction` JSON-RPC body used by every
     /// sender endpoint. Extracted so the fan-out and the probe path serialize the
     /// tx exactly once and submit byte-identical bodies.
-    pub(super) fn encode_send_body(&self, tx: &Transaction) -> Result<serde_json::Value> {
+    pub fn encode_send_body(&self, tx: &Transaction) -> Result<serde_json::Value> {
         let encoded = general_purpose::STANDARD.encode(bincode::serialize(tx)?);
         Ok(json!({
             "jsonrpc": "2.0",
@@ -173,7 +173,7 @@ impl PumpFunTrader {
     /// signatures, only a correctly-built instruction set. Used by the cashback
     /// claim path to validate accounts / data / CU without sending.
     #[cfg(feature = "claim")]
-    pub(super) async fn simulate_transaction(
+    pub async fn simulate_transaction(
         &self,
         tx: &Transaction,
     ) -> Result<(Option<u64>, Option<String>, Vec<String>)> {
@@ -196,7 +196,7 @@ impl PumpFunTrader {
         ))
     }
 
-    pub(super) async fn send_transaction(&self, tx: &Transaction) -> Result<String> {
+    pub async fn send_transaction(&self, tx: &Transaction) -> Result<String> {
         let body = self.encode_send_body(tx)?;
         // Serialize the JSON-RPC envelope to bytes EXACTLY ONCE here, then share
         // the buffer across every endpoint. The previous `.json(body)` re-walked
@@ -260,7 +260,7 @@ impl PumpFunTrader {
     }
 
     /// Poll the RPC until the transaction is confirmed or retries are exhausted.
-    pub(super) async fn confirm_transaction(&self, signature: &str, max_retries: usize) -> Result<()> {
+    pub async fn confirm_transaction(&self, signature: &str, max_retries: usize) -> Result<()> {
         let sig = Signature::from_str(signature)?;
 
         // Poll status first, then sleep *between* polls (not before the first and
@@ -350,7 +350,7 @@ pub enum SigStatus {
 /// Extract the program's custom error code from a failed-tx `TransactionError`,
 /// if the failure was an `InstructionError::Custom(code)`. Other failure shapes
 /// (account-not-found, insufficient funds, …) carry no Anchor code → `None`.
-pub(super) fn custom_error_code(err: &TransactionError) -> Option<u32> {
+pub fn custom_error_code(err: &TransactionError) -> Option<u32> {
     match err {
         TransactionError::InstructionError(_, InstructionError::Custom(code)) => Some(*code),
         _ => None,
@@ -363,7 +363,7 @@ pub(super) fn custom_error_code(err: &TransactionError) -> Option<u32> {
 /// Serializes `body` itself — used by callers (the probe) that hold a `Value`
 /// and only hit a single endpoint, so the one-time serialize cost is irrelevant.
 #[cfg(feature = "probe")]
-pub(super) async fn post_tx(
+pub async fn post_tx(
     http: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
@@ -375,7 +375,7 @@ pub(super) async fn post_tx(
 /// As [`post_tx`] but ships a pre-serialized JSON body. The fan-out serializes
 /// the `sendTransaction` envelope once and hands every endpoint an `Arc` clone
 /// of the same bytes, so the costly base64 tx is walked exactly once per send.
-pub(super) async fn post_tx_bytes(
+pub async fn post_tx_bytes(
     http: &reqwest::Client,
     url: &str,
     body: Arc<Vec<u8>>,
@@ -405,7 +405,8 @@ pub(super) async fn post_tx_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trader::{PumpFunTrader, TraderConfig};
+    use crate::config::TraderConfig;
+    use crate::engine::Engine;
     use solana_sdk::{hash::Hash, message::Message, signature::Keypair, transaction::Transaction};
     use std::sync::Arc;
     use std::time::Duration;
@@ -450,13 +451,22 @@ mod tests {
         format!("http://{addr}/")
     }
 
-    fn trader_with(urls: Vec<String>) -> PumpFunTrader {
-        PumpFunTrader::new(Arc::new(TraderConfig::new(
-            "http://localhost".into(),
-            urls,
-            Arc::new(Keypair::new()),
-            vec![solana_sdk::pubkey::Pubkey::new_unique()],
-        )))
+    fn trader_with(urls: Vec<String>) -> Engine {
+        // The send fan-out only touches `config.helius_sender_urls` + `http`, so a
+        // bare engine (no init, dummy tip account / rent) is enough to drive it.
+        Engine::new(
+            Arc::new(TraderConfig::new(
+                "http://localhost".into(),
+                urls,
+                Arc::new(Keypair::new()),
+                vec![solana_sdk::pubkey::Pubkey::new_unique()],
+            )),
+            solana_sdk::pubkey::Pubkey::new_unique(),
+            0,
+            0,
+            0,
+            0,
+        )
     }
 
     fn dummy_signed_tx() -> Transaction {

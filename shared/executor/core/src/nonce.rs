@@ -9,7 +9,7 @@
 //                            by the refresh path).
 // ============================================================
 
-use super::PumpFunTrader;
+use crate::engine::Engine;
 use crate::error::{bail, Context, Result};
 use solana_client::nonce_utils;
 use solana_sdk::{hash::Hash, nonce::State, pubkey::Pubkey};
@@ -32,9 +32,9 @@ pub struct NonceAuthCheck {
     pub error: Option<String>,
 }
 
-impl PumpFunTrader {
+impl Engine {
     /// Acquire the next available nonce slot (round-robin, spin-wait if all busy).
-    pub(super) async fn acquire_nonce(&self) -> Result<(Pubkey, Hash)> {
+    pub async fn acquire_nonce(&self) -> Result<(Pubkey, Hash)> {
         if self.nonce_pubkeys.is_empty() {
             bail!("No nonce accounts configured");
         }
@@ -116,7 +116,7 @@ impl PumpFunTrader {
     }
 
     /// After a tx is sent, refresh the nonce hash in the background and clear in_use.
-    pub(super) fn schedule_nonce_refresh(&self, nonce_pubkey: Pubkey) {
+    pub fn schedule_nonce_refresh(&self, nonce_pubkey: Pubkey) {
         let rpc = Arc::clone(&self.rpc);
         let slots = Arc::clone(&self.nonce_slots);
         let available = Arc::clone(&self.nonce_available);

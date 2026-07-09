@@ -155,7 +155,7 @@ impl PumpFunTrader {
     /// Recent blockhash for a Jito bundle — reads the warmed cache or fetches once.
     pub async fn fresh_blockhash(&self) -> Result<Hash> {
         use std::time::Duration;
-        if let Some(hash) = self.blockhash_cache.get_fresh(Duration::from_millis(
+        if let Some(hash) = self.engine.blockhash_cache.get_fresh(Duration::from_millis(
             self.config.cache.blockhash_max_age_ms,
         )) {
             return Ok(hash);
@@ -237,7 +237,7 @@ impl PumpFunTrader {
 
         ixs.push(system_instruction::transfer(
             &signer.pubkey(),
-            &self.jito_tip_account,
+            &self.engine.jito_tip_account,
             leg.tip_lamports,
         ));
 
@@ -372,7 +372,7 @@ impl PumpFunTrader {
 
         ixs.push(system_instruction::transfer(
             &signer.pubkey(),
-            &self.jito_tip_account,
+            &self.engine.jito_tip_account,
             leg.tip_lamports,
         ));
 

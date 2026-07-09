@@ -166,7 +166,7 @@ impl PumpFunTrader {
                 price_ix,
             ]
         } else {
-            self.cu_ixs_curve_create.clone()
+            self.engine.cu_ixs_curve_create.clone()
         }
     }
 

@@ -8,7 +8,7 @@
 // assembles, signs, sends, and confirms one sell tx.
 // ============================================================
 
-use super::swap_retry::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use super::{PumpFunTrader, TokenPDAs};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol;
@@ -468,7 +468,7 @@ impl PumpFunTrader {
         let global = self.global_account.as_ref().context("Not initialized")?;
 
         let mut ixs = Vec::with_capacity(6);
-        ixs.extend_from_slice(&self.cu_ixs_curve_sell);
+        ixs.extend_from_slice(&self.engine.cu_ixs_curve_sell);
 
         // Sell (Sell exact token in)
         // 8-byte discriminator + two u64 args: size up front so the two extends
@@ -580,7 +580,7 @@ mod tests {
             fee_config: Pubkey::new_unique(),
             stable_quote_mint: None,
         });
-        t.cu_ixs_curve_sell = vec![
+        t.engine.cu_ixs_curve_sell = vec![
             solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(100_000),
             solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(1),
         ];

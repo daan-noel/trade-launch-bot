@@ -48,9 +48,9 @@ impl PumpFunTrader {
     /// (space, rent) for a token account of the given program — legacy vs 2022.
     fn space_rent_for(&self, token_program: TokenProgram) -> (u64, u64) {
         match token_program {
-            TokenProgram::Legacy => (self.token_account_space, self.token_account_rent),
+            TokenProgram::Legacy => (self.engine.token_account_space, self.engine.token_account_rent),
             TokenProgram::Token2022 => {
-                (self.token_2022_account_space, self.token_2022_account_rent)
+                (self.engine.token_2022_account_space, self.engine.token_2022_account_rent)
             }
         }
     }

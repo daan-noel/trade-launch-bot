@@ -10,10 +10,10 @@
 // feed is cold or stale (startup, network blip, or a stalled refresher).
 // ============================================================
 
-use super::PumpFunTrader;
+use crate::engine::Engine;
 use crate::config::JitoTipCfg;
 use crate::error::{Context, Result};
-use crate::protocol::LAMPORTS_PER_SOL;
+use crate::LAMPORTS_PER_SOL;
 use serde::Deserialize;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::system_instruction;
@@ -54,7 +54,7 @@ pub struct JitoTipCache {
     inner: Mutex<Option<(TipFloor, Instant)>>,
     /// Jito tuning (percentile / clamp bounds / floor feed) copied from
     /// `TraderConfig.jito` so the trade path sizes tips without touching config.
-    pub(super) cfg: JitoTipCfg,
+    pub cfg: JitoTipCfg,
 }
 
 impl JitoTipCache {
@@ -131,7 +131,7 @@ struct TipFloorRow {
 
 /// Fetch Jito's tip-floor feed and store all percentiles (as lamports). Called
 /// once to prime the cache, then on a background interval (see `init.rs`).
-pub(super) async fn refresh_tip_floor(http: &reqwest::Client, cache: &JitoTipCache) -> Result<()> {
+pub async fn refresh_tip_floor(http: &reqwest::Client, cache: &JitoTipCache) -> Result<()> {
     let rows: Vec<TipFloorRow> = http
         .get(&cache.cfg.floor_url)
         .send()
@@ -162,12 +162,12 @@ fn sol_to_lamports(sol: f64) -> u64 {
     (sol * LAMPORTS_PER_SOL as f64) as u64
 }
 
-impl PumpFunTrader {
+impl Engine {
     /// Build the per-trade Jito tip instruction, sized from the live tip-floor
     /// cache for retry `level` (0 = first attempt). The destination account is
     /// fixed per trader instance; only the amount varies with the auction and the
     /// escalation level. See [`JitoTipCache::tip_lamports_for_level`].
-    pub(super) fn jito_tip_ix(&self, level: u8) -> Instruction {
+    pub fn jito_tip_ix(&self, level: u8) -> Instruction {
         system_instruction::transfer(
             &self.config.signer.pubkey(),
             &self.jito_tip_account,

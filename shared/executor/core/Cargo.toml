@@ -1,0 +1,61 @@
+[package]
+name = "executor-core"
+version = "0.1.0"
+edition = "2021"
+description = "Venue-agnostic Solana send engine: sign / fan-out send / feed-confirm / durable-nonce / Jito tip / retry-classify / sim harness + the open `Venue` trait. Knows nothing about any specific launchpad."
+
+[lib]
+name = "executor_core"
+path = "src/lib.rs"
+
+[features]
+# Mirror pump-trader's off-hot-path feature gates so the split preserves them
+# 1:1 (tx.rs `simulate_transaction` is `claim`-gated; `post_tx` is `probe`-gated).
+default = []
+probe = []
+claim = []
+
+[dependencies]
+# Async runtime (consumer provides the runtime; the engine spawns background tasks).
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+
+# Error handling — a crate-owned `thiserror` boundary (no `anyhow` leak).
+thiserror = "1"
+
+# Serialization (jito tip-floor rows deserialize)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+
+# Encodings for transaction submission
+base64 = "0.22"
+bincode = "1.3"
+# base58: decode legacy simulateTransaction account payloads in the sim decoder.
+bs58 = "0.5"
+
+# Random Jito tip-account selection
+rand = "0.8"
+
+# Concurrent maps for the per-position SOL-exposure ledger.
+dashmap = "4.0"
+
+# HTTP client for the Helius sender JSON-RPC
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+# Solana on-chain transaction construction and RPC
+solana-client = "1.17.27"
+solana-sdk = "1.17.27"
+# Decode post-execution account states from simulateTransaction (the `accounts`
+# field) into balances/token amounts for the simulation engine.
+solana-account-decoder = "1.17.27"
+
+# Generic SPL token-account decode in the sim engine (owner id() + amount offset)
+# — venue-agnostic SPL, not pump-specific. Versions pinned to match solana 1.17.
+spl-token = "=4.0.0"
+spl-token-2022 = "=1.0.0"
+
+[dev-dependencies]
+# Mock TCP sender endpoints for the multi-endpoint fan-out test (send.rs).
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

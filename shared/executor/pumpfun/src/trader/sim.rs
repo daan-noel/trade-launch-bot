@@ -1,19 +1,17 @@
 // ============================================================
-// Simulation engine — run any instruction set through
-// `simulateTransaction` against LIVE chain state with zero SOL at
-// risk and (for the primitive) no signing key required.
+// Venue simulation helpers (Layer 1) — build the REAL pump curve/AMM
+// ix set (slippage floor from live reserves) and run it through the
+// engine's `simulate_ixs` primitive against LIVE chain state with zero
+// SOL at risk.
 //
-//   simulate_ixs        — Layer 0 primitive: any instructions, any
-//                         fee payer, optional tracked-account deltas.
-//                         No keypair needed (sig_verify = false), so
-//                         it can simulate a trade for ANY wallet.
-//   simulate_curve_buy  — Layer 1: build the real curve-buy ix set
-//   simulate_curve_sell   (slippage floor from live reserves) and
-//                         simulate it, reporting SOL/token deltas.
+//   simulate_curve_buy  / simulate_curve_sell
+//   simulate_amm_buy    / simulate_amm_sell
 //
 // Reuses the SAME instruction builders the live trade path sends
-// (`build_curve_buy_ixs` / `build_curve_sell_ixs`) so what's
-// simulated is what production would send — not a copy that can drift.
+// (`build_curve_buy_ixs` / `build_amm_buy_ixs` / …) so what's simulated
+// is what production would send — not a copy that can drift. The Layer-0
+// primitive (`simulate_ixs`) + `SimOutcome` / `AccountDelta` live in
+// `executor-core`.
 //
 // OFF THE HOT PATH: each call is one or two RPC round-trips. Never
 // invoke inline before a real send (see CLAUDE.md latency budgets).
@@ -21,161 +19,11 @@
 
 use super::PumpFunTrader;
 use crate::error::{bail, Context, Result};
-use base64::{engine::general_purpose, Engine as _};
-use solana_account_decoder::{UiAccountData, UiAccountEncoding};
-use solana_client::rpc_config::{RpcSimulateTransactionAccountsConfig, RpcSimulateTransactionConfig};
-use solana_sdk::{
-    commitment_config::CommitmentConfig, instruction::Instruction, message::Message,
-    pubkey::Pubkey, transaction::Transaction,
-};
+use executor_core::SimOutcome;
+use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 
-/// Pre/post balance snapshot for one account tracked through a simulation.
-#[derive(Debug, Clone)]
-pub struct AccountDelta {
-    pub pubkey: Pubkey,
-    pub lamports_before: u64,
-    pub lamports_after: u64,
-    /// SPL token amount (raw base units) before/after — `Some` only when the
-    /// account is (or becomes) an SPL / Token-2022 token account; `None` for a
-    /// plain SOL account such as the fee payer.
-    pub token_before: Option<u64>,
-    pub token_after: Option<u64>,
-}
-
-impl AccountDelta {
-    /// Signed lamports change (after − before). Negative = SOL spent. Note the
-    /// network base fee is NOT reflected by `simulateTransaction`, so a buy's
-    /// payer delta is the on-chain spend (buy lamports + Jito tip), not the full
-    /// wallet debit.
-    pub fn lamports_delta(&self) -> i64 {
-        self.lamports_after as i64 - self.lamports_before as i64
-    }
-
-    /// Signed token change (after − before) when this is a token account. An
-    /// account created during the sim (no `before`) counts its full `after` as a
-    /// gain.
-    pub fn token_delta(&self) -> Option<i64> {
-        match (self.token_before, self.token_after) {
-            (Some(b), Some(a)) => Some(a as i64 - b as i64),
-            (None, Some(a)) => Some(a as i64),
-            _ => None,
-        }
-    }
-}
-
-/// Outcome of a `simulateTransaction` run against live chain state.
-#[derive(Debug, Clone)]
-pub struct SimOutcome {
-    /// `true` when the simulated tx would NOT revert.
-    pub success: bool,
-    /// The revert message (debug-formatted `TransactionError`) when it would.
-    pub err: Option<String>,
-    /// The program's custom (Anchor) error code on a reverted sim — e.g. curve
-    /// `TooLittleSolReceived` = 6003, AMM `ExceededSlippage` = 6004 — so a caller
-    /// can tell a slippage revert (retryable) from a structural one. `None` when
-    /// the failure wasn't an `InstructionError::Custom`.
-    pub custom_error: Option<u32>,
-    pub units_consumed: Option<u64>,
-    pub logs: Vec<String>,
-    /// Pre/post balances for the accounts the caller asked to track.
-    pub accounts: Vec<AccountDelta>,
-}
-
-impl SimOutcome {
-    /// The tracked delta for `pubkey`, if it was tracked.
-    pub fn delta_for(&self, pubkey: &Pubkey) -> Option<&AccountDelta> {
-        self.accounts.iter().find(|d| &d.pubkey == pubkey)
-    }
-}
-
 impl PumpFunTrader {
-    /// Layer 0 — the simulation primitive. Run `instructions` through
-    /// `simulateTransaction` against current chain state and report the outcome
-    /// plus pre/post balances for `track_accounts`.
-    ///
-    /// NO signing key is required: the tx is built UNSIGNED with `payer` as fee
-    /// payer, `sig_verify = false`, and `replace_recent_blockhash = true`, so this
-    /// can simulate a transaction for ANY wallet — not only the configured one.
-    /// (The domain helpers below still build wallet-specific trade ixs, so those
-    /// simulate the configured wallet; the generality lives here.)
-    ///
-    /// OFF THE HOT PATH — one batched pre-state RPC plus the simulate RPC. Never
-    /// call inline before a real send.
-    pub async fn simulate_ixs(
-        &self,
-        instructions: Vec<Instruction>,
-        payer: &Pubkey,
-        track_accounts: &[Pubkey],
-    ) -> Result<SimOutcome> {
-        // Pre-state for the tracked accounts (one batched RPC). A missing account
-        // reads as zero lamports / not-yet-a-token-account.
-        let pre = if track_accounts.is_empty() {
-            Vec::new()
-        } else {
-            self.rpc
-                .get_multiple_accounts(track_accounts)
-                .await
-                .context("simulate: fetch pre-state")?
-        };
-
-        let tx = Transaction::new_unsigned(Message::new(&instructions, Some(payer)));
-
-        let accounts_cfg =
-            (!track_accounts.is_empty()).then(|| RpcSimulateTransactionAccountsConfig {
-                encoding: Some(UiAccountEncoding::Base64),
-                addresses: track_accounts.iter().map(|p| p.to_string()).collect(),
-            });
-        let cfg = RpcSimulateTransactionConfig {
-            sig_verify: false,
-            replace_recent_blockhash: true,
-            commitment: Some(CommitmentConfig::processed()),
-            accounts: accounts_cfg,
-            ..Default::default()
-        };
-        let resp = self
-            .rpc
-            .simulate_transaction_with_config(&tx, cfg)
-            .await
-            .context("simulateTransaction RPC")?;
-        let v = resp.value;
-
-        let post = v.accounts.unwrap_or_default();
-        let mut accounts = Vec::with_capacity(track_accounts.len());
-        for (i, pk) in track_accounts.iter().enumerate() {
-            let (lamports_before, token_before) = match pre.get(i).and_then(|o| o.as_ref()) {
-                Some(acct) => (acct.lamports, decode_token_amount(&acct.owner, &acct.data)),
-                None => (0, None),
-            };
-            let (lamports_after, token_after) = match post.get(i).and_then(|o| o.as_ref()) {
-                Some(ui) => {
-                    let token = Pubkey::from_str(&ui.owner)
-                        .ok()
-                        .zip(decode_ui_data(&ui.data))
-                        .and_then(|(owner, data)| decode_token_amount(&owner, &data));
-                    (ui.lamports, token)
-                }
-                None => (0, None),
-            };
-            accounts.push(AccountDelta {
-                pubkey: *pk,
-                lamports_before,
-                lamports_after,
-                token_before,
-                token_after,
-            });
-        }
-
-        Ok(SimOutcome {
-            success: v.err.is_none(),
-            custom_error: v.err.as_ref().and_then(super::tx::custom_error_code),
-            err: v.err.map(|e| format!("{e:?}")),
-            units_consumed: v.units_consumed,
-            logs: v.logs.unwrap_or_default(),
-            accounts,
-        })
-    }
-
     /// Layer 1 — simulate the real curve BUY for `token_mint` at `sol_amount`
     /// (SOL) against live curve state. Resolves routing (creator / token program /
     /// curve PDAs), derives the wallet's ATA — prepending an idempotent ATA-create
@@ -338,8 +186,8 @@ impl PumpFunTrader {
             .await?;
         // Mirror `amm_buy`'s tx assembly (CU budget + core swap + level-0 tip) so
         // the simulated bytes match the live send.
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
-        ixs.extend_from_slice(&self.cu_ixs_amm);
+        let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
+        ixs.extend_from_slice(&self.engine.cu_ixs_amm);
         ixs.extend(core_ixs);
         ixs.push(self.jito_tip_ix(0));
         self.simulate_ixs(ixs, &user, &[user, user_base]).await
@@ -371,8 +219,8 @@ impl PumpFunTrader {
                 &user,
             )
             .await?;
-        let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
-        ixs.extend_from_slice(&self.cu_ixs_amm);
+        let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
+        ixs.extend_from_slice(&self.engine.cu_ixs_amm);
         ixs.extend(core_ixs);
         ixs.push(self.jito_tip_ix(0));
         // The base account whose token delta we track (cache-first resolve, same
@@ -382,29 +230,4 @@ impl PumpFunTrader {
             .await?;
         self.simulate_ixs(ixs, &user, &[user, user_base]).await
     }
-}
-
-/// Decode a `UiAccountData` payload into raw bytes. Handles the base64 encoding
-/// the engine requests (and legacy base58 for completeness); `None` for the JSON
-/// encoding, which the engine never asks for.
-fn decode_ui_data(data: &UiAccountData) -> Option<Vec<u8>> {
-    match data {
-        UiAccountData::Binary(s, UiAccountEncoding::Base64) => {
-            general_purpose::STANDARD.decode(s).ok()
-        }
-        UiAccountData::LegacyBinary(s) => bs58::decode(s).into_vec().ok(),
-        _ => None,
-    }
-}
-
-/// Read the raw SPL token amount from an account's `(owner, data)` when it's an
-/// SPL Token / Token-2022 account — the amount is a little-endian `u64` at offset
-/// 64 in both layouts (Token-2022 appends extensions after the 165-byte base).
-/// `None` for any non-token account.
-fn decode_token_amount(owner: &Pubkey, data: &[u8]) -> Option<u64> {
-    let is_token = *owner == spl_token::id() || *owner == spl_token_2022::id();
-    if !is_token || data.len() < 72 {
-        return None;
-    }
-    Some(u64::from_le_bytes(data[64..72].try_into().ok()?))
 }

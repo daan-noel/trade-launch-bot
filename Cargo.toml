@@ -19,7 +19,9 @@ members = [
     "hunter/live",
     "hunter/lab",
     # shared standalone crates (used by BOTH products)
-    "shared/pump-trader",
+    # executor write-stack: venue-agnostic engine + pump.fun venue (was pump-trader)
+    "shared/executor/core",
+    "shared/executor/pumpfun",
     "shared/ingest-laserstream",
     "shared/ingest/websocket",
     # forge (was solana-launch-platform); lake -> forge/lab/src/lake module,
@@ -53,7 +55,12 @@ version = "0.1.0"
 # graph (verify with `cargo tree -p lab` / `-p slp-lab`).
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
-pump-trader        = { path = "shared/pump-trader" }
+# The executor write-stack (was `pump-trader`, now split engine/venue). The
+# dependency KEY stays `pump-trader` (+ `package = "executor-pumpfun"`, lib name
+# still `pump_trader`) so the ~120 `use pump_trader::` call sites and the two
+# consumers compile unchanged through the façade; only the path/package changed.
+pump-trader        = { package = "executor-pumpfun", path = "shared/executor/pumpfun" }
+executor-core      = { path = "shared/executor/core" }
 ingest-laserstream = { path = "shared/ingest-laserstream", features = ["raw-tx"] }
 
 # Shared third-party versions pinned once (mirrors meme-trading's set).

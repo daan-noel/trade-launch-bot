@@ -2297,6 +2297,52 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
+name = "executor-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bincode",
+ "bs58 0.5.1",
+ "dashmap 4.0.2",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solana-account-decoder",
+ "solana-client",
+ "solana-sdk",
+ "spl-token",
+ "spl-token-2022",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "executor-pumpfun"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bincode",
+ "bs58 0.5.1",
+ "dashmap 4.0.2",
+ "executor-core",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solana-account-decoder",
+ "solana-client",
+ "solana-sdk",
+ "spl-associated-token-account",
+ "spl-token",
+ "spl-token-2022",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2425,8 +2471,8 @@ dependencies = [
  "bincode",
  "bs58 0.5.1",
  "chrono",
+ "executor-pumpfun",
  "forge-core",
- "pump-trader",
  "rand 0.8.6",
  "reqwest",
  "serde",
@@ -2953,10 +2999,10 @@ dependencies = [
  "chrono",
  "dashmap 4.0.2",
  "dotenvy",
+ "executor-pumpfun",
  "futures-util",
  "hunter-core",
  "ingest-laserstream",
- "pump-trader",
  "reqwest",
  "serde",
  "serde_json",
@@ -4360,29 +4406,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "pump-trader"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "bincode",
- "bs58 0.5.1",
- "dashmap 4.0.2",
- "rand 0.8.6",
- "reqwest",
- "serde",
- "serde_json",
- "solana-account-decoder",
- "solana-client",
- "solana-sdk",
- "spl-associated-token-account",
- "spl-token",
- "spl-token-2022",
- "thiserror",
- "tokio",
- "tracing",
 ]
 
 [[package]]

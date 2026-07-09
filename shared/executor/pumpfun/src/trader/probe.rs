@@ -19,9 +19,9 @@
 // `simulate-sell` probe subcommands call it directly.
 // ============================================================
 
-use super::jito_tip::refresh_tip_floor;
 use super::PumpFunTrader;
 use crate::error::{Context, Result};
+use executor_core::jito_tip::refresh_tip_floor;
 use solana_sdk::system_instruction;
 use std::time::Instant;
 
@@ -49,11 +49,11 @@ impl PumpFunTrader {
     /// each retry level the escalation ladder would bid right now. Read-only —
     /// zero SOL, no transaction.
     pub async fn probe_tip_ladder(&self, levels: u8) -> Result<Vec<(u8, u64)>> {
-        refresh_tip_floor(&self.http, &self.jito_tip_cache)
+        refresh_tip_floor(&self.http, &self.engine.jito_tip_cache)
             .await
             .context("refresh live Jito tip-floor")?;
         Ok((0..levels.max(1))
-            .map(|l| (l, self.jito_tip_cache.tip_lamports_for_level(l)))
+            .map(|l| (l, self.engine.jito_tip_cache.tip_lamports_for_level(l)))
             .collect())
     }
 
@@ -89,7 +89,7 @@ impl PumpFunTrader {
             let body = body.clone();
             joins.push(tokio::spawn(async move {
                 let t = Instant::now();
-                let outcome = super::tx::post_tx(&http, &url, &body)
+                let outcome = executor_core::send::post_tx(&http, &url, &body)
                     .await
                     .map_err(|e| e.to_string());
                 EndpointResult {

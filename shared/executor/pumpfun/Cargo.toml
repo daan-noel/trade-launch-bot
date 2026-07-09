@@ -1,29 +1,40 @@
 [package]
-name = "pump-trader"
+name = "executor-pumpfun"
 version = "0.1.0"
 edition = "2021"
-description = "Standalone Pump.fun trader: pre-built nonce/seed pools, Jito tips, confirmation polling."
+description = "The pump.fun VENUE for the executor stack: protocol consts, discriminators, variant catalog, ix builders, curve+AMM pricing. Wraps `executor-core`'s venue-agnostic send engine (via Deref) as `PumpFunTrader`."
 
+# The lib name stays `pump_trader` so every `use pump_trader::…` consumer + the
+# `pump_trader::{constants,protocol,types}` paths keep resolving unchanged — this
+# crate is the back-compat FAÇADE, re-exporting the engine items from
+# `executor-core` alongside its own pump venue API.
 [lib]
 name = "pump_trader"
 path = "src/lib.rs"
 
 [features]
 # Off-hot-path tools, off by default so a minimal consumer compiles only the
-# buy/sell core. `live` enables both. `sim` stays in core (shares the ix builders).
+# buy/sell core. `live` enables both. The features are forwarded to executor-core
+# (whose send/sim harness carries the matching `probe`/`claim` gates).
 default = []
-probe = []
-claim = []
+probe = ["executor-core/probe"]
+claim = ["executor-core/claim"]
 
 [dependencies]
+# The venue-agnostic send engine (sign/send/confirm/nonce/tip/retry/sim + the
+# `Venue` seam + `TradeError`/`TraderConfig`). This crate wraps it as the pump.fun
+# venue and re-exports its public items through the `pump_trader` façade.
+executor-core = { path = "../core" }
+
 # Tier-1 protocol invariants live in `src/protocol.rs` (const Pubkeys via the
-# `pubkey!` macro); Tier-2 tuning in `src/config.rs`. `src/constants.rs` is a thin
-# back-compat shim for external string consumers.
+# `pubkey!` macro). `src/constants.rs` is a thin back-compat shim for external
+# string consumers.
 
 # Async runtime (consumer provides the runtime; the trader spawns background tasks).
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 
-# Error handling — a crate-owned `thiserror` boundary (no `anyhow` leak).
+# Error handling — the boundary type is re-exported from executor-core, but the
+# venue still derives its own via thiserror where needed.
 thiserror = "1"
 
 # Serialization (WalletHolding / TokenBalance derive Serialize)
@@ -40,7 +51,7 @@ bincode = "1.3"
 # on-chain swap to recover the per-coin fee-share marker account.
 bs58 = "0.5"
 
-# Random Jito tip-account selection
+# Random Jito tip-account selection (venue picks the tip account at construction).
 rand = "0.8"
 
 # Concurrent maps for the per-token / reserve caches. Sharded internally, so the
@@ -64,6 +75,6 @@ spl-token = "=4.0.0"
 spl-token-2022 = "=1.0.0"
 
 [dev-dependencies]
-# Mock TCP sender endpoints for the multi-endpoint fan-out test (tx.rs). Adds
-# only the socket + io features needed by the test; not compiled for downstream.
+# Mock TCP sender endpoints for the multi-endpoint fan-out test. Adds only the
+# socket + io features needed by the test; not compiled for downstream.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

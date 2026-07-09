@@ -128,27 +128,32 @@ Target crates: **`executor-core`** (`shared/executor/core/`, third-party deps on
 **`executor-pumpfun`** (`shared/executor/pumpfun/`, deps `executor-core`) →
 **`orchestrator`** (`forge/orchestrator/`, deps both).
 
-### Phase A — Split `pump-trader` → `executor-core` + `executor-pumpfun` (no behavior change)
-- [ ] `git mv shared/pump-trader shared/executor/pumpfun` (pkg `executor-pumpfun`); create
-      `shared/executor/core` (pkg `executor-core`). Add both to root `[workspace]` members.
-- [ ] Move to **`executor-core`** (venue-agnostic): `tx.rs`, `nonce.rs`, `blockhash.rs`,
-      `jito_tip.rs`, `swap_retry.rs` (→ `retry/`, keep `classify_swap_revert` + error-code consts
-      as SSOT), `sim.rs`, `pool.rs`, `error.rs` (`TradeError`), the `Arc<dyn Signer>` seam, and new
-      `venue.rs` (`Venue` trait + `VenueId`, static dispatch — no `Box<dyn>`).
-- [ ] Keep in **`executor-pumpfun`**: `protocol.rs`, `buy/sell/amm/create/bundle_buy/query/
-      reserves/consolidate/claim/types/config`. Implement `Venue` for pump; curve/AMM are **stages
-      inside** pump. Pump protocol consts stay self-contained here.
-- [ ] Decompose `PumpFunTrader`: engine (signer+rpc+tx/nonce/tip/blockhash/send/confirm) behind
-      `executor-core`; pump caches + ix builders + pricing stay in `executor-pumpfun`, consuming
-      the engine via the `Venue` seam.
-- [ ] **Back-compat façade:** keep `pump_trader::*` / `::constants` / `::protocol` re-exporting from
-      both crates so `hunter/live` + `launcher` compile **unchanged**. Repoint only the two direct
-      consumers' Cargo deps.
-- [ ] Preserve every SSOT guard test (`protocol_constants_ssot`, `classify_swap_revert`,
-      `jito_tip`, `fan_out`, `reserves`, min-out math), no-DB.
-- **Gate A:** `cargo build -p hunter-live -p forge-live` green via façade;
-      `cargo test -p executor-core -p executor-pumpfun` green;
-      `cargo tree -p hunter-lab`/`-p forge-lab` link **none** of `executor-core`/`executor-pumpfun`.
+### Phase A — Split `pump-trader` → `executor-core` + `executor-pumpfun` (no behavior change) — ✅ DONE (2026-07-09)
+- [x] `git mv shared/pump-trader shared/executor/pumpfun` (pkg `executor-pumpfun`, **lib stays
+      `pump_trader`**); created `shared/executor/core` (pkg `executor-core`, lib `executor_core`).
+      Both added to root `[workspace]` members; workspace dep key `pump-trader` kept via
+      `package = "executor-pumpfun"`.
+- [x] Moved to **`executor-core`** (venue-agnostic): `tx.rs`→`send.rs`, `nonce.rs`, `blockhash.rs`,
+      `jito_tip.rs`, `swap_retry.rs`→`retry.rs` (SSOT `classify_swap_revert` + error-code consts),
+      `error.rs` (`TradeError`+`bail!` via `#[macro_export]`), `config.rs` (`TraderConfig`), the
+      `sim.rs` **Layer-0** primitive (`simulate_ixs`+`SimOutcome`/`AccountDelta`), the `Arc<dyn
+      Signer>` seam, and new `venue.rs` (`Venue` trait + `VenueId`, static dispatch).
+- [x] **Deviation (correct):** `pool.rs` + the 4 `simulate_*` Layer-1 helpers **stay venue-side**
+      (they read venue caches / depend on `TokenProgram`) — the plan mis-listed them for core.
+- [x] Decomposed `PumpFunTrader` across an **`Engine` struct** (engine owns signer+rpc+http+
+      nonce/tip/blockhash caches+cu-ixs+SOL-ledger; `Engine::initialize` does the engine-half of
+      init). `PumpFunTrader { engine, …venue caches }` **`Deref`s to `Engine`** so every
+      `self.send_transaction/acquire_nonce/jito_tip_ix/simulate_ixs` call resolves unchanged;
+      duplicated `config`/`rpc`/`http` handles (same allocation) keep the ~60 field reads unedited.
+      Implements `Venue for PumpFunTrader`.
+- [x] **Back-compat façade:** `pump_trader::*` / `::constants` / `::protocol` / `::config` /
+      `::error` re-export from both crates so `hunter/live` + `launcher` compile **unchanged**
+      (0 source edits). Repointed only the two direct consumers' Cargo deps (+ workspace dep).
+- [x] SSOT guard tests preserved (`protocol_constants_ssot` passes; `classify_swap_revert`,
+      `jito_tip`, `fan_out`, min-out math all green).
+- **Gate A:** ✅ `cargo check -p hunter-live -p forge-live` green via façade; `cargo test -p
+      executor-core -p executor-pumpfun` green (18+27); `cargo tree -p hunter-lab`/`-p forge-lab`
+      link **none** of `executor-core`/`executor-pumpfun`; full `cargo check --workspace` = 0 errors.
 
 ### Phase B — Variant catalog = SSOT + structural overflow fix
 - [ ] Add the const `VariantSpec` catalog to `executor-pumpfun/catalog.rs` — one row per on-chain

@@ -7,7 +7,7 @@
 // and pool replenishment so the next buy starts warm.
 // ============================================================
 
-use super::swap_retry::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
 use crate::protocol;
@@ -396,7 +396,7 @@ impl PumpFunTrader {
         let global = self.global_account.as_ref().context("Not initialized")?;
 
         let mut ixs = Vec::with_capacity(6);
-        ixs.extend_from_slice(&self.cu_ixs_curve_buy);
+        ixs.extend_from_slice(&self.engine.cu_ixs_curve_buy);
         ixs.extend(account_creation_ixs);
 
         // 8-byte discriminator + two u64 args: size up front so the two

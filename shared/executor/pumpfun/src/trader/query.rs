@@ -21,7 +21,7 @@ use std::str::FromStr;
 /// [`PumpFunTrader::get_creator_from_mint_pda`] so the read and the offset
 /// parsing live in exactly one place.
 #[derive(Clone, Copy)]
-pub(super) struct CurveRouting {
+pub(crate) struct CurveRouting {
     creator: Pubkey,
     token_program: Pubkey,
     /// Bonding-curve `complete` flag — true once migrated to the AMM.

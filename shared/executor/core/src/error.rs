@@ -103,9 +103,17 @@ impl<T> Context<T> for Option<T> {
 }
 
 /// `return Err(TradeError::Other(format!(...)))` — the migrated `anyhow::bail!`.
+///
+/// `#[macro_export]` (exported at the crate root as `executor_core::bail`) so the
+/// venue crate can re-export it into its own `error` module and keep every
+/// `crate::error::bail` call site resolving. `$crate` binds to `executor_core`,
+/// so `$crate::error::TradeError` is correct from either crate.
+#[macro_export]
 macro_rules! bail {
     ($($arg:tt)*) => {
         return ::core::result::Result::Err($crate::error::TradeError::Other(::std::format!($($arg)*)))
     };
 }
-pub(crate) use bail;
+// Re-export at the `error::` path too, so `crate::error::bail` resolves inside
+// this crate (mirrors the macro_export crate-root name).
+pub use crate::bail;

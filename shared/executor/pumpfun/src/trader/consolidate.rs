@@ -16,7 +16,7 @@
 // enumeration RPC and zero writes.
 // ============================================================
 
-use super::sim::SimOutcome;
+use executor_core::SimOutcome;
 use super::PumpFunTrader;
 use crate::error::{Context, Result};
 use crate::types::TokenProgram;

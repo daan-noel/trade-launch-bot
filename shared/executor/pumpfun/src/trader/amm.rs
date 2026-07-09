@@ -15,7 +15,7 @@
 // a WSOL token account (buy) / unwraps proceeds (sell) and closes it afterward.
 // ============================================================
 
-use super::swap_retry::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
+use executor_core::{classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute};
 use super::{AmmGlobalConfig, AmmPoolInfo, PumpFunTrader};
 use crate::error::{bail, Context, Result, TradeError};
 use crate::protocol::{
@@ -106,8 +106,8 @@ impl PumpFunTrader {
                 )
                 .await?;
 
-            let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
-            ixs.extend_from_slice(&self.cu_ixs_amm);
+            let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
+            ixs.extend_from_slice(&self.engine.cu_ixs_amm);
             ixs.extend(core_ixs);
             ixs.push(self.jito_tip_ix(0));
 
@@ -236,8 +236,8 @@ impl PumpFunTrader {
                 )
                 .await?;
 
-            let mut ixs = Vec::with_capacity(core_ixs.len() + self.cu_ixs_amm.len() + 1);
-            ixs.extend_from_slice(&self.cu_ixs_amm);
+            let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
+            ixs.extend_from_slice(&self.engine.cu_ixs_amm);
             ixs.extend(core_ixs);
             ixs.push(self.jito_tip_ix(tip_level));
 
