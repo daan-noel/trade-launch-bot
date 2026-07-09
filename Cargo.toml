@@ -28,6 +28,8 @@ members = [
     # ingest-host -> forge/live/src/ingest module (both folded, no longer crates)
     "forge/core",
     "forge/launcher",
+    # the brain: Operation/Plan model + providers + dry-run over the executor stack
+    "forge/orchestrator",
     "forge/live",
     "forge/lab",
 ]

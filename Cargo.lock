@@ -2510,6 +2510,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "executor-core",
+ "executor-pumpfun",
+ "serde",
+ "serde_json",
+ "solana-sdk",
+ "uuid",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

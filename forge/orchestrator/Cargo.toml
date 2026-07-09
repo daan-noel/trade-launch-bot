@@ -1,0 +1,24 @@
+[package]
+name = "forge-orchestrator"
+version.workspace = true
+edition.workspace = true
+description = "The brain (forge-only): the Operation/Plan model, catalog-gated providers, and a zero-SOL dry-run over the executor write-stack. Macros/personas/auditor land in later phases. LIVE-only — never a lab dep."
+
+[lib]
+name = "orchestrator"
+path = "src/lib.rs"
+
+[dependencies]
+# The executor write-stack. The `Plan` keys off the same venue/variant axes the
+# catalog owns; providers draw legal variants from `pump_trader::catalog` and hand
+# each `Operation` to the pump.fun ix builders. `executor-core` gives the neutral
+# `VenueId` seam the `Plan` is keyed on.
+executor-core = { workspace = true }
+pump-trader = { workspace = true }
+
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+uuid.workspace = true
+# Address parsing/validation at the provider boundary (the `Plan` carries base58
+# strings so it stays serializable/persistable; the provider resolves them).
+solana-sdk.workspace = true

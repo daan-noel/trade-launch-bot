@@ -18,7 +18,8 @@ use crate::engine::Engine;
 /// The launchpad/AMM a venue drives. A closed enum on purpose: it is the single
 /// axis every `Operation`/`VariantSpec` keys off, so an unrepresentable venue is
 /// a compile error, not a runtime string mismatch. Extend by adding an arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VenueId {
     /// pump.fun bonding curve + its migrated PumpSwap AMM pools.
     PumpFun,

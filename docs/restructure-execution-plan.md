@@ -87,7 +87,10 @@ hunter, then forge, then deploy/docs. The two big `shared/` crate *splits* (`pum
       its DB-gated roundtrip test as `#[cfg(test)] mod roundtrip_test`. Fixed the compile-time
       `sqlx::migrate!("../../migrations")` → `("../migrations")` for the new `forge/core` depth.
 - [x] Moved `frontend-launch` → `forge/frontend`.
-- [x] Moved `idl/` → `forge/idl`, `migrations/` → `forge/migrations`, `docs/` → `forge/docs`.
+- [x] Moved `migrations/` → `forge/migrations`, `docs/` → `forge/docs`. (`idl/` was moved to
+      `forge/idl` here, then **removed** in Phase 2 as a byte-identical duplicate of
+      `shared/executor/pumpfun/idl/`, which owns the fetch scripts + hand-written decoders and is
+      the sole canonical copy — no code loads the IDL JSONs at build/runtime.)
 - **Gate 1.3:** ✅ `cargo build -p forge-live -p forge-lab` green; `cargo tree` shows `forge-live`
       free of DuckDB/arrow/parquet and `forge-lab` free of pump-trader/ingest-laserstream; forge
       frontend `vite build` green. ⚠ the frontend `tsc` step fails on a **pre-existing** TS6
@@ -194,22 +197,46 @@ Target crates: **`executor-core`** (`shared/executor/core/`, third-party deps on
       catalog + `Plan`. Phase B delivers the SSOT + structural prerequisites; a live mainnet repro
       is still needed to confirm the class is gone (Gate F).
 
-### Phase C — `orchestrator` crate: `Operation`/`Plan` + providers + dry-run
-- [ ] Create `forge/orchestrator/` (deps `executor-core` + `executor-pumpfun`).
-- [ ] `plan.rs`: `OpKind` (`Create`,`Buy`,`Sell`,`TransferSol`,`TransferToken`) with
-      `Role`/`Intent`/`VenueId`/canonical `Amount` as **orthogonal fields**
-      (`DevBuy ≡ {Buy, role:Dev, intent:Snipe}`). `Plan { ops, funding, schedule }` — `funding`
-      and `schedule` are **typed inputs** from the existing SLP unlinkability/jit-funding
-      workstream, not built here.
-- [ ] **Providers:** each `Operation` → ixs by calling `executor-pumpfun` builders
-      (enum-dispatched, no `Box<dyn>`); reject any variant not in `valid_*(venue)`.
-- [ ] **Dry-run:** build every tx from a `Plan`, stop before submit → serialized txs + summary;
-      `min_out` shown as computed-at-send.
-- [ ] **Generalize, don't replace** SLP's `manage::ActionPlan`/`PlanLeg`
-      (`launcher/src/manage/model.rs`) + `bundles.legs` JSONB + `launch_templates.params
-      .leg_structures` — unify the two divergent leg types under `Operation`.
-- **Gate C:** a hand-authored `Plan` (1 create + dev-buy + 2 bundler buys) → valid signed txs in
-      dry-run with zero SOL; `simulate_ixs` confirms they'd land.
+### Phase C — `orchestrator` crate: `Operation`/`Plan` + providers + dry-run — ✅ DONE (2026-07-09)
+- [x] Created `forge/orchestrator/` (pkg `forge-orchestrator`, lib `orchestrator`; deps
+      `executor-core` + `pump-trader`=`executor-pumpfun`); added to root `[workspace]` members.
+      LIVE/forge-only — neither lab links it (`cargo tree -p forge-lab`/`-p hunter-lab` = none).
+- [x] `plan.rs`: **`OpKind` reuses the catalog's `VariantKind`** (`Create`/`Buy`/`Sell`/
+      `TransferSol`/`TransferToken`) — SSOT, can't drift from the on-chain ix table. `Role`
+      (`dev`/`bundler`/`volume`/`treasury`/`external`), `Intent` (`snipe`/`accumulate`/
+      `make_volume`/`exit`/`fund`/`consolidate`/`create`), `VenueId`, and canonical `Amount`
+      (`ExactQuote`/`ExactBase`/`ExactBaseIn`/`Sol`/`Token`/`None`) are **orthogonal fields**
+      (`DevBuy ≡ {Buy, role:Dev, intent:Snipe}`). `min_out` is **NOT** stored — only
+      `slippage_bps` (late-bound). `Plan { mint_address, ops, funding, schedule }`; `Funding`/
+      `Schedule` are **typed `Default` inputs** for the SLP unlinkability workstream, not built
+      here. Addresses are base58 `String`s so a `Plan` serializes/persists (generalizes
+      `bundles.legs` JSONB). Constructors: `Operation::{create,buy,sell,transfer_sol}`.
+- [x] **Providers (`provider.rs`):** `prepare(&Plan) → PreparedPlan` — static dispatch over
+      `VenueId`/`OpKind` (no `Box<dyn>`); rejects (fail-fast, crate-owned `PlanError`) an
+      off-catalog variant (`is_valid`), a kind≠spec.kind, an `Amount` the variant's `denom` can't
+      encode (variant ⊥ amount), an unparseable address, a missing target, a dangling dep, or a
+      duplicate id. `MinOut` policy = `Late{bps}` / `Unprotected` / `NotApplicable` (never a frozen
+      number). **Deviation (honest):** providers do NOT emit `Instruction`s this phase — the pump ix
+      builders are methods on an *initialized* `PumpFunTrader` (read the on-chain `Global` account),
+      so real tx assembly + `simulate_ixs` land at the **Phase F** live cutover; `PreparedOp` carries
+      exactly what that build step consumes (resolved `VariantSpec`, parsed accounts, `Amount`,
+      min_out policy).
+- [x] **Dry-run (`dryrun.rs`):** `dry_run(&Plan) → DryRunReport` — serializable per-op summary
+      (kind/variant/role/intent/wallet/target/amount/`min_out` label/deps) + roll-ups; `min_out`
+      shown as "computed-at-send @ Nbps". Zero SOL, zero network.
+- [x] **Generalize seam:** `Operation` + its constructors unify the two divergent leg types; the
+      typed `transfer_sol` op is the shape that replaces the three raw `system_instruction::transfer`
+      bypasses. The actual `manage::ActionPlan`/`PlanLeg` + `launch_templates.leg_structures` →
+      `Plan` adapter lands in **Phase F** (it lives launcher-side; orchestrator can't dep the
+      launcher without a cycle).
+- **Gate C:** ✅ zero-SOL portion — `cargo test -p forge-orchestrator` green (6): the hand-authored
+      launch `Plan` (1 `create_v2` + dev-buy + 2 bundler `buy_exact_sol_in`, all deps→create)
+      dry-runs clean, serializes, roll-ups correct; off-catalog / kind-mismatch / denom-mismatch /
+      dangling-dep all rejected; typed consolidate transfer builds. Executor guard tests still green
+      (18 + 34) after adding `serde` derives to `VenueId`/`VariantKind`; `cargo check -p hunter-live
+      -p forge-live` green. ⚠ the **signed-txs + `simulate_ixs` would-land** check needs a live
+      `PumpFunTrader` (on-chain `Global` read) → deferred to Phase F, same as prior phases' live-only
+      gate portions.
 
 ### Phase D — Macros + personas (disguise, forge-only)
 - [ ] `orchestrator/macros.rs`: `fund`, `bundle_launch`, `volume_make`, `exit`, `consolidate` —

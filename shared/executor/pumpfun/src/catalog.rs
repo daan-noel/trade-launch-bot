@@ -20,7 +20,8 @@ use executor_core::venue::VenueId;
 /// The tier-1 **mechanism** an instruction performs — venue-neutral and
 /// orthogonal to role / intent / venue / amount (the orchestrator `Plan` keys
 /// off these same axes). Choosing a variant changes *encoding*, never the kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VariantKind {
     Create,
     Buy,
