@@ -15,13 +15,15 @@ Meme-coin trading bot — **massive token + trade volume**. Performance outranks
 
 ## Architecture
 
-Six Rust workspace crates + `frontend-react` SPA. The old single `backend` crate was split into two bins over a shared core, then renamed to the `live`/`lab` topology (see [@plans/modes/crate-split.md](@plans/modes/crate-split.md) and [live-lab-remake-plan.md](live-lab-remake-plan.md)):
+**Monorepo:** `meme-trading/` is now one product folder inside the `Bot/` monorepo (single Cargo `[workspace]`, `resolver = "1"`, root `Bot/Cargo.toml`) alongside `solana-launch-platform/`. The two **standalone drop-in** crates (`pump-trader`, `ingest-laserstream`) moved to a neutral **`shared/`** home (`Bot/shared/…`) so both products consume them as intra-workspace deps — meme-trading's `live` links them via `path = "../../shared/…"`. A bare `cargo build` at the root builds only meme-trading's bins (`default-members`); target SLP crates with `-p`. See `../monorepo-trader-plan.md` (Part 1).
+
+Six Rust crates + `frontend-react` SPA. The old single `backend` crate was split into two bins over a shared core, then renamed to the `live`/`lab` topology (see [@plans/modes/crate-split.md](@plans/modes/crate-split.md) and [live-lab-remake-plan.md](live-lab-remake-plan.md)):
 
 | Crate | Kind | Role |
 | --- | --- | --- |
 | `trading_core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, core handlers, strategy domain (`tpsl_rules_core`), **ingest contract** (`trading_core::ingest`) |
-| `pump-trader` | lib | buy/sell executor; **standalone drop-in library** (no workspace deps). Three tiers: `protocol` (Tier-1 `const Pubkey` invariants), `config` (Tier-2 `TraderConfig` + 7 `Default` sub-structs), per-call args. Signs via `Arc<dyn Signer>` (HSM/remote-ready); typed `error::TradeError` (no `anyhow`). `probe`/`claim` are off-by-default cargo features; `constants.rs` is a thin back-compat shim |
-| `ingest-laserstream` | lib | Helius LaserStream gRPC transport (client→pipeline→db_writer) + watchdog. **Standalone drop-in — no workspace deps** (NOT `trading_core`); exposes its own raw transport API (`Ingest`/`IngestHandle`/`IngestEvent`/`Protocol`), which `live`'s host adapter bridges onto the `trading_core::ingest` contract |
+| `pump-trader` (`shared/pump-trader`) | lib | buy/sell executor; **standalone drop-in library** (no workspace deps). Three tiers: `protocol` (Tier-1 `const Pubkey` invariants), `config` (Tier-2 `TraderConfig` + 7 `Default` sub-structs), per-call args. Signs via `Arc<dyn Signer>` (HSM/remote-ready); typed `error::TradeError` (no `anyhow`). `probe`/`claim` are off-by-default cargo features; `constants.rs` is a thin back-compat shim |
+| `ingest-laserstream` (`shared/ingest-laserstream`) | lib | Helius LaserStream gRPC transport (client→pipeline→db_writer) + watchdog. **Standalone drop-in — no workspace deps** (NOT `trading_core`); exposes its own raw transport API (`Ingest`/`IngestHandle`/`IngestEvent`/`Protocol`), which `live`'s host adapter bridges onto the `trading_core::ingest` contract |
 | `ingest-websocket` | lib | **empty scaffold** (this one *does* depend on `trading_core`) — a stub transport so `live` can swap ingest backends later (not yet implemented) |
 | `live` | **bin** | LIVE box: strategies, trader, deploy services/state (`DeployState`), live/trading handlers, `probe`. Ships to EC2 |
 | `lab` | **bin** | ANALYSIS box: sweep/backtest, swing analyzer, local state (`LocalState`), rule-authoring + sweep handlers. Runs with NO keys / NO gRPC; never depends on `pump-trader` |

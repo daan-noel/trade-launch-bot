@@ -13,26 +13,35 @@ for the full design. Phases and task checklist:
 
 ## Layout
 
+Now one product folder inside the **`Bot/` monorepo** (single Cargo workspace at
+`Bot/Cargo.toml`, shared with `meme-trading/`). The bins are `slp-live` / `slp-lab`
+(meme-trading owns `live`/`lab`); they are not workspace `default-members`, so target
+them with `-p slp-live` / `-p slp-lab`.
+
 ```text
-solana-launch-platform/
-├── Cargo.toml            workspace + path deps → ../meme-trading/*
-├── docker-compose.yml    local Postgres + TimescaleDB (host port 5556)
-├── .env.example          copy to .env
-├── idl/                  pump.fun IDLs (copied SSOT: pfee / pump_amm / pump_bonding_curve)
-├── migrations/           0001_init.sql (Phase 2)
-└── crates/
-    ├── platform-core (lib)  data layer: config, models, storage, repositories, venue trait
-    ├── ingest-host   (lib)  borrowed ingest → PG trades          [LIVE only]
-    ├── launcher      (lib)  create/dev-buy/bundle via pump-trader [LIVE only]
-    ├── lake          (lib)  Parquet/DuckDB cold tier             [LAB only]
-    ├── live          (bin)  ingest + launcher + trading + HTTP → EC2
-    └── lab           (bin)  lake + sweeps + backtests + analytics → workstation
+Bot/                          monorepo root: [workspace] + Cargo.lock, resolver "1"
+├── shared/                   standalone drop-in crates used by BOTH products
+│   ├── pump-trader/          (was ../meme-trading/pump-trader)
+│   └── ingest-laserstream/   (was ../meme-trading/ingest-laserstream)
+├── meme-trading/             sibling product (live/lab)
+└── solana-launch-platform/
+    ├── docker-compose.yml    local Postgres + TimescaleDB (5556) + slp-live service
+    ├── .env.example          copy to .env
+    ├── idl/                  pump.fun IDLs (copied SSOT: pfee / pump_amm / pump_bonding_curve)
+    ├── migrations/           0001_init.sql
+    └── crates/
+        ├── platform-core (lib)  data layer: config, models, storage, repositories, venue trait
+        ├── ingest-host   (lib)  borrowed ingest → PG trades              [slp-live only]
+        ├── launcher      (lib)  create/dev-buy/bundle via pump-trader    [slp-live only]
+        ├── lake          (lib)  Parquet/DuckDB cold tier                 [slp-lab only]
+        ├── slp-live      (bin)  ingest + launcher + trading + HTTP → EC2
+        └── slp-lab       (bin)  lake + sweeps + backtests + analytics → workstation
 ```
 
-## Reuse (borrowed crates)
+## Reuse (shared crates)
 
-Two standalone crates from `../meme-trading` are referenced by **path dep** during
-co-development (switch to a pinned `git` rev once stable):
+Two standalone crates live in the monorepo's **`shared/`** home and are consumed as
+intra-workspace deps (`{ workspace = true }`) by both products:
 
 | Crate | Role | Used by |
 | --- | --- | --- |
@@ -46,11 +55,11 @@ Only tiny pure SSOT files were lifted by copy: the pump.fun IDLs (`idl/`) and th
 
 ## Dep partition (enforced from commit 1)
 
-`live` (EC2) and `lab` (workstation) link **disjoint** dep graphs — a resource
+`slp-live` (EC2) and `slp-lab` (workstation) link **disjoint** dep graphs — a resource
 partition, not a naming preference. EC2 is 2vCPU/4GB: DuckDB/arrow/parquet/rayon
 must never ship there; signing keys + gRPC never ship to the workstation.
 
-| Crate | `live` | `lab` |
+| Crate | `slp-live` | `slp-lab` |
 | --- | --- | --- |
 | `ingest-host` (+ `ingest-laserstream`) | ✓ | ✗ |
 | `launcher` (+ `pump-trader`) | ✓ | ✗ |
@@ -60,8 +69,8 @@ must never ship there; signing keys + gRPC never ship to the workstation.
 Verify the partition (resolution only, no compile):
 
 ```sh
-cargo tree -p live   # must show NO duckdb / arrow / parquet
-cargo tree -p lab    # must show NO pump-trader / ingest-laserstream / tonic
+cargo tree -p slp-live   # must show NO duckdb / arrow / parquet
+cargo tree -p slp-lab    # must show NO pump-trader / ingest-laserstream / tonic
 ```
 
 ## Dev loop
@@ -69,15 +78,15 @@ cargo tree -p lab    # must show NO pump-trader / ingest-laserstream / tonic
 ```sh
 docker compose up -d              # local Postgres + TimescaleDB (port 5556)
 # sqlx migrate run                # Phase 2+ (0001_init.sql)
-cargo run -p live                 # LIVE box: ingest + launch + trade + HTTP
-cargo run -p lab                  # ANALYSIS box: lake + sweeps (no gRPC, no keys)
+cargo run -p slp-live             # LIVE box: ingest + launch + trade + HTTP
+cargo run -p slp-lab              # ANALYSIS box: lake + sweeps (no gRPC, no keys)
 ```
 
 - **Data flow (live):** Helius gRPC → `ingest-laserstream` → `ingest-host` → PG
   `raw_txs`/`trades` (7-day `raw_txs` / 30-day `trades` retention on EC2).
 - **Data flow (analysis):** EC2 PG → DB sync → local PG → `lab -- lake-export` →
   sealed-day Parquet → DuckDB reads/sweeps.
-- **Reuse flow:** edit `../meme-trading/pump-trader`, both projects see it (path dep).
+- **Reuse flow:** edit `shared/pump-trader`, both products see it (intra-workspace dep).
 
 ## Tests
 

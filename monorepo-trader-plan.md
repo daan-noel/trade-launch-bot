@@ -1,20 +1,21 @@
 # Monorepo + Trader Redesign Plan
 
-One plan, two parts, run in order:
+> **Status:** ✅ **Part 1 (Monorepo migration) is COMPLETE** — `meme-trading` and
+> `solana-launch-platform` now live in ONE `Bot/` git repo + ONE Cargo workspace
+> (`resolver = "1"`), the shared drop-in crates moved to `shared/`, SLP's bins renamed
+> `slp-live`/`slp-lab`, and both stacks' Docker images build green. The Part 1 phase
+> plan has been removed now that it's landed; only **Part 2** remains below. (History of
+> the migration is in the commits + the git-bundle backups under `Bot/_monorepo-backup/`.)
 
-- **Part 1 — Monorepo migration.** Merge `meme-trading` and `solana-launch-platform`
-  into ONE git repo + ONE Cargo workspace, moving the shared drop-in crates to a neutral
-  `shared/` home. Physical consolidation only.
-- **Part 2 — Trader redesign.** Reshape the execution stack into **two crates a person can
-  hold in their head**: a shared **`trader`** ("build & send one trade") and an SLP-only
-  **`campaign`** ("plan many trades and disguise them"). Handles every instruction variant,
-  anti-fingerprint personas, and future launchpads — without a cathedral of crates.
+What remains — **Part 2 — Trader redesign.** Reshape the execution stack into **two crates
+a person can hold in their head**: a shared **`trader`** ("build & send one trade") and an
+SLP-only **`campaign`** ("plan many trades and disguise them"). Handles every instruction
+variant, anti-fingerprint personas, and future launchpads — without a cathedral of crates.
 
 **Two sentences to remember the whole design:** `trader` builds and sends one trade.
 `campaign` plans a batch and disguises them.
 
-Run Part 1 fully green before starting Part 2. Each phase ends with a **verify gate** — do
-not proceed until it passes.
+Each phase ends with a **verify gate** — do not proceed until it passes.
 
 ---
 
@@ -156,105 +157,6 @@ tests, audit) with **zero SOL**.
   constant CU/tip, synchronized exit, nonce-account reuse, `close_token_ata` exit-tell,
   **account-shape integrity** = fee recipient must be at index 17). Fail → reject unless
   overridden.
-
----
-
-# Part 1 — Monorepo migration
-
-Kills the cross-repo `path` dependency (SLP's build coupled to meme-trading's working tree)
-by putting both products in one repo + one workspace.
-
-### Locked (migration)
-- **Monorepo**, not a versioned shared repo. Path deps become intra-workspace deps.
-- **`resolver = "1"`** stays.
-- **Shared crates → `shared/`:** `pump-trader` and `ingest-laserstream` move there
-  **unchanged** (the `trader` rename happens in Part 2, Phase A — physical move first).
-- **Rename SLP's colliding crates:** `live` → `slp-live`, `lab` → `slp-lab` (package + bin).
-  meme-trading keeps `live`/`lab`.
-- **Two Docker Compose stacks stay independent**, each with build `context` = monorepo root.
-
-### End-state (after Part 1)
-```
-Bot/
-├── Cargo.toml                 [one [workspace], resolver "1", default-members = meme bins]
-├── shared/
-│   ├── pump-trader/           (moved; renamed to trader in Part 2)
-│   └── ingest-laserstream/
-├── meme-trading/  (trading_core, live, lab, ingest-websocket, frontend-react, dockerfiles, compose)
-└── solana-launch-platform/  (crates/{platform-core, ingest-host, launcher, lake, slp-live, slp-lab}, frontend, compose)
-```
-
-### Phase 0 — Safety & baseline
-- [ ] Back up both repos. Commit/stash WIP; record each HEAD.
-- [ ] Record GREEN baseline: `cargo build --bin live` + `--bin lab` (meme), SLP `cargo
-      build`, `docker compose build` (meme).
-- [ ] Snapshot dep graphs (`cargo tree` for meme `live`/`lab` + SLP bins) to the scratchpad
-      for a later parity check.
-
-**Gate:** baselines green, snapshots saved.
-
-### Phase 1 — Create the monorepo git repo
-- [ ] History strategy: **`git subtree`** to preserve both (fallback: fresh `git init` +
-      copy trees + one commit if history isn't worth it).
-- [ ] Both product folders present, paths unchanged (no crate moved yet).
-- [ ] Root `.gitignore` merges both (`target/`, `node_modules/`, `dist/`, `.env*`,
-      `*.parquet`, `.lake/`).
-
-**Gate:** `git log` shows history (or a clean init); tree matches both originals under their
-folders.
-
-### Phase 2 — Root workspace manifest
-- [ ] `Bot/Cargo.toml` single `[workspace]`: `members` = every crate from both projects;
-      `resolver = "1"`; merge `[workspace.package]` + `[workspace.dependencies]` + `[profile.dev]`;
-      `default-members` = meme bins so a bare `cargo build` isn't everything.
-- [ ] Delete the two sub-workspace `Cargo.toml`s; keep every package `Cargo.toml`.
-
-**Gate:** `cargo metadata` resolves; only the `live`/`lab` name-collision errors remain
-(fixed Phase 4).
-
-### Phase 3 — Relocate shared crates
-- [ ] `git mv meme-trading/pump-trader shared/pump-trader`; same for `ingest-laserstream`.
-- [ ] Repoint meme-trading + SLP consumers (`../pump-trader`, `../meme-trading/pump-trader`
-      → `shared/…` or `{ workspace = true }`). Grep the whole tree for stray
-      `../meme-trading/` refs.
-
-**Gate:** `cargo metadata` resolves; no path points outside the monorepo.
-
-### Phase 4 — Resolve `live`/`lab` collisions (rename SLP's)
-- [ ] `git mv` SLP `crates/live` → `crates/slp-live` (name + `[[bin]]`), `crates/lab` →
-      `crates/slp-lab`. Update members, intra-SLP deps, deploy scripts (`--bin slp-*`), docs.
-
-**Gate:** `cargo metadata` fully resolves (ZERO duplicate-package errors); `cargo build
---bin live` (meme) and `--bin slp-live` both succeed.
-
-### Phase 5 — Docker / Compose
-- [ ] Move `.dockerignore` → `Bot/.dockerignore` (merge both; exclude both products'
-      `target/`, `node_modules/`, `dist/`, `*.parquet`, `.lake/`).
-- [ ] meme compose: `build.context: ..`, `dockerfile: meme-trading/<path>/Dockerfile`. Confirm
-      cargo-chef `cook --bin live` + cache mounts keep it scoped.
-- [ ] SLP: author Dockerfile(s) mirroring meme's `live/Dockerfile` (`--bin slp-live`);
-      compose `context: ..`; distinct `container_name`/ports.
-
-**Gate:** both stacks `docker compose build` green + run; meme's `live` image contains no SLP
-binaries.
-
-### Phase 6 — Full verification
-- [ ] `cargo build --bin live`/`--bin lab` (meme), `--bin slp-live`/`--bin slp-lab` — green.
-- [ ] `cargo test -p live -p lab -p trading_core` (meme) + SLP crate tests — green.
-- [ ] **Dep-partition:** `cargo tree -p lab` and `-p slp-lab` show NEITHER `pump-trader` NOR
-      `ingest-laserstream`.
-- [ ] **Dep parity:** diff `cargo tree -p live` vs the Phase-0 snapshot; reconcile drift.
-- [ ] Frontends `npm run build` (both) green. End-to-end read-path smoke on both stacks.
-
-**Gate:** every box checked.
-
-### Phase 7 — Cleanup & docs
-- [ ] Update `meme-trading/CLAUDE.md` (crate map → `shared/` home, monorepo, resolver "1").
-      Update SLP README/docs (borrowed crates → `shared/`; bins `slp-live`/`slp-lab`).
-- [ ] Delete the backed-up standalone repos only after green + pushed.
-- [ ] Commit: "chore: consolidate meme-trading + SLP into monorepo".
-
-**Gate:** a fresh clone builds both products with no external path deps.
 
 ---
 

@@ -2,7 +2,8 @@
 
 Guidance for Claude Code working in **solana-launch-platform** — a venue- and
 non-SOL-quote-generalized Solana launch + trading + analytics platform (sibling to
-`../meme-trading`, its own git repo). Starts with pump.fun token creation; grows into
+`../meme-trading` inside the shared `Bot/` monorepo — one Cargo workspace, no longer
+separate git repos). Starts with pump.fun token creation; grows into
 multi-launchpad / multi-quote / multi-wallet.
 
 **Full design:** [../and-about-the-instructions-shimmying-shore.md](../and-about-the-instructions-shimmying-shore.md).
@@ -73,27 +74,32 @@ and modularity outrank everything.
 
 ## Architecture — 6 crates, 2 bins
 
-Cargo workspace (`resolver = "1"`). Two standalone crates are **borrowed from
-`../meme-trading` via path dep** (`pump-trader`, `ingest-laserstream`) — switch to a
-pinned `git` rev once stable. `trading_core` is **NOT** reused (its SOL/pump domain is
-the thing being redesigned); only tiny pure SSOT files were copied (IDLs, unit consts).
+**Monorepo:** `solana-launch-platform/` is now one product folder inside the `Bot/`
+monorepo — a single Cargo `[workspace]` (`resolver = "1"`, root `Bot/Cargo.toml`) shared
+with `meme-trading/`. The two standalone crates (`pump-trader`, `ingest-laserstream`) are
+**borrowed from the neutral `shared/` home** (`Bot/shared/…`) as intra-workspace deps
+(`{ workspace = true }`), NOT a cross-repo path dep any more. **SLP's bins are named
+`slp-live` / `slp-lab`** (meme-trading owns `live`/`lab`); they are NOT workspace
+`default-members`, so build/run them with `-p slp-live` / `-p slp-lab`. `trading_core` is
+**NOT** reused (its SOL/pump domain is the thing being redesigned); only tiny pure SSOT
+files were copied (IDLs, unit consts).
 
 | Crate | Kind | Role | Ships to |
 | --- | --- | --- | --- |
 | `platform-core` | lib | data layer: config, models, storage, repositories, `venue/` trait. **solana-free** (addresses are TEXT/String) | both |
-| `ingest-host` | lib | borrowed `ingest-laserstream` events → PG `raw_txs`/`trades` | **live** |
-| `launcher` | lib | create / dev-buy / bundle via `pump-trader` | **live** |
-| `lake` | lib | Parquet/DuckDB cold tier (sweeps/backtests) | **lab** |
-| `live` | **bin** | ingest + launcher + trading + thin HTTP → **EC2** | — |
-| `lab` | **bin** | lake + sweeps + backtests + analytics → **workstation** | — |
+| `ingest-host` | lib | borrowed `ingest-laserstream` events → PG `raw_txs`/`trades` | **slp-live** |
+| `launcher` | lib | create / dev-buy / bundle via `pump-trader` | **slp-live** |
+| `lake` | lib | Parquet/DuckDB cold tier (sweeps/backtests) | **slp-lab** |
+| `slp-live` (`crates/slp-live`) | **bin** | ingest + launcher + trading + thin HTTP → **EC2** | — |
+| `slp-lab` (`crates/slp-lab`) | **bin** | lake + sweeps + backtests + analytics → **workstation** | — |
 
 **Dep partition (load-bearing — enforce from the scaffold):**
 
-- `live` must NOT pull `duckdb`/`arrow`/`parquet` (the `lake` stack). Verify:
-  `cargo tree -p live` (rayon *is* present, but only as a Solana transitive via
+- `slp-live` must NOT pull `duckdb`/`arrow`/`parquet` (the `lake` stack). Verify:
+  `cargo tree -p slp-live` (rayon *is* present, but only as a Solana transitive via
   `pump-trader` — not the lake crate; that's expected).
-- `lab` must NOT pull `pump-trader`/`ingest-laserstream`/`tonic`/solana. Verify:
-  `cargo tree -p lab`.
+- `slp-lab` must NOT pull `pump-trader`/`ingest-laserstream`/`tonic`/solana. Verify:
+  `cargo tree -p slp-lab`.
 
 ## Schema conventions (locked)
 
@@ -138,7 +144,7 @@ Keystore backend (ADR D3) = **envelope-encrypted file + pluggable KEK trait**
 
 ## Deployment (EC2: 2vCPU / 4GB — IO-bound, RAM-constrained)
 
-- Ship **`live` + borrowed crates** to EC2 only. **`lab` + `lake` + DuckDB/arrow/
+- Ship **`slp-live` + borrowed crates** to EC2 only. **`slp-lab` + `lake` + DuckDB/arrow/
   parquet/rayon stay on the workstation** — never deploy them.
 - EC2 PG = hot rolling buffer (`raw_txs` 7d, `trades` 30d). Analysis is via DB sync to
   a local mirror → `lake-export` → Parquet. No DuckDB/export cron on the server.
@@ -148,15 +154,16 @@ Keystore backend (ADR D3) = **envelope-encrypted file + pluggable KEK trait**
 ## Commands
 
 ```powershell
-docker compose up -d                 # local Postgres + TimescaleDB (host port 5556)
+# Run from the monorepo root (Bot/) or this folder; the workspace is Bot/Cargo.toml.
+docker compose up -d                 # local Postgres + TimescaleDB (host port 5556); adds slp-live service
 sqlx migrate run                     # apply migrations/0001,0002
-cargo check --workspace              # typecheck all 6 crates (use --target-dir target-check if a bin is running)
-cargo tree -p live                   # dep-partition check (no duckdb/arrow/parquet)
-cargo tree -p lab                    # dep-partition check (no pump-trader/ingest-laserstream/tonic)
-cargo run -p live                    # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8091
-cargo run -p live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
-cargo run -p live -- wallet-verify <key_ref> <expected_address>  # restore runbook: confirm a keystore blob decrypts to the expected pubkey
-cargo run -p lab                     # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8092
+cargo check -p slp-live -p slp-lab   # typecheck the SLP bins (use --target-dir target-check if a bin is running)
+cargo tree -p slp-live               # dep-partition check (no duckdb/arrow/parquet)
+cargo tree -p slp-lab                # dep-partition check (no pump-trader/ingest-laserstream/tonic)
+cargo run -p slp-live                # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8091
+cargo run -p slp-live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
+cargo run -p slp-live -- wallet-verify <key_ref> <expected_address>  # restore runbook: confirm a keystore blob decrypts to the expected pubkey
+cargo run -p slp-lab                 # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8092
 ```
 
 **DB-gated tests** (generality proof, repo round-trips) self-skip unless
@@ -165,8 +172,8 @@ migrations). Ports: DB **5556**, live **8091**, lab **8092**.
 
 ## Definition of done
 
-- `cargo check --workspace` clean; clippy on touched code; test when logic changed.
-- Dep partition still holds (`cargo tree -p live`/`-p lab`).
+- `cargo check -p slp-live -p slp-lab` clean; clippy on touched code; test when logic changed.
+- Dep partition still holds (`cargo tree -p slp-live`/`-p slp-lab`).
 - Stayed in the owning crate; no secrets in code; `.env` synced with `.env.example`.
 - **Docs updated:** rules/commands → this file; schema/data-flow → `README.md` +
   `docs/`; decisions/rationale → `docs/decisions.md`.
