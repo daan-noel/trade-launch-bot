@@ -1,16 +1,23 @@
 -- ============================================================================
 -- Consolidated core schema (single-file init). TimescaleDB, local-first.
 --
--- This is the squash of the former 0001..0010 core migration chain into one
--- end-state file — it creates the schema exactly as running the full chain on a
--- fresh database would leave it (all renames/adds/drops already folded in):
---   * 0001 init                      base tables, hypertables, views, seeds
---   * 0002 token_account             strategy_positions.token_account
---   * 0003 venue-neutral reserves    reserve_sol/reserve_token (already inlined)
---   * 0004 creation_slot / first-slot  tokens.creation_slot + first-slot lamports
---   * 0005 token-list pagination     tokens/tokens_info sort indexes
---   * 0007 drop cohort metric        strategy_run_metrics.n_exit_cohort removed
---   * 0009 SOL/lamports naming        *_sol/*_lamports unit-in-name renames
+-- This is the squash of the entire core migration chain into one end-state file —
+-- it creates the schema exactly as running the full chain on a fresh database
+-- would leave it (all renames/adds/drops already folded in). It absorbs the
+-- former on-disk files:
+--   * 0001_init  — itself the squash of the legacy 0001..0010 chain:
+--       - 0001 init                    base tables, hypertables, views, seeds
+--       - 0002 token_account           strategy_positions.token_account
+--       - 0003 venue-neutral reserves  reserve_sol/reserve_token (already inlined)
+--       - 0004 creation_slot/first-slot tokens.creation_slot + first-slot lamports
+--       - 0005 token-list pagination   tokens/tokens_info sort indexes
+--       - 0007 drop cohort metric      strategy_run_metrics.n_exit_cohort removed
+--       - 0009 SOL/lamports naming      *_sol/*_lamports unit-in-name renames
+--   * 0002_strategy_positions_mint_address — strategy_positions.mint -> mint_address
+--       (folded: the column + its index below already use the mint_address name).
+--   * 0003_bucket_width_sol — data-only (rewrote strategy_rules/strategy_runs
+--       params tolerance_pct -> bucket_width_sol); a no-op on a fresh DB, so
+--       intentionally omitted here.
 -- The pure data-backfill migrations (0006 snake_case buy-ix keys, 0008 paper
 -- entry backfill, 0010 tpsl2 param cleanup, and 0009's JSONB key rewrite) only
 -- rewrote pre-existing rows — no-ops on a fresh DB — so they are intentionally
@@ -355,7 +362,7 @@ CREATE TABLE IF NOT EXISTS strategy_positions (
     rule_id                 UUID,
     mode                    TEXT        NOT NULL CHECK (mode IN ('real', 'paper')),
 
-    mint                    TEXT        NOT NULL,
+    mint_address            TEXT        NOT NULL,
     wallet                  TEXT        NOT NULL,
     token_program_id        TEXT,
     -- persisted wallet token account for this mint, so bot buys/sells reuse ONE
@@ -399,7 +406,7 @@ CREATE INDEX IF NOT EXISTS idx_strategy_positions_run            ON strategy_pos
 CREATE INDEX IF NOT EXISTS idx_strategy_positions_strategy_created
     ON strategy_positions(strategy_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_positions_rule_created   ON strategy_positions(rule_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_strategy_positions_mint_status    ON strategy_positions(mint, status);
+CREATE INDEX IF NOT EXISTS idx_strategy_positions_mint_address_status ON strategy_positions(mint_address, status);
 CREATE INDEX IF NOT EXISTS idx_strategy_positions_token_program  ON strategy_positions(token_program_id);
 
 -- In-flight recovery sweep (real mode).

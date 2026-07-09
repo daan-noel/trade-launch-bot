@@ -1,14 +1,19 @@
 -- ============================================================================
 -- Consolidated lab-only grouped param-sweep storage (single-file init).
 --
--- Squash of the former 0001..0003 lab migration chain into one end-state file —
--- it creates the schema exactly as running the full chain on a fresh database
--- would leave it:
---   * 0001 grouped_sweep        tpsl1/tpsl2 four-table sets
---   * 0002 swing1 + next_kill    swing_1 set + shared n_exit_next_kill column
---   * 0003 drop cohort           n_exit_cohort removed from every _results table
--- (0004 `n_exit_dead` — the analysis death-close counter — is applied on top of
---  this squash as its own file, mirroring the 0002 next_kill column append.)
+-- Squash of the entire lab migration chain into one end-state file — it creates
+-- the schema exactly as running the full chain on a fresh database would leave
+-- it. It absorbs the former on-disk lab files:
+--   * 0001_grouped_sweep  — itself the squash of the legacy 0001..0003 lab chain:
+--       - 0001 grouped_sweep     tpsl1/tpsl2 four-table sets
+--       - 0002 swing1 + next_kill swing_1 set + shared n_exit_next_kill column
+--       - 0003 drop cohort        n_exit_cohort removed from every _results table
+--   * 0002_trades_wallet_index / 0003_trades_wallet_index_covering — the lab-only
+--       supporting index for the Trader Analysis query. End state = the COVERING
+--       variant (0003 superseded 0002); folded in as the single
+--       `idx_trades_wallet_time` create at the bottom of this file.
+--   * 0004_n_exit_dead — the analysis death-close counter; folded into each
+--       `_results` table's CREATE as `n_exit_dead INTEGER NOT NULL DEFAULT 0`.
 --
 -- Written **only by `lab`** (the workstation analysis box); `live`/EC2 never
 -- touches them, which is why they live in the lab-owned migration set (applied
@@ -110,6 +115,7 @@ CREATE TABLE IF NOT EXISTS tpsl2_grouped_sweep_results (
     n_exit_time         INTEGER NOT NULL,
     n_exit_liquidity    INTEGER NOT NULL,
     n_exit_next_kill    INTEGER NOT NULL DEFAULT 0,
+    n_exit_dead         INTEGER NOT NULL DEFAULT 0,
     n_exit_open         INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tpsl2_gsweep_results_group
@@ -196,6 +202,7 @@ CREATE TABLE IF NOT EXISTS tpsl1_grouped_sweep_results (
     n_exit_time         INTEGER NOT NULL,
     n_exit_liquidity    INTEGER NOT NULL,
     n_exit_next_kill    INTEGER NOT NULL DEFAULT 0,
+    n_exit_dead         INTEGER NOT NULL DEFAULT 0,
     n_exit_open         INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tpsl1_gsweep_results_group
@@ -282,7 +289,22 @@ CREATE TABLE IF NOT EXISTS swing_1_grouped_sweep_results (
     n_exit_time         INTEGER NOT NULL,
     n_exit_liquidity    INTEGER NOT NULL,
     n_exit_next_kill    INTEGER NOT NULL DEFAULT 0,
+    n_exit_dead         INTEGER NOT NULL DEFAULT 0,
     n_exit_open         INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_swing_1_gsweep_results_group
     ON swing_1_grouped_sweep_results(run_id, group_id);
+
+-- ---------------------------------------------------------------------------
+-- Lab-only supporting index for the Trader Analysis query
+-- (`TradeRepo::wallet_traded_mints` -> GET /api/wallets/:wallet/tokens).
+--
+-- Folded from the former 0002_trades_wallet_index / 0003_trades_wallet_index_covering:
+-- end state is the COVERING variant. Seek by `wallet_id`, range-scan
+-- `block_time DESC` (recent-first), with `mint_address` + `trade_type` trailing so
+-- the GROUP BY + `COUNT(*) FILTER (WHERE trade_type=…)` are satisfied index-only
+-- (no heap fetch). Lives in the lab-only migration set on purpose: only `lab`
+-- runs this analysis query, so the EC2 `live` box's ingest hot path pays NO extra
+-- per-insert index-maintenance cost. Idempotent.
+CREATE INDEX IF NOT EXISTS idx_trades_wallet_time
+    ON trades (wallet_id, block_time DESC, mint_address, trade_type);
