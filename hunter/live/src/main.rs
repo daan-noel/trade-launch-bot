@@ -464,12 +464,24 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Config
+    // Config. Shared settings load for both bins; the live bin additionally
+    // requires the Helius endpoints (fail fast at boot) and loads its own trading
+    // credentials (`TradingSecrets` — wallet key, nonce accounts, Sender URLs),
+    // which lab never touches.
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
+    settings
+        .require_live_endpoints()
+        .context("live bin is missing a required Helius endpoint")?;
+    let secrets = live::config::TradingSecrets::from_env()
+        .context("Failed to load live trading credentials")?;
+
+    // HTTP bind — live reads its own LIVE_HOST/LIVE_PORT (docker's HOST/PORT wins).
+    let http_host = config::resolve_host("LIVE_HOST");
+    let http_port = config::resolve_port("LIVE_PORT", 8081)?;
 
     info!(
-        host = %settings.host,
-        port = settings.port,
+        host = %http_host,
+        port = http_port,
         pump_program = constants::PUMP_FUN_PROGRAM_ID,
         "Configuration loaded"
     );
@@ -477,10 +489,10 @@ async fn main() -> anyhow::Result<()> {
     // The trader takes an `Arc<dyn Signer>` (HSM/remote-signer-ready) and parsed
     // nonce pubkeys, with all tuning at the crate's `Default`s (see `TraderConfig`).
     let signer: Arc<dyn solana_sdk::signature::Signer + Send + Sync> = Arc::new(
-        parse_wallet_keypair(&settings.wallet_private_key)
+        parse_wallet_keypair(&secrets.wallet_private_key)
             .context("Failed to parse trader wallet private key")?,
     );
-    let nonce_accounts = settings
+    let nonce_accounts = secrets
         .nonce_accounts
         .iter()
         .map(|s| s.parse::<solana_sdk::pubkey::Pubkey>())
@@ -488,7 +500,7 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to parse NONCE_ACCOUNTS as pubkeys")?;
     let trader_config = Arc::new(TraderConfig::new(
         settings.helius_rpc_url.clone(),
-        settings.helius_sender_urls.clone(),
+        secrets.helius_sender_urls.clone(),
         signer,
         nonce_accounts,
     ));
@@ -767,7 +779,7 @@ async fn main() -> anyhow::Result<()> {
     let price_task = tokio::spawn(services::sol_price::run_poller(sol_price.clone()));
 
     let server_task = if settings.http_enabled {
-        let bind_addr = format!("{}:{}", settings.host, settings.port);
+        let bind_addr = format!("{http_host}:{http_port}");
         info!(addr = %bind_addr, workers = settings.http_workers, "Starting HTTP server");
         // Render each SSE event to wire bytes exactly once and fan the shared
         // frame out to all connections, instead of every subscriber re-rendering

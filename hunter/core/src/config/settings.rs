@@ -1,24 +1,31 @@
 use std::time::Duration;
 
-/// All configuration loaded from environment variables at startup.
-/// Validated once — panics early if required values are missing.
+/// Configuration shared by **both** bins (`hunter-live` + `hunter-lab`), loaded
+/// from the environment once at startup. One constructor, one shape — a field a
+/// bin doesn't use it simply leaves at its default (e.g. lab never sets the
+/// Helius endpoints, disabling the token-sync replay path).
+///
+/// **Live-only trading credentials do NOT live here.** The trader wallet key,
+/// nonce accounts, and Helius Sender endpoints are required to move real SOL, so
+/// only the live bin loads them — see `live::config::TradingSecrets`. Keeping
+/// them off this struct means lab can't accidentally require (or hold) trading
+/// secrets, and there's no second constructor to drift out of sync. Mirrors
+/// forge's `Settings` (DB-only) + `LauncherSettings` (live-only) split.
+///
+/// **HTTP host/port are read per-bin**, not here: live and lab bind different
+/// ports (`LIVE_PORT` :8081 / `LAB_PORT` :8082) so both can run at once. Each
+/// `main` resolves its own via [`resolve_host`] / [`resolve_port`].
 #[derive(Debug, Clone)]
 pub struct Settings {
-    // --- Helius ---
+    // --- Helius endpoints (shared, OPTIONAL) ---
+    // Used by the token-sync replay "Fetch New" fast path via `CoreState`. Empty
+    // ⇒ replay disabled (RPC path only) — that's the lab default. The live bin
+    // requires them and enforces it at boot with [`Settings::require_live_endpoints`].
     pub helius_api_key: String,
     pub helius_rpc_url: String,
-    /// One or more Helius Sender endpoints. The signed tx is fanned out to all of
-    /// them concurrently (same signature → on-chain dedup, tip paid once), so a
-    /// slow/down endpoint can't gate the send. A single entry behaves exactly
-    /// like the legacy single-endpoint path.
-    pub helius_sender_urls: Vec<String>,
     /// LaserStream (Yellowstone gRPC) ingest endpoint. Auth reuses
-    /// `helius_api_key` via x-token. Required — the live transport.
+    /// `helius_api_key` via x-token.
     pub helius_laserstream_url: String,
-
-    // --- Solana ---
-    pub wallet_private_key: String,
-    pub nonce_accounts: Vec<String>,
 
     // --- Database ---
     pub database_url: String,
@@ -41,8 +48,6 @@ pub struct Settings {
     pub db_acquire_timeout: Duration,
 
     // --- Server ---
-    pub host: String,
-    pub port: u16,
     pub http_enabled: bool,
     pub http_workers: usize,
     /// CORS allowed origin. `"*"` (default) keeps the permissive behaviour;
@@ -57,17 +62,18 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Load from environment. Call `dotenvy::dotenv()` before this.
+    /// Load the shared configuration from the environment. Call
+    /// `dotenvy::dotenv()` before this. Used by **both** bins.
+    ///
+    /// Required: `DATABASE_URL` and `API_AUTH_TOKEN`. The Helius endpoints default
+    /// to empty (lab runs with no keys / no gRPC); the live bin calls
+    /// [`Self::require_live_endpoints`] after loading to fail fast if they're
+    /// missing.
     pub fn from_env() -> anyhow::Result<Self> {
-        let api_key = required("HELIUS_API_KEY")?;
-
         let settings = Self {
-            helius_api_key: api_key,
-            helius_rpc_url: required("HELIUS_RPC_URL")?,
-            helius_sender_urls: sender_urls()?,
-            helius_laserstream_url: required("HELIUS_LASERSTREAM_URL")?,
-            wallet_private_key: required("WALLET_PRIVATE_KEY")?,
-            nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
+            helius_api_key: env_or("HELIUS_API_KEY", ""),
+            helius_rpc_url: env_or("HELIUS_RPC_URL", ""),
+            helius_laserstream_url: env_or("HELIUS_LASERSTREAM_URL", ""),
             database_url: required("DATABASE_URL")?,
             db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 64u32, 1)?,
             db_min_connections: env_parse("DB_MIN_CONNECTIONS", 4u32)?,
@@ -76,8 +82,6 @@ impl Settings {
             db_batch_max_connections: env_parse_min("DB_BATCH_MAX_CONNECTIONS", 16u32, 1)?,
             db_batch_min_connections: env_parse("DB_BATCH_MIN_CONNECTIONS", 2u32)?,
             db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
-            host: resolve_host("LIVE_HOST"),
-            port: resolve_port("LIVE_PORT", 8081)?,
             // Route through the erroring parse: a typo (e.g. `HTTP_ENABLED=ture`)
             // must fail loudly, not silently fall back to `true` and expose the API.
             http_enabled: env_parse("HTTP_ENABLED", true)?,
@@ -89,77 +93,50 @@ impl Settings {
         Ok(settings)
     }
 
-    /// Load configuration for the **local** (analysis box) bin. Unlike
-    /// [`Self::from_env`], the trading/ingest credentials (wallet key, nonce
-    /// accounts, sender + LaserStream endpoints) are NOT required — the local box
-    /// never trades or ingests, so demanding them would block a boot that has no
-    /// reason to hold them. Only `DATABASE_URL` (corpus) and `API_AUTH_TOKEN`
-    /// (mutating rule/sweep routes are fail-closed) are required; the Helius RPC
-    /// URL/key default to empty and are unused by local handlers.
-    pub fn from_env_local() -> anyhow::Result<Self> {
-        let settings = Self {
-            helius_api_key: env_or("HELIUS_API_KEY", ""),
-            helius_rpc_url: env_or("HELIUS_RPC_URL", ""),
-            helius_sender_urls: Vec::new(),
-            helius_laserstream_url: env_or("HELIUS_LASERSTREAM_URL", ""),
-            wallet_private_key: String::new(),
-            nonce_accounts: Vec::new(),
-            database_url: required("DATABASE_URL")?,
-            db_max_connections: env_parse_min("DB_MAX_CONNECTIONS", 64u32, 1)?,
-            db_min_connections: env_parse("DB_MIN_CONNECTIONS", 4u32)?,
-            db_api_max_connections: env_parse_min("DB_API_MAX_CONNECTIONS", 32u32, 1)?,
-            db_api_min_connections: env_parse("DB_API_MIN_CONNECTIONS", 2u32)?,
-            db_batch_max_connections: env_parse_min("DB_BATCH_MAX_CONNECTIONS", 16u32, 1)?,
-            db_batch_min_connections: env_parse("DB_BATCH_MIN_CONNECTIONS", 2u32)?,
-            db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
-            host: resolve_host("LAB_HOST"),
-            port: resolve_port("LAB_PORT", 8082)?,
-            http_enabled: env_parse("HTTP_ENABLED", true)?,
-            http_workers: env_parse_min("HTTP_WORKERS", 2usize, 1)?,
-            cors_allowed_origin: env_or("CORS_ALLOWED_ORIGIN", "*"),
-            api_auth_token: Some(required_non_empty("API_AUTH_TOKEN")?),
-        };
-
-        Ok(settings)
-    }
-}
-
-/// Helius Sender endpoints, newest-form first. Prefer the plural
-/// `HELIUS_FAST_SENDER_URLS` (comma-separated, fanned out concurrently); fall
-/// back to the legacy singular `HELIUS_FAST_SENDER_URL` so existing single-
-/// endpoint deployments keep working unchanged. At least one is required.
-fn sender_urls() -> anyhow::Result<Vec<String>> {
-    if let Ok(list) = std::env::var("HELIUS_FAST_SENDER_URLS") {
-        let items: Vec<String> = list
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !items.is_empty() {
-            return Ok(items);
+    /// Assert the Helius endpoints the **live** bin can't run without are present.
+    /// Lab leaves them empty (replay disabled, no gRPC); live calls this right
+    /// after [`Self::from_env`] so a missing endpoint fails at boot instead of at
+    /// first RPC/gRPC use.
+    pub fn require_live_endpoints(&self) -> anyhow::Result<()> {
+        for (key, val) in [
+            ("HELIUS_API_KEY", &self.helius_api_key),
+            ("HELIUS_RPC_URL", &self.helius_rpc_url),
+            ("HELIUS_LASERSTREAM_URL", &self.helius_laserstream_url),
+        ] {
+            if val.trim().is_empty() {
+                anyhow::bail!("Missing required env var for the live bin: {key}");
+            }
         }
+        Ok(())
     }
-    Ok(vec![required("HELIUS_FAST_SENDER_URL")?])
-}
-
-fn parse_required_list(key: &str) -> anyhow::Result<Vec<String>> {
-    let value = required(key)?;
-    let items = value
-        .split(',')
-        .map(|item| item.trim().to_string())
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>();
-
-    if items.is_empty() {
-        anyhow::bail!("{key} must contain at least one value");
-    }
-
-    Ok(items)
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve the HTTP bind host. Docker injects `HOST=0.0.0.0` (so the container is
+/// reachable via its published port) and that wins; local dev falls back to the
+/// bin-specific key (`LIVE_HOST` / `LAB_HOST`) so the two bins can bind
+/// independently, then to loopback. Each `main` calls this. Mirrors forge.
+pub fn resolve_host(specific_key: &str) -> String {
+    std::env::var("HOST")
+        .or_else(|_| std::env::var(specific_key))
+        .unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+/// Resolve the HTTP bind port. Docker injects `PORT` (the compose `*_API_PORT`)
+/// and that wins; local dev falls back to the bin-specific key (`LIVE_PORT` /
+/// `LAB_PORT`) so live and lab default to *different* ports (8081 / 8082) and
+/// neither needs an inline `PORT=…` override to avoid colliding. Mirrors forge.
+pub fn resolve_port(specific_key: &str, default: u16) -> anyhow::Result<u16> {
+    if let Ok(raw) = std::env::var("PORT") {
+        return raw
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid value for PORT={raw:?}: {e}"));
+    }
+    env_parse(specific_key, default)
+}
 
 fn required(key: &str) -> anyhow::Result<String> {
     std::env::var(key).map_err(|_| anyhow::anyhow!("Missing required env var: {key}"))
@@ -179,29 +156,6 @@ fn required_non_empty(key: &str) -> anyhow::Result<String> {
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
-/// Resolve the HTTP bind host. Docker injects `HOST=0.0.0.0` (0.0.0.0 so the
-/// container is reachable via its published port) and that wins; local dev falls
-/// back to the bin-specific key (`LIVE_HOST` / `LAB_HOST`) so the two bins can
-/// bind independently, then to loopback. Mirrors forge's live/lab bins.
-fn resolve_host(specific_key: &str) -> String {
-    std::env::var("HOST")
-        .or_else(|_| std::env::var(specific_key))
-        .unwrap_or_else(|_| "127.0.0.1".to_string())
-}
-
-/// Resolve the HTTP bind port. Docker injects `PORT` (the compose `*_API_PORT`)
-/// and that wins; local dev falls back to the bin-specific key (`LIVE_PORT` /
-/// `LAB_PORT`) so live and lab default to *different* ports (8081 / 8082) and
-/// neither needs an inline `PORT=…` override to avoid colliding. Mirrors forge.
-fn resolve_port(specific_key: &str, default: u16) -> anyhow::Result<u16> {
-    if let Ok(raw) = std::env::var("PORT") {
-        return raw
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid value for PORT={raw:?}: {e}"));
-    }
-    env_parse(specific_key, default)
 }
 
 fn env_parse<T>(key: &str, default: T) -> anyhow::Result<T>
@@ -231,4 +185,3 @@ where
     }
     Ok(val)
 }
-

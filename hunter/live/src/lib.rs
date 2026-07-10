@@ -5,6 +5,7 @@
 //! existing `crate::strategies::…` / `crate::trader::…` paths keep resolving.
 
 pub mod api;
+pub mod config;
 pub mod ingest;
 pub mod seed;
 pub mod services;

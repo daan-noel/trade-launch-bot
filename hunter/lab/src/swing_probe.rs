@@ -89,7 +89,7 @@ fn probe_rule() -> Swing1Rule {
 /// latch (with `min_kills_before_volume = 1` — the real thesis). Prints a table so
 /// you can see whether the defining feature is common enough to ever trade.
 pub async fn census(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> anyhow::Result<()> {
-    let _settings = config::Settings::from_env_local().context("config load")?;
+    let _settings = config::Settings::from_env().context("config load")?;
     let root = crate::lake::lake_root();
     println!("swing-census: lake = {}", root.display());
 
@@ -169,7 +169,7 @@ pub async fn census(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> an
 /// the first `N` tokens (default 8) of the lake selection.
 pub async fn run(n_tokens: usize, created_after: Option<DateTime<Utc>>) -> anyhow::Result<()> {
     // Validate config (lake root via env) — no DB pool needed, the lake is files.
-    let _settings = config::Settings::from_env_local().context("config load")?;
+    let _settings = config::Settings::from_env().context("config load")?;
     let root = crate::lake::lake_root();
     println!("swing-probe: lake = {}", root.display());
 

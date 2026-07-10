@@ -3,7 +3,9 @@
 //! pools (the corpus), serves the core read routes + the local routes (rule
 //! authoring, backtests, grouped sweeps, swing detection), and runs the SOL-price
 //! poller + token-list refresh. It boots with **no** trading keys and **no**
-//! HELIUS gRPC — see `Settings::from_env_local`.
+//! HELIUS gRPC: it loads the shared `Settings::from_env` (same as live) and
+//! simply leaves the optional Helius endpoints empty and never loads
+//! `live::config::TradingSecrets`.
 
 use lab::{api, state, storage, sweep};
 
@@ -75,8 +77,12 @@ async fn main() -> anyhow::Result<()> {
         return lab::swing_probe::census(n, after).await;
     }
 
-    let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
-    info!(host = %settings.host, port = settings.port, "Local (analysis) configuration loaded");
+    let settings = config::Settings::from_env().context("Failed to load configuration")?;
+    // HTTP bind — lab reads its own LAB_HOST/LAB_PORT (docker's HOST/PORT wins),
+    // defaulting to :8082 so it never collides with the live bin's :8081.
+    let http_host = config::resolve_host("LAB_HOST");
+    let http_port = config::resolve_port("LAB_PORT", 8082)?;
+    info!(host = %http_host, port = http_port, "Local (analysis) configuration loaded");
 
     // Database — the three workload-isolated pools + migrations. `api_db` backs the
     // fast handlers, `batch_db` the heavy sweep/backtest jobs; `db` (hot) backs the
@@ -163,7 +169,7 @@ async fn main() -> anyhow::Result<()> {
     let price_task = tokio::spawn(services::sol_price::run_poller(sol_price.clone()));
 
     let server_task = if settings.http_enabled {
-        let bind_addr = format!("{}:{}", settings.host, settings.port);
+        let bind_addr = format!("{http_host}:{http_port}");
         info!(addr = %bind_addr, workers = settings.http_workers, "Starting HTTP server");
         // Render each SSE event to wire bytes once and fan the shared frame out to
         // all connections instead of re-rendering per subscriber.
@@ -247,7 +253,7 @@ async fn main() -> anyhow::Result<()> {
 /// Reads `DATABASE_URL` (via `Settings`) for local PG and `SWEEP_LAKE_DIR` for the
 /// lake root. A batch job — no HTTP, no pollers.
 async fn run_lake_export(include_today: bool) -> anyhow::Result<()> {
-    let settings = config::Settings::from_env_local().context("Failed to load configuration")?;
+    let settings = config::Settings::from_env().context("Failed to load configuration")?;
     let storage::postgres::DbPools { batch: batch_db, .. } =
         storage::postgres::connect(&settings).await?;
 
