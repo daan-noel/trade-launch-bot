@@ -396,18 +396,27 @@ façade; pump decoders + protocol consts + `PumpFunVenue`, deps `ingest-core`) �
       tests (curve/AMM/truncated-log) + live smoke test deferred to Phase I / EC2-gated (decoder code
       is a byte-unchanged move, so behavior is preserved).
 
-### Phase I — Confirm per-product `live/src/ingest/` bridges read core+pumpfun — NOT STARTED
-- [ ] Confirm `forge/live/src/ingest/` + `hunter/live/src/ingest/` read through the façade unchanged;
-      carry forward + regression-test the log-truncation dropped-legs fix (+ close the AMM-path case).
-- **Gate I:** `cargo tree -p *-live` show `ingest-core`+`ingest-pumpfun`, no `ingest-host` crate;
-      `*-lab` link neither; truncation regression tests pass.
+### Phase I — Confirm per-product `live/src/ingest/` bridges read core+pumpfun — ✅ DONE (2026-07-09)
+- [x] Confirmed `forge/live/src/ingest/` + `hunter/live/src/ingest/` read through the façade unchanged
+      (both `*-live` build green, zero `.rs` edits; no `ingest-host` crate in either tree). Carried
+      forward the log-truncation dropped-legs fix and **guarded** it: extracted the recovery gate to the
+      pure SSOT `should_consult_inner_events()` + a regression test pinning partial-truncation recovery.
+- [x] **AMM-path truncation CLOSED** — added `decode_pump_swap_trades_from_inner` (AMM twin of the curve
+      inner decoder), generalized `find_pump_pb_ixs`→`find_program_pb_ixs`, and wired `decode_amm_live_pb`
+      through the same gate; a truncated multi-swap AMM bundle no longer under-counts legs.
+- **Gate I:** ✅ `cargo tree -p *-live` show `ingest-core`+`ingest-pumpfun`, no `ingest-host`; `*-lab`
+      link neither; truncation regression test passes (warning-free). ⚠ live-feed fixture replay = EC2-gated.
 
-### Phase J — WebSocket transport stub — NOT STARTED
-- [ ] Keep `shared/ingest/websocket` a stub sibling to `core`; flesh out only if moving off gRPC.
-- **Gate J:** stub compiles as a workspace member; no consumer forced to link it.
+### Phase J — WebSocket transport stub — ✅ DONE (2026-07-09)
+- [x] Kept `shared/ingest/websocket` a stub sibling to `core` (real dep = `hunter-core`, not ingest);
+      refreshed its description to point at the `IngestVenue`/`IngestEvent` seam. Not fleshed out.
+- **Gate J:** ✅ `cargo check -p ingest-websocket` green as a workspace member; no consumer links it
+      (only a doc-comment mention in `hunter/core/src/ingest.rs`).
 
-**Part 3 exit gate:** full-workspace `cargo build` green; `scripts/dep-partition-check.{sh,ps1}`
-passes; both `*-live` bins ingest live feed with no behavior regression vs. pre-split.
+**Part 3 exit gate:** ✅ (zero-SOL portion) full-workspace `cargo build` green; `dep-partition-check`
+holds (both `*-lab` link neither ingest crate); curve **and** AMM log-truncation recovery closed +
+guarded. ⚠ only the live-feed no-regression smoke on both `*-live` bins remains (EC2-gated; the decoder
+is a byte-unchanged move + additive AMM recovery, so behavior is preserved/improved).
 
 ---
 

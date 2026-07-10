@@ -2,7 +2,7 @@
 name = "ingest-websocket"
 version = "0.1.0"
 edition = "2021"
-description = "WebSocket ingest transport for the meme-trading backend — empty scaffold mirroring ingest-laserstream's spawn contract (not yet implemented)."
+description = "WebSocket ingest transport — empty scaffold sibling to ingest-core. Flesh out only if moving off gRPC; when built it consumes the same ingest-core IngestVenue/IngestEvent seam so a venue stays transport-agnostic. Not yet implemented."
 
 [lib]
 name = "ingest_websocket"

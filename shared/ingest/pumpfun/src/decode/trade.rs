@@ -9,6 +9,9 @@ use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
+#[cfg(test)]
+use borsh::BorshSerialize;
+
 use crate::event::{Reserves, Side, Trade, Venue};
 use crate::protocol::Protocol;
 
@@ -88,6 +91,7 @@ pub(super) fn decode_trade_events_from_logs(
 // ── PumpSwap BuyEvent / SellEvent from "Program data:" ───────────────────────
 
 #[derive(BorshDeserialize)]
+#[cfg_attr(test, derive(BorshSerialize))]
 struct RawPumpSwapBuyEvent {
     #[allow(dead_code)]
     timestamp: i64,
@@ -117,6 +121,7 @@ struct RawPumpSwapBuyEvent {
 }
 
 #[derive(BorshDeserialize)]
+#[cfg_attr(test, derive(BorshSerialize))]
 struct RawPumpSwapSellEvent {
     #[allow(dead_code)]
     timestamp: i64,
@@ -157,14 +162,51 @@ pub(super) struct DecodedAmmTrade {
     pub(super) pool_quote_reserves: f64,
 }
 
+/// Turn a decoded PumpSwap `BuyEvent` into the neutral [`DecodedAmmTrade`]. SSOT for
+/// the buy reserve math — shared by the log-line path and the inner-instruction
+/// recovery so the two can't drift.
+fn amm_buy_trade(e: RawPumpSwapBuyEvent, lps: f64) -> DecodedAmmTrade {
+    let post_base = e.pool_base_token_reserves.saturating_sub(e.base_amount_out);
+    let post_quote = e
+        .pool_quote_token_reserves
+        .saturating_add(e.quote_amount_in_with_lp_fee);
+    DecodedAmmTrade {
+        is_buy: true,
+        base_amount: e.base_amount_out,
+        quote_amount: e.user_quote_amount_in as f64 / lps,
+        pool: bs58::encode(e.pool).into_string(),
+        user: bs58::encode(e.user).into_string(),
+        pool_base_reserves: post_base,
+        pool_quote_reserves: post_quote as f64 / lps,
+    }
+}
+
+/// Turn a decoded PumpSwap `SellEvent` into the neutral [`DecodedAmmTrade`]. SSOT for
+/// the sell reserve math — shared by the log-line and inner-instruction paths.
+fn amm_sell_trade(e: RawPumpSwapSellEvent, lps: f64) -> DecodedAmmTrade {
+    let post_base = e.pool_base_token_reserves.saturating_add(e.base_amount_in);
+    let post_quote = e
+        .pool_quote_token_reserves
+        .saturating_sub(e.quote_amount_out_without_lp_fee);
+    DecodedAmmTrade {
+        is_buy: false,
+        base_amount: e.base_amount_in,
+        quote_amount: e.user_quote_amount_out as f64 / lps,
+        pool: bs58::encode(e.pool).into_string(),
+        user: bs58::encode(e.user).into_string(),
+        pool_base_reserves: post_base,
+        pool_quote_reserves: post_quote as f64 / lps,
+    }
+}
+
 pub(super) fn decode_pump_swap_trades_from_logs(
     logs: &[&str],
     protocol: &Protocol,
 ) -> Vec<DecodedAmmTrade> {
     let mut out = Vec::new();
-    let lps = protocol.lamports_per_sol;
     let buy_disc = &protocol.discriminators.pump_swap_buy_event;
     let sell_disc = &protocol.discriminators.pump_swap_sell_event;
+    let lps = protocol.lamports_per_sol;
 
     for log in logs {
         let Some(encoded) = log.strip_prefix("Program data: ") else {
@@ -182,39 +224,53 @@ pub(super) fn decode_pump_swap_trades_from_logs(
 
         if disc == buy_disc {
             match RawPumpSwapBuyEvent::deserialize(&mut buf) {
-                Ok(e) => {
-                    let post_base = e.pool_base_token_reserves.saturating_sub(e.base_amount_out);
-                    let post_quote = e.pool_quote_token_reserves
-                        .saturating_add(e.quote_amount_in_with_lp_fee);
-                    out.push(DecodedAmmTrade {
-                        is_buy: true,
-                        base_amount: e.base_amount_out,
-                        quote_amount: e.user_quote_amount_in as f64 / lps,
-                        pool: bs58::encode(e.pool).into_string(),
-                        user: bs58::encode(e.user).into_string(),
-                        pool_base_reserves: post_base,
-                        pool_quote_reserves: post_quote as f64 / lps,
-                    });
-                }
+                Ok(e) => out.push(amm_buy_trade(e, lps)),
                 Err(e) => warn!("Failed to Borsh-decode PumpSwap BuyEvent: {e}"),
             }
         } else if disc == sell_disc {
             match RawPumpSwapSellEvent::deserialize(&mut buf) {
-                Ok(e) => {
-                    let post_base = e.pool_base_token_reserves.saturating_add(e.base_amount_in);
-                    let post_quote = e.pool_quote_token_reserves
-                        .saturating_sub(e.quote_amount_out_without_lp_fee);
-                    out.push(DecodedAmmTrade {
-                        is_buy: false,
-                        base_amount: e.base_amount_in,
-                        quote_amount: e.user_quote_amount_out as f64 / lps,
-                        pool: bs58::encode(e.pool).into_string(),
-                        user: bs58::encode(e.user).into_string(),
-                        pool_base_reserves: post_base,
-                        pool_quote_reserves: post_quote as f64 / lps,
-                    });
-                }
+                Ok(e) => out.push(amm_sell_trade(e, lps)),
                 Err(e) => warn!("Failed to Borsh-decode PumpSwap SellEvent: {e}"),
+            }
+        }
+    }
+    out
+}
+
+/// Recover PumpSwap (AMM) swaps from the pump_swap program's **inner instructions**
+/// — the anchor self-CPI events (`anchor_event_cpi` disc + `BuyEvent`/`SellEvent`
+/// disc + Borsh payload). This is the AMM twin of the curve path's
+/// `decode_trade_events_from_inner_pb`: inner instructions are NOT subject to the
+/// validator's per-tx log byte limit, so a multi-swap AMM bundle whose trailing
+/// `"Program data:"` lines were truncated is recovered here in full. `ix_datas` is
+/// the raw instruction data of every pump_swap inner ix (venue-neutral byte slices,
+/// so this stays independent of the protobuf `PbIx` type in `grpc.rs`).
+pub(super) fn decode_pump_swap_trades_from_inner(
+    ix_datas: &[&[u8]],
+    protocol: &Protocol,
+) -> Vec<DecodedAmmTrade> {
+    let anchor = &protocol.discriminators.anchor_event_cpi;
+    let buy_disc = &protocol.discriminators.pump_swap_buy_event;
+    let sell_disc = &protocol.discriminators.pump_swap_sell_event;
+    let lps = protocol.lamports_per_sol;
+    let mut out = Vec::new();
+
+    for data in ix_datas {
+        // Anchor event CPI: [event_cpi disc (8)] [event disc (8)] [borsh payload].
+        if data.len() < 16 || &data[..8] != anchor {
+            continue;
+        }
+        let disc = &data[8..16];
+        let mut buf: &[u8] = &data[16..];
+        if disc == buy_disc {
+            match RawPumpSwapBuyEvent::deserialize(&mut buf) {
+                Ok(e) => out.push(amm_buy_trade(e, lps)),
+                Err(e) => warn!("Failed to Borsh-decode inner PumpSwap BuyEvent: {e}"),
+            }
+        } else if disc == sell_disc {
+            match RawPumpSwapSellEvent::deserialize(&mut buf) {
+                Ok(e) => out.push(amm_sell_trade(e, lps)),
+                Err(e) => warn!("Failed to Borsh-decode inner PumpSwap SellEvent: {e}"),
             }
         }
     }
@@ -282,4 +338,129 @@ pub(super) fn compute_sol_change(
             (pre_bal as f64 - post_bal as f64).abs() / 1_000_000_000.0
         })
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buy_event(base_out: u64, quote_in: u64, pool: u8, user: u8) -> RawPumpSwapBuyEvent {
+        RawPumpSwapBuyEvent {
+            timestamp: 0,
+            base_amount_out: base_out,
+            max_quote_amount_in: quote_in,
+            user_base_token_reserves: 0,
+            user_quote_token_reserves: 0,
+            pool_base_token_reserves: 1_000_000,
+            pool_quote_token_reserves: 2_000_000_000,
+            quote_amount_in: quote_in,
+            lp_fee_basis_points: 0,
+            lp_fee: 0,
+            protocol_fee_basis_points: 0,
+            protocol_fee: 0,
+            quote_amount_in_with_lp_fee: quote_in,
+            user_quote_amount_in: quote_in,
+            pool: [pool; 32],
+            user: [user; 32],
+        }
+    }
+
+    fn sell_event(base_in: u64, quote_out: u64, pool: u8, user: u8) -> RawPumpSwapSellEvent {
+        RawPumpSwapSellEvent {
+            timestamp: 0,
+            base_amount_in: base_in,
+            min_quote_amount_out: quote_out,
+            user_base_token_reserves: 0,
+            user_quote_token_reserves: 0,
+            pool_base_token_reserves: 1_000_000,
+            pool_quote_token_reserves: 2_000_000_000,
+            quote_amount_out: quote_out,
+            lp_fee_basis_points: 0,
+            lp_fee: 0,
+            protocol_fee_basis_points: 0,
+            protocol_fee: 0,
+            quote_amount_out_without_lp_fee: quote_out,
+            user_quote_amount_out: quote_out,
+            pool: [pool; 32],
+            user: [user; 32],
+        }
+    }
+
+    /// Encode a PumpSwap event as an anchor self-CPI inner-instruction data blob:
+    /// `[event_cpi disc (8)] [event disc (8)] [borsh payload]`.
+    fn inner_ix(event_cpi: &[u8; 8], event_disc: &[u8; 8], payload: &[u8]) -> Vec<u8> {
+        let mut d = Vec::with_capacity(16 + payload.len());
+        d.extend_from_slice(event_cpi);
+        d.extend_from_slice(event_disc);
+        d.extend_from_slice(payload);
+        d
+    }
+
+    /// The AMM twin of the curve log-truncation fix: a multi-swap bundle whose
+    /// trailing swaps were dropped from the logs is recovered in full from the
+    /// pump_swap inner instructions — buys and sells, with base/quote/pool/user
+    /// preserved and matching the log-path reserve math.
+    #[test]
+    fn inner_amm_recovery_decodes_buys_and_sells() {
+        let p = Protocol::pump_fun();
+        let cpi = &p.discriminators.anchor_event_cpi;
+
+        let buy = inner_ix(
+            cpi,
+            &p.discriminators.pump_swap_buy_event,
+            &borsh::to_vec(&buy_event(1_000, 500_000_000, 7, 9)).unwrap(),
+        );
+        let sell = inner_ix(
+            cpi,
+            &p.discriminators.pump_swap_sell_event,
+            &borsh::to_vec(&sell_event(2_000, 250_000_000, 7, 11)).unwrap(),
+        );
+        // A non-pump_swap inner ix (wrong CPI disc) must be ignored.
+        let noise = inner_ix(&[0xAA; 8], &p.discriminators.pump_swap_buy_event, &[0u8; 8]);
+
+        let datas: Vec<&[u8]> = vec![buy.as_slice(), sell.as_slice(), noise.as_slice()];
+        let trades = decode_pump_swap_trades_from_inner(&datas, &p);
+
+        assert_eq!(trades.len(), 2, "one trade per real swap event, noise ignored");
+        assert!(trades[0].is_buy);
+        assert_eq!(trades[0].base_amount, 1_000);
+        assert!((trades[0].quote_amount - 0.5).abs() < 1e-9);
+        assert!(!trades[1].is_buy);
+        assert_eq!(trades[1].base_amount, 2_000);
+        assert!((trades[1].quote_amount - 0.25).abs() < 1e-9);
+        // Buy/sell come from the same pool → identical decoded pool id.
+        assert_eq!(trades[0].pool, trades[1].pool);
+    }
+
+    /// The inner recovery yields the SAME `DecodedAmmTrade` a complete log scan
+    /// would — so swapping to the recovered set on truncation never changes values.
+    #[test]
+    fn inner_and_log_paths_agree() {
+        let p = Protocol::pump_fun();
+        let raw = buy_event(4_242, 777_000_000, 3, 4);
+        let payload = borsh::to_vec(&raw).unwrap();
+
+        // Log path: base64 "Program data:" line.
+        let mut logline = Vec::new();
+        logline.extend_from_slice(&p.discriminators.pump_swap_buy_event);
+        logline.extend_from_slice(&payload);
+        let encoded = format!("Program data: {}", STANDARD.encode(&logline));
+        let from_logs = decode_pump_swap_trades_from_logs(&[encoded.as_str()], &p);
+
+        // Inner path: anchor CPI inner ix.
+        let ix = inner_ix(
+            &p.discriminators.anchor_event_cpi,
+            &p.discriminators.pump_swap_buy_event,
+            &payload,
+        );
+        let from_inner = decode_pump_swap_trades_from_inner(&[ix.as_slice()], &p);
+
+        assert_eq!(from_logs.len(), 1);
+        assert_eq!(from_inner.len(), 1);
+        assert_eq!(from_logs[0].base_amount, from_inner[0].base_amount);
+        assert_eq!(from_logs[0].pool, from_inner[0].pool);
+        assert_eq!(from_logs[0].user, from_inner[0].user);
+        assert_eq!(from_logs[0].pool_base_reserves, from_inner[0].pool_base_reserves);
+        assert!((from_logs[0].quote_amount - from_inner[0].quote_amount).abs() < 1e-9);
+    }
 }

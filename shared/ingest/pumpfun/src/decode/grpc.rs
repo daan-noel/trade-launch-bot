@@ -16,8 +16,9 @@ use super::instructions::{
     InstructionKind,
 };
 use super::trade::{
-    build_amm_trade, compute_sol_change, decode_pump_swap_trades_from_logs,
-    decode_trade_events_from_logs, DecodedAmmTrade, DecodedTradeEvent, RawTradeEvent,
+    build_amm_trade, compute_sol_change, decode_pump_swap_trades_from_inner,
+    decode_pump_swap_trades_from_logs, decode_trade_events_from_logs, DecodedAmmTrade,
+    DecodedTradeEvent, RawTradeEvent,
 };
 use super::{DecodeOutput, Decoder, TxRelevance};
 
@@ -146,8 +147,8 @@ impl Decoder {
         // truncation — 3 of 4 events is non-empty, so the recovery never ran.)
         let mut decoded_events = decode_trade_events_from_logs(&logs, &p.discriminators.trade_event, p.lamports_per_sol);
         let logs_truncated = logs.iter().any(|l| l.contains("Log truncated"));
-        if decoded_events.is_empty() || logs_truncated {
-            let pump_ixs = find_pump_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
+        if should_consult_inner_events(decoded_events.len(), logs_truncated) {
+            let pump_ixs = find_program_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
             let inner_events = decode_trade_events_from_inner_pb(&pump_ixs, p);
             if inner_events.len() > decoded_events.len() {
                 decoded_events = inner_events;
@@ -201,7 +202,7 @@ impl Decoder {
 
         // 3b: balance-delta fallback (no TradeEvent log, but has Buy/Sell instruction).
         if decoded_events.is_empty() {
-            let pump_ixs = find_pump_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
+            let pump_ixs = find_program_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
             let all_keys = keys.all();
             for kind in &kinds {
                 if !matches!(kind, InstructionKind::Buy | InstructionKind::Sell) {
@@ -225,7 +226,7 @@ impl Decoder {
 
         // 3c: Create.
         if has_create {
-            let pump_ixs = find_pump_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
+            let pump_ixs = find_program_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
             if let Some(create_ix) = pump_ixs.iter().find(|ix| is_create_pb(ix, p)) {
                 let ix_accounts = resolve_pump_accounts_pb(create_ix, &keys);
                 let all_keys = keys.all();
@@ -242,7 +243,7 @@ impl Decoder {
 
         // 3d: Migrate.
         if kinds.iter().any(|k| matches!(k, InstructionKind::Migrate)) {
-            let pump_ixs = find_pump_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
+            let pump_ixs = find_program_pb_ixs(message, meta, &keys, &p.programs.pump_fun.bytes);
             if let Some(migrate_ix) = pump_ixs.iter().find(|ix| is_migrate_pb(ix, p)) {
                 let ix_accounts = resolve_pump_accounts_pb(migrate_ix, &keys);
                 if let Some(ev) = self.emit_migrate(&signature, slot, received_at, &ix_accounts) {
@@ -281,14 +282,29 @@ impl Decoder {
             None => return DecodeOutput::Ignored,
         };
 
+        let keys = LazyKeys::new(message, meta);
         let logs: Vec<&str> = meta.log_messages.iter().map(String::as_str).collect();
-        // NOTE: same log-truncation exposure as the curve path (see decode_curve_pb
-        // Step 1a) — a multi-swap AMM bundle whose logs exceed the validator byte limit
-        // loses its trailing PumpSwap Buy/Sell "Program data:" lines. Recovering them
-        // needs an inner-instruction PumpSwap-event decoder (the events are also emitted
-        // as anchor self-CPIs); not yet implemented, so a truncated AMM bundle can still
-        // under-count legs. Curve launch bundles (the observed case) are fixed above.
-        let resolved: Vec<(DecodedAmmTrade, String)> = decode_pump_swap_trades_from_logs(&logs, p)
+
+        // Step 1a: PumpSwap Buy/Sell events from the "Program data:" log lines — the
+        // cheap primary source. But the validator truncates a tx's logs past a byte
+        // limit, so a multi-swap AMM bundle can lose its trailing swap log lines (the
+        // exact curve-path regression, see `decode_curve_pb`). The anchor self-CPI
+        // event *inner instructions* on the pump_swap program carry the COMPLETE set
+        // (inner ixs are NOT subject to the log limit), so consult them when the log
+        // scan is empty OR the logs were truncated, taking whichever yields more.
+        let mut amm_trades = decode_pump_swap_trades_from_logs(&logs, p);
+        let logs_truncated = logs.iter().any(|l| l.contains("Log truncated"));
+        if should_consult_inner_events(amm_trades.len(), logs_truncated) {
+            let swap_ixs =
+                find_program_pb_ixs(message, meta, &keys, &p.programs.pump_swap.bytes);
+            let datas: Vec<&[u8]> = swap_ixs.iter().map(|ix| ix.data).collect();
+            let inner = decode_pump_swap_trades_from_inner(&datas, p);
+            if inner.len() > amm_trades.len() {
+                amm_trades = inner;
+            }
+        }
+
+        let resolved: Vec<(DecodedAmmTrade, String)> = amm_trades
             .into_iter()
             .filter(|ev| ev.quote_amount >= p.min_trade_sol)
             .filter_map(|ev| index.get(&ev.pool).map(|m| (ev, m.value().clone())))
@@ -299,7 +315,6 @@ impl Decoder {
         }
 
         let signature = bs58::encode(&info.signature).into_string();
-        let keys = LazyKeys::new(message, meta);
         let (labels, _, _) = build_labels_pb(message, meta, &keys, p);
 
         let mut events = Vec::with_capacity(resolved.len());
@@ -455,7 +470,7 @@ fn decode_trade_events_from_inner_pb(pump_ixs: &[PbIx], p: &Protocol) -> Vec<Dec
 
 // ── Protobuf helpers ──────────────────────────────────────────────────────────
 
-fn find_pump_pb_ixs<'a>(
+fn find_program_pb_ixs<'a>(
     message: &'a scb::Message,
     meta: &'a scb::TransactionStatusMeta,
     keys: &LazyKeys,
@@ -549,4 +564,40 @@ fn is_create_pb(ix: &PbIx, p: &Protocol) -> bool {
 fn is_migrate_pb(ix: &PbIx, p: &Protocol) -> bool {
     let d = &p.discriminators;
     ix.data.len() >= 8 && (&ix.data[..8] == d.migrate_ix || &ix.data[..8] == d.migrate_v2_ix)
+}
+
+/// Gate for the log-truncation event recovery — shared by BOTH the curve
+/// (`TradeEvent`) and AMM (`PumpSwap Buy/Sell`) paths.
+///
+/// Returns `true` when the cheap log-scanned event set may be incomplete and the
+/// complete-but-costlier inner-CPI events should be consulted. Recovery is needed
+/// both when the log scan is **empty** (fully truncated / no `Program data:` lines)
+/// AND when the logs were **partially truncated** — the latter is the regression
+/// this guards: a 4-swap bundle that logs only 3 events + a `"Log truncated"` marker
+/// is non-empty, so a plain `is_empty()` check skipped the recovery and permanently
+/// dropped the 4th leg. Keeping the gate cheap (a length + a bool) means the hot
+/// path only decodes the inner instructions when it must.
+fn should_consult_inner_events(log_event_count: usize, logs_truncated: bool) -> bool {
+    log_event_count == 0 || logs_truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_consult_inner_events;
+
+    /// Regression guard for the log-truncation dropped-legs fix: inner-CPI
+    /// recovery must fire on PARTIAL truncation, not only on empty logs.
+    #[test]
+    fn inner_recovery_fires_on_partial_and_full_truncation() {
+        // Fully truncated / no TradeEvent log lines → consult inner.
+        assert!(should_consult_inner_events(0, false));
+        assert!(should_consult_inner_events(0, true));
+        // Partial truncation (3-of-4 bundle: non-empty yet incomplete) → consult
+        // inner. This is the exact case a plain `is_empty()` check missed.
+        assert!(should_consult_inner_events(3, true));
+        // Complete, untruncated logs → trust the log scan, skip the inner decode
+        // (hot-path fast path — most txs land here).
+        assert!(!should_consult_inner_events(3, false));
+        assert!(!should_consult_inner_events(1, false));
+    }
 }
