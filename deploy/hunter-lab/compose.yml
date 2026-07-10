@@ -1,23 +1,39 @@
 # ---------------------------------------------------------------------------
-# hunter-lab — production stack for the ANALYSIS tier: postgres (TimescaleDB) +
-# analysis bin (`lab`, api.Dockerfile) + lab UI (nginx + TLS/Basic-auth,
-# ui.Dockerfile). Deploys to its OWN server — NOT the live EC2 box: the lab bin
-# pulls arrow/parquet/rayon + a bundled libduckdb (heavy C++ build) and needs
-# more resources than the 2vCPU/4GB live host.
+# hunter-lab — STANDALONE analysis stack: postgres (TimescaleDB) + analysis bin
+# (`lab`, api.Dockerfile) + lab UI (nginx + TLS/Basic-auth, ui.Dockerfile). Run
+# the lab tier on its own, WITHOUT the live trading tier. For live + lab running
+# CONCURRENTLY on one host (one shared postgres process), use the merged
+# deploy/hunter/compose.yml instead.
+#
+# SHARED DB (same as the root/merged stack): postgres here uses container_name
+# `hunter-postgres` and the FIXED named volume `hunter-pgdata` — the SAME
+# container name + data volume as deploy/hunter/compose.yml AND the sibling
+# deploy/hunter-live/compose.yml. So whichever of {merged, live-only, lab-only}
+# you bring up, they all read/write ONE `meme_bot` database on ONE volume.
+#
+# ⚠ RUN ONE STACK AT A TIME. Because all three share the `hunter-postgres`
+# container name + `hunter-pgdata` volume, only one may be `up` at once — a
+# second `up` fails on the name/volume conflict (a safe failure, no corruption).
+# `docker compose -f <file> down` the current stack before bringing up another.
+#
+# PORTS come from hunter/.env (the "PORTS" block, scheme 8·F·C·P). Defaults below
+# MIRROR that block; pass --env-file to override:
+#   postgres  ${DB_PORT:-5555}:5432        published
+#   lab-api   ${LAB_API_PORT:-8140}        published (direct access + `run --rm` batch)
+#   lab-ui    ${LAB_UI_HTTP_PORT:-8120}:80 ${LAB_UI_HTTPS_PORT:-8121}:443  published
 #
 # Each image carries BOTH `image:` (ECR ref, pulled on the lab server) and
-# `build:` (context = repo root, builds on the workstation), exactly like the
-# live stack. The live stack (deploy/hunter-live/) builds the SEPARATE api /
-# `index.html` images; lab and live never share a backend binary or a bundle.
+# `build:` (context = repo root, builds on the workstation).
 #
-# Up / update:   docker compose -f deploy/hunter-lab/compose.yml up -d --build
+# Up / update:  docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml up -d --build
+# Lake export (batch): docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml run --rm lab-api lab lake-export
 # Local dev alt: `npm run dev:lab` (vite, HMR) against `cargo run -p lab` on 8082.
-# Lake export (batch): docker compose -f deploy/hunter-lab/compose.yml run --rm api lab lake-export
-# Config: hunter/.env (see hunter/.env.example). Backend on 8082, UI on 443.
+# Config: hunter/.env (see hunter/.env.example).
 # ---------------------------------------------------------------------------
 
 services:
   postgres:
+    container_name: hunter-postgres
     image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
     command:
@@ -34,6 +50,24 @@ services:
       - "effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-2GB}"
       - "-c"
       - "work_mem=${POSTGRES_WORK_MEM:-16MB}"
+      - "-c"
+      - "maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}"
+      - "-c"
+      - "random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}"
+      - "-c"
+      - "effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}"
+      - "-c"
+      - "max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_PER_GATHER:-1}"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "min_wal_size=80MB"
+      - "-c"
+      - "wal_compression=on"
+      - "-c"
+      - "synchronous_commit=off"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
@@ -41,14 +75,18 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_HOST_PORT:-5555}:5432"
+      - "${DB_PORT:-5555}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-meme_bot}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  api:
+  # The analysis bin (`lab`). Host-published on ${LAB_API_PORT} AND proxied by
+  # lab-ui's nginx at http://lab-api:${LAB_API_PORT}. The service name `lab-api`
+  # matches nginx/default.conf.template's proxy_pass.
+  lab-api:
+    container_name: hunter-lab-api
     image: ${ECR_REGISTRY:-hunter}/hunter-lab-api:${IMAGE_TAG:-latest}
     build:
       context: ../..
@@ -58,22 +96,22 @@ services:
     env_file: ../../hunter/.env
     environment:
       HOST: 0.0.0.0
-      PORT: 8082
+      PORT: ${LAB_API_PORT:-8140}
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-meme_bot}
       SWEEP_LAKE_DIR: /lake
     volumes:
       - lakedata:/lake
     ports:
-      - "${LAB_HOST_PORT:-8082}:8082"
+      - "${LAB_API_PORT:-8140}:${LAB_API_PORT:-8140}"
     depends_on:
       postgres:
         condition: service_healthy
 
   # Lab UI (nginx, TLS-terminating + Basic-auth). Serves the lab bundle and
-  # proxies /api to the `api` backend above, injecting the bearer token
-  # (${API_AUTH_TOKEN}) via nginx's envsubst so the lab bin's fail-closed
-  # mutating routes are accepted. Mirrors the live UI.
-  ui:
+  # proxies /api to the `lab-api` backend above, injecting the bearer token
+  # (${API_AUTH_TOKEN}) + upstream (${LAB_API_PORT}) via envsubst. Mirrors live.
+  lab-ui:
+    container_name: hunter-lab-ui
     image: ${ECR_REGISTRY:-hunter}/hunter-lab-ui:${IMAGE_TAG:-latest}
     build:
       context: ../..
@@ -82,20 +120,22 @@ services:
         VITE_API_BASE: ""
         VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
     restart: unless-stopped
-    # env_file (not `${API_AUTH_TOKEN}` interpolation) so the token is read from
-    # hunter/.env into the container env, where nginx's envsubst picks it up.
-    # NGINX_ENVSUBST_FILTER limits substitution to just this var.
     env_file: ../../hunter/.env
     environment:
-      NGINX_ENVSUBST_FILTER: API_AUTH_TOKEN
-    # Host ports default off 80/443 so the lab stack can coexist with the live
-    # stack on one workstation; set them to 80/443 on the dedicated lab server.
+      NGINX_ENVSUBST_FILTER: "API_AUTH_TOKEN|LAB_API_PORT"
+      # Explicit (with default) so a missing/unsynced .env can't leave the nginx
+      # upstream port empty and crash the container. Matches lab-api's bind.
+      LAB_API_PORT: ${LAB_API_PORT:-8140}
     ports:
-      - "${LAB_WEB_HTTP_PORT:-8080}:80"
-      - "${LAB_WEB_HTTPS_PORT:-8443}:443"
+      - "${LAB_UI_HTTP_PORT:-8120}:80"
+      - "${LAB_UI_HTTPS_PORT:-8121}:443"
     depends_on:
-      - api
+      - lab-api
 
+# Fixed volume names (NOT project-namespaced) so live-only, lab-only, and the
+# merged stack all mount the SAME postgres data + lake. See the header note.
 volumes:
   pgdata:
+    name: hunter-pgdata
   lakedata:
+    name: hunter-lakedata

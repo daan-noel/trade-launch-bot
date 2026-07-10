@@ -39,9 +39,9 @@ server {
 
     # Backend API. No trailing slash on proxy_pass => the /api/ prefix is
     # preserved, matching the backend's /api/... routes. The lab backend listens
-    # on 8082 and is reached by its compose service name `api`.
+    # on ${LAB_API_PORT} and is reached by its compose service name `lab-api`.
     location /api/ {
-        proxy_pass http://api:8082;
+        proxy_pass http://lab-api:${LAB_API_PORT};
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;

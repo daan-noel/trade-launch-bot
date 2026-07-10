@@ -87,7 +87,7 @@
   Requires: ssh + psql on PATH; local Postgres >= 16 with postgres_fdw + TimescaleDB;
   connect as a SUPERUSER local role (CREATE EXTENSION / USER MAPPING). Stop any local
   backend writing to meme_bot first. Server creds are read from the remote .env
-  automatically (POSTGRES_HOST_PORT/USER/PASSWORD/DB).
+  automatically (DB_PORT/POSTGRES_USER/PASSWORD/DB).
 
 .EXAMPLE
   $env:PGPASSWORD = 'your_LOCAL_pw'
@@ -257,7 +257,7 @@ Write-Host "Reading server DB config from $SshTarget ..."
 # NativeCommandError before we can check $LASTEXITCODE. Send ssh stderr to a file so
 # only a real non-zero exit aborts.
 $sshErr = [System.IO.Path]::GetTempFileName()
-$remoteEnv = (ssh @sshOpts $SshTarget "cd $RemoteDir 2>/dev/null && grep -E '^(POSTGRES_HOST_PORT|POSTGRES_PASSWORD|POSTGRES_USER|POSTGRES_DB)=' .env" 2>$sshErr) -join "`n"
+$remoteEnv = (ssh @sshOpts $SshTarget "cd $RemoteDir 2>/dev/null && grep -E '^(DB_PORT|POSTGRES_HOST_PORT|POSTGRES_PASSWORD|POSTGRES_USER|POSTGRES_DB)=' .env" 2>$sshErr) -join "`n"
 $sshCode = $LASTEXITCODE
 Remove-Item $sshErr -ErrorAction SilentlyContinue
 if ($sshCode -ne 0 -or -not $remoteEnv) { throw "Could not read $RemoteDir/.env on $SshTarget" }
@@ -268,7 +268,13 @@ foreach ($line in ($remoteEnv -split "`n")) {
 $remotePw   = $renv['POSTGRES_PASSWORD']; if (-not $remotePw) { throw "POSTGRES_PASSWORD not found in remote .env" }
 $remoteUser = if ($renv['POSTGRES_USER']) { $renv['POSTGRES_USER'] } else { 'postgres' }
 $remoteDb   = if ($renv['POSTGRES_DB'])   { $renv['POSTGRES_DB'] }   else { 'meme_bot' }
-if ($RemotePgPort -le 0) { $RemotePgPort = if ($renv['POSTGRES_HOST_PORT']) { [int]$renv['POSTGRES_HOST_PORT'] } else { 5555 } }
+# DB_PORT is the current name; POSTGRES_HOST_PORT is read as a fallback for a
+# server whose .env predates the rename (deploy/*/compose.yml PORTS block).
+if ($RemotePgPort -le 0) {
+  $RemotePgPort = if ($renv['DB_PORT']) { [int]$renv['DB_PORT'] }
+                  elseif ($renv['POSTGRES_HOST_PORT']) { [int]$renv['POSTGRES_HOST_PORT'] }
+                  else { 5555 }
+}
 Write-Host "  server postgres: 127.0.0.1:$RemotePgPort (db=$remoteDb user=$remoteUser)"
 
 # ---- 2. Open the SSH tunnel (background) -------------------------------------

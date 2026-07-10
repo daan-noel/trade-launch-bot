@@ -68,8 +68,8 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 ## What it does (step by step)
 
 1. **Locks down `aws-ec2-key.pem`** (idempotent `icacls`) so Windows OpenSSH accepts it.
-2. **Reads server DB creds** (`POSTGRES_HOST_PORT/USER/PASSWORD/DB`) from the server's `.env` over SSH.
-3. **Opens an SSH tunnel** `localhost:5433 → server:<POSTGRES_HOST_PORT>` (background) and waits until it's reachable.
+2. **Reads server DB creds** (`DB_PORT/USER/PASSWORD/DB`) from the server's `.env` over SSH.
+3. **Opens an SSH tunnel** `localhost:5433 → server:<DB_PORT>` (background) and waits until it's reachable.
 4. **Attaches the server** as a `postgres_fdw` foreign server (schema `ec2_sync_src`), rebuilt fresh each run.
 5. **Schema-parity guard** — compares local vs. server columns for every synced table and **aborts on drift** before moving any data.
 6. **Computes local watermarks** (`MAX(block_time)`, `MAX(created_at)`, …) and the sealed-day cutoff (midnight UTC today). TimescaleDB auto-creates destination chunks on insert — no partition-ensure step.
@@ -109,7 +109,7 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 | `-LocalPgUser` | `postgres` | Must be a superuser role |
 | `-TunnelLocalPort` | `5433` | Local end of the SSH tunnel (must be free) |
 | `-FdwTunnelHost` | `host.docker.internal` | How the **local** Postgres reaches the tunnel. Dockerized DB → `host.docker.internal`; native local Postgres → `127.0.0.1` |
-| `-RemotePgPort` | `0` (auto) | `0` = read `POSTGRES_HOST_PORT` from server `.env` (fallback `5555`) |
+| `-RemotePgPort` | `0` (auto) | `0` = read `DB_PORT` from server `.env` (fallback `5555`) |
 | `-IncludeRawTxs` | *(off)* | Also sync the heavy `raw_txs` BYTEA feed |
 | `-LocalPgPassword` | `$env:PGPASSWORD` | Local DB password |
 
@@ -140,7 +140,7 @@ After that the key stays loaded across sessions and the script never prompts.
 ## Troubleshooting
 
 - **"SSH tunnel exited early"** — wrong host, key rejected, or the server's Postgres
-  host port isn't published. Confirm `POSTGRES_HOST_PORT` in the server's `.env` and
+  host port isn't published. Confirm `DB_PORT` in the server's `.env` and
   that you can `ssh -i aws-ec2-key.pem ubuntu@54.93.174.192` manually.
 - **"Tunnel port 5433 never opened"** — port `5433` is busy locally; pass a free
   `-TunnelLocalPort`.
@@ -165,4 +165,4 @@ The run is safe to re-execute at any point — watermarks + `ON CONFLICT` make i
 
 - Host: `ubuntu@54.93.174.192`
 - Project: `/home/ubuntu/projects/meme-trading`
-- Postgres: published on the host's `POSTGRES_HOST_PORT` (default `5555`), reached via the SSH tunnel
+- Postgres: published on the host's `DB_PORT` (default `5555`), reached via the SSH tunnel

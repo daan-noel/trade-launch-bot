@@ -1,17 +1,36 @@
 # ---------------------------------------------------------------------------
-# hunter-live — production stack: postgres + Rust backend (`live`) + nginx
-# (frontend static + /api proxy). Ships to EC2.
+# hunter-live — STANDALONE live stack: postgres + Rust backend (`live`) + nginx
+# (frontend static + /api proxy). Run the live tier on its own, WITHOUT the lab
+# analysis tier. For live + lab running CONCURRENTLY on one host (one shared
+# postgres process), use the merged deploy/hunter/compose.yml instead.
 #
-# Each image carries BOTH `image:` (ECR ref, pulled on EC2) and `build:`
-# (context = repo root, so it builds on the workstation). `docker compose build`
-# builds + tags; `docker compose up` on EC2 pulls the tag.
+# SHARED DB (same as the root/merged stack): postgres here uses container_name
+# `hunter-postgres` and the FIXED named volume `hunter-pgdata` — the SAME
+# container name + data volume as deploy/hunter/compose.yml AND the sibling
+# deploy/hunter-lab/compose.yml. So whichever of {merged, live-only, lab-only}
+# you bring up, they all read/write ONE `meme_bot` database on ONE volume.
 #
-# Up / update:   docker compose -f deploy/hunter-live/compose.yml up -d --build
-# Secrets/config: hunter/.env (see hunter/.env.example). Only nginx is published.
+# ⚠ RUN ONE STACK AT A TIME. Because all three share the `hunter-postgres`
+# container name + `hunter-pgdata` volume, only one may be `up` at once — a
+# second `up` fails on the name/volume conflict (a safe failure, no corruption).
+# `docker compose -f <file> down` the current stack before bringing up another.
+#
+# PORTS come from hunter/.env (the "PORTS" block, scheme 8·F·C·P). Defaults below
+# MIRROR that block; pass --env-file to override:
+#   postgres  ${DB_PORT:-5555}:5432          published
+#   live-api  binds ${LIVE_API_PORT:-8130}   NOT published (nginx-only upstream)
+#   live-ui   ${LIVE_UI_HTTP_PORT:-8110}:80  ${LIVE_UI_HTTPS_PORT:-8111}:443  published
+#
+# Each image carries BOTH `image:` (ECR ref, pulled on the deploy box) and
+# `build:` (context = repo root, builds on the workstation).
+#
+# Up / update:  docker compose --env-file hunter/.env -f deploy/hunter-live/compose.yml up -d --build
+# Config: hunter/.env (see hunter/.env.example). Only nginx (live-ui) is published.
 # ---------------------------------------------------------------------------
 
 services:
   postgres:
+    container_name: hunter-postgres
     image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
     # EC2 (2vCPU/4GB) tuning: keep max_connections low, bias planner to index
@@ -56,16 +75,18 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_HOST_PORT:-5555}:5432"
+      - "${DB_PORT:-5555}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-meme_bot}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # The live trading bin (`live`). Named `api`; nginx reaches it at
-  # `proxy_pass http://api:8081` (see nginx/default.conf.template).
-  api:
+  # The live trading bin (`live`). NOT host-published — reached only through
+  # live-ui's nginx at http://live-api:${LIVE_API_PORT} (envsubst upstream). The
+  # service name `live-api` matches nginx/default.conf.template's proxy_pass.
+  live-api:
+    container_name: hunter-live-api
     image: ${ECR_REGISTRY:-hunter}/hunter-live-api:${IMAGE_TAG:-latest}
     build:
       context: ../..
@@ -76,13 +97,14 @@ services:
     env_file: ../../hunter/.env
     environment:
       HOST: 0.0.0.0
-      PORT: 8081
+      PORT: ${LIVE_API_PORT:-8130}
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-meme_bot}
     depends_on:
       postgres:
         condition: service_healthy
 
-  ui:
+  live-ui:
+    container_name: hunter-live-ui
     image: ${ECR_REGISTRY:-hunter}/hunter-live-ui:${IMAGE_TAG:-latest}
     build:
       context: ../..
@@ -91,17 +113,22 @@ services:
         VITE_API_BASE: ""
         VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
     restart: unless-stopped
-    # env_file (not `${API_AUTH_TOKEN}` interpolation) so the token is read from
-    # hunter/.env into the container env, where nginx's envsubst picks it up.
-    # NGINX_ENVSUBST_FILTER limits substitution to just this var.
+    # env_file supplies both API_AUTH_TOKEN and LIVE_API_PORT to the container;
+    # nginx's envsubst (filter below) injects them into the /api proxy at start.
     env_file: ../../hunter/.env
     environment:
-      NGINX_ENVSUBST_FILTER: API_AUTH_TOKEN
+      NGINX_ENVSUBST_FILTER: "API_AUTH_TOKEN|LIVE_API_PORT"
+      # Explicit (with default) so a missing/unsynced .env can't leave the nginx
+      # upstream port empty and crash the container. Matches live-api's bind.
+      LIVE_API_PORT: ${LIVE_API_PORT:-8130}
     ports:
-      - "80:80"
-      - "443:443"
+      - "${LIVE_UI_HTTP_PORT:-8110}:80"
+      - "${LIVE_UI_HTTPS_PORT:-8111}:443"
     depends_on:
-      - api
+      - live-api
 
+# Fixed volume name (NOT project-namespaced) so live-only, lab-only, and the
+# merged stack all mount the SAME postgres data. See the header note.
 volumes:
   pgdata:
+    name: hunter-pgdata
