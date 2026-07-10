@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
-# Multi-stage build for the forge ANALYSIS bin (package `forge-lab`, bin
-# `slp-lab`): lake export + sweeps + backtests + analytics + thin HTTP API.
+# Multi-stage build for the forge ANALYSIS bin (package + bin `forge-lab`):
+# lake export + sweeps + backtests + analytics + thin HTTP API.
 #
 # LOCAL DEV ONLY (deploy/forge-lab/compose.yml). The analysis bin is
 # workstation-only and must NEVER ship to EC2 — the lake tier pulls
@@ -24,18 +24,17 @@ RUN cargo chef prepare --recipe-path recipe.json
 # `bundled` feature needs to compile libduckdb in-tree when the lake fills.
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-# `-p forge-lab` scopes by package (default-members are the hunter bins only);
-# the bin target is still named `slp-lab`.
+# `-p forge-lab` scopes by package (default-members are the hunter bins only).
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json -p forge-lab --bin slp-lab
+    cargo chef cook --release --recipe-path recipe.json -p forge-lab --bin forge-lab
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release -p forge-lab --bin slp-lab \
-    && cp /app/target/release/slp-lab /usr/local/bin/slp-lab
+    cargo build --release -p forge-lab --bin forge-lab \
+    && cp /app/target/release/forge-lab /usr/local/bin/forge-lab
 
 FROM debian:bookworm-slim AS runtime
 # ca-certificates: TLS to the SOL-price source. libstdc++6: bundled libduckdb
@@ -44,7 +43,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /usr/local/bin/slp-lab /usr/local/bin/slp-lab
+COPY --from=builder /usr/local/bin/forge-lab /usr/local/bin/forge-lab
 # HOST/PORT/SWEEP_LAKE_DIR are set in deploy/forge-lab/compose.yml.
 EXPOSE 8092
-CMD ["slp-lab"]
+CMD ["forge-lab"]

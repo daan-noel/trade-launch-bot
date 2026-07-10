@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
-# Multi-stage build for the ANALYSIS bin (`lab`): sweep/backtest engine +
+# Multi-stage build for the ANALYSIS bin (`hunter-lab`): sweep/backtest engine +
 # swing analyzer + Parquet-lake pipeline + HTTP API (actix-web + sqlx).
 #
 # IMPORTANT: this image deploys to its OWN lab server, NOT the live EC2 box —
@@ -33,15 +33,15 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json --bin lab
+    cargo chef cook --release --recipe-path recipe.json --bin hunter-lab
 COPY . .
 # target/ is a cache mount, so it is NOT persisted into the image layer —
 # copy the finished binary out within the same RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release --bin lab \
-    && cp /app/target/release/lab /usr/local/bin/lab
+    cargo build --release --bin hunter-lab \
+    && cp /app/target/release/hunter-lab /usr/local/bin/hunter-lab
 
 # --- Runtime: slim image with just the binary -------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -51,7 +51,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /usr/local/bin/lab /usr/local/bin/lab
+COPY --from=builder /usr/local/bin/hunter-lab /usr/local/bin/hunter-lab
 # HOST/PORT/SWEEP_LAKE_DIR are set in deploy/hunter-lab/compose.yml.
 EXPOSE 8082
-CMD ["lab"]
+CMD ["hunter-lab"]

@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
-# Multi-stage build for the LIVE backend bin (`live`): ingest +
+# Multi-stage build for the LIVE backend bin (`hunter-live`): ingest +
 # strategies + trade execution + HTTP API (actix-web + sqlx + solana-sdk).
 #
 # This is the ONLY backend image on the EC2 live box. The analysis bin
-# (`lab`, with arrow/parquet/rayon) is a SEPARATE image
+# (`hunter-lab`, with arrow/parquet/rayon) is a SEPARATE image
 # (deploy/hunter-lab/api.Dockerfile) that deploys to its own, heavier lab
 # server — never the live box. See CLAUDE.md "Deployed server".
 #
@@ -36,7 +36,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json --bin live
+    cargo chef cook --release --recipe-path recipe.json --bin hunter-live
 # Now bring in the real source and build just the live bin.
 COPY . .
 # target/ is a cache mount, so it is NOT persisted into the image layer —
@@ -44,8 +44,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release --bin live \
-    && cp /app/target/release/live /usr/local/bin/live
+    cargo build --release --bin hunter-live \
+    && cp /app/target/release/hunter-live /usr/local/bin/hunter-live
 
 # --- Runtime: slim image with just the binary -------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -54,7 +54,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /usr/local/bin/live /usr/local/bin/live
+COPY --from=builder /usr/local/bin/hunter-live /usr/local/bin/hunter-live
 # HOST/PORT are set in compose.yml (must bind 0.0.0.0 inside the network).
 EXPOSE 8081
-CMD ["live"]
+CMD ["hunter-live"]

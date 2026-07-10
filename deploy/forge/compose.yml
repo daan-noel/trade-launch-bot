@@ -87,7 +87,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # The live bin (`slp-live`). NOT host-published — reached only through
+  # The live bin (`forge-live`). NOT host-published — reached only through
   # live-ui's nginx at http://live-api:${LIVE_API_PORT} (envsubst upstream).
   live-api:
     container_name: forge-live-api
@@ -132,10 +132,10 @@ services:
     depends_on:
       - live-api
 
-  # The analysis bin (`slp-lab`). API-only (no UI), reached directly on the
+  # The analysis bin (`forge-lab`). API-only (no UI), reached directly on the
   # host-published ${LAB_API_PORT}. Build-only: the lake cold tier
   # (duckdb/arrow/parquet) is workstation-scale — never an ECR image.
-  # Lake export (batch): docker compose -f deploy/forge/compose.yml run --rm lab-api slp-lab lake-export
+  # Lake export (batch): docker compose -f deploy/forge/compose.yml run --rm lab-api forge-lab lake-export
   lab-api:
     container_name: forge-lab-api
     build:

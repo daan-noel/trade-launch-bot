@@ -5,7 +5,7 @@ edition.workspace = true
 description = "LIVE box (ships to EC2): ingest + launcher + trading + thin HTTP. The ingest host-adapter is now the in-crate `src/ingest/` module (was the ingest-host crate); links launcher (+ pump-trader + ingest-laserstream). MUST NOT link lake / duckdb / arrow / parquet."
 
 [[bin]]
-name = "slp-live"
+name = "forge-live"
 path = "src/main.rs"
 
 [dependencies]

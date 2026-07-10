@@ -8,7 +8,7 @@ name = "live"
 path = "src/lib.rs"
 
 [[bin]]
-name = "live"
+name = "hunter-live"
 path = "src/main.rs"
 
 [dependencies]

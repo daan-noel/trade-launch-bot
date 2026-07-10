@@ -5,7 +5,7 @@ edition.workspace = true
 description = "ANALYSIS box (workstation only): lake export + sweeps + backtests + wallet analytics + thin HTTP. The Parquet/DuckDB cold tier is now the in-crate `src/lake/` module (was the lake crate). MUST NOT link pump-trader / ingest-laserstream / launcher."
 
 [[bin]]
-name = "slp-lab"
+name = "forge-lab"
 path = "src/main.rs"
 
 [dependencies]

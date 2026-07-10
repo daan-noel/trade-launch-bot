@@ -86,7 +86,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # The live trading bin (`live`). NOT host-published — reached only through
+  # The live trading bin (`hunter-live`). NOT host-published — reached only through
   # live-ui's nginx at http://live-api:${LIVE_API_PORT} (envsubst upstream).
   live-api:
     container_name: hunter-live-api
@@ -130,9 +130,9 @@ services:
     depends_on:
       - live-api
 
-  # The analysis bin (`lab`). Host-published on ${LAB_API_PORT} AND proxied by
+  # The analysis bin (`hunter-lab`). Host-published on ${LAB_API_PORT} AND proxied by
   # lab-ui's nginx at http://lab-api:${LAB_API_PORT}.
-  # Lake export (batch): docker compose -f deploy/hunter/compose.yml run --rm lab-api lab lake-export
+  # Lake export (batch): docker compose -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
   lab-api:
     container_name: hunter-lab-api
     image: ${ECR_REGISTRY:-hunter}/hunter-lab-api:${IMAGE_TAG:-latest}

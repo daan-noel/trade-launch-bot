@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
-# Multi-stage build for the launch-platform LIVE bin (`slp-live`): ingest +
+# Multi-stage build for the launch-platform LIVE bin (`forge-live`): ingest +
 # launcher + trading + thin HTTP API. Mirrors deploy/hunter-live/api.Dockerfile.
 #
 # This is the ONLY launch-platform image shipped to EC2. The analysis bin
-# (`slp-lab`, with duckdb/arrow/parquet) runs on the workstation and is never
+# (`forge-lab`, with duckdb/arrow/parquet) runs on the workstation and is never
 # containerised — see the SLP CLAUDE.md "Dep partition".
 #
 # cargo-chef caches the (huge) dependency tree as its own layer, so day-to-day
@@ -25,26 +25,25 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# --- Build: cook deps (cached), then compile just the slp-live binary --------
+# --- Build: cook deps (cached), then compile just the forge-live binary -------
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 # NOTE: `-p forge-live` is REQUIRED. The root workspace sets default-members to the
-# hunter bins only, so a bare `--bin slp-live` resolves against those and errors
-# "no bin target named slp-live in default-run packages". Scope by package
-# (package = forge-live; the bin target is still named `slp-live`).
+# hunter bins only, so a bare `--bin forge-live` resolves against those and errors
+# "no bin target named forge-live in default-run packages". Scope by package.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json -p forge-live --bin slp-live
-# Now bring in the real source and build only the slp-live bin.
+    cargo chef cook --release --recipe-path recipe.json -p forge-live --bin forge-live
+# Now bring in the real source and build only the forge-live bin.
 COPY . .
 # target/ is a cache mount (not persisted into the layer) — copy the finished
 # binary out within the same RUN.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release -p forge-live --bin slp-live \
-    && cp /app/target/release/slp-live /usr/local/bin/slp-live
+    cargo build --release -p forge-live --bin forge-live \
+    && cp /app/target/release/forge-live /usr/local/bin/forge-live
 
 # --- Runtime: slim image with just the binary -------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -53,7 +52,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /usr/local/bin/slp-live /usr/local/bin/slp-live
+COPY --from=builder /usr/local/bin/forge-live /usr/local/bin/forge-live
 # HOST/PORT are set in docker-compose.yml (bind 0.0.0.0 inside the network).
 EXPOSE 8081
-CMD ["slp-live"]
+CMD ["forge-live"]
