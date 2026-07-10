@@ -10,7 +10,7 @@ use pump_trader::types::TokenProgram;
 use pump_trader::{PumpFunTrader};
 use serde::Serialize;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use sqlx::PgPool;
 use std::str::FromStr;
 use tracing::info;
@@ -250,10 +250,24 @@ fn check_wallet_reserved_to_bundle(wallet: &ManagedWallet, launch_id: Uuid) -> R
     Ok(())
 }
 
-async fn submit_jito_bundle(url: &str, txs: &[Transaction]) -> Result<String> {
+/// Solana's hard per-tx wire cap. Each Jito bundle leg must fit it independently;
+/// a leg over the limit fails the whole bundle at submit, so guard locally with an
+/// actionable message rather than shipping it and getting an opaque rejection.
+const MAX_TX_WIRE_BYTES: usize = 1232;
+
+async fn submit_jito_bundle(url: &str, txs: &[VersionedTransaction]) -> Result<String> {
     let mut encoded = Vec::with_capacity(txs.len());
-    for tx in txs {
-        encoded.push(STANDARD.encode(bincode::serialize(tx)?));
+    for (i, tx) in txs.iter().enumerate() {
+        let wire = bincode::serialize(tx)?;
+        if wire.len() > MAX_TX_WIRE_BYTES {
+            bail!(
+                "bundle leg {i} is {} B, over the {MAX_TX_WIRE_BYTES} B tx limit by {} B — \
+                 provision/point PUMP_LAUNCH_ALT at a launch ALT so v2 legs compress",
+                wire.len(),
+                wire.len() - MAX_TX_WIRE_BYTES,
+            );
+        }
+        encoded.push(STANDARD.encode(wire));
     }
 
     let body = serde_json::json!({

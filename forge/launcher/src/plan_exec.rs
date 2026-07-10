@@ -27,7 +27,7 @@ use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Signature, Signer};
 use solana_sdk::system_instruction;
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::{Transaction, VersionedTransaction};
 
 use crate::plan_pipeline::{bundle_buy_variant, DEFAULT_BUNDLE_SLIPPAGE_BPS};
 
@@ -68,7 +68,9 @@ pub fn buy_lamports(op: &Operation) -> Result<u64> {
 
 /// Build one signed Jito bundle leg tx from a gated bundler-buy op. `signer` is the
 /// bundler wallet (resolved by the caller from the op's managed wallet id).
-/// `blockhash` must be shared across every leg in the same bundle submission.
+/// `blockhash` must be shared across every leg in the same bundle submission. The
+/// leg is a **v0** tx (compressed via the launch ALT when configured) so a v2
+/// bundle-buy leg's ~27 accounts fit the per-tx limit Jito enforces on each leg.
 #[allow(clippy::too_many_arguments)]
 pub async fn build_leg_tx(
     trader: &PumpFunTrader,
@@ -80,7 +82,7 @@ pub async fn build_leg_tx(
     cashback_enabled: bool,
     op: &Operation,
     disguise: &Disguise,
-) -> Result<Transaction> {
+) -> Result<VersionedTransaction> {
     let variant = bundle_buy_variant(&op.variant)?;
     let lamports = buy_lamports(op)?;
     let params = leg_params(op, disguise);

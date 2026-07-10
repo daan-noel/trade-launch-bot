@@ -12,6 +12,7 @@ use crate::error::{Context, Result, TradeError};
 use crate::protocol;
 use crate::types::TokenProgram;
 use solana_sdk::{
+    address_lookup_table::AddressLookupTableAccount,
     compute_budget::ComputeBudgetInstruction,
     hash::Hash,
     instruction::{AccountMeta, Instruction},
@@ -19,7 +20,7 @@ use solana_sdk::{
     signature::Signer,
     system_instruction,
     system_program,
-    transaction::Transaction,
+    transaction::VersionedTransaction,
 };
 use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
@@ -73,9 +74,12 @@ const DISC_BUY_V2: [u8; 8] = crate::protocol::BUY_V2_DISC;
 const DISC_BUY_EXACT_QUOTE_IN_V2: [u8; 8] = crate::protocol::BUY_EXACT_QUOTE_IN_V2_DISC;
 
 impl PumpFunTrader {
-    /// Build one signed legacy buy tx for a Jito bundle leg. `signer` is the
+    /// Build one signed **v0** buy tx for a Jito bundle leg. `signer` is the
     /// bundler wallet (may differ from `TraderConfig.signer`). `blockhash` must
-    /// be shared across every tx in the same bundle submission.
+    /// be shared across every tx in the same bundle submission. When a launch ALT
+    /// is configured it compresses the leg's immutable accounts — load-bearing for
+    /// the ~27-account v2 buy leg, which would otherwise ride the 1232 B limit; the
+    /// v1 leg just gains headroom. No ALT → a plain v0 tx (~legacy size).
     pub async fn build_bundle_leg_tx(
         &self,
         signer: &(dyn Signer + Send + Sync),
@@ -87,7 +91,7 @@ impl PumpFunTrader {
         cashback_enabled: bool,
         variant: BundleBuyVariant,
         leg: &BundleLegParams,
-    ) -> Result<Transaction> {
+    ) -> Result<VersionedTransaction> {
         self.global_account.as_ref().context("Not initialized")?;
         let token_program_pk = token_program.pubkey();
         let mint_str = mint.to_string();
@@ -150,7 +154,14 @@ impl PumpFunTrader {
             )?
         };
 
-        self.build_recent_tx_with_blockhash(ixs, signer, blockhash)
+        // Compile as v0 against the launch ALT (empty slice when none configured),
+        // sharing the bundle's blockhash so every leg lands in the same block.
+        let alts: &[AddressLookupTableAccount] = self
+            .launch_alt
+            .as_ref()
+            .map(std::slice::from_ref)
+            .unwrap_or(&[]);
+        self.build_v0_tx_with_blockhash(ixs, signer, blockhash, alts)
             .await
     }
 
@@ -388,6 +399,78 @@ impl PumpFunTrader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trader::{PumpFunTrader, TraderConfig};
+    use solana_sdk::signature::Keypair;
+    use std::sync::Arc;
+
+    fn trader_with_global() -> (PumpFunTrader, Keypair) {
+        let bundler = Keypair::new();
+        let mut t = PumpFunTrader::new(Arc::new(TraderConfig::new(
+            "http://localhost".into(),
+            vec!["http://localhost".into()],
+            Arc::new(Keypair::new()),
+            vec![Pubkey::new_unique()],
+        )));
+        let d = |seeds: &[&[u8]], prog: &Pubkey| Pubkey::find_program_address(seeds, prog).0;
+        t.global_account = Some(crate::trader::GlobalAccount {
+            global_pda: d(&[b"global"], &protocol::PUMP_FUN),
+            fee_recipient: Pubkey::new_unique(),
+            global_volume_accumulator: d(&[b"global_volume_accumulator"], &protocol::PUMP_FUN),
+            user_volume_accumulator: d(&[b"user_volume_accumulator", bundler.pubkey().as_ref()], &protocol::PUMP_FUN),
+            fee_config: d(&[b"fee_config", protocol::PUMP_FUN.as_ref()], &protocol::FEE_PROGRAM),
+            stable_quote_mint: None,
+        });
+        (t, bundler)
+    }
+
+    /// The v2 bundle-buy leg is the ~27-account one at risk of the 1232 B ceiling.
+    /// Prove the launch ALT compresses it: v0+ALT is both smaller than the legacy
+    /// message AND under the limit, and actually references the ALT.
+    #[test]
+    fn bundle_v2_leg_v0_alt_fits_and_beats_legacy() {
+        use solana_sdk::address_lookup_table::AddressLookupTableAccount;
+        use solana_sdk::hash::Hash;
+        use solana_sdk::message::{v0, Message, VersionedMessage};
+
+        let (t, bundler) = trader_with_global();
+        let mint = Pubkey::new_unique();
+        let creator = Pubkey::new_unique();
+        let token_program = TokenProgram::Token2022.pubkey();
+        let pdas = t.derive_token_pdas(&mint, &creator, &token_program, true);
+        let user_base_ata =
+            get_associated_token_address_with_program_id(&bundler.pubkey(), &mint, &token_program);
+        let account_creation_ixs = vec![create_associated_token_account_idempotent(
+            &bundler.pubkey(),
+            &bundler.pubkey(),
+            &mint,
+            &token_program,
+        )];
+        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000 };
+        let ixs = t
+            .build_bundle_v2_buy_ixs(
+                &bundler, &mint, &creator, &pdas, &user_base_ata,
+                account_creation_ixs, BundleBuyVariant::BuyV2, 10_000_000, 1, &leg,
+            )
+            .unwrap();
+
+        let legacy = {
+            let msg = Message::new(&ixs, Some(&bundler.pubkey()));
+            1 + 64 * msg.header.num_required_signatures as usize + msg.serialize().len()
+        };
+        let alt = AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: crate::alt::launch_alt_addresses(),
+        };
+        let vmsg = v0::Message::try_compile(&bundler.pubkey(), &ixs, std::slice::from_ref(&alt), Hash::default())
+            .expect("compile v0 bundle leg");
+        let v0_size = 1
+            + 64 * vmsg.header.num_required_signatures as usize
+            + VersionedMessage::V0(vmsg.clone()).serialize().len();
+        eprintln!("v2 bundle leg: legacy = {legacy} B, v0+ALT = {v0_size} B (limit 1232)");
+        assert!(!vmsg.address_table_lookups.is_empty(), "v0 leg did not reference the ALT");
+        assert!(v0_size < legacy, "ALT must shrink the leg: v0 {v0_size} >= legacy {legacy}");
+        assert!(v0_size <= 1232, "v2 leg over limit even with ALT: {v0_size} B");
+    }
 
     #[test]
     fn variant_parse_covers_composer_surface() {

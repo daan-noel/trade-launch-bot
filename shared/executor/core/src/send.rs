@@ -203,6 +203,26 @@ impl Engine {
         Ok(tx)
     }
 
+    /// Like [`Self::build_recent_v0_tx_multi`] but for a single signer against a
+    /// caller-supplied blockhash — so every leg of a Jito bundle shares one hash
+    /// AND compresses its accounts through `alts`. The v2 bundle-buy leg names ~27
+    /// accounts and would otherwise sit near the 1232 B ceiling; the ALT gives it
+    /// the same headroom the create path gets. Pass an empty `alts` for a plain v0
+    /// tx (still valid, ~legacy size).
+    pub async fn build_v0_tx_with_blockhash(
+        &self,
+        instructions: Vec<Instruction>,
+        signer: &(dyn Signer + Send + Sync),
+        blockhash: Hash,
+        alts: &[AddressLookupTableAccount],
+    ) -> Result<VersionedTransaction> {
+        let msg = v0::Message::try_compile(&signer.pubkey(), &instructions, alts, blockhash)
+            .context("compile v0 message (bundle leg)")?;
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[signer as &dyn Signer])
+            .context("sign v0 bundle leg")?;
+        Ok(tx)
+    }
+
     /// Submit a signed tx to the Helius Sender. With one configured endpoint this
     /// is a single POST; with several the *identical* signed tx is fanned out to
     /// all of them concurrently. Because the signature is identical, the bank

@@ -133,6 +133,13 @@ single-message path (what hunter uses) is unchanged. A **fail-fast 1232 B guard*
 now runs in the send path so any future overflow surfaces locally with an
 actionable message instead of the sender's cryptic error.
 
+**Also covers Jito bundle legs.** Each `build_bundle_leg_tx` leg is now a v0 tx over
+the same ALT (empty-lookup fallback when unset). The v2 bundle-buy leg's ~27-account
+buy sat at **1141 B** — 91 B under the ceiling, one longer disguise from failing — and
+drops to **867 B** with the ALT. `submit_jito_bundle` guards each leg at 1232 B before
+submit (a single over-limit leg fails the whole bundle). Measured by
+`bundle_v2_leg_v0_alt_fits_and_beats_legacy`.
+
 ---
 
 ## D5 — Wallet-funding obfuscation — **PARTIALLY BUILT** (hop graph still deferred)
