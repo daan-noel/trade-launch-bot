@@ -40,7 +40,7 @@ Copy the printed `newuser:$2y$...` line into [`.htpasswd`](.htpasswd) (replacing
 nginx reads `.htpasswd` on each request, but reload to be safe / pick up config changes:
 
 ```bash
-docker compose -f deploy/forge-live/compose.yml restart ui
+docker compose -f deploy/forge.compose.yml restart live-ui
 ```
 
 ## Notes

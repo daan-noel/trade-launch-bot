@@ -57,6 +57,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /usr/local/bin/hunter-lab /usr/local/bin/hunter-lab
-# HOST/PORT/SWEEP_LAKE_DIR are set in deploy/hunter-lab/compose.yml.
+# HOST/PORT/SWEEP_LAKE_DIR are set in deploy/hunter.compose.yml.
 EXPOSE 8082
 CMD ["hunter-lab"]

@@ -11,7 +11,7 @@
 # updates only recompile YOUR code instead of all deps.
 #
 # Build context = MONOREPO root (the single cargo workspace + shared/ crates
-# live there). See deploy/forge-live/compose.yml.
+# live there). See deploy/forge.compose.yml.
 # No DATABASE_URL needed at build time (runtime sqlx::query + embedded migrations).
 # ---------------------------------------------------------------------------
 

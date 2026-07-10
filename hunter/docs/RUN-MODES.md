@@ -9,14 +9,13 @@ in that file's **`PORTS`** block (scheme `8·F·C·P` — see the comment there)
 | Mode | How | Postgres | Where |
 | --- | --- | --- | --- |
 | **Develop** | native bins + Vite dev servers | one local PG (dockerized or native) | Workstation |
-| **Deploy — co-located** | `deploy/hunter/compose.yml` (merged) | **one shared** `pgdata` for live+lab | One shared box |
-| **Deploy — per-box** | `deploy/hunter-live/compose.yml` **or** `deploy/hunter-lab/compose.yml` | each stack brings **its own** PG | One tier per box |
+| **Deploy** | `deploy/hunter.compose.yml` (merged live + lab) | **one shared** `pgdata` for live+lab | One shared box |
 
 Why `lab` is special: it pulls arrow/parquet/rayon + a bundled libduckdb
 (compiled from C++) and runs heavy sweeps. Keep it off a small (2 vCPU / 4 GB)
-live box — deploy it per-box on a bigger machine, or co-locate only on a box
-sized well above the old live EC2 (it shares the merged stack's Postgres with the
-latency-sensitive `live` hot path). See CLAUDE.md → "Deployed server".
+live box — co-locate it only on a box sized well above the old live EC2 (it shares
+the merged stack's Postgres with the latency-sensitive `live` hot path). See
+CLAUDE.md → "Deployed server".
 
 > **Always pass `--env-file hunter/.env`** to every `docker compose` command
 > below. Compose reads `${VAR}` port values from the file named by `--env-file`
@@ -34,7 +33,7 @@ Postgres from the merged compose (published on `DB_PORT`, default 5555):
 
 ```powershell
 # Postgres only (dockerized) — or use a native local Postgres instead
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d postgres
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d postgres
 
 # --- Backends (native, separate terminals) ---
 cargo run -p live                 # needs Postgres + Helius gRPC/keys (binds LIVE_PORT :8081)
@@ -57,18 +56,18 @@ npm run dev:lab      # lab only   (:5174 -> proxies /api to the lab bin)
 
 ---
 
-## Deploy mode A — co-located (one shared box)
+## Deploy mode — co-located (one shared box)
 
 All tiers on one host, **sharing one Postgres** (`hunter-postgres`, volume
-`pgdata`). Services: `postgres`, `live-api`, `live-ui`, `lab-api`, `lab-ui`.
-Only the two nginx UIs and `lab-api` are published; `live-api` is reached only
-through `live-ui`'s nginx.
+`pgdata`) via the single merged compose file. Services: `postgres`, `live-api`,
+`live-ui`, `lab-api`, `lab-ui`. Only the two nginx UIs and `lab-api` are
+published; `live-api` is reached only through `live-ui`'s nginx.
 
 ```bash
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml ps
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml logs -f live-api
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml down        # pgdata persists
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml ps
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml logs -f live-api
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml down        # pgdata persists
 ```
 
 Published (defaults, all in the `.env` PORTS block): postgres `DB_PORT` 5555 ·
@@ -78,25 +77,16 @@ live-ui `LIVE_UI_HTTP_PORT`/`LIVE_UI_HTTPS_PORT` 8110/8111 · lab-ui
 Lake export as a one-off container:
 
 ```bash
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml run --rm lab-api hunter-lab lake-export
 ```
 
-## Deploy mode B — per-box (one tier per machine)
-
-Deploy the live tier alone (e.g. the small EC2) and the lab tier on its own,
-bigger box. Each stack stands up **its own** Postgres (`hunter-live-postgres` /
-`hunter-lab-postgres`) — they do **not** share a DB.
-
-```bash
-# on the live box:
-docker compose --env-file hunter/.env -f deploy/hunter-live/compose.yml up -d --build
-# on the lab box:
-docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml  up -d --build
-```
-
-> Running the live and lab **separate** stacks on the *same* host makes them
-> collide (same `DB_PORT` / UI ports). To co-locate them, use the merged compose
-> (mode A) — that's its whole purpose — or override the clashing ports per stack.
+> **Per-tier boxes.** The old split `hunter-live`/`hunter-lab` compose files were
+> retired in favor of this single merged file. To put just one tier on a box,
+> bring up only the services you want (compose still starts their `depends_on`):
+> `... -f deploy/hunter.compose.yml up -d --build live-api live-ui` for a live-only
+> box, or `... up -d --build lab-api lab-ui` for a lab-only box. Both target the
+> same `hunter-postgres`, so run only one tier-subset per host unless you also
+> override `DB_PORT`/UI ports.
 
 ### First-time setup on a box
 ```bash

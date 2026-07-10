@@ -38,9 +38,9 @@ families (**hunter** = meme trading, **forge** = launch platform), each with a
 
    ```powershell
    # hunter DB on :5555
-   docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d postgres
+   docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d postgres
    # forge DB on :5556
-   docker compose --env-file forge/.env  -f deploy/forge/compose.yml  up -d postgres
+   docker compose --env-file forge/.env  -f deploy/forge.compose.yml  up -d postgres
    ```
 
 2. **`.env` synced** (gitignored; copy from `.env.example` and fill real values):

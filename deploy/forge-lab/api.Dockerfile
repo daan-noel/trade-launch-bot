@@ -3,7 +3,7 @@
 # Multi-stage build for the forge ANALYSIS bin (package + bin `forge-lab`):
 # lake export + sweeps + backtests + analytics + thin HTTP API.
 #
-# LOCAL DEV ONLY (deploy/forge-lab/compose.yml). The analysis bin is
+# LOCAL DEV ONLY (deploy/forge.compose.yml). The analysis bin is
 # workstation-only and must NEVER ship to EC2 — the lake tier pulls
 # duckdb/arrow/parquet/rayon when filled. See forge/CLAUDE.md "Dep partition".
 # Mirrors deploy/hunter-lab/api.Dockerfile.
@@ -44,6 +44,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /usr/local/bin/forge-lab /usr/local/bin/forge-lab
-# HOST/PORT/SWEEP_LAKE_DIR are set in deploy/forge-lab/compose.yml.
+# HOST/PORT/SWEEP_LAKE_DIR are set in deploy/forge.compose.yml.
 EXPOSE 8092
 CMD ["forge-lab"]

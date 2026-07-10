@@ -5,8 +5,8 @@
 # backend and the lab analysis backend — they operate on the same `meme_bot`
 # database (lab analyzes what live produces). Two Postgres containers can NOT
 # safely mount one PGDATA (postmaster lock), so sharing = one DB container, two
-# api clients. That is why the previously-separate deploy/hunter-live/ and
-# deploy/hunter-lab/ compose files are folded together here.
+# api clients. That is why the live and lab tiers are folded together in this
+# one merged compose file rather than run as separate stacks.
 #
 # PORTS — all names + numbers are defined in hunter/.env (the "PORTS" block).
 # Scheme 8·F·C·P: 8 fixed · family(1=hunter) · component(1 live-ui 2 lab-ui
@@ -29,7 +29,7 @@
 # contend with the latency-sensitive live hot path over the SAME Postgres. Only
 # co-locate them on a box sized well above the old 2vCPU/4GB live EC2.
 #
-# Up / update:  docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
+# Up / update:  docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build
 # ---------------------------------------------------------------------------
 
 services:
@@ -92,12 +92,12 @@ services:
     container_name: hunter-live-api
     image: ${ECR_REGISTRY:-hunter}/hunter-live-api:${IMAGE_TAG:-latest}
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/hunter-live/api.Dockerfile
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
-    env_file: ../../hunter/.env
+    env_file: ../hunter/.env
     environment:
       HOST: 0.0.0.0
       PORT: ${LIVE_API_PORT:-8130}
@@ -110,7 +110,7 @@ services:
     container_name: hunter-live-ui
     image: ${ECR_REGISTRY:-hunter}/hunter-live-ui:${IMAGE_TAG:-latest}
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/hunter-live/ui.Dockerfile
       args:
         VITE_API_BASE: ""
@@ -118,7 +118,7 @@ services:
     restart: unless-stopped
     # env_file supplies both API_AUTH_TOKEN and LIVE_API_PORT to the container;
     # nginx's envsubst (filter below) injects them into the /api proxy at start.
-    env_file: ../../hunter/.env
+    env_file: ../hunter/.env
     environment:
       NGINX_ENVSUBST_FILTER: "API_AUTH_TOKEN|LIVE_API_PORT"
       # Explicit (with default) so a missing/unsynced .env can't leave the nginx
@@ -132,16 +132,16 @@ services:
 
   # The analysis bin (`hunter-lab`). Host-published on ${LAB_API_PORT} AND proxied by
   # lab-ui's nginx at http://lab-api:${LAB_API_PORT}.
-  # Lake export (batch): docker compose -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
+  # Lake export (batch): docker compose -f deploy/hunter.compose.yml run --rm lab-api hunter-lab lake-export
   lab-api:
     container_name: hunter-lab-api
     image: ${ECR_REGISTRY:-hunter}/hunter-lab-api:${IMAGE_TAG:-latest}
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/hunter-lab/api.Dockerfile
     restart: unless-stopped
     init: true
-    env_file: ../../hunter/.env
+    env_file: ../hunter/.env
     environment:
       HOST: 0.0.0.0
       PORT: ${LAB_API_PORT:-8140}
@@ -159,13 +159,13 @@ services:
     container_name: hunter-lab-ui
     image: ${ECR_REGISTRY:-hunter}/hunter-lab-ui:${IMAGE_TAG:-latest}
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/hunter-lab/ui.Dockerfile
       args:
         VITE_API_BASE: ""
         VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
     restart: unless-stopped
-    env_file: ../../hunter/.env
+    env_file: ../hunter/.env
     environment:
       NGINX_ENVSUBST_FILTER: "API_AUTH_TOKEN|LAB_API_PORT"
       # Explicit (with default) so a missing/unsynced .env can't leave the nginx
@@ -177,9 +177,8 @@ services:
     depends_on:
       - lab-api
 
-# Fixed volume names (NOT project-namespaced) so this merged stack AND the split
-# deploy/hunter-live + deploy/hunter-lab stacks all mount the SAME postgres data
-# + lake. Run only one of the three layouts at a time.
+# Fixed volume names (NOT project-namespaced) so the data volumes are stable
+# regardless of the compose project name this stack is brought up under.
 volumes:
   pgdata:
     name: hunter-pgdata

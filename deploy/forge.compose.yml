@@ -1,34 +1,39 @@
 # ---------------------------------------------------------------------------
-# forge-live — STANDALONE production stack: postgres + forge LIVE backend
-# (package + bin `forge-live`, api.Dockerfile): ingest + launcher +
-# trading + thin HTTP API + forge UI (nginx + TLS/Basic-auth, ui.Dockerfile).
-# Run the live tier on its own, WITHOUT the lab analysis tier. For live + lab
-# running CONCURRENTLY on one host (one shared postgres process), use the merged
-# deploy/forge/compose.yml instead. The analysis bin (`forge-lab`) is never built
-# here — see deploy/forge-lab/.
+# forge — MERGED live + lab stack for a single shared deploy server.
 #
-# SHARED DB (same as the root/merged stack): postgres here uses container_name
-# `forge-postgres` and the FIXED named volume `forge-pgdata` — the SAME
-# container name + data volume as deploy/forge/compose.yml AND the sibling
-# deploy/forge-lab/compose.yml. So whichever of {merged, live-only, lab-only}
-# you bring up, they all read/write ONE `launch_platform` database on ONE volume.
+# ONE Postgres (the shared DB volume `pgdata`) is used by BOTH the live backend
+# (package + bin `forge-live`) and the lab analysis backend (package + bin
+# `forge-lab`) — same `launch_platform` database (lab analyzes
+# what live produces). Two Postgres containers can NOT safely mount one PGDATA
+# (postmaster lock), so sharing = one DB container, two api clients. That is why
+# the live and lab tiers are folded together in this one merged compose file
+# rather than run as separate stacks.
 #
-# ⚠ RUN ONE STACK AT A TIME. Because all three share the `forge-postgres`
-# container name + `forge-pgdata` volume, only one may be `up` at once — a
-# second `up` fails on the name/volume conflict (a safe failure, no corruption).
-# `docker compose -f <file> down` the current stack before bringing up another.
+# PORTS — all names + numbers are defined in forge/.env (the "PORTS" block).
+# Scheme 8·F·C·P: 8 fixed · family(2=forge) · component(1 live-ui 3 live-api
+# 4 lab-api) · protocol(0 http 1 https). forge-lab is API-only (no lab-ui).
+# Defaults below MIRROR that block; pass --env-file to override:
 #
-# PORTS come from forge/.env (the "PORTS" block, scheme 8·F·C·P). Defaults below
-# MIRROR that block; pass --env-file to override:
-#   postgres  ${DB_PORT:-5556}:5432          published (5556 coexists with hunter's 5555)
-#   live-api  binds ${LIVE_API_PORT:-8230}   NOT published (nginx-only upstream)
-#   live-ui   ${LIVE_UI_HTTP_PORT:-8210}:80  ${LIVE_UI_HTTPS_PORT:-8211}:443  published
+#   service   host port(s)                container   published?
+#   postgres  ${DB_PORT:-5556}:5432       forge-postgres    yes
+#   live-api  (none)                      forge-live-api    no — nginx-only upstream, binds ${LIVE_API_PORT:-8230}
+#   live-ui   ${LIVE_UI_HTTP_PORT:-8210}:80  ${LIVE_UI_HTTPS_PORT:-8211}:443   yes
+#   lab-api   ${LAB_API_PORT:-8240}:8240  forge-lab-api     yes (direct access; no UI/nginx for forge lab)
 #
-# Each image carries BOTH `image:` (ECR ref, pulled on the deploy box) and
-# `build:` (context = repo root, builds on the workstation).
+# 5556 (not 5555) so the forge Postgres coexists with hunter's on the same host;
+# the live-ui host ports (82xx) are likewise offset from hunter's (81xx).
 #
-# Up / update:  docker compose --env-file forge/.env -f deploy/forge-live/compose.yml up -d --build
-# Config: forge/.env (see forge/.env.example). Only nginx (live-ui) is published.
+# The Dockerfiles + nginx template still live under deploy/forge-live/ and
+# deploy/forge-lab/ (build context = repo root, so their paths are unchanged).
+# nginx proxies /api to live-api at ${LIVE_API_PORT} via envsubst. forge-lab is
+# build-only (no ECR image ref) — it builds on this box; the lake cold tier is
+# workstation-scale, so size the box accordingly.
+#
+# RESOURCE NOTE: lab pulls duckdb/arrow/parquet/rayon and runs heavy sweeps that
+# contend with the latency-sensitive live hot path over the SAME Postgres. Only
+# co-locate them on a box sized well above the old 2vCPU/4GB live EC2.
+#
+# Up / update:  docker compose --env-file forge/.env -f deploy/forge.compose.yml up -d --build
 # ---------------------------------------------------------------------------
 
 services:
@@ -36,7 +41,6 @@ services:
     container_name: forge-postgres
     image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
-    # EC2 (2vCPU/4GB) tuning, carried from hunter.
     command:
       - "postgres"
       - "-c"
@@ -84,18 +88,17 @@ services:
       retries: 10
 
   # The live bin (`forge-live`). NOT host-published — reached only through
-  # live-ui's nginx at http://live-api:${LIVE_API_PORT} (envsubst upstream). The
-  # service name `live-api` matches nginx/default.conf.template's proxy_pass.
+  # live-ui's nginx at http://live-api:${LIVE_API_PORT} (envsubst upstream).
   live-api:
     container_name: forge-live-api
     image: ${ECR_REGISTRY:-forge}/forge-live-api:${IMAGE_TAG:-latest}
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/forge-live/api.Dockerfile
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
-    env_file: ../../forge/.env
+    env_file: ../forge/.env
     environment:
       HOST: 0.0.0.0
       PORT: ${LIVE_API_PORT:-8230}
@@ -112,12 +115,12 @@ services:
     container_name: forge-live-ui
     image: ${ECR_REGISTRY:-forge}/forge-live-ui:${IMAGE_TAG:-latest}
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/forge-live/ui.Dockerfile
     restart: unless-stopped
     # env_file supplies both API_AUTH_TOKEN and LIVE_API_PORT to the container;
     # nginx's envsubst (filter below) injects them into the /api proxy at start.
-    env_file: ../../forge/.env
+    env_file: ../forge/.env
     environment:
       NGINX_ENVSUBST_FILTER: "API_AUTH_TOKEN|LIVE_API_PORT"
       # Explicit (with default) so a missing/unsynced .env can't leave the nginx
@@ -129,8 +132,35 @@ services:
     depends_on:
       - live-api
 
-# Fixed volume name (NOT project-namespaced) so live-only, lab-only, and the
-# merged stack all mount the SAME postgres data. See the header note.
+  # The analysis bin (`forge-lab`). API-only (no UI), reached directly on the
+  # host-published ${LAB_API_PORT}. Build-only: the lake cold tier
+  # (duckdb/arrow/parquet) is workstation-scale — never an ECR image.
+  # Lake export (batch): docker compose -f deploy/forge.compose.yml run --rm lab-api forge-lab lake-export
+  lab-api:
+    container_name: forge-lab-api
+    build:
+      context: ..
+      dockerfile: deploy/forge-lab/api.Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file: ../forge/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${LAB_API_PORT:-8240}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-launch_platform}
+      SWEEP_LAKE_DIR: /lake
+    volumes:
+      - lakedata:/lake
+    ports:
+      - "${LAB_API_PORT:-8240}:${LAB_API_PORT:-8240}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# Fixed volume names (NOT project-namespaced) so the data volumes are stable
+# regardless of the compose project name this stack is brought up under.
 volumes:
   pgdata:
     name: forge-pgdata
+  lakedata:
+    name: forge-lakedata

@@ -6,26 +6,26 @@ the build context is the cargo workspace at the root.
 
 ---
 
-## The six compose files
+## The two compose files
 
-There are two families (**hunter** = meme trading, **forge** = launch platform),
-each with a live tier and a lab tier. Each family has a **merged** file plus two
-**split** files:
+There are two families (**hunter** = meme trading, **forge** = launch platform).
+Each family has **one merged compose file** that runs its live tier and lab tier
+together against a single shared Postgres:
 
 | Compose file | Runs | Env file |
 | --- | --- | --- |
-| `deploy/hunter/compose.yml` | hunter live **+** lab (merged) | `hunter/.env` |
-| `deploy/hunter-live/compose.yml` | hunter live only | `hunter/.env` |
-| `deploy/hunter-lab/compose.yml` | hunter lab only | `hunter/.env` |
-| `deploy/forge/compose.yml` | forge live **+** lab (merged) | `forge/.env` |
-| `deploy/forge-live/compose.yml` | forge live only | `forge/.env` |
-| `deploy/forge-lab/compose.yml` | forge lab only (API only) | `forge/.env` |
+| `deploy/hunter.compose.yml` | hunter live **+** lab | `hunter/.env` |
+| `deploy/forge.compose.yml` | forge live **+** lab (lab is API-only) | `forge/.env` |
 
-> ⚠️ **One layout at a time per family.** Within a family the merged, live, and
-> lab files all share the `<family>-postgres` container and `<family>-pgdata`
-> volume, so only one can be up at once. `down` the current one before bringing
-> up another. (hunter and forge use different names/ports, so they can run
-> together.)
+> Within a family the live and lab tiers **share** the `<family>-postgres`
+> container and `<family>-pgdata` volume — that is the whole point of the merged
+> file (two Postgres postmasters can't mount one PGDATA). hunter and forge use
+> different names/ports, so the two families **can** run together on one host.
+
+The per-tier Dockerfiles and nginx templates still live under
+`deploy/hunter-live/`, `deploy/hunter-lab/`, `deploy/forge-live/`, and
+`deploy/forge-lab/` (the build context is the repo root, so their paths are
+unchanged — only the compose files moved up into `deploy/`).
 
 ---
 
@@ -33,7 +33,7 @@ each with a live tier and a lab tier. Each family has a **merged** file plus two
 
 | Flag | Meaning |
 | --- | --- |
-| `-f <file>` | Which compose file to use (always required — we have several). |
+| `-f <file>` | Which compose file to use (always required — we have two). |
 | `--env-file <file>` | Load ports/secrets from `hunter/.env` or `forge/.env`. |
 | `-d` | Detached: run in the background. Omit to watch logs in the foreground. |
 | `--build` | Rebuild images from source first (use after code changes). |
@@ -44,29 +44,9 @@ each with a live tier and a lab tier. Each family has a **merged** file plus two
 
 ## Bring a stack up (build + start, background)
 
-**Merged (live + lab):**
-
 ```bash
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
-docker compose --env-file forge/.env  -f deploy/forge/compose.yml  up -d --build
-```
-
-**Split — hunter:**
-
-```bash
-# live only
-docker compose --env-file hunter/.env -f deploy/hunter-live/compose.yml up -d --build
-# lab only
-docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml  up -d --build
-```
-
-**Split — forge:**
-
-```bash
-# live only
-docker compose --env-file forge/.env -f deploy/forge-live/compose.yml up -d --build
-# lab only (API only, no UI)
-docker compose --env-file forge/.env -f deploy/forge-lab/compose.yml  up -d --build
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build
+docker compose --env-file forge/.env  -f deploy/forge.compose.yml  up -d --build
 ```
 
 - `--build` recompiles images. Drop it to just (re)start existing images.
@@ -80,14 +60,13 @@ docker compose --env-file forge/.env -f deploy/forge-lab/compose.yml  up -d --bu
 
 ```bash
 # Stop + remove containers/network, KEEP the database + lake volumes
-docker compose -f deploy/hunter/compose.yml down
+docker compose -f deploy/hunter.compose.yml down
 
 # Stop but keep the containers (faster restart)
-docker compose -f deploy/hunter/compose.yml stop
+docker compose -f deploy/hunter.compose.yml stop
 ```
 
-Swap in whichever compose file you brought up (`deploy/hunter-live/compose.yml`,
-`deploy/forge-lab/compose.yml`, etc.).
+Swap in `deploy/forge.compose.yml` for the forge family.
 
 > ⚠️ Add `-v` (`down -v`) only if you want to **delete the database and lake** and
 > start clean.
@@ -98,16 +77,16 @@ Swap in whichever compose file you brought up (`deploy/hunter-live/compose.yml`,
 
 ```bash
 # Containers in this stack
-docker compose -f deploy/hunter/compose.yml ps
+docker compose -f deploy/hunter.compose.yml ps
 
 # All containers on the host
 docker ps
 
 # Follow logs for the whole stack
-docker compose -f deploy/hunter/compose.yml logs -f
+docker compose -f deploy/hunter.compose.yml logs -f
 
 # Follow logs for one service (postgres | live-api | live-ui | lab-api | lab-ui)
-docker compose -f deploy/hunter/compose.yml logs -f live-api
+docker compose -f deploy/hunter.compose.yml logs -f live-api
 ```
 
 ---
@@ -115,8 +94,8 @@ docker compose -f deploy/hunter/compose.yml logs -f live-api
 ## Restart / rebuild one service
 
 ```bash
-docker compose -f deploy/hunter/compose.yml restart live-api
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build live-api
+docker compose -f deploy/hunter.compose.yml restart live-api
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build live-api
 ```
 
 ---
@@ -127,11 +106,11 @@ docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
 per family (`hunter-lab` for hunter, `forge-lab` for forge):
 
 ```bash
-# hunter (merged or hunter-lab stack)
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
+# hunter
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml run --rm lab-api hunter-lab lake-export
 
-# forge (merged or forge-lab stack)
-docker compose --env-file forge/.env  -f deploy/forge/compose.yml  run --rm lab-api forge-lab lake-export
+# forge
+docker compose --env-file forge/.env  -f deploy/forge.compose.yml  run --rm lab-api forge-lab lake-export
 ```
 
 ---
@@ -146,14 +125,14 @@ psql postgres://postgres:<password>@localhost:5555/meme_bot          # hunter
 psql postgres://postgres:<password>@localhost:5556/launch_platform   # forge
 
 # Inside the running container
-docker compose -f deploy/hunter/compose.yml exec postgres psql -U postgres -d meme_bot
-docker compose -f deploy/forge/compose.yml  exec postgres psql -U postgres -d launch_platform
+docker compose -f deploy/hunter.compose.yml exec postgres psql -U postgres -d meme_bot
+docker compose -f deploy/forge.compose.yml  exec postgres psql -U postgres -d launch_platform
 ```
 
 Open a shell inside any service:
 
 ```bash
-docker compose -f deploy/hunter/compose.yml exec live-api sh
+docker compose -f deploy/hunter.compose.yml exec live-api sh
 ```
 
 ---
@@ -187,25 +166,25 @@ docker volume ls
 ## Quick reference card
 
 ```bash
-# Up (merged hunter), background, rebuild
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
+# Up (hunter), background, rebuild
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build
 
 # Logs (one service)
-docker compose -f deploy/hunter/compose.yml logs -f live-api
+docker compose -f deploy/hunter.compose.yml logs -f live-api
 
 # Status
-docker compose -f deploy/hunter/compose.yml ps
+docker compose -f deploy/hunter.compose.yml ps
 
 # Stop (keep data)
-docker compose -f deploy/hunter/compose.yml down
+docker compose -f deploy/hunter.compose.yml down
 
 # Lake export
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
+docker compose --env-file hunter/.env -f deploy/hunter.compose.yml run --rm lab-api hunter-lab lake-export
 
 # DB shell
-docker compose -f deploy/hunter/compose.yml exec postgres psql -U postgres -d meme_bot
+docker compose -f deploy/hunter.compose.yml exec postgres psql -U postgres -d meme_bot
 ```
 
 For forge: swap `hunter`→`forge`, `meme_bot`→`launch_platform`, `hunter-lab`→`forge-lab`,
-and ports `5555`/`81xx`→`5556`/`82xx`. For a split stack, swap the compose file
-(e.g. `-f deploy/hunter-lab/compose.yml`).
+the compose file `deploy/hunter.compose.yml`→`deploy/forge.compose.yml`, and ports
+`5555`/`81xx`→`5556`/`82xx`.
