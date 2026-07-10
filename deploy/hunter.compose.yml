@@ -32,6 +32,11 @@
 # Up / update:  docker compose --env-file hunter/.env -f deploy/hunter.compose.yml up -d --build
 # ---------------------------------------------------------------------------
 
+# Project name. Without this, Compose defaults it to the parent dir (`deploy`),
+# so the hunter AND forge stacks would collapse into one shared `deploy` project
+# (colliding networks + cross-stack orphan warnings on `down`). Pin it per family.
+name: hunter
+
 services:
   postgres:
     container_name: hunter-postgres

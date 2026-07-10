@@ -26,8 +26,9 @@
 # The Dockerfiles + nginx template still live under deploy/forge-live/ and
 # deploy/forge-lab/ (build context = repo root, so their paths are unchanged).
 # nginx proxies /api to live-api at ${LIVE_API_PORT} via envsubst. forge-lab is
-# build-only (no ECR image ref) — it builds on this box; the lake cold tier is
-# workstation-scale, so size the box accordingly.
+# build-only — its `image:` just names the locally-built image (matching the
+# live tiers' style); it is never pushed/pulled from ECR. It builds on this box;
+# the lake cold tier is workstation-scale, so size the box accordingly.
 #
 # RESOURCE NOTE: lab pulls duckdb/arrow/parquet/rayon and runs heavy sweeps that
 # contend with the latency-sensitive live hot path over the SAME Postgres. Only
@@ -35,6 +36,11 @@
 #
 # Up / update:  docker compose --env-file forge/.env -f deploy/forge.compose.yml up -d --build
 # ---------------------------------------------------------------------------
+
+# Project name. Without this, Compose defaults it to the parent dir (`deploy`),
+# so the forge AND hunter stacks would collapse into one shared `deploy` project
+# (colliding networks + cross-stack orphan warnings on `down`). Pin it per family.
+name: forge
 
 services:
   postgres:
@@ -133,11 +139,13 @@ services:
       - live-api
 
   # The analysis bin (`forge-lab`). API-only (no UI), reached directly on the
-  # host-published ${LAB_API_PORT}. Build-only: the lake cold tier
-  # (duckdb/arrow/parquet) is workstation-scale — never an ECR image.
+  # host-published ${LAB_API_PORT}. Build-only: the `image:` just names the
+  # locally-built image; the lake cold tier (duckdb/arrow/parquet) is
+  # workstation-scale, so it is never pushed/pulled as an ECR image.
   # Lake export (batch): docker compose -f deploy/forge.compose.yml run --rm lab-api forge-lab lake-export
   lab-api:
     container_name: forge-lab-api
+    image: ${ECR_REGISTRY:-forge}/forge-lab-api:${IMAGE_TAG:-latest}
     build:
       context: ..
       dockerfile: deploy/forge-lab/api.Dockerfile
