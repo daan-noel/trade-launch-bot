@@ -271,15 +271,36 @@ Target crates: **`executor-core`** (`shared/executor/core/`, third-party deps on
       `dry_run`. `cargo check --workspace` = 0 errors; executor tests still green (18+34);
       `cargo tree -p forge-lab`/`-p hunter-lab` link **none** of orchestrator/executor.
 
-### Phase E — Fingerprint auditor (mandatory)
-- [ ] `orchestrator/audit.rs` — each rule a unit-testable fn over the `Plan`: star funding, equal
-      amounts, same-slot cluster, direct own-graph token edge, constant CU/tip, synchronized
-      `Bundler` exit, nonce-account reuse, `DurableNonce` on a non-latency op, clustered
-      `close_token_ata: true` exit-tell, and **account-shape integrity** (fee recipient at index 17
-      — hard reject). Output score + findings; **fail ⇒ reject unless `--allow-fingerprint`.**
-- **Gate E:** rejects a deliberately-naive Plan (star fund, equal 0.02 legs, same-slot sells, a
-      direct token transfer, a reused nonce, a mangled account list); passes a properly
-      scheduled/persona'd one. Zero SOL, zero network.
+### Phase E — Fingerprint auditor (mandatory) — ✅ DONE (2026-07-09)
+- [x] `orchestrator/audit.rs` — all 10 rules as standalone unit-testable fns over an `Ctx { plan,
+      profiles, cfg }`: star funding (funding-graph fan-out ≥ N), equal amounts (identical swap
+      legs ≥ N), same-slot cluster (non-launch ops sharing a `SlotKey` — launch `Snipe`/`Create`
+      excluded as legitimately-atomic Jito bundles), direct own-graph token edge (`TransferToken`
+      whose target is an acting own-wallet — SOL consolidate deliberately NOT flagged), constant
+      CU/tip (disguises collapsing onto one `(cu_price, tip)` pair), synchronized `Bundler` exit
+      (≥ 2 bundler sells in one slot), nonce-account reuse, `DurableNonce` on a non-`Snipe` op,
+      clustered `close_token_ata`, and **account-shape integrity** (declared fee recipient must sit
+      at `PUMP_FEE_RECIPIENT_INDEX` = **17**, mirroring the curve-buy account layout — a mangled
+      list is `Severity::Reject`).
+- [x] The build-shape rules (CU/tip · nonce · ATA · account list) read a per-op **`SendProfile`**
+      (disguise + nonce_account/durable_nonce/close_token_ata/accounts/fee_recipient) that the Phase F
+      build step will resolve; all fields default so a **pre-build Plan-only `audit(plan)`** still
+      runs the graph/amount/schedule/token-edge rules. `audit_with(plan, &profiles, cfg)` runs
+      everything. Output = `AuditReport { findings, score, hard_reject }`; **`passed(allow_fingerprint)`
+      = `!hard_reject && (allow_fingerprint || no Warn findings)`** — a hard reject (malformed account
+      shape) is **never** overridable, matching the invariant "account index 17 fee recipient never
+      reshaped".
+- [x] SSOT: `PUMP_FEE_RECIPIENT_INDEX` mirrors the executor's positional layout (the *pubkey* stays
+      owned by `pump_trader::protocol`); `OpKind` reused (not `Ord`, so equal-amounts keys on a
+      `&'static str` kind tag).
+- **Gate E:** ✅ `cargo test -p forge-orchestrator` green (31, +9 new): `gate_e_naive_plan_is_rejected`
+      builds the deliberately-naive plan (star fund + equal 0.02-SOL legs + unscheduled same-slot
+      sells + a direct own-graph token transfer + a reused nonce + a mangled account list) → asserts
+      hard-reject + every fingerprint rule fired + `!passed(true)`; `gate_e_clean_plan_passes` builds
+      a real launch bundle + delay-spread varied-amount volume/exit + SOL-only consolidate +
+      persona-drawn disguises + fresh nonces + correct account shape → `passed(false)` with `score ==
+      0`. Executor tests still green (18+34); `cargo tree -i forge-orchestrator` from both `*-lab` =
+      no match (partition holds). Zero SOL, zero network.
 
 ### Phase F — Wire forge flows onto `Plan` + cut over
 - [ ] Repoint the launcher (`execute_launch`, `bundle_execute`, `compose_bundle_legs` —
