@@ -28,6 +28,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # --- Build: cook deps (cached), then compile the live binary -------
 FROM chef AS builder
+# Cap build parallelism so the Rust release compile does not spawn one rustc per
+# core and blow past a memory-constrained Docker VM (~8GB WSL2 default). Lighter
+# than lab (no libduckdb), but kept in sync for reliable low-memory builds.
+ENV CARGO_BUILD_JOBS=2
 COPY --from=planner /app/recipe.json recipe.json
 # Cook the dependency tree. The cargo-chef layer caches at the Docker level;
 # the BuildKit cache mounts add a second safety net so that even when this

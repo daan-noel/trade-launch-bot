@@ -29,6 +29,11 @@ RUN cargo chef prepare --recipe-path recipe.json
 # The rust:bookworm base ships g++/make (buildpack-deps), which duckdb's
 # `bundled` feature needs to compile libduckdb in-tree.
 FROM chef AS builder
+# Cap build parallelism so the cold libduckdb (C++) + Rust release compile does
+# not spawn one rustc/cc per core and blow past a memory-constrained Docker VM
+# (~8GB WSL2 default) — an OOM here kills buildkitd mid-build. Lower = lower peak
+# RAM, slightly slower. Also bounds the cc crate's parallel .cpp compiles.
+ENV CARGO_BUILD_JOBS=2
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
