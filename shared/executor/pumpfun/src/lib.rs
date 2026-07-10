@@ -25,6 +25,7 @@
 //! trader.buy_token(&mint, &creator, token_program, sol_amount, slippage, cashback_enabled).await?;
 //! ```
 
+pub mod alt;
 pub mod catalog;
 pub mod constants;
 pub mod protocol;
@@ -52,6 +53,7 @@ pub use executor_core::{
 };
 
 // --- pump venue items ---
+pub use alt::launch_alt_addresses;
 #[cfg(feature = "claim")]
 pub use trader::claim::{ClaimOutcome, PotStatus};
 #[cfg(feature = "probe")]

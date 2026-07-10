@@ -56,6 +56,13 @@ async fn main() -> anyhow::Result<()> {
         launcher::run_launch_probe(&settings, &args[1..]).await?;
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("create-alt") {
+        // Provision the persistent launch ALT (spends real SOL). Needs the
+        // launcher env (keystore + KEK + RPC), so build LauncherSettings here.
+        let launcher_settings = LauncherSettings::from_env()?;
+        launcher::run_create_alt(&launcher_settings, &args[1..]).await?;
+        return Ok(());
+    }
 
     let pools = connect(&settings).await?;
     info!("live box: DB connected, migrations applied");

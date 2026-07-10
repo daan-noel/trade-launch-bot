@@ -5,6 +5,7 @@
 //! row. The per-leg structure composer (variant + params + budget/tip) lives here,
 //! not in pump-trader.
 
+mod alt;
 mod backup;
 mod bundle;
 mod bundle_execute;
@@ -26,6 +27,7 @@ mod wallet_funding;
 mod wallet_pool;
 mod wallet_verify;
 
+pub use alt::run_create_alt;
 pub use backup::run_backup;
 pub use bundle::{
     legs_from_json, legs_to_json, BundledLegPlan, BuyVariant, LegStructure, LegStructureRecipe,

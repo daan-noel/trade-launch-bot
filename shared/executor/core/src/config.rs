@@ -211,6 +211,13 @@ pub struct TraderConfig {
     pub signer: Arc<dyn Signer + Send + Sync>,
     /// Durable-nonce accounts (parsed pubkeys; deduplicated at init).
     pub nonce_accounts: Vec<Pubkey>,
+    /// Optional on-chain Address Lookup Table for the launch (create + dev-buy)
+    /// path. When set, the venue fetches it once at init and compiles the create
+    /// tx as a v0 (versioned) message so the ~27 accounts of a create_v2 + dev-buy
+    /// reference the ~15 immutable ones by 1-byte index instead of 32-byte keys —
+    /// dropping the tx from ~1267 B (over the 1232 B limit) to ~840 B. `None`
+    /// keeps the legacy single-message path unchanged (what hunter uses).
+    pub launch_alt_address: Option<Pubkey>,
     // --- tuning, all Default ---
     pub compute: ComputeBudgetCfg,
     pub jito: JitoTipCfg,
@@ -236,6 +243,7 @@ impl TraderConfig {
             helius_sender_urls,
             signer,
             nonce_accounts,
+            launch_alt_address: None,
             compute: ComputeBudgetCfg::default(),
             jito: JitoTipCfg::default(),
             retry: RetryCfg::default(),
@@ -255,6 +263,7 @@ impl std::fmt::Debug for TraderConfig {
             .field("helius_sender_urls", &self.helius_sender_urls)
             .field("wallet", &self.signer.pubkey())
             .field("nonce_accounts", &self.nonce_accounts)
+            .field("launch_alt_address", &self.launch_alt_address)
             .field("compute", &self.compute)
             .field("jito", &self.jito)
             .field("retry", &self.retry)

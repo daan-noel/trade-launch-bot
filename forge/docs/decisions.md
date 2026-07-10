@@ -107,6 +107,34 @@ single seam a future oracle writes to.
 
 ---
 
+## D6 — create_v2 + dev-buy tx size: v0 + Address Lookup Table — **BUILT**
+
+**Problem:** a `create_v2` + dev-buy is one transaction naming ~27 accounts and
+serializes to **1267 B**, over Solana's hard **1232 B** limit. The Helius `/fast`
+sender rejects it as the opaque `base64 encoded too large`, and the launch dies at
+create (`create_signature` NULL). `create_v2` overflows where `create_v1` fit
+because it always carries the 5 Mayhem accounts (structurally required regardless
+of `is_mayhem_mode`).
+
+**Choice:** compile the create tx as a **v0 (versioned) message** referencing a
+persistent on-chain **Address Lookup Table** of the ~15 *immutable* accounts
+(program IDs, constant-seed PDAs, the 10 Jito tip accounts — SSOT
+`pump_trader::launch_alt_addresses`). Those collapse from 32-byte keys to 1-byte
+indexes, dropping the tx to **931 B** (measured; 301 B headroom). The ALT is
+provisioned once (`forge-live -- create-alt <authority_key_ref>`, spends ~0.001
+SOL) and referenced via `PUMP_LAUNCH_ALT`.
+
+**Rejected:** (a) splitting the dev-buy into a second tx — loses create+buy
+atomicity; (b) keeping the fee_recipient / fee_config in the ALT — their values are
+governance-rotatable, so a stale table could misroute silently; only fixed-address
+accounts go in the ALT, the 2 global-derived ones stay inline. **Non-breaking:**
+`launch_alt_address` is `Option` on `TraderConfig`; unset → the legacy
+single-message path (what hunter uses) is unchanged. A **fail-fast 1232 B guard**
+now runs in the send path so any future overflow surfaces locally with an
+actionable message instead of the sender's cryptic error.
+
+---
+
 ## D5 — Wallet-funding obfuscation — **PARTIALLY BUILT** (hop graph still deferred)
 
 **Choice:** per-leg instruction variation (§3e) defeats naive "identical-tx"

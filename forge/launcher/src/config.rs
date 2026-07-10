@@ -1,7 +1,9 @@
 //! Launcher runtime settings (Helius RPC/sender, nonce accounts, keystore path).
 
 use anyhow::{bail, Context, Result};
+use solana_sdk::pubkey::Pubkey;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 /// Env-backed settings for the launch executor.
 #[derive(Debug, Clone)]
@@ -15,6 +17,12 @@ pub struct LauncherSettings {
     pub kek_passphrase: String,
     /// Jito block-engine JSON-RPC base (defaults to mainnet).
     pub jito_block_engine_url: String,
+    /// Persistent launch Address Lookup Table (`PUMP_LAUNCH_ALT`). `None` (unset)
+    /// keeps the legacy single-message create path; `Some` makes the launcher
+    /// compile the create + dev-buy as a v0 tx against this table so it fits the
+    /// 1232 B limit. Provision it once with the `create-alt` CLI. Required in
+    /// practice for `create_v2` + dev-buy (that combo overflows without it).
+    pub launch_alt: Option<Pubkey>,
     /// Wallet-pool backup root (wallet-pool Phase 4) — `None` disables the
     /// post-generation backup entirely; there's no safe default location to
     /// assume, so this stays opt-in rather than required.
@@ -164,6 +172,13 @@ impl LauncherSettings {
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").unwrap_or_else(|_| {
             "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
         });
+        let launch_alt = match std::env::var("PUMP_LAUNCH_ALT") {
+            Ok(v) if !v.trim().is_empty() => Some(
+                Pubkey::from_str(v.trim())
+                    .context("PUMP_LAUNCH_ALT is not a valid pubkey")?,
+            ),
+            _ => None,
+        };
         let backup_dir = std::env::var("WALLET_BACKUP_DIR").ok().map(PathBuf::from);
         let pinata_jwt = std::env::var("PINATA_JWT").ok().filter(|s| !s.is_empty());
         let funding = FundingConfig::from_env();
@@ -181,6 +196,7 @@ impl LauncherSettings {
             keystore_dir,
             kek_passphrase,
             jito_block_engine_url,
+            launch_alt,
             backup_dir,
             pinata_jwt,
             funding,

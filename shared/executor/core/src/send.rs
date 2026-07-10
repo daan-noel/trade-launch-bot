@@ -19,12 +19,13 @@ use solana_client::rpc_config::RpcSimulateTransactionConfig;
 #[cfg(feature = "claim")]
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::{
+    address_lookup_table::AddressLookupTableAccount,
     hash::Hash,
     instruction::{Instruction, InstructionError},
-    message::Message,
+    message::{v0, Message, VersionedMessage},
     signature::{Signature, Signer},
     pubkey::Pubkey,
-    transaction::{Transaction, TransactionError},
+    transaction::{Transaction, TransactionError, VersionedTransaction},
 };
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +40,29 @@ use tracing::{debug, info};
 /// reaping a wedged connection. (The single-endpoint path is awaited directly and
 /// isn't bounded here — its caller already wraps the send in a timeout.)
 const FANOUT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Solana's hard wire cap for a single serialized transaction (`PACKET_DATA_SIZE`).
+/// A tx over this can't land; the Helius sender rejects it with the opaque
+/// `base64 encoded too large`. We check locally before the network round-trip so
+/// the failure names the real cause (too many accounts → needs an ALT) and, on
+/// the create path, fails BEFORE signing burns the fresh mint keypair.
+const PACKET_DATA_SIZE: usize = 1232;
+
+/// Reject an over-limit serialized tx locally with an actionable error instead of
+/// letting the sender return `-32602 base64 encoded too large`. Applied to the raw
+/// tx wire (bincode), which is what the 1232 B limit governs — not the base64/JSON
+/// envelope. Shared by the legacy and versioned send paths.
+fn guard_wire_size(wire: &[u8]) -> Result<()> {
+    if wire.len() > PACKET_DATA_SIZE {
+        return Err(TradeError::Other(format!(
+            "transaction is {} B, over the {PACKET_DATA_SIZE} B limit by {} B — too \
+             many accounts to fit a single message (use an address lookup table / v0 tx)",
+            wire.len(),
+            wire.len() - PACKET_DATA_SIZE,
+        )));
+    }
+    Ok(())
+}
 
 /// Monotonic JSON-RPC request id. A simple atomic counter replaces a
 /// `timestamp_millis` syscall on every `sendTransaction` (the id only needs to
@@ -144,6 +168,41 @@ impl Engine {
         Ok(tx)
     }
 
+    /// Build + sign a **v0 (versioned)** tx that references `alts` so its account
+    /// list is compressed via the lookup table(s). `signers[0]` is the fee payer.
+    /// Used by the launch create path: a create_v2 + dev-buy names ~27 accounts,
+    /// ~15 of them immutable program IDs / constant PDAs — moving those into an ALT
+    /// drops the tx below the 1232 B legacy-message limit it otherwise overflows.
+    /// Reads the same background-refreshed blockhash cache as [`build_recent_tx`].
+    pub async fn build_recent_v0_tx_multi(
+        &self,
+        instructions: Vec<Instruction>,
+        signers: &[&(dyn Signer + Send + Sync)],
+        alts: &[AddressLookupTableAccount],
+    ) -> Result<VersionedTransaction> {
+        if signers.is_empty() {
+            bail!("build_recent_v0_tx_multi requires at least one signer");
+        }
+        let blockhash = match self
+            .blockhash_cache
+            .get_fresh(Duration::from_millis(self.config.cache.blockhash_max_age_ms))
+        {
+            Some(hash) => hash,
+            None => self
+                .rpc
+                .get_latest_blockhash()
+                .await
+                .context("fetch recent blockhash")?,
+        };
+        let fee_payer = signers[0].pubkey();
+        let msg = v0::Message::try_compile(&fee_payer, &instructions, alts, blockhash)
+            .context("compile v0 message")?;
+        let refs: Vec<&dyn Signer> = signers.iter().map(|s| *s as &dyn Signer).collect();
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &refs)
+            .context("sign v0 tx")?;
+        Ok(tx)
+    }
+
     /// Submit a signed tx to the Helius Sender. With one configured endpoint this
     /// is a single POST; with several the *identical* signed tx is fanned out to
     /// all of them concurrently. Because the signature is identical, the bank
@@ -155,8 +214,18 @@ impl Engine {
     /// sender endpoint. Extracted so the fan-out and the probe path serialize the
     /// tx exactly once and submit byte-identical bodies.
     pub fn encode_send_body(&self, tx: &Transaction) -> Result<serde_json::Value> {
-        let encoded = general_purpose::STANDARD.encode(bincode::serialize(tx)?);
-        Ok(json!({
+        let wire = bincode::serialize(tx)?;
+        guard_wire_size(&wire)?;
+        Ok(self.encode_send_body_wire(&wire))
+    }
+
+    /// Wrap already-serialized tx wire bytes in the `sendTransaction` JSON-RPC
+    /// body. The single site both the legacy (`Transaction`) and versioned
+    /// (`VersionedTransaction`) encoders funnel through, so the base64 params +
+    /// options are identical regardless of tx version.
+    fn encode_send_body_wire(&self, wire: &[u8]) -> serde_json::Value {
+        let encoded = general_purpose::STANDARD.encode(wire);
+        json!({
             "jsonrpc": "2.0",
             "id": SEND_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
             "method": "sendTransaction",
@@ -164,7 +233,7 @@ impl Engine {
                 encoded,
                 { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
             ]
-        }))
+        })
     }
 
     /// Simulate a tx (no SOL, no land) and return `(units_consumed, err, logs)`.
@@ -203,7 +272,26 @@ impl Engine {
         // and re-serialized the (base64-tx-bearing) Value per endpoint; now each
         // request just clones an `Arc<Vec<u8>>` pointer and ships the same bytes.
         let raw = Arc::new(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
+        self.send_raw(raw).await
+    }
 
+    /// Submit a signed **v0 (versioned)** tx over the same fan-out as
+    /// [`Self::send_transaction`]. The launch create path uses this when a launch
+    /// ALT is configured. Size-guarded on the tx wire like the legacy path.
+    pub async fn send_versioned_transaction(&self, tx: &VersionedTransaction) -> Result<String> {
+        let wire = bincode::serialize(tx).context("serialize versioned tx")?;
+        guard_wire_size(&wire)?;
+        let body = self.encode_send_body_wire(&wire);
+        let raw = Arc::new(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
+        self.send_raw(raw).await
+    }
+
+    /// Fan-out core shared by the legacy and versioned send paths: ships the
+    /// pre-serialized JSON-RPC body to every configured sender endpoint and
+    /// returns the first acceptance. Single endpoint = a direct await; multiple =
+    /// detached concurrent submissions (same signature → on-chain dedup, tip paid
+    /// once), first success wins, losers keep running in the background.
+    async fn send_raw(&self, raw: Arc<Vec<u8>>) -> Result<String> {
         let urls = &self.config.helius_sender_urls;
 
         // Single endpoint: await directly — no spawn/channel overhead, identical

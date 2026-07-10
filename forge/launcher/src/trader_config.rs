@@ -29,6 +29,9 @@ pub fn build_launch_trader_config(
         signer,
         nonce_accounts,
     );
+    // Launch ALT (when provisioned): the trader fetches it at init and compiles the
+    // create + dev-buy as a v0 tx so create_v2 + dev-buy fits the 1232 B limit.
+    config.launch_alt_address = settings.launch_alt;
     // Create-only v2 measures ~900–1100 B; give mainnet headroom to land.
     config.retry.confirm_max_retries = 40;
     config.retry.confirm_poll_ms = 1_500;

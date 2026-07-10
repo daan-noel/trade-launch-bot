@@ -12,6 +12,7 @@ use super::{GlobalAccount, PumpFunTrader};
 use crate::error::{bail, Context, Result};
 use crate::protocol;
 use crate::types::TokenProgram;
+use solana_sdk::address_lookup_table::{state::AddressLookupTable, AddressLookupTableAccount};
 use solana_sdk::pubkey::Pubkey;
 use tracing::info;
 
@@ -32,6 +33,19 @@ impl PumpFunTrader {
         // accumulators, fee config, stable cashback mint).
         self.global_account = Some(self.fetch_global_account().await?);
         info!("✅ Global account initialized");
+
+        // 2b. Launch ALT (optional): resolve the configured table to its address
+        // set once, so the create path can compile a v0 tx against it. A bad /
+        // missing table address fails init loudly rather than silently falling
+        // back to an oversized legacy tx at launch time.
+        if let Some(alt_address) = self.config.launch_alt_address {
+            self.launch_alt = Some(self.fetch_launch_alt(&alt_address).await?);
+            info!(
+                "✅ Launch ALT loaded: {} ({} addresses)",
+                alt_address,
+                self.launch_alt.as_ref().map(|a| a.addresses.len()).unwrap_or(0)
+            );
+        }
 
         // 3. Pre-build buy seed pools for both token programs (uses the engine's
         // rent values, read in step 1).
@@ -105,6 +119,31 @@ impl PumpFunTrader {
             user_volume_accumulator,
             fee_config,
             stable_quote_mint,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Launch Address Lookup Table
+    // -----------------------------------------------------------------------
+
+    /// Fetch + deserialize the on-chain launch ALT into the `(key, addresses)`
+    /// form v0 message compilation needs. The addresses are the immutable pump
+    /// accounts pre-loaded by `create-alt` (see `crate::alt`); we copy them out of
+    /// the borrowed `Cow` so the resolved table outlives the RPC response.
+    async fn fetch_launch_alt(&self, alt_address: &Pubkey) -> Result<AddressLookupTableAccount> {
+        let account = self
+            .rpc
+            .get_account(alt_address)
+            .await
+            .with_context(|| format!("fetch launch ALT {alt_address}"))?;
+        let table = AddressLookupTable::deserialize(&account.data)
+            .map_err(|e| crate::error::TradeError::Other(format!("deserialize launch ALT: {e}")))?;
+        if table.addresses.is_empty() {
+            bail!("launch ALT {alt_address} is empty — run `create-alt` to populate it");
+        }
+        Ok(AddressLookupTableAccount {
+            key: *alt_address,
+            addresses: table.addresses.to_vec(),
         })
     }
 }

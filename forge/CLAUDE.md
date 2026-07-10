@@ -176,6 +176,7 @@ cargo tree -p forge-lab                # dep-partition check (no pump-trader/ing
 cargo run -p forge-live                # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8230
 cargo run -p forge-live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
 cargo run -p forge-live -- wallet-verify <key_ref> <expected_address>  # restore runbook: confirm a keystore blob decrypts to the expected pubkey
+cargo run -p forge-live -- create-alt <authority_key_ref>  # provision the persistent launch ALT (spends real SOL); paste output into PUMP_LAUNCH_ALT
 cargo run -p forge-lab                 # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8240
 ```
 

@@ -254,11 +254,27 @@ impl PumpFunTrader {
         is_mayhem_mode: bool,
         t0: Instant,
     ) -> Result<String> {
-        let tx = self
-            .build_recent_tx_multi(ixs, &[wallet, mint])
-            .await
-            .context("sign create tx")?;
-        let sig = self.send_transaction(&tx).await?;
+        // With a launch ALT configured, compile a v0 tx that references it: a
+        // create_v2 + dev-buy names ~27 accounts and overflows the 1232 B
+        // legacy-message limit, but the ~15 immutable ones collapse to 1-byte ALT
+        // indexes. Without an ALT, the legacy single-message path is unchanged
+        // (correct for create-only and create_v1, which already fit).
+        let sig = match &self.launch_alt {
+            Some(alt) => {
+                let tx = self
+                    .build_recent_v0_tx_multi(ixs, &[wallet, mint], std::slice::from_ref(alt))
+                    .await
+                    .context("build v0 create tx")?;
+                self.send_versioned_transaction(&tx).await?
+            }
+            None => {
+                let tx = self
+                    .build_recent_tx_multi(ixs, &[wallet, mint])
+                    .await
+                    .context("sign create tx")?;
+                self.send_transaction(&tx).await?
+            }
+        };
         info!(
             "🚀 Create submitted — sig: {} | mint: {} | {}ms",
             sig,
@@ -458,6 +474,100 @@ mod tests {
             Arc::new(Keypair::new()),
             vec![Pubkey::new_unique()],
         )))
+    }
+
+    /// Populate the trader's `global_account` with correctly-derived PDAs so the
+    /// dev-buy leg builds offline (no RPC), letting the size tests exercise the
+    /// REAL create_v2 + dev-buy instruction set.
+    fn with_global(mut t: PumpFunTrader) -> PumpFunTrader {
+        let wallet = t.config.signer.pubkey();
+        let d = |seeds: &[&[u8]], prog: &Pubkey| Pubkey::find_program_address(seeds, prog).0;
+        t.global_account = Some(crate::trader::GlobalAccount {
+            global_pda: d(&[b"global"], &protocol::PUMP_FUN),
+            fee_recipient: Pubkey::new_unique(),
+            global_volume_accumulator: d(&[b"global_volume_accumulator"], &protocol::PUMP_FUN),
+            user_volume_accumulator: d(&[b"user_volume_accumulator", wallet.as_ref()], &protocol::PUMP_FUN),
+            fee_config: d(&[b"fee_config", protocol::PUMP_FUN.as_ref()], &protocol::FEE_PROGRAM),
+            stable_quote_mint: None,
+        });
+        t
+    }
+
+    /// The real create_v2 + dev-buy instruction set (2 CU + create_v2 + ATA + curve
+    /// buy + tip), built with production-representative identity string lengths.
+    fn create_v2_dev_buy_ixs(t: &PumpFunTrader, mint: &Pubkey, wallet: Pubkey) -> Vec<Instruction> {
+        let accounts = derive_create_accounts(mint, TokenProgram::Token2022, true);
+        let args = CreateTokenV2Args {
+            name: "France World Cup".into(), // 16 chars — a real launch name
+            symbol: "FWC".into(),
+            uri: "ipfs://QmZadt6hjfsXjUSNpi2pm1Ky9Zx8i6r5k39gnZY1C1m5dQ".into(), // 53 B ipfs pointer
+            creator: wallet,
+            is_mayhem_mode: false,
+            cashback_enabled: false,
+        };
+        let mut ixs = t.cu_ixs_for_create(true);
+        ixs.push(build_create_v2_ix(mint, wallet, &args, &accounts).unwrap());
+        t.append_dev_buy_ixs(
+            &mut ixs,
+            mint,
+            wallet,
+            TokenProgram::Token2022,
+            false,
+            Some((0.02, 20_000_000, None)),
+        )
+        .unwrap();
+        ixs.push(t.jito_tip_ix(0));
+        ixs
+    }
+
+    fn wire_size(msg: &solana_sdk::message::Message) -> usize {
+        1 + 64 * msg.header.num_required_signatures as usize + msg.serialize().len()
+    }
+
+    /// The bug: a legacy single-message create_v2 + dev-buy overflows the 1232 B
+    /// tx limit (Helius `/fast` → "base64 encoded too large"). Pins the regression.
+    #[test]
+    fn create_v2_dev_buy_legacy_overflows_1232() {
+        let t = with_global(trader());
+        let wallet = t.config.signer.pubkey();
+        let mint = Keypair::new();
+        let ixs = create_v2_dev_buy_ixs(&t, &mint.pubkey(), wallet);
+        let msg = solana_sdk::message::Message::new(&ixs, Some(&wallet));
+        let size = wire_size(&msg);
+        eprintln!("create_v2 + dev-buy legacy = {size} B (limit 1232)");
+        assert!(size > 1232, "expected legacy create_v2+dev-buy > 1232, got {size} B");
+    }
+
+    /// The fix: compiling the SAME instruction set as a v0 tx against the launch
+    /// ALT (the immutable-account set) brings it comfortably under 1232 B.
+    #[test]
+    fn create_v2_dev_buy_v0_with_alt_fits_1232() {
+        use solana_sdk::address_lookup_table::AddressLookupTableAccount;
+        use solana_sdk::hash::Hash;
+        use solana_sdk::message::{v0, VersionedMessage};
+
+        let t = with_global(trader());
+        let wallet = t.config.signer.pubkey();
+        let mint = Keypair::new();
+        let ixs = create_v2_dev_buy_ixs(&t, &mint.pubkey(), wallet);
+
+        let alt = AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: crate::alt::launch_alt_addresses(),
+        };
+        let msg = v0::Message::try_compile(&wallet, &ixs, std::slice::from_ref(&alt), Hash::default())
+            .expect("compile v0 create tx");
+        let size = 1
+            + 64 * msg.header.num_required_signatures as usize
+            + VersionedMessage::V0(msg.clone()).serialize().len();
+        eprintln!("create_v2 + dev-buy v0+ALT  = {size} B (limit 1232)");
+        assert!(size <= 1232, "expected v0+ALT create_v2+dev-buy <= 1232, got {size} B");
+        // The ALT must actually be doing the work — at least the immutable programs
+        // + constant PDAs (>= 12) should resolve through it, not inline.
+        assert!(
+            !msg.address_table_lookups.is_empty(),
+            "v0 message did not reference the ALT"
+        );
     }
 
     #[test]

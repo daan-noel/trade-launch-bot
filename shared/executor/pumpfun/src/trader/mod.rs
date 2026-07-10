@@ -144,6 +144,13 @@ pub struct PumpFunTrader {
     // Set once in initialize()
     pub(crate) global_account: Option<GlobalAccount>,
 
+    // Launch Address Lookup Table, resolved once in `initialize()` from
+    // `config.launch_alt_address` (fetched + deserialized off-chain into its
+    // address set). `Some` → the create path compiles a v0 tx referencing it so a
+    // create_v2 + dev-buy fits the 1232 B limit; `None` → legacy single-message
+    // path (unchanged). See `crate::alt` for the immutable account set it holds.
+    pub(crate) launch_alt: Option<solana_sdk::address_lookup_table::AddressLookupTableAccount>,
+
     // PumpSwap AMM (migrated tokens). Program-constant PumpSwap PDAs, derived once
     // in `new()` (they never depend on the token, only on the program / this
     // wallet) instead of re-running `find_program_address` on every AMM swap.
@@ -257,6 +264,7 @@ impl PumpFunTrader {
             http,
             rpc,
             global_account: None,
+            launch_alt: None,
             amm_global_config_pda,
             amm_event_authority,
             amm_fee_config,
