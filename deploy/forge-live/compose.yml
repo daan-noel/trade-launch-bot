@@ -1,15 +1,17 @@
 # ---------------------------------------------------------------------------
-# forge-live — production stack: postgres + forge LIVE bin (package
-# `forge-live`, bin `slp-live`): ingest + launcher + trading + thin HTTP.
-# Ships to EC2. The analysis bin (`slp-lab`) is workstation-only (see
-# deploy/forge-lab/) and never built here.
+# forge-live — production stack: postgres + forge LIVE backend (package
+# `forge-live`, bin `slp-live`, api.Dockerfile): ingest + launcher + trading +
+# thin HTTP API + forge UI (nginx + TLS/Basic-auth, ui.Dockerfile). Ships to
+# EC2. The analysis bin (`slp-lab`) is workstation-only (see deploy/forge-lab/)
+# and never built here.
 #
-# Image carries BOTH `image:` (ECR ref, pulled on EC2) and `build:` (context =
-# repo root, builds on the workstation).
+# Each image carries BOTH `image:` (ECR ref, pulled on EC2) and `build:`
+# (context = repo root, builds on the workstation). Only nginx (`ui`) is
+# published; the backend is reached only through the proxy.
 #
 # Up:    docker compose -f deploy/forge-live/compose.yml up -d --build
-# Config: forge/.env (see forge/.env.example). Host port 5556 (coexists with
-# hunter's 5555); live published on 8091.
+# Config: forge/.env (see forge/.env.example). Postgres on host 5556 (coexists
+# with hunter's 5555); UI on 80/443.
 # ---------------------------------------------------------------------------
 
 services:
@@ -64,24 +66,42 @@ services:
       timeout: 5s
       retries: 10
 
-  slp-live:
-    container_name: forge-live
-    image: ${ECR_REGISTRY:-forge}/forge-live:${IMAGE_TAG:-latest}
+  # The live bin (`slp-live`). Named `api`; nginx reaches it at
+  # `proxy_pass http://api:8081` (see nginx/default.conf).
+  api:
+    container_name: forge-live-api
+    image: ${ECR_REGISTRY:-forge}/forge-live-api:${IMAGE_TAG:-latest}
     build:
       context: ../..
-      dockerfile: deploy/forge-live/Dockerfile
+      dockerfile: deploy/forge-live/api.Dockerfile
     restart: unless-stopped
+    # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
     env_file: ../../forge/.env
     environment:
       HOST: 0.0.0.0
       PORT: 8081
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-launch_platform}
-    ports:
-      - "${SLP_LIVE_HOST_PORT:-8091}:8081"
     depends_on:
       postgres:
         condition: service_healthy
+
+  # forge UI (nginx, TLS-terminating + Basic-auth). Serves the built SPA and
+  # proxies /api to the `api` backend above. Unlike hunter, the forge backend
+  # has no bearer gate, so nginx does TLS + Basic-auth only (plain default.conf,
+  # no envsubst) — see nginx/default.conf.
+  ui:
+    container_name: forge-live-ui
+    image: ${ECR_REGISTRY:-forge}/forge-live-ui:${IMAGE_TAG:-latest}
+    build:
+      context: ../..
+      dockerfile: deploy/forge-live/ui.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
 
 volumes:
   pgdata:

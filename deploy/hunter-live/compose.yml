@@ -63,13 +63,13 @@ services:
       timeout: 5s
       retries: 10
 
-  # The live trading bin (`live`). Service stays named `backend` so nginx's
-  # `proxy_pass http://backend:8081` keeps working.
-  backend:
-    image: ${ECR_REGISTRY:-hunter}/hunter-live:${IMAGE_TAG:-latest}
+  # The live trading bin (`live`). Named `api`; nginx reaches it at
+  # `proxy_pass http://api:8081` (see nginx/default.conf.template).
+  api:
+    image: ${ECR_REGISTRY:-hunter}/hunter-live-api:${IMAGE_TAG:-latest}
     build:
       context: ../..
-      dockerfile: deploy/hunter-live/Dockerfile
+      dockerfile: deploy/hunter-live/api.Dockerfile
     restart: unless-stopped
     # tini as PID 1: forwards SIGTERM so `docker stop`/redeploy kills it promptly.
     init: true
@@ -82,23 +82,26 @@ services:
       postgres:
         condition: service_healthy
 
-  web:
-    image: ${ECR_REGISTRY:-hunter}/hunter-web:${IMAGE_TAG:-latest}
+  ui:
+    image: ${ECR_REGISTRY:-hunter}/hunter-live-ui:${IMAGE_TAG:-latest}
     build:
       context: ../..
-      dockerfile: deploy/hunter-live/web.Dockerfile
+      dockerfile: deploy/hunter-live/ui.Dockerfile
       args:
         VITE_API_BASE: ""
         VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-5000}
     restart: unless-stopped
+    # env_file (not `${API_AUTH_TOKEN}` interpolation) so the token is read from
+    # hunter/.env into the container env, where nginx's envsubst picks it up.
+    # NGINX_ENVSUBST_FILTER limits substitution to just this var.
+    env_file: ../../hunter/.env
     environment:
-      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?API_AUTH_TOKEN is required (see hunter/.env.example)}
       NGINX_ENVSUBST_FILTER: API_AUTH_TOKEN
     ports:
       - "80:80"
       - "443:443"
     depends_on:
-      - backend
+      - api
 
 volumes:
   pgdata:

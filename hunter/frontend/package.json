@@ -7,7 +7,7 @@
     "dev": "concurrently -n live,lab -c blue,magenta \"npm:dev:live\" \"npm:dev:lab\"",
     "dev:live": "vite --host --config vite.live.config.ts",
     "dev:lab": "vite --host --config vite.lab.config.ts",
-    "build": "tsc && vite build --config vite.live.config.ts",
+    "build:live": "tsc && vite build --config vite.live.config.ts",
     "build:lab": "tsc && vite build --config vite.lab.config.ts",
     "preview": "vite preview --config vite.live.config.ts",
     "test": "vitest run"

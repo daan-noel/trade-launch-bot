@@ -3,13 +3,13 @@
 # Multi-stage build for the ANALYSIS bin (`lab`): sweep/backtest engine +
 # swing analyzer + Parquet-lake pipeline + HTTP API (actix-web + sqlx).
 #
-# IMPORTANT: this image is for LOCAL DEV ONLY (docker-compose.dev.yml). The
-# analysis bin is workstation-only and must NEVER be shipped to EC2 (it pulls
-# arrow/parquet/rayon + a bundled libduckdb compiled from C++ source). See
-# CLAUDE.md "Deployed server". The live image (live/Dockerfile) is the only
-# backend ever deployed.
+# IMPORTANT: this image deploys to its OWN lab server, NOT the live EC2 box —
+# the analysis bin pulls arrow/parquet/rayon + a bundled libduckdb compiled from
+# C++ source, so it is heavier than the 2vCPU/4GB live host should carry. See
+# CLAUDE.md "Deployed server". The live backend (deploy/hunter-live/api.Dockerfile)
+# is the only image on the EC2 live box.
 #
-# Mirrors live/Dockerfile's cargo-chef caching so day-to-day edits recompile
+# Mirrors hunter-live/api.Dockerfile's cargo-chef caching so day-to-day edits recompile
 # only YOUR code. Build context = repo root (the cargo workspace lives there).
 # No DATABASE_URL needed at build time: queries are runtime sqlx::query() and
 # migrations are embedded via sqlx::migrate!("./migrations").
@@ -52,6 +52,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /usr/local/bin/lab /usr/local/bin/lab
-# HOST/PORT/SWEEP_LAKE_DIR are set in docker-compose.dev.yml.
+# HOST/PORT/SWEEP_LAKE_DIR are set in deploy/hunter-lab/compose.yml.
 EXPOSE 8082
 CMD ["lab"]

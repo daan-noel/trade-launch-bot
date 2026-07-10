@@ -1,6 +1,9 @@
 # ---------------------------------------------------------------------------
-# Serves the built React SPA and reverse-proxies /api to the backend container.
-# TLS-terminating: HTTPS on 443, plain HTTP on 80 redirects up to HTTPS.
+# hunter-lab nginx — serves the built LAB SPA (entry `lab.html`) and
+# reverse-proxies /api to the lab backend container. TLS-terminating: HTTPS on
+# 443, plain HTTP on 80 redirects up to HTTPS. Mirrors the live stack's nginx
+# (deploy/hunter-live/nginx/) — the lab stack deploys to its own server, so it
+# gets the same TLS + Basic-auth gate.
 # ---------------------------------------------------------------------------
 
 # Plain HTTP -> redirect everything to HTTPS. No auth here so the redirect
@@ -24,35 +27,39 @@ server {
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
     root /usr/share/nginx/html;
-    index index.html;
+    # The lab build's entry document is lab.html (not index.html) — Vite keeps
+    # the entry basename. Serve it as the directory index and the SPA fallback.
+    index lab.html;
 
     # HTTP Basic Auth gate for the whole site (SPA + /api). The location blocks
     # below inherit these directives. Credentials live in nginx/.htpasswd
-    # (bcrypt), copied into the image by the frontend Dockerfile.
+    # (bcrypt), copied into the image by the UI Dockerfile.
     auth_basic           "Restricted";
     auth_basic_user_file /etc/nginx/.htpasswd;
 
     # Backend API. No trailing slash on proxy_pass => the /api/ prefix is
-    # preserved, matching the backend's /api/... routes.
+    # preserved, matching the backend's /api/... routes. The lab backend listens
+    # on 8082 and is reached by its compose service name `api`.
     location /api/ {
-        proxy_pass http://api:8081;
+        proxy_pass http://api:8082;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        # Bridge the browser's Basic-Auth login to the backend's fail-closed
+        # Bridge the browser's Basic-Auth login to the lab bin's fail-closed
         # bearer auth: replace the inbound `Authorization: Basic ...` with the
-        # backend's bearer token so mutating (real-SOL) routes are accepted.
-        # ${API_AUTH_TOKEN} is substituted at container start by the nginx image's
-        # envsubst entrypoint (NGINX_ENVSUBST_FILTER restricts it to this var, so
-        # the `$host`/`$remote_addr` runtime vars above are left untouched). The
-        # token stays server-side — it is never sent to the browser.
+        # backend's bearer token so mutating routes are accepted. ${API_AUTH_TOKEN}
+        # is substituted at container start by the nginx image's envsubst
+        # entrypoint (NGINX_ENVSUBST_FILTER restricts it to this var, so the
+        # $host/$remote_addr runtime vars above are left untouched). The token
+        # stays server-side — it is never sent to the browser.
         proxy_set_header Authorization     "Bearer ${API_AUTH_TOKEN}";
         proxy_read_timeout 300s;
     }
 
-    # SPA fallback: let react-router handle client-side routes.
+    # SPA fallback: let react-router handle client-side routes by serving the
+    # lab entry document for any non-file, non-/api path.
     location / {
-        try_files $uri $uri/ /index.html;
+        try_files $uri $uri/ /lab.html;
     }
 }

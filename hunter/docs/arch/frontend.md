@@ -24,7 +24,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   builds run the live config only** → `dist/index.html`, no `lab.html`, no sweep/swing/grouped chunks
   (the EC2 image is lab-free).
 - **Two dev servers, run separately or concurrently:** `npm run dev:live` (:5173) and `npm run dev:lab`
-  (:5174) are independent processes; `npm run dev` runs both at once via `concurrently`. `npm run build`
+  (:5174) are independent processes; `npm run dev` runs both at once via `concurrently`. `npm run build:live`
   = live-only `dist/index.html`; `npm run build:lab` = workstation lab build. `tsc` type-checks **both**
   trees in one pass, so a lab type error fails the live build too (acceptable; single package).
 - **Per-app `/api` proxy:** live proxies to the live bin (`VITE_LIVE_DEV_PROXY_TARGET`, default

@@ -3,14 +3,15 @@
 # Multi-stage build for the LIVE backend bin (`live`): ingest +
 # strategies + trade execution + HTTP API (actix-web + sqlx + solana-sdk).
 #
-# This is the ONLY backend image shipped to EC2. The analysis bin
-# (`lab`, with arrow/parquet/rayon) runs on the workstation and is
-# never containerised — see CLAUDE.md "Deployed server".
+# This is the ONLY backend image on the EC2 live box. The analysis bin
+# (`lab`, with arrow/parquet/rayon) is a SEPARATE image
+# (deploy/hunter-lab/api.Dockerfile) that deploys to its own, heavier lab
+# server — never the live box. See CLAUDE.md "Deployed server".
 #
 # cargo-chef caches the (huge) dependency tree as its own layer, so day-to-day
 # updates only recompile YOUR code (~1 min) instead of all ~400 crates (~10 min).
 #
-# Build context = repo root (the cargo workspace lives there). See docker-compose.yml.
+# Build context = repo root (the cargo workspace lives there). See compose.yml.
 # No DATABASE_URL needed at build time: all queries are runtime sqlx::query(),
 # and migrations are embedded into the binary via sqlx::migrate!("./migrations").
 # ---------------------------------------------------------------------------
@@ -54,6 +55,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /usr/local/bin/live /usr/local/bin/live
-# HOST/PORT are set in docker-compose.yml (must bind 0.0.0.0 inside the network).
+# HOST/PORT are set in compose.yml (must bind 0.0.0.0 inside the network).
 EXPOSE 8081
 CMD ["live"]

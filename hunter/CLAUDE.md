@@ -61,7 +61,8 @@ cargo run   -p live -- probe <ladder|fanout|simulate-sell|holdings> [args]
 cd frontend-react; npm run dev         # both apps concurrently: live :5173, lab :5174 (separate dev servers)
 npm run dev:live                       # live app only (:5173, proxies /api -> live bin :8081)
 npm run dev:lab                        # lab app only  (:5174, proxies /api -> lab bin :8082) — pair with `PORT=8082 cargo run -p lab`
-npm run build                          # tsc (checks BOTH trees) && vite build (live config) → LIVE-ONLY dist/index.html
+npm run build:live                     # tsc (checks BOTH trees) && vite build (live config) → LIVE-ONLY dist/index.html
+npm run build:lab                      # tsc (checks BOTH trees) && vite build (lab config)  → workstation lab.html (never deployed)
 ```
 
 **Frontend is two apps over a shared core** (mirrors the backend two-bin split): `src/shared` ·
@@ -69,7 +70,7 @@ npm run build                          # tsc (checks BOTH trees) && vite build (
 (`index.html`→live `vite.live.config.ts` :5173, `lab.html`→lab `vite.lab.config.ts` :5174;
 `lab.html` is dev-only — never built for prod). Each app runs independently (`dev:live`/`dev:lab`)
 or both at once (`dev`). Mode is build-time, not runtime — no `useCapabilities` gating. Ship the
-**live** build to EC2 (`npm run build` emits lab-free `dist/index.html`). One split `createApi`:
+**live** build to EC2 (`npm run build:live` emits lab-free `dist/index.html`). One split `createApi`:
 `baseApi` shell + per-mode `injectEndpoints`; import mode hooks from `@live|@lab/store/*Endpoints`,
 never the shared `store/apiSlice` barrel, so a mode's side effect never leaks across builds. See
 [docs/arch/frontend.md](docs/arch/frontend.md).
@@ -102,7 +103,7 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 ## Definition of done
 
 - **Backend:** `cargo check -p live` + `cargo check -p lab` clean; clippy on touched code; test when logic changed
-- **Frontend:** `npm run build` clean; no extra re-render on SOL/USD tick or live-trade stream
+- **Frontend:** `npm run build:live` clean; no extra re-render on SOL/USD tick or live-trade stream
 - **Docs — update ALL affected tiers:**
   - Rules/commands/constraints changed → **CLAUDE.md**
   - Module structure/data flow/behavior changed → **docs/arch/[subsystem].md** *(high-level map: crates, files, data flow)*

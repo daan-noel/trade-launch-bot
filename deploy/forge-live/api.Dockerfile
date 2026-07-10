@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
 # Multi-stage build for the launch-platform LIVE bin (`slp-live`): ingest +
-# launcher + trading + thin HTTP API. Mirrors meme-trading/live/Dockerfile.
+# launcher + trading + thin HTTP API. Mirrors deploy/hunter-live/api.Dockerfile.
 #
 # This is the ONLY launch-platform image shipped to EC2. The analysis bin
 # (`slp-lab`, with duckdb/arrow/parquet) runs on the workstation and is never
@@ -11,7 +11,7 @@
 # updates only recompile YOUR code instead of all deps.
 #
 # Build context = MONOREPO root (the single cargo workspace + shared/ crates
-# live there). See solana-launch-platform/docker-compose.yml.
+# live there). See deploy/forge-live/compose.yml.
 # No DATABASE_URL needed at build time (runtime sqlx::query + embedded migrations).
 # ---------------------------------------------------------------------------
 

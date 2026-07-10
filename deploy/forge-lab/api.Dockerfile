@@ -6,7 +6,7 @@
 # LOCAL DEV ONLY (deploy/forge-lab/compose.yml). The analysis bin is
 # workstation-only and must NEVER ship to EC2 — the lake tier pulls
 # duckdb/arrow/parquet/rayon when filled. See forge/CLAUDE.md "Dep partition".
-# Mirrors deploy/hunter-lab/Dockerfile.
+# Mirrors deploy/hunter-lab/api.Dockerfile.
 #
 # Build context = MONOREPO root (the single cargo workspace + shared/ crates).
 # No DATABASE_URL at build time (runtime sqlx::query + embedded migrations).
