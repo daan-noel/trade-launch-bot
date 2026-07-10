@@ -10,7 +10,7 @@
 
 ## Context primer (read first in a fresh session)
 
-We run a Solana launch+trade platform (`solana-launch-platform`). Wallets flow
+We run a Solana launch+trade platform (`forge`). Wallets flow
 `generated → funding → funded → used → retired` (`ManagedWallet`,
 `platform-core::models`). Treasury wallets are the SOL *source*; dev + bundler
 wallets are the launch buyers. Funding lives in
@@ -158,7 +158,7 @@ jitter.
       slippage, and (where >1 venue exists) route. Feed from a per-wallet seed so
       it's stable per wallet but varied across the set.
 - [ ] Verify the exact knobs in the `pump-trader` buy/sell args before wiring
-      (path-dep crate from meme-trading) — do **not** invent field names.
+      (path-dep crate from hunter) — do **not** invent field names.
 - [ ] Guard test: across a launch's wallets, `cu_price`/slippage are not all equal.
 - [ ] DoD: test green; no regression to landing reliability on the snipe path.
 

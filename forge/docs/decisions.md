@@ -54,7 +54,7 @@ denormalized ids on `trades` (with `CHECK` on `market_kind`).
 **Choice:** **envelope-encrypted file + a pluggable KEK trait.** `key_ref` is a blob
 id/path to an AES-GCM-encrypted ed25519 secret whose data-encryption key is wrapped
 by a KEK. The KEK source is a trait — **env/passphrase now** (no infra, works
-headless on EC2, honours meme-trading's "no new infra spend"), swappable to **AWS
+headless on EC2, honours hunter's "no new infra spend"), swappable to **AWS
 KMS** (unwrap via the instance IAM role) for production with no schema or call-site
 change.
 
@@ -91,7 +91,7 @@ reference only (`0002_own_launch.sql`), and `ManagedWallet.key_ref` is
 ## D4 — USD rate source for non-SOL quotes — **CHOSEN**
 
 **Choice:** **USDC pinned to `1.0`** (seeded in `quote_assets`); **SOL** from a
-price poller carried over from meme-trading, writing `quote_assets.usd_rate` /
+price poller carried over from hunter, writing `quote_assets.usd_rate` /
 `usd_rate_at`. A live oracle is **deferred** until a quote that is neither SOL nor a
 USD-stable actually needs one.
 

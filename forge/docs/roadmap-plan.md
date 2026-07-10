@@ -1,6 +1,6 @@
 # Platform roadmap — phases & tasks
 
-Living task list for **solana-launch-platform**. The foundation design lives in
+Living task list for **forge**. The foundation design lives in
 [`and-about-the-instructions-shimmying-shore.md`](../../and-about-the-instructions-shimmying-shore.md);
 ADRs in [`decisions.md`](decisions.md). Update this file when a phase advances
 or tasks are added/dropped.
@@ -84,7 +84,7 @@ planned sniper bundle → Jito submit.
 | --- | --- |
 | Auto-submit | `launcher::service`, `live::http` |
 | Bundle confirm | `launcher::confirm` (done — thin `live` watcher) |
-| Leg variants | `launcher::bundle_execute`, `../meme-trading/pump-trader::bundle_buy` |
+| Leg variants | `launcher::bundle_execute`, `../hunter/pump-trader::bundle_buy` |
 | USD poller | `live` (composition root), `platform-core` repos |
 
 ---
@@ -126,9 +126,9 @@ items are folded into Phase 5+ below.
 **Goal:** Automated buy/sell on observed + own tokens; sell-confirm from feed.
 
 - [ ] Trading executor in `live` (reuse `pump-trader` buy/sell/AMM paths)
-- [ ] Feed-based sell-confirm (gRPC `trades` — no RPC poll; carry meme-trading lesson)
+- [ ] Feed-based sell-confirm (gRPC `trades` — no RPC poll; carry hunter lesson)
 - [ ] Domain E migration — `strategy_rules`, `strategy_runs`, `strategy_positions`, …
-- [ ] Strategy runner + registry (port patterns from meme-trading `live`, generalized quote/base)
+- [ ] Strategy runner + registry (port patterns from hunter `live`, generalized quote/base)
 - [ ] Managed-wallet roles wired — `bundler` / `treasury` / `trading` beyond launch-only
 - [ ] In-RAM tracking cache + SQL-paged token list (EC2 RAM guardrails)
 
@@ -169,7 +169,7 @@ Recorded so they are not forgotten; no schedule.
   (from the retired wallet-pool plan)
 - [ ] Multi-RPC health / latency hypertable (Domain F)
 - [x] **Frontend SPA rebuilt** — `frontend-launch` is now a proper React-Router +
-  RTK-Query + Tailwind operator dashboard (mirrors meme-trading's stack): a
+  RTK-Query + Tailwind operator dashboard (mirrors hunter's stack): a
   persistent nav shell over `shared`/`app`/`features` trees, a shared `ui/` kit,
   Dashboard + Launch Console + Launched-Tokens list + per-token detail (spot-price
   chart via `lightweight-charts`) + Wallet Pool + Launch/Metadata template editors.

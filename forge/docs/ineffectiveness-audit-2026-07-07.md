@@ -1,6 +1,6 @@
 # Ineffectiveness / SSOT Audit + Fixes — 2026-07-07
 
-Session handoff. A three-agent audit of `solana-launch-platform` (frontend, backend/SSOT,
+Session handoff. A three-agent audit of `forge` (frontend, backend/SSOT,
 FE↔BE seam) followed by fixes in three tiers. **All backend Rust edits below were made but
 NOT compiled** in the session's environment — you must `cargo check` + apply migrations.
 The **frontend `npm run build` is green** throughout (verified after every frontend change).

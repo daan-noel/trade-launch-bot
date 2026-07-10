@@ -8,14 +8,14 @@ multi-wallet, multi-RPC, strategy + analytics ecosystem.
 
 The **current step is the data-infrastructure foundation** — a concrete schema designed
 *generalized for multi-venue + non-SOL quote from day one*, learning from (not copying) the
-existing `meme-trading` repo's data layer. That layer is well-built but **SOL-and-pump.fun
+existing `hunter` repo's data layer. That layer is well-built but **SOL-and-pump.fun
 locked** (`amount_lamports`, `reserve_lamports`, `venue IN ('curve','amm')`). This redesign's
 job is to lift those two hard-coded assumptions into first-class dimensions.
 
 The launcher execution (create tx, dev-buy, bundler) is a **later** step; here we only design
 the schema seams it will need.
 
-**Operational constraint (carried from `meme-trading`):** production ships to a **2vCPU / 4GB
+**Operational constraint (carried from `hunter`):** production ships to a **2vCPU / 4GB
 RAM EC2** box. Ingest + launch + trading and lake/sweep analytics are **disjoint workloads** —
 the architecture mirrors the existing `live`/`lab` split from day one (see §1b), not as a later
 refactor.
@@ -27,7 +27,7 @@ refactor.
 | Reuse | New Cargo workspace; borrow the two standalone crates (`pump-trader`, `ingest-laserstream`) via **`path` dep now → pinned `git` rev when stable**. `trading_core`'s data layer is redesigned fresh, not carried. |
 | Data scope now | The extensible **foundation**: identity (mint/launchpad/quote SSOT), tokens, launches, wallets, and the trades/ingest feed — generalized for multi-launchpad + non-SOL quote. Launch tables implemented first. |
 | Storage | Carry the proven **two-tier** stack: Postgres/TimescaleDB (source-of-truth + hot path) + Parquet/DuckDB lake (cold OLAP). |
-| **Deployment** | **Two bins from day one** (mirror `meme-trading`'s `live`/`lab` split): **`live` → EC2** (ingest + launch + trade + thin HTTP); **`lab` → workstation** (lake export, sweeps, backtests, wallet analytics). Lake/DuckDB/`arrow`/`parquet`/`rayon` **never** ship to EC2. Server PG = hot rolling buffer; analysis via DB sync to local PG. |
+| **Deployment** | **Two bins from day one** (mirror `hunter`'s `live`/`lab` split): **`live` → EC2** (ingest + launch + trade + thin HTTP); **`lab` → workstation** (lake export, sweeps, backtests, wallet analytics). Lake/DuckDB/`arrow`/`parquet`/`rayon` **never** ship to EC2. Server PG = hot rolling buffer; analysis via DB sync to local PG. |
 | Bundler variation | Per-leg structure variation surface = **variant + params + budget/tip** (smallest safe surface). |
 
 ---
@@ -41,7 +41,7 @@ New workspace (fresh git repo). Two crates referenced, not copied:
 | `pump-trader` | Execution layer: tx build / sign / submit / confirm / retry / nonce / Jito / slippage — real-money-hardened. The launch dev-buy *is* a pump-trader buy. | pump.fun-specific → used as the **pump.fun venue adapter**; gets a new `create.rs` (token-create builder doesn't exist yet). |
 | `ingest-laserstream` | Ingestion layer: Helius gRPC transport + curve/AMM/create decoders + truncated-log recovery + reconnect watchdog. Foundational to *all* analytics. | decoders are pump.fun/PumpSwap-specific → extend per launchpad; transport/pipeline/watchdog are venue-agnostic. |
 
-- **Path deps** (`{ path = "../meme-trading/pump-trader" }`) during co-development, so edits to
+- **Path deps** (`{ path = "../hunter/pump-trader" }`) during co-development, so edits to
   the crate (e.g. adding `create.rs`) are seen by both projects immediately; switch to a
   **pinned `git` rev** once stable for reproducible builds.
 - **pump-trader gets a targeted extension (you own it):** expose each buy/sell **variant** as an
@@ -61,12 +61,12 @@ New repo sits NEXT TO the existing one (path deps reach sideways). `★` = build
 
 ```text
 your-code/
-├── meme-trading/                  ← EXISTING (borrowed from, not modified except pump-trader ext.)
+├── hunter/                  ← EXISTING (borrowed from, not modified except pump-trader ext.)
 │   ├── pump-trader/               ← borrowed: execution
 │   └── ingest-laserstream/        ← borrowed: data feed
 │
-└── solana-launch-platform/        ← NEW repo + Cargo workspace
-    ├── Cargo.toml                 ← members + path deps to ../meme-trading/*
+└── forge/        ← NEW repo + Cargo workspace
+    ├── Cargo.toml                 ← members + path deps to ../hunter/*
     ├── docker-compose.yml         ← local Postgres + TimescaleDB
     ├── .env.example
     ├── migrations/
@@ -86,7 +86,7 @@ Each crate = one job: **platform-core** (all tables + types + read/write — thi
 via pump-trader) · **lake** (cold columnar copy for backtests) · **live** / **lab** (two
 composition roots — never one monolithic `app` bin).
 
-**Dep partition (enforced from scaffold — same lesson as `meme-trading`'s crate split):**
+**Dep partition (enforced from scaffold — same lesson as `hunter`'s crate split):**
 
 | Crate | `live` | `lab` | `platform-core` |
 | --- | --- | --- | --- |
@@ -106,11 +106,11 @@ Verify with `cargo tree -p live` (no `duckdb`/`arrow`/`parquet`) and `cargo tree
   equivalent) → local PG → `lab -- lake-export` → sealed-day Parquet → DuckDB reads/sweeps.
 - **Launch flow:** template → `launcher` → `pump-trader` → chain → confirm → `launches` row
   (live only).
-- **Reuse flow:** edit `../meme-trading/pump-trader`, both projects see it (path dep).
+- **Reuse flow:** edit `../hunter/pump-trader`, both projects see it (path dep).
 
 ### 1b. Deployment topology — EC2 vs workstation
 
-Hard constraint inherited from `meme-trading`: production runs on **2vCPU / 4GB RAM EC2**.
+Hard constraint inherited from `hunter`: production runs on **2vCPU / 4GB RAM EC2**.
 This platform adds launcher + bundler on top of ingest/trading — the box gets *tighter*, not
 looser. The live/lab split is a **resource partition**, not a naming preference.
 
@@ -425,7 +425,7 @@ for recent tokens, parity test vs. PG.
   the sync watermark; it does not host Parquet files or run export jobs.
 - Simulate/sweep/backtest endpoints live in **`lab`** and read lake (+ PG fresh tail for tokens
   newer than the last export). Single-rule simulate reads Parquet, not PG — same as
-  `meme-trading`.
+  `hunter`.
 - EC2's contribution to the lake is **being the upstream PG source** that gets synced — not
   running the cold tier.
 
@@ -476,7 +476,7 @@ Domains E–F and the lake fill follow on the workstation side as the platform g
 
 ---
 
-## 9. Open decisions — **RESOLVED** (see [`solana-launch-platform/docs/decisions.md`](solana-launch-platform/docs/decisions.md))
+## 9. Open decisions — **RESOLVED** (see [`forge/docs/decisions.md`](forge/docs/decisions.md))
 
 1. **Amount naming** → **LOCKED:** asset-referenced `*_quote`/`*_base` (dual `*_lamports`
    vocab rejected). Already implemented across migrations + models.
@@ -487,6 +487,6 @@ Domains E–F and the lake fill follow on the workstation side as the platform g
    trait (env/passphrase now → AWS KMS later); ed25519 signs in-process (KMS can't sign it).
    Builds in the phase-2 launcher; schema already stores `key_ref` only.
 4. **USD rate source** → **CHOSEN:** USDC pinned to 1.0 + SOL price poller (carried from
-   meme-trading); USD derived in views only; live oracle deferred.
+   hunter); USD derived in views only; live oracle deferred.
 5. **Wallet-funding obfuscation** → **DEFERRED** (parallel workstream, post-launcher);
    `managed_wallets` must eventually record funding source + hop graph.
