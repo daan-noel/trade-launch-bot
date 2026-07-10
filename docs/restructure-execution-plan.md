@@ -302,22 +302,32 @@ Target crates: **`executor-core`** (`shared/executor/core/`, third-party deps on
       0`. Executor tests still green (18+34); `cargo tree -i forge-orchestrator` from both `*-lab` =
       no match (partition holds). Zero SOL, zero network.
 
-### Phase F — Wire forge flows onto `Plan` + cut over
-- [ ] Repoint the launcher (`execute_launch`, `bundle_execute`, `compose_bundle_legs` —
-      `service.rs`, `bundle.rs`, `bundle_execute.rs`) to `bundle_launch` → `Plan` →
-      `executor-core`, replacing the inline leg builder + free-text `template.variant` string match.
-      Preserve the `funder-target == launch-gate` SSOT (`dev_launch_required_lamports`,
-      `funding_plan.rs`).
-- [ ] Repoint `manage` (sell/buy/consolidate — `manage/execute.rs`) + `ladder`/`volume` onto
-      `volume_make`/`exit`/`consolidate`. **Retire the three raw-transfer paths**
-      (`wallet_funding.rs:824`, `dust_sweep.rs`, `manage/execute.rs:341`) in favor of typed
-      `TransferSol` ops (funding may keep its plain-transfer strategy behind a `TransferSol` op —
-      but auditable).
-- [ ] Persist the `Plan` + audit result alongside `bundles`/`token_positions` for preview/replay
-      (generalize `bundles.legs` JSONB). Retire dead ad-hoc paths **after** parity.
-- **Gate F (Part 2 exit):** a real (small) launch + volume + exit runs end-to-end through the
-      `Plan` pipeline; audit logged; landing feed-confirmed on `forge/live` (no RPC poll); the
-      on-chain "overflow" launch error class is gone.
+### Phase F — Wire forge flows onto `Plan` + cut over — ✅ CODE-COMPLETE (2026-07-09); ⚠ live Gate F deferred
+- [x] Repointed the launcher onto the `Plan` pipeline. New `plan_pipeline::gate` (validate via
+      `prepare` → sticky-persona disguise applied to the plan → mandatory `audit_with` → refuse a
+      failing plan) + `plan_exec` (bundler-buy op → `build_bundle_leg_tx`; SSOT `execute_transfer`).
+      `execute_launch` builds the launch as `bundle_launch` (create + dev-buy + N bundlers), gates +
+      persists Plan+audit; `bundle_execute` rebuilds + submits legs from the **persisted `Plan`**
+      (re-gated ⇒ identical deterministic disguises), dropping `BundleBuyVariant::parse` + the
+      `compose_bundle_legs` RNG composer + the free-text `template.variant` match (now mapped onto the
+      catalog via `create_variant_name`). Bundler buys are `ExactQuote` (SOL-in, min_out-floored) —
+      the tokens-out `ExactBase` overflow encoding is **never** chosen (structural overflow cure).
+      `dev_launch_required_lamports` gate SSOT preserved.
+- [x] Repointed `manage::execute_action` (sell→`Sell`/Exit, buy→`Buy`/Accumulate, consolidate→typed
+      `TransferSol`) — builds + gates + persists a `Plan` before executing; `ladder`/`volume` inherit
+      it (they drive `execute_action`). **Retired all three raw-transfer paths** — `manage`
+      consolidate, `wallet_funding` (send/submit), `dust_sweep` — onto the one SSOT
+      `plan_exec::execute_transfer` (still plain transfers, no Jito; now typed + auditable).
+- [x] Persist the `Plan` + `AuditReport` (migration `0002_plan_audit`: `bundles.{plan,audit}` +
+      `manage_actions.{plan_orchestrator,audit}`, nullable/additive; `bundles.legs` kept as a display
+      projection of the plan for the confirm watcher + UI). `AUDIT_ENFORCE_FINGERPRINT` (default off)
+      hard-blocks on tells; a malformed-account hard reject is never overridable.
+- **Gates met (zero-SOL):** ✅ `cargo check` green for all 4 product bins; dep partition holds
+      (neither `*-lab` links orchestrator/executor); 11 launcher + 31 orchestrator + executor tests
+      pass (new launch/consolidate/persist-round-trip gate tests added). Committed `bb4d792`.
+- **⚠ Gate F (live, Part 2 exit) — NOT run here:** a real (small) launch + volume + exit end-to-end
+      through the `Plan` pipeline; audit logged; feed-confirmed landing on `forge/live`; overflow class
+      confirmed gone. Requires a real-SOL mainnet run — cannot be exercised in this environment.
 
 **Part 2 invariants to preserve (bug if violated):** feed-confirmed sends / no hot-path RPC poll;
 `min_out` late-bound (`slippage None ⇒ min_out=1 ⇒ skip reserve read`, `None ≠ Some(0)`); buy
