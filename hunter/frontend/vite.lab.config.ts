@@ -3,8 +3,8 @@ import { makeConfig } from './vite.config.base';
 // LAB build (workstation only, never shipped). Served from `lab.html`; the
 // `spaFallback` middleware rewrites deep client routes to `lab.html` so a hard
 // refresh on e.g. `/strategies/tpsl1` loads the lab app instead of the live one.
-// `/api` proxies to the lab bin (default :8082 — run `PORT=8082 cargo run -p lab`
-// to keep it off the live bin's :8081 when both run side by side).
+// `/api` proxies to the lab bin, which binds :8082 by default (its `LAB_PORT`),
+// off the live bin's :8081 — so `cargo run -p hunter-lab` needs no port override.
 export default makeConfig({
   port: 5174,
   entry: 'lab.html',

@@ -76,8 +76,8 @@ impl Settings {
             db_batch_max_connections: env_parse_min("DB_BATCH_MAX_CONNECTIONS", 16u32, 1)?,
             db_batch_min_connections: env_parse("DB_BATCH_MIN_CONNECTIONS", 2u32)?,
             db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
-            host: env_or("HOST", "127.0.0.1"),
-            port: env_parse("PORT", 8081)?,
+            host: resolve_host("LIVE_HOST"),
+            port: resolve_port("LIVE_PORT", 8081)?,
             // Route through the erroring parse: a typo (e.g. `HTTP_ENABLED=ture`)
             // must fail loudly, not silently fall back to `true` and expose the API.
             http_enabled: env_parse("HTTP_ENABLED", true)?,
@@ -112,8 +112,8 @@ impl Settings {
             db_batch_max_connections: env_parse_min("DB_BATCH_MAX_CONNECTIONS", 16u32, 1)?,
             db_batch_min_connections: env_parse("DB_BATCH_MIN_CONNECTIONS", 2u32)?,
             db_acquire_timeout: Duration::from_secs(env_parse("DB_ACQUIRE_TIMEOUT_SECS", 10u64)?),
-            host: env_or("HOST", "127.0.0.1"),
-            port: env_parse("PORT", 8081)?,
+            host: resolve_host("LAB_HOST"),
+            port: resolve_port("LAB_PORT", 8082)?,
             http_enabled: env_parse("HTTP_ENABLED", true)?,
             http_workers: env_parse_min("HTTP_WORKERS", 2usize, 1)?,
             cors_allowed_origin: env_or("CORS_ALLOWED_ORIGIN", "*"),
@@ -179,6 +179,29 @@ fn required_non_empty(key: &str) -> anyhow::Result<String> {
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Resolve the HTTP bind host. Docker injects `HOST=0.0.0.0` (0.0.0.0 so the
+/// container is reachable via its published port) and that wins; local dev falls
+/// back to the bin-specific key (`LIVE_HOST` / `LAB_HOST`) so the two bins can
+/// bind independently, then to loopback. Mirrors forge's live/lab bins.
+fn resolve_host(specific_key: &str) -> String {
+    std::env::var("HOST")
+        .or_else(|_| std::env::var(specific_key))
+        .unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+/// Resolve the HTTP bind port. Docker injects `PORT` (the compose `*_API_PORT`)
+/// and that wins; local dev falls back to the bin-specific key (`LIVE_PORT` /
+/// `LAB_PORT`) so live and lab default to *different* ports (8081 / 8082) and
+/// neither needs an inline `PORT=…` override to avoid colliding. Mirrors forge.
+fn resolve_port(specific_key: &str, default: u16) -> anyhow::Result<u16> {
+    if let Ok(raw) = std::env::var("PORT") {
+        return raw
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid value for PORT={raw:?}: {e}"));
+    }
+    env_parse(specific_key, default)
 }
 
 fn env_parse<T>(key: &str, default: T) -> anyhow::Result<T>

@@ -54,13 +54,13 @@ cargo test  -p hunter-live             # live unit tests (strategies, trader edg
 cargo test  -p hunter-lab              # lab unit tests (sweep, swing)
 cargo test  -p hunter-live -- --ignored  # integration; needs DATABASE_URL + HELIUS_RPC_URL
 cargo test  -p executor-pumpfun        # trader crate tests
-cargo run   -p hunter-live             # live box: loads .env; needs Postgres + Helius gRPC
-cargo run   -p hunter-lab              # analysis box: needs Postgres; NO keys / NO gRPC
+cargo run   -p hunter-live             # live box: loads .env; needs Postgres + Helius gRPC (binds LIVE_PORT :8081)
+cargo run   -p hunter-lab              # analysis box: needs Postgres; NO keys / NO gRPC (binds LAB_PORT :8082)
 cargo run   -p hunter-lab -- lake-export # batch: export sealed days local-PG -> Parquet lake ($SWEEP_LAKE_DIR)
 cargo run   -p hunter-live -- probe <ladder|fanout|simulate-sell|holdings> [args]
-cd frontend-react; npm run dev         # both apps concurrently: live :5173, lab :5174 (separate dev servers)
+cd frontend; npm run dev               # both apps concurrently: live :5173, lab :5174 (separate dev servers)
 npm run dev:live                       # live app only (:5173, proxies /api -> live bin :8081)
-npm run dev:lab                        # lab app only  (:5174, proxies /api -> lab bin :8082) — pair with `PORT=8082 cargo run -p hunter-lab`
+npm run dev:lab                        # lab app only  (:5174, proxies /api -> lab bin :8082)
 npm run build:live                     # tsc (checks BOTH trees) && vite build (live config) → LIVE-ONLY dist/index.html
 npm run build:lab                      # tsc (checks BOTH trees) && vite build (lab config)  → workstation lab.html (never deployed)
 ```

@@ -37,8 +37,8 @@ Postgres from the merged compose (published on `DB_PORT`, default 5555):
 docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d postgres
 
 # --- Backends (native, separate terminals) ---
-cargo run -p live                 # needs Postgres + Helius gRPC/keys
-$env:PORT=8082; cargo run -p lab  # run lab beside live (live keeps its own PORT)
+cargo run -p live                 # needs Postgres + Helius gRPC/keys (binds LIVE_PORT :8081)
+cargo run -p lab                  # binds LAB_PORT :8082 by default — runs beside live, no override
 cargo run -p lab -- lake-export                  # export sealed days -> Parquet lake
 cargo run -p lab -- lake-export --include-today  # also today's open day (sweep current-day data)
 
