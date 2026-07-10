@@ -56,13 +56,15 @@ pub async fn require_bearer_auth(
     let authorized = match (mutating, configured) {
         // Safe reads + preflight always pass.
         (false, _) => true,
-        // Mutating + token configured → must match exactly.
+        // Mutating + token configured → must match exactly. Compared in constant
+        // time (`constant_time_eq`) so response timing can't leak the secret token
+        // byte-by-byte; a length mismatch short-circuits (length isn't secret).
         (true, Some(expected)) => req
             .headers()
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.strip_prefix("Bearer "))
-            .map(|t| t == expected)
+            .map(|t| constant_time_eq::constant_time_eq(t.as_bytes(), expected.as_bytes()))
             .unwrap_or(false),
         // Mutating + NO token configured → deny (fail closed).
         (true, None) => false,

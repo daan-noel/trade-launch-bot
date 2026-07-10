@@ -380,7 +380,7 @@ mod tests {
         // stays a **Rust-only** fixture (do not delete it: this test `include_str!`s
         // it). See the JSON's `_comment` for the grammar (it matches `resolve` above).
         let data: Value = serde_json::from_str(include_str!(
-            "../../../frontend-react/src/shared/services/tableEval.fixtures.json"
+            "../../../frontend/src/shared/services/tableEval.fixtures.json"
         ))
         .expect("fixtures parse");
         let rows: Vec<Value> = data["rows"].as_array().expect("rows array").clone();

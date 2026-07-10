@@ -1,29 +1,30 @@
 //! **Fingerprint auditor** (forge-only, mandatory) — the last gate before a `Plan`
-//! executes. It reads the *whole* plan (ops + funding graph + schedule) and the
-//! per-op **send shape** (the [`crate::disguise::Disguise`] plus the nonce / ATA /
-//! account-list attributes the Phase F build step resolves) and looks for the
-//! on-chain *tells* that link our wallets to each other or mark them as a bot:
+//! executes. It reads the *whole* plan (ops + schedule) and the per-op **send
+//! shape** (the [`crate::disguise::Disguise`] plus the nonce / ATA / account-list
+//! attributes the Phase F build step resolves) and looks for the on-chain *tells*
+//! that link our wallets to each other or mark them as a bot:
 //!
-//!   1. **star funding** — one source fans SOL out to many wallets (a funding-graph
-//!      star is the single strongest linkage tell);
-//!   2. **equal amounts** — a cluster of legs (buys/sells or funding edges) that
-//!      spend the *exact* same amount (e.g. everyone buys 0.02 SOL);
-//!   3. **same-slot cluster** — many non-launch ops (exits / volume) crammed into
+//!   1. **equal amounts** — a cluster of swap legs that spend the *exact* same
+//!      amount (e.g. everyone buys 0.02 SOL);
+//!   2. **same-slot cluster** — many non-launch ops (exits / volume) crammed into
 //!      one bundle / delay bucket so they land together;
-//!   4. **direct own-graph token edge** — an SPL-token transfer straight from one of
+//!   3. **direct own-graph token edge** — an SPL-token transfer straight from one of
 //!      our wallets to another (a permanent, mint-tagged linkage on-chain);
-//!   5. **constant CU / tip** — every op fee-bids identically (no persona spread);
-//!   6. **synchronized `Bundler` exit** — the launch bundlers all sell in one slot;
-//!   7. **nonce-account reuse** — two ops share a durable-nonce account (the
+//!   4. **constant CU / tip** — every op fee-bids identically (no persona spread);
+//!   5. **synchronized `Bundler` exit** — the launch bundlers all sell in one slot;
+//!   6. **nonce-account reuse** — two ops share a durable-nonce account (the
 //!      invariant is a *fresh* nonce account per wallet);
-//!   8. **`DurableNonce` on a non-latency op** — durable nonce is off-by-default for
+//!   7. **`DurableNonce` on a non-latency op** — durable nonce is off-by-default for
 //!      forge; riding it on a volume/exit op is a misconfiguration tell;
-//!   9. **clustered `close_token_ata`** — several exits close their token ATA in the
+//!   8. **clustered `close_token_ata`** — several exits close their token ATA in the
 //!      same breath (humans leave dust ATAs; bots sweep them);
-//!  10. **account-shape integrity** — the pump fee recipient must sit at the fixed
+//!   9. **account-shape integrity** — the pump fee recipient must sit at the fixed
 //!      account index the curve-buy ix lays it at (see [`PUMP_FEE_RECIPIENT_INDEX`]);
 //!      a reshaped account list is a **hard reject** (a malformed tx, not a stylistic
 //!      tell) that `--allow-fingerprint` can *not* override.
+//!
+//! (A funding-graph "star funding" rule once lived here too, but the `Plan.funding`
+//! input was never populated in production and was removed with the graph.)
 //!
 //! Every rule is a standalone, unit-testable fn over the audit context. The report
 //! carries a fingerprint **score** (informational) and the findings; the pass/fail
@@ -32,7 +33,7 @@
 //! network.
 
 use crate::disguise::Disguise;
-use crate::plan::{Funding, Intent, OpId, OpKind, Operation, Plan, Role};
+use crate::plan::{Intent, OpId, OpKind, Operation, Plan, Role};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -57,7 +58,6 @@ pub enum Severity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rule {
-    StarFunding,
     EqualAmounts,
     SameSlotCluster,
     DirectOwnGraphTokenEdge,
@@ -116,7 +116,7 @@ impl AuditReport {
 /// attributes the Phase F build step resolves (which durable-nonce account the op
 /// would use, whether it rides a durable nonce, whether a sell closes its token ATA,
 /// and the built account list + which account must sit at the fee-recipient index).
-/// All are optional/defaulted so a *pre-build* Plan-only audit still runs the graph /
+/// All are optional/defaulted so a *pre-build* Plan-only audit still runs the
 /// amount / schedule / token-edge rules; the build-shape rules simply find nothing
 /// to inspect until a profile carries the data.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -150,8 +150,6 @@ impl SendProfile {
 #[derive(Debug, Clone, Copy)]
 pub struct AuditConfig {
     pub fee_recipient_index: usize,
-    /// One funding source fanning to ≥ this many targets is a star.
-    pub star_fan_out_min: usize,
     /// ≥ this many legs at the identical amount is an equal-amounts cluster.
     pub equal_amount_min_cluster: usize,
     /// ≥ this many non-launch ops in one slot is a same-slot cluster.
@@ -166,7 +164,6 @@ impl Default for AuditConfig {
     fn default() -> Self {
         Self {
             fee_recipient_index: PUMP_FEE_RECIPIENT_INDEX,
-            star_fan_out_min: 3,
             equal_amount_min_cluster: 3,
             same_slot_min_cluster: 3,
             constant_fee_min_cluster: 3,
@@ -175,8 +172,8 @@ impl Default for AuditConfig {
     }
 }
 
-/// Audit a `Plan` alone (pre-build): runs the funding / amount / schedule / token
-/// -edge rules. The build-shape rules (CU/tip, nonce, ATA, account list) need
+/// Audit a `Plan` alone (pre-build): runs the amount / schedule / token-edge
+/// rules. The build-shape rules (CU/tip, nonce, ATA, account list) need
 /// [`SendProfile`]s — use [`audit_with`].
 pub fn audit(plan: &Plan) -> AuditReport {
     audit_with(plan, &[], AuditConfig::default())
@@ -187,7 +184,6 @@ pub fn audit_with(plan: &Plan, profiles: &[SendProfile], cfg: AuditConfig) -> Au
     let ctx = Ctx { plan, profiles, cfg };
     let mut findings = Vec::new();
 
-    findings.extend(rule_star_funding(&ctx));
     findings.extend(rule_equal_amounts(&ctx));
     findings.extend(rule_same_slot_cluster(&ctx));
     findings.extend(rule_direct_own_graph_token_edge(&ctx));
@@ -259,36 +255,7 @@ fn finding(rule: Rule, severity: Severity, weight: u32, message: String, op_ids:
 // rules — each a standalone, unit-testable fn over the context
 // ---------------------------------------------------------------------------
 
-/// 1) Star funding: one source funds ≥ `star_fan_out_min` distinct targets.
-fn rule_star_funding(ctx: &Ctx) -> Vec<Finding> {
-    star_sources(&ctx.plan.funding, ctx.cfg.star_fan_out_min)
-        .into_iter()
-        .map(|(src, n)| {
-            finding(
-                Rule::StarFunding,
-                Severity::Warn,
-                40,
-                format!("funding source {src} fans out to {n} wallets (star ≥ {})", ctx.cfg.star_fan_out_min),
-                Vec::new(),
-            )
-        })
-        .collect()
-}
-
-/// Pure sub-fn (unit-testable without a whole plan): sources funding ≥ `min`
-/// distinct targets, with their fan-out count.
-fn star_sources(funding: &Funding, min: usize) -> Vec<(String, usize)> {
-    let mut fan: BTreeMap<&str, std::collections::BTreeSet<&str>> = BTreeMap::new();
-    for e in &funding.edges {
-        fan.entry(e.from.as_str()).or_default().insert(e.to.as_str());
-    }
-    fan.into_iter()
-        .filter(|(_, tos)| tos.len() >= min)
-        .map(|(from, tos)| (from.to_string(), tos.len()))
-        .collect()
-}
-
-/// 2) Equal amounts: ≥ `equal_amount_min_cluster` swap legs at the identical
+/// 1) Equal amounts: ≥ `equal_amount_min_cluster` swap legs at the identical
 /// (kind, amount). Everyone-buys-0.02-SOL is the canonical tell.
 fn rule_equal_amounts(ctx: &Ctx) -> Vec<Finding> {
     // Group swap ops by (kind, amount encoding). Create/transfer are excluded — a
@@ -334,7 +301,7 @@ fn amount_key(op: &Operation) -> (u64, &'static str) {
     }
 }
 
-/// 3) Same-slot cluster: ≥ `same_slot_min_cluster` non-launch ops share one slot.
+/// 2) Same-slot cluster: ≥ `same_slot_min_cluster` non-launch ops share one slot.
 /// Launch snipes (create + dev/bundler `Snipe` buys) are *meant* to be atomic — a
 /// Jito bundle — so they're excluded; this targets exits / volume clustered together.
 fn rule_same_slot_cluster(ctx: &Ctx) -> Vec<Finding> {
@@ -367,7 +334,7 @@ fn is_launch_op(op: &Operation) -> bool {
     op.kind == OpKind::Create || (op.kind == OpKind::Buy && op.intent == Intent::Snipe)
 }
 
-/// 4) Direct own-graph token edge: a `TransferToken` whose target is one of *our*
+/// 3) Direct own-graph token edge: a `TransferToken` whose target is one of *our*
 /// wallets — a permanent, mint-tagged linkage on-chain (SOL consolidation is
 /// expected and not flagged here; a raw token move between own wallets is not).
 fn rule_direct_own_graph_token_edge(ctx: &Ctx) -> Vec<Finding> {
@@ -391,7 +358,7 @@ fn rule_direct_own_graph_token_edge(ctx: &Ctx) -> Vec<Finding> {
         .collect()
 }
 
-/// 5) Constant CU / tip: ≥ `constant_fee_min_cluster` disguised ops share one
+/// 4) Constant CU / tip: ≥ `constant_fee_min_cluster` disguised ops share one
 /// exact `(cu_price, tip)` pair — no persona spread, a bot tell.
 fn rule_constant_cu_tip(ctx: &Ctx) -> Vec<Finding> {
     let mut groups: BTreeMap<(u64, Option<u64>), Vec<OpId>> = BTreeMap::new();
@@ -421,7 +388,7 @@ fn rule_constant_cu_tip(ctx: &Ctx) -> Vec<Finding> {
         .collect()
 }
 
-/// 6) Synchronized `Bundler` exit: ≥ 2 bundler sells land in the same slot.
+/// 5) Synchronized `Bundler` exit: ≥ 2 bundler sells land in the same slot.
 fn rule_synchronized_bundler_exit(ctx: &Ctx) -> Vec<Finding> {
     let mut by_slot: BTreeMap<SlotKey, Vec<OpId>> = BTreeMap::new();
     for op in &ctx.plan.ops {
@@ -445,7 +412,7 @@ fn rule_synchronized_bundler_exit(ctx: &Ctx) -> Vec<Finding> {
         .collect()
 }
 
-/// 7) Nonce-account reuse: a durable-nonce account consumed by more than one op
+/// 6) Nonce-account reuse: a durable-nonce account consumed by more than one op
 /// (the invariant is a *fresh* nonce account per wallet).
 fn rule_nonce_reuse(ctx: &Ctx) -> Vec<Finding> {
     let mut by_nonce: BTreeMap<&str, Vec<OpId>> = BTreeMap::new();
@@ -470,7 +437,7 @@ fn rule_nonce_reuse(ctx: &Ctx) -> Vec<Finding> {
         .collect()
 }
 
-/// 8) `DurableNonce` on a non-latency op: durable nonce is off-by-default for forge;
+/// 7) `DurableNonce` on a non-latency op: durable nonce is off-by-default for forge;
 /// a non-`Snipe` op riding it is a misconfiguration / linkable tell.
 fn rule_durable_nonce_misuse(ctx: &Ctx) -> Vec<Finding> {
     ctx.profiles
@@ -491,7 +458,7 @@ fn rule_durable_nonce_misuse(ctx: &Ctx) -> Vec<Finding> {
         .collect()
 }
 
-/// 9) Clustered `close_token_ata`: ≥ `ata_close_min_cluster` exits close their token
+/// 8) Clustered `close_token_ata`: ≥ `ata_close_min_cluster` exits close their token
 /// ATA — humans leave dust ATAs; a synchronized close is a bot tell.
 fn rule_clustered_ata_close(ctx: &Ctx) -> Vec<Finding> {
     let ops: Vec<OpId> = ctx
@@ -515,7 +482,7 @@ fn rule_clustered_ata_close(ctx: &Ctx) -> Vec<Finding> {
     }
 }
 
-/// 10) Account-shape integrity: a declared fee recipient MUST sit at the fixed
+/// 9) Account-shape integrity: a declared fee recipient MUST sit at the fixed
 /// account index. A reshaped list is a malformed tx — a **hard reject** that
 /// `--allow-fingerprint` can never override.
 fn rule_account_shape_integrity(ctx: &Ctx) -> Vec<Finding> {
@@ -550,9 +517,7 @@ mod tests {
     use crate::disguise::for_op;
     use crate::macros::{bundle_launch, consolidate, exit, volume_make, BundleLaunch, BundlerLeg, ExitLeg, Sweep, VolumeLeg};
     use crate::personas::PersonaSet;
-    use crate::plan::{
-        Amount, FundingEdge, IdSeq, Intent, Operation, Plan, Role, ScheduleSlot, WalletRef,
-    };
+    use crate::plan::{Amount, IdSeq, Intent, Operation, Plan, Role, ScheduleSlot, WalletRef};
     use executor_core::config::ComputeBudgetCfg;
     use solana_sdk::signature::{Keypair, Signer};
 
@@ -564,22 +529,6 @@ mod tests {
     }
 
     // ---- per-rule unit tests -------------------------------------------------
-
-    #[test]
-    fn star_funding_fires_on_fan_out() {
-        let src = addr();
-        let funding = Funding {
-            edges: (0..4)
-                .map(|_| FundingEdge { from: src.clone(), to: addr(), lamports: 1_000_000 })
-                .collect(),
-        };
-        assert_eq!(star_sources(&funding, 3).len(), 1, "one source fans to 4 targets");
-        // A jit pattern (each target a distinct source) is NOT a star.
-        let spread = Funding {
-            edges: (0..4).map(|_| FundingEdge { from: addr(), to: addr(), lamports: 1_000_000 }).collect(),
-        };
-        assert!(star_sources(&spread, 3).is_empty());
-    }
 
     #[test]
     fn equal_amounts_fires_on_identical_legs() {
@@ -698,18 +647,12 @@ mod tests {
 
     // ---- Gate E: naive plan rejected, clean plan passes ---------------------
 
-    /// A deliberately-naive plan: star fund, equal 0.02 legs, same-slot sells, a
-    /// direct own-graph token transfer, a reused nonce, and a mangled account list.
+    /// A deliberately-naive plan: equal 0.02 legs, same-slot sells, a direct
+    /// own-graph token transfer, a reused nonce, and a mangled account list.
     #[test]
     fn gate_e_naive_plan_is_rejected() {
         let mint = addr();
-        let treasury = addr();
         let w: Vec<WalletRef> = (0..3).map(|_| managed()).collect();
-
-        // star fund: treasury → 3 wallets
-        let funding = Funding {
-            edges: w.iter().map(|x| FundingEdge { from: treasury.clone(), to: x.pubkey.clone(), lamports: 20_000_000 }).collect(),
-        };
 
         let mut ops = Vec::new();
         // equal 0.02 SOL buys (3 legs, identical)
@@ -740,7 +683,7 @@ mod tests {
             deps: vec![],
         });
 
-        let plan = Plan { mint_address: Some(mint), ops, funding, schedule: Default::default() };
+        let plan = Plan { mint_address: Some(mint), ops, schedule: Default::default() };
 
         // profiles: a reused nonce across two ops + a mangled account list.
         let nonce = addr();
@@ -759,7 +702,6 @@ mod tests {
         assert!(!report.passed(true), "hard reject is not overridable");
         // The fingerprint tells all fired.
         for rule in [
-            Rule::StarFunding,
             Rule::EqualAmounts,
             Rule::SameSlotCluster,
             Rule::DirectOwnGraphTokenEdge,
@@ -825,12 +767,7 @@ mod tests {
             .map(|(i, o)| ScheduleSlot { op_id: o.id, bundle: None, delay_ms: (i as u64 + 1) * 1500 })
             .collect();
 
-        // jit funding (each target a distinct source — no star).
-        let funding = Funding {
-            edges: vols.iter().map(|v| FundingEdge { from: addr(), to: v.pubkey.clone(), lamports: 3_000_000 }).collect(),
-        };
-
-        let plan = Plan { mint_address: Some(mint), ops: ops.clone(), funding, schedule: crate::plan::Schedule { slots } };
+        let plan = Plan { mint_address: Some(mint), ops: ops.clone(), schedule: crate::plan::Schedule { slots } };
 
         // Persona-drawn disguises (varied fees) + fresh nonce per op + correct
         // account shape on the swap legs.

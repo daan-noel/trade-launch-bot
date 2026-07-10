@@ -740,7 +740,7 @@ impl PumpFunTrader {
     /// process-lifetime cache would silently keep slippage protection loose after
     /// a fee raise until restart.
     async fn amm_config(&self) -> Result<AmmGlobalConfig> {
-        if let Some((c, fetched)) = *self.amm_global_config.lock().unwrap() {
+        if let Some((c, fetched)) = *self.amm_global_config.lock().unwrap_or_else(|p| p.into_inner()) {
             if fetched.elapsed() < AMM_CONFIG_MAX_AGE {
                 return Ok(c);
             }
@@ -780,7 +780,7 @@ impl PumpFunTrader {
             coin_creator_fee_bps,
             protocol_fee_recipient,
         };
-        *self.amm_global_config.lock().unwrap() = Some((cfg, Instant::now()));
+        *self.amm_global_config.lock().unwrap_or_else(|p| p.into_inner()) = Some((cfg, Instant::now()));
         Ok(cfg)
     }
 

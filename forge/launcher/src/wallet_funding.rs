@@ -18,7 +18,7 @@
 //! [`FundingStrategy`] impl behind the same seam.
 
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -44,6 +44,18 @@ use crate::wallet_pool::MIN_FUNDED_LAMPORTS;
 /// How often the background funder tops the pool up. Cheap when idle — a single
 /// `funded_count` per fundable role, no work when every role is already warm.
 const FUND_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Serializes every funding pass in this process. The reserve floor + per-interval
+/// spend cap are enforced against a pass-local treasury snapshot (`TreasuryPool`
+/// captured at pass start + a running `spent`), so two passes running at once —
+/// the background funder, a manual `POST /api/wallet_pool/fund`, and a JIT
+/// `fund_for_launch` can all fire independently — each sees the other's spend as
+/// zero and could together spend N× the cap or breach the reserve. Holding this
+/// across a whole pass makes the snapshot authoritative: at most one pass reads
+/// balances, spends, and writes them back at a time. Correctness over latency —
+/// real SOL is moving, and a warm-pool pass is a fast no-op.
+static FUNDING_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// One planned treasury->wallet transfer. Amount is already jittered.
 #[derive(Debug, Clone)]
@@ -265,6 +277,10 @@ pub async fn fund_once(
     let Some(cfg) = settings.funding.as_ref() else {
         bail!("wallet funding not configured (FUND_ENABLED not set)");
     };
+
+    // Serialize against every other funding pass — see `FUNDING_LOCK`. Held for the
+    // whole pass so the treasury snapshot + spend accounting stay authoritative.
+    let _funding_guard = FUNDING_LOCK.lock().await;
 
     let mut report = FundReport::default();
 
@@ -498,6 +514,10 @@ pub async fn fund_for_launch(
     let Some(cfg) = settings.funding.as_ref() else {
         bail!("wallet funding not configured (FUND_ENABLED not set)");
     };
+
+    // Serialize against every other funding pass — see `FUNDING_LOCK`. A JIT launch
+    // fund and the background funder must not race on the treasury snapshot/cap.
+    let _funding_guard = FUNDING_LOCK.lock().await;
 
     let mut report = FundReport::default();
 

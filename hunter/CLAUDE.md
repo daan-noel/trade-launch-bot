@@ -24,11 +24,10 @@ Six Rust crates + `frontend-react` SPA. The old single `backend` crate was split
 | `trading_core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, core handlers, strategy domain (`tpsl_rules_core`), **ingest contract** (`trading_core::ingest`) |
 | `pump-trader` (`shared/pump-trader`) | lib | buy/sell executor; **standalone drop-in library** (no workspace deps). Three tiers: `protocol` (Tier-1 `const Pubkey` invariants), `config` (Tier-2 `TraderConfig` + 7 `Default` sub-structs), per-call args. Signs via `Arc<dyn Signer>` (HSM/remote-ready); typed `error::TradeError` (no `anyhow`). `probe`/`claim` are off-by-default cargo features; `constants.rs` is a thin back-compat shim |
 | `ingest-laserstream` (`shared/ingest-laserstream`) | lib | Helius LaserStream gRPC transport (client→pipeline→db_writer) + watchdog. **Standalone drop-in — no workspace deps** (NOT `trading_core`); exposes its own raw transport API (`Ingest`/`IngestHandle`/`IngestEvent`/`Protocol`), which `live`'s host adapter bridges onto the `trading_core::ingest` contract |
-| `ingest-websocket` | lib | **empty scaffold** (this one *does* depend on `trading_core`) — a stub transport so `live` can swap ingest backends later (not yet implemented) |
 | `live` | **bin** | LIVE box: strategies, trader, deploy services/state (`DeployState`), live/trading handlers, `probe`. Ships to EC2 |
 | `lab` | **bin** | ANALYSIS box: sweep/backtest, swing analyzer, local state (`LocalState`), rule-authoring + sweep handlers. Runs with NO keys / NO gRPC; never depends on `pump-trader` |
 
-The transport-agnostic ingest contract (`IngestHandles`, `TraderHook`, re-exports of `StrategyPing`/`TradeSignals`) lives in `trading_core::ingest`. `ingest-laserstream` is **standalone** (no workspace deps) and exposes only its raw transport (`Ingest`/`IngestHandle`/`IngestEvent`); the host adapter `live/src/ingest/` (`spawn_ingest`) is what builds that transport and bridges its events onto the `trading_core` contract, returning `IngestHandles`. `ingest-websocket` (the not-yet-implemented sibling) does depend on `trading_core`.
+The transport-agnostic ingest contract (`IngestHandles`, `TraderHook`, re-exports of `StrategyPing`/`TradeSignals`) lives in `trading_core::ingest`. `ingest-laserstream` is **standalone** (no workspace deps) and exposes only its raw transport (`Ingest`/`IngestHandle`/`IngestEvent`); the host adapter `live/src/ingest/` (`spawn_ingest`) is what builds that transport and bridges its events onto the `trading_core` contract, returning `IngestHandles`. (The old `ingest-websocket` empty scaffold was deleted — the transport seam survives in `IngestHandles` and can be revived when a second transport is actually needed.)
 
 Each bin is its own composition root (`tokio::select!` over long-lived tasks). `live/main.rs` starts ingest via `live::ingest::spawn_ingest` (host adapter over `ingest_laserstream::Ingest`) + trading + strategy + HTTP; `lab/main.rs` is thin (SOL-price poller + token-cache seed + HTTP, no ingest/trader). Helius LaserStream (gRPC) is the **sole** live transport; the `trades` table *is* that feed. Both serve `configure_core_routes` plus their own route config. The frontend split is build-time, so there is no runtime capability advertisement — each bin builds into its own SPA with a static nav. **The frontend uses `live`/`lab` vocabulary throughout** (`@live`/`@lab` aliases, `src/live`/`src/lab` trees, `liveApi`/`labApi`).
 
@@ -75,7 +74,7 @@ or both at once (`dev`). Mode is build-time, not runtime — no `useCapabilities
 never the shared `store/apiSlice` barrel, so a mode's side effect never leaks across builds. See
 [docs/arch/frontend.md](docs/arch/frontend.md).
 
-Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` / `ingest-websocket` / `live` / `lab`). Use `--target-dir target-check` if a bin `.exe` is running (locks `target/`). Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
+Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` / `live` / `lab`). Use `--target-dir target-check` if a bin `.exe` is running (locks `target/`). Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 
 ## Performance budgets (hot path — violation = bug)
 

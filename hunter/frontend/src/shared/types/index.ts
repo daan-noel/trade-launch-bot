@@ -205,7 +205,8 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   pnl_sol: number | null;
   status: string;
   strategy: string;
-  rule_id: string;
+  /** Owning rule id; null if the rule was deleted (`ON DELETE SET NULL`). */
+  rule_id: string | null;
   /** Why the position exited (TakeProfit/StopLoss/TrailingStop/Stall/TimeStop/
    * LiquidityExit); null while still open. */
   exit_reason: string | null;

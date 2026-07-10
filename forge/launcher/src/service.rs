@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use platform_core::models::{BundleStatus, LaunchStatus, NewLaunch, NewToken, WalletRole};
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, LaunchTemplateRepo, ManagedWalletRepo, MetadataTemplateRepo,
-    TokenMarketStateRepo, TokenRepo,
+    TokenMarketStateRepo, TokenPositionRepo, TokenRepo,
 };
 use platform_core::models::TokenMarketState;
 use chrono::Utc;
@@ -269,6 +269,28 @@ pub async fn execute_launch(
         // (terminal — never re-claimable, and now eligible for the dust sweep).
         if let Err(e) = ManagedWalletRepo::mark_used(pool, &[dev_wallet.id]).await {
             tracing::warn!(%launch_id, dev_wallet_id = %dev_wallet.id, %e, "failed to mark dev wallet used");
+        }
+
+        // Seed the dev cost-basis position eagerly (idempotent) the moment a
+        // dev-buy lands, so the dust sweep's open-position guard protects this
+        // wallet's gas SOL immediately. Otherwise the position is only seeded
+        // lazily on the first holdings-page read, leaving a window (up to the
+        // hourly sweep) where the wallet — now `used` — would be drained and
+        // retired while still holding tokens, stranding the sell (no gas to pay
+        // its fee → "confirmation timed out"). No dev-buy ⇒ no tokens held ⇒
+        // nothing to seed or protect.
+        if dev_buy_quote > 0 {
+            if let Err(e) = TokenPositionRepo::seed(
+                pool,
+                &mint_address,
+                dev_wallet.id,
+                WalletRole::Dev.as_str(),
+                dev_buy_quote,
+            )
+            .await
+            {
+                tracing::warn!(%launch_id, dev_wallet_id = %dev_wallet.id, %e, "failed to seed dev position");
+            }
         }
 
         let token_program = keystore::token_program_for_variant(&template.variant);

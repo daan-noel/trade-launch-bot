@@ -15,10 +15,10 @@
 # Defaults below MIRROR that block; pass --env-file to override:
 #
 #   service   host port(s)                container   published?
-#   postgres  ${DB_PORT:-5556}:5432       forge-postgres    yes
+#   postgres  127.0.0.1:${DB_PORT:-5556}:5432  forge-postgres  loopback-only (SSH tunnel)
 #   live-api  (none)                      forge-live-api    no — nginx-only upstream, binds ${LIVE_API_PORT:-8230}
 #   live-ui   ${LIVE_UI_HTTP_PORT:-8210}:80  ${LIVE_UI_HTTPS_PORT:-8211}:443   yes
-#   lab-api   ${LAB_API_PORT:-8240}:8240  forge-lab-api     yes (direct access; no UI/nginx for forge lab)
+#   lab-api   127.0.0.1:${LAB_API_PORT:-8240}:8240  forge-lab-api  loopback-only (SSH tunnel; no UI/nginx)
 #
 # 5556 (not 5555) so the forge Postgres coexists with hunter's on the same host;
 # the live-ui host ports (82xx) are likewise offset from hunter's (81xx).
@@ -81,12 +81,14 @@ services:
       - "synchronous_commit=off"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in the env-file, no default}
       POSTGRES_DB: ${POSTGRES_DB:-forge_bot}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "${DB_PORT:-5556}:5432"
+      # Loopback-only: reachable on the host via an SSH tunnel / local mirror sync,
+      # never on 0.0.0.0. In-network services reach it by the `postgres` hostname.
+      - "127.0.0.1:${DB_PORT:-5556}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-forge_bot}"]
       interval: 5s
@@ -108,7 +110,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${LIVE_API_PORT:-8230}
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-forge_bot}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in the env-file, no default}@postgres:5432/${POSTGRES_DB:-forge_bot}
     depends_on:
       postgres:
         condition: service_healthy
@@ -138,8 +140,10 @@ services:
     depends_on:
       - live-api
 
-  # The analysis bin (`forge-lab`). API-only (no UI), reached directly on the
-  # host-published ${LAB_API_PORT}. Build-only: the `image:` just names the
+  # The analysis bin (`forge-lab`). API-only (no UI/nginx), so it must NOT sit on
+  # 0.0.0.0 — reach it LOOPBACK-ONLY on ${LAB_API_PORT} via an SSH tunnel. It also
+  # now carries the shared bearer gate (fail-closed on any future mutating route).
+  # Build-only: the `image:` just names the
   # locally-built image; the lake cold tier (duckdb/arrow/parquet) is
   # workstation-scale, so it is never pushed/pulled as an ECR image.
   # Lake export (batch): docker compose -f deploy/forge.compose.yml run --rm lab-api forge-lab lake-export
@@ -155,12 +159,12 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${LAB_API_PORT:-8240}
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-forge_bot}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in the env-file, no default}@postgres:5432/${POSTGRES_DB:-forge_bot}
       SWEEP_LAKE_DIR: /lake
     volumes:
       - lakedata:/lake
     ports:
-      - "${LAB_API_PORT:-8240}:${LAB_API_PORT:-8240}"
+      - "127.0.0.1:${LAB_API_PORT:-8240}:${LAB_API_PORT:-8240}"
     depends_on:
       postgres:
         condition: service_healthy

@@ -1211,13 +1211,18 @@ impl StrategyRuntimeCache {
 /// Frontend strategy label ("tpsl1" / "tpsl2") for the SSE `strategy` field. The
 /// frontend mode strings are intentionally unchanged in this remake phase.
 fn fe_strategy_label(strategy_id: &str) -> &'static str {
+    // Exhaustive over StrategyImpl (NO `_` wildcard) so strategy #4 is a compile
+    // error here rather than silently collapsing into the tpsl1 label — swing1's
+    // own frontend page filters SSE frames on `swing_1`, and a misrouted label
+    // would starve that page.
     match StrategyImpl::from_id(strategy_id) {
+        Some(StrategyImpl::Tpsl1) => "tpsl1",
         Some(StrategyImpl::Tpsl2) => "tpsl2",
-        // swing1's own frontend page filters SSE frames on `swing_1`, so it must
-        // NOT collapse into the tpsl1 catch-all (that would misroute its deltas to
-        // the tpsl1 page and starve the swing1 page).
         Some(StrategyImpl::Swing1) => "swing_1",
-        _ => "tpsl1",
+        None => {
+            tracing::warn!(strategy_id, "fe_strategy_label: unknown strategy id — using tpsl1 label");
+            "tpsl1"
+        }
     }
 }
 

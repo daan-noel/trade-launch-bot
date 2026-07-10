@@ -175,9 +175,14 @@ pub const CATALOG: &[VariantSpec] = &[
         needs_wsol: false,
         v2_accounts: true,
     },
-    // --- native SOL + SPL token moves (venue-neutral; no Anchor disc) ---
+    // --- native SOL + SPL token moves. The IX itself is venue-neutral (a plain
+    //     System/SPL instruction, no Anchor disc), but the row is cataloged under
+    //     the only venue forge trades today (PumpFun); a second venue would add its
+    //     own rows or a neutral `VenueId` arm. `system_transfer` is exactly
+    //     `system_instruction::transfer` (NOT `transfer_with_seed` — the old name
+    //     misdescribed the emitted ix). ---
     VariantSpec {
-        name: "transfer_with_seed",
+        name: "system_transfer",
         venue: VenueId::PumpFun,
         stage: Stage::NA,
         kind: VariantKind::TransferSol,

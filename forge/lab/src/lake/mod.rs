@@ -7,16 +7,7 @@
 //! (`duckdb`/`arrow`/`parquet`/`rayon`) land when this is filled — and must NEVER
 //! reach EC2 (`live` must not appear in this crate's reverse deps).
 
+// The export/reader/parity pipeline (DuckDB/arrow/parquet, LAB-only) fills in a
+// later phase and will build on the column-SSOT seam below. The previous
+// `run_export` do-nothing stub was removed rather than left returning `Ok(0)`.
 pub mod schema;
-
-/// Export sealed days from the synced local PG mirror to Parquet. Stub — the
-/// export/reader/parity pipeline fills in a later phase. Returns the count
-/// exported (0 today).
-pub async fn run_export(_database_url: &str, include_today: bool) -> anyhow::Result<u64> {
-    tracing::warn!(
-        include_today,
-        "lake export not yet implemented — schema seam only (lake::schema). \
-         Fill after the feed is live; DuckDB/arrow/parquet land here (LAB only)."
-    );
-    Ok(0)
-}

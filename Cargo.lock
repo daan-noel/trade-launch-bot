@@ -2453,6 +2453,7 @@ dependencies = [
  "anyhow",
  "dotenvy",
  "forge-core",
+ "http-auth",
  "serde",
  "serde_json",
  "sqlx",
@@ -2928,6 +2929,7 @@ name = "http-auth"
 version = "0.1.0"
 dependencies = [
  "actix-web",
+ "constant_time_eq",
  "serde_json",
 ]
 
@@ -3332,15 +3334,6 @@ dependencies = [
  "solana-sdk",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "ingest-websocket"
-version = "0.1.0"
-dependencies = [
- "hunter-core",
- "sqlx",
- "tokio",
 ]
 
 [[package]]

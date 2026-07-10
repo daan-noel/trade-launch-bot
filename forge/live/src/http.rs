@@ -23,9 +23,20 @@ use platform_core::storage::repositories::{
     MetadataTemplateRepo, QuoteAssetRepo, SellLadderRepo, TokenRepo, TradeRepo, VolumeBotRepo,
 };
 
-/// Map any error to a 500 without leaking a panic.
+/// Map any error to a 500 with a GENERIC client body. The full detail (which can
+/// carry SQL text / anyhow chains / internal paths) is logged server-side, never
+/// returned to the caller.
 fn e500<E: std::fmt::Debug>(e: E) -> actix_web::Error {
-    actix_web::error::ErrorInternalServerError(format!("{e:?}"))
+    tracing::error!(error = ?e, "internal error serving request");
+    actix_web::error::ErrorInternalServerError("internal server error")
+}
+
+/// Map a validation error to a 400. Returns the Display (top-level) message so the
+/// operator sees the actionable reason (bad rung, bad config, …) — NOT the `{e:?}`
+/// debug chain, which leaks internals. Full detail is logged server-side.
+fn e400<E: std::fmt::Display + std::fmt::Debug>(e: E) -> actix_web::Error {
+    tracing::warn!(error = ?e, "bad request");
+    actix_web::error::ErrorBadRequest(format!("{e}"))
 }
 
 /// Borrow the boot-time launcher settings out of `app_data`, or 503 if the box
@@ -796,7 +807,7 @@ async fn manage_preview(
         .map_err(e500)?;
     let plan = launcher::build_plan(pool.get_ref(), &mint, &body)
         .await
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("{e:?}")))?;
+        .map_err(e400)?;
     Ok(HttpResponse::Ok().json(plan))
 }
 
@@ -862,7 +873,7 @@ async fn ladder_arm(
     let body = body.into_inner();
     let ladder = arm_ladder(pool.get_ref(), &mint, body.selection, body.rungs)
         .await
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("{e:?}")))?;
+        .map_err(e400)?;
     Ok(HttpResponse::Ok().json(ladder))
 }
 
@@ -911,7 +922,7 @@ async fn volume_start(
     let body = body.into_inner();
     let bot = start_volume_bot(pool.get_ref(), &mint, body.selection, body.config)
         .await
-        .map_err(|e| actix_web::error::ErrorBadRequest(format!("{e:?}")))?;
+        .map_err(e400)?;
     Ok(HttpResponse::Ok().json(bot))
 }
 

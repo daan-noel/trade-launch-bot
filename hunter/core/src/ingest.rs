@@ -2,9 +2,9 @@
 //!
 //! The decoded event model + `pipeline`/`db_writer` stay inside the concrete
 //! transport crate (`ingest-laserstream`); only the cross-transport surface
-//! lives here so both `ingest-laserstream` and `ingest-websocket` can expose the
-//! same `spawn(...) -> IngestHandles` and `live` can swap transports without
-//! touching its wiring.
+//! lives here so a transport crate can expose the same
+//! `spawn(...) -> IngestHandles` and `live` can swap transports without touching
+//! its wiring.
 //!
 //! Surface:
 //! - [`IngestHandles`] — what `spawn` returns to the supervising `select!`.

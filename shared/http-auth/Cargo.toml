@@ -7,3 +7,6 @@ description = "Shared actix-web bearer-auth middleware: fail-closed gate on muta
 [dependencies]
 actix-web.workspace = true
 serde_json.workspace = true
+# Constant-time token comparison so a mutating request can't recover the secret
+# bearer token byte-by-byte via response-timing (see `require_bearer_auth`).
+constant_time_eq = "0.4"

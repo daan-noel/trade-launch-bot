@@ -165,7 +165,18 @@ async fn execute_bundle_inner(
     let total_tip_floor = trader.jito_tip_floor_lamports(level);
     let per_leg_tip_floor = total_tip_floor.div_ceil(bundler_ops.len() as u64);
 
-    BundleRepo::set_status(pool, bundle_id, BundleStatus::Submitting.as_str()).await?;
+    // Atomic compare-and-swap `planned → submitting`. The read-check above is a
+    // fast-fail for an obviously-wrong status, but ~8-12 RPC round trips (gate,
+    // trader init, blockhash, tip floor) run between it and here — two concurrent
+    // executes can both pass that check. This conditional UPDATE is the real gate:
+    // exactly one caller flips the row, and the loser aborts BEFORE signing or
+    // submitting, so the same bundler wallets can't double-submit real-SOL buys.
+    if !BundleRepo::claim_for_submitting(pool, bundle_id).await? {
+        bail!(
+            "bundle {bundle_id} was concurrently claimed for submission \
+             (status is no longer planned) — aborting to avoid a double submit"
+        );
+    }
 
     let finish = async {
         let mut txs = Vec::with_capacity(bundler_ops.len());

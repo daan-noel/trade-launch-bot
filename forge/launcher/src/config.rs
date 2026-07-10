@@ -75,15 +75,16 @@ pub struct ManageConfig {
 }
 
 impl ManageConfig {
-    /// `None` unless `MANAGE_ENABLED=true`.
-    pub fn from_env() -> Option<Self> {
+    /// `None` unless `MANAGE_ENABLED=true`. A set-but-malformed numeric var is a
+    /// hard error (see [`env_u64`]).
+    pub fn from_env() -> Result<Option<Self>> {
         if !env_flag("MANAGE_ENABLED", false) {
-            return None;
+            return Ok(None);
         }
-        Some(Self {
-            sell_slippage_bps: env_u64("MANAGE_SELL_SLIPPAGE_BPS", 1_000),
+        Ok(Some(Self {
+            sell_slippage_bps: env_u64("MANAGE_SELL_SLIPPAGE_BPS", 1_000)?,
             dry_run: env_flag("MANAGE_DRY_RUN", false),
-        })
+        }))
     }
 }
 
@@ -112,25 +113,27 @@ pub struct FundingConfig {
 
 impl FundingConfig {
     /// `None` unless `FUND_ENABLED=true`. Reads every `FUND_*` var with a
-    /// conservative default so a partial config can't silently over-spend.
-    pub fn from_env() -> Option<Self> {
+    /// conservative default so a partial config can't silently over-spend — and a
+    /// set-but-malformed value is FATAL (see [`env_u64`]), never a silent revert to
+    /// the permissive default.
+    pub fn from_env() -> Result<Option<Self>> {
         if !env_flag("FUND_ENABLED", false) {
-            return None;
+            return Ok(None);
         }
-        Some(Self {
-            treasury_reserve_lamports: env_u64("FUND_TREASURY_RESERVE_LAMPORTS", 50_000_000),
+        Ok(Some(Self {
+            treasury_reserve_lamports: env_u64("FUND_TREASURY_RESERVE_LAMPORTS", 50_000_000)?,
             max_spend_per_interval_lamports: env_u64(
                 "FUND_MAX_SPEND_PER_INTERVAL_LAMPORTS",
                 1_000_000_000,
-            ),
-            amount_dev_lamports: env_u64("FUND_AMOUNT_DEV_LAMPORTS", 50_000_000),
-            amount_bundler_lamports: env_u64("FUND_AMOUNT_BUNDLER_LAMPORTS", 30_000_000),
-            amount_jitter_pct: env_f64("FUND_AMOUNT_JITTER_PCT", 0.15),
-            max_delay_ms: env_u64("FUND_MAX_DELAY_MS", 8_000),
-            target_funded_dev: env_u64("FUND_TARGET_FUNDED_DEV", 2) as i64,
-            target_funded_bundler: env_u64("FUND_TARGET_FUNDED_BUNDLER", 5) as i64,
+            )?,
+            amount_dev_lamports: env_u64("FUND_AMOUNT_DEV_LAMPORTS", 50_000_000)?,
+            amount_bundler_lamports: env_u64("FUND_AMOUNT_BUNDLER_LAMPORTS", 30_000_000)?,
+            amount_jitter_pct: env_f64("FUND_AMOUNT_JITTER_PCT", 0.15)?,
+            max_delay_ms: env_u64("FUND_MAX_DELAY_MS", 8_000)?,
+            target_funded_dev: env_u64("FUND_TARGET_FUNDED_DEV", 2)? as i64,
+            target_funded_bundler: env_u64("FUND_TARGET_FUNDED_BUNDLER", 5)? as i64,
             dry_run: env_flag("FUND_DRY_RUN", false),
-        })
+        }))
     }
 }
 
@@ -141,12 +144,31 @@ fn env_flag(key: &str, default: bool) -> bool {
     }
 }
 
-fn env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+/// Parse a `u64` env var, or `default` if unset. A var that is SET but malformed
+/// is a hard error, not a silent fall-back to the default — these back money
+/// safety rails (`FUND_*` reserve/cap, `MANAGE_SELL_SLIPPAGE_BPS`), and a typo
+/// like `5O000000` silently reverting to a permissive default is exactly the
+/// footgun this guards. Refuse to boot instead.
+fn env_u64(key: &str, default: u64) -> Result<u64> {
+    match std::env::var(key) {
+        Ok(v) => v
+            .trim()
+            .parse()
+            .with_context(|| format!("{key} must be a non-negative integer, got {v:?}")),
+        Err(_) => Ok(default),
+    }
 }
 
-fn env_f64(key: &str, default: f64) -> f64 {
-    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+/// Parse an `f64` env var, or `default` if unset. Set-but-malformed is fatal —
+/// same rationale as [`env_u64`].
+fn env_f64(key: &str, default: f64) -> Result<f64> {
+    match std::env::var(key) {
+        Ok(v) => v
+            .trim()
+            .parse()
+            .with_context(|| format!("{key} must be a number, got {v:?}")),
+        Err(_) => Ok(default),
+    }
 }
 
 impl LauncherSettings {
@@ -178,7 +200,7 @@ impl LauncherSettings {
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").unwrap_or_else(|_| {
             "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
         });
-        let bundle_max_retries = env_u64("BUNDLE_MAX_RETRIES", 2) as u32;
+        let bundle_max_retries = env_u64("BUNDLE_MAX_RETRIES", 2)? as u32;
         let launch_alt = match std::env::var("PUMP_LAUNCH_ALT") {
             Ok(v) if !v.trim().is_empty() => Some(
                 Pubkey::from_str(v.trim())
@@ -188,12 +210,12 @@ impl LauncherSettings {
         };
         let backup_dir = std::env::var("WALLET_BACKUP_DIR").ok().map(PathBuf::from);
         let pinata_jwt = std::env::var("PINATA_JWT").ok().filter(|s| !s.is_empty());
-        let funding = FundingConfig::from_env();
+        let funding = FundingConfig::from_env()?;
         let export_secret = std::env::var("WALLET_EXPORT_SECRET")
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let manage = ManageConfig::from_env();
+        let manage = ManageConfig::from_env()?;
         // Default: don't block on fingerprint tells (audit still runs + persists).
         let allow_fingerprint = !env_flag("AUDIT_ENFORCE_FINGERPRINT", false);
         Ok(Self {

@@ -14,9 +14,10 @@ pub struct Position {
     /// Token program id used for this position (SPL legacy or Token-2022).
     pub token_program_id: Option<String>,
     /// Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
-    /// this position, distinct from the actual `entry_*` fill. Set later via
-    /// [`Position::set_target`], not at construction; `None` until armed (and for
-    /// legacy rows / paths that never arm, e.g. backtest). `target_price` is the
+    /// this position, distinct from the actual `entry_*` fill. Set later on the
+    /// arming path (the repo `update_target`), not at construction; `None` until
+    /// armed (and for legacy rows / paths that never arm, e.g. backtest).
+    /// `target_price` is the
     /// trigger trade's price, `target_token_amount` its **token** count,
     /// `target_time` its block time, `target_tx` its signature. SOL is never
     /// stored — derived at display as `price × tokens`. The gap vs. `entry_*` is
@@ -90,8 +91,8 @@ pub enum PositionStatus {
     /// stale — nothing was bought. (Was `PendingEntry`.)
     Arming,
     /// A buy has been **signed and sent**, but its fill is not yet recorded —
-    /// tokens may already exist on-chain. Reached from `Arming` via
-    /// [`Position::mark_buy_submitted`] the instant a send returns. Transitions
+    /// tokens may already exist on-chain. Reached from `Arming` via the repo
+    /// `mark_buy_submitted` the instant a send returns. Transitions
     /// to `Holding` via `update_entry` once the on-chain fill is adopted. In the
     /// holding index but not counted toward the cap (no entry yet). **Never
     /// reaped** — owned by the buy-recovery reaper, which adopts/waits/drops per
@@ -169,41 +170,6 @@ impl Position {
         }
     }
 
-    /// Record the target (trigger-trade) snapshot — the scalp-entry signal trade
-    /// that armed this position. Set before the entry fill lands; `entry_*` is
-    /// filled independently later, so the two can be compared to derive the gap.
-    ///
-    /// In-memory mutator parallel to the repo's `update_target` (the live arming
-    /// path persists via that, syncing the RETURNed row); kept as the model-level
-    /// setter for callers that mutate a `Position` before a bulk write.
-    #[allow(dead_code)]
-    pub fn set_target(
-        &mut self,
-        price: f64,
-        amount: u64,
-        time: DateTime<Utc>,
-        tx: String,
-    ) {
-        self.target_price = Some(price);
-        self.target_token_amount = Some(amount);
-        self.target_time = Some(time);
-        self.target_tx = Some(tx);
-        self.updated_at = Utc::now();
-    }
-
-    /// Record a submitted snipe-buy signature and flip the status to
-    /// `BuySubmitted` (the durable "buy in flight" marker). Appends to
-    /// `submitted_buy_signatures` so every attempt is recoverable. In-memory
-    /// mutator parallel to the repo's `mark_buy_submitted`; idempotent on the
-    /// status (re-marking an already-`BuySubmitted` position just appends the
-    /// new attempt's signature).
-    #[allow(dead_code)]
-    pub fn mark_buy_submitted(&mut self, signature: String) {
-        self.submitted_buy_signatures.push(signature);
-        self.status = PositionStatus::BuySubmitted;
-        self.updated_at = Utc::now();
-    }
-
     /// Mark the position as pending exit while the sell is executing.
     pub fn mark_exit_pending(&mut self) {
         self.status = PositionStatus::ExitPending;
@@ -220,20 +186,6 @@ impl Position {
         self.exit_time = Some(exit_time);
         self.status = PositionStatus::ExitFailed;
         self.updated_at = Utc::now();
-    }
-
-    /// Close the position with an exit fill. `exit_tx_signatures` are the
-    /// signature(s) of this position's OWN sell leg(s) that cleared the balance
-    /// (one for a single-shot sell; several when the sell-confirm loop retried /
-    /// re-routed across migration).
-    /// Flip status from PendingEntry to Holding when the on-chain fill is
-    /// confirmed in-memory (the repo `update_entry` does the same atomically
-    /// in the DB; this helper keeps the in-memory `Position` consistent so
-    /// callers can mutate the value before handing it back to the cache).
-    #[allow(dead_code)]
-    pub fn mark_entry_filled(&mut self) {
-        self.status = PositionStatus::Holding;
-        self.updated_at = chrono::Utc::now();
     }
 
     pub fn close(
@@ -336,7 +288,13 @@ impl Position {
 /// Wire view of a [`Position`] for the API + SSE stream (the "tpsl2" shape, which
 /// carries the `target_*` snapshot). Lives in core next to `Position` so the core
 /// SSE render bridge can emit it; `api::handlers::strategies::tpsl2_positions`
-/// re-exports it. (tpsl1 keeps its own narrower `PositionResponse`.)
+/// re-exports it.
+///
+/// SSOT NOTE: the frontend consumes this AND the sibling tpsl1 `PositionResponse`
+/// (`hunter/live/.../strategies/positions.rs`) through ONE shared `RulePositionRecord`
+/// type. The two are intentionally separate structs (per-strategy clones), but their
+/// SERIALIZED field set must stay a consistent superset — the tpsl1 shape now also
+/// emits `target_*` for parity. If you add a wire field to one, add it to both.
 #[derive(Serialize)]
 pub struct PositionResponse {
     pub id: Uuid,
@@ -373,7 +331,9 @@ pub struct PositionResponse {
     pub pnl_sol: Option<f64>,
     pub status: String,
     pub strategy: String,
-    pub rule_id: Uuid,
+    /// Owning rule (`None` if the rule was deleted — `ON DELETE SET NULL`). Matches
+    /// the sibling tpsl1 shape's `Option<Uuid>` so the two can't type-drift.
+    pub rule_id: Option<Uuid>,
     /// Why the position exited ("TakeProfit", "StopLoss", "TrailingStop",
     /// "Stall", "TimeStop", "LiquidityExit"); `None` while still open.
     pub exit_reason: Option<String>,
@@ -425,7 +385,7 @@ impl From<Position> for PositionResponse {
             pnl_sol,
             status: p.status.to_string(),
             strategy: p.strategy,
-            rule_id: p.rule_id,
+            rule_id: Some(p.rule_id),
             exit_reason,
             // `Position` (legacy shape) carries no run_seq; the run-history handler
             // stamps it after construction from the run map.
@@ -510,27 +470,6 @@ mod tests {
         assert!(p.exit_reason_or_derived().is_none());
     }
 
-    #[test]
-    fn mark_buy_submitted_appends_sig_and_flips_status() {
-        let mut p = make_position();
-        assert_eq!(p.status, PositionStatus::Arming);
-        p.mark_buy_submitted("sig-1".into());
-        assert_eq!(p.status, PositionStatus::BuySubmitted);
-        assert_eq!(p.submitted_buy_signatures, vec!["sig-1".to_string()]);
-        // A second send (retry) just appends — still BuySubmitted, still in index.
-        p.mark_buy_submitted("sig-2".into());
-        assert_eq!(p.submitted_buy_signatures, vec!["sig-1".to_string(), "sig-2".to_string()]);
-        assert!(p.is_in_holding_index());
-    }
-
-    #[test]
-    fn mark_entry_filled_transitions_to_holding() {
-        let mut p = make_position();
-        assert_eq!(p.status, PositionStatus::Arming);
-        p.mark_entry_filled();
-        assert_eq!(p.status, PositionStatus::Holding);
-    }
-
     /// A clean profitable exit: win, positive SOL + %, closed.
     #[test]
     fn pnl_and_win_for_clean_profitable_exit() {
@@ -585,7 +524,7 @@ mod tests {
         let mut holding = make_position();
         holding.entry_price = Some(1.0);
         holding.entry_token_amount = Some(100);
-        holding.mark_entry_filled();
+        holding.status = PositionStatus::Holding;
         assert!(!holding.is_closed(), "Holding is not closed");
         assert_eq!(holding.pnl_sol(), None, "no exit price yet");
     }
@@ -594,9 +533,9 @@ mod tests {
     fn is_in_holding_index_covers_all_pre_fill_statuses() {
         let mut p = make_position();
         assert!(p.is_in_holding_index(), "Arming is in holding index");
-        p.mark_buy_submitted("sig".into());
+        p.status = PositionStatus::BuySubmitted;
         assert!(p.is_in_holding_index(), "BuySubmitted is in holding index");
-        p.mark_entry_filled();
+        p.status = PositionStatus::Holding;
         assert!(p.is_in_holding_index(), "Holding is in holding index");
         p.mark_exit_pending();
         assert!(!p.is_in_holding_index(), "ExitPending is NOT in holding index");

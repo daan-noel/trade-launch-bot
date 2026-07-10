@@ -71,6 +71,11 @@ venv
 # --- TLS (self-signed, generated locally) ---
 nginx/tls/*.pem
 
+# --- nginx Basic-auth credentials (secret bcrypt hash — generate per-gate, never
+#     commit; the ui.Dockerfile COPYs it from disk at build time). See the tracked
+#     .htpasswd.example next to each for the generation command. ---
+deploy/*/nginx/.htpasswd
+
 # --- Editor / OS ---
 .vscode/
 .idea/

@@ -6,10 +6,17 @@
 //! (`transport::run<V>`) and the decode task (which calls `V::decode`), returning
 //! the host event receiver + a control handle.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch, Notify};
 use tracing::warn;
+
+/// Count of events dropped after the back-pressure retry ALSO failed — the only
+/// genuinely-lost events (a `Full` that the 100ms retry couldn't drain, or a
+/// closed channel). Process-wide (ingest is a single session); surfaced on every
+/// real drop so sustained loss is visible instead of silent.
+static DROPPED_EVENTS: AtomicU64 = AtomicU64::new(0);
 
 use crate::config::{Auth, Commitment, IngestConfig};
 use crate::event::IngestEvent;
@@ -116,11 +123,23 @@ impl<V: IngestVenue> Ingest<V> {
                     match event_tx_clone.try_send(ev) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(ev)) => {
-                            warn!("ingest: event channel full — dropping event");
-                            // Retry with timeout to avoid silent loss on brief back-pressure.
-                            let _ = event_tx_clone
+                            // Channel briefly full — retry with a short timeout
+                            // rather than logging a drop prematurely (the retry
+                            // usually succeeds under transient back-pressure).
+                            if event_tx_clone
                                 .send_timeout(ev, std::time::Duration::from_millis(100))
-                                .await;
+                                .await
+                                .is_err()
+                            {
+                                // Retry ALSO failed — this is a genuine drop. Count
+                                // it and log the running total so sustained loss is
+                                // visible instead of silent.
+                                let n = DROPPED_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+                                warn!(
+                                    dropped_total = n,
+                                    "ingest: event channel full after retry — dropped event"
+                                );
+                            }
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             return; // Host dropped the receiver — stop.

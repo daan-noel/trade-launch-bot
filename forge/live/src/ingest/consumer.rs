@@ -148,21 +148,53 @@ async fn wallet_ref(
     Ok(id)
 }
 
+/// Cap on how many pending rows a buffer may hold across failed flushes before we
+/// give up retaining them. Inserts are idempotent so a transient DB error can be
+/// retried on the next flush without loss — but an extended outage must not grow
+/// the buffer without bound and OOM the ingest task (the box is RAM-constrained).
+/// Past this, the oldest rows are dropped (logged) so recent trades keep flowing.
+const MAX_PENDING_ROWS: usize = 50_000;
+
 /// Flush both buffers (idempotent inserts). Errors are logged, not propagated —
-/// a transient DB error must not tear down the ingest task.
+/// a transient DB error must not tear down the ingest task. On a failed insert the
+/// batch is RETAINED (not cleared) so the next flush retries it — inserts are
+/// idempotent (dedup key = PK), so replaying a partially-applied batch is safe and
+/// a transient DB blip no longer permanently loses trades. The buffer is bounded
+/// by `MAX_PENDING_ROWS` so a prolonged outage sheds the oldest rows instead of
+/// growing unbounded.
 async fn flush(pool: &PgPool, trades: &mut Vec<NewTrade>, raws: &mut Vec<RawTx>) {
     if !trades.is_empty() {
         match TradeRepo::insert_batch(pool, trades).await {
-            Ok(n) => tracing::debug!(rows = n, "flushed trades"),
-            Err(e) => warn!(?e, count = trades.len(), "trade flush failed"),
+            Ok(n) => {
+                tracing::debug!(rows = n, "flushed trades");
+                trades.clear();
+            }
+            Err(e) => {
+                warn!(?e, count = trades.len(), "trade flush failed — retaining batch for retry");
+                shed_overflow(trades, "trades");
+            }
         }
-        trades.clear();
     }
     if !raws.is_empty() {
         match RawTxRepo::insert_batch(pool, raws).await {
-            Ok(n) => tracing::debug!(rows = n, "flushed raw_txs"),
-            Err(e) => warn!(?e, count = raws.len(), "raw_tx flush failed"),
+            Ok(n) => {
+                tracing::debug!(rows = n, "flushed raw_txs");
+                raws.clear();
+            }
+            Err(e) => {
+                warn!(?e, count = raws.len(), "raw_tx flush failed — retaining batch for retry");
+                shed_overflow(raws, "raw_txs");
+            }
         }
-        raws.clear();
+    }
+}
+
+/// Drop the oldest rows once a retained buffer exceeds `MAX_PENDING_ROWS`, keeping
+/// the most recent. Only reached on a sustained flush failure.
+fn shed_overflow<T>(buf: &mut Vec<T>, what: &str) {
+    if buf.len() > MAX_PENDING_ROWS {
+        let drop_n = buf.len() - MAX_PENDING_ROWS;
+        buf.drain(0..drop_n);
+        warn!(dropped = drop_n, kind = what, "pending flush buffer over cap — shed oldest rows");
     }
 }

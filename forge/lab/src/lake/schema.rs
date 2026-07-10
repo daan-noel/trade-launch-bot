@@ -6,6 +6,11 @@
 //! silently drift. Columns mirror the generalized `trades` + a `tokens`
 //! dimension: quote/base amounts + the venue-neutral reserve pair + the interned
 //! `launchpad_id`/`quote_asset_id` (a new launchpad/quote is data, not a column).
+//!
+//! Forward seam: these constants are unused until the Parquet writer / DuckDB
+//! reader land (LAB only), so the whole module opts out of dead-code warnings
+//! rather than carry a placeholder consumer.
+#![allow(dead_code)]
 
 /// Ordered column set for the sealed-day `trades` Parquet files. The reader binds
 /// by name, but a stable order keeps writer output deterministic.

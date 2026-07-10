@@ -197,7 +197,11 @@ async fn fetch_balances(
 }
 
 /// Spawn the reservation TTL sweep as a long-lived task. Cheap when idle —
-/// bounded to the (small) `reserved` set via the partial index in migration `0004`.
+/// bounded to the (small) `reserved`/`funding` sets via the partial indexes in
+/// migration `0004`. Sweeps two stranded states with the same TTL: `reserved`
+/// wallets from an aborted launch, and `funding` wallets whose treasury send was
+/// dropped (SOL never left the treasury) — both would otherwise be stranded
+/// forever, invisible to every claim.
 pub fn spawn_reservation_sweep(pool: PgPool) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(RESERVATION_SWEEP_INTERVAL);
@@ -208,6 +212,11 @@ pub fn spawn_reservation_sweep(pool: PgPool) -> tokio::task::JoinHandle<()> {
                 Ok(0) => {}
                 Ok(released) => info!(released, "reservation TTL sweep released stranded wallets"),
                 Err(e) => warn!(?e, "reservation TTL sweep failed"),
+            }
+            match ManagedWalletRepo::revert_stale_funding(&pool, cutoff).await {
+                Ok(0) => {}
+                Ok(reverted) => info!(reverted, "funding TTL sweep reverted stranded wallets"),
+                Err(e) => warn!(?e, "funding TTL sweep failed"),
             }
         }
     })

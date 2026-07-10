@@ -8,8 +8,11 @@ use sqlx::PgPool;
 
 use platform_core::storage::repositories::{LaunchpadRepo, QuoteAssetRepo, TokenRepo, TradeRepo};
 
+/// Map any error to a 500 with a GENERIC client body; the full detail (which can
+/// carry SQL text / anyhow chains) is logged server-side, never returned.
 fn e500<E: std::fmt::Debug>(e: E) -> actix_web::Error {
-    actix_web::error::ErrorInternalServerError(format!("{e:?}"))
+    tracing::error!(error = ?e, "internal error serving request");
+    actix_web::error::ErrorInternalServerError("internal server error")
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

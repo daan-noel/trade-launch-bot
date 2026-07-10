@@ -175,7 +175,7 @@ impl ManagedWalletRepo {
                 ORDER BY created_at LIMIT $2 \
                 FOR UPDATE SKIP LOCKED \
              ) \
-             UPDATE managed_wallets SET status = 'funding', funding_source = $3 \
+             UPDATE managed_wallets SET status = 'funding', funding_source = $3, reserved_at = now() \
              WHERE id IN (SELECT id FROM claimed) \
              RETURNING *",
         )
@@ -199,7 +199,7 @@ impl ManagedWalletRepo {
         funding_source: &str,
     ) -> anyhow::Result<Option<ManagedWallet>> {
         Ok(sqlx::query_as::<_, ManagedWallet>(
-            "UPDATE managed_wallets SET status = 'funding', funding_source = $2 \
+            "UPDATE managed_wallets SET status = 'funding', funding_source = $2, reserved_at = now() \
              WHERE id = $1 AND status = 'generated' RETURNING *",
         )
         .bind(id)
@@ -214,10 +214,33 @@ impl ManagedWalletRepo {
     /// number reverted.
     pub async fn revert_funding(pool: &PgPool, ids: &[Uuid]) -> anyhow::Result<u64> {
         let result = sqlx::query(
-            "UPDATE managed_wallets SET status = 'generated', funding_source = NULL \
+            "UPDATE managed_wallets SET status = 'generated', funding_source = NULL, reserved_at = NULL \
              WHERE id = ANY($1) AND status = 'funding'",
         )
         .bind(ids)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// TTL sweep for the `funding` state (mirror of [`Self::release_expired_reservations`]).
+    /// A `funding` claim stamps `reserved_at` (see [`Self::claim_for_funding`]); a
+    /// send that never lands — a dropped manual-mode tx whose SOL never left the
+    /// treasury — would otherwise strand the wallet in `funding` forever, invisible
+    /// to every claim. This reverts any `funding` wallet older than `cutoff` back to
+    /// `generated` (clearing the tentative `funding_source`/`reserved_at`), so the
+    /// next funding pass can re-claim it. Safe even if the SOL later lands: the
+    /// balance poller promotes a `generated` wallet to `funded` off its real
+    /// balance just as it does a `funding` one. Returns the number reverted.
+    pub async fn revert_stale_funding(
+        pool: &PgPool,
+        cutoff: DateTime<Utc>,
+    ) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE managed_wallets SET status = 'generated', funding_source = NULL, reserved_at = NULL \
+             WHERE status = 'funding' AND reserved_at < $1",
+        )
+        .bind(cutoff)
         .execute(pool)
         .await?;
         Ok(result.rows_affected())
@@ -308,11 +331,26 @@ impl ManagedWalletRepo {
     /// — the wallet-pool Phase 4 dust sweep, and the final stop for any wallet.
     /// Unlike the other transitions this has no status guard: a wallet can be
     /// retired from any state.
-    pub async fn retire(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("UPDATE managed_wallets SET status = 'retired' WHERE id = $1")
-            .bind(id)
-            .execute(pool)
-            .await?;
+    ///
+    /// Also stamps the wallet's true final on-chain balance (`final_balance_lamports`)
+    /// — the caller has just observed it (a sweep leaves the wallet at 0; a
+    /// below-dust-floor retire leaves only the residual it read). The balance poller
+    /// stops watching a wallet once it leaves `generated`/`funding`, so without this
+    /// the row would keep displaying a stale funded-era snapshot forever, reading as
+    /// phantom holdings even though the SOL is back in the treasury.
+    pub async fn retire(
+        pool: &PgPool,
+        id: Uuid,
+        final_balance_lamports: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE managed_wallets SET status = 'retired', \
+             balance_lamports = $2, balance_checked_at = now() WHERE id = $1",
+        )
+        .bind(id)
+        .bind(final_balance_lamports)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 }
@@ -551,6 +589,23 @@ impl BundleRepo {
         Ok(())
     }
 
+    /// Atomically claim a `planned` bundle for submission (compare-and-swap):
+    /// flips `planned → submitting` in a single conditional UPDATE and reports
+    /// whether THIS caller won. Two concurrent `execute` calls both read a bundle
+    /// as `planned`, then race to build+submit their own signed tx sets from the
+    /// same bundler wallets — a double real-SOL buy. The row-conditional
+    /// `WHERE status = 'planned'` lets exactly one caller transition it; the loser
+    /// gets `false` (0 rows affected) and must abort before signing/submitting.
+    pub async fn claim_for_submitting(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+        let res = sqlx::query(
+            "UPDATE bundles SET status = 'submitting' WHERE id = $1 AND status = 'planned'",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(res.rows_affected() == 1)
+    }
+
     /// Record the Jito submit result: status → `submitted`, stamps
     /// `submitted_at` (the confirm watcher's timeout window starts here), and
     /// increments `submit_attempts` — so the NEXT re-bid (after a `dropped`
@@ -683,6 +738,27 @@ impl TokenPositionRepo {
         .bind(mint_address)
         .fetch_all(pool)
         .await?)
+    }
+
+    /// The set of managed-wallet ids that still hold an OPEN position — i.e. the
+    /// wallet holds tokens (or is a just-launched dev/bundler row seeded before its
+    /// first balance reconcile, which defaults `open`). The dust sweep consults
+    /// this so it NEVER drains such a wallet's SOL: that SOL is the gas the wallet
+    /// needs to sell the position later, and a fee-payer at 0 lamports can't land
+    /// the sell (the leader drops it → the manage action reports "confirmation
+    /// timed out"). A `closed` (sold out) or `dropped` (never bought) position does
+    /// NOT protect a wallet, so a genuinely-terminal wallet still sweeps. One
+    /// indexed scan of the small own-holdings table.
+    pub async fn managed_wallet_ids_with_open_positions(
+        pool: &PgPool,
+    ) -> anyhow::Result<std::collections::HashSet<Uuid>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT managed_wallet_id FROM token_positions WHERE status = $1",
+        )
+        .bind(crate::models::PositionStatus::Open.as_str())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     /// Write a reconciled on-chain balance + the canonical token account. Auto

@@ -28,6 +28,12 @@ const LOW_POOL_THRESHOLD = 3;
 const ROLES: WalletRole[] = ['dev', 'bundler', 'treasury', 'trading'];
 const STATUSES: WalletStatus[] = ['generated', 'funding', 'funded', 'reserved', 'used', 'retired'];
 
+// The balance poller only refreshes `generated`/`funding` (+ the treasury by role);
+// `balance_lamports` freezes at the funded-era snapshot once a wallet is claimed and
+// spent. Show a number only where it's still live — a stale snapshot on a reserved/
+// used/retired wallet reads as phantom holdings (the SOL is already back in treasury).
+const STALE_BALANCE_STATUSES = new Set<WalletStatus>(['reserved', 'used', 'retired']);
+
 // Tone → color var, so the per-role status bar segments match the StatusPill palette.
 const TONE_COLOR: Record<string, string> = {
   good: 'var(--color-good)',
@@ -225,7 +231,18 @@ export function WalletPoolPage() {
     { header: 'Label', render: (w) => w.label ?? <span className="muted">—</span> },
     { header: 'Role', render: (w) => <RolePill role={w.role} /> },
     { header: 'Status', render: (w) => <StatusPill status={w.status} /> },
-    { header: 'Balance', align: 'right', render: (w) => <span className="mono">{formatSol(w.balance_lamports)}</span> },
+    {
+      header: 'Balance',
+      align: 'right',
+      render: (w) =>
+        STALE_BALANCE_STATUSES.has(w.status) ? (
+          <span className="muted" title="Not tracked after a wallet is reserved/used/retired — its SOL is back in the treasury">
+            —
+          </span>
+        ) : (
+          <span className="mono">{formatSol(w.balance_lamports)}</span>
+        ),
+    },
     { header: 'Age', align: 'right', render: (w) => formatAge(w.created_at) },
     {
       header: '',

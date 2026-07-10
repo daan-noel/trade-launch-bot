@@ -385,24 +385,8 @@ impl Default for IdSeq {
     }
 }
 
-/// **Who funds whom** — a typed INPUT from the forge unlinkability / jit-funding
-/// workstream, not computed here. The orchestrator consumes it (audit reads the
-/// funding graph for star-fund tells); it does not build the funding strategy.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Funding {
-    pub edges: Vec<FundingEdge>,
-}
-
-/// One funding edge (source → target, lamports). Populated by the unlinkability
-/// workstream; the auditor inspects the resulting graph shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FundingEdge {
-    pub from: String,
-    pub to: String,
-    pub lamports: u64,
-}
-
-/// **Timing / bundling** — a typed INPUT from the same workstream. `bundle` groups
+/// **Timing / bundling** — a typed INPUT from the forge unlinkability workstream.
+/// `bundle` groups
 /// ops that submit atomically (Jito bundle); `delay_ms` spaces the rest. Not
 /// generated here (Phase D personas draw from it).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,30 +404,27 @@ pub struct ScheduleSlot {
     pub delay_ms: u64,
 }
 
-/// A batch of operations plus its funding graph and schedule — the single object
-/// the whole write side runs on. Persisted (generalizing `bundles.legs` JSONB)
-/// for preview/replay, audited before execution, and (Phase F) built into txs.
+/// A batch of operations plus its schedule — the single object the whole write
+/// side runs on. Persisted (generalizing `bundles.legs` JSONB) for preview/replay,
+/// audited before execution, and (Phase F) built into txs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     /// The token this plan concerns, base58 (a launch's fresh mint, a manage
-    /// action's existing mint). `None` for a pure funding-only plan.
+    /// action's existing mint). `None` for a mint-less plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mint_address: Option<String>,
     pub ops: Vec<Operation>,
-    #[serde(default)]
-    pub funding: Funding,
     #[serde(default)]
     pub schedule: Schedule,
 }
 
 impl Plan {
-    /// A plan concerning one mint with the given ops (funding/schedule default —
-    /// the unlinkability workstream fills them).
+    /// A plan concerning one mint with the given ops (schedule default — the
+    /// unlinkability workstream fills it).
     pub fn for_mint(mint_address: impl Into<String>, ops: Vec<Operation>) -> Self {
         Self {
             mint_address: Some(mint_address.into()),
             ops,
-            funding: Funding::default(),
             schedule: Schedule::default(),
         }
     }

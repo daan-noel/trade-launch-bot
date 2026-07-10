@@ -142,10 +142,12 @@ items are folded into Phase 5+ below.
 **Goal:** Cold tier + sweeps/backtests; EC2 stays a rolling PG buffer only.
 
 - [ ] Fill `lake` crate — Parquet writer, DuckDB reader, sealed-day export
-- [ ] `lake-export` implementation (replace stub in `lake::run_export`)
+- [ ] `lake-export` implementation + `forge-lab` subcommand (the do-nothing
+      `lake::run_export` stub + its CLI branch were removed; build on `lake::schema`)
 - [ ] Writer/reader column parity guard (`lake::schema` SSOT + test)
 - [ ] PG fresh-tail union for tokens newer than last export
-- [ ] `db-incremental-sync.ps1` validated against production schema drift
+- [ ] `db-incremental-sync.ps1` — the non-functional stub was removed; author it
+      fresh (FDW/SSH-tunnel) once the EC2 box exists
 - [ ] Sweeps / backtests / simulate HTTP in `lab`
 - [ ] Domain E analytics tables — `wallet_profiles`, `wallets`, tags (eat-bots)
 - [ ] Analysis workflow cron documented — nightly sync + `lake-export --include-today`

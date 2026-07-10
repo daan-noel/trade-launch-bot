@@ -11,6 +11,57 @@ no behavior-preservation requirement. This file is the synthesis; per-area detai
 
 ---
 
+## EXECUTION STATUS — re-verified 2026-07-10 (scope agreed with user)
+
+Whole-repo re-check after significant code changes since the audit. **Agreed scope:**
+- **C1 (strategy triplication) — OUT.** tpsl1/tpsl2/swing1 are intentional clones; keep them.
+- **C2 (forge↔hunter infra duplication) — OUT.** forge was copied from hunter and is still WIP;
+  do not extract to shared crates / de-duplicate yet.
+- **In scope:** all remaining **B** bugs + the **C3** dead-code cleanups (delete unreachable).
+
+**B status — ALL DONE (2 were already fixed pre-session; 15 fixed this session):**
+
+| Item | Status | Item | Status | Item | Status |
+|------|--------|------|--------|------|--------|
+| B1 | ✅ CAS `claim_for_submitting` | B7 | ✅ poison-recovery lock | B13 | ✅ e500 generic + e400 Display |
+| B2 | ✅ `FUNDING_LOCK` serializes passes | B8 | ✅ retain batch + `MAX_PENDING_ROWS` | B14 | ✅ lab-api 127.0.0.1 (both) |
+| B3 | ✅ `${…:?}` pw + 127.0.0.1 (both) | B9 | ✅ `revert_stale_funding` sweep + `reserved_at` stamp | B15 | ✅ exhaustive match + warn |
+| B4 | ✅ forge-lab bearer gate (token optional) | B10 | ✅ strict `env_u64/f64` → `Result` | B16 | ✅ log+counter only on real drop |
+| B5 | ✅ (pre-session) | B11 | ✅ tpsl1 emits `target_*`; `rule_id: Option<Uuid>` both; FE type aligned | B17 | ✅ `constant_time_eq` |
+| B6 | ✅ (pre-session) | B12 | ✅ untracked + gitignored + `.example` | | |
+
+**C3 — ALL DONE (with two precision calls noted):**
+- C3-1 `shared/ingest/websocket` → **deleted** (crate + member + doc refs).
+- C3-2 forge/orchestrator → **`dryrun.rs` deleted** (+ macros tests repointed to `prepare()`); **funding graph
+  deleted** (`Plan.funding`/`Funding`/`FundingEdge`/`StarFunding`/`star_sources` — genuinely dead, edges never
+  populated). **`Plan.schedule` KEPT** — it feeds LIVE audit rules (`same_slot_cluster`,
+  `synchronized_bundler_exit`) via the `Unscheduled` bucket, so removing it changes audit behavior, not dead
+  code. `Plan` is persisted JSON but removing a field is serde-read-compatible (unknown keys ignored).
+- C3-3 hunter/core legacy `Position` → **dropped the 3 `#[allow(dead_code)]` mutators** (`set_target`,
+  `mark_buy_submitted`, `mark_entry_filled` — live uses `StrategyPosition`'s same-named copies) + repointed their
+  tests. Full DTO reduction was NOT done: `close`/`mark_exit_*`/read-helpers are exercised by the core exit tests
+  (C1 clone territory, off-limits).
+- C3-4 forge/lab `run_export` `Ok(0)` stub → **deleted** (+ its CLI branch; unknown args now error). `lake::schema`
+  SSOT seam kept (`#[allow(dead_code)]`).
+- C3-5 `forge/scripts/db-incremental-sync.ps1` stub → **deleted** (roadmap note updated).
+- C3-6 `transfer_with_seed` → renamed **`system_transfer`** (const + catalog row). Venue-neutral rows keep
+  `VenueId::PumpFun` (the enum is a deliberate closed single-variant; a neutral arm is a speculative 2nd-venue
+  change) — clarified via comment instead.
+
+**Also fixed (pre-existing, unblocked hunter-core tests):** `table_eval.rs` `include_str!` path
+`frontend-react/` → `frontend/` (stale from the earlier frontend rename).
+
+**USER FOLLOW-UPS REQUIRED:**
+- **B12:** the old committed bcrypt hash is compromised (still in git history). Regenerate a UNIQUE per-gate
+  `.htpasswd` (`htpasswd -B -C 12 -c …`) for hunter-live / hunter-lab / forge-live before deploy (see each
+  `.htpasswd.example`). Consider scrubbing the hash from history.
+- **B3:** compose now REQUIRES `POSTGRES_PASSWORD` in the env-file (no default) — sync `.env` before `compose up`.
+
+**Verification:** `cargo check` clean across all 10 touched crates; tests green — orchestrator 24, http-auth 5,
+hunter-core position 12 + table_eval 6. (`cargo 1.96.1` builds here — old "no linker" note is stale.)
+
+---
+
 ## A. Verdict in one paragraph
 
 The codebase is much better engineered than a typical solo trading project — the live hot path,

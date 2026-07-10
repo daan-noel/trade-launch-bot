@@ -26,12 +26,28 @@ use trading_core::strategies::swing_1::swing::SwingLeg;
 /// Wire shape for a position read. Field set is kept stable for the frontend; the
 /// JSONB signature arrays are decoded to `Vec<String>` and the single-address
 /// display columns are the first entry leg / last exit leg.
+///
+/// SSOT NOTE: the frontend consumes this AND the sibling
+/// [`trading_core::models::PositionResponse`] (the tpsl2 shape) through ONE shared
+/// `RulePositionRecord` type. The two are intentionally kept as separate structs
+/// (per-strategy clones), but their SERIALIZED field set must stay a consistent
+/// superset — a field the FE type declares must be emitted by BOTH. If you add a
+/// wire field here, add it (or its `None` placeholder) to the sibling too.
 #[derive(Serialize)]
 pub struct PositionResponse {
     pub id: Uuid,
     pub run_id: Uuid,
     pub mint_address: String,
     pub wallet: String,
+    /// Target (trigger-trade) snapshot — the scalp-entry signal trade that armed
+    /// this position, distinct from the actual entry fill. `None` for strategies
+    /// that never arm (tpsl1 sniper). Emitted so the shared FE type's `target_*`
+    /// keys are present on every strategy's rows (parity with the tpsl2 shape).
+    pub target_price: Option<f64>,
+    /// Raw token units (exact integer; the frontend scales for display).
+    pub target_token_amount: Option<u64>,
+    pub target_time: Option<DateTime<Utc>>,
+    pub target_tx: Option<String>,
     pub entry_price: Option<f64>,
     pub exit_price: Option<f64>,
     /// First entry leg's signature (display/back-compat); empty until the fill is
@@ -100,6 +116,10 @@ impl From<StrategyPosition> for PositionResponse {
             run_id: p.run_id,
             mint_address: p.mint_address,
             wallet: p.wallet,
+            target_price: p.target_price,
+            target_token_amount: p.target_token_amount,
+            target_time: p.target_time,
+            target_tx: p.target_tx,
             entry_price: p.entry_price,
             exit_price: p.exit_price,
             entry_tx: entry_sigs.first().cloned().unwrap_or_default(),

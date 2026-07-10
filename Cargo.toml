@@ -26,7 +26,6 @@ members = [
     # ingest read-stack: venue-agnostic engine + pump.fun venue (was ingest-laserstream)
     "shared/ingest/core",
     "shared/ingest/pumpfun",
-    "shared/ingest/websocket",
     # shared HTTP bearer-auth middleware (fail-closed gate for real-money bins)
     "shared/http-auth",
     # forge; lake -> forge/lab/src/lake module,

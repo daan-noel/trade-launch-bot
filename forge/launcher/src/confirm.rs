@@ -18,8 +18,10 @@ use chrono::Utc;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-use platform_core::models::{Bundle, BundleStatus};
-use platform_core::storage::repositories::{BundleRepo, LaunchRepo, ManagedWalletRepo, TradeRepo};
+use platform_core::models::{Bundle, BundleStatus, WalletRole};
+use platform_core::storage::repositories::{
+    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
+};
 
 use crate::bundle::legs_from_json;
 use crate::config::LauncherSettings;
@@ -91,6 +93,7 @@ async fn confirm_one(
 
     if landed.len() == sigs.len() {
         BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Landed.as_str()).await?;
+        seed_landed_bundle_positions(pool, &launch.mint_address, &bundle).await;
         mark_bundle_wallets_used(pool, &bundle).await;
         info!(bundle_id = %bundle.id, legs = sigs.len(), "bundle landed");
         return Ok(());
@@ -170,6 +173,37 @@ async fn rebid_dropped(
 /// they're not safely re-claimable. A no-op (`WHERE status = 'reserved'` guard in
 /// `mark_used`) for wallets not currently reserved, i.e. today's free-form
 /// template-selected legs, until launch execution claims via `claim_funded`.
+/// Seed the cost-basis position for every leg of a LANDED bundle (idempotent),
+/// mirroring the dev-buy seed at launch. This gives the dust sweep's
+/// open-position guard a row to protect the instant the bundle lands, rather than
+/// waiting for the first holdings-page read to lazily seed it — otherwise these
+/// token-holding bundler wallets, now `used`, could be drained + retired by the
+/// hourly sweep before the token is ever viewed, stranding their sell (no gas to
+/// pay the fee → "confirmation timed out"). Only landed legs bought tokens; a
+/// dropped/partial bundle's legs hold nothing and stay sweep-eligible.
+async fn seed_landed_bundle_positions(pool: &PgPool, mint_address: &str, bundle: &Bundle) {
+    let legs = match legs_from_json(&bundle.legs) {
+        Ok(legs) => legs,
+        Err(e) => {
+            warn!(bundle_id = %bundle.id, %e, "failed to parse bundle legs for position seed");
+            return;
+        }
+    };
+    for leg in legs {
+        if let Err(e) = TokenPositionRepo::seed(
+            pool,
+            mint_address,
+            leg.managed_wallet_id,
+            WalletRole::Bundler.as_str(),
+            leg.quote_amount,
+        )
+        .await
+        {
+            warn!(bundle_id = %bundle.id, managed_wallet_id = %leg.managed_wallet_id, %e, "failed to seed bundler position");
+        }
+    }
+}
+
 async fn mark_bundle_wallets_used(pool: &PgPool, bundle: &Bundle) {
     let wallet_ids = match legs_from_json(&bundle.legs) {
         Ok(legs) => legs.iter().map(|leg| leg.managed_wallet_id).collect::<Vec<_>>(),

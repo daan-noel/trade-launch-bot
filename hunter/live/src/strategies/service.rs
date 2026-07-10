@@ -1224,10 +1224,17 @@ impl StrategyService {
     /// frontend page filters on — swing1 filters `swing_1`, so it can't collapse
     /// into the tpsl1 catch-all or its rule-list refetch would never fire.
     fn strat_label(strategy_id: &str) -> String {
+        // Exhaustive over StrategyImpl (NO `_` wildcard) so strategy #4 is a compile
+        // error here rather than silently collapsing into the tpsl1 label — swing1
+        // filters `swing_1`, so a misrouted label would never fire its refetch.
         match StrategyImpl::from_id(strategy_id) {
+            Some(StrategyImpl::Tpsl1) => "tpsl1".to_string(),
             Some(StrategyImpl::Tpsl2) => "tpsl2".to_string(),
             Some(StrategyImpl::Swing1) => "swing_1".to_string(),
-            _ => "tpsl1".to_string(),
+            None => {
+                tracing::warn!(strategy_id, "strat_label: unknown strategy id — using tpsl1 label");
+                "tpsl1".to_string()
+            }
         }
     }
 

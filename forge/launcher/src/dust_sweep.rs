@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use platform_core::models::{ManagedWallet, WalletRole, WalletStatus};
-use platform_core::storage::repositories::ManagedWalletRepo;
+use platform_core::storage::repositories::{ManagedWalletRepo, TokenPositionRepo};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
@@ -55,10 +55,29 @@ async fn sweep_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()> {
         return Ok(());
     }
 
+    // Never sweep a wallet that still holds an OPEN token position: its SOL is the
+    // gas it needs to sell that position later. Draining + retiring it here strands
+    // the tokens — the sell can't pay its fee, so the leader drops the tx and the
+    // manage action fails with "confirmation timed out". Such a wallet stays `used`
+    // and is re-checked next pass; once the position is sold (`closed`) or was never
+    // bought (`dropped`), it becomes sweep-eligible again.
+    let holding = TokenPositionRepo::managed_wallet_ids_with_open_positions(pool).await?;
+    let (sweepable, held): (Vec<_>, Vec<_>) =
+        used.into_iter().partition(|w| !holding.contains(&w.id));
+    if !held.is_empty() {
+        info!(
+            kept = held.len(),
+            "dust sweep: keeping wallets with open token positions (need gas to sell) — not swept"
+        );
+    }
+    if sweepable.is_empty() {
+        return Ok(());
+    }
+
     let rpc = RpcClient::new_with_commitment(settings.rpc_url.clone(), CommitmentConfig::confirmed());
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
 
-    for wallet in used {
+    for wallet in sweepable {
         let id = wallet.id;
         if let Err(e) = sweep_wallet(&rpc, pool, settings, &kek, &wallet, treasury_address).await {
             warn!(managed_wallet_id = %id, %e, "dust sweep failed for wallet");
@@ -79,8 +98,9 @@ async fn sweep_wallet(
     let balance = rpc.get_balance(&address).await.context("fetch wallet balance")?;
 
     if balance <= SWEEP_MIN_LAMPORTS {
-        // Not worth a signed tx + fee — retire directly, dust left behind.
-        ManagedWalletRepo::retire(pool, wallet.id).await?;
+        // Not worth a signed tx + fee — retire directly, dust left behind. Stamp the
+        // real (sub-floor) residual so the row reflects what's actually on-chain.
+        ManagedWalletRepo::retire(pool, wallet.id, balance as i64).await?;
         info!(managed_wallet_id = %wallet.id, balance, "wallet below dust floor — retired without sweep");
         return Ok(());
     }
@@ -102,7 +122,9 @@ async fn sweep_wallet(
 
     // Retire regardless: a `None` means the balance fell to/below the tx fee since
     // we read it — nothing worth a signed tx, same terminal outcome as a sweep.
-    ManagedWalletRepo::retire(pool, wallet.id).await?;
+    // The `SweepAll` transfer lands the source at 0 (any `None`/post-fee residual is
+    // sub-fee dust), so stamp 0 — the wallet holds nothing after this.
+    ManagedWalletRepo::retire(pool, wallet.id, 0).await?;
     match swept {
         Some(sig) => info!(
             managed_wallet_id = %wallet.id, address = %wallet.address, sig = %sig,

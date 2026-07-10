@@ -15,9 +15,9 @@
 
 use crate::plan::{Amount, IdSeq, Intent, OpId, Operation, Role, WalletRef};
 
-/// The default native-SOL transfer encoding for fund/consolidate legs (a
-/// system-program transfer; catalog variant `transfer_with_seed`).
-pub const DEFAULT_SOL_TRANSFER_VARIANT: &str = "transfer_with_seed";
+/// The default native-SOL transfer encoding for fund/consolidate legs (a plain
+/// `system_instruction::transfer`; catalog variant `system_transfer`).
+pub const DEFAULT_SOL_TRANSFER_VARIANT: &str = "system_transfer";
 
 // ---------------------------------------------------------------------------
 // bundle_launch
@@ -246,7 +246,7 @@ pub fn fund(seq: &mut IdSeq, source: &WalletRef, targets: &[FundTarget]) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dryrun::dry_run;
+    use crate::provider::prepare;
     use crate::plan::Plan;
     use solana_sdk::signature::{Keypair, Signer};
 
@@ -281,7 +281,7 @@ mod tests {
             assert_eq!(buy.deps, vec![create_id], "every buy deps the create");
         }
         let plan = Plan::for_mint(p.mint.clone(), ops);
-        dry_run(&plan).expect("launch plan must validate");
+        prepare(&plan).expect("launch plan must validate");
     }
 
     /// A full compose — fund → launch → volume → exit → consolidate — shares one
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(consolidate_op.deps, exit_ids, "consolidate deps the exits");
 
         let plan = Plan::for_mint(mint, ops);
-        dry_run(&plan).expect("composed plan must validate through the providers");
+        prepare(&plan).expect("composed plan must validate through the providers");
     }
 
     /// Gate D: volume_make + exit produce a plan where a wallet's ops share its
