@@ -377,17 +377,16 @@ impl PumpFunTrader {
                 tip_level,
             )?;
 
-            // ── Acquire nonce + sign & send ─────────────────────────────────
-            // Acquire the nonce only now — after the cached-PDA / token-account
-            // reads and the slippage `curve_reserves` read above — so the slot
-            // isn't held `in_use` across any RPC. Only the build/send/confirm
-            // below runs while holding it, and we always fall through to
-            // `schedule_nonce_refresh`.
-            let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
-            info!("🔁 Sell — token: {} nonce: {}", token_mint, nonce_pubkey);
+            // ── Build (nonce or recent blockhash) + sign & send ─────────────
+            // Build the tx only now — after the cached-PDA / token-account reads
+            // and the slippage `curve_reserves` read above. In durable-nonce mode
+            // (hunter) this acquires a slot held only across the build/send/confirm
+            // below, always freed via `schedule_nonce_refresh`; in recent-blockhash
+            // mode (forge's ephemeral wallets) there is no slot to hold.
+            let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer).await?;
+            info!("🔁 Sell — token: {}", token_mint);
 
             let res: Result<Option<String>> = async {
-                let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
                 let sig = self.send_transaction(&tx).await?;
 
                 info!(
@@ -417,7 +416,9 @@ impl PumpFunTrader {
             }
             .await;
 
-            self.schedule_nonce_refresh(nonce_pubkey);
+            if let Some(nonce_pubkey) = nonce_to_refresh {
+                self.schedule_nonce_refresh(nonce_pubkey);
+            }
 
             if let Err(TradeError::Reverted { custom }) = &res {
                 if !healed

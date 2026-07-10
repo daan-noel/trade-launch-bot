@@ -419,7 +419,7 @@ function FundReportCard({ report }: { report: FundReport }) {
       <p className="text-xs muted mb-2">
         Spent <strong>{formatSol(report.spent_lamports)}</strong> across {report.outcomes.length} wallet(s).
       </p>
-      <DataTable columns={columns} rows={report.outcomes} rowKey={(o) => o.wallet_id} />
+      <DataTable columns={columns} rows={report.outcomes} rowKey={(o) => o.managed_wallet_id} />
       {capped && (
         <Banner tone="bad" className="mt-3">
           A safety rail stopped funding early — the launch may be under-funded. Check treasury balance /

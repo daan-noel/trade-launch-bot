@@ -69,7 +69,10 @@ pub struct LegStructure {
 /// the plan and its stored form are ONE type that can't drift.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundledLegPlan {
-    pub wallet_id: Uuid,
+    /// FK → `managed_wallets.id`. `alias` keeps deserialization backward-compatible
+    /// with `bundles.legs` rows written under the old `wallet_id` key.
+    #[serde(alias = "wallet_id")]
+    pub managed_wallet_id: Uuid,
     pub quote_amount: i64,
     pub structure: LegStructure,
 }

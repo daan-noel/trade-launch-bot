@@ -106,7 +106,7 @@ async fn execute_bundle_inner(
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
     let first_wallet_id = bundler_ops[0]
         .wallet
-        .wallet_id
+        .managed_wallet_id
         .context("bundler leg op has no managed wallet id")?;
     let first_wallet = ManagedWalletRepo::get(pool, first_wallet_id)
         .await?
@@ -172,14 +172,14 @@ async fn execute_bundle_inner(
         let mut leg_signatures = Vec::with_capacity(bundler_ops.len());
 
         for op in &bundler_ops {
-            let wallet_id = op
+            let managed_wallet_id = op
                 .wallet
-                .wallet_id
+                .managed_wallet_id
                 .context("bundler leg op has no managed wallet id")?;
             let disguise = gated
                 .disguise_of(op.id)
                 .context("no disguise for bundler leg op")?;
-            let wallet = ManagedWalletRepo::get(pool, wallet_id)
+            let wallet = ManagedWalletRepo::get(pool, managed_wallet_id)
                 .await?
                 .context("bundler wallet not found")?;
             check_wallet_reserved_to_bundle(&wallet, bundle.launch_id)?;

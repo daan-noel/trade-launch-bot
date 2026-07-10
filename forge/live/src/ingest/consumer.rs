@@ -81,7 +81,7 @@ async fn run_consumer(
                 match ev {
                     IngestEvent::Trade(t) => {
                         tracked_in_tx = true;
-                        match wallet_id(&pool, &mut wallet_cache, &t.wallet).await {
+                        match wallet_ref(&pool, &mut wallet_cache, &t.wallet).await {
                             Ok(wid) => match map::trade_to_row(&adapter, wid, &t) {
                                 Ok(row) => trades.push(row),
                                 Err(e) => warn!(?e, mint = %t.mint, "skip trade (sig decode)"),
@@ -133,8 +133,9 @@ async fn run_consumer(
     flush(&pool, &mut trades, &mut raws).await;
 }
 
-/// Intern a wallet address → id, memoized. On a cache hit no DB round-trip occurs.
-async fn wallet_id(
+/// Intern a wallet address → `wallet_dict` id (`wallet_ref`), memoized. On a cache
+/// hit no DB round-trip occurs.
+async fn wallet_ref(
     pool: &PgPool,
     cache: &mut HashMap<String, i32>,
     address: &str,

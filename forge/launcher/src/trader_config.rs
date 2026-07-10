@@ -32,6 +32,14 @@ pub fn build_launch_trader_config(
     // Launch ALT (when provisioned): the trader fetches it at init and compiles the
     // create + dev-buy as a v0 tx so create_v2 + dev-buy fits the 1232 B limit.
     config.launch_alt_address = settings.launch_alt;
+    // Recent-blockhash trades, NOT durable nonce. Forge signs every buy/sell with a
+    // different ephemeral managed wallet (dev/bundler/treasury), none of which is
+    // the shared nonce pool's on-chain authority — a durable-nonce tx they can't
+    // advance is silently dropped by the leader (never lands → confirm-timeout).
+    // The create + dev-buy path already rides a recent blockhash; this makes the
+    // post-launch manage buy/sell path do the same. (Durable nonce is a hunter
+    // hot-path optimization for its single persistent signer.)
+    config.durable_nonce = false;
     // Create-only v2 measures ~900–1100 B; give mainnet headroom to land.
     config.retry.confirm_max_retries = 40;
     config.retry.confirm_poll_ms = 1_500;

@@ -84,7 +84,10 @@ export type PositionStatus = 'open' | 'closed';
 export interface TokenPosition {
   id: string;
   mint_address: string;
-  wallet_id: string;
+  // Internal storage key (managed_wallets.id UUID) — never rendered; join/render
+  // by `wallet_address`, the canonical cross-subsystem wallet identity.
+  managed_wallet_id: string;
+  wallet_address: string;
   role: WalletRole;
   token_account: string | null;
   balance_base: number;
@@ -105,7 +108,9 @@ export interface WalletSelection {
 
 // One planned/executed per-wallet leg of a management action.
 export interface PlanLeg {
-  wallet_id: string;
+  // Internal storage key (managed_wallets.id UUID); render `wallet_address`.
+  managed_wallet_id: string;
+  wallet_address: string;
   role: WalletRole;
   token_account: string | null;
   side: string; // 'sell' | 'buy' | 'consolidate'
@@ -211,7 +216,7 @@ export interface ManagedWalletPool {
 }
 
 export interface WalletFundOutcome {
-  wallet_id: string;
+  managed_wallet_id: string;
   address: string;
   role: string;
   amount_lamports: number;
@@ -362,7 +367,9 @@ export interface TokenOverview {
 // byte array over the wire (see formatSig).
 export interface TradePriced {
   mint_address: string;
-  wallet_id: number;
+  // Interned `wallet_dict` ref (soft int key) — the lean feed table keeps it as a
+  // ref; resolve to an address only where needed.
+  wallet_ref: number;
   launchpad_id: number;
   market_kind: string;
   quote_asset_id: number;

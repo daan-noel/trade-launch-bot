@@ -297,24 +297,20 @@ impl PumpFunTrader {
                     min_tokens_out,
                 )?;
 
-                // Acquire the nonce only now — after PDA derivation, the ATA-exists
-                // RPC, template acquisition, and the slippage reserve read above — so
-                // the slot isn't held `in_use` across any of those reads. Only the
-                // build/send/confirm below can fail while holding it, and the inner
-                // block always falls through to `schedule_nonce_refresh`.
-                let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+                // Build the tx only now — after PDA derivation, the ATA-exists RPC,
+                // template acquisition, and the slippage reserve read above. In
+                // durable-nonce mode (hunter) this acquires a slot held only across
+                // the build/send/confirm below, always freed via
+                // `schedule_nonce_refresh`; in recent-blockhash mode (forge's
+                // ephemeral wallets) there is no slot to hold.
+                let (tx, nonce_to_refresh) = self.build_trade_tx(ixs, signer).await?;
                 let sent: Result<String> = async {
-                    let tx = self.build_nonce_tx(ixs, &nonce_pubkey, nonce_hash, signer)?;
-                    // Write-ahead persist (Phase 2): the durable-nonce signature is
-                    // fixed the instant we sign — before any network round-trip — so
-                    // hand it to the hook to durably record the "buy in flight" marker
-                    // BEFORE the submit below. A crash anywhere after this point is
-                    // recoverable; a crash before it means the tx never went out, so no
-                    // tokens can exist. The hook is one DB write under the nonce's
-                    // `in_use` window (the slot frees in `schedule_nonce_refresh`
-                    // below regardless) — an intentional, bounded latency trade for
-                    // crash-safety, off the ingest hot path (this is the spawned buy
-                    // task).
+                    // Write-ahead persist (Phase 2): the signature is fixed the
+                    // instant we sign — before any network round-trip — so hand it to
+                    // the hook to durably record the "buy in flight" marker BEFORE the
+                    // submit below. A crash anywhere after this point is recoverable; a
+                    // crash before it means the tx never went out, so no tokens can
+                    // exist. Off the ingest hot path (this is the spawned buy task).
                     if let Some(hook) = on_signed.take() {
                         let sig = tx
                             .signatures
@@ -344,7 +340,9 @@ impl PumpFunTrader {
                 }
                 .await;
 
-                self.schedule_nonce_refresh(nonce_pubkey);
+                if let Some(nonce_pubkey) = nonce_to_refresh {
+                    self.schedule_nonce_refresh(nonce_pubkey);
+                }
 
                 if let Err(TradeError::Reverted { custom }) = &sent {
                     if !healed

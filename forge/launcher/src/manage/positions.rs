@@ -5,13 +5,12 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use platform_core::models::{TokenPosition, WalletRole};
+use platform_core::models::{BundleStatus, PositionStatus, TokenPosition, WalletRole};
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
+    BundleRepo, LaunchRepo, TokenPositionRepo, TradeRepo,
 };
 use sqlx::PgPool;
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::bundle::legs_from_json;
 use crate::config::LauncherSettings;
@@ -58,15 +57,40 @@ async fn seed_positions(pool: &PgPool, mint_address: &str) -> Result<()> {
 
     if let Some(bundle_id) = launch.bundle_id {
         if let Some(bundle) = BundleRepo::get(pool, bundle_id).await? {
-            for leg in legs_from_json(&bundle.legs)? {
-                TokenPositionRepo::seed(
-                    pool,
-                    mint_address,
-                    leg.wallet_id,
-                    WalletRole::Bundler.as_str(),
-                    leg.quote_amount,
-                )
-                .await?;
+            // A Jito bundle is atomic: `landed` ⇒ every leg bought; any other
+            // TERMINAL outcome (dropped/failed) ⇒ no leg bought, so those wallets
+            // hold nothing and spent nothing — seed them `dropped` at zero cost
+            // (not a phantom closed buy). While the bundle is still non-terminal
+            // (planned/submitting/submitted) we can't yet tell, so skip seeding
+            // and let a later read (once the confirm watcher resolves it) seed the
+            // correct row — `seed`/`seed_dropped` are DO-NOTHING idempotent, so the
+            // first terminal read wins and sticks.
+            match bundle.status.parse::<BundleStatus>() {
+                Ok(BundleStatus::Landed) => {
+                    for leg in legs_from_json(&bundle.legs)? {
+                        TokenPositionRepo::seed(
+                            pool,
+                            mint_address,
+                            leg.managed_wallet_id,
+                            WalletRole::Bundler.as_str(),
+                            leg.quote_amount,
+                        )
+                        .await?;
+                    }
+                }
+                Ok(BundleStatus::Dropped) | Ok(BundleStatus::Failed) => {
+                    for leg in legs_from_json(&bundle.legs)? {
+                        TokenPositionRepo::seed_dropped(
+                            pool,
+                            mint_address,
+                            leg.managed_wallet_id,
+                            WalletRole::Bundler.as_str(),
+                        )
+                        .await?;
+                    }
+                }
+                // Non-terminal (or an unrecognized status) — don't seed yet.
+                _ => {}
             }
         }
     }
@@ -87,29 +111,28 @@ pub async fn reconcile_positions(
         return Ok(());
     }
 
-    let wallet_ids: Vec<Uuid> = positions.iter().map(|p| p.wallet_id).collect();
-    let wallets = ManagedWalletRepo::get_many(pool, &wallet_ids).await?;
-    let addr_of = |id: Uuid| wallets.iter().find(|w| w.id == id).map(|w| w.address.clone());
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .context("build reqwest client for position reconcile")?;
 
     for pos in &positions {
-        let Some(owner) = addr_of(pos.wallet_id) else {
-            warn!(wallet_id = %pos.wallet_id, "position wallet missing from managed_wallets — skipped");
+        // The canonical wallet identity is denormalized onto the row (no
+        // managed_wallets join). A `dropped` leg never bought — skip its balance
+        // RPC and keep it terminal (see `set_balance`'s dropped guard).
+        if pos.status == PositionStatus::Dropped.as_str() {
             continue;
-        };
+        }
+        let owner = &pos.wallet_address;
         // On-chain balance + canonical account.
         let (balance_base, token_account) =
-            fetch_token_holding(&client, &settings.rpc_url, &owner, mint_address).await?;
+            fetch_token_holding(&client, &settings.rpc_url, owner, mint_address).await?;
         TokenPositionRepo::set_balance(pool, pos.id, balance_base, token_account.as_deref()).await?;
 
         // Feed-accurate realized proceeds (sum of this wallet's sells for the
         // mint) — authoritative from `trades`, never a fabricated estimate. Lags
         // one ingest cycle behind a just-fired sell; the next read picks it up.
-        let realized = TradeRepo::sum_side_quote_by_address(pool, mint_address, &owner, "sell")
+        let realized = TradeRepo::sum_side_quote_by_address(pool, mint_address, owner, "sell")
             .await
             .unwrap_or(0);
         TokenPositionRepo::set_realized(pool, pos.id, realized).await?;

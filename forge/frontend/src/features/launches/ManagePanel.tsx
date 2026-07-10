@@ -6,6 +6,7 @@ import {
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
+  AddressDisplay,
   Banner,
   Button,
   Card,
@@ -212,7 +213,7 @@ function PlanTable({
 }) {
   const base: Column<PlanLeg>[] = [
     { header: 'Role', render: (l) => <StatusPill status={l.role} /> },
-    { header: 'Wallet', render: (l) => <span className="mono text-xs muted">{l.wallet_id.slice(0, 8)}</span> },
+    { header: 'Wallet', render: (l) => <AddressDisplay value={l.wallet_address} /> },
   ];
   const amountCols: Column<PlanLeg>[] =
     plan.kind === 'sell'
@@ -239,7 +240,7 @@ function PlanTable({
             render: (l) => <span className="mono">{quoteToHuman(l.spend_quote, qd)}</span>,
           },
         ];
-  return <DataTable columns={[...base, ...amountCols]} rows={plan.legs} rowKey={(l) => l.wallet_id} />;
+  return <DataTable columns={[...base, ...amountCols]} rows={plan.legs} rowKey={(l) => l.managed_wallet_id} />;
 }
 
 function ActionsHistory({ actions }: { actions: ManageAction[] }) {

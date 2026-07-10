@@ -623,29 +623,55 @@ impl TokenPositionRepo {
     pub async fn seed(
         pool: &PgPool,
         mint_address: &str,
-        wallet_id: Uuid,
+        managed_wallet_id: Uuid,
         role: &str,
         cost_quote: i64,
     ) -> anyhow::Result<TokenPosition> {
+        // `wallet_address` is denormalized from managed_wallets by subselect so the
+        // caller never has to resolve it and the row can't carry a stale address.
         // Two statements rather than `INSERT ... RETURNING` because a conflicting
         // insert returns no row — always end with a SELECT of the final state.
         sqlx::query(
-            "INSERT INTO token_positions (mint_address, wallet_id, role, cost_quote) \
-             VALUES ($1,$2,$3,$4) ON CONFLICT (mint_address, wallet_id) DO NOTHING",
+            "INSERT INTO token_positions (mint_address, managed_wallet_id, wallet_address, role, cost_quote) \
+             VALUES ($1, $2, (SELECT address FROM managed_wallets WHERE id = $2), $3, $4) \
+             ON CONFLICT (mint_address, managed_wallet_id) DO NOTHING",
         )
         .bind(mint_address)
-        .bind(wallet_id)
+        .bind(managed_wallet_id)
         .bind(role)
         .bind(cost_quote)
         .execute(pool)
         .await?;
         Ok(sqlx::query_as::<_, TokenPosition>(
-            "SELECT * FROM token_positions WHERE mint_address = $1 AND wallet_id = $2",
+            "SELECT * FROM token_positions WHERE mint_address = $1 AND managed_wallet_id = $2",
         )
         .bind(mint_address)
-        .bind(wallet_id)
+        .bind(managed_wallet_id)
         .fetch_one(pool)
         .await?)
+    }
+
+    /// Seed a bundler leg whose bundle NEVER landed: it bought nothing and spent
+    /// nothing, so record a zero cost basis and the terminal `dropped` status.
+    /// Idempotent (`DO NOTHING`); `set_balance` deliberately never flips a
+    /// `dropped` row to open/closed, so this label sticks across reconciles.
+    pub async fn seed_dropped(
+        pool: &PgPool,
+        mint_address: &str,
+        managed_wallet_id: Uuid,
+        role: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO token_positions (mint_address, managed_wallet_id, wallet_address, role, cost_quote, status) \
+             VALUES ($1, $2, (SELECT address FROM managed_wallets WHERE id = $2), $3, 0, 'dropped') \
+             ON CONFLICT (mint_address, managed_wallet_id) DO NOTHING",
+        )
+        .bind(mint_address)
+        .bind(managed_wallet_id)
+        .bind(role)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     /// All positions for a mint (the token detail holdings panel), newest-seeded
@@ -661,7 +687,10 @@ impl TokenPositionRepo {
 
     /// Write a reconciled on-chain balance + the canonical token account. Auto
     /// `closed` once the balance hits 0 (drained), back to `open` if it's non-zero
-    /// (a later buy re-opened it). Stamps `balance_checked_at` + `updated_at`.
+    /// (a later buy re-opened it). A `dropped` leg (bundle never landed) is terminal
+    /// and left untouched — it never bought, so a 0-balance reconcile must NOT
+    /// relabel it `closed` (which reads as "bought then fully sold"). Stamps
+    /// `balance_checked_at` + `updated_at`.
     pub async fn set_balance(
         pool: &PgPool,
         id: Uuid,
@@ -671,7 +700,8 @@ impl TokenPositionRepo {
         sqlx::query(
             "UPDATE token_positions SET balance_base = $2, \
                  token_account = COALESCE($3, token_account), \
-                 status = CASE WHEN $2 > 0 THEN 'open' ELSE 'closed' END, \
+                 status = CASE WHEN status = 'dropped' THEN 'dropped' \
+                               WHEN $2 > 0 THEN 'open' ELSE 'closed' END, \
                  balance_checked_at = now(), updated_at = now() \
              WHERE id = $1",
         )

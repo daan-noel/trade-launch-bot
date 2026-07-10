@@ -172,7 +172,7 @@ async fn rebid_dropped(
 /// template-selected legs, until launch execution claims via `claim_funded`.
 async fn mark_bundle_wallets_used(pool: &PgPool, bundle: &Bundle) {
     let wallet_ids = match legs_from_json(&bundle.legs) {
-        Ok(legs) => legs.iter().map(|leg| leg.wallet_id).collect::<Vec<_>>(),
+        Ok(legs) => legs.iter().map(|leg| leg.managed_wallet_id).collect::<Vec<_>>(),
         Err(e) => {
             warn!(bundle_id = %bundle.id, %e, "failed to parse bundle legs for wallet-used transition");
             return;

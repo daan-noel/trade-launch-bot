@@ -22,10 +22,10 @@ pub struct WalletSelection {
 }
 
 impl WalletSelection {
-    /// Does this position's (wallet_id, role) match the selection?
-    pub fn matches(&self, wallet_id: Uuid, role: &str) -> bool {
+    /// Does this position's (managed_wallet_id, role) match the selection?
+    pub fn matches(&self, managed_wallet_id: Uuid, role: &str) -> bool {
         if !self.wallet_ids.is_empty() {
-            return self.wallet_ids.contains(&wallet_id);
+            return self.wallet_ids.contains(&managed_wallet_id);
         }
         match &self.role {
             Some(r) => r == role,
@@ -53,7 +53,10 @@ pub struct ManageRequest {
 /// preview and filled in by the executor for the audit row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanLeg {
-    pub wallet_id: Uuid,
+    /// FK → `managed_wallets.id` (internal key; used to sign/execute the leg).
+    pub managed_wallet_id: Uuid,
+    /// Denormalized on-chain address — the canonical identity the preview renders.
+    pub wallet_address: String,
     pub role: String,
     /// Canonical token account the sell routes through (from the position row).
     pub token_account: Option<String>,

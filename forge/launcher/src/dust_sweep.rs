@@ -61,7 +61,7 @@ async fn sweep_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()> {
     for wallet in used {
         let id = wallet.id;
         if let Err(e) = sweep_wallet(&rpc, pool, settings, &kek, &wallet, treasury_address).await {
-            warn!(wallet_id = %id, %e, "dust sweep failed for wallet");
+            warn!(managed_wallet_id = %id, %e, "dust sweep failed for wallet");
         }
     }
     Ok(())
@@ -81,7 +81,7 @@ async fn sweep_wallet(
     if balance <= SWEEP_MIN_LAMPORTS {
         // Not worth a signed tx + fee — retire directly, dust left behind.
         ManagedWalletRepo::retire(pool, wallet.id).await?;
-        info!(wallet_id = %wallet.id, balance, "wallet below dust floor — retired without sweep");
+        info!(managed_wallet_id = %wallet.id, balance, "wallet below dust floor — retired without sweep");
         return Ok(());
     }
 
@@ -105,11 +105,11 @@ async fn sweep_wallet(
     ManagedWalletRepo::retire(pool, wallet.id).await?;
     match swept {
         Some(sig) => info!(
-            wallet_id = %wallet.id, address = %wallet.address, sig = %sig,
+            managed_wallet_id = %wallet.id, address = %wallet.address, sig = %sig,
             "dust swept to treasury, wallet retired"
         ),
         None => info!(
-            wallet_id = %wallet.id, balance,
+            managed_wallet_id = %wallet.id, balance,
             "wallet balance below fee at send — retired without sweep"
         ),
     }

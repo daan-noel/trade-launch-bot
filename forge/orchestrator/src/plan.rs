@@ -161,21 +161,23 @@ impl Amount {
 }
 
 /// A reference to a wallet an op acts through. `pubkey` is the base58 address
-/// (always present — it's what signs/receives); `wallet_id` links the managed-pool
-/// row when the wallet is ours (absent for an external counterparty).
+/// (always present — it's what signs/receives, and the ONE canonical identity);
+/// `managed_wallet_id` links our managed-pool row when the wallet is ours (absent
+/// for an external counterparty). `alias` reads plans persisted under the old
+/// `wallet_id` key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalletRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wallet_id: Option<Uuid>,
+    #[serde(default, alias = "wallet_id", skip_serializing_if = "Option::is_none")]
+    pub managed_wallet_id: Option<Uuid>,
     pub pubkey: String,
 }
 
 impl WalletRef {
     pub fn new(pubkey: impl Into<String>) -> Self {
-        Self { wallet_id: None, pubkey: pubkey.into() }
+        Self { managed_wallet_id: None, pubkey: pubkey.into() }
     }
-    pub fn managed(wallet_id: Uuid, pubkey: impl Into<String>) -> Self {
-        Self { wallet_id: Some(wallet_id), pubkey: pubkey.into() }
+    pub fn managed(managed_wallet_id: Uuid, pubkey: impl Into<String>) -> Self {
+        Self { managed_wallet_id: Some(managed_wallet_id), pubkey: pubkey.into() }
     }
 }
 

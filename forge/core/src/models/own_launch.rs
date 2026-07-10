@@ -174,7 +174,13 @@ pub struct NewLaunch {
 pub struct TokenPosition {
     pub id: Uuid,
     pub mint_address: String,
-    pub wallet_id: Uuid,
+    /// FK → `managed_wallets.id` (our internal wallet key). Never the wallet's
+    /// on-chain identity — that's `wallet_address` below. Never rendered in the UI.
+    pub managed_wallet_id: Uuid,
+    /// Denormalized `managed_wallets.address` (base58 pubkey) — the ONE canonical,
+    /// user-facing wallet identity. This is what the holdings table renders and
+    /// what correlates to the `creator_wallet` / `trades` feed (join by address).
+    pub wallet_address: String,
     /// Denormalized `managed_wallets.role` (dev | bundler | …) so the holdings
     /// table can group by wallet class without a join.
     pub role: String,

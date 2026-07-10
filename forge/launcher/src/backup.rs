@@ -62,14 +62,14 @@ pub async fn run_backup(
         let dest = keystore_dir.join(&wallet.key_ref);
         if let Some(parent) = dest.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                warn!(wallet_id = %wallet.id, %e, "backup: failed to create nested keystore dir");
+                warn!(managed_wallet_id = %wallet.id, %e, "backup: failed to create nested keystore dir");
                 continue;
             }
         }
         match std::fs::copy(&src, &dest) {
             Ok(_) => copied += 1,
             Err(e) => warn!(
-                wallet_id = %wallet.id,
+                managed_wallet_id = %wallet.id,
                 key_ref = %wallet.key_ref,
                 %e,
                 "backup: failed to copy keystore blob"

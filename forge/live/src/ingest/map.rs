@@ -43,16 +43,17 @@ pub fn decode_sig(b58: &str) -> anyhow::Result<Vec<u8>> {
     Ok(bs58::decode(b58).into_vec()?)
 }
 
-/// Map a decoded trade to a `NewTrade`. `wallet_id` is pre-interned by the caller.
+/// Map a decoded trade to a `NewTrade`. `wallet_ref` is the wallet_dict id,
+/// pre-interned by the caller.
 pub fn trade_to_row(
     adapter: &PumpFunAdapter,
-    wallet_id: i32,
+    wallet_ref: i32,
     t: &IlTrade,
 ) -> anyhow::Result<NewTrade> {
     let kind = market_kind_of(t.venue);
     Ok(NewTrade {
         mint_address: t.mint.clone(),
-        wallet_id,
+        wallet_ref,
         launchpad_id: adapter.launchpad_id(),
         market_kind: kind.as_str().to_string(),
         quote_asset_id: adapter.quote_asset_id(kind),

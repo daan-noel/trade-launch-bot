@@ -229,13 +229,13 @@ enum SlotKey {
 
 impl Ctx<'_> {
     /// The pubkeys of wallets we control (managed-pool rows). An external
-    /// counterparty has no `wallet_id`, so a transfer *to* an own pubkey is the
+    /// counterparty has no `managed_wallet_id`, so a transfer *to* an own pubkey is the
     /// linkable own-graph edge.
     fn own_pubkeys(&self) -> std::collections::BTreeSet<&str> {
         self.plan
             .ops
             .iter()
-            .filter(|o| o.wallet.wallet_id.is_some())
+            .filter(|o| o.wallet.managed_wallet_id.is_some())
             .map(|o| o.wallet.pubkey.as_str())
             .collect()
     }
@@ -608,7 +608,7 @@ mod tests {
     fn direct_own_graph_token_edge_fires() {
         // A token transfer whose target is one of our own wallets. `b` is known to
         // be ours because it acts elsewhere in the plan (a wallet is "ours" when a
-        // WalletRef carries a wallet_id — the auditor sees that on acting ops).
+        // WalletRef carries a managed_wallet_id — the auditor sees that on acting ops).
         let mint = addr();
         let a = managed();
         let b = managed();

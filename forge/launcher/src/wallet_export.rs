@@ -28,9 +28,9 @@ use crate::keystore::{resolve_secret_bytes, EnvKek};
 pub async fn export_wallet_base58(
     pool: &PgPool,
     settings: &LauncherSettings,
-    wallet_id: Uuid,
+    managed_wallet_id: Uuid,
 ) -> Result<ExportedKey> {
-    let wallet = ManagedWalletRepo::get(pool, wallet_id)
+    let wallet = ManagedWalletRepo::get(pool, managed_wallet_id)
         .await?
         .context("managed wallet not found")?;
 
@@ -60,27 +60,27 @@ pub struct ExportedKey {
     pub private_key_base58: Zeroizing<String>,
 }
 
-/// `wallet-export <wallet_id> --i-understand [--stdout]` — decrypt a managed
+/// `wallet-export <managed_wallet_id> --i-understand [--stdout]` — decrypt a managed
 /// wallet and emit its base58 (Phantom-style) private key.
 pub async fn run_wallet_export(settings: &Settings, args: &[String]) -> Result<()> {
-    let wallet_id_arg = args
+    let managed_wallet_id_arg = args
         .first()
-        .context("usage: wallet-export <wallet_id> --i-understand [--stdout]")?;
+        .context("usage: wallet-export <managed_wallet_id> --i-understand [--stdout]")?;
     let confirmed = args.iter().any(|a| a == "--i-understand");
     let to_stdout = args.iter().any(|a| a == "--stdout");
 
     if !confirmed {
         bail!(
             "refusing to export raw private key without --i-understand \
-             (usage: wallet-export <wallet_id> --i-understand [--stdout])"
+             (usage: wallet-export <managed_wallet_id> --i-understand [--stdout])"
         );
     }
 
-    let wallet_id = Uuid::parse_str(wallet_id_arg).context("parse wallet_id")?;
+    let managed_wallet_id = Uuid::parse_str(managed_wallet_id_arg).context("parse managed_wallet_id")?;
     let launcher = LauncherSettings::from_env()?;
     let pools = connect(settings).await?;
 
-    let exported = export_wallet_base58(&pools.hot, &launcher, wallet_id).await?;
+    let exported = export_wallet_base58(&pools.hot, &launcher, managed_wallet_id).await?;
     let derived = exported.address;
     let base58 = exported.private_key_base58;
 
@@ -92,7 +92,7 @@ pub async fn run_wallet_export(settings: &Settings, args: &[String]) -> Result<(
 
     let out = launcher
         .keystore_dir
-        .join(format!("export-{wallet_id}.base58"));
+        .join(format!("export-{managed_wallet_id}.base58"));
     write_secret_file(&out, base58.as_bytes())
         .with_context(|| format!("write private key to {}", out.display()))?;
     println!("wrote base58 private key for {derived} -> {}", out.display());

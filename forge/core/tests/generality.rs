@@ -44,10 +44,10 @@ fn mk_token(mint: &str, quote_id: i16) -> NewToken {
     }
 }
 
-fn mk_trade(mint: &str, quote_id: i16, wallet_id: i32, sig: &[u8]) -> NewTrade {
+fn mk_trade(mint: &str, quote_id: i16, wallet_ref: i32, sig: &[u8]) -> NewTrade {
     NewTrade {
         mint_address: mint.to_string(),
-        wallet_id,
+        wallet_ref,
         launchpad_id: PUMP_FUN,
         market_kind: "bonding_curve".to_string(),
         quote_asset_id: quote_id,

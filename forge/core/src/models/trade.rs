@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 /// A typed trade row. Amounts are exact base units (`amount_quote` quote,
 /// `amount_base` token); `reserve_quote`/`reserve_base` are the venue-neutral
 /// price pair. `launchpad_id`/`market_kind`/`quote_asset_id` are denormalized so
-/// the hot read never joins. `wallet_id` is a soft ref into `wallet_dict`.
+/// the hot read never joins. `wallet_ref` is a soft ref into `wallet_dict` — the
+/// interned network-wallet id, NOT a managed-wallet UUID.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Trade {
     pub mint_address: String,
-    pub wallet_id: i32,
+    pub wallet_ref: i32,
     pub launchpad_id: i16,
     pub market_kind: String,
     pub quote_asset_id: i16,
@@ -26,12 +27,12 @@ pub struct Trade {
     pub tx_signature: Vec<u8>,
 }
 
-/// Insert form of [`Trade`]. `wallet_id` is already interned (call
+/// Insert form of [`Trade`]. `wallet_ref` is already interned (call
 /// `WalletDictRepo::intern` first). `leg_index` defaults to 0.
 #[derive(Debug, Clone)]
 pub struct NewTrade {
     pub mint_address: String,
-    pub wallet_id: i32,
+    pub wallet_ref: i32,
     pub launchpad_id: i16,
     pub market_kind: String,
     pub quote_asset_id: i16,
@@ -53,7 +54,7 @@ pub struct NewTrade {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TradePriced {
     pub mint_address: String,
-    pub wallet_id: i32,
+    pub wallet_ref: i32,
     pub launchpad_id: i16,
     pub market_kind: String,
     pub quote_asset_id: i16,

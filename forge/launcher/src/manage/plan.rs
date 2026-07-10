@@ -57,7 +57,7 @@ async fn build_sell_legs(
         if p.status != PositionStatus::Open.as_str() || p.balance_base <= 0 {
             continue;
         }
-        if !req.selection.matches(p.wallet_id, &p.role) {
+        if !req.selection.matches(p.managed_wallet_id, &p.role) {
             continue;
         }
         let amount_base = ((p.balance_base as f64) * pct / 100.0).floor() as i64;
@@ -68,7 +68,8 @@ async fn build_sell_legs(
             .map(|pr| (amount_base as f64 * pr).max(0.0) as i64)
             .unwrap_or(0);
         legs.push(PlanLeg {
-            wallet_id: p.wallet_id,
+            managed_wallet_id: p.managed_wallet_id,
+            wallet_address: p.wallet_address,
             role: p.role,
             token_account: p.token_account,
             side: "sell".to_string(),
@@ -103,7 +104,8 @@ async fn build_buy_legs(
     Ok(wallets
         .into_iter()
         .map(|w| PlanLeg {
-            wallet_id: w.id,
+            managed_wallet_id: w.id,
+            wallet_address: w.address,
             role: w.role,
             token_account: None,
             side: "buy".to_string(),
@@ -135,7 +137,8 @@ async fn build_consolidate_legs(
         // Never sweep a treasury wallet into itself.
         .filter(|w| w.role != platform_core::models::WalletRole::Treasury.as_str())
         .map(|w| PlanLeg {
-            wallet_id: w.id,
+            managed_wallet_id: w.id,
+            wallet_address: w.address,
             role: w.role,
             token_account: None,
             side: "consolidate".to_string(),

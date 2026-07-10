@@ -447,20 +447,20 @@ async fn wallet_pool_export(
         // Throttle brute-force: a fixed delay caps guess rate to a crawl even
         // over a fast remote link. Constant regardless of where the mismatch is.
         tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-        let wallet_id = path.into_inner();
-        tracing::warn!(%wallet_id, "wallet export rejected — bad or missing X-Export-Secret");
+        let managed_wallet_id = path.into_inner();
+        tracing::warn!(%managed_wallet_id, "wallet export rejected — bad or missing X-Export-Secret");
         return Ok(HttpResponse::Forbidden().json(serde_json::json!({
             "error": "invalid export secret"
         })));
     }
 
-    let wallet_id = path.into_inner();
-    let exported = export_wallet_base58(pool.get_ref(), settings, wallet_id)
+    let managed_wallet_id = path.into_inner();
+    let exported = export_wallet_base58(pool.get_ref(), settings, managed_wallet_id)
         .await
         .map_err(e500)?;
 
     // Never log the key; never let a cache retain it.
-    tracing::info!(%wallet_id, address = %exported.address, "wallet private key exported");
+    tracing::info!(%managed_wallet_id, address = %exported.address, "wallet private key exported");
     Ok(HttpResponse::Ok()
         .insert_header(("Cache-Control", "no-store"))
         .json(serde_json::json!({

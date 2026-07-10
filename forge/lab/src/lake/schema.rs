@@ -11,7 +11,8 @@
 /// by name, but a stable order keeps writer output deterministic.
 pub mod trades {
     pub const MINT_ADDRESS: &str = "mint_address";
-    pub const WALLET_ID: &str = "wallet_id";
+    /// `wallet_dict` interned id (soft ref), NOT a managed-wallet UUID.
+    pub const WALLET_REF: &str = "wallet_ref";
     pub const LAUNCHPAD_ID: &str = "launchpad_id";
     pub const MARKET_KIND: &str = "market_kind";
     pub const QUOTE_ASSET_ID: &str = "quote_asset_id";
@@ -29,7 +30,7 @@ pub mod trades {
     /// The full ordered column list. Writer + reader both consume this.
     pub const COLUMNS: &[&str] = &[
         MINT_ADDRESS,
-        WALLET_ID,
+        WALLET_REF,
         LAUNCHPAD_ID,
         MARKET_KIND,
         QUOTE_ASSET_ID,

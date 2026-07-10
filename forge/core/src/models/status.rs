@@ -199,12 +199,15 @@ impl FromStr for WalletStatus {
 }
 
 /// `token_positions.status` — post-launch holdings lifecycle: `open` (we hold, or
-/// have partially sold) → `closed` (balance fully drained to 0). CHECK in
-/// migration `0010`.
+/// have partially sold) → `closed` (balance fully drained to 0). `dropped` is a
+/// terminal seed-time state for a bundler leg whose bundle never landed — the
+/// wallet never bought and never spent, so it carries a zero cost basis and is
+/// NEVER flipped to open/closed by a balance reconcile. CHECK in migration `0004`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PositionStatus {
     Open,
     Closed,
+    Dropped,
 }
 
 impl PositionStatus {
@@ -213,11 +216,13 @@ impl PositionStatus {
         match self {
             PositionStatus::Open => "open",
             PositionStatus::Closed => "closed",
+            PositionStatus::Dropped => "dropped",
         }
     }
 
     /// Every variant — the SSOT list the CHECK-constraint parity test iterates.
-    pub const ALL: [PositionStatus; 2] = [PositionStatus::Open, PositionStatus::Closed];
+    pub const ALL: [PositionStatus; 3] =
+        [PositionStatus::Open, PositionStatus::Closed, PositionStatus::Dropped];
 }
 
 impl FromStr for PositionStatus {
@@ -226,6 +231,7 @@ impl FromStr for PositionStatus {
         match s {
             "open" => Ok(PositionStatus::Open),
             "closed" => Ok(PositionStatus::Closed),
+            "dropped" => Ok(PositionStatus::Dropped),
             other => Err(format!("unknown position status: {other}")),
         }
     }

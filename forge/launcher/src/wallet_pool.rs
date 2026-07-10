@@ -148,7 +148,7 @@ async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &s
                 && wallet.status != WalletStatus::Funded.as_str()
             {
                 info!(
-                    wallet_id = %wallet.id,
+                    managed_wallet_id = %wallet.id,
                     address = %wallet.address,
                     prev = %wallet.status,
                     balance,

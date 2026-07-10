@@ -94,6 +94,34 @@ impl Engine {
         Ok(tx)
     }
 
+    /// Build + sign a curve buy/sell tx from `instructions`, choosing the tx
+    /// mechanism from [`crate::config::TraderConfig::durable_nonce`]:
+    ///
+    /// - `true` (hunter hot path): acquire a durable-nonce slot and wrap the ixs
+    ///   in a nonce tx. Returns the nonce pubkey as `Some` so the caller can kick
+    ///   off [`Self::schedule_nonce_refresh`] after the send.
+    /// - `false` (forge's ephemeral per-wallet path): sign against a recent
+    ///   blockhash. Returns `None` — there is no nonce slot to refresh. This is the
+    ///   ONLY correct mode when the signer isn't the nonce pool's on-chain
+    ///   authority, since a nonce tx it can't advance is silently dropped.
+    ///
+    /// The signature is fixed the instant the tx is signed in both modes, so the
+    /// buy write-ahead hook works either way.
+    pub async fn build_trade_tx(
+        &self,
+        instructions: Vec<Instruction>,
+        signer: &(dyn Signer + Send + Sync),
+    ) -> Result<(Transaction, Option<Pubkey>)> {
+        if self.config.durable_nonce {
+            let (nonce_pubkey, nonce_hash) = self.acquire_nonce().await?;
+            let tx = self.build_nonce_tx(instructions, &nonce_pubkey, nonce_hash, signer)?;
+            Ok((tx, Some(nonce_pubkey)))
+        } else {
+            let tx = self.build_recent_tx(instructions, signer).await?;
+            Ok((tx, None))
+        }
+    }
+
     /// Build + sign a legacy tx against a recent blockhash (no durable nonce).
     /// Used for AMM buys, whose ~27-account instruction would overflow the
     /// 1232-byte tx limit once a nonce-advance (+2 accounts) is prepended (the

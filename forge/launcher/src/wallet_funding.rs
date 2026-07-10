@@ -48,7 +48,7 @@ const FUND_INTERVAL: Duration = Duration::from_secs(60);
 /// One planned treasury->wallet transfer. Amount is already jittered.
 #[derive(Debug, Clone)]
 pub struct Transfer {
-    pub wallet_id: Uuid,
+    pub managed_wallet_id: Uuid,
     pub target: Pubkey,
     pub lamports: u64,
 }
@@ -92,7 +92,7 @@ impl FundingStrategy for DirectJittered {
             .map(|(id, pk)| {
                 let factor = 1.0 + rng.gen_range(-jitter..=jitter);
                 let lamports = (params.amount_lamports as f64 * factor).round() as u64;
-                Transfer { wallet_id: *id, target: *pk, lamports }
+                Transfer { managed_wallet_id: *id, target: *pk, lamports }
             })
             .collect()
     }
@@ -158,7 +158,7 @@ async fn build_treasury_pool(
         let pubkey = match Pubkey::from_str(&w.address) {
             Ok(pk) => pk,
             Err(e) => {
-                warn!(wallet_id = %w.id, %e, "wallet funding: bad treasury address — skipping source");
+                warn!(managed_wallet_id = %w.id, %e, "wallet funding: bad treasury address — skipping source");
                 continue;
             }
         };
@@ -223,7 +223,7 @@ pub enum FundMode {
 /// per-wallet response, and the log detail for the background pass.
 #[derive(Debug, Serialize)]
 pub struct WalletFundOutcome {
-    pub wallet_id: Uuid,
+    pub managed_wallet_id: Uuid,
     pub address: String,
     pub role: String,
     pub amount_lamports: u64,
@@ -316,7 +316,7 @@ pub async fn fund_once(
                 Ok(pk) => targets.push((w.id, pk)),
                 Err(e) => {
                     let _ = ManagedWalletRepo::revert_funding(pool, &[w.id]).await;
-                    warn!(wallet_id = %w.id, %e, "wallet funding: bad address — reverted");
+                    warn!(managed_wallet_id = %w.id, %e, "wallet funding: bad address — reverted");
                     report.outcomes.push(bad_address_outcome(w));
                 }
             }
@@ -337,7 +337,7 @@ pub async fn fund_once(
             let over_cap = report.spent_lamports + t.lamports > cfg.max_spend_per_interval_lamports;
             let source_idx = sources.pick_source(t.lamports, cfg.treasury_reserve_lamports);
             if over_cap || source_idx.is_none() {
-                let unsent: Vec<Uuid> = transfers[i..].iter().map(|t| t.wallet_id).collect();
+                let unsent: Vec<Uuid> = transfers[i..].iter().map(|t| t.managed_wallet_id).collect();
                 let _ = ManagedWalletRepo::revert_funding(pool, &unsent).await;
                 warn!(
                     role = role.as_str(),
@@ -349,7 +349,7 @@ pub async fn fund_once(
                 );
                 for t in &transfers[i..] {
                     report.outcomes.push(WalletFundOutcome {
-                        wallet_id: t.wallet_id,
+                        managed_wallet_id: t.managed_wallet_id,
                         address: t.target.to_string(),
                         role: role.as_str().to_string(),
                         amount_lamports: t.lamports,
@@ -364,15 +364,15 @@ pub async fn fund_once(
 
             if cfg.dry_run {
                 // Plan + log, send nothing, release the claim so it isn't stranded.
-                let _ = ManagedWalletRepo::revert_funding(pool, &[t.wallet_id]).await;
+                let _ = ManagedWalletRepo::revert_funding(pool, &[t.managed_wallet_id]).await;
                 info!(
-                    wallet_id = %t.wallet_id,
+                    managed_wallet_id = %t.managed_wallet_id,
                     address = %t.target,
                     lamports = t.lamports,
                     "wallet funding (DRY RUN): would transfer"
                 );
                 report.outcomes.push(WalletFundOutcome {
-                    wallet_id: t.wallet_id,
+                    managed_wallet_id: t.managed_wallet_id,
                     address: t.target.to_string(),
                     role: role.as_str().to_string(),
                     amount_lamports: t.lamports,
@@ -407,14 +407,14 @@ pub async fn fund_once(
                     sources.sources[source_idx].spent += t.lamports;
                     report.spent_lamports += t.lamports;
                     info!(
-                        wallet_id = %t.wallet_id,
+                        managed_wallet_id = %t.managed_wallet_id,
                         address = %t.target,
                         lamports = t.lamports,
                         sig = %sig,
                         "wallet funding: transfer sent (poller will promote funding -> funded)"
                     );
                     report.outcomes.push(WalletFundOutcome {
-                        wallet_id: t.wallet_id,
+                        managed_wallet_id: t.managed_wallet_id,
                         address: t.target.to_string(),
                         role: role.as_str().to_string(),
                         amount_lamports: t.lamports,
@@ -424,10 +424,10 @@ pub async fn fund_once(
                     });
                 }
                 Err(e) => {
-                    let _ = ManagedWalletRepo::revert_funding(pool, &[t.wallet_id]).await;
-                    warn!(wallet_id = %t.wallet_id, %e, "wallet funding: transfer failed — reverted");
+                    let _ = ManagedWalletRepo::revert_funding(pool, &[t.managed_wallet_id]).await;
+                    warn!(managed_wallet_id = %t.managed_wallet_id, %e, "wallet funding: transfer failed — reverted");
                     report.outcomes.push(WalletFundOutcome {
-                        wallet_id: t.wallet_id,
+                        managed_wallet_id: t.managed_wallet_id,
                         address: t.target.to_string(),
                         role: role.as_str().to_string(),
                         amount_lamports: t.lamports,
@@ -636,7 +636,7 @@ async fn fund_wallet_to_target(
             if is_funding {
                 let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
             }
-            warn!(wallet_id = %wallet.id, %e, "wallet funding: bad address — skipped");
+            warn!(managed_wallet_id = %wallet.id, %e, "wallet funding: bad address — skipped");
             report.outcomes.push(bad_address_outcome(&wallet));
             return Ok(FundStep::Continue);
         }
@@ -656,10 +656,10 @@ async fn fund_wallet_to_target(
             ManagedWalletRepo::record_balance(ctx.pool, wallet.id, balance as i64, MIN_FUNDED_LAMPORTS)
                 .await
         {
-            warn!(?e, wallet_id = %wallet.id, "wallet funding: failed to record target balance");
+            warn!(?e, managed_wallet_id = %wallet.id, "wallet funding: failed to record target balance");
         }
         report.outcomes.push(WalletFundOutcome {
-            wallet_id: wallet.id,
+            managed_wallet_id: wallet.id,
             address: wallet.address.clone(),
             role: wallet.role.clone(),
             amount_lamports: 0,
@@ -679,14 +679,14 @@ async fn fund_wallet_to_target(
             let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
         }
         warn!(
-            wallet_id = %wallet.id,
+            managed_wallet_id = %wallet.id,
             over_cap,
             under_reserve = source_idx.is_none(),
             spent = report.spent_lamports,
             "wallet funding: safety rail hit funding a launch — stopping"
         );
         report.outcomes.push(WalletFundOutcome {
-            wallet_id: wallet.id,
+            managed_wallet_id: wallet.id,
             address: wallet.address.clone(),
             role: wallet.role.clone(),
             amount_lamports: shortfall,
@@ -703,13 +703,13 @@ async fn fund_wallet_to_target(
             let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
         }
         info!(
-            wallet_id = %wallet.id,
+            managed_wallet_id = %wallet.id,
             address = %wallet.address,
             lamports = shortfall,
             "wallet funding (DRY RUN): would top up for launch"
         );
         report.outcomes.push(WalletFundOutcome {
-            wallet_id: wallet.id,
+            managed_wallet_id: wallet.id,
             address: wallet.address.clone(),
             role: wallet.role.clone(),
             amount_lamports: shortfall,
@@ -750,18 +750,18 @@ async fn fund_wallet_to_target(
                 )
                 .await
                 {
-                    warn!(?e, wallet_id = %wallet.id, "wallet funding: send ok but promote failed");
+                    warn!(?e, managed_wallet_id = %wallet.id, "wallet funding: send ok but promote failed");
                 }
             }
             info!(
-                wallet_id = %wallet.id,
+                managed_wallet_id = %wallet.id,
                 address = %wallet.address,
                 lamports = shortfall,
                 sig = %sig,
                 "wallet funding: launch top-up sent"
             );
             report.outcomes.push(WalletFundOutcome {
-                wallet_id: wallet.id,
+                managed_wallet_id: wallet.id,
                 address: wallet.address.clone(),
                 role: wallet.role.clone(),
                 amount_lamports: shortfall,
@@ -774,9 +774,9 @@ async fn fund_wallet_to_target(
             if is_funding {
                 let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
             }
-            warn!(wallet_id = %wallet.id, %e, "wallet funding: launch top-up failed");
+            warn!(managed_wallet_id = %wallet.id, %e, "wallet funding: launch top-up failed");
             report.outcomes.push(WalletFundOutcome {
-                wallet_id: wallet.id,
+                managed_wallet_id: wallet.id,
                 address: wallet.address.clone(),
                 role: wallet.role.clone(),
                 amount_lamports: shortfall,
@@ -797,7 +797,7 @@ async fn fund_wallet_to_target(
 
 fn bad_address_outcome(w: &ManagedWallet) -> WalletFundOutcome {
     WalletFundOutcome {
-        wallet_id: w.id,
+        managed_wallet_id: w.id,
         address: w.address.clone(),
         role: w.role.clone(),
         amount_lamports: 0,
@@ -892,7 +892,7 @@ mod tests {
         let lo = (amount as f64 * (1.0 - jitter)).round() as u64;
         let hi = (amount as f64 * (1.0 + jitter)).round() as u64;
         for (t, (id, pk)) in transfers.iter().zip(&targets) {
-            assert_eq!(t.wallet_id, *id);
+            assert_eq!(t.managed_wallet_id, *id);
             assert_eq!(t.target, *pk);
             assert!(
                 t.lamports >= lo && t.lamports <= hi,

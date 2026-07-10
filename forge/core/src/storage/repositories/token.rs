@@ -42,6 +42,21 @@ impl TokenRepo {
         Ok(res.rows_affected() > 0)
     }
 
+    /// Force the ownership flag for one of OUR launches. The launcher calls this
+    /// after the create lands, so `is_own_launch` is correct even when the ingest
+    /// feed inserted the token row first: the create event hits the feed almost
+    /// immediately (often before `execute_launch` reaches its own `INSERT … DO
+    /// NOTHING`), and ingest inserts `is_own_launch = false`. A plain UPDATE fixes
+    /// the flag regardless of which writer won the insert race — the `launches`
+    /// row is the SSOT for "ours", this column just mirrors it for `token_overview`.
+    pub async fn mark_own_launch(pool: &PgPool, mint_address: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE tokens SET is_own_launch = TRUE WHERE mint_address = $1")
+            .bind(mint_address)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get(pool: &PgPool, mint_address: &str) -> anyhow::Result<Option<Token>> {
         Ok(sqlx::query_as::<_, Token>("SELECT * FROM tokens WHERE mint_address = $1")
             .bind(mint_address)

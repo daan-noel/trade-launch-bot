@@ -308,6 +308,12 @@ pub async fn execute_launch(
         )
         .await?;
 
+        // Force `is_own_launch = true` even if the ingest feed already inserted this
+        // mint's row (its `INSERT … DO NOTHING` above would be a no-op, leaving the
+        // feed's `is_own_launch = false`). The create event lands on the feed almost
+        // immediately after the tx confirms — often before we reach the insert.
+        TokenRepo::mark_own_launch(pool, &mint_address).await?;
+
         TokenMarketStateRepo::upsert(
             pool,
             &TokenMarketState {

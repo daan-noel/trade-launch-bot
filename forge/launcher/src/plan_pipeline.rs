@@ -170,7 +170,7 @@ pub fn display_legs_json(gated: &GatedPlan) -> serde_json::Value {
             let d = gated.disguise_of(op.id)?;
             let quote = crate::plan_exec::buy_lamports(op).ok()?;
             Some(BundledLegPlan {
-                wallet_id: op.wallet.wallet_id?,
+                managed_wallet_id: op.wallet.managed_wallet_id?,
                 quote_amount: quote as i64,
                 structure: LegStructure {
                     variant: op.variant.clone(),

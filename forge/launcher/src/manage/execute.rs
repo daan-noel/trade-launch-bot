@@ -103,7 +103,7 @@ pub async fn execute_action(
             Err(e) => {
                 leg.status = Some("failed".to_string());
                 leg.error = Some(e.to_string());
-                warn!(%mint, wallet_id = %leg.wallet_id, side = %leg.side, error = %e, "manage leg failed");
+                warn!(%mint, managed_wallet_id = %leg.managed_wallet_id, side = %leg.side, error = %e, "manage leg failed");
             }
         }
     }
@@ -196,13 +196,13 @@ impl ExecContext {
     }
 }
 
-/// Build a pump-trader signed by `wallet_id`'s wallet (initialize included).
+/// Build a pump-trader signed by `managed_wallet_id`'s wallet (initialize included).
 async fn build_wallet_trader(
     pool: &PgPool,
     settings: &LauncherSettings,
-    wallet_id: uuid::Uuid,
+    managed_wallet_id: uuid::Uuid,
 ) -> Result<(platform_core::models::ManagedWallet, PumpFunTrader)> {
-    let wallet = ManagedWalletRepo::get(pool, wallet_id)
+    let wallet = ManagedWalletRepo::get(pool, managed_wallet_id)
         .await?
         .context("leg wallet not found")?;
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
@@ -235,11 +235,11 @@ async fn sell_leg(
         bail!("leg amount is zero");
     }
     if manage_cfg.dry_run {
-        info!(%mint, wallet_id = %leg.wallet_id, amount, "MANAGE_DRY_RUN: would sell (no trade placed)");
+        info!(%mint, managed_wallet_id = %leg.managed_wallet_id, amount, "MANAGE_DRY_RUN: would sell (no trade placed)");
         return Ok(None);
     }
 
-    let (_wallet, trader) = build_wallet_trader(pool, settings, leg.wallet_id).await?;
+    let (_wallet, trader) = build_wallet_trader(pool, settings, leg.managed_wallet_id).await?;
 
     // Own the retry loop so we capture the confirmed signature for the audit —
     // `sell_token` only returns a bool.
@@ -266,7 +266,7 @@ async fn sell_leg(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("sell failed after {MAX_LEG_SELL_ATTEMPTS} attempts")))
 }
 
-/// BUY: spend `spend_quote` lamports of SOL to buy the token from `wallet_id`.
+/// BUY: spend `spend_quote` lamports of SOL to buy the token from `managed_wallet_id`.
 /// RPC-confirmed; returns the signature (`None` in dry-run).
 async fn buy_leg(
     pool: &PgPool,
@@ -283,12 +283,12 @@ async fn buy_leg(
     }
     let sol_amount = spend as f64 / LAMPORTS_PER_SOL as f64;
     if manage_cfg.dry_run {
-        info!(%mint, wallet_id = %leg.wallet_id, sol_amount, "MANAGE_DRY_RUN: would buy (no trade placed)");
+        info!(%mint, managed_wallet_id = %leg.managed_wallet_id, sol_amount, "MANAGE_DRY_RUN: would buy (no trade placed)");
         return Ok(None);
     }
 
     let mint_pk = Pubkey::from_str(mint).context("parse mint for buy")?;
-    let (_wallet, trader) = build_wallet_trader(pool, settings, leg.wallet_id).await?;
+    let (_wallet, trader) = build_wallet_trader(pool, settings, leg.managed_wallet_id).await?;
     let sig = trader
         .buy_token(
             &mint_pk,
@@ -318,7 +318,7 @@ async fn consolidate_leg(
     let treasury = ctx.treasury.context("consolidate context not resolved")?;
     let rpc = ctx.rpc.as_ref().context("consolidate RPC not resolved")?;
 
-    let wallet = ManagedWalletRepo::get(pool, leg.wallet_id)
+    let wallet = ManagedWalletRepo::get(pool, leg.managed_wallet_id)
         .await?
         .context("leg wallet not found")?;
     let address = Pubkey::from_str(&wallet.address).context("parse wallet address")?;
@@ -361,7 +361,7 @@ async fn build_orchestrator_plan(
 ) -> Result<orchestrator::Plan> {
     use orchestrator::{Amount, IdSeq, Intent, Operation, Plan, Role, WalletRef};
 
-    let ids: Vec<uuid::Uuid> = legs.iter().map(|l| l.wallet_id).collect();
+    let ids: Vec<uuid::Uuid> = legs.iter().map(|l| l.managed_wallet_id).collect();
     let wallets = ManagedWalletRepo::get_many(pool, &ids).await?;
     let addr_of = |id: uuid::Uuid| wallets.iter().find(|w| w.id == id).map(|w| w.address.clone());
     let treasury = ctx.treasury.map(|p| p.to_string());
@@ -369,9 +369,9 @@ async fn build_orchestrator_plan(
     let mut seq = IdSeq::new(0);
     let mut ops = Vec::with_capacity(legs.len());
     for leg in legs {
-        let pubkey = addr_of(leg.wallet_id)
-            .with_context(|| format!("manage plan: wallet {} not found", leg.wallet_id))?;
-        let wref = WalletRef::managed(leg.wallet_id, pubkey);
+        let pubkey = addr_of(leg.managed_wallet_id)
+            .with_context(|| format!("manage plan: wallet {} not found", leg.managed_wallet_id))?;
+        let wref = WalletRef::managed(leg.managed_wallet_id, pubkey);
         let role = Role::from_str_lossy(&leg.role);
         let op = match leg.side.as_str() {
             "sell" => Operation::sell(

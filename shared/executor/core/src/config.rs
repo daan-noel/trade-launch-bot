@@ -218,6 +218,16 @@ pub struct TraderConfig {
     /// dropping the tx from ~1267 B (over the 1232 B limit) to ~840 B. `None`
     /// keeps the legacy single-message path unchanged (what hunter uses).
     pub launch_alt_address: Option<Pubkey>,
+    /// Whether curve buy/sell transactions are built against a **durable nonce**
+    /// (`true`, the low-latency hot path — one persistent signer that is ALSO the
+    /// nonce authority, as in hunter's live bot) or a **recent blockhash**
+    /// (`false`). A durable-nonce tx can only be advanced by the nonce account's
+    /// on-chain authority, so a signer that isn't that authority produces a tx the
+    /// leader silently drops (never lands → confirm-timeout). Forge signs every
+    /// trade with a different ephemeral managed wallet (dev/bundler), none of which
+    /// is the shared nonce pool's authority, so forge sets this `false` and rides a
+    /// recent blockhash instead — the create path already does. Default `true`.
+    pub durable_nonce: bool,
     // --- tuning, all Default ---
     pub compute: ComputeBudgetCfg,
     pub jito: JitoTipCfg,
@@ -244,6 +254,7 @@ impl TraderConfig {
             signer,
             nonce_accounts,
             launch_alt_address: None,
+            durable_nonce: true,
             compute: ComputeBudgetCfg::default(),
             jito: JitoTipCfg::default(),
             retry: RetryCfg::default(),
@@ -264,6 +275,7 @@ impl std::fmt::Debug for TraderConfig {
             .field("wallet", &self.signer.pubkey())
             .field("nonce_accounts", &self.nonce_accounts)
             .field("launch_alt_address", &self.launch_alt_address)
+            .field("durable_nonce", &self.durable_nonce)
             .field("compute", &self.compute)
             .field("jito", &self.jito)
             .field("retry", &self.retry)

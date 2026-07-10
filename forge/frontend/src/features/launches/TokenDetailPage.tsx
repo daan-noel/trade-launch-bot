@@ -144,7 +144,7 @@ function HoldingsTable({
     { header: 'Role', render: (p) => <StatusPill status={p.role} /> },
     {
       header: 'Wallet',
-      render: (p) => <span className="mono text-xs muted">{p.wallet_id.slice(0, 8)}</span>,
+      render: (p) => <AddressDisplay value={p.wallet_address} />,
     },
     {
       header: 'Balance',
@@ -207,7 +207,7 @@ function TradesTable({
     { header: 'Market', render: (t) => <span className="text-xs muted">{t.market_kind}</span> },
     { header: 'Quote', align: 'right', render: (t) => <span className="mono">{t.amount_quote_display?.toFixed(4) ?? quoteToHuman(t.amount_quote, qd)}</span> },
     { header: 'USD', align: 'right', render: (t) => <span className="mono">{formatUsd(t.amount_usd)}</span> },
-    { header: 'Wallet', render: (t) => <span className="mono text-xs muted">#{t.wallet_id}</span> },
+    { header: 'Wallet', render: (t) => <span className="mono text-xs muted">#{t.wallet_ref}</span> },
     {
       header: 'Tx',
       render: (t) => {

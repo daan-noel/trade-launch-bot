@@ -8,11 +8,11 @@ use sqlx::PgPool;
 
 use crate::models::{NewTrade, RawTx, TradePriced};
 
-/// `wallet_dict` — interning map (4-byte `wallet_id` ↔ 44-byte address).
+/// `wallet_dict` — interning map (4-byte `wallet_ref` ↔ 44-byte address).
 pub struct WalletDictRepo;
 
 impl WalletDictRepo {
-    /// Intern an address → its stable `wallet_id`, inserting on first sight. The
+    /// Intern an address → its stable `wallet_ref`, inserting on first sight. The
     /// `DO UPDATE` is a no-op touch so a pre-existing row still `RETURNING`s.
     pub async fn intern(pool: &PgPool, address: &str) -> anyhow::Result<i32> {
         let id: i32 = sqlx::query_scalar(
@@ -71,7 +71,7 @@ impl TradeRepo {
             return Ok(0);
         }
         let mint_address: Vec<String> = rows.iter().map(|r| r.mint_address.clone()).collect();
-        let wallet_id: Vec<i32> = rows.iter().map(|r| r.wallet_id).collect();
+        let wallet_ref: Vec<i32> = rows.iter().map(|r| r.wallet_ref).collect();
         let launchpad_id: Vec<i16> = rows.iter().map(|r| r.launchpad_id).collect();
         let market_kind: Vec<String> = rows.iter().map(|r| r.market_kind.clone()).collect();
         let quote_asset_id: Vec<i16> = rows.iter().map(|r| r.quote_asset_id).collect();
@@ -88,7 +88,7 @@ impl TradeRepo {
 
         let res = sqlx::query(
             "INSERT INTO trades \
-                (mint_address, wallet_id, launchpad_id, market_kind, quote_asset_id, trade_type, \
+                (mint_address, wallet_ref, launchpad_id, market_kind, quote_asset_id, trade_type, \
                  amount_quote, amount_base, reserve_quote, reserve_base, \
                  slot, tx_index, leg_index, block_time, tx_signature) \
              SELECT * FROM UNNEST($1::text[], $2::int4[], $3::int2[], $4::text[], $5::int2[], $6::text[], \
@@ -97,7 +97,7 @@ impl TradeRepo {
              ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING",
         )
         .bind(&mint_address)
-        .bind(&wallet_id)
+        .bind(&wallet_ref)
         .bind(&launchpad_id)
         .bind(&market_kind)
         .bind(&quote_asset_id)
@@ -141,7 +141,7 @@ impl TradeRepo {
     /// Sum a wallet's fills of one side (`buy`/`sell`) for a mint, in quote base
     /// units — the feed-accurate realized-proceeds / actual-cost figure for a
     /// managed wallet's position. Joins `wallet_dict` by address (the interned
-    /// `wallet_id` is keyed there, never stored on the managed wallet). Mint- and
+    /// `wallet_ref` is keyed there, never stored on the managed wallet). Mint- and
     /// wallet-scoped — never a table scan. Returns 0 when nothing's ingested yet.
     pub async fn sum_side_quote_by_address(
         pool: &PgPool,
@@ -151,7 +151,7 @@ impl TradeRepo {
     ) -> anyhow::Result<i64> {
         let (sum,): (i64,) = sqlx::query_as(
             "SELECT COALESCE(SUM(t.amount_quote), 0) FROM trades t \
-             JOIN wallet_dict w ON w.id = t.wallet_id \
+             JOIN wallet_dict w ON w.id = t.wallet_ref \
              WHERE t.mint_address = $1 AND w.address = $2 AND t.trade_type = $3",
         )
         .bind(mint_address)
