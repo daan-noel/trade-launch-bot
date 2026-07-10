@@ -15,6 +15,8 @@ mod funding_plan;
 mod keystore;
 mod manage;
 mod metadata_upload;
+mod plan_exec;
+mod plan_pipeline;
 mod probe;
 mod service;
 mod trader_config;
@@ -26,8 +28,7 @@ mod wallet_verify;
 
 pub use backup::run_backup;
 pub use bundle::{
-    compose_bundle_legs, leg_params, legs_from_json, legs_to_json, BundledLegPlan, BuyVariant,
-    LegStructure, LegStructureRecipe,
+    legs_from_json, legs_to_json, BundledLegPlan, BuyVariant, LegStructure, LegStructureRecipe,
 };
 pub use bundle_execute::{execute_bundle, BundleExecuteResult};
 pub use confirm::spawn_bundle_confirm_watcher;

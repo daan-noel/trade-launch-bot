@@ -510,13 +510,18 @@ impl BundleRepo {
         launch_id: Uuid,
         tip_quote: Option<i64>,
         legs: serde_json::Value,
+        plan: serde_json::Value,
+        audit: serde_json::Value,
     ) -> anyhow::Result<Bundle> {
         Ok(sqlx::query_as::<_, Bundle>(
-            "INSERT INTO bundles (launch_id, tip_quote, legs, status) VALUES ($1,$2,$3,'planned') RETURNING *",
+            "INSERT INTO bundles (launch_id, tip_quote, legs, plan, audit, status) \
+             VALUES ($1,$2,$3,$4,$5,'planned') RETURNING *",
         )
         .bind(launch_id)
         .bind(tip_quote)
         .bind(legs)
+        .bind(plan)
+        .bind(audit)
         .fetch_one(pool)
         .await?)
     }
@@ -689,18 +694,22 @@ impl ManageActionRepo {
         sizing: &str,
         selection: serde_json::Value,
         plan: serde_json::Value,
+        plan_orchestrator: serde_json::Value,
+        audit: serde_json::Value,
         legs_total: i32,
     ) -> anyhow::Result<ManageAction> {
         Ok(sqlx::query_as::<_, ManageAction>(
             "INSERT INTO manage_actions \
-                (mint_address, kind, sizing, selection, plan, status, legs_total) \
-             VALUES ($1,$2,$3,$4,$5,'executing',$6) RETURNING *",
+                (mint_address, kind, sizing, selection, plan, plan_orchestrator, audit, status, legs_total) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,'executing',$8) RETURNING *",
         )
         .bind(mint_address)
         .bind(kind)
         .bind(sizing)
         .bind(selection)
         .bind(plan)
+        .bind(plan_orchestrator)
+        .bind(audit)
         .bind(legs_total)
         .fetch_one(pool)
         .await?)

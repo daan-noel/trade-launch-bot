@@ -13,11 +13,7 @@ use platform_core::models::{ManagedWallet, WalletRole, WalletStatus};
 use platform_core::storage::repositories::ManagedWalletRepo;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
-use solana_sdk::system_instruction;
-use solana_sdk::transaction::Transaction;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
@@ -89,47 +85,33 @@ async fn sweep_wallet(
         return Ok(());
     }
 
-    let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
-
-    // The transfer amount is a fixed-width u64 in the instruction data, so a
-    // probe message (any amount) has the exact same serialized size — and
-    // therefore the exact same fee — as the final one. Query it first so we
-    // can send the true remainder and land the source account at exactly 0
-    // lamports: leaving any non-zero balance below the rent-exempt minimum
-    // makes the runtime reject the transfer outright.
-    let probe_ix = system_instruction::transfer(&address, &treasury, balance);
-    let probe_msg = Message::new_with_blockhash(&[probe_ix], Some(&address), &blockhash);
-    let fee = rpc
-        .get_fee_for_message(&probe_msg)
-        .await
-        .context("fetch dust-sweep transfer fee")?;
-
-    if balance <= fee {
-        ManagedWalletRepo::retire(pool, wallet.id).await?;
-        info!(wallet_id = %wallet.id, balance, fee, "wallet balance below fee — retired without sweep");
-        return Ok(());
-    }
-    let send_lamports = balance - fee;
-
+    // Phase 2.F: the sweep is a typed `TransferSol` move executed through the SSOT
+    // [`crate::plan_exec::execute_transfer`] (the ONE place a plain SOL transfer is
+    // assembled — probe-fee then `balance − fee` so the source lands at exactly 0).
+    // Still a plain transfer (no Jito): a dust sweep has no landing urgency.
     let signer = keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, kek)?;
-    let ix = system_instruction::transfer(&address, &treasury, send_lamports);
-    let msg = Message::new_with_blockhash(&[ix], Some(&address), &blockhash);
-    let mut tx = Transaction::new_unsigned(msg);
-    tx.try_sign(&[signer.as_ref() as &dyn Signer], blockhash)
-        .context("sign dust-sweep transfer")?;
+    let swept = crate::plan_exec::execute_transfer(
+        rpc,
+        signer.as_ref(),
+        address,
+        treasury,
+        crate::plan_exec::TransferMode::SweepAll { min_lamports: SWEEP_MIN_LAMPORTS },
+        true, // confirm
+    )
+    .await?;
 
-    let sig = rpc
-        .send_and_confirm_transaction(&tx)
-        .await
-        .context("send dust-sweep transfer")?;
-
+    // Retire regardless: a `None` means the balance fell to/below the tx fee since
+    // we read it — nothing worth a signed tx, same terminal outcome as a sweep.
     ManagedWalletRepo::retire(pool, wallet.id).await?;
-    info!(
-        wallet_id = %wallet.id,
-        address = %wallet.address,
-        swept_lamports = send_lamports,
-        sig = %sig,
-        "dust swept to treasury, wallet retired"
-    );
+    match swept {
+        Some(sig) => info!(
+            wallet_id = %wallet.id, address = %wallet.address, sig = %sig,
+            "dust swept to treasury, wallet retired"
+        ),
+        None => info!(
+            wallet_id = %wallet.id, balance,
+            "wallet balance below fee at send — retired without sweep"
+        ),
+    }
     Ok(())
 }

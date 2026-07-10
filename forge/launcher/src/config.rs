@@ -38,6 +38,15 @@ pub struct LauncherSettings {
     /// previewing a plan and reading holdings are always allowed; firing real
     /// sells/buys is not, unless explicitly enabled. Mirrors `funding`.
     pub manage: Option<ManageConfig>,
+    /// Whether the mandatory fingerprint auditor (Phase 2.F) *waves through* its
+    /// fingerprint tells (equal amounts, star funding, same-slot clusters, …). The
+    /// audit ALWAYS runs and is persisted regardless; this only decides whether a
+    /// tell blocks execution. Default `true` (log + persist, don't block) preserves
+    /// existing launch behavior (equal-amount bundles are a known tell the
+    /// unlinkability workstream addresses via funding/schedule, not a launch block);
+    /// set `AUDIT_ENFORCE_FINGERPRINT=true` to hard-block on any tell. A hard reject
+    /// (a malformed account shape) is NEVER waved through, regardless of this flag.
+    pub allow_fingerprint: bool,
 }
 
 /// Config for executing post-launch management actions (real sells/buys). Only
@@ -163,6 +172,8 @@ impl LauncherSettings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         let manage = ManageConfig::from_env();
+        // Default: don't block on fingerprint tells (audit still runs + persists).
+        let allow_fingerprint = !env_flag("AUDIT_ENFORCE_FINGERPRINT", false);
         Ok(Self {
             rpc_url,
             sender_urls,
@@ -175,6 +186,7 @@ impl LauncherSettings {
             funding,
             export_secret,
             manage,
+            allow_fingerprint,
         })
     }
 }

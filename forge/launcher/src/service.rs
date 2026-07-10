@@ -39,6 +39,18 @@ const PUMP_TOKEN_DECIMALS: i16 = 6;
 /// the same floor instead of hardcoding (and re-drifting) its own copy.
 pub(crate) const MIN_DEV_LAUNCH_LAMPORTS: u64 = 20_000_000; // 0.02 SOL
 
+/// Map the DB `launch_templates.variant` (`"pumpfun.create_v1"` / `_v2`) to the
+/// venue **catalog** create variant name the orchestrator plan carries. This is
+/// the one place the free-text launch-variant string is translated onto the
+/// catalog SSOT (the create tx itself is still built by the matching `create_*`
+/// trader method below — the plan documents + audits it).
+fn create_variant_name(template_variant: &str) -> &'static str {
+    match template_variant {
+        "pumpfun.create_v2" => "create_v2",
+        _ => "create",
+    }
+}
+
 /// Parsed `launch_templates.params` brain for pump.fun create_v2. Token identity
 /// (name/symbol/uri) is NOT here — it lives in the linked `metadata_templates`
 /// row (`launch_templates.metadata_template_id`), the single source of truth.
@@ -322,7 +334,7 @@ pub async fn execute_launch(
 
         Ok(LaunchResult {
             launch_id,
-            mint_address,
+            mint_address: mint_address.clone(),
             create_signature: signature,
             bundle: None,
         })
@@ -349,11 +361,6 @@ pub async fn execute_launch(
     // a real, successful on-chain create. Matches how bundle auto-submit below
     // already treats post-create bundle failures as non-fatal to the launch row.
     if let Some(leg_count) = crate::bundle::resolve_leg_count(req.bundler_count, &params) {
-        let recipes = params
-            .leg_structures
-            .as_deref()
-            .filter(|p| !p.is_empty())
-            .context("bundle requested but template leg_structures pool is empty")?;
         let (quote_per_leg, tip_quote) = crate::bundle::resolve_bundle_quote(&params)?;
 
         // Server-side atomic claim from the `funded` bundler pool (wallet-pool
@@ -382,22 +389,56 @@ pub async fn execute_launch(
                     "bundler pool short — planning a smaller bundle"
                 );
             }
-            let wallet_ids: Vec<Uuid> = claimed.iter().map(|w| w.id).collect();
-            let composed = crate::bundle::compose_bundle_legs(
-                recipes,
-                wallet_ids.len(),
-                &wallet_ids,
-                quote_per_leg,
-            )?;
+            // Phase 2.F: build the full launch as an orchestrator `Plan`
+            // (create + dev-buy + N bundler co-buys), all catalog-validated, then
+            // pass the mandatory fingerprint-audit gate before it's persisted or a
+            // single leg is built. The create + dev-buy already landed on-chain
+            // above (one atomic tx); their ops document the launch and are audited
+            // alongside the bundlers. Bundler buys are `ExactQuote` (SOL-in,
+            // min_out-floored) — never the overflow-prone tokens-out encoding.
+            let bundle_slippage = params
+                .slippage_bps
+                .or(Some(crate::plan_pipeline::DEFAULT_BUNDLE_SLIPPAGE_BPS));
+            let bundlers: Vec<orchestrator::BundlerLeg> = claimed
+                .iter()
+                .map(|w| orchestrator::BundlerLeg {
+                    wallet: orchestrator::WalletRef::managed(w.id, w.address.clone()),
+                    sol: quote_per_leg.max(0) as u64,
+                    slippage_bps: bundle_slippage,
+                })
+                .collect();
+            let mut seq = orchestrator::IdSeq::new(0);
+            let ops = orchestrator::bundle_launch(
+                &mut seq,
+                &orchestrator::BundleLaunch {
+                    mint: mint_address.clone(),
+                    dev: orchestrator::WalletRef::managed(dev_wallet.id, creator.to_string()),
+                    create_variant: create_variant_name(&template.variant).to_string(),
+                    buy_variant: crate::plan_pipeline::LAUNCH_BUY_VARIANT.to_string(),
+                    dev_buy_sol: dev_buy_quote.max(0) as u64,
+                    dev_slippage_bps: params.slippage_bps,
+                    bundlers,
+                },
+            );
+            let plan = orchestrator::Plan::for_mint(mint_address.clone(), ops);
+            let gated = crate::plan_pipeline::gate(plan, settings.allow_fingerprint)
+                .context("launch bundle failed the mandatory plan/audit gate")?;
+
+            let legs_json = crate::plan_pipeline::display_legs_json(&gated);
             let bundle = BundleRepo::insert(
                 pool,
                 launch_id,
                 tip_quote,
-                crate::bundle::legs_to_json(&composed),
+                legs_json,
+                gated.plan_json(),
+                gated.audit_json(),
             )
             .await?;
             LaunchRepo::set_bundle_id(pool, launch_id, bundle.id).await?;
-            info!(launch_id = %launch_id, bundle_id = %bundle.id, legs = wallet_ids.len(), "bundle planned");
+            info!(
+                launch_id = %launch_id, bundle_id = %bundle.id, legs = claimed.len(),
+                audit_score = gated.audit.score, "bundle planned + audited"
+            );
         }
     }
 

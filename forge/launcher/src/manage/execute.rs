@@ -14,11 +14,7 @@ use platform_core::storage::repositories::{ManageActionRepo, ManagedWalletRepo, 
 use pump_trader::{protocol::LAMPORTS_PER_SOL, PumpFunTrader, TokenProgram};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
-use solana_sdk::system_instruction;
-use solana_sdk::transaction::Transaction;
 use sqlx::PgPool;
 use std::str::FromStr;
 use tracing::{info, warn};
@@ -28,6 +24,7 @@ use super::plan::build_plan;
 use super::positions::{load_positions, reconcile_positions};
 use crate::config::{LauncherSettings, ManageConfig};
 use crate::keystore::{self, EnvKek};
+use crate::plan_exec::TransferMode;
 use crate::trader_config::build_launch_trader_config;
 
 /// Max sell/buy attempts per leg (escalating Jito tip each try on sell).
@@ -63,6 +60,16 @@ pub async fn execute_action(
     // treasury + RPC for consolidate) so it isn't re-fetched per leg.
     let ctx = ExecContext::resolve(pool, settings, mint, &plan.kind).await?;
 
+    // Phase 2.F: build the action as an orchestrator `Plan` (sell → Exit sell,
+    // buy → Accumulate buy, consolidate → typed `TransferSol`) and run the
+    // mandatory fingerprint-audit gate BEFORE anything executes. The legacy
+    // `PlanLeg[]` still drives the (proven) per-leg execution below; the gated plan
+    // is the audited, persisted SSOT — a hard-reject here aborts the whole action.
+    let orch_plan =
+        build_orchestrator_plan(pool, mint, &plan.legs, &ctx, manage_cfg.sell_slippage_bps).await?;
+    let gated = crate::plan_pipeline::gate(orch_plan, settings.allow_fingerprint)
+        .context("manage action failed the mandatory plan/audit gate")?;
+
     let selection_json = serde_json::to_value(&req.selection)?;
     let legs_total = plan.legs.len() as i32;
     let action = ManageActionRepo::insert_executing(
@@ -72,6 +79,8 @@ pub async fn execute_action(
         &plan.sizing,
         selection_json,
         serde_json::to_value(&plan.legs)?,
+        gated.plan_json(),
+        gated.audit_json(),
         legs_total,
     )
     .await?;
@@ -294,9 +303,10 @@ async fn buy_leg(
     Ok(Some(sig))
 }
 
-/// CONSOLIDATE: sweep the wallet's SOL (balance − fee) to treasury via a plain
-/// RPC transfer (no Jito — no landing urgency), leaving the source at 0. Does NOT
-/// retire the wallet (unlike the end-of-life dust sweep) — it stays a live
+/// CONSOLIDATE: sweep the wallet's SOL (balance − fee) to treasury as a typed
+/// `TransferSol` op, executed via the SSOT [`crate::plan_exec::execute_transfer`]
+/// (a plain transfer — no Jito, no landing urgency), leaving the source at 0. Does
+/// NOT retire the wallet (unlike the end-of-life dust sweep) — it stays a live
 /// management wallet.
 async fn consolidate_leg(
     pool: &PgPool,
@@ -322,31 +332,87 @@ async fn consolidate_leg(
         return Ok(None);
     }
 
-    let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
-    // Fixed-width amount ⇒ probe fee with any amount, then send balance − fee so
-    // the source lands at exactly 0 (a sub-rent remainder would be rejected).
-    let probe_ix = system_instruction::transfer(&address, &treasury, balance);
-    let probe_msg = Message::new_with_blockhash(&[probe_ix], Some(&address), &blockhash);
-    let fee = rpc
-        .get_fee_for_message(&probe_msg)
-        .await
-        .context("fetch consolidate transfer fee")?;
-    if balance <= fee {
-        bail!("balance {balance} below tx fee {fee} — cannot consolidate");
-    }
-    let send_lamports = balance - fee;
-
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
     let signer = keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, &kek)?;
-    let ix = system_instruction::transfer(&address, &treasury, send_lamports);
-    let msg = Message::new_with_blockhash(&[ix], Some(&address), &blockhash);
-    let mut tx = Transaction::new_unsigned(msg);
-    tx.try_sign(&[signer.as_ref() as &dyn Signer], blockhash)
-        .context("sign consolidate transfer")?;
-    let sig = rpc
-        .send_and_confirm_transaction(&tx)
-        .await
-        .context("send consolidate transfer")?;
-    info!(wallet = %wallet.address, swept_lamports = send_lamports, sig = %sig, "consolidated SOL to treasury");
+    let sig = crate::plan_exec::execute_transfer(
+        rpc,
+        signer.as_ref(),
+        address,
+        treasury,
+        TransferMode::SweepAll { min_lamports: CONSOLIDATE_MIN_LAMPORTS },
+        true, // confirm — cold manual path
+    )
+    .await?
+    .context("consolidate: balance fell below the tx fee — nothing swept")?;
+    info!(wallet = %wallet.address, sig = %sig, "consolidated SOL to treasury");
     Ok(Some(sig.to_string()))
+}
+
+/// Build the orchestrator [`Plan`](orchestrator::Plan) for a management action from
+/// its computed legs — the audited + persisted SSOT. Resolves each leg wallet's
+/// pubkey (the op needs it to validate) and maps by side: sell → `Sell`/`Exit`,
+/// buy → `Buy`/`Accumulate` (SOL-in), consolidate → typed `TransferSol` to treasury.
+async fn build_orchestrator_plan(
+    pool: &PgPool,
+    mint: &str,
+    legs: &[PlanLeg],
+    ctx: &ExecContext,
+    slippage_bps: u64,
+) -> Result<orchestrator::Plan> {
+    use orchestrator::{Amount, IdSeq, Intent, Operation, Plan, Role, WalletRef};
+
+    let ids: Vec<uuid::Uuid> = legs.iter().map(|l| l.wallet_id).collect();
+    let wallets = ManagedWalletRepo::get_many(pool, &ids).await?;
+    let addr_of = |id: uuid::Uuid| wallets.iter().find(|w| w.id == id).map(|w| w.address.clone());
+    let treasury = ctx.treasury.map(|p| p.to_string());
+
+    let mut seq = IdSeq::new(0);
+    let mut ops = Vec::with_capacity(legs.len());
+    for leg in legs {
+        let pubkey = addr_of(leg.wallet_id)
+            .with_context(|| format!("manage plan: wallet {} not found", leg.wallet_id))?;
+        let wref = WalletRef::managed(leg.wallet_id, pubkey);
+        let role = Role::from_str_lossy(&leg.role);
+        let op = match leg.side.as_str() {
+            "sell" => Operation::sell(
+                seq.next(),
+                "sell",
+                role,
+                wref,
+                mint.to_string(),
+                leg.amount_base.max(0) as u64,
+                Some(slippage_bps),
+                vec![],
+            ),
+            "buy" => Operation::buy(
+                seq.next(),
+                crate::plan_pipeline::LAUNCH_BUY_VARIANT,
+                role,
+                Intent::Accumulate,
+                wref,
+                mint.to_string(),
+                Amount::ExactQuote(leg.spend_quote.max(0) as u64),
+                Some(slippage_bps),
+                vec![],
+            ),
+            "consolidate" => {
+                let to = treasury
+                    .clone()
+                    .context("consolidate plan needs a resolved treasury target")?;
+                Operation::transfer_sol_as(
+                    seq.next(),
+                    orchestrator::macros::DEFAULT_SOL_TRANSFER_VARIANT,
+                    role,
+                    Intent::Consolidate,
+                    wref,
+                    to,
+                    leg.spend_quote.max(0) as u64,
+                    vec![],
+                )
+            }
+            other => bail!("unknown leg side '{other}'"),
+        };
+        ops.push(op);
+    }
+    Ok(Plan::for_mint(mint.to_string(), ops))
 }

@@ -266,4 +266,13 @@ pub struct Bundle {
     pub submitted_at: Option<DateTime<Utc>>,
     pub confirmed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// The serialized `orchestrator::Plan` this bundle was gated + built from
+    /// (Phase 2.F). The executor rebuilds legs from this and recomputes the
+    /// deterministic disguises; `legs` above stays for the confirm watcher + UI.
+    #[serde(default)]
+    pub plan: Option<Json>,
+    /// The serialized `orchestrator::AuditReport` captured at the gate — findings
+    /// + score + hard_reject, for post-hoc inspection. Never read back to execute.
+    #[serde(default)]
+    pub audit: Option<Json>,
 }

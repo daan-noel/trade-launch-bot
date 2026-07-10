@@ -28,11 +28,8 @@ use rand::Rng;
 use serde::Serialize;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Signature, Signer};
-use solana_sdk::system_instruction;
-use solana_sdk::transaction::Transaction;
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -810,27 +807,10 @@ fn bad_address_outcome(w: &ManagedWallet) -> WalletFundOutcome {
     }
 }
 
-/// Build + sign a plain treasury-signed SOL transfer (fee paid by the treasury).
-/// The one place the funding transfer tx is assembled — both the confirmed and
-/// fire-and-forget senders below reuse it.
-async fn sign_transfer(
-    rpc: &RpcClient,
-    treasury_signer: &Arc<dyn Signer + Send + Sync>,
-    from: Pubkey,
-    to: Pubkey,
-    lamports: u64,
-) -> Result<Transaction> {
-    let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
-    let ix = system_instruction::transfer(&from, &to, lamports);
-    let msg = Message::new_with_blockhash(&[ix], Some(&from), &blockhash);
-    let mut tx = Transaction::new_unsigned(msg);
-    tx.try_sign(&[treasury_signer.as_ref() as &dyn Signer], blockhash)
-        .context("sign funding transfer")?;
-    Ok(tx)
-}
-
 /// Send + confirm a funding transfer (background pass). No retry — the caller
-/// reverts the claim on error and the next pass re-attempts.
+/// reverts the claim on error and the next pass re-attempts. Phase 2.F: the
+/// treasury→pool move is a typed `TransferSol` executed through the SSOT
+/// [`crate::plan_exec::execute_transfer`] (exact lamports, treasury pays the fee).
 async fn send_transfer(
     rpc: &RpcClient,
     treasury_signer: &Arc<dyn Signer + Send + Sync>,
@@ -838,10 +818,16 @@ async fn send_transfer(
     to: Pubkey,
     lamports: u64,
 ) -> Result<Signature> {
-    let tx = sign_transfer(rpc, treasury_signer, from, to, lamports).await?;
-    rpc.send_and_confirm_transaction(&tx)
-        .await
-        .context("send funding transfer")
+    crate::plan_exec::execute_transfer(
+        rpc,
+        treasury_signer.as_ref(),
+        from,
+        to,
+        crate::plan_exec::TransferMode::Exact(lamports),
+        true, // confirm
+    )
+    .await?
+    .context("funding transfer produced no signature")
 }
 
 /// Submit a funding transfer WITHOUT waiting for confirmation (manual pass):
@@ -854,10 +840,16 @@ async fn submit_transfer(
     to: Pubkey,
     lamports: u64,
 ) -> Result<Signature> {
-    let tx = sign_transfer(rpc, treasury_signer, from, to, lamports).await?;
-    rpc.send_transaction(&tx)
-        .await
-        .context("submit funding transfer")
+    crate::plan_exec::execute_transfer(
+        rpc,
+        treasury_signer.as_ref(),
+        from,
+        to,
+        crate::plan_exec::TransferMode::Exact(lamports),
+        false, // submit only
+    )
+    .await?
+    .context("funding transfer produced no signature")
 }
 
 /// Spawn the background funder. Long-lived; keeps every fundable role warm. Gate

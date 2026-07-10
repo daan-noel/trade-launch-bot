@@ -16,9 +16,9 @@ use std::str::FromStr;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::bundle::{leg_params, legs_from_json};
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
+use crate::plan_pipeline::{self, is_bundler_leg};
 use crate::trader_config::build_launch_trader_config;
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,13 +84,31 @@ async fn execute_bundle_inner(
         .await?
         .context("token row not found")?;
 
-    let legs = legs_from_json(&bundle.legs)?;
-    if legs.is_empty() {
-        bail!("bundle has no legs");
+    // Phase 2.F: the bundle's executable SSOT is the persisted orchestrator `Plan`.
+    // Deserialize it and re-run the mandatory gate (which recomputes the identical
+    // deterministic disguises and re-audits) — a bundle planned before the cutover
+    // has no plan and can't be executed on this path.
+    let plan: orchestrator::Plan = serde_json::from_value(
+        bundle
+            .plan
+            .clone()
+            .context("bundle predates the Plan cutover (no persisted plan) — cannot execute")?,
+    )
+    .context("deserialize persisted bundle plan")?;
+    let gated = plan_pipeline::gate(plan, settings.allow_fingerprint)
+        .context("persisted bundle plan failed the mandatory plan/audit gate")?;
+    let bundler_ops: Vec<&orchestrator::Operation> =
+        gated.plan.ops.iter().filter(|op| is_bundler_leg(op)).collect();
+    if bundler_ops.is_empty() {
+        bail!("bundle plan has no bundler legs");
     }
 
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
-    let first_wallet = ManagedWalletRepo::get(pool, legs[0].wallet_id)
+    let first_wallet_id = bundler_ops[0]
+        .wallet
+        .wallet_id
+        .context("bundler leg op has no managed wallet id")?;
+    let first_wallet = ManagedWalletRepo::get(pool, first_wallet_id)
         .await?
         .context("bundler wallet not found")?;
     check_wallet_reserved_to_bundle(&first_wallet, bundle.launch_id)?;
@@ -138,33 +156,35 @@ async fn execute_bundle_inner(
     BundleRepo::set_status(pool, bundle_id, BundleStatus::Submitting.as_str()).await?;
 
     let finish = async {
-        let mut txs = Vec::with_capacity(legs.len());
-        let mut leg_signatures = Vec::with_capacity(legs.len());
+        let mut txs = Vec::with_capacity(bundler_ops.len());
+        let mut leg_signatures = Vec::with_capacity(bundler_ops.len());
 
-        for leg in &legs {
-            let variant = pump_trader::BundleBuyVariant::parse(&leg.structure.variant)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let wallet = ManagedWalletRepo::get(pool, leg.wallet_id)
+        for op in &bundler_ops {
+            let wallet_id = op
+                .wallet
+                .wallet_id
+                .context("bundler leg op has no managed wallet id")?;
+            let disguise = gated
+                .disguise_of(op.id)
+                .context("no disguise for bundler leg op")?;
+            let wallet = ManagedWalletRepo::get(pool, wallet_id)
                 .await?
                 .context("bundler wallet not found")?;
             check_wallet_reserved_to_bundle(&wallet, bundle.launch_id)?;
             let signer =
                 keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, &kek)?;
-            let buy_lamports = leg.quote_amount.max(0) as u64;
-            let params = leg_params(&leg.structure);
-            let tx = trader
-                .build_bundle_leg_tx(
-                    signer.as_ref(),
-                    blockhash,
-                    &mint,
-                    &creator,
-                    token_program,
-                    buy_lamports,
-                    cashback_enabled,
-                    variant,
-                    &params,
-                )
-                .await?;
+            let tx = crate::plan_exec::build_leg_tx(
+                trader,
+                signer.as_ref(),
+                blockhash,
+                &mint,
+                &creator,
+                token_program,
+                cashback_enabled,
+                op,
+                disguise,
+            )
+            .await?;
             leg_signatures.push(tx.signatures[0].to_string());
             txs.push(tx);
         }
@@ -179,7 +199,7 @@ async fn execute_bundle_inner(
         info!(
             bundle_id = %bundle_id,
             launch_id = %bundle.launch_id,
-            legs = legs.len(),
+            legs = bundler_ops.len(),
             jito_bundle_id = %jito_bundle_id,
             "bundle submitted to Jito"
         );

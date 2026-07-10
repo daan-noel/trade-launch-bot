@@ -13,6 +13,11 @@ platform-core = { path = "../core", package = "forge-core" }
 # Borrowed execution layer (standalone). The launch dev-buy IS a pump-trader buy;
 # the create builder is a targeted extension we own. LIVE-only.
 pump-trader.workspace = true
+executor-core.workspace = true
+# The brain: Operation/Plan model + catalog-gated providers + macros + disguise +
+# fingerprint audit. Every forge write flow assembles a Plan and passes the
+# mandatory audit gate here before a single ix is built. LIVE/forge-only.
+orchestrator = { path = "../orchestrator", package = "forge-orchestrator" }
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
