@@ -27,7 +27,6 @@ Bot/                          monorepo root: [workspace] + Cargo.lock, resolver 
 └── forge/
     ├── docker-compose.yml    local Postgres + TimescaleDB (5556) + forge-live service
     ├── .env.example          copy to .env
-    ├── idl/                  pump.fun IDLs (copied SSOT: pfee / pump_amm / pump_bonding_curve)
     ├── migrations/           0001_init.sql
     └── crates/
         ├── platform-core (lib)  data layer: config, models, storage, repositories, venue trait
@@ -49,9 +48,10 @@ intra-workspace deps (`{ workspace = true }`) by both products:
 | `ingest-laserstream` | Helius gRPC transport + curve/AMM decoders + watchdog | `ingest-host` |
 
 `trading_core` is **not** reused — it encodes the SOL/pump domain being redesigned.
-Only tiny pure SSOT files were lifted by copy: the pump.fun IDLs (`idl/`) and the
-`lamports↔sol` conversion (generalized to quote/base decimals in
-`platform-core::units`).
+The pump.fun IDLs are the single canonical copy at `shared/executor/pumpfun/idl/`
+(alongside the fetch scripts and hand-written decoders); forge no longer keeps its own
+copy. The only pure SSOT lifted by copy is the `lamports↔sol` conversion (generalized to
+quote/base decimals in `platform-core::units`).
 
 ## Dep partition (enforced from commit 1)
 

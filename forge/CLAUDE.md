@@ -81,8 +81,9 @@ with `hunter/`. The two standalone crates (`pump-trader`, `ingest-laserstream`) 
 (`{ workspace = true }`), NOT a cross-repo path dep any more. **forge's bins are named
 `forge-live` / `forge-lab`** (hunter owns `hunter-live`/`hunter-lab`); they are NOT workspace
 `default-members`, so build/run them with `-p forge-live` / `-p forge-lab`. `trading_core` is
-**NOT** reused (its SOL/pump domain is the thing being redesigned); only tiny pure SSOT
-files were copied (IDLs, unit consts).
+**NOT** reused (its SOL/pump domain is the thing being redesigned); the only pure SSOT
+lifted by copy is the unit consts. The pump.fun IDLs are the single canonical copy at
+`shared/executor/pumpfun/idl/`, not duplicated into forge.
 
 | Crate | Kind | Role | Ships to |
 | --- | --- | --- | --- |
