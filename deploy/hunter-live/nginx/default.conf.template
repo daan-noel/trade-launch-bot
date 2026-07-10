@@ -1,23 +1,33 @@
 # ---------------------------------------------------------------------------
-# Serves the built React SPA and reverse-proxies /api to the backend container.
-# TLS-terminating: HTTPS on 443, plain HTTP on 80 redirects up to HTTPS.
+# hunter-live nginx — serves the built React SPA and reverse-proxies /api to the
+# backend container (see ui.Dockerfile). The SPA calls /api/... same-origin, so
+# no CORS and no hardcoded backend URL.
+#
+# ONE server block listens on BOTH plain HTTP (80) and TLS (443). There is NO
+# HTTP->HTTPS redirect: this stack publishes the UI on NON-standard host ports
+# (the 8·F·C·P scheme -> ${LIVE_UI_HTTP_PORT:-8110} http / ${LIVE_UI_HTTPS_PORT:-8111}
+# https, never 80/443), and several UIs share one box, so a `return 301
+# https://$host...` would drop the non-standard port and dead-end the browser on
+# :443. Instead both schemes serve the app directly. Reach it at
+# http://<host>:8110 (plain) or https://<host>:8111 (self-signed TLS).
+#
+# *.template: the nginx image entrypoint runs envsubst over
+# /etc/nginx/templates/*.template at startup, writing the result to
+# /etc/nginx/conf.d/default.conf. This injects ${API_AUTH_TOKEN} and
+# ${LIVE_API_PORT} (passed as env vars by compose). NGINX_ENVSUBST_FILTER (set
+# in compose) limits substitution to those vars so nginx's own $host/$remote_addr
+# runtime vars survive untouched.
 # ---------------------------------------------------------------------------
 
-# Plain HTTP -> redirect everything to HTTPS. No auth here so the redirect
-# itself never prompts for credentials.
 server {
     listen 80;
-    server_name _;
-    return 301 https://$host$request_uri;
-}
-
-server {
     listen 443 ssl;
     http2 on;
     server_name _;
 
     # Self-signed cert for local/testing (regenerate with openssl; see
-    # nginx/tls/). Swap in a real cert for production.
+    # nginx/tls/). Used only by the TLS (443) listener; plain HTTP ignores it.
+    # Swap in a real cert for production.
     ssl_certificate     /etc/nginx/tls/cert.pem;
     ssl_certificate_key /etc/nginx/tls/key.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
