@@ -1,0 +1,211 @@
+# Docker commands
+
+A command reference for building, running, and operating the Docker stacks in
+this repo. Run everything from the **repo root** (`c:\Users\User\Documents\Bot`) —
+the build context is the cargo workspace at the root.
+
+---
+
+## The six compose files
+
+There are two families (**hunter** = meme trading, **forge** = launch platform),
+each with a live tier and a lab tier. Each family has a **merged** file plus two
+**split** files:
+
+| Compose file | Runs | Env file |
+| --- | --- | --- |
+| `deploy/hunter/compose.yml` | hunter live **+** lab (merged) | `hunter/.env` |
+| `deploy/hunter-live/compose.yml` | hunter live only | `hunter/.env` |
+| `deploy/hunter-lab/compose.yml` | hunter lab only | `hunter/.env` |
+| `deploy/forge/compose.yml` | forge live **+** lab (merged) | `forge/.env` |
+| `deploy/forge-live/compose.yml` | forge live only | `forge/.env` |
+| `deploy/forge-lab/compose.yml` | forge lab only (API only) | `forge/.env` |
+
+> ⚠️ **One layout at a time per family.** Within a family the merged, live, and
+> lab files all share the `<family>-postgres` container and `<family>-pgdata`
+> volume, so only one can be up at once. `down` the current one before bringing
+> up another. (hunter and forge use different names/ports, so they can run
+> together.)
+
+---
+
+## Command flags
+
+| Flag | Meaning |
+| --- | --- |
+| `-f <file>` | Which compose file to use (always required — we have several). |
+| `--env-file <file>` | Load ports/secrets from `hunter/.env` or `forge/.env`. |
+| `-d` | Detached: run in the background. Omit to watch logs in the foreground. |
+| `--build` | Rebuild images from source first (use after code changes). |
+| `run --rm <svc> <cmd>` | Run a one-off command in a throwaway container, then remove it. |
+| `down -v` | Also delete volumes — ⚠️ **wipes the database and lake.** |
+
+---
+
+## Bring a stack up (build + start, background)
+
+**Merged (live + lab):**
+
+```bash
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
+docker compose --env-file forge/.env  -f deploy/forge/compose.yml  up -d --build
+```
+
+**Split — hunter:**
+
+```bash
+# live only
+docker compose --env-file hunter/.env -f deploy/hunter-live/compose.yml up -d --build
+# lab only
+docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml  up -d --build
+```
+
+**Split — forge:**
+
+```bash
+# live only
+docker compose --env-file forge/.env -f deploy/forge-live/compose.yml up -d --build
+# lab only (API only, no UI)
+docker compose --env-file forge/.env -f deploy/forge-lab/compose.yml  up -d --build
+```
+
+- `--build` recompiles images. Drop it to just (re)start existing images.
+- `-d` runs in the background. Drop it to stream logs live in the foreground.
+- **Updating after a code change = the same `up -d --build` command.** Compose
+  rebuilds only what changed and recreates just those containers.
+
+---
+
+## Stop a stack
+
+```bash
+# Stop + remove containers/network, KEEP the database + lake volumes
+docker compose -f deploy/hunter/compose.yml down
+
+# Stop but keep the containers (faster restart)
+docker compose -f deploy/hunter/compose.yml stop
+```
+
+Swap in whichever compose file you brought up (`deploy/hunter-live/compose.yml`,
+`deploy/forge-lab/compose.yml`, etc.).
+
+> ⚠️ Add `-v` (`down -v`) only if you want to **delete the database and lake** and
+> start clean.
+
+---
+
+## Status and logs
+
+```bash
+# Containers in this stack
+docker compose -f deploy/hunter/compose.yml ps
+
+# All containers on the host
+docker ps
+
+# Follow logs for the whole stack
+docker compose -f deploy/hunter/compose.yml logs -f
+
+# Follow logs for one service (postgres | live-api | live-ui | lab-api | lab-ui)
+docker compose -f deploy/hunter/compose.yml logs -f live-api
+```
+
+---
+
+## Restart / rebuild one service
+
+```bash
+docker compose -f deploy/hunter/compose.yml restart live-api
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build live-api
+```
+
+---
+
+## Batch job: lake export
+
+`run --rm` runs a one-off command in a throwaway container. The lab bin differs
+per family (`lab` for hunter, `slp-lab` for forge):
+
+```bash
+# hunter (merged or hunter-lab stack)
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api lab lake-export
+
+# forge (merged or forge-lab stack)
+docker compose --env-file forge/.env  -f deploy/forge/compose.yml  run --rm lab-api slp-lab lake-export
+```
+
+---
+
+## Access the database
+
+Default DB host ports: **hunter = 5555**, **forge = 5556** (override in `.env`).
+
+```bash
+# From the host
+psql postgres://postgres:<password>@localhost:5555/meme_bot          # hunter
+psql postgres://postgres:<password>@localhost:5556/launch_platform   # forge
+
+# Inside the running container
+docker compose -f deploy/hunter/compose.yml exec postgres psql -U postgres -d meme_bot
+docker compose -f deploy/forge/compose.yml  exec postgres psql -U postgres -d launch_platform
+```
+
+Open a shell inside any service:
+
+```bash
+docker compose -f deploy/hunter/compose.yml exec live-api sh
+```
+
+---
+
+## Default host ports
+
+Set in `.env` (scheme `8·F·C·P`); the values below are the defaults.
+
+| Service | hunter | forge |
+| --- | --- | --- |
+| Postgres | `5555` | `5556` |
+| live UI (http / https) | `8110` / `8111` | `8210` / `8211` |
+| live API | *(internal only, via nginx)* | *(internal only, via nginx)* |
+| lab API | `8140` | `8240` |
+| lab UI (http / https) | `8120` / `8121` | *(none — forge lab is API-only)* |
+
+---
+
+## Housekeeping
+
+```bash
+# Remove stopped containers + dangling images (keeps named volumes)
+docker system prune
+
+# List volumes (your data: hunter-pgdata, hunter-lakedata, forge-pgdata, forge-lakedata)
+docker volume ls
+```
+
+---
+
+## Quick reference card
+
+```bash
+# Up (merged hunter), background, rebuild
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
+
+# Logs (one service)
+docker compose -f deploy/hunter/compose.yml logs -f live-api
+
+# Status
+docker compose -f deploy/hunter/compose.yml ps
+
+# Stop (keep data)
+docker compose -f deploy/hunter/compose.yml down
+
+# Lake export
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api lab lake-export
+
+# DB shell
+docker compose -f deploy/hunter/compose.yml exec postgres psql -U postgres -d meme_bot
+```
+
+For forge: swap `hunter`→`forge`, `meme_bot`→`launch_platform`, `lab`→`slp-lab`,
+and ports `5555`/`81xx`→`5556`/`82xx`. For a split stack, swap the compose file
+(e.g. `-f deploy/hunter-lab/compose.yml`).
