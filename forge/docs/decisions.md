@@ -118,9 +118,12 @@ of `is_mayhem_mode`).
 
 **Choice:** compile the create tx as a **v0 (versioned) message** referencing a
 persistent on-chain **Address Lookup Table** of the ~15 *immutable* accounts
-(program IDs, constant-seed PDAs, the 10 Jito tip accounts — SSOT
-`pump_trader::launch_alt_addresses`). Those collapse from 32-byte keys to 1-byte
-indexes, dropping the tx to **931 B** (measured; 301 B headroom). The ALT is
+(program IDs, constant-seed PDAs — SSOT `pump_trader::launch_alt_addresses`).
+Those collapse from 32-byte keys to 1-byte indexes, dropping the tx to **931 B**
+(measured; 301 B headroom). NOTE: the Jito tip accounts are deliberately NOT in
+the ALT — a tip referenced through an ALT is invisible to Jito's bundle
+auction-eligibility check, which scans static keys only, so the chosen tip must
+stay an inline account (see `crate::alt` docs). The ALT is
 provisioned once (`forge-live -- create-alt <authority_key_ref>`, spends ~0.001
 SOL) and referenced via `PUMP_LAUNCH_ALT`.
 

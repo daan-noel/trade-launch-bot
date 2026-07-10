@@ -2,10 +2,10 @@
 //! accounts a launch tx references.
 //!
 //! A create_v2 + dev-buy names ~27 accounts; ~15 of them never vary across
-//! launches (program IDs, constant-seed PDAs, the Jito tip accounts). Pre-loading
-//! those into one persistent on-chain ALT lets the launch tx reference them by a
-//! 1-byte index instead of a 32-byte key, dropping it from ~1267 B (over the
-//! 1232 B legacy-message limit) to ~840 B.
+//! launches (program IDs, constant-seed PDAs). Pre-loading those into one
+//! persistent on-chain ALT lets the launch tx reference them by a 1-byte index
+//! instead of a 32-byte key, dropping it from ~1267 B (over the 1232 B
+//! legacy-message limit) to ~840 B.
 //!
 //! Deliberately EXCLUDED (kept inline in the tx):
 //!   - per-launch/per-wallet PDAs (mint, bonding curve, ATA, creator vault,
@@ -13,7 +13,13 @@
 //!     so they can't live in a persistent table;
 //!   - the on-chain `Global.fee_recipient` — its *value* is governance-rotatable,
 //!     so caching its current value in the ALT could silently stale the table. Its
-//!     32 bytes inline are cheap against the ~400 B the immutable set already saves.
+//!     32 bytes inline are cheap against the ~400 B the immutable set already saves;
+//!   - the **Jito tip accounts** — Jito's bundle auction-eligibility check scans a
+//!     tx's STATIC account keys for a write-locked tip account and does NOT resolve
+//!     ALTs. If the tip account is referenced through the ALT, Jito can't see the
+//!     write lock and rejects the bundle ("must write lock at least one tip account
+//!     to be eligible for the auction"). So the chosen tip account MUST stay inline
+//!     — its ~31 B is the price of auction eligibility.
 //!
 //! Every entry here is either a compile-time program ID / recipient constant or a
 //! PDA derived from **constant seeds** (its address is fixed even if the account's
@@ -24,11 +30,13 @@ use solana_sdk::{compute_budget, pubkey::Pubkey, system_program, sysvar};
 
 /// The immutable accounts the launch (create + dev-buy) path references, for
 /// pre-loading into the persistent launch ALT. Covers both `create_v1`
-/// (Metaplex) and `create_v2` (Mayhem) plus the curve dev-buy and Jito tip — so
-/// ONE table serves every launch variant. Order is stable but irrelevant (the ALT
-/// is content-addressed by membership, and v0 compilation matches by pubkey).
+/// (Metaplex) and `create_v2` (Mayhem) plus the curve dev-buy — so ONE table
+/// serves every launch variant. The Jito tip accounts are intentionally NOT
+/// included (see module docs: they must stay inline for bundle auction
+/// eligibility). Order is stable but irrelevant (the ALT is content-addressed by
+/// membership, and v0 compilation matches by pubkey).
 pub fn launch_alt_addresses() -> Vec<Pubkey> {
-    let mut addrs = vec![
+    vec![
         // --- programs / sysvars ---
         system_program::id(),
         compute_budget::id(),
@@ -52,11 +60,7 @@ pub fn launch_alt_addresses() -> Vec<Pubkey> {
         pda(&[b"fee_config", protocol::PUMP_FUN.as_ref()], &protocol::FEE_PROGRAM),
         pda(&[b"global-params"], &protocol::MAYHEM_PROGRAM),
         pda(&[b"sol-vault"], &protocol::MAYHEM_PROGRAM),
-    ];
-    // All Jito tip accounts — the engine picks one at random per instance, so the
-    // table must cover every candidate for the ALT to compress that leg.
-    addrs.extend_from_slice(&protocol::JITO_TIP_ACCOUNTS);
-    addrs
+    ]
 }
 
 fn pda(seeds: &[&[u8]], program: &Pubkey) -> Pubkey {
@@ -69,12 +73,18 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn address_set_is_deduped_and_covers_tip_accounts() {
+    fn address_set_is_deduped_and_excludes_tip_accounts() {
         let addrs = launch_alt_addresses();
         let unique: HashSet<_> = addrs.iter().collect();
         assert_eq!(unique.len(), addrs.len(), "ALT address list has duplicates");
+        // Jito tip accounts MUST NOT be in the ALT: a tip referenced through an ALT
+        // is invisible to Jito's auction-eligibility write-lock check, so the bundle
+        // is rejected. The chosen tip account has to stay an inline static key.
         for tip in protocol::JITO_TIP_ACCOUNTS {
-            assert!(addrs.contains(&tip), "tip account {tip} missing from ALT set");
+            assert!(
+                !addrs.contains(&tip),
+                "tip account {tip} must NOT be in the ALT (breaks Jito auction eligibility)"
+            );
         }
         // Well under the 256-address ALT cap, with headroom for future accounts.
         assert!(addrs.len() < 256);

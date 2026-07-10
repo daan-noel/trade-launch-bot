@@ -236,7 +236,7 @@ impl PumpFunTrader {
         .0;
 
         // Jito tip account — one chosen at random per trader instance from the
-        // `const [Pubkey; 10]`; the tip *amount* is sized per trade (engine).
+        // `const [Pubkey; 8]`; the tip *amount* is sized per trade (engine).
         let jito_tip_account = protocol::JITO_TIP_ACCOUNTS
             .choose(&mut rand::thread_rng())
             .copied()

@@ -130,6 +130,15 @@ impl PumpFunTrader {
     /// form v0 message compilation needs. The addresses are the immutable pump
     /// accounts pre-loaded by `create-alt` (see `crate::alt`); we copy them out of
     /// the borrowed `Cow` so the resolved table outlives the RPC response.
+    ///
+    /// Jito tip accounts are stripped from the resolved set even if an older ALT
+    /// was provisioned with them: a tip referenced through an ALT is invisible to
+    /// Jito's auction-eligibility write-lock check, so the bundle is rejected. With
+    /// the tip account absent from the resolved addresses, v0 compilation leaves it
+    /// an inline static key. This keeps a pre-existing on-chain table (tips at the
+    /// tail — that's how `crate::alt` always appended them) working without a
+    /// re-provision; the survivors keep their on-chain indices because we only ever
+    /// drop a trailing suffix (guarded below).
     async fn fetch_launch_alt(&self, alt_address: &Pubkey) -> Result<AddressLookupTableAccount> {
         let account = self
             .rpc
@@ -141,9 +150,35 @@ impl PumpFunTrader {
         if table.addresses.is_empty() {
             bail!("launch ALT {alt_address} is empty — run `create-alt` to populate it");
         }
+
+        // v0 lookup indices are positions into THIS address vec and must match the
+        // on-chain table, so we may only drop a trailing suffix. Guard that every
+        // tip account sits after every retained (non-tip) address before filtering.
+        let last_kept = table
+            .addresses
+            .iter()
+            .rposition(|a| !protocol::JITO_TIP_ACCOUNTS.contains(a));
+        if let Some(last_kept) = last_kept {
+            if table.addresses[..last_kept]
+                .iter()
+                .any(|a| protocol::JITO_TIP_ACCOUNTS.contains(a))
+            {
+                bail!(
+                    "launch ALT {alt_address} interleaves Jito tip accounts among launch \
+                     accounts — indices would desync if filtered; re-provision with `create-alt`"
+                );
+            }
+        }
+        let addresses: Vec<Pubkey> = table
+            .addresses
+            .iter()
+            .filter(|a| !protocol::JITO_TIP_ACCOUNTS.contains(a))
+            .copied()
+            .collect();
+
         Ok(AddressLookupTableAccount {
             key: *alt_address,
-            addresses: table.addresses.to_vec(),
+            addresses,
         })
     }
 }
