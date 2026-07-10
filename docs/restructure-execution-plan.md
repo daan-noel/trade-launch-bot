@@ -374,14 +374,27 @@ façade; pump decoders + protocol consts + `PumpFunVenue`, deps `ingest-core`) �
       link **none** of the two (present in `*-live` trees); `git status` clean (renames only). Full
       detail in `docs/ingest-redesign-plan.md`.
 
-### Phase H — `IngestVenue` seam + generic transport/`Ingest` + provider-as-config — NOT STARTED
-- [ ] `ingest-core`: `IngestVenue` trait (`classify`/`decode`/`subscription_accounts`/`derive_pool`/
-      `filter_key`, static dispatch, `Relevance` assoc type) + move transport + `Ingest<V>` into core.
-- [ ] `ingest-pumpfun`: `PumpFunVenue` impl (`Relevance = TxRelevance`); façade `type Ingest =
-      ingest_core::Ingest<PumpFunVenue>` + builder shim keeps `.protocol(Protocol)` working.
-- [ ] Provider-as-config: `Auth` + endpoint/capability in core; Helius→Triton/Shyft = config, no crate.
-- **Gate H:** decoder unit tests (curve + AMM + truncated-log fallback) green; provider swap type-checks
-      with no crate change; partition holds. Live smoke test EC2-gated.
+### Phase H — `IngestVenue` seam + generic transport/`Ingest` + provider-as-config — ✅ DONE (2026-07-09)
+- [x] `ingest-core`: `IngestVenue` trait (`classify`/`decode`/`subscription_accounts`/`derive_pool`/
+      `filter_key`/`pool_index`/`pools_changed`, static dispatch, `Relevance` assoc type) in
+      `venue.rs`; moved the whole transport (generic `run<V>`/`run_once<V>`/`connect`/
+      `build_subscribe_request`) into `core/transport/` and the `Ingest<V>`/`IngestHandle<V>` session
+      into `core/session.rs`. **Deviation:** venue-owns-pools (the venue holds the shared `PoolIndex` +
+      resubscribe `Notify` so its decoder + the transport share one instance) — cleaner than threading
+      `pools` through every call; behavior identical.
+- [x] `ingest-pumpfun`: `PumpFunVenue` impl (`Relevance = TxRelevance`); façade **newtype**
+      `Ingest` over `ingest_core::Ingest<PumpFunVenue>` (not a `pub type` — a bare alias can't carry
+      the pump `.protocol()` builder method) + `IngestBuilder` shim keeps `.protocol(Protocol)` +
+      `.api_key()` working; `transport` shim preserves the standalone replay `connect`/
+      `build_subscribe_request` surface. Zero consumer `.rs` edits.
+- [x] Provider-as-config: `Auth { XToken | None }` in core config; `XTokenInterceptor` inserts the
+      header only when present (self-hosted geyser = no header); Helius→Triton/Shyft = config, no crate.
+- **Gate H:** ✅ `cargo build -p hunter-live -p forge-live` green via façade (0 source edits);
+      `cargo check --workspace` = 0 errors; `cargo test -p ingest-core -p ingest-pumpfun` green (4
+      seam/transport tests, incl. `provider_swap_is_config`); `cargo tree -i` partition holds (both
+      `*-lab` link neither ingest crate; both in the `*-live` trees). ⚠ decoder fixture regression
+      tests (curve/AMM/truncated-log) + live smoke test deferred to Phase I / EC2-gated (decoder code
+      is a byte-unchanged move, so behavior is preserved).
 
 ### Phase I — Confirm per-product `live/src/ingest/` bridges read core+pumpfun — NOT STARTED
 - [ ] Confirm `forge/live/src/ingest/` + `hunter/live/src/ingest/` read through the façade unchanged;

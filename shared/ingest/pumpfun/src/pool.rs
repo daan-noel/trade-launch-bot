@@ -4,9 +4,7 @@
 //! transport task reads it to build per-pool gRPC subscriptions.
 
 use std::str::FromStr;
-use std::sync::Arc;
 
-use dashmap::DashMap;
 use solana_sdk::pubkey::Pubkey;
 use tracing::warn;
 
@@ -14,11 +12,15 @@ use crate::protocol::Protocol;
 
 /// Shared pool address → base mint address index.
 ///
+/// The type is owned by `ingest-core` (the venue seam's neutral `PoolIndex`) and
+/// re-exported here so the historical `ingest_laserstream::pool::PoolIndex` /
+/// `ingest_laserstream::PoolIndex` paths resolve unchanged.
+///
 /// - The decode task inserts on every `TokenMigrated` (auto-discovery).
 /// - The host inserts known-active pools at warm-restart via
 ///   `IngestHandle::track_pools`.
 /// - The transport task reads it to build gRPC account_include filters.
-pub type PoolIndex = Arc<DashMap<String, String>>;
+pub use ingest_core::venue::PoolIndex;
 
 /// Derive the canonical PumpSwap pool PDA for a migrated pump.fun token.
 ///

@@ -146,27 +146,50 @@ its gate is cheap to trust.
       dep is `trading_core`) — left as-is; the doc-comment references in `hunter/core` + `hunter` CLAUDE.md
       are stale prose, folded into the Phase I/doc-reconciliation pass, not a compile concern.
 
-## Phase H — `IngestVenue` seam + generic transport/`Ingest` + provider-as-config — NOT STARTED
+## Phase H — `IngestVenue` seam + generic transport/`Ingest` + provider-as-config — ✅ DONE (2026-07-09)
 The design-heavy phase; still behavior-preserving (identical wire + identical events).
-- [ ] Add `ingest-core/src/venue.rs`: `IngestVenue` trait (above), `DecodeOutput`, `PoolIndex`
-      (moved out of `pool.rs`). Move the transport connect mechanics + reconnect loop into
-      `ingest-core/src/transport/` and make `connect`/`run`/`run_once`/`build_subscribe_request`
-      **generic over `V: IngestVenue`** — `classify_tx` → `venue.classify`, `account_includes` →
-      `venue.subscription_accounts`, the `"pumpfun"` key → `venue.filter_key`. Move `Ingest`/
-      `IngestBuilder`/`IngestHandle`/`start` into core as `Ingest<V>` (the decode task calls
-      `venue.decode`; `track_pools`/`untrack_pools` call `venue.derive_pool`).
-- [ ] In `ingest-pumpfun`: add `PumpFunVenue { protocol: Arc<Protocol>, decoder-state }` implementing
-      `IngestVenue` (`Relevance = TxRelevance`; `classify` = the old `classify_tx`; `decode` wraps the
-      existing `Decoder::decode_relevant_pb` + the `raw-tx` append; `subscription_accounts` = pump id
-      + pools; `derive_pool` = `pool::derive_pool`). `Decoder`/`TxRelevance` stay pumpfun-owned.
-- [ ] Provider-as-config: add `Auth` + `endpoint`/capability fields to core config; generalize
-      `XTokenInterceptor` to the `Auth`. Default path = Helius x-token (byte-identical to today).
-- [ ] Façade: `pub type Ingest = ingest_core::Ingest<PumpFunVenue>` + `IngestBuilder` shim mapping
-      `.protocol(Protocol)` → `PumpFunVenue`. Consumers still unchanged.
-- **Gate H:** decoder unit tests over fixture logs (curve + AMM, incl. the truncated-log fallback)
-      green; `cargo build -p hunter-live -p forge-live` green; a provider-config swap (endpoint/auth)
-      compiles + type-checks with **no crate change**; `cargo tree` partition still holds (no `*-lab`
-      linkage). Zero SOL, zero network for the unit portion; a live feed smoke test is EC2-gated.
+- [x] Added `ingest-core/src/venue.rs`: `IngestVenue` trait + `DecodeOutput` + `PoolIndex` (moved
+      out of `pool.rs`/`decode/mod.rs`). Moved the whole transport (connect mechanics + reconnect
+      loop) into `ingest-core/src/transport/` and made `connect`/`run`/`run_once`/
+      `build_subscribe_request` **generic over `V: IngestVenue`** — `classify_tx` → `venue.classify`,
+      `account_includes` → `venue.subscription_accounts`, the `"pumpfun"` key → `venue.filter_key`.
+      Moved `Ingest`/`IngestHandle`/`start` into core (`session.rs`) as `Ingest<V>`/`IngestHandle<V>`
+      (decode task calls `venue.decode` + the `raw-tx` append; `track_pools`/`untrack_pools` call
+      `venue.derive_pool`). The moved transport reason-labels test rode along and passes.
+- [x] **Deviation (venue-owns-pools):** the trait design's `subscription_accounts(&self, pools:
+      &PoolIndex)` became `subscription_accounts(&self)` + added `pool_index(&self)` /
+      `pools_changed(&self)` methods — the venue owns the shared `PoolIndex` + resubscribe `Notify` so
+      its `Decoder` and the transport share exactly one instance (an auto-discovered pool becomes a
+      subscription account with no cross-task hand-off). `Ingest::start` reads them off the venue
+      instead of creating them. Behavior identical to the old `start()` (`with_pools_changed` always,
+      `with_pool_index` only when `track_amm`).
+- [x] `ingest-pumpfun/src/venue.rs`: `PumpFunVenue { protocol: Arc<Protocol>, decoder, pool_index,
+      pools_changed }` implements `IngestVenue` (`Relevance = TxRelevance`; `classify` = the old
+      `classify_tx`; `decode` wraps `Decoder::decode_relevant_pb`; `subscription_accounts` = pump id +
+      pools; `derive_pool` = `pool::derive_pool`; `filter_key` = `"pumpfun"`). `Decoder`/`TxRelevance`
+      stay pumpfun-owned; `DecodeOutput`/`PoolIndex` re-exported from core at their old paths.
+- [x] Provider-as-config: added `Auth { XToken(String) | None }` to core config; `XTokenInterceptor`
+      generalized to insert the `x-token` header only when present (`Auth::None` = self-hosted geyser,
+      no header). Default path = Helius x-token (byte-identical). `Ingest::new(endpoint, auth, venue,
+      config)` takes the `Auth`. Guarded by unit tests (`interceptor_inserts_x_token_only_when_present`,
+      `provider_swap_is_config`, `build_subscribe_request_honors_venue_filter_key`).
+- [x] **Façade (deviation — newtype, not `pub type`):** `Ingest` is a thin newtype over
+      `ingest_core::Ingest<PumpFunVenue>` (a bare type alias can't carry the pump-specific
+      `.protocol()` builder method — orphan rule), `IngestHandle = ingest_core::IngestHandle<PumpFunVenue>`
+      (alias), `PoolIndex` re-exported from core. `IngestBuilder` shim maps `.protocol(Protocol)` →
+      `PumpFunVenue::new` + `.api_key(k)` → `Auth::XToken(k)`. The standalone replay path keeps a
+      `transport` shim (`connect(endpoint, api_key, cfg)` = core `connect` + `Auth::XToken`;
+      `build_subscribe_request(accounts, from_slot, commitment)` = core keyed `"pumpfun"`). **Zero
+      consumer `.rs` edits.** Pruned now-unused `tonic`/`prost`/`tokio-stream` from `ingest-pumpfun`.
+- **Gate H:** ✅ `cargo check -p ingest-core -p ingest-pumpfun` green (default + `raw-tx,rpc-backfill`);
+      `cargo build -p hunter-live -p forge-live` green **via the façade, zero source edits**;
+      `cargo check --workspace` = 0 errors; `cargo test -p ingest-core -p ingest-pumpfun` green (4
+      transport/seam tests); provider-config swap (endpoint/Auth) type-checks with **no crate change**
+      (`provider_swap_is_config`); `cargo tree -i` partition holds — `hunter-lab`/`forge-lab` link
+      **neither** `ingest-core` nor `ingest-pumpfun`, both appear in the `*-live` trees. Zero SOL, zero
+      network. ⚠ decoder **fixture** regression tests (curve/AMM/truncated-log) + a live-feed smoke
+      test are deferred to Phase I (the decoder code is a byte-unchanged move here, so behavior is
+      preserved; Phase I is where the truncation regression tests are explicitly scoped) / EC2-gated.
 
 ## Phase I — Confirm per-product `live/src/ingest/` bridges read core+pumpfun directly — NOT STARTED
 - [ ] Confirm `forge/live/src/ingest/` (`consumer.rs`/`map.rs`/`pumpfun.rs`/`mod.rs`, folded from the

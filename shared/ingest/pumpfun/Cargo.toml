@@ -19,19 +19,15 @@ raw-tx = ["ingest-core/raw-tx"]
 rpc-backfill = ["ingest-core/rpc-backfill"]
 
 [dependencies]
-# Venue-agnostic engine: proto wire types, IngestEvent, config, slot_anchor,
-# raw_tx (feat), backfill (feat).
+# Venue-agnostic engine: gRPC transport + reconnect, IngestVenue seam, generic
+# Ingest<V> session, proto wire types, IngestEvent, config, slot_anchor, raw_tx
+# (feat), backfill (feat). The transport/prost/tonic/tokio-stream stack moved
+# here in Phase H, so this crate no longer depends on them directly.
 ingest-core = { path = "../core" }
 
-# gRPC transport
-tonic = { version = "0.10", features = ["tls", "tls-webpki-roots"] }
-prost = "0.12"
-tokio-stream = "0.1"
-
-# Runtime + utils
+# Runtime + utils (Notify for the pool-changed signal; mpsc in the façade).
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-thiserror = "1"
 
 # Shared state deps
 dashmap = "4.0"

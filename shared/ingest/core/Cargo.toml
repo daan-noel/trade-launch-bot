@@ -2,7 +2,7 @@
 name = "ingest-core"
 version = "0.1.0"
 edition = "2021"
-description = "Venue-agnostic ingest engine: Yellowstone/LaserStream gRPC wire types, neutral IngestEvent, config, slot-anchor, and RPC-backfill. No pump.fun coupling (Phase G: leaf modules; the IngestVenue seam lands in Phase H)."
+description = "Venue-agnostic ingest engine: Yellowstone/LaserStream gRPC transport + reconnect, the `IngestVenue` trait seam, generic `Ingest<V>` session, neutral IngestEvent, config (incl. provider Auth), slot-anchor, and RPC-backfill. No pump.fun coupling."
 
 [lib]
 name = "ingest_core"
@@ -18,9 +18,16 @@ raw-tx = []
 rpc-backfill = ["dep:serde_json"]
 
 [dependencies]
-# gRPC wire types (generated geyser client uses tonic; prost for the messages).
+# gRPC wire types + transport (generated geyser client uses tonic; prost for
+# the messages; tokio-stream drives the outbound Subscribe request stream).
 tonic = { version = "0.10", features = ["tls", "tls-webpki-roots"] }
 prost = "0.12"
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio-stream = "0.1"
+
+# Shared session state: pool index (transport ↔ decode ↔ handle) + resubscribe
+# signal.
+dashmap = "4.0"
 
 # Utils
 tracing = "0.1"

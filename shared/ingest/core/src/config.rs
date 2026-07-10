@@ -8,6 +8,20 @@ pub enum Commitment {
     Finalized,
 }
 
+/// Transport authentication for the Yellowstone gRPC provider.
+///
+/// Provider-as-config: every Yellowstone provider (Helius, Triton, Shyft, a
+/// self-hosted geyser) speaks the same wire protocol and differs only in
+/// endpoint + auth. Swapping providers is therefore a config change — no new
+/// crate. The current default path is Helius's `x-token` header.
+#[derive(Debug, Clone)]
+pub enum Auth {
+    /// `x-token` metadata header (Helius / Triton / Shyft).
+    XToken(String),
+    /// No auth (self-hosted / local validator geyser).
+    None,
+}
+
 /// All dynamic tunables for the ingest crate.
 ///
 /// Every timeout, cap, and interval is a field with the current proven value as

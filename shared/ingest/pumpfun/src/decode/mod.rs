@@ -11,9 +11,13 @@ use std::sync::Arc;
 
 use tokio::sync::Notify;
 
-use crate::event::IngestEvent;
 use crate::pool::PoolIndex;
 use crate::protocol::Protocol;
+
+// `DecodeOutput` is the venue-neutral decode result; it lives in `ingest-core`
+// (the `IngestVenue::decode` return type) and is re-exported here so the pump
+// decoder modules keep referencing `super::DecodeOutput` unchanged.
+pub use ingest_core::venue::DecodeOutput;
 
 mod create;
 mod grpc;
@@ -29,15 +33,6 @@ pub enum TxRelevance {
     Curve,
     /// Post-migration PumpSwap (AMM) swap, resolved via the shared pool index.
     Amm,
-}
-
-/// Outcome of decoding one LaserStream transaction update.
-pub enum DecodeOutput {
-    /// One or more events decoded; may include [`IngestEvent::RawTx`] when the
-    /// `raw-tx` feature is enabled.
-    Events(Vec<IngestEvent>),
-    /// Not relevant (other program, ping, parse failure, dust, etc.).
-    Ignored,
 }
 
 // ── Decoder ───────────────────────────────────────────────────────────────────

@@ -3297,10 +3297,13 @@ dependencies = [
  "bincode",
  "bs58 0.5.1",
  "chrono",
+ "dashmap 4.0.2",
  "prost",
  "serde_json",
  "solana-sdk",
  "thiserror",
+ "tokio",
+ "tokio-stream",
  "tonic",
  "tracing",
 ]
@@ -3315,12 +3318,8 @@ dependencies = [
  "chrono",
  "dashmap 4.0.2",
  "ingest-core",
- "prost",
  "solana-sdk",
- "thiserror",
  "tokio",
- "tokio-stream",
- "tonic",
  "tracing",
 ]
 
