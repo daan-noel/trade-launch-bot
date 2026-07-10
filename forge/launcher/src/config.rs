@@ -17,6 +17,12 @@ pub struct LauncherSettings {
     pub kek_passphrase: String,
     /// Jito block-engine JSON-RPC base (defaults to mainnet).
     pub jito_block_engine_url: String,
+    /// How many times the confirm watcher re-bids a `dropped` bundle before giving
+    /// up (each re-bid climbs the Jito tip-escalation ladder: p95, p99, …). `0`
+    /// disables auto re-bid — a dropped bundle stays dropped for a manual
+    /// `POST /bundles/:id/execute`. Env `BUNDLE_MAX_RETRIES`, default `2` (so a
+    /// launch bundle gets up to 3 total attempts at escalating tips).
+    pub bundle_max_retries: u32,
     /// Persistent launch Address Lookup Table (`PUMP_LAUNCH_ALT`). `None` (unset)
     /// keeps the legacy single-message create path; `Some` makes the launcher
     /// compile the create + dev-buy as a v0 tx against this table so it fits the
@@ -172,6 +178,7 @@ impl LauncherSettings {
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").unwrap_or_else(|_| {
             "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
         });
+        let bundle_max_retries = env_u64("BUNDLE_MAX_RETRIES", 2) as u32;
         let launch_alt = match std::env::var("PUMP_LAUNCH_ALT") {
             Ok(v) if !v.trim().is_empty() => Some(
                 Pubkey::from_str(v.trim())
@@ -196,6 +203,7 @@ impl LauncherSettings {
             keystore_dir,
             kek_passphrase,
             jito_block_engine_url,
+            bundle_max_retries,
             launch_alt,
             backup_dir,
             pinata_jwt,

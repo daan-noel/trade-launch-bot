@@ -95,10 +95,6 @@ async fn main() -> anyhow::Result<()> {
         native_quote.mint,
     ));
 
-    // Feed-based bundle-landing confirmation — cheap, always on (no RPC/keys
-    // needed; it only reads `bundles`/`trades` from the already-connected pool).
-    let bundle_confirm_task = launcher::spawn_bundle_confirm_watcher(pools.hot.clone());
-
     // Launcher settings — built ONCE at boot (single source of truth) and shared
     // by BOTH the wallet-pool background tasks below AND the HTTP handlers (via
     // `app_data`), instead of each HTTP request re-parsing ~15 env vars.
@@ -112,6 +108,14 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
+
+    // Feed-based bundle-landing confirmation — cheap, always on (confirming reads
+    // only `bundles`/`trades` from the already-connected pool). The launcher
+    // settings (when configured) additionally let it auto re-bid a `dropped`
+    // bundle at a higher Jito tip before conceding; without them it stays
+    // read-only (confirm/mark only).
+    let bundle_confirm_task =
+        launcher::spawn_bundle_confirm_watcher(pools.hot.clone(), launcher_settings.clone());
 
     // Fresh-wallet pool: balance poller (generated/funding -> funded) +
     // reservation TTL sweep (Phase 1) + dust sweep (used -> retired, Phase 4) +

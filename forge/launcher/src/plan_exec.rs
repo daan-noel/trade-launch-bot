@@ -46,13 +46,16 @@ pub enum TransferMode {
 /// Map a bundler-buy op + its drawn disguise → the per-leg params the Jito leg
 /// builder consumes. Slippage comes from the op (late-bound min_out policy); CU
 /// limit / price / tip come from the persona disguise (replacing the old per-field
-/// recipe jitter).
-pub fn leg_params(op: &Operation, disguise: &Disguise) -> BundleLegParams {
+/// recipe jitter). `min_tip_lamports` is this leg's share of the live-floor bundle
+/// tip target ([`crate::bundle_execute`]): the disguise draw is only ever raised to
+/// it, never lowered, so the persona jitter is preserved when it already clears the
+/// auction and the tip is bid up to the live floor when it doesn't.
+pub fn leg_params(op: &Operation, disguise: &Disguise, min_tip_lamports: u64) -> BundleLegParams {
     BundleLegParams {
         slippage_bps: op.slippage_bps.unwrap_or(DEFAULT_BUNDLE_SLIPPAGE_BPS),
         cu_limit: disguise.cu_limit,
         cu_price: disguise.cu_price_micro_lamports,
-        tip_lamports: disguise.tip_lamports.unwrap_or(0),
+        tip_lamports: disguise.tip_lamports.unwrap_or(0).max(min_tip_lamports),
     }
 }
 
@@ -82,10 +85,11 @@ pub async fn build_leg_tx(
     cashback_enabled: bool,
     op: &Operation,
     disguise: &Disguise,
+    min_tip_lamports: u64,
 ) -> Result<VersionedTransaction> {
     let variant = bundle_buy_variant(&op.variant)?;
     let lamports = buy_lamports(op)?;
-    let params = leg_params(op, disguise);
+    let params = leg_params(op, disguise, min_tip_lamports);
     trader
         .build_bundle_leg_tx(
             signer,

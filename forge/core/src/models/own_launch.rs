@@ -266,6 +266,12 @@ pub struct Bundle {
     pub submitted_at: Option<DateTime<Utc>>,
     pub confirmed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// How many times this bundle has been submitted to Jito. `0` before the first
+    /// submit; each submit increments it. Doubles as the tip-escalation *level*
+    /// (0 = configured percentile, 1 = p95, 2 = p99, …) so a re-bid after a
+    /// `dropped` verdict bids higher than the attempt that just lost the auction.
+    #[serde(default)]
+    pub submit_attempts: i32,
     /// The serialized `orchestrator::Plan` this bundle was gated + built from
     /// (Phase 2.F). The executor rebuilds legs from this and recomputes the
     /// deterministic disguises; `legs` above stays for the confirm watcher + UI.

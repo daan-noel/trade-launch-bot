@@ -299,4 +299,16 @@ impl PumpFunTrader {
         self.reserve_cache
             .update(mint, token_reserves, sol_reserves, is_amm);
     }
+
+    /// The live-floor-sized Jito tip (lamports) for a bundle submission at
+    /// escalation `level` (0 = first attempt; 1 = p95, 2 = p99, climbing beyond).
+    /// Reads the background-refreshed tip-floor cache — the SAME landed-tip auction
+    /// signal the sell path bids on — so a launch bundle sizes its tip to *win the
+    /// current slot* instead of a static persona draw that silently loses a
+    /// contested launch. This is the TOTAL bundle-tip target (Jito's floor is
+    /// per-bundle); the launcher splits it across the legs. Always clamped to the
+    /// configured `[min_sol, max_sol]` cost guardrail. See [`JitoTipCache`].
+    pub fn jito_tip_floor_lamports(&self, level: u8) -> u64 {
+        self.engine.jito_tip_cache.tip_lamports_for_level(level)
+    }
 }

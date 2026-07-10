@@ -153,6 +153,18 @@ async fn execute_bundle_inner(
 
     let blockhash = trader.fresh_blockhash().await?;
 
+    // Size the bundle's total Jito tip to the live landed-tip floor at this
+    // submission's escalation level. `submit_attempts` is the persisted level:
+    // 0 on the first attempt, and a re-bid after a `dropped` verdict re-enters
+    // here with it incremented (see `launcher::confirm`), so it bids ABOVE the
+    // tip that just lost the auction (level 1 = p95, 2 = p99, …). The total is
+    // split evenly across legs; `leg_params` only ever RAISES a persona tip draw
+    // to this floor, never lowers it — so persona jitter is kept when it already
+    // clears the auction, and the tip is bid up to the live floor when it doesn't.
+    let level = bundle.submit_attempts.max(0) as u8;
+    let total_tip_floor = trader.jito_tip_floor_lamports(level);
+    let per_leg_tip_floor = total_tip_floor.div_ceil(bundler_ops.len() as u64);
+
     BundleRepo::set_status(pool, bundle_id, BundleStatus::Submitting.as_str()).await?;
 
     let finish = async {
@@ -183,6 +195,7 @@ async fn execute_bundle_inner(
                 cashback_enabled,
                 op,
                 disguise,
+                per_leg_tip_floor,
             )
             .await?;
             leg_signatures.push(tx.signatures[0].to_string());
@@ -201,6 +214,8 @@ async fn execute_bundle_inner(
             launch_id = %bundle.launch_id,
             legs = bundler_ops.len(),
             jito_bundle_id = %jito_bundle_id,
+            tip_level = level,
+            total_tip_floor_lamports = total_tip_floor,
             "bundle submitted to Jito"
         );
 

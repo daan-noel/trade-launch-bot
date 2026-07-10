@@ -552,7 +552,9 @@ impl BundleRepo {
     }
 
     /// Record the Jito submit result: status → `submitted`, stamps
-    /// `submitted_at` (the confirm watcher's timeout window starts here).
+    /// `submitted_at` (the confirm watcher's timeout window starts here), and
+    /// increments `submit_attempts` — so the NEXT re-bid (after a `dropped`
+    /// verdict) reads a higher escalation level than the attempt that just lost.
     pub async fn set_submitted(
         pool: &PgPool,
         id: Uuid,
@@ -561,11 +563,27 @@ impl BundleRepo {
     ) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE bundles SET status = 'submitted', jito_bundle_id = $2, \
-             leg_signatures = $3, submitted_at = now() WHERE id = $1",
+             leg_signatures = $3, submitted_at = now(), \
+             submit_attempts = submit_attempts + 1 WHERE id = $1",
         )
         .bind(id)
         .bind(jito_bundle_id)
         .bind(leg_signatures)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Reset a `submitted`-but-`dropped` bundle back to `planned` for a re-bid,
+    /// clearing the stale Jito id / leg signatures / submit timestamp so the
+    /// confirm watcher can't re-pick it and the fresh submit stamps clean values.
+    /// `submit_attempts` is deliberately preserved (it's the escalation level).
+    pub async fn reset_for_rebid(pool: &PgPool, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE bundles SET status = 'planned', jito_bundle_id = NULL, \
+             leg_signatures = '{}', submitted_at = NULL WHERE id = $1",
+        )
+        .bind(id)
         .execute(pool)
         .await?;
         Ok(())

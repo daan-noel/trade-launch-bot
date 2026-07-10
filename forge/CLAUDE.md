@@ -20,7 +20,12 @@ migrations `0001` (Domains A–C) + `0002` (Domain D). §9 open decisions are **
 `POST /api/bundles/{id}/execute` (Jito submit), **feed-based bundle-landing
 confirmation** (migration `0003`; always-on watcher in `live/main.rs` checks leg
 signatures against ingested `trades`, no RPC poll; `GET /api/bundles/{id}` for status).
-**Auto-submit** after launch, multi-variant bundle legs, SOL/USD poller. Phase-2b:
+**Auto-submit** after launch, multi-variant bundle legs, SOL/USD poller.
+**Bundle tip sizing + drop re-bid** (migration `0003`): each bundle leg's Jito tip
+is floored to the live landed-tip auction (`trader.jito_tip_floor_lamports(level)`,
+split across legs, only ever raising a persona draw), and the confirm watcher auto
+re-submits a `dropped` bundle at an escalating tip (`bundles.submit_attempts` = the
+level; p95→p99→…) up to `BUNDLE_MAX_RETRIES` (default 2) before conceding. Phase-2b:
 ingest round-trip test + dep-partition CI + [`docs/live-verify.md`](docs/live-verify.md)
 mainnet checklist.
 **Wallet pool (parallel workstream, plan finished & retired — see
