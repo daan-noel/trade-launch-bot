@@ -18,6 +18,8 @@ ingest-laserstream = { package = "ingest-pumpfun", path = "../../shared/ingest/p
 # Key stays `pump-trader` (lib `pump_trader`) via the façade; package renamed to
 # `executor-pumpfun` and rehomed under shared/executor/ by the executor split.
 pump-trader = { package = "executor-pumpfun", path = "../../shared/executor/pumpfun", features = ["probe", "claim"] }
+# Shared fail-closed bearer-auth middleware (SSOT for the mutating-route gate).
+http-auth = { path = "../../shared/http-auth" }
 
 # Tokio
 tokio = { version = "1", features = ["full"] }

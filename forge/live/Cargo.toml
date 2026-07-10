@@ -14,6 +14,9 @@ launcher      = { path = "../launcher", package = "forge-launcher" }
 # Ingest host-adapter (src/ingest/) — folded in from the former ingest-host crate;
 # it bridges the borrowed ingest-laserstream transport onto platform-core rows.
 ingest-laserstream.workspace = true
+# Shared fail-closed bearer-auth middleware — same gate hunter's real-money bins
+# use; forge-live moves treasury SOL so its mutating routes get it too.
+http-auth.workspace = true
 tokio.workspace = true
 actix-web.workspace = true
 tracing.workspace = true

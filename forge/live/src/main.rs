@@ -13,9 +13,14 @@ mod http;
 mod ingest;
 mod sol_price;
 
+use actix_web::middleware::from_fn;
 use actix_web::{web, App, HttpServer};
 use std::sync::Arc;
 use tracing::{info, warn};
+
+// Same fail-closed bearer gate hunter's real-money bins use — forge-live moves
+// treasury SOL (fund / launch / manage), so its mutating routes require it too.
+use http_auth::{require_bearer_auth, ApiAuth};
 
 use launcher::LauncherSettings;
 use platform_core::config::Settings;
@@ -153,15 +158,39 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Thin HTTP surface over the api pool.
-    let host = std::env::var("LIVE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = std::env::var("LIVE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8091);
+    // Fail-closed bearer auth on mutating routes. Required at HTTP-startup (not
+    // for the CLI subcommands above, which return before this) so the launch /
+    // fund / manage endpoints are never reachable without the server-side token
+    // the reverse proxy injects. Absent token ⇒ refuse to boot the server rather
+    // than serve real-money routes wide open.
+    let api_auth_token = std::env::var("API_AUTH_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("API_AUTH_TOKEN is required to serve HTTP (see forge/.env.example)")
+        })?;
+    let api_auth = ApiAuth { token: Some(api_auth_token) };
+    info!("API auth enabled (fail-closed): mutating requests require a bearer token");
+
+    // Thin HTTP surface over the api pool. Prefer HOST/PORT (what the container
+    // injects — mirrors hunter, so nginx's `proxy_pass http://api:8081` matches),
+    // falling back to the LIVE_HOST/LIVE_PORT local-dev convention (127.0.0.1:8091).
+    let host = std::env::var("HOST")
+        .or_else(|_| std::env::var("LIVE_HOST"))
+        .unwrap_or_else(|_| "127.0.0.1".into());
+    let port: u16 = std::env::var("PORT")
+        .or_else(|_| std::env::var("LIVE_PORT"))
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8091);
     let api_pool = pools.api.clone();
     let server = HttpServer::new(move || {
         App::new()
+            .wrap(from_fn(require_bearer_auth))
             .app_data(web::Data::new(api_pool.clone()))
             .app_data(web::Data::new(ingest_handle.clone()))
             .app_data(web::Data::new(launcher_settings.clone()))
+            .app_data(web::Data::new(api_auth.clone()))
             .configure(http::configure)
     })
     .bind((host.as_str(), port))?

@@ -42,8 +42,17 @@ async fn main() -> anyhow::Result<()> {
     let pools = connect(&settings).await?;
     info!("lab box: DB connected, migrations applied (local mirror)");
 
-    let host = std::env::var("LAB_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = std::env::var("LAB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8092);
+    // Prefer HOST/PORT (what the container injects) so the docker bind is on
+    // 0.0.0.0 and reachable via the published port; fall back to the
+    // LAB_HOST/LAB_PORT local-dev convention (127.0.0.1:8092).
+    let host = std::env::var("HOST")
+        .or_else(|_| std::env::var("LAB_HOST"))
+        .unwrap_or_else(|_| "127.0.0.1".into());
+    let port: u16 = std::env::var("PORT")
+        .or_else(|_| std::env::var("LAB_PORT"))
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8092);
     let api_pool = pools.api.clone();
     let server = HttpServer::new(move || {
         App::new()

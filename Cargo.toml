@@ -26,6 +26,8 @@ members = [
     "shared/ingest/core",
     "shared/ingest/pumpfun",
     "shared/ingest/websocket",
+    # shared HTTP bearer-auth middleware (fail-closed gate for real-money bins)
+    "shared/http-auth",
     # forge (was solana-launch-platform); lake -> forge/lab/src/lake module,
     # ingest-host -> forge/live/src/ingest module (both folded, no longer crates)
     "forge/core",
@@ -71,6 +73,9 @@ executor-core      = { path = "shared/executor/core" }
 # façade; only the path/package changed.
 ingest-laserstream = { package = "ingest-pumpfun", path = "shared/ingest/pumpfun", features = ["raw-tx"] }
 ingest-core        = { path = "shared/ingest/core" }
+# Shared bearer-auth middleware (`ApiAuth` + `require_bearer_auth`), consumed by
+# every real-money HTTP bin so the fail-closed auth decision lives in ONE place.
+http-auth          = { path = "shared/http-auth" }
 
 # Shared third-party versions pinned once (mirrors meme-trading's set).
 tokio     = { version = "1", features = ["full"] }

@@ -2500,6 +2500,7 @@ dependencies = [
  "dotenvy",
  "forge-core",
  "forge-launcher",
+ "http-auth",
  "ingest-pumpfun",
  "reqwest",
  "serde",
@@ -2923,6 +2924,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-auth"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "serde_json",
+]
+
+[[package]]
 name = "http-body"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2984,6 +2993,7 @@ dependencies = [
  "dotenvy",
  "duckdb",
  "futures-util",
+ "http-auth",
  "hunter-core",
  "memory-stats",
  "parquet",
@@ -3015,6 +3025,7 @@ dependencies = [
  "dotenvy",
  "executor-pumpfun",
  "futures-util",
+ "http-auth",
  "hunter-core",
  "ingest-pumpfun",
  "reqwest",

@@ -1,0 +1,9 @@
+[package]
+name = "http-auth"
+version.workspace = true
+edition.workspace = true
+description = "Shared actix-web bearer-auth middleware: fail-closed gate on mutating (POST/PUT/DELETE/PATCH) API requests. One home for the `ApiAuth` app-data type + `require_bearer_auth` used by every real-money HTTP bin (hunter live/lab, forge live)."
+
+[dependencies]
+actix-web.workspace = true
+serde_json.workspace = true

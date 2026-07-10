@@ -15,6 +15,8 @@ path = "src/main.rs"
 # Sweep CU cost-model constants come from `trading_core::config::constants`, so
 # the analysis bin never pulls the trading/RPC stack (`pump-trader`).
 trading_core = { path = "../core", package = "hunter-core" }
+# Shared fail-closed bearer-auth middleware (SSOT for the mutating-route gate).
+http-auth = { path = "../../shared/http-auth" }
 
 # Tokio
 tokio = { version = "1", features = ["full"] }

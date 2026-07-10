@@ -15,56 +15,12 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use actix_cors::Cors;
-use actix_web::body::{EitherBody, MessageBody};
-use actix_web::dev::{ServiceRequest, ServiceResponse};
-use actix_web::middleware::{from_fn, Next};
-use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::middleware::from_fn;
+use actix_web::{web, App, HttpServer};
 
-/// Optional bearer token gating mutating API requests, shared via `app_data`.
-#[derive(Clone)]
-struct ApiAuth {
-    token: Option<String>,
-}
-
-/// Middleware: require `Authorization: Bearer <token>` on mutating requests.
-/// Preflight (OPTIONS) and safe reads (GET/HEAD) always pass; the check is
-/// fail-closed (a mutating request with no token configured is rejected).
-/// `API_AUTH_TOKEN` is required by `Settings::from_env_local`, so the `None` arm
-/// is only reachable if the server is started without it.
-async fn require_bearer_auth(
-    req: ServiceRequest,
-    next: Next<impl MessageBody + 'static>,
-) -> Result<ServiceResponse<EitherBody<impl MessageBody>>, actix_web::Error> {
-    use actix_web::http::{header::AUTHORIZATION, Method};
-
-    let mutating = matches!(
-        *req.method(),
-        Method::POST | Method::PUT | Method::DELETE | Method::PATCH
-    );
-    let configured = req
-        .app_data::<web::Data<ApiAuth>>()
-        .and_then(|a| a.token.clone());
-
-    let authorized = match (mutating, configured) {
-        (false, _) => true,
-        (true, Some(expected)) => req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "))
-            .map(|t| t == expected)
-            .unwrap_or(false),
-        (true, None) => false,
-    };
-
-    if authorized {
-        Ok(next.call(req).await?.map_into_left_body())
-    } else {
-        let resp = HttpResponse::Unauthorized()
-            .json(serde_json::json!({ "error": "unauthorized" }));
-        Ok(req.into_response(resp).map_into_right_body())
-    }
-}
+// Bearer-auth gate (`ApiAuth` + `require_bearer_auth`) is the shared, fail-closed
+// `http_auth` middleware — one SSOT copy across hunter live/lab + forge live.
+use http_auth::{require_bearer_auth, ApiAuth};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {

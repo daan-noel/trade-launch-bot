@@ -142,6 +142,18 @@ files were copied (IDLs, unit consts).
 Keystore backend (ADR D3) = **envelope-encrypted file + pluggable KEK trait**
 (env/passphrase now → AWS KMS later; ed25519 signs in-process — KMS can't sign it).
 
+**HTTP: fail-closed bearer gate on mutating routes.** `slp-live` moves treasury SOL
+(launch / fund / manage), so — like hunter — every POST/PUT/DELETE/PATCH requires
+`Authorization: Bearer $API_AUTH_TOKEN`; safe reads + preflight pass. `API_AUTH_TOKEN`
+is **required** for the live HTTP server to boot (a missing token refuses to serve,
+never serves open). The gate is the shared `http-auth` crate (`ApiAuth` +
+`require_bearer_auth`, `shared/http-auth`) — ONE copy across hunter live/lab + forge
+live, so the auth decision can't drift between products. In deploy, nginx (`forge-live`
+UI, `default.conf.template`) bridges the operator's Basic-auth login to the bearer
+token via envsubst so only the proxy can reach `/api`; the token never reaches the
+browser. Defense in depth, not a substitute for keeping the box off the public
+internet where possible.
+
 ## Deployment (EC2: 2vCPU / 4GB — IO-bound, RAM-constrained)
 
 - Ship **`slp-live` + borrowed crates** to EC2 only. **`slp-lab` + `lake` + DuckDB/arrow/

@@ -87,9 +87,9 @@ services:
         condition: service_healthy
 
   # forge UI (nginx, TLS-terminating + Basic-auth). Serves the built SPA and
-  # proxies /api to the `api` backend above. Unlike hunter, the forge backend
-  # has no bearer gate, so nginx does TLS + Basic-auth only (plain default.conf,
-  # no envsubst) — see nginx/default.conf.
+  # proxies /api to the `api` backend above. Like hunter, the forge backend now
+  # runs a fail-closed bearer gate, so nginx injects ${API_AUTH_TOKEN} into the
+  # /api proxy via envsubst — see nginx/default.conf.template.
   ui:
     container_name: forge-live-ui
     image: ${ECR_REGISTRY:-forge}/forge-live-ui:${IMAGE_TAG:-latest}
@@ -97,6 +97,12 @@ services:
       context: ../..
       dockerfile: deploy/forge-live/ui.Dockerfile
     restart: unless-stopped
+    # env_file (not `${API_AUTH_TOKEN}` interpolation) so the token is read from
+    # forge/.env into the container env, where nginx's envsubst picks it up.
+    # NGINX_ENVSUBST_FILTER limits substitution to just this var.
+    env_file: ../../forge/.env
+    environment:
+      NGINX_ENVSUBST_FILTER: API_AUTH_TOKEN
     ports:
       - "80:80"
       - "443:443"

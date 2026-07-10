@@ -3,9 +3,13 @@
 # reverse-proxies /api to the live backend container. TLS-terminating: HTTPS on
 # 443, plain HTTP on 80 redirects up to HTTPS.
 #
-# This is a PLAIN conf (not a *.template): the forge backend has no fail-closed
-# bearer gate, so there is nothing to envsubst — a static Basic-auth + TLS gate
-# is the whole story. Copied straight to /etc/nginx/conf.d/ by ui.Dockerfile.
+# This is a *.template: the forge backend now runs the same fail-closed bearer
+# gate as hunter (it moves treasury SOL), so nginx must inject ${API_AUTH_TOKEN}
+# into the /api proxy's Authorization header. The nginx image entrypoint runs
+# envsubst over /etc/nginx/templates/*.template at startup, writing the result to
+# /etc/nginx/conf.d/default.conf. NGINX_ENVSUBST_FILTER (set in compose) limits
+# substitution to just API_AUTH_TOKEN so nginx's own $host/$remote_addr runtime
+# vars survive untouched.
 # ---------------------------------------------------------------------------
 
 # Plain HTTP -> redirect everything to HTTPS. No auth here so the redirect
@@ -46,6 +50,14 @@ server {
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Bridge the browser's Basic-Auth login to the backend's fail-closed
+        # bearer auth: replace the inbound `Authorization: Basic ...` with the
+        # backend's bearer token so mutating (real-SOL) routes are accepted.
+        # ${API_AUTH_TOKEN} is substituted at container start by the nginx image's
+        # envsubst entrypoint (NGINX_ENVSUBST_FILTER restricts it to this var, so
+        # the `$host`/`$remote_addr` runtime vars above are left untouched). The
+        # token stays server-side — it is never sent to the browser.
+        proxy_set_header Authorization     "Bearer ${API_AUTH_TOKEN}";
         proxy_read_timeout 300s;
     }
 
