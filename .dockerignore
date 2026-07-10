@@ -1,7 +1,7 @@
 # ============================================================================
 # Monorepo build-context excludes. BOTH product stacks now build with
 # context = repo root (the cargo workspace lives here), so this single file is
-# shared by the meme-trading and solana-launch-platform image builds. Patterns
+# shared by the hunter and forge image builds. Patterns
 # are recursive (**/) because each product's tree is one level down.
 # ============================================================================
 
@@ -36,7 +36,7 @@ _monorepo-backup/
 aws-ec2-key.pem
 .mcp.json
 # NOTE: nginx/tls/*.pem is deliberately NOT excluded — the frontend image COPYs
-# the self-signed cert/key. The SLP keystores / *.enc above are the secret set.
+# the self-signed cert/key. The forge keystores / *.enc above are the secret set.
 
 # --- Parquet lake / local data (never part of an image build) ---
 **/.lake/

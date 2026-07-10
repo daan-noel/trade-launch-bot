@@ -1,5 +1,5 @@
 # ============================================================================
-# Monorepo root .gitignore — merges meme-trading + solana-launch-platform.
+# Monorepo root .gitignore — merges hunter + forge.
 # Each product folder also keeps its own nested .gitignore (comes in via the
 # subtree import); this root file is the cross-cutting superset + safety net.
 # NOTE: Cargo.lock is intentionally COMMITTED (binary/app, deterministic deps,

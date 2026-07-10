@@ -5,11 +5,11 @@
   without loading the server.
 
 .DESCRIPTION
-  Rewrite of meme-trading's script for THIS project's generalized schema. The
+  Rewrite of hunter's script for THIS project's generalized schema. The
   server keeps only a short rolling window (raw_txs 7d, trades 30d); the lab keeps
   history far longer. Each run pulls new rows and upserts the dimensions.
 
-  Strategy (mirrors the proven meme-trading approach):
+  Strategy (mirrors the proven hunter approach):
     1. Reach the server DB (direct conn string, or an SSH tunnel to a private box
        -- wire the tunnel here when the EC2 box exists; params below).
     2. postgres_fdw import the server schema into a scratch `ec2_sync_src`.
@@ -36,7 +36,7 @@
 
 .PARAMETER ServerDatabaseUrl
   libpq conn string for the SERVER (or tunnel local end), e.g.
-  postgres://user:pass@127.0.0.1:5540/launch_platform
+  postgres://user:pass@127.0.0.1:5540/forge_bot
 
 .PARAMETER LocalDatabaseUrl
   libpq conn string for the LOCAL mirror (default: $env:DATABASE_URL).
@@ -50,7 +50,7 @@ param(
     [switch] $IncludeRawTxs
 )
 
-$ErrorActionPreference = 'Continue'   # native psql stderr noise must not abort; see meme-trading notes
+$ErrorActionPreference = 'Continue'   # native psql stderr noise must not abort; see hunter notes
 if (-not $LocalDatabaseUrl) { throw 'LocalDatabaseUrl or $env:DATABASE_URL is required' }
 
 # Tables mirrored in FK-safe order. Each entry: name + merge mode.

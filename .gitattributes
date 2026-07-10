@@ -1,5 +1,5 @@
 # ============================================================================
-# Monorepo root attributes. The former per-repo .gitattributes (meme-trading/)
+# Monorepo root attributes. The former per-repo .gitattributes (hunter/)
 # still applies within its subtree; these rules cover the monorepo root files
 # (root Cargo.lock, root .dockerignore) and everything both products share.
 # ============================================================================

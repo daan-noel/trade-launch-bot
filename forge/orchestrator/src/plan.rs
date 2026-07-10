@@ -34,7 +34,7 @@ use uuid::Uuid;
 pub use pump_trader::VariantKind as OpKind;
 pub use pump_trader::VenueId;
 
-/// The wallet **persona/role** an op acts as. Mirrors the SLP `WalletRole`
+/// The wallet **persona/role** an op acts as. Mirrors the forge `WalletRole`
 /// vocabulary (`dev` / `bundler` / `treasury`) plus the trading roles the volume/
 /// exit macros need. `as_str` is the SSOT string used in persistence + the
 /// `ActionPlan`/`PlanLeg` bridge.
@@ -383,7 +383,7 @@ impl Default for IdSeq {
     }
 }
 
-/// **Who funds whom** — a typed INPUT from the SLP unlinkability / jit-funding
+/// **Who funds whom** — a typed INPUT from the forge unlinkability / jit-funding
 /// workstream, not computed here. The orchestrator consumes it (audit reads the
 /// funding graph for star-fund tells); it does not build the funding strategy.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

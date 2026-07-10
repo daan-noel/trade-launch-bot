@@ -2,7 +2,7 @@
 name = "hunter-core"
 version = "0.1.0"
 edition = "2021"
-description = "Shared core for the meme-trading backends: config, models, storage, core services/state, api framework, core handlers, strategy domain."
+description = "Shared core for the hunter backends: config, models, storage, core services/state, api framework, core handlers, strategy domain."
 
 [lib]
 name = "trading_core"

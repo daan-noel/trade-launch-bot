@@ -1,7 +1,7 @@
 //! Domain models — typed rows / DTOs, one module per domain.
 //!
 //! Amount fields are **exact base-unit integers** (`i64`), not baked-in human
-//! floats: the generalization of meme-trading's `_lamports`/`_sol` rule. The
+//! floats: the generalization of hunter's `_lamports`/`_sol` rule. The
 //! display/USD value depends on the referenced asset's decimals (a `quote_assets`
 //! / token dimension), so conversion happens where the decimals are known — the
 //! SQL views, or a caller holding the [`QuoteAsset`] — via [`crate::units`], never

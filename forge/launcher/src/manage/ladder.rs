@@ -5,7 +5,7 @@
 //! reads each armed mint's market state and, when a metric crosses a rung's
 //! threshold, fires a sell of `pct` across the ladder's wallet selection — through
 //! the **Phase 2 sell pipeline** (audit + feed-confirm), gated by the same
-//! `MANAGE_ENABLED` kill switch. Deliberately NOT meme-trading's tpsl engine: a
+//! `MANAGE_ENABLED` kill switch. Deliberately NOT hunter's tpsl engine: a
 //! handful of price/market-cap thresholds authored here, evaluated off the
 //! already-ingested `token_overview`.
 

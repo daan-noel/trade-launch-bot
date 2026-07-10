@@ -1,8 +1,7 @@
 [workspace]
 # ---------------------------------------------------------------------------
-# Monorepo: ONE workspace over both products — `hunter/` (was meme-trading) and
-# `forge/` (was solana-launch-platform) — plus `shared/`. This is the single
-# [workspace] manifest.
+# Monorepo: ONE workspace over both products — `hunter/` and `forge/` — plus
+# `shared/`. This is the single [workspace] manifest.
 #
 # `resolver = "1"` stays — the borrowed standalone crates pin solana 1.17.27
 # and "1"'s additive feature unification is what they were built against.
@@ -16,7 +15,7 @@
 # `use` paths stay valid; dependents map packages via the `package = "..."` form.
 # ---------------------------------------------------------------------------
 members = [
-    # hunter (was meme-trading)
+    # hunter
     "hunter/core",
     "hunter/live",
     "hunter/lab",
@@ -30,7 +29,7 @@ members = [
     "shared/ingest/websocket",
     # shared HTTP bearer-auth middleware (fail-closed gate for real-money bins)
     "shared/http-auth",
-    # forge (was solana-launch-platform); lake -> forge/lab/src/lake module,
+    # forge; lake -> forge/lab/src/lake module,
     # ingest-host -> forge/live/src/ingest module (both folded, no longer crates)
     "forge/core",
     "forge/launcher",
@@ -53,9 +52,9 @@ edition = "2021"
 version = "0.1.0"
 
 # ---------------------------------------------------------------------------
-# Shared crate versions, pinned once. meme-trading's packages declare their deps
-# directly (no `workspace = true`); solana-launch-platform's packages consume
-# these via `<dep>.workspace = true`. Both patterns coexist fine.
+# Shared crate versions, pinned once. hunter's packages declare their deps
+# directly (no `workspace = true`); forge's packages consume these via
+# `<dep>.workspace = true`. Both patterns coexist fine.
 #
 # The two borrowed standalone crates now live in the same repo, so their paths
 # are rebased to the monorepo root (they move to shared/ in Phase 3). They have
@@ -79,7 +78,7 @@ ingest-core        = { path = "shared/ingest/core" }
 # every real-money HTTP bin so the fail-closed auth decision lives in ONE place.
 http-auth          = { path = "shared/http-auth" }
 
-# Shared third-party versions pinned once (mirrors meme-trading's set).
+# Shared third-party versions pinned once for both products.
 tokio     = { version = "1", features = ["full"] }
 sqlx      = { version = "0.6", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid", "migrate"] }
 serde     = { version = "1", features = ["derive", "rc"] }

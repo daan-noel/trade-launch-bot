@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 pub const USER_AGENT: &str =
-    "Mozilla/5.0 (compatible; MemeTrading/1.0; +https://github.com/your-org/meme-trading)";
+    "Mozilla/5.0 (compatible; Hunter/1.0; +https://github.com/your-org/hunter)";
 
 static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
 

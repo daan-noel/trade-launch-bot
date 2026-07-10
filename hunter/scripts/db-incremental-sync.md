@@ -1,6 +1,6 @@
 # Incremental DB Sync — `db-incremental-sync.ps1`
 
-Pull the EC2 server's **newer** data and append it into your local `meme_bot` DB —
+Pull the EC2 server's **newer** data and append it into your local `hunter_bot` DB —
 directly **DB → DB** over an SSH tunnel. No CSV files, no `scp`, no temp files.
 
 Safe to run repeatedly. **Non-destructive for market data**: your local sweep results,
@@ -102,8 +102,8 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 | --- | --- | --- |
 | `-SshTarget` | `ubuntu@54.93.174.192` | user@host of the EC2 box |
 | `-SshKey` | `../aws-ec2-key.pem` | Path to the EC2 private key |
-| `-RemoteDir` | `~/projects/meme-trading` | Where the server's `.env` lives |
-| `-Database` | `meme_bot` | Local + remote DB name |
+| `-RemoteDir` | `~/projects/hunter` | Where the server's `.env` lives |
+| `-Database` | `hunter_bot` | Local + remote DB name |
 | `-LocalPgHost` | `localhost` | |
 | `-LocalPgPort` | `5555` | Dockerized local DB; use `5432` for a native local Postgres |
 | `-LocalPgUser` | `postgres` | Must be a superuser role |
@@ -164,5 +164,5 @@ The run is safe to re-execute at any point — watermarks + `ON CONFLICT` make i
 ## Server reference
 
 - Host: `ubuntu@54.93.174.192`
-- Project: `/home/ubuntu/projects/meme-trading`
+- Project: `/home/ubuntu/projects/hunter`
 - Postgres: published on the host's `DB_PORT` (default `5555`), reached via the SSH tunnel

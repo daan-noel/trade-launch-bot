@@ -8,7 +8,7 @@ the build context is the cargo workspace at the root.
 
 ## The two compose files
 
-There are two families (**hunter** = meme trading, **forge** = launch platform).
+There are two families (**hunter** = meme-coin trading, **forge** = launch platform).
 Each family has **one merged compose file** that runs its live tier and lab tier
 together against a single shared Postgres:
 
@@ -121,12 +121,12 @@ Default DB host ports: **hunter = 5555**, **forge = 5556** (override in `.env`).
 
 ```bash
 # From the host
-psql postgres://postgres:<password>@localhost:5555/meme_bot          # hunter
-psql postgres://postgres:<password>@localhost:5556/launch_platform   # forge
+psql postgres://postgres:<password>@localhost:5555/hunter_bot        # hunter
+psql postgres://postgres:<password>@localhost:5556/forge_bot         # forge
 
 # Inside the running container
-docker compose -f deploy/hunter.compose.yml exec postgres psql -U postgres -d meme_bot
-docker compose -f deploy/forge.compose.yml  exec postgres psql -U postgres -d launch_platform
+docker compose -f deploy/hunter.compose.yml exec postgres psql -U postgres -d hunter_bot
+docker compose -f deploy/forge.compose.yml  exec postgres psql -U postgres -d forge_bot
 ```
 
 Open a shell inside any service:
@@ -182,9 +182,9 @@ docker compose -f deploy/hunter.compose.yml down
 docker compose --env-file hunter/.env -f deploy/hunter.compose.yml run --rm lab-api hunter-lab lake-export
 
 # DB shell
-docker compose -f deploy/hunter.compose.yml exec postgres psql -U postgres -d meme_bot
+docker compose -f deploy/hunter.compose.yml exec postgres psql -U postgres -d hunter_bot
 ```
 
-For forge: swap `hunter`→`forge`, `meme_bot`→`launch_platform`, `hunter-lab`→`forge-lab`,
+For forge: swap `hunter`→`forge`, `hunter_bot`→`forge_bot`, `hunter-lab`→`forge-lab`,
 the compose file `deploy/hunter.compose.yml`→`deploy/forge.compose.yml`, and ports
 `5555`/`81xx`→`5556`/`82xx`.

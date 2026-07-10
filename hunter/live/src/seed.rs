@@ -202,7 +202,7 @@ mod tests {
     //! `build_state` precedence is a pure unit test (no DB). The cap / window /
     //! position-safety-net behaviours touch Postgres and are `#[ignore]`d like the
     //! other DB tests; run against a local Postgres:
-    //!   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/meme_bot"
+    //!   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/hunter_bot"
     //!   cargo test --bin backend seed:: -- --ignored --nocapture
     use super::*;
     use trading_core::models::trade::TradeType;

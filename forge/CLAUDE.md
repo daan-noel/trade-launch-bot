@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-Guidance for Claude Code working in **solana-launch-platform** — a venue- and
+Guidance for Claude Code working in **forge** — a venue- and
 non-SOL-quote-generalized Solana launch + trading + analytics platform (sibling to
-`../meme-trading` inside the shared `Bot/` monorepo — one Cargo workspace, no longer
+`../hunter` inside the shared `Bot/` monorepo — one Cargo workspace, no longer
 separate git repos). Starts with pump.fun token creation; grows into
 multi-launchpad / multi-quote / multi-wallet.
 
@@ -74,11 +74,11 @@ and modularity outrank everything.
 
 ## Architecture — 6 crates, 2 bins
 
-**Monorepo:** `solana-launch-platform/` is now one product folder inside the `Bot/`
+**Monorepo:** `forge/` is now one product folder inside the `Bot/`
 monorepo — a single Cargo `[workspace]` (`resolver = "1"`, root `Bot/Cargo.toml`) shared
-with `meme-trading/`. The two standalone crates (`pump-trader`, `ingest-laserstream`) are
+with `hunter/`. The two standalone crates (`pump-trader`, `ingest-laserstream`) are
 **borrowed from the neutral `shared/` home** (`Bot/shared/…`) as intra-workspace deps
-(`{ workspace = true }`), NOT a cross-repo path dep any more. **SLP's bins are named
+(`{ workspace = true }`), NOT a cross-repo path dep any more. **forge's bins are named
 `forge-live` / `forge-lab`** (hunter owns `hunter-live`/`hunter-lab`); they are NOT workspace
 `default-members`, so build/run them with `-p forge-live` / `-p forge-lab`. `trading_core` is
 **NOT** reused (its SOL/pump domain is the thing being redesigned); only tiny pure SSOT
@@ -106,7 +106,7 @@ files were copied (IDLs, unit consts).
 - **Amounts** name their unit as a SUFFIX: `amount_quote` / `amount_base` (exact BIGINT
   base units), reserves `reserve_quote` / `reserve_base`. The unit is the *referenced
   quote/base asset*, **never** a hard-coded lamport — native SOL is just the
-  `quote_assets` row with `is_native, decimals 9`. (Evolution of meme-trading's
+  `quote_assets` row with `is_native, decimals 9`. (Evolution of hunter's
   SOL/lamports rule; `*_lamports` dual-vocab was **rejected** — see ADR D1.)
 - **Prices are RAW RATIOS** stored/aggregated (`amount_quote / amount_base`,
   decimals-agnostic). Decimals + USD are applied **only in derived views**
@@ -169,7 +169,7 @@ internet where possible.
 # Run from the monorepo root (Bot/) or this folder; the workspace is Bot/Cargo.toml.
 docker compose up -d                 # local Postgres + TimescaleDB (host port 5556); adds forge-live service
 sqlx migrate run                     # apply migrations/0001,0002
-cargo check -p forge-live -p forge-lab   # typecheck the SLP bins (use --target-dir target-check if a bin is running)
+cargo check -p forge-live -p forge-lab   # typecheck the forge bins (use --target-dir target-check if a bin is running)
 cargo tree -p forge-live               # dep-partition check (no duckdb/arrow/parquet)
 cargo tree -p forge-lab                # dep-partition check (no pump-trader/ingest-laserstream/tonic)
 cargo run -p forge-live                # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8230

@@ -1862,7 +1862,7 @@ mod backfill_persistence {
     //! caller stamps the sync watermark.
     //!
     //! `#[ignore]`d like the other DB tests; run against a local Postgres:
-    //!   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/meme_bot"
+    //!   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/hunter_bot"
     //!   cargo test -p backend backfill_persistence -- --ignored --nocapture
     use super::*;
     use trading_core::models::trade::TradeType;

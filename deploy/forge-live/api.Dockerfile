@@ -5,7 +5,7 @@
 #
 # This is the ONLY launch-platform image shipped to EC2. The analysis bin
 # (`forge-lab`, with duckdb/arrow/parquet) runs on the workstation and is never
-# containerised — see the SLP CLAUDE.md "Dep partition".
+# containerised — see the forge CLAUDE.md "Dep partition".
 #
 # cargo-chef caches the (huge) dependency tree as its own layer, so day-to-day
 # updates only recompile YOUR code instead of all deps.
@@ -15,7 +15,7 @@
 # No DATABASE_URL needed at build time (runtime sqlx::query + embedded migrations).
 # ---------------------------------------------------------------------------
 
-# Pin to the toolchain the workspace builds on (matches meme-trading/live).
+# Pin to the toolchain the workspace builds on (matches hunter-live).
 FROM rust:1.95-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app

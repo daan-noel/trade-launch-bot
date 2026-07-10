@@ -1,7 +1,7 @@
 //! Feed-based bundle-landing confirmation (LIVE box).
 //!
 //! Jito `sendBundle` only reports acceptance into the block-engine queue, not
-//! landing — the same gap meme-trading's sell-confirm closes by trusting the
+//! landing — the same gap hunter's sell-confirm closes by trusting the
 //! ingested feed over a fresh RPC poll. This watcher does the equivalent for
 //! launch bundles: it never calls the chain itself, it only checks whether each
 //! leg's signature has shown up in the already-ingested `trades` table.

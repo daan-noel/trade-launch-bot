@@ -3,7 +3,7 @@
 #
 # ONE Postgres (the shared DB volume `pgdata`) is used by BOTH the live backend
 # (package + bin `forge-live`) and the lab analysis backend (package + bin
-# `forge-lab`) — same `launch_platform` database (lab analyzes
+# `forge-lab`) — same `forge_bot` database (lab analyzes
 # what live produces). Two Postgres containers can NOT safely mount one PGDATA
 # (postmaster lock), so sharing = one DB container, two api clients. That is why
 # the live and lab tiers are folded together in this one merged compose file
@@ -82,13 +82,13 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-launch_platform}
+      POSTGRES_DB: ${POSTGRES_DB:-forge_bot}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "${DB_PORT:-5556}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-launch_platform}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-forge_bot}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -108,7 +108,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${LIVE_API_PORT:-8230}
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-launch_platform}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-forge_bot}
     depends_on:
       postgres:
         condition: service_healthy
@@ -155,7 +155,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${LAB_API_PORT:-8240}
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-launch_platform}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-forge_bot}
       SWEEP_LAKE_DIR: /lake
     volumes:
       - lakedata:/lake

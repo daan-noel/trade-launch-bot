@@ -1,7 +1,7 @@
 //! Config / settings. Loads `.env` (dotenvy) and exposes the DB connection
 //! settings shared by both bins. Each bin reads its own HTTP host/port.
 //!
-//! Pool sizing mirrors meme-trading's workload-isolated hot/api/batch split (the
+//! Pool sizing mirrors hunter's workload-isolated hot/api/batch split (the
 //! sum stays well under Postgres `max_connections`; connection counts are
 //! load-bearing on the 2vCPU/4GB EC2 box).
 

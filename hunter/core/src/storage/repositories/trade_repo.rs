@@ -1018,7 +1018,7 @@ pub fn sig_bytes_to_base58(bytes: &[u8]) -> String {
 // same token must each confirm against their OWN fills, never the shared
 // `(wallet, mint)` balance). DB-integration, so `#[ignore]`d like the other
 // DB tests; run against a local Postgres:
-//   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/meme_bot"
+//   $env:DATABASE_URL = "postgres://postgres:1220@localhost:5432/hunter_bot"
 //   cargo test -p trading_core trade_repo:: -- --ignored --nocapture
 // Each test uses unique mint/wallet ids and deletes the rows it created.
 // ---------------------------------------------------------------------------

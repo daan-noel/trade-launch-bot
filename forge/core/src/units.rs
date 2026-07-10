@@ -1,6 +1,6 @@
 //! Unit conversions — the single source of truth for base-unit ↔ human-display math.
 //!
-//! Lifted by copy from meme-trading's `config::constants::token_math` (the plan's
+//! Lifted by copy from hunter's `config::constants::token_math` (the plan's
 //! sanctioned SSOT copy), then **generalized**: the "store integer base units,
 //! display float, unit-in-name" discipline is preserved, but the unit is now the
 //! *referenced quote/base asset's decimals*, not a hard-coded lamport.

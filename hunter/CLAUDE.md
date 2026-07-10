@@ -15,7 +15,7 @@ Meme-coin trading bot — **massive token + trade volume**. Performance outranks
 
 ## Architecture
 
-**Monorepo:** `meme-trading/` is now one product folder inside the `Bot/` monorepo (single Cargo `[workspace]`, `resolver = "1"`, root `Bot/Cargo.toml`) alongside `solana-launch-platform/`. The two **standalone drop-in** crates (`pump-trader`, `ingest-laserstream`) moved to a neutral **`shared/`** home (`Bot/shared/…`) so both products consume them as intra-workspace deps — meme-trading's `live` links them via `path = "../../shared/…"`. A bare `cargo build` at the root builds only meme-trading's bins (`default-members`); target SLP crates with `-p`. See `../monorepo-trader-plan.md` (Part 1).
+**Monorepo:** `hunter/` is now one product folder inside the `Bot/` monorepo (single Cargo `[workspace]`, `resolver = "1"`, root `Bot/Cargo.toml`) alongside `forge/`. The two **standalone drop-in** crates (`pump-trader`, `ingest-laserstream`) moved to a neutral **`shared/`** home (`Bot/shared/…`) so both products consume them as intra-workspace deps — hunter's `live` links them via `path = "../../shared/…"`. A bare `cargo build` at the root builds only hunter's bins (`default-members`); target forge crates with `-p`. See `../monorepo-trader-plan.md` (Part 1).
 
 Six Rust crates + `frontend-react` SPA. The old single `backend` crate was split into two bins over a shared core, then renamed to the `live`/`lab` topology (see [docs/plans/modes/crate-split.md](docs/plans/modes/crate-split.md) and [live-lab-remake-plan.md](live-lab-remake-plan.md)):
 

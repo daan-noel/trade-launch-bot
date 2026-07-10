@@ -1,4 +1,4 @@
-# solana-launch-platform
+# forge
 
 A Solana launch + trading + analytics platform. Starts with pump.fun token
 creation and grows into a multi-launchpad (incl. USDC-quoted), multi-wallet,
@@ -6,7 +6,7 @@ multi-RPC strategy + analytics ecosystem.
 
 This repo is the **data-infrastructure foundation**: a schema designed
 *generalized for multi-venue + non-SOL quote from day one*, learning from (not
-copying) the sibling `meme-trading` repo's data layer. See
+copying) the sibling `hunter` repo's data layer. See
 [`and-about-the-instructions-shimmying-shore.md`](../and-about-the-instructions-shimmying-shore.md)
 for the full design. Phases and task checklist:
 [`docs/roadmap-plan.md`](docs/roadmap-plan.md).
@@ -14,17 +14,17 @@ for the full design. Phases and task checklist:
 ## Layout
 
 Now one product folder inside the **`Bot/` monorepo** (single Cargo workspace at
-`Bot/Cargo.toml`, shared with `meme-trading/`). The bins are `forge-live` / `forge-lab`
+`Bot/Cargo.toml`, shared with `hunter/`). The bins are `forge-live` / `forge-lab`
 (hunter owns `hunter-live`/`hunter-lab`); they are not workspace `default-members`, so target
 them with `-p forge-live` / `-p forge-lab`.
 
 ```text
 Bot/                          monorepo root: [workspace] + Cargo.lock, resolver "1"
 ├── shared/                   standalone drop-in crates used by BOTH products
-│   ├── pump-trader/          (was ../meme-trading/pump-trader)
-│   └── ingest-laserstream/   (was ../meme-trading/ingest-laserstream)
-├── meme-trading/             sibling product (live/lab)
-└── solana-launch-platform/
+│   ├── pump-trader/          (was ../hunter/pump-trader)
+│   └── ingest-laserstream/   (was ../hunter/ingest-laserstream)
+├── hunter/             sibling product (live/lab)
+└── forge/
     ├── docker-compose.yml    local Postgres + TimescaleDB (5556) + forge-live service
     ├── .env.example          copy to .env
     ├── idl/                  pump.fun IDLs (copied SSOT: pfee / pump_amm / pump_bonding_curve)
@@ -96,7 +96,7 @@ views, USD-comparable), point it at a **throwaway** database (it runs migrations
 and mutates seed rows):
 
 ```sh
-createdb launch_platform_test   # or: psql -c 'CREATE DATABASE launch_platform_test'
-PLATFORM_TEST_DATABASE_URL=postgres://postgres:pass@localhost:5556/launch_platform_test \
+createdb forge_bot_test   # or: psql -c 'CREATE DATABASE forge_bot_test'
+PLATFORM_TEST_DATABASE_URL=postgres://postgres:pass@localhost:5556/forge_bot_test \
   cargo test -p platform-core --test generality -- --nocapture
 ```

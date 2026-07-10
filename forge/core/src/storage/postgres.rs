@@ -1,6 +1,6 @@
 //! Postgres connection pools + boot (migrations, continuous aggregates).
 //!
-//! Workload-isolated pools (carried from meme-trading): splitting by contention
+//! Workload-isolated pools (carried from hunter): splitting by contention
 //! class keeps a long analysis query off the latency-critical ingest path.
 //!   - `hot`   — ingest writes, strategy eval, background caches (no stmt timeout).
 //!   - `api`   — fast interactive HTTP reads (bounded stmt timeout).

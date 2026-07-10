@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Append the EC2 server's newer **sealed daily** data into the local meme_bot DB --
+  Append the EC2 server's newer **sealed daily** data into the local hunter_bot DB --
   directly, DB->DB, over an SSH tunnel. No CSV, no scp, no temp files.
 
 .DESCRIPTION
@@ -86,7 +86,7 @@
 
   Requires: ssh + psql on PATH; local Postgres >= 16 with postgres_fdw + TimescaleDB;
   connect as a SUPERUSER local role (CREATE EXTENSION / USER MAPPING). Stop any local
-  backend writing to meme_bot first. Server creds are read from the remote .env
+  backend writing to hunter_bot first. Server creds are read from the remote .env
   automatically (DB_PORT/POSTGRES_USER/PASSWORD/DB).
 
 .EXAMPLE
@@ -104,11 +104,11 @@
 #>
 param(
   [string]$SshTarget       = 'ubuntu@54.93.174.192',                      # user@host of the EC2 box
-  [string]$SshKey          = "$PSScriptRoot/../aws-ec2-key.pem",
-  [string]$RemoteDir       = '~/projects/meme-trading',                   # where the server's .env lives
-  [string]$Database        = 'meme_bot',
+  [string]$SshKey          = $(foreach ($p in "$PSScriptRoot/../aws-ec2-key.pem", "$HOME/.ssh/aws-ec2-key.pem") { if (Test-Path $p) { $p; break } }),
+  [string]$RemoteDir       = '~/projects/hunter',                         # where the server's .env lives
+  [string]$Database        = 'hunter_bot',
   [string]$LocalPgHost     = 'localhost',
-  [int]   $LocalPgPort     = 5555,                                        # local meme_bot port (5555 dockerized, 5432 native)
+  [int]   $LocalPgPort     = 5555,                                        # local hunter_bot port (5555 dockerized, 5432 native)
   [string]$LocalPgUser     = 'postgres',
   [int]   $TunnelLocalPort = 5433,                                        # local end of the SSH tunnel (must be free)
   [string]$FdwTunnelHost   = 'host.docker.internal',                      # how the LOCAL postgres reaches the tunnel: 'host.docker.internal' if it runs in Docker, '127.0.0.1' if native
@@ -267,7 +267,7 @@ foreach ($line in ($remoteEnv -split "`n")) {
 }
 $remotePw   = $renv['POSTGRES_PASSWORD']; if (-not $remotePw) { throw "POSTGRES_PASSWORD not found in remote .env" }
 $remoteUser = if ($renv['POSTGRES_USER']) { $renv['POSTGRES_USER'] } else { 'postgres' }
-$remoteDb   = if ($renv['POSTGRES_DB'])   { $renv['POSTGRES_DB'] }   else { 'meme_bot' }
+$remoteDb   = if ($renv['POSTGRES_DB'])   { $renv['POSTGRES_DB'] }   else { 'hunter_bot' }
 # DB_PORT is the current name; POSTGRES_HOST_PORT is read as a fallback for a
 # server whose .env predates the rename (deploy/*/compose.yml PORTS block).
 if ($RemotePgPort -le 0) {
