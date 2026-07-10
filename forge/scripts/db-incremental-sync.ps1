@@ -121,4 +121,4 @@ foreach ($t in $ownLaunch) {
 
 Write-Host "==> Cleanup"
 Invoke-LocalSql "DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;"
-Write-Host "Sync complete. Next: cargo run -p slp-lab -- lake-export --include-today"
+Write-Host "Sync complete. Next: cargo run -p forge-lab -- lake-export --include-today"

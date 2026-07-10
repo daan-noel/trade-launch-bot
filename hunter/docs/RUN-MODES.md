@@ -78,7 +78,7 @@ live-ui `LIVE_UI_HTTP_PORT`/`LIVE_UI_HTTPS_PORT` 8110/8111 · lab-ui
 Lake export as a one-off container:
 
 ```bash
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api lab lake-export
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
 ```
 
 ## Deploy mode B — per-box (one tier per machine)

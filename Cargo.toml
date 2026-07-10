@@ -8,10 +8,12 @@
 # and "1"'s additive feature unification is what they were built against.
 #
 # Packages are namespaced by product (`hunter-*` / `forge-*`), so there is no
-# duplicate-package-name collision. `[lib]`/`[[bin]]` TARGET names are kept from
-# the pre-rename crates (lib `trading_core`/`platform_core`/`launcher`; bins
-# `live`/`lab`/`slp-live`/`slp-lab`) so source `use` paths + Docker `--bin`
-# flags stay valid; dependents map them via the `package = "..."` rename form.
+# duplicate-package-name collision. `[[bin]]` TARGET names now MATCH their
+# packages (`hunter-live`/`hunter-lab`/`forge-live`/`forge-lab`) so the Docker
+# `--bin` flags + `run --rm … <bin>` batch commands are symmetric across both
+# products. `[lib]` TARGET names are still kept from the pre-rename crates (lib
+# `trading_core`/`platform_core`/`launcher`; hunter libs `live`/`lab`) so source
+# `use` paths stay valid; dependents map packages via the `package = "..."` form.
 # ---------------------------------------------------------------------------
 members = [
     # hunter (was meme-trading)
@@ -57,8 +59,8 @@ version = "0.1.0"
 #
 # The two borrowed standalone crates now live in the same repo, so their paths
 # are rebased to the monorepo root (they move to shared/ in Phase 3). They have
-# NO workspace deps of their own and MUST NOT appear in any `lab`/`slp-lab` dep
-# graph (verify with `cargo tree -p lab` / `-p slp-lab`).
+# NO workspace deps of their own and MUST NOT appear in any `hunter-lab`/`forge-lab`
+# dep graph (verify with `cargo tree -p hunter-lab` / `-p forge-lab`).
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
 # The executor write-stack (was `pump-trader`, now split engine/venue). The

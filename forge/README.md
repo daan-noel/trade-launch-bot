@@ -14,9 +14,9 @@ for the full design. Phases and task checklist:
 ## Layout
 
 Now one product folder inside the **`Bot/` monorepo** (single Cargo workspace at
-`Bot/Cargo.toml`, shared with `meme-trading/`). The bins are `slp-live` / `slp-lab`
-(meme-trading owns `live`/`lab`); they are not workspace `default-members`, so target
-them with `-p slp-live` / `-p slp-lab`.
+`Bot/Cargo.toml`, shared with `meme-trading/`). The bins are `forge-live` / `forge-lab`
+(hunter owns `hunter-live`/`hunter-lab`); they are not workspace `default-members`, so target
+them with `-p forge-live` / `-p forge-lab`.
 
 ```text
 Bot/                          monorepo root: [workspace] + Cargo.lock, resolver "1"
@@ -25,17 +25,17 @@ Bot/                          monorepo root: [workspace] + Cargo.lock, resolver 
 │   └── ingest-laserstream/   (was ../meme-trading/ingest-laserstream)
 ├── meme-trading/             sibling product (live/lab)
 └── solana-launch-platform/
-    ├── docker-compose.yml    local Postgres + TimescaleDB (5556) + slp-live service
+    ├── docker-compose.yml    local Postgres + TimescaleDB (5556) + forge-live service
     ├── .env.example          copy to .env
     ├── idl/                  pump.fun IDLs (copied SSOT: pfee / pump_amm / pump_bonding_curve)
     ├── migrations/           0001_init.sql
     └── crates/
         ├── platform-core (lib)  data layer: config, models, storage, repositories, venue trait
-        ├── ingest-host   (lib)  borrowed ingest → PG trades              [slp-live only]
-        ├── launcher      (lib)  create/dev-buy/bundle via pump-trader    [slp-live only]
-        ├── lake          (lib)  Parquet/DuckDB cold tier                 [slp-lab only]
-        ├── slp-live      (bin)  ingest + launcher + trading + HTTP → EC2
-        └── slp-lab       (bin)  lake + sweeps + backtests + analytics → workstation
+        ├── ingest-host   (lib)  borrowed ingest → PG trades              [forge-live only]
+        ├── launcher      (lib)  create/dev-buy/bundle via pump-trader    [forge-live only]
+        ├── lake          (lib)  Parquet/DuckDB cold tier                 [forge-lab only]
+        ├── forge-live      (bin)  ingest + launcher + trading + HTTP → EC2
+        └── forge-lab       (bin)  lake + sweeps + backtests + analytics → workstation
 ```
 
 ## Reuse (shared crates)
@@ -55,11 +55,11 @@ Only tiny pure SSOT files were lifted by copy: the pump.fun IDLs (`idl/`) and th
 
 ## Dep partition (enforced from commit 1)
 
-`slp-live` (EC2) and `slp-lab` (workstation) link **disjoint** dep graphs — a resource
+`forge-live` (EC2) and `forge-lab` (workstation) link **disjoint** dep graphs — a resource
 partition, not a naming preference. EC2 is 2vCPU/4GB: DuckDB/arrow/parquet/rayon
 must never ship there; signing keys + gRPC never ship to the workstation.
 
-| Crate | `slp-live` | `slp-lab` |
+| Crate | `forge-live` | `forge-lab` |
 | --- | --- | --- |
 | `ingest-host` (+ `ingest-laserstream`) | ✓ | ✗ |
 | `launcher` (+ `pump-trader`) | ✓ | ✗ |
@@ -69,8 +69,8 @@ must never ship there; signing keys + gRPC never ship to the workstation.
 Verify the partition (resolution only, no compile):
 
 ```sh
-cargo tree -p slp-live   # must show NO duckdb / arrow / parquet
-cargo tree -p slp-lab    # must show NO pump-trader / ingest-laserstream / tonic
+cargo tree -p forge-live   # must show NO duckdb / arrow / parquet
+cargo tree -p forge-lab    # must show NO pump-trader / ingest-laserstream / tonic
 ```
 
 ## Dev loop
@@ -78,8 +78,8 @@ cargo tree -p slp-lab    # must show NO pump-trader / ingest-laserstream / tonic
 ```sh
 docker compose up -d              # local Postgres + TimescaleDB (port 5556)
 # sqlx migrate run                # Phase 2+ (0001_init.sql)
-cargo run -p slp-live             # LIVE box: ingest + launch + trade + HTTP
-cargo run -p slp-lab              # ANALYSIS box: lake + sweeps (no gRPC, no keys)
+cargo run -p forge-live             # LIVE box: ingest + launch + trade + HTTP
+cargo run -p forge-lab              # ANALYSIS box: lake + sweeps (no gRPC, no keys)
 ```
 
 - **Data flow (live):** Helius gRPC → `ingest-laserstream` → `ingest-host` → PG

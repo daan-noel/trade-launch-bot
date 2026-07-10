@@ -79,27 +79,27 @@ monorepo — a single Cargo `[workspace]` (`resolver = "1"`, root `Bot/Cargo.tom
 with `meme-trading/`. The two standalone crates (`pump-trader`, `ingest-laserstream`) are
 **borrowed from the neutral `shared/` home** (`Bot/shared/…`) as intra-workspace deps
 (`{ workspace = true }`), NOT a cross-repo path dep any more. **SLP's bins are named
-`slp-live` / `slp-lab`** (meme-trading owns `live`/`lab`); they are NOT workspace
-`default-members`, so build/run them with `-p slp-live` / `-p slp-lab`. `trading_core` is
+`forge-live` / `forge-lab`** (hunter owns `hunter-live`/`hunter-lab`); they are NOT workspace
+`default-members`, so build/run them with `-p forge-live` / `-p forge-lab`. `trading_core` is
 **NOT** reused (its SOL/pump domain is the thing being redesigned); only tiny pure SSOT
 files were copied (IDLs, unit consts).
 
 | Crate | Kind | Role | Ships to |
 | --- | --- | --- | --- |
 | `platform-core` | lib | data layer: config, models, storage, repositories, `venue/` trait. **solana-free** (addresses are TEXT/String) | both |
-| `ingest-host` | lib | borrowed `ingest-laserstream` events → PG `raw_txs`/`trades` | **slp-live** |
-| `launcher` | lib | create / dev-buy / bundle via `pump-trader` | **slp-live** |
-| `lake` | lib | Parquet/DuckDB cold tier (sweeps/backtests) | **slp-lab** |
-| `slp-live` (`crates/slp-live`) | **bin** | ingest + launcher + trading + thin HTTP → **EC2** | — |
-| `slp-lab` (`crates/slp-lab`) | **bin** | lake + sweeps + backtests + analytics → **workstation** | — |
+| `ingest-host` | lib | borrowed `ingest-laserstream` events → PG `raw_txs`/`trades` | **forge-live** |
+| `launcher` | lib | create / dev-buy / bundle via `pump-trader` | **forge-live** |
+| `lake` | lib | Parquet/DuckDB cold tier (sweeps/backtests) | **forge-lab** |
+| `forge-live` (`crates/forge-live`) | **bin** | ingest + launcher + trading + thin HTTP → **EC2** | — |
+| `forge-lab` (`crates/forge-lab`) | **bin** | lake + sweeps + backtests + analytics → **workstation** | — |
 
 **Dep partition (load-bearing — enforce from the scaffold):**
 
-- `slp-live` must NOT pull `duckdb`/`arrow`/`parquet` (the `lake` stack). Verify:
-  `cargo tree -p slp-live` (rayon *is* present, but only as a Solana transitive via
+- `forge-live` must NOT pull `duckdb`/`arrow`/`parquet` (the `lake` stack). Verify:
+  `cargo tree -p forge-live` (rayon *is* present, but only as a Solana transitive via
   `pump-trader` — not the lake crate; that's expected).
-- `slp-lab` must NOT pull `pump-trader`/`ingest-laserstream`/`tonic`/solana. Verify:
-  `cargo tree -p slp-lab`.
+- `forge-lab` must NOT pull `pump-trader`/`ingest-laserstream`/`tonic`/solana. Verify:
+  `cargo tree -p forge-lab`.
 
 ## Schema conventions (locked)
 
@@ -142,7 +142,7 @@ files were copied (IDLs, unit consts).
 Keystore backend (ADR D3) = **envelope-encrypted file + pluggable KEK trait**
 (env/passphrase now → AWS KMS later; ed25519 signs in-process — KMS can't sign it).
 
-**HTTP: fail-closed bearer gate on mutating routes.** `slp-live` moves treasury SOL
+**HTTP: fail-closed bearer gate on mutating routes.** `forge-live` moves treasury SOL
 (launch / fund / manage), so — like hunter — every POST/PUT/DELETE/PATCH requires
 `Authorization: Bearer $API_AUTH_TOKEN`; safe reads + preflight pass. `API_AUTH_TOKEN`
 is **required** for the live HTTP server to boot (a missing token refuses to serve,
@@ -156,7 +156,7 @@ internet where possible.
 
 ## Deployment (EC2: 2vCPU / 4GB — IO-bound, RAM-constrained)
 
-- Ship **`slp-live` + borrowed crates** to EC2 only. **`slp-lab` + `lake` + DuckDB/arrow/
+- Ship **`forge-live` + borrowed crates** to EC2 only. **`forge-lab` + `lake` + DuckDB/arrow/
   parquet/rayon stay on the workstation** — never deploy them.
 - EC2 PG = hot rolling buffer (`raw_txs` 7d, `trades` 30d). Analysis is via DB sync to
   a local mirror → `lake-export` → Parquet. No DuckDB/export cron on the server.
@@ -167,15 +167,15 @@ internet where possible.
 
 ```powershell
 # Run from the monorepo root (Bot/) or this folder; the workspace is Bot/Cargo.toml.
-docker compose up -d                 # local Postgres + TimescaleDB (host port 5556); adds slp-live service
+docker compose up -d                 # local Postgres + TimescaleDB (host port 5556); adds forge-live service
 sqlx migrate run                     # apply migrations/0001,0002
-cargo check -p slp-live -p slp-lab   # typecheck the SLP bins (use --target-dir target-check if a bin is running)
-cargo tree -p slp-live               # dep-partition check (no duckdb/arrow/parquet)
-cargo tree -p slp-lab                # dep-partition check (no pump-trader/ingest-laserstream/tonic)
-cargo run -p slp-live                # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8091
-cargo run -p slp-live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
-cargo run -p slp-live -- wallet-verify <key_ref> <expected_address>  # restore runbook: confirm a keystore blob decrypts to the expected pubkey
-cargo run -p slp-lab                 # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8092
+cargo check -p forge-live -p forge-lab   # typecheck the SLP bins (use --target-dir target-check if a bin is running)
+cargo tree -p forge-live               # dep-partition check (no duckdb/arrow/parquet)
+cargo tree -p forge-lab                # dep-partition check (no pump-trader/ingest-laserstream/tonic)
+cargo run -p forge-live                # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8091
+cargo run -p forge-live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
+cargo run -p forge-live -- wallet-verify <key_ref> <expected_address>  # restore runbook: confirm a keystore blob decrypts to the expected pubkey
+cargo run -p forge-lab                 # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8092
 ```
 
 **DB-gated tests** (generality proof, repo round-trips) self-skip unless
@@ -184,8 +184,8 @@ migrations). Ports: DB **5556**, live **8091**, lab **8092**.
 
 ## Definition of done
 
-- `cargo check -p slp-live -p slp-lab` clean; clippy on touched code; test when logic changed.
-- Dep partition still holds (`cargo tree -p slp-live`/`-p slp-lab`).
+- `cargo check -p forge-live -p forge-lab` clean; clippy on touched code; test when logic changed.
+- Dep partition still holds (`cargo tree -p forge-live`/`-p forge-lab`).
 - Stayed in the owning crate; no secrets in code; `.env` synced with `.env.example`.
 - **Docs updated:** rules/commands → this file; schema/data-flow → `README.md` +
   `docs/`; decisions/rationale → `docs/decisions.md`.

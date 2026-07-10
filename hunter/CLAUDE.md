@@ -47,20 +47,20 @@ Each bin is its own composition root (`tokio::select!` over long-lived tasks). `
 ## Commands
 
 ```powershell
-cargo check -p live                    # typecheck the live bin
-cargo check -p lab                     # typecheck the analysis bin
-cargo check -p trading_core            # typecheck the shared lib
-cargo test  -p live                    # live unit tests (strategies, trader edge)
-cargo test  -p lab                     # lab unit tests (sweep, swing)
-cargo test  -p live -- --ignored       # integration; needs DATABASE_URL + HELIUS_RPC_URL
-cargo test  -p pump-trader             # trader crate tests
-cargo run   -p live                    # live box: loads .env; needs Postgres + Helius gRPC
-cargo run   -p lab                     # analysis box: needs Postgres; NO keys / NO gRPC
-cargo run   -p lab -- lake-export       # batch: export sealed days local-PG -> Parquet lake ($SWEEP_LAKE_DIR)
-cargo run   -p live -- probe <ladder|fanout|simulate-sell|holdings> [args]
+cargo check -p hunter-live             # typecheck the live bin
+cargo check -p hunter-lab              # typecheck the analysis bin
+cargo check -p hunter-core             # typecheck the shared lib
+cargo test  -p hunter-live             # live unit tests (strategies, trader edge)
+cargo test  -p hunter-lab              # lab unit tests (sweep, swing)
+cargo test  -p hunter-live -- --ignored  # integration; needs DATABASE_URL + HELIUS_RPC_URL
+cargo test  -p executor-pumpfun        # trader crate tests
+cargo run   -p hunter-live             # live box: loads .env; needs Postgres + Helius gRPC
+cargo run   -p hunter-lab              # analysis box: needs Postgres; NO keys / NO gRPC
+cargo run   -p hunter-lab -- lake-export # batch: export sealed days local-PG -> Parquet lake ($SWEEP_LAKE_DIR)
+cargo run   -p hunter-live -- probe <ladder|fanout|simulate-sell|holdings> [args]
 cd frontend-react; npm run dev         # both apps concurrently: live :5173, lab :5174 (separate dev servers)
 npm run dev:live                       # live app only (:5173, proxies /api -> live bin :8081)
-npm run dev:lab                        # lab app only  (:5174, proxies /api -> lab bin :8082) — pair with `PORT=8082 cargo run -p lab`
+npm run dev:lab                        # lab app only  (:5174, proxies /api -> lab bin :8082) — pair with `PORT=8082 cargo run -p hunter-lab`
 npm run build:live                     # tsc (checks BOTH trees) && vite build (live config) → LIVE-ONLY dist/index.html
 npm run build:lab                      # tsc (checks BOTH trees) && vite build (lab config)  → workstation lab.html (never deployed)
 ```
@@ -102,7 +102,7 @@ Stay in the owning crate (`trading_core` / `pump-trader` / `ingest-laserstream` 
 
 ## Definition of done
 
-- **Backend:** `cargo check -p live` + `cargo check -p lab` clean; clippy on touched code; test when logic changed
+- **Backend:** `cargo check -p hunter-live` + `cargo check -p hunter-lab` clean; clippy on touched code; test when logic changed
 - **Frontend:** `npm run build:live` clean; no extra re-render on SOL/USD tick or live-trade stream
 - **Docs — update ALL affected tiers:**
   - Rules/commands/constraints changed → **CLAUDE.md**

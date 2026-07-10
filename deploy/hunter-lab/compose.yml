@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # hunter-lab — STANDALONE analysis stack: postgres (TimescaleDB) + analysis bin
-# (`lab`, api.Dockerfile) + lab UI (nginx + TLS/Basic-auth, ui.Dockerfile). Run
+# (`hunter-lab`, api.Dockerfile) + lab UI (nginx + TLS/Basic-auth, ui.Dockerfile). Run
 # the lab tier on its own, WITHOUT the live trading tier. For live + lab running
 # CONCURRENTLY on one host (one shared postgres process), use the merged
 # deploy/hunter/compose.yml instead.
@@ -26,8 +26,8 @@
 # `build:` (context = repo root, builds on the workstation).
 #
 # Up / update:  docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml up -d --build
-# Lake export (batch): docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml run --rm lab-api lab lake-export
-# Local dev alt: `npm run dev:lab` (vite, HMR) against `cargo run -p lab` on 8082.
+# Lake export (batch): docker compose --env-file hunter/.env -f deploy/hunter-lab/compose.yml run --rm lab-api hunter-lab lake-export
+# Local dev alt: `npm run dev:lab` (vite, HMR) against `cargo run -p hunter-lab` on 8082.
 # Config: hunter/.env (see hunter/.env.example).
 # ---------------------------------------------------------------------------
 
@@ -82,7 +82,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # The analysis bin (`lab`). Host-published on ${LAB_API_PORT} AND proxied by
+  # The analysis bin (`hunter-lab`). Host-published on ${LAB_API_PORT} AND proxied by
   # lab-ui's nginx at http://lab-api:${LAB_API_PORT}. The service name `lab-api`
   # matches nginx/default.conf.template's proxy_pass.
   lab-api:

@@ -124,14 +124,14 @@ docker compose --env-file hunter/.env -f deploy/hunter/compose.yml up -d --build
 ## Batch job: lake export
 
 `run --rm` runs a one-off command in a throwaway container. The lab bin differs
-per family (`lab` for hunter, `slp-lab` for forge):
+per family (`hunter-lab` for hunter, `forge-lab` for forge):
 
 ```bash
 # hunter (merged or hunter-lab stack)
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api lab lake-export
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
 
 # forge (merged or forge-lab stack)
-docker compose --env-file forge/.env  -f deploy/forge/compose.yml  run --rm lab-api slp-lab lake-export
+docker compose --env-file forge/.env  -f deploy/forge/compose.yml  run --rm lab-api forge-lab lake-export
 ```
 
 ---
@@ -200,12 +200,12 @@ docker compose -f deploy/hunter/compose.yml ps
 docker compose -f deploy/hunter/compose.yml down
 
 # Lake export
-docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api lab lake-export
+docker compose --env-file hunter/.env -f deploy/hunter/compose.yml run --rm lab-api hunter-lab lake-export
 
 # DB shell
 docker compose -f deploy/hunter/compose.yml exec postgres psql -U postgres -d meme_bot
 ```
 
-For forge: swap `hunter`→`forge`, `meme_bot`→`launch_platform`, `lab`→`slp-lab`,
+For forge: swap `hunter`→`forge`, `meme_bot`→`launch_platform`, `hunter-lab`→`forge-lab`,
 and ports `5555`/`81xx`→`5556`/`82xx`. For a split stack, swap the compose file
 (e.g. `-f deploy/hunter-lab/compose.yml`).

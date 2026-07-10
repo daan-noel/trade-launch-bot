@@ -2,8 +2,8 @@
 # forge — MERGED live + lab stack for a single shared deploy server.
 #
 # ONE Postgres (the shared DB volume `pgdata`) is used by BOTH the live backend
-# (package `forge-live`, bin `slp-live`) and the lab analysis backend (package
-# `forge-lab`, bin `slp-lab`) — same `launch_platform` database (lab analyzes
+# (package + bin `forge-live`) and the lab analysis backend (package + bin
+# `forge-lab`) — same `launch_platform` database (lab analyzes
 # what live produces). Two Postgres containers can NOT safely mount one PGDATA
 # (postmaster lock), so sharing = one DB container, two api clients. That is why
 # the previously-separate deploy/forge-live/ and deploy/forge-lab/ compose files

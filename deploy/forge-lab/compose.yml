@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # forge-lab — STANDALONE analysis stack: postgres (TimescaleDB) + forge analysis
-# bin (package `forge-lab`, bin `slp-lab`). API-only (no UI/nginx for forge lab)
+# bin (package + bin `forge-lab`). API-only (no UI/nginx for forge lab)
 # — reached directly on the host-published ${LAB_API_PORT}. Run the lab tier on
 # its own, WITHOUT the live tier. For live + lab running CONCURRENTLY on one host
 # (one shared postgres process), use the merged deploy/forge/compose.yml instead.
@@ -26,7 +26,7 @@
 #   lab-api   ${LAB_API_PORT:-8240}   published (direct access + `run --rm` batch)
 #
 # Up / update:  docker compose --env-file forge/.env -f deploy/forge-lab/compose.yml up -d --build
-# Lake export (batch): docker compose --env-file forge/.env -f deploy/forge-lab/compose.yml run --rm lab-api slp-lab lake-export
+# Lake export (batch): docker compose --env-file forge/.env -f deploy/forge-lab/compose.yml run --rm lab-api forge-lab lake-export
 # Config: forge/.env (see forge/.env.example).
 # ---------------------------------------------------------------------------
 
@@ -81,7 +81,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # The analysis bin (`slp-lab`). API-only (no UI), reached directly on the
+  # The analysis bin (`forge-lab`). API-only (no UI), reached directly on the
   # host-published ${LAB_API_PORT}. Build-only: never an ECR image (see header).
   lab-api:
     container_name: forge-lab-api

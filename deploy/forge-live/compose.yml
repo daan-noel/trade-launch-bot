@@ -1,10 +1,10 @@
 # ---------------------------------------------------------------------------
 # forge-live — STANDALONE production stack: postgres + forge LIVE backend
-# (package `forge-live`, bin `slp-live`, api.Dockerfile): ingest + launcher +
+# (package + bin `forge-live`, api.Dockerfile): ingest + launcher +
 # trading + thin HTTP API + forge UI (nginx + TLS/Basic-auth, ui.Dockerfile).
 # Run the live tier on its own, WITHOUT the lab analysis tier. For live + lab
 # running CONCURRENTLY on one host (one shared postgres process), use the merged
-# deploy/forge/compose.yml instead. The analysis bin (`slp-lab`) is never built
+# deploy/forge/compose.yml instead. The analysis bin (`forge-lab`) is never built
 # here — see deploy/forge-lab/.
 #
 # SHARED DB (same as the root/merged stack): postgres here uses container_name
@@ -83,7 +83,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # The live bin (`slp-live`). NOT host-published — reached only through
+  # The live bin (`forge-live`). NOT host-published — reached only through
   # live-ui's nginx at http://live-api:${LIVE_API_PORT} (envsubst upstream). The
   # service name `live-api` matches nginx/default.conf.template's proxy_pass.
   live-api:

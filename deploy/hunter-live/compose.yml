@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# hunter-live — STANDALONE live stack: postgres + Rust backend (`live`) + nginx
+# hunter-live — STANDALONE live stack: postgres + Rust backend (`hunter-live`) + nginx
 # (frontend static + /api proxy). Run the live tier on its own, WITHOUT the lab
 # analysis tier. For live + lab running CONCURRENTLY on one host (one shared
 # postgres process), use the merged deploy/hunter/compose.yml instead.
@@ -82,7 +82,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # The live trading bin (`live`). NOT host-published — reached only through
+  # The live trading bin (`hunter-live`). NOT host-published — reached only through
   # live-ui's nginx at http://live-api:${LIVE_API_PORT} (envsubst upstream). The
   # service name `live-api` matches nginx/default.conf.template's proxy_pass.
   live-api:
