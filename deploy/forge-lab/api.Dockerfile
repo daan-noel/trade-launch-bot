@@ -45,5 +45,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /usr/local/bin/forge-lab /usr/local/bin/forge-lab
 # HOST/PORT/SWEEP_LAKE_DIR are set in deploy/forge.compose.yml.
-EXPOSE 8092
+# EXPOSE is documentation-only; the real bind is the injected PORT (LAB_API_PORT).
+EXPOSE 8240
 CMD ["forge-lab"]

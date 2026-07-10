@@ -476,8 +476,9 @@ async fn main() -> anyhow::Result<()> {
         .context("Failed to load live trading credentials")?;
 
     // HTTP bind — live reads its own LIVE_HOST/LIVE_PORT (docker's HOST/PORT wins).
+    // Default matches the deploy LIVE_API_PORT so local + docker use the same port.
     let http_host = config::resolve_host("LIVE_HOST");
-    let http_port = config::resolve_port("LIVE_PORT", 8081)?;
+    let http_port = config::resolve_port("LIVE_PORT", 8130)?;
 
     info!(
         host = %http_host,

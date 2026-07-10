@@ -60,5 +60,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /usr/local/bin/hunter-live /usr/local/bin/hunter-live
 # HOST/PORT are set in compose.yml (must bind 0.0.0.0 inside the network).
-EXPOSE 8081
+# EXPOSE is documentation-only; the real bind is the injected PORT (LIVE_API_PORT).
+EXPOSE 8130
 CMD ["hunter-live"]

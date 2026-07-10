@@ -19,14 +19,16 @@ families (**hunter** = meme trading, **forge** = launch platform), each with a
 
 | | hunter | forge |
 | --- | --- | --- |
-| live backend | `:8081` | `:8091` |
-| lab backend | `:8082` | `:8092` |
-| live frontend (vite) | `:5173` → proxies `/api` to `:8081` | `:5175` → proxies `/api` to `:8091` |
-| lab frontend (vite) | `:5174` → proxies `/api` to `:8082` | *(none — forge lab is API-only)* |
+| live backend | `:8130` | `:8230` |
+| lab backend | `:8140` | `:8240` |
+| live frontend (vite) | `:5173` → proxies `/api` to `:8130` | `:5175` → proxies `/api` to `:8230` |
+| lab frontend (vite) | `:5174` → proxies `/api` to `:8140` | *(none — forge lab is API-only)* |
 | Postgres | `:5555` | `:5556` |
 
-> Note the difference from the **Docker** ports (81xx/82xx) in `deploy/DOCKER.md`.
-> These are the local-from-source defaults.
+> The backend ports now MATCH the Docker `*_API_PORT`s in `deploy/DOCKER.md`, so a
+> given backend answers on the same number whether you run it from source or in
+> Docker. The **frontend** dev ports (5173/5174/5175) stay Vite-dev-only — the
+> Docker UI is nginx on 81xx/82xx, a different server.
 
 ---
 
@@ -54,8 +56,9 @@ families (**hunter** = meme trading, **forge** = launch platform), each with a
    needs **no** keys / **no** gRPC.
 
    The bins pick their local-dev bind port from `.env`: live reads `LIVE_PORT`
-   (8081), lab reads `LAB_PORT` (8082) — so live and lab already default to
-   different ports and you never pass an inline `PORT=…`. (Docker overrides both
+   (8130), lab reads `LAB_PORT` (8140) — the SAME numbers as the deploy
+   `*_API_PORT`s, so local and Docker use one backend port — and live/lab default
+   to different ports so you never pass an inline `PORT=…`. (Docker overrides both
    with the injected `PORT`.)
 
 3. **Frontend deps installed** (once per frontend folder):
@@ -74,10 +77,10 @@ families (**hunter** = meme trading, **forge** = launch platform), each with a
 Run each in its own terminal.
 
 ```powershell
-# 1) live backend  → :8081   (needs Postgres + Helius gRPC + keys)
+# 1) live backend  → :8130   (needs Postgres + Helius gRPC + keys)
 cargo run -p hunter-live
 
-# 2) lab backend   → :8082   (needs Postgres only)
+# 2) lab backend   → :8140   (needs Postgres only)
 cargo run -p hunter-lab
 
 # 3) both frontends → live :5173, lab :5174
@@ -89,14 +92,14 @@ Open `http://localhost:5173` (live) and `http://localhost:5174` (lab).
 ### Split — live only
 
 ```powershell
-cargo run -p hunter-live                      # backend  → :8081
+cargo run -p hunter-live                      # backend  → :8130
 cd hunter/frontend; npm run dev:live          # frontend → :5173
 ```
 
 ### Split — lab only
 
 ```powershell
-cargo run -p hunter-lab                        # backend  → :8082 (LAB_PORT)
+cargo run -p hunter-lab                        # backend  → :8140 (LAB_PORT)
 cd hunter/frontend; npm run dev:lab            # frontend → :5174
 ```
 
@@ -113,34 +116,34 @@ cargo run -p hunter-live -- probe <ladder|fanout|simulate-sell|holdings> [args]
 ## forge
 
 forge's **lab is API-only** — there is no lab frontend. The single forge frontend
-(`:5175`) proxies to the **live** backend (`:8091`).
+(`:5175`) proxies to the **live** backend (`:8230`).
 
 ### Merged (live + lab)
 
 ```powershell
-# 1) live backend → :8091   (needs Postgres + keys)
+# 1) live backend → :8230   (needs Postgres + keys)
 cargo run -p forge-live
 
-# 2) lab backend  → :8092   (needs Postgres only; API-only, no UI)
+# 2) lab backend  → :8240   (needs Postgres only; API-only, no UI)
 cargo run -p forge-lab
 
-# 3) frontend → :5175 (proxies /api to the live backend :8091)
+# 3) frontend → :5175 (proxies /api to the live backend :8230)
 cd forge/frontend; npm run dev
 ```
 
-Open `http://localhost:5175`. Hit the lab API directly on `http://localhost:8092`.
+Open `http://localhost:5175`. Hit the lab API directly on `http://localhost:8240`.
 
 ### Split — live only
 
 ```powershell
-cargo run -p forge-live                       # backend  → :8091
+cargo run -p forge-live                       # backend  → :8230
 cd forge/frontend; npm run dev                # frontend → :5175
 ```
 
 ### Split — lab only
 
 ```powershell
-cargo run -p forge-lab                        # API only → :8092  (no frontend)
+cargo run -p forge-lab                        # API only → :8240  (no frontend)
 ```
 
 ### forge extras

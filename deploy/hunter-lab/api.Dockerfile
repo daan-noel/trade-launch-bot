@@ -58,5 +58,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /usr/local/bin/hunter-lab /usr/local/bin/hunter-lab
 # HOST/PORT/SWEEP_LAKE_DIR are set in deploy/hunter.compose.yml.
-EXPOSE 8082
+# EXPOSE is documentation-only; the real bind is the injected PORT (LAB_API_PORT).
+EXPOSE 8140
 CMD ["hunter-lab"]

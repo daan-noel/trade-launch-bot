@@ -172,15 +172,15 @@ sqlx migrate run                     # apply migrations/0001,0002
 cargo check -p forge-live -p forge-lab   # typecheck the SLP bins (use --target-dir target-check if a bin is running)
 cargo tree -p forge-live               # dep-partition check (no duckdb/arrow/parquet)
 cargo tree -p forge-lab                # dep-partition check (no pump-trader/ingest-laserstream/tonic)
-cargo run -p forge-live                # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8091
+cargo run -p forge-live                # LIVE box: needs Postgres + Helius gRPC/keys; HTTP :8230
 cargo run -p forge-live -- wallet-encrypt <keypair.json> <key_ref>  # envelope-encrypt dev wallet (needs WALLET_KEYSTORE + LAUNCHER_KEK_PASSPHRASE)
 cargo run -p forge-live -- wallet-verify <key_ref> <expected_address>  # restore runbook: confirm a keystore blob decrypts to the expected pubkey
-cargo run -p forge-lab                 # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8092
+cargo run -p forge-lab                 # ANALYSIS box: needs Postgres only; NO keys / NO gRPC; HTTP :8240
 ```
 
 **DB-gated tests** (generality proof, repo round-trips) self-skip unless
 `PLATFORM_TEST_DATABASE_URL` points at a **dedicated throwaway** DB (they run their own
-migrations). Ports: DB **5556**, live **8091**, lab **8092**.
+migrations). Ports: DB **5556**, live **8230**, lab **8240**.
 
 ## Definition of done
 

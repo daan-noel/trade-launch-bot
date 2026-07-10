@@ -79,9 +79,10 @@ async fn main() -> anyhow::Result<()> {
 
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
     // HTTP bind — lab reads its own LAB_HOST/LAB_PORT (docker's HOST/PORT wins),
-    // defaulting to :8082 so it never collides with the live bin's :8081.
+    // defaulting to :8140 (the deploy LAB_API_PORT) so it never collides with the
+    // live bin's :8130 and local + docker use the same port.
     let http_host = config::resolve_host("LAB_HOST");
-    let http_port = config::resolve_port("LAB_PORT", 8082)?;
+    let http_port = config::resolve_port("LAB_PORT", 8140)?;
     info!(host = %http_host, port = http_port, "Local (analysis) configuration loaded");
 
     // Database — the three workload-isolated pools + migrations. `api_db` backs the

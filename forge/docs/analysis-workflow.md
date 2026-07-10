@@ -37,7 +37,7 @@ EC2 `live` Postgres            workstation
 2. **Export** sealed days from the local mirror to the Parquet lake:
 
    ```powershell
-   PORT=8092 cargo run -p lab -- lake-export --include-today
+   PORT=8240 cargo run -p lab -- lake-export --include-today
    ```
 
    Sealed-days-only, so run it on a cadence (e.g. nightly + `--include-today`)
@@ -53,10 +53,10 @@ EC2 `live` Postgres            workstation
 ## Running the lab HTTP surface
 
 ```powershell
-# lab defaults to :8092 (live uses :8091); pair with a local PG mirror.
-LAB_PORT=8092 cargo run -p lab
-curl http://127.0.0.1:8092/health          # {"status":"ok","service":"lab"}
-curl http://127.0.0.1:8092/api/quote_assets
+# lab defaults to :8240 (live uses :8230); pair with a local PG mirror.
+LAB_PORT=8240 cargo run -p lab
+curl http://127.0.0.1:8240/health          # {"status":"ok","service":"lab"}
+curl http://127.0.0.1:8240/api/quote_assets
 ```
 
 ## Status

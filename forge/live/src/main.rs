@@ -173,8 +173,9 @@ async fn main() -> anyhow::Result<()> {
     info!("API auth enabled (fail-closed): mutating requests require a bearer token");
 
     // Thin HTTP surface over the api pool. Prefer HOST/PORT (what the container
-    // injects — mirrors hunter, so nginx's `proxy_pass http://api:8081` matches),
-    // falling back to the LIVE_HOST/LIVE_PORT local-dev convention (127.0.0.1:8091).
+    // injects — the compose LIVE_API_PORT, so nginx's envsubst upstream matches),
+    // falling back to the LIVE_HOST/LIVE_PORT local-dev convention (127.0.0.1:8230,
+    // the same number as the deploy LIVE_API_PORT).
     let host = std::env::var("HOST")
         .or_else(|_| std::env::var("LIVE_HOST"))
         .unwrap_or_else(|_| "127.0.0.1".into());
@@ -182,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|_| std::env::var("LIVE_PORT"))
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8091);
+        .unwrap_or(8230);
     let api_pool = pools.api.clone();
     let server = HttpServer::new(move || {
         App::new()

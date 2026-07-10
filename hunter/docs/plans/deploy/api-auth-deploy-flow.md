@@ -63,7 +63,7 @@ so the fail-closed `None` arm is really only reachable in theory.
 2. **postgres starts**, runs its healthcheck. Backend waits for healthy.
 3. **backend starts.** `Settings::from_env()` requires `API_AUTH_TOKEN`
    (non-empty) or the process exits. With it, ingest + strategies + HTTP server
-   (`:8081`, internal only) come up. Mutating requests now need the bearer.
+   (`:8130`, internal only) come up. Mutating requests now need the bearer.
 4. **web (nginx) starts.** The nginx image entrypoint runs **envsubst** over
    `default.conf.template`, replacing `${API_AUTH_TOKEN}` with the real value and
    writing the final `/etc/nginx/conf.d/default.conf`. `NGINX_ENVSUBST_FILTER=API_AUTH_TOKEN`

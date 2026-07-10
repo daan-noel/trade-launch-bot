@@ -44,7 +44,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Prefer HOST/PORT (what the container injects) so the docker bind is on
     // 0.0.0.0 and reachable via the published port; fall back to the
-    // LAB_HOST/LAB_PORT local-dev convention (127.0.0.1:8092).
+    // LAB_HOST/LAB_PORT local-dev convention (127.0.0.1:8240, the same number as
+    // the deploy LAB_API_PORT).
     let host = std::env::var("HOST")
         .or_else(|_| std::env::var("LAB_HOST"))
         .unwrap_or_else(|_| "127.0.0.1".into());
@@ -52,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|_| std::env::var("LAB_PORT"))
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8092);
+        .unwrap_or(8240);
     let api_pool = pools.api.clone();
     let server = HttpServer::new(move || {
         App::new()

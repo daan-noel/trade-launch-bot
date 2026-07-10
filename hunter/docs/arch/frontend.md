@@ -28,9 +28,10 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   = live-only `dist/index.html`; `npm run build:lab` = workstation lab build. `tsc` type-checks **both**
   trees in one pass, so a lab type error fails the live build too (acceptable; single package).
 - **Per-app `/api` proxy:** live proxies to the live bin (`VITE_LIVE_DEV_PROXY_TARGET`, default
-  `:8081`); lab proxies to the lab bin (`VITE_LAB_DEV_PROXY_TARGET`, default `:8082`). The lab bin
-  binds `LAB_PORT` (`:8082`) by default, off the live bin's `LIVE_PORT` (`:8081`), so both run side
-  by side with no port override.
+  `:8130`); lab proxies to the lab bin (`VITE_LAB_DEV_PROXY_TARGET`, default `:8140`). The lab bin
+  binds `LAB_PORT` (`:8140`) by default, off the live bin's `LIVE_PORT` (`:8130`), so both run side
+  by side with no port override. Both default to the deploy `*_API_PORT` numbers, so local and docker
+  use the same backend port.
 - **Lab SPA fallback:** the lab dev server isn't served from `index.html`, so a small `configureServer`
   middleware in `vite.lab.config.ts` rewrites top-level HTML navigations to `lab.html` — a hard refresh
   on a deep route (e.g. `/strategies/tpsl1`) loads the lab app, not the live one. The live server uses

@@ -32,7 +32,7 @@ Prereqs: funded dev + bundler wallets in keystore, launch template with
 
 ```powershell
 # POST /api/launches/execute — auto-plans + auto-submits bundle
-curl -X POST http://127.0.0.1:8091/api/launches/execute `
+curl -X POST http://127.0.0.1:8230/api/launches/execute `
   -H "Content-Type: application/json" `
   -d '{"template_id":"<uuid>","dev_wallet_id":"<uuid>"}'
 ```
@@ -42,7 +42,7 @@ Response includes `bundle.jito_bundle_id` when sniper legs submitted.
 Confirm landing (feed-based, no RPC poll):
 
 ```powershell
-curl http://127.0.0.1:8091/api/bundles/<bundle_id>
+curl http://127.0.0.1:8230/api/bundles/<bundle_id>
 # status → landed | dropped | partial
 ```
 
@@ -73,7 +73,7 @@ cargo run -p live
 # Terminal 2 — seed once (edit pubkeys in script first)
 # psql $env:DATABASE_URL -f scripts/seed-dev-launch.sql
 
-# Terminal 3 — UI (proxies /api → :8091)
+# Terminal 3 — UI (proxies /api → :8230)
 cd frontend-launch
 npm install
 npm run dev

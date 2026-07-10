@@ -13,8 +13,9 @@ use std::time::Duration;
 /// forge's `Settings` (DB-only) + `LauncherSettings` (live-only) split.
 ///
 /// **HTTP host/port are read per-bin**, not here: live and lab bind different
-/// ports (`LIVE_PORT` :8081 / `LAB_PORT` :8082) so both can run at once. Each
-/// `main` resolves its own via [`resolve_host`] / [`resolve_port`].
+/// ports (`LIVE_PORT` :8130 / `LAB_PORT` :8140 — matching the deploy
+/// `*_API_PORT`s) so both can run at once. Each `main` resolves its own via
+/// [`resolve_host`] / [`resolve_port`].
 #[derive(Debug, Clone)]
 pub struct Settings {
     // --- Helius endpoints (shared, OPTIONAL) ---
@@ -127,8 +128,9 @@ pub fn resolve_host(specific_key: &str) -> String {
 
 /// Resolve the HTTP bind port. Docker injects `PORT` (the compose `*_API_PORT`)
 /// and that wins; local dev falls back to the bin-specific key (`LIVE_PORT` /
-/// `LAB_PORT`) so live and lab default to *different* ports (8081 / 8082) and
-/// neither needs an inline `PORT=…` override to avoid colliding. Mirrors forge.
+/// `LAB_PORT`) so live and lab default to *different* ports (8130 / 8140 — the
+/// same numbers as the deploy `*_API_PORT`s) and neither needs an inline
+/// `PORT=…` override to avoid colliding. Mirrors forge.
 pub fn resolve_port(specific_key: &str, default: u16) -> anyhow::Result<u16> {
     if let Ok(raw) = std::env::var("PORT") {
         return raw

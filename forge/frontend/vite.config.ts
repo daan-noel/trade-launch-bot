@@ -9,11 +9,11 @@ export default defineConfig({
     port: 5175,
     proxy: {
       '/api': {
-        target: process.env.VITE_LIVE_PROXY ?? 'http://127.0.0.1:8091',
+        target: process.env.VITE_LIVE_PROXY ?? 'http://127.0.0.1:8230',
         changeOrigin: true,
       },
       '/health': {
-        target: process.env.VITE_LIVE_PROXY ?? 'http://127.0.0.1:8091',
+        target: process.env.VITE_LIVE_PROXY ?? 'http://127.0.0.1:8230',
         changeOrigin: true,
       },
     },
