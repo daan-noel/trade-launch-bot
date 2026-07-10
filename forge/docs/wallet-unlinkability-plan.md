@@ -1,7 +1,7 @@
 # Wallet unlinkability / anti-clustering plan
 
-> **Status: PLANNED (not started).** Extends `wallet-funding-plan.md` +
-> `jit-funding-plan.md` + decision **D5**. Goal: make our launch/trade wallets
+> **Status: PLANNED (not started).** Extends the (now-implemented, retired-to-git)
+> `wallet-funding-plan.md` + `jit-funding-plan.md` design + decision **D5**. Goal: make our launch/trade wallets
 > resist on-chain clustering by *other traders* (snipers, copy-bots, rug-checkers,
 > rival launchers). **Scope of protection:** other on-chain observers — NOT the
 > exchange (it KYCs us) and NOT law enforcement. Bulk CEX automation carries real

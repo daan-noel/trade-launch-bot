@@ -175,4 +175,4 @@ to each other.
 | Balance poller (`funding` → `funded`) | [live/src/main.rs](../crates/live/src/main.rs) |
 | HTTP endpoint | [live/src/http.rs](../crates/live/src/http.rs) |
 | Fund button (frontend) | [frontend-launch/src/features/wallets/WalletPoolPage.tsx](../frontend-launch/src/features/wallets/WalletPoolPage.tsx) |
-| Design plan | [docs/wallet-funding-plan.md](wallet-funding-plan.md) · [docs/jit-funding-plan.md](jit-funding-plan.md) |
+| Design plan | retired — `wallet-funding-plan.md` + `jit-funding-plan.md` (both fully implemented; full detail in git history) |
