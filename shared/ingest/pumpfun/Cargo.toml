@@ -1,0 +1,48 @@
+[package]
+name = "ingest-pumpfun"
+version = "0.1.0"
+edition = "2021"
+description = "Pump.fun ingest venue — decoders + protocol descriptor + gRPC transport over the venue-agnostic `ingest-core` engine. Lib name stays `ingest_laserstream` so consumers compile unchanged (back-compat façade)."
+
+[lib]
+# Lib target name kept from the pre-split crate so the `ingest_laserstream::`
+# use paths in hunter/live + forge/live need zero edits. The façade in lib.rs
+# re-exports every module `ingest-core` now owns.
+name = "ingest_laserstream"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Forward to ingest-core so the moved raw_tx module + IngestEvent::RawTx variant
+# (and the backfill module) exist when a consumer requests the feature.
+raw-tx = ["ingest-core/raw-tx"]
+rpc-backfill = ["ingest-core/rpc-backfill"]
+
+[dependencies]
+# Venue-agnostic engine: proto wire types, IngestEvent, config, slot_anchor,
+# raw_tx (feat), backfill (feat).
+ingest-core = { path = "../core" }
+
+# gRPC transport
+tonic = { version = "0.10", features = ["tls", "tls-webpki-roots"] }
+prost = "0.12"
+tokio-stream = "0.1"
+
+# Runtime + utils
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+thiserror = "1"
+
+# Shared state deps
+dashmap = "4.0"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Base58 / Base64 (protocol / pool PDA + decoder event payloads)
+bs58 = "0.5"
+base64 = "0.22"
+
+# Borsh deserialization (pump.fun on-chain structs)
+borsh = { version = "1", features = ["derive"] }
+
+# Solana SDK: PDA derivation in pool.rs
+solana-sdk = "1.17.27"

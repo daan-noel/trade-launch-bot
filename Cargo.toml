@@ -22,7 +22,9 @@ members = [
     # executor write-stack: venue-agnostic engine + pump.fun venue (was pump-trader)
     "shared/executor/core",
     "shared/executor/pumpfun",
-    "shared/ingest-laserstream",
+    # ingest read-stack: venue-agnostic engine + pump.fun venue (was ingest-laserstream)
+    "shared/ingest/core",
+    "shared/ingest/pumpfun",
     "shared/ingest/websocket",
     # forge (was solana-launch-platform); lake -> forge/lab/src/lake module,
     # ingest-host -> forge/live/src/ingest module (both folded, no longer crates)
@@ -63,7 +65,12 @@ version = "0.1.0"
 # consumers compile unchanged through the façade; only the path/package changed.
 pump-trader        = { package = "executor-pumpfun", path = "shared/executor/pumpfun" }
 executor-core      = { path = "shared/executor/core" }
-ingest-laserstream = { path = "shared/ingest-laserstream", features = ["raw-tx"] }
+# Ingest read-stack split into engine/venue. The dependency KEY stays
+# `ingest-laserstream` (+ `package = "ingest-pumpfun"`, lib name still
+# `ingest_laserstream`) so both `*-live` consumers compile unchanged through the
+# façade; only the path/package changed.
+ingest-laserstream = { package = "ingest-pumpfun", path = "shared/ingest/pumpfun", features = ["raw-tx"] }
+ingest-core        = { path = "shared/ingest/core" }
 
 # Shared third-party versions pinned once (mirrors meme-trading's set).
 tokio     = { version = "1", features = ["full"] }

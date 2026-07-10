@@ -13,30 +13,24 @@
 //!
 //! The host owns all sinks (DB, cache, SSE, strategy, watchdog). The crate emits
 //! decoded [`event::IngestEvent`]s out a bounded mpsc channel and never reads env.
-#[allow(clippy::all, dead_code)]
-#[rustfmt::skip]
-pub mod proto {
-    include!("generated/mod.rs");
-}
+// ── Venue-agnostic engine (moved to `ingest-core` in Phase G) ──────────────────
+// Re-exported at their original paths so both external `ingest_laserstream::{proto,
+// config, event, …}` and internal `crate::proto` / `crate::config` / `crate::error`
+// references resolve unchanged (zero-edit back-compat façade).
+pub use ingest_core::{config, error, event, proto, slot_anchor};
 
 #[cfg(feature = "rpc-backfill")]
-pub mod backfill;
-pub mod config;
+pub use ingest_core::backfill;
+#[cfg(feature = "raw-tx")]
+pub use ingest_core::raw_tx;
+
+// ── Pump.fun venue (this crate) ────────────────────────────────────────────────
 pub mod decode;
-pub mod error;
-pub mod event;
 pub mod pool;
 pub mod protocol;
-
-pub mod slot_anchor;
 pub mod transport;
 
-#[cfg(feature = "raw-tx")]
-pub mod raw_tx;
-
-pub use config::{Commitment, IngestConfig};
-pub use error::{IngestError, Result};
-pub use event::IngestEvent;
+pub use ingest_core::{Commitment, IngestConfig, IngestError, IngestEvent, Result};
 pub use pool::PoolIndex;
 pub use protocol::Protocol;
 

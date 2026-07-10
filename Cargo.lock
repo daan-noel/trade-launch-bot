@@ -2500,7 +2500,7 @@ dependencies = [
  "dotenvy",
  "forge-core",
  "forge-launcher",
- "ingest-laserstream",
+ "ingest-pumpfun",
  "reqwest",
  "serde",
  "serde_json",
@@ -3016,7 +3016,7 @@ dependencies = [
  "executor-pumpfun",
  "futures-util",
  "hunter-core",
- "ingest-laserstream",
+ "ingest-pumpfun",
  "reqwest",
  "serde",
  "serde_json",
@@ -3290,17 +3290,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "ingest-laserstream"
+name = "ingest-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bincode",
+ "bs58 0.5.1",
+ "chrono",
+ "prost",
+ "serde_json",
+ "solana-sdk",
+ "thiserror",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
+name = "ingest-pumpfun"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
  "borsh 1.7.0",
  "bs58 0.5.1",
  "chrono",
  "dashmap 4.0.2",
+ "ingest-core",
  "prost",
- "serde_json",
  "solana-sdk",
  "thiserror",
  "tokio",

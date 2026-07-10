@@ -338,59 +338,59 @@ cost-model constants single-sourced.
 
 ---
 
-## PART 3 — Ingest redesign (`ingest-redesign-plan.md`) ⚠DERIVED
+## PART 3 — Ingest redesign → **`docs/ingest-redesign-plan.md`** (reconciled 2026-07-09)
 
-> **⚠ Every item below is INFERRED by me** from `monorepo-structure-plan.md` (§ shared/ingest,
-> rules 4–5) and the `executor-redesign-plan.md` cross-references — **not** from an actual
-> `ingest-redesign-plan.md`, which was not provided. Treat this Part as a scaffold: **reconcile
-> phase-by-phase against the real plan before running any step.** Structure mirrors Part 2 because
-> the two stacks are deliberately symmetric.
+> **✅ RECONCILED.** The old `⚠DERIVED` scaffold has been replaced by a real, source-verified plan in
+> **`docs/ingest-redesign-plan.md`** (authored against the actual `shared/ingest-laserstream` crate).
+> The bullets below are a **summary** — `ingest-redesign-plan.md` is the source of truth (module→crate
+> table, the `IngestVenue` seam design, exact feature/dep splits, consumer surface). Key reconciliation:
+> the transport is **pump-coupled** (`classify_tx` on log IDs, hardcoded `"pumpfun"` filter key,
+> `Arc<Protocol>` threaded through), so "venue-agnostic core" needs an `IngestVenue` **trait seam**
+> (analogous to Phase A's `Engine`/`Venue`) — that seam is **Phase H**, so **Phase G** was re-scoped
+> to a pure no-seam leaf-move to keep its gate cheap to trust.
 
-Read side. Splits `shared/ingest-laserstream` into an engine + venue decoder, makes the provider a
-config axis, and collapses the per-product mapping into a `live/src/ingest/` module. **Totally
+Read side. Splits `shared/ingest-laserstream` into a transport/pipeline engine + a pump venue decoder,
+makes the provider a config axis, and keeps the per-product `live/src/ingest/` bridges. **Totally
 separate from Part 2** — no crate crosses between the two stacks.
 
-Target crates: **`ingest-core`** (`shared/ingest/core/`, venue-agnostic: transport/pipeline/
-reconnect + `Decoder` trait + neutral `IngestEvent`, provider-as-config) →
-**`ingest-pumpfun`** (`shared/ingest/pumpfun/`, pump decoders + own protocol consts, deps
-`ingest-core`) → **`ingest-websocket`** (already moved in Phase 1.1, stub second transport).
+Target crates: **`ingest-core`** (`shared/ingest/core/`, lib `ingest_core`; venue-agnostic transport/
+pipeline/reconnect + `IngestVenue` trait + neutral `IngestEvent`, provider-as-config) →
+**`ingest-pumpfun`** (`shared/ingest/pumpfun/`, **lib stays `ingest_laserstream`** for a zero-edit
+façade; pump decoders + protocol consts + `PumpFunVenue`, deps `ingest-core`) →
+**`ingest-websocket`** (positioned in Phase 1.1, stub second transport).
 
-### Phase G — Split `ingest-laserstream` → `ingest-core` + `ingest-pumpfun` (no behavior change) ⚠DERIVED
-- [ ] `git mv shared/ingest-laserstream shared/ingest/pumpfun` (pkg `ingest-pumpfun`); create
-      `shared/ingest/core` (pkg `ingest-core`). Add both to root `[workspace]` members.
-- [ ] Move to **`ingest-core`** (venue-agnostic): transport/Yellowstone-gRPC connection,
-      pipeline/reconnect, the neutral `IngestEvent` type, and the new `Decoder` trait seam.
-- [ ] Keep in **`ingest-pumpfun`**: pump decoders (`grpc.rs` `decode_curve_pb`, AMM decode),
-      protocol consts (self-contained copy — the executor stack keeps its own; deliberate).
-- [ ] **Back-compat façade** so `hunter/live` + `forge/live` compile unchanged this phase;
-      repoint the direct consumers' Cargo deps only.
-- **Gate G:** `cargo build -p hunter-live -p forge-live` green via façade;
-      `cargo test -p ingest-core -p ingest-pumpfun` green; `cargo tree -p hunter-lab`/`-p forge-lab`
-      link **none** of `ingest-core`/`ingest-pumpfun`.
+### Phase G — Reposition + create crates + move venue-neutral **leaves** (no seam yet) — ✅ DONE (2026-07-09)
+- [x] `git mv shared/ingest-laserstream shared/ingest/pumpfun` (pkg `ingest-pumpfun`, kept lib
+      `ingest_laserstream`); created `shared/ingest/core` (pkg `ingest-core`, lib `ingest_core`). Fixed
+      `[workspace] members` + workspace dep key (`package = "ingest-pumpfun"`) + both consumer deps.
+- [x] Moved to **`ingest-core`** the zero-pump-coupling leaves: `error`, `config`, `event`, `proto/`,
+      `slot_anchor`, `raw_tx` (feat), `backfill` (feat) + feature defs/deps. Transport + `Ingest`/
+      `IngestHandle` + `decode/` + `protocol`/`pool` **stayed in pumpfun**. (`base64` kept dual — the
+      pump decoders use it too.)
+- [x] **Back-compat façade** (`pub use ingest_core::{…}` at old paths) → **zero `.rs` edits** in
+      hunter/forge.
+- **Gate G:** ✅ `cargo build -p hunter-live -p forge-live` + `cargo check --workspace` green via
+      façade; `cargo test -p ingest-core -p ingest-pumpfun` green; `cargo tree -i` from both `*-lab`
+      link **none** of the two (present in `*-live` trees); `git status` clean (renames only). Full
+      detail in `docs/ingest-redesign-plan.md`.
 
-### Phase H — `Decoder` trait + neutral `IngestEvent` + provider-as-config ⚠DERIVED
-- [ ] Formalize the `Decoder` trait in `ingest-core`; `ingest-pumpfun` implements it. Emit only the
-      neutral `IngestEvent` across the seam.
-- [ ] **Provider = config** inside `ingest-core`: endpoint · pluggable `Auth` · capability flags —
-      so Helius→Triton/Shyft (same Yellowstone gRPC) is a config change, no new crate.
-- [ ] Carry forward the known decode fixes as guarded behavior: log-truncation dropped-legs
-      (use inner-ix CPI events on "Log truncated"), and the still-exposed **AMM path** truncation
-      (verify/close per the real plan).
-- **Gate H:** decoder unit tests over fixture logs (curve + AMM, incl. truncated-log fallback)
-      green; switching provider config compiles + connects with no crate change.
+### Phase H — `IngestVenue` seam + generic transport/`Ingest` + provider-as-config — NOT STARTED
+- [ ] `ingest-core`: `IngestVenue` trait (`classify`/`decode`/`subscription_accounts`/`derive_pool`/
+      `filter_key`, static dispatch, `Relevance` assoc type) + move transport + `Ingest<V>` into core.
+- [ ] `ingest-pumpfun`: `PumpFunVenue` impl (`Relevance = TxRelevance`); façade `type Ingest =
+      ingest_core::Ingest<PumpFunVenue>` + builder shim keeps `.protocol(Protocol)` working.
+- [ ] Provider-as-config: `Auth` + endpoint/capability in core; Helius→Triton/Shyft = config, no crate.
+- **Gate H:** decoder unit tests (curve + AMM + truncated-log fallback) green; provider swap type-checks
+      with no crate change; partition holds. Live smoke test EC2-gated.
 
-### Phase I — Collapse `ingest-host` mapping into per-product `live/src/ingest/` modules ⚠DERIVED
-- [ ] Confirm `forge/live/src/ingest/` (moved in Phase 1.3) consumes `ingest-core` +
-      `ingest-pumpfun` **directly**; the old `ingest-host` `consumer.rs`/`map.rs`/`pumpfun.rs`
-      live here as a **module**, not a crate.
-- [ ] Confirm `hunter/live/src/ingest/` follows the same bridge pattern. Both products now read
-      identically: shared ingest stack + per-product `src/ingest/` bridge. `lab` links neither.
-- **Gate I:** `cargo tree -p forge-live` / `-p hunter-live` show `ingest-core` + `ingest-pumpfun`
-      but no `ingest-host` crate; `cargo tree -p *-lab` link neither.
+### Phase I — Confirm per-product `live/src/ingest/` bridges read core+pumpfun — NOT STARTED
+- [ ] Confirm `forge/live/src/ingest/` + `hunter/live/src/ingest/` read through the façade unchanged;
+      carry forward + regression-test the log-truncation dropped-legs fix (+ close the AMM-path case).
+- **Gate I:** `cargo tree -p *-live` show `ingest-core`+`ingest-pumpfun`, no `ingest-host` crate;
+      `*-lab` link neither; truncation regression tests pass.
 
-### Phase J — WebSocket transport (only if actually switching) ⚠DERIVED
-- [ ] Keep `shared/ingest/websocket` as the stub second-transport sibling to `core`. Flesh out
-      **only** if you actually move off gRPC; otherwise leave as the documented stub.
+### Phase J — WebSocket transport stub — NOT STARTED
+- [ ] Keep `shared/ingest/websocket` a stub sibling to `core`; flesh out only if moving off gRPC.
 - **Gate J:** stub compiles as a workspace member; no consumer forced to link it.
 
 **Part 3 exit gate:** full-workspace `cargo build` green; `scripts/dep-partition-check.{sh,ps1}`
