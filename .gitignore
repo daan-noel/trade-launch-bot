@@ -12,15 +12,37 @@ target-check/
 **/*.rs.bk
 
 # --- Node / frontend ---
+# NOTE: package-lock.json is intentionally COMMITTED (like Cargo.lock above) —
+# the frontend Docker images build with `npm ci`, which REQUIRES a committed,
+# in-sync lockfile for reproducible installs. Ignoring it let forge's lockfile
+# drift incomplete (missing Linux platform binaries) and broke `npm ci`.
 node_modules/
 dist/
 build/
 .vite/
-package-lock.json
 *.tsbuildinfo
 .pnp
 .pnp.js
 coverage/
+
+# --- Temp / scratch / runtime lock files ---
+# Policy: all transient temp files and runtime/OS/process lock files are ignored.
+# NOT dependency lockfiles — package-lock.json (ends in .json, unaffected below)
+# and Cargo.lock (re-included via the negation) are deliberately COMMITTED so
+# `npm ci` / cargo builds stay reproducible; see the Cargo.lock note up top.
+*.tmp
+*.temp
+*.bak
+*~
+~$*
+.~lock.*
+*.pid
+postmaster.pid
+*.wal
+*.db-shm
+*.db-wal
+*.lock
+!Cargo.lock
 
 # --- Env / secrets / keys ---
 .env
@@ -34,6 +56,9 @@ aws.pub
 keystore/
 wallet-backups/
 wallet-backups/**/keystore/
+# Envelope-encrypted wallet blobs — ignore by TYPE too, not just by keystore/
+# location (defense in depth; matches .dockerignore's **/*.enc exclusion).
+*.enc
 
 # --- Data lake / parquet / sweep artifacts ---
 *.parquet

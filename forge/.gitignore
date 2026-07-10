@@ -8,7 +8,9 @@ target-check
 .env.backup
 *.pem
 keystore/
-package-lock.json
+*.enc
+# package-lock.json is intentionally COMMITTED — the frontend image builds with
+# `npm ci`, which requires an in-sync committed lockfile (see root .gitignore).
 
 
 # Lake data (workstation-local Parquet; never committed)
