@@ -270,11 +270,14 @@ async fn submit_jito_bundle(url: &str, txs: &[VersionedTransaction]) -> Result<S
         encoded.push(STANDARD.encode(wire));
     }
 
+    // Jito's `sendBundle` defaults to base58-decoding each tx; we send base64
+    // (v0 ALT legs are binary-dense), so the encoding option is mandatory — without
+    // it Jito rejects with "transaction #0 could not be decoded".
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "sendBundle",
-        "params": [encoded]
+        "params": [encoded, { "encoding": "base64" }]
     });
 
     let client = reqwest::Client::new();
