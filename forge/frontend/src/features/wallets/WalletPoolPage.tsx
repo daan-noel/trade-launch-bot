@@ -3,6 +3,7 @@ import {
   useWalletPoolQuery,
   useGenerateWalletsMutation,
   useFundPoolMutation,
+  useTransferSolMutation,
   useExportWalletKeyMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
@@ -22,7 +23,11 @@ import {
   AddressDisplay,
 } from '@shared/components/ui';
 import { formatAge, formatSol } from '@shared/lib/format';
-import type { ManagedWalletPool, WalletRole, WalletStatus } from '@shared/types';
+import type { ManagedWalletPool, TransferReport, WalletRole, WalletStatus } from '@shared/types';
+
+// A wallet in one of these statuses can't be an ad-hoc transfer source (a launch is
+// mid-flight against it, or it's retired) — mirrors the backend status guard.
+const NON_SOURCE_STATUSES = new Set<WalletStatus>(['funding', 'reserved', 'retired']);
 
 const LOW_POOL_THRESHOLD = 3;
 const ROLES: WalletRole[] = ['dev', 'bundler', 'treasury', 'trading'];
@@ -130,6 +135,15 @@ export function WalletPoolPage() {
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();
 
+  // Wallet-to-wallet transfer dialog, keyed by the source wallet.
+  const [transferTarget, setTransferTarget] = useState<ManagedWalletPool | null>(null);
+  const [transferDest, setTransferDest] = useState('');
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferMax, setTransferMax] = useState(false);
+  const [transferResult, setTransferResult] = useState<TransferReport | null>(null);
+  const [transferErr, setTransferErr] = useState<string | null>(null);
+  const [transferSol, transferring] = useTransferSolMutation();
+
   // Private-key export dialog. The secret + revealed key live ONLY in local
   // state (never Redux/RTK cache) and are wiped when the dialog closes.
   const [exportTarget, setExportTarget] = useState<ManagedWalletPool | null>(null);
@@ -163,6 +177,51 @@ export function WalletPoolPage() {
     if (!revealedKey) return;
     await navigator.clipboard.writeText(revealedKey);
     setCopied(true);
+  };
+
+  const openTransfer = (w: ManagedWalletPool) => {
+    setTransferTarget(w);
+    setTransferDest('');
+    setTransferAmount('');
+    setTransferMax(false);
+    setTransferResult(null);
+    setTransferErr(null);
+  };
+
+  const closeTransfer = () => {
+    setTransferTarget(null);
+    setTransferDest('');
+    setTransferAmount('');
+    setTransferMax(false);
+    setTransferResult(null);
+    setTransferErr(null);
+  };
+
+  // Candidate destinations for the open transfer: any other wallet that isn't
+  // retired (topping up a shredded wallet is pointless).
+  const transferDestinations = useMemo(
+    () =>
+      transferTarget
+        ? wallets.filter((w) => w.id !== transferTarget.id && w.status !== 'retired')
+        : [],
+    [wallets, transferTarget],
+  );
+
+  const onTransfer = async () => {
+    if (!transferTarget || !transferDest) return;
+    if (!transferMax && !(Number(transferAmount) > 0)) return;
+    setTransferErr(null);
+    try {
+      const res = await transferSol({
+        from_id: transferTarget.id,
+        to_id: transferDest,
+        ...(transferMax ? { max: true } : { amount_sol: Number(transferAmount) }),
+      }).unwrap();
+      setTransferResult(res);
+    } catch (e) {
+      setTransferResult(null);
+      setTransferErr(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'Transfer failed.');
+    }
   };
 
   const counts = useMemo(() => {
@@ -248,16 +307,31 @@ export function WalletPoolPage() {
       header: '',
       align: 'right',
       render: (w) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            closeExport();
-            setExportTarget(w);
-          }}
-        >
-          Export key
-        </Button>
+        <div className="flex justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={NON_SOURCE_STATUSES.has(w.status)}
+            title={
+              NON_SOURCE_STATUSES.has(w.status)
+                ? 'A launch is mid-flight against this wallet, or it is retired — not a valid source'
+                : undefined
+            }
+            onClick={() => openTransfer(w)}
+          >
+            Transfer
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              closeExport();
+              setExportTarget(w);
+            }}
+          >
+            Export key
+          </Button>
+        </div>
       ),
     },
   ];
@@ -424,6 +498,97 @@ export function WalletPoolPage() {
                       {copied ? 'Copied' : 'Copy'}
                     </Button>
                     <Button variant="primary" onClick={closeExport}>
+                      Done
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {transferTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={closeTransfer}
+        >
+          <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <Card title="Transfer SOL">
+              <p className="text-xs muted">
+                From <RolePill role={transferTarget.role} />{' '}
+                <span className="mono">{transferTarget.address}</span>. The source signs and pays
+                the fee.
+              </p>
+
+              {!transferResult ? (
+                <div className="mt-3 space-y-3">
+                  <Field label="Destination wallet" htmlFor="transfer-dest">
+                    <Select
+                      id="transfer-dest"
+                      value={transferDest}
+                      onChange={(e) => setTransferDest(e.target.value)}
+                    >
+                      <option value="">Select a wallet…</option>
+                      {transferDestinations.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.role} · {w.address.slice(0, 6)}…{w.address.slice(-6)}
+                          {w.label ? ` · ${w.label}` : ''}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <div className="flex items-end gap-3">
+                    <Field label="Amount (SOL)" htmlFor="transfer-amount" className="flex-1">
+                      <Input
+                        id="transfer-amount"
+                        type="number"
+                        min={0}
+                        step="any"
+                        value={transferAmount}
+                        disabled={transferMax}
+                        onChange={(e) => setTransferAmount(e.target.value)}
+                        placeholder="0.05"
+                      />
+                    </Field>
+                    <label className="mb-2 flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={transferMax}
+                        onChange={(e) => setTransferMax(e.target.checked)}
+                      />
+                      Max (sweep to ~0)
+                    </label>
+                  </div>
+                  {transferErr && <Banner tone="bad">{transferErr}</Banner>}
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" onClick={closeTransfer}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      loading={transferring.isLoading}
+                      disabled={!transferDest || (!transferMax && !(Number(transferAmount) > 0))}
+                      onClick={onTransfer}
+                    >
+                      Send
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  <Banner tone="good">
+                    {transferResult.signature ? (
+                      <>
+                        Sent <strong>{formatSol(transferResult.lamports_sent)}</strong> —{' '}
+                        <span className="mono break-all">{transferResult.signature}</span>
+                      </>
+                    ) : (
+                      'Nothing to send — the source balance was at or below the sweep floor.'
+                    )}
+                  </Banner>
+                  <div className="flex justify-end">
+                    <Button variant="primary" onClick={closeTransfer}>
                       Done
                     </Button>
                   </div>

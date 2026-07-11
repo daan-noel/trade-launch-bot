@@ -28,6 +28,8 @@ import type {
   TokenOverview,
   TokenPosition,
   TradePriced,
+  TransferArgs,
+  TransferReport,
 } from '@shared/types';
 
 const q = (params: Record<string, string | number | undefined>) => {
@@ -128,6 +130,10 @@ export const api = baseApi.injectEndpoints({
     >({
       query: (body) => ({ url: '/api/wallet_pool/fund_for_launch', method: 'POST', body }),
       invalidatesTags: ['Wallets', 'Bootstrap'],
+    }),
+    transferSol: build.mutation<TransferReport, TransferArgs>({
+      query: (body) => ({ url: '/api/wallet_pool/transfer', method: 'POST', body }),
+      invalidatesTags: ['Wallets'],
     }),
     // DANGER: returns raw base58 private key. Secret goes in the X-Export-Secret
     // header (never the URL/body cache). No tag invalidation — pure read, and we
@@ -276,6 +282,7 @@ export const {
   useGenerateWalletsMutation,
   useFundPoolMutation,
   useFundForLaunchMutation,
+  useTransferSolMutation,
   useExportWalletKeyMutation,
   useLaunchesQuery,
   useExecuteLaunchMutation,

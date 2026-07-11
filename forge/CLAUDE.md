@@ -59,6 +59,13 @@ Phase 4 done (wallet-pool plan fully implemented) — `launcher::spawn_dust_swee
 blobs + a full `managed_wallets.json` export, KEK never included); new
 `wallet-verify` CLI backs the restore runbook (decrypt + confirm a derived
 address before trusting a restored pool).
+**Operator wallet→wallet transfer** (docs/wallet-transfer-plan.md): move SOL between
+any two managed wallets from the dashboard (`launcher::transfer_between_wallets`,
+`POST /api/wallet_pool/transfer`, Wallet Pool page per-row "Transfer" modal with an
+exact-SOL or **Max**-sweep amount). No new transfer-assembly — routes through the
+`plan_exec::execute_transfer` SSOT (which now also returns the exact lamports moved);
+the source signs + pays the fee; a source that's `funding`/`reserved`/`retired` is
+rejected; treasury-side moves take the funding lock.
 **Next:** see [docs/roadmap-plan.md](docs/roadmap-plan.md) — Phase 3 live trading.
 Wallet-pool Phase 5+ (automated multi-hop funding, fingerprint picker UI, KMS
 KEK) is explicitly deferred — see `docs/roadmap-plan.md`'s Phase 5+ Growth section.

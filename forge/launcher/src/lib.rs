@@ -25,6 +25,7 @@ mod wallet_encrypt;
 mod wallet_export;
 mod wallet_funding;
 mod wallet_pool;
+mod wallet_transfer;
 mod wallet_verify;
 
 pub use alt::run_create_alt;
@@ -61,4 +62,5 @@ pub use wallet_funding::{
     FundScope, FundingStrategy, StrategyParams, Transfer, WalletFundOutcome,
 };
 pub use wallet_pool::{generate_wallets, spawn_balance_poller, spawn_reservation_sweep};
+pub use wallet_transfer::{transfer_between_wallets, TransferAmount, TransferReport};
 pub use wallet_verify::run_wallet_verify;

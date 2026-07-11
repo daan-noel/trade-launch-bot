@@ -4,10 +4,10 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use crate::ingest::IngestHandle;
 use launcher::{
     arm_ladder, create_metadata_template, execute_action, execute_bundle, execute_launch,
-    export_wallet_base58, fund_for_launch, fund_once, start_volume_bot, update_metadata_template,
-    FundMode, FundScope, LadderRung, LaunchRequest, LauncherSettings, ManageRequest,
-    NewMetadataTemplateRequest, PumpfunTemplateParams, UpdateMetadataTemplateRequest, VolumeConfig,
-    WalletSelection,
+    export_wallet_base58, fund_for_launch, fund_once, start_volume_bot, transfer_between_wallets,
+    update_metadata_template, FundMode, FundScope, LadderRung, LaunchRequest, LauncherSettings,
+    ManageRequest, NewMetadataTemplateRequest, PumpfunTemplateParams, TransferAmount,
+    UpdateMetadataTemplateRequest, VolumeConfig, WalletSelection,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -81,6 +81,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             "/api/wallet_pool/fund_for_launch",
             web::post().to(wallet_pool_fund_for_launch),
         )
+        .route("/api/wallet_pool/transfer", web::post().to(wallet_pool_transfer))
         .route(
             "/api/wallet_pool/{id}/export",
             web::post().to(wallet_pool_export),
@@ -412,6 +413,42 @@ async fn wallet_pool_fund_for_launch(
     )
     .await
     .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
+#[derive(serde::Deserialize)]
+struct TransferBody {
+    from_id: Uuid,
+    to_id: Uuid,
+    /// Whole SOL to move. Ignored when `max` is set; required otherwise.
+    #[serde(default)]
+    amount_sol: Option<f64>,
+    /// Sweep the source to ~0 instead of an exact amount.
+    #[serde(default)]
+    max: Option<bool>,
+}
+
+/// Operator wallet-to-wallet SOL move (docs/wallet-transfer-plan.md). The source
+/// signs + pays the fee. Bearer-gated like every mutating route. 503 if the
+/// launcher isn't configured. Returns the `TransferReport` (signature + lamports).
+async fn wallet_pool_transfer(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    body: web::Json<TransferBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    let body = body.into_inner();
+    let amount = if body.max == Some(true) {
+        TransferAmount::Max
+    } else {
+        let sol = body
+            .amount_sol
+            .ok_or_else(|| actix_web::error::ErrorBadRequest("amount_sol required unless max=true"))?;
+        TransferAmount::Exact(sol)
+    };
+    let report = transfer_between_wallets(pool.get_ref(), settings, body.from_id, body.to_id, amount)
+        .await
+        .map_err(e400)?;
     Ok(HttpResponse::Ok().json(report))
 }
 

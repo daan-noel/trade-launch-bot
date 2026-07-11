@@ -21,7 +21,8 @@ use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
 
 /// Only sweep wallets holding more than this — not worth a signed tx + fee for dust.
-const SWEEP_MIN_LAMPORTS: u64 = 100_000; // 0.0001 SOL
+/// Also the floor a `Max` operator transfer reuses (see `wallet_transfer`).
+pub(crate) const SWEEP_MIN_LAMPORTS: u64 = 100_000; // 0.0001 SOL
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// Spawn the dust sweep as a long-lived task. Cheap when idle — bounded to the
@@ -126,7 +127,7 @@ async fn sweep_wallet(
     // sub-fee dust), so stamp 0 — the wallet holds nothing after this.
     ManagedWalletRepo::retire(pool, wallet.id, 0).await?;
     match swept {
-        Some(sig) => info!(
+        Some((sig, _lamports)) => info!(
             managed_wallet_id = %wallet.id, address = %wallet.address, sig = %sig,
             "dust swept to treasury, wallet retired"
         ),

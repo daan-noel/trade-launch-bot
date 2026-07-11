@@ -236,6 +236,25 @@ export interface FundReport {
   outcomes: WalletFundOutcome[];
 }
 
+// Operator wallet-to-wallet SOL move — `POST /api/wallet_pool/transfer`.
+export interface TransferArgs {
+  from_id: string;
+  to_id: string;
+  // Whole SOL; ignored when `max` is set, required otherwise.
+  amount_sol?: number;
+  // Sweep the source to ~0.
+  max?: boolean;
+}
+
+export interface TransferReport {
+  from_id: string;
+  to_id: string;
+  from_address: string;
+  to_address: string;
+  lamports_sent: number;
+  signature: string | null;
+}
+
 export interface MetadataTemplate {
   id: string;
   template_name: string;

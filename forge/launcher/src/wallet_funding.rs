@@ -54,7 +54,7 @@ const FUND_INTERVAL: Duration = Duration::from_secs(60);
 /// across a whole pass makes the snapshot authoritative: at most one pass reads
 /// balances, spends, and writes them back at a time. Correctness over latency —
 /// real SOL is moving, and a warm-pool pass is a fast no-op.
-static FUNDING_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+pub(crate) static FUNDING_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// One planned treasury->wallet transfer. Amount is already jittered.
@@ -838,7 +838,7 @@ async fn send_transfer(
     to: Pubkey,
     lamports: u64,
 ) -> Result<Signature> {
-    crate::plan_exec::execute_transfer(
+    let (sig, _) = crate::plan_exec::execute_transfer(
         rpc,
         treasury_signer.as_ref(),
         from,
@@ -847,7 +847,8 @@ async fn send_transfer(
         true, // confirm
     )
     .await?
-    .context("funding transfer produced no signature")
+    .context("funding transfer produced no signature")?;
+    Ok(sig)
 }
 
 /// Submit a funding transfer WITHOUT waiting for confirmation (manual pass):
@@ -860,7 +861,7 @@ async fn submit_transfer(
     to: Pubkey,
     lamports: u64,
 ) -> Result<Signature> {
-    crate::plan_exec::execute_transfer(
+    let (sig, _) = crate::plan_exec::execute_transfer(
         rpc,
         treasury_signer.as_ref(),
         from,
@@ -869,7 +870,8 @@ async fn submit_transfer(
         false, // submit only
     )
     .await?
-    .context("funding transfer produced no signature")
+    .context("funding transfer produced no signature")?;
+    Ok(sig)
 }
 
 /// Spawn the background funder. Long-lived; keeps every fundable role warm. Gate

@@ -32,6 +32,16 @@ const MAX_LEG_SELL_ATTEMPTS: u8 = 3;
 /// Don't sweep a wallet holding less than this (not worth a signed tx + fee).
 const CONSOLIDATE_MIN_LAMPORTS: u64 = 100_000; // 0.0001 SOL
 
+/// A management sell must pay its own base fee + escalating Jito tip across
+/// [`MAX_LEG_SELL_ATTEMPTS`] (each attempt is a separate tx; the tip caps at
+/// 0.005 SOL). Below this floor the wallet is topped up from treasury before the
+/// sell — otherwise a wallet the dust sweep already drained (gas swept while it
+/// still held tokens) has 0 lamports and the sell can only ever time out.
+const SELL_GAS_FLOOR_LAMPORTS: u64 = 6_000_000; // 0.006 SOL
+/// Top a low sell wallet up to this from treasury — headroom for three
+/// escalating-tip attempts (≈3 × 0.005 tip + fees) with margin.
+const SELL_GAS_TOPUP_TARGET_LAMPORTS: u64 = 20_000_000; // 0.02 SOL
+
 /// Execute `req` against `mint`. Requires management to be enabled
 /// (`settings.manage`); the HTTP handler also gates on it for a clean 503, but
 /// this re-checks so the library can't fire trades with it off.
@@ -196,6 +206,68 @@ impl ExecContext {
     }
 }
 
+/// Ensure a sell wallet holds enough SOL to pay the sell's fee + escalating Jito
+/// tip, topping it up from treasury when it's below [`SELL_GAS_FLOOR_LAMPORTS`].
+///
+/// The dust sweep can sweep a token-holding wallet's SOL to treasury (now guarded
+/// against, but wallets stranded before that guard shipped stay dry), leaving a
+/// 0-lamport fee-payer whose sell can only time out. This tops the wallet back up
+/// from treasury (net-neutral: it reclaims the gas the sweep moved there in the
+/// first place). Fail-fast: if a top-up is needed but can't be sent (no treasury /
+/// underfunded), return an actionable error so the leg fails immediately with a
+/// clear cause instead of the opaque "confirmation timed out" after ~3 min of
+/// retries. A wallet already at/above the floor is a no-op (one balance RPC).
+async fn ensure_sell_gas(
+    pool: &PgPool,
+    settings: &LauncherSettings,
+    wallet_address: &str,
+) -> Result<()> {
+    let rpc =
+        RpcClient::new_with_commitment(settings.rpc_url.clone(), CommitmentConfig::confirmed());
+    let addr = Pubkey::from_str(wallet_address).context("parse sell wallet address")?;
+    let balance = rpc.get_balance(&addr).await.context("fetch sell wallet balance")?;
+    if balance >= SELL_GAS_FLOOR_LAMPORTS {
+        return Ok(());
+    }
+
+    // Source the top-up from the best-funded live treasury (`by_role` already
+    // excludes retired). No treasury ⇒ we can't re-gas; say so plainly.
+    let treasury = ManagedWalletRepo::by_role(pool, WalletRole::Treasury.as_str())
+        .await?
+        .into_iter()
+        .max_by_key(|w| w.balance_lamports)
+        .with_context(|| {
+            format!(
+                "sell wallet {wallet_address} has {balance} lamports (below the \
+                 {SELL_GAS_FLOOR_LAMPORTS} gas floor) and no treasury wallet (role=treasury) \
+                 is configured to top it up — fund the wallet manually and retry"
+            )
+        })?;
+    let treasury_addr = Pubkey::from_str(&treasury.address).context("parse treasury address")?;
+    let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
+    let treasury_signer = keystore::resolve_signer(&settings.keystore_dir, &treasury.key_ref, &kek)?;
+
+    let topup = SELL_GAS_TOPUP_TARGET_LAMPORTS.saturating_sub(balance);
+    crate::plan_exec::execute_transfer(
+        &rpc,
+        treasury_signer.as_ref(),
+        treasury_addr,
+        addr,
+        TransferMode::Exact(topup),
+        true, // confirm — the sell that immediately follows needs the SOL on-chain
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "gas top-up of {topup} lamports from treasury {} to sell wallet {wallet_address} \
+             failed (treasury underfunded?) — fund the wallet manually and retry",
+            treasury.address
+        )
+    })?;
+    info!(%wallet_address, balance, topup, treasury = %treasury.address, "topped up sell wallet gas from treasury");
+    Ok(())
+}
+
 /// Build a pump-trader signed by `managed_wallet_id`'s wallet (initialize included).
 async fn build_wallet_trader(
     pool: &PgPool,
@@ -238,6 +310,12 @@ async fn sell_leg(
         info!(%mint, managed_wallet_id = %leg.managed_wallet_id, amount, "MANAGE_DRY_RUN: would sell (no trade placed)");
         return Ok(None);
     }
+
+    // Re-gas the wallet from treasury if it's short — the dust sweep can drain a
+    // token-holding wallet's SOL to treasury, and a 0-lamport fee-payer's sell just
+    // times out. Fails fast with an actionable error if a top-up is needed but
+    // can't be sent, rather than burning the retry budget on a doomed send.
+    ensure_sell_gas(pool, settings, &leg.wallet_address).await?;
 
     let (_wallet, trader) = build_wallet_trader(pool, settings, leg.managed_wallet_id).await?;
 
@@ -334,7 +412,7 @@ async fn consolidate_leg(
 
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
     let signer = keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, &kek)?;
-    let sig = crate::plan_exec::execute_transfer(
+    let (sig, _lamports) = crate::plan_exec::execute_transfer(
         rpc,
         signer.as_ref(),
         address,

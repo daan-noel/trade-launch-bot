@@ -109,7 +109,9 @@ pub async fn build_leg_tx(
 /// Execute a `TransferSol` op as a plain SOL transfer — the SSOT that replaces the
 /// consolidate / dust-sweep / funding raw-transfer sites. `signer` is the source
 /// wallet (it pays the fee and is the `from`); `to` is the op target. Returns the
-/// signature (`None` only when a `SweepAll` had nothing worth sweeping).
+/// signature **and the exact lamports moved** (`None` only when a `SweepAll` had
+/// nothing worth sweeping) — the lamports let a caller report/reconcile the send
+/// without re-deriving the probe-fee remainder itself.
 ///
 /// `confirm` picks the send mode: `true` waits for confirmation (background funding
 /// pass, consolidate, dust-sweep); `false` fire-and-forget (manual funding pass —
@@ -121,7 +123,7 @@ pub async fn execute_transfer(
     to: Pubkey,
     mode: TransferMode,
     confirm: bool,
-) -> Result<Option<Signature>> {
+) -> Result<Option<(Signature, u64)>> {
     let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
 
     let lamports = match mode {
@@ -160,5 +162,5 @@ pub async fn execute_transfer(
     } else {
         rpc.send_transaction(&tx).await.context("submit transfer")?
     };
-    Ok(Some(sig))
+    Ok(Some((sig, lamports)))
 }
