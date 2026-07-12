@@ -67,6 +67,12 @@ pub struct LegStructure {
     pub cu_price: u64,
     pub tip_quote: i64,
     pub ix_order: u8,
+    /// The resolved ix layout (decoration step names, in order) this leg will
+    /// broadcast — the authored layout, or the canonical buy shape. Display-only
+    /// (the dry-run preview shows the exact tx shape); `#[serde(default)]` so rows
+    /// persisted before this field read back fine.
+    #[serde(default)]
+    pub layout: Vec<String>,
 }
 
 /// One composed bundle leg — also the exact persisted shape of a `bundles.legs`

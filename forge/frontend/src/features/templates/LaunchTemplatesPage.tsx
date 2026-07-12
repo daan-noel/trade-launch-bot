@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   useTemplatesQuery,
   useLaunchpadsQuery,
@@ -20,8 +20,9 @@ import {
   Input,
   Select,
 } from '@shared/components/ui';
+import { IxLayoutEditor } from '@shared/components/IxLayoutEditor';
 import { formatAge } from '@shared/lib/format';
-import type { BuyVariant, LaunchTemplate, NewLaunchTemplateInput } from '@shared/types';
+import type { BuyVariant, DecoStep, LaunchTemplate, NewLaunchTemplateInput } from '@shared/types';
 import {
   BUY_VARIANTS,
   VARIANTS,
@@ -57,6 +58,7 @@ export function LaunchTemplatesPage() {
   const [bundleQuotePerLeg, setBundleQuotePerLeg] = useState('');
   const [bundleTipQuote, setBundleTipQuote] = useState('');
   const [legRows, setLegRows] = useState<LegRow[]>([]);
+  const [createLayout, setCreateLayout] = useState<DecoStep[] | undefined>(undefined);
 
   const selectedQuoteAsset = quoteAssets.find((qq) => String(qq.id) === quoteAssetId);
   const decimals = selectedQuoteAsset?.decimals ?? 9;
@@ -84,6 +86,7 @@ export function LaunchTemplatesPage() {
     setBundleQuotePerLeg('');
     setBundleTipQuote('');
     setLegRows([]);
+    setCreateLayout(undefined);
     if (launchpads[0]) setLaunchpadId(String(launchpads[0].id));
     const native = quoteAssets.find((qq) => qq.is_native) ?? quoteAssets[0];
     if (native) setQuoteAssetId(String(native.id));
@@ -105,6 +108,7 @@ export function LaunchTemplatesPage() {
     setBundleQuotePerLeg(toHumanUnits(t.params.bundle_quote_per_leg, legDecimals));
     setBundleTipQuote(toHumanUnits(t.params.bundle_tip_quote, legDecimals));
     setLegRows((t.params.leg_structures ?? []).map((r) => recipeToLegRow(r, legDecimals)));
+    setCreateLayout(t.params.create_layout);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -122,6 +126,16 @@ export function LaunchTemplatesPage() {
   const removeLegRow = (i: number) => setLegRows((r) => r.filter((_, idx) => idx !== i));
   const updateLegRow = (i: number, patch: Partial<LegRow>) =>
     setLegRows((r) => r.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+
+  // Mirror the backend `UniformLayout` audit rule: ≥3 legs sharing an identical
+  // authored layout is a fingerprint tell (the gate rejects it without allow_fingerprint).
+  const uniformLayoutWarning = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of legRows) {
+      if (r.layout) counts.set(r.layout.join(','), (counts.get(r.layout.join(',')) ?? 0) + 1);
+    }
+    return [...counts.values()].some((n) => n >= 3);
+  }, [legRows]);
 
   const canSubmit = templateName && launchpadId && quoteAssetId && variant && metadataTemplateId;
 
@@ -142,6 +156,7 @@ export function LaunchTemplatesPage() {
         bundle_quote_per_leg: toBaseUnits(bundleQuotePerLeg, decimals),
         bundle_tip_quote: toBaseUnits(bundleTipQuote, decimals),
         leg_structures: legRows.length ? legRows.map((r) => legRowToRecipe(r, decimals)) : undefined,
+        create_layout: createLayout,
       },
     };
     try {
@@ -268,6 +283,15 @@ export function LaunchTemplatesPage() {
           </Field>
         </div>
 
+        <div className="mt-3">
+          <IxLayoutEditor
+            label="Create tx ix layout (orders CU/tip around the fused create Core)"
+            value={createLayout}
+            onChange={setCreateLayout}
+            kind="create"
+          />
+        </div>
+
         <div className="mt-4">
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-semibold uppercase tracking-wider muted">Leg structures</h3>
@@ -275,8 +299,16 @@ export function LaunchTemplatesPage() {
           </div>
           <p className="mt-1 text-xs muted">
             Blank fields fall back to the composer defaults: slippage 300–800 bps, cu_limit
-            120k–180k, cu_price 150k–400k, tip 10k–100k lamports.
+            120k–180k, cu_price 150k–400k, tip 10k–100k lamports. CU/tip stay persona-jittered
+            even for a hand-picked variant + layout.
           </p>
+          {uniformLayoutWarning && (
+            <Banner tone="warn" className="mt-2">
+              ≥3 legs share an identical ix layout — the fingerprint auditor flags this
+              (<span className="mono">UniformLayout</span>). Vary the step order across legs, or the
+              launch needs <span className="mono">allow_fingerprint</span> to send.
+            </Banner>
+          )}
           <div className="mt-2 space-y-2">
             {legRows.map((row, i) => (
               <div key={i} className="panel p-3 grid grid-cols-2 md:grid-cols-6 gap-2 items-end">
@@ -296,6 +328,10 @@ export function LaunchTemplatesPage() {
                 <LegRange label={`Tip ${quoteSymbol}`} min={row.tip_quote_min} max={row.tip_quote_max}
                   onMin={(v) => updateLegRow(i, { tip_quote_min: v })} onMax={(v) => updateLegRow(i, { tip_quote_max: v })} />
                 <Button variant="danger" size="sm" onClick={() => removeLegRow(i)}>Remove</Button>
+                <div className="col-span-2 md:col-span-6">
+                  <IxLayoutEditor label="Ix layout" value={row.layout}
+                    onChange={(layout) => updateLegRow(i, { layout })} kind="buy" />
+                </div>
               </div>
             ))}
           </div>

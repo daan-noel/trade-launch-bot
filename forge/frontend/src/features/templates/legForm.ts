@@ -1,4 +1,4 @@
-import type { BuyVariant, LegStructureRecipe } from '@shared/types';
+import type { BuyVariant, DecoStep, LegStructureRecipe } from '@shared/types';
 
 // The dev-buy is NOT a separate variant — it's driven purely by the template's
 // `dev_buy_quote` (> 0 ⇒ create+dev-buy, else plain create), so `create_v2` and
@@ -27,6 +27,8 @@ export interface LegRow {
   cu_price_max: string;
   tip_quote_min: string;
   tip_quote_max: string;
+  // Authored ix layout (decoration step order); undefined ⇒ canonical buy shape.
+  layout?: DecoStep[];
 }
 
 export function emptyLegRow(): LegRow {
@@ -40,6 +42,7 @@ export function emptyLegRow(): LegRow {
     cu_price_max: '',
     tip_quote_min: '',
     tip_quote_max: '',
+    layout: undefined,
   };
 }
 
@@ -72,6 +75,7 @@ export function legRowToRecipe(row: LegRow, decimals: number): LegStructureRecip
     cu_price_max: toInt(row.cu_price_max),
     tip_quote_min: toBaseUnits(row.tip_quote_min, decimals),
     tip_quote_max: toBaseUnits(row.tip_quote_max, decimals),
+    layout: row.layout,
   };
 }
 
@@ -86,5 +90,6 @@ export function recipeToLegRow(recipe: LegStructureRecipe, decimals: number): Le
     cu_price_max: recipe.cu_price_max?.toString() ?? '',
     tip_quote_min: toHumanUnits(recipe.tip_quote_min, decimals),
     tip_quote_max: toHumanUnits(recipe.tip_quote_max, decimals),
+    layout: recipe.layout,
   };
 }

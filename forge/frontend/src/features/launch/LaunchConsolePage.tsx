@@ -22,6 +22,7 @@ import {
   Select,
   StatusPill,
 } from '@shared/components/ui';
+import { canonicalSteps } from '@shared/components/IxLayoutEditor';
 import { formatSig, formatSol, solscanTx } from '@shared/lib/format';
 import { toHumanUnits } from '@features/templates/legForm';
 import type {
@@ -341,6 +342,23 @@ function TemplateSummary({
         <KVRow label="Bundle tip">
           <span className="mono">{amt(p.bundle_tip_quote)}</span>
         </KVRow>
+        <KVRow label="Create ix layout">
+          <span className="mono text-xs">
+            {(p.create_layout ?? canonicalSteps('create')).join(' · ')}
+          </span>
+        </KVRow>
+        {p.leg_structures?.length ? (
+          <KVRow label="Leg shapes">
+            <div className="space-y-0.5">
+              {p.leg_structures.map((r, i) => (
+                <div key={i} className="text-xs">
+                  <span className="mono">{r.variant}</span>{' '}
+                  <span className="muted mono">[{(r.layout ?? canonicalSteps('buy')).join(' · ')}]</span>
+                </div>
+              ))}
+            </div>
+          </KVRow>
+        ) : null}
         {(p.is_mayhem_mode || p.cashback_enabled) && (
           <KVRow label="Flags">
             {p.is_mayhem_mode && <span className="badge badge-warn">mayhem</span>}{' '}

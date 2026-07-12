@@ -4,6 +4,10 @@
 
 export type BuyVariant = 'buy' | 'buy_exact_sol_in' | 'buy_v2' | 'buy_exact_quote_in';
 
+// The ix-layout decoration steps (mirrors `executor_core::DecoStep`). `core` is the
+// opaque on-chain instruction block; the rest are wrappers around it. Order matters.
+export type DecoStep = 'cu_limit' | 'cu_price' | 'create_ata' | 'core' | 'tip';
+
 export interface LegStructureRecipe {
   variant: BuyVariant;
   slippage_bps_min?: number;
@@ -14,6 +18,9 @@ export interface LegStructureRecipe {
   cu_price_max?: number;
   tip_quote_min?: number;
   tip_quote_max?: number;
+  // Hand-picked ix layout (decoration step order) for legs using this recipe.
+  // Omitted ⇒ the executor's canonical buy shape.
+  layout?: DecoStep[];
 }
 
 export interface PumpfunTemplateParams {
@@ -25,6 +32,9 @@ export interface PumpfunTemplateParams {
   bundle_quote_per_leg?: number;
   bundle_tip_quote?: number;
   leg_structures?: LegStructureRecipe[];
+  // Hand-picked create-tx ix layout (orders CU/tip around the fused create Core).
+  // Omitted ⇒ canonical_create.
+  create_layout?: DecoStep[];
 }
 
 export interface LaunchTemplate {

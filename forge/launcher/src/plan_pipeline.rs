@@ -192,6 +192,14 @@ pub fn display_legs_json(gated: &GatedPlan) -> serde_json::Value {
         .filter_map(|(ix, op)| {
             let d = gated.disguise_of(op.id)?;
             let quote = crate::plan_exec::buy_lamports(op).ok()?;
+            // The exact ix shape this leg will broadcast: the authored layout, or
+            // the canonical buy shape — resolved to step names for the preview.
+            let layout = op
+                .layout
+                .clone()
+                .map(|steps| executor_core::IxLayout { steps })
+                .unwrap_or_else(executor_core::IxLayout::canonical_buy);
+            let layout_names = layout.steps.iter().map(|s| s.as_str().to_string()).collect();
             Some(BundledLegPlan {
                 managed_wallet_id: op.wallet.managed_wallet_id?,
                 quote_amount: quote as i64,
@@ -202,6 +210,7 @@ pub fn display_legs_json(gated: &GatedPlan) -> serde_json::Value {
                     cu_price: d.cu_price_micro_lamports,
                     tip_quote: d.tip_lamports.unwrap_or(0) as i64,
                     ix_order: ix as u8,
+                    layout: layout_names,
                 },
             })
         })
