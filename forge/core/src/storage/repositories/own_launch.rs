@@ -331,6 +331,23 @@ impl ManagedWalletRepo {
         Ok(result.rows_affected())
     }
 
+    /// Release EVERY `reserved` wallet a given launch owns back to `funded` — the
+    /// atomic-launch failure cleanup. Scoped by `reserved_by_launch_id` so it only
+    /// frees wallets THIS launch reserved (dev + every bundler leg) and can never
+    /// steal a wallet a concurrent launch legitimately holds. A failed launch spent
+    /// nothing (a dropped/never-submitted Jito bundle executes no txs), so the
+    /// wallets are fully reusable, not `used`. Returns the number released.
+    pub async fn release_by_launch(pool: &PgPool, launch_id: Uuid) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE managed_wallets SET status = 'funded', reserved_by_launch_id = NULL, reserved_at = NULL \
+             WHERE reserved_by_launch_id = $1 AND status = 'reserved'",
+        )
+        .bind(launch_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Terminal `reserved` -> `used` transition on launch/bundle completion.
     /// Never re-selectable afterward. A no-op (`WHERE status = 'reserved'` guard)
     /// for ids not currently reserved. Returns the number transitioned.

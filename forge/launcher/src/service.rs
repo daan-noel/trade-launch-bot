@@ -422,6 +422,13 @@ pub async fn execute_launch(
     .await;
 
     if let Err(e) = finish {
+        // Hand the dev wallet (and any wallet this launch reserved) back to `funded`
+        // — a launch that failed before/at build spent nothing, so leaving it
+        // `reserved` would strand real SOL and block every retry at `claim_specific`.
+        // Scoped by launch id, so a concurrent launch's reservation is never touched.
+        if let Err(rel) = ManagedWalletRepo::release_by_launch(pool, launch_id).await {
+            tracing::warn!(%launch_id, %rel, "failed to release reservations after chain error");
+        }
         if let Err(mark_err) =
             LaunchRepo::set_failed(pool, launch_id, LaunchStatus::Failed.as_str()).await
         {
@@ -605,11 +612,19 @@ pub async fn execute_launch(
                     }
                 }
                 Err(e) => {
+                    tracing::warn!(%launch_id, %bundle_id, error = %format!("{e:#}"), "atomic launch bundle auto-submit failed");
                     let mint_ref = keystore::mint_key_ref(launch_id);
                     if let Err(del) =
                         keystore::delete_mint_key(&settings.keystore_dir, &mint_ref)
                     {
                         tracing::warn!(%launch_id, %del, "failed to delete mint key after atomic submit failure");
+                    }
+                    // A submit failure means the atomic bundle never landed (create is
+                    // tx0 of a bundle that wasn't sent), so nothing was spent — release
+                    // the dev + every claimed bundler leg back to `funded` instead of
+                    // stranding them `reserved` (which would block the next retry).
+                    if let Err(rel) = ManagedWalletRepo::release_by_launch(pool, launch_id).await {
+                        tracing::warn!(%launch_id, %rel, "failed to release reservations after atomic submit failure");
                     }
                     if let Err(mark) =
                         LaunchRepo::set_failed(pool, launch_id, LaunchStatus::Failed.as_str()).await
