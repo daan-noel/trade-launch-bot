@@ -83,10 +83,52 @@ pub struct PumpfunTemplateParams {
 }
 
 impl PumpfunTemplateParams {
-    /// Author-time validation of every hand-picked ix layout (mirrors the fail-closed
-    /// check `plan_pipeline::gate` re-runs before send), so a malformed template is
-    /// rejected at save time instead of only failing mid-launch. A bundler co-buy is
-    /// a snipe → its layout must carry `CuPrice` + `Tip`; the create layout is a
+    /// Author-time validation of a template's hand-picked pieces (mirrors the
+    /// fail-closed checks `plan_pipeline::gate` re-runs before send), so a malformed
+    /// template is rejected at save time — and, at launch, BEFORE any wallet is
+    /// reserved or a pending row inserted — instead of only failing mid-plan with a
+    /// silent 500. Validates (1) every authored bundler-leg buy variant is a SOL-in
+    /// encoding, and (2) every authored ix layout. Returns the first defect.
+    pub fn validate(&self) -> Result<(), String> {
+        self.validate_leg_variants()?;
+        self.validate_layouts()?;
+        Ok(())
+    }
+
+    /// A bundler leg is a BUY, so its authored variant must be a catalog buy
+    /// encoding — any of the four (`buy`, `buy_v2`, `buy_exact_sol_in`,
+    /// `buy_exact_quote_in_v2`). The leg carries a SOL budget (`Amount::ExactQuote`),
+    /// which every buy can consume: the SOL-in encodings spend it directly, the
+    /// tokens-out encodings (`buy`/`buy_v2`) take it as `max_sol_cost` and derive the
+    /// token amount from the curve reserves at build time (see `denom_accepts`). This
+    /// only guards against a typo or a non-buy variant (a `sell`/`create`) slipping
+    /// into `leg_structures` — the plan gate re-validates the full plan before send.
+    fn validate_leg_variants(&self) -> Result<(), String> {
+        for (i, recipe) in self.leg_structures.iter().flatten().enumerate() {
+            let name = recipe.variant.as_str();
+            match pump_trader::spec(name) {
+                Some(s) if s.kind == pump_trader::VariantKind::Buy => {}
+                Some(s) => {
+                    return Err(format!(
+                        "leg_structures[{i}] variant {name:?} is a {:?}, not a buy — a bundler \
+                         leg must use a buy encoding (buy, buy_v2, buy_exact_sol_in, \
+                         buy_exact_quote_in_v2)",
+                        s.kind
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "leg_structures[{i}] variant {name:?} is not a known pump.fun variant \
+                         (use buy, buy_v2, buy_exact_sol_in, or buy_exact_quote_in_v2)"
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Fail-closed validation of every hand-picked ix layout. A bundler co-buy is a
+    /// snipe → its layout must carry `CuPrice` + `Tip`; the create layout is a
     /// non-snipe `Create`. Returns the first defect.
     pub fn validate_layouts(&self) -> Result<(), String> {
         use pump_trader::{IxLayout, LayoutKind};
@@ -188,11 +230,13 @@ pub async fn execute_launch(
     let trader_config = build_launch_trader_config(settings, signer, nonce_accounts);
     let mut trader = PumpFunTrader::new(trader_config);
     trader.initialize().await.context("initialize pump-trader")?;
-    // Fail-closed on any malformed hand-picked layout before a single ix is built,
-    // then apply the authored create layout (if any) to this launch's create tx.
+    // Fail-closed on any malformed template piece (bundler-leg variant denom + any
+    // hand-picked layout) BEFORE a single ix is built, a wallet is reserved, or a
+    // pending row is inserted — so a bad template fails fast + clean, never as a
+    // silent mid-plan 500 that strands a `pending` launch with `reserved` wallets.
     params
-        .validate_layouts()
-        .map_err(|e| anyhow::anyhow!("template ix layout invalid: {e}"))?;
+        .validate()
+        .map_err(|e| anyhow::anyhow!("template invalid: {e}"))?;
     trader.set_create_layout(params.create_ix_layout());
 
     // Fail fast before building anything on-chain: the dev wallet must cover the
@@ -439,42 +483,43 @@ pub async fn execute_launch(
         return Err(e);
     }
 
-    let mut result = finish?;
+    let result = finish?;
 
     // Bundle planning + atomic submit. In the atomic launch the create leg lives
     // INSIDE the bundle, so — unlike the old flow where create had already landed —
-    // a planning problem here means the token was never created, and the launch must
-    // fail (not silently skip the bundle and strand a `pending` launch with no create).
-    if let Some(leg_count) = crate::bundle::resolve_leg_count(req.bundler_count, &params) {
-        let (quote_per_leg, tip_quote) = crate::bundle::resolve_bundle_quote(&params)?;
+    // a problem ANYWHERE here means the token was never created. The whole phase runs
+    // inside one `bundle_phase` block whose single error handler is the SSOT cleanup:
+    // delete the persisted mint key, release every wallet this launch reserved (dev +
+    // bundler legs) back to `funded`, and mark the launch `failed`. Every `?` inside
+    // therefore fails LOUD + CLEAN — never a silent 500 that strands a `pending`
+    // launch with `reserved` wallets (the bug where a bad leg variant slipped a bare
+    // `?` here left three launches pending + wallets stuck reserved).
+    let bundle_phase = async {
+        let mut result = result; // owned by this phase; mutated with the bundle result
+        if let Some(leg_count) = crate::bundle::resolve_leg_count(req.bundler_count, &params) {
+            let (quote_per_leg, tip_quote) = crate::bundle::resolve_bundle_quote(&params)?;
 
-        // Server-side atomic claim from the `funded` bundler pool (wallet-pool
-        // Phase 3) — never a client-side wallet pick. May return fewer than
-        // `leg_count` if the pool is short; plan exactly that many legs rather
-        // than erroring or reusing a wallet across legs.
-        let claimed = ManagedWalletRepo::claim_funded(
-            pool,
-            WalletRole::Bundler.as_str(),
-            leg_count as i64,
-            launch_id,
-        )
-        .await?;
-        if claimed.is_empty() {
-            // Atomic launch with no bundlers available: create never got sent (it's
-            // tx0 of the bundle we can't build). Fail cleanly — release the dev
-            // wallet and mark the launch failed so the operator can fund bundlers
-            // (or relaunch without them) and retry.
-            if let Err(e) =
-                ManagedWalletRepo::release_reservation(pool, &[dev_wallet.id]).await
-            {
-                tracing::warn!(%launch_id, %e, "failed to release dev wallet after empty bundler claim");
+            // Server-side atomic claim from the `funded` bundler pool (wallet-pool
+            // Phase 3) — never a client-side wallet pick. May return fewer than
+            // `leg_count` if the pool is short; plan exactly that many legs rather
+            // than erroring or reusing a wallet across legs.
+            let claimed = ManagedWalletRepo::claim_funded(
+                pool,
+                WalletRole::Bundler.as_str(),
+                leg_count as i64,
+                launch_id,
+            )
+            .await?;
+            if claimed.is_empty() {
+                // No bundlers available: create never got sent (it's tx0 of the bundle
+                // we can't build). Bail → the shared handler releases the dev wallet +
+                // marks the launch failed, so the operator can fund bundlers (or
+                // relaunch with 0 bundlers) and retry.
+                bail!(
+                    "no funded bundler wallets available for an atomic launch \
+                     (requested {leg_count}) — fund the bundler pool or launch with 0 bundlers"
+                );
             }
-            LaunchRepo::set_failed(pool, launch_id, LaunchStatus::Failed.as_str()).await?;
-            bail!(
-                "no funded bundler wallets available for an atomic launch \
-                 (requested {leg_count}) — fund the bundler pool or launch with 0 bundlers"
-            );
-        } else {
             if claimed.len() < leg_count as usize {
                 tracing::warn!(
                     launch_id = %launch_id,
@@ -577,65 +622,114 @@ pub async fn execute_launch(
                 audit_score = gated.audit.score, "bundle planned + audited"
             );
         }
-    }
 
-    // Auto-submit the planned atomic bundle (create tx0 + co-buy legs) — no second
-    // HTTP call. This IS the create for a bundled launch, so a submit failure must
-    // fail the launch and clean up the persisted mint key + released wallets (the
-    // reservation TTL sweep is the backstop for the wallets).
-    if let Some(bundle_id) = LaunchRepo::get(pool, launch_id)
-        .await?
-        .and_then(|l| l.bundle_id)
-    {
-        if BundleRepo::get(pool, bundle_id)
+        // Auto-submit the planned atomic bundle (create tx0 + co-buy legs) — no second
+        // HTTP call. This IS the create for a bundled launch, so a submit failure is a
+        // launch failure: the `?` drops into the shared cleanup below.
+        if let Some(bundle_id) = LaunchRepo::get(pool, launch_id)
             .await?
-            .is_some_and(|b| b.status == BundleStatus::Planned.as_str())
+            .and_then(|l| l.bundle_id)
         {
-            // Reuse the dev trader built above — the auto-submit no longer stands up
-            // (and initialize()s) a second trader in the same request.
-            match execute_bundle_with_trader(pool, settings, &trader, bundle_id).await {
-                Ok(bundle_result) => {
-                    info!(
-                        launch_id = %launch_id,
-                        bundle_id = %bundle_id,
-                        jito_bundle_id = %bundle_result.jito_bundle_id,
-                        "atomic launch bundle auto-submitted"
-                    );
-                    result.bundle = Some(bundle_result);
-                    // The create leg's signature was stamped on the launch by
-                    // `execute_bundle`; surface it in the response (status is still
-                    // `pending` until the confirm watcher sees the bundle land).
-                    if let Some(sig) =
-                        LaunchRepo::get(pool, launch_id).await?.and_then(|l| l.create_signature)
-                    {
-                        result.create_signature = sig;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(%launch_id, %bundle_id, error = %format!("{e:#}"), "atomic launch bundle auto-submit failed");
-                    let mint_ref = keystore::mint_key_ref(launch_id);
-                    if let Err(del) =
-                        keystore::delete_mint_key(&settings.keystore_dir, &mint_ref)
-                    {
-                        tracing::warn!(%launch_id, %del, "failed to delete mint key after atomic submit failure");
-                    }
-                    // A submit failure means the atomic bundle never landed (create is
-                    // tx0 of a bundle that wasn't sent), so nothing was spent — release
-                    // the dev + every claimed bundler leg back to `funded` instead of
-                    // stranding them `reserved` (which would block the next retry).
-                    if let Err(rel) = ManagedWalletRepo::release_by_launch(pool, launch_id).await {
-                        tracing::warn!(%launch_id, %rel, "failed to release reservations after atomic submit failure");
-                    }
-                    if let Err(mark) =
-                        LaunchRepo::set_failed(pool, launch_id, LaunchStatus::Failed.as_str()).await
-                    {
-                        tracing::warn!(%launch_id, %mark, "failed to mark launch failed after atomic submit failure");
-                    }
-                    return Err(e).context("atomic launch bundle auto-submit failed");
+            if BundleRepo::get(pool, bundle_id)
+                .await?
+                .is_some_and(|b| b.status == BundleStatus::Planned.as_str())
+            {
+                // Reuse the dev trader built above — the auto-submit no longer stands up
+                // (and initialize()s) a second trader in the same request.
+                let bundle_result = execute_bundle_with_trader(pool, settings, &trader, bundle_id)
+                    .await
+                    .context("atomic launch bundle auto-submit failed")?;
+                info!(
+                    launch_id = %launch_id,
+                    bundle_id = %bundle_id,
+                    jito_bundle_id = %bundle_result.jito_bundle_id,
+                    "atomic launch bundle auto-submitted"
+                );
+                result.bundle = Some(bundle_result);
+                // The create leg's signature was stamped on the launch by
+                // `execute_bundle`; surface it in the response (status is still
+                // `pending` until the confirm watcher sees the bundle land).
+                if let Some(sig) =
+                    LaunchRepo::get(pool, launch_id).await?.and_then(|l| l.create_signature)
+                {
+                    result.create_signature = sig;
                 }
             }
         }
+
+        Ok::<_, anyhow::Error>(result)
+    }
+    .await;
+
+    match bundle_phase {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            tracing::warn!(%launch_id, error = %format!("{e:#}"), "launch bundle phase failed — cleaning up");
+            // Delete the persisted mint key if one was written (idempotent — a no-op
+            // when the failure happened before `write_mint_key`).
+            let mint_ref = keystore::mint_key_ref(launch_id);
+            if let Err(del) = keystore::delete_mint_key(&settings.keystore_dir, &mint_ref) {
+                tracing::warn!(%launch_id, %del, "failed to delete mint key during launch cleanup");
+            }
+            // Release every wallet this launch reserved (dev + bundler legs) back to
+            // `funded` — a failed atomic launch spent nothing (a bundle that never
+            // submitted/landed executes no txs), so they're fully reusable, not `used`,
+            // and the next retry won't stall at `claim_specific`.
+            if let Err(rel) = ManagedWalletRepo::release_by_launch(pool, launch_id).await {
+                tracing::warn!(%launch_id, %rel, "failed to release reservations during launch cleanup");
+            }
+            if let Err(mark) =
+                LaunchRepo::set_failed(pool, launch_id, LaunchStatus::Failed.as_str()).await
+            {
+                tracing::warn!(%launch_id, %mark, "failed to mark launch failed during launch cleanup");
+            }
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params_with_leg_variants(variants: &[&str]) -> PumpfunTemplateParams {
+        let legs: Vec<serde_json::Value> =
+            variants.iter().map(|v| json!({ "variant": v })).collect();
+        serde_json::from_value(json!({
+            "dev_buy_quote": 20_000_000,
+            "bundle_leg_count": variants.len(),
+            "bundle_quote_per_leg": 10_000_000,
+            "leg_structures": legs,
+        }))
+        .expect("params parse")
     }
 
-    Ok(result)
+    /// All four buy encodings are valid bundler-leg variants (each consumes the leg's
+    /// SOL budget — tokens-out via `max_sol_cost`, SOL-in via `spendable`).
+    #[test]
+    fn validate_accepts_all_buy_variants() {
+        // The exact original template (`["buy_exact_sol_in", "buy"]`) now validates.
+        assert!(params_with_leg_variants(&["buy_exact_sol_in", "buy"]).validate().is_ok());
+        // Every buy encoding is accepted, tokens-out included.
+        for v in ["buy", "buy_v2", "buy_exact_sol_in", "buy_exact_quote_in_v2"] {
+            assert!(params_with_leg_variants(&[v]).validate().is_ok(), "{v} should validate");
+        }
+        // The pre-alignment string still parses (serde alias) and is accepted.
+        assert!(params_with_leg_variants(&["buy_exact_quote_in"]).validate().is_ok());
+        // No leg_structures at all ⇒ nothing to validate.
+        let empty: PumpfunTemplateParams = serde_json::from_value(json!({})).unwrap();
+        assert!(empty.validate().is_ok());
+    }
+
+    /// A non-buy variant can't even be authored into `leg_structures` — the
+    /// `BuyVariant` enum rejects it at JSON parse (the first line of defense; the
+    /// catalog-SSOT check in `validate_leg_variants` is the second, against drift).
+    #[test]
+    fn non_buy_leg_variant_fails_to_parse() {
+        let bad = json!({ "leg_structures": [{ "variant": "sell" }] });
+        assert!(
+            serde_json::from_value::<PumpfunTemplateParams>(bad).is_err(),
+            "a `sell` leg variant must not deserialize"
+        );
+    }
 }

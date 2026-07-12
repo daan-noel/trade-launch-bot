@@ -2,7 +2,16 @@
 // (crates/live/src/http.rs). Amounts are quote/base base units unless a field
 // name says otherwise; `*_lamports` is exact native SOL.
 
-export type BuyVariant = 'buy' | 'buy_exact_sol_in' | 'buy_v2' | 'buy_exact_quote_in';
+// Only the SOL-in encodings (`buy_exact_sol_in`, `buy_exact_quote_in_v2`) are valid
+// for a bundler leg and offered in the authoring dropdown (see `legForm.BUY_VARIANTS`).
+// The tokens-out `buy`/`buy_v2` + the legacy non-v2 `buy_exact_quote_in` remain in the
+// union only so a template authored before the alignment still types when read back.
+export type BuyVariant =
+  | 'buy'
+  | 'buy_exact_sol_in'
+  | 'buy_v2'
+  | 'buy_exact_quote_in'
+  | 'buy_exact_quote_in_v2';
 
 // The ix-layout decoration steps (mirrors `executor_core::DecoStep`). `core` is the
 // opaque on-chain instruction block; the rest are wrappers around it. Order matters.

@@ -209,15 +209,26 @@ fn prepare_op<'a>(plan: &Plan, op: &'a Operation) -> Result<PreparedOp<'a>, Plan
 }
 
 /// Can a variant denominated `denom` encode this `amount`? The variant ⊥ amount
-/// rule as a compatibility check (a SOL-in buy takes an `ExactQuote`, a tokens-out
-/// buy takes an `ExactBase`, and neither takes the other). Public so the disguise
-/// sampler (Phase D) never draws a variant whose denom can't encode the op's amount
-/// (a disguise that broke `prepare` would be a bug, not a disguise).
+/// compatibility check. Public so the disguise sampler (Phase D) never draws a
+/// variant whose denom can't encode the op's amount (a disguise that broke `prepare`
+/// would be a bug, not a disguise).
+///
+/// **A SOL budget (`ExactQuote`) is universally valid for a buy.** A SOL-in buy
+/// spends it directly (`spendable_sol_in`); a **tokens-out** buy (`ExactBaseOut` —
+/// `buy`/`buy_v2`/`amm_buy`) takes it as the `max_sol_cost` ceiling and derives the
+/// token amount from the curve reserves at build time (`build_bundle_leg_tx` /
+/// `compute_curve_buy_min_out`). So `ExactQuote` is accepted by BOTH buy denoms —
+/// this is what lets a launch bundler leg use any of the four buy encodings from its
+/// per-leg SOL budget (and lets the persona disguise rotate across all of them). An
+/// `ExactBase` (exact token count) still only fits a tokens-out buy.
 pub fn denom_accepts(denom: Denom, amount: Amount) -> bool {
     matches!(
         (denom, amount),
         (Denom::ExactQuoteIn, Amount::ExactQuote(_))
             | (Denom::ExactBaseOut, Amount::ExactBase(_))
+            // A SOL budget drives a tokens-out buy via `max_sol_cost` (token amount
+            // derived from reserves) — see the doc comment above.
+            | (Denom::ExactBaseOut, Amount::ExactQuote(_))
             | (Denom::ExactBaseIn, Amount::ExactBaseIn(_))
             | (Denom::None, Amount::None)
             | (Denom::Sol, Amount::Sol(_))

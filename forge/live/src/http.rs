@@ -229,10 +229,11 @@ fn validate_params(params: &Option<serde_json::Value>) -> Result<(), actix_web::
     let value = params.clone().unwrap_or_else(|| serde_json::json!({}));
     let parsed = serde_json::from_value::<PumpfunTemplateParams>(value)
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("invalid template params: {e}")))?;
-    // Fail-closed on any hand-picked ix layout that breaks the landing-safety rails
-    // (the same check the plan gate re-runs before send).
+    // Fail-closed on any invalid template piece — a tokens-out bundler-leg variant
+    // (can't encode a SOL amount) or a hand-picked ix layout that breaks the
+    // landing-safety rails (the same checks the plan gate re-runs before send).
     parsed
-        .validate_layouts()
+        .validate()
         .map_err(actix_web::error::ErrorBadRequest)?;
     Ok(())
 }

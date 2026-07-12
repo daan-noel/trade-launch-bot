@@ -16,6 +16,11 @@ pub enum BuyVariant {
     Buy,
     BuyExactSolIn,
     BuyV2,
+    /// The v2 exact-quote (SOL-in) buy. The real ix is `buy_exact_quote_in_v2` — the
+    /// non-v2 `buy_exact_quote_in` is not a valid pump.fun instruction (see
+    /// `catalog.rs`). `alias` still accepts the old string on read so a template
+    /// authored before this alignment parses; new writes emit the catalog name.
+    #[serde(rename = "buy_exact_quote_in_v2", alias = "buy_exact_quote_in")]
     BuyExactQuoteIn,
 }
 
@@ -25,8 +30,16 @@ impl BuyVariant {
             Self::Buy => "buy",
             Self::BuyExactSolIn => "buy_exact_sol_in",
             Self::BuyV2 => "buy_v2",
-            Self::BuyExactQuoteIn => "buy_exact_quote_in",
+            Self::BuyExactQuoteIn => "buy_exact_quote_in_v2",
         }
+    }
+
+    /// Whether this encoding spends an EXACT SOL amount (`ExactQuoteIn`) — the only
+    /// kind valid for a launch bundler leg (co-buys are always SOL-denominated). The
+    /// tokens-out `buy`/`buy_v2` encodings can't encode a SOL amount. Kept in sync
+    /// with the catalog denom via the `service`-layer validation (SSOT).
+    pub fn is_sol_in(self) -> bool {
+        matches!(self, Self::BuyExactSolIn | Self::BuyExactQuoteIn)
     }
 }
 

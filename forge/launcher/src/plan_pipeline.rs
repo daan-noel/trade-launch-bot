@@ -277,6 +277,67 @@ mod tests {
         }
     }
 
+    /// A launch whose `leg_structures` mixes an authored tokens-out `"buy"` with a
+    /// SOL-in `"buy_exact_sol_in"` on SOL-denominated (`Amount::ExactQuote`) legs
+    /// GATES cleanly: a SOL budget is a valid `max_sol_cost` for a tokens-out buy, so
+    /// `denom_accepts` allows it and the executor derives the token amount from
+    /// reserves at build time. (Regression guard: this used to be rejected with a
+    /// `DenomMismatch`, which surfaced as an "internal server error" mid-launch.)
+    #[test]
+    fn authored_tokens_out_buy_variant_now_gates() {
+        let mut seq = IdSeq::new(0);
+        let ops = bundle_launch(
+            &mut seq,
+            &BundleLaunch {
+                mint: addr(),
+                dev: w(),
+                create_variant: "create_v2".to_string(),
+                buy_variant: LAUNCH_BUY_VARIANT.to_string(),
+                dev_buy_sol: 20_000_000,
+                dev_slippage_bps: None,
+                bundlers: vec![
+                    BundlerLeg {
+                        wallet: w(),
+                        sol: 10_000_000,
+                        slippage_bps: None,
+                        variant: Some("buy_exact_sol_in".to_string()),
+                        layout: None,
+                    },
+                    // authored tokens-out "buy" on a SOL budget — now valid
+                    BundlerLeg {
+                        wallet: w(),
+                        sol: 10_000_000,
+                        slippage_bps: None,
+                        variant: Some("buy".to_string()),
+                        layout: None,
+                    },
+                    // and "buy_v2" (also tokens-out)
+                    BundlerLeg {
+                        wallet: w(),
+                        sol: 10_000_000,
+                        slippage_bps: None,
+                        variant: Some("buy_v2".to_string()),
+                        layout: None,
+                    },
+                ],
+            },
+        );
+        let mint = ops[0].target.clone().unwrap();
+        let plan = Plan::for_mint(mint, ops);
+        let gated = gate(plan, true).expect("authored tokens-out buy legs must gate");
+        // The two authored tokens-out legs kept their variant (locked, disguise
+        // can't swap an authored leg); the plan is buildable.
+        let buy_legs: Vec<&str> = gated
+            .plan
+            .ops
+            .iter()
+            .filter(|o| is_bundler_leg(o))
+            .map(|o| o.variant.as_str())
+            .collect();
+        assert!(buy_legs.contains(&"buy"), "the authored `buy` leg survives gating: {buy_legs:?}");
+        assert!(buy_legs.contains(&"buy_v2"), "the authored `buy_v2` leg survives gating: {buy_legs:?}");
+    }
+
     /// A varied-amount launch (distinct buys) passes even the STRICT gate — no
     /// equal-amounts / constant-fee / star tells to trip.
     #[test]

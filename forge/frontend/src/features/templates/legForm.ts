@@ -8,11 +8,18 @@ export const VARIANTS = [
   'pumpfun.create_v1',
 ] as const;
 
+// All four pump.fun buy encodings are selectable for a bundler leg. Each consumes
+// the leg's per-leg SOL budget: the SOL-in encodings (`buy_exact_sol_in`,
+// `buy_exact_quote_in_v2`) spend it directly; the tokens-out encodings (`buy`,
+// `buy_v2`) take it as `max_sol_cost` and derive the token amount from the curve
+// reserves at build time. Mixing encodings across legs diversifies the on-chain
+// instruction discriminators (anti-fingerprint). `buy_exact_quote_in_v2` is the real
+// v2 SOL-in ix (the old non-v2 `buy_exact_quote_in` was not a valid instruction).
 export const BUY_VARIANTS: BuyVariant[] = [
   'buy',
   'buy_exact_sol_in',
   'buy_v2',
-  'buy_exact_quote_in',
+  'buy_exact_quote_in_v2',
 ];
 
 // The form works in human quote units; `params` stores quote base units. These
