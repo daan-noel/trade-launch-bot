@@ -76,13 +76,18 @@ pub struct PumpfunTemplateParams {
     pub bundle_tip_quote: Option<i64>,
     #[serde(default)]
     pub leg_structures: Option<Vec<crate::bundle::LegStructureRecipe>>,
+    /// Hand-picked create-tx ix layout (orders CU/tip around the fused create
+    /// `Core`; the dev-buy stays inside `Core`). `None` ⇒ `canonical_create`.
+    #[serde(default)]
+    pub create_layout: Option<Vec<pump_trader::DecoStep>>,
 }
 
 impl PumpfunTemplateParams {
     /// Author-time validation of every hand-picked ix layout (mirrors the fail-closed
     /// check `plan_pipeline::gate` re-runs before send), so a malformed template is
     /// rejected at save time instead of only failing mid-launch. A bundler co-buy is
-    /// a snipe → its layout must carry `CuPrice` + `Tip`. Returns the first defect.
+    /// a snipe → its layout must carry `CuPrice` + `Tip`; the create layout is a
+    /// non-snipe `Create`. Returns the first defect.
     pub fn validate_layouts(&self) -> Result<(), String> {
         use pump_trader::{IxLayout, LayoutKind};
         for (i, recipe) in self.leg_structures.iter().flatten().enumerate() {
@@ -92,7 +97,20 @@ impl PumpfunTemplateParams {
                     .map_err(|e| format!("leg_structures[{i}] ix layout invalid: {e}"))?;
             }
         }
+        if let Some(steps) = &self.create_layout {
+            IxLayout { steps: steps.clone() }
+                .validate(LayoutKind::Create, false)
+                .map_err(|e| format!("create_layout invalid: {e}"))?;
+        }
         Ok(())
+    }
+
+    /// The authored create layout as an [`IxLayout`], if any — the launcher feeds
+    /// this to `PumpFunTrader::set_create_layout` before building the create tx.
+    pub fn create_ix_layout(&self) -> Option<pump_trader::IxLayout> {
+        self.create_layout
+            .clone()
+            .map(|steps| pump_trader::IxLayout { steps })
     }
 }
 
@@ -170,6 +188,12 @@ pub async fn execute_launch(
     let trader_config = build_launch_trader_config(settings, signer, nonce_accounts);
     let mut trader = PumpFunTrader::new(trader_config);
     trader.initialize().await.context("initialize pump-trader")?;
+    // Fail-closed on any malformed hand-picked layout before a single ix is built,
+    // then apply the authored create layout (if any) to this launch's create tx.
+    params
+        .validate_layouts()
+        .map_err(|e| anyhow::anyhow!("template ix layout invalid: {e}"))?;
+    trader.set_create_layout(params.create_ix_layout());
 
     // Fail fast before building anything on-chain: the dev wallet must cover the
     // create's rent + fees + tip (MIN_DEV_LAUNCH_LAMPORTS) on top of the dev-buy

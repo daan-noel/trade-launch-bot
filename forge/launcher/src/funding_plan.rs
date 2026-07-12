@@ -86,6 +86,7 @@ mod tests {
             bundle_quote_per_leg: per_leg,
             bundle_tip_quote: tip,
             leg_structures: None,
+            create_layout: None,
         }
     }
 

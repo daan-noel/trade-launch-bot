@@ -152,6 +152,12 @@ pub struct PumpFunTrader {
     // path (unchanged). See `crate::alt` for the immutable account set it holds.
     pub(crate) launch_alt: Option<solana_sdk::address_lookup_table::AddressLookupTableAccount>,
 
+    // Optional authored create-tx ix **layout** (decoration step order around the
+    // create `Core`). `None` → the builder's `canonical_create` shape. Set per
+    // launch from the template's `create_layout` (see `set_create_layout`); the
+    // dev-buy always stays fused inside `Core`, so this only orders CU/tip.
+    pub(crate) create_layout: Option<executor_core::IxLayout>,
+
     // PumpSwap AMM (migrated tokens). Program-constant PumpSwap PDAs, derived once
     // in `new()` (they never depend on the token, only on the program / this
     // wallet) instead of re-running `find_program_address` on every AMM swap.
@@ -266,6 +272,7 @@ impl PumpFunTrader {
             rpc,
             global_account: None,
             launch_alt: None,
+            create_layout: None,
             amm_global_config_pda,
             amm_event_authority,
             amm_fee_config,
@@ -283,6 +290,14 @@ impl PumpFunTrader {
             buy_pool_misses_2022: AtomicUsize::new(0),
             seed_counter: AtomicUsize::new(0),
         }
+    }
+
+    /// Set the authored create-tx ix layout for the next create (from the launch
+    /// template's `create_layout`). `None` restores the `canonical_create` shape.
+    /// Validated by the caller (the plan gate / template author check) before this;
+    /// the create builder trusts it and only orders CU/tip around the fused `Core`.
+    pub fn set_create_layout(&mut self, layout: Option<executor_core::IxLayout>) {
+        self.create_layout = layout;
     }
 
     /// Feed a post-trade reserve snapshot into the live cache. Called by the WS

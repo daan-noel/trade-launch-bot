@@ -175,8 +175,14 @@ impl PumpFunTrader {
         } else {
             compute.curve_create_cu
         };
+        // Authored `create_layout` (set per launch from the template) orders the
+        // CU/tip wrappers around the fused `Core`; absent ⇒ the canonical shape.
+        let layout = self
+            .create_layout
+            .clone()
+            .unwrap_or_else(IxLayout::canonical_create);
         Ok(assemble(
-            &IxLayout::canonical_create(),
+            &layout,
             IxParts {
                 core,
                 ata: Vec::new(), // buyer ATA is fused into `core` for create
@@ -713,5 +719,39 @@ mod tests {
             t.jito_tip_ix(0),
         ];
         assert_eq!(got, expected);
+    }
+
+    /// Phase C: an authored `create_layout` reshapes the create tx — a lean `[Core]`
+    /// layout drops CU + tip, leaving just the create ix (`Core` placed opaque).
+    #[test]
+    fn create_layout_override_reshapes_the_tx() {
+        use executor_core::{DecoStep, IxLayout};
+        let mut t = with_global(trader());
+        let wallet = t.config.signer.pubkey();
+        let mint = Keypair::new();
+        let args = CreateTokenV2Args {
+            name: "Lean".into(),
+            symbol: "LN".into(),
+            uri: "ipfs://x".into(),
+            creator: wallet,
+            is_mayhem_mode: false,
+            cashback_enabled: false,
+        };
+        let accounts = derive_create_accounts(&mint.pubkey(), TokenProgram::Token2022, true);
+        let create_ix = build_create_v2_ix(&mint.pubkey(), wallet, &args, &accounts).unwrap();
+
+        // Default: the canonical 4-ix create-only shape.
+        let canonical = t
+            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None)
+            .unwrap();
+        assert_eq!(canonical.len(), 4);
+
+        // Authored lean `[Core]` → just the create ix.
+        t.set_create_layout(Some(IxLayout { steps: vec![DecoStep::Core] }));
+        let lean = t
+            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None)
+            .unwrap();
+        assert_eq!(lean.len(), 1);
+        assert_eq!(lean[0], create_ix, "Core placed opaque, byte-identical");
     }
 }

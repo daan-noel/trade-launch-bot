@@ -96,14 +96,15 @@ bundler leg; when absent, fall back to today's persona disguise + `canonical_buy
 
 **Todos:**
 
-- [ ] Add `create_layout: Option<Vec<DecoStep>>` to `PumpfunTemplateParams`
-      ([../launcher/src/service.rs:57](../launcher/src/service.rs#L57)); `validate_params`
-      validates it via `IxLayout::validate(Create, is_snipe=false)`.
-- [ ] Thread it into `create_token*_inner`
-      ([../../shared/executor/pumpfun/src/trader/create.rs](../../shared/executor/pumpfun/src/trader/create.rs)):
-      `assemble(&layout, parts)`, defaulting to `canonical_create()` when omitted. The
-      dev-buy buy lives *inside* create's fused `Core`; the create step-list only orders
-      `CuLimit`/`CuPrice`/`Core`/`Tip` around it.
+- [x] Added `create_layout: Option<Vec<DecoStep>>` to `PumpfunTemplateParams`
+      ([../launcher/src/service.rs](../launcher/src/service.rs)); `validate_layouts`
+      validates it via `IxLayout::validate(Create, is_snipe=false)` (run at author time
+      in `validate_params` **and** in `execute_launch` before build).
+- [x] Threaded it into the create builder via `PumpFunTrader::set_create_layout` +
+      a `create_layout` field ([../../shared/executor/pumpfun/src/trader/{mod,create}.rs](../../shared/executor/pumpfun/src/trader/create.rs)):
+      `assemble_create_ixs` uses it, defaulting to `canonical_create()` when omitted. The
+      dev-buy stays *inside* the fused `Core`; the step-list only orders CU/tip around it.
+      Test `create_layout_override_reshapes_the_tx` proves a lean `[Core]` layout works.
 
 ## Phase D — frontend wire types
 
