@@ -1,9 +1,9 @@
 # Decision record (ADR)
 
-Resolutions for the foundation plan's §9 *Open decisions*
-([`../../and-about-the-instructions-shimmying-shore.md`](../../and-about-the-instructions-shimmying-shore.md)).
-Each entry: **status**, the **choice**, the **rationale**, and **where it lives** in
-the code so the decision can't silently drift.
+Resolutions for the foundation design's *Open decisions* (the foundation plan doc
+was retired to git history once fully implemented). Each entry: **status**, the
+**choice**, the **rationale**, and **where it lives** in the code so the decision
+can't silently drift.
 
 Status legend: **LOCKED** (implemented, guarded) · **CHOSEN** (decided, builds in a
 later phase) · **DEFERRED** (intentionally not now; recorded so it isn't forgotten).

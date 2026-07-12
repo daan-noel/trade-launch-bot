@@ -6,7 +6,6 @@ non-SOL-quote-generalized Solana launch + trading + analytics platform (sibling 
 separate git repos). Starts with pump.fun token creation; grows into
 multi-launchpad / multi-quote / multi-wallet.
 
-**Full design:** [docs/and-about-the-instructions-shimmying-shore.md](docs/and-about-the-instructions-shimmying-shore.md).
 **Phases & tasks:** [docs/roadmap-plan.md](docs/roadmap-plan.md).
 **Decisions (ADR):** [docs/decisions.md](docs/decisions.md).
 **Overview + layout:** [README.md](README.md). **Analysis pipeline:** [docs/analysis-workflow.md](docs/analysis-workflow.md).

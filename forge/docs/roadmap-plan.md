@@ -1,9 +1,9 @@
 # Platform roadmap — phases & tasks
 
-Living task list for **forge**. The foundation design lives in
-[`and-about-the-instructions-shimmying-shore.md`](../../and-about-the-instructions-shimmying-shore.md);
-ADRs in [`decisions.md`](decisions.md). Update this file when a phase advances
-or tasks are added/dropped.
+Living task list for **forge**. Design decisions & rationale in
+[`decisions.md`](decisions.md) (the foundation plan doc was retired to git history
+once implemented). Update this file when a phase advances or tasks are
+added/dropped.
 
 **Last updated:** 2026-07-07 (wallet-pool plan finished — Phases 1–4 done; its
 plan doc is retired, see below).
@@ -104,7 +104,7 @@ planned sniper bundle → Jito submit.
 - [ ] **Pin borrowed crates** — path dep → pinned `git` rev on `pump-trader` /
   `ingest-laserstream` once stable
 
-See also §8 verification checklist in the foundation design doc.
+See also the verification-status table in [`decisions.md`](decisions.md).
 
 ---
 
@@ -194,4 +194,4 @@ Recorded so they are not forgotten; no schedule.
 
 - Check off tasks when merged; move items if scope changes.
 - When **Status** in `CLAUDE.md` shifts, sync the one-line summary there.
-- Deep design rationale → foundation doc or `docs/decisions.md`, not here.
+- Deep design rationale → `docs/decisions.md`, not here.

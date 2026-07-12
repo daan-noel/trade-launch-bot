@@ -6,9 +6,8 @@ multi-RPC strategy + analytics ecosystem.
 
 This repo is the **data-infrastructure foundation**: a schema designed
 *generalized for multi-venue + non-SOL quote from day one*, learning from (not
-copying) the sibling `hunter` repo's data layer. See
-[`and-about-the-instructions-shimmying-shore.md`](../and-about-the-instructions-shimmying-shore.md)
-for the full design. Phases and task checklist:
+copying) the sibling `hunter` repo's data layer. Design decisions and rationale:
+[`docs/decisions.md`](docs/decisions.md). Phases and task checklist:
 [`docs/roadmap-plan.md`](docs/roadmap-plan.md).
 
 ## Layout
