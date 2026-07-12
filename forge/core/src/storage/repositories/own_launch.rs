@@ -314,6 +314,23 @@ impl ManagedWalletRepo {
         Ok(result.rows_affected())
     }
 
+    /// Release specific `reserved` wallets back to `funded` (reservation cancelled)
+    /// — the atomic-launch cleanup path: a launch that fails before/at bundle build,
+    /// or a bundle that drops all attempts, spent nothing (a dropped Jito bundle
+    /// executes no txs), so its dev + bundler wallets are fully reusable, not `used`.
+    /// Clears `reserved_by_launch_id`/`reserved_at`. Guarded no-op for ids not
+    /// currently `reserved`. Returns the number released.
+    pub async fn release_reservation(pool: &PgPool, ids: &[Uuid]) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE managed_wallets SET status = 'funded', reserved_by_launch_id = NULL, reserved_at = NULL \
+             WHERE id = ANY($1) AND status = 'reserved'",
+        )
+        .bind(ids)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Terminal `reserved` -> `used` transition on launch/bundle completion.
     /// Never re-selectable afterward. A no-op (`WHERE status = 'reserved'` guard)
     /// for ids not currently reserved. Returns the number transitioned.
@@ -504,6 +521,23 @@ impl LaunchRepo {
         Ok(n)
     }
 
+    /// Stamp the create leg's tx signature WITHOUT changing status — the atomic
+    /// launch bundle sets this at submit time (the create leg is `tx0`), then the
+    /// confirm watcher flips status to `created` only once the bundle lands. A
+    /// re-bid overwrites it with the new attempt's signature.
+    pub async fn set_create_signature(
+        pool: &PgPool,
+        id: Uuid,
+        create_signature: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE launches SET create_signature = $2 WHERE id = $1")
+            .bind(id)
+            .bind(create_signature)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     /// Record the create tx signature + status once the launch lands on-chain.
     pub async fn set_created(
         pool: &PgPool,
@@ -543,6 +577,7 @@ impl LaunchRepo {
 pub struct BundleRepo;
 
 impl BundleRepo {
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert(
         pool: &PgPool,
         launch_id: Uuid,
@@ -550,16 +585,18 @@ impl BundleRepo {
         legs: serde_json::Value,
         plan: serde_json::Value,
         audit: serde_json::Value,
+        create_args: Option<serde_json::Value>,
     ) -> anyhow::Result<Bundle> {
         Ok(sqlx::query_as::<_, Bundle>(
-            "INSERT INTO bundles (launch_id, tip_quote, legs, plan, audit, status) \
-             VALUES ($1,$2,$3,$4,$5,'planned') RETURNING *",
+            "INSERT INTO bundles (launch_id, tip_quote, legs, plan, audit, create_args, status) \
+             VALUES ($1,$2,$3,$4,$5,$6,'planned') RETURNING *",
         )
         .bind(launch_id)
         .bind(tip_quote)
         .bind(legs)
         .bind(plan)
         .bind(audit)
+        .bind(create_args)
         .fetch_one(pool)
         .await?)
     }
@@ -626,6 +663,19 @@ impl BundleRepo {
         .bind(leg_signatures)
         .execute(pool)
         .await?;
+        Ok(())
+    }
+
+    /// Stamp the whole-bundle Jito tip actually sized for this submission (lamports)
+    /// — the live-floor total the create leg carries. Previously always NULL (the
+    /// value only lived inside `legs[].structure`); this is the column the UI/audit
+    /// reads. Overwritten each re-bid with the escalated tip.
+    pub async fn set_tip_quote(pool: &PgPool, id: Uuid, tip_quote: i64) -> anyhow::Result<()> {
+        sqlx::query("UPDATE bundles SET tip_quote = $2 WHERE id = $1")
+            .bind(id)
+            .bind(tip_quote)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 

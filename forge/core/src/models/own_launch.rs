@@ -287,4 +287,10 @@ pub struct Bundle {
     /// + score + hard_reject, for post-hoc inspection. Never read back to execute.
     #[serde(default)]
     pub audit: Option<Json>,
+    /// The create (+ dev-buy) leg's build inputs (name/symbol/uri/flags/variant/
+    /// dev-buy), persisted so the confirm watcher's background re-bid can rebuild
+    /// the atomic bundle's `tx0` create leg without the original launch request.
+    /// `None` for a legacy bundle whose create landed on its own separate tx.
+    #[serde(default)]
+    pub create_args: Option<Json>,
 }

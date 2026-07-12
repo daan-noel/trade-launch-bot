@@ -18,14 +18,14 @@ use chrono::Utc;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-use platform_core::models::{Bundle, BundleStatus, WalletRole};
+use platform_core::models::{Bundle, BundleStatus, Launch, LaunchStatus, WalletRole};
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
 };
 
 use crate::bundle::legs_from_json;
 use crate::config::LauncherSettings;
-use crate::execute_bundle;
+use crate::{execute_bundle, keystore};
 
 /// How often to re-check bundles awaiting confirmation.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
@@ -75,6 +75,9 @@ async fn confirm_one(
         .await?
         .context("launch not found for bundle")?;
 
+    // `leg_signatures` is the CO-BUY set (the create leg is `tx0`, its signature is
+    // on the launch). The bundle is atomic, so all co-buys present in the feed ⟹ the
+    // create landed too.
     let sigs: Vec<Vec<u8>> = bundle
         .leg_signatures
         .iter()
@@ -82,9 +85,8 @@ async fn confirm_one(
         .collect::<Result<_, _>>()
         .context("decode leg signature")?;
     if sigs.is_empty() {
-        warn!(bundle_id = %bundle.id, "submitted bundle has no leg signatures — marking dropped");
-        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Dropped.as_str()).await?;
-        mark_bundle_wallets_used(pool, &bundle).await;
+        warn!(bundle_id = %bundle.id, "submitted bundle has no co-buy signatures — marking dropped");
+        finalize_dropped(pool, &bundle, &launch, settings).await;
         return Ok(());
     }
 
@@ -92,10 +94,8 @@ async fn confirm_one(
         TradeRepo::find_signatures_present(pool, &launch.mint_address, &sigs).await?;
 
     if landed.len() == sigs.len() {
-        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Landed.as_str()).await?;
-        seed_landed_bundle_positions(pool, &launch.mint_address, &bundle).await;
-        mark_bundle_wallets_used(pool, &bundle).await;
-        info!(bundle_id = %bundle.id, legs = sigs.len(), "bundle landed");
+        finalize_landed(pool, &bundle, &launch, settings).await;
+        info!(bundle_id = %bundle.id, legs = sigs.len(), "atomic launch bundle landed (create + co-buys)");
         return Ok(());
     }
 
@@ -107,34 +107,172 @@ async fn confirm_one(
     }
 
     if landed.is_empty() {
-        // Auto re-bid: the bundle lost the Jito auction (accepted but not
-        // included). Re-submit at a higher tip before conceding — `submit_attempts`
-        // both bounds the retries and drives the escalation level (bundle_execute
-        // reads it as p95/p99/…). Wallets stay `reserved` across the re-bid; they
-        // only transition to `used` on a terminal outcome below.
+        // Auto re-bid: the atomic bundle lost the Jito auction (accepted but not
+        // included) — create AND co-buys, all-or-nothing, so nothing was created and
+        // nothing spent. Re-submit the WHOLE bundle at a higher tip before conceding;
+        // `submit_attempts` both bounds the retries and drives the escalation level.
+        // Wallets stay `reserved` across the re-bid.
         if let Some(settings) = settings {
             if (bundle.submit_attempts as u32) <= settings.bundle_max_retries {
                 return rebid_dropped(pool, settings, &bundle).await;
             }
         }
-        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Dropped.as_str()).await?;
         warn!(
             bundle_id = %bundle.id,
             attempts = bundle.submit_attempts,
-            "bundle dropped — no legs landed within timeout (retries exhausted)"
+            "atomic launch bundle dropped — nothing landed within timeout (retries exhausted)"
         );
+        finalize_dropped(pool, &bundle, &launch, settings).await;
     } else {
-        // Atomicity anomaly: a Jito bundle should never land partially.
-        BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Partial.as_str()).await?;
+        // Atomicity anomaly: a Jito bundle should never land partially. The create
+        // co-landed (it's tx0), so the launch IS created — mark it so, but flag the
+        // partial for investigation.
         warn!(
             bundle_id = %bundle.id,
             landed = landed.len(),
             total = sigs.len(),
-            "bundle partially landed — Jito atomicity anomaly, investigate"
+            "atomic launch bundle partially landed — Jito atomicity anomaly, investigate"
         );
+        finalize_partial(pool, &bundle, &launch, settings).await;
     }
-    mark_bundle_wallets_used(pool, &bundle).await;
     Ok(())
+}
+
+/// Terminal LANDED: the token is live and every co-buy filled. Flip the bundle +
+/// launch to their success states, seed the dev + bundler cost-basis positions,
+/// mark the wallets `used`, and delete the persisted mint key.
+async fn finalize_landed(
+    pool: &PgPool,
+    bundle: &Bundle,
+    launch: &Launch,
+    settings: Option<&LauncherSettings>,
+) {
+    if let Err(e) = BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Landed.as_str()).await {
+        warn!(bundle_id = %bundle.id, %e, "failed to set bundle landed");
+    }
+    // The create leg's signature was stamped on the launch at submit — promote the
+    // launch to `created` now that it actually landed.
+    let sig = launch.create_signature.clone().unwrap_or_default();
+    if let Err(e) =
+        LaunchRepo::set_created(pool, launch.id, &sig, LaunchStatus::Created.as_str()).await
+    {
+        warn!(launch_id = %launch.id, %e, "failed to set launch created after bundle landed");
+    }
+    seed_dev_position(pool, launch).await;
+    seed_landed_bundle_positions(pool, &launch.mint_address, bundle).await;
+    mark_bundle_wallets_used(pool, bundle).await;
+    mark_dev_wallet_used(pool, launch).await;
+    delete_mint_key(settings, launch.id);
+}
+
+/// Terminal DROPPED (retries exhausted): the atomic bundle never landed, so the
+/// token was never created and NO SOL was spent (a dropped Jito bundle executes no
+/// txs). Fail the launch and RELEASE the dev + bundler wallets back to `funded`
+/// (they're fully reusable), and delete the persisted mint key.
+async fn finalize_dropped(
+    pool: &PgPool,
+    bundle: &Bundle,
+    launch: &Launch,
+    settings: Option<&LauncherSettings>,
+) {
+    if let Err(e) = BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Dropped.as_str()).await
+    {
+        warn!(bundle_id = %bundle.id, %e, "failed to set bundle dropped");
+    }
+    if let Err(e) = LaunchRepo::set_failed(pool, launch.id, LaunchStatus::Failed.as_str()).await {
+        warn!(launch_id = %launch.id, %e, "failed to set launch failed after bundle dropped");
+    }
+    release_bundle_wallets(pool, bundle, launch).await;
+    delete_mint_key(settings, launch.id);
+}
+
+/// PARTIAL (Jito atomicity anomaly — should not happen): some co-buys landed, so
+/// the create (tx0) landed too. Treat the launch as created, seed what landed, mark
+/// the wallets `used` (they spent), and delete the mint key. Left flagged by the
+/// caller's `warn!` for investigation.
+async fn finalize_partial(
+    pool: &PgPool,
+    bundle: &Bundle,
+    launch: &Launch,
+    settings: Option<&LauncherSettings>,
+) {
+    if let Err(e) = BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Partial.as_str()).await
+    {
+        warn!(bundle_id = %bundle.id, %e, "failed to set bundle partial");
+    }
+    let sig = launch.create_signature.clone().unwrap_or_default();
+    if let Err(e) =
+        LaunchRepo::set_created(pool, launch.id, &sig, LaunchStatus::Created.as_str()).await
+    {
+        warn!(launch_id = %launch.id, %e, "failed to set launch created after partial bundle");
+    }
+    seed_dev_position(pool, launch).await;
+    seed_landed_bundle_positions(pool, &launch.mint_address, bundle).await;
+    mark_bundle_wallets_used(pool, bundle).await;
+    mark_dev_wallet_used(pool, launch).await;
+    delete_mint_key(settings, launch.id);
+}
+
+/// Seed the dev cost-basis position for a landed launch (idempotent) — the dev-buy
+/// fused into the create leg. No dev-buy ⇒ nothing held ⇒ nothing to seed.
+async fn seed_dev_position(pool: &PgPool, launch: &Launch) {
+    let (Some(dev_wallet_id), Some(dev_buy)) = (launch.dev_wallet_id, launch.dev_buy_quote) else {
+        return;
+    };
+    if dev_buy <= 0 {
+        return;
+    }
+    if let Err(e) = TokenPositionRepo::seed(
+        pool,
+        &launch.mint_address,
+        dev_wallet_id,
+        WalletRole::Dev.as_str(),
+        dev_buy,
+    )
+    .await
+    {
+        warn!(launch_id = %launch.id, %e, "failed to seed dev position on landing");
+    }
+}
+
+/// Mark the dev wallet `used` on a terminal spend (landed/partial).
+async fn mark_dev_wallet_used(pool: &PgPool, launch: &Launch) {
+    if let Some(dev_wallet_id) = launch.dev_wallet_id {
+        if let Err(e) = ManagedWalletRepo::mark_used(pool, &[dev_wallet_id]).await {
+            warn!(launch_id = %launch.id, %e, "failed to mark dev wallet used");
+        }
+    }
+}
+
+/// Release the dev + bundler wallets back to `funded` (a dropped atomic bundle spent
+/// nothing — they're reusable).
+async fn release_bundle_wallets(pool: &PgPool, bundle: &Bundle, launch: &Launch) {
+    let mut ids = match legs_from_json(&bundle.legs) {
+        Ok(legs) => legs.iter().map(|leg| leg.managed_wallet_id).collect::<Vec<_>>(),
+        Err(e) => {
+            warn!(bundle_id = %bundle.id, %e, "failed to parse bundle legs for wallet release");
+            Vec::new()
+        }
+    };
+    if let Some(dev_wallet_id) = launch.dev_wallet_id {
+        ids.push(dev_wallet_id);
+    }
+    if !ids.is_empty() {
+        if let Err(e) = ManagedWalletRepo::release_reservation(pool, &ids).await {
+            warn!(bundle_id = %bundle.id, %e, "failed to release bundle wallets after drop");
+        }
+    }
+}
+
+/// Delete the persisted (envelope-encrypted) mint key on a terminal outcome.
+/// A no-op when the watcher is running without settings (can't reach the keystore
+/// dir) — the file is small and the reservation sweep is the wider backstop.
+fn delete_mint_key(settings: Option<&LauncherSettings>, launch_id: uuid::Uuid) {
+    let Some(settings) = settings else { return };
+    let key_ref = keystore::mint_key_ref(launch_id);
+    if let Err(e) = keystore::delete_mint_key(&settings.keystore_dir, &key_ref) {
+        warn!(%launch_id, %e, "failed to delete mint key on terminal outcome");
+    }
 }
 
 /// Re-submit a dropped bundle at the next tip-escalation level. Resets it to
@@ -167,20 +305,15 @@ async fn rebid_dropped(
     Ok(())
 }
 
-/// Wallet-pool lifecycle: a bundle's leg wallets are terminal (`used`) once the
-/// bundle reaches ANY terminal outcome (landed/dropped/partial) — a dropped or
-/// partial bundle still spent its legs' fees/nonces on a real submit attempt, so
-/// they're not safely re-claimable. A no-op (`WHERE status = 'reserved'` guard in
-/// `mark_used`) for wallets not currently reserved, i.e. today's free-form
-/// template-selected legs, until launch execution claims via `claim_funded`.
-/// Seed the cost-basis position for every leg of a LANDED bundle (idempotent),
-/// mirroring the dev-buy seed at launch. This gives the dust sweep's
+/// Seed the cost-basis position for every leg of a LANDED (or partial) bundle
+/// (idempotent), mirroring the dev-buy seed. This gives the dust sweep's
 /// open-position guard a row to protect the instant the bundle lands, rather than
 /// waiting for the first holdings-page read to lazily seed it — otherwise these
 /// token-holding bundler wallets, now `used`, could be drained + retired by the
 /// hourly sweep before the token is ever viewed, stranding their sell (no gas to
-/// pay the fee → "confirmation timed out"). Only landed legs bought tokens; a
-/// dropped/partial bundle's legs hold nothing and stay sweep-eligible.
+/// pay the fee → "confirmation timed out"). Only landed legs bought tokens; a fully
+/// dropped atomic bundle's legs hold nothing and are released back to `funded`
+/// (see [`release_bundle_wallets`]), not seeded here.
 async fn seed_landed_bundle_positions(pool: &PgPool, mint_address: &str, bundle: &Bundle) {
     let legs = match legs_from_json(&bundle.legs) {
         Ok(legs) => legs,
@@ -204,6 +337,10 @@ async fn seed_landed_bundle_positions(pool: &PgPool, mint_address: &str, bundle:
     }
 }
 
+/// Terminal `reserved` -> `used` for a bundle's LEG (bundler) wallets on a spend
+/// (landed/partial) — they bought tokens, so they're not re-claimable. The dev
+/// wallet is transitioned separately ([`mark_dev_wallet_used`]). A no-op for wallets
+/// not currently `reserved`.
 async fn mark_bundle_wallets_used(pool: &PgPool, bundle: &Bundle) {
     let wallet_ids = match legs_from_json(&bundle.legs) {
         Ok(legs) => legs.iter().map(|leg| leg.managed_wallet_id).collect::<Vec<_>>(),

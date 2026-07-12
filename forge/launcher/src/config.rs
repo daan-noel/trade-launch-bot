@@ -23,6 +23,18 @@ pub struct LauncherSettings {
     /// `POST /bundles/:id/execute`. Env `BUNDLE_MAX_RETRIES`, default `2` (so a
     /// launch bundle gets up to 3 total attempts at escalating tips).
     pub bundle_max_retries: u32,
+    /// Jito tip floor for a launch bundle, in SOL (`JITO_MIN_TIP_SOL`) — the
+    /// fallback when the live tip-floor feed is cold/stale.
+    pub jito_min_tip_sol: f64,
+    /// Jito tip **ceiling** for a launch bundle, in SOL (`JITO_MAX_TIP_SOL`) — the
+    /// hard per-bundle cost guardrail the escalation ladder clamps to. Higher than
+    /// the trade-path default (0.005): a contested launch's whole-bundle tip must be
+    /// able to climb far enough to actually win the auction. A tip that never lands
+    /// costs nothing, so the ceiling only bounds spend once the bundle wins.
+    pub jito_max_tip_sol: f64,
+    /// Landed-tip percentile the first attempt targets (`JITO_TIP_PERCENTILE`,
+    /// 25|50|75|95|99) before the per-re-bid escalation climbs above it.
+    pub jito_tip_percentile: u8,
     /// Persistent launch Address Lookup Table (`PUMP_LAUNCH_ALT`). `None` (unset)
     /// keeps the legacy single-message create path; `Some` makes the launcher
     /// compile the create + dev-buy as a v0 tx against this table so it fits the
@@ -201,6 +213,9 @@ impl LauncherSettings {
             "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
         });
         let bundle_max_retries = env_u64("BUNDLE_MAX_RETRIES", 2)? as u32;
+        let jito_min_tip_sol = env_f64("JITO_MIN_TIP_SOL", 0.0002)?;
+        let jito_max_tip_sol = env_f64("JITO_MAX_TIP_SOL", 0.01)?;
+        let jito_tip_percentile = env_u64("JITO_TIP_PERCENTILE", 75)? as u8;
         let launch_alt = match std::env::var("PUMP_LAUNCH_ALT") {
             Ok(v) if !v.trim().is_empty() => Some(
                 Pubkey::from_str(v.trim())
@@ -226,6 +241,9 @@ impl LauncherSettings {
             kek_passphrase,
             jito_block_engine_url,
             bundle_max_retries,
+            jito_min_tip_sol,
+            jito_max_tip_sol,
+            jito_tip_percentile,
             launch_alt,
             backup_dir,
             pinata_jwt,

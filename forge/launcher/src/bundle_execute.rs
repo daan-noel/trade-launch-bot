@@ -3,12 +3,10 @@
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use platform_core::models::{BundleStatus, ManagedWallet, WalletRole, WalletStatus};
-use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenRepo,
-};
-use pump_trader::types::TokenProgram;
-use pump_trader::{PumpFunTrader};
-use serde::Serialize;
+use platform_core::storage::repositories::{BundleRepo, LaunchRepo, ManagedWalletRepo};
+use pump_trader::types::{CreateTokenArgs, CreateTokenV2Args, TokenProgram};
+use pump_trader::PumpFunTrader;
+use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::transaction::VersionedTransaction;
 use sqlx::PgPool;
@@ -28,9 +26,37 @@ pub struct BundleExecuteResult {
     pub leg_signatures: Vec<String>,
 }
 
-/// Build + submit a `planned` bundle's buy legs to Jito, standing up a fresh
-/// trader from the first leg's bundler wallet. Standalone retry entrypoint
-/// (`POST /bundles/:id/execute`).
+/// The create (+ dev-buy) leg's build inputs, persisted on the bundle (JSONB
+/// `bundles.create_args`) so the confirm watcher's background re-bid can rebuild
+/// the atomic bundle's `tx0` create leg without the original launch request. The
+/// SSOT for the create leg — service.rs writes it at plan time; [`build_create_leg`]
+/// reads it on every submit + re-bid so first-attempt and re-bid create legs are
+/// byte-identical bar the tip level + blockhash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateLegArgs {
+    /// Template variant: `"pumpfun.create_v2"` | `"pumpfun.create_v1"`.
+    pub variant: String,
+    pub name: String,
+    pub symbol: String,
+    pub uri: String,
+    #[serde(default)]
+    pub is_mayhem_mode: bool,
+    #[serde(default)]
+    pub cashback_enabled: bool,
+    /// Dev-buy lamports fused into the create leg; `0` = create-only.
+    #[serde(default)]
+    pub dev_buy_quote: u64,
+    /// Dev-buy slippage tolerance (bps); `None` = unprotected (min_out 1).
+    #[serde(default)]
+    pub slippage_bps: Option<u64>,
+    /// The dev/creator wallet pubkey (base58) — equals the create ix `creator`.
+    pub creator: String,
+}
+
+/// Build + submit a `planned` atomic launch bundle to Jito — the create (+ dev-buy)
+/// leg (`tx0`) plus every co-buy leg in ONE `sendBundle`, standing up a fresh trader
+/// from the launch's DEV wallet. Standalone entrypoint (`POST /bundles/:id/execute`
+/// and the confirm watcher's re-bid).
 pub async fn execute_bundle(
     pool: &PgPool,
     settings: &LauncherSettings,
@@ -39,14 +65,13 @@ pub async fn execute_bundle(
     execute_bundle_inner(pool, settings, bundle_id, None).await
 }
 
-/// Same as [`execute_bundle`], but reuse a trader the caller already built and
-/// initialized (the launch's create trader). Every leg is signed by its own
-/// bundler wallet, and the cached global account is wallet-independent for the
-/// fields the legs read (`build_bundle_leg_tx` re-derives each leg's
-/// `user_volume_accumulator` from that leg's signer), so the trader's own signer
-/// identity is irrelevant here. This avoids standing up a second trader — a full
-/// `initialize()` (≈8-12 RPC/HTTP round trips plus two background refresher
-/// tasks) — for the auto-submit that already follows a create in the same request.
+/// Same as [`execute_bundle`], but reuse the DEV trader the caller already built +
+/// initialized (service.rs's launch trader, whose `config.signer` is the dev
+/// wallet). The create leg signs + pays as that dev wallet; each co-buy leg signs
+/// with its own bundler wallet (the cached global account is wallet-independent for
+/// the fields the legs read — `build_bundle_leg_tx` re-derives each leg's
+/// `user_volume_accumulator` from that leg's signer). Avoids a second full
+/// `initialize()` for the auto-submit that follows a plan in the same request.
 pub(crate) async fn execute_bundle_with_trader(
     pool: &PgPool,
     settings: &LauncherSettings,
@@ -76,18 +101,21 @@ async fn execute_bundle_inner(
     let launch = LaunchRepo::get(pool, bundle.launch_id)
         .await?
         .context("launch not found for bundle")?;
-    if launch.create_signature.is_none() {
-        bail!("launch must be created on-chain before bundle execute");
-    }
 
-    let token = TokenRepo::get(pool, &launch.mint_address)
-        .await?
-        .context("token row not found")?;
+    // The create (+ dev-buy) leg is `tx0` of the atomic bundle now, NOT a
+    // separately-landed tx — so a bundle without `create_args` predates this
+    // cutover and can't be built on this path.
+    let create_args: CreateLegArgs = serde_json::from_value(
+        bundle
+            .create_args
+            .clone()
+            .context("bundle predates the atomic-launch cutover (no create_args) — cannot execute")?,
+    )
+    .context("deserialize persisted create_args")?;
 
     // Phase 2.F: the bundle's executable SSOT is the persisted orchestrator `Plan`.
     // Deserialize it and re-run the mandatory gate (which recomputes the identical
-    // deterministic disguises and re-audits) — a bundle planned before the cutover
-    // has no plan and can't be executed on this path.
+    // deterministic disguises and re-audits).
     let plan: orchestrator::Plan = serde_json::from_value(
         bundle
             .plan
@@ -104,33 +132,30 @@ async fn execute_bundle_inner(
     }
 
     let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
-    let first_wallet_id = bundler_ops[0]
-        .wallet
-        .managed_wallet_id
-        .context("bundler leg op has no managed wallet id")?;
-    let first_wallet = ManagedWalletRepo::get(pool, first_wallet_id)
-        .await?
-        .context("bundler wallet not found")?;
-    check_wallet_reserved_to_bundle(&first_wallet, bundle.launch_id)?;
 
     // Reuse the caller's already-initialized trader when given one (the launch's
-    // create trader); otherwise stand up a fresh one from the first bundler
-    // wallet (the standalone retry path).
+    // DEV trader from service.rs); otherwise stand up a fresh one from the DEV
+    // wallet — the create leg signs + pays as the dev/creator, so `config.signer`
+    // MUST be the dev wallet (each co-buy leg still signs with its OWN bundler
+    // wallet, independent of `config.signer`).
     let built_trader;
     let trader: &PumpFunTrader = match existing_trader {
         Some(t) => t,
         None => {
-            let primary_signer = keystore::resolve_signer(
-                &settings.keystore_dir,
-                &first_wallet.key_ref,
-                &kek,
-            )?;
+            let dev_wallet_id = launch
+                .dev_wallet_id
+                .context("launch has no dev wallet id (cannot rebuild create leg)")?;
+            let dev_wallet = ManagedWalletRepo::get(pool, dev_wallet_id)
+                .await?
+                .context("dev wallet not found")?;
+            let dev_signer =
+                keystore::resolve_signer(&settings.keystore_dir, &dev_wallet.key_ref, &kek)?;
             let nonce_accounts: Vec<Pubkey> = settings
                 .nonce_accounts
                 .iter()
                 .map(|s| Pubkey::from_str(s).with_context(|| format!("parse nonce pubkey {s}")))
                 .collect::<Result<_>>()?;
-            let trader_config = build_launch_trader_config(settings, primary_signer, nonce_accounts);
+            let trader_config = build_launch_trader_config(settings, dev_signer, nonce_accounts);
             let mut t = PumpFunTrader::new(trader_config);
             t.initialize().await.context("initialize pump-trader")?;
             built_trader = t;
@@ -138,39 +163,44 @@ async fn execute_bundle_inner(
         }
     };
 
+    // The persisted mint keypair (envelope-encrypted at plan time). REQUIRED — the
+    // create leg is inside the bundle, so a re-bid must re-sign create with the SAME
+    // mint. Deterministic key_ref from the launch id (no DB column).
+    let mint_ref = keystore::mint_key_ref(bundle.launch_id);
+    let mint_signer = keystore::resolve_signer(&settings.keystore_dir, &mint_ref, &kek)
+        .context("load persisted launch mint key (atomic bundle create leg needs it)")?;
+    if mint_signer.pubkey().to_string() != launch.mint_address {
+        bail!(
+            "persisted mint key {} does not match launch mint {}",
+            mint_signer.pubkey(),
+            launch.mint_address
+        );
+    }
+
     let mint = Pubkey::from_str(&launch.mint_address).context("parse mint")?;
-    let creator = Pubkey::from_str(&token.creator_wallet).context("parse creator")?;
-    let token_program_id = token
-        .token_program_id
-        .as_deref()
-        .unwrap_or_else(|| keystore::token_program_for_variant(&launch.variant));
+    let creator = Pubkey::from_str(&create_args.creator).context("parse creator")?;
+    let token_program_id = keystore::token_program_for_variant(&create_args.variant);
     let token_program = TokenProgram::from_id(token_program_id);
-    let cashback_enabled = token
-        .meta
-        .get("cashback_enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let cashback_enabled = create_args.cashback_enabled;
 
     let blockhash = trader.fresh_blockhash().await?;
 
-    // Size the bundle's total Jito tip to the live landed-tip floor at this
-    // submission's escalation level. `submit_attempts` is the persisted level:
-    // 0 on the first attempt, and a re-bid after a `dropped` verdict re-enters
-    // here with it incremented (see `launcher::confirm`), so it bids ABOVE the
-    // tip that just lost the auction (level 1 = p95, 2 = p99, …). The total is
-    // split evenly across legs; `leg_params` only ever RAISES a persona tip draw
-    // to this floor, never lowers it — so persona jitter is kept when it already
-    // clears the auction, and the tip is bid up to the live floor when it doesn't.
+    // Escalation level = `submit_attempts` (0 first attempt; a re-bid after a
+    // `dropped` verdict re-enters with it incremented → bids above the tip that just
+    // lost). The WHOLE-bundle Jito tip rides the create leg (`tx0`) at this level
+    // (sized to the live floor, clamped to the cost guardrail); each co-buy leg
+    // carries only its small persona tip jitter (`min_tip = 0`) so the total sits at
+    // ~floor without double-counting a per-leg split.
     let level = bundle.submit_attempts.max(0) as u8;
     let total_tip_floor = trader.jito_tip_floor_lamports(level);
-    let per_leg_tip_floor = total_tip_floor.div_ceil(bundler_ops.len() as u64);
+    let cobuy_min_tip: u64 = 0;
 
     // Atomic compare-and-swap `planned → submitting`. The read-check above is a
     // fast-fail for an obviously-wrong status, but ~8-12 RPC round trips (gate,
     // trader init, blockhash, tip floor) run between it and here — two concurrent
     // executes can both pass that check. This conditional UPDATE is the real gate:
     // exactly one caller flips the row, and the loser aborts BEFORE signing or
-    // submitting, so the same bundler wallets can't double-submit real-SOL buys.
+    // submitting, so the same wallets can't double-submit real-SOL buys.
     if !BundleRepo::claim_for_submitting(pool, bundle_id).await? {
         bail!(
             "bundle {bundle_id} was concurrently claimed for submission \
@@ -179,10 +209,60 @@ async fn execute_bundle_inner(
     }
 
     let finish = async {
-        let mut txs = Vec::with_capacity(bundler_ops.len());
-        let mut leg_signatures = Vec::with_capacity(bundler_ops.len());
+        // tx0 — the create (+ fused dev-buy) leg, signed by dev + mint on the shared
+        // blockhash, carrying the whole-bundle tip at `level`.
+        let dev_buy = if create_args.dev_buy_quote > 0 {
+            let sol = create_args.dev_buy_quote as f64
+                / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
+            Some((sol, create_args.dev_buy_quote, create_args.slippage_bps))
+        } else {
+            None
+        };
+        let create_tx = match create_args.variant.as_str() {
+            "pumpfun.create_v2" => {
+                let args = CreateTokenV2Args {
+                    name: create_args.name.clone(),
+                    symbol: create_args.symbol.clone(),
+                    uri: create_args.uri.clone(),
+                    creator,
+                    is_mayhem_mode: create_args.is_mayhem_mode,
+                    cashback_enabled: create_args.cashback_enabled,
+                };
+                trader
+                    .build_create_v2_leg_tx(mint_signer.as_ref(), &args, dev_buy, blockhash, level)
+                    .await?
+            }
+            "pumpfun.create_v1" => {
+                let args = CreateTokenArgs {
+                    name: create_args.name.clone(),
+                    symbol: create_args.symbol.clone(),
+                    uri: create_args.uri.clone(),
+                    creator,
+                };
+                trader
+                    .build_create_leg_tx(mint_signer.as_ref(), &args, dev_buy, blockhash, level)
+                    .await?
+            }
+            other => bail!("unsupported launch variant: {other}"),
+        };
+        let create_signature = create_tx.signatures[0].to_string();
 
-        for op in &bundler_ops {
+        // The curve is created in THIS bundle, so co-buy legs can't read live
+        // reserves — simulate the curve forward (create → dev-buy → prior co-buys)
+        // so each leg's min_out floor is computed against the state it will fill at.
+        let cobuy_lamports: Vec<u64> = bundler_ops
+            .iter()
+            .map(|op| crate::plan_exec::buy_lamports(op))
+            .collect::<Result<_>>()?;
+        let leg_reserves =
+            trader.simulate_launch_leg_reserves(create_args.dev_buy_quote, &cobuy_lamports);
+
+        // tx1..N — the co-buy legs, each signed by its own bundler wallet, all on the
+        // same blockhash so the whole bundle lands atomically in one slot.
+        let mut txs = Vec::with_capacity(bundler_ops.len() + 1);
+        txs.push(create_tx);
+        let mut leg_signatures = Vec::with_capacity(bundler_ops.len());
+        for (i, op) in bundler_ops.iter().enumerate() {
             let managed_wallet_id = op
                 .wallet
                 .managed_wallet_id
@@ -206,7 +286,8 @@ async fn execute_bundle_inner(
                 cashback_enabled,
                 op,
                 disguise,
-                per_leg_tip_floor,
+                cobuy_min_tip,
+                Some(leg_reserves[i]),
             )
             .await?;
             leg_signatures.push(tx.signatures[0].to_string());
@@ -214,20 +295,27 @@ async fn execute_bundle_inner(
         }
 
         let jito_bundle_id = submit_jito_bundle(&settings.jito_block_engine_url, &txs).await?;
+        // `leg_signatures` is the CO-BUY set the confirm watcher checks against the
+        // `trades` feed; the bundle is atomic, so all co-buys present ⟹ create landed.
+        // Stamp the create leg's signature on the launch (status stays `pending`
+        // until the watcher confirms landing); a re-bid overwrites it.
         BundleRepo::set_submitted(pool, bundle_id, &jito_bundle_id, &leg_signatures).await?;
+        BundleRepo::set_tip_quote(pool, bundle_id, total_tip_floor as i64).await?;
+        LaunchRepo::set_create_signature(pool, bundle.launch_id, &create_signature).await?;
 
-        // Wallet-pool lifecycle: bundler wallets stay `reserved` here — submit
-        // isn't completion. `launcher::confirm` transitions them to `used` once
-        // the bundle reaches a terminal landed/dropped/partial outcome.
+        // Wallet-pool lifecycle: dev + bundler wallets stay `reserved` here — submit
+        // isn't completion. `launcher::confirm` transitions them to `used` on a
+        // terminal outcome.
 
         info!(
             bundle_id = %bundle_id,
             launch_id = %bundle.launch_id,
             legs = bundler_ops.len(),
             jito_bundle_id = %jito_bundle_id,
+            create_signature = %create_signature,
             tip_level = level,
             total_tip_floor_lamports = total_tip_floor,
-            "bundle submitted to Jito"
+            "atomic launch bundle submitted to Jito (create + co-buys)"
         );
 
         Ok(BundleExecuteResult {

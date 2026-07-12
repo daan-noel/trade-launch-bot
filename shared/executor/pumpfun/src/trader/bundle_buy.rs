@@ -84,6 +84,7 @@ impl PumpFunTrader {
     /// is configured it compresses the leg's immutable accounts — load-bearing for
     /// the ~27-account v2 buy leg, which would otherwise ride the 1232 B limit; the
     /// v1 leg just gains headroom. No ALT → a plain v0 tx (~legacy size).
+    #[allow(clippy::too_many_arguments)]
     pub async fn build_bundle_leg_tx(
         &self,
         signer: &(dyn Signer + Send + Sync),
@@ -95,6 +96,7 @@ impl PumpFunTrader {
         cashback_enabled: bool,
         variant: BundleBuyVariant,
         leg: &BundleLegParams,
+        reserves_override: Option<(u128, u128)>,
     ) -> Result<VersionedTransaction> {
         self.global_account.as_ref().context("Not initialized")?;
         let token_program_pk = token_program.pubkey();
@@ -110,9 +112,14 @@ impl PumpFunTrader {
         self.user_token_accounts
             .insert(mint_str.clone(), user_token_account);
 
-        let reserves = self
-            .curve_reserves(&mint_str, &pdas.bonding_curve)
-            .await?;
+        // An atomic launch bundle creates the curve in the SAME bundle, so the co-buy
+        // legs' curve has no on-chain state to read — the caller passes the SIMULATED
+        // pre-leg reserves (create → dev-buy → prior co-buys). A standalone buy against
+        // an already-created curve passes `None` and reads live reserves as before.
+        let reserves = match reserves_override {
+            Some(r) => r,
+            None => self.curve_reserves(&mint_str, &pdas.bonding_curve).await?,
+        };
         let min_tokens_out = compute_curve_buy_min_out(
             buy_lamports,
             Some(leg.slippage_bps),
@@ -167,6 +174,31 @@ impl PumpFunTrader {
             .unwrap_or(&[]);
         self.build_v0_tx_with_blockhash(ixs, signer, blockhash, alts)
             .await
+    }
+
+    /// Simulate the launch curve forward and return the **pre-buy reserves each
+    /// co-buy leg faces**, in leg order. The curve is created inside the atomic
+    /// bundle, so no co-buy can read it live: index `i` is the curve state after
+    /// create + dev-buy + the first `i` co-buys, which is exactly what co-buy leg
+    /// `i` sees. `dev_buy_lamports` is `0` for a no-dev-buy launch. Pass each
+    /// returned tuple as `reserves_override` to [`Self::build_bundle_leg_tx`] so the
+    /// leg's `min_out` floor is computed against the state it will actually fill at.
+    pub fn simulate_launch_leg_reserves(
+        &self,
+        dev_buy_lamports: u64,
+        cobuy_lamports: &[u64],
+    ) -> Vec<(u128, u128)> {
+        let fee = self.config.slippage.curve_fee_buffer_bps;
+        let mut reserves = crate::price::fresh_curve_reserves();
+        if dev_buy_lamports > 0 {
+            reserves = crate::price::apply_curve_buy(reserves, dev_buy_lamports, fee);
+        }
+        let mut out = Vec::with_capacity(cobuy_lamports.len());
+        for &lamports in cobuy_lamports {
+            out.push(reserves); // this leg fills against the current curve state
+            reserves = crate::price::apply_curve_buy(reserves, lamports, fee);
+        }
+        out
     }
 
     /// Recent blockhash for a Jito bundle — reads the warmed cache or fetches once.
@@ -482,6 +514,36 @@ mod tests {
         assert!(!vmsg.address_table_lookups.is_empty(), "v0 leg did not reference the ALT");
         assert!(v0_size < legacy, "ALT must shrink the leg: v0 {v0_size} >= legacy {legacy}");
         assert!(v0_size <= 1232, "v2 leg over limit even with ALT: {v0_size} B");
+    }
+
+    /// The atomic-launch reserve simulation: index 0 is the curve AFTER create +
+    /// dev-buy (so co-buy leg 0 doesn't price against the empty curve), and every
+    /// subsequent co-buy faces a strictly higher quote reserve (its predecessors
+    /// moved the price). Length matches the co-buy count.
+    #[test]
+    fn simulate_launch_leg_reserves_is_ordered_and_post_dev_buy() {
+        let (t, _bundler) = trader_with_global();
+        let fresh = crate::price::fresh_curve_reserves();
+        let cobuys = [10_000_000u64, 10_000_000, 15_000_000];
+        let seq = t.simulate_launch_leg_reserves(20_000_000, &cobuys);
+        assert_eq!(seq.len(), cobuys.len(), "one pre-state per co-buy leg");
+        assert!(
+            seq[0].1 > fresh.1,
+            "co-buy leg 0 faces the post-dev-buy curve, not the empty one"
+        );
+        for w in seq.windows(2) {
+            assert!(w[1].1 > w[0].1, "each later co-buy faces a higher quote reserve");
+            assert!(w[1].0 < w[0].0, "each later co-buy faces a lower token reserve");
+        }
+    }
+
+    /// With NO dev-buy, co-buy leg 0 prices against the fresh curve exactly.
+    #[test]
+    fn simulate_launch_leg_reserves_no_dev_buy_starts_fresh() {
+        let (t, _bundler) = trader_with_global();
+        let fresh = crate::price::fresh_curve_reserves();
+        let seq = t.simulate_launch_leg_reserves(0, &[10_000_000]);
+        assert_eq!(seq[0], fresh, "no dev-buy ⇒ first co-buy sees the fresh curve");
     }
 
     #[test]

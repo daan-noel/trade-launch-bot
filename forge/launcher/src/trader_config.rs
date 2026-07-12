@@ -45,5 +45,11 @@ pub fn build_launch_trader_config(
     config.retry.confirm_poll_ms = 1_500;
     config.retry.confirm_poll_schedule_ms = vec![500, 750, 1_000, 1_500, 2_000];
     config.compute.price_micro_lamports = 750_000;
+    // Launch-tuned Jito tip bounds (env-overridable). The ceiling is higher than the
+    // trade-path default so a contested launch's whole-bundle tip can climb far
+    // enough to win the auction; a tip that never lands costs nothing.
+    config.jito.min_sol = settings.jito_min_tip_sol;
+    config.jito.max_sol = settings.jito_max_tip_sol;
+    config.jito.percentile = settings.jito_tip_percentile;
     Arc::new(config)
 }

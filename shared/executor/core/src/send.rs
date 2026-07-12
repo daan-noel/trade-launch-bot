@@ -251,6 +251,29 @@ impl Engine {
         Ok(tx)
     }
 
+    /// Multi-signer variant of [`Self::build_v0_tx_with_blockhash`] — the atomic
+    /// launch bundle's **create leg** is signed by both the dev wallet (fee payer,
+    /// `signers[0]`) and the fresh mint keypair, and must share the bundle's
+    /// blockhash + ALT compression so it lands in the same slot as the co-buy legs.
+    pub async fn build_v0_tx_with_blockhash_multi(
+        &self,
+        instructions: Vec<Instruction>,
+        signers: &[&(dyn Signer + Send + Sync)],
+        blockhash: Hash,
+        alts: &[AddressLookupTableAccount],
+    ) -> Result<VersionedTransaction> {
+        if signers.is_empty() {
+            bail!("build_v0_tx_with_blockhash_multi requires at least one signer");
+        }
+        let fee_payer = signers[0].pubkey();
+        let msg = v0::Message::try_compile(&fee_payer, &instructions, alts, blockhash)
+            .context("compile v0 message (create leg)")?;
+        let refs: Vec<&dyn Signer> = signers.iter().map(|s| *s as &dyn Signer).collect();
+        let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &refs)
+            .context("sign v0 create leg")?;
+        Ok(tx)
+    }
+
     /// Submit a signed tx to the Helius Sender. With one configured endpoint this
     /// is a single POST; with several the *identical* signed tx is fanned out to
     /// all of them concurrently. Because the signature is identical, the bank

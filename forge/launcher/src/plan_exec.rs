@@ -94,6 +94,7 @@ pub async fn build_leg_tx(
     op: &Operation,
     disguise: &Disguise,
     min_tip_lamports: u64,
+    reserves_override: Option<(u128, u128)>,
 ) -> Result<VersionedTransaction> {
     let variant = bundle_buy_variant(&op.variant)?;
     let lamports = buy_lamports(op)?;
@@ -109,6 +110,7 @@ pub async fn build_leg_tx(
             cashback_enabled,
             variant,
             &params,
+            reserves_override,
         )
         .await
         .map_err(|e| anyhow::anyhow!("build bundle leg (op {}): {e}", op.id))

@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use solana_sdk::signature::{Keypair, Signer};
 use std::path::Path;
 use std::sync::Arc;
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Key-encryption-key source (env/passphrase now → AWS KMS later).
@@ -209,6 +210,43 @@ fn decrypt_aes(key: &[u8], nonce_bytes: &[u8], ciphertext: &[u8]) -> Result<Zero
 fn decode_b64(s: &str) -> Result<Vec<u8>> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     STANDARD.decode(s).context("base64 decode")
+}
+
+/// The keystore-relative path a launch's ephemeral mint key is stored at. Derived
+/// deterministically from the launch id, so the atomic-bundle submit path and the
+/// confirm watcher's re-bid both find it without a DB column.
+pub fn mint_key_ref(launch_id: Uuid) -> String {
+    format!("mints/{launch_id}.enc")
+}
+
+/// Persist the launch **mint** keypair, envelope-encrypted (same KEK path as
+/// wallets), so a dropped atomic-launch bundle can be re-signed on a re-bid — the
+/// create leg lives INSIDE the bundle, so an all-or-nothing drop means create never
+/// happened and the whole bundle (create included) must be rebuilt. Deleted on any
+/// terminal outcome via [`delete_mint_key`]. Returns the key_ref (relative to the
+/// keystore dir); it is also re-derivable from the launch id via [`mint_key_ref`].
+pub fn write_mint_key(
+    keystore_dir: &Path,
+    launch_id: Uuid,
+    mint: &Keypair,
+    kek: &dyn Kek,
+) -> Result<String> {
+    let key_ref = mint_key_ref(launch_id);
+    let out = keystore_dir.join(&key_ref);
+    write_envelope(&out, &mint.to_bytes(), kek)?;
+    Ok(key_ref)
+}
+
+/// Delete a persisted launch mint key (terminal-outcome cleanup). Idempotent — a
+/// missing file is not an error (a re-bid path may run this more than once, or none
+/// was ever written for a bundle-less launch).
+pub fn delete_mint_key(keystore_dir: &Path, key_ref: &str) -> Result<()> {
+    let path = keystore_dir.join(key_ref);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("delete mint key {}", path.display())),
+    }
 }
 
 /// SPL token program id string for a launch variant.

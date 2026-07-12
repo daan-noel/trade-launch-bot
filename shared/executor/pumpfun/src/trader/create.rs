@@ -19,6 +19,7 @@ use solana_sdk::{
     signature::{Keypair, Signer},
     system_program,
     sysvar,
+    transaction::VersionedTransaction,
 };
 use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
@@ -110,6 +111,7 @@ impl PumpFunTrader {
             token_program,
             args.creator == wallet.pubkey(),
             dev_buy,
+            0,
         )?;
         self.send_create_tx(ixs, wallet, mint, confirm, &mint_pk, args.creator, token_program, args.creator == wallet.pubkey(), false, t0)
             .await
@@ -135,6 +137,7 @@ impl PumpFunTrader {
             token_program,
             args.cashback_enabled,
             dev_buy,
+            0,
         )?;
         self.send_create_tx(
             ixs,
@@ -164,6 +167,7 @@ impl PumpFunTrader {
         token_program: TokenProgram,
         cashback_enabled: bool,
         dev_buy: Option<(f64, u64, Option<u64>)>,
+        tip_level: u8,
     ) -> Result<Vec<Instruction>> {
         let mut core = Vec::with_capacity(3);
         core.push(create_ix);
@@ -188,11 +192,87 @@ impl PumpFunTrader {
                 ata: Vec::new(), // buyer ATA is fused into `core` for create
                 cu_limit,
                 cu_price: compute.price_micro_lamports,
-                tip_lamports: self.jito_tip_cache.tip_lamports_for_level(0),
+                // Level 0 for a standalone create send (unchanged); the atomic
+                // launch bundle passes the escalation level so the whole-bundle tip
+                // rides the create leg and climbs on a re-bid.
+                tip_lamports: self.jito_tip_cache.tip_lamports_for_level(tip_level),
                 tip_account: self.engine.jito_tip_account,
                 payer: self.config.signer.pubkey(),
             },
         ))
+    }
+
+    /// Build the `create` (+ fused dev-buy) as an **unsent signed v0 tx** on a
+    /// caller-supplied blockhash — the first leg (`tx0`) of an atomic launch Jito
+    /// bundle. Unlike [`create_token`], this does NOT submit or confirm: the caller
+    /// prepends it to the co-buy legs and `sendBundle`s all of them atomically, so
+    /// the create and every sniper buy land in one slot (no front-run gap, no
+    /// separate-submission drop). Signed by the dev wallet (`config.signer`, fee
+    /// payer) + the `mint` keypair. The whole-bundle Jito tip rides this leg at
+    /// `tip_level` (0 first attempt, higher on a re-bid). Compiled v0 over the
+    /// launch ALT (empty when none) — required for the ~27-account create_v2+dev-buy.
+    pub async fn build_create_leg_tx(
+        &self,
+        mint_signer: &(dyn Signer + Send + Sync),
+        args: &CreateTokenArgs,
+        dev_buy: Option<(f64, u64, Option<u64>)>,
+        blockhash: solana_sdk::hash::Hash,
+        tip_level: u8,
+    ) -> Result<VersionedTransaction> {
+        let mint_pk = mint_signer.pubkey();
+        let token_program = TokenProgram::Legacy;
+        let accounts = derive_create_accounts(&mint_pk, token_program, false);
+        let create_ix = build_create_ix(&mint_pk, self.config.signer.pubkey(), args, &accounts)?;
+        let ixs = self.assemble_create_ixs(
+            create_ix,
+            &mint_pk,
+            args.creator,
+            token_program,
+            args.creator == self.config.signer.pubkey(),
+            dev_buy,
+            tip_level,
+        )?;
+        self.sign_create_leg(ixs, mint_signer, blockhash).await
+    }
+
+    /// Token-2022 [`build_create_leg_tx`] — the current default create_v2 path.
+    pub async fn build_create_v2_leg_tx(
+        &self,
+        mint_signer: &(dyn Signer + Send + Sync),
+        args: &CreateTokenV2Args,
+        dev_buy: Option<(f64, u64, Option<u64>)>,
+        blockhash: solana_sdk::hash::Hash,
+        tip_level: u8,
+    ) -> Result<VersionedTransaction> {
+        let mint_pk = mint_signer.pubkey();
+        let token_program = TokenProgram::Token2022;
+        let accounts = derive_create_accounts(&mint_pk, token_program, true);
+        let create_ix = build_create_v2_ix(&mint_pk, self.config.signer.pubkey(), args, &accounts)?;
+        let ixs = self.assemble_create_ixs(
+            create_ix,
+            &mint_pk,
+            args.creator,
+            token_program,
+            args.cashback_enabled,
+            dev_buy,
+            tip_level,
+        )?;
+        self.sign_create_leg(ixs, mint_signer, blockhash).await
+    }
+
+    /// Compile + sign the create leg's ixs as a v0 tx over the launch ALT, signed by
+    /// the dev wallet (fee payer) + the mint keypair, on the shared bundle blockhash.
+    async fn sign_create_leg(
+        &self,
+        ixs: Vec<Instruction>,
+        mint_signer: &(dyn Signer + Send + Sync),
+        blockhash: solana_sdk::hash::Hash,
+    ) -> Result<VersionedTransaction> {
+        let alts = self.launch_alt.as_slice();
+        let dev = self.config.signer.clone();
+        let signers: [&(dyn Signer + Send + Sync); 2] = [dev.as_ref(), mint_signer];
+        self.build_v0_tx_with_blockhash_multi(ixs, &signers, blockhash, alts)
+            .await
     }
 
     /// The dev-buy block that fuses into create's `Core`: `[ata, buy]`, or empty
@@ -518,6 +598,7 @@ mod tests {
             TokenProgram::Token2022,
             false,
             Some((0.02, 20_000_000, None)),
+            0,
         )
         .unwrap()
     }
@@ -654,7 +735,7 @@ mod tests {
         let create_ix = build_create_v2_ix(&mint.pubkey(), wallet, &args, &accounts).unwrap();
 
         let got = t
-            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None)
+            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None, 0)
             .unwrap();
 
         let compute = &t.config.compute;
@@ -693,6 +774,7 @@ mod tests {
                 TokenProgram::Token2022,
                 false,
                 Some((0.02, 20_000_000, None)),
+                0,
             )
             .unwrap();
 
@@ -742,14 +824,14 @@ mod tests {
 
         // Default: the canonical 4-ix create-only shape.
         let canonical = t
-            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None)
+            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None, 0)
             .unwrap();
         assert_eq!(canonical.len(), 4);
 
         // Authored lean `[Core]` → just the create ix.
         t.set_create_layout(Some(IxLayout { steps: vec![DecoStep::Core] }));
         let lean = t
-            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None)
+            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None, 0)
             .unwrap();
         assert_eq!(lean.len(), 1);
         assert_eq!(lean[0], create_ix, "Core placed opaque, byte-identical");

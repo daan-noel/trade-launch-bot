@@ -85,6 +85,32 @@ pub(crate) fn fresh_curve_reserves() -> (u128, u128) {
     )
 }
 
+/// Advance a bonding curve's `(virtual_token, virtual_quote=lamports)` reserves by
+/// ONE constant-product buy of `buy_lamports` (gross), returning the post-buy
+/// reserves. Used ONLY to **simulate** the curve state each co-buy leg of an atomic
+/// launch Jito bundle will face: the curve is created inside the same bundle, so no
+/// leg after the dev-buy can read live reserves — they're derived by replaying the
+/// preceding legs (create+dev-buy, then each prior co-buy) through this step. Mirrors
+/// [`curve_buy_min_out`]'s net-of-fee-buffer input so the simulated evolution and the
+/// per-leg floor never drift; the small residual (true protocol fee vs the buffer,
+/// sub-0.1 % at launch buy sizes) is absorbed by the leg's own `slippage_bps`.
+pub(crate) fn apply_curve_buy(
+    reserves: (u128, u128),
+    buy_lamports: u64,
+    curve_fee_buffer_bps: u128,
+) -> (u128, u128) {
+    let (vt, vq) = reserves;
+    let net = (buy_lamports as u128)
+        .saturating_mul(10_000u128.saturating_sub(curve_fee_buffer_bps))
+        / 10_000;
+    let denom = vq.saturating_add(net);
+    if denom == 0 {
+        return reserves;
+    }
+    let tokens_out = vt.saturating_mul(net) / denom;
+    (vt.saturating_sub(tokens_out), vq.saturating_add(net))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{curve_buy_min_out, curve_sell_min_out, fresh_curve_reserves};
@@ -128,5 +154,46 @@ mod tests {
         let tight = curve_buy_min_out(1_000_000_000, Some(100), reserves, FEE_BUF);
         assert_eq!(unprotected, 1, "no slippage → no floor even on a fresh curve");
         assert!(tight >= loose && loose >= 1, "protected floor rises with tighter slippage");
+    }
+
+    /// A single `apply_curve_buy` moves the curve the right direction: quote reserve
+    /// UP by the net-of-fee-buffer lamports, token reserve DOWN by the tokens the
+    /// buyer received (constant-product), and it hands out a positive token amount.
+    #[test]
+    fn apply_curve_buy_moves_reserves_the_right_way() {
+        use super::apply_curve_buy;
+        let (vt0, vq0) = fresh_curve_reserves();
+        let (vt1, vq1) = apply_curve_buy((vt0, vq0), 20_000_000, FEE_BUF);
+        assert!(vq1 > vq0, "quote reserve must rise on a buy");
+        assert!(vt1 < vt0, "token reserve must fall on a buy");
+        // Net added to the quote reserve is buy_lamports minus the fee buffer.
+        let net = 20_000_000u128 * (10_000 - FEE_BUF) / 10_000;
+        assert_eq!(vq1 - vq0, net, "quote reserve grows by exactly the net-of-fee input");
+        assert_eq!(vt0 - vt1, vt0 * net / (vq0 + net), "tokens out follow constant product");
+    }
+
+    /// Replaying create → dev-buy → co-buy1 → co-buy2 produces a MONOTONE curve: each
+    /// successive leg faces a higher quote reserve and a lower token reserve, so its
+    /// `min_out` floor for the same spend is no greater than the prior leg's. This is
+    /// exactly why the atomic launch's co-buy legs don't revert — each is priced
+    /// against the state its predecessors leave behind, not the empty curve.
+    #[test]
+    fn sequential_buys_are_monotone_and_lower_each_floor() {
+        use super::apply_curve_buy;
+        let mut r = fresh_curve_reserves();
+        let leg_spend = 10_000_000u64;
+        let mut prev_vq = 0u128;
+        let mut prev_floor = u64::MAX;
+        for _ in 0..4 {
+            assert!(r.1 > prev_vq, "each leg faces a strictly higher quote reserve");
+            let floor = curve_buy_min_out(leg_spend, Some(500), Some(r), FEE_BUF);
+            assert!(
+                floor <= prev_floor,
+                "a later leg's min_out floor must not exceed an earlier one's ({floor} > {prev_floor})"
+            );
+            prev_vq = r.1;
+            prev_floor = floor;
+            r = apply_curve_buy(r, leg_spend, FEE_BUF);
+        }
     }
 }
