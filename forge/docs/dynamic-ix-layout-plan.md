@@ -110,23 +110,23 @@ pub struct IxLayout { pub steps: Vec<DecoStep> }
 
 **Todos:**
 
-- [ ] Create `ix_layout.rs` with `DecoStep`, `IxLayout`.
-- [ ] `IxLayout::canonical_buy()` → `[CuLimit, CuPrice, CreateAta, Core, Tip]` (matches
+- [x] Create `ix_layout.rs` with `DecoStep`, `IxLayout`. (+ `LayoutKind` for validate)
+- [x] `IxLayout::canonical_buy()` → `[CuLimit, CuPrice, CreateAta, Core, Tip]` (matches
       [bundle_buy.rs:200-256](../../shared/executor/pumpfun/src/trader/bundle_buy.rs#L200);
       for a v2 buy, `CreateAta` expands to base ATA **and** WSOL ATA — the interpreter
       emits every ix the `ata` part carries).
-- [ ] `IxLayout::canonical_create()` → `[CuLimit, CuPrice, Core, Tip]` (Core = `[create]`
+- [x] `IxLayout::canonical_create()` → `[CuLimit, CuPrice, Core, Tip]` (Core = `[create]`
       for create-only, or the fused `[create, ata, buy]` when a dev buy is present —
       same layout, different Core contents).
-- [ ] `IxLayout::validate(kind, is_snipe) -> Result<(), &'static str>` enforcing the
+- [x] `IxLayout::validate(kind, is_snipe) -> Result<(), &'static str>` enforcing the
       landing-safety rails: (1) exactly one `Core`; (2) `CreateAta` (if present)
       precedes `Core`; (3) a snipe buy must include `CuPrice` and `Tip`; (4) CU steps
       independent (absent ⇒ runtime default budget — allowed for non-snipe legs,
-      forbidden for snipes by rule 3).
-- [ ] `pub mod ix_layout;` + `pub use ix_layout::{DecoStep, IxLayout};` in `lib.rs`.
-- [ ] Unit tests: canonical constants pass validate; each rule 1–4 rejects a crafted
+      forbidden for snipes by rule 3). (+ rule: Create kind rejects standalone CreateAta)
+- [x] `pub mod ix_layout;` + `pub use ix_layout::{DecoStep, IxLayout};` in `lib.rs`.
+- [x] Unit tests: canonical constants pass validate; each rule 1–4 rejects a crafted
       bad layout; serde round-trips.
-- [ ] `cargo check -p executor-core` (or crate name) green.
+- [x] `cargo check -p executor-core` (or crate name) green. (`cargo test -p executor-core` — 7/7 green)
 
 ## Phase 1 — interpreter + builder refactor (no behavior change)
 

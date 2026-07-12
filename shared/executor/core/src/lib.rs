@@ -20,6 +20,7 @@ pub mod blockhash;
 pub mod config;
 pub mod engine;
 pub mod error;
+pub mod ix_layout;
 pub mod jito_tip;
 pub mod nonce;
 pub mod retry;
@@ -38,6 +39,7 @@ pub use config::{
 };
 pub use engine::{buy_lamports_checked, Engine};
 pub use error::{Context, Result, TradeError};
+pub use ix_layout::{DecoStep, IxLayout, LayoutKind};
 pub use nonce::NonceAuthCheck;
 pub use retry::{
     classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute,
