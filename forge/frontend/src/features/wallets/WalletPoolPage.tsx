@@ -34,10 +34,13 @@ const ROLES: WalletRole[] = ['dev', 'bundler', 'treasury', 'trading'];
 const STATUSES: WalletStatus[] = ['generated', 'funding', 'funded', 'reserved', 'used', 'retired'];
 
 // The balance poller only refreshes `generated`/`funding` (+ the treasury by role);
-// `balance_lamports` freezes at the funded-era snapshot once a wallet is claimed and
-// spent. Show a number only where it's still live — a stale snapshot on a reserved/
-// used/retired wallet reads as phantom holdings (the SOL is already back in treasury).
-const STALE_BALANCE_STATUSES = new Set<WalletStatus>(['reserved', 'used', 'retired']);
+// `balance_lamports` freezes at the funded-era snapshot once a wallet is claimed.
+// `used`/`retired` are terminal: the SOL is spent or swept to treasury, so a snapshot
+// there reads as phantom holdings — show `—`. A `reserved` wallet, though, STILL HOLDS
+// its SOL (a launch reserved it but hasn't spent yet — and a failed launch releases it
+// back to `funded` intact), so hiding its balance made a real, funded wallet look empty.
+// Show its last-known snapshot, dimmed + tagged, instead.
+const SPENT_BALANCE_STATUSES = new Set<WalletStatus>(['used', 'retired']);
 
 // Tone → color var, so the per-role status bar segments match the StatusPill palette.
 const TONE_COLOR: Record<string, string> = {
@@ -294,9 +297,15 @@ export function WalletPoolPage() {
       header: 'Balance',
       align: 'right',
       render: (w) =>
-        STALE_BALANCE_STATUSES.has(w.status) ? (
-          <span className="muted" title="Not tracked after a wallet is reserved/used/retired — its SOL is back in the treasury">
+        SPENT_BALANCE_STATUSES.has(w.status) ? (
+          <span className="muted" title="Not tracked after a wallet is used/retired — its SOL is spent or swept to the treasury">
             —
+          </span>
+        ) : w.status === 'reserved' ? (
+          // Reserved by an in-flight launch but still holding its SOL — show the
+          // last-known snapshot, dimmed, so a funded wallet never looks empty.
+          <span className="mono muted" title="Reserved by an in-flight launch — last-known balance (not live-polled while reserved)">
+            {formatSol(w.balance_lamports)}
           </span>
         ) : (
           <span className="mono">{formatSol(w.balance_lamports)}</span>
