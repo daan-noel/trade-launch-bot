@@ -227,8 +227,13 @@ async fn launch_templates_list(
 /// stops a malformed template from only failing much later, mid-launch.
 fn validate_params(params: &Option<serde_json::Value>) -> Result<(), actix_web::Error> {
     let value = params.clone().unwrap_or_else(|| serde_json::json!({}));
-    serde_json::from_value::<PumpfunTemplateParams>(value)
+    let parsed = serde_json::from_value::<PumpfunTemplateParams>(value)
         .map_err(|e| actix_web::error::ErrorBadRequest(format!("invalid template params: {e}")))?;
+    // Fail-closed on any hand-picked ix layout that breaks the landing-safety rails
+    // (the same check the plan gate re-runs before send).
+    parsed
+        .validate_layouts()
+        .map_err(actix_web::error::ErrorBadRequest)?;
     Ok(())
 }
 

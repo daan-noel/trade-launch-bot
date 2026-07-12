@@ -51,6 +51,11 @@ pub struct LegStructureRecipe {
     pub tip_quote_min: Option<i64>,
     #[serde(default)]
     pub tip_quote_max: Option<i64>,
+    /// Hand-picked ix layout (decoration step order) for legs using this recipe.
+    /// `None` ⇒ the builder's `canonical_buy` shape. Validated at author time
+    /// (`live::http::validate_params`) and again fail-closed in `plan_pipeline::gate`.
+    #[serde(default)]
+    pub layout: Option<Vec<pump_trader::DecoStep>>,
 }
 
 /// Persisted per-leg descriptor (matches `bundles.legs` JSON schema).

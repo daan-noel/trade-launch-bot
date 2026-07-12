@@ -67,6 +67,7 @@ pub enum Rule {
     DurableNonceMisuse,
     ClusteredAtaClose,
     AccountShapeIntegrity,
+    UniformLayout,
 }
 
 /// One tell the auditor found. `op_ids` names the ops implicated so the operator
@@ -158,6 +159,9 @@ pub struct AuditConfig {
     pub constant_fee_min_cluster: usize,
     /// ≥ this many exits closing their ATA is a clustered-ATA-close tell.
     pub ata_close_min_cluster: usize,
+    /// ≥ this many buy legs sharing one *authored* ix layout is a uniform-layout
+    /// tell (hand-picking the same non-canonical shape across many legs).
+    pub uniform_layout_min_cluster: usize,
 }
 
 impl Default for AuditConfig {
@@ -168,6 +172,7 @@ impl Default for AuditConfig {
             same_slot_min_cluster: 3,
             constant_fee_min_cluster: 3,
             ata_close_min_cluster: 2,
+            uniform_layout_min_cluster: 3,
         }
     }
 }
@@ -193,6 +198,7 @@ pub fn audit_with(plan: &Plan, profiles: &[SendProfile], cfg: AuditConfig) -> Au
     findings.extend(rule_durable_nonce_misuse(&ctx));
     findings.extend(rule_clustered_ata_close(&ctx));
     findings.extend(rule_account_shape_integrity(&ctx));
+    findings.extend(rule_uniform_layout(&ctx));
 
     let hard_reject = findings.iter().any(|f| f.severity == Severity::Reject);
     let score = findings
@@ -511,6 +517,40 @@ fn rule_account_shape_integrity(ctx: &Ctx) -> Vec<Finding> {
         .collect()
 }
 
+/// 10) Uniform layout: ≥ `uniform_layout_min_cluster` buy legs share the identical
+/// **authored** ix layout (decoration step order). Hand-picking the same
+/// non-canonical shape across many legs makes them byte-alike — exactly the tell
+/// the operator opted out of the default persona/canonical diversity to create.
+/// Only *authored* layouts count (`op.layout.is_some()`); a leg on the canonical
+/// default (`None`) is the un-distinctive norm and is never flagged — so an empty
+/// `leg_structures` launch keeps passing byte-for-byte.
+fn rule_uniform_layout(ctx: &Ctx) -> Vec<Finding> {
+    let mut groups: BTreeMap<Vec<&'static str>, Vec<OpId>> = BTreeMap::new();
+    for op in &ctx.plan.ops {
+        if op.kind != OpKind::Buy {
+            continue;
+        }
+        if let Some(steps) = &op.layout {
+            let key: Vec<&'static str> = steps.iter().map(|s| s.as_str()).collect();
+            groups.entry(key).or_default().push(op.id);
+        }
+    }
+    groups
+        .into_iter()
+        .filter(|(_, ops)| ops.len() >= ctx.cfg.uniform_layout_min_cluster)
+        .map(|(key, ops)| {
+            let n = ops.len();
+            finding(
+                Rule::UniformLayout,
+                Severity::Warn,
+                30,
+                format!("{n} buy legs share an identical hand-picked ix layout {key:?}"),
+                ops,
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +617,8 @@ mod tests {
             wallet: a,
             target: Some(b.pubkey.clone()),
             deps: vec![],
+            layout: None,
+            lock_variant: false,
         };
         let plan = Plan::for_mint(mint, vec![b_acts, edge]);
         assert!(audit(&plan).has(Rule::DirectOwnGraphTokenEdge));
@@ -645,6 +687,37 @@ mod tests {
         assert_eq!(hits[0].op_ids, vec![1]);
     }
 
+    #[test]
+    fn uniform_layout_fires_on_authored_but_not_canonical() {
+        use executor_core::DecoStep::*;
+        let mint = addr();
+        let steps = vec![CuLimit, CuPrice, CreateAta, Core, Tip];
+        // 3 bundler buys sharing the SAME authored layout → uniform tell (varied
+        // amounts, so it isn't the equal-amounts rule firing instead).
+        let ops: Vec<Operation> = (0..3)
+            .map(|i| {
+                Operation::buy(
+                    i, "buy_exact_sol_in", Role::Bundler, Intent::Snipe, managed(), mint.clone(),
+                    Amount::ExactQuote(1_000_000 + i as u64 * 111), Some(500), vec![],
+                )
+                .with_authored(Some(steps.clone()), true)
+            })
+            .collect();
+        assert!(audit(&Plan::for_mint(mint.clone(), ops)).has(Rule::UniformLayout));
+
+        // The same 3 buys with NO authored layout (canonical default) are the
+        // un-distinctive norm — never flagged (keeps existing launches passing).
+        let plain: Vec<Operation> = (0..3)
+            .map(|i| {
+                Operation::buy(
+                    i, "buy_exact_sol_in", Role::Bundler, Intent::Snipe, managed(), mint.clone(),
+                    Amount::ExactQuote(1_000_000 + i as u64 * 111), Some(500), vec![],
+                )
+            })
+            .collect();
+        assert!(!audit(&Plan::for_mint(mint, plain)).has(Rule::UniformLayout));
+    }
+
     // ---- Gate E: naive plan rejected, clean plan passes ---------------------
 
     /// A deliberately-naive plan: equal 0.02 legs, same-slot sells, a direct
@@ -681,6 +754,8 @@ mod tests {
             wallet: w[0].clone(),
             target: Some(w[1].pubkey.clone()),
             deps: vec![],
+            layout: None,
+            lock_variant: false,
         });
 
         let plan = Plan { mint_address: Some(mint), ops, schedule: Default::default() };

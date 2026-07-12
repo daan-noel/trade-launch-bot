@@ -58,12 +58,16 @@ impl BundleBuyVariant {
 }
 
 /// Per-leg overrides from the launch bundle composer (`bundles.legs[].structure`).
-#[derive(Debug, Clone, Copy)]
+/// Carries the leg's ix **layout** (shape): an authored hand-picked step order, or
+/// [`IxLayout::canonical_buy`] when none was authored. The `layout` (a `Vec`) is why
+/// this is no longer `Copy`; callers build it by value ([`crate::trader`] leg builder).
+#[derive(Debug, Clone)]
 pub struct BundleLegParams {
     pub slippage_bps: u64,
     pub cu_limit: u32,
     pub cu_price: u64,
     pub tip_lamports: u64,
+    pub layout: IxLayout,
 }
 
 // SSOT: the buy-variant discriminators live in `crate::protocol`; aliased here so
@@ -244,10 +248,10 @@ impl PumpFunTrader {
         };
 
         // Layout (shape) is drawn separately from the core ix (bytes above): the
-        // canonical buy orders `[cu_limit, cu_price, ata, core, tip]`. The v1 buy
-        // carries a single base ATA; `Core` is the opaque `[buy]` block.
+        // authored `leg.layout` (or `canonical_buy` when none) orders the wrappers
+        // around the opaque `Core = [buy]` block. The v1 buy carries a single base ATA.
         Ok(assemble(
-            &IxLayout::canonical_buy(),
+            &leg.layout,
             IxParts {
                 core: vec![buy_ix],
                 ata: account_creation_ixs,
@@ -387,10 +391,10 @@ impl PumpFunTrader {
         // Silence unused `creator` — retained for future sharing-config reads.
         let _ = creator;
 
-        // Canonical buy shape `[cu_limit, cu_price, ata, core, tip]`; the v2 buy's
+        // Authored `leg.layout` (or `canonical_buy`) orders the wrappers; the v2 buy's
         // `CreateAta` carries both the base and WSOL ATAs, `Core` is `[buy]`.
         Ok(assemble(
-            &IxLayout::canonical_buy(),
+            &leg.layout,
             IxParts {
                 core: vec![buy_ix],
                 ata,
@@ -453,7 +457,7 @@ mod tests {
             &mint,
             &token_program,
         )];
-        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000 };
+        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
         let ixs = t
             .build_bundle_v2_buy_ixs(
                 &bundler, &mint, &creator, &pdas, &user_base_ata,
@@ -528,7 +532,7 @@ mod tests {
             &mint,
             &token_program,
         );
-        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000 };
+        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
         let out = t
             .build_bundle_v1_curve_buy_ixs(
                 &bundler, &mint, &pdas, &user_ata, vec![ata_ix.clone()],
@@ -568,7 +572,7 @@ mod tests {
             &protocol::WSOL_MINT,
             &spl_token::id(),
         );
-        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000 };
+        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
         let out = t
             .build_bundle_v2_buy_ixs(
                 &bundler, &mint, &creator, &pdas, &user_base_ata, vec![base_ata.clone()],

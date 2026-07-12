@@ -40,6 +40,20 @@ pub enum DecoStep {
     Tip,
 }
 
+impl DecoStep {
+    /// The stable snake_case slug (matches the serde rename) — SSOT for display
+    /// (dry-run preview) and for keying a layout by its step sequence (audit).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecoStep::CuLimit => "cu_limit",
+            DecoStep::CuPrice => "cu_price",
+            DecoStep::CreateAta => "create_ata",
+            DecoStep::Core => "core",
+            DecoStep::Tip => "tip",
+        }
+    }
+}
+
 /// Which kind of tx a layout describes — governs a couple of validation rules
 /// (a create folds its buyer ATA inside `Core`, so `CreateAta` is illegal there).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

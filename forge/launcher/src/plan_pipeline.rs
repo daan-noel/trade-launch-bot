@@ -89,11 +89,34 @@ pub fn gate(plan: Plan, allow_fingerprint: bool) -> Result<GatedPlan> {
     let mut plan = plan;
     let disguises = disguise_ops(&personas, &plan.ops, &cfg);
     for (op, d) in plan.ops.iter_mut().zip(&disguises) {
-        d.apply_variant(op);
+        // A hand-picked (authored) leg keeps its operator-chosen variant — the
+        // disguise must not swap it. CU/price/tip still come from the disguise, so
+        // even a locked leg keeps anti-fingerprint fee jitter.
+        if !op.lock_variant {
+            d.apply_variant(op);
+        }
     }
     // Re-validate: a disguise is denom-safe by construction, but assert it so a
     // future persona bug can't slip an unbuildable variant past the gate.
     prepare(&plan).map_err(|e| anyhow::anyhow!("disguised plan is not buildable: {e}"))?;
+
+    // Fail-closed layout validation: any authored ix layout must satisfy the
+    // landing-safety rails (exactly one Core; CreateAta precedes Core; a snipe buy
+    // includes CuPrice + Tip). A bundler co-buy is a snipe.
+    for op in &plan.ops {
+        if let Some(steps) = &op.layout {
+            use orchestrator::{Intent, OpKind};
+            let layout = executor_core::IxLayout { steps: steps.clone() };
+            let kind = match op.kind {
+                OpKind::Create => executor_core::LayoutKind::Create,
+                _ => executor_core::LayoutKind::Buy,
+            };
+            let is_snipe = op.intent == Intent::Snipe;
+            layout
+                .validate(kind, is_snipe)
+                .map_err(|e| anyhow::anyhow!("op {} has an invalid ix layout: {e}", op.id))?;
+        }
+    }
 
     // 3) Fingerprint audit over the disguised plan + its send profiles.
     let profiles = send_profiles(&plan, &disguises);
@@ -215,7 +238,7 @@ mod tests {
                 dev_slippage_bps: Some(500),
                 bundlers: bundler_sols
                     .iter()
-                    .map(|&sol| BundlerLeg { wallet: w(), sol, slippage_bps: Some(500) })
+                    .map(|&sol| BundlerLeg { wallet: w(), sol, slippage_bps: Some(500), variant: None, layout: None })
                     .collect(),
             },
         );

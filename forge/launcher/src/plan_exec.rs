@@ -20,7 +20,7 @@
 use anyhow::{bail, Context, Result};
 use orchestrator::{Amount, Disguise, Operation};
 use pump_trader::types::TokenProgram;
-use pump_trader::{BundleLegParams, PumpFunTrader};
+use pump_trader::{BundleLegParams, IxLayout, PumpFunTrader};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::hash::Hash;
 use solana_sdk::message::Message;
@@ -51,11 +51,19 @@ pub enum TransferMode {
 /// it, never lowered, so the persona jitter is preserved when it already clears the
 /// auction and the tip is bid up to the live floor when it doesn't.
 pub fn leg_params(op: &Operation, disguise: &Disguise, min_tip_lamports: u64) -> BundleLegParams {
+    // Authored layout (hand-picked step order) rides on the op; absent ⇒ the
+    // canonical buy shape. The gate already validated any authored layout.
+    let layout = op
+        .layout
+        .clone()
+        .map(|steps| IxLayout { steps })
+        .unwrap_or_else(IxLayout::canonical_buy);
     BundleLegParams {
         slippage_bps: op.slippage_bps.unwrap_or(DEFAULT_BUNDLE_SLIPPAGE_BPS),
         cu_limit: disguise.cu_limit,
         cu_price: disguise.cu_price_micro_lamports,
         tip_lamports: disguise.tip_lamports.unwrap_or(0).max(min_tip_lamports),
+        layout,
     }
 }
 

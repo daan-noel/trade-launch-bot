@@ -78,6 +78,24 @@ pub struct PumpfunTemplateParams {
     pub leg_structures: Option<Vec<crate::bundle::LegStructureRecipe>>,
 }
 
+impl PumpfunTemplateParams {
+    /// Author-time validation of every hand-picked ix layout (mirrors the fail-closed
+    /// check `plan_pipeline::gate` re-runs before send), so a malformed template is
+    /// rejected at save time instead of only failing mid-launch. A bundler co-buy is
+    /// a snipe → its layout must carry `CuPrice` + `Tip`. Returns the first defect.
+    pub fn validate_layouts(&self) -> Result<(), String> {
+        use pump_trader::{IxLayout, LayoutKind};
+        for (i, recipe) in self.leg_structures.iter().flatten().enumerate() {
+            if let Some(steps) = &recipe.layout {
+                IxLayout { steps: steps.clone() }
+                    .validate(LayoutKind::Buy, true)
+                    .map_err(|e| format!("leg_structures[{i}] ix layout invalid: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
     pub template_id: Uuid,
@@ -427,12 +445,26 @@ pub async fn execute_launch(
             let bundle_slippage = params
                 .slippage_bps
                 .or(Some(crate::plan_pipeline::DEFAULT_BUNDLE_SLIPPAGE_BPS));
+            // Hand-picked recipes cycle across the claimed legs (`recipe = leg_structures
+            // [i % len]`) — the claimed count is dynamic (a short pool yields fewer
+            // legs), so a handful of authored shapes distribute over however many
+            // wallets are claimed. Empty `leg_structures` ⇒ no authored variant/layout
+            // (each leg falls back to the default buy encoding + persona disguise).
+            let recipes = params.leg_structures.as_deref().unwrap_or(&[]);
             let bundlers: Vec<orchestrator::BundlerLeg> = claimed
                 .iter()
-                .map(|w| orchestrator::BundlerLeg {
-                    wallet: orchestrator::WalletRef::managed(w.id, w.address.clone()),
-                    sol: quote_per_leg.max(0) as u64,
-                    slippage_bps: bundle_slippage,
+                .enumerate()
+                .map(|(i, w)| {
+                    let recipe = (!recipes.is_empty()).then(|| &recipes[i % recipes.len()]);
+                    orchestrator::BundlerLeg {
+                        wallet: orchestrator::WalletRef::managed(w.id, w.address.clone()),
+                        sol: quote_per_leg.max(0) as u64,
+                        slippage_bps: recipe
+                            .and_then(|r| r.slippage_bps_min)
+                            .or(bundle_slippage),
+                        variant: recipe.map(|r| r.variant.as_str().to_string()),
+                        layout: recipe.and_then(|r| r.layout.clone()),
+                    }
                 })
                 .collect();
             let mut seq = orchestrator::IdSeq::new(0);

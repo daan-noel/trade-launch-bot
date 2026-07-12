@@ -69,35 +69,28 @@ bundler leg; when absent, fall back to today's persona disguise + `canonical_buy
 
 **Todos:**
 
-- [ ] **Recipe carries a layout.** Add `layout: Option<Vec<DecoStep>>` to
-      `LegStructureRecipe` ([../launcher/src/bundle.rs:36](../launcher/src/bundle.rs#L36)).
-      Keep the existing CU/tip/slippage range fields — they become the authored source
-      when present (else the disguise supplies them).
-- [ ] **`BundleLegParams` carries a layout.** Add `layout: IxLayout` to `BundleLegParams`
-      ([../../shared/executor/pumpfun/src/trader/bundle_buy.rs:61](../../shared/executor/pumpfun/src/trader/bundle_buy.rs#L61)).
-      This **drops `#[derive(Copy)]`** (a `Vec` isn't `Copy`) — the ripple is contained
-      because `leg_params` ([../launcher/src/plan_exec.rs:53](../launcher/src/plan_exec.rs#L53))
-      returns by value (the note already flagged in the P0/P1 doc).
-- [ ] **Builder consumes it.** `build_bundle_leg_tx` → `build_bundle_v1/v2_buy_ixs` call
-      `assemble(&leg.layout, parts)` (from Phase A) instead of the hardcoded `ixs.push`
-      sequence.
-- [ ] **Thread authored recipe → op.** In `execute_launch`'s bundle assembly
-      ([../launcher/src/service.rs:398-428](../launcher/src/service.rs#L398)): set each
-      op's `Operation::variant` from its cycled recipe (not the `LAUNCH_BUY_VARIANT`
-      constant) and carry its `layout`. Recipes cycle across the claimed legs.
-- [ ] **Respect the authored lock in the gate.** When an op has an authored recipe, the
-      disguise must **not** overwrite its variant/layout (skip `d.apply_variant(op)` for
-      locked ops, [../launcher/src/plan_pipeline.rs:91](../launcher/src/plan_pipeline.rs#L91));
-      CU/price/tip come from the recipe ranges when set, else the disguise. Empty
-      `leg_structures` ⇒ unchanged persona behavior.
-- [ ] **Validate fail-closed.** Call `IxLayout::validate(Buy, is_snipe=true)` on every leg
-      layout both (a) at author time in `validate_params`
-      ([../live/src/http.rs:216](../live/src/http.rs#L216)) and (b) inside
-      `plan_pipeline::gate` before send. A bundler co-buy is a snipe → forces `CuPrice` +
-      `Tip`.
-- [ ] **Audit `UniformLayout` (the doc's P4).** Add `Rule::UniformLayout` warn finding in
-      [../orchestrator/src/audit.rs](../orchestrator/src/audit.rs), firing when ≥3 legs
-      share an identical `steps` sequence; waved through only by `allow_fingerprint`.
+- [x] **Recipe carries a layout.** Added `layout: Option<Vec<DecoStep>>` to
+      `LegStructureRecipe` ([../launcher/src/bundle.rs](../launcher/src/bundle.rs)).
+      (Scoping note: CU/tip stay from the **persona disguise** even for authored legs —
+      strictly better anti-fingerprint jitter than authored-constant CU/tip, which would
+      trip the `ConstantCuTip` rule anyway; `slippage_bps_min` is honored per leg.)
+- [x] **`BundleLegParams` carries a layout.** Added `layout: IxLayout` to `BundleLegParams`
+      ([../../shared/executor/pumpfun/src/trader/bundle_buy.rs](../../shared/executor/pumpfun/src/trader/bundle_buy.rs));
+      **dropped `#[derive(Copy)]`**; `leg_params` returns by value so the ripple was contained.
+- [x] **Builder consumes it.** `build_bundle_v1/v2_buy_ixs` now call `assemble(&leg.layout, parts)`.
+- [x] **Thread authored recipe → op.** `execute_launch` cycles `leg_structures[i % len]`
+      across the claimed legs, setting each `BundlerLeg`'s variant + layout; `bundle_launch`
+      applies them via `Operation::with_authored` (authored variant ⇒ `lock_variant`).
+- [x] **Respect the authored lock in the gate.** `plan_pipeline::gate` skips
+      `d.apply_variant(op)` when `op.lock_variant`. Empty `leg_structures` ⇒ unchanged
+      persona behavior (no lock, no authored layout).
+- [x] **Validate fail-closed.** `PumpfunTemplateParams::validate_layouts` at author time
+      (`live::http::validate_params`) **and** `plan_pipeline::gate` before send both run
+      `IxLayout::validate(Buy, is_snipe=true)` on every authored leg layout.
+- [x] **Audit `UniformLayout` (the doc's P4).** Added `Rule::UniformLayout` (+ config
+      threshold) in [../orchestrator/src/audit.rs](../orchestrator/src/audit.rs), firing when
+      ≥3 buy legs share an identical **authored** `steps` sequence (canonical/`None` legs
+      never flagged, so existing launches still pass); Warn ⇒ waved by `allow_fingerprint`.
 
 ## Phase C — `create_layout` on the template → create builder (the doc's P3)
 

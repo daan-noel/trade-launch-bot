@@ -30,6 +30,13 @@ pub struct BundlerLeg {
     /// SOL (lamports) this bundler spends — encoded as an `ExactQuote` buy.
     pub sol: u64,
     pub slippage_bps: Option<u64>,
+    /// Hand-picked buy variant for this leg (`leg_structures[i].variant`). `None`
+    /// ⇒ fall back to `BundleLaunch.buy_variant`, and the disguise stays free to
+    /// swap the encoding (the un-authored, persona-driven path).
+    pub variant: Option<String>,
+    /// Hand-picked ix layout (decoration step order) for this leg. `None` ⇒ the
+    /// builder's `canonical_buy` shape.
+    pub layout: Option<Vec<executor_core::DecoStep>>,
 }
 
 /// The inputs to a bundled launch: a create, a dev-buy, and N bundler co-buys, all
@@ -74,17 +81,25 @@ pub fn bundle_launch(seq: &mut IdSeq, p: &BundleLaunch) -> Vec<Operation> {
     }
 
     for b in &p.bundlers {
-        ops.push(Operation::buy(
-            seq.next(),
-            &p.buy_variant,
-            Role::Bundler,
-            Intent::Snipe,
-            b.wallet.clone(),
-            p.mint.clone(),
-            Amount::ExactQuote(b.sol),
-            b.slippage_bps,
-            vec![create_id],
-        ));
+        // Hand-picked variant when the operator authored one (`leg_structures`),
+        // else the launch's default buy encoding. An authored variant is LOCKED so
+        // the disguise won't swap it; an authored layout rides along either way.
+        let authored = b.variant.is_some();
+        let variant = b.variant.clone().unwrap_or_else(|| p.buy_variant.clone());
+        ops.push(
+            Operation::buy(
+                seq.next(),
+                &variant,
+                Role::Bundler,
+                Intent::Snipe,
+                b.wallet.clone(),
+                p.mint.clone(),
+                Amount::ExactQuote(b.sol),
+                b.slippage_bps,
+                vec![create_id],
+            )
+            .with_authored(b.layout.clone(), authored),
+        );
     }
 
     ops
@@ -270,8 +285,8 @@ mod tests {
             dev_buy_sol: 1_500_000,
             dev_slippage_bps: None,
             bundlers: vec![
-                BundlerLeg { wallet: w(), sol: 800_000, slippage_bps: Some(500) },
-                BundlerLeg { wallet: w(), sol: 900_000, slippage_bps: Some(500) },
+                BundlerLeg { wallet: w(), sol: 800_000, slippage_bps: Some(500), variant: None, layout: None },
+                BundlerLeg { wallet: w(), sol: 900_000, slippage_bps: Some(500), variant: None, layout: None },
             ],
         };
         let ops = bundle_launch(&mut seq, &p);

@@ -216,6 +216,16 @@ pub struct Operation {
     /// after exits). Ids reference other ops in the same plan.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deps: Vec<OpId>,
+    /// Authored ix **layout** (the operator hand-picked this leg's decoration step
+    /// order via the template's `leg_structures`). `None` ⇒ the builder uses the
+    /// canonical shape. Only the *shape* (wrapper order) — never the core ix bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Vec<executor_core::DecoStep>>,
+    /// When set, the disguise must NOT swap this op's authored `variant` (the
+    /// operator hand-picked it). CU/price/tip still come from the persona disguise
+    /// (so hand-picked legs keep anti-fingerprint fee jitter).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_variant: bool,
 }
 
 impl Operation {
@@ -233,6 +243,8 @@ impl Operation {
             wallet: dev,
             target: Some(mint.into()),
             deps: Vec::new(),
+            layout: None,
+            lock_variant: false,
         }
     }
 
@@ -262,6 +274,8 @@ impl Operation {
             wallet,
             target: Some(mint.into()),
             deps,
+            layout: None,
+            lock_variant: false,
         }
     }
 
@@ -305,6 +319,8 @@ impl Operation {
             wallet,
             target: Some(mint.into()),
             deps,
+            layout: None,
+            lock_variant: false,
         }
     }
 
@@ -352,7 +368,19 @@ impl Operation {
             wallet: from,
             target: Some(to.into()),
             deps,
+            layout: None,
+            lock_variant: false,
         }
+    }
+
+    /// Attach an authored ix layout + lock the variant against disguise swap — the
+    /// hand-picked-leg path (`leg_structures`). Chained onto a `buy` op the operator
+    /// authored a recipe for. `lock` reflects an authored variant; the layout is the
+    /// authored decoration order (validated at the gate before send).
+    pub fn with_authored(mut self, layout: Option<Vec<executor_core::DecoStep>>, lock: bool) -> Self {
+        self.layout = layout;
+        self.lock_variant = lock;
+        self
     }
 }
 
