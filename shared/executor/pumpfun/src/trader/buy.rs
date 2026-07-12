@@ -391,11 +391,32 @@ impl PumpFunTrader {
         buy_lamports: u64,
         min_tokens_out: u64,
     ) -> Result<Vec<Instruction>> {
-        let global = self.global_account.as_ref().context("Not initialized")?;
-
         let mut ixs = Vec::with_capacity(6);
         ixs.extend_from_slice(&self.engine.cu_ixs_curve_buy);
         ixs.extend(account_creation_ixs);
+        ixs.push(self.curve_buy_ix(mint, pdas, user_token_account, buy_lamports, min_tokens_out)?);
+
+        // Buys are a single shot (the snipe re-send only fires on a revert,
+        // which a bigger tip can't fix), so always the level-0 tip.
+        ixs.push(self.jito_tip_ix(0));
+
+        Ok(ixs)
+    }
+
+    /// The bare curve-buy instruction (`buy_exact_sol_in`) — SSOT for the buy
+    /// account list + arg encoding. `build_curve_buy_ixs` wraps it with the CU
+    /// budget + tip for the standalone buy path; the launch-create dev-buy path
+    /// ([`super::create`]) reuses just this ix inside the fused create `Core`
+    /// block, so there is no build-then-strip of the CU/tip decorations.
+    pub(super) fn curve_buy_ix(
+        &self,
+        mint: &Pubkey,
+        pdas: &super::TokenPDAs,
+        user_token_account: &Pubkey,
+        buy_lamports: u64,
+        min_tokens_out: u64,
+    ) -> Result<Instruction> {
+        let global = self.global_account.as_ref().context("Not initialized")?;
 
         // 8-byte discriminator + two u64 args: size up front so the two
         // extends below don't reallocate on the buy hot path.
@@ -403,7 +424,7 @@ impl PumpFunTrader {
         buy_data.extend_from_slice(&protocol::BUY_EXACT_SOL_IN_DISC);
         buy_data.extend_from_slice(&buy_lamports.to_le_bytes());
         buy_data.extend_from_slice(&min_tokens_out.to_le_bytes());
-        ixs.push(Instruction {
+        Ok(Instruction {
             program_id: protocol::PUMP_FUN,
             accounts: vec![
                 AccountMeta::new_readonly(global.global_pda, false),
@@ -426,13 +447,7 @@ impl PumpFunTrader {
                 AccountMeta::new(protocol::PUMP_CURVE_FEE_RECIPIENT, false),
             ],
             data: buy_data,
-        });
-
-        // Buys are a single shot (the snipe re-send only fires on a revert,
-        // which a bigger tip can't fix), so always the level-0 tip.
-        ixs.push(self.jito_tip_ix(0));
-
-        Ok(ixs)
+        })
     }
 }
 

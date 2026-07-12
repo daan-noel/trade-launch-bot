@@ -27,6 +27,7 @@
 // ============================================================
 
 mod amm;
+mod assemble;
 mod bundle_buy;
 mod buy;
 mod consolidate;

@@ -6,19 +6,19 @@
 // per-leg compute-budget / Jito-tip overrides from the launch composer.
 // ============================================================
 
+use super::assemble::{assemble, IxParts};
 use super::buy::compute_curve_buy_min_out;
 use super::PumpFunTrader;
 use crate::error::{Context, Result, TradeError};
 use crate::protocol;
 use crate::types::TokenProgram;
+use executor_core::IxLayout;
 use solana_sdk::{
     address_lookup_table::AddressLookupTableAccount,
-    compute_budget::ComputeBudgetInstruction,
     hash::Hash,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::Signer,
-    system_instruction,
     system_program,
     transaction::VersionedTransaction,
 };
@@ -197,11 +197,6 @@ impl PumpFunTrader {
             &protocol::PUMP_FUN,
         );
 
-        let mut ixs = Vec::with_capacity(6);
-        ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(leg.cu_limit));
-        ixs.push(ComputeBudgetInstruction::set_compute_unit_price(leg.cu_price));
-        ixs.extend(account_creation_ixs);
-
         let mut buy_data = Vec::with_capacity(25);
         match variant {
             BundleBuyVariant::Buy => {
@@ -223,7 +218,7 @@ impl PumpFunTrader {
         // `OptionBool` track_volume = None
         buy_data.push(0);
 
-        ixs.push(Instruction {
+        let buy_ix = Instruction {
             program_id: protocol::PUMP_FUN,
             accounts: vec![
                 AccountMeta::new_readonly(global.global_pda, false),
@@ -246,15 +241,23 @@ impl PumpFunTrader {
                 AccountMeta::new(protocol::PUMP_CURVE_FEE_RECIPIENT, false),
             ],
             data: buy_data,
-        });
+        };
 
-        ixs.push(system_instruction::transfer(
-            &signer.pubkey(),
-            &self.engine.jito_tip_account,
-            leg.tip_lamports,
-        ));
-
-        Ok(ixs)
+        // Layout (shape) is drawn separately from the core ix (bytes above): the
+        // canonical buy orders `[cu_limit, cu_price, ata, core, tip]`. The v1 buy
+        // carries a single base ATA; `Core` is the opaque `[buy]` block.
+        Ok(assemble(
+            &IxLayout::canonical_buy(),
+            IxParts {
+                core: vec![buy_ix],
+                ata: account_creation_ixs,
+                cu_limit: leg.cu_limit,
+                cu_price: leg.cu_price,
+                tip_lamports: leg.tip_lamports,
+                tip_account: self.engine.jito_tip_account,
+                payer: signer.pubkey(),
+            },
+        ))
     }
 
     fn build_bundle_v2_buy_ixs(
@@ -318,12 +321,10 @@ impl PumpFunTrader {
             &quote_token_program,
         );
 
-        let mut ixs = Vec::with_capacity(8);
-        ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(leg.cu_limit));
-        ixs.push(ComputeBudgetInstruction::set_compute_unit_price(leg.cu_price));
-        ixs.extend(account_creation_ixs);
-        // v2 buys need the user's WSOL ATA for the quote side.
-        ixs.push(create_associated_token_account_idempotent(
+        // v2 buys need the user's WSOL ATA for the quote side in addition to the
+        // base ATA — the canonical buy's single `CreateAta` step expands to both.
+        let mut ata = account_creation_ixs;
+        ata.push(create_associated_token_account_idempotent(
             &signer.pubkey(),
             &signer.pubkey(),
             &quote_mint,
@@ -349,7 +350,7 @@ impl PumpFunTrader {
             }
         }
 
-        ixs.push(Instruction {
+        let buy_ix = Instruction {
             program_id: protocol::PUMP_FUN,
             accounts: vec![
                 AccountMeta::new_readonly(global.global_pda, false),
@@ -381,18 +382,25 @@ impl PumpFunTrader {
                 AccountMeta::new_readonly(protocol::PUMP_FUN, false),
             ],
             data: buy_data,
-        });
-
-        ixs.push(system_instruction::transfer(
-            &signer.pubkey(),
-            &self.engine.jito_tip_account,
-            leg.tip_lamports,
-        ));
+        };
 
         // Silence unused `creator` — retained for future sharing-config reads.
         let _ = creator;
 
-        Ok(ixs)
+        // Canonical buy shape `[cu_limit, cu_price, ata, core, tip]`; the v2 buy's
+        // `CreateAta` carries both the base and WSOL ATAs, `Core` is `[buy]`.
+        Ok(assemble(
+            &IxLayout::canonical_buy(),
+            IxParts {
+                core: vec![buy_ix],
+                ata,
+                cu_limit: leg.cu_limit,
+                cu_price: leg.cu_price,
+                tip_lamports: leg.tip_lamports,
+                tip_account: self.engine.jito_tip_account,
+                payer: signer.pubkey(),
+            },
+        ))
     }
 }
 
@@ -498,5 +506,85 @@ mod tests {
         assert!(!BundleBuyVariant::BuyExactQuoteIn.uses_v2_accounts(false));
         assert!(BundleBuyVariant::BuyExactQuoteIn.uses_v2_accounts(true));
         assert!(BundleBuyVariant::BuyV2.uses_v2_accounts(false));
+    }
+
+    // --- Golden byte-identity: `assemble(canonical_buy, …)` reproduces the old
+    // hand-pushed `[cu_limit, cu_price, ata.., core, tip]` order exactly. ---
+    use solana_sdk::compute_budget::ComputeBudgetInstruction as CBI;
+    use solana_sdk::system_instruction;
+
+    #[test]
+    fn golden_bundle_v1_leg_shape() {
+        let (t, bundler) = trader_with_global();
+        let mint = Pubkey::new_unique();
+        let creator = Pubkey::new_unique();
+        let token_program = TokenProgram::Legacy.pubkey();
+        let pdas = t.derive_token_pdas(&mint, &creator, &token_program, false);
+        let user_ata =
+            get_associated_token_address_with_program_id(&bundler.pubkey(), &mint, &token_program);
+        let ata_ix = create_associated_token_account_idempotent(
+            &bundler.pubkey(),
+            &bundler.pubkey(),
+            &mint,
+            &token_program,
+        );
+        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000 };
+        let out = t
+            .build_bundle_v1_curve_buy_ixs(
+                &bundler, &mint, &pdas, &user_ata, vec![ata_ix.clone()],
+                BundleBuyVariant::Buy, 10_000_000, 1, &leg,
+            )
+            .unwrap();
+        // [cu_limit, cu_price, base_ata, core buy, tip] — 5 ixs, in this order.
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0], CBI::set_compute_unit_limit(leg.cu_limit));
+        assert_eq!(out[1], CBI::set_compute_unit_price(leg.cu_price));
+        assert_eq!(out[2], ata_ix);
+        assert_eq!(out[3].program_id, protocol::PUMP_FUN); // opaque Core buy
+        assert_eq!(
+            out[4],
+            system_instruction::transfer(&bundler.pubkey(), &t.engine.jito_tip_account, leg.tip_lamports)
+        );
+    }
+
+    #[test]
+    fn golden_bundle_v2_leg_shape() {
+        let (t, bundler) = trader_with_global();
+        let mint = Pubkey::new_unique();
+        let creator = Pubkey::new_unique();
+        let token_program = TokenProgram::Token2022.pubkey();
+        let pdas = t.derive_token_pdas(&mint, &creator, &token_program, true);
+        let user_base_ata =
+            get_associated_token_address_with_program_id(&bundler.pubkey(), &mint, &token_program);
+        let base_ata = create_associated_token_account_idempotent(
+            &bundler.pubkey(),
+            &bundler.pubkey(),
+            &mint,
+            &token_program,
+        );
+        let wsol_ata = create_associated_token_account_idempotent(
+            &bundler.pubkey(),
+            &bundler.pubkey(),
+            &protocol::WSOL_MINT,
+            &spl_token::id(),
+        );
+        let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000 };
+        let out = t
+            .build_bundle_v2_buy_ixs(
+                &bundler, &mint, &creator, &pdas, &user_base_ata, vec![base_ata.clone()],
+                BundleBuyVariant::BuyV2, 10_000_000, 1, &leg,
+            )
+            .unwrap();
+        // [cu_limit, cu_price, base_ata, wsol_ata, core buy, tip] — 6 ixs.
+        assert_eq!(out.len(), 6);
+        assert_eq!(out[0], CBI::set_compute_unit_limit(leg.cu_limit));
+        assert_eq!(out[1], CBI::set_compute_unit_price(leg.cu_price));
+        assert_eq!(out[2], base_ata);
+        assert_eq!(out[3], wsol_ata); // CreateAta expanded to the WSOL ATA too
+        assert_eq!(out[4].program_id, protocol::PUMP_FUN); // opaque Core buy
+        assert_eq!(
+            out[5],
+            system_instruction::transfer(&bundler.pubkey(), &t.engine.jito_tip_account, leg.tip_lamports)
+        );
     }
 }

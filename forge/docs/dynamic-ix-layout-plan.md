@@ -154,36 +154,35 @@ tip_lamports)`.
 
 **Todos:**
 
-- [ ] Create `assemble.rs` with `IxParts` + `assemble`; register `mod assemble;` in
+- [x] Create `assemble.rs` with `IxParts` + `assemble`; register `mod assemble;` in
       [trader/mod.rs](../../shared/executor/pumpfun/src/trader/mod.rs).
-- [ ] Refactor `build_bundle_v1_curve_buy_ixs` / `build_bundle_v2_buy_ixs`
+- [x] Refactor `build_bundle_v1_curve_buy_ixs` / `build_bundle_v2_buy_ixs`
       ([bundle_buy.rs](../../shared/executor/pumpfun/src/trader/bundle_buy.rs)): keep the
       `vec![AccountMeta…]` + `buy_data` blocks **verbatim** (the fixed core); stop
       hand-pushing cu/ata/tip. Build `IxParts { core: vec![buy_ix], ata:
       account_creation_ixs (+ wsol ata for v2), cu_limit/cu_price/tip from `leg`,
       tip_account: self.engine.jito_tip_account, payer: signer.pubkey() }` and return
       `assemble(&IxLayout::canonical_buy(), parts)`.
-- [ ] Refactor `create_token_inner` / `create_token_v2_inner`
+- [x] Refactor `create_token_inner` / `create_token_v2_inner`
       ([create.rs](../../shared/executor/pumpfun/src/trader/create.rs)): build the core
       block, then `assemble(&IxLayout::canonical_create(), parts)` with `ata: vec![]`
-      (folded) and tip from `jito_tip_ix(0)`'s amount.
-      - **No dev buy:** `Core = [create_ix]` — `append_dev_buy_ixs` already no-ops
-        ([create.rs:182-184](../../shared/executor/pumpfun/src/trader/create.rs#L182)).
-      - **With dev buy:** `Core = [create_ix, ata_ix, buy_ix]`. **Delete the
-        build-then-strip filter** ([create.rs:221-225](../../shared/executor/pumpfun/src/trader/create.rs#L221))
-        and its `is_jito_tip_ix`/`compute_budget::id()` dependency — reuse
-        `build_curve_buy_ixs`'s account/data block but return just the bare buy ix.
-- [ ] **Golden byte-identity test** (load-bearing): for create-only, create+dev-buy, v1
-      bundle buy, v2 bundle buy, assert `assemble(canonical_*, parts)` yields a
-      `Vec<Instruction>` with identical program ids, accounts, and data to the
-      pre-refactor builder. Create-only must reproduce `[cu_limit, cu_price, create,
-      tip]` exactly.
-- [ ] Confirm existing size tests still pass:
+      (folded) and tip from `jito_tip_ix(0)`'s amount. (via new `assemble_create_ixs`)
+      - **No dev buy:** `Core = [create_ix]` — `dev_buy_core_ixs` returns `[]`.
+      - **With dev buy:** `Core = [create_ix, ata_ix, buy_ix]`. **Deleted the
+        build-then-strip filter** and its `is_jito_tip_ix`/`compute_budget::id()`
+        dependency — new `dev_buy_core_ixs` reuses the extracted `curve_buy_ix` SSOT
+        (buy.rs) and returns the bare `[ata, buy]` block.
+- [x] **Golden byte-identity test** (load-bearing): create-only + create+dev-buy
+      (`golden_create_*_shape`, full ix-by-ix equality) and v1/v2 bundle buy
+      (`golden_bundle_v*_leg_shape`, ordered slot equality; Core placed opaque).
+      Create-only reproduces `[cu_limit, cu_price, create, tip]` exactly.
+- [x] Confirm existing size tests still pass:
       `bundle_v2_leg_v0_alt_fits_and_beats_legacy`,
       `create_v2_dev_buy_v0_with_alt_fits_1232`, `create_v2_dev_buy_legacy_overflows_1232`.
-- [ ] `cargo check -p forge-live -p forge-lab` green; clippy on touched files.
-- [ ] Dep partition holds: `cargo tree -p forge-live` (no new deps from `ix_layout`),
-      `cargo tree -p forge-lab`.
+      (all green — 45/45 `executor-pumpfun` lib tests)
+- [x] `cargo check -p forge-live -p forge-lab` green; clippy on touched files (no new warnings).
+- [x] Dep partition holds: `ix_layout` is solana-free plain data in the already-present
+      `executor-core`, adds no deps; forge bins compile unchanged.
 
 > **Note for P2:** adding a `layout` field to `BundleLegParams`
 > ([bundle_buy.rs:61](../../shared/executor/pumpfun/src/trader/bundle_buy.rs#L61)) will

@@ -6,11 +6,13 @@
 // tx reuses `build_curve_buy_ixs` with the fresh-curve initial reserves.
 // ============================================================
 
+use super::assemble::{assemble, IxParts};
 use super::buy::compute_curve_buy_min_out;
 use super::PumpFunTrader;
 use crate::error::{Context, Result};
 use crate::protocol::{self, LAMPORTS_PER_SOL};
 use crate::types::{CreateTokenArgs, CreateTokenV2Args, TokenProgram};
+use executor_core::IxLayout;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
@@ -100,17 +102,15 @@ impl PumpFunTrader {
         let mint_pk = mint.pubkey();
         let token_program = TokenProgram::Legacy;
         let accounts = derive_create_accounts(&mint_pk, token_program, false);
-        let mut ixs = self.cu_ixs_for_create(dev_buy.is_some());
-        ixs.push(build_create_ix(&mint_pk, wallet.pubkey(), args, &accounts)?);
-        self.append_dev_buy_ixs(
-            &mut ixs,
+        let create_ix = build_create_ix(&mint_pk, wallet.pubkey(), args, &accounts)?;
+        let ixs = self.assemble_create_ixs(
+            create_ix,
             &mint_pk,
             args.creator,
             token_program,
             args.creator == wallet.pubkey(),
             dev_buy,
         )?;
-        ixs.push(self.jito_tip_ix(0));
         self.send_create_tx(ixs, wallet, mint, confirm, &mint_pk, args.creator, token_program, args.creator == wallet.pubkey(), false, t0)
             .await
     }
@@ -127,17 +127,15 @@ impl PumpFunTrader {
         let mint_pk = mint.pubkey();
         let token_program = TokenProgram::Token2022;
         let accounts = derive_create_accounts(&mint_pk, token_program, true);
-        let mut ixs = self.cu_ixs_for_create(dev_buy.is_some());
-        ixs.push(build_create_v2_ix(&mint_pk, wallet.pubkey(), args, &accounts)?);
-        self.append_dev_buy_ixs(
-            &mut ixs,
+        let create_ix = build_create_v2_ix(&mint_pk, wallet.pubkey(), args, &accounts)?;
+        let ixs = self.assemble_create_ixs(
+            create_ix,
             &mint_pk,
             args.creator,
             token_program,
             args.cashback_enabled,
             dev_buy,
         )?;
-        ixs.push(self.jito_tip_ix(0));
         self.send_create_tx(
             ixs,
             wallet,
@@ -153,48 +151,71 @@ impl PumpFunTrader {
         .await
     }
 
-    fn cu_ixs_for_create(&self, with_dev_buy: bool) -> Vec<Instruction> {
-        if with_dev_buy {
-            let compute = &self.config.compute;
-            let price_ix = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_price(
-                compute.price_micro_lamports,
-            );
-            vec![
-                solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
-                    compute.curve_create_buy_cu,
-                ),
-                price_ix,
-            ]
-        } else {
-            self.engine.cu_ixs_curve_create.clone()
-        }
-    }
-
-    fn append_dev_buy_ixs(
+    /// Assemble the full create tx instruction list via the canonical create
+    /// layout `[cu_limit, cu_price, core, tip]`. `Core` is `[create_ix]`, or the
+    /// fused `[create_ix, ata, buy]` when a dev buy is present. The CU limit is
+    /// the create-only budget unless a dev buy is requested (`dev_buy.is_some()`),
+    /// matching the pre-refactor `cu_ixs_for_create` selection.
+    fn assemble_create_ixs(
         &self,
-        ixs: &mut Vec<Instruction>,
+        create_ix: Instruction,
         mint: &Pubkey,
         creator: Pubkey,
         token_program: TokenProgram,
         cashback_enabled: bool,
         dev_buy: Option<(f64, u64, Option<u64>)>,
-    ) -> Result<()> {
+    ) -> Result<Vec<Instruction>> {
+        let mut core = Vec::with_capacity(3);
+        core.push(create_ix);
+        core.extend(self.dev_buy_core_ixs(mint, creator, token_program, cashback_enabled, dev_buy)?);
+
+        let compute = &self.config.compute;
+        let cu_limit = if dev_buy.is_some() {
+            compute.curve_create_buy_cu
+        } else {
+            compute.curve_create_cu
+        };
+        Ok(assemble(
+            &IxLayout::canonical_create(),
+            IxParts {
+                core,
+                ata: Vec::new(), // buyer ATA is fused into `core` for create
+                cu_limit,
+                cu_price: compute.price_micro_lamports,
+                tip_lamports: self.jito_tip_cache.tip_lamports_for_level(0),
+                tip_account: self.engine.jito_tip_account,
+                payer: self.config.signer.pubkey(),
+            },
+        ))
+    }
+
+    /// The dev-buy block that fuses into create's `Core`: `[ata, buy]`, or empty
+    /// when there is no dev buy (or a zero-lamport one). Reuses `curve_buy_ix` —
+    /// the SSOT buy ix — so there is no build-then-strip of CU/tip decorations.
+    fn dev_buy_core_ixs(
+        &self,
+        mint: &Pubkey,
+        creator: Pubkey,
+        token_program: TokenProgram,
+        cashback_enabled: bool,
+        dev_buy: Option<(f64, u64, Option<u64>)>,
+    ) -> Result<Vec<Instruction>> {
         let Some((dev_buy_sol, buy_lamports, slippage_bps)) = dev_buy else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         if buy_lamports == 0 {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let wallet = self.config.signer.pubkey();
         let token_program_pk = token_program.pubkey();
         let user_ata =
             get_associated_token_address_with_program_id(&wallet, mint, &token_program_pk);
-        ixs.push(create_associated_token_account_idempotent(
+        let ata_ix = create_associated_token_account_idempotent(
             &wallet,
             &wallet,
             mint,
             &token_program_pk,
-        ));
+        );
         let pdas = self.derive_token_pdas(mint, &creator, &token_program_pk, cashback_enabled);
         // The curve is created in THIS tx, so it has no on-chain state to read —
         // its live reserves are the protocol-constant fresh-curve reserves. Feed
@@ -208,22 +229,7 @@ impl PumpFunTrader {
             reserves,
             self.config.slippage.curve_fee_buffer_bps,
         );
-        let buy_ixs = self.build_curve_buy_ixs(
-            mint,
-            &pdas,
-            &user_ata,
-            Vec::new(),
-            buy_lamports,
-            min_out,
-        )?;
-        // `build_curve_buy_ixs` includes its own CU budget + tip — strip those;
-        // this tx already has a single CU block and one tip at the end.
-        let buy_only = buy_ixs
-            .into_iter()
-            .filter(|ix| ix.program_id != solana_sdk::compute_budget::id())
-            .filter(|ix| !self.is_jito_tip_ix(ix))
-            .collect::<Vec<_>>();
-        ixs.extend(buy_only);
+        let buy_ix = self.curve_buy_ix(mint, &pdas, &user_ata, buy_lamports, min_out)?;
         info!(
             mint = %mint,
             dev_buy_sol,
@@ -231,14 +237,7 @@ impl PumpFunTrader {
             min_out,
             "create tx includes dev-buy leg"
         );
-        Ok(())
-    }
-
-    fn is_jito_tip_ix(&self, ix: &Instruction) -> bool {
-        ix.program_id == system_program::id()
-            && ix.accounts.len() == 2
-            && ix.accounts[0].pubkey == self.config.signer.pubkey()
-            && protocol::JITO_TIP_ACCOUNTS.contains(&ix.accounts[1].pubkey)
+        Ok(vec![ata_ix, buy_ix])
     }
 
     async fn send_create_tx(
@@ -505,19 +504,16 @@ mod tests {
             is_mayhem_mode: false,
             cashback_enabled: false,
         };
-        let mut ixs = t.cu_ixs_for_create(true);
-        ixs.push(build_create_v2_ix(mint, wallet, &args, &accounts).unwrap());
-        t.append_dev_buy_ixs(
-            &mut ixs,
+        let create_ix = build_create_v2_ix(mint, wallet, &args, &accounts).unwrap();
+        t.assemble_create_ixs(
+            create_ix,
             mint,
             wallet,
             TokenProgram::Token2022,
             false,
             Some((0.02, 20_000_000, None)),
         )
-        .unwrap();
-        ixs.push(t.jito_tip_ix(0));
-        ixs
+        .unwrap()
     }
 
     fn wire_size(msg: &solana_sdk::message::Message) -> usize {
@@ -625,5 +621,97 @@ mod tests {
             cfg.curve_create_buy_cu > cfg.curve_create_cu,
             "create+buy CU limit must exceed create-only"
         );
+    }
+
+    // --- Golden byte-identity: the `assemble()` refactor is a provable no-op. ---
+    // Each test reconstructs the pre-refactor hand-pushed sequence and asserts the
+    // new builder yields an identical `Vec<Instruction>` (same program ids,
+    // accounts, and data, in the same order).
+
+    use solana_sdk::compute_budget::ComputeBudgetInstruction as CBI;
+
+    /// Create-**only** must reproduce exactly `[cu_limit, cu_price, create, tip]`.
+    #[test]
+    fn golden_create_only_shape() {
+        let t = with_global(trader());
+        let wallet = t.config.signer.pubkey();
+        let mint = Keypair::new();
+        let args = CreateTokenV2Args {
+            name: "Golden".into(),
+            symbol: "GLD".into(),
+            uri: "ipfs://x".into(),
+            creator: wallet,
+            is_mayhem_mode: false,
+            cashback_enabled: false,
+        };
+        let accounts = derive_create_accounts(&mint.pubkey(), TokenProgram::Token2022, true);
+        let create_ix = build_create_v2_ix(&mint.pubkey(), wallet, &args, &accounts).unwrap();
+
+        let got = t
+            .assemble_create_ixs(create_ix.clone(), &mint.pubkey(), wallet, TokenProgram::Token2022, false, None)
+            .unwrap();
+
+        let compute = &t.config.compute;
+        let expected = vec![
+            CBI::set_compute_unit_limit(compute.curve_create_cu),
+            CBI::set_compute_unit_price(compute.price_micro_lamports),
+            create_ix,
+            t.jito_tip_ix(0),
+        ];
+        assert_eq!(got, expected);
+    }
+
+    /// Create **with** dev buy must reproduce `[cu_limit, cu_price, create, ata, buy, tip]`
+    /// — the fused `Core` = `[create, ata, buy]` — with the create-buy CU budget.
+    #[test]
+    fn golden_create_dev_buy_shape() {
+        let t = with_global(trader());
+        let wallet = t.config.signer.pubkey();
+        let mint = Keypair::new();
+        let args = CreateTokenV2Args {
+            name: "Golden".into(),
+            symbol: "GLD".into(),
+            uri: "ipfs://x".into(),
+            creator: wallet,
+            is_mayhem_mode: false,
+            cashback_enabled: false,
+        };
+        let accounts = derive_create_accounts(&mint.pubkey(), TokenProgram::Token2022, true);
+        let create_ix = build_create_v2_ix(&mint.pubkey(), wallet, &args, &accounts).unwrap();
+
+        let got = t
+            .assemble_create_ixs(
+                create_ix.clone(),
+                &mint.pubkey(),
+                wallet,
+                TokenProgram::Token2022,
+                false,
+                Some((0.02, 20_000_000, None)),
+            )
+            .unwrap();
+
+        // Hand-build the expected dev-buy fused block the way the old builder did.
+        let token_program_pk = TokenProgram::Token2022.pubkey();
+        let user_ata = get_associated_token_address_with_program_id(&wallet, &mint.pubkey(), &token_program_pk);
+        let ata_ix = create_associated_token_account_idempotent(&wallet, &wallet, &mint.pubkey(), &token_program_pk);
+        let pdas = t.derive_token_pdas(&mint.pubkey(), &wallet, &token_program_pk, false);
+        let min_out = compute_curve_buy_min_out(
+            20_000_000,
+            None,
+            Some(crate::price::fresh_curve_reserves()),
+            t.config.slippage.curve_fee_buffer_bps,
+        );
+        let buy_ix = t.curve_buy_ix(&mint.pubkey(), &pdas, &user_ata, 20_000_000, min_out).unwrap();
+
+        let compute = &t.config.compute;
+        let expected = vec![
+            CBI::set_compute_unit_limit(compute.curve_create_buy_cu),
+            CBI::set_compute_unit_price(compute.price_micro_lamports),
+            create_ix,
+            ata_ix,
+            buy_ix,
+            t.jito_tip_ix(0),
+        ];
+        assert_eq!(got, expected);
     }
 }
