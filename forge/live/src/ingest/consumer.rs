@@ -1,48 +1,35 @@
 //! The ingest → DB pipeline (LIVE box). Builds the borrowed transport, then
-//! consumes `IngestEvent`s and projects them onto `raw_txs` / `trades` / `tokens`
-//! through the pump.fun/SOL adapter.
+//! drains `IngestEvent`s on a hot recv loop that does **no DB I/O** — it forwards
+//! durable work onto a bounded channel drained by a separate
+//! [`DbWriter`](super::db_writer) task. A wedged DB therefore backs up the channel
+//! (and, once full, backpressures the transport) instead of stalling the recv
+//! loop; the [`watchdog`](super::watchdog) force-exits the process if writes stop
+//! while work is queued.
 //!
-//! Batching: trades + raw_txs accumulate in buffers flushed on size or a short
-//! interval (one `UNNEST` round-trip per flush). Wallet addresses are interned
-//! through an in-memory cache so a repeat wallet costs no DB round-trip. Raw txs
-//! are persisted only for txs that produced a semantic event (the trailing
-//! `RawTx` event uses a per-tx flag), so `raw_txs` stays the source-of-truth for
-//! exactly what `trades` projects.
-//!
-//! This is the scaffold pipeline (single task, inline batched writer). A fully
-//! channel-decoupled `DbWriter` is a later refinement; correctness + idempotent
-//! replay (PK `ON CONFLICT DO NOTHING`) hold today.
+//! Only the tx-tracking state machine lives here: `raw_txs` is persisted only for
+//! txs that produced a semantic event (the trailing `RawTx` event uses a per-tx
+//! flag), so `raw_txs` stays the source-of-truth for exactly what `trades`
+//! projects. That decision is pure stream ordering — no DB — so it stays on the
+//! hot path; all mapping + interning + inserts happen in the `DbWriter`.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use ingest_laserstream::{Ingest, IngestConfig, IngestEvent, IngestHandle, Protocol};
 use sqlx::PgPool;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use platform_core::models::RawTx;
-use platform_core::models::NewTrade;
-use platform_core::storage::repositories::dimensions::NewMarket;
-use platform_core::storage::repositories::{MarketRepo, RawTxRepo, TokenRepo, TradeRepo, WalletDictRepo};
-use platform_core::venue::{LaunchpadAdapter, MarketKind};
+use super::db_writer::{DbWriteOp, DbWriter, CHANNEL_CAPACITY};
+use super::pumpfun::PumpFunAdapter;
+use super::watchdog::{spawn_watchdog, DbHeartbeat};
 
-use super::map;
-use super::pumpfun::{PumpFunAdapter, CURVE_PROGRAM_ID};
-
-/// Flush when a buffer reaches this many rows (or on the interval, whichever first).
-const FLUSH_EVERY: usize = 256;
-/// Max time rows sit buffered before a flush.
-const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Build the transport and spawn the ingest → DB pipeline task. Boots
-/// **paused** (`start(false)`): no gRPC subscription opens until an operator
-/// flips the runtime toggle on (`PUT /api/ingest {live:true}` →
-/// `handle.set_live(true)`). Returns the consumer's join handle plus the
-/// control handle (the caller owns it for the process lifetime to expose that
-/// runtime pause/resume toggle over HTTP).
+/// Build the transport and spawn the ingest → DB pipeline (consumer + writer +
+/// watchdog). Boots **paused** (`start(false)`): no gRPC subscription opens until
+/// an operator flips the runtime toggle on (`PUT /api/ingest {live:true}` →
+/// `handle.set_live(true)`). Returns the consumer's join handle plus the control
+/// handle (the caller owns it for the process lifetime to expose that runtime
+/// pause/resume toggle over HTTP).
 pub async fn spawn_ingest(
     pool: PgPool,
     endpoint: String,
@@ -57,146 +44,66 @@ pub async fn spawn_ingest(
         .build()?
         .start(false);
     let handle = Arc::new(handle);
+
+    // Decoupled writer: hot recv loop → bounded channel → DbWriter task.
+    let (tx, rx) = mpsc::channel::<DbWriteOp>(CHANNEL_CAPACITY);
+    let heartbeat = DbHeartbeat::new();
+    tokio::spawn(DbWriter::new(pool, adapter, heartbeat.clone()).run(rx));
+
+    // Watchdog on its own OS thread: force-exit if the writer stops committing
+    // while the queue is backed up and the stream is live. `is_live` reads the
+    // ingest toggle; `work_pending` reads the channel occupancy via a weak sender
+    // (so the watchdog doesn't keep the channel alive after the consumer exits).
+    let live_handle = handle.clone();
+    let weak_tx = tx.downgrade();
+    spawn_watchdog(
+        heartbeat,
+        move || live_handle.is_live(),
+        move || {
+            weak_tx
+                .upgrade()
+                .map(|s| s.max_capacity() - s.capacity() > 0)
+                .unwrap_or(false)
+        },
+    );
+
     info!("ingest transport spawned, paused (pump.fun/SOL adapter) — enable via PUT /api/ingest");
-    let join = tokio::spawn(run_consumer(pool, adapter, event_rx));
+    let join = tokio::spawn(run_consumer(event_rx, tx));
     Ok((join, handle))
 }
 
-async fn run_consumer(
-    pool: PgPool,
-    adapter: PumpFunAdapter,
-    mut event_rx: Receiver<IngestEvent>,
-) {
-    let mut trades: Vec<NewTrade> = Vec::new();
-    let mut raws: Vec<RawTx> = Vec::new();
-    let mut wallet_cache: HashMap<String, i32> = HashMap::new();
+/// Hot recv loop: forward durable work to the writer, tracking which txs produced
+/// a semantic event so only those get their `RawTx` persisted. No DB, no mapping.
+async fn run_consumer(mut event_rx: Receiver<IngestEvent>, tx: Sender<DbWriteOp>) {
     let mut tracked_in_tx = false;
-    let mut tick = tokio::time::interval(FLUSH_INTERVAL);
-
-    loop {
-        tokio::select! {
-            maybe = event_rx.recv() => {
-                let Some(ev) = maybe else {
-                    warn!("ingest event channel closed — transport ended");
-                    break;
-                };
-                match ev {
-                    IngestEvent::Trade(t) => {
-                        tracked_in_tx = true;
-                        match wallet_ref(&pool, &mut wallet_cache, &t.wallet).await {
-                            Ok(wid) => match map::trade_to_row(&adapter, wid, &t) {
-                                Ok(row) => trades.push(row),
-                                Err(e) => warn!(?e, mint = %t.mint, "skip trade (sig decode)"),
-                            },
-                            Err(e) => warn!(?e, "wallet intern failed"),
-                        }
-                        if trades.len() >= FLUSH_EVERY {
-                            flush(&pool, &mut trades, &mut raws).await;
-                        }
-                    }
-                    IngestEvent::TokenCreated(tc) => {
-                        tracked_in_tx = true;
-                        let token = map::token_created_to_row(&adapter, &tc);
-                        if let Err(e) = TokenRepo::insert(&pool, &token).await {
-                            warn!(?e, mint = %tc.mint, "token insert failed");
-                        }
-                        let market = NewMarket {
-                            mint_address: tc.mint.clone(),
-                            launchpad_id: adapter.launchpad_id(),
-                            market_kind: MarketKind::BondingCurve.as_str().to_string(),
-                            program_id: CURVE_PROGRAM_ID.to_string(),
-                            quote_asset_id: adapter.quote_asset_id(MarketKind::BondingCurve),
-                            pool_address: tc.bonding_curve.clone(),
-                            created_slot: Some(tc.slot as i64),
-                        };
-                        if let Err(e) = MarketRepo::upsert(&pool, &market).await {
-                            warn!(?e, mint = %tc.mint, "market upsert failed");
-                        }
-                    }
-                    IngestEvent::RawTx(r) => {
-                        if tracked_in_tx {
-                            raws.push(map::raw_tx_to_row(&r));
-                        }
-                        tracked_in_tx = false;
-                        if raws.len() >= FLUSH_EVERY {
-                            flush(&pool, &mut trades, &mut raws).await;
-                        }
-                    }
-                    // TokenMigrated / Liquidity / CreatorActivity: not projected yet.
-                    _ => {}
+    while let Some(ev) = event_rx.recv().await {
+        let op = match ev {
+            IngestEvent::Trade(t) => {
+                tracked_in_tx = true;
+                DbWriteOp::Trade(Box::new(t))
+            }
+            IngestEvent::TokenCreated(tc) => {
+                tracked_in_tx = true;
+                DbWriteOp::TokenCreated(Box::new(tc))
+            }
+            IngestEvent::RawTx(r) => {
+                let forward = tracked_in_tx;
+                tracked_in_tx = false;
+                if !forward {
+                    continue;
                 }
+                DbWriteOp::Raw(Box::new(r))
             }
-            _ = tick.tick() => {
-                flush(&pool, &mut trades, &mut raws).await;
-            }
+            // TokenMigrated / Liquidity / CreatorActivity: not projected yet.
+            _ => continue,
+        };
+        // `send().await` is the durable-write backpressure: if the writer is
+        // behind, this blocks and stops draining the transport rather than
+        // dropping real rows.
+        if tx.send(op).await.is_err() {
+            warn!("ingest DbWriter channel closed — consumer exiting");
+            break;
         }
     }
-    // Final drain.
-    flush(&pool, &mut trades, &mut raws).await;
-}
-
-/// Intern a wallet address → `wallet_dict` id (`wallet_ref`), memoized. On a cache
-/// hit no DB round-trip occurs.
-async fn wallet_ref(
-    pool: &PgPool,
-    cache: &mut HashMap<String, i32>,
-    address: &str,
-) -> anyhow::Result<i32> {
-    if let Some(id) = cache.get(address) {
-        return Ok(*id);
-    }
-    let id = WalletDictRepo::intern(pool, address).await?;
-    cache.insert(address.to_string(), id);
-    Ok(id)
-}
-
-/// Cap on how many pending rows a buffer may hold across failed flushes before we
-/// give up retaining them. Inserts are idempotent so a transient DB error can be
-/// retried on the next flush without loss — but an extended outage must not grow
-/// the buffer without bound and OOM the ingest task (the box is RAM-constrained).
-/// Past this, the oldest rows are dropped (logged) so recent trades keep flowing.
-const MAX_PENDING_ROWS: usize = 50_000;
-
-/// Flush both buffers (idempotent inserts). Errors are logged, not propagated —
-/// a transient DB error must not tear down the ingest task. On a failed insert the
-/// batch is RETAINED (not cleared) so the next flush retries it — inserts are
-/// idempotent (dedup key = PK), so replaying a partially-applied batch is safe and
-/// a transient DB blip no longer permanently loses trades. The buffer is bounded
-/// by `MAX_PENDING_ROWS` so a prolonged outage sheds the oldest rows instead of
-/// growing unbounded.
-async fn flush(pool: &PgPool, trades: &mut Vec<NewTrade>, raws: &mut Vec<RawTx>) {
-    if !trades.is_empty() {
-        match TradeRepo::insert_batch(pool, trades).await {
-            Ok(n) => {
-                tracing::debug!(rows = n, "flushed trades");
-                trades.clear();
-            }
-            Err(e) => {
-                warn!(?e, count = trades.len(), "trade flush failed — retaining batch for retry");
-                shed_overflow(trades, "trades");
-            }
-        }
-    }
-    if !raws.is_empty() {
-        match RawTxRepo::insert_batch(pool, raws).await {
-            Ok(n) => {
-                tracing::debug!(rows = n, "flushed raw_txs");
-                raws.clear();
-            }
-            Err(e) => {
-                warn!(?e, count = raws.len(), "raw_tx flush failed — retaining batch for retry");
-                shed_overflow(raws, "raw_txs");
-            }
-        }
-    }
-}
-
-/// Drop the oldest rows once a retained buffer exceeds `MAX_PENDING_ROWS`, keeping
-/// the most recent. Only reached on a sustained flush failure.
-fn shed_overflow<T>(buf: &mut Vec<T>, what: &str) {
-    if buf.len() > MAX_PENDING_ROWS {
-        let drop_n = buf.len() - MAX_PENDING_ROWS;
-        buf.drain(0..drop_n);
-        warn!(dropped = drop_n, kind = what, "pending flush buffer over cap — shed oldest rows");
-    }
+    warn!("ingest event channel closed — transport ended");
 }

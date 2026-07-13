@@ -7,15 +7,19 @@
 //! venue adapter (`launchpad_id = pump_fun`, `quote_asset_id = SOL`, venue-neutral
 //! reserve pair).
 //!
-//! - `pumpfun`  — the `LaunchpadAdapter` impl (resolves interned dimension ids).
-//! - `map`      — pure event → row mappers (unit-testable, no DB/network).
-//! - `consumer` — `spawn_ingest` + the batched ingest → DB pipeline.
+//! - `pumpfun`   — the `LaunchpadAdapter` impl (resolves interned dimension ids).
+//! - `map`       — pure event → row mappers (unit-testable, no DB/network).
+//! - `consumer`  — `spawn_ingest` + the hot recv loop (no DB I/O).
+//! - `db_writer` — the decoupled batched writer task (all DB I/O + interning).
+//! - `watchdog`  — OS-thread process watchdog on the writer heartbeat.
 //!
 //! Dep partition: LIVE only. Must NOT appear in `lab`'s dep graph.
 
 pub mod consumer;
+pub mod db_writer;
 pub mod map;
 pub mod pumpfun;
+pub mod watchdog;
 
 #[cfg(test)]
 mod roundtrip_test;
