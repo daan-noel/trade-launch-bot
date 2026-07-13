@@ -7,6 +7,7 @@
 // ============================================================
 
 use super::assemble::{assemble, IxParts};
+use super::bundle_buy::BundleBuyVariant;
 use super::buy::compute_curve_buy_min_out;
 use super::PumpFunTrader;
 use crate::error::{Context, Result};
@@ -27,6 +28,21 @@ use spl_associated_token_account::{
 };
 use std::time::Instant;
 use tracing::info;
+
+/// The dev-wallet buy fused into a create tx: the spend, its slippage floor, and
+/// the curve-buy **encoding**. `variant` is any of the four [`BundleBuyVariant`]s —
+/// the same catalog the bundler co-buys draw from — so the dev buy is no longer
+/// pinned to `buy_exact_sol_in`. `sol` is the human-SOL mirror of `lamports` (kept
+/// for logging). A tokens-out variant (`buy` / `buy_v2`) needs a `slippage_bps` so
+/// `min_out` is a real reserve-derived token floor (else it would buy ~1 token); the
+/// launcher validates that before this is built.
+#[derive(Debug, Clone, Copy)]
+pub struct DevBuy {
+    pub sol: f64,
+    pub lamports: u64,
+    pub slippage_bps: Option<u64>,
+    pub variant: BundleBuyVariant,
+}
 
 /// PDAs and derived accounts for a not-yet-created mint.
 #[derive(Debug, Clone, Copy)]
@@ -54,17 +70,19 @@ impl PumpFunTrader {
     }
 
     /// Legacy `create` followed by a dev-wallet buy in the **same** transaction.
+    /// `variant` selects the dev-buy curve encoding (see [`DevBuy`]).
     pub async fn create_token_and_dev_buy(
         &self,
         mint: &Keypair,
         args: &CreateTokenArgs,
         dev_buy_sol: f64,
         slippage_bps: Option<u64>,
+        variant: BundleBuyVariant,
         confirm: bool,
     ) -> Result<String> {
         let buy_lamports = (dev_buy_sol * LAMPORTS_PER_SOL as f64) as u64;
-        self.create_token_inner(mint, args, Some((dev_buy_sol, buy_lamports, slippage_bps)), confirm)
-            .await
+        let dev_buy = DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant };
+        self.create_token_inner(mint, args, Some(dev_buy), confirm).await
     }
 
     /// Token-2022 `create_v2` — the current pump.fun default. Returns the tx signature.
@@ -78,24 +96,26 @@ impl PumpFunTrader {
     }
 
     /// `create_v2` followed by a dev-wallet buy in the **same** transaction.
+    /// `variant` selects the dev-buy curve encoding (see [`DevBuy`]).
     pub async fn create_token_v2_and_dev_buy(
         &self,
         mint: &Keypair,
         args: &CreateTokenV2Args,
         dev_buy_sol: f64,
         slippage_bps: Option<u64>,
+        variant: BundleBuyVariant,
         confirm: bool,
     ) -> Result<String> {
         let buy_lamports = (dev_buy_sol * LAMPORTS_PER_SOL as f64) as u64;
-        self.create_token_v2_inner(mint, args, Some((dev_buy_sol, buy_lamports, slippage_bps)), confirm)
-            .await
+        let dev_buy = DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant };
+        self.create_token_v2_inner(mint, args, Some(dev_buy), confirm).await
     }
 
     async fn create_token_inner(
         &self,
         mint: &Keypair,
         args: &CreateTokenArgs,
-        dev_buy: Option<(f64, u64, Option<u64>)>,
+        dev_buy: Option<DevBuy>,
         confirm: bool,
     ) -> Result<String> {
         let t0 = Instant::now();
@@ -121,7 +141,7 @@ impl PumpFunTrader {
         &self,
         mint: &Keypair,
         args: &CreateTokenV2Args,
-        dev_buy: Option<(f64, u64, Option<u64>)>,
+        dev_buy: Option<DevBuy>,
         confirm: bool,
     ) -> Result<String> {
         let t0 = Instant::now();
@@ -166,7 +186,7 @@ impl PumpFunTrader {
         creator: Pubkey,
         token_program: TokenProgram,
         cashback_enabled: bool,
-        dev_buy: Option<(f64, u64, Option<u64>)>,
+        dev_buy: Option<DevBuy>,
         tip_level: u8,
     ) -> Result<Vec<Instruction>> {
         let mut core = Vec::with_capacity(3);
@@ -215,7 +235,7 @@ impl PumpFunTrader {
         &self,
         mint_signer: &(dyn Signer + Send + Sync),
         args: &CreateTokenArgs,
-        dev_buy: Option<(f64, u64, Option<u64>)>,
+        dev_buy: Option<DevBuy>,
         blockhash: solana_sdk::hash::Hash,
         tip_level: u8,
     ) -> Result<VersionedTransaction> {
@@ -240,7 +260,7 @@ impl PumpFunTrader {
         &self,
         mint_signer: &(dyn Signer + Send + Sync),
         args: &CreateTokenV2Args,
-        dev_buy: Option<(f64, u64, Option<u64>)>,
+        dev_buy: Option<DevBuy>,
         blockhash: solana_sdk::hash::Hash,
         tip_level: u8,
     ) -> Result<VersionedTransaction> {
@@ -275,18 +295,23 @@ impl PumpFunTrader {
             .await
     }
 
-    /// The dev-buy block that fuses into create's `Core`: `[ata, buy]`, or empty
-    /// when there is no dev buy (or a zero-lamport one). Reuses `curve_buy_ix` —
-    /// the SSOT buy ix — so there is no build-then-strip of CU/tip decorations.
+    /// The dev-buy block that fuses into create's `Core`: `[base_ata, ..extra_atas,
+    /// buy]`, or empty when there is no dev buy (or a zero-lamport one). Draws the
+    /// variant's raw buy (+ any WSOL quote ATA a v2 encoding needs) from the SAME
+    /// `build_curve_buy_core` SSOT the bundler co-buys use — so the dev buy supports
+    /// all four encodings, byte-for-byte identical to a co-buy of the same variant,
+    /// with no build-then-strip of CU/tip decorations.
     fn dev_buy_core_ixs(
         &self,
         mint: &Pubkey,
         creator: Pubkey,
         token_program: TokenProgram,
         cashback_enabled: bool,
-        dev_buy: Option<(f64, u64, Option<u64>)>,
+        dev_buy: Option<DevBuy>,
     ) -> Result<Vec<Instruction>> {
-        let Some((dev_buy_sol, buy_lamports, slippage_bps)) = dev_buy else {
+        let Some(DevBuy { sol: dev_buy_sol, lamports: buy_lamports, slippage_bps, variant }) =
+            dev_buy
+        else {
             return Ok(Vec::new());
         };
         if buy_lamports == 0 {
@@ -303,11 +328,13 @@ impl PumpFunTrader {
             &token_program_pk,
         );
         let pdas = self.derive_token_pdas(mint, &creator, &token_program_pk, cashback_enabled);
-        // The curve is created in THIS tx, so it has no on-chain state to read —
-        // its live reserves are the protocol-constant fresh-curve reserves. Feed
-        // those through the SAME shared `curve_buy_min_out` every other buy uses
-        // (no hand-inlined reserve tuple that could drift). `slippage_bps = None`
-        // keeps the historical unprotected launch behaviour (min_out = 1).
+        // The curve is created in THIS tx, so it has no on-chain state to read — its
+        // live reserves are the protocol-constant fresh-curve reserves. Feed those
+        // through the SAME shared `curve_buy_min_out` every other buy uses (no
+        // hand-inlined reserve tuple that could drift). For a SOL-in variant
+        // `slippage_bps = None` keeps the historical unprotected launch behaviour
+        // (min_out = 1); a tokens-out variant carries a real slippage (launcher-
+        // validated) so `min_out` is a genuine token floor.
         let reserves = Some(crate::price::fresh_curve_reserves());
         let min_out = compute_curve_buy_min_out(
             buy_lamports,
@@ -315,15 +342,32 @@ impl PumpFunTrader {
             reserves,
             self.config.slippage.curve_fee_buffer_bps,
         );
-        let buy_ix = self.curve_buy_ix(mint, &pdas, &user_ata, buy_lamports, min_out)?;
+        // Buyer is the dev/creator wallet (`config.signer`). `build_curve_buy_core`
+        // dispatches v1/v2 by variant + cashback and returns the raw buy plus any
+        // extra ATA (the v2 WSOL quote ATA) to fuse right after the base ATA.
+        let core = self.build_curve_buy_core(
+            variant,
+            &wallet,
+            mint,
+            &pdas,
+            &user_ata,
+            buy_lamports,
+            min_out,
+            cashback_enabled,
+        )?;
         info!(
             mint = %mint,
             dev_buy_sol,
             buy_lamports,
             min_out,
+            ?variant,
             "create tx includes dev-buy leg"
         );
-        Ok(vec![ata_ix, buy_ix])
+        let mut ixs = Vec::with_capacity(2 + core.extra_atas.len());
+        ixs.push(ata_ix);
+        ixs.extend(core.extra_atas);
+        ixs.push(core.buy_ix);
+        Ok(ixs)
     }
 
     async fn send_create_tx(
@@ -597,7 +641,7 @@ mod tests {
             wallet,
             TokenProgram::Token2022,
             false,
-            Some((0.02, 20_000_000, None)),
+            Some(DevBuy { sol: 0.02, lamports: 20_000_000, slippage_bps: None, variant: BundleBuyVariant::BuyExactSolIn }),
             0,
         )
         .unwrap()
@@ -773,12 +817,14 @@ mod tests {
                 wallet,
                 TokenProgram::Token2022,
                 false,
-                Some((0.02, 20_000_000, None)),
+                Some(DevBuy { sol: 0.02, lamports: 20_000_000, slippage_bps: None, variant: BundleBuyVariant::BuyExactSolIn }),
                 0,
             )
             .unwrap();
 
-        // Hand-build the expected dev-buy fused block the way the old builder did.
+        // Hand-build the expected dev-buy fused block: base ATA + the variant's raw
+        // buy from the SAME `build_curve_buy_core` SSOT the leg builds through (v1
+        // buy_exact_sol_in ⇒ no extra WSOL ATA).
         let token_program_pk = TokenProgram::Token2022.pubkey();
         let user_ata = get_associated_token_address_with_program_id(&wallet, &mint.pubkey(), &token_program_pk);
         let ata_ix = create_associated_token_account_idempotent(&wallet, &wallet, &mint.pubkey(), &token_program_pk);
@@ -789,7 +835,13 @@ mod tests {
             Some(crate::price::fresh_curve_reserves()),
             t.config.slippage.curve_fee_buffer_bps,
         );
-        let buy_ix = t.curve_buy_ix(&mint.pubkey(), &pdas, &user_ata, 20_000_000, min_out).unwrap();
+        let buy_ix = t
+            .build_curve_buy_core(
+                BundleBuyVariant::BuyExactSolIn, &wallet, &mint.pubkey(), &pdas, &user_ata,
+                20_000_000, min_out, false,
+            )
+            .unwrap()
+            .buy_ix;
 
         let compute = &t.config.compute;
         let expected = vec![

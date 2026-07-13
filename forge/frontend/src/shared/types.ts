@@ -34,6 +34,9 @@ export interface LegStructureRecipe {
 
 export interface PumpfunTemplateParams {
   dev_buy_quote?: number;
+  // Dev-buy curve encoding (any of the four buy variants). Omitted ⇒ backend default
+  // `buy_exact_sol_in`. A tokens-out encoding (`buy`/`buy_v2`) needs `slippage_bps`.
+  dev_buy_variant?: BuyVariant;
   slippage_bps?: number;
   is_mayhem_mode?: boolean;
   cashback_enabled?: boolean;

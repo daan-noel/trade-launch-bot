@@ -108,6 +108,12 @@ fn create_variant_name(template_variant: &str) -> &'static str {
 pub struct PumpfunTemplateParams {
     #[serde(default)]
     pub dev_buy_quote: Option<i64>,
+    /// The dev-buy curve encoding (catalog name: `buy` / `buy_exact_sol_in` /
+    /// `buy_v2` / `buy_exact_quote_in_v2`). Independent of the bundler legs' encoding
+    /// so the dev buy can diverge from the co-buys. `None` ⇒ `buy_exact_sol_in` (the
+    /// historical dev-buy encoding). Resolve via [`Self::dev_buy_variant_name`].
+    #[serde(default)]
+    pub dev_buy_variant: Option<String>,
     #[serde(default)]
     pub slippage_bps: Option<u64>,
     #[serde(default)]
@@ -137,11 +143,56 @@ impl PumpfunTemplateParams {
     /// fail-closed checks `plan_pipeline::gate` re-runs before send), so a malformed
     /// template is rejected at save time — and, at launch, BEFORE any wallet is
     /// reserved or a pending row inserted — instead of only failing mid-plan with a
-    /// silent 500. Validates (1) every authored bundler-leg buy variant is a SOL-in
-    /// encoding, and (2) every authored ix layout. Returns the first defect.
+    /// silent 500. Validates (1) every authored bundler-leg buy variant is a buy
+    /// encoding, (2) the dev-buy variant (a buy; tokens-out needs slippage), and
+    /// (3) every authored ix layout. Returns the first defect.
     pub fn validate(&self) -> Result<(), String> {
         self.validate_leg_variants()?;
+        self.validate_dev_buy()?;
         self.validate_layouts()?;
+        Ok(())
+    }
+
+    /// The resolved dev-buy encoding — the authored `dev_buy_variant`, or the
+    /// historical `buy_exact_sol_in` default. SSOT for the three read sites (macro
+    /// wiring, persisted `create_args`, the bundler-less legacy create path).
+    pub fn dev_buy_variant_name(&self) -> String {
+        self.dev_buy_variant
+            .clone()
+            .unwrap_or_else(|| crate::plan_pipeline::LAUNCH_BUY_VARIANT.to_string())
+    }
+
+    /// The dev buy is a BUY fused into the create tx, so its encoding must be a
+    /// catalog buy variant. A **tokens-out** encoding (`buy` / `buy_v2`,
+    /// `Denom::ExactBaseOut`) buys an exact token amount capped by `max_sol_cost`, so
+    /// it needs a `slippage_bps` for `min_out` to be a real reserve-derived token
+    /// floor — without one it would request ~1 token and barely spend the budget. The
+    /// SOL-in encodings spend the budget directly, so `None` slippage stays the
+    /// historical unprotected launch behaviour. Only enforced when a dev buy exists.
+    fn validate_dev_buy(&self) -> Result<(), String> {
+        if self.dev_buy_quote.unwrap_or(0) <= 0 {
+            return Ok(()); // no dev buy ⇒ the encoding is inert
+        }
+        let name = self.dev_buy_variant_name();
+        let spec = pump_trader::spec(&name).ok_or_else(|| {
+            format!(
+                "dev_buy_variant {name:?} is not a known pump.fun variant \
+                 (use buy, buy_v2, buy_exact_sol_in, or buy_exact_quote_in_v2)"
+            )
+        })?;
+        if spec.kind != pump_trader::VariantKind::Buy {
+            return Err(format!(
+                "dev_buy_variant {name:?} is a {:?}, not a buy — the dev buy must use a \
+                 buy encoding (buy, buy_v2, buy_exact_sol_in, buy_exact_quote_in_v2)",
+                spec.kind
+            ));
+        }
+        if spec.denom == pump_trader::Denom::ExactBaseOut && self.slippage_bps.is_none() {
+            return Err(format!(
+                "dev_buy_variant {name:?} is a tokens-out encoding — set slippage_bps so the \
+                 dev buy spends its budget (a tokens-out buy with no slippage buys ~1 token)"
+            ));
+        }
         Ok(())
     }
 
@@ -384,9 +435,13 @@ pub async fn execute_launch(
                         cashback_enabled: params.cashback_enabled,
                     };
                     if dev_buy_quote > 0 {
+                        // The dev-buy encoding (validated above); same catalog→executor
+                        // map the co-buy legs use so it also accepts `buy_exact_quote_in_v2`.
+                        let dev_variant =
+                            crate::plan_pipeline::bundle_buy_variant(&params.dev_buy_variant_name())?;
                         trader
                             .create_token_v2_and_dev_buy(
-                                &mint, &args, dev_buy_sol, params.slippage_bps, true,
+                                &mint, &args, dev_buy_sol, params.slippage_bps, dev_variant, true,
                             )
                             .await?
                     } else {
@@ -401,9 +456,11 @@ pub async fn execute_launch(
                         creator,
                     };
                     if dev_buy_quote > 0 {
+                        let dev_variant =
+                            crate::plan_pipeline::bundle_buy_variant(&params.dev_buy_variant_name())?;
                         trader
                             .create_token_and_dev_buy(
-                                &mint, &args, dev_buy_sol, params.slippage_bps, true,
+                                &mint, &args, dev_buy_sol, params.slippage_bps, dev_variant, true,
                             )
                             .await?
                     } else {
@@ -625,6 +682,7 @@ pub async fn execute_launch(
                     dev: orchestrator::WalletRef::managed(dev_wallet.id, creator.to_string()),
                     create_variant: create_variant_name(&template.variant).to_string(),
                     buy_variant: crate::plan_pipeline::LAUNCH_BUY_VARIANT.to_string(),
+                    dev_buy_variant: params.dev_buy_variant_name(),
                     dev_buy_sol: dev_buy_quote.max(0) as u64,
                     dev_slippage_bps: params.slippage_bps,
                     bundlers,
@@ -655,6 +713,7 @@ pub async fn execute_launch(
                     params.cashback_enabled
                 },
                 dev_buy_quote: dev_buy_quote.max(0) as u64,
+                dev_buy_variant: params.dev_buy_variant_name(),
                 slippage_bps: params.slippage_bps,
                 creator: creator.to_string(),
             };
@@ -787,5 +846,40 @@ mod tests {
             serde_json::from_value::<PumpfunTemplateParams>(bad).is_err(),
             "a `sell` leg variant must not deserialize"
         );
+    }
+
+    fn params_with_dev_buy(variant: Option<&str>, slippage: Option<u64>, quote: i64) -> PumpfunTemplateParams {
+        let mut obj = json!({ "dev_buy_quote": quote });
+        if let Some(v) = variant {
+            obj["dev_buy_variant"] = json!(v);
+        }
+        if let Some(s) = slippage {
+            obj["slippage_bps"] = json!(s);
+        }
+        serde_json::from_value(obj).expect("params parse")
+    }
+
+    /// The dev-buy variant defaults to `buy_exact_sol_in` and every buy encoding is
+    /// accepted; a tokens-out encoding additionally REQUIRES a slippage so its
+    /// `min_out` is a real token floor. The check is inert without a dev buy.
+    #[test]
+    fn validate_dev_buy_variant_and_tokens_out_slippage() {
+        // Default (None ⇒ buy_exact_sol_in), SOL-in, no slippage → ok.
+        assert!(params_with_dev_buy(None, None, 20_000_000).validate().is_ok());
+        // Every SOL-in encoding validates with no slippage.
+        for v in ["buy_exact_sol_in", "buy_exact_quote_in_v2"] {
+            assert!(params_with_dev_buy(Some(v), None, 20_000_000).validate().is_ok(), "{v} SOL-in");
+        }
+        // A tokens-out dev variant with NO slippage is rejected...
+        for v in ["buy", "buy_v2"] {
+            assert!(params_with_dev_buy(Some(v), None, 20_000_000).validate().is_err(), "{v} needs slippage");
+            // ...and accepted once a slippage is set.
+            assert!(params_with_dev_buy(Some(v), Some(500), 20_000_000).validate().is_ok(), "{v} + slippage");
+        }
+        // An unknown / non-buy dev variant is rejected.
+        assert!(params_with_dev_buy(Some("sell"), Some(500), 20_000_000).validate().is_err());
+        assert!(params_with_dev_buy(Some("nonsense"), Some(500), 20_000_000).validate().is_err());
+        // No dev buy (quote 0) ⇒ the encoding is inert, even a tokens-out one w/o slippage.
+        assert!(params_with_dev_buy(Some("buy"), None, 0).validate().is_ok());
     }
 }

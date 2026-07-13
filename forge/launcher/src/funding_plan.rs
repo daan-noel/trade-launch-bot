@@ -92,6 +92,7 @@ mod tests {
     fn params(dev_buy: Option<i64>, legs: Option<u32>, per_leg: Option<i64>, tip: Option<i64>) -> PumpfunTemplateParams {
         PumpfunTemplateParams {
             dev_buy_quote: dev_buy,
+            dev_buy_variant: None,
             slippage_bps: None,
             is_mayhem_mode: false,
             cashback_enabled: false,

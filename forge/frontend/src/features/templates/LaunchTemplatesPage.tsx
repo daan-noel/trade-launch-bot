@@ -52,6 +52,7 @@ export function LaunchTemplatesPage() {
   const [variant, setVariant] = useState<string>(VARIANTS[0]);
   const [metadataTemplateId, setMetadataTemplateId] = useState('');
   const [devBuyQuote, setDevBuyQuote] = useState('');
+  const [devBuyVariant, setDevBuyVariant] = useState<BuyVariant>('buy_exact_sol_in');
   const [slippageBps, setSlippageBps] = useState('');
   const [isMayhemMode, setIsMayhemMode] = useState(false);
   const [cashbackEnabled, setCashbackEnabled] = useState(false);
@@ -80,6 +81,7 @@ export function LaunchTemplatesPage() {
     setVariant(VARIANTS[0]);
     setMetadataTemplateId('');
     setDevBuyQuote('');
+    setDevBuyVariant('buy_exact_sol_in');
     setSlippageBps('');
     setIsMayhemMode(false);
     setCashbackEnabled(false);
@@ -102,6 +104,7 @@ export function LaunchTemplatesPage() {
     setVariant(t.variant);
     setMetadataTemplateId(t.metadata_template_id ?? '');
     setDevBuyQuote(toHumanUnits(t.params.dev_buy_quote, legDecimals));
+    setDevBuyVariant(t.params.dev_buy_variant ?? 'buy_exact_sol_in');
     setSlippageBps(t.params.slippage_bps?.toString() ?? '');
     setIsMayhemMode(t.params.is_mayhem_mode ?? false);
     setCashbackEnabled(t.params.cashback_enabled ?? false);
@@ -138,7 +141,16 @@ export function LaunchTemplatesPage() {
     return [...counts.values()].some((n) => n >= 3);
   }, [legRows]);
 
-  const canSubmit = templateName && launchpadId && quoteAssetId && variant && metadataTemplateId;
+  // Mirror the backend `validate_dev_buy` rule: a tokens-out dev-buy encoding
+  // (`buy`/`buy_v2`) needs a slippage so its min_out is a real token floor (else it
+  // buys ~1 token). Only relevant when a dev buy is actually set.
+  const devBuyTokensOutNeedsSlippage =
+    (devBuyVariant === 'buy' || devBuyVariant === 'buy_v2') &&
+    !!devBuyQuote.trim() &&
+    !slippageBps.trim();
+
+  const canSubmit =
+    templateName && launchpadId && quoteAssetId && variant && metadataTemplateId && !devBuyTokensOutNeedsSlippage;
 
   const onSubmit = async () => {
     if (!canSubmit) return;
@@ -150,6 +162,7 @@ export function LaunchTemplatesPage() {
       metadata_template_id: metadataTemplateId,
       params: {
         dev_buy_quote: toBaseUnits(devBuyQuote, decimals),
+        dev_buy_variant: devBuyVariant,
         slippage_bps: toInt(slippageBps),
         is_mayhem_mode: isMayhemMode,
         cashback_enabled: cashbackEnabled,
@@ -262,6 +275,13 @@ export function LaunchTemplatesPage() {
           <Field label={`Dev buy (${quoteSymbol})`} htmlFor="lt-db">
             <Input id="lt-db" value={devBuyQuote} onChange={(e) => setDevBuyQuote(e.target.value)} placeholder="0.05" />
           </Field>
+          <Field label="Dev buy variant" htmlFor="lt-dbv">
+            <Select id="lt-dbv" value={devBuyVariant} onChange={(e) => setDevBuyVariant(e.target.value as BuyVariant)}>
+              {BUY_VARIANTS.map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </Select>
+          </Field>
           <Field label="Slippage (bps)" htmlFor="lt-sl">
             <Input id="lt-sl" type="number" value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} />
           </Field>
@@ -270,6 +290,14 @@ export function LaunchTemplatesPage() {
             <Checkbox id="lt-cb" label="Cashback" checked={cashbackEnabled} onChange={(e) => setCashbackEnabled(e.target.checked)} />
           </div>
         </div>
+
+        {devBuyTokensOutNeedsSlippage && (
+          <Banner tone="warn" className="mt-2">
+            The dev-buy variant <span className="mono">{devBuyVariant}</span> is a tokens-out
+            encoding — set a <strong>Slippage (bps)</strong> so the dev buy spends its budget
+            (a tokens-out buy with no slippage buys ~1 token).
+          </Banner>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
           <Field label="Default bundle leg count" htmlFor="lt-lc">

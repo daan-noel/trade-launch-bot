@@ -20,6 +20,11 @@ migrations `0001` (Domains A–C) + `0002` (Domain D). §9 open decisions are **
 confirmation** (migration `0003`; always-on watcher in `live/main.rs` checks leg
 signatures against ingested `trades`, no RPC poll; `GET /api/bundles/{id}` for status).
 **Auto-submit** after launch, multi-variant bundle legs, SOL/USD poller.
+**Dev-buy ix variants** ([docs/dev-buy-variants.md](docs/dev-buy-variants.md)): the
+launch dev-buy selects any of the four curve-buy encodings (independent of the
+bundler `buy_variant`), sharing the `build_curve_buy_core` SSOT with the co-buy legs;
+tokens-out encodings (`buy`/`buy_v2`) require a slippage (validated). v2 dev-buy tx
+size is not yet real-SOL verified.
 **Bundle tip sizing + drop re-bid** (migration `0003`): each bundle leg's Jito tip
 is floored to the live landed-tip auction (`trader.jito_tip_floor_lamports(level)`,
 split across legs, only ever raising a persona draw), and the confirm watcher auto

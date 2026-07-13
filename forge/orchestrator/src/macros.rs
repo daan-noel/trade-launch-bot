@@ -47,8 +47,13 @@ pub struct BundleLaunch {
     pub dev: WalletRef,
     /// The create encoding (`create` / `create_v2`).
     pub create_variant: String,
-    /// The buy encoding for the dev + bundler legs (an `ExactQuote`/SOL-in variant).
+    /// The default buy encoding for the bundler legs (an `ExactQuote`/SOL-in variant).
     pub buy_variant: String,
+    /// The dev-buy curve encoding — any of the four catalog buy variants (`buy`,
+    /// `buy_exact_sol_in`, `buy_v2`, `buy_exact_quote_in_v2`). Independent of the
+    /// bundler `buy_variant` so the dev buy can diverge from the co-buys (fingerprint
+    /// diversity). The op is LOCKED so the disguise won't swap the operator's choice.
+    pub dev_buy_variant: String,
     /// Dev-buy spend (lamports). `0` ⇒ create-only (no dev-buy op emitted).
     pub dev_buy_sol: u64,
     /// Dev-buy slippage; `None` keeps the historical unprotected launch leg
@@ -67,17 +72,23 @@ pub fn bundle_launch(seq: &mut IdSeq, p: &BundleLaunch) -> Vec<Operation> {
     ops.push(Operation::create(create_id, &p.create_variant, p.dev.clone(), p.mint.clone()));
 
     if p.dev_buy_sol > 0 {
-        ops.push(Operation::buy(
-            seq.next(),
-            &p.buy_variant,
-            Role::Dev,
-            Intent::Snipe,
-            p.dev.clone(),
-            p.mint.clone(),
-            Amount::ExactQuote(p.dev_buy_sol),
-            p.dev_slippage_bps,
-            vec![create_id],
-        ));
+        // The dev-buy carries its OWN encoding (`dev_buy_variant`), independent of the
+        // bundler default. Locked (authored) so the disguise keeps the operator's
+        // chosen variant — only CU/tip stay persona-jittered.
+        ops.push(
+            Operation::buy(
+                seq.next(),
+                &p.dev_buy_variant,
+                Role::Dev,
+                Intent::Snipe,
+                p.dev.clone(),
+                p.mint.clone(),
+                Amount::ExactQuote(p.dev_buy_sol),
+                p.dev_slippage_bps,
+                vec![create_id],
+            )
+            .with_authored(None, true),
+        );
     }
 
     for b in &p.bundlers {
@@ -282,6 +293,7 @@ mod tests {
             dev: w(),
             create_variant: "create_v2".to_string(),
             buy_variant: "buy_exact_sol_in".to_string(),
+            dev_buy_variant: "buy_exact_sol_in".to_string(),
             dev_buy_sol: 1_500_000,
             dev_slippage_bps: None,
             bundlers: vec![
@@ -324,6 +336,7 @@ mod tests {
                 dev: dev.clone(),
                 create_variant: "create_v2".to_string(),
                 buy_variant: "buy_exact_sol_in".to_string(),
+                dev_buy_variant: "buy_exact_sol_in".to_string(),
                 dev_buy_sol: 1_000_000,
                 dev_slippage_bps: None,
                 bundlers: vec![],

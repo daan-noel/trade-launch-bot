@@ -70,6 +70,18 @@ pub struct BundleLegParams {
     pub layout: IxLayout,
 }
 
+/// The raw on-chain buy — the opaque `Core` block a layout wraps. `buy_ix` is the
+/// variant's curve-buy instruction; `extra_atas` are the ATA-creation ixs the
+/// variant needs BEYOND the wallet's base token ATA (the WSOL quote ATA for the v2
+/// encodings; empty for v1). SSOT for the per-variant buy shape: a Jito bundle leg
+/// draws it and `assemble`s CU/tip/ATA around it, while the launch-create dev-buy
+/// (`super::create`) fuses `[base_ata, ..extra_atas, buy_ix]` straight into create's
+/// `Core`. One place decides account list + arg encoding + WSOL-ATA per variant.
+pub(super) struct BuyCore {
+    pub buy_ix: Instruction,
+    pub extra_atas: Vec<Instruction>,
+}
+
 // SSOT: the buy-variant discriminators live in `crate::protocol`; aliased here so
 // the per-variant dispatch below reads unchanged. `catalog::tests` guards equality.
 const DISC_BUY: [u8; 8] = crate::protocol::BUY_DISC;
@@ -127,43 +139,41 @@ impl PumpFunTrader {
             self.config.slippage.curve_fee_buffer_bps,
         );
 
-        let account_creation_ixs = vec![create_associated_token_account_idempotent(
+        let base_ata = create_associated_token_account_idempotent(
             &signer.pubkey(),
             &signer.pubkey(),
             mint,
             &token_program_pk,
-        )];
+        );
 
-        let ixs = if variant.uses_v2_accounts(cashback_enabled) {
-            self.build_bundle_v2_buy_ixs(
-                signer,
-                mint,
-                creator,
-                &pdas,
-                &user_token_account,
-                account_creation_ixs,
-                variant,
-                buy_lamports,
-                min_tokens_out,
-                leg,
-            )?
-        } else {
-            let v1_variant = match variant {
-                BundleBuyVariant::BuyExactQuoteIn => BundleBuyVariant::BuyExactSolIn,
-                other => other,
-            };
-            self.build_bundle_v1_curve_buy_ixs(
-                signer,
-                mint,
-                &pdas,
-                &user_token_account,
-                account_creation_ixs,
-                v1_variant,
-                buy_lamports,
-                min_tokens_out,
-                leg,
-            )?
-        };
+        // The variant's raw buy (SSOT dispatch, shared with the dev-buy path), then
+        // `assemble` the leg's CU/tip/ATA wrappers around it. The base token ATA is
+        // always first; a v2 variant adds its WSOL quote ATA via `extra_atas`.
+        let core = self.build_curve_buy_core(
+            variant,
+            &signer.pubkey(),
+            mint,
+            &pdas,
+            &user_token_account,
+            buy_lamports,
+            min_tokens_out,
+            cashback_enabled,
+        )?;
+        let mut ata = Vec::with_capacity(1 + core.extra_atas.len());
+        ata.push(base_ata);
+        ata.extend(core.extra_atas);
+        let ixs = assemble(
+            &leg.layout,
+            IxParts {
+                core: vec![core.buy_ix],
+                ata,
+                cu_limit: leg.cu_limit,
+                cu_price: leg.cu_price,
+                tip_lamports: leg.tip_lamports,
+                tip_account: self.engine.jito_tip_account,
+                payer: signer.pubkey(),
+            },
+        );
 
         // Compile as v0 against the launch ALT (empty slice when none configured),
         // sharing the bundle's blockhash so every leg lands in the same block.
@@ -215,21 +225,46 @@ impl PumpFunTrader {
             .map_err(|e| crate::error::TradeError::Other(format!("fetch blockhash: {e}")))
     }
 
-    fn build_bundle_v1_curve_buy_ixs(
+    /// Dispatch a variant to its raw [`BuyCore`] (v1 vs v2 account layout). SSOT for
+    /// the per-variant curve buy — used by the Jito bundle leg above AND the fused
+    /// launch-create dev-buy (`super::create`). `buyer` is the wallet doing the buy
+    /// (a bundler wallet, or the dev/creator for a dev-buy); `cashback_enabled`
+    /// routes `BuyExactQuoteIn` to the v2 layout when on, else the v1 SOL-in path.
+    pub(super) fn build_curve_buy_core(
         &self,
-        signer: &(dyn Signer + Send + Sync),
+        variant: BundleBuyVariant,
+        buyer: &Pubkey,
+        mint: &Pubkey,
+        pdas: &super::TokenPDAs,
+        user_base_ata: &Pubkey,
+        buy_lamports: u64,
+        min_tokens_out: u64,
+        cashback_enabled: bool,
+    ) -> Result<BuyCore> {
+        if variant.uses_v2_accounts(cashback_enabled) {
+            self.curve_buy_core_v2(variant, buyer, mint, pdas, user_base_ata, buy_lamports, min_tokens_out)
+        } else {
+            let v1_variant = match variant {
+                BundleBuyVariant::BuyExactQuoteIn => BundleBuyVariant::BuyExactSolIn,
+                other => other,
+            };
+            self.curve_buy_core_v1(v1_variant, buyer, mint, pdas, user_base_ata, buy_lamports, min_tokens_out)
+        }
+    }
+
+    fn curve_buy_core_v1(
+        &self,
+        variant: BundleBuyVariant,
+        buyer: &Pubkey,
         mint: &Pubkey,
         pdas: &super::TokenPDAs,
         user_token_account: &Pubkey,
-        account_creation_ixs: Vec<Instruction>,
-        variant: BundleBuyVariant,
         buy_lamports: u64,
         min_tokens_out: u64,
-        leg: &BundleLegParams,
-    ) -> Result<Vec<Instruction>> {
+    ) -> Result<BuyCore> {
         let global = self.global_account.as_ref().context("Not initialized")?;
         let (user_volume_accumulator, _) = Pubkey::find_program_address(
-            &[b"user_volume_accumulator", signer.pubkey().as_ref()],
+            &[b"user_volume_accumulator", buyer.as_ref()],
             &protocol::PUMP_FUN,
         );
 
@@ -263,7 +298,7 @@ impl PumpFunTrader {
                 AccountMeta::new(pdas.bonding_curve, false),
                 AccountMeta::new(pdas.associated_bonding_curve, false),
                 AccountMeta::new(*user_token_account, false),
-                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(*buyer, true),
                 AccountMeta::new_readonly(system_program::id(), false),
                 AccountMeta::new_readonly(pdas.token_program, false),
                 AccountMeta::new(pdas.creator_vault, false),
@@ -279,36 +314,20 @@ impl PumpFunTrader {
             data: buy_data,
         };
 
-        // Layout (shape) is drawn separately from the core ix (bytes above): the
-        // authored `leg.layout` (or `canonical_buy` when none) orders the wrappers
-        // around the opaque `Core = [buy]` block. The v1 buy carries a single base ATA.
-        Ok(assemble(
-            &leg.layout,
-            IxParts {
-                core: vec![buy_ix],
-                ata: account_creation_ixs,
-                cu_limit: leg.cu_limit,
-                cu_price: leg.cu_price,
-                tip_lamports: leg.tip_lamports,
-                tip_account: self.engine.jito_tip_account,
-                payer: signer.pubkey(),
-            },
-        ))
+        // The v1 buy carries no ATA beyond the wallet's base token ATA.
+        Ok(BuyCore { buy_ix, extra_atas: Vec::new() })
     }
 
-    fn build_bundle_v2_buy_ixs(
+    fn curve_buy_core_v2(
         &self,
-        signer: &(dyn Signer + Send + Sync),
+        variant: BundleBuyVariant,
+        buyer: &Pubkey,
         mint: &Pubkey,
-        creator: &Pubkey,
         pdas: &super::TokenPDAs,
         user_base_ata: &Pubkey,
-        account_creation_ixs: Vec<Instruction>,
-        variant: BundleBuyVariant,
         buy_lamports: u64,
         min_tokens_out: u64,
-        leg: &BundleLegParams,
-    ) -> Result<Vec<Instruction>> {
+    ) -> Result<BuyCore> {
         let global = self.global_account.as_ref().context("Not initialized")?;
         let quote_mint = protocol::WSOL_MINT;
         let quote_token_program = spl_token::id();
@@ -336,7 +355,7 @@ impl PumpFunTrader {
             &quote_token_program,
         );
         let associated_quote_user = get_associated_token_address_with_program_id(
-            &signer.pubkey(),
+            buyer,
             &quote_mint,
             &quote_token_program,
         );
@@ -348,7 +367,7 @@ impl PumpFunTrader {
         let (sharing_config, _) =
             Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::PUMP_FUN);
         let (user_volume_accumulator, _) = Pubkey::find_program_address(
-            &[b"user_volume_accumulator", signer.pubkey().as_ref()],
+            &[b"user_volume_accumulator", buyer.as_ref()],
             &protocol::PUMP_FUN,
         );
         let associated_user_volume = get_associated_token_address_with_program_id(
@@ -359,13 +378,13 @@ impl PumpFunTrader {
 
         // v2 buys need the user's WSOL ATA for the quote side in addition to the
         // base ATA — the canonical buy's single `CreateAta` step expands to both.
-        let mut ata = account_creation_ixs;
-        ata.push(create_associated_token_account_idempotent(
-            &signer.pubkey(),
-            &signer.pubkey(),
+        // Returned as `extra_atas` so the caller places it right after the base ATA.
+        let extra_atas = vec![create_associated_token_account_idempotent(
+            buyer,
+            buyer,
             &quote_mint,
             &quote_token_program,
-        ));
+        )];
 
         let mut buy_data = Vec::with_capacity(24);
         match variant {
@@ -402,7 +421,7 @@ impl PumpFunTrader {
                 AccountMeta::new(pdas.bonding_curve, false),
                 AccountMeta::new(associated_base_bonding_curve, false),
                 AccountMeta::new(associated_quote_bonding_curve, false),
-                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(*buyer, true),
                 AccountMeta::new(*user_base_ata, false),
                 AccountMeta::new(associated_quote_user, false),
                 AccountMeta::new(pdas.creator_vault, false),
@@ -420,23 +439,7 @@ impl PumpFunTrader {
             data: buy_data,
         };
 
-        // Silence unused `creator` — retained for future sharing-config reads.
-        let _ = creator;
-
-        // Authored `leg.layout` (or `canonical_buy`) orders the wrappers; the v2 buy's
-        // `CreateAta` carries both the base and WSOL ATAs, `Core` is `[buy]`.
-        Ok(assemble(
-            &leg.layout,
-            IxParts {
-                core: vec![buy_ix],
-                ata,
-                cu_limit: leg.cu_limit,
-                cu_price: leg.cu_price,
-                tip_lamports: leg.tip_lamports,
-                tip_account: self.engine.jito_tip_account,
-                payer: signer.pubkey(),
-            },
-        ))
+        Ok(BuyCore { buy_ix, extra_atas })
     }
 }
 
@@ -467,6 +470,33 @@ mod tests {
         (t, bundler)
     }
 
+    /// Assemble a full bundle leg the way `build_bundle_leg_tx` does: the base token
+    /// ATA first, then the variant's `extra_atas` (the v2 WSOL ATA), then CU/tip
+    /// around the opaque `Core = [buy]`. Keeps the golden shape tests exercising the
+    /// exact production assembly over the shared `build_curve_buy_core`.
+    fn assemble_leg(
+        t: &PumpFunTrader,
+        core: BuyCore,
+        base_ata: Instruction,
+        leg: &BundleLegParams,
+        payer: Pubkey,
+    ) -> Vec<Instruction> {
+        let mut ata = vec![base_ata];
+        ata.extend(core.extra_atas);
+        assemble(
+            &leg.layout,
+            IxParts {
+                core: vec![core.buy_ix],
+                ata,
+                cu_limit: leg.cu_limit,
+                cu_price: leg.cu_price,
+                tip_lamports: leg.tip_lamports,
+                tip_account: t.engine.jito_tip_account,
+                payer,
+            },
+        )
+    }
+
     /// The v2 bundle-buy leg is the ~27-account one at risk of the 1232 B ceiling.
     /// Prove the launch ALT compresses it: v0+ALT is both smaller than the legacy
     /// message AND under the limit, and actually references the ALT.
@@ -483,19 +513,20 @@ mod tests {
         let pdas = t.derive_token_pdas(&mint, &creator, &token_program, true);
         let user_base_ata =
             get_associated_token_address_with_program_id(&bundler.pubkey(), &mint, &token_program);
-        let account_creation_ixs = vec![create_associated_token_account_idempotent(
+        let base_ata = create_associated_token_account_idempotent(
             &bundler.pubkey(),
             &bundler.pubkey(),
             &mint,
             &token_program,
-        )];
+        );
         let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
-        let ixs = t
-            .build_bundle_v2_buy_ixs(
-                &bundler, &mint, &creator, &pdas, &user_base_ata,
-                account_creation_ixs, BundleBuyVariant::BuyV2, 10_000_000, 1, &leg,
+        let core = t
+            .build_curve_buy_core(
+                BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
+                10_000_000, 1, true,
             )
             .unwrap();
+        let ixs = assemble_leg(&t, core, base_ata, &leg, bundler.pubkey());
 
         let legacy = {
             let msg = Message::new(&ixs, Some(&bundler.pubkey()));
@@ -595,12 +626,13 @@ mod tests {
             &token_program,
         );
         let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
-        let out = t
-            .build_bundle_v1_curve_buy_ixs(
-                &bundler, &mint, &pdas, &user_ata, vec![ata_ix.clone()],
-                BundleBuyVariant::Buy, 10_000_000, 1, &leg,
+        let core = t
+            .build_curve_buy_core(
+                BundleBuyVariant::Buy, &bundler.pubkey(), &mint, &pdas, &user_ata,
+                10_000_000, 1, false,
             )
             .unwrap();
+        let out = assemble_leg(&t, core, ata_ix.clone(), &leg, bundler.pubkey());
         // [cu_limit, cu_price, base_ata, core buy, tip] — 5 ixs, in this order.
         assert_eq!(out.len(), 5);
         assert_eq!(out[0], CBI::set_compute_unit_limit(leg.cu_limit));
@@ -635,12 +667,13 @@ mod tests {
             &spl_token::id(),
         );
         let leg = BundleLegParams { slippage_bps: 500, cu_limit: 250_000, cu_price: 750_000, tip_lamports: 200_000, layout: IxLayout::canonical_buy() };
-        let out = t
-            .build_bundle_v2_buy_ixs(
-                &bundler, &mint, &creator, &pdas, &user_base_ata, vec![base_ata.clone()],
-                BundleBuyVariant::BuyV2, 10_000_000, 1, &leg,
+        let core = t
+            .build_curve_buy_core(
+                BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
+                10_000_000, 1, true,
             )
             .unwrap();
+        let out = assemble_leg(&t, core, base_ata.clone(), &leg, bundler.pubkey());
         // [cu_limit, cu_price, base_ata, wsol_ata, core buy, tip] — 6 ixs.
         assert_eq!(out.len(), 6);
         assert_eq!(out[0], CBI::set_compute_unit_limit(leg.cu_limit));

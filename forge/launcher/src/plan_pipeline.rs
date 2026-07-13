@@ -243,6 +243,7 @@ mod tests {
                 dev: w(),
                 create_variant: "create_v2".to_string(),
                 buy_variant: LAUNCH_BUY_VARIANT.to_string(),
+                dev_buy_variant: LAUNCH_BUY_VARIANT.to_string(),
                 dev_buy_sol: dev_buy,
                 dev_slippage_bps: Some(500),
                 bundlers: bundler_sols
@@ -293,6 +294,7 @@ mod tests {
                 dev: w(),
                 create_variant: "create_v2".to_string(),
                 buy_variant: LAUNCH_BUY_VARIANT.to_string(),
+                dev_buy_variant: LAUNCH_BUY_VARIANT.to_string(),
                 dev_buy_sol: 20_000_000,
                 dev_slippage_bps: None,
                 bundlers: vec![

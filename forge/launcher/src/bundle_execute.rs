@@ -47,11 +47,23 @@ pub struct CreateLegArgs {
     /// Dev-buy lamports fused into the create leg; `0` = create-only.
     #[serde(default)]
     pub dev_buy_quote: u64,
-    /// Dev-buy slippage tolerance (bps); `None` = unprotected (min_out 1).
+    /// Dev-buy curve encoding (catalog name: `buy` / `buy_exact_sol_in` / `buy_v2` /
+    /// `buy_exact_quote_in_v2`). Defaults to `buy_exact_sol_in` for bundles persisted
+    /// before dev-buy variants existed.
+    #[serde(default = "default_dev_buy_variant")]
+    pub dev_buy_variant: String,
+    /// Dev-buy slippage tolerance (bps); `None` = unprotected (min_out 1). Required
+    /// (launcher-validated) when `dev_buy_variant` is a tokens-out encoding.
     #[serde(default)]
     pub slippage_bps: Option<u64>,
     /// The dev/creator wallet pubkey (base58) — equals the create ix `creator`.
     pub creator: String,
+}
+
+/// The dev-buy encoding for `CreateLegArgs` persisted before dev-buy variants
+/// existed (they were always `buy_exact_sol_in`).
+fn default_dev_buy_variant() -> String {
+    crate::plan_pipeline::LAUNCH_BUY_VARIANT.to_string()
 }
 
 /// Build + submit a `planned` atomic launch bundle to Jito — the create (+ dev-buy)
@@ -325,7 +337,16 @@ pub(crate) async fn build_atomic_bundle_txs(
     // blockhash, carrying the whole-bundle tip at `level`.
     let dev_buy = if create_args.dev_buy_quote > 0 {
         let sol = create_args.dev_buy_quote as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
-        Some((sol, create_args.dev_buy_quote, create_args.slippage_bps))
+        // Same catalog→executor map the co-buy legs use, so the dev buy honors its
+        // authored encoding (create leg is byte-identical on every submit + re-bid).
+        let variant = plan_pipeline::bundle_buy_variant(&create_args.dev_buy_variant)
+            .context("persisted dev_buy_variant is not a valid buy encoding")?;
+        Some(pump_trader::DevBuy {
+            sol,
+            lamports: create_args.dev_buy_quote,
+            slippage_bps: create_args.slippage_bps,
+            variant,
+        })
     } else {
         None
     };

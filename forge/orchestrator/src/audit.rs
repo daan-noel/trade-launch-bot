@@ -555,7 +555,7 @@ fn rule_uniform_layout(ctx: &Ctx) -> Vec<Finding> {
 mod tests {
     use super::*;
     use crate::disguise::for_op;
-    use crate::macros::{bundle_launch, consolidate, exit, volume_make, BundleLaunch, BundlerLeg, ExitLeg, Sweep, VolumeLeg};
+    use crate::macros::{bundle_launch, consolidate, exit, volume_make, BundleLaunch, ExitLeg, Sweep, VolumeLeg};
     use crate::personas::PersonaSet;
     use crate::plan::{Amount, IdSeq, Intent, Operation, Plan, Role, ScheduleSlot, WalletRef};
     use executor_core::config::ComputeBudgetCfg;
@@ -810,6 +810,7 @@ mod tests {
             dev: dev.clone(),
             create_variant: "create_v2".to_string(),
             buy_variant: "buy_exact_sol_in".to_string(),
+            dev_buy_variant: "buy_exact_sol_in".to_string(),
             dev_buy_sol: 1_500_000,
             dev_slippage_bps: None,
             bundlers: vec![],
