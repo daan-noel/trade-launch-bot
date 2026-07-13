@@ -9,6 +9,7 @@ mod alt;
 mod backup;
 mod bundle;
 mod bundle_execute;
+mod bundle_simulate;
 mod confirm;
 mod config;
 mod dust_sweep;
@@ -34,6 +35,7 @@ pub use bundle::{
     legs_from_json, legs_to_json, BundledLegPlan, BuyVariant, LegStructure, LegStructureRecipe,
 };
 pub use bundle_execute::{execute_bundle, BundleExecuteResult};
+pub use bundle_simulate::run_bundle_simulate;
 pub use confirm::spawn_bundle_confirm_watcher;
 
 pub use config::{FundingConfig, LauncherSettings, ManageConfig};

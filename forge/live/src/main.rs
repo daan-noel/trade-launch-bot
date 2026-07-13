@@ -56,6 +56,13 @@ async fn main() -> anyhow::Result<()> {
         launcher::run_launch_probe(&settings, &args[1..]).await?;
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("bundle-simulate") {
+        // Read-only pre-flight: rebuild a persisted launch bundle and run Jito
+        // simulateBundle against it (no submit, no SOL). Diagnoses a bundle that
+        // is accepted but never lands (a leg reverts). Needs the launcher env.
+        launcher::run_bundle_simulate(&settings, &args[1..]).await?;
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("create-alt") {
         // Provision the persistent launch ALT (spends real SOL). Needs the
         // launcher env (keystore + KEK + RPC), so build LauncherSettings here.

@@ -8,6 +8,7 @@ use pump_trader::types::{CreateTokenArgs, CreateTokenV2Args, TokenProgram};
 use pump_trader::PumpFunTrader;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signer;
 use solana_sdk::transaction::VersionedTransaction;
 use sqlx::PgPool;
 use std::str::FromStr;
@@ -193,7 +194,6 @@ async fn execute_bundle_inner(
     // ~floor without double-counting a per-leg split.
     let level = bundle.submit_attempts.max(0) as u8;
     let total_tip_floor = trader.jito_tip_floor_lamports(level);
-    let cobuy_min_tip: u64 = 0;
 
     // Atomic compare-and-swap `planned → submitting`. The read-check above is a
     // fast-fail for an obviously-wrong status, but ~8-12 RPC round trips (gate,
@@ -209,99 +209,41 @@ async fn execute_bundle_inner(
     }
 
     let finish = async {
-        // tx0 — the create (+ fused dev-buy) leg, signed by dev + mint on the shared
-        // blockhash, carrying the whole-bundle tip at `level`.
-        let dev_buy = if create_args.dev_buy_quote > 0 {
-            let sol = create_args.dev_buy_quote as f64
-                / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
-            Some((sol, create_args.dev_buy_quote, create_args.slippage_bps))
-        } else {
-            None
-        };
-        let create_tx = match create_args.variant.as_str() {
-            "pumpfun.create_v2" => {
-                let args = CreateTokenV2Args {
-                    name: create_args.name.clone(),
-                    symbol: create_args.symbol.clone(),
-                    uri: create_args.uri.clone(),
-                    creator,
-                    is_mayhem_mode: create_args.is_mayhem_mode,
-                    cashback_enabled: create_args.cashback_enabled,
-                };
-                trader
-                    .build_create_v2_leg_tx(mint_signer.as_ref(), &args, dev_buy, blockhash, level)
-                    .await?
-            }
-            "pumpfun.create_v1" => {
-                let args = CreateTokenArgs {
-                    name: create_args.name.clone(),
-                    symbol: create_args.symbol.clone(),
-                    uri: create_args.uri.clone(),
-                    creator,
-                };
-                trader
-                    .build_create_leg_tx(mint_signer.as_ref(), &args, dev_buy, blockhash, level)
-                    .await?
-            }
-            other => bail!("unsupported launch variant: {other}"),
-        };
-        let create_signature = create_tx.signatures[0].to_string();
+        // Build tx0 (create + fused dev-buy) + every co-buy leg via the shared SSOT
+        // builder — byte-identical to what `bundle-simulate` pre-checks. `true` =
+        // enforce that each leg wallet is still `reserved` to this launch (the real
+        // spend path); the simulate path passes `false`.
+        let built = build_atomic_bundle_txs(
+            pool,
+            settings,
+            trader,
+            &kek,
+            &gated,
+            &bundler_ops,
+            &create_args,
+            mint_signer.as_ref(),
+            &mint,
+            &creator,
+            token_program,
+            cashback_enabled,
+            blockhash,
+            level,
+            bundle.launch_id,
+            true,
+        )
+        .await?;
 
-        // The curve is created in THIS bundle, so co-buy legs can't read live
-        // reserves — simulate the curve forward (create → dev-buy → prior co-buys)
-        // so each leg's min_out floor is computed against the state it will fill at.
-        let cobuy_lamports: Vec<u64> = bundler_ops
-            .iter()
-            .map(|op| crate::plan_exec::buy_lamports(op))
-            .collect::<Result<_>>()?;
-        let leg_reserves =
-            trader.simulate_launch_leg_reserves(create_args.dev_buy_quote, &cobuy_lamports);
-
-        // tx1..N — the co-buy legs, each signed by its own bundler wallet, all on the
-        // same blockhash so the whole bundle lands atomically in one slot.
-        let mut txs = Vec::with_capacity(bundler_ops.len() + 1);
-        txs.push(create_tx);
-        let mut leg_signatures = Vec::with_capacity(bundler_ops.len());
-        for (i, op) in bundler_ops.iter().enumerate() {
-            let managed_wallet_id = op
-                .wallet
-                .managed_wallet_id
-                .context("bundler leg op has no managed wallet id")?;
-            let disguise = gated
-                .disguise_of(op.id)
-                .context("no disguise for bundler leg op")?;
-            let wallet = ManagedWalletRepo::get(pool, managed_wallet_id)
-                .await?
-                .context("bundler wallet not found")?;
-            check_wallet_reserved_to_bundle(&wallet, bundle.launch_id)?;
-            let signer =
-                keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, &kek)?;
-            let tx = crate::plan_exec::build_leg_tx(
-                trader,
-                signer.as_ref(),
-                blockhash,
-                &mint,
-                &creator,
-                token_program,
-                cashback_enabled,
-                op,
-                disguise,
-                cobuy_min_tip,
-                Some(leg_reserves[i]),
-            )
-            .await?;
-            leg_signatures.push(tx.signatures[0].to_string());
-            txs.push(tx);
-        }
-
-        let jito_bundle_id = submit_jito_bundle(&settings.jito_block_engine_url, &txs).await?;
+        let jito_bundle_id =
+            submit_jito_bundle(&settings.jito_block_engine_url, &built.txs).await?;
         // `leg_signatures` is the CO-BUY set the confirm watcher checks against the
         // `trades` feed; the bundle is atomic, so all co-buys present ⟹ create landed.
         // Stamp the create leg's signature on the launch (status stays `pending`
         // until the watcher confirms landing); a re-bid overwrites it.
-        BundleRepo::set_submitted(pool, bundle_id, &jito_bundle_id, &leg_signatures).await?;
+        BundleRepo::set_submitted(pool, bundle_id, &jito_bundle_id, &built.leg_signatures)
+            .await?;
         BundleRepo::set_tip_quote(pool, bundle_id, total_tip_floor as i64).await?;
-        LaunchRepo::set_create_signature(pool, bundle.launch_id, &create_signature).await?;
+        LaunchRepo::set_create_signature(pool, bundle.launch_id, &built.create_signature)
+            .await?;
 
         // Wallet-pool lifecycle: dev + bundler wallets stay `reserved` here — submit
         // isn't completion. `launcher::confirm` transitions them to `used` on a
@@ -312,7 +254,7 @@ async fn execute_bundle_inner(
             launch_id = %bundle.launch_id,
             legs = bundler_ops.len(),
             jito_bundle_id = %jito_bundle_id,
-            create_signature = %create_signature,
+            create_signature = %built.create_signature,
             tip_level = level,
             total_tip_floor_lamports = total_tip_floor,
             "atomic launch bundle submitted to Jito (create + co-buys)"
@@ -321,7 +263,7 @@ async fn execute_bundle_inner(
         Ok(BundleExecuteResult {
             bundle_id,
             jito_bundle_id,
-            leg_signatures,
+            leg_signatures: built.leg_signatures,
         })
     }
     .await;
@@ -335,6 +277,140 @@ async fn execute_bundle_inner(
     }
 
     finish
+}
+
+/// The signed transactions of an atomic launch bundle — `tx0` (create + fused
+/// dev-buy) followed by every co-buy leg in submit order — plus the signatures the
+/// caller stamps/tracks. Returned by [`build_atomic_bundle_txs`].
+pub(crate) struct BuiltBundleTxs {
+    pub txs: Vec<VersionedTransaction>,
+    pub create_signature: String,
+    pub leg_signatures: Vec<String>,
+}
+
+/// Build (but do NOT submit) an atomic launch bundle's transactions: the create
+/// (+ fused dev-buy) leg as `tx0`, then each co-buy leg, all on the shared
+/// `blockhash`. This is the SSOT for what a launch bundle *is* on the wire —
+/// [`execute_bundle_inner`] submits exactly this, and `bundle-simulate` simulates
+/// exactly this, so a pre-submit dry-run can never diverge from the real spend.
+///
+/// `require_reservation` gates the per-leg wallet check: the real spend path passes
+/// `true` (a leg wallet must still be `reserved` to this launch); the read-only
+/// simulate passes `false` so a terminal bundle (dropped/failed, wallets already
+/// released) can still be rebuilt and checked.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_atomic_bundle_txs(
+    pool: &PgPool,
+    settings: &LauncherSettings,
+    trader: &PumpFunTrader,
+    kek: &EnvKek,
+    gated: &plan_pipeline::GatedPlan,
+    bundler_ops: &[&orchestrator::Operation],
+    create_args: &CreateLegArgs,
+    mint_signer: &(dyn Signer + Send + Sync),
+    mint: &Pubkey,
+    creator: &Pubkey,
+    token_program: TokenProgram,
+    cashback_enabled: bool,
+    blockhash: solana_sdk::hash::Hash,
+    level: u8,
+    launch_id: Uuid,
+    require_reservation: bool,
+) -> Result<BuiltBundleTxs> {
+    // The whole-bundle Jito tip rides the create leg (`tx0`); co-buy legs carry
+    // only their persona tip jitter, so their tip floor is 0.
+    const COBUY_MIN_TIP: u64 = 0;
+
+    // tx0 — the create (+ fused dev-buy) leg, signed by dev + mint on the shared
+    // blockhash, carrying the whole-bundle tip at `level`.
+    let dev_buy = if create_args.dev_buy_quote > 0 {
+        let sol = create_args.dev_buy_quote as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64;
+        Some((sol, create_args.dev_buy_quote, create_args.slippage_bps))
+    } else {
+        None
+    };
+    let create_tx = match create_args.variant.as_str() {
+        "pumpfun.create_v2" => {
+            let args = CreateTokenV2Args {
+                name: create_args.name.clone(),
+                symbol: create_args.symbol.clone(),
+                uri: create_args.uri.clone(),
+                creator: *creator,
+                is_mayhem_mode: create_args.is_mayhem_mode,
+                cashback_enabled: create_args.cashback_enabled,
+            };
+            trader
+                .build_create_v2_leg_tx(mint_signer, &args, dev_buy, blockhash, level)
+                .await?
+        }
+        "pumpfun.create_v1" => {
+            let args = CreateTokenArgs {
+                name: create_args.name.clone(),
+                symbol: create_args.symbol.clone(),
+                uri: create_args.uri.clone(),
+                creator: *creator,
+            };
+            trader
+                .build_create_leg_tx(mint_signer, &args, dev_buy, blockhash, level)
+                .await?
+        }
+        other => bail!("unsupported launch variant: {other}"),
+    };
+    let create_signature = create_tx.signatures[0].to_string();
+
+    // The curve is created in THIS bundle, so co-buy legs can't read live reserves —
+    // simulate the curve forward (create → dev-buy → prior co-buys) so each leg's
+    // min_out floor is computed against the state it will fill at.
+    let cobuy_lamports: Vec<u64> = bundler_ops
+        .iter()
+        .map(|op| crate::plan_exec::buy_lamports(op))
+        .collect::<Result<_>>()?;
+    let leg_reserves =
+        trader.simulate_launch_leg_reserves(create_args.dev_buy_quote, &cobuy_lamports);
+
+    // tx1..N — the co-buy legs, each signed by its own bundler wallet, all on the
+    // same blockhash so the whole bundle lands atomically in one slot.
+    let mut txs = Vec::with_capacity(bundler_ops.len() + 1);
+    txs.push(create_tx);
+    let mut leg_signatures = Vec::with_capacity(bundler_ops.len());
+    for (i, op) in bundler_ops.iter().enumerate() {
+        let managed_wallet_id = op
+            .wallet
+            .managed_wallet_id
+            .context("bundler leg op has no managed wallet id")?;
+        let disguise = gated
+            .disguise_of(op.id)
+            .context("no disguise for bundler leg op")?;
+        let wallet = ManagedWalletRepo::get(pool, managed_wallet_id)
+            .await?
+            .context("bundler wallet not found")?;
+        if require_reservation {
+            check_wallet_reserved_to_bundle(&wallet, launch_id)?;
+        }
+        let signer = keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, kek)?;
+        let tx = crate::plan_exec::build_leg_tx(
+            trader,
+            signer.as_ref(),
+            blockhash,
+            mint,
+            creator,
+            token_program,
+            cashback_enabled,
+            op,
+            disguise,
+            COBUY_MIN_TIP,
+            Some(leg_reserves[i]),
+        )
+        .await?;
+        leg_signatures.push(tx.signatures[0].to_string());
+        txs.push(tx);
+    }
+
+    Ok(BuiltBundleTxs {
+        txs,
+        create_signature,
+        leg_signatures,
+    })
 }
 
 /// Guards against spending from a wallet whose reservation lapsed (TTL sweep)
