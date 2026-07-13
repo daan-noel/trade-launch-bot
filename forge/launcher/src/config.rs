@@ -202,6 +202,15 @@ fn env_f64(key: &str, default: f64) -> Result<f64> {
 }
 
 impl LauncherSettings {
+    /// The Jito tip **ceiling** (`JITO_MAX_TIP_SOL`) expressed in lamports — the
+    /// most a launch bundle's whole-bundle tip can escalate to across re-bids. The
+    /// dev-wallet launch gate budgets this so a contested launch that climbs the
+    /// tip ladder to the ceiling can't strand the dev wallet under-funded. Rounds
+    /// up so a fractional-lamport tip never under-budgets.
+    pub fn launch_tip_ceiling_lamports(&self) -> u64 {
+        (self.jito_max_tip_sol * pump_trader::protocol::LAMPORTS_PER_SOL as f64).ceil() as u64
+    }
+
     pub fn from_env() -> Result<Self> {
         let rpc_url = std::env::var("HELIUS_RPC_URL")
             .or_else(|_| std::env::var("RPC_URL"))

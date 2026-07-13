@@ -11,7 +11,7 @@
 use anyhow::Result;
 
 use crate::bundle::{resolve_bundle_quote, resolve_leg_count};
-use crate::service::{PumpfunTemplateParams, MIN_DEV_LAUNCH_LAMPORTS};
+use crate::service::{min_dev_launch_lamports, PumpfunTemplateParams};
 
 /// Extra lamports funded on top of the strict requirement to absorb the create's
 /// signature fee + transient costs, so a topped-up wallet can't land a hair under
@@ -20,11 +20,17 @@ use crate::service::{PumpfunTemplateParams, MIN_DEV_LAUNCH_LAMPORTS};
 pub const FUNDING_HEADROOM_LAMPORTS: u64 = 2_000_000; // 0.002 SOL
 
 /// SSOT for the dev-wallet launch requirement: the create floor
-/// ([`MIN_DEV_LAUNCH_LAMPORTS`]) plus the template's dev-buy spend. The
-/// pre-launch gate in `service::execute_launch` MUST call this instead of
-/// re-inlining the sum, so the funder's target and the gate can't drift.
-pub fn dev_launch_required_lamports(params: &PumpfunTemplateParams) -> u64 {
-    MIN_DEV_LAUNCH_LAMPORTS + params.dev_buy_quote.unwrap_or(0).max(0) as u64
+/// ([`min_dev_launch_lamports`], = fixed rent/fees + the live tip ceiling) plus
+/// the template's dev-buy spend. The pre-launch gate in `service::execute_launch`
+/// MUST call this instead of re-inlining the sum, so the funder's target and the
+/// gate can't drift. `tip_ceiling_lamports` is the `JITO_MAX_TIP_SOL` ceiling the
+/// caller reads from settings.
+pub fn dev_launch_required_lamports(
+    params: &PumpfunTemplateParams,
+    tip_ceiling_lamports: u64,
+) -> u64 {
+    min_dev_launch_lamports(tip_ceiling_lamports)
+        + params.dev_buy_quote.unwrap_or(0).max(0) as u64
 }
 
 /// Per bundler leg funding target: the leg's buy quote + the bundle tip + fee/
@@ -58,8 +64,10 @@ impl FundPlan {
     pub fn from_params(
         params: &PumpfunTemplateParams,
         requested_bundler_count: Option<u32>,
+        tip_ceiling_lamports: u64,
     ) -> Result<Self> {
-        let dev_lamports = dev_launch_required_lamports(params) + FUNDING_HEADROOM_LAMPORTS;
+        let dev_lamports =
+            dev_launch_required_lamports(params, tip_ceiling_lamports) + FUNDING_HEADROOM_LAMPORTS;
         let (per_leg_lamports, leg_count) = match resolve_leg_count(requested_bundler_count, params)
         {
             Some(n) => {
@@ -94,10 +102,11 @@ mod tests {
     fn dev_required_is_the_launch_gate() {
         // The funder's dev target must never be below the launch gate the executor
         // enforces — this is the SSOT guard.
+        let tip = 1_000_000; // JITO_MAX_TIP_SOL ceiling, in lamports
         let p = params(Some(100_000_000), None, None, None);
-        let gate = dev_launch_required_lamports(&p);
-        assert_eq!(gate, MIN_DEV_LAUNCH_LAMPORTS + 100_000_000);
-        let plan = FundPlan::from_params(&p, None).unwrap();
+        let gate = dev_launch_required_lamports(&p, tip);
+        assert_eq!(gate, min_dev_launch_lamports(tip) + 100_000_000);
+        let plan = FundPlan::from_params(&p, None, tip).unwrap();
         assert!(plan.dev_lamports >= gate, "funded dev target must cover the gate");
         assert_eq!(plan.leg_count, 0, "no bundle configured");
     }
@@ -105,7 +114,7 @@ mod tests {
     #[test]
     fn plan_derives_per_leg_from_template() {
         let p = params(Some(0), Some(3), Some(50_000_000), Some(1_000_000));
-        let plan = FundPlan::from_params(&p, None).unwrap();
+        let plan = FundPlan::from_params(&p, None, 0).unwrap();
         assert_eq!(plan.leg_count, 3);
         assert_eq!(plan.per_leg_lamports, 50_000_000 + 1_000_000 + FUNDING_HEADROOM_LAMPORTS);
     }
@@ -113,7 +122,7 @@ mod tests {
     #[test]
     fn request_override_wins_over_template_leg_count() {
         let p = params(Some(0), Some(3), Some(50_000_000), None);
-        let plan = FundPlan::from_params(&p, Some(5)).unwrap();
+        let plan = FundPlan::from_params(&p, Some(5), 0).unwrap();
         assert_eq!(plan.leg_count, 5);
     }
 }

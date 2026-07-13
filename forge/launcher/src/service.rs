@@ -32,12 +32,27 @@ use crate::trader_config::build_launch_trader_config;
 /// value equal to `ingest_host::map::PUMP_TOKEN_DECIMALS`.
 const PUMP_TOKEN_DECIMALS: i16 = 6;
 
-/// Minimum dev-wallet balance (lamports) to cover a create's rent + fees + Jito
-/// tip, on top of any dev-buy spend. Named so the pre-launch balance check and
-/// its error message can't drift — the message used to claim 0.05 SOL while the
-/// gate was actually 0.02. `pub(crate)` so the `probe` pre-launch check reuses
-/// the same floor instead of hardcoding (and re-drifting) its own copy.
-pub(crate) const MIN_DEV_LAUNCH_LAMPORTS: u64 = 20_000_000; // 0.02 SOL
+/// Fixed rent-exempt deposits + base/priority fees a create (+ fused dev-buy)
+/// locks up, EXCLUDING the Jito tip and the dev-buy spend. These are deterministic
+/// on-chain: the mint account, the Metaplex/on-chain metadata, the bonding-curve
+/// ATA and the dev ATA — each token account ~0.002 SOL (see
+/// `pumpfun::protocol::TOKEN_ACCOUNT_RENT_PLACEHOLDER`), summing to ~0.01 SOL. We
+/// carry it as a named constant with a little margin rather than a live RPC read
+/// because the background funder (`FundPlan`) derives the same dev target without
+/// a live trader — so gate and funder read one figure and can't drift.
+pub(crate) const CREATE_RENT_AND_FEE_LAMPORTS: u64 = 12_000_000; // ~0.012 SOL
+
+/// Minimum dev-wallet balance (lamports) to cover a create's rent + fees + the
+/// live-configured Jito tip, on top of any dev-buy spend. `tip_ceiling_lamports`
+/// is the MAX tip a launch bundle could draw (`JITO_MAX_TIP_SOL`), budgeted so a
+/// re-bid that escalates the tip to the ceiling can't strand the launch
+/// under-funded. Replaces the old flat 0.02 SOL pad (sized when launch tips ran
+/// ~0.015 SOL) so the floor now tracks the configured tip instead of a stale
+/// worst-case guess. `pub(crate)` so the `probe` pre-launch check reuses the same
+/// floor instead of hardcoding (and re-drifting) its own copy.
+pub(crate) fn min_dev_launch_lamports(tip_ceiling_lamports: u64) -> u64 {
+    CREATE_RENT_AND_FEE_LAMPORTS + tip_ceiling_lamports
+}
 
 /// Map the DB `launch_templates.variant` (`"pumpfun.create_v1"` / `_v2`) to the
 /// venue **catalog** create variant name the orchestrator plan carries. This is
@@ -240,14 +255,17 @@ pub async fn execute_launch(
     trader.set_create_layout(params.create_ix_layout());
 
     // Fail fast before building anything on-chain: the dev wallet must cover the
-    // create's rent + fees + tip (MIN_DEV_LAUNCH_LAMPORTS) on top of the dev-buy
-    // spend, if any.
+    // create's rent + fees + the configured Jito tip on top of the dev-buy spend,
+    // if any.
     let dev_buy_quote = params.dev_buy_quote.unwrap_or(0);
     let balance = trader.get_sol_balance().await.context("fetch dev wallet balance")?;
     // SSOT: the exact figure `funding_plan::FundPlan` funds the dev wallet to, so
     // the JIT funder's target and this gate can never drift (they were inlined
-    // separately before).
-    let required_lamports = crate::funding_plan::dev_launch_required_lamports(&params);
+    // separately before). The create floor tracks the live tip ceiling.
+    let tip_ceiling = settings.launch_tip_ceiling_lamports();
+    let create_floor = min_dev_launch_lamports(tip_ceiling);
+    let required_lamports =
+        crate::funding_plan::dev_launch_required_lamports(&params, tip_ceiling);
     if balance < required_lamports {
         let per_sol = pump_trader::protocol::LAMPORTS_PER_SOL as f64;
         bail!(
@@ -255,7 +273,7 @@ pub async fn execute_launch(
              (create floor {:.4} + dev-buy {:.4}) before launching",
             balance as f64 / per_sol,
             required_lamports as f64 / per_sol,
-            MIN_DEV_LAUNCH_LAMPORTS as f64 / per_sol,
+            create_floor as f64 / per_sol,
             dev_buy_quote.max(0) as f64 / per_sol,
         );
     }

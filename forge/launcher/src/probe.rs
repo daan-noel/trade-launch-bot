@@ -81,12 +81,14 @@ pub async fn run_launch_probe(settings: &Settings, args: &[String]) -> Result<()
         balance_sol = balance as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64,
         "dev wallet balance"
     );
-    if balance < crate::service::MIN_DEV_LAUNCH_LAMPORTS {
+    let create_floor =
+        crate::service::min_dev_launch_lamports(launcher.launch_tip_ceiling_lamports());
+    if balance < create_floor {
         let per_sol = pump_trader::protocol::LAMPORTS_PER_SOL as f64;
         bail!(
             "dev wallet {creator} has only {:.4} SOL — fund with at least {:.4} SOL before launching",
             balance as f64 / per_sol,
-            crate::service::MIN_DEV_LAUNCH_LAMPORTS as f64 / per_sol
+            create_floor as f64 / per_sol
         );
     }
 
