@@ -1,10 +1,11 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   useTokenOverviewQuery,
   useTokenPositionsQuery,
   useTokenTradesQuery,
 } from '@shared/store/endpoints';
+import { connectTradeStream } from '@shared/services/sse';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
   AddressDisplay,
@@ -24,18 +25,43 @@ import { VolumePanel } from './VolumePanel';
 import { ageFromSecs, formatCount, formatSig, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { TokenOverview, TokenPosition, TradePriced } from '@shared/types';
 
-// This is the polled live view (every 10s), not the cold full-history inspect
-// path. Cap the fetch at the most recent N trades so a high-volume mint doesn't
-// ship (and re-render, and re-chart) its entire history every tick (audit C3).
+// This is the live view (SSE-driven), not the cold full-history inspect path.
+// Cap the fetch at the most recent N trades so a high-volume mint doesn't ship
+// (and re-render, and re-chart) its entire history per refresh (audit C3).
 const TRADES_LIMIT = 500;
+// Min gap between SSE-triggered refetches. A hot mint pushes many trades/sec; we
+// coalesce them into at most one `/trades` refetch per window rather than one per
+// trade (still far fresher than the old 10s blind poll).
+const REFETCH_THROTTLE_MS = 1500;
 
 export function TokenDetailPage() {
   const { mint = '' } = useParams();
   const { data: overview, isLoading, error } = useTokenOverviewQuery(mint, { skip: !mint });
-  const { data: trades = [], isFetching: tradesLoading } = useTokenTradesQuery(
+  const {
+    data: trades = [],
+    isFetching: tradesLoading,
+    refetch: refetchTrades,
+  } = useTokenTradesQuery(
     { mint, limit: TRADES_LIMIT },
-    { skip: !mint, pollingInterval: 10_000, skipPollingIfUnfocused: true },
+    // 30s poll is now only a gap-heal fallback; freshness comes from the SSE push.
+    { skip: !mint, pollingInterval: 30_000, skipPollingIfUnfocused: true },
   );
+
+  // Refetch the trade page when a trade for THIS mint is pushed, throttled so a
+  // burst of trades coalesces into one refetch. The shared stream is unfiltered,
+  // so we filter by mint here.
+  const lastRefetch = useRef(0);
+  useEffect(() => {
+    if (!mint) return;
+    const handle = connectTradeStream((t) => {
+      if (t.mint_address !== mint) return;
+      const now = Date.now();
+      if (now - lastRefetch.current < REFETCH_THROTTLE_MS) return;
+      lastRefetch.current = now;
+      refetchTrades();
+    });
+    return () => handle.close();
+  }, [mint, refetchTrades]);
   const { data: positions = [], isFetching: positionsLoading } = useTokenPositionsQuery(mint, {
     skip: !mint,
   });
