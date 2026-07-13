@@ -84,6 +84,21 @@ pub struct ManageConfig {
     pub sell_slippage_bps: u64,
     /// Log intended actions and place NO real trades. Test before live.
     pub dry_run: bool,
+    /// Compute-unit price (micro-lamports/CU) for manage buy/sell txs. The manage
+    /// path is operator-timed (latency is NOT a race), so this is decoupled from the
+    /// launch create-leg fee and set an order of magnitude lower — the priority fee
+    /// is `cu_price × cu_limit`, and a cold manual sell doesn't need to out-bid a
+    /// launch slot. Default 50_000 (vs the 750k launch create fee).
+    pub cu_price_micro_lamports: u64,
+    /// Jito tip **floor** (SOL) for manage buy/sell txs. Default `0.0`: manage txs
+    /// are submitted via plain RPC (see [`crate::trader_config::build_manage_trader_config`]),
+    /// where a Jito tip buys nothing — the tip instruction is a no-op transfer, so
+    /// the tip is zeroed rather than paid to a tip account that never sees a bundle.
+    pub jito_min_tip_sol: f64,
+    /// Jito tip **ceiling** (SOL) for manage txs. Default `0.0` (pins the tip to 0
+    /// with the floor). Raise both only if you route the manage path back through a
+    /// bundle/sender that actually credits the tip.
+    pub jito_max_tip_sol: f64,
 }
 
 impl ManageConfig {
@@ -96,6 +111,9 @@ impl ManageConfig {
         Ok(Some(Self {
             sell_slippage_bps: env_u64("MANAGE_SELL_SLIPPAGE_BPS", 1_000)?,
             dry_run: env_flag("MANAGE_DRY_RUN", false),
+            cu_price_micro_lamports: env_u64("MANAGE_CU_PRICE_MICRO_LAMPORTS", 50_000)?,
+            jito_min_tip_sol: env_f64("MANAGE_JITO_MIN_TIP_SOL", 0.0)?,
+            jito_max_tip_sol: env_f64("MANAGE_JITO_MAX_TIP_SOL", 0.0)?,
         }))
     }
 }

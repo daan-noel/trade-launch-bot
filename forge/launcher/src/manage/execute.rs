@@ -25,22 +25,24 @@ use super::positions::{load_positions, reconcile_positions};
 use crate::config::{LauncherSettings, ManageConfig};
 use crate::keystore::{self, EnvKek};
 use crate::plan_exec::TransferMode;
-use crate::trader_config::build_launch_trader_config;
+use crate::trader_config::build_manage_trader_config;
 
-/// Max sell/buy attempts per leg (escalating Jito tip each try on sell).
+/// Max sell/buy attempts per leg (each attempt re-submits at a fresh blockhash).
 const MAX_LEG_SELL_ATTEMPTS: u8 = 3;
 /// Don't sweep a wallet holding less than this (not worth a signed tx + fee).
 const CONSOLIDATE_MIN_LAMPORTS: u64 = 100_000; // 0.0001 SOL
 
-/// A management sell must pay its own base fee + escalating Jito tip across
-/// [`MAX_LEG_SELL_ATTEMPTS`] (each attempt is a separate tx; the tip caps at
-/// 0.005 SOL). Below this floor the wallet is topped up from treasury before the
-/// sell — otherwise a wallet the dust sweep already drained (gas swept while it
-/// still held tokens) has 0 lamports and the sell can only ever time out.
-const SELL_GAS_FLOOR_LAMPORTS: u64 = 6_000_000; // 0.006 SOL
-/// Top a low sell wallet up to this from treasury — headroom for three
-/// escalating-tip attempts (≈3 × 0.005 tip + fees) with margin.
-const SELL_GAS_TOPUP_TARGET_LAMPORTS: u64 = 20_000_000; // 0.02 SOL
+/// A management sell must pay its own base fee + priority fee across
+/// [`MAX_LEG_SELL_ATTEMPTS`] (each attempt is a separate tx). The manage path is
+/// plain-RPC with a zeroed Jito tip and a low CU price (see
+/// [`crate::trader_config::build_manage_trader_config`]), so a sell costs ~base fee
+/// + a sub-0.00001 SOL priority fee — but keep a small floor so a wallet the dust
+/// sweep already drained (gas swept while it still held tokens) is re-gassed from
+/// treasury rather than timing out on 0 lamports.
+const SELL_GAS_FLOOR_LAMPORTS: u64 = 1_000_000; // 0.001 SOL
+/// Top a low sell wallet up to this from treasury — headroom for three attempts'
+/// base + priority fees with wide margin (net-neutral: reclaims swept gas).
+const SELL_GAS_TOPUP_TARGET_LAMPORTS: u64 = 3_000_000; // 0.003 SOL
 
 /// Execute `req` against `mint`. Requires management to be enabled
 /// (`settings.manage`); the HTTP handler also gates on it for a clean 503, but
@@ -268,10 +270,13 @@ async fn ensure_sell_gas(
     Ok(())
 }
 
-/// Build a pump-trader signed by `managed_wallet_id`'s wallet (initialize included).
+/// Build a pump-trader signed by `managed_wallet_id`'s wallet (initialize included),
+/// using the cheap operator-timed [`build_manage_trader_config`] (plain RPC, zeroed
+/// Jito tip, low CU price) rather than the launch bundle's fee/tip budget.
 async fn build_wallet_trader(
     pool: &PgPool,
     settings: &LauncherSettings,
+    manage_cfg: &ManageConfig,
     managed_wallet_id: uuid::Uuid,
 ) -> Result<(platform_core::models::ManagedWallet, PumpFunTrader)> {
     let wallet = ManagedWalletRepo::get(pool, managed_wallet_id)
@@ -284,7 +289,7 @@ async fn build_wallet_trader(
         .iter()
         .map(|s| Pubkey::from_str(s).with_context(|| format!("parse nonce pubkey {s}")))
         .collect::<Result<_>>()?;
-    let config = build_launch_trader_config(settings, signer, nonce_accounts);
+    let config = build_manage_trader_config(settings, manage_cfg, signer, nonce_accounts);
     let mut trader = PumpFunTrader::new(config);
     trader
         .initialize()
@@ -317,7 +322,8 @@ async fn sell_leg(
     // can't be sent, rather than burning the retry budget on a doomed send.
     ensure_sell_gas(pool, settings, &leg.wallet_address).await?;
 
-    let (_wallet, trader) = build_wallet_trader(pool, settings, leg.managed_wallet_id).await?;
+    let (_wallet, trader) =
+        build_wallet_trader(pool, settings, manage_cfg, leg.managed_wallet_id).await?;
 
     // Own the retry loop so we capture the confirmed signature for the audit —
     // `sell_token` only returns a bool.
@@ -366,7 +372,8 @@ async fn buy_leg(
     }
 
     let mint_pk = Pubkey::from_str(mint).context("parse mint for buy")?;
-    let (_wallet, trader) = build_wallet_trader(pool, settings, leg.managed_wallet_id).await?;
+    let (_wallet, trader) =
+        build_wallet_trader(pool, settings, manage_cfg, leg.managed_wallet_id).await?;
     let sig = trader
         .buy_token(
             &mint_pk,

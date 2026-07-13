@@ -164,6 +164,14 @@ impl PersonaSet {
     /// placeholders — the CU headroom keeps every disguise landing, the cu_price
     /// floors stay competitive, and the tip ranges differ per archetype so wallets
     /// don't all fee-bid identically (a constant-tip tell the auditor flags).
+    ///
+    /// **Tip ranges are intentionally tiny (~1k–10k lamports).** These drive the
+    /// per-leg tip on a launch **co-buy**, and Jito sums every tip in a bundle — so
+    /// a co-buy leg does NOT need its own competitive bid. The whole-bundle
+    /// auction tip rides the create leg (tx0), floored to `JITO_MIN_TIP_SOL`; the
+    /// co-buy tips only need to be non-zero-ish jittered noise so the legs don't all
+    /// read as one actor. Sizing them like standalone snipes (0.001–0.003 SOL each)
+    /// multiplied the bundle cost by the leg count for zero inclusion benefit.
     pub fn builtin() -> Self {
         PersonaSet {
             personas: vec![
@@ -178,7 +186,7 @@ impl PersonaSet {
                     sell_variants: vec!["sell".to_string()],
                     cu_headroom: JitterRange::new(20_000, 60_000),
                     cu_price: JitterRange::new(250_000, 450_000),
-                    tip_lamports: JitterRange::new(1_000_000, 3_000_000),
+                    tip_lamports: JitterRange::new(3_000, 10_000),
                     non_snipe_tip_pct: 60,
                 },
                 // Patient accumulator: tokens-out buys, modest fees, rarely tips
@@ -189,7 +197,7 @@ impl PersonaSet {
                     sell_variants: vec!["sell".to_string()],
                     cu_headroom: JitterRange::new(10_000, 40_000),
                     cu_price: JitterRange::new(120_000, 220_000),
-                    tip_lamports: JitterRange::new(200_000, 900_000),
+                    tip_lamports: JitterRange::new(1_000, 4_000),
                     non_snipe_tip_pct: 20,
                 },
                 // Balanced churner: mixes both buy encodings, mid fees — the
@@ -205,7 +213,7 @@ impl PersonaSet {
                     sell_variants: vec!["sell".to_string()],
                     cu_headroom: JitterRange::new(15_000, 50_000),
                     cu_price: JitterRange::new(150_000, 320_000),
-                    tip_lamports: JitterRange::new(400_000, 1_500_000),
+                    tip_lamports: JitterRange::new(2_000, 7_000),
                     non_snipe_tip_pct: 35,
                 },
             ],
