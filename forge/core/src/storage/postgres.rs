@@ -85,11 +85,11 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPools> {
         .await
         .map_err(|e| anyhow::anyhow!("Migration failed: {e}"))?;
 
-    // CAggs can't be created inside a transaction (every migration is one), so set
-    // them up idempotently right after. See `storage::timescale`.
-    super::timescale::setup_caggs(&hot)
+    // Drop the dead OHLCV CAggs (no reader exists) so already-deployed DBs stop
+    // paying their per-minute refresh cost. Idempotent. See `storage::timescale`.
+    super::timescale::teardown_dead_caggs(&hot)
         .await
-        .map_err(|e| anyhow::anyhow!("TimescaleDB continuous-aggregate setup failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("TimescaleDB continuous-aggregate teardown failed: {e}"))?;
 
     let api = build_pool(
         settings,

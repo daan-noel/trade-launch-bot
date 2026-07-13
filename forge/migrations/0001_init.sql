@@ -31,9 +31,11 @@
 -- decimals-agnostic; decimals + USD are applied ONLY in derived views.
 --
 -- TimescaleDB note: hypertable creation + compression/retention policies are
--- transaction-safe and live here. Continuous aggregates CANNOT be created inside
--- a transaction (sqlx wraps every migration in one) — so the OHLCV CAggs are
--- created idempotently at boot by `platform_core::storage::timescale::setup_caggs`.
+-- transaction-safe and live here. The OHLCV continuous aggregates were dropped
+-- (audit 2026-07-13: no reader ever consumed them); boot now runs an idempotent
+-- teardown, `platform_core::storage::timescale::teardown_dead_caggs`, so already
+-- deployed DBs stop paying the per-minute refresh. Re-add CAgg creation there
+-- (outside a txn — CAggs can't be created in one) when a candle reader exists.
 --
 -- CHECK IN-lists are the SQL half of the SSOT owned by
 -- `platform_core::models::status` (LaunchStatus / BundleStatus / WalletStatus /
