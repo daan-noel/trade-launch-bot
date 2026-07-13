@@ -899,16 +899,24 @@ impl TokenPositionRepo {
 
     /// Reconcile many positions in ONE `UNNEST` update: set each row's on-chain
     /// balance (+ canonical token account, kept via COALESCE when None), its
-    /// feed-derived realized proceeds, and the derived `open`/`closed` status —
-    /// folding what were two per-row UPDATEs × N rows into a single round trip.
-    /// A `dropped` row is left terminal (the CASE guard), matching [`Self::set_balance`].
-    /// The four slices are parallel arrays (row i across all four).
+    /// feed-derived realized proceeds, its feed-derived cost basis, and the derived
+    /// `open`/`closed` status — folding what were two per-row UPDATEs × N rows into a
+    /// single round trip. A `dropped` row is left terminal (the CASE guard), matching
+    /// [`Self::set_balance`]. The five slices are parallel arrays (row i across all
+    /// five).
+    ///
+    /// `cost_quote` is the feed-authoritative cost basis of the row's CURRENT open lot
+    /// (lot-reset average cost — see [`crate::storage::repositories::TradeRepo::fills_for_mint_wallets`]).
+    /// It's a `Some` only for wallets the feed has ingested fills for; a `None` leaves
+    /// the existing `cost_quote` untouched (COALESCE) so the seed cost survives the
+    /// ingest-lag window right after a launch/buy, before the fill lands in `trades`.
     pub async fn reconcile_batch(
         pool: &PgPool,
         ids: &[Uuid],
         balances: &[i64],
         token_accounts: &[Option<String>],
         realized: &[i64],
+        cost_quote: &[Option<i64>],
     ) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -918,17 +926,19 @@ impl TokenPositionRepo {
                  balance_base = v.balance_base, \
                  token_account = COALESCE(v.token_account, p.token_account), \
                  realized_quote = v.realized_quote, \
+                 cost_quote = COALESCE(v.cost_quote, p.cost_quote), \
                  status = CASE WHEN p.status = 'dropped' THEN 'dropped' \
                                WHEN v.balance_base > 0 THEN 'open' ELSE 'closed' END, \
                  balance_checked_at = now(), updated_at = now() \
-             FROM UNNEST($1::uuid[], $2::int8[], $3::text[], $4::int8[]) \
-                  AS v(id, balance_base, token_account, realized_quote) \
+             FROM UNNEST($1::uuid[], $2::int8[], $3::text[], $4::int8[], $5::int8[]) \
+                  AS v(id, balance_base, token_account, realized_quote, cost_quote) \
              WHERE p.id = v.id",
         )
         .bind(ids)
         .bind(balances)
         .bind(token_accounts)
         .bind(realized)
+        .bind(cost_quote)
         .execute(pool)
         .await?;
         Ok(())

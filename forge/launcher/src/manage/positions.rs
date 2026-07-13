@@ -171,6 +171,17 @@ pub async fn reconcile_positions(
             .into_iter()
             .collect();
 
+    // Feed-authoritative cost basis of each wallet's CURRENT open lot: replay its
+    // ordered fills so a full exit (sell to zero) realizes the prior lot and resets
+    // cost to 0 — a dev-buy-then-sell-all-then-rebuy shows only the re-buy's cost,
+    // not the stale launch/seed `dev_buy_quote`. Restricted to our probed wallets
+    // (mint + wallet scoped). Only wallets the feed has seen appear here; the rest
+    // keep their seed cost (reconcile_batch COALESCEs a `None`) so the value isn't
+    // zeroed during the ingest-lag window right after a launch/buy.
+    let probe_addrs: Vec<String> = probe.keys().cloned().collect();
+    let cost_by_addr: HashMap<String, i64> =
+        cost_basis_by_address(&TradeRepo::fills_for_mint_wallets(pool, mint_address, &probe_addrs).await?);
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -227,6 +238,7 @@ pub async fn reconcile_positions(
     let mut balances = Vec::new();
     let mut token_accounts: Vec<Option<String>> = Vec::new();
     let mut realized = Vec::new();
+    let mut cost_quote: Vec<Option<i64>> = Vec::new();
     for pos in &positions {
         if pos.status == PositionStatus::Dropped.as_str() {
             continue;
@@ -238,9 +250,45 @@ pub async fn reconcile_positions(
         balances.push(*balance_base);
         token_accounts.push(token_account.clone());
         realized.push(realized_by_addr.get(&pos.wallet_address).copied().unwrap_or(0));
+        // `None` when the feed has no fills for this wallet yet — keep the seed cost.
+        cost_quote.push(cost_by_addr.get(&pos.wallet_address).copied());
     }
 
-    TokenPositionRepo::reconcile_batch(pool, &ids, &balances, &token_accounts, &realized).await
+    TokenPositionRepo::reconcile_batch(pool, &ids, &balances, &token_accounts, &realized, &cost_quote)
+        .await
+}
+
+/// Derive each wallet's CURRENT-lot cost basis (quote base units) from its ordered
+/// fills, lot-reset semantics: replay buys/sells per wallet; a buy adds cost + tokens,
+/// a sell that drains the wallet to zero realizes the whole lot and resets cost to 0,
+/// and a partial sell reduces cost pro-rata (average cost). So `buy 0.02 → sell all →
+/// buy 0.01` yields 0.01, not the stale 0.02 launch cost. `fills` must already be in
+/// canonical chronological order (the query's `ORDER BY slot, tx_index, leg_index`);
+/// rows for all wallets may be interleaved — we key state by address. Only wallets
+/// present in `fills` appear in the result (callers leave the rest on their seed cost).
+fn cost_basis_by_address(fills: &[(String, String, i64, i64)]) -> HashMap<String, i64> {
+    // Per wallet: (held_base, cost_quote) of the open lot as we replay forward.
+    let mut lot: HashMap<String, (i64, i64)> = HashMap::new();
+    for (address, trade_type, amount_quote, amount_base) in fills {
+        let (held_base, cost) = lot.entry(address.clone()).or_insert((0, 0));
+        if trade_type == "buy" {
+            *held_base = held_base.saturating_add(*amount_base);
+            *cost = cost.saturating_add(*amount_quote);
+        } else {
+            // Sell. A drain to (or below) zero fully realizes the lot → reset. A
+            // partial sell scales the remaining cost by the fraction of tokens kept
+            // (i128 math: cost×remaining can overflow i64).
+            if *amount_base >= *held_base || *held_base == 0 {
+                *held_base = 0;
+                *cost = 0;
+            } else {
+                let remaining = *held_base - *amount_base;
+                *cost = ((*cost as i128 * remaining as i128) / *held_base as i128) as i64;
+                *held_base = remaining;
+            }
+        }
+    }
+    lot.into_iter().map(|(addr, (_, cost))| (addr, cost)).collect()
 }
 
 /// Sum an owner's SPL balance for a mint, and pick the largest token account as

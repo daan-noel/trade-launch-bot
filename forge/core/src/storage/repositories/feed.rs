@@ -182,6 +182,35 @@ impl TradeRepo {
         .await?)
     }
 
+    /// Chronological fill history for a mint, restricted to `addresses` (our managed
+    /// wallets) — `(address, trade_type, amount_quote, amount_base)` rows in canonical
+    /// order (`slot, tx_index, leg_index`). Feeds the per-wallet lot-reset cost-basis
+    /// walk in position reconcile: replaying a wallet's buys/sells derives the cost
+    /// basis of its CURRENT open lot, where a full exit to zero balance realizes the
+    /// prior lot and resets cost to 0 — so a sell-all-then-rebuy shows only the
+    /// re-buy's cost, not the stale launch/seed cost. Mint- AND wallet-scoped (bounded
+    /// to our handful of wallets, never every trader of a popular mint) — never a
+    /// table scan. Empty `addresses` ⇒ no query.
+    pub async fn fills_for_mint_wallets(
+        pool: &PgPool,
+        mint_address: &str,
+        addresses: &[String],
+    ) -> anyhow::Result<Vec<(String, String, i64, i64)>> {
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_as(
+            "SELECT w.address, t.trade_type, t.amount_quote, t.amount_base FROM trades t \
+             JOIN wallet_dict w ON w.id = t.wallet_ref \
+             WHERE t.mint_address = $1 AND w.address = ANY($2::text[]) \
+             ORDER BY t.slot, t.tx_index, t.leg_index",
+        )
+        .bind(mint_address)
+        .bind(addresses)
+        .fetch_all(pool)
+        .await?)
+    }
+
     /// Priced read for a mint (newest-first). `limit <= 0` ⇒ no LIMIT (the full
     /// mint-scoped history the inspect charts need). Still mint-scoped, never the
     /// whole table.
