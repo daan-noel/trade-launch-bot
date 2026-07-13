@@ -12,6 +12,7 @@
 mod http;
 mod ingest;
 mod sol_price;
+mod sse;
 
 use actix_web::middleware::from_fn;
 use actix_web::{web, App, HttpServer};
@@ -123,6 +124,12 @@ async fn main() -> anyhow::Result<()> {
     // carries it (same as the old poll, just slower).
     let trades_notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
+    // SSE push bus (audit §1: poll → push). Created unconditionally and shared by
+    // the ingest DbWriter (trade/token events) + the HTTP layer (the `/api/stream`
+    // endpoint and the ingest toggle). When no browser is connected it does zero
+    // work; when ingest is disabled it simply never receives feed events.
+    let sse_hub = sse::SseHub::new();
+
     // Feed-based bundle-landing confirmation — cheap, always on (confirming reads
     // only `bundles`/`trades` from the already-connected pool). The launcher
     // settings (when configured) additionally let it auto re-bid a `dropped`
@@ -177,9 +184,14 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("HELIUS_API_KEY"),
     ) {
         (Ok(endpoint), Ok(api_key)) if !endpoint.is_empty() && !api_key.is_empty() => {
-            let (task, handle) =
-                ingest::spawn_ingest(pools.hot.clone(), endpoint, api_key, trades_notify.clone())
-                    .await?;
+            let (task, handle) = ingest::spawn_ingest(
+                pools.hot.clone(),
+                endpoint,
+                api_key,
+                trades_notify.clone(),
+                sse_hub.clone(),
+            )
+            .await?;
             (Some(task), Some(handle))
         }
         _ => {
@@ -222,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(web::Data::new(ingest_handle.clone()))
             .app_data(web::Data::new(launcher_settings.clone()))
             .app_data(web::Data::new(api_auth.clone()))
+            .app_data(web::Data::new(sse_hub.clone()))
             .configure(http::configure)
     })
     .bind((host.as_str(), port))?

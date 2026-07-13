@@ -2501,6 +2501,7 @@ dependencies = [
  "dotenvy",
  "forge-core",
  "forge-launcher",
+ "futures-util",
  "http-auth",
  "ingest-pumpfun",
  "reqwest",

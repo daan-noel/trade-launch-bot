@@ -59,6 +59,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // JSON body here is large enough to make a higher ceiling a real risk.
     cfg.app_data(web::JsonConfig::default().limit(10 * 1024 * 1024));
     cfg.route("/health", web::get().to(health))
+        .route("/api/stream", web::get().to(crate::sse::stream_events))
         .route("/api/ingest", web::get().to(ingest_status))
         .route("/api/ingest", web::put().to(ingest_toggle))
         .route("/api/bootstrap", web::get().to(bootstrap))
@@ -171,11 +172,15 @@ struct SetIngestBody {
 
 async fn ingest_toggle(
     handle: web::Data<Option<Arc<IngestHandle>>>,
+    sse: web::Data<crate::sse::SseHub>,
     body: web::Json<SetIngestBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
     match handle.as_ref() {
         Some(h) => {
             h.set_live(body.live);
+            // Push the new state so every dashboard's badge flips at once instead
+            // of waiting on its 5s poll (the poll stays as a gap-heal fallback).
+            sse.ingest_status(h.is_live());
             Ok(HttpResponse::Ok().json(IngestStatusResponse {
                 configured: true,
                 live: h.is_live(),

@@ -24,6 +24,7 @@ use tracing::{info, warn};
 use super::db_writer::{DbWriteOp, DbWriter, CHANNEL_CAPACITY};
 use super::pumpfun::PumpFunAdapter;
 use super::watchdog::{spawn_watchdog, DbHeartbeat};
+use crate::sse::SseHub;
 
 /// Build the transport and spawn the ingest → DB pipeline (consumer + writer +
 /// watchdog). Boots **paused** (`start(false)`): no gRPC subscription opens until
@@ -36,6 +37,7 @@ pub async fn spawn_ingest(
     endpoint: String,
     api_key: String,
     trades_notify: Arc<Notify>,
+    sse: SseHub,
 ) -> anyhow::Result<(JoinHandle<()>, Arc<IngestHandle>)> {
     let adapter = PumpFunAdapter::resolve(&pool).await?;
     let (event_rx, handle) = Ingest::builder()
@@ -50,7 +52,7 @@ pub async fn spawn_ingest(
     // Decoupled writer: hot recv loop → bounded channel → DbWriter task.
     let (tx, rx) = mpsc::channel::<DbWriteOp>(CHANNEL_CAPACITY);
     let heartbeat = DbHeartbeat::new();
-    tokio::spawn(DbWriter::new(pool, adapter, heartbeat.clone(), trades_notify).run(rx));
+    tokio::spawn(DbWriter::new(pool, adapter, heartbeat.clone(), trades_notify, sse).run(rx));
 
     // Watchdog on its own OS thread: force-exit if the writer stops committing
     // while the queue is backed up and the stream is live. `is_live` reads the

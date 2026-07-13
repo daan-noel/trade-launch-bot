@@ -31,6 +31,7 @@ use platform_core::venue::{LaunchpadAdapter, MarketKind};
 use super::map;
 use super::pumpfun::{PumpFunAdapter, CURVE_PROGRAM_ID};
 use super::watchdog::DbHeartbeat;
+use crate::sse::SseHub;
 
 /// Bounded channel depth from consumer → writer. Full ⇒ the consumer's
 /// `send().await` blocks, backpressuring the transport (durable writes are never
@@ -63,6 +64,9 @@ pub struct DbWriter {
     /// pending leg signatures immediately (notify over poll) instead of waiting on
     /// its slow fallback tick.
     trades_notify: Arc<Notify>,
+    /// Push bus: freshly-committed trades/tokens are broadcast to connected
+    /// browsers over `/api/stream` (audit §1). No-op when no browser is connected.
+    sse: SseHub,
 }
 
 impl DbWriter {
@@ -71,6 +75,7 @@ impl DbWriter {
         adapter: PumpFunAdapter,
         heartbeat: DbHeartbeat,
         trades_notify: Arc<Notify>,
+        sse: SseHub,
     ) -> Self {
         Self {
             pool,
@@ -78,6 +83,7 @@ impl DbWriter {
             wallet_cache: HashMap::new(),
             heartbeat,
             trades_notify,
+            sse,
         }
     }
 
@@ -145,6 +151,8 @@ impl DbWriter {
             if let Err(e) = MarketRepo::upsert(&self.pool, &market).await {
                 warn!(?e, mint = %tc.mint, "market upsert failed");
             }
+            // Push the new token to any connected dashboard (no-op if none).
+            self.sse.token_created(tc);
         }
 
         // Trades: intern wallets (cached), map, then one batch insert.
@@ -179,6 +187,12 @@ impl DbWriter {
                 }
                 // New trades landed — wake the bundle-confirm watcher to re-check.
                 self.trades_notify.notify_one();
+                // Push each committed trade to connected dashboards; mint-scoped so
+                // the token-detail page (a `?mint_address=` subscriber) only wakes
+                // for its own token. No-op when no browser is connected.
+                for t in &trades {
+                    self.sse.trade_executed(t);
+                }
             }
         }
 

@@ -19,6 +19,9 @@ ingest-laserstream.workspace = true
 http-auth.workspace = true
 tokio.workspace = true
 actix-web.workspace = true
+# SSE push bus: `stream::unfold` over the broadcast receiver for `/api/stream`
+# (same version hunter-core pins).
+futures-util = "0.3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
