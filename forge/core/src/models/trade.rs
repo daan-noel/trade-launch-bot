@@ -55,6 +55,10 @@ pub struct NewTrade {
 pub struct TradePriced {
     pub mint_address: String,
     pub wallet_ref: i32,
+    /// Canonical on-chain wallet identity, resolved from `wallet_dict` in the
+    /// view (falls back to `#<wallet_ref>` if the interned row is missing).
+    /// Render THIS, not `wallet_ref` (the internal interned key).
+    pub wallet_address: String,
     pub launchpad_id: i16,
     pub market_kind: String,
     pub quote_asset_id: i16,

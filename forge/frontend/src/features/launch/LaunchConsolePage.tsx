@@ -20,8 +20,10 @@ import {
   Input,
   KV,
   KVRow,
+  RolePill,
   Select,
   StatusPill,
+  TradeTypePill,
 } from '@shared/components/ui';
 import { canonicalSteps } from '@shared/components/IxLayoutEditor';
 import { formatSig, formatSol, solscanTx } from '@shared/lib/format';
@@ -277,11 +279,11 @@ export function LaunchConsolePage() {
         )}
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button loading={fundState.isLoading} disabled={!templateId || !walletId} onClick={onFund}
+          <Button icon="coins" loading={fundState.isLoading} disabled={!templateId || !walletId} onClick={onFund}
             title="Top the dev wallet + bundler legs up to this template's amounts">
             Fund for launch
           </Button>
-          <Button variant="primary" loading={launchState.isLoading}
+          <Button variant="primary" icon="rocket" loading={launchState.isLoading}
             disabled={!templateId || !walletId || !metaTemplateId || !devWalletReady || devShort} onClick={onLaunch}
             title={
               devShort
@@ -479,7 +481,7 @@ function MetadataSummary({
 
 function FundReportCard({ report }: { report: FundReport }) {
   const columns: Column<WalletFundOutcome>[] = [
-    { header: 'Role', render: (o) => o.role },
+    { header: 'Role', render: (o) => <RolePill role={o.role} /> },
     { header: 'Address', render: (o) => <AddressDisplay value={o.address} /> },
     { header: 'Amount', align: 'right', render: (o) => <span className="mono">{formatSol(o.amount_lamports)}</span> },
     { header: 'Result', render: (o) => <StatusPill status={o.result} /> },
@@ -509,7 +511,7 @@ function FundReportCard({ report }: { report: FundReport }) {
 function TradesTable({ trades }: { trades: TradePriced[] }) {
   const columns: Column<TradePriced>[] = [
     { header: 'Slot', align: 'right', render: (t) => <span className="mono">{t.slot}</span> },
-    { header: 'Type', render: (t) => <StatusPill status={t.trade_type} /> },
+    { header: 'Type', render: (t) => <TradeTypePill type={t.trade_type} /> },
     { header: 'Quote', align: 'right', render: (t) => <span className="mono">{t.amount_quote_display ?? t.amount_quote}</span> },
     {
       header: 'Tx',

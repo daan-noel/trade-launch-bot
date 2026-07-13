@@ -6,7 +6,7 @@ import {
   useDeleteMetadataTemplateMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
-import { AgeCell, Banner, Button, Card, Column, DataTable, Field, Input } from '@shared/components/ui';
+import { AgeCell, Banner, Button, Card, Column, DataTable, Field, IconButton, Input } from '@shared/components/ui';
 import { fileToBase64 } from '@shared/lib/format';
 import type { MetadataTemplate } from '@shared/types';
 
@@ -125,16 +125,15 @@ export function MetadataTemplatesPage() {
       header: '',
       align: 'right',
       render: (t) => (
-        <div className="flex justify-end gap-2">
-          <Button size="sm" onClick={() => onEdit(t)}>Edit</Button>
-          <Button
-            size="sm"
+        <div className="flex justify-end gap-1">
+          <IconButton icon="edit" label="Edit" onClick={() => onEdit(t)} />
+          <IconButton
+            icon="trash"
+            label="Delete"
             variant="danger"
             loading={removeState.isLoading && removeState.originalArgs === t.id}
             onClick={() => onDelete(t)}
-          >
-            Delete
-          </Button>
+          />
         </div>
       ),
     },

@@ -1,5 +1,9 @@
 export { Button } from './Button';
-export { Badge, StatusPill, statusTone, RolePill, roleColorVar } from './Badge';
+export { IconButton } from './IconButton';
+export { Icon } from './Icon';
+export type { IconName } from './Icon';
+export { FilterToggle } from './FilterToggle';
+export { Badge, StatusPill, statusTone, TradeTypePill, tradeTypeTone, RolePill, roleColorVar, toneColorVar } from './Badge';
 export type { Tone } from './Badge';
 export { Field, Input, Textarea, Select, Checkbox } from './form';
 export { Card, Banner } from './Card';

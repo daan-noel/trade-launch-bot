@@ -7,7 +7,7 @@ import {
   useStopVolumeBotMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
-import { Badge, Banner, Button, Card, Field, Input, Select } from '@shared/components/ui';
+import { Badge, Banner, Button, Card, Field, IconButton, Input, Select } from '@shared/components/ui';
 import { formatSol } from '@shared/lib/format';
 import type { VolumeBot, VolumeConfig } from '@shared/types';
 
@@ -102,7 +102,7 @@ export function VolumePanel({ mint }: { mint: string }) {
             <Input type="number" min={0} placeholder="∞" value={cfg.max_cycles ?? ''}
               onChange={(e) => set({ max_cycles: e.target.value ? num(e.target.value, 1) : null })} />
           </Field>
-          <Button variant="primary" onClick={onStart} loading={startState.isLoading} disabled={invalid}>
+          <Button variant="primary" icon="play" onClick={onStart} loading={startState.isLoading} disabled={invalid}>
             Start bot
           </Button>
         </div>
@@ -162,13 +162,13 @@ function BotRow({
       </div>
       <div className="flex items-center gap-2">
         {bot.status === 'running' && (
-          <Button size="sm" variant="ghost" onClick={onPause}>Pause</Button>
+          <IconButton icon="pause" label="Pause bot" size="sm" variant="ghost" onClick={onPause} />
         )}
         {bot.status === 'paused' && (
-          <Button size="sm" variant="ghost" onClick={onResume}>Resume</Button>
+          <IconButton icon="play" label="Resume bot" size="sm" variant="ghost" onClick={onResume} />
         )}
         {bot.status !== 'stopped' && (
-          <Button size="sm" variant="ghost" onClick={onStop}>Stop</Button>
+          <IconButton icon="stop" label="Stop bot" size="sm" variant="danger" onClick={onStop} />
         )}
       </div>
     </div>

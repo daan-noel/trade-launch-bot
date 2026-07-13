@@ -21,6 +21,7 @@
   --color-bad-bg: #3d1b1b;
   --color-info: #9ac4f5;
   --color-info-bg: #1b2a3d;
+  --color-neutral-bg: #262b35;
 
   /* Wallet role hues — one distinct color per role, SSOT for RolePill + summary cards. */
   --color-role-dev: #c39bf5;
@@ -111,6 +112,14 @@ a:hover {
   .btn-ghost {
     background: transparent;
   }
+  /* Square icon-only button — equal padding so the glyph sits centered. */
+  .btn-icon {
+    padding: 0.4rem;
+    line-height: 0;
+  }
+  .btn-icon.btn-sm {
+    padding: 0.3rem;
+  }
 
   /* Inputs */
   .input,
@@ -164,7 +173,7 @@ a:hover {
     color: var(--color-bad);
   }
   .badge-neutral {
-    background: #262b35;
+    background: var(--color-neutral-bg);
     color: var(--color-muted);
   }
   .badge-info {
@@ -188,8 +197,36 @@ a:hover {
     color: var(--color-role-trading);
   }
   .badge-role-unknown {
-    background: #262b35;
+    background: var(--color-neutral-bg);
     color: var(--color-muted);
+  }
+
+  /* Compact show/hide toggle: eye glyph + a status-colored badge, nothing else.
+     Color comes from the Badge tone SSOT. Driven by FilterToggle.tsx. */
+  .filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.1rem 0.2rem;
+    border: none;
+    background: transparent;
+    color: var(--color-muted);
+    cursor: pointer;
+    transition: filter 0.12s ease, opacity 0.12s ease;
+  }
+  .filter-toggle .ft-icon {
+    flex: none;
+  }
+  .filter-toggle:hover:not(:disabled) {
+    filter: brightness(1.25);
+  }
+  .filter-toggle:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  /* Hidden group → dim the badge so on/off is legible even at a glance. */
+  .filter-toggle[data-active='false'] .badge {
+    opacity: 0.5;
   }
 
   /* Tables */

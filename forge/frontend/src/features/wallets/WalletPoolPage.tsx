@@ -18,12 +18,15 @@ import {
   Column,
   DataTable,
   Field,
+  FilterToggle,
+  IconButton,
   Input,
   Select,
   StatusPill,
   RolePill,
   roleColorVar,
   statusTone,
+  toneColorVar,
   AddressDisplay,
 } from '@shared/components/ui';
 import { formatSol } from '@shared/lib/format';
@@ -69,6 +72,24 @@ function isBalanceLive(w: ManagedWalletPool): boolean {
 // this, minutes after a manual refresh the total would collapse to ~treasury only.
 const STABLE_BALANCE_STATUSES = new Set<WalletStatus>(['funded', 'reserved']);
 
+// A retired wallet holding no SOL — swept, shredded, done. Hidden from the pool table
+// by default (see the "Show retired (empty)" toggle) since it's just visual noise.
+function isRetiredEmpty(w: ManagedWalletPool): boolean {
+  return w.status === 'retired' && (w.balance_lamports ?? 0) === 0;
+}
+
+// A freshly-generated, not-yet-funded wallet. Hidden by default (see the "Show
+// generated" toggle) so the table shows the live, funded pool by default.
+function isGenerated(w: ManagedWalletPool): boolean {
+  return w.status === 'generated';
+}
+
+// Terminal statuses — a wallet here is done being launched from. Its SOL still counts
+// toward the pool total, but it's broken out under its own status chip (not the per-role
+// chips) so the operator can see how much is parked in spent/shredded wallets awaiting a
+// sweep, instead of it hiding inside e.g. the "dev" role figure.
+const TERMINAL_STATUSES = new Set<WalletStatus>(['used', 'retired']);
+
 // Whether a wallet's balance is trustworthy enough to fold into the holdings total:
 // either freshly polled OR sitting in a stable status. `used`/`retired` may have spent
 // SOL post-launch, so they stay stale-gated (excluded until a manual Refresh re-reads
@@ -84,15 +105,6 @@ function formatAgo(ms: number): string {
   if (m < 60) return `${m}m ago`;
   return `${Math.round(m / 60)}h ago`;
 }
-
-// Tone → color var, so the per-role status bar segments match the StatusPill palette.
-const TONE_COLOR: Record<string, string> = {
-  good: 'var(--color-good)',
-  warn: 'var(--color-warn)',
-  bad: 'var(--color-bad)',
-  info: 'var(--color-info)',
-  neutral: 'var(--color-line-2)',
-};
 
 /**
  * At-a-glance card for one role: big funded count (red when below threshold),
@@ -148,7 +160,7 @@ function RoleSummaryCard({
               <div
                 key={s}
                 title={`${s}: ${n}`}
-                style={{ width: `${(n / total) * 100}%`, background: TONE_COLOR[statusTone(s)] }}
+                style={{ width: `${(n / total) * 100}%`, background: toneColorVar(statusTone(s)) }}
               />
             );
           })}
@@ -158,7 +170,7 @@ function RoleSummaryCard({
       <div className="mt-2 flex flex-wrap gap-x-2.5 gap-y-0.5 text-xs">
         {STATUSES.filter((s) => (counts[s] ?? 0) > 0).map((s) => (
           <span key={s} className="muted">
-            <span style={{ color: TONE_COLOR[statusTone(s)] }}>●</span> {counts[s]} {s}
+            <span style={{ color: toneColorVar(statusTone(s)) }}>●</span> {counts[s]} {s}
           </span>
         ))}
       </div>
@@ -172,6 +184,11 @@ export function WalletPoolPage() {
   const [genCount, setGenCount] = useState(5);
   const [genLabel, setGenLabel] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
+  // Retired (drained) and freshly-`generated` (not-yet-funded) wallets are dead weight in
+  // the table — hidden by default so the list reads as the live, funded pool; the operator
+  // can toggle either group back in to audit/fund/export them.
+  const [showRetiredEmpty, setShowRetiredEmpty] = useState(false);
+  const [showGenerated, setShowGenerated] = useState(false);
 
   const { data: wallets = [], isFetching, error } = useWalletPoolQuery(roleFilter || undefined, {
     // Poll while any wallet is mid-lifecycle (a treasury send in flight or awaiting
@@ -293,50 +310,52 @@ export function WalletPoolPage() {
   };
 
   // Exact SOL the pool holds, read at a glance instead of adding up every row by hand.
-  // Counts every COUNTABLE balance (freshly polled, or a stable funded/reserved wallet
-  // whose balance can't drift on its own) — so the total survives the poller letting a
-  // funded wallet's check go stale, instead of collapsing to ~treasury a minute after a
-  // manual refresh. Only used/retired stale snapshots (which may have spent SOL post-
-  // launch) are held out as "Refresh to include". A "Refresh balances" pass re-reads
-  // every wallet, folding those in too. Respects the active role filter; per-role
-  // breakdown shows where the SOL sits.
+  // The headline number is the COMPLETE on-chain total — EVERY wallet's balance,
+  // including `used`/`retired` whose snapshot the steady poller lets go stale. It never
+  // collapses to "just the live roles" after 90s: the total always reflects the full
+  // pool, and the per-role breakdown shows where the SOL sits. We still track how much of
+  // that total is a stale snapshot (`used`/`retired` not live-re-read, which may have
+  // spent SOL post-launch) so the operator knows a slice isn't freshly confirmed — a
+  // "Refresh balances" pass re-reads every wallet and makes the whole figure exact.
+  // Respects the active role filter.
   const holdings = useMemo(() => {
-    let countedLamports = 0;
-    let countedCount = 0;
-    let uncountedLamports = 0;
-    let uncountedCount = 0;
+    let totalLamports = 0;
+    let walletCount = 0;
+    let snapshotLamports = 0;
+    let snapshotCount = 0;
     let oldestCheck: number | null = null;
     const byRole: Record<string, number> = {};
-    const byUncountedStatus: Record<string, number> = {};
+    const byTerminalStatus: Record<string, number> = {};
     for (const w of wallets) {
-      if (isBalanceCountable(w)) {
-        const bal = w.balance_lamports ?? 0;
-        countedLamports += bal;
-        countedCount += 1;
-        byRole[w.role] = (byRole[w.role] ?? 0) + bal;
-        if (w.balance_checked_at) {
-          const t = new Date(w.balance_checked_at).getTime();
-          if (oldestCheck == null || t < oldestCheck) oldestCheck = t;
-        }
+      const bal = w.balance_lamports ?? 0;
+      totalLamports += bal;
+      walletCount += 1;
+      // Terminal wallets (used/retired) break out by status; the rest by role — together
+      // they partition the total with no double-counting.
+      if (TERMINAL_STATUSES.has(w.status)) {
+        byTerminalStatus[w.status] = (byTerminalStatus[w.status] ?? 0) + bal;
       } else {
-        // Excluded from the trusted total (stale used/retired snapshots), but still
-        // holds SOL — surface its last-known balance broken down by status, styled like
-        // the per-role chips, so the operator sees where the rest of the SOL sits
-        // instead of it vanishing behind a bare count.
-        const bal = w.balance_lamports ?? 0;
-        uncountedLamports += bal;
-        uncountedCount += 1;
-        byUncountedStatus[w.status] = (byUncountedStatus[w.status] ?? 0) + bal;
+        byRole[w.role] = (byRole[w.role] ?? 0) + bal;
+      }
+      if (w.balance_checked_at) {
+        const t = new Date(w.balance_checked_at).getTime();
+        if (oldestCheck == null || t < oldestCheck) oldestCheck = t;
+      }
+      // Stale used/retired snapshots are still summed into the total, but flagged so the
+      // freshness note can say how much of it hasn't been live-confirmed recently.
+      if (!isBalanceCountable(w)) {
+        snapshotLamports += bal;
+        snapshotCount += 1;
       }
     }
     return {
-      countedLamports,
-      countedCount,
-      uncountedLamports,
-      uncountedCount,
+      totalLamports,
+      walletCount,
+      snapshotLamports,
+      snapshotCount,
       oldestCheck,
       byRole,
-      byUncountedStatus,
+      byTerminalStatus,
     };
   }, [wallets]);
 
@@ -352,18 +371,29 @@ export function WalletPoolPage() {
 
   // Cluster the flat pool by role (in canonical ROLES order) so same-role wallets
   // read as a group even without filtering; status/age keep a stable sub-order.
+  // These groups are hidden unless the operator toggles them on.
+  const hiddenRetiredCount = useMemo(
+    () => wallets.filter(isRetiredEmpty).length,
+    [wallets],
+  );
+  const hiddenGeneratedCount = useMemo(() => wallets.filter(isGenerated).length, [wallets]);
+
   const sortedWallets = useMemo(() => {
     const roleIdx = (r: string) => {
       const i = ROLES.indexOf(r as WalletRole);
       return i === -1 ? ROLES.length : i;
     };
-    return [...wallets].sort(
+    const visible = wallets.filter(
+      (w) =>
+        (showRetiredEmpty || !isRetiredEmpty(w)) && (showGenerated || !isGenerated(w)),
+    );
+    return [...visible].sort(
       (a, b) =>
         roleIdx(a.role) - roleIdx(b.role) ||
         STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) ||
         (a.label ?? '').localeCompare(b.label ?? ''),
     );
-  }, [wallets]);
+  }, [wallets, showRetiredEmpty, showGenerated]);
 
   const lowPoolRoles = Object.entries(counts).filter(
     ([, s]) => (s.funded ?? 0) < LOW_POOL_THRESHOLD,
@@ -422,7 +452,7 @@ export function WalletPoolPage() {
     const parts = [
       `${formatSol(r.total_sol_swept_lamports)} swept from ${touched} wallet${touched === 1 ? '' : 's'}`,
       r.accounts_closed > 0 &&
-        `${r.accounts_closed} token account${r.accounts_closed === 1 ? '' : 's'} closed (+${formatSol(r.total_rent_reclaimed_lamports)} rent)`,
+      `${r.accounts_closed} token account${r.accounts_closed === 1 ? '' : 's'} closed (+${formatSol(r.total_rent_reclaimed_lamports)} rent)`,
       r.wallets_retired > 0 && `${r.wallets_retired} retired`,
       noted > 0 && `${noted} skipped/failed`,
     ].filter(Boolean);
@@ -491,29 +521,27 @@ export function WalletPoolPage() {
       align: 'right',
       render: (w) => (
         <div className="flex justify-end gap-1">
-          <Button
+          <IconButton
+            icon="transfer"
+            label="Transfer"
             variant="ghost"
-            size="sm"
             disabled={NON_SOURCE_STATUSES.has(w.status)}
             title={
               NON_SOURCE_STATUSES.has(w.status)
                 ? 'A launch is mid-flight against this wallet, or it is retired — not a valid source'
-                : undefined
+                : 'Transfer SOL to another wallet'
             }
             onClick={() => openTransfer(w)}
-          >
-            Transfer
-          </Button>
-          <Button
+          />
+          <IconButton
+            icon="key"
+            label="Export key"
             variant="ghost"
-            size="sm"
             onClick={() => {
               closeExport();
               setExportTarget(w);
             }}
-          >
-            Export key
-          </Button>
+          />
         </div>
       ),
     },
@@ -534,6 +562,7 @@ export function WalletPoolPage() {
         <div className="flex flex-wrap gap-2">
           <Button
             variant="ghost"
+            icon="broom"
             loading={sweeping.isLoading}
             title="Sweep used wallets to the treasury (retiring them) and reclaim retired wallets — residual SOL + close empty token accounts for rent."
             onClick={onSweep}
@@ -542,6 +571,7 @@ export function WalletPoolPage() {
           </Button>
           <Button
             variant="ghost"
+            icon="merge"
             loading={consolidating.isLoading}
             disabled={treasuryDestinations.length === 0}
             title={
@@ -559,7 +589,7 @@ export function WalletPoolPage() {
           >
             Consolidate → treasury
           </Button>
-          <Button variant="primary" loading={funding.isLoading} onClick={() => onFund()}>
+          <Button variant="primary" icon="coins" loading={funding.isLoading} onClick={() => onFund()}>
             Fund pool
           </Button>
         </div>
@@ -569,7 +599,7 @@ export function WalletPoolPage() {
         <Banner
           tone="warn"
           actions={
-            <Button variant="primary" size="sm" loading={funding.isLoading} onClick={() => onFund()}>
+            <Button variant="primary" size="sm" icon="coins" loading={funding.isLoading} onClick={() => onFund()}>
               Fund
             </Button>
           }
@@ -685,54 +715,55 @@ export function WalletPoolPage() {
           <div>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-semibold leading-none">
-                {formatSol(holdings.countedLamports)}
+                {formatSol(holdings.totalLamports)}
               </span>
-              <Button
+              <IconButton
+                icon="refresh"
+                label="Refresh balances"
                 variant="ghost"
-                size="sm"
                 loading={refreshing.isLoading}
                 onClick={onRefreshBalances}
-              >
-                Refresh balances
-              </Button>
+              />
             </div>
             <p className="mt-1 text-xs muted">
-              across {holdings.countedCount} wallet{holdings.countedCount === 1 ? '' : 's'}
+              across {holdings.walletCount} wallet{holdings.walletCount === 1 ? '' : 's'}
               {holdings.oldestCheck != null
                 ? ` · as of ${formatAgo(Date.now() - holdings.oldestCheck)}`
                 : ''}
-              {holdings.uncountedCount > 0
-                ? ` · ${holdings.uncountedCount} not live-checked (snapshot) — Refresh to include`
+              {holdings.snapshotCount > 0
+                ? ` · incl. ${formatSol(holdings.snapshotLamports)} snapshot (${holdings.snapshotCount} not live-checked) — Refresh to confirm`
                 : ''}
             </p>
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-            {ROLES.filter((r) => (holdings.byRole[r] ?? 0) > 0).map((r) => (
-              <span key={r} className="flex items-center gap-1.5">
-                <RolePill role={r} />
-                <span className="mono">{formatSol(holdings.byRole[r])}</span>
-              </span>
-            ))}
-            {/* Excluded (stale used/retired) holdings, shown as status chips in the same
-                style as the per-role chips — dimmed, since these are last-known snapshots. */}
-            {STATUSES.filter((s) => (holdings.byUncountedStatus[s] ?? 0) > 0).map((s) => (
-              <span
-                key={s}
-                className="flex items-center gap-1.5 opacity-70"
-                title="Last-known snapshot — not live-checked. Click Refresh balances to fold into the total."
-              >
-                <StatusPill status={s} />
-                <span className="mono">{formatSol(holdings.byUncountedStatus[s])}</span>
-              </span>
-            ))}
+          <div className="flex flex-col items-end gap-1.5 text-sm">
+            <div className="flex flex-wrap justify-end gap-x-4 gap-y-1">
+              {ROLES.filter((r) => (holdings.byRole[r] ?? 0) > 0).map((r) => (
+                <span key={r} className="flex items-center gap-1.5">
+                  <RolePill role={r} />
+                  <span className="mono">{formatSol(holdings.byRole[r])}</span>
+                </span>
+              ))}
+            </div>
+            {/* Terminal holdings (used/retired) on their own line beneath the role chips,
+                dimmed + prefixed so they read as a distinct "parked, awaiting sweep" group. */}
+            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t border-[var(--color-line)] pt-1.5 opacity-75">
+              {STATUSES.filter((s) => (holdings.byTerminalStatus[s] ?? 0) > 0).map((s) => (
+                <span key={s} className="flex items-center gap-1.5">
+                  <StatusPill status={s} />
+                  <span className="mono text-xs">{formatSol(holdings.byTerminalStatus[s])}</span>
+                </span>
+              ))}
+            </div>
           </div>
         </div>
         <p className="mt-2 text-xs muted">
-          On-chain total of every freshly-polled wallet plus <code>funded</code>/
-          <code>reserved</code> wallets (whose balance is stable until a launch spends it).
-          The background poller keeps only <code>generated</code>/<code>funding</code> +
-          treasury live — click <strong>Refresh balances</strong> to also re-read{' '}
-          <code>used</code>/<code>retired</code> wallets and fold them into the total.
+          On-chain total across <em>every</em> wallet and role (incl. <code>used</code>/
+          <code>retired</code>). The background poller keeps only <code>generated</code>/
+          <code>funding</code> + treasury live and <code>funded</code>/<code>reserved</code>{' '}
+          balances are stable until a launch spends them, so <code>used</code>/
+          <code>retired</code> wallets carry a last-known snapshot between refreshes — that
+          slice is noted above; click <strong>Refresh balances</strong> to re-read every
+          wallet on-chain and make the whole figure exact.
         </p>
       </Card>
 
@@ -765,7 +796,7 @@ export function WalletPoolPage() {
               placeholder="e.g. batch-07"
             />
           </Field>
-          <Button variant="primary" loading={gen.isLoading} onClick={onGenerate}>
+          <Button variant="primary" icon="plus" loading={gen.isLoading} onClick={onGenerate}>
             Generate
           </Button>
         </div>
@@ -794,16 +825,46 @@ export function WalletPoolPage() {
       </div>
 
       <Card
-        title={`Pool (${wallets.length})`}
+        title={`Pool (${sortedWallets.length})`}
         actions={
-          <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="w-40">
-            <option value="">All roles</option>
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </Select>
+          <div className="flex items-center gap-2">
+            <FilterToggle
+              tone={statusTone('retired')}
+              active={showRetiredEmpty}
+              count={hiddenRetiredCount}
+              disabled={hiddenRetiredCount === 0}
+              title={
+                hiddenRetiredCount === 0
+                  ? 'No retired, empty wallets to show.'
+                  : 'Toggle retired wallets holding no SOL in/out of the table.'
+              }
+              onClick={() => setShowRetiredEmpty((v) => !v)}
+            >
+              Retired
+            </FilterToggle>
+            <FilterToggle
+              tone={statusTone('generated')}
+              active={showGenerated}
+              count={hiddenGeneratedCount}
+              disabled={hiddenGeneratedCount === 0}
+              title={
+                hiddenGeneratedCount === 0
+                  ? 'No generated (unfunded) wallets to show.'
+                  : 'Toggle freshly-generated, not-yet-funded wallets in/out of the table.'
+              }
+              onClick={() => setShowGenerated((v) => !v)}
+            >
+              Generated
+            </FilterToggle>
+            <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="w-40">
+              <option value="">All roles</option>
+              {ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </Select>
+          </div>
         }
       >
         <DataTable

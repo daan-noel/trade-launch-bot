@@ -1,5 +1,6 @@
 import { ButtonHTMLAttributes } from 'react';
 import clsx from 'clsx';
+import { Icon, IconName } from './Icon';
 
 type Variant = 'default' | 'primary' | 'danger' | 'ghost';
 
@@ -7,6 +8,8 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: 'sm' | 'md';
   loading?: boolean;
+  /** Optional leading icon. Swapped for the spinner while `loading`. */
+  icon?: IconName;
 }
 
 const VARIANT: Record<Variant, string> = {
@@ -16,10 +19,18 @@ const VARIANT: Record<Variant, string> = {
   ghost: 'btn-ghost',
 };
 
+/** Shared inline spinner — reused by Button + IconButton so they stay in lockstep. */
+export function Spinner() {
+  return (
+    <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+  );
+}
+
 export function Button({
   variant = 'default',
   size = 'md',
   loading,
+  icon,
   disabled,
   className,
   children,
@@ -32,7 +43,7 @@ export function Button({
       disabled={disabled || loading}
       {...rest}
     >
-      {loading && <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />}
+      {loading ? <Spinner /> : icon && <Icon name={icon} />}
       {children}
     </button>
   );

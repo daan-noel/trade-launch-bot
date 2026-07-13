@@ -13,10 +13,13 @@ import {
   Card,
   Column,
   DataTable,
+  Icon,
   KV,
   KVRow,
+  RolePill,
   StatCard,
   StatusPill,
+  TradeTypePill,
 } from '@shared/components/ui';
 import { PriceChart } from '@shared/components/PriceChart';
 import { ManagePanel } from './ManagePanel';
@@ -69,8 +72,12 @@ export function TokenDetailPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Link to="/launches" className="text-sm muted hover:text-[var(--color-ink)]">
-          ← Launched Tokens
+        <Link
+          to="/launches"
+          className="inline-flex items-center gap-1 text-sm muted hover:text-[var(--color-ink)]"
+        >
+          <Icon name="chevron-left" size={14} />
+          Launched Tokens
         </Link>
       </div>
 
@@ -178,7 +185,7 @@ function HoldingsTable({
       quoteBase == null || usdRate == null ? null : (quoteBase / 10 ** qd) * usdRate;
 
     return [
-      { header: 'Role', render: (p) => <StatusPill status={p.role} /> },
+      { header: 'Role', render: (p) => <RolePill role={p.role} /> },
       {
         header: 'Wallet',
         render: (p) => <AddressDisplay value={p.wallet_address} />,
@@ -242,11 +249,11 @@ function TradesTable({
   // Memoized so its identity is stable across the 10s trades poll (audit H2).
   const columns = useMemo<Column<TradePriced>[]>(() => [
     { header: 'Slot', align: 'right', render: (t) => <span className="mono">{t.slot}</span> },
-    { header: 'Type', render: (t) => <StatusPill status={t.trade_type} /> },
+    { header: 'Type', render: (t) => <TradeTypePill type={t.trade_type} /> },
     { header: 'Market', render: (t) => <span className="text-xs muted">{t.market_kind}</span> },
     { header: 'Quote', align: 'right', render: (t) => <span className="mono">{t.amount_quote_display?.toFixed(4) ?? quoteToHuman(t.amount_quote, qd)}</span> },
     { header: 'USD', align: 'right', render: (t) => <span className="mono">{formatUsd(t.amount_usd)}</span> },
-    { header: 'Wallet', render: (t) => <span className="mono text-xs muted">#{t.wallet_ref}</span> },
+    { header: 'Wallet', render: (t) => <AddressDisplay value={t.wallet_address} /> },
     {
       header: 'Tx',
       render: (t) => {

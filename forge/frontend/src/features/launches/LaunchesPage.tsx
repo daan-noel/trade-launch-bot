@@ -6,10 +6,10 @@ import {
   AddressDisplay,
   AgeCell,
   Banner,
-  Button,
   Card,
   Column,
   DataTable,
+  IconButton,
   StatusPill,
 } from '@shared/components/ui';
 import { formatCount, formatUsd, gmgnMint } from '@shared/lib/format';
@@ -76,9 +76,7 @@ export function LaunchesPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Launched Tokens</h1>
-        <Button size="sm" onClick={() => refetch()} loading={isFetching}>
-          Refresh
-        </Button>
+        <IconButton icon="refresh" label="Refresh" onClick={() => refetch()} loading={isFetching} />
       </div>
 
       {error && <Banner tone="bad">{apiErrorMessage(error)}</Banner>}
@@ -87,23 +85,21 @@ export function LaunchesPage() {
         title={`Launches (${total})`}
         actions={
           <div className="flex items-center gap-2 text-xs">
-            <Button
-              size="sm"
+            <IconButton
+              icon="chevron-left"
+              label="Previous page"
               disabled={offset === 0}
               onClick={() => setOffset((o) => Math.max(0, o - PAGE))}
-            >
-              ← Prev
-            </Button>
+            />
             <span className="muted">
               {total === 0 ? 0 : offset + 1}–{Math.min(offset + PAGE, total)} of {total}
             </span>
-            <Button
-              size="sm"
+            <IconButton
+              icon="chevron-right"
+              label="Next page"
               disabled={offset + PAGE >= total}
               onClick={() => setOffset((o) => o + PAGE)}
-            >
-              Next →
-            </Button>
+            />
           </div>
         }
       >

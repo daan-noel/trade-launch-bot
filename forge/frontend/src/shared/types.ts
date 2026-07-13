@@ -448,6 +448,9 @@ export interface TradePriced {
   // Interned `wallet_dict` ref (soft int key) — the lean feed table keeps it as a
   // ref; resolve to an address only where needed.
   wallet_ref: number;
+  // Canonical on-chain wallet identity (resolved from `wallet_dict` in the view).
+  // Render THIS, never `wallet_ref` — address is the SSOT wallet identity.
+  wallet_address: string;
   launchpad_id: number;
   market_kind: string;
   quote_asset_id: number;

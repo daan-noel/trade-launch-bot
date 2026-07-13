@@ -5,7 +5,7 @@ import {
   useCancelLadderMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
-import { Badge, Banner, Button, Card, Field, Input, Select } from '@shared/components/ui';
+import { Badge, Banner, Button, Card, Field, IconButton, Input, Select } from '@shared/components/ui';
 import { formatUsd } from '@shared/lib/format';
 import type { LadderRung, SellLadder } from '@shared/types';
 
@@ -89,8 +89,8 @@ export function LadderPanel({ mint }: { mint: string }) {
               onChange={(e) => setPct(Math.max(1, Math.min(100, Number(e.target.value) || 0)))}
             />
           </Field>
-          <Button variant="ghost" onClick={addRung}>
-            + Add rung
+          <Button variant="ghost" icon="plus" onClick={addRung}>
+            Add rung
           </Button>
         </div>
 
@@ -103,13 +103,11 @@ export function LadderPanel({ mint }: { mint: string }) {
                   <Badge tone="info">
                     {METRIC_LABEL[r.metric as Metric]} ≥ {formatUsd(r.threshold)} → sell {r.pct}%
                   </Badge>
-                  <button className="text-xs muted hover:text-[var(--color-bad)]" onClick={() => removeRung(i)}>
-                    remove
-                  </button>
+                  <IconButton icon="close" label="Remove rung" variant="ghost" size="sm" onClick={() => removeRung(i)} />
                 </li>
               ))}
             </ul>
-            <Button variant="primary" onClick={onArm} loading={armState.isLoading}>
+            <Button variant="primary" icon="bolt" onClick={onArm} loading={armState.isLoading}>
               Arm ladder
             </Button>
           </div>
@@ -146,9 +144,7 @@ function LadderRow({ ladder, onCancel }: { ladder: SellLadder; onCancel: () => v
         ))}
       </div>
       {ladder.status === 'armed' && (
-        <Button size="sm" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
+        <IconButton icon="close" label="Cancel ladder" size="sm" variant="ghost" onClick={onCancel} />
       )}
     </div>
   );

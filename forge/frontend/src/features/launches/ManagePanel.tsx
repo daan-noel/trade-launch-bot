@@ -15,6 +15,7 @@ import {
   DataTable,
   Field,
   Input,
+  RolePill,
   Select,
   StatusPill,
 } from '@shared/components/ui';
@@ -194,7 +195,7 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
             </Field>
           )}
 
-          <Button variant="primary" onClick={onPreview} loading={previewState.isLoading}>
+          <Button variant="primary" icon="eye" onClick={onPreview} loading={previewState.isLoading}>
             Preview
           </Button>
         </div>
@@ -212,6 +213,7 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
                   <span className="muted">{plan.legs.length} leg(s)</span>
                   <Button
                     variant="danger"
+                    icon="bolt"
                     onClick={onExecute}
                     loading={executeState.isLoading}
                   >
@@ -250,7 +252,7 @@ function PlanTable({
   qs: string;
 }) {
   const base: Column<PlanLeg>[] = [
-    { header: 'Role', render: (l) => <StatusPill status={l.role} /> },
+    { header: 'Role', render: (l) => <RolePill role={l.role} /> },
     { header: 'Wallet', render: (l) => <AddressDisplay value={l.wallet_address} /> },
   ];
   const amountCols: Column<PlanLeg>[] =

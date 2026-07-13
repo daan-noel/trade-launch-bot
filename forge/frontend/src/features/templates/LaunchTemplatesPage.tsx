@@ -18,6 +18,7 @@ import {
   Column,
   DataTable,
   Field,
+  IconButton,
   Input,
   Select,
 } from '@shared/components/ui';
@@ -189,16 +190,15 @@ export function LaunchTemplatesPage() {
       header: '',
       align: 'right',
       render: (t) => (
-        <div className="flex justify-end gap-2">
-          <Button size="sm" onClick={() => onEdit(t)}>Edit</Button>
-          <Button
-            size="sm"
+        <div className="flex justify-end gap-1">
+          <IconButton icon="edit" label="Edit" onClick={() => onEdit(t)} />
+          <IconButton
+            icon="trash"
+            label="Delete"
             variant="danger"
             loading={removeState.isLoading && removeState.originalArgs === t.id}
             onClick={() => onDelete(t)}
-          >
-            Delete
-          </Button>
+          />
         </div>
       ),
     },

@@ -91,13 +91,13 @@ export function DashboardPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Dashboard</h1>
         <div className="flex gap-2">
-          <Button variant="primary" onClick={() => navigate('/launch')}>New launch</Button>
-          <Button onClick={() => navigate('/wallets')}>Manage wallets</Button>
+          <Button variant="primary" icon="rocket" onClick={() => navigate('/launch')}>New launch</Button>
+          <Button icon="key" onClick={() => navigate('/wallets')}>Manage wallets</Button>
         </div>
       </div>
 
       {lowRoles.length > 0 && (
-        <Banner tone="warn" actions={<Button size="sm" onClick={() => navigate('/wallets')}>Fund</Button>}>
+        <Banner tone="warn" actions={<Button size="sm" icon="coins" onClick={() => navigate('/wallets')}>Fund</Button>}>
           <strong>Low pool:</strong> {lowRoles.map((r) => `${r} (${fundedByRole(r)} funded)`).join(', ')} — below{' '}
           {LOW_POOL_THRESHOLD}.
         </Banner>
