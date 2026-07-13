@@ -569,7 +569,12 @@ export function WalletPoolPage() {
             variant="ghost"
             icon="broom"
             loading={sweeping.isLoading}
-            title="Sweep used wallets to the treasury (retiring them) and reclaim retired wallets — residual SOL + close empty token accounts for rent."
+            title={
+              'Clean-up pass — gathers leftover SOL back into the treasury. Two things:\n\n' +
+              '1) USED wallets (ones that already finished a launch): sends their leftover SOL home to the treasury and marks them retired. A wallet that still holds tokens is skipped — it keeps its SOL to pay the fee to sell those tokens later.\n\n' +
+              '2) RETIRED wallets: sends home any SOL still sitting in them, and closes their empty token accounts to reclaim the ~0.002 SOL of rent locked inside each one. (Accounts that still hold tokens are left alone and just reported.)\n\n' +
+              'Does not touch wallets you are actively using. Safe to run anytime.'
+            }
             onClick={onSweep}
           >
             Sweep &amp; retire
@@ -581,8 +586,11 @@ export function WalletPoolPage() {
             disabled={treasuryDestinations.length === 0}
             title={
               treasuryDestinations.length === 0
-                ? 'No treasury wallet to consolidate into — generate one first.'
-                : 'Drain SOL + close empty token accounts on every wallet into one treasury.'
+                ? 'No treasury wallet exists to gather funds into. Create one first — use "Generate wallets" below with the role set to "treasury".'
+                : 'Empties EVERYTHING into one treasury wallet you choose.\n\n' +
+                  'Takes all the SOL out of every wallet — dev, bundler, trading, even other treasuries (every role, every status) — and closes their empty token accounts to reclaim the rent, moving it all into the one treasury you pick next.\n\n' +
+                  'Wallets in the middle of a launch (funding or reserved) are skipped, so a live launch is never broken. Wallets are emptied but NOT retired — they can be funded and reused.\n\n' +
+                  'Use this when winding down or pulling all funds into one place.'
             }
             onClick={() => {
               setConsolidateErr(null);
