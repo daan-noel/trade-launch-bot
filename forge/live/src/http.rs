@@ -970,32 +970,19 @@ async fn token_trades(
 }
 
 /// Per-wallet holdings for a launched token (post-launch management, Phase 1).
-/// Serves the seeded snapshot immediately (O(1) DB) and, when the launcher (RPC)
-/// is configured, kicks the on-chain reconcile OFF the request path (audit Phase
-/// 3): a slow/failing RPC never blocks this response, and the refreshed balances
-/// land in the DB for the next read. With no launcher config, seeded rows still
-/// return (unreconciled).
+/// Balance, cost basis, and realized proceeds are all **feed-derived** — replayed
+/// from the ingested `trades` with **zero RPC** — so this read never issues a
+/// network call however often the page refetches. On-chain truth (an external
+/// transfer the feed can't see, or a dropped feed leg) is corrected only on the
+/// explicit "Refresh" action (`POST …/positions/refresh`, the sole RPC path).
 async fn token_positions(
     pool: web::Data<PgPool>,
-    settings: web::Data<Option<LauncherSettings>>,
     mint: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let mint = mint.into_inner();
     let rows = launcher::read_positions(pool.get_ref(), &mint)
         .await
         .map_err(e500)?;
-
-    // Fire-and-forget refresh so the request returns without waiting on N wallet
-    // RPCs. Idempotent + best-effort — a failure only logs.
-    if let Some(settings) = settings.get_ref().as_ref() {
-        let pool = pool.get_ref().clone();
-        let settings = settings.clone();
-        tokio::spawn(async move {
-            if let Err(e) = launcher::reconcile_positions(&pool, &settings, &mint).await {
-                tracing::warn!(%mint, ?e, "background position reconcile failed");
-            }
-        });
-    }
     Ok(HttpResponse::Ok().json(rows))
 }
 
