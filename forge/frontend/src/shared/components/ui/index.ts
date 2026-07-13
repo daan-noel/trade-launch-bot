@@ -5,7 +5,7 @@ export type { IconName } from './Icon';
 export { FilterToggle } from './FilterToggle';
 export { Badge, StatusPill, statusTone, TradeTypePill, tradeTypeTone, RolePill, roleColorVar, toneColorVar } from './Badge';
 export type { Tone } from './Badge';
-export { Field, Input, Textarea, Select, Checkbox } from './form';
+export { Field, InfoTip, Input, Textarea, Select, Checkbox } from './form';
 export { Card, Banner } from './Card';
 export { DataTable } from './DataTable';
 export type { Column } from './DataTable';

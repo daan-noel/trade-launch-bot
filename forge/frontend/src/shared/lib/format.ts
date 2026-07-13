@@ -91,6 +91,13 @@ export function gmgnMint(mint: string): string {
   return `https://gmgn.ai/sol/token/${mint}`;
 }
 
+/** Rewrites an `ipfs://…` URI to an HTTP gateway URL so browsers can fetch it;
+ * passes through anything already HTTP(S). */
+export function ipfsToHttp(uri: string | null | undefined): string | null {
+  if (!uri) return null;
+  return uri.startsWith('ipfs://') ? uri.replace('ipfs://', 'https://ipfs.io/ipfs/') : uri;
+}
+
 /** `trades_priced.tx_signature` arrives as a byte array — base58-encode it. */
 export function formatSig(tx: number[] | string | null | undefined): string {
   if (typeof tx === 'string') return tx;

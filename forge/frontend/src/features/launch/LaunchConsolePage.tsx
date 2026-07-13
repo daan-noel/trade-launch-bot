@@ -26,7 +26,7 @@ import {
   TradeTypePill,
 } from '@shared/components/ui';
 import { canonicalSteps } from '@shared/components/IxLayoutEditor';
-import { formatSig, formatSol, solscanTx } from '@shared/lib/format';
+import { formatSig, formatSol, ipfsToHttp, solscanTx } from '@shared/lib/format';
 import { toHumanUnits } from '@features/templates/legForm';
 import type {
   FundReport,
@@ -390,6 +390,7 @@ function TemplateSummary({
         </KVRow>
         <KVRow label="Dev buy">
           <span className="mono">{amt(p.dev_buy_quote)}</span>
+          <span className="muted mono text-xs"> · {p.dev_buy_variant ?? 'buy_exact_sol_in'}</span>
         </KVRow>
         <KVRow label="Slippage">{p.slippage_bps != null ? `${p.slippage_bps} bps` : '—'}</KVRow>
         <KVRow label="Bundle legs">
@@ -451,7 +452,7 @@ function MetadataSummary({
       <div className="flex gap-3">
         {metadata.image_uri && (
           <img
-            src={metadata.image_uri}
+            src={ipfsToHttp(metadata.image_uri) ?? undefined}
             alt=""
             className="h-14 w-14 shrink-0 rounded-md border border-[var(--color-line)] object-cover"
           />

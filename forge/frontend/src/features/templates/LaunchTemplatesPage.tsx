@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   useTemplatesQuery,
   useLaunchpadsQuery,
@@ -19,6 +19,7 @@ import {
   DataTable,
   Field,
   IconButton,
+  InfoTip,
   Input,
   Select,
 } from '@shared/components/ui';
@@ -235,10 +236,18 @@ export function LaunchTemplatesPage() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <Field label="Template name" htmlFor="lt-tn">
+          <Field
+            label="Template name"
+            htmlFor="lt-tn"
+            tip="A label for this reusable launch config. Pick something descriptive (e.g. 'standard-v2-bundle') — it's how you'll recognize the template on the launch console."
+          >
             <Input id="lt-tn" value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="standard-v2-bundle" />
           </Field>
-          <Field label="Launchpad" htmlFor="lt-lp">
+          <Field
+            label="Launchpad"
+            htmlFor="lt-lp"
+            tip="Which on-chain launch program creates the token (e.g. pump.fun). Determines the create instruction and bonding-curve mechanics."
+          >
             <Select id="lt-lp" value={launchpadId} onChange={(e) => setLaunchpadId(e.target.value)}>
               {launchpads.length === 0 && <option value="">No launchpads</option>}
               {launchpads.map((lp) => (
@@ -246,7 +255,11 @@ export function LaunchTemplatesPage() {
               ))}
             </Select>
           </Field>
-          <Field label="Quote asset" htmlFor="lt-qa">
+          <Field
+            label="Quote asset"
+            htmlFor="lt-qa"
+            tip="The asset paired against the new token (native SOL by default). Every amount below — dev buy, quote per leg, tip — is denominated in this asset."
+          >
             <Select id="lt-qa" value={quoteAssetId} onChange={(e) => setQuoteAssetId(e.target.value)}>
               {quoteAssets.length === 0 && <option value="">No quote assets</option>}
               {quoteAssets.map((qa) => (
@@ -254,14 +267,24 @@ export function LaunchTemplatesPage() {
               ))}
             </Select>
           </Field>
-          <Field label="Variant" htmlFor="lt-v">
+          <Field
+            label="Variant"
+            htmlFor="lt-v"
+            tipAlign="end"
+            tip="The create-instruction encoding. v2 fuses create + dev-buy into one atomic tx; v1 is the legacy single create. Use v2 unless you need the legacy path."
+          >
             <Select id="lt-v" value={variant} onChange={(e) => setVariant(e.target.value)}>
               {VARIANTS.map((v) => (
                 <option key={v} value={v}>{v}</option>
               ))}
             </Select>
           </Field>
-          <Field label="Metadata template (name/symbol/URI)" htmlFor="lt-mt" className="md:col-span-4">
+          <Field
+            label="Metadata template (name/symbol/URI)"
+            htmlFor="lt-mt"
+            className="md:col-span-4"
+            tip="The token identity — name, symbol, and metadata URI — resolved from a saved Metadata template at create time. Required. Author these on the Metadata page."
+          >
             <Select id="lt-mt" value={metadataTemplateId} onChange={(e) => setMetadataTemplateId(e.target.value)}>
               <option value="">— select a metadata template —</option>
               {metadataTemplates.map((m) => (
@@ -272,22 +295,40 @@ export function LaunchTemplatesPage() {
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-          <Field label={`Dev buy (${quoteSymbol})`} htmlFor="lt-db">
+          <Field
+            label={`Dev buy (${quoteSymbol})`}
+            htmlFor="lt-db"
+            tip={`How much ${quoteSymbol} the launch (dev) wallet spends buying its own token in the create tx. Leave blank for a create with no dev buy.`}
+          >
             <Input id="lt-db" value={devBuyQuote} onChange={(e) => setDevBuyQuote(e.target.value)} placeholder="0.05" />
           </Field>
-          <Field label="Dev buy variant" htmlFor="lt-dbv">
+          <Field
+            label="Dev buy variant"
+            htmlFor="lt-dbv"
+            tip="The curve-buy encoding for the dev buy. 'buy_exact_sol_in' spends a fixed quote budget (recommended). 'buy' / 'buy_v2' are tokens-out and require a Slippage value to spend the budget."
+          >
             <Select id="lt-dbv" value={devBuyVariant} onChange={(e) => setDevBuyVariant(e.target.value as BuyVariant)}>
               {BUY_VARIANTS.map((v) => (
                 <option key={v} value={v}>{v}</option>
               ))}
             </Select>
           </Field>
-          <Field label="Slippage (bps)" htmlFor="lt-sl">
-            <Input id="lt-sl" type="number" value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} />
+          <Field
+            label="Slippage (bps)"
+            htmlFor="lt-sl"
+            tip="Max buy slippage in basis points (100 bps = 1%). Required for tokens-out dev-buy variants ('buy' / 'buy_v2') so their min-out floor is real — otherwise a fresh-curve buy nets ~1 token or reverts. 300–800 (3–8%) is typical; 500 is a safe default."
+          >
+            <Input id="lt-sl" type="number" value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} placeholder="500" />
           </Field>
           <div className="flex items-end gap-4">
-            <Checkbox id="lt-mh" label="Mayhem" checked={isMayhemMode} onChange={(e) => setIsMayhemMode(e.target.checked)} />
-            <Checkbox id="lt-cb" label="Cashback" checked={cashbackEnabled} onChange={(e) => setCashbackEnabled(e.target.checked)} />
+            <span className="inline-flex items-center gap-1">
+              <Checkbox id="lt-mh" label="Mayhem" checked={isMayhemMode} onChange={(e) => setIsMayhemMode(e.target.checked)} />
+              <InfoTip text="Enable pump.fun 'mayhem mode' on the create — higher-volatility launch parameters. Leave off unless you specifically want it." />
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Checkbox id="lt-cb" label="Cashback" checked={cashbackEnabled} onChange={(e) => setCashbackEnabled(e.target.checked)} />
+              <InfoTip text="Opt the launch into the launchpad's fee-cashback program where available." align="end" />
+            </span>
           </div>
         </div>
 
@@ -300,13 +341,26 @@ export function LaunchTemplatesPage() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-          <Field label="Default bundle leg count" htmlFor="lt-lc">
-            <Input id="lt-lc" type="number" min={0} value={bundleLegCount} onChange={(e) => setBundleLegCount(e.target.value)} />
+          <Field
+            label="Default bundle leg count"
+            htmlFor="lt-lc"
+            tip="How many co-buy legs to bundle atomically with the launch when the console doesn't override it. 0 = launch with no co-buys. Each leg is a separate funded wallet buying at creation."
+          >
+            <Input id="lt-lc" type="number" min={0} value={bundleLegCount} onChange={(e) => setBundleLegCount(e.target.value)} placeholder="4" />
           </Field>
-          <Field label={`Quote per leg (${quoteSymbol})`} htmlFor="lt-qpl">
+          <Field
+            label={`Quote per leg (${quoteSymbol})`}
+            htmlFor="lt-qpl"
+            tip={`${quoteSymbol} amount each co-buy leg spends. Applied to every leg unless a per-leg structure below overrides it.`}
+          >
             <Input id="lt-qpl" value={bundleQuotePerLeg} onChange={(e) => setBundleQuotePerLeg(e.target.value)} placeholder="0.02" />
           </Field>
-          <Field label={`Bundle tip (${quoteSymbol})`} htmlFor="lt-bt">
+          <Field
+            label={`Bundle tip (${quoteSymbol})`}
+            htmlFor="lt-bt"
+            tipAlign="end"
+            tip={`Jito tip for the co-buy bundle, in ${quoteSymbol}. Floored up to the live landed-tip auction at submit — this is a starting floor, not a cap.`}
+          >
             <Input id="lt-bt" value={bundleTipQuote} onChange={(e) => setBundleTipQuote(e.target.value)} placeholder="0.001" />
           </Field>
         </div>
@@ -340,20 +394,32 @@ export function LaunchTemplatesPage() {
           <div className="mt-2 space-y-2">
             {legRows.map((row, i) => (
               <div key={i} className="panel p-3 grid grid-cols-2 md:grid-cols-6 gap-2 items-end">
-                <Field label="Variant">
+                <Field
+                  label="Variant"
+                  tip="The curve-buy encoding this co-buy leg uses, independent of the dev buy. Vary encodings across legs to reduce the bundle's fingerprint."
+                >
                   <Select value={row.variant} onChange={(e) => updateLegRow(i, { variant: e.target.value as BuyVariant })}>
                     {BUY_VARIANTS.map((v) => (
                       <option key={v} value={v}>{v}</option>
                     ))}
                   </Select>
                 </Field>
-                <LegRange label="Slippage bps" min={row.slippage_bps_min} max={row.slippage_bps_max}
+                <LegRange label="Slippage bps"
+                  tip="Min/max slippage (bps) drawn per leg to vary the fingerprint. Blank = composer default 300–800."
+                  min={row.slippage_bps_min} max={row.slippage_bps_max}
                   onMin={(v) => updateLegRow(i, { slippage_bps_min: v })} onMax={(v) => updateLegRow(i, { slippage_bps_max: v })} />
-                <LegRange label="CU limit" min={row.cu_limit_min} max={row.cu_limit_max}
+                <LegRange label="CU limit"
+                  tip="Min/max compute-unit limit drawn per leg. Blank = composer default 120k–180k."
+                  min={row.cu_limit_min} max={row.cu_limit_max}
                   onMin={(v) => updateLegRow(i, { cu_limit_min: v })} onMax={(v) => updateLegRow(i, { cu_limit_max: v })} />
-                <LegRange label="CU price" min={row.cu_price_min} max={row.cu_price_max}
+                <LegRange label="CU price"
+                  tip="Min/max compute-unit price (micro-lamports) per leg — the priority fee. Blank = composer default 150k–400k."
+                  min={row.cu_price_min} max={row.cu_price_max}
                   onMin={(v) => updateLegRow(i, { cu_price_min: v })} onMax={(v) => updateLegRow(i, { cu_price_max: v })} />
-                <LegRange label={`Tip ${quoteSymbol}`} min={row.tip_quote_min} max={row.tip_quote_max}
+                <LegRange label={`Tip ${quoteSymbol}`}
+                  tipAlign="end"
+                  tip={`Min/max per-leg Jito tip range in ${quoteSymbol}. Blank = composer default (10k–100k lamports). Each leg's tip is still floored to the live auction at submit.`}
+                  min={row.tip_quote_min} max={row.tip_quote_max}
                   onMin={(v) => updateLegRow(i, { tip_quote_min: v })} onMax={(v) => updateLegRow(i, { tip_quote_max: v })} />
                 <Button variant="danger" size="sm" onClick={() => removeLegRow(i)}>Remove</Button>
                 <div className="col-span-2 md:col-span-6">
@@ -388,19 +454,23 @@ export function LaunchTemplatesPage() {
 
 function LegRange({
   label,
+  tip,
+  tipAlign,
   min,
   max,
   onMin,
   onMax,
 }: {
   label: string;
+  tip?: ReactNode;
+  tipAlign?: 'start' | 'end';
   min: string;
   max: string;
   onMin: (v: string) => void;
   onMax: (v: string) => void;
 }) {
   return (
-    <Field label={label}>
+    <Field label={label} tip={tip} tipAlign={tipAlign}>
       <div className="flex gap-1">
         <Input value={min} onChange={(e) => onMin(e.target.value)} placeholder="min" />
         <Input value={max} onChange={(e) => onMax(e.target.value)} placeholder="max" />

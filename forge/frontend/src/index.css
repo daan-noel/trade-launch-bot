@@ -267,6 +267,58 @@ a:hover {
   .muted {
     color: var(--color-muted);
   }
+
+  /* Info tooltip: a small info glyph that reveals a styled bubble on hover/focus.
+     Bubble text is normal-cased (labels are uppercase, tips should read as prose).
+     Anchored below-left of the icon; keeps within the dense form columns. */
+  .infotip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    color: var(--color-muted);
+    cursor: help;
+    vertical-align: middle;
+  }
+  .infotip:hover,
+  .infotip:focus-visible {
+    color: var(--color-accent-ink);
+    outline: none;
+  }
+  .infotip__bubble {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    width: max-content;
+    max-width: 260px;
+    padding: 0.5rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--color-line-2);
+    background: var(--color-panel-2);
+    color: var(--color-ink);
+    font-size: 0.72rem;
+    font-weight: 400;
+    line-height: 1.45;
+    text-transform: none;
+    letter-spacing: normal;
+    white-space: normal;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.12s ease;
+    pointer-events: none;
+  }
+  /* Right-anchored variant for fields near the container's right edge, so the
+     bubble grows leftward and never overflows the viewport. */
+  .infotip--end .infotip__bubble {
+    left: auto;
+    right: 0;
+  }
+  .infotip:hover .infotip__bubble,
+  .infotip:focus-visible .infotip__bubble {
+    opacity: 1;
+    visibility: visible;
+  }
 }
 
 /* Thin scrollbars for the dense layout */

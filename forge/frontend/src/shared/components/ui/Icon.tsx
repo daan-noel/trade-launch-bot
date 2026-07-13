@@ -23,6 +23,7 @@ export type IconName =
   | 'rocket'
   | 'bolt'
   | 'eye'
+  | 'info'
   | 'play'
   | 'pause'
   | 'stop';
@@ -119,6 +120,13 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
     </>
   ),
   play: <path d="M6 3v18l15-9Z" fill="currentColor" />,
