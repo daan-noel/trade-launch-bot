@@ -2,16 +2,22 @@ import bs58 from 'bs58';
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
-/** Lamports (exact native SOL) → human "0.0500 SOL". */
+/** Lamports (exact native SOL) → human "0.05 SOL".
+ *  `digits` is a MAX (not a fixed count) so trailing zeros are dropped:
+ *  `0.0500 → "0.05 SOL"`, `0 → "0 SOL"`. */
 export function formatSol(lamports: number | null | undefined, digits = 4): string {
   if (lamports == null) return '—';
-  return `${(lamports / LAMPORTS_PER_SOL).toFixed(digits)} SOL`;
+  return `${lamportsToSol(lamports, digits)} SOL`;
 }
 
-/** Bare lamports → SOL number (no unit) for compact table cells. */
+/** Bare lamports → SOL number (no unit) for compact table cells.
+ *  `digits` is a MAX so trailing zeros are dropped (`0.0500 → "0.05"`, `0 → "0"`). */
 export function lamportsToSol(lamports: number | null | undefined, digits = 4): string {
   if (lamports == null) return '—';
-  return (lamports / LAMPORTS_PER_SOL).toFixed(digits);
+  return (lamports / LAMPORTS_PER_SOL).toLocaleString('en-US', {
+    maximumFractionDigits: digits,
+    useGrouping: false,
+  });
 }
 
 export function formatUsd(usd: number | null | undefined): string {

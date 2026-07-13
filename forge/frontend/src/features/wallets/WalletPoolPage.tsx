@@ -501,6 +501,11 @@ export function WalletPoolPage() {
       // age, so a number that may have drifted never masquerades as current.
       render: (w) => {
         if (w.balance_lamports == null) return <span className="muted">—</span>;
+        // An empty wallet (typically a spent `used`/`retired` one) renders dimmed so a
+        // real holding never visually blends with a zero — regardless of freshness.
+        if (w.balance_lamports === 0) {
+          return <span className="mono muted">{formatSol(0)}</span>;
+        }
         if (isBalanceCountable(w)) {
           return <span className="mono">{formatSol(w.balance_lamports)}</span>;
         }
