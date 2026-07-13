@@ -514,9 +514,15 @@ impl LaunchRepo {
     /// Newest-first page of launches enriched for the "launched tokens" list —
     /// each launch LEFT JOINed to its `tokens` identity, the `token_overview`
     /// derived view (trade count / USD price / USD market cap — the SSOT for
-    /// display+USD, never recomputed here), and its bundle status. LEFT JOINs so a
-    /// launch still lists before its create tx is ingested (name/market are then
-    /// `NULL`). Bounded by `limit`/`offset` — never an unbounded scan.
+    /// display+USD, never recomputed here), and its bundle status. Also folds in a
+    /// per-mint holdings aggregate (`SUM(balance_base)` over open `token_positions`)
+    /// and its SOL value (`holding_base * current_price_quote`, quote base units) so
+    /// the list shows what we still hold without a per-row fetch. The holdings sum is
+    /// as-of the last on-chain reconcile (only the `/positions` endpoint reconciles;
+    /// the list load never RPC-probes) — the balance is materialized, not live.
+    /// LEFT JOINs so a launch still lists before its create tx is ingested (name /
+    /// market / holdings are then `NULL`). Bounded by `limit`/`offset` — never an
+    /// unbounded scan.
     pub async fn list_page(
         pool: &PgPool,
         limit: i64,
@@ -528,11 +534,20 @@ impl LaunchRepo {
                     b.status AS bundle_status, l.created_at, \
                     t.name, t.symbol, \
                     ov.trade_count, ov.is_migrated, ov.is_dead, \
-                    ov.price_usd, ov.market_cap_usd \
+                    ov.price_usd, ov.market_cap_usd, \
+                    ov.decimals AS token_decimals, ov.quote_decimals, \
+                    pos.holding_base, pos.holding_cost_quote, \
+                    (pos.holding_base * ov.current_price_quote) AS holding_value_quote \
              FROM launches l \
              LEFT JOIN tokens t ON t.mint_address = l.mint_address \
              LEFT JOIN token_overview ov ON ov.mint_address = l.mint_address \
              LEFT JOIN bundles b ON b.id = l.bundle_id \
+             LEFT JOIN ( \
+                 SELECT mint_address, SUM(balance_base)::BIGINT AS holding_base, \
+                        SUM(cost_quote)::BIGINT AS holding_cost_quote \
+                 FROM token_positions WHERE status = 'open' \
+                 GROUP BY mint_address \
+             ) pos ON pos.mint_address = l.mint_address \
              ORDER BY l.created_at DESC \
              LIMIT $1 OFFSET $2",
         )

@@ -21,14 +21,19 @@ export function formatUsd(usd: number | null | undefined): string {
   return `$${usd.toPrecision(3)}`;
 }
 
-/** Quote base units → human quote amount, given the quote's decimals. */
+/** Quote base units → human quote amount, given the quote's decimals.
+ *  `digits` is a MAX (not a fixed count) so trailing zeros are dropped:
+ *  `0.0200 → "0.02"`, `1.5 → "1.5"`, `0 → "0"`. */
 export function quoteToHuman(
   base: number | null | undefined,
   decimals: number,
   digits = 4,
 ): string {
   if (base == null) return '—';
-  return (base / 10 ** decimals).toFixed(digits);
+  return (base / 10 ** decimals).toLocaleString('en-US', {
+    maximumFractionDigits: digits,
+    useGrouping: false,
+  });
 }
 
 export function formatCount(n: number | null | undefined): string {

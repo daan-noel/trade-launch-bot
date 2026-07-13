@@ -12,7 +12,7 @@ import {
   IconButton,
   StatusPill,
 } from '@shared/components/ui';
-import { formatCount, formatUsd, gmgnMint } from '@shared/lib/format';
+import { formatCount, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { LaunchListRow } from '@shared/types';
 
 const PAGE = 100;
@@ -39,6 +39,40 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
   { header: 'Flags', render: (l) => <Flags l={l} /> },
   { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
   { header: 'Mkt cap', align: 'right', render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span> },
+  {
+    header: 'Holding',
+    align: 'right',
+    render: (l) =>
+      l.holding_base && l.holding_base > 0 ? (
+        <span className="mono">
+          {(l.holding_base / 10 ** (l.token_decimals ?? 6)).toLocaleString(undefined, {
+            maximumFractionDigits: 2,
+          })}
+        </span>
+      ) : (
+        <span className="muted">—</span>
+      ),
+  },
+  {
+    header: 'Cost (SOL)',
+    align: 'right',
+    render: (l) =>
+      l.holding_base && l.holding_base > 0 ? (
+        <span className="mono">{quoteToHuman(l.holding_cost_quote, l.quote_decimals ?? 9)}</span>
+      ) : (
+        <span className="muted">—</span>
+      ),
+  },
+  {
+    header: 'Value (SOL)',
+    align: 'right',
+    render: (l) =>
+      l.holding_base && l.holding_base > 0 ? (
+        <span className="mono">{quoteToHuman(l.holding_value_quote, l.quote_decimals ?? 9)}</span>
+      ) : (
+        <span className="muted">—</span>
+      ),
+  },
   { header: 'Variant', render: (l) => <span className="mono text-xs muted">{l.variant}</span> },
   { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
   {

@@ -171,6 +171,18 @@ function HoldingsTable({
   const usdRate = overview?.quote_usd_rate ?? null;
   const quoteSymbol = overview?.quote_symbol ?? 'quote';
 
+  // Aggregate holdings across every open position: total tokens held + total cost
+  // basis + total value, in the quote (SOL). Same math as the per-row cells, summed
+  // once (audit H2: recomputes only when positions / price change). Open-only, to
+  // match the launched-tokens list aggregate.
+  const totals = useMemo(() => {
+    const open = positions.filter((p) => p.status === 'open');
+    const totalBase = open.reduce((s, p) => s + p.balance_base, 0);
+    const totalCostQuote = open.reduce((s, p) => s + p.cost_quote, 0);
+    const totalValueQuote = price == null ? null : totalBase * price;
+    return { totalBase, totalCostQuote, totalValueQuote };
+  }, [positions, price]);
+
   // Memoized so its identity is stable across polls (audit H2) — the value/PnL
   // closures fold in the overview-derived scalars, so they only rebuild when
   // those actually change, not on every positions refetch.
@@ -226,13 +238,31 @@ function HoldingsTable({
   }, [qd, td, price, usdRate, quoteSymbol]);
 
   return (
-    <DataTable
-      columns={columns}
-      rows={positions}
-      rowKey={(p) => p.id}
-      loading={loading}
-      empty="No tracked holdings — this token isn't one of our launches, or its positions aren't seeded yet."
-    />
+    <div className="space-y-3">
+      {positions.length > 0 && (
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard
+            label="Total held"
+            value={(totals.totalBase / 10 ** td).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+          />
+          <StatCard
+            label={`Total cost (${quoteSymbol})`}
+            value={quoteToHuman(totals.totalCostQuote, qd)}
+          />
+          <StatCard
+            label={`Total value (${quoteSymbol})`}
+            value={quoteToHuman(totals.totalValueQuote, qd)}
+          />
+        </div>
+      )}
+      <DataTable
+        columns={columns}
+        rows={positions}
+        rowKey={(p) => p.id}
+        loading={loading}
+        empty="No tracked holdings — this token isn't one of our launches, or its positions aren't seeded yet."
+      />
+    </div>
   );
 }
 

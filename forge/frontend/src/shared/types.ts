@@ -407,6 +407,17 @@ export interface LaunchListRow {
   is_dead: boolean | null;
   price_usd: number | null;
   market_cap_usd: number | null;
+  // Token decimals — divides holding_base to a human token amount.
+  token_decimals: number | null;
+  // Quote-asset decimals — divides holding_value_quote to human SOL.
+  quote_decimals: number | null;
+  // Tokens still held across open positions (token base units, SUM(balance_base)).
+  // As-of the last reconcile (list load doesn't RPC-probe) — see backend list_page.
+  holding_base: number | null;
+  // Cost basis of those open positions, quote base units (SUM(cost_quote)).
+  holding_cost_quote: number | null;
+  // SOL value of the holding, quote base units (holding_base * current_price_quote).
+  holding_value_quote: number | null;
 }
 
 export interface LaunchesPage {

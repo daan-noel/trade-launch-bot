@@ -148,6 +148,23 @@ pub struct LaunchListRow {
     pub is_dead: Option<bool>,
     pub price_usd: Option<f64>,
     pub market_cap_usd: Option<f64>,
+    /// Token decimals (from `token_overview`) — divides `holding_base` to a human
+    /// token amount. `None` until the create tx is ingested.
+    pub token_decimals: Option<i16>,
+    /// Quote-asset decimals (from `token_overview`) — lets the frontend render
+    /// `holding_value_quote` in human SOL. `None` until the create tx is ingested.
+    pub quote_decimals: Option<i16>,
+    /// Tokens we still hold across all open positions for this mint, token base
+    /// units (`SUM(balance_base)`). `None` when no positions are seeded/open.
+    /// As-of the last on-chain reconcile — see [`LaunchRepo::list_page`].
+    pub holding_base: Option<i64>,
+    /// Cost basis of those open positions, quote base units (`SUM(cost_quote)` —
+    /// total SOL spent acquiring them). Divide by `10^quote_decimals` for human SOL.
+    pub holding_cost_quote: Option<i64>,
+    /// SOL value of that holding, quote base units (`holding_base *
+    /// current_price_quote`). Divide by `10^quote_decimals` for human SOL. `None`
+    /// when we hold nothing or the token has no priced trades yet.
+    pub holding_value_quote: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
