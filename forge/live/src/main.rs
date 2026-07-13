@@ -58,9 +58,11 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.first().map(String::as_str) == Some("launch-sim-matrix") {
-        // Read-only: Helius-simulate every create × cashback × buy-variant combo
-        // (zero SOL) to establish the actual on-chain working-pairs. Needs the
-        // launcher env (keystore + KEK + RPC + ALT + a funded managed wallet).
+        // Read-only: Jito-simulateBundle every create × cashback × buy-variant
+        // combo (zero SOL) — both the fused dev-buy (tx0) AND a standalone co-buy
+        // leg (tx1) against the same curve — to establish the actual on-chain
+        // working-pairs. Needs the launcher env (keystore + KEK + RPC + ALT + TWO
+        // funded managed wallets: one dev/creator payer, one bundler-leg payer).
         launcher::run_launch_sim_matrix(&settings, &args[1..]).await?;
         return Ok(());
     }

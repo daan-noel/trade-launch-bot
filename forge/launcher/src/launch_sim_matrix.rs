@@ -1,59 +1,89 @@
-//! `launch-sim-matrix` — Helius-simulate EVERY create × cashback × buy-variant
-//! combination with ZERO real SOL, to establish the actual on-chain working-pairs.
+//! `launch-sim-matrix` — Jito-`simulateBundle` EVERY create × cashback ×
+//! buy-variant combination with ZERO real SOL, to establish the actual on-chain
+//! working-pairs for BOTH the fused dev-buy and a standalone co-buy leg.
 //!
 //! For each combo it builds the REAL create(+dev-buy) `tx0` the launch path would
 //! submit (via the same `build_create{,_v2}_leg_tx` builders) against a fresh
-//! ephemeral mint, then runs a standard `simulateTransaction` against live chain
-//! state. Because create + dev-buy execute in ONE tx, the simulated buy sees the
-//! curve the create just made — including whether `create_v2`'s cashback CPI
-//! initialized the per-mint `sharing_config` a `buy_v2`/`buy_exact_quote_in_v2`
-//! needs. And because a dev-buy of variant X is byte-identical to a CO-BUY of X
-//! (both draw the shared `build_curve_buy_core` SSOT), this also verifies the
-//! co-buy-leg account layouts.
+//! ephemeral mint, PLUS a real co-buy-leg `tx1` of the same variant (via
+//! `build_bundle_leg_tx`, signed by a second wallet) against the SAME curve — the
+//! exact two builders an atomic launch bundle draws from
+//! (`build_atomic_bundle_txs`). Both run through ONE `simulateBundle` call so `tx1`
+//! executes against the simulation bank `tx0` just produced, exactly like a real
+//! bundle. This covers both the shared `build_curve_buy_core` SSOT AND each
+//! builder's own wrapping (idempotent ATA creation, `assemble`'s CU/tip/ATA
+//! layout, launch-ALT compilation) — a leg-specific bug (e.g. in `assemble` or the
+//! leg's ALT compile) would NOT be caught by the dev-buy alone.
 //!
-//! Nothing is submitted; the payer only needs a real on-chain balance so a valid
-//! pair simulates as SUCCESS (not insufficient-funds). Read-only diagnostic.
+//! Nothing is submitted; the two payers only need a real on-chain balance so a
+//! valid pair simulates as SUCCESS (not insufficient-funds). Read-only diagnostic.
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use executor_core::IxLayout;
 use platform_core::config::Settings;
 use platform_core::storage::connect;
 use platform_core::storage::repositories::ManagedWalletRepo;
-use pump_trader::types::{CreateTokenArgs, CreateTokenV2Args};
-use pump_trader::{BundleBuyVariant, DevBuy, PumpFunTrader};
+use pump_trader::types::{CreateTokenArgs, CreateTokenV2Args, TokenProgram};
+use pump_trader::{BundleBuyVariant, BundleLegParams, DevBuy, PumpFunTrader};
 use serde_json::Value;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::transaction::VersionedTransaction;
 use std::str::FromStr;
 
+use crate::bundle_simulate::simulate_jito_bundle;
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
 use crate::trader_config::build_launch_trader_config;
 
-/// Minimum payer balance to simulate a small dev-buy without a false
-/// insufficient-funds revert (create rent + 0.01 dev-buy + headroom).
+/// Minimum payer balance to simulate a small dev-buy/co-buy without a false
+/// insufficient-funds revert (create rent + 0.01 buy + fee/tip headroom).
 const MIN_PAYER_LAMPORTS: i64 = 30_000_000; // ~0.03 SOL
 /// Small dev-buy so any modestly-funded managed wallet can be the sim payer.
 const DEV_BUY_LAMPORTS: u64 = 10_000_000; // 0.01 SOL
+/// Small co-buy leg, same size as the dev-buy for a like-for-like comparison.
+const COBUY_LAMPORTS: u64 = 10_000_000; // 0.01 SOL
+/// Static leg budget for the sim — real launches jitter these per persona, but a
+/// fixed mid-range value is enough to prove the account layout + ix assembly work.
+fn sim_leg_params() -> BundleLegParams {
+    BundleLegParams {
+        slippage_bps: 500,
+        cu_limit: 250_000,
+        cu_price: 750_000,
+        tip_lamports: 200_000,
+        layout: IxLayout::canonical_buy(),
+    }
+}
 
 pub async fn run_launch_sim_matrix(settings: &Settings, _args: &[String]) -> Result<()> {
     let launcher = LauncherSettings::from_env()?;
     let pools = connect(settings).await?;
     let kek = EnvKek::from_passphrase(&launcher.kek_passphrase);
 
-    // Pick the highest-balance managed wallet we hold a key for as the sim
-    // creator/payer. Simulation spends nothing, but the payer must hold real SOL
-    // so a VALID pair simulates as success rather than an insufficient-funds
-    // revert that would mask the account-layout result we're actually testing.
+    // Pick the two highest-balance managed wallets we hold keys for: one is the sim
+    // creator/dev payer (tx0), the other is the sim bundler payer for the co-buy
+    // leg (tx1) — mirroring a real atomic bundle, where the dev wallet and bundler
+    // wallets are always distinct. Simulation spends nothing, but both payers must
+    // hold real SOL so a VALID pair simulates as success rather than an
+    // insufficient-funds revert that would mask the account-layout result we're
+    // actually testing.
     let mut wallets = ManagedWalletRepo::list_all(&pools.hot, None).await?;
     wallets.sort_by_key(|w| std::cmp::Reverse(w.balance_lamports.unwrap_or(0)));
-    let payer = wallets
+    let mut funded = wallets
         .into_iter()
-        .find(|w| w.balance_lamports.unwrap_or(0) > MIN_PAYER_LAMPORTS)
-        .context("no managed wallet with > ~0.03 SOL to act as the sim payer")?;
+        .filter(|w| w.balance_lamports.unwrap_or(0) > MIN_PAYER_LAMPORTS);
+    let payer = funded
+        .next()
+        .context("no managed wallet with > ~0.03 SOL to act as the sim dev/creator payer")?;
+    let bundler_payer = funded.next().context(
+        "need a SECOND managed wallet with > ~0.03 SOL to act as the sim co-buy-leg payer \
+         (the dev wallet and a bundler wallet are always distinct in a real launch)",
+    )?;
+
     let dev_signer = keystore::resolve_signer(&launcher.keystore_dir, &payer.key_ref, &kek)?;
     let creator = dev_signer.pubkey();
+    let bundler_signer = keystore::resolve_signer(&launcher.keystore_dir, &bundler_payer.key_ref, &kek)?;
+    let bundler_pubkey = bundler_signer.pubkey();
 
     let nonce_accounts: Vec<Pubkey> = launcher
         .nonce_accounts
@@ -64,21 +94,27 @@ pub async fn run_launch_sim_matrix(settings: &Settings, _args: &[String]) -> Res
     let mut trader = PumpFunTrader::new(trader_config);
     trader.initialize().await.context("initialize pump-trader")?;
 
-    println!("── launch-sim-matrix (Helius simulateTransaction, zero SOL) ──────────");
+    println!("── launch-sim-matrix (Jito simulateBundle, zero SOL) ──────────────────");
     println!(
-        "payer/creator : {creator}  ({:.4} SOL)",
+        "dev payer     : {creator}  ({:.4} SOL)",
         payer.balance_lamports.unwrap_or(0) as f64 / 1e9
     );
-    println!("dev-buy       : {:.4} SOL per combo (slippage 500bps)", DEV_BUY_LAMPORTS as f64 / 1e9);
+    println!(
+        "bundler payer : {bundler_pubkey}  ({:.4} SOL)",
+        bundler_payer.balance_lamports.unwrap_or(0) as f64 / 1e9
+    );
+    println!("dev-buy       : {:.4} SOL per combo (slippage 500bps, fused into tx0)", DEV_BUY_LAMPORTS as f64 / 1e9);
+    println!("co-buy leg    : {:.4} SOL per combo (slippage 500bps, standalone tx1)", COBUY_LAMPORTS as f64 / 1e9);
     println!("launch ALT    : {:?}", launcher.launch_alt);
-    println!("note          : dev-buy of variant X ≡ co-buy of X (shared SSOT), so this");
-    println!("                verifies both dev-buy AND co-buy-leg account layouts.");
+    println!("note          : tx0 (create+dev-buy) and tx1 (co-buy leg) run through ONE");
+    println!("                simulateBundle call, so tx1 executes against the curve tx0");
+    println!("                just made — exactly like a real atomic launch bundle.");
     println!("─────────────────────────────────────────────────────────────────────");
     println!(
-        "{:<20} {:<9} {:<24} {:<12} {}",
-        "create", "cashback", "buy_variant", "result", "detail"
+        "{:<20} {:<9} {:<24} {:<12} {:<12} detail",
+        "create", "cashback", "buy_variant", "dev_buy", "leg_buy"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(120));
 
     // create variant, cashback flag (create_v1 ignores it)
     let creates: [(&str, bool); 3] = [
@@ -104,7 +140,7 @@ pub async fn run_launch_sim_matrix(settings: &Settings, _args: &[String]) -> Res
                 variant: bv,
             });
 
-            let built = match create_variant {
+            let create_built = match create_variant {
                 "pumpfun.create_v2" => {
                     let args = CreateTokenV2Args {
                         name: "SimMatrix".into(),
@@ -131,54 +167,104 @@ pub async fn run_launch_sim_matrix(settings: &Settings, _args: &[String]) -> Res
                 }
             };
 
-            // The buyer's base token ATA — track it so a "success" is proven by
-            // real tokens landing in it (not a silent no-op). Token program follows
-            // the create variant (Legacy SPL for v1, Token-2022 for v2). ATA =
+            // Each buyer's base token ATA — tracked so a "success" is proven by real
+            // tokens landing in it (not a silent no-op). Token program follows the
+            // create variant (Legacy SPL for v1, Token-2022 for v2). ATA =
             // PDA([owner, token_program, mint], ATA_PROGRAM).
-            let base_token_program = if create_variant.ends_with("v1") {
+            let token_program_pk = if create_variant.ends_with("v1") {
                 pump_trader::protocol::TOKEN
             } else {
                 pump_trader::protocol::TOKEN_2022
             };
-            let base_ata = Pubkey::find_program_address(
-                &[
-                    creator.as_ref(),
-                    base_token_program.as_ref(),
-                    mint.pubkey().as_ref(),
-                ],
-                &pump_trader::protocol::ASSOCIATED_TOKEN_PROGRAM,
-            )
-            .0;
+            let base_ata_for = |owner: &Pubkey| {
+                Pubkey::find_program_address(
+                    &[owner.as_ref(), token_program_pk.as_ref(), mint.pubkey().as_ref()],
+                    &pump_trader::protocol::ASSOCIATED_TOKEN_PROGRAM,
+                )
+                .0
+            };
+            let dev_base_ata = base_ata_for(&creator);
+            let leg_base_ata = base_ata_for(&bundler_pubkey);
 
-            let (result, detail) = match built {
-                Ok(tx) => match simulate_tx(&launcher.rpc_url, &tx, &base_ata).await {
-                    Ok(sim) if sim.success => (
-                        "OK".to_string(),
-                        format!(
-                            "cu={} tokens_recv={}",
-                            sim.units.map(|u| u.to_string()).unwrap_or_else(|| "?".into()),
-                            sim.token_after.map(|t| t.to_string()).unwrap_or_else(|| "0".into()),
-                        ),
-                    ),
-                    Ok(sim) => {
-                        let code = extract_custom(&sim.err);
-                        let hint = sim
-                            .logs
-                            .iter()
-                            .rev()
-                            .find(|l| {
-                                l.contains("failed") || l.contains("Error") || l.contains("Constraint")
-                            })
-                            .cloned()
-                            .unwrap_or_default();
-                        (
-                            format!("REVERT{}", code.map(|c| format!(" ({c})")).unwrap_or_default()),
-                            format!("{} | {hint}", sim.err),
-                        )
+            // tx1 — the standalone co-buy leg (`build_bundle_leg_tx`, the SAME
+            // builder an atomic launch bundle draws from), same variant as the
+            // dev-buy above. Only attempted when tx0 built — it has no curve to buy
+            // against otherwise. Pre-buy reserves are the SIMULATED post-dev-buy
+            // curve (no on-chain state exists yet for this ephemeral mint), the same
+            // `simulate_launch_leg_reserves` SSOT `build_atomic_bundle_txs` uses.
+            let mut leg_build_err: Option<String> = None;
+            let leg_built = if create_built.is_ok() {
+                let token_program = if create_variant.ends_with("v1") {
+                    TokenProgram::Legacy
+                } else {
+                    TokenProgram::Token2022
+                };
+                let leg_reserves =
+                    trader.simulate_launch_leg_reserves(DEV_BUY_LAMPORTS, &[COBUY_LAMPORTS])[0];
+                match trader
+                    .build_bundle_leg_tx(
+                        bundler_signer.as_ref(),
+                        blockhash,
+                        &mint.pubkey(),
+                        &creator,
+                        token_program,
+                        COBUY_LAMPORTS,
+                        cashback,
+                        bv,
+                        &sim_leg_params(),
+                        Some(leg_reserves),
+                    )
+                    .await
+                {
+                    Ok(tx) => Some(tx),
+                    Err(e) => {
+                        leg_build_err = Some(e.to_string());
+                        None
                     }
-                    Err(e) => ("SIM_ERR".to_string(), e.to_string()),
-                },
-                Err(e) => ("BUILD_ERR".to_string(), e.to_string()),
+                }
+            } else {
+                leg_build_err = Some("skipped (tx0 create leg failed to build)".to_string());
+                None
+            };
+
+            // Run whatever built through ONE simulateBundle call so the co-buy leg
+            // (if present) executes against tx0's simulation bank.
+            let mut txs: Vec<VersionedTransaction> = Vec::with_capacity(2);
+            let mut track: Vec<Option<Pubkey>> = Vec::with_capacity(2);
+            let dev_build_err = match create_built {
+                Ok(tx) => {
+                    txs.push(tx);
+                    track.push(Some(dev_base_ata));
+                    None
+                }
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(tx) = leg_built {
+                txs.push(tx);
+                track.push(Some(leg_base_ata));
+            }
+
+            let leg_results: Vec<(String, String)> = if txs.is_empty() {
+                Vec::new()
+            } else {
+                match combo_leg_results(&launcher.rpc_url, &txs, &track).await {
+                    Ok(r) => r,
+                    Err(e) => vec![("SIM_ERR".to_string(), e.to_string()); txs.len()],
+                }
+            };
+            let mut leg_results = leg_results.into_iter();
+
+            let (dev_result, dev_detail) = match dev_build_err {
+                Some(e) => ("BUILD_ERR".to_string(), e),
+                None => leg_results
+                    .next()
+                    .unwrap_or_else(|| ("SIM_ERR".to_string(), "no result".to_string())),
+            };
+            let (leg_result, leg_detail) = match leg_build_err {
+                Some(e) => ("BUILD_ERR".to_string(), e),
+                None => leg_results
+                    .next()
+                    .unwrap_or_else(|| ("SIM_ERR".to_string(), "no result".to_string())),
             };
 
             let cb = if create_variant.ends_with("v1") {
@@ -189,8 +275,8 @@ pub async fn run_launch_sim_matrix(settings: &Settings, _args: &[String]) -> Res
                 "off"
             };
             println!(
-                "{:<20} {:<9} {:<24} {:<12} {}",
-                create_variant, cb, bv_name, result, detail
+                "{:<20} {:<9} {:<24} {:<12} {:<12} dev[{dev_detail}] leg[{leg_detail}]",
+                create_variant, cb, bv_name, dev_result, leg_result
             );
         }
         println!();
@@ -202,73 +288,75 @@ pub async fn run_launch_sim_matrix(settings: &Settings, _args: &[String]) -> Res
     Ok(())
 }
 
-/// Parsed outcome of one `simulateTransaction`.
-struct SimResult {
-    success: bool,
-    err: String,
-    logs: Vec<String>,
-    units: Option<u64>,
-    /// Post-execution raw token balance of the tracked base ATA — proves the buy
-    /// actually filled (tokens landed), not a silent no-op.
-    token_after: Option<u64>,
-}
-
-/// POST a standard `simulateTransaction` for one signed v0 tx, tracking `track`'s
-/// post-execution state. `sigVerify:false` + `replaceRecentBlockhash:true` so
-/// neither a stale blockhash nor the (real) signatures gate the result — only the
-/// on-chain execution does.
-async fn simulate_tx(rpc_url: &str, tx: &VersionedTransaction, track: &Pubkey) -> Result<SimResult> {
-    let wire = bincode::serialize(tx).context("serialize tx")?;
-    let b64 = STANDARD.encode(wire);
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "simulateTransaction",
-        "params": [
-            b64,
-            {
-                "sigVerify": false,
-                "replaceRecentBlockhash": true,
-                "encoding": "base64",
-                "commitment": "processed",
-                "accounts": { "encoding": "base64", "addresses": [track.to_string()] }
-            }
-        ]
-    });
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(rpc_url)
-        .json(&body)
-        .send()
-        .await
-        .context("simulateTransaction HTTP")?;
-    let status = resp.status();
-    let text = resp.text().await.context("simulateTransaction body")?;
-    if !status.is_success() {
-        bail!("simulateTransaction HTTP {status}: {text}");
+/// Parse a `simulateBundle` response into one `(result, detail)` pair per tx, in
+/// request order — `txs[0]` is always tx0 (create+dev-buy); `txs[1]`, if present,
+/// is the co-buy leg. Mirrors the single-tx `simulateTransaction` parse this
+/// replaced (same OK/REVERT/custom-code/log-hint shape), plus a best-effort
+/// post-execution token balance per leg from `postExecutionAccountsConfigs`.
+async fn combo_leg_results(
+    rpc_url: &str,
+    txs: &[VersionedTransaction],
+    track: &[Option<Pubkey>],
+) -> Result<Vec<(String, String)>> {
+    let resp = simulate_jito_bundle(rpc_url, txs, track).await?;
+    if let Some(err) = resp.get("error") {
+        bail!("simulateBundle RPC error: {err}");
     }
-    let v: Value = serde_json::from_str(&text).context("parse simulateTransaction response")?;
-    if let Some(err) = v.get("error") {
-        bail!("RPC error: {err}");
-    }
-    let val = v
+    let value = resp
         .get("result")
         .and_then(|r| r.get("value"))
-        .context("simulateTransaction: no result.value")?;
-    let err = val.get("err");
-    let success = matches!(err, None | Some(Value::Null));
-    let err_str = err.map(|e| e.to_string()).unwrap_or_default();
-    let logs = val
-        .get("logs")
+        .context("simulateBundle: no result.value")?;
+    let results = value
+        .get("transactionResults")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|l| l.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-    let units = val.get("unitsConsumed").and_then(Value::as_u64);
-    // The tracked account's post-exec data (base64 SPL/Token-2022) → raw amount at
-    // offset 64 (u64 LE), present in both token layouts. None if the ATA wasn't
-    // created / no data returned.
-    let token_after = val
-        .get("accounts")
+        .context("simulateBundle: no transactionResults")?;
+
+    Ok(results
+        .iter()
+        .map(|tx| {
+            let err = tx.get("err");
+            let ok = matches!(err, None | Some(Value::Null));
+            let units = tx.get("unitsConsumed").and_then(Value::as_u64);
+            if ok {
+                let token_after = extract_token_after(tx);
+                (
+                    "OK".to_string(),
+                    format!(
+                        "cu={} tokens_recv={}",
+                        units.map(|u| u.to_string()).unwrap_or_else(|| "?".into()),
+                        token_after.map(|t| t.to_string()).unwrap_or_else(|| "0".into()),
+                    ),
+                )
+            } else {
+                let err_str = err.map(|e| e.to_string()).unwrap_or_default();
+                let code = extract_custom(&err_str);
+                let hint = tx
+                    .get("logs")
+                    .and_then(Value::as_array)
+                    .and_then(|logs| {
+                        logs.iter().rev().find_map(|l| {
+                            l.as_str().filter(|l| {
+                                l.contains("failed") || l.contains("Error") || l.contains("Constraint")
+                            })
+                        })
+                    })
+                    .unwrap_or_default();
+                (
+                    format!("REVERT{}", code.map(|c| format!(" ({c})")).unwrap_or_default()),
+                    format!("{err_str} | {hint}"),
+                )
+            }
+        })
+        .collect())
+}
+
+/// Best-effort post-execution raw token balance of a `simulateBundle` tx result's
+/// FIRST tracked account (`postExecutionAccountsConfigs`) — offset 64 (u64 LE) is
+/// the SPL/Token-2022 amount field, present in both layouts. `None` if the field is
+/// absent (RPC doesn't populate it) or the ATA wasn't created.
+fn extract_token_after(tx_result: &Value) -> Option<u64> {
+    tx_result
+        .get("postExecutionAccounts")
         .and_then(Value::as_array)
         .and_then(|a| a.first())
         .and_then(|acct| acct.as_object())
@@ -278,11 +366,11 @@ async fn simulate_tx(rpc_url: &str, tx: &VersionedTransaction, track: &Pubkey) -
         .and_then(Value::as_str)
         .and_then(|b64| STANDARD.decode(b64).ok())
         .filter(|bytes| bytes.len() >= 72)
-        .map(|bytes| u64::from_le_bytes(bytes[64..72].try_into().unwrap()));
-    Ok(SimResult { success, err: err_str, logs, units, token_after })
+        .map(|bytes| u64::from_le_bytes(bytes[64..72].try_into().unwrap()))
 }
 
-/// Pull the Anchor custom error code out of a `simulateTransaction` `err` JSON,
+/// Pull the Anchor custom error code out of a `simulateTransaction`/`simulateBundle`
+/// `err` JSON,
 /// e.g. `{"InstructionError":[2,{"Custom":2006}]}` → `Some(2006)`.
 fn extract_custom(err_json: &str) -> Option<u32> {
     let marker = "\"Custom\":";

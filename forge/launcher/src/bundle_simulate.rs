@@ -137,7 +137,7 @@ pub async fn run_bundle_simulate(settings: &Settings, args: &[String]) -> Result
     }
     println!("──────────────────────────────────────────────────────────");
 
-    let result = simulate_jito_bundle(&launcher.rpc_url, &built.txs).await?;
+    let result = simulate_jito_bundle(&launcher.rpc_url, &built.txs, &vec![None; built.txs.len()]).await?;
     report_simulation(&result);
     Ok(())
 }
@@ -145,17 +145,31 @@ pub async fn run_bundle_simulate(settings: &Settings, args: &[String]) -> Result
 /// POST Jito `simulateBundle` to the configured RPC. Executes the txs in order
 /// against one simulation bank (so co-buys see the curve `tx0` creates). Signatures
 /// are real (we sign with the keystore keys), but `skipSigVerify` is set so a
-/// slightly-stale blockhash can't mask the actual execution error.
-async fn simulate_jito_bundle(rpc_url: &str, txs: &[solana_sdk::transaction::VersionedTransaction]) -> Result<Value> {
+/// slightly-stale blockhash can't mask the actual execution error. `track` is a
+/// parallel slice — `Some(pubkey)` at index `i` requests post-execution account data
+/// for `txs[i]` (e.g. to prove tokens actually landed in a buyer's ATA); `None`
+/// skips tracking for that leg. SSOT for the `simulateBundle` call — used by both
+/// this bundle's real-persisted-bundle pre-flight and `launch_sim_matrix`'s
+/// create+dev-buy+co-buy-leg matrix.
+pub(crate) async fn simulate_jito_bundle(
+    rpc_url: &str,
+    txs: &[solana_sdk::transaction::VersionedTransaction],
+    track: &[Option<Pubkey>],
+) -> Result<Value> {
     let encoded: Vec<String> = txs
         .iter()
         .map(|tx| bincode::serialize(tx).map(|b| STANDARD.encode(b)))
         .collect::<std::result::Result<_, _>>()
         .context("serialize bundle tx")?;
 
-    // One (null) account-config per tx — required fields even when we don't want
-    // account snapshots back.
-    let per_tx_null: Vec<Value> = vec![Value::Null; encoded.len()];
+    let pre_null: Vec<Value> = vec![Value::Null; encoded.len()];
+    let post_configs: Vec<Value> = track
+        .iter()
+        .map(|t| match t {
+            Some(pk) => serde_json::json!({ "encoding": "base64", "addresses": [pk.to_string()] }),
+            None => Value::Null,
+        })
+        .collect();
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -165,8 +179,8 @@ async fn simulate_jito_bundle(rpc_url: &str, txs: &[solana_sdk::transaction::Ver
             {
                 "skipSigVerify": true,
                 "transactionEncoding": "base64",
-                "preExecutionAccountsConfigs": per_tx_null,
-                "postExecutionAccountsConfigs": per_tx_null,
+                "preExecutionAccountsConfigs": pre_null,
+                "postExecutionAccountsConfigs": post_configs,
             }
         ]
     });
