@@ -460,7 +460,13 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "live=info,sqlx=error".into()),
+                // The bin crate is `hunter_live` (bin target `hunter-live`), where all
+                // of main.rs's startup logs live; `live` is the lib crate. Enable both
+                // (plus the shared `trading_core` lib) or the process runs silently and
+                // looks idle.
+                .unwrap_or_else(|_| {
+                    "hunter_live=info,live=info,trading_core=info,sqlx=error".into()
+                }),
         )
         .init();
 
