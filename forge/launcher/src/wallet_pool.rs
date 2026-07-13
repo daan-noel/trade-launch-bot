@@ -160,6 +160,43 @@ async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &s
     Ok(pending)
 }
 
+/// One-shot LIVE balance refresh across the WHOLE managed-wallet set (every role,
+/// every status incl. `funded`/`reserved`/`used`/`retired`), so the operator can
+/// read an exact "how much SOL is in my wallets right now" figure on demand.
+///
+/// Deliberately NOT wired into the steady poller: that stays bounded to
+/// `generated`/`funding` + treasury to hold EC2 idle RPC cost flat (the 4GB/2vCPU
+/// guardrail). This is an operator-triggered burst instead — batched
+/// `getMultipleAccounts` (100 pubkeys/call), one cache write per wallet. Returns
+/// the freshly-stamped rows (balance + `balance_checked_at`), optionally scoped to
+/// one role, in list order. Races the steady poller harmlessly: both write via
+/// `record_balance` (last-writer-wins on balance/checked_at, no corruption).
+pub async fn refresh_all_balances(
+    pool: &PgPool,
+    rpc_url: &str,
+    role: Option<&str>,
+) -> Result<Vec<platform_core::models::ManagedWallet>> {
+    let wallets = ManagedWalletRepo::list_all(pool, role).await?;
+    if wallets.is_empty() {
+        return Ok(wallets);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("build reqwest client for balance refresh")?;
+    for chunk in wallets.chunks(RPC_BATCH_SIZE) {
+        let addresses: Vec<String> = chunk.iter().map(|w| w.address.clone()).collect();
+        let balances = fetch_balances(&client, rpc_url, &addresses).await?;
+        for (wallet, balance) in chunk.iter().zip(balances) {
+            ManagedWalletRepo::record_balance(pool, wallet.id, balance as i64, MIN_FUNDED_LAMPORTS)
+                .await?;
+        }
+    }
+    info!(count = wallets.len(), ?role, "operator live balance refresh");
+    // Re-read so the caller gets the freshly-stamped rows.
+    ManagedWalletRepo::list_all(pool, role).await
+}
+
 /// `getMultipleAccounts` lamport balances, in the same order as `addresses`.
 /// Missing/never-funded accounts come back `null` from the RPC — treated as 0.
 async fn fetch_balances(

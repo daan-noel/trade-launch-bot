@@ -82,6 +82,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             "/api/wallet_pool/fund_for_launch",
             web::post().to(wallet_pool_fund_for_launch),
         )
+        .route(
+            "/api/wallet_pool/refresh_balances",
+            web::post().to(wallet_pool_refresh_balances),
+        )
         .route("/api/wallet_pool/transfer", web::post().to(wallet_pool_transfer))
         .route(
             "/api/wallet_pool/{id}/export",
@@ -294,6 +298,23 @@ async fn wallet_pool_list(
     q: web::Query<WalletsQuery>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let rows = ManagedWalletRepo::list_all(pool.get_ref(), q.role.as_deref())
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+/// `POST /api/wallet_pool/refresh_balances` — one live `getMultipleAccounts` burst
+/// over EVERY managed wallet (optionally scoped to `?role=`), writing each cached
+/// balance so the pool page can show an exact, current total (incl. `used`/`retired`
+/// wallets the steady poller leaves frozen). Operator-triggered; not on any hot
+/// path — see `launcher::refresh_all_balances`.
+async fn wallet_pool_refresh_balances(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    q: web::Query<WalletsQuery>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    let rows = launcher::refresh_all_balances(pool.get_ref(), &settings.rpc_url, q.role.as_deref())
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(rows))

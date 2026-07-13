@@ -120,6 +120,16 @@ export const api = baseApi.injectEndpoints({
       query: (body) => ({ url: '/api/wallet_pool/generate', method: 'POST', body }),
       invalidatesTags: ['Wallets', 'Bootstrap'],
     }),
+    // Live full-pool balance refresh: one on-chain read over every wallet (incl.
+    // used/retired the steady poller leaves frozen). Returns the freshly-stamped
+    // rows; invalidates Wallets so the table + holdings total re-render exact.
+    refreshWalletBalances: build.mutation<ManagedWalletPool[], string | undefined>({
+      query: (role) => ({
+        url: `/api/wallet_pool/refresh_balances${role ? q({ role }) : ''}`,
+        method: 'POST',
+      }),
+      invalidatesTags: ['Wallets'],
+    }),
     fundPool: build.mutation<FundReport, { role?: string; count?: number }>({
       query: (body) => ({ url: '/api/wallet_pool/fund', method: 'POST', body }),
       invalidatesTags: ['Wallets'],
@@ -279,6 +289,7 @@ export const {
   useUpdateMetadataTemplateMutation,
   useDeleteMetadataTemplateMutation,
   useWalletPoolQuery,
+  useRefreshWalletBalancesMutation,
   useGenerateWalletsMutation,
   useFundPoolMutation,
   useFundForLaunchMutation,

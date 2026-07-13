@@ -63,6 +63,8 @@ pub use wallet_funding::{
     fund_for_launch, fund_once, spawn_wallet_funding, DirectJittered, FundMode, FundReport,
     FundScope, FundingStrategy, StrategyParams, Transfer, WalletFundOutcome,
 };
-pub use wallet_pool::{generate_wallets, spawn_balance_poller, spawn_reservation_sweep};
+pub use wallet_pool::{
+    generate_wallets, refresh_all_balances, spawn_balance_poller, spawn_reservation_sweep,
+};
 pub use wallet_transfer::{transfer_between_wallets, TransferAmount, TransferReport};
 pub use wallet_verify::run_wallet_verify;

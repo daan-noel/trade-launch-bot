@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   useWalletPoolQuery,
+  useRefreshWalletBalancesMutation,
   useGenerateWalletsMutation,
   useFundPoolMutation,
   useTransferSolMutation,
@@ -34,25 +35,32 @@ const LOW_POOL_THRESHOLD = 3;
 const ROLES: WalletRole[] = ['dev', 'bundler', 'treasury', 'trading'];
 const STATUSES: WalletStatus[] = ['generated', 'funding', 'funded', 'reserved', 'used', 'retired'];
 
-// The balance poller only refreshes `generated`/`funding` (+ the treasury by role);
-// `balance_lamports` freezes at the funded-era snapshot once a wallet is claimed.
-// `used`/`retired` are terminal: the SOL is spent or swept to treasury, so a snapshot
-// there reads as phantom holdings — show `—`. A `reserved` wallet, though, STILL HOLDS
-// its SOL (a launch reserved it but hasn't spent yet — and a failed launch releases it
-// back to `funded` intact), so hiding its balance made a real, funded wallet look empty.
-// Show its last-known snapshot, dimmed + tagged, instead.
-const SPENT_BALANCE_STATUSES = new Set<WalletStatus>(['used', 'retired']);
+// The steady balance poller only live-refreshes `generated`/`funding` (+ the treasury
+// by role); every other status carries a FROZEN snapshot in `balance_lamports` (funded/
+// reserved at their funded-era value; used/retired at whatever they last held). So a
+// balance is only trustworthy — countable into the total — when it was checked recently.
+// The poller runs every ≤30s, so anything older than this is a stale snapshot until the
+// operator hits "Refresh balances" (which re-reads EVERY wallet on-chain and re-stamps
+// `balance_checked_at`, flipping used/retired live so they fold into the exact total).
+const BALANCE_STALE_AFTER_MS = 90_000;
 
-// Statuses whose `balance_lamports` reflects SOL the pool actually still holds, so it's
-// safe to sum into a total. Excludes `used`/`retired` (spent or swept to treasury — their
-// snapshot reads as phantom holdings). `funded`/`reserved` are frozen snapshots (see
-// above) but the SOL is genuinely there, so they count — the total is "≈" not exact.
-const TRACKED_BALANCE_STATUSES = new Set<WalletStatus>([
-  'generated',
-  'funding',
-  'funded',
-  'reserved',
-]);
+function balanceAgeMs(w: ManagedWalletPool): number | null {
+  if (!w.balance_checked_at) return null;
+  return Date.now() - new Date(w.balance_checked_at).getTime();
+}
+
+function isBalanceLive(w: ManagedWalletPool): boolean {
+  const age = balanceAgeMs(w);
+  return age != null && age < BALANCE_STALE_AFTER_MS;
+}
+
+function formatAgo(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.round(m / 60)}h ago`;
+}
 
 // Tone → color var, so the per-role status bar segments match the StatusPill palette.
 const TONE_COLOR: Record<string, string> = {
@@ -150,6 +158,7 @@ export function WalletPoolPage() {
   });
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();
+  const [refreshBalances, refreshing] = useRefreshWalletBalancesMutation();
 
   // Wallet-to-wallet transfer dialog, keyed by the source wallet.
   const [transferTarget, setTransferTarget] = useState<ManagedWalletPool | null>(null);
@@ -240,25 +249,31 @@ export function WalletPoolPage() {
     }
   };
 
-  // Total SOL the pool still holds, so it can be read at a glance instead of adding up
-  // every row by hand. Sums only TRACKED statuses (used/retired are spent/swept). Respects
-  // the active role filter; per-role breakdown lets you see where the SOL sits.
+  // Exact SOL the pool holds, read at a glance instead of adding up every row by hand.
+  // Sums only LIVE (recently-checked) balances — a stale snapshot could over/understate
+  // (a used wallet's frozen funded-era number is the classic phantom), so it's counted as
+  // "stale, Refresh to include" rather than folded into a number we can't vouch for. A
+  // "Refresh balances" pass re-reads every wallet, flipping them all live → exact total.
+  // Respects the active role filter; per-role breakdown shows where the SOL sits.
   const holdings = useMemo(() => {
-    let totalLamports = 0;
-    let trackedCount = 0;
-    let untrackedCount = 0;
+    let liveLamports = 0;
+    let liveCount = 0;
+    let staleCount = 0;
+    let oldestLiveCheck: number | null = null;
     const byRole: Record<string, number> = {};
     for (const w of wallets) {
-      if (TRACKED_BALANCE_STATUSES.has(w.status)) {
+      if (isBalanceLive(w)) {
         const bal = w.balance_lamports ?? 0;
-        totalLamports += bal;
-        trackedCount += 1;
+        liveLamports += bal;
+        liveCount += 1;
         byRole[w.role] = (byRole[w.role] ?? 0) + bal;
+        const t = new Date(w.balance_checked_at as string).getTime();
+        if (oldestLiveCheck == null || t < oldestLiveCheck) oldestLiveCheck = t;
       } else {
-        untrackedCount += 1;
+        staleCount += 1;
       }
     }
-    return { totalLamports, trackedCount, untrackedCount, byRole };
+    return { liveLamports, liveCount, staleCount, oldestLiveCheck, byRole };
   }, [wallets]);
 
   const counts = useMemo(() => {
@@ -301,6 +316,18 @@ export function WalletPoolPage() {
     }
   };
 
+  // Live-read every wallet's on-chain balance (respecting the active role filter) so
+  // the holdings total becomes exact, incl. used/retired the poller leaves frozen.
+  const onRefreshBalances = async () => {
+    setMsg(null);
+    try {
+      const rows = await refreshBalances(roleFilter || undefined).unwrap();
+      setMsg(`Balances refreshed — ${rows.length} wallet${rows.length === 1 ? '' : 's'} read on-chain.`);
+    } catch {
+      /* surfaced via mutation error below */
+    }
+  };
+
   const onFund = async (role?: string) => {
     setMsg(null);
     try {
@@ -330,20 +357,24 @@ export function WalletPoolPage() {
     {
       header: 'Balance',
       align: 'right',
-      render: (w) =>
-        SPENT_BALANCE_STATUSES.has(w.status) ? (
-          <span className="muted" title="Not tracked after a wallet is used/retired — its SOL is spent or swept to the treasury">
-            —
-          </span>
-        ) : w.status === 'reserved' ? (
-          // Reserved by an in-flight launch but still holding its SOL — show the
-          // last-known snapshot, dimmed, so a funded wallet never looks empty.
-          <span className="mono muted" title="Reserved by an in-flight launch — last-known balance (not live-polled while reserved)">
+      // Show every wallet's balance (incl. used/retired). A live (recently-checked)
+      // balance renders normal; a frozen snapshot renders dimmed with its age, so a
+      // stale number never masquerades as current — "Refresh balances" makes it live.
+      render: (w) => {
+        if (w.balance_lamports == null) return <span className="muted">—</span>;
+        if (isBalanceLive(w)) {
+          return <span className="mono">{formatSol(w.balance_lamports)}</span>;
+        }
+        const age = balanceAgeMs(w);
+        return (
+          <span
+            className="mono muted"
+            title={`Snapshot${age != null ? ` from ${formatAgo(age)}` : ''} — not live-polled in this status. Click "Refresh balances" for a live on-chain figure.`}
+          >
             {formatSol(w.balance_lamports)}
           </span>
-        ) : (
-          <span className="mono">{formatSol(w.balance_lamports)}</span>
-        ),
+        );
+      },
     },
     { header: 'Age', align: 'right', render: (w) => <AgeCell iso={w.created_at} /> },
     {
@@ -379,7 +410,11 @@ export function WalletPoolPage() {
     },
   ];
 
-  const mutationError = apiErrorMessage(gen.error) ?? apiErrorMessage(funding.error) ?? apiErrorMessage(error);
+  const mutationError =
+    apiErrorMessage(gen.error) ??
+    apiErrorMessage(funding.error) ??
+    apiErrorMessage(refreshing.error) ??
+    apiErrorMessage(error);
 
   return (
     <div className="space-y-4">
@@ -412,13 +447,24 @@ export function WalletPoolPage() {
           <div>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-semibold leading-none">
-                ≈ {formatSol(holdings.totalLamports)}
+                {formatSol(holdings.liveLamports)}
               </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                loading={refreshing.isLoading}
+                onClick={onRefreshBalances}
+              >
+                Refresh balances
+              </Button>
             </div>
             <p className="mt-1 text-xs muted">
-              across {holdings.trackedCount} tracked wallet{holdings.trackedCount === 1 ? '' : 's'}
-              {holdings.untrackedCount > 0
-                ? ` · ${holdings.untrackedCount} used/retired not counted (spent or swept to treasury)`
+              live across {holdings.liveCount} wallet{holdings.liveCount === 1 ? '' : 's'}
+              {holdings.oldestLiveCheck != null
+                ? ` · as of ${formatAgo(Date.now() - holdings.oldestLiveCheck)}`
+                : ''}
+              {holdings.staleCount > 0
+                ? ` · ${holdings.staleCount} not live-checked — Refresh to include`
                 : ''}
             </p>
           </div>
@@ -432,8 +478,10 @@ export function WalletPoolPage() {
           </div>
         </div>
         <p className="mt-2 text-xs muted">
-          Approximate — <code>funded</code>/<code>reserved</code> balances are last-known
-          snapshots (not live-polled), so this is your pool total, not a to-the-lamport figure.
+          Exact on-chain total of every wallet checked within the last 90s. The background
+          poller keeps only <code>generated</code>/<code>funding</code> + treasury live —
+          click <strong>Refresh balances</strong> to re-read <em>every</em> wallet (incl.{' '}
+          <code>used</code>/<code>retired</code>) and fold them into the total.
         </p>
       </Card>
 
