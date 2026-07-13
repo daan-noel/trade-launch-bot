@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   useTokenOverviewQuery,
@@ -23,11 +24,16 @@ import { VolumePanel } from './VolumePanel';
 import { ageFromSecs, formatCount, formatSig, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { TokenOverview, TokenPosition, TradePriced } from '@shared/types';
 
+// This is the polled live view (every 10s), not the cold full-history inspect
+// path. Cap the fetch at the most recent N trades so a high-volume mint doesn't
+// ship (and re-render, and re-chart) its entire history every tick (audit C3).
+const TRADES_LIMIT = 500;
+
 export function TokenDetailPage() {
   const { mint = '' } = useParams();
   const { data: overview, isLoading, error } = useTokenOverviewQuery(mint, { skip: !mint });
   const { data: trades = [], isFetching: tradesLoading } = useTokenTradesQuery(
-    { mint },
+    { mint, limit: TRADES_LIMIT },
     { skip: !mint, pollingInterval: 10_000, skipPollingIfUnfocused: true },
   );
   const { data: positions = [], isFetching: positionsLoading } = useTokenPositionsQuery(mint, {
@@ -130,55 +136,61 @@ function HoldingsTable({
   const td = overview?.decimals ?? 6;
   const price = overview?.current_price_quote ?? null; // quote base units / token base unit
   const usdRate = overview?.quote_usd_rate ?? null;
+  const quoteSymbol = overview?.quote_symbol ?? 'quote';
 
-  // value_quote (quote base units) = balance_base * price; PnL folds realized in.
-  const valueQuote = (p: TokenPosition) => (price == null ? null : p.balance_base * price);
-  const pnlQuote = (p: TokenPosition) => {
-    const v = valueQuote(p);
-    return v == null ? null : p.realized_quote + v - p.cost_quote;
-  };
-  const usd = (quoteBase: number | null) =>
-    quoteBase == null || usdRate == null ? null : (quoteBase / 10 ** qd) * usdRate;
+  // Memoized so its identity is stable across polls (audit H2) — the value/PnL
+  // closures fold in the overview-derived scalars, so they only rebuild when
+  // those actually change, not on every positions refetch.
+  const columns = useMemo<Column<TokenPosition>[]>(() => {
+    // value_quote (quote base units) = balance_base * price; PnL folds realized in.
+    const valueQuote = (p: TokenPosition) => (price == null ? null : p.balance_base * price);
+    const pnlQuote = (p: TokenPosition) => {
+      const v = valueQuote(p);
+      return v == null ? null : p.realized_quote + v - p.cost_quote;
+    };
+    const usd = (quoteBase: number | null) =>
+      quoteBase == null || usdRate == null ? null : (quoteBase / 10 ** qd) * usdRate;
 
-  const columns: Column<TokenPosition>[] = [
-    { header: 'Role', render: (p) => <StatusPill status={p.role} /> },
-    {
-      header: 'Wallet',
-      render: (p) => <AddressDisplay value={p.wallet_address} />,
-    },
-    {
-      header: 'Balance',
-      align: 'right',
-      render: (p) => <span className="mono">{(p.balance_base / 10 ** td).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>,
-    },
-    {
-      header: `Cost (${overview?.quote_symbol ?? 'quote'})`,
-      align: 'right',
-      render: (p) => <span className="mono">{quoteToHuman(p.cost_quote, qd)}</span>,
-    },
-    {
-      header: `Value (${overview?.quote_symbol ?? 'quote'})`,
-      align: 'right',
-      render: (p) => <span className="mono">{quoteToHuman(valueQuote(p), qd)}</span>,
-    },
-    {
-      header: 'PnL',
-      align: 'right',
-      render: (p) => {
-        const pnl = pnlQuote(p);
-        if (pnl == null) return <span className="muted">—</span>;
-        const pct = p.cost_quote > 0 ? (pnl / p.cost_quote) * 100 : null;
-        const tone = pnl >= 0 ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]';
-        return (
-          <span className={`mono ${tone}`}>
-            {formatUsd(usd(pnl))}
-            {pct != null && <span className="text-xs muted"> ({pct >= 0 ? '+' : ''}{pct.toFixed(0)}%)</span>}
-          </span>
-        );
+    return [
+      { header: 'Role', render: (p) => <StatusPill status={p.role} /> },
+      {
+        header: 'Wallet',
+        render: (p) => <AddressDisplay value={p.wallet_address} />,
       },
-    },
-    { header: 'Status', render: (p) => <StatusPill status={p.status} /> },
-  ];
+      {
+        header: 'Balance',
+        align: 'right',
+        render: (p) => <span className="mono">{(p.balance_base / 10 ** td).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>,
+      },
+      {
+        header: `Cost (${quoteSymbol})`,
+        align: 'right',
+        render: (p) => <span className="mono">{quoteToHuman(p.cost_quote, qd)}</span>,
+      },
+      {
+        header: `Value (${quoteSymbol})`,
+        align: 'right',
+        render: (p) => <span className="mono">{quoteToHuman(valueQuote(p), qd)}</span>,
+      },
+      {
+        header: 'PnL',
+        align: 'right',
+        render: (p) => {
+          const pnl = pnlQuote(p);
+          if (pnl == null) return <span className="muted">—</span>;
+          const pct = p.cost_quote > 0 ? (pnl / p.cost_quote) * 100 : null;
+          const tone = pnl >= 0 ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]';
+          return (
+            <span className={`mono ${tone}`}>
+              {formatUsd(usd(pnl))}
+              {pct != null && <span className="text-xs muted"> ({pct >= 0 ? '+' : ''}{pct.toFixed(0)}%)</span>}
+            </span>
+          );
+        },
+      },
+      { header: 'Status', render: (p) => <StatusPill status={p.status} /> },
+    ];
+  }, [qd, td, price, usdRate, quoteSymbol]);
 
   return (
     <DataTable
@@ -201,7 +213,8 @@ function TradesTable({
   overview: TokenOverview | undefined;
 }) {
   const qd = overview?.quote_decimals ?? 9;
-  const columns: Column<TradePriced>[] = [
+  // Memoized so its identity is stable across the 10s trades poll (audit H2).
+  const columns = useMemo<Column<TradePriced>[]>(() => [
     { header: 'Slot', align: 'right', render: (t) => <span className="mono">{t.slot}</span> },
     { header: 'Type', render: (t) => <StatusPill status={t.trade_type} /> },
     { header: 'Market', render: (t) => <span className="text-xs muted">{t.market_kind}</span> },
@@ -215,7 +228,7 @@ function TradesTable({
         return sig !== '—' ? <AddressDisplay value={sig} kind="tx" /> : <span className="muted">—</span>;
       },
     },
-  ];
+  ], [qd]);
   return (
     <DataTable
       columns={columns}
