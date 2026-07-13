@@ -284,6 +284,28 @@ pub async fn fund_once(
 
     let mut report = FundReport::default();
 
+    // Cheap indexed shortfall gate BEFORE paying for the treasury RPC snapshot
+    // (audit §5): a periodic top-up pass over a fully warm pool otherwise builds
+    // the treasury pool — N `get_balance` RPCs — every 60s only to fund nothing.
+    // An explicit `count` (a manual fund request) always proceeds; the automatic
+    // pass (count = None) bails when `funded_count` already meets every target.
+    if scope.count.is_none() {
+        let roles: Vec<WalletRole> = match scope.role {
+            Some(r) => vec![r],
+            None => vec![WalletRole::Dev, WalletRole::Bundler],
+        };
+        let mut shortfall = 0i64;
+        for role in &roles {
+            if let Some((_amount, target)) = role_plan(*role, cfg) {
+                let funded = ManagedWalletRepo::funded_count(pool, role.as_str()).await?;
+                shortfall += (target - funded).max(0);
+            }
+        }
+        if shortfall <= 0 {
+            return Ok(report); // fully warm — nothing to fund, no RPC paid
+        }
+    }
+
     // Resolve the treasury source pool (ALL non-retired treasuries). No-op if
     // none — same posture as the dust sweep's missing-treasury case.
     let rpc =

@@ -487,6 +487,18 @@ impl LaunchRepo {
             .await?)
     }
 
+    /// Batch-load launches by id — one query for a set, replacing a per-row
+    /// [`Self::get`] loop (e.g. the confirm watcher's per-bundle launch fetch).
+    pub async fn get_many(pool: &PgPool, ids: &[Uuid]) -> anyhow::Result<Vec<Launch>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_as::<_, Launch>("SELECT * FROM launches WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(pool)
+            .await?)
+    }
+
     /// Most-recent launch for a mint — the entry point for post-launch management
     /// (resolve a token back to the dev wallet + bundle that seeded it). A mint is
     /// launched once in practice; `ORDER BY created_at DESC LIMIT 1` is defensive.

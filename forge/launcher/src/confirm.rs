@@ -57,9 +57,28 @@ pub fn spawn_bundle_confirm_watcher(
 
 async fn confirm_pending(pool: &PgPool, settings: Option<&LauncherSettings>) -> anyhow::Result<()> {
     let pending = BundleRepo::find_awaiting_confirmation(pool).await?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    // Batch-load the launches for this tick's pending bundles in ONE query instead
+    // of a per-bundle `LaunchRepo::get` (audit §5). The set is tiny (only bundles
+    // awaiting confirmation), so a HashMap by id is ample.
+    let launch_ids: Vec<uuid::Uuid> = pending.iter().map(|b| b.launch_id).collect();
+    let launches: std::collections::HashMap<uuid::Uuid, Launch> =
+        LaunchRepo::get_many(pool, &launch_ids)
+            .await?
+            .into_iter()
+            .map(|l| (l.id, l))
+            .collect();
+
     for bundle in pending {
         let id = bundle.id;
-        if let Err(e) = confirm_one(pool, bundle, settings).await {
+        let Some(launch) = launches.get(&bundle.launch_id).cloned() else {
+            warn!(bundle_id = %id, launch_id = %bundle.launch_id, "launch not found for bundle — skipping");
+            continue;
+        };
+        if let Err(e) = confirm_one(pool, bundle, launch, settings).await {
             warn!(bundle_id = %id, ?e, "bundle confirm check failed");
         }
     }
@@ -69,12 +88,9 @@ async fn confirm_pending(pool: &PgPool, settings: Option<&LauncherSettings>) -> 
 async fn confirm_one(
     pool: &PgPool,
     bundle: Bundle,
+    launch: Launch,
     settings: Option<&LauncherSettings>,
 ) -> anyhow::Result<()> {
-    let launch = LaunchRepo::get(pool, bundle.launch_id)
-        .await?
-        .context("launch not found for bundle")?;
-
     // `leg_signatures` is the CO-BUY set (the create leg is `tx0`, its signature is
     // on the launch). The bundle is atomic, so all co-buys present in the feed ⟹ the
     // create landed too.
