@@ -17,6 +17,7 @@ use std::sync::Arc;
 use ingest_laserstream::{Ingest, IngestConfig, IngestEvent, IngestHandle, Protocol};
 use sqlx::PgPool;
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -34,6 +35,7 @@ pub async fn spawn_ingest(
     pool: PgPool,
     endpoint: String,
     api_key: String,
+    trades_notify: Arc<Notify>,
 ) -> anyhow::Result<(JoinHandle<()>, Arc<IngestHandle>)> {
     let adapter = PumpFunAdapter::resolve(&pool).await?;
     let (event_rx, handle) = Ingest::builder()
@@ -48,7 +50,7 @@ pub async fn spawn_ingest(
     // Decoupled writer: hot recv loop → bounded channel → DbWriter task.
     let (tx, rx) = mpsc::channel::<DbWriteOp>(CHANNEL_CAPACITY);
     let heartbeat = DbHeartbeat::new();
-    tokio::spawn(DbWriter::new(pool, adapter, heartbeat.clone()).run(rx));
+    tokio::spawn(DbWriter::new(pool, adapter, heartbeat.clone(), trades_notify).run(rx));
 
     // Watchdog on its own OS thread: force-exit if the writer stops committing
     // while the queue is backed up and the stream is live. `is_live` reads the

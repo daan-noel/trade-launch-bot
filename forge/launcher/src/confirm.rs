@@ -11,11 +11,13 @@
 //! than designed around.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
 use sqlx::PgPool;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use platform_core::models::{Bundle, BundleStatus, Launch, LaunchStatus, WalletRole};
@@ -27,8 +29,11 @@ use crate::bundle::legs_from_json;
 use crate::config::LauncherSettings;
 use crate::{execute_bundle, keystore};
 
-/// How often to re-check bundles awaiting confirmation.
-const POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// Fallback re-check cadence. The watcher is normally woken by `trades_notify`
+/// the instant the ingest DbWriter commits new trades (notify over poll); this
+/// slow tick is only the backstop that still advances the time-driven
+/// timeout → dropped → rebid path when no trades are flowing.
+const FALLBACK_INTERVAL: Duration = Duration::from_secs(10);
 /// How long to wait for a bundle to land before declaring it dropped.
 const CONFIRM_TIMEOUT: chrono::Duration = chrono::Duration::seconds(90);
 
@@ -43,11 +48,18 @@ const CONFIRM_TIMEOUT: chrono::Duration = chrono::Duration::seconds(90);
 pub fn spawn_bundle_confirm_watcher(
     pool: PgPool,
     settings: Option<LauncherSettings>,
+    trades_notify: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(POLL_INTERVAL);
+        let mut tick = tokio::time::interval(FALLBACK_INTERVAL);
         loop {
-            tick.tick().await;
+            // Wake on a fresh trade commit (fast-path landing detection) OR the
+            // slow fallback tick (time-driven timeout/rebid). `notify_one` stores a
+            // permit if we're mid-pass, so a commit during processing isn't missed.
+            tokio::select! {
+                _ = trades_notify.notified() => {}
+                _ = tick.tick() => {}
+            }
             if let Err(e) = confirm_pending(&pool, settings.as_ref()).await {
                 warn!(?e, "bundle confirm pass failed");
             }

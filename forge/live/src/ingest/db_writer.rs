@@ -14,11 +14,13 @@
 //! backpressure is the (correct) overflow behavior for durable writes.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ingest_laserstream::event::{RawTx as IlRawTx, TokenCreated as IlTokenCreated, Trade as IlTrade};
 use sqlx::PgPool;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::Notify;
 use tracing::warn;
 
 use platform_core::models::{NewTrade, RawTx};
@@ -57,15 +59,25 @@ pub struct DbWriter {
     /// round-trip). Lives on the writer task, never the hot path.
     wallet_cache: HashMap<String, i32>,
     heartbeat: DbHeartbeat,
+    /// Pinged after committing trades so the bundle-confirm watcher re-checks its
+    /// pending leg signatures immediately (notify over poll) instead of waiting on
+    /// its slow fallback tick.
+    trades_notify: Arc<Notify>,
 }
 
 impl DbWriter {
-    pub fn new(pool: PgPool, adapter: PumpFunAdapter, heartbeat: DbHeartbeat) -> Self {
+    pub fn new(
+        pool: PgPool,
+        adapter: PumpFunAdapter,
+        heartbeat: DbHeartbeat,
+        trades_notify: Arc<Notify>,
+    ) -> Self {
         Self {
             pool,
             adapter,
             wallet_cache: HashMap::new(),
             heartbeat,
+            trades_notify,
         }
     }
 
@@ -165,6 +177,8 @@ impl DbWriter {
                         }
                     }
                 }
+                // New trades landed — wake the bundle-confirm watcher to re-check.
+                self.trades_notify.notify_one();
             }
         }
 

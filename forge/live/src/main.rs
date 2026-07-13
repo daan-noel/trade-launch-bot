@@ -116,13 +116,23 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Notify over poll: the ingest DbWriter pings this after committing trades so
+    // the bundle-confirm watcher re-checks its pending leg signatures immediately
+    // instead of blind-polling. Created unconditionally — if ingest is disabled
+    // (no Helius creds) it simply never fires and the watcher's slow fallback tick
+    // carries it (same as the old poll, just slower).
+    let trades_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+
     // Feed-based bundle-landing confirmation — cheap, always on (confirming reads
     // only `bundles`/`trades` from the already-connected pool). The launcher
     // settings (when configured) additionally let it auto re-bid a `dropped`
     // bundle at a higher Jito tip before conceding; without them it stays
     // read-only (confirm/mark only).
-    let bundle_confirm_task =
-        launcher::spawn_bundle_confirm_watcher(pools.hot.clone(), launcher_settings.clone());
+    let bundle_confirm_task = launcher::spawn_bundle_confirm_watcher(
+        pools.hot.clone(),
+        launcher_settings.clone(),
+        trades_notify.clone(),
+    );
 
     // Fresh-wallet pool: balance poller (generated/funding -> funded) +
     // reservation TTL sweep (Phase 1) + dust sweep (used -> retired, Phase 4) +
@@ -167,7 +177,9 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("HELIUS_API_KEY"),
     ) {
         (Ok(endpoint), Ok(api_key)) if !endpoint.is_empty() && !api_key.is_empty() => {
-            let (task, handle) = ingest::spawn_ingest(pools.hot.clone(), endpoint, api_key).await?;
+            let (task, handle) =
+                ingest::spawn_ingest(pools.hot.clone(), endpoint, api_key, trades_notify.clone())
+                    .await?;
             (Some(task), Some(handle))
         }
         _ => {
