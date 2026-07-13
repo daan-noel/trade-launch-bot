@@ -857,10 +857,12 @@ async fn launch_requirement(
         .await
         .map_err(e500)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("launch template not found"))?;
+    let variant = template.variant.clone();
     let params: PumpfunTemplateParams = serde_json::from_value(template.params).map_err(e400)?;
     let tip_ceiling = settings.launch_tip_ceiling_lamports();
-    let dev_required_lamports = dev_launch_required_lamports(&params, tip_ceiling);
-    let plan = FundPlan::from_params(&params, q.bundler_count, tip_ceiling).map_err(e400)?;
+    let dev_required_lamports = dev_launch_required_lamports(&variant, &params, tip_ceiling);
+    let plan =
+        FundPlan::from_params(&variant, &params, q.bundler_count, tip_ceiling).map_err(e400)?;
     let dev_balance_lamports = match q.dev_wallet_id {
         Some(id) => ManagedWalletRepo::get(pool.get_ref(), id)
             .await

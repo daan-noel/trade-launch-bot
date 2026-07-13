@@ -81,8 +81,12 @@ pub async fn run_launch_probe(settings: &Settings, args: &[String]) -> Result<()
         balance_sol = balance as f64 / pump_trader::protocol::LAMPORTS_PER_SOL as f64,
         "dev wallet balance"
     );
-    let create_floor =
-        crate::service::min_dev_launch_lamports(launcher.launch_tip_ceiling_lamports());
+    // The probe always builds a `create_v2` (Token-2022) tx below, so it checks
+    // against the v2 create floor.
+    let create_floor = crate::service::min_dev_launch_lamports(
+        "pumpfun.create_v2",
+        launcher.launch_tip_ceiling_lamports(),
+    );
     if balance < create_floor {
         let per_sol = pump_trader::protocol::LAMPORTS_PER_SOL as f64;
         bail!(

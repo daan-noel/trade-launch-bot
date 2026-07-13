@@ -32,26 +32,46 @@ use crate::trader_config::build_launch_trader_config;
 /// value equal to `ingest_host::map::PUMP_TOKEN_DECIMALS`.
 const PUMP_TOKEN_DECIMALS: i16 = 6;
 
-/// Fixed rent-exempt deposits + base/priority fees a create (+ fused dev-buy)
-/// locks up, EXCLUDING the Jito tip and the dev-buy spend. These are deterministic
-/// on-chain: the mint account, the Metaplex/on-chain metadata, the bonding-curve
-/// ATA and the dev ATA — each token account ~0.002 SOL (see
-/// `pumpfun::protocol::TOKEN_ACCOUNT_RENT_PLACEHOLDER`), summing to ~0.01 SOL. We
-/// carry it as a named constant with a little margin rather than a live RPC read
-/// because the background funder (`FundPlan`) derives the same dev target without
-/// a live trader — so gate and funder read one figure and can't drift.
-pub(crate) const CREATE_RENT_AND_FEE_LAMPORTS: u64 = 12_000_000; // ~0.012 SOL
+/// Create-side rent-exempt deposits + base/priority fees a launch locks up,
+/// EXCLUDING the Jito tip and the dev-buy spend — keyed by launch **variant**,
+/// because a legacy `create_v1` costs ~2× a `create_v2`.
+///
+/// These are ~all *recoverable rent* (mint, on-chain metadata, bonding-curve state,
+/// the bonding-curve + dev ATAs) — measured on mainnet to be ~97% rent with no flat
+/// protocol fee — so they're deterministic and carried as MEASURED constants rather
+/// than a live RPC read, so the background funder (`FundPlan`) derives the SAME dev
+/// target without a live trader (gate + funder can't drift). Re-measure if pump
+/// changes the create account layout.
+///
+/// - `create_v2` (Token-2022, metadata embedded in the mint): measured **12,275,000**
+///   on-chain (sig `454sgqt8…`). Floored to 13,000,000.
+/// - `create_v1` (legacy SPL-Token + a SEPARATE ~0.006 SOL Metaplex metadata account,
+///   and a larger overall account set): measured **~24,800,000** (sig `5ZNix…`, from
+///   the balance at the reverted dev-buy). Floored to 26,000,000. **Under-budgeting
+///   this is the exact bug that silently under-funded the dev-buy** — the create
+///   succeeded but the fused buy ran the wallet negative → System
+///   `ResultWithNegativeLamports` (`Custom(1)`) → opaque on-chain revert.
+///
+/// This floor varies by CREATE variant ONLY: the dev-buy contributes a fixed dev-ATA
+/// (already in the measured set) plus the `dev_buy_quote` SPEND, which is budgeted as
+/// a separate term — so a hand-authored dev-buy ix layout does not change it.
+pub(crate) fn create_rent_and_fee_lamports(variant: &str) -> u64 {
+    if variant.contains("create_v1") {
+        26_000_000 // ~0.026 SOL — legacy SPL + Metaplex metadata account
+    } else {
+        13_000_000 // ~0.013 SOL — create_v2 (Token-2022)
+    }
+}
 
 /// Minimum dev-wallet balance (lamports) to cover a create's rent + fees + the
 /// live-configured Jito tip, on top of any dev-buy spend. `tip_ceiling_lamports`
 /// is the MAX tip a launch bundle could draw (`JITO_MAX_TIP_SOL`), budgeted so a
 /// re-bid that escalates the tip to the ceiling can't strand the launch
-/// under-funded. Replaces the old flat 0.02 SOL pad (sized when launch tips ran
-/// ~0.015 SOL) so the floor now tracks the configured tip instead of a stale
-/// worst-case guess. `pub(crate)` so the `probe` pre-launch check reuses the same
-/// floor instead of hardcoding (and re-drifting) its own copy.
-pub(crate) fn min_dev_launch_lamports(tip_ceiling_lamports: u64) -> u64 {
-    CREATE_RENT_AND_FEE_LAMPORTS + tip_ceiling_lamports
+/// under-funded. The create floor is variant-aware (see
+/// [`create_rent_and_fee_lamports`]). `pub(crate)` so the `probe` pre-launch check
+/// reuses the same floor instead of hardcoding (and re-drifting) its own copy.
+pub(crate) fn min_dev_launch_lamports(variant: &str, tip_ceiling_lamports: u64) -> u64 {
+    create_rent_and_fee_lamports(variant) + tip_ceiling_lamports
 }
 
 /// Typed error for the pre-launch dev-wallet balance gate so the HTTP layer can
@@ -278,9 +298,9 @@ pub async fn execute_launch(
     // the JIT funder's target and this gate can never drift (they were inlined
     // separately before). The create floor tracks the live tip ceiling.
     let tip_ceiling = settings.launch_tip_ceiling_lamports();
-    let create_floor = min_dev_launch_lamports(tip_ceiling);
+    let create_floor = min_dev_launch_lamports(&template.variant, tip_ceiling);
     let required_lamports =
-        crate::funding_plan::dev_launch_required_lamports(&params, tip_ceiling);
+        crate::funding_plan::dev_launch_required_lamports(&template.variant, &params, tip_ceiling);
     if balance < required_lamports {
         let per_sol = pump_trader::protocol::LAMPORTS_PER_SOL as f64;
         // Typed so the HTTP layer maps it to a 400 with this exact message,

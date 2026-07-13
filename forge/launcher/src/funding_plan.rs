@@ -20,16 +20,19 @@ use crate::service::{min_dev_launch_lamports, PumpfunTemplateParams};
 pub const FUNDING_HEADROOM_LAMPORTS: u64 = 2_000_000; // 0.002 SOL
 
 /// SSOT for the dev-wallet launch requirement: the create floor
-/// ([`min_dev_launch_lamports`], = fixed rent/fees + the live tip ceiling) plus
-/// the template's dev-buy spend. The pre-launch gate in `service::execute_launch`
-/// MUST call this instead of re-inlining the sum, so the funder's target and the
-/// gate can't drift. `tip_ceiling_lamports` is the `JITO_MAX_TIP_SOL` ceiling the
-/// caller reads from settings.
+/// ([`min_dev_launch_lamports`], = variant-aware rent/fees + the live tip ceiling)
+/// plus the template's dev-buy spend. The pre-launch gate in
+/// `service::execute_launch` MUST call this instead of re-inlining the sum, so the
+/// funder's target and the gate can't drift. `variant` is the launch template's
+/// `variant` (`pumpfun.create_v1` / `_v2`) — a legacy v1 create costs ~2× the rent
+/// of a v2, so the floor is variant-keyed. `tip_ceiling_lamports` is the
+/// `JITO_MAX_TIP_SOL` ceiling the caller reads from settings.
 pub fn dev_launch_required_lamports(
+    variant: &str,
     params: &PumpfunTemplateParams,
     tip_ceiling_lamports: u64,
 ) -> u64 {
-    min_dev_launch_lamports(tip_ceiling_lamports)
+    min_dev_launch_lamports(variant, tip_ceiling_lamports)
         + params.dev_buy_quote.unwrap_or(0).max(0) as u64
 }
 
@@ -62,12 +65,14 @@ impl FundPlan {
     /// `resolve_leg_count` / `resolve_bundle_quote` the launch executor uses, so
     /// the funded amounts match what the bundle actually spends.
     pub fn from_params(
+        variant: &str,
         params: &PumpfunTemplateParams,
         requested_bundler_count: Option<u32>,
         tip_ceiling_lamports: u64,
     ) -> Result<Self> {
         let dev_lamports =
-            dev_launch_required_lamports(params, tip_ceiling_lamports) + FUNDING_HEADROOM_LAMPORTS;
+            dev_launch_required_lamports(variant, params, tip_ceiling_lamports)
+                + FUNDING_HEADROOM_LAMPORTS;
         let (per_leg_lamports, leg_count) = match resolve_leg_count(requested_bundler_count, params)
         {
             Some(n) => {
@@ -104,17 +109,32 @@ mod tests {
         // enforces — this is the SSOT guard.
         let tip = 1_000_000; // JITO_MAX_TIP_SOL ceiling, in lamports
         let p = params(Some(100_000_000), None, None, None);
-        let gate = dev_launch_required_lamports(&p, tip);
-        assert_eq!(gate, min_dev_launch_lamports(tip) + 100_000_000);
-        let plan = FundPlan::from_params(&p, None, tip).unwrap();
+        let gate = dev_launch_required_lamports("pumpfun.create_v2", &p, tip);
+        assert_eq!(gate, min_dev_launch_lamports("pumpfun.create_v2", tip) + 100_000_000);
+        let plan = FundPlan::from_params("pumpfun.create_v2", &p, None, tip).unwrap();
         assert!(plan.dev_lamports >= gate, "funded dev target must cover the gate");
         assert_eq!(plan.leg_count, 0, "no bundle configured");
     }
 
     #[test]
+    fn create_v1_floor_exceeds_v2() {
+        // Regression: a legacy `create_v1` allocates a separate Metaplex metadata
+        // account (~2× the create rent of a v2), so its dev-wallet floor MUST be
+        // strictly higher — under-budgeting it silently under-funds the fused
+        // dev-buy and reverts on-chain (System `ResultWithNegativeLamports`).
+        let tip = 1_000_000;
+        let p = params(Some(30_000_000), None, None, None);
+        let v1 = dev_launch_required_lamports("pumpfun.create_v1", &p, tip);
+        let v2 = dev_launch_required_lamports("pumpfun.create_v2", &p, tip);
+        assert!(v1 > v2, "v1 floor {v1} must exceed v2 floor {v2}");
+        // The delta is entirely the create-rent difference (same dev-buy + tip).
+        assert_eq!(v1 - v2, 26_000_000 - 13_000_000);
+    }
+
+    #[test]
     fn plan_derives_per_leg_from_template() {
         let p = params(Some(0), Some(3), Some(50_000_000), Some(1_000_000));
-        let plan = FundPlan::from_params(&p, None, 0).unwrap();
+        let plan = FundPlan::from_params("pumpfun.create_v2", &p, None, 0).unwrap();
         assert_eq!(plan.leg_count, 3);
         assert_eq!(plan.per_leg_lamports, 50_000_000 + 1_000_000 + FUNDING_HEADROOM_LAMPORTS);
     }
@@ -122,7 +142,7 @@ mod tests {
     #[test]
     fn request_override_wins_over_template_leg_count() {
         let p = params(Some(0), Some(3), Some(50_000_000), None);
-        let plan = FundPlan::from_params(&p, Some(5), 0).unwrap();
+        let plan = FundPlan::from_params("pumpfun.create_v2", &p, Some(5), 0).unwrap();
         assert_eq!(plan.leg_count, 5);
     }
 }

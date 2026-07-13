@@ -550,8 +550,12 @@ pub async fn fund_for_launch(
         .context("launch template not found")?;
     let params: PumpfunTemplateParams =
         serde_json::from_value(template.params.clone()).context("parse template params")?;
-    let plan =
-        FundPlan::from_params(&params, bundler_count, settings.launch_tip_ceiling_lamports())?;
+    let plan = FundPlan::from_params(
+        &template.variant,
+        &params,
+        bundler_count,
+        settings.launch_tip_ceiling_lamports(),
+    )?;
 
     let rpc =
         RpcClient::new_with_commitment(settings.rpc_url.clone(), CommitmentConfig::confirmed());
