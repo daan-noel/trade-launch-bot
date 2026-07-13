@@ -15,6 +15,7 @@ mod config;
 mod dust_sweep;
 mod funding_plan;
 mod keystore;
+mod launch_sim_matrix;
 mod manage;
 mod metadata_upload;
 mod plan_exec;
@@ -47,6 +48,7 @@ pub use funding_plan::{
 pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
+pub use launch_sim_matrix::run_launch_sim_matrix;
 pub use manage::{
     arm_ladder, build_plan, execute_action, load_positions, read_positions, reconcile_positions,
     spawn_ladder_evaluator, spawn_volume_scheduler, start_volume_bot, ActionPlan, LadderRung,

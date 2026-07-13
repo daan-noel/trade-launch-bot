@@ -150,6 +150,15 @@ export function LaunchTemplatesPage() {
     !!devBuyQuote.trim() &&
     !slippageBps.trim();
 
+  // Cashback and Mayhem are create_v2-only options — the legacy `create_v1`
+  // instruction encodes neither, and the backend forces them off for it. Reflect
+  // that: disable + force-off both when create_v1 is selected. (Every BUY variant,
+  // by contrast, works with every create variant — verified on-chain via the
+  // `launch-sim-matrix` harness — so the buy-variant dropdowns stay unconstrained.)
+  const isLegacyCreate = variant === 'pumpfun.create_v1';
+  const effectiveCashback = cashbackEnabled && !isLegacyCreate;
+  const effectiveMayhem = isMayhemMode && !isLegacyCreate;
+
   const canSubmit =
     templateName && launchpadId && quoteAssetId && variant && metadataTemplateId && !devBuyTokensOutNeedsSlippage;
 
@@ -165,8 +174,8 @@ export function LaunchTemplatesPage() {
         dev_buy_quote: toBaseUnits(devBuyQuote, decimals),
         dev_buy_variant: devBuyVariant,
         slippage_bps: toInt(slippageBps),
-        is_mayhem_mode: isMayhemMode,
-        cashback_enabled: cashbackEnabled,
+        is_mayhem_mode: effectiveMayhem,
+        cashback_enabled: effectiveCashback,
         bundle_leg_count: toInt(bundleLegCount),
         bundle_quote_per_leg: toBaseUnits(bundleQuotePerLeg, decimals),
         bundle_tip_quote: toBaseUnits(bundleTipQuote, decimals),
@@ -273,7 +282,20 @@ export function LaunchTemplatesPage() {
             tipAlign="end"
             tip="The create-instruction encoding. v2 fuses create + dev-buy into one atomic tx; v1 is the legacy single create. Use v2 unless you need the legacy path."
           >
-            <Select id="lt-v" value={variant} onChange={(e) => setVariant(e.target.value)}>
+            <Select
+              id="lt-v"
+              value={variant}
+              onChange={(e) => {
+                const v = e.target.value;
+                setVariant(v);
+                // create_v1 supports neither cashback nor mayhem — clear both so a
+                // stale checked state can't be saved against a legacy create.
+                if (v === 'pumpfun.create_v1') {
+                  setCashbackEnabled(false);
+                  setIsMayhemMode(false);
+                }
+              }}
+            >
               {VARIANTS.map((v) => (
                 <option key={v} value={v}>{v}</option>
               ))}
@@ -321,13 +343,13 @@ export function LaunchTemplatesPage() {
             <Input id="lt-sl" type="number" value={slippageBps} onChange={(e) => setSlippageBps(e.target.value)} placeholder="500" />
           </Field>
           <div className="flex items-end gap-4">
-            <span className="inline-flex items-center gap-1">
-              <Checkbox id="lt-mh" label="Mayhem" checked={isMayhemMode} onChange={(e) => setIsMayhemMode(e.target.checked)} />
-              <InfoTip text="Enable pump.fun 'mayhem mode' on the create — higher-volatility launch parameters. Leave off unless you specifically want it." />
+            <span className={`inline-flex items-center gap-1${isLegacyCreate ? ' opacity-50' : ''}`}>
+              <Checkbox id="lt-mh" label="Mayhem" checked={effectiveMayhem} disabled={isLegacyCreate} onChange={(e) => setIsMayhemMode(e.target.checked)} />
+              <InfoTip text="Enable pump.fun 'mayhem mode' on the create — higher-volatility launch parameters. create_v2 only: the legacy create_v1 instruction has no mayhem field." />
             </span>
-            <span className="inline-flex items-center gap-1">
-              <Checkbox id="lt-cb" label="Cashback" checked={cashbackEnabled} onChange={(e) => setCashbackEnabled(e.target.checked)} />
-              <InfoTip text="Opt the launch into the launchpad's fee-cashback program where available." align="end" />
+            <span className={`inline-flex items-center gap-1${isLegacyCreate ? ' opacity-50' : ''}`}>
+              <Checkbox id="lt-cb" label="Cashback" checked={effectiveCashback} disabled={isLegacyCreate} onChange={(e) => setCashbackEnabled(e.target.checked)} />
+              <InfoTip text="Opt the launch into the launchpad's fee-cashback program where available. create_v2 only: the legacy create_v1 instruction has no cashback field." align="end" />
             </span>
           </div>
         </div>

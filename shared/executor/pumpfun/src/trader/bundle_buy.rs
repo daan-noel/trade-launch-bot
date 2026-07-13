@@ -48,12 +48,17 @@ impl BundleBuyVariant {
         }
     }
 
-    fn uses_v2_accounts(self, cashback_enabled: bool) -> bool {
-        match self {
-            Self::BuyV2 => true,
-            Self::BuyExactQuoteIn => cashback_enabled,
-            _ => false,
-        }
+    /// Whether this encoding uses the pump v2 account layout (WSOL quote side +
+    /// the fee-program `sharing_config` PDA). BOTH v2 encodings (`buy_v2`,
+    /// `buy_exact_quote_in_v2`) use it unconditionally — cashback does NOT gate it.
+    /// Live `simulateTransaction` (see the `launch-sim-matrix` harness) confirms a
+    /// v2 buy self-provisions its quote-side accounts and tolerates `sharing_config`
+    /// against ANY curve — legacy `create_v1`, or `create_v2` with or without
+    /// cashback — filling correctly in every case. (`sharing_config` is only
+    /// mis-derived, and thus 2006-reverting, if built under the wrong program — that
+    /// bug is fixed in `curve_buy_core_v2`.)
+    fn uses_v2_accounts(self) -> bool {
+        matches!(self, Self::BuyV2 | Self::BuyExactQuoteIn)
     }
 }
 
@@ -157,7 +162,6 @@ impl PumpFunTrader {
             &user_token_account,
             buy_lamports,
             min_tokens_out,
-            cashback_enabled,
         )?;
         let mut ata = Vec::with_capacity(1 + core.extra_atas.len());
         ata.push(base_ata);
@@ -228,8 +232,10 @@ impl PumpFunTrader {
     /// Dispatch a variant to its raw [`BuyCore`] (v1 vs v2 account layout). SSOT for
     /// the per-variant curve buy — used by the Jito bundle leg above AND the fused
     /// launch-create dev-buy (`super::create`). `buyer` is the wallet doing the buy
-    /// (a bundler wallet, or the dev/creator for a dev-buy); `cashback_enabled`
-    /// routes `BuyExactQuoteIn` to the v2 layout when on, else the v1 SOL-in path.
+    /// (a bundler wallet, or the dev/creator for a dev-buy). The account layout is a
+    /// pure function of the `variant` ([`BundleBuyVariant::uses_v2_accounts`]); the
+    /// curve's cashback flag does NOT change it (a v2 buy fills against any curve —
+    /// verified on-chain), so it is not an input here.
     pub(super) fn build_curve_buy_core(
         &self,
         variant: BundleBuyVariant,
@@ -239,16 +245,13 @@ impl PumpFunTrader {
         user_base_ata: &Pubkey,
         buy_lamports: u64,
         min_tokens_out: u64,
-        cashback_enabled: bool,
     ) -> Result<BuyCore> {
-        if variant.uses_v2_accounts(cashback_enabled) {
+        if variant.uses_v2_accounts() {
             self.curve_buy_core_v2(variant, buyer, mint, pdas, user_base_ata, buy_lamports, min_tokens_out)
         } else {
-            let v1_variant = match variant {
-                BundleBuyVariant::BuyExactQuoteIn => BundleBuyVariant::BuyExactSolIn,
-                other => other,
-            };
-            self.curve_buy_core_v1(v1_variant, buyer, mint, pdas, user_base_ata, buy_lamports, min_tokens_out)
+            // Only the v1 SOL-in / tokens-out encodings (`buy`, `buy_exact_sol_in`)
+            // reach here; both are handled directly by the v1 builder.
+            self.curve_buy_core_v1(variant, buyer, mint, pdas, user_base_ata, buy_lamports, min_tokens_out)
         }
     }
 
@@ -527,7 +530,7 @@ mod tests {
         let core = t
             .build_curve_buy_core(
                 BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
-                10_000_000, 1, true,
+                10_000_000, 1,
             )
             .unwrap();
         let ixs = assemble_leg(&t, core, base_ata, &leg, bundler.pubkey());
@@ -602,11 +605,15 @@ mod tests {
         assert!(BundleBuyVariant::parse("unknown").is_err());
     }
 
+    /// Both v2 encodings use the v2 account layout unconditionally (cashback does
+    /// NOT gate it — a v2 buy fills against any curve, verified on-chain by the
+    /// `launch-sim-matrix` harness); the v1 encodings never do.
     #[test]
-    fn v2_routing_requires_cashback_for_exact_quote() {
-        assert!(!BundleBuyVariant::BuyExactQuoteIn.uses_v2_accounts(false));
-        assert!(BundleBuyVariant::BuyExactQuoteIn.uses_v2_accounts(true));
-        assert!(BundleBuyVariant::BuyV2.uses_v2_accounts(false));
+    fn v2_encodings_always_use_v2_layout() {
+        assert!(BundleBuyVariant::BuyV2.uses_v2_accounts());
+        assert!(BundleBuyVariant::BuyExactQuoteIn.uses_v2_accounts());
+        assert!(!BundleBuyVariant::Buy.uses_v2_accounts());
+        assert!(!BundleBuyVariant::BuyExactSolIn.uses_v2_accounts());
     }
 
     // --- Golden byte-identity: `assemble(canonical_buy, …)` reproduces the old
@@ -633,7 +640,7 @@ mod tests {
         let core = t
             .build_curve_buy_core(
                 BundleBuyVariant::Buy, &bundler.pubkey(), &mint, &pdas, &user_ata,
-                10_000_000, 1, false,
+                10_000_000, 1,
             )
             .unwrap();
         let out = assemble_leg(&t, core, ata_ix.clone(), &leg, bundler.pubkey());
@@ -665,7 +672,7 @@ mod tests {
         let core = t
             .build_curve_buy_core(
                 BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
-                10_000_000, 1, true,
+                10_000_000, 1,
             )
             .unwrap();
 
@@ -703,7 +710,7 @@ mod tests {
         let core = t
             .build_curve_buy_core(
                 BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
-                10_000_000, 1, true,
+                10_000_000, 1,
             )
             .unwrap();
         let out = assemble_leg(&t, core, base_ata.clone(), &leg, bundler.pubkey());

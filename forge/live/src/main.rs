@@ -57,6 +57,13 @@ async fn main() -> anyhow::Result<()> {
         launcher::run_launch_probe(&settings, &args[1..]).await?;
         return Ok(());
     }
+    if args.first().map(String::as_str) == Some("launch-sim-matrix") {
+        // Read-only: Helius-simulate every create × cashback × buy-variant combo
+        // (zero SOL) to establish the actual on-chain working-pairs. Needs the
+        // launcher env (keystore + KEK + RPC + ALT + a funded managed wallet).
+        launcher::run_launch_sim_matrix(&settings, &args[1..]).await?;
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("bundle-simulate") {
         // Read-only pre-flight: rebuild a persisted launch bundle and run Jito
         // simulateBundle against it (no submit, no SOL). Diagnoses a bundle that
