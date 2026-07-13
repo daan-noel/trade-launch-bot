@@ -6,5 +6,6 @@ export { Card, Banner } from './Card';
 export { DataTable } from './DataTable';
 export type { Column } from './DataTable';
 export { StatCard } from './Stat';
+export { AgeCell } from './AgeCell';
 export { AddressDisplay } from './AddressDisplay';
 export { KV, KVRow } from './KV';

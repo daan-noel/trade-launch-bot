@@ -6,8 +6,8 @@ import {
   useDeleteMetadataTemplateMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
-import { Banner, Button, Card, Column, DataTable, Field, Input } from '@shared/components/ui';
-import { fileToBase64, formatAge } from '@shared/lib/format';
+import { AgeCell, Banner, Button, Card, Column, DataTable, Field, Input } from '@shared/components/ui';
+import { fileToBase64 } from '@shared/lib/format';
 import type { MetadataTemplate } from '@shared/types';
 
 const emptyForm = {
@@ -120,7 +120,7 @@ export function MetadataTemplatesPage() {
         ),
     },
     { header: 'URI', render: (t) => <code className="mono text-xs break-all">{t.uri}</code> },
-    { header: 'Age', align: 'right', render: (t) => formatAge(t.created_at) },
+    { header: 'Age', align: 'right', render: (t) => <AgeCell iso={t.created_at} /> },
     {
       header: '',
       align: 'right',

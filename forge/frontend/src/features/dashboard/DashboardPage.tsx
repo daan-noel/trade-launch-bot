@@ -7,6 +7,7 @@ import {
 } from '@shared/store/endpoints';
 import {
   AddressDisplay,
+  AgeCell,
   Banner,
   Button,
   Card,
@@ -15,7 +16,7 @@ import {
   StatCard,
   StatusPill,
 } from '@shared/components/ui';
-import { formatAge, formatCount, formatSol, gmgnMint } from '@shared/lib/format';
+import { formatCount, formatSol, gmgnMint } from '@shared/lib/format';
 import type { LaunchListRow, ManagedWalletPool } from '@shared/types';
 
 const ROLES = ['dev', 'bundler', 'treasury', 'trading'] as const;
@@ -55,7 +56,7 @@ export function DashboardPage() {
     { header: 'Launch', render: (l) => <StatusPill status={l.status} /> },
     { header: 'Bundle', render: (l) => <StatusPill status={l.bundle_status ?? undefined} /> },
     { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
-    { header: 'Age', align: 'right', render: (l) => formatAge(l.created_at) },
+    { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
     {
       header: '',
       align: 'right',
@@ -151,7 +152,7 @@ function TreasuryTable({ wallets }: { wallets: ManagedWalletPool[] }) {
     { header: 'Address', render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} /> },
     { header: 'Label', render: (w) => w.label ?? <span className="muted">—</span> },
     { header: 'Balance', align: 'right', render: (w) => <span className="mono">{formatSol(w.balance_lamports)}</span> },
-    { header: 'Checked', align: 'right', render: (w) => formatAge(w.balance_checked_at) },
+    { header: 'Checked', align: 'right', render: (w) => <AgeCell iso={w.balance_checked_at} /> },
   ];
   return <DataTable columns={columns} rows={wallets} rowKey={(w) => w.id} />;
 }

@@ -36,9 +36,9 @@ export function formatCount(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
-export function formatAge(iso: string | null | undefined): string {
+export function formatAge(iso: string | null | undefined, nowMs: number = Date.now()): string {
   if (!iso) return '—';
-  const ms = Date.now() - new Date(iso).getTime();
+  const ms = nowMs - new Date(iso).getTime();
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes}m ago`;

@@ -4,6 +4,7 @@ import { useLaunchesQuery } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
   AddressDisplay,
+  AgeCell,
   Banner,
   Button,
   Card,
@@ -11,7 +12,7 @@ import {
   DataTable,
   StatusPill,
 } from '@shared/components/ui';
-import { formatAge, formatCount, formatUsd, gmgnMint } from '@shared/lib/format';
+import { formatCount, formatUsd, gmgnMint } from '@shared/lib/format';
 import type { LaunchListRow } from '@shared/types';
 
 const PAGE = 100;
@@ -47,7 +48,7 @@ export function LaunchesPage() {
     { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
     { header: 'Mkt cap', align: 'right', render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span> },
     { header: 'Variant', render: (l) => <span className="mono text-xs muted">{l.variant}</span> },
-    { header: 'Age', align: 'right', render: (l) => formatAge(l.created_at) },
+    { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
     {
       header: '',
       align: 'right',

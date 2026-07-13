@@ -8,6 +8,7 @@ import {
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
+  AgeCell,
   Banner,
   Button,
   Card,
@@ -22,7 +23,7 @@ import {
   statusTone,
   AddressDisplay,
 } from '@shared/components/ui';
-import { formatAge, formatSol } from '@shared/lib/format';
+import { formatSol } from '@shared/lib/format';
 import type { ManagedWalletPool, TransferReport, WalletRole, WalletStatus } from '@shared/types';
 
 // A wallet in one of these statuses can't be an ad-hoc transfer source (a launch is
@@ -312,7 +313,7 @@ export function WalletPoolPage() {
           <span className="mono">{formatSol(w.balance_lamports)}</span>
         ),
     },
-    { header: 'Age', align: 'right', render: (w) => formatAge(w.created_at) },
+    { header: 'Age', align: 'right', render: (w) => <AgeCell iso={w.created_at} /> },
     {
       header: '',
       align: 'right',

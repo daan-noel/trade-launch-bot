@@ -7,6 +7,7 @@ import {
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
   AddressDisplay,
+  AgeCell,
   Banner,
   Button,
   Card,
@@ -17,7 +18,7 @@ import {
   Select,
   StatusPill,
 } from '@shared/components/ui';
-import { formatAge, quoteToHuman } from '@shared/lib/format';
+import { quoteToHuman } from '@shared/lib/format';
 import type { ActionPlan, ManageAction, ManageRequest, PlanLeg, TokenOverview } from '@shared/types';
 
 type Kind = 'sell' | 'buy' | 'consolidate';
@@ -246,7 +247,7 @@ function PlanTable({
 function ActionsHistory({ actions }: { actions: ManageAction[] }) {
   if (actions.length === 0) return null;
   const columns: Column<ManageAction>[] = [
-    { header: 'When', render: (a) => <span className="text-xs muted">{formatAge(a.created_at)}</span> },
+    { header: 'When', render: (a) => <span className="text-xs muted"><AgeCell iso={a.created_at} /></span> },
     { header: 'Action', render: (a) => <span className="text-xs">{a.kind} · {a.sizing}</span> },
     { header: 'Status', render: (a) => <StatusPill status={a.status} /> },
     {

@@ -10,6 +10,7 @@ import {
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
+  AgeCell,
   Banner,
   Button,
   Card,
@@ -21,7 +22,6 @@ import {
   Select,
 } from '@shared/components/ui';
 import { IxLayoutEditor } from '@shared/components/IxLayoutEditor';
-import { formatAge } from '@shared/lib/format';
 import type { BuyVariant, DecoStep, LaunchTemplate, NewLaunchTemplateInput } from '@shared/types';
 import {
   BUY_VARIANTS,
@@ -184,7 +184,7 @@ export function LaunchTemplatesPage() {
     },
     { header: 'Quote', render: (t) => quoteAssets.find((qa) => qa.id === t.quote_asset_id)?.symbol ?? t.quote_asset_id },
     { header: 'Legs', align: 'right', render: (t) => t.params.leg_structures?.length ?? t.params.bundle_leg_count ?? 0 },
-    { header: 'Updated', align: 'right', render: (t) => formatAge(t.updated_at) },
+    { header: 'Updated', align: 'right', render: (t) => <AgeCell iso={t.updated_at} /> },
     {
       header: '',
       align: 'right',
