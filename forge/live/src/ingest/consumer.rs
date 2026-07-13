@@ -37,10 +37,12 @@ const FLUSH_EVERY: usize = 256;
 /// Max time rows sit buffered before a flush.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Build the transport and spawn the ingest → DB pipeline task. Streams live
-/// immediately (`start(true)`). Returns the consumer's join handle plus the
-/// control handle (the caller owns it for the process lifetime — e.g. to
-/// expose a runtime pause/resume toggle over HTTP).
+/// Build the transport and spawn the ingest → DB pipeline task. Boots
+/// **paused** (`start(false)`): no gRPC subscription opens until an operator
+/// flips the runtime toggle on (`PUT /api/ingest {live:true}` →
+/// `handle.set_live(true)`). Returns the consumer's join handle plus the
+/// control handle (the caller owns it for the process lifetime to expose that
+/// runtime pause/resume toggle over HTTP).
 pub async fn spawn_ingest(
     pool: PgPool,
     endpoint: String,
@@ -53,9 +55,9 @@ pub async fn spawn_ingest(
         .protocol(Protocol::pump_fun())
         .config(IngestConfig::default())
         .build()?
-        .start(true);
+        .start(false);
     let handle = Arc::new(handle);
-    info!("ingest transport started (pump.fun/SOL adapter)");
+    info!("ingest transport spawned, paused (pump.fun/SOL adapter) — enable via PUT /api/ingest");
     let join = tokio::spawn(run_consumer(pool, adapter, event_rx));
     Ok((join, handle))
 }
