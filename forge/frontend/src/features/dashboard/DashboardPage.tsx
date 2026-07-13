@@ -22,6 +22,44 @@ import type { LaunchListRow, ManagedWalletPool } from '@shared/types';
 const ROLES = ['dev', 'bundler', 'treasury', 'trading'] as const;
 const LOW_POOL_THRESHOLD = 3;
 
+// Module-scope so the array identity is stable across polls — a fresh array each
+// render would defeat DataTable's row memoization (audit H2).
+const RECENT_LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
+  {
+    header: 'Token',
+    render: (l) => (l.name ? <span className="font-medium">{l.name} <span className="muted">{l.symbol}</span></span> : <span className="muted italic">pending…</span>),
+  },
+  { header: 'Launch', render: (l) => <StatusPill status={l.status} /> },
+  { header: 'Bundle', render: (l) => <StatusPill status={l.bundle_status ?? undefined} /> },
+  { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
+  { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
+  {
+    header: '',
+    align: 'right',
+    render: (l) =>
+      l.mint_address ? (
+        <a
+          href={gmgnMint(l.mint_address)}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs"
+          onClick={(e) => e.stopPropagation()}
+        >
+          GMGN ↗
+        </a>
+      ) : (
+        <span className="muted">—</span>
+      ),
+  },
+];
+
+const TREASURY_COLUMNS: Column<ManagedWalletPool>[] = [
+  { header: 'Address', render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} /> },
+  { header: 'Label', render: (w) => w.label ?? <span className="muted">—</span> },
+  { header: 'Balance', align: 'right', render: (w) => <span className="mono">{formatSol(w.balance_lamports)}</span> },
+  { header: 'Checked', align: 'right', render: (w) => <AgeCell iso={w.balance_checked_at} /> },
+];
+
 export function DashboardPage() {
   const navigate = useNavigate();
   const { data: wallets = [] } = useWalletPoolQuery(undefined, {
@@ -47,35 +85,6 @@ export function DashboardPage() {
   const lowRoles = ROLES.filter((r) => (r === 'dev' || r === 'bundler') && fundedByRole(r) < LOW_POOL_THRESHOLD);
 
   const launches = launchesPage?.launches ?? [];
-
-  const columns: Column<LaunchListRow>[] = [
-    {
-      header: 'Token',
-      render: (l) => (l.name ? <span className="font-medium">{l.name} <span className="muted">{l.symbol}</span></span> : <span className="muted italic">pending…</span>),
-    },
-    { header: 'Launch', render: (l) => <StatusPill status={l.status} /> },
-    { header: 'Bundle', render: (l) => <StatusPill status={l.bundle_status ?? undefined} /> },
-    { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
-    { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
-    {
-      header: '',
-      align: 'right',
-      render: (l) =>
-        l.mint_address ? (
-          <a
-            href={gmgnMint(l.mint_address)}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs"
-            onClick={(e) => e.stopPropagation()}
-          >
-            GMGN ↗
-          </a>
-        ) : (
-          <span className="muted">—</span>
-        ),
-    },
-  ];
 
   return (
     <div className="space-y-4">
@@ -130,7 +139,7 @@ export function DashboardPage() {
         actions={<Link to="/launches" className="text-xs">View all →</Link>}
       >
         <DataTable
-          columns={columns}
+          columns={RECENT_LAUNCH_COLUMNS}
           rows={launches}
           rowKey={(l) => l.id}
           empty="No launches yet — run one from the Launch Console."
@@ -148,11 +157,5 @@ export function DashboardPage() {
 }
 
 function TreasuryTable({ wallets }: { wallets: ManagedWalletPool[] }) {
-  const columns: Column<ManagedWalletPool>[] = [
-    { header: 'Address', render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} /> },
-    { header: 'Label', render: (w) => w.label ?? <span className="muted">—</span> },
-    { header: 'Balance', align: 'right', render: (w) => <span className="mono">{formatSol(w.balance_lamports)}</span> },
-    { header: 'Checked', align: 'right', render: (w) => <AgeCell iso={w.balance_checked_at} /> },
-  ];
-  return <DataTable columns={columns} rows={wallets} rowKey={(w) => w.id} />;
+  return <DataTable columns={TREASURY_COLUMNS} rows={wallets} rowKey={(w) => w.id} />;
 }

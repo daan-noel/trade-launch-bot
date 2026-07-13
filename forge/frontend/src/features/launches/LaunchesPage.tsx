@@ -17,6 +17,50 @@ import type { LaunchListRow } from '@shared/types';
 
 const PAGE = 100;
 
+// Module-scope so the array identity is stable across renders — a fresh array
+// each render would defeat DataTable's row memoization (audit H2). None of these
+// cells close over component state.
+const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
+  {
+    header: 'Token',
+    render: (l) =>
+      l.name ? (
+        <span>
+          <span className="font-medium">{l.name}</span>{' '}
+          <span className="muted">{l.symbol}</span>
+        </span>
+      ) : (
+        <span className="muted italic">pending ingest…</span>
+      ),
+  },
+  { header: 'Mint', render: (l) => <AddressDisplay value={l.mint_address} kind="token" /> },
+  { header: 'Launch', render: (l) => <StatusPill status={l.status} /> },
+  { header: 'Bundle', render: (l) => <StatusPill status={l.bundle_status ?? undefined} /> },
+  { header: 'Flags', render: (l) => <Flags l={l} /> },
+  { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
+  { header: 'Mkt cap', align: 'right', render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span> },
+  { header: 'Variant', render: (l) => <span className="mono text-xs muted">{l.variant}</span> },
+  { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
+  {
+    header: '',
+    align: 'right',
+    render: (l) =>
+      l.mint_address ? (
+        <a
+          href={gmgnMint(l.mint_address)}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs"
+          onClick={(e) => e.stopPropagation()}
+        >
+          GMGN ↗
+        </a>
+      ) : (
+        <span className="muted">—</span>
+      ),
+  },
+];
+
 export function LaunchesPage() {
   const [offset, setOffset] = useState(0);
   const { data, isFetching, error, refetch } = useLaunchesQuery(
@@ -27,47 +71,6 @@ export function LaunchesPage() {
 
   const rows = data?.launches ?? [];
   const total = data?.total ?? 0;
-
-  const columns: Column<LaunchListRow>[] = [
-    {
-      header: 'Token',
-      render: (l) =>
-        l.name ? (
-          <span>
-            <span className="font-medium">{l.name}</span>{' '}
-            <span className="muted">{l.symbol}</span>
-          </span>
-        ) : (
-          <span className="muted italic">pending ingest…</span>
-        ),
-    },
-    { header: 'Mint', render: (l) => <AddressDisplay value={l.mint_address} kind="token" /> },
-    { header: 'Launch', render: (l) => <StatusPill status={l.status} /> },
-    { header: 'Bundle', render: (l) => <StatusPill status={l.bundle_status ?? undefined} /> },
-    { header: 'Flags', render: (l) => <Flags l={l} /> },
-    { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
-    { header: 'Mkt cap', align: 'right', render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span> },
-    { header: 'Variant', render: (l) => <span className="mono text-xs muted">{l.variant}</span> },
-    { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
-    {
-      header: '',
-      align: 'right',
-      render: (l) =>
-        l.mint_address ? (
-          <a
-            href={gmgnMint(l.mint_address)}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs"
-            onClick={(e) => e.stopPropagation()}
-          >
-            GMGN ↗
-          </a>
-        ) : (
-          <span className="muted">—</span>
-        ),
-    },
-  ];
 
   return (
     <div className="space-y-4">
@@ -105,7 +108,7 @@ export function LaunchesPage() {
         }
       >
         <DataTable
-          columns={columns}
+          columns={LAUNCH_COLUMNS}
           rows={rows}
           rowKey={(l) => l.id}
           loading={isFetching}
