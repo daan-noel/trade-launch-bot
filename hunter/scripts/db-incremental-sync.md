@@ -7,15 +7,18 @@ Safe to run repeatedly. **Non-destructive for market data**: your local sweep re
 settings, `raw_txs`, and existing trades are never touched — only new rows are added
 (and a few metadata rows refreshed).
 
-> **Strategy tables are mirrored (server wins), including deletes.** `strategy_rules`,
+> **Strategy tables are mirrored (server wins), non-destructively.** `strategy_rules`,
 > `strategy_runs`, `strategy_run_metrics`, and `strategy_positions` are copied
-> **full-table each run**, upserted (`DO UPDATE`), and **tombstone-deleted**: a local
-> row is removed once the server no longer has it (rule delete, "clear paper results",
-> the stale-position reaper). Deletion is scoped to ids a *previous run of this script*
-> observed coming from the server (tracked in a local `_ec2_sync_seen_ids` table) — a
-> rule/run/position you create directly in the lab UI never enters that set, so it's
-> never touched. Because upserts are server-wins, a lab-authored row sharing a UUID
-> with the server's would still be overwritten (UUIDs collide with ≈0 probability).
+> **full-table each run** and upserted (`DO UPDATE`): new server rows are added and
+> changed ones refreshed, but **no local row is ever deleted**. So the lab keeps its
+> accumulated history — a run/position the server has since deleted or aged out of its
+> rolling window **survives locally**, and rows you author directly in the lab UI
+> survive too. The trade-off: server-side deletes are **not** propagated (a rule
+> deleted / "clear paper results" / a reaped position on the live box lingers on the lab
+> until you remove it manually). Because upserts are server-wins, a lab-authored row
+> sharing a UUID with the server's would still be overwritten (UUIDs collide with ≈0
+> probability). (An earlier version tombstone-deleted dropped server rows via a
+> `_ec2_sync_seen_ids` table; that was removed, and the table is dropped each run.)
 >
 > Run from the project root in PowerShell.
 
@@ -75,7 +78,7 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 6. **Computes local watermarks** (`MAX(block_time)`, `MAX(created_at)`, …) and the sealed-day cutoff (midnight UTC today). TimescaleDB auto-creates destination chunks on insert — no partition-ensure step.
 7. **Upserts each market-data table** with the watermark as a pushed-down literal (see table below); hypertables pull only sealed days `[watermark, cutoff)`. **`wallet_dict` is the exception** — it is **non-destructively merged** each run (one transaction), not watermark-incremental. `lab` never mints its own ids, there is **no FK** on `trades.wallet_id`, and a missing dict row makes the trade-history reads render the wallet as `unknown:<id>` (LEFT-join fallback in `trade_repo.rs`) rather than drop the trade. The merge pulls the server dict into a temp table, drops local rows whose address the server reassigned to a different id (server wins), then UPSERTs every server row by id — while **preserving local-only ids the server has aged out**, because the lab retains trade history longer than the server's 7-day window. This heals the two prior failure modes: the original `id > MAX(local id) ON CONFLICT DO NOTHING` silently skipped colliding server rows (after the ~Jul-2026 rebuild re-minted `wallet_dict`, ~98k ids went missing → 58% of trades invisible), and a naive `TRUNCATE`+full-replace fixed recent days but re-orphaned the oldest retained days every run.
 7a. **Integrity** — a HARD completeness guard runs *inside* the merge transaction: every **server** id must be present locally afterward, else the sync aborts (catches a real mirror regression). A separate post-trades **report** just logs the residual orphans — trades whose `wallet_id` is absent from *both* dicts (wallets the server re-minted/aged out; they render as `unknown:<id>` and age out of lab retention). The residual is informational and does not fail the sync.
-7b. **Mirrors the strategy tables** (`strategy_rules` → `strategy_runs` → `strategy_run_metrics` → `strategy_positions`, FK-safe order) **full-table, server wins** — no watermark (tiny vs. `trades`). For each table: tombstone-delete any local row whose id was previously seen from the server but is now gone there (via the local `_ec2_sync_seen_ids` bookkeeping table), then `INSERT ... ON CONFLICT DO UPDATE` so status/exit-fill updates propagate, then refresh the seen-ids snapshot for that table. Lab-authored rows (the lab UI's own create/update/delete-rule handlers write straight to the local DB for local backtest/paper authoring) never enter `_ec2_sync_seen_ids`, so they're never a delete candidate. The lab reads these mirrored rows for both the positions table/summary **and** the rules-table counters (open/pending/total/win/loss): the lab has no runtime cache, so its `list_*_rules` handlers compute those counters in SQL via `StrategyRepo::rule_counters_for_latest_paper_runs` (latest paper run per rule) instead of a cache read. Without this sync the lab shows all-zero counters.
+7b. **Mirrors the strategy tables** (`strategy_rules` → `strategy_runs` → `strategy_run_metrics` → `strategy_positions`, FK-safe order) **full-table, server wins, non-destructive** — no watermark (tiny vs. `trades`). For each table: `INSERT ... ON CONFLICT DO UPDATE` so new server rows are added and status/exit-fill changes propagate — but **no local row is deleted**, so the lab keeps its accumulated history (rows the server deleted/aged out) and its own lab-authored rows (the lab UI's create/update/delete-rule handlers write straight to the local DB for local backtest/paper authoring). Server-side deletes are deliberately **not** propagated — a rule/position deleted on the live box lingers on the lab until removed manually (the trade-off for retaining old local data). The one exception is a single **constraint-conflict resolver** on `strategy_runs`: it also has `UNIQUE(rule_id, mode, run_seq)`, so a divergent local run sharing that triple under a different id is dropped first (server wins) or the insert would abort — this fires only on a genuine collision, never on age. (An earlier version tombstone-deleted dropped server rows via a `_ec2_sync_seen_ids` table; that was removed, and the table is dropped each run.) The lab reads these mirrored rows for both the positions table/summary **and** the rules-table counters (open/pending/total/win/loss): the lab has no runtime cache, so its `list_*_rules` handlers compute those counters in SQL via `StrategyRepo::rule_counters_for_latest_paper_runs` (latest paper run per rule) instead of a cache read. Without this sync the lab shows all-zero counters.
 8. **Syncs `_sqlx_migrations`** from the server so the local backend doesn't re-apply migrations.
 9. **Detaches** — drops the foreign server (removing the server password from the local catalog) and kills the tunnel (in a `finally`, so it's cleaned up even on error).
 
@@ -89,10 +92,10 @@ EC2 box (per the data-scale guardrails in `CLAUDE.md`).
 | `token_sync_state` | `(mint_address, venue)` | DO UPDATE — newer `last_synced_at` wins |
 | `trades` | `(block_time, tx_signature, leg_index)` | DO NOTHING (append-only) |
 | `raw_txs` | `(block_time, tx_signature)` | DO NOTHING (opt-in via `-IncludeRawTxs`) |
-| `strategy_rules` | `id` | DO UPDATE + tombstone delete — server wins (full-table) |
-| `strategy_runs` | `id` | DO UPDATE + tombstone delete — server wins (full-table) |
-| `strategy_run_metrics` | `run_id` | DO UPDATE + tombstone delete — server wins (full-table) |
-| `strategy_positions` | `id` | DO UPDATE + tombstone delete — server wins (full-table; real + paper) |
+| `strategy_rules` | `id` | DO UPDATE — server wins, non-destructive (full-table; local rows kept) |
+| `strategy_runs` | `id` | DO UPDATE — server wins, non-destructive (full-table; local rows kept) |
+| `strategy_run_metrics` | `run_id` | DO UPDATE — server wins, non-destructive (full-table; local rows kept) |
+| `strategy_positions` | `id` | DO UPDATE — server wins, non-destructive (full-table; real + paper; local rows kept) |
 
 ---
 
