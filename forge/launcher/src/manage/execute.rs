@@ -9,8 +9,10 @@
 //! not this operator-triggered path.
 
 use anyhow::{bail, Context, Result};
-use platform_core::models::{ManageAction, ManageStatus, WalletRole};
-use platform_core::storage::repositories::{ManageActionRepo, ManagedWalletRepo, TokenRepo};
+use platform_core::models::{ManageAction, ManageKind, ManageStatus, WalletRole};
+use platform_core::storage::repositories::{
+    ManageActionRepo, ManagedWalletRepo, TokenPositionRepo, TokenRepo,
+};
 use pump_trader::{protocol::LAMPORTS_PER_SOL, PumpFunTrader, TokenProgram};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -58,8 +60,19 @@ pub async fn execute_action(
         .as_ref()
         .context("token management disabled (set MANAGE_ENABLED=true)")?;
 
-    // Seed + reconcile first so a sell plan sizes off FRESH balances.
+    let kind: ManageKind = req.kind.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+
+    // Seed + reconcile first so a sell plan sizes off FRESH balances. For a SELL
+    // this is correctness-critical — an under-count silently under-sells (leaving
+    // tokens stranded) — so a failed reconcile is FATAL here rather than planning
+    // off possibly-stale recorded balances. Buys/consolidates stay best-effort.
     if let Err(e) = load_positions(pool, Some(settings), mint).await {
+        if kind == ManageKind::Sell {
+            bail!(
+                "pre-sell balance reconcile failed ({e}); refusing to size a sell off \
+                 stale balances — retry once RPC recovers"
+            );
+        }
         warn!(%mint, ?e, "pre-plan position reconcile failed — planning off recorded balances");
     }
 
@@ -111,6 +124,25 @@ pub async fn execute_action(
                 leg.status = Some("confirmed".to_string());
                 leg.signature = sig;
                 confirmed += 1;
+                // A confirmed manage-buy makes this wallet a holder. Seed its
+                // position row (with the real SOL cost basis) so the post-action
+                // reconcile fills its on-chain balance and every future "sell all"
+                // sees it — otherwise a manual buy from a non-launch wallet is
+                // invisible to the holdings model. Idempotent (`ON CONFLICT DO
+                // NOTHING`), so buying more from the same wallet never clobbers.
+                if leg.side == "buy" {
+                    if let Err(e) = TokenPositionRepo::seed(
+                        pool,
+                        mint,
+                        leg.managed_wallet_id,
+                        &leg.role,
+                        leg.spend_quote,
+                    )
+                    .await
+                    {
+                        warn!(%mint, managed_wallet_id = %leg.managed_wallet_id, ?e, "seed position after manage-buy failed");
+                    }
+                }
             }
             Err(e) => {
                 leg.status = Some("failed".to_string());

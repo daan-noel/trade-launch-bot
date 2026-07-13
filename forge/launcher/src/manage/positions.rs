@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use platform_core::models::{BundleStatus, PositionStatus, TokenPosition, WalletRole};
+use platform_core::models::{BundleStatus, PositionStatus, TokenPosition, WalletRole, WalletStatus};
 use platform_core::storage::repositories::{
-    BundleRepo, LaunchRepo, TokenPositionRepo, TradeRepo,
+    BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
 };
 use sqlx::PgPool;
 use tokio::task::JoinSet;
@@ -111,22 +111,54 @@ async fn seed_positions(pool: &PgPool, mint_address: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reconcile every position's on-chain balance (`getTokenAccountsByOwner`) and its
-/// feed-accurate realized proceeds (sum of the wallet's sell fills for the mint).
-/// Public so the sell executor can refresh positions immediately after a sell.
+/// Reconcile a mint's positions against chain + feed, **discovering** any managed
+/// wallet that holds the mint but was never seeded a row. Public so the sell
+/// executor can refresh positions immediately after a sell.
+///
+/// The probe set is every non-retired managed wallet (discovery) UNION every
+/// existing non-`dropped` position owner (so a sold-out row on a since-retired
+/// wallet still reconciles to `closed`). Each is queried for its on-chain balance
+/// (`getTokenAccountsByOwner`) concurrently; a wallet found holding the mint with
+/// no position row gets one seeded (cost basis 0 — the row exists only to make the
+/// holding visible + sellable) before the batch balance write. This is what makes
+/// "sell all" correct for a manual manage-buy or any out-of-band holding, not just
+/// the launch dev/bundle wallets.
 ///
 /// Shape (audit 2026-07-13): realized proceeds for ALL wallets come from ONE
 /// grouped query (not a per-position N+1); the per-wallet balance RPCs run
 /// **concurrently** (a slow/failing wallet logs + skips instead of `?`-aborting
 /// the whole pass); and every reconciled row is written in ONE `UNNEST` batch
-/// update (not two UPDATEs × N rows).
+/// update (not two UPDATEs × N rows). Cold, operator-triggered path (preview /
+/// sell / holdings read) — the per-wallet scan is acceptable here and must never
+/// run on an ingest hot path.
 pub async fn reconcile_positions(
     pool: &PgPool,
     settings: &LauncherSettings,
     mint_address: &str,
 ) -> Result<()> {
-    let positions = TokenPositionRepo::by_mint(pool, mint_address).await?;
-    if positions.is_empty() {
+    let existing = TokenPositionRepo::by_mint(pool, mint_address).await?;
+    let existing_owners: std::collections::HashSet<String> =
+        existing.iter().map(|p| p.wallet_address.clone()).collect();
+
+    // Probe set: owner_address -> (managed_wallet_id, role). Seed from every
+    // non-retired managed wallet (discovery), then add any existing non-dropped
+    // position owner. A `dropped` leg never bought — never probe or seed it.
+    let mut probe: HashMap<String, (uuid::Uuid, String)> = HashMap::new();
+    for w in ManagedWalletRepo::list_all(pool, None).await? {
+        if w.status == WalletStatus::Retired.as_str() {
+            continue;
+        }
+        probe.insert(w.address, (w.id, w.role));
+    }
+    for p in &existing {
+        if p.status == PositionStatus::Dropped.as_str() {
+            continue;
+        }
+        probe
+            .entry(p.wallet_address.clone())
+            .or_insert((p.managed_wallet_id, p.role.clone()));
+    }
+    if probe.is_empty() {
         return Ok(());
     }
 
@@ -144,33 +176,28 @@ pub async fn reconcile_positions(
         .build()
         .context("build reqwest client for position reconcile")?;
 
-    // Fire every non-dropped wallet's balance RPC concurrently. A `dropped` leg
-    // never bought — skip its balance RPC and keep it terminal (see the
-    // `reconcile_batch` dropped guard).
+    // Fire every probed wallet's balance RPC concurrently.
     let mut set = JoinSet::new();
-    for pos in &positions {
-        if pos.status == PositionStatus::Dropped.as_str() {
-            continue;
-        }
+    for (owner, (wid, role)) in &probe {
         let client = client.clone();
         let rpc_url = settings.rpc_url.clone();
-        let owner = pos.wallet_address.clone();
+        let owner = owner.clone();
+        let role = role.clone();
+        let wid = *wid;
         let mint = mint_address.to_string();
-        let id = pos.id;
         set.spawn(async move {
             let res = fetch_token_holding(&client, &rpc_url, &owner, &mint).await;
-            (id, owner, res)
+            (owner, wid, role, res)
         });
     }
 
-    // Collect into parallel arrays for the single batch update. A failed wallet is
-    // logged and skipped — it keeps its last-known row rather than aborting the pass.
-    let mut ids = Vec::new();
-    let mut balances = Vec::new();
-    let mut token_accounts: Vec<Option<String>> = Vec::new();
-    let mut realized = Vec::new();
+    // Collect each wallet's balance; seed a row for any DISCOVERED holder (holds
+    // the mint, no existing row) so the batch update below has an id to write. A
+    // failed wallet is logged and skipped — it keeps its last-known row rather than
+    // aborting the pass.
+    let mut holdings: HashMap<String, (i64, Option<String>)> = HashMap::new();
     while let Some(joined) = set.join_next().await {
-        let (id, owner, res) = match joined {
+        let (owner, wid, role, res) = match joined {
             Ok(t) => t,
             Err(e) => {
                 warn!(?e, "position balance task panicked — skipping");
@@ -179,13 +206,38 @@ pub async fn reconcile_positions(
         };
         match res {
             Ok((balance_base, token_account)) => {
-                ids.push(id);
-                balances.push(balance_base);
-                token_accounts.push(token_account);
-                realized.push(realized_by_addr.get(&owner).copied().unwrap_or(0));
+                if balance_base > 0 && !existing_owners.contains(&owner) {
+                    if let Err(e) =
+                        TokenPositionRepo::seed(pool, mint_address, wid, &role, 0).await
+                    {
+                        warn!(%owner, ?e, "seed discovered holder position failed — skipping");
+                        continue;
+                    }
+                }
+                holdings.insert(owner, (balance_base, token_account));
             }
             Err(e) => warn!(%owner, ?e, "position balance RPC failed — skipping this wallet"),
         }
+    }
+
+    // Re-read so freshly-seeded discovery rows carry an id, then write every
+    // non-dropped row we have a fresh balance for in ONE `UNNEST` batch update.
+    let positions = TokenPositionRepo::by_mint(pool, mint_address).await?;
+    let mut ids = Vec::new();
+    let mut balances = Vec::new();
+    let mut token_accounts: Vec<Option<String>> = Vec::new();
+    let mut realized = Vec::new();
+    for pos in &positions {
+        if pos.status == PositionStatus::Dropped.as_str() {
+            continue;
+        }
+        let Some((balance_base, token_account)) = holdings.get(&pos.wallet_address) else {
+            continue;
+        };
+        ids.push(pos.id);
+        balances.push(*balance_base);
+        token_accounts.push(token_account.clone());
+        realized.push(realized_by_addr.get(&pos.wallet_address).copied().unwrap_or(0));
     }
 
     TokenPositionRepo::reconcile_batch(pool, &ids, &balances, &token_accounts, &realized).await
