@@ -111,6 +111,7 @@ export function LaunchConsolePage() {
   const { data: status } = useLaunchStatusQuery(launchId ?? '', {
     skip: !launchId,
     pollingInterval: pollInterval,
+    skipPollingIfUnfocused: true,
   });
   const polling = pollInterval > 0;
   useEffect(() => {

@@ -23,9 +23,18 @@ const LOW_POOL_THRESHOLD = 3;
 
 export function DashboardPage() {
   const navigate = useNavigate();
-  const { data: wallets = [] } = useWalletPoolQuery(undefined, { pollingInterval: 15_000 });
-  const { data: launchesPage } = useLaunchesQuery({ limit: 8 }, { pollingInterval: 15_000 });
-  const { data: ingest } = useIngestStatusQuery(undefined, { pollingInterval: 5000 });
+  const { data: wallets = [] } = useWalletPoolQuery(undefined, {
+    pollingInterval: 15_000,
+    skipPollingIfUnfocused: true,
+  });
+  const { data: launchesPage } = useLaunchesQuery(
+    { limit: 8 },
+    { pollingInterval: 15_000, skipPollingIfUnfocused: true },
+  );
+  const { data: ingest } = useIngestStatusQuery(undefined, {
+    pollingInterval: 5000,
+    skipPollingIfUnfocused: true,
+  });
   const { data: quotes = [] } = useQuoteAssetsQuery();
 
   const sol = quotes.find((q) => q.is_native)?.usd_rate ?? null;

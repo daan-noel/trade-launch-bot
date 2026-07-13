@@ -28,7 +28,7 @@ export function TokenDetailPage() {
   const { data: overview, isLoading, error } = useTokenOverviewQuery(mint, { skip: !mint });
   const { data: trades = [], isFetching: tradesLoading } = useTokenTradesQuery(
     { mint },
-    { skip: !mint, pollingInterval: 10_000 },
+    { skip: !mint, pollingInterval: 10_000, skipPollingIfUnfocused: true },
   );
   const { data: positions = [], isFetching: positionsLoading } = useTokenPositionsQuery(mint, {
     skip: !mint,

@@ -134,6 +134,7 @@ export function WalletPoolPage() {
     // Poll while any wallet is mid-lifecycle (a treasury send in flight or awaiting
     // manual funding); stop once the pool settles.
     pollingInterval: 5000,
+    skipPollingIfUnfocused: true,
   });
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();

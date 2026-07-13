@@ -20,7 +20,11 @@ const num = (v: string, min = 0) => Math.max(min, Number(v) || 0);
  *  Starting a bot is always allowed; it only trades once the MANAGE_ENABLED kill
  *  switch is on (until then a `running` bot sits idle). */
 export function VolumePanel({ mint }: { mint: string }) {
-  const { data: bots = [] } = useVolumeBotsQuery(mint, { skip: !mint, pollingInterval: 10_000 });
+  const { data: bots = [] } = useVolumeBotsQuery(mint, {
+    skip: !mint,
+    pollingInterval: 10_000,
+    skipPollingIfUnfocused: true,
+  });
   const [startBot, startState] = useStartVolumeBotMutation();
   const [pauseBot] = usePauseVolumeBotMutation();
   const [resumeBot] = useResumeVolumeBotMutation();

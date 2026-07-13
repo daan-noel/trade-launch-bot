@@ -13,7 +13,10 @@ const NAV: { to: string; label: string; icon: string; end?: boolean }[] = [
 ];
 
 function SolPrice() {
-  const { data } = useQuoteAssetsQuery(undefined, { pollingInterval: 60_000 });
+  const { data } = useQuoteAssetsQuery(undefined, {
+    pollingInterval: 60_000,
+    skipPollingIfUnfocused: true,
+  });
   const native = data?.find((q) => q.is_native);
   if (!native?.usd_rate) return null;
   return (

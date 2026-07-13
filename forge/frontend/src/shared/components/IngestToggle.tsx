@@ -7,7 +7,10 @@ import { useIngestStatusQuery, useSetIngestMutation } from '@shared/store/endpoi
  * watchdog auto-pause. Hidden when the box booted without Helius creds.
  */
 export function IngestToggle() {
-  const { data } = useIngestStatusQuery(undefined, { pollingInterval: 5000 });
+  const { data } = useIngestStatusQuery(undefined, {
+    pollingInterval: 5000,
+    skipPollingIfUnfocused: true,
+  });
   const [setIngest, { isLoading }] = useSetIngestMutation();
 
   if (!data || !data.configured) return null;

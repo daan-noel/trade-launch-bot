@@ -20,7 +20,7 @@ export function LaunchesPage() {
   const [offset, setOffset] = useState(0);
   const { data, isFetching, error, refetch } = useLaunchesQuery(
     { limit: PAGE, offset },
-    { pollingInterval: 15_000 },
+    { pollingInterval: 15_000, skipPollingIfUnfocused: true },
   );
   const navigate = useNavigate();
 
