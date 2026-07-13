@@ -115,7 +115,7 @@ export function TokenDetailPage() {
 
       <Card title="Spot price">
         {trades.length > 0 ? (
-          <PriceChart trades={trades} />
+          <PriceChart trades={trades} overview={overview} mint={mint} />
         ) : (
           <p className="muted text-sm py-8 text-center">
             {tradesLoading ? 'Loading trades…' : 'No trades ingested for this mint yet.'}

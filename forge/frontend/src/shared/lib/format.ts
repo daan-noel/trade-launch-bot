@@ -47,6 +47,56 @@ export function formatCount(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
+/** `value.toFixed(decimals)` with trailing zeros (and a bare `.`) trimmed. */
+export function formatDecimalTrim(value: number, decimals: number): string {
+  const s = value.toFixed(decimals);
+  if (!s.includes('.')) return s;
+  const trimmed = s.replace(/0+$/, '').replace(/\.$/, '');
+  return trimmed || s;
+}
+
+/**
+ * Human-readable price for meme-token spot values (raw quote-per-base ratios).
+ * `>= 1` trims to 6 decimals; tiny values render in engineering e-notation
+ * (`1.23e-9`) so they never collapse to `0`. Ported from hunter's `utils/format`.
+ */
+export function formatPrice(value: number): string {
+  if (value === 0) return '0';
+  const abs = Math.abs(value);
+  if (abs >= 1) return formatDecimalTrim(value, 6);
+
+  const exponent = -Math.floor(Math.log10(abs));
+  let engineeringExponent: number;
+  if (exponent <= 3) engineeringExponent = -3;
+  else if (exponent <= 6) engineeringExponent = -6;
+  else if (exponent <= 9) engineeringExponent = -9;
+  else if (exponent <= 12) engineeringExponent = -12;
+  else if (exponent <= 15) engineeringExponent = -15;
+  else return value.toExponential(6);
+
+  const mantissa = value / 10 ** engineeringExponent;
+  return `${formatDecimalTrim(mantissa, 6)}e${engineeringExponent}`;
+}
+
+/**
+ * Full age breakdown down to the second (`30s`, `12m 30s`, `3h 12m 30s`,
+ * `1D 3h 12m 30s`) — no unit collapsed. Day unit is uppercase `D`.
+ */
+export function formatAgePrecise(seconds: number): string {
+  if (seconds < 0) return '?';
+  const s = Math.floor(seconds);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}D`);
+  if (d > 0 || h > 0) parts.push(`${h}h`);
+  if (d > 0 || h > 0 || m > 0) parts.push(`${m}m`);
+  parts.push(`${sec}s`);
+  return parts.join(' ');
+}
+
 export function formatAge(iso: string | null | undefined, nowMs: number = Date.now()): string {
   if (!iso) return '—';
   const ms = nowMs - new Date(iso).getTime();

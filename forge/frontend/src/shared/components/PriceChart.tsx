@@ -1,84 +1,145 @@
-import { useEffect, useRef } from 'react';
-import {
-  createChart,
-  ColorType,
-  LineSeries,
-  type IChartApi,
-  type ISeriesApi,
-  type UTCTimestamp,
-} from 'lightweight-charts';
-import type { TradePriced } from '@shared/types';
-
-export interface PricePoint {
-  time: UTCTimestamp;
-  value: number;
-}
+import { useMemo, useState } from 'react';
+import clsx from 'clsx';
+import type { TradePriced, TokenOverview } from '@shared/types';
+import { formatSig } from '@shared/lib/format';
+import { useWalletPoolQuery } from '@shared/store/endpoints';
+import { TokenPriceChart } from './tokenChart';
+import type {
+  ChartMetric,
+  ChartTrade,
+  PriceUnit,
+  ProfileWalletInfo,
+} from './tokenChart/types';
 
 /**
- * De-duplicated, time-ascending spot-price series from a token's priced trades.
- * Uses `spot_price_quote` (the canonical curve/pool spot per the project's price
- * convention), falling back to `exec_price_quote`. The value is the raw quote
- * ratio — monotonic and correct in shape; absolute USD lives in TokenOverview.
- * Collapses trades sharing a whole second to the last one.
+ * Forge adapter over the ported hunter token chart. Maps `trades_priced` rows
+ * onto the chart's `ChartTrade` contract (which is in hunter's units — human SOL
+ * + raw token base units — so the ported pump.fun constants line up), sources
+ * wallet markers from the managed pool, and owns the SOL/USD + price/MC toggles.
  */
-export function tradesToPriceSeries(trades: TradePriced[]): PricePoint[] {
-  const byTime = new Map<number, number>();
-  for (const t of trades) {
-    const price = t.spot_price_quote ?? t.exec_price_quote;
-    if (price == null) continue;
-    const sec = Math.floor(new Date(t.block_time).getTime() / 1000);
-    byTime.set(sec, price);
+
+/** Managed-wallet role → theme CSS var; resolved to a real hex for canvas draws. */
+const ROLE_VAR: Record<string, string> = {
+  dev: '--color-role-dev',
+  bundler: '--color-role-bundler',
+  treasury: '--color-role-treasury',
+  trading: '--color-role-trading',
+};
+
+function resolveRoleColor(role: string): string {
+  const varName = ROLE_VAR[role.toLowerCase()] ?? '--color-accent';
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    if (v) return v;
+  } catch {
+    /* ignore (SSR / detached) */
   }
-  return [...byTime.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([time, value]) => ({ time: time as UTCTimestamp, value }));
+  return '#7eb8ff';
 }
 
-export function PriceChart({ trades, height = 260 }: { trades: TradePriced[]; height?: number }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+/** `trades_priced` row → `ChartTrade`. Converts forge's raw quote/base ratios
+ *  (lamport-scale) to human SOL per raw token so the chart's SOL-denominated
+ *  constants (initial 30 SOL, migration price, FDV supply) apply unchanged. */
+function toChartTrade(t: TradePriced): ChartTrade {
+  const qd = t.quote_decimals;
+  const scale = 10 ** qd;
+  const spot = t.spot_price_quote ?? t.exec_price_quote ?? 0;
+  return {
+    block_time: t.block_time,
+    price_per_token: spot / scale,
+    trade_type: t.trade_type === 'buy' ? 'buy' : 'sell',
+    amount_sol: t.amount_quote_display ?? t.amount_quote / scale,
+    token_amount: t.amount_base,
+    slot: t.slot,
+    tx_index: t.tx_index,
+    tx_signature: typeof t.tx_signature === 'string' ? t.tx_signature : formatSig(t.tx_signature),
+    leg_index: t.leg_index,
+    reserve_sol: t.reserve_quote == null ? null : t.reserve_quote / scale,
+    reserve_token: t.reserve_base,
+    venue: t.market_kind === 'amm' ? 'amm' : 'curve',
+    wallet_address: t.wallet_address,
+  };
+}
 
-  // Create the chart once.
-  useEffect(() => {
-    if (!ref.current) return;
-    const chart = createChart(ref.current, {
-      height,
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#9aa3b2',
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: 'rgba(255,255,255,0.04)' },
-        horzLines: { color: 'rgba(255,255,255,0.04)' },
-      },
-      rightPriceScale: { borderColor: '#2a2f3a' },
-      timeScale: { borderColor: '#2a2f3a', timeVisible: true, secondsVisible: false },
-      crosshair: { mode: 0 },
-      autoSize: true,
-    });
-    const series = chart.addSeries(LineSeries, {
-      color: '#7eb8ff',
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-    });
-    chartRef.current = chart;
-    seriesRef.current = series;
-    return () => {
-      chart.remove();
-      chartRef.current = null;
-      seriesRef.current = null;
-    };
-  }, [height]);
+export function PriceChart({
+  trades,
+  overview,
+  mint,
+  height = 340,
+}: {
+  trades: TradePriced[];
+  overview?: TokenOverview;
+  mint: string;
+  height?: number;
+}) {
+  const [metric, setMetric] = useState<ChartMetric>('price');
+  const [unit, setUnit] = useState<PriceUnit>('SOL');
 
-  // Push data whenever trades change.
-  useEffect(() => {
-    if (!seriesRef.current) return;
-    seriesRef.current.setData(tradesToPriceSeries(trades));
-    chartRef.current?.timeScale().fitContent();
-  }, [trades]);
+  const quoteSymbol = overview?.quote_symbol ?? trades[0]?.quote_symbol ?? 'SOL';
+  const usdRate = overview?.quote_usd_rate ?? trades[0]?.quote_usd_rate ?? null;
+  const canUsd = usdRate != null && usdRate > 0;
+  const effectiveUnit: PriceUnit = unit === 'USD' && canUsd ? 'USD' : 'SOL';
 
-  return <div ref={ref} style={{ width: '100%', height }} />;
+  const chartTrades = useMemo(() => trades.map(toChartTrade), [trades]);
+
+  // Managed-pool wallets as role-colored markers. The pool is global; only
+  // wallets that actually traded this mint surface (the marker builder filters).
+  const { data: pool = [] } = useWalletPoolQuery(undefined);
+  const profileWallets = useMemo<ProfileWalletInfo[]>(
+    () =>
+      pool.map((w) => ({
+        address: w.address,
+        label: w.role,
+        profileName: w.role,
+        color: resolveRoleColor(w.role),
+        isMine: w.role === 'dev',
+      })),
+    [pool],
+  );
+
+  const toValue = useMemo(() => {
+    if (effectiveUnit === 'USD' && usdRate != null) return (sol: number) => sol * usdRate;
+    return (sol: number) => sol;
+  }, [effectiveUnit, usdRate]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-end">
+        <div className="inline-flex rounded-md border border-[var(--color-line)] overflow-hidden text-xs">
+          {(['SOL', 'USD'] as PriceUnit[]).map((u) => (
+            <button
+              key={u}
+              type="button"
+              disabled={u === 'USD' && !canUsd}
+              onClick={() => setUnit(u)}
+              className={clsx(
+                'px-2 py-0.5 transition-colors',
+                effectiveUnit === u
+                  ? 'bg-[var(--color-accent)] text-[var(--color-accent-ink)]'
+                  : 'text-[var(--color-muted)] hover:text-[var(--color-ink)]',
+                u === 'USD' && !canUsd && 'opacity-40 cursor-not-allowed',
+              )}
+              title={u === 'USD' && !canUsd ? 'No USD rate for this quote yet' : undefined}
+            >
+              {u === 'USD' ? '$ USD' : `◎ ${quoteSymbol}`}
+            </button>
+          ))}
+        </div>
+      </div>
+      <TokenPriceChart
+        id={mint}
+        symbol={overview?.symbol ?? quoteSymbol}
+        trades={chartTrades}
+        height={height}
+        metric={metric}
+        onMetricChange={setMetric}
+        priceUnit={effectiveUnit}
+        priceLabel={effectiveUnit === 'USD' ? 'USD' : quoteSymbol}
+        toValue={toValue}
+        isMigrated={overview?.is_migrated ?? undefined}
+        tokenCreatedAt={overview?.created_at}
+        profileWallets={profileWallets}
+      />
+    </div>
+  );
 }
