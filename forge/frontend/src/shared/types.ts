@@ -331,6 +331,16 @@ export interface LaunchOverrides {
   bundler_count?: number;
 }
 
+// Pre-launch cost preview — `GET /api/launches/requirement`. Mirrors the SSOT the
+// launch gate enforces, so the console can show the required amount + shortfall
+// before the user clicks Launch (never discovering it via a failed request).
+export interface LaunchRequirement {
+  dev_required_lamports: number;
+  per_leg_lamports: number;
+  leg_count: number;
+  dev_balance_lamports: number | null;
+}
+
 export interface Launch {
   id: string;
   mint_address: string;

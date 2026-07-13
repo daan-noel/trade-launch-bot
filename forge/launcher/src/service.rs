@@ -54,6 +54,21 @@ pub(crate) fn min_dev_launch_lamports(tip_ceiling_lamports: u64) -> u64 {
     CREATE_RENT_AND_FEE_LAMPORTS + tip_ceiling_lamports
 }
 
+/// Typed error for the pre-launch dev-wallet balance gate so the HTTP layer can
+/// surface it as an actionable 400 ("needs 0.06 SOL, has 0.049") instead of the
+/// blanket 500 every other `anyhow` error collapses to. Carries the
+/// already-formatted, operator-facing message.
+#[derive(Debug)]
+pub struct InsufficientDevBalance(pub String);
+
+impl std::fmt::Display for InsufficientDevBalance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InsufficientDevBalance {}
+
 /// Map the DB `launch_templates.variant` (`"pumpfun.create_v1"` / `_v2`) to the
 /// venue **catalog** create variant name the orchestrator plan carries. This is
 /// the one place the free-text launch-variant string is translated onto the
@@ -268,14 +283,17 @@ pub async fn execute_launch(
         crate::funding_plan::dev_launch_required_lamports(&params, tip_ceiling);
     if balance < required_lamports {
         let per_sol = pump_trader::protocol::LAMPORTS_PER_SOL as f64;
-        bail!(
+        // Typed so the HTTP layer maps it to a 400 with this exact message,
+        // instead of the opaque 500 that hid the shortfall before.
+        return Err(InsufficientDevBalance(format!(
             "dev wallet {creator} has {:.4} SOL — needs at least {:.4} SOL \
              (create floor {:.4} + dev-buy {:.4}) before launching",
             balance as f64 / per_sol,
             required_lamports as f64 / per_sol,
             create_floor as f64 / per_sol,
             dev_buy_quote.max(0) as f64 / per_sol,
-        );
+        ))
+        .into());
     }
 
     let mint = Keypair::new();

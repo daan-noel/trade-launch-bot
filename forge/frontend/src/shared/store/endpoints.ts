@@ -9,6 +9,7 @@ import type {
   LaunchesPage,
   Launchpad,
   LaunchOverrides,
+  LaunchRequirement,
   LaunchResult,
   LaunchStatus,
   LaunchTemplate,
@@ -181,6 +182,19 @@ export const api = baseApi.injectEndpoints({
     launchStatus: build.query<LaunchStatus, string>({
       query: (id) => `/api/launches/${id}/status`,
     }),
+    launchRequirement: build.query<
+      LaunchRequirement,
+      { template_id: string; dev_wallet_id?: string; bundler_count?: number }
+    >({
+      query: (arg) =>
+        `/api/launches/requirement${q({
+          template_id: arg.template_id,
+          dev_wallet_id: arg.dev_wallet_id,
+          bundler_count: arg.bundler_count,
+        })}`,
+      // Balances go stale as the pool is funded, so re-read when Wallets change.
+      providesTags: ['Wallets'],
+    }),
     executeBundle: build.mutation<Bundle, string>({
       query: (id) => ({ url: `/api/bundles/${id}/execute`, method: 'POST' }),
       invalidatesTags: ['Launches'],
@@ -299,6 +313,7 @@ export const {
   useExecuteLaunchMutation,
   useLaunchQuery,
   useLaunchStatusQuery,
+  useLaunchRequirementQuery,
   useExecuteBundleMutation,
   useTokenOverviewQuery,
   useTokenTradesQuery,

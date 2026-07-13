@@ -6,6 +6,7 @@ import {
   useFundForLaunchMutation,
   useExecuteLaunchMutation,
   useLaunchStatusQuery,
+  useLaunchRequirementQuery,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
@@ -100,6 +101,23 @@ export function LaunchConsolePage() {
   const devWalletReady = selectedDevWallet?.status === 'funded';
   const effectiveMetadata = metadataTemplates.find((m) => m.id === metaTemplateId);
   const quoteAsset = quoteAssets.find((q) => q.id === selectedTemplate?.quote_asset_id);
+
+  // Pre-launch cost preview — the SAME figure the launch gate enforces, so the
+  // required amount + any shortfall is visible BEFORE clicking Launch instead of
+  // surfacing as a failed request.
+  const { data: requirement } = useLaunchRequirementQuery(
+    {
+      template_id: templateId,
+      dev_wallet_id: walletId || undefined,
+      bundler_count: bundlerCount ? Number(bundlerCount) : undefined,
+    },
+    { skip: !templateId },
+  );
+  const devShortfall =
+    requirement && requirement.dev_balance_lamports != null
+      ? Math.max(0, requirement.dev_required_lamports - requirement.dev_balance_lamports)
+      : 0;
+  const devShort = devShortfall > 0;
 
   // Status polling: keep the query alive after a launch, polling every 3s until
   // the bundle reaches a terminal state, then stop (interval → 0).
@@ -210,6 +228,34 @@ export function LaunchConsolePage() {
           </Field>
         </div>
 
+        {requirement && (
+          <div className="mt-3 rounded-md border border-[var(--color-line)] p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span>
+                Dev wallet needs{' '}
+                <span className="mono font-semibold">{formatSol(requirement.dev_required_lamports)}</span>
+                {requirement.dev_balance_lamports != null && (
+                  <span className="muted">
+                    {' '}· has <span className="mono">{formatSol(requirement.dev_balance_lamports)}</span>
+                  </span>
+                )}
+              </span>
+              {requirement.leg_count > 0 && (
+                <span className="muted">
+                  + {requirement.leg_count} bundler leg(s) ×{' '}
+                  <span className="mono">{formatSol(requirement.per_leg_lamports)}</span>
+                </span>
+              )}
+            </div>
+            {devShort && (
+              <div className="mt-1" style={{ color: 'var(--color-bad)' }}>
+                Dev wallet short <span className="mono font-semibold">{formatSol(devShortfall)}</span> — fund it
+                before launching (rent + fees + Jito tip + dev-buy).
+              </div>
+            )}
+          </div>
+        )}
+
         {(selectedTemplate || effectiveMetadata) && (
           <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
             {selectedTemplate && (
@@ -236,12 +282,23 @@ export function LaunchConsolePage() {
             Fund for launch
           </Button>
           <Button variant="primary" loading={launchState.isLoading}
-            disabled={!templateId || !walletId || !metaTemplateId || !devWalletReady} onClick={onLaunch}
-            title={devWalletReady ? '' : 'Dev wallet not funded yet — Fund for launch first'}>
+            disabled={!templateId || !walletId || !metaTemplateId || !devWalletReady || devShort} onClick={onLaunch}
+            title={
+              devShort
+                ? `Dev wallet short ${formatSol(devShortfall)} — fund it first`
+                : devWalletReady
+                  ? ''
+                  : 'Dev wallet not funded yet — Fund for launch first'
+            }>
             Launch
           </Button>
           {!devWalletReady && selectedDevWallet && (
             <span className="text-xs muted">Dev wallet is <StatusPill status={selectedDevWallet.status} /> — fund it first.</span>
+          )}
+          {devWalletReady && devShort && (
+            <span className="text-xs" style={{ color: 'var(--color-bad)' }}>
+              Balance below the launch requirement — short {formatSol(devShortfall)}.
+            </span>
           )}
         </div>
         {error && <Banner tone="bad" className="mt-3">{error}</Banner>}

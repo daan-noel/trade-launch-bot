@@ -3,10 +3,11 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use crate::ingest::IngestHandle;
 use launcher::{
-    arm_ladder, create_metadata_template, execute_action, execute_bundle, execute_launch,
-    export_wallet_base58, fund_for_launch, fund_once, start_volume_bot, transfer_between_wallets,
-    update_metadata_template, FundMode, FundScope, LadderRung, LaunchRequest, LauncherSettings,
-    ManageRequest, NewMetadataTemplateRequest, PumpfunTemplateParams, TransferAmount,
+    arm_ladder, create_metadata_template, dev_launch_required_lamports, execute_action,
+    execute_bundle, execute_launch, export_wallet_base58, fund_for_launch, fund_once,
+    start_volume_bot, transfer_between_wallets, update_metadata_template, FundMode, FundPlan,
+    FundScope, InsufficientDevBalance, LadderRung, LaunchRequest, LauncherSettings, ManageRequest,
+    NewMetadataTemplateRequest, PumpfunTemplateParams, TransferAmount,
     UpdateMetadataTemplateRequest, VolumeConfig, WalletSelection,
 };
 use platform_core::models::{
@@ -105,6 +106,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             web::delete().to(metadata_templates_delete),
         )
         .route("/api/launches", web::get().to(launches_list))
+        // Registered BEFORE `/{id}` so the literal path isn't captured as an id.
+        .route("/api/launches/requirement", web::get().to(launch_requirement))
         .route("/api/launches/{id}", web::get().to(launch_get))
         .route("/api/launches/{id}/status", web::get().to(launch_status))
         .route("/api/launches/execute", web::post().to(launch_execute))
@@ -749,8 +752,74 @@ async fn launch_execute(
         },
     )
     .await
-    .map_err(e500)?;
+    // Surface the pre-launch balance gate as an actionable 400 ("needs X, has Y")
+    // instead of the opaque 500 every other error collapses to. All other errors
+    // stay a generic 500 (their detail can carry internals — logged, never sent).
+    .map_err(|e| match e.downcast::<InsufficientDevBalance>() {
+        Ok(insufficient) => e400(insufficient),
+        Err(other) => e500(other),
+    })?;
     Ok(HttpResponse::Ok().json(result))
+}
+
+#[derive(serde::Deserialize)]
+struct LaunchRequirementQuery {
+    template_id: Uuid,
+    /// Optional: include this dev wallet's last-observed balance so the caller can
+    /// render the shortfall without a second round-trip.
+    #[serde(default)]
+    dev_wallet_id: Option<Uuid>,
+    /// "Use N bundlers" override — unset falls back to the template default.
+    #[serde(default)]
+    bundler_count: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct LaunchRequirementResponse {
+    /// The dev-wallet minimum the launch gate enforces (rent + fees + live tip
+    /// ceiling + dev-buy). This is the SAME figure `execute_launch` checks.
+    dev_required_lamports: u64,
+    /// Per-bundler-leg funding target (buy + tip + headroom); 0 if no bundle.
+    per_leg_lamports: u64,
+    /// Number of bundler legs this launch would run (0 = no bundle).
+    leg_count: u32,
+    /// The selected dev wallet's last-observed balance (lamports), if a wallet was
+    /// given and its balance has been polled. `null` otherwise.
+    dev_balance_lamports: Option<i64>,
+}
+
+/// `GET /api/launches/requirement` — read-only pre-launch cost preview. Reuses the
+/// exact SSOT (`dev_launch_required_lamports` / `FundPlan`) the gate and funder
+/// use, so the number shown can't drift from the number enforced. Spends nothing,
+/// so it is NOT gated on `FUND_ENABLED`.
+async fn launch_requirement(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    query: web::Query<LaunchRequirementQuery>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    let q = query.into_inner();
+    let template = LaunchTemplateRepo::get(pool.get_ref(), q.template_id)
+        .await
+        .map_err(e500)?
+        .ok_or_else(|| actix_web::error::ErrorNotFound("launch template not found"))?;
+    let params: PumpfunTemplateParams = serde_json::from_value(template.params).map_err(e400)?;
+    let tip_ceiling = settings.launch_tip_ceiling_lamports();
+    let dev_required_lamports = dev_launch_required_lamports(&params, tip_ceiling);
+    let plan = FundPlan::from_params(&params, q.bundler_count, tip_ceiling).map_err(e400)?;
+    let dev_balance_lamports = match q.dev_wallet_id {
+        Some(id) => ManagedWalletRepo::get(pool.get_ref(), id)
+            .await
+            .map_err(e500)?
+            .and_then(|w| w.balance_lamports),
+        None => None,
+    };
+    Ok(HttpResponse::Ok().json(LaunchRequirementResponse {
+        dev_required_lamports,
+        per_leg_lamports: plan.per_leg_lamports,
+        leg_count: plan.leg_count,
+        dev_balance_lamports,
+    }))
 }
 
 async fn bundle_execute(
