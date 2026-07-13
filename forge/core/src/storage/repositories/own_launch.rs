@@ -869,6 +869,43 @@ impl TokenPositionRepo {
         .await?;
         Ok(())
     }
+
+    /// Reconcile many positions in ONE `UNNEST` update: set each row's on-chain
+    /// balance (+ canonical token account, kept via COALESCE when None), its
+    /// feed-derived realized proceeds, and the derived `open`/`closed` status —
+    /// folding what were two per-row UPDATEs × N rows into a single round trip.
+    /// A `dropped` row is left terminal (the CASE guard), matching [`Self::set_balance`].
+    /// The four slices are parallel arrays (row i across all four).
+    pub async fn reconcile_batch(
+        pool: &PgPool,
+        ids: &[Uuid],
+        balances: &[i64],
+        token_accounts: &[Option<String>],
+        realized: &[i64],
+    ) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE token_positions AS p SET \
+                 balance_base = v.balance_base, \
+                 token_account = COALESCE(v.token_account, p.token_account), \
+                 realized_quote = v.realized_quote, \
+                 status = CASE WHEN p.status = 'dropped' THEN 'dropped' \
+                               WHEN v.balance_base > 0 THEN 'open' ELSE 'closed' END, \
+                 balance_checked_at = now(), updated_at = now() \
+             FROM UNNEST($1::uuid[], $2::int8[], $3::text[], $4::int8[]) \
+                  AS v(id, balance_base, token_account, realized_quote) \
+             WHERE p.id = v.id",
+        )
+        .bind(ids)
+        .bind(balances)
+        .bind(token_accounts)
+        .bind(realized)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
 }
 
 /// `manage_actions` — audit log of executed post-launch management actions.

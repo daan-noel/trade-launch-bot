@@ -162,6 +162,26 @@ impl TradeRepo {
         Ok(sum)
     }
 
+    /// Realized sell proceeds for EVERY wallet that has sold a mint, in one grouped
+    /// query — `(address, sum_quote)` rows. Replaces the per-position
+    /// [`Self::sum_side_quote_by_address`] N+1 during position reconcile: a mint
+    /// with W managed wallets is one scan + `GROUP BY`, not W scans. Only wallets
+    /// with at least one sell appear (callers default the rest to 0).
+    pub async fn sum_sells_by_address_for_mint(
+        pool: &PgPool,
+        mint_address: &str,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT w.address, COALESCE(SUM(t.amount_quote), 0)::int8 FROM trades t \
+             JOIN wallet_dict w ON w.id = t.wallet_ref \
+             WHERE t.mint_address = $1 AND t.trade_type = 'sell' \
+             GROUP BY w.address",
+        )
+        .bind(mint_address)
+        .fetch_all(pool)
+        .await?)
+    }
+
     /// Priced read for a mint (newest-first). `limit <= 0` ⇒ no LIMIT (the full
     /// mint-scoped history the inspect charts need). Still mint-scoped, never the
     /// whole table.

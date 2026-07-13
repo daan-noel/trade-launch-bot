@@ -47,9 +47,9 @@ pub use keystore::{
     read_keypair_bytes, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
 };
 pub use manage::{
-    arm_ladder, build_plan, execute_action, load_positions, spawn_ladder_evaluator,
-    spawn_volume_scheduler, start_volume_bot, ActionPlan, LadderRung, ManageRequest, PlanLeg,
-    VolumeConfig, WalletSelection,
+    arm_ladder, build_plan, execute_action, load_positions, read_positions, reconcile_positions,
+    spawn_ladder_evaluator, spawn_volume_scheduler, start_volume_bot, ActionPlan, LadderRung,
+    ManageRequest, PlanLeg, VolumeConfig, WalletSelection,
 };
 pub use metadata_upload::{
     create_metadata_template, update_metadata_template, NewMetadataTemplateRequest,
