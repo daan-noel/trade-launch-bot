@@ -180,7 +180,7 @@ internet where possible.
 ```powershell
 # Run from the monorepo root (Bot/) or this folder; the workspace is Bot/Cargo.toml.
 docker compose up -d                 # local Postgres + TimescaleDB (host port 5556); adds forge-live service
-sqlx migrate run                     # apply migrations/0001,0002
+sqlx migrate run                     # apply migrations/0001_init (single squashed init)
 cargo check -p forge-live -p forge-lab   # typecheck the forge bins (use --target-dir target-check if a bin is running)
 cargo tree -p forge-live               # dep-partition check (no duckdb/arrow/parquet)
 cargo tree -p forge-lab                # dep-partition check (no pump-trader/ingest-laserstream/tonic)

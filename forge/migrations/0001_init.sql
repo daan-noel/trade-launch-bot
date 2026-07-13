@@ -1,25 +1,22 @@
 -- ============================================================================
 -- 0001_init — consolidated platform schema (single-file init). TimescaleDB.
 --
--- Squash of the entire 0001..0013 migration chain into ONE end-state file — it
--- creates the schema exactly as running the full chain on a fresh database would
--- leave it (all renames/adds/drops/CHECK-tightenings already folded in). Absorbs:
---   * 0001 init                     dimensions + token identity + feed + views + seeds
---   * 0002 own_launch               managed_wallets, launch_templates, launches, bundles
---   * 0003 bundle_confirm           bundles jito_bundle_id/leg_signatures/*_at + index
---   * 0004 wallet_pool              managed_wallets status lifecycle (replaces is_active)
---   * 0005 metadata_templates       metadata_templates table
---   * 0006 status_check             launches/bundles named status CHECKs (+ default heal)
---   * 0007 launch_metadata_fk       launch_templates.metadata_template_id FK; image_uri NULL
---   * 0008 wallet_funding           managed_wallets 'funding' status + pollable index
---   * 0009 collapse_devbuy_variant  DATA-ONLY (variant string rewrite) — omitted
---   * 0010 token_positions          token_positions table
---   * 0011 manage_actions           manage_actions table
---   * 0012 sell_ladders             sell_ladders table
---   * 0013 volume_bots              volume_bots table
--- Data-only migrations (0009's variant rewrite, and the 0004/0006/0007 backfills
--- that only rewrote pre-existing rows) are no-ops on a fresh DB and intentionally
--- omitted here. See the per-domain plan docs for column rationale.
+-- Single-file end-state schema: creates the schema exactly as running the full
+-- migration chain on a fresh database would leave it (all renames / column adds /
+-- CHECK-tightenings already folded in). Two squash generations are absorbed:
+--   * the original SLP 0001..0013 chain — dimensions, token identity, feed, views,
+--     seeds, wallet pool + funding lifecycle, metadata/launch/bundle, token
+--     management (positions / manage_actions / sell_ladders / volume_bots); and
+--   * the forge-era incremental migrations that were layered on top of it:
+--       0002 plan_audit             bundles.plan/audit, manage_actions.plan_orchestrator/audit
+--       0003 bundle_submit_attempts bundles.submit_attempts (tip-escalation / re-bid level)
+--       0004 wallet_identity        trades.wallet_id→wallet_ref; token_positions.wallet_id→
+--                                   managed_wallet_id (+ wallet_address); 'dropped' position status
+--       0005 bundle_create_args     bundles.create_args (atomic-launch re-bid build inputs)
+--       0006 hot_poll_indexes       idx_launches_created, idx_managed_wallets_role_created
+-- Data-only steps (variant rewrites, and the 0004 backfills that only rewrote
+-- pre-existing rows) are no-ops on a fresh DB and intentionally omitted here.
+-- See the per-domain plan docs for column rationale.
 --
 -- Naming rule (locked): a column denoting an amount names its unit as a SUFFIX —
 -- `amount_quote`/`amount_base` (exact BIGINT base units, display ÷10^decimals);
@@ -188,7 +185,7 @@ SELECT add_retention_policy('raw_txs', drop_after => INTERVAL '7 days', if_not_e
 -- quote_asset_id are DENORMALIZED onto the row so the hot read never joins.
 CREATE TABLE IF NOT EXISTS trades (
     mint_address    TEXT         NOT NULL,
-    wallet_id       INTEGER      NOT NULL,             -- soft ref → wallet_dict(id)
+    wallet_ref      INTEGER      NOT NULL,             -- soft ref → wallet_dict(id) (renamed from wallet_id, 0004)
     launchpad_id    SMALLINT     NOT NULL,             -- denormalized (hot path, no join)
     market_kind     TEXT         NOT NULL CHECK (market_kind IN ('bonding_curve','amm','clmm','orderbook')),
     quote_asset_id  SMALLINT     NOT NULL,             -- denormalized
@@ -319,6 +316,10 @@ CREATE TABLE IF NOT EXISTS managed_wallets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_managed_wallets_role ON managed_wallets(role);
+-- Newest-first pool admin list, optionally scoped to one role (0006); the leading
+-- column also serves the unfiltered scan.
+CREATE INDEX IF NOT EXISTS idx_managed_wallets_role_created
+    ON managed_wallets (role, created_at DESC);
 -- Bounds the reservation TTL sweep to the (small) in-flight reserved set.
 CREATE INDEX IF NOT EXISTS idx_managed_wallets_reserved
     ON managed_wallets(reserved_at) WHERE status = 'reserved';
@@ -387,22 +388,29 @@ CREATE TABLE IF NOT EXISTS launches (
 CREATE INDEX IF NOT EXISTS idx_launches_mint     ON launches(mint_address);
 CREATE INDEX IF NOT EXISTS idx_launches_template ON launches(template_id);
 CREATE INDEX IF NOT EXISTS idx_launches_status   ON launches(status, created_at DESC);
+-- Newest-first list scan for the polled `/api/launches` (0006); id tiebreaks.
+CREATE INDEX IF NOT EXISTS idx_launches_created  ON launches (created_at DESC, id);
 
--- Atomic Jito bundle of a launch's buy legs. `status` default 'planned' + CHECK
--- (0006). Confirm columns (jito_bundle_id/leg_signatures/*_at) from 0003.
+-- Atomic Jito bundle of a launch's create + buy legs. `status` default 'planned'.
+-- Confirm columns (jito_bundle_id/leg_signatures/*_at) + submit_attempts (0003),
+-- plan/audit (0002), create_args (0005) folded in.
 CREATE TABLE IF NOT EXISTS bundles (
-    id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
-    launch_id      UUID         NOT NULL REFERENCES launches(id) ON DELETE CASCADE,
-    status         TEXT         NOT NULL DEFAULT 'planned'
-                       CHECK (status IN ('planned', 'submitting', 'submitted',
-                                         'landed', 'dropped', 'partial', 'failed')),
-    tip_quote      BIGINT,                             -- total Jito tip, quote base units
-    legs           JSONB        NOT NULL DEFAULT '[]',
-    jito_bundle_id TEXT,
-    leg_signatures TEXT[]       NOT NULL DEFAULT '{}',
-    submitted_at   TIMESTAMPTZ,
-    confirmed_at   TIMESTAMPTZ,
-    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now()
+    id              UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+    launch_id       UUID         NOT NULL REFERENCES launches(id) ON DELETE CASCADE,
+    status          TEXT         NOT NULL DEFAULT 'planned'
+                        CHECK (status IN ('planned', 'submitting', 'submitted',
+                                          'landed', 'dropped', 'partial', 'failed')),
+    tip_quote       BIGINT,                             -- total Jito tip, quote base units
+    legs            JSONB        NOT NULL DEFAULT '[]',
+    jito_bundle_id  TEXT,
+    leg_signatures  TEXT[]       NOT NULL DEFAULT '{}',
+    submit_attempts INT          NOT NULL DEFAULT 0,    -- tip-escalation / re-bid level (0003)
+    plan            JSONB,                              -- serialized orchestrator::Plan (0002)
+    audit           JSONB,                              -- serialized orchestrator::AuditReport (0002)
+    create_args     JSONB,                              -- atomic-launch re-bid build inputs (0005)
+    submitted_at    TIMESTAMPTZ,
+    confirmed_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_bundles_launch ON bundles(launch_id);
@@ -426,24 +434,27 @@ END $$;
 -- ===========================================================================
 -- Post-launch token management (0010..0013). NO FK on mint_address on any of
 -- these — a position/action can target a launch before its create tx is ingested
--- into `tokens`. wallet_id DOES FK — the wallet always pre-exists.
+-- into `tokens`. managed_wallet_id DOES FK — the wallet always pre-exists.
 -- ===========================================================================
 
--- Per-wallet holdings read model (0010).
+-- Per-wallet holdings read model (0010). 0004: wallet_id→managed_wallet_id, the
+-- canonical `wallet_address` denormalized onto the row, and 'dropped' status (a
+-- bundler leg whose bundle never landed — never bought, zero cost basis).
 CREATE TABLE IF NOT EXISTS token_positions (
     id                 UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     mint_address       TEXT        NOT NULL,
-    wallet_id          UUID        NOT NULL REFERENCES managed_wallets(id),
+    managed_wallet_id  UUID        NOT NULL REFERENCES managed_wallets(id),
+    wallet_address     TEXT        NOT NULL,               -- canonical on-chain identity (0004)
     role               TEXT        NOT NULL CHECK (role IN ('dev','bundler','treasury','trading')),
     token_account      TEXT,                    -- canonical ATA buys/sells route through
     balance_base       BIGINT      NOT NULL DEFAULT 0,   -- tokens held (token base units)
     cost_quote         BIGINT      NOT NULL DEFAULT 0,   -- cost basis (quote base units)
     realized_quote     BIGINT      NOT NULL DEFAULT 0,   -- quote recovered from sells
     balance_checked_at TIMESTAMPTZ,
-    status             TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+    status             TEXT        NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed','dropped')),
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (mint_address, wallet_id)
+    UNIQUE (mint_address, managed_wallet_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_token_positions_mint ON token_positions(mint_address);
@@ -455,8 +466,10 @@ CREATE TABLE IF NOT EXISTS manage_actions (
     kind           TEXT        NOT NULL CHECK (kind IN ('sell','buy','consolidate')),
     sizing         TEXT        NOT NULL CHECK (sizing IN
                        ('pct_of_holdings','to_sol_target','fixed_base','fixed_sol','sweep')),
-    selection      JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    plan           JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    selection         JSONB    NOT NULL DEFAULT '{}'::jsonb,
+    plan              JSONB    NOT NULL DEFAULT '[]'::jsonb,
+    plan_orchestrator JSONB,                            -- serialized orchestrator::Plan (0002)
+    audit             JSONB,                            -- serialized orchestrator::AuditReport (0002)
     status         TEXT        NOT NULL DEFAULT 'planned' CHECK (status IN
                        ('planned','executing','completed','partial','failed')),
     legs_total     INTEGER     NOT NULL DEFAULT 0,
