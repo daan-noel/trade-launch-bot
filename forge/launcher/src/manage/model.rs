@@ -34,6 +34,10 @@ impl WalletSelection {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// The operator's action request (from the Manage panel). `size` is interpreted
 /// per `sizing`: for `pct_of_holdings` it's a percent 0–100.
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +50,13 @@ pub struct ManageRequest {
     pub size: f64,
     #[serde(default)]
     pub selection: WalletSelection,
+    /// Buy/consolidate by-`role` scope: `true` (default) restricts to the wallets
+    /// that participated in THIS token's launch — the dev creator + the snipe-bundle
+    /// legs — instead of every pool wallet of the role. `false` = pool-wide by role
+    /// (e.g. seeding fresh buyers). Ignored when the selection names explicit
+    /// `wallet_ids`, and for `sell` (already mint-scoped via positions).
+    #[serde(default = "default_true")]
+    pub token_scoped: bool,
 }
 
 /// One planned per-wallet leg. Amount fields are exact base-unit integers

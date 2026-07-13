@@ -157,6 +157,9 @@ export interface ManageRequest {
   sizing: string; // 'pct_of_holdings'
   size: number; // percent for pct_of_holdings
   selection?: WalletSelection;
+  // Buy/consolidate only: true (default) = this token's dev/snipe wallets; false =
+  // pool-wide by role. Omitted for sell (already mint-scoped via positions).
+  token_scoped?: boolean;
 }
 
 // Audit row — `POST .../manage/execute` result + `GET .../manage/actions`.

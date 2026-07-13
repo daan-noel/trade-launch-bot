@@ -232,6 +232,9 @@ async fn run_cycle(
             sizing: "fixed_sol".to_string(),
             size: buy_sol,
             selection: one.clone(),
+            // Inert here — `one` names an explicit wallet id, so the resolver never
+            // reaches the role/token-scope branch.
+            token_scoped: true,
         },
     )
     .await?;
@@ -251,6 +254,7 @@ async fn run_cycle(
                 sizing: "pct_of_holdings".to_string(),
                 size: config.sell_back_pct,
                 selection: one,
+                token_scoped: true, // inert for sell (position-scoped) + explicit id
             },
         )
         .await

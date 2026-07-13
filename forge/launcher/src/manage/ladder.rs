@@ -136,6 +136,7 @@ async fn evaluate_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()>
                 sizing: "pct_of_holdings".to_string(),
                 size: rung.pct,
                 selection: selection.clone(),
+                token_scoped: true, // inert for sell (position-scoped)
             };
             match execute_action(pool, settings, &ladder.mint_address, &req).await {
                 Ok(a) => info!(

@@ -6,8 +6,12 @@
 //!   holds nothing yet), a fixed SOL spend each.
 //! - `consolidate` + `sweep` — per selected wallet, sweep its SOL to treasury.
 
+use std::collections::HashSet;
+
 use anyhow::{bail, Result};
-use platform_core::models::{ManageKind, ManageSizing, ManagedWallet, PositionStatus};
+use platform_core::models::{
+    ManageKind, ManageSizing, ManagedWallet, PositionStatus, WalletStatus,
+};
 use platform_core::storage::repositories::{
     ManagedWalletRepo, TokenMarketStateRepo, TokenPositionRepo,
 };
@@ -87,7 +91,7 @@ async fn build_sell_legs(
 /// BUY: a fixed SOL spend per selected managed wallet (fresh buyers welcome).
 async fn build_buy_legs(
     pool: &PgPool,
-    _mint: &str,
+    mint: &str,
     req: &ManageRequest,
     sizing: ManageSizing,
 ) -> Result<Vec<PlanLeg>> {
@@ -100,7 +104,7 @@ async fn build_buy_legs(
     }
     let spend_quote = (sol * LAMPORTS_PER_SOL as f64).round() as i64;
 
-    let wallets = resolve_selection_wallets(pool, &req.selection, "buy").await?;
+    let wallets = resolve_selection_wallets(pool, mint, &req.selection, req.token_scoped, "buy").await?;
     Ok(wallets
         .into_iter()
         .map(|w| PlanLeg {
@@ -124,14 +128,16 @@ async fn build_buy_legs(
 /// computed at execute.
 async fn build_consolidate_legs(
     pool: &PgPool,
-    _mint: &str,
+    mint: &str,
     req: &ManageRequest,
     sizing: ManageSizing,
 ) -> Result<Vec<PlanLeg>> {
     if sizing != ManageSizing::Sweep {
         bail!("consolidate supports sizing 'sweep' (got '{}')", req.sizing);
     }
-    let wallets = resolve_selection_wallets(pool, &req.selection, "consolidate").await?;
+    let wallets =
+        resolve_selection_wallets(pool, mint, &req.selection, req.token_scoped, "consolidate")
+            .await?;
     Ok(wallets
         .into_iter()
         // Never sweep a treasury wallet into itself.
@@ -155,16 +161,56 @@ async fn build_consolidate_legs(
 /// Resolve the managed wallets a buy/consolidate targets: explicit `wallet_ids`
 /// win, else a `role`. Both unset is refused (these primitives don't have a
 /// natural "all wallets" — that would be dangerously broad).
+///
+/// When resolving by `role`, `token_scoped` (the default) restricts to the wallets
+/// that participated in THIS token's launch — dev creator + snipe legs — so on a
+/// token page "dev"/"bundler" means *this token's* dev/snipers, not every pool
+/// wallet of the role. `token_scoped = false` is the explicit pool-wide escape
+/// hatch (e.g. buying from fresh wallets to seed new holders).
 async fn resolve_selection_wallets(
     pool: &PgPool,
+    mint: &str,
     selection: &WalletSelection,
+    token_scoped: bool,
     action: &str,
 ) -> Result<Vec<ManagedWallet>> {
     if !selection.wallet_ids.is_empty() {
         return ManagedWalletRepo::get_many(pool, &selection.wallet_ids).await;
     }
-    match &selection.role {
-        Some(role) => ManagedWalletRepo::by_role(pool, role).await,
-        None => bail!("{action} requires a wallet role or explicit wallet_ids"),
+    let Some(role) = selection.role.as_deref() else {
+        bail!("{action} requires a wallet role or explicit wallet_ids");
+    };
+    if token_scoped {
+        resolve_token_role_wallets(pool, mint, role).await
+    } else {
+        ManagedWalletRepo::by_role(pool, role).await
     }
+}
+
+/// This token's participant wallets of `role`: the dev creator + snipe-bundle legs.
+/// Derived from the mint's seeded token positions (the same source `sell` reads, so
+/// buy/consolidate/sell agree on "this token's wallets"), de-duplicated by wallet id
+/// (a wallet may hold both a curve and AMM position), with `retired` wallets dropped
+/// for parity with the pool-wide [`ManagedWalletRepo::by_role`].
+async fn resolve_token_role_wallets(
+    pool: &PgPool,
+    mint: &str,
+    role: &str,
+) -> Result<Vec<ManagedWallet>> {
+    let positions = TokenPositionRepo::by_mint(pool, mint).await?;
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    for p in positions {
+        if p.role == role && seen.insert(p.managed_wallet_id) {
+            ids.push(p.managed_wallet_id);
+        }
+    }
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let wallets = ManagedWalletRepo::get_many(pool, &ids).await?;
+    Ok(wallets
+        .into_iter()
+        .filter(|w| w.status != WalletStatus::Retired.as_str())
+        .collect())
 }

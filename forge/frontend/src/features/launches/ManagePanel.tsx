@@ -37,6 +37,10 @@ const SIZING: Record<Kind, string> = {
 export function ManagePanel({ mint, overview }: { mint: string; overview: TokenOverview | undefined }) {
   const [kind, setKind] = useState<Kind>('sell');
   const [group, setGroup] = useState<Group>('all');
+  // Buy/consolidate default to THIS token's participant wallets (dev creator + snipe
+  // legs). Pool-wide = every pool wallet of the role (fresh-buyer seeding). Sell is
+  // always token-scoped (it reads the mint's positions), so this is ignored there.
+  const [poolWide, setPoolWide] = useState(false);
   const [pct, setPct] = useState(100);
   const [sol, setSol] = useState(0.05);
   const [plan, setPlan] = useState<ActionPlan | null>(null);
@@ -53,6 +57,15 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
   // kinds restrict the group to dev/bundler.
   const groupOptions: Group[] = kind === 'sell' ? ['all', 'dev', 'bundler'] : ['dev', 'bundler'];
 
+  // Human label for a wallet group, reflecting scope: on buy/consolidate a role is
+  // either "this token's" (default) or pool-wide (opt-in); sell is inherently scoped.
+  const groupOptionLabel = (g: Group): string => {
+    if (g === 'all') return 'All wallets';
+    const role = g === 'dev' ? 'dev' : 'bundlers';
+    if (kind === 'sell') return g === 'dev' ? 'Dev only' : 'Bundlers only';
+    return poolWide ? `All ${role} (pool)` : `This token's ${role}`;
+  };
+
   const onKind = (k: Kind) => {
     setKind(k);
     setPlan(null);
@@ -65,6 +78,8 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
     sizing: SIZING[kind],
     size: kind === 'sell' ? pct : kind === 'buy' ? sol : 0,
     selection: group === 'all' ? {} : { role: group },
+    // Only meaningful for buy/consolidate; omit for sell.
+    ...(kind === 'sell' ? {} : { token_scoped: !poolWide }),
   });
 
   const onPreview = async () => {
@@ -78,7 +93,7 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
 
   const onExecute = async () => {
     if (!plan) return;
-    const groupLabel = group === 'all' ? 'ALL wallets' : `${group} wallets`;
+    const groupLabel = group === 'all' ? 'ALL wallets' : groupOptionLabel(group);
     const verb =
       kind === 'sell'
         ? `Sell ${pct}% of holdings`
@@ -114,15 +129,37 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
             </Select>
           </Field>
 
-          <Field label="Wallet group" className="w-40">
-            <Select value={group} onChange={(e) => setGroup(e.target.value as Group)}>
+          <Field label="Wallet group" className="w-48">
+            <Select
+              value={group}
+              onChange={(e) => {
+                setGroup(e.target.value as Group);
+                setPlan(null);
+              }}
+            >
               {groupOptions.map((g) => (
                 <option key={g} value={g}>
-                  {g === 'all' ? 'All wallets' : g === 'dev' ? 'Dev only' : 'Bundlers only'}
+                  {groupOptionLabel(g)}
                 </option>
               ))}
             </Select>
           </Field>
+
+          {kind !== 'sell' && (
+            <Field label="Scope" className="w-44">
+              <label className="flex h-9 items-center gap-2 text-sm" title="Off: only this token's dev/snipe wallets. On: every pool wallet of the role.">
+                <input
+                  type="checkbox"
+                  checked={poolWide}
+                  onChange={(e) => {
+                    setPoolWide(e.target.checked);
+                    setPlan(null);
+                  }}
+                />
+                Pool-wide
+              </label>
+            </Field>
+          )}
 
           {kind === 'sell' && (
             <>
