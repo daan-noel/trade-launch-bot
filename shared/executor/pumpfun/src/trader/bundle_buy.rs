@@ -364,8 +364,12 @@ impl PumpFunTrader {
             &quote_mint,
             &quote_token_program,
         );
+        // `sharing_config` is a PDA of the pump.fun **fee program** (`pfeeUxB6…`), NOT
+        // the main bonding-curve program — the IDL pins `seeds::program = fee_program`.
+        // Deriving it under `PUMP_FUN` yields a different address and the v2 buy reverts
+        // with Anchor `ConstraintSeeds` (custom 2006).
         let (sharing_config, _) =
-            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::PUMP_FUN);
+            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::FEE_PROGRAM);
         let (user_volume_accumulator, _) = Pubkey::find_program_address(
             &[b"user_volume_accumulator", buyer.as_ref()],
             &protocol::PUMP_FUN,
@@ -643,6 +647,35 @@ mod tests {
             out[4],
             system_instruction::transfer(&bundler.pubkey(), &t.engine.jito_tip_account, leg.tip_lamports)
         );
+    }
+
+    /// Regression: the v2 buy's `sharing_config` (account 18) is a PDA of the pump.fun
+    /// **fee program**, not the main bonding-curve program. Deriving it under `PUMP_FUN`
+    /// (the old bug) yields a different address → the on-chain buy reverts with Anchor
+    /// `ConstraintSeeds` (custom 2006). Pin the correct derivation.
+    #[test]
+    fn v2_buy_sharing_config_is_fee_program_pda() {
+        let (t, bundler) = trader_with_global();
+        let mint = Pubkey::new_unique();
+        let creator = Pubkey::new_unique();
+        let token_program = TokenProgram::Token2022.pubkey();
+        let pdas = t.derive_token_pdas(&mint, &creator, &token_program, true);
+        let user_base_ata =
+            get_associated_token_address_with_program_id(&bundler.pubkey(), &mint, &token_program);
+        let core = t
+            .build_curve_buy_core(
+                BundleBuyVariant::BuyV2, &bundler.pubkey(), &mint, &pdas, &user_base_ata,
+                10_000_000, 1, true,
+            )
+            .unwrap();
+
+        let expected =
+            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::FEE_PROGRAM).0;
+        let wrong =
+            Pubkey::find_program_address(&[b"sharing-config", mint.as_ref()], &protocol::PUMP_FUN).0;
+        // Account 18 in the v2 buy is `sharing_config` (see the IDL account order).
+        assert_eq!(core.buy_ix.accounts[18].pubkey, expected, "sharing_config must be a fee-program PDA");
+        assert_ne!(core.buy_ix.accounts[18].pubkey, wrong, "must not use the old PUMP_FUN derivation");
     }
 
     #[test]

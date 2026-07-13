@@ -124,16 +124,21 @@ impl PumpFunTrader {
         let token_program = TokenProgram::Legacy;
         let accounts = derive_create_accounts(&mint_pk, token_program, false);
         let create_ix = build_create_ix(&mint_pk, wallet.pubkey(), args, &accounts)?;
+        // Legacy `create` builds a v1 (SPL-Token) curve, which has NO cashback / v2 buy
+        // accounts — so the fused dev-buy must route through the v1 layout. Pass
+        // `cashback_enabled = false` (a v1 curve can never be cashback); passing
+        // `creator == signer` here mis-fed the dev-buy variant router, steering a
+        // `buy_exact_quote_in` dev-buy onto the v2 account layout → ConstraintSeeds.
         let ixs = self.assemble_create_ixs(
             create_ix,
             &mint_pk,
             args.creator,
             token_program,
-            args.creator == wallet.pubkey(),
+            false,
             dev_buy,
             0,
         )?;
-        self.send_create_tx(ixs, wallet, mint, confirm, &mint_pk, args.creator, token_program, args.creator == wallet.pubkey(), false, t0)
+        self.send_create_tx(ixs, wallet, mint, confirm, &mint_pk, args.creator, token_program, false, false, t0)
             .await
     }
 
@@ -243,12 +248,14 @@ impl PumpFunTrader {
         let token_program = TokenProgram::Legacy;
         let accounts = derive_create_accounts(&mint_pk, token_program, false);
         let create_ix = build_create_ix(&mint_pk, self.config.signer.pubkey(), args, &accounts)?;
+        // v1 (legacy) curve — no cashback / v2 buy accounts exist, so the fused dev-buy
+        // must use the v1 layout. `false`, not `creator == signer` (see `create_token_inner`).
         let ixs = self.assemble_create_ixs(
             create_ix,
             &mint_pk,
             args.creator,
             token_program,
-            args.creator == self.config.signer.pubkey(),
+            false,
             dev_buy,
             tip_level,
         )?;
@@ -853,6 +860,53 @@ mod tests {
             t.jito_tip_ix(0),
         ];
         assert_eq!(got, expected);
+    }
+
+    /// Regression: a legacy `create_v1` with a `buy_exact_quote_in` dev-buy must fuse
+    /// the **v1** buy layout, not the v2 one. The old code passed `creator == signer`
+    /// into the `cashback_enabled` slot, which — when the dev is the creator — flipped
+    /// `buy_exact_quote_in` onto the v2 account set (WSOL ATA + `sharing_config`) against
+    /// a legacy curve → ConstraintSeeds. With `cashback_enabled = false` the fused block
+    /// is exactly `[create, base_ata, v1_buy]` (no extra WSOL ATA), and the buy names the
+    /// 18-account v1 layout (not the 27-account v2 one).
+    #[test]
+    fn create_v1_exact_quote_dev_buy_stays_v1() {
+        let t = with_global(trader());
+        let wallet = t.config.signer.pubkey();
+        let mint = Keypair::new();
+        let args = CreateTokenArgs {
+            name: "V1".into(),
+            symbol: "V1".into(),
+            uri: "ipfs://x".into(),
+            creator: wallet, // dev IS the creator — the case the old bug mis-handled
+        };
+        let accounts = derive_create_accounts(&mint.pubkey(), TokenProgram::Legacy, false);
+        let create_ix = build_create_ix(&mint.pubkey(), wallet, &args, &accounts).unwrap();
+
+        // Mirror the fixed call site: `cashback_enabled = false` for the legacy curve.
+        let ixs = t
+            .assemble_create_ixs(
+                create_ix,
+                &mint.pubkey(),
+                wallet,
+                TokenProgram::Legacy,
+                false,
+                Some(DevBuy {
+                    sol: 0.02,
+                    lamports: 20_000_000,
+                    slippage_bps: Some(500),
+                    variant: BundleBuyVariant::BuyExactQuoteIn,
+                }),
+                0,
+            )
+            .unwrap();
+
+        // Canonical create layout = [cu_limit, cu_price, create, base_ata, buy, tip].
+        // A v2 routing would insert a second (WSOL) ATA → 7 ixs; v1 stays at 6.
+        assert_eq!(ixs.len(), 6, "v1 dev-buy must not add the v2 WSOL ATA");
+        let buy_ix = &ixs[4];
+        assert_eq!(buy_ix.program_id, protocol::PUMP_FUN);
+        assert_eq!(buy_ix.accounts.len(), 18, "must be the 18-account v1 buy, not the 27-account v2 buy");
     }
 
     /// Phase C: an authored `create_layout` reshapes the create tx — a lean `[Core]`
