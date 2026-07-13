@@ -31,10 +31,9 @@ export function DashboardPage() {
     { limit: 8 },
     { pollingInterval: 15_000, skipPollingIfUnfocused: true },
   );
-  const { data: ingest } = useIngestStatusQuery(undefined, {
-    pollingInterval: 5000,
-    skipPollingIfUnfocused: true,
-  });
+  // No own poller: the always-mounted header IngestToggle polls /api/ingest at
+  // 5s and RTK Query shares one cache entry, so we just read the warm value.
+  const { data: ingest } = useIngestStatusQuery();
   const { data: quotes = [] } = useQuoteAssetsQuery();
 
   const sol = quotes.find((q) => q.is_native)?.usd_rate ?? null;
