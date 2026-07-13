@@ -31,7 +31,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Upper bound on a single detached fan-out submission. The fast path returns on
 /// the FIRST endpoint that accepts the tx; the losers keep running in the
@@ -432,6 +432,13 @@ impl Engine {
                 // (Anchor) error code when present, so the sell retry path can
                 // tell a structural revert from a transient min-out miss.
                 Some(Err(e)) => {
+                    // Log the FULL `TransactionError` before it's reduced to the bare
+                    // custom code: its Display carries the failing instruction INDEX +
+                    // the inner error (e.g. "Error processing Instruction 2: custom
+                    // program error: 0x1"), which the `custom`-only `Reverted` variant
+                    // drops — the one detail that says which ix (and thus which CPI'd
+                    // program) actually reverted.
+                    warn!(signature, tx_error = %e, "tx landed and reverted on-chain");
                     return Err(TradeError::Reverted {
                         custom: custom_error_code(&e),
                     })

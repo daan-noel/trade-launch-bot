@@ -797,11 +797,21 @@ async fn launch_execute(
     )
     .await
     // Surface the pre-launch balance gate as an actionable 400 ("needs X, has Y")
-    // instead of the opaque 500 every other error collapses to. All other errors
-    // stay a generic 500 (their detail can carry internals — logged, never sent).
+    // instead of the opaque 500 every other error collapses to.
     .map_err(|e| match e.downcast::<InsufficientDevBalance>() {
         Ok(insufficient) => e400(insufficient),
-        Err(other) => e500(other),
+        // Unlike the generic `e500` (used on public reads, which must not leak
+        // internals), this endpoint is the bearer-gated, nginx-fronted OPERATOR API
+        // — so a launch failure returns the full anyhow CONTEXT chain (`{:#}` joins
+        // every `.context()` message: e.g. "sign create tx: … Transaction simulation
+        // failed: … custom program error: 0x…"), making the failure self-diagnosing
+        // instead of a blank "internal server error". `{:#}` is the human-readable
+        // source chain only — NOT the `{:?}` debug form, so no file paths / backtrace
+        // leak. Full detail is still logged server-side.
+        Err(other) => {
+            tracing::error!(error = ?other, "launch execute failed");
+            actix_web::error::ErrorInternalServerError(format!("launch failed: {other:#}"))
+        }
     })?;
     Ok(HttpResponse::Ok().json(result))
 }
