@@ -43,6 +43,17 @@ const STATUSES: WalletStatus[] = ['generated', 'funding', 'funded', 'reserved', 
 // Show its last-known snapshot, dimmed + tagged, instead.
 const SPENT_BALANCE_STATUSES = new Set<WalletStatus>(['used', 'retired']);
 
+// Statuses whose `balance_lamports` reflects SOL the pool actually still holds, so it's
+// safe to sum into a total. Excludes `used`/`retired` (spent or swept to treasury — their
+// snapshot reads as phantom holdings). `funded`/`reserved` are frozen snapshots (see
+// above) but the SOL is genuinely there, so they count — the total is "≈" not exact.
+const TRACKED_BALANCE_STATUSES = new Set<WalletStatus>([
+  'generated',
+  'funding',
+  'funded',
+  'reserved',
+]);
+
 // Tone → color var, so the per-role status bar segments match the StatusPill palette.
 const TONE_COLOR: Record<string, string> = {
   good: 'var(--color-good)',
@@ -229,6 +240,27 @@ export function WalletPoolPage() {
     }
   };
 
+  // Total SOL the pool still holds, so it can be read at a glance instead of adding up
+  // every row by hand. Sums only TRACKED statuses (used/retired are spent/swept). Respects
+  // the active role filter; per-role breakdown lets you see where the SOL sits.
+  const holdings = useMemo(() => {
+    let totalLamports = 0;
+    let trackedCount = 0;
+    let untrackedCount = 0;
+    const byRole: Record<string, number> = {};
+    for (const w of wallets) {
+      if (TRACKED_BALANCE_STATUSES.has(w.status)) {
+        const bal = w.balance_lamports ?? 0;
+        totalLamports += bal;
+        trackedCount += 1;
+        byRole[w.role] = (byRole[w.role] ?? 0) + bal;
+      } else {
+        untrackedCount += 1;
+      }
+    }
+    return { totalLamports, trackedCount, untrackedCount, byRole };
+  }, [wallets]);
+
   const counts = useMemo(() => {
     const c: Record<string, Record<string, number>> = {};
     for (const role of ROLES) c[role] = Object.fromEntries(STATUSES.map((s) => [s, 0]));
@@ -374,6 +406,36 @@ export function WalletPoolPage() {
       )}
       {msg && <Banner tone="info">{msg}</Banner>}
       {mutationError && <Banner tone="bad">{mutationError}</Banner>}
+
+      <Card title={roleFilter ? `Holdings · ${roleFilter}` : 'Holdings'}>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-semibold leading-none">
+                ≈ {formatSol(holdings.totalLamports)}
+              </span>
+            </div>
+            <p className="mt-1 text-xs muted">
+              across {holdings.trackedCount} tracked wallet{holdings.trackedCount === 1 ? '' : 's'}
+              {holdings.untrackedCount > 0
+                ? ` · ${holdings.untrackedCount} used/retired not counted (spent or swept to treasury)`
+                : ''}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+            {ROLES.filter((r) => (holdings.byRole[r] ?? 0) > 0).map((r) => (
+              <span key={r} className="flex items-center gap-1.5">
+                <RolePill role={r} />
+                <span className="mono">{formatSol(holdings.byRole[r])}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+        <p className="mt-2 text-xs muted">
+          Approximate — <code>funded</code>/<code>reserved</code> balances are last-known
+          snapshots (not live-polled), so this is your pool total, not a to-the-lamport figure.
+        </p>
+      </Card>
 
       <Card title="Generate wallets">
         <div className="flex flex-wrap items-end gap-3">
