@@ -26,6 +26,7 @@ import type {
   NewMetadataTemplate,
   UpdateMetadataTemplate,
   QuoteAsset,
+  SweepReport,
   TokenOverview,
   TokenPosition,
   TradePriced,
@@ -144,6 +145,18 @@ export const api = baseApi.injectEndpoints({
     }),
     transferSol: build.mutation<TransferReport, TransferArgs>({
       query: (body) => ({ url: '/api/wallet_pool/transfer', method: 'POST', body }),
+      invalidatesTags: ['Wallets'],
+    }),
+    // "Sweep & retire": dust-sweep `used` wallets + reclaim `retired` ones (residual
+    // SOL + close empty token accounts) into the oldest treasury. Body-less POST.
+    sweepWallets: build.mutation<SweepReport, void>({
+      query: () => ({ url: '/api/wallet_pool/sweep', method: 'POST' }),
+      invalidatesTags: ['Wallets'],
+    }),
+    // "Consolidate → treasury": drain SOL + close empty token accounts on every
+    // wallet into the chosen treasury (skips mid-launch wallets).
+    consolidateWallets: build.mutation<SweepReport, { dest_treasury_id: string }>({
+      query: (body) => ({ url: '/api/wallet_pool/consolidate', method: 'POST', body }),
       invalidatesTags: ['Wallets'],
     }),
     // DANGER: returns raw base58 private key. Secret goes in the X-Export-Secret
@@ -308,6 +321,8 @@ export const {
   useFundPoolMutation,
   useFundForLaunchMutation,
   useTransferSolMutation,
+  useSweepWalletsMutation,
+  useConsolidateWalletsMutation,
   useExportWalletKeyMutation,
   useLaunchesQuery,
   useExecuteLaunchMutation,

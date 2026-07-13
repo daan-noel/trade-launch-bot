@@ -26,6 +26,7 @@ mod wallet_encrypt;
 mod wallet_export;
 mod wallet_funding;
 mod wallet_pool;
+mod wallet_sweep;
 mod wallet_transfer;
 mod wallet_verify;
 
@@ -67,6 +68,9 @@ pub use wallet_funding::{
 };
 pub use wallet_pool::{
     generate_wallets, refresh_all_balances, spawn_balance_poller, spawn_reservation_sweep,
+};
+pub use wallet_sweep::{
+    consolidate_all, sweep_used_and_retired, SweepReport, WalletSweepOutcome,
 };
 pub use wallet_transfer::{transfer_between_wallets, TransferAmount, TransferReport};
 pub use wallet_verify::run_wallet_verify;

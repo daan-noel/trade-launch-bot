@@ -4,6 +4,10 @@
 //! Deliberately a plain SOL transfer via `solana-client`'s nonblocking RPC —
 //! not routed through pump-trader's Jito/multi-sender/retry machinery, since a
 //! dust sweep has no landing urgency (unlike a snipe buy).
+//!
+//! The per-wallet pass ([`sweep_used_wallets`]) is shared: the hourly background
+//! task drives it here, and the operator "Sweep & retire" button drives it (plus
+//! the retired-wallet reclaim) via [`crate::wallet_sweep`].
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -16,9 +20,11 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use sqlx::PgPool;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::config::LauncherSettings;
 use crate::keystore::{self, EnvKek};
+use crate::wallet_sweep::WalletSweepOutcome;
 
 /// Only sweep wallets holding more than this — not worth a signed tx + fee for dust.
 /// Also the floor a `Max` operator transfer reuses (see `wallet_transfer`).
@@ -32,28 +38,54 @@ pub fn spawn_dust_sweep(pool: PgPool, settings: LauncherSettings) -> tokio::task
         let mut tick = tokio::time::interval(SWEEP_INTERVAL);
         loop {
             tick.tick().await;
-            if let Err(e) = sweep_once(&pool, &settings).await {
-                warn!(?e, "dust sweep pass failed");
+            match sweep_once(&pool, &settings).await {
+                Ok(outcomes) => {
+                    let swept = outcomes.iter().filter(|o| o.retired).count();
+                    if swept > 0 {
+                        info!(swept, "dust sweep pass complete");
+                    }
+                }
+                Err(e) => warn!(?e, "dust sweep pass failed"),
             }
         }
     })
 }
 
-async fn sweep_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()> {
+/// One hourly pass: resolve the treasury, then sweep every eligible `used` wallet.
+async fn sweep_once(pool: &PgPool, settings: &LauncherSettings) -> Result<Vec<WalletSweepOutcome>> {
     let Some(treasury) = ManagedWalletRepo::by_role(pool, WalletRole::Treasury.as_str())
         .await?
         .into_iter()
         .next()
     else {
         warn!("dust sweep: no treasury wallet configured (role=treasury) — skipping");
-        return Ok(());
+        return Ok(Vec::new());
     };
     let treasury_address =
         Pubkey::from_str(&treasury.address).context("parse treasury wallet address")?;
 
+    let rpc = RpcClient::new_with_commitment(settings.rpc_url.clone(), CommitmentConfig::confirmed());
+    let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
+    sweep_used_wallets(&rpc, pool, settings, &kek, treasury.id, treasury_address).await
+}
+
+/// Sweep every `used` wallet's balance to `treasury`, retiring each. Skips wallets
+/// with an OPEN token position (their SOL is the gas they need to sell — draining
+/// them here strands the tokens). Returns one [`WalletSweepOutcome`] per wallet
+/// touched (including the held-back ones, so the operator sees why they were kept).
+///
+/// Shared by the hourly [`spawn_dust_sweep`] task and the operator sweep button.
+pub(crate) async fn sweep_used_wallets(
+    rpc: &RpcClient,
+    pool: &PgPool,
+    settings: &LauncherSettings,
+    kek: &EnvKek,
+    treasury_id: Uuid,
+    treasury_address: Pubkey,
+) -> Result<Vec<WalletSweepOutcome>> {
     let used = ManagedWalletRepo::find_by_status(pool, WalletStatus::Used.as_str(), None).await?;
     if used.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Never sweep a wallet that still holds an OPEN token position: its SOL is the
@@ -71,30 +103,48 @@ async fn sweep_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()> {
             "dust sweep: keeping wallets with open token positions (need gas to sell) — not swept"
         );
     }
-    if sweepable.is_empty() {
-        return Ok(());
-    }
 
-    let rpc = RpcClient::new_with_commitment(settings.rpc_url.clone(), CommitmentConfig::confirmed());
-    let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
+    let mut outcomes = Vec::with_capacity(sweepable.len() + held.len());
+    for wallet in &held {
+        // Never a treasury-drain candidate: surfaced so the operator understands the
+        // count. `sol_swept`/`retired` stay zero/false.
+        outcomes.push(WalletSweepOutcome::skipped(
+            wallet,
+            "holds an open token position — keeping gas to sell it",
+        ));
+    }
 
     for wallet in sweepable {
-        let id = wallet.id;
-        if let Err(e) = sweep_wallet(&rpc, pool, settings, &kek, &wallet, treasury_address).await {
-            warn!(managed_wallet_id = %id, %e, "dust sweep failed for wallet");
-        }
+        let outcome =
+            match sweep_wallet(rpc, pool, settings, kek, &wallet, treasury_id, treasury_address)
+                .await
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    warn!(managed_wallet_id = %wallet.id, %e, "dust sweep failed for wallet");
+                    WalletSweepOutcome::errored(&wallet, e)
+                }
+            };
+        outcomes.push(outcome);
     }
-    Ok(())
+    Ok(outcomes)
 }
 
+/// Sweep one `used` wallet to the treasury and retire it. `treasury_id` guards
+/// against a treasury wallet somehow entering the `used` set — never sweep it to
+/// itself (an empty ix set would fail the send anyway, but skip it cleanly).
 async fn sweep_wallet(
     rpc: &RpcClient,
     pool: &PgPool,
     settings: &LauncherSettings,
     kek: &EnvKek,
     wallet: &ManagedWallet,
+    treasury_id: Uuid,
     treasury: Pubkey,
-) -> Result<()> {
+) -> Result<WalletSweepOutcome> {
+    if wallet.id == treasury_id {
+        return Ok(WalletSweepOutcome::skipped(wallet, "is the destination treasury"));
+    }
     let address = Pubkey::from_str(&wallet.address).context("parse wallet address")?;
     let balance = rpc.get_balance(&address).await.context("fetch wallet balance")?;
 
@@ -103,7 +153,7 @@ async fn sweep_wallet(
         // real (sub-floor) residual so the row reflects what's actually on-chain.
         ManagedWalletRepo::retire(pool, wallet.id, balance as i64).await?;
         info!(managed_wallet_id = %wallet.id, balance, "wallet below dust floor — retired without sweep");
-        return Ok(());
+        return Ok(WalletSweepOutcome::retired_no_sweep(wallet, balance));
     }
 
     // Phase 2.F: the sweep is a typed `TransferSol` move executed through the SSOT
@@ -127,14 +177,19 @@ async fn sweep_wallet(
     // sub-fee dust), so stamp 0 — the wallet holds nothing after this.
     ManagedWalletRepo::retire(pool, wallet.id, 0).await?;
     match swept {
-        Some((sig, _lamports)) => info!(
-            managed_wallet_id = %wallet.id, address = %wallet.address, sig = %sig,
-            "dust swept to treasury, wallet retired"
-        ),
-        None => info!(
-            managed_wallet_id = %wallet.id, balance,
-            "wallet balance below fee at send — retired without sweep"
-        ),
+        Some((sig, lamports)) => {
+            info!(
+                managed_wallet_id = %wallet.id, address = %wallet.address, sig = %sig,
+                "dust swept to treasury, wallet retired"
+            );
+            Ok(WalletSweepOutcome::swept(wallet, lamports, sig.to_string(), true))
+        }
+        None => {
+            info!(
+                managed_wallet_id = %wallet.id, balance,
+                "wallet balance below fee at send — retired without sweep"
+            );
+            Ok(WalletSweepOutcome::retired_no_sweep(wallet, 0))
+        }
     }
-    Ok(())
 }

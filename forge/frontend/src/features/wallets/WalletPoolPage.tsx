@@ -5,6 +5,8 @@ import {
   useGenerateWalletsMutation,
   useFundPoolMutation,
   useTransferSolMutation,
+  useSweepWalletsMutation,
+  useConsolidateWalletsMutation,
   useExportWalletKeyMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
@@ -25,7 +27,13 @@ import {
   AddressDisplay,
 } from '@shared/components/ui';
 import { formatSol } from '@shared/lib/format';
-import type { ManagedWalletPool, TransferReport, WalletRole, WalletStatus } from '@shared/types';
+import type {
+  ManagedWalletPool,
+  SweepReport,
+  TransferReport,
+  WalletRole,
+  WalletStatus,
+} from '@shared/types';
 
 // A wallet in one of these statuses can't be an ad-hoc transfer source (a launch is
 // mid-flight against it, or it's retired) — mirrors the backend status guard.
@@ -175,6 +183,26 @@ export function WalletPoolPage() {
   const [fund, funding] = useFundPoolMutation();
   const [refreshBalances, refreshing] = useRefreshWalletBalancesMutation();
 
+  // Operator sweep passes. Both return a `SweepReport`, shown in a result card.
+  const [sweep, sweeping] = useSweepWalletsMutation();
+  const [consolidate, consolidating] = useConsolidateWalletsMutation();
+  const [sweepResult, setSweepResult] = useState<{ title: string; report: SweepReport } | null>(
+    null,
+  );
+
+  // "Consolidate → treasury" dialog: pick the destination treasury, then confirm.
+  const [consolidateOpen, setConsolidateOpen] = useState(false);
+  const [consolidateDest, setConsolidateDest] = useState('');
+  const [consolidateErr, setConsolidateErr] = useState<string | null>(null);
+
+  // Treasury wallets for the consolidate destination picker — queried unfiltered so
+  // they're always available even when the pool table is scoped to another role.
+  const { data: treasuryWallets = [] } = useWalletPoolQuery('treasury');
+  const treasuryDestinations = useMemo(
+    () => treasuryWallets.filter((w) => w.status !== 'retired'),
+    [treasuryWallets],
+  );
+
   // Wallet-to-wallet transfer dialog, keyed by the source wallet.
   const [transferTarget, setTransferTarget] = useState<ManagedWalletPool | null>(null);
   const [transferDest, setTransferDest] = useState('');
@@ -275,9 +303,11 @@ export function WalletPoolPage() {
   const holdings = useMemo(() => {
     let countedLamports = 0;
     let countedCount = 0;
+    let uncountedLamports = 0;
     let uncountedCount = 0;
     let oldestCheck: number | null = null;
     const byRole: Record<string, number> = {};
+    const byUncountedStatus: Record<string, number> = {};
     for (const w of wallets) {
       if (isBalanceCountable(w)) {
         const bal = w.balance_lamports ?? 0;
@@ -289,10 +319,25 @@ export function WalletPoolPage() {
           if (oldestCheck == null || t < oldestCheck) oldestCheck = t;
         }
       } else {
+        // Excluded from the trusted total (stale used/retired snapshots), but still
+        // holds SOL — surface its last-known balance broken down by status, styled like
+        // the per-role chips, so the operator sees where the rest of the SOL sits
+        // instead of it vanishing behind a bare count.
+        const bal = w.balance_lamports ?? 0;
+        uncountedLamports += bal;
         uncountedCount += 1;
+        byUncountedStatus[w.status] = (byUncountedStatus[w.status] ?? 0) + bal;
       }
     }
-    return { countedLamports, countedCount, uncountedCount, oldestCheck, byRole };
+    return {
+      countedLamports,
+      countedCount,
+      uncountedLamports,
+      uncountedCount,
+      oldestCheck,
+      byRole,
+      byUncountedStatus,
+    };
   }, [wallets]);
 
   const counts = useMemo(() => {
@@ -368,6 +413,50 @@ export function WalletPoolPage() {
     }
   };
 
+  // One-line roll-up of a sweep/consolidate pass for the info banner.
+  const summarizeSweep = (r: SweepReport): string => {
+    const touched = r.outcomes.filter(
+      (o) => o.sol_swept_lamports > 0 || o.accounts_closed > 0,
+    ).length;
+    const noted = r.outcomes.filter((o) => o.note).length;
+    const parts = [
+      `${formatSol(r.total_sol_swept_lamports)} swept from ${touched} wallet${touched === 1 ? '' : 's'}`,
+      r.accounts_closed > 0 &&
+        `${r.accounts_closed} token account${r.accounts_closed === 1 ? '' : 's'} closed (+${formatSol(r.total_rent_reclaimed_lamports)} rent)`,
+      r.wallets_retired > 0 && `${r.wallets_retired} retired`,
+      noted > 0 && `${noted} skipped/failed`,
+    ].filter(Boolean);
+    return `Into treasury ${r.treasury_address.slice(0, 6)}…${r.treasury_address.slice(-6)}: ${parts.join(', ')}.`;
+  };
+
+  // "Sweep & retire": dust-sweep `used` wallets + reclaim `retired` ones. Direct
+  // action (like Fund) — used wallets are terminal and retired ones are shredded.
+  const onSweep = async () => {
+    setMsg(null);
+    try {
+      const report = await sweep().unwrap();
+      setSweepResult({ title: 'Sweep & retire', report });
+      setMsg(summarizeSweep(report));
+    } catch {
+      /* surfaced via mutation error below */
+    }
+  };
+
+  const onConsolidate = async () => {
+    if (!consolidateDest) return;
+    setConsolidateErr(null);
+    try {
+      const report = await consolidate({ dest_treasury_id: consolidateDest }).unwrap();
+      setSweepResult({ title: 'Consolidate → treasury', report });
+      setMsg(summarizeSweep(report));
+      setConsolidateOpen(false);
+    } catch (e) {
+      setConsolidateErr(
+        apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'Consolidate failed.',
+      );
+    }
+  };
+
   const columns: Column<ManagedWalletPool>[] = [
     { header: 'Address', render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} /> },
     { header: 'Label', render: (w) => w.label ?? <span className="muted">—</span> },
@@ -434,15 +523,46 @@ export function WalletPoolPage() {
     apiErrorMessage(gen.error) ??
     apiErrorMessage(funding.error) ??
     apiErrorMessage(refreshing.error) ??
+    apiErrorMessage(sweeping.error) ??
+    apiErrorMessage(consolidating.error) ??
     apiErrorMessage(error);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Wallet Pool</h1>
-        <Button variant="primary" loading={funding.isLoading} onClick={() => onFund()}>
-          Fund pool
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="ghost"
+            loading={sweeping.isLoading}
+            title="Sweep used wallets to the treasury (retiring them) and reclaim retired wallets — residual SOL + close empty token accounts for rent."
+            onClick={onSweep}
+          >
+            Sweep &amp; retire
+          </Button>
+          <Button
+            variant="ghost"
+            loading={consolidating.isLoading}
+            disabled={treasuryDestinations.length === 0}
+            title={
+              treasuryDestinations.length === 0
+                ? 'No treasury wallet to consolidate into — generate one first.'
+                : 'Drain SOL + close empty token accounts on every wallet into one treasury.'
+            }
+            onClick={() => {
+              setConsolidateErr(null);
+              setConsolidateDest(
+                treasuryDestinations.length === 1 ? treasuryDestinations[0].id : '',
+              );
+              setConsolidateOpen(true);
+            }}
+          >
+            Consolidate → treasury
+          </Button>
+          <Button variant="primary" loading={funding.isLoading} onClick={() => onFund()}>
+            Fund pool
+          </Button>
+        </div>
       </div>
 
       {lowPoolRoles.length > 0 && (
@@ -461,6 +581,104 @@ export function WalletPoolPage() {
       )}
       {msg && <Banner tone="info">{msg}</Banner>}
       {mutationError && <Banner tone="bad">{mutationError}</Banner>}
+
+      {sweepResult && (
+        <Card
+          title={`${sweepResult.title} — result`}
+          actions={
+            <Button variant="ghost" size="sm" onClick={() => setSweepResult(null)}>
+              Dismiss
+            </Button>
+          }
+        >
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+            <span>
+              <span className="muted">SOL swept</span>{' '}
+              <span className="mono">{formatSol(sweepResult.report.total_sol_swept_lamports)}</span>
+            </span>
+            <span>
+              <span className="muted">Accounts closed</span>{' '}
+              <span className="mono">{sweepResult.report.accounts_closed}</span>
+            </span>
+            <span>
+              <span className="muted">Rent reclaimed</span>{' '}
+              <span className="mono">
+                {formatSol(sweepResult.report.total_rent_reclaimed_lamports)}
+              </span>
+            </span>
+            <span>
+              <span className="muted">Retired</span>{' '}
+              <span className="mono">{sweepResult.report.wallets_retired}</span>
+            </span>
+          </div>
+          <div className="mt-3">
+            <DataTable
+              columns={[
+                {
+                  header: 'Address',
+                  render: (o) => <AddressDisplay value={o.address} lead={6} tail={6} />,
+                },
+                { header: 'Role', render: (o) => <RolePill role={o.role} /> },
+                { header: 'Status', render: (o) => <StatusPill status={o.status} /> },
+                {
+                  header: 'SOL swept',
+                  align: 'right',
+                  render: (o) =>
+                    o.sol_swept_lamports > 0 ? (
+                      <span className="mono">{formatSol(o.sol_swept_lamports)}</span>
+                    ) : (
+                      <span className="muted">—</span>
+                    ),
+                },
+                {
+                  header: 'Accts closed',
+                  align: 'right',
+                  render: (o) => (
+                    <span className="mono">
+                      {o.accounts_closed}
+                      {o.accounts_nonempty_skipped > 0 && (
+                        <span
+                          className="muted"
+                          title={`${o.accounts_nonempty_skipped} non-empty account(s) left open — can't close a token account that still holds a balance`}
+                        >
+                          {' '}
+                          (+{o.accounts_nonempty_skipped} held)
+                        </span>
+                      )}
+                    </span>
+                  ),
+                },
+                {
+                  header: 'Rent',
+                  align: 'right',
+                  render: (o) =>
+                    o.rent_reclaimed_lamports > 0 ? (
+                      <span className="mono">{formatSol(o.rent_reclaimed_lamports)}</span>
+                    ) : (
+                      <span className="muted">—</span>
+                    ),
+                },
+                {
+                  header: 'Note',
+                  render: (o) =>
+                    o.note ? (
+                      <span className="text-xs muted" title={o.note}>
+                        {o.note}
+                      </span>
+                    ) : (
+                      <span className="muted">—</span>
+                    ),
+                },
+              ] satisfies Column<SweepReport['outcomes'][number]>[]}
+              rows={sweepResult.report.outcomes.filter(
+                (o) => o.sol_swept_lamports > 0 || o.accounts_closed > 0 || o.note,
+              )}
+              rowKey={(o) => o.wallet_id}
+              empty="No wallets needed sweeping — the pool is already clean."
+            />
+          </div>
+        </Card>
+      )}
 
       <Card title={roleFilter ? `Holdings · ${roleFilter}` : 'Holdings'}>
         <div className="flex flex-wrap items-end justify-between gap-4">
@@ -484,7 +702,7 @@ export function WalletPoolPage() {
                 ? ` · as of ${formatAgo(Date.now() - holdings.oldestCheck)}`
                 : ''}
               {holdings.uncountedCount > 0
-                ? ` · ${holdings.uncountedCount} not live-checked — Refresh to include`
+                ? ` · ${holdings.uncountedCount} not live-checked (snapshot) — Refresh to include`
                 : ''}
             </p>
           </div>
@@ -493,6 +711,18 @@ export function WalletPoolPage() {
               <span key={r} className="flex items-center gap-1.5">
                 <RolePill role={r} />
                 <span className="mono">{formatSol(holdings.byRole[r])}</span>
+              </span>
+            ))}
+            {/* Excluded (stale used/retired) holdings, shown as status chips in the same
+                style as the per-role chips — dimmed, since these are last-known snapshots. */}
+            {STATUSES.filter((s) => (holdings.byUncountedStatus[s] ?? 0) > 0).map((s) => (
+              <span
+                key={s}
+                className="flex items-center gap-1.5 opacity-70"
+                title="Last-known snapshot — not live-checked. Click Refresh balances to fold into the total."
+              >
+                <StatusPill status={s} />
+                <span className="mono">{formatSol(holdings.byUncountedStatus[s])}</span>
               </span>
             ))}
           </div>
@@ -736,6 +966,55 @@ export function WalletPoolPage() {
                   </div>
                 </div>
               )}
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {consolidateOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setConsolidateOpen(false)}
+        >
+          <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <Card title="Consolidate → treasury">
+              <Banner tone="warn">
+                <strong>Drains every wallet.</strong> Sweeps the SOL of <em>all</em> managed
+                wallets (all roles, incl. other treasuries) into the chosen treasury and closes
+                their empty token accounts to reclaim rent. Wallets mid-launch (
+                <code>funding</code>/<code>reserved</code>) are skipped.
+              </Banner>
+              <div className="mt-3 space-y-3">
+                <Field label="Destination treasury" htmlFor="consolidate-dest">
+                  <Select
+                    id="consolidate-dest"
+                    value={consolidateDest}
+                    onChange={(e) => setConsolidateDest(e.target.value)}
+                  >
+                    <option value="">Select a treasury wallet…</option>
+                    {treasuryDestinations.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.address.slice(0, 6)}…{w.address.slice(-6)}
+                        {w.label ? ` · ${w.label}` : ''}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                {consolidateErr && <Banner tone="bad">{consolidateErr}</Banner>}
+                <div className="flex justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setConsolidateOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    loading={consolidating.isLoading}
+                    disabled={!consolidateDest}
+                    onClick={onConsolidate}
+                  >
+                    Consolidate
+                  </Button>
+                </div>
+              </div>
             </Card>
           </div>
         </div>

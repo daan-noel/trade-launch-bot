@@ -277,6 +277,33 @@ export interface TransferReport {
   signature: string | null;
 }
 
+// Per-wallet result of an operator sweep/consolidate pass. `retired` = the wallet
+// is retired after the pass; `note` carries a skip reason or error.
+export interface WalletSweepOutcome {
+  wallet_id: string;
+  address: string;
+  role: string;
+  status: WalletStatus;
+  sol_swept_lamports: number;
+  rent_reclaimed_lamports: number;
+  accounts_closed: number;
+  accounts_nonempty_skipped: number;
+  retired: boolean;
+  signature: string | null;
+  note: string | null;
+}
+
+// `POST /api/wallet_pool/sweep` + `/consolidate` — aggregate roll-up + per-wallet rows.
+export interface SweepReport {
+  treasury_id: string;
+  treasury_address: string;
+  total_sol_swept_lamports: number;
+  total_rent_reclaimed_lamports: number;
+  wallets_retired: number;
+  accounts_closed: number;
+  outcomes: WalletSweepOutcome[];
+}
+
 export interface MetadataTemplate {
   id: string;
   template_name: string;

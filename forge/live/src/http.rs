@@ -3,12 +3,13 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use crate::ingest::IngestHandle;
 use launcher::{
-    arm_ladder, create_metadata_template, dev_launch_required_lamports, execute_action,
-    execute_bundle, execute_launch, export_wallet_base58, fund_for_launch, fund_once,
-    start_volume_bot, transfer_between_wallets, update_metadata_template, FundMode, FundPlan,
-    FundScope, InsufficientDevBalance, LadderRung, LaunchRequest, LauncherSettings, ManageRequest,
-    NewMetadataTemplateRequest, PumpfunTemplateParams, TransferAmount,
-    UpdateMetadataTemplateRequest, VolumeConfig, WalletSelection,
+    arm_ladder, consolidate_all, create_metadata_template, dev_launch_required_lamports,
+    execute_action, execute_bundle, execute_launch, export_wallet_base58, fund_for_launch,
+    fund_once, start_volume_bot, sweep_used_and_retired, transfer_between_wallets,
+    update_metadata_template, FundMode, FundPlan, FundScope, InsufficientDevBalance, LadderRung,
+    LaunchRequest, LauncherSettings, ManageRequest, NewMetadataTemplateRequest,
+    PumpfunTemplateParams, TransferAmount, UpdateMetadataTemplateRequest, VolumeConfig,
+    WalletSelection,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -88,6 +89,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             web::post().to(wallet_pool_refresh_balances),
         )
         .route("/api/wallet_pool/transfer", web::post().to(wallet_pool_transfer))
+        .route("/api/wallet_pool/sweep", web::post().to(wallet_pool_sweep))
+        .route(
+            "/api/wallet_pool/consolidate",
+            web::post().to(wallet_pool_consolidate),
+        )
         .route(
             "/api/wallet_pool/{id}/export",
             web::post().to(wallet_pool_export),
@@ -482,6 +488,44 @@ async fn wallet_pool_transfer(
         TransferAmount::Exact(sol)
     };
     let report = transfer_between_wallets(pool.get_ref(), settings, body.from_id, body.to_id, amount)
+        .await
+        .map_err(e400)?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
+/// `POST /api/wallet_pool/sweep` — operator "Sweep & retire" pass: run the
+/// `used`-wallet dust sweep (skipping open-position holders) AND reclaim already-
+/// `retired` wallets (residual SOL + close empty token accounts). All lands in the
+/// oldest treasury. Bearer-gated; 503 if the launcher isn't configured. Returns the
+/// per-wallet `SweepReport`.
+async fn wallet_pool_sweep(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    let report = sweep_used_and_retired(pool.get_ref(), settings)
+        .await
+        .map_err(e400)?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
+#[derive(serde::Deserialize)]
+struct ConsolidateBody {
+    /// The treasury-role wallet every other wallet's SOL + reclaimed rent drains into.
+    dest_treasury_id: Uuid,
+}
+
+/// `POST /api/wallet_pool/consolidate` — operator "Consolidate → treasury" pass:
+/// drain SOL + close empty token accounts on EVERY managed wallet (incl. other
+/// treasuries) into `dest_treasury_id`. Skips mid-launch (`funding`/`reserved`)
+/// wallets. Bearer-gated; 503 if the launcher isn't configured.
+async fn wallet_pool_consolidate(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    body: web::Json<ConsolidateBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    let report = consolidate_all(pool.get_ref(), settings, body.into_inner().dest_treasury_id)
         .await
         .map_err(e400)?;
     Ok(HttpResponse::Ok().json(report))

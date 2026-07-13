@@ -149,6 +149,30 @@ with exact template-derived amounts) — distinct from the pool "Fund" button.
 | `FUND_MAX_DELAY_MS` | 8_000 | Timing jitter (background funder only) |
 | `FUND_DRY_RUN` | off | Plan/log without sending |
 
+## Manual sweeps: the "Sweep & retire" and "Consolidate → treasury" buttons
+
+Two operator-triggered reclaim passes on the Wallet Pool page, in
+[wallet_sweep.rs](../crates/launcher/src/wallet_sweep.rs). Both drain into a
+`treasury` wallet and share one token-account closer.
+
+### "Sweep & retire" (`POST /api/wallet_pool/sweep`)
+Runs the same `used`-wallet dust sweep the hourly task does (skipping wallets that
+still hold an **open token position** — their SOL is the gas they need to sell),
+then **reclaims already-`retired` wallets**: sweeps any residual SOL home and
+**closes their _empty_ SPL token accounts** to reclaim the rent. Non-empty accounts
+are reported, never force-closed (an SPL account can only be closed at a zero
+balance). Everything lands in the oldest `role=treasury` wallet.
+
+### "Consolidate → treasury" (`POST /api/wallet_pool/consolidate`)
+Drains SOL **and** closes empty token accounts on **every** managed wallet (all
+roles/statuses, incl. other treasuries) into one **operator-chosen** treasury.
+Skips `funding`/`reserved` wallets (mid-launch — draining them would break the
+in-flight launch). A pure fund reclaim; it does **not** retire wallets.
+
+The close-account tx uses the **destination treasury as fee payer** (the wallet
+owner only co-signs to authorize the close), so even a 0-SOL retired wallet's rent
+can be reclaimed; the reclaimed rent lands in the treasury.
+
 ## Quick reference
 
 ```
@@ -172,6 +196,7 @@ to each other.
 | Funding config / env vars | [launcher/src/config.rs](../crates/launcher/src/config.rs) |
 | `reserved` guard during bundle | [launcher/src/bundle_execute.rs](../crates/launcher/src/bundle_execute.rs) |
 | Dust sweep (`used` → `retired`) | [launcher/src/dust_sweep.rs](../crates/launcher/src/dust_sweep.rs) |
+| Manual sweep + consolidate (buttons) | [launcher/src/wallet_sweep.rs](../crates/launcher/src/wallet_sweep.rs) |
 | Balance poller (`funding` → `funded`) | [live/src/main.rs](../crates/live/src/main.rs) |
 | HTTP endpoint | [live/src/http.rs](../crates/live/src/http.rs) |
 | Fund button (frontend) | [frontend-launch/src/features/wallets/WalletPoolPage.tsx](../frontend-launch/src/features/wallets/WalletPoolPage.tsx) |
