@@ -54,6 +54,21 @@ function isBalanceLive(w: ManagedWalletPool): boolean {
   return age != null && age < BALANCE_STALE_AFTER_MS;
 }
 
+// Statuses whose on-chain balance is STABLE between checks: a `funded`/`reserved`
+// wallet just holds its SOL until a launch consumes it (flipping it to `used`), so its
+// last-read balance stays exact even after the steady poller — which only re-reads
+// `generated`/`funding` + treasury — lets its `balance_checked_at` go stale. Without
+// this, minutes after a manual refresh the total would collapse to ~treasury only.
+const STABLE_BALANCE_STATUSES = new Set<WalletStatus>(['funded', 'reserved']);
+
+// Whether a wallet's balance is trustworthy enough to fold into the holdings total:
+// either freshly polled OR sitting in a stable status. `used`/`retired` may have spent
+// SOL post-launch, so they stay stale-gated (excluded until a manual Refresh re-reads
+// them). `isBalanceLive` remains the narrower "freshly read on-chain" freshness signal.
+function isBalanceCountable(w: ManagedWalletPool): boolean {
+  return isBalanceLive(w) || STABLE_BALANCE_STATUSES.has(w.status);
+}
+
 function formatAgo(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s}s ago`;
@@ -250,30 +265,34 @@ export function WalletPoolPage() {
   };
 
   // Exact SOL the pool holds, read at a glance instead of adding up every row by hand.
-  // Sums only LIVE (recently-checked) balances — a stale snapshot could over/understate
-  // (a used wallet's frozen funded-era number is the classic phantom), so it's counted as
-  // "stale, Refresh to include" rather than folded into a number we can't vouch for. A
-  // "Refresh balances" pass re-reads every wallet, flipping them all live → exact total.
-  // Respects the active role filter; per-role breakdown shows where the SOL sits.
+  // Counts every COUNTABLE balance (freshly polled, or a stable funded/reserved wallet
+  // whose balance can't drift on its own) — so the total survives the poller letting a
+  // funded wallet's check go stale, instead of collapsing to ~treasury a minute after a
+  // manual refresh. Only used/retired stale snapshots (which may have spent SOL post-
+  // launch) are held out as "Refresh to include". A "Refresh balances" pass re-reads
+  // every wallet, folding those in too. Respects the active role filter; per-role
+  // breakdown shows where the SOL sits.
   const holdings = useMemo(() => {
-    let liveLamports = 0;
-    let liveCount = 0;
-    let staleCount = 0;
-    let oldestLiveCheck: number | null = null;
+    let countedLamports = 0;
+    let countedCount = 0;
+    let uncountedCount = 0;
+    let oldestCheck: number | null = null;
     const byRole: Record<string, number> = {};
     for (const w of wallets) {
-      if (isBalanceLive(w)) {
+      if (isBalanceCountable(w)) {
         const bal = w.balance_lamports ?? 0;
-        liveLamports += bal;
-        liveCount += 1;
+        countedLamports += bal;
+        countedCount += 1;
         byRole[w.role] = (byRole[w.role] ?? 0) + bal;
-        const t = new Date(w.balance_checked_at as string).getTime();
-        if (oldestLiveCheck == null || t < oldestLiveCheck) oldestLiveCheck = t;
+        if (w.balance_checked_at) {
+          const t = new Date(w.balance_checked_at).getTime();
+          if (oldestCheck == null || t < oldestCheck) oldestCheck = t;
+        }
       } else {
-        staleCount += 1;
+        uncountedCount += 1;
       }
     }
-    return { liveLamports, liveCount, staleCount, oldestLiveCheck, byRole };
+    return { countedLamports, countedCount, uncountedCount, oldestCheck, byRole };
   }, [wallets]);
 
   const counts = useMemo(() => {
@@ -357,12 +376,13 @@ export function WalletPoolPage() {
     {
       header: 'Balance',
       align: 'right',
-      // Show every wallet's balance (incl. used/retired). A live (recently-checked)
-      // balance renders normal; a frozen snapshot renders dimmed with its age, so a
-      // stale number never masquerades as current — "Refresh balances" makes it live.
+      // Show every wallet's balance (incl. used/retired). A countable balance (freshly
+      // read, or a stable funded/reserved wallet) renders normal — matching what folds
+      // into the holdings total; a stale used/retired snapshot renders dimmed with its
+      // age, so a number that may have drifted never masquerades as current.
       render: (w) => {
         if (w.balance_lamports == null) return <span className="muted">—</span>;
-        if (isBalanceLive(w)) {
+        if (isBalanceCountable(w)) {
           return <span className="mono">{formatSol(w.balance_lamports)}</span>;
         }
         const age = balanceAgeMs(w);
@@ -447,7 +467,7 @@ export function WalletPoolPage() {
           <div>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-semibold leading-none">
-                {formatSol(holdings.liveLamports)}
+                {formatSol(holdings.countedLamports)}
               </span>
               <Button
                 variant="ghost"
@@ -459,12 +479,12 @@ export function WalletPoolPage() {
               </Button>
             </div>
             <p className="mt-1 text-xs muted">
-              live across {holdings.liveCount} wallet{holdings.liveCount === 1 ? '' : 's'}
-              {holdings.oldestLiveCheck != null
-                ? ` · as of ${formatAgo(Date.now() - holdings.oldestLiveCheck)}`
+              across {holdings.countedCount} wallet{holdings.countedCount === 1 ? '' : 's'}
+              {holdings.oldestCheck != null
+                ? ` · as of ${formatAgo(Date.now() - holdings.oldestCheck)}`
                 : ''}
-              {holdings.staleCount > 0
-                ? ` · ${holdings.staleCount} not live-checked — Refresh to include`
+              {holdings.uncountedCount > 0
+                ? ` · ${holdings.uncountedCount} not live-checked — Refresh to include`
                 : ''}
             </p>
           </div>
@@ -478,10 +498,11 @@ export function WalletPoolPage() {
           </div>
         </div>
         <p className="mt-2 text-xs muted">
-          Exact on-chain total of every wallet checked within the last 90s. The background
-          poller keeps only <code>generated</code>/<code>funding</code> + treasury live —
-          click <strong>Refresh balances</strong> to re-read <em>every</em> wallet (incl.{' '}
-          <code>used</code>/<code>retired</code>) and fold them into the total.
+          On-chain total of every freshly-polled wallet plus <code>funded</code>/
+          <code>reserved</code> wallets (whose balance is stable until a launch spends it).
+          The background poller keeps only <code>generated</code>/<code>funding</code> +
+          treasury live — click <strong>Refresh balances</strong> to also re-read{' '}
+          <code>used</code>/<code>retired</code> wallets and fold them into the total.
         </p>
       </Card>
 
