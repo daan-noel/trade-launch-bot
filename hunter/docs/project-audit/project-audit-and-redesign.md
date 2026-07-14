@@ -88,90 +88,47 @@ Priority order is unchanged in spirit — **real-money safety > lab throughput >
 the redesign is now explicitly deprioritized below bugs/perf (forge is the multi-venue product; hunter
 stays pump/SOL for now, adopting forge's model later — see Part 5).
 
-### Part 1 — Real-money & correctness ✅ SHIPPED 2026-07-14
+> **Parts 1 & 2 shipped 2026-07-14 and their plan sections were removed as finished** — the
+> outcome is recorded in the status table above (C1, M1, H2, M2, M3/M4, H1, C2, H6, H5 all ✅) and
+> in commits `fb30590` (Part 1) / `4a95c7a` (Part 2). Part 1's only remaining task is the real-SOL
+> smoke test of the sell/close paths.
 
-> **Status:** all six items below implemented on `master` (branch pre-merge), plus the
-> two live doc-drift comments. `cargo check`/clippy clean on `hunter-live`+`hunter-core`;
-> 17 `execution::real` + 12 `hunter-core` unit tests green (incl. the new
-> `non_revert_status_never_resends_the_sell`). One new migration
-> [`0003_part1_realmoney.sql`](../../core/migrations/0003_part1_realmoney.sql) (status
-> CHECK += `ExitUnconfirmed`; `tokens.total_supply_token` column + backfill; `token_overview`
-> view repoint). **Only real-SOL smoke of the sell/close paths remains.**
+### Part 3 — Modularity (H10 remainder) ⛔ DECLINED 2026-07-14 (intentional separation)
+
+> **Decision (2026-07-14):** Part 3 is **deliberately not pursued.** A four-agent re-map of the
+> actual code confirmed the "duplication" is mostly *intentional separation*, and the one item that
+> touches real-money code (the decision-module merge) is actively unsafe. Part 3 is the
+> explicitly-deprioritized maintainability tier; Parts 1–2 (the items that mattered) shipped. Revisit
+> a specific item only if/when adding strategy #4 makes its copy-paste cost real. Per-item rationale:
 >
-> Deviations from the original sketch (all deliberate, safer/leaner):
-> - **C1** added an `ExitUnconfirmed` terminal state (new `classify_sell_confirm` +
->   extended feed-poll in `execution/real.rs`); re-send now fires **only** on a confirmed
->   same-route revert (or a reverted route-change), never on Succeeded/Pending/RPC-error.
-> - **M1** guards the rent-reclaim `close_token_account` with a **DB "other open position
->   on (wallet,mint)?" check** (`has_other_open_position_on_mint`) — restart-safe, no
->   in-memory refcount — plus a per-`(wallet,mint)` async `Mutex` (`runtime.mint_exit_lock`)
->   serializing same-mint real exits.
-> - **M2** bounds `mark_buy_submitted` with a 250 ms timeout in the `on_signed` hook
->   (keeps the shared executor DB-agnostic) — the in-memory `signed_slot` journal still
->   covers this-process write-ahead recovery.
-> - **M3/M4** use a shared bounded `address→id` cache (`LazyLock<DashMap>`, cap 200k) +
->   SELECT-fast-path `INSERT … DO NOTHING` intern (kills the dead-tuple churn).
-> - **H1** stores `tokens.total_supply_token` (populated at ingest from `total_supply_for`,
->   the Rust SSOT) and repoints `MARKET_CAP_SQL`/`market_cap_sol` at it; sync script carries
->   the new column.
-
-These were the original Phase 0 items.
-
-1. **C1 — sell re-send guard.** Make `classify_sell_revert` (`real.rs:850-862`) symmetric with the
-   already-shipped buy guard `classify_silent_send` (`real.rs:59-73`): re-send **only** on a confirmed
-   on-chain revert; `Succeeded`/`Pending`/RPC-error → keep polling (feed + `getSignatureStatuses`) on an
-   extended deadline, then mark the position `ExitUnconfirmed` and alarm — never fire a second sell. **S.**
-2. **M1 — token-account refcount + same-mint exit serialization.** `DashMap<(wallet,mint), AtomicU32>`;
-   `close_token_account` only at zero; per-mint async `Mutex` around real exits. Closes the cross-position
-   oversell path C1 rides on. **S/M.**
-3. **H2 — decouple strategy pings from DB backpressure.** Dispatch the ping + reserve update *before*
-   `enqueue_db`; give the hot-path Trade enqueue a `send_timeout` + drop-metric. Stops a PG hiccup from
-   stalling real exits (and the watchdog from being the de-facto backpressure handler). **S.**
-4. **M2 — nonce-hold during persist.** Make `mark_buy_submitted` fire-and-forget (spawn, in-memory
-   journal preserves the write-ahead guarantee) or add a 250 ms timeout; hold the nonce slot only for
-   sign+send. **S.**
-5. **M3/M4 — wallet_dict hot path.** `intern`: SELECT fast path → `INSERT … ON CONFLICT DO NOTHING`;
-   add an in-process LRU of hot ids, which also collapses the confirm-loop's 2 RTs (M4). **S.**
-6. **H1 — market-cap formula (display correctness).** Add a real `total_supply_raw` column; repoint
-   the single `MARKET_CAP_SQL` + `market_cap_sol` SSOT (already unified) at `total_supply × price`.
-   The SSOT plumbing is done — only the underlying quantity is wrong. **S.**
-
-### Part 2 — Lab throughput ✅ SHIPPED 2026-07-14
-
-> **Status:** all three items implemented (`hunter-lab`). `cargo check -p hunter-lab` +
-> clippy clean (no new warnings in any `lab` file). Deviations from the sketch, all
-> deliberate:
-> - **C2** defaults to `cores − 1` and drops the `TOKIO_WORKER_THREADS`/`HTTP_WORKERS`
->   reservation outright (lab runs no live hot path), keeping the `SWEEP_RAYON_THREADS`
->   override + `≥1` floor.
-> - **H6** extracts a pure `resolve_token` per strategy and runs it via `rayon::par_iter`
->   inside `spawn_blocking` across **all three** backtests (tpsl1/tpsl2/swing1), and moves
->   the whole DuckDB `LakeSource::load` read into `spawn_blocking` (one shared win for
->   sweep + simulate).
-> - **H5** folds a **lake-version fingerprint** into `lake_hash` so the existing
->   `corpus_hash` compare doubles as the `(selection, lake version)` cache key — the
->   sweep-start reuse needs no new cache field; `stage_mints` collapsed to one call.
-
-1. **C2 — rayon sizing.** Default `SWEEP_RAYON_THREADS = cores − 1` on lab; drop the live-hot-path
-   rationale. One-line-class, ~3.5× on the 8-core box. **S.** ✅
-2. **H6 — parallel simulate + `spawn_blocking`.** `par_iter` the per-token resolve; wrap DuckDB load +
-   resolve in `spawn_blocking` so they stop occupying an actix worker. **S/M.** ✅
-3. **H5 — corpus cache reuse.** Key `sweep_corpus_cache` by (Selection hash, lake version) and check it
-   *before* `LakeSource::load` on sweep start (not just drill-in); fix `stage_mints`-twice. Arrow batch
-   load remains deferred (deliberate row-API isolation). **S** (cache) ✅ / **M** (arrow, optional — deferred).
-
-### Part 3 — Modularity (H10 remainder) 🟡
-
-The generic engine landed; the concrete collapse did not. Remaining, in leverage order:
-1. Merge `tpsl_sniper_1/2` decision modules into one `tpsl_sniper` with a `ReserveSource {Virtual,Real}`
-   param (the only real delta besides tpsl2's scalp entry); keep `tpsl_sniper_1/2` as strategy-id presets
-   + a parity test vs recorded v1 outputs. Deletes the byte-identical `util.rs` clone.
-2. Collapse the 3 sweep adapters + `sweep_*`/`simulate_*_one_combo` clones behind `sweep_dispatch<S>` /
-   a `StrategyDescriptor` + `register_strategy!` macro.
-3. Collapse the **12 per-strategy sweep tables** into one shared quadruple keyed by `strategy_id` +
-   `params JSONB` + `extra_metrics JSONB`. New strategy = zero migrations.
-4. Frontend: one parametrized `StrategyLabPage` + typed column base; delete the tpsl1/tpsl2 page/column
-   duplication.
+> 1. **Merge `tpsl_sniper_1/2` decision modules — REJECTED (unsafe + fights an intentional design).**
+>    `hunter/CLAUDE.md` already codifies these as *intentional clones* ("a fix in one usually belongs
+>    in both"). The map found the divergence is **larger than this audit originally claimed** — not
+>    just `ReserveSource {Virtual,Real}` (2 read sites in the E4 rung) + tpsl2's scalp entry, but also
+>    a genuinely reimplemented exit fill-window (`find_trade_driven_exit_live` vs
+>    `find_trade_driven_exit_with_slot`, which returns the fire slot) and a `CachedExitState`
+>    `Copy`-derive difference; tpsl2's entry is a separate scalp path with 7 extra `Tpsl2Rule` fields.
+>    A `ReserveSource` param alone will **not** unify them. Merging would rewrite **live real-money
+>    sell-decision code (consumed via `exit_state.rs`) that has not yet had its Part 1 real-SOL smoke
+>    test** — maintainability churn *against* real-money safety, inverting this repo's priority order,
+>    to save an 18-line byte-identical `util.rs` clone. Not worth it.
+> 2. **`sweep_dispatch<S>` / `StrategyDescriptor` + `register_strategy!` — DEFERRED.** This is the one
+>    spot with genuine copy-paste (the `sweep_*`/`simulate_*_one_combo`/`sweep_base_rule_*` clones in
+>    `hunter/lab/src/sweep/registry.rs`; the generic engine `strategy.rs`/`grouped_engine.rs` already
+>    landed). But it's isolated and working; a macro trades the copy-paste for macro complexity. Only
+>    worth it while actively adding strategy #4.
+> 3. **Collapse the 12 sweep tables — REJECTED (no win).** The tables are byte-identical *but the Rust
+>    repo (`GroupedSweepRepo`) is already fully strategy-blind* — the SQL is written once and
+>    `format!`s the table name in, so there is **zero code duplication today**. The only "cost" is one
+>    migration block per new strategy (rare); per-strategy tables also give clean per-strategy
+>    retention/pruning. Collapsing would **drop existing sweep results** and add JSONB indirection for
+>    no runtime or maintenance gain.
+> 4. **Parametrized `StrategyLabPage` — DEFERRED (the only item with a real tax).** The 3×
+>    ~1187–1296-line near-identical lab pages (`Tpsl1Page`/`Tpsl2Page`/`Swing1Page`) mean a bug gets
+>    fixed in triplicate; the shared column base (`strategyColumns.tsx`) and the sweep layer's
+>    `GroupedSweepView` thin-wrapper pattern already show the target shape. If any Part 3 item is later
+>    picked up, this is the one with an ongoing cost — but it's a nice-to-have, not a need, and pairs
+>    with M18.
 
 ### Part 4 — Frontend cleanup 🟡
 
@@ -217,10 +174,7 @@ a USDC-paired pump token (T1) must be addable without touching anything outside 
    citations across docs point at moved paths. **Plan:** a mechanical rename pass (`trading_core→hunter/core`,
    `pump-trader→shared/executor/*`, `ingest-laserstream→shared/ingest/*`, `live/→hunter/live/`).
 
-4. **Fix the two live doc-drift comments** (cheap, ship with Part 1): `strategy_id` CHECK comment
-   (`0001_init.sql:272`) and the `initial_supply_token` doc-comment (`models/token.rs:21`, resolves with H1).
-
-5. **Track the newer forge audit separately.** `docs/forge-efficiency-audit-2026-07-13.md` is the active
+4. **Track the newer forge audit separately.** `docs/forge-efficiency-audit-2026-07-13.md` is the active
    perf track for forge and is out of scope here; this document covers **hunter** only. Don't double-plan
    the forge SSE/ingest/reconcile work — it's already in flight there.
 
@@ -229,12 +183,13 @@ a USDC-paired pump token (T1) must be addable without touching anything outside 
 ## Dependency / sequencing
 
 ```
-Part 1 (real-money, no deps)  ──►  ship immediately, before anything else
-Part 2 (lab throughput)       ──►  independent, any time
-Part 3 (modularity)           ──►  independent; enables cheaper strategy #4
+Part 1 (real-money, no deps)  ──►  ✅ SHIPPED; only real-SOL smoke of sell/close paths remains
+Part 2 (lab throughput)       ──►  ✅ SHIPPED
+Part 3 (modularity)           ──►  ⛔ DECLINED — intentional separation; revisit per-item at strategy #4
 Part 4 (frontend)             ──►  independent (M17 waits on Part 5)
 Part 5 (venue/quote port)     ──►  deferred; port from forge when prioritized
 New-plan #1 (SSOT drift)      ──►  do before any hunter/forge shared refactor (esp. chart M18)
 ```
 
-Nothing in Parts 2–5 should merge ahead of Part 1.
+Nothing in Parts 4–5 should merge ahead of Part 1's real-SOL smoke test. **Next real work: the
+Part 1 sell/close real-SOL smoke test — the only genuinely open risk in this audit.**
