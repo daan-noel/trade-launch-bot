@@ -249,11 +249,13 @@ async fn execute_bundle_inner(
         // the upcoming slot leader so this bundle lands in a slot that can build it.
         // The dominant drop cause is a non-Jito leader slot, NOT tip size — a tip we
         // can't cure by escalating (see `jito_leader`). Both the first attempt and
-        // every confirm-watcher re-bid flow through here, so re-bids also wait for a
-        // fresh leader window instead of re-firing a higher tip into a dead slot.
+        // every confirm-watcher re-bid flow through here; `level` (= submit_attempts)
+        // scales the wait so each escalating re-bid hunts a leader harder, pairing the
+        // tip ladder with the gate instead of re-firing a higher tip into a dead slot.
         crate::jito_leader::wait_for_jito_leader(
             &settings.leader_gate,
             &settings.jito_block_engine_url,
+            level,
         )
         .await;
 

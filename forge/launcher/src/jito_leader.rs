@@ -26,6 +26,12 @@ use crate::config::LeaderGateConfig;
 /// any drift in this constant self-corrects rather than compounding.
 const SLOT_MS: u64 = 450;
 
+/// Cap on the per-level wait-budget multiplier. A re-bid climbs the tip ladder AND
+/// hunts a Jito leader harder (it has already burned a confirm timeout, so wasting
+/// its escalated tip on a non-Jito slot is the exact failure to avoid) — but the
+/// hunt is still bounded so a launch can't wait unboundedly across many re-bids.
+const MAX_WAIT_LEVEL_MULT: u64 = 4;
+
 /// The `getNextScheduledLeader` result — the next slot a Jito validator leads.
 #[derive(Debug, Deserialize)]
 struct NextLeader {
@@ -37,16 +43,22 @@ struct NextLeader {
 
 /// Block until a Jito-participating validator is within `send_within_slots` of the
 /// current slot (so a `sendBundle` now lands in a slot that can build the bundle),
-/// or until the `max_wait_ms` budget is spent — whichever comes first. See the
-/// module docs for the fail-open contract: this NEVER prevents a submit, it only
-/// delays one (bounded) to a slot that can actually land it.
-pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, engine_url: &str) {
+/// or until the wait budget is spent — whichever comes first. See the module docs
+/// for the fail-open contract: this NEVER prevents a submit, it only delays one
+/// (bounded) to a slot that can actually land it.
+///
+/// `level` is the tip-escalation level (0 = first attempt; a confirm-watcher re-bid
+/// passes its `submit_attempts`). It scales the wait budget so each escalating re-bid
+/// hunts a Jito leader harder — pairing the tip ladder with the gate — capped at
+/// [`MAX_WAIT_LEVEL_MULT`]× so the total hunt across re-bids stays bounded.
+pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, engine_url: &str, level: u8) {
     if !cfg.enabled {
         return;
     }
     let http = reqwest::Client::new();
     let start = Instant::now();
-    let budget = Duration::from_millis(cfg.max_wait_ms);
+    let mult = (level as u64 + 1).min(MAX_WAIT_LEVEL_MULT);
+    let budget = Duration::from_millis(cfg.max_wait_ms.saturating_mul(mult));
 
     loop {
         let leader = match fetch_next_leader(&http, engine_url).await {
@@ -72,7 +84,8 @@ pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, engine_url: &str) {
         let Some(remaining) = budget.checked_sub(start.elapsed()) else {
             warn!(
                 slots_until,
-                max_wait_ms = cfg.max_wait_ms,
+                budget_ms = budget.as_millis(),
+                level,
                 "Jito leader-schedule wait budget spent — submitting anyway (leader not yet in window)"
             );
             return;
