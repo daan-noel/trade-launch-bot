@@ -112,6 +112,25 @@ services:
       HOST: 0.0.0.0
       PORT: ${LIVE_API_PORT:-8230}
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in the env-file, no default}@postgres:5432/${POSTGRES_DB:-forge_bot}
+      # Keystore holds SPENDABLE ed25519 secrets (Postgres stores only a key_ref).
+      # Override the .env's relative `./keystore` / `./wallet-backups` (fine for a
+      # local `cargo run`) with absolute in-container paths that the bind-mounts
+      # below target — a fresh container FS is otherwise empty, so without this the
+      # blobs are ephemeral: generated wallets vanish on redeploy, and the
+      # keystore-restore flow has no `.enc` files to read.
+      WALLET_KEYSTORE: /keystore
+      WALLET_BACKUP_DIR: /wallet-backups
+    volumes:
+      # Bind-mount the host keystore so the copied `.enc` blobs persist across a
+      # redeploy AND are visible to the restore job. Point WALLET_KEYSTORE_HOST at
+      # the host dir holding the blobs; it must be on the SAME KEK — set
+      # LAUNCHER_KEK_PASSPHRASE in forge/.env to the passphrase that encrypted
+      # them, or every decrypt fails. Relative paths (default) resolve relative
+      # to THIS compose file's directory (deploy/), so the default
+      # `../forge/keystore` means "the keystore/ folder at the repo root" —
+      # commit-portable, no per-host absolute path needed.
+      - ${WALLET_KEYSTORE_HOST:-../forge/keystore}:/keystore
+      - ${WALLET_BACKUP_DIR_HOST:-../forge/wallet-backups}:/wallet-backups
     depends_on:
       postgres:
         condition: service_healthy
