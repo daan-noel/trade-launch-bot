@@ -292,6 +292,8 @@ export interface WalletSweepOutcome {
   accounts_closed: number;
   accounts_nonempty_skipped: number;
   retired: boolean;
+  // A drain step failed on this wallet (vs. a benign mid-launch skip) — re-run to retry.
+  failed: boolean;
   signature: string | null;
   note: string | null;
 }

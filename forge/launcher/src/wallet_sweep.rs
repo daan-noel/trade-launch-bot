@@ -48,6 +48,40 @@ const CLOSE_ACCOUNT_IX: u8 = 9;
 /// Empty token accounts closed per tx. Each close adds ~1 account key + a tiny ix;
 /// kept well under the 1232-byte tx limit with room for the two signers.
 const CLOSE_BATCH: usize = 12;
+/// Attempts for a single send/confirm before a wallet's step is reported failed.
+/// A transient RPC blip (expired blockhash, dropped confirm) used to fail the whole
+/// wallet until the operator re-clicked; retrying with a fresh blockhash self-heals
+/// it inside the same pass.
+const SEND_ATTEMPTS: usize = 3;
+/// Pause between send attempts — lets a transient RPC/network hiccup clear.
+const RETRY_BACKOFF_MS: u64 = 500;
+
+/// Bounded retry for a transient send/confirm. Re-runs `f` up to [`SEND_ATTEMPTS`]
+/// times; `f` re-fetches its own blockhash each call, so an expired-blockhash or
+/// dropped-confirm blip self-heals within one sweep pass instead of failing the
+/// wallet until the operator re-clicks. Returns the last error (with attempt count)
+/// only after every attempt fails.
+async fn retry_send<T, F, Fut>(context: &str, mut f: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=SEND_ATTEMPTS {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                warn!(context, attempt, error = %format!("{e:#}"), "sweep send attempt failed");
+                last_err = Some(e);
+                if attempt < SEND_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_BACKOFF_MS)).await;
+                }
+            }
+        }
+    }
+    Err(last_err.expect("loop runs at least once"))
+        .with_context(|| format!("{context} failed after {SEND_ATTEMPTS} attempts"))
+}
 
 /// Outcome of sweeping/draining ONE wallet. `retired` = the wallet is `retired`
 /// after this pass (the `used` dust sweep retires; the retired-reclaim path leaves
@@ -63,6 +97,11 @@ pub struct WalletSweepOutcome {
     pub accounts_closed: usize,
     pub accounts_nonempty_skipped: usize,
     pub retired: bool,
+    /// A drain STEP failed on this wallet (close and/or SOL sweep errored, or the
+    /// wallet couldn't be set up) — distinct from a benign skip (mid-launch). The UI
+    /// flags these loudly and prompts a re-run; `note` carries the reason(s). A
+    /// skipped wallet leaves this `false`.
+    pub failed: bool,
     pub signature: Option<String>,
     pub note: Option<String>,
 }
@@ -79,6 +118,7 @@ impl WalletSweepOutcome {
             accounts_closed: 0,
             accounts_nonempty_skipped: 0,
             retired: false,
+            failed: false,
             signature: None,
             note: None,
         }
@@ -92,6 +132,7 @@ impl WalletSweepOutcome {
 
     pub(crate) fn errored(w: &ManagedWallet, e: anyhow::Error) -> Self {
         let mut o = Self::base(w);
+        o.failed = true;
         o.note = Some(format!("{e:#}"));
         o
     }
@@ -308,9 +349,17 @@ async fn drain_to_treasury(
     let mut o = WalletSweepOutcome::base(wallet);
     let owner = Pubkey::from_str(&wallet.address).context("parse wallet address")?;
     let owner_signer = keystore::resolve_signer(&settings.keystore_dir, &wallet.key_ref, kek)?;
+    // Partial-failure notes: a close hiccup must NOT abort the SOL sweep (and vice
+    // versa) — the two reclaim steps are independent. Failures are recorded per step
+    // and folded into the outcome's `note`, so the pass drains every wallet it can
+    // and the operator sees exactly which step failed on which wallet.
+    let mut issues: Vec<String> = Vec::new();
 
     // 1) Close empty token accounts, reclaiming their rent into the treasury.
-    let close = close_empty_token_accounts(
+    // Recorded-and-continue on failure: coupling this to the SOL sweep with an early
+    // `?` used to strand a wallet's SOL whenever a token-account close hit a
+    // transient RPC error (the sweep + cache refresh below never ran).
+    match close_empty_token_accounts(
         rpc,
         http,
         rpc_url,
@@ -320,33 +369,55 @@ async fn drain_to_treasury(
         dest,
     )
     .await
-    .context("close empty token accounts")?;
-    o.rent_reclaimed_lamports = close.rent_reclaimed_lamports;
-    o.accounts_closed = close.accounts_closed;
-    o.accounts_nonempty_skipped = close.nonempty_skipped;
-
-    // 2) Sweep residual SOL to the treasury (source signs + pays its own fee). A
-    // 0-balance / sub-floor wallet just no-ops here (`None`).
-    let swept = execute_transfer(
-        rpc,
-        owner_signer.as_ref(),
-        owner,
-        dest,
-        TransferMode::SweepAll { min_lamports: SWEEP_MIN_LAMPORTS },
-        true,
-    )
-    .await
-    .context("sweep residual SOL")?;
-    if let Some((sig, lamports)) = swept {
-        o.sol_swept_lamports = lamports;
-        o.signature = Some(sig.to_string());
+    {
+        Ok(close) => {
+            o.rent_reclaimed_lamports = close.rent_reclaimed_lamports;
+            o.accounts_closed = close.accounts_closed;
+            o.accounts_nonempty_skipped = close.nonempty_skipped;
+        }
+        Err(e) => {
+            warn!(managed_wallet_id = %wallet.id, error = %format!("{e:#}"),
+                "close empty token accounts failed — continuing to SOL sweep");
+            issues.push(format!("close-accounts failed: {e:#}"));
+        }
     }
 
-    // Refresh the cached balance so the pool table reflects the drain at once.
-    // `record_balance` also demotes `funded` → `generated` when the drain took the
-    // balance back below the funded floor (so a drained wallet can't be handed to
-    // the next launch as if it still had gas); `used`/`reserved`/`retired` are left
-    // alone — it never un-retires a wallet. Best-effort — the drain already succeeded.
+    // 2) Sweep residual SOL to the treasury (source signs + pays its own fee).
+    // Bounded retry with a fresh blockhash each attempt (an expired-blockhash /
+    // dropped-confirm blip self-heals in the same pass). A 0-balance / sub-floor
+    // wallet no-ops (`None`). Recorded-and-continue on failure so the cache refresh
+    // below still runs.
+    match retry_send(&format!("sweep {} → treasury", wallet.address), || {
+        execute_transfer(
+            rpc,
+            owner_signer.as_ref(),
+            owner,
+            dest,
+            TransferMode::SweepAll { min_lamports: SWEEP_MIN_LAMPORTS },
+            true,
+        )
+    })
+    .await
+    {
+        Ok(Some((sig, lamports))) => {
+            o.sol_swept_lamports = lamports;
+            o.signature = Some(sig.to_string());
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(managed_wallet_id = %wallet.id, error = %format!("{e:#}"),
+                "residual SOL sweep failed");
+            issues.push(format!("sol-sweep failed: {e:#}"));
+        }
+    }
+
+    // 3) Refresh the cached balance for EVERY wallet in the pass — even one whose
+    // drain partially failed — so the pool table always reflects true on-chain state
+    // after a sweep (a stale, inflated cache was exactly what made a failed drain
+    // look like missing SOL). `record_balance` also demotes `funded` → `generated`
+    // when the balance fell back below the funded floor (so a drained wallet can't be
+    // handed to the next launch as if it still had gas); `used`/`reserved`/`retired`
+    // are left alone — it never un-retires a wallet. Best-effort — never fails the drain.
     match rpc.get_balance(&owner).await {
         Ok(bal) => {
             if let Err(e) =
@@ -360,6 +431,10 @@ async fn drain_to_treasury(
     }
 
     o.retired = wallet.status == WalletStatus::Retired.as_str();
+    if !issues.is_empty() {
+        o.failed = true;
+        o.note = Some(issues.join("; "));
+    }
     if o.accounts_closed > 0 || o.sol_swept_lamports > 0 {
         info!(
             managed_wallet_id = %wallet.id, address = %wallet.address,
@@ -415,12 +490,18 @@ async fn close_empty_token_accounts(
             })
             .collect();
 
-        let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
-        let msg = Message::new_with_blockhash(&ixs, Some(&fee_payer.pubkey()), &blockhash);
-        let mut tx = Transaction::new_unsigned(msg);
-        tx.try_sign(&[fee_payer as &dyn Signer, owner as &dyn Signer], blockhash)
-            .context("sign close-account tx")?;
-        rpc.send_and_confirm_transaction(&tx).await.context("send close-account tx")?;
+        // Bounded retry with a fresh blockhash each attempt, so a transient
+        // expired-blockhash / dropped-confirm blip on the close tx self-heals.
+        retry_send(&format!("close {} token account(s)", chunk.len()), || async {
+            let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
+            let msg = Message::new_with_blockhash(&ixs, Some(&fee_payer.pubkey()), &blockhash);
+            let mut tx = Transaction::new_unsigned(msg);
+            tx.try_sign(&[fee_payer as &dyn Signer, owner as &dyn Signer], blockhash)
+                .context("sign close-account tx")?;
+            rpc.send_and_confirm_transaction(&tx).await.context("send close-account tx")?;
+            Ok(())
+        })
+        .await?;
 
         summary.accounts_closed += chunk.len();
         summary.rent_reclaimed_lamports += chunk.iter().map(|a| a.lamports).sum::<u64>();
@@ -490,4 +571,47 @@ async fn list_token_accounts(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A transient failure that clears before the attempt budget is exhausted must
+    /// succeed within one pass — this is the contract that lets a wallet's sweep
+    /// self-heal instead of failing until the operator re-clicks.
+    #[tokio::test]
+    async fn retry_send_recovers_from_transient_failure() {
+        let calls = Cell::new(0usize);
+        let out = retry_send("test", || {
+            let n = calls.get() + 1;
+            calls.set(n);
+            async move {
+                if n < SEND_ATTEMPTS {
+                    anyhow::bail!("transient blip");
+                }
+                Ok(n)
+            }
+        })
+        .await
+        .expect("should recover before attempts run out");
+        assert_eq!(out, SEND_ATTEMPTS, "succeeds on the final attempt");
+        assert_eq!(calls.get(), SEND_ATTEMPTS, "retried up to the budget");
+    }
+
+    /// A persistent failure returns Err only after the full attempt budget — the
+    /// caller records it as a per-wallet issue and moves on (never aborts the pass).
+    #[tokio::test]
+    async fn retry_send_gives_up_after_budget() {
+        let calls = Cell::new(0usize);
+        let err = retry_send::<(), _, _>("test", || {
+            calls.set(calls.get() + 1);
+            async { anyhow::bail!("always fails") }
+        })
+        .await
+        .expect_err("should exhaust the budget");
+        assert!(err.to_string().contains("failed after"));
+        assert_eq!(calls.get(), SEND_ATTEMPTS, "tried exactly the budget");
+    }
 }

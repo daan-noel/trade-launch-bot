@@ -505,18 +505,22 @@ export function WalletPoolPage() {
     }
   };
 
-  // One-line roll-up of a sweep/consolidate pass for the info banner.
+  // One-line roll-up of a sweep/consolidate pass for the info banner. Genuine drain
+  // failures (`failed`) are counted apart from benign mid-launch skips so a partial
+  // failure is never hidden inside a lumped "skipped/failed" figure.
   const summarizeSweep = (r: SweepReport): string => {
     const touched = r.outcomes.filter(
       (o) => o.sol_swept_lamports > 0 || o.accounts_closed > 0,
     ).length;
-    const noted = r.outcomes.filter((o) => o.note).length;
+    const failed = r.outcomes.filter((o) => o.failed).length;
+    const skipped = r.outcomes.filter((o) => o.note && !o.failed).length;
     const parts = [
       `${formatSol(r.total_sol_swept_lamports)} swept from ${touched} wallet${touched === 1 ? '' : 's'}`,
       r.accounts_closed > 0 &&
       `${r.accounts_closed} token account${r.accounts_closed === 1 ? '' : 's'} closed (+${formatSol(r.total_rent_reclaimed_lamports)} rent)`,
       r.wallets_retired > 0 && `${r.wallets_retired} retired`,
-      noted > 0 && `${noted} skipped/failed`,
+      skipped > 0 && `${skipped} skipped`,
+      failed > 0 && `${failed} FAILED — re-run to retry`,
     ].filter(Boolean);
     return `Into treasury ${r.treasury_address.slice(0, 6)}…${r.treasury_address.slice(-6)}: ${parts.join(', ')}.`;
   };
@@ -737,7 +741,24 @@ export function WalletPoolPage() {
             </Button>
           }
         >
-          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+          {(() => {
+            const failed = sweepResult.report.outcomes.filter((o) => o.failed);
+            if (failed.length === 0) return null;
+            const addrs = failed
+              .map((o) => `${o.address.slice(0, 6)}…${o.address.slice(-4)}`)
+              .join(', ');
+            return (
+              <Banner tone="bad">
+                <strong>
+                  {failed.length} wallet{failed.length === 1 ? '' : 's'} failed to drain
+                </strong>{' '}
+                — {addrs}. Their SOL is untouched (nothing was lost); re-run{' '}
+                <strong>{sweepResult.title}</strong> to retry just the failures. Per-wallet
+                reasons are in the table below.
+              </Banner>
+            );
+          })()}
+          <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm">
             <span>
               <span className="muted">SOL swept</span>{' '}
               <span className="mono">{formatSol(sweepResult.report.total_sol_swept_lamports)}</span>
@@ -808,8 +829,13 @@ export function WalletPoolPage() {
                   header: 'Note',
                   render: (o) =>
                     o.note ? (
-                      <span className="text-xs muted" title={o.note}>
-                        {o.note}
+                      <span
+                        className="text-xs"
+                        style={{ color: o.failed ? 'var(--color-bad)' : undefined }}
+                        title={o.note}
+                      >
+                        {o.failed && <span className="mr-1">⚠</span>}
+                        <span className={o.failed ? '' : 'muted'}>{o.note}</span>
                       </span>
                     ) : (
                       <span className="muted">—</span>
