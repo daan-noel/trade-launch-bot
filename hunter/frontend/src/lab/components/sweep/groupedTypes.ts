@@ -73,7 +73,7 @@ export const BUCKETED_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField
  *  column (`is_cashback_enabled` — no fingerprint gate exists for it) are absent
  *  and skipped when serializing. Mirrors the tpsl1/tpsl2/swing1 spec fingerprint
  *  columns (`p_token_*`). */
-const GROUP_FIELD_TO_COLUMN: Partial<Record<GroupField, string>> = {
+export const GROUP_FIELD_TO_COLUMN: Partial<Record<GroupField, string>> = {
   cu_limit: 'p_token_cu_limit',
   cu_price: 'p_token_cu_price',
   max_cost_lamports: 'p_token_max_sol_cost',

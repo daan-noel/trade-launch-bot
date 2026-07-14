@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
+import { BucketChip } from 'components/ui/BucketChip';
 import { cn } from 'lib/cn';
 import {
   GROUP_FIELDS,
@@ -226,12 +227,10 @@ export function FingerprintGroupPicker({
                 </span>
               ) : (
                 BUCKETED_GROUP_FIELDS.has(f) && (
-                  <span
-                    className="shrink-0 font-mono text-[10px] text-accent/70"
+                  <BucketChip
+                    width={SOL_BUCKET_WIDTH}
                     title={`Continuous SOL amount — grouped into ${SOL_BUCKET_WIDTH}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.`}
-                  >
-                    ◎{SOL_BUCKET_WIDTH} buckets
-                  </span>
+                  />
                 )
               )}
             </div>
@@ -326,7 +325,7 @@ export function FingerprintGroupPicker({
 
       {/* Legend — which fields bucket and how (so grouping behavior is self-explaining). */}
       <p className="border-t border-white/5 pt-1.5 text-[11px] leading-snug text-text-dim/70">
-        <span className="font-mono text-accent/70">◎{SOL_BUCKET_WIDTH} buckets</span>{' '}
+        <BucketChip width={SOL_BUCKET_WIDTH} className="align-middle" />{' '}
         <span className="text-text-mid">
           {[...BUCKETED_GROUP_FIELDS].map((f) => GROUP_FIELD_LABELS[f]).join(', ')}
         </span>{' '}

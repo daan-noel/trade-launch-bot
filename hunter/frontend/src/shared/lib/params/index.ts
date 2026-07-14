@@ -3,6 +3,7 @@
 
 export * from './types';
 export * from './engine';
+export * from './bucketed';
 
 import type { RuleParamsBlob, StrategySpec, Strategy } from './types';
 import { TPSL1_SPEC } from './specs/tpsl1';

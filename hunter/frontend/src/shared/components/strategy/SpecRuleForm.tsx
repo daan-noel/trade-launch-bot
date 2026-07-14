@@ -6,6 +6,7 @@ import { InlineAlert } from 'components/ui/Modal';
 import { Select } from 'components/ui/Select';
 import { Accordion } from 'components/ui/Accordion';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
+import { BucketChip } from 'components/ui/BucketChip';
 import { TPSL_PARAM_HELP, type TpslParamKey } from 'lib/tpslParamHelp';
 import { cn } from 'lib/cn';
 import { EXAMPLE_IX_LABELS } from 'components/strategy/cellFormat';
@@ -13,6 +14,7 @@ import { PasteParamsSection } from 'components/strategy/PasteParamsSection';
 import {
   applyBlob,
   freshLocks,
+  isBucketedColumn,
   RULE_NAME_KEY,
   TRADE_MODE_KEY,
   type FormState,
@@ -46,22 +48,31 @@ export interface SpecRuleFormProps {
 }
 
 /** Field label + optional ⓘ tooltip (tpsl `helpKey`) or native `title` (swing1
- *  `help`). Matches the old modals' `FieldLabel` styling. */
+ *  `help`). Matches the old modals' `FieldLabel` styling. Bucketed fingerprint
+ *  fields also carry the shared {@link BucketChip} so it's explicit they match by
+ *  range — the same marker the grouped-sweep picker shows. */
 function FieldLabel({ field, accent }: { field: ParamField; accent?: string }) {
   const cls = cn(
     'inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider',
     accent ?? 'text-text-dim',
   );
+  const bucketed = isBucketedColumn(field.column);
   if (field.helpKey && field.helpKey in TPSL_PARAM_HELP) {
     const h = TPSL_PARAM_HELP[field.helpKey as TpslParamKey];
     return (
       <span className={cls}>
         {field.label}
+        {bucketed && <BucketChip />}
         <InfoTooltip title={h.title} body={h.body} />
       </span>
     );
   }
-  return <span className={cls} title={field.help}>{field.label}</span>;
+  return (
+    <span className={cls} title={field.help}>
+      {field.label}
+      {bucketed && <BucketChip />}
+    </span>
+  );
 }
 
 export function SpecRuleForm({
