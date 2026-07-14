@@ -123,6 +123,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/tokens/{mint}/trades", web::get().to(token_trades))
         .route("/api/tokens/{mint}/positions", web::get().to(token_positions))
         .route(
+            "/api/tokens/{mint}/positions/refresh",
+            web::post().to(positions_refresh),
+        )
+        .route(
             "/api/tokens/{mint}/manage/preview",
             web::post().to(manage_preview),
         )
@@ -981,6 +985,25 @@ async fn token_positions(
 ) -> Result<HttpResponse, actix_web::Error> {
     let mint = mint.into_inner();
     let rows = launcher::read_positions(pool.get_ref(), &mint)
+        .await
+        .map_err(e500)?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
+/// Refresh a mint's holdings against **chain** — the one and only RPC balance path
+/// for holdings. The plain GET reads are feed-derived (zero RPC); this explicit
+/// action runs the batched on-chain reconcile (`getMultipleAccounts` over derived
+/// ATAs) so an external transfer or a missed feed leg is corrected, then returns
+/// the refreshed rows. Requires the launcher (RPC) configured. A mutating route, so
+/// it sits behind the bearer gate, but it places no trade.
+async fn positions_refresh(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    mint: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    let mint = mint.into_inner();
+    let rows = launcher::load_positions(pool.get_ref(), Some(settings), &mint)
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(rows))

@@ -3,6 +3,7 @@
 //! ingested feed (realized proceeds). Cold, operator-triggered path.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -10,8 +11,9 @@ use platform_core::models::{BundleStatus, PositionStatus, TokenPosition, WalletR
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
 };
+use pump_trader::protocol;
+use solana_sdk::pubkey::Pubkey;
 use sqlx::PgPool;
-use tokio::task::JoinSet;
 use tracing::warn;
 
 use crate::bundle::legs_from_json;
@@ -214,26 +216,31 @@ pub async fn reconcile_positions_feed(pool: &PgPool, mint_address: &str) -> Resu
         .await
 }
 
-/// Reconcile a mint's positions against chain + feed, **discovering** any managed
-/// wallet that holds the mint but was never seeded a row. Public so the sell
-/// executor can refresh positions immediately after a sell.
+/// Reconcile a mint's positions against **chain** + feed, **discovering** any
+/// managed wallet that holds the mint but was never seeded a row. This is the ONLY
+/// RPC path for holdings — reached from the operator "Refresh" action and the
+/// sell/preview sizing paths, never from a plain page read (that's the feed-only
+/// [`reconcile_positions_feed`]). Public so the sell executor can refresh
+/// positions immediately after a sell.
 ///
 /// The probe set is every non-retired managed wallet (discovery) UNION every
 /// existing non-`dropped` position owner (so a sold-out row on a since-retired
-/// wallet still reconciles to `closed`). Each is queried for its on-chain balance
-/// (`getTokenAccountsByOwner`) concurrently; a wallet found holding the mint with
-/// no position row gets one seeded (cost basis 0 — the row exists only to make the
-/// holding visible + sellable) before the batch balance write. This is what makes
-/// "sell all" correct for a manual manage-buy or any out-of-band holding, not just
-/// the launch dev/bundle wallets.
+/// wallet still reconciles to `closed`). Balances are read in ONE batched sweep:
+/// each owner's canonical ATA is derived deterministically (the mint's token
+/// program comes from the launch `variant` — Legacy SPL for `create_v1`,
+/// Token-2022 otherwise) and read via `getMultipleAccounts` (100 accounts/call).
+/// So a whole-pool probe is `ceil(N/100)` RPC calls, not `N` per-wallet
+/// `getTokenAccountsByOwner` calls — full discovery stays cheap. A wallet found
+/// holding the mint with no position row gets one seeded (cost basis 0 — the row
+/// exists only to make the holding visible + sellable) before the batch balance
+/// write, so "sell all" is correct for a manual manage-buy or any out-of-band
+/// holding, not just the launch dev/bundle wallets.
 ///
-/// Shape (audit 2026-07-13): realized proceeds for ALL wallets come from ONE
-/// grouped query (not a per-position N+1); the per-wallet balance RPCs run
-/// **concurrently** (a slow/failing wallet logs + skips instead of `?`-aborting
-/// the whole pass); and every reconciled row is written in ONE `UNNEST` batch
-/// update (not two UPDATEs × N rows). Cold, operator-triggered path (preview /
-/// sell / holdings read) — the per-wallet scan is acceptable here and must never
-/// run on an ingest hot path.
+/// Shape: realized proceeds + cost basis for ALL wallets come from the feed in two
+/// grouped queries (not a per-position N+1); balances come from `ceil(N/100)`
+/// batched account reads; and every reconciled row is written in ONE `UNNEST`
+/// batch update. Cold, operator-triggered path — never run it on an ingest hot
+/// path.
 pub async fn reconcile_positions(
     pool: &PgPool,
     settings: &LauncherSettings,
@@ -271,53 +278,48 @@ pub async fn reconcile_positions(
             .map(|(addr, (_held, cost))| (addr, cost))
             .collect();
 
+    // The mint's token program picks the ATA derivation (Legacy for `create_v1`,
+    // Token-2022 otherwise) — resolved from the launch we're reconciling.
+    let token_program = match LaunchRepo::find_by_mint(pool, mint_address).await? {
+        Some(l) if l.variant.contains("create_v1") => protocol::TOKEN,
+        _ => protocol::TOKEN_2022,
+    };
+    let mint_pk =
+        Pubkey::from_str(mint_address).with_context(|| format!("parse mint {mint_address}"))?;
+
+    // Derive each probed owner's canonical ATA, then read them all in one batched
+    // sweep. A malformed owner address is logged + skipped (never aborts the pass).
+    let mut probed: Vec<(String, uuid::Uuid, String, String)> = Vec::new(); // (owner, wid, role, ata)
+    for (owner, (wid, role)) in &probe {
+        let owner_pk = match Pubkey::from_str(owner) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(%owner, ?e, "bad managed-wallet address — skipping");
+                continue;
+            }
+        };
+        let ata = derive_ata(&owner_pk, &token_program, &mint_pk).to_string();
+        probed.push((owner.clone(), *wid, role.clone(), ata));
+    }
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .context("build reqwest client for position reconcile")?;
+    let atas: Vec<String> = probed.iter().map(|(_, _, _, ata)| ata.clone()).collect();
+    let balances = fetch_ata_balances_batched(&client, &settings.rpc_url, &atas).await?;
 
-    // Fire every probed wallet's balance RPC concurrently.
-    let mut set = JoinSet::new();
-    for (owner, (wid, role)) in &probe {
-        let client = client.clone();
-        let rpc_url = settings.rpc_url.clone();
-        let owner = owner.clone();
-        let role = role.clone();
-        let wid = *wid;
-        let mint = mint_address.to_string();
-        set.spawn(async move {
-            let res = fetch_token_holding(&client, &rpc_url, &owner, &mint).await;
-            (owner, wid, role, res)
-        });
-    }
-
-    // Collect each wallet's balance; seed a row for any DISCOVERED holder (holds
-    // the mint, no existing row) so the batch update below has an id to write. A
-    // failed wallet is logged and skipped — it keeps its last-known row rather than
-    // aborting the pass.
+    // Seed a row for any DISCOVERED holder (holds the mint, no existing row) so the
+    // batch update below has an id to write. `token_account` is the derived ATA.
     let mut holdings: HashMap<String, (i64, Option<String>)> = HashMap::new();
-    while let Some(joined) = set.join_next().await {
-        let (owner, wid, role, res) = match joined {
-            Ok(t) => t,
-            Err(e) => {
-                warn!(?e, "position balance task panicked — skipping");
+    for ((owner, wid, role, ata), balance_base) in probed.into_iter().zip(balances) {
+        if balance_base > 0 && !existing_owners.contains(&owner) {
+            if let Err(e) = TokenPositionRepo::seed(pool, mint_address, wid, &role, 0).await {
+                warn!(%owner, ?e, "seed discovered holder position failed — skipping");
                 continue;
             }
-        };
-        match res {
-            Ok((balance_base, token_account)) => {
-                if balance_base > 0 && !existing_owners.contains(&owner) {
-                    if let Err(e) =
-                        TokenPositionRepo::seed(pool, mint_address, wid, &role, 0).await
-                    {
-                        warn!(%owner, ?e, "seed discovered holder position failed — skipping");
-                        continue;
-                    }
-                }
-                holdings.insert(owner, (balance_base, token_account));
-            }
-            Err(e) => warn!(%owner, ?e, "position balance RPC failed — skipping this wallet"),
         }
+        holdings.insert(owner, (balance_base, Some(ata)));
     }
 
     // Re-read so freshly-seeded discovery rows carry an id, then write every
@@ -382,57 +384,66 @@ fn lot_by_address(fills: &[(String, String, i64, i64)]) -> HashMap<String, (i64,
     lot
 }
 
-/// Sum an owner's SPL balance for a mint, and pick the largest token account as
-/// the canonical one. Works across SPL Token + Token-2022 (the RPC resolves the
-/// program from the mint filter). A never-created ATA ⇒ `(0, None)`.
-async fn fetch_token_holding(
+/// The canonical associated token account: `PDA([owner, token_program, mint],
+/// ATA_PROGRAM)`. Deterministic — so a whole pool's balances read in one batched
+/// `getMultipleAccounts` sweep instead of a per-owner `getTokenAccountsByOwner`.
+fn derive_ata(owner: &Pubkey, token_program: &Pubkey, mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &protocol::ASSOCIATED_TOKEN_PROGRAM,
+    )
+    .0
+}
+
+/// Read many token accounts' balances in ONE `getMultipleAccounts` call per 100
+/// pubkeys (the RPC cap), preserving the input order. A never-created / non-token
+/// account comes back `null` (or without a parsed `tokenAmount`) ⇒ 0. Balances are
+/// exact base units.
+async fn fetch_ata_balances_batched(
     client: &reqwest::Client,
     rpc_url: &str,
-    owner: &str,
-    mint: &str,
-) -> Result<(i64, Option<String>)> {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getTokenAccountsByOwner",
-        "params": [owner, { "mint": mint }, { "encoding": "jsonParsed", "commitment": "confirmed" }],
-    });
-    let v: serde_json::Value = client
-        .post(rpc_url)
-        .json(&body)
-        .send()
-        .await
-        .context("getTokenAccountsByOwner HTTP")?
-        .error_for_status()
-        .context("getTokenAccountsByOwner HTTP status")?
-        .json()
-        .await
-        .context("parse getTokenAccountsByOwner body")?;
-    if let Some(err) = v.get("error") {
-        anyhow::bail!("getTokenAccountsByOwner RPC error: {err}");
-    }
-    let accounts = v
-        .get("result")
-        .and_then(|r| r.get("value"))
-        .and_then(|value| value.as_array())
-        .context("getTokenAccountsByOwner response missing result.value")?;
-
-    let mut total: i64 = 0;
-    let mut best_account: Option<String> = None;
-    let mut best_amount: i64 = -1;
-    for acc in accounts {
-        let amount = acc
-            .pointer("/account/data/parsed/info/tokenAmount/amount")
-            .and_then(|a| a.as_str())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-        total = total.saturating_add(amount);
-        if amount > best_amount {
-            best_amount = amount;
-            best_account = acc.get("pubkey").and_then(|p| p.as_str()).map(String::from);
+    atas: &[String],
+) -> Result<Vec<i64>> {
+    const BATCH: usize = 100; // getMultipleAccounts caps at 100 pubkeys per call
+    let mut out = Vec::with_capacity(atas.len());
+    for chunk in atas.chunks(BATCH) {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getMultipleAccounts",
+            "params": [chunk, { "encoding": "jsonParsed", "commitment": "confirmed" }],
+        });
+        let v: serde_json::Value = client
+            .post(rpc_url)
+            .json(&body)
+            .send()
+            .await
+            .context("getMultipleAccounts HTTP")?
+            .error_for_status()
+            .context("getMultipleAccounts HTTP status")?
+            .json()
+            .await
+            .context("parse getMultipleAccounts body")?;
+        if let Some(err) = v.get("error") {
+            anyhow::bail!("getMultipleAccounts RPC error: {err}");
+        }
+        let accounts = v
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(|value| value.as_array())
+            .context("getMultipleAccounts response missing result.value")?;
+        for acc in accounts {
+            // `null` account (never created) or a non-token account (no parsed
+            // tokenAmount) ⇒ 0. `amount` is a decimal string in base units.
+            let amount = acc
+                .pointer("/data/parsed/info/tokenAmount/amount")
+                .and_then(|a| a.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            out.push(amount);
         }
     }
-    Ok((total, best_account))
+    Ok(out)
 }
 
 #[cfg(test)]

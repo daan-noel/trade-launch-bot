@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import {
   useTokenOverviewQuery,
   useTokenPositionsQuery,
+  useRefreshPositionsMutation,
   useTokenTradesQuery,
 } from '@shared/store/endpoints';
 import { connectTradeStream } from '@shared/services/sse';
@@ -14,6 +15,7 @@ import {
   Column,
   DataTable,
   Icon,
+  IconButton,
   KV,
   KVRow,
   RolePill,
@@ -68,6 +70,13 @@ export function TokenDetailPage() {
   const { data: positions = [], isFetching: positionsLoading } = useTokenPositionsQuery(mint, {
     skip: !mint,
   });
+
+  // The holdings table above is feed-derived (no RPC). This is the one explicit
+  // on-chain refresh: reconcile balances vs chain to catch an external transfer or
+  // a missed feed leg. `invalidatesTags: ['Positions']` repaints the table; the
+  // mutation's own `.error` surfaces a failure (no unwrap → no unhandled reject).
+  const [refreshPositions, refreshingPositions] = useRefreshPositionsMutation();
+  const refreshError = apiErrorMessage(refreshingPositions.error);
 
   return (
     <div className="space-y-4">
@@ -136,7 +145,23 @@ export function TokenDetailPage() {
         </Card>
       )}
 
-      <Card title={`Our holdings (${positions.length})`}>
+      <Card
+        title={`Our holdings (${positions.length})`}
+        actions={
+          <IconButton
+            icon="refresh"
+            label="Refresh on-chain"
+            variant="ghost"
+            loading={refreshingPositions.isLoading}
+            onClick={() => refreshPositions(mint)}
+          />
+        }
+      >
+        {refreshError && (
+          <Banner tone="bad" className="mb-3">
+            {refreshError}
+          </Banner>
+        )}
         <HoldingsTable positions={positions} loading={positionsLoading} overview={overview} />
       </Card>
 

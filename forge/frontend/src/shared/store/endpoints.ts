@@ -224,6 +224,13 @@ export const api = baseApi.injectEndpoints({
       query: (mint) => `/api/tokens/${mint}/positions`,
       providesTags: ['Positions'],
     }),
+    // The ONLY on-chain (RPC) holdings refresh. Plain reads above are feed-derived
+    // (zero RPC); this explicit action reconciles against chain to catch external
+    // transfers / missed feed legs, then invalidates so the table repaints.
+    refreshPositions: build.mutation<TokenPosition[], string>({
+      query: (mint) => ({ url: `/api/tokens/${mint}/positions/refresh`, method: 'POST' }),
+      invalidatesTags: ['Positions'],
+    }),
 
     // ---- Post-launch management ----
     // Preview is a mutation (POST, no cache) — a fresh dry-run each click.
@@ -333,6 +340,7 @@ export const {
   useTokenOverviewQuery,
   useTokenTradesQuery,
   useTokenPositionsQuery,
+  useRefreshPositionsMutation,
   useManagePreviewMutation,
   useManageExecuteMutation,
   useManageActionsQuery,
