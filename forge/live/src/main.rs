@@ -156,43 +156,29 @@ async fn main() -> anyhow::Result<()> {
         Some(event_sink.clone()),
     );
 
-    // Fresh-wallet pool: balance poller (generated/funding -> funded) +
-    // reservation TTL sweep (Phase 1) + dust sweep (used -> retired, Phase 4) +
-    // treasury->pool funder (wallet-funding-plan; only when FUND_ENABLED) +
-    // sell-ladder evaluator (token-management Phase 4; self-skips firing until
-    // MANAGE_ENABLED).
-    let (
-        wallet_balance_task,
-        wallet_sweep_task,
-        wallet_dust_sweep_task,
-        wallet_funding_task,
-        ladder_task,
-        volume_task,
-    ) = match launcher_settings.as_ref() {
+    // Fresh-wallet pool: ONE unified wallet-lifecycle task (audit Phase C1) folds
+    // the balance poll (generated/funding -> funded) + reservation/funding TTL
+    // sweep + warm-pool funder (only when FUND_ENABLED) + hourly dust sweep
+    // (used -> retired) into a single poll→promote→sweep→top-up→dust tick. The two
+    // non-wallet-lifecycle launcher loops — the sell-ladder evaluator and the
+    // volume scheduler (both trading; self-skip until MANAGE_ENABLED) — stay
+    // separate.
+    let (wallet_lifecycle_task, ladder_task, volume_task) = match launcher_settings.as_ref() {
         Some(s) => {
-            let funding_task = if s.funding.is_some() {
-                Some(launcher::spawn_wallet_funding(
+            if s.funding.is_none() {
+                warn!("wallet funding disabled — set FUND_ENABLED=true to enable");
+            }
+            (
+                Some(launcher::spawn_wallet_lifecycle(
                     pools.hot.clone(),
                     s.clone(),
                     Some(event_sink.clone()),
-                ))
-            } else {
-                warn!("wallet funding disabled — set FUND_ENABLED=true to enable");
-                None
-            };
-            (
-                Some(launcher::spawn_balance_poller(
-                    pools.hot.clone(),
-                    s.rpc_url.clone(),
                 )),
-                Some(launcher::spawn_reservation_sweep(pools.hot.clone())),
-                Some(launcher::spawn_dust_sweep(pools.hot.clone(), s.clone())),
-                funding_task,
                 Some(launcher::spawn_ladder_evaluator(pools.hot.clone(), s.clone())),
                 Some(launcher::spawn_volume_scheduler(pools.hot.clone(), s.clone())),
             )
         }
-        None => (None, None, None, None, None, None),
+        None => (None, None, None),
     };
 
     // Ingest (optional): spawn only when Helius creds are present. `ingest_handle`
@@ -265,32 +251,8 @@ async fn main() -> anyhow::Result<()> {
     // Optional tasks become always-pollable futures (pending forever when absent)
     // so they can join the single `tokio::select!` below without duplicating it
     // per combination of enabled tasks.
-    let wallet_balance = async {
-        match wallet_balance_task {
-            Some(h) => {
-                let _ = h.await;
-            }
-            None => std::future::pending::<()>().await,
-        }
-    };
-    let wallet_sweep = async {
-        match wallet_sweep_task {
-            Some(h) => {
-                let _ = h.await;
-            }
-            None => std::future::pending::<()>().await,
-        }
-    };
-    let wallet_dust_sweep = async {
-        match wallet_dust_sweep_task {
-            Some(h) => {
-                let _ = h.await;
-            }
-            None => std::future::pending::<()>().await,
-        }
-    };
-    let wallet_funding = async {
-        match wallet_funding_task {
+    let wallet_lifecycle = async {
+        match wallet_lifecycle_task {
             Some(h) => {
                 let _ = h.await;
             }
@@ -321,10 +283,7 @@ async fn main() -> anyhow::Result<()> {
                 r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
                 r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
                 r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
-                _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
-                _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
-                _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
-                _ = wallet_funding      => warn!("wallet funding task ended — shutting down"),
+                _ = wallet_lifecycle    => warn!("wallet lifecycle task ended — shutting down"),
                 _ = ladder              => warn!("ladder evaluator ended — shutting down"),
                 _ = volume              => warn!("volume scheduler ended — shutting down"),
             }
@@ -334,10 +293,7 @@ async fn main() -> anyhow::Result<()> {
                 r = http_task           => warn!(?r, "HTTP server ended — shutting down"),
                 r = bundle_confirm_task => warn!(?r, "bundle confirm watcher ended — shutting down"),
                 r = price_task          => warn!(?r, "SOL price poller ended — shutting down"),
-                _ = wallet_balance      => warn!("wallet balance poller ended — shutting down"),
-                _ = wallet_sweep        => warn!("wallet reservation sweep ended — shutting down"),
-                _ = wallet_dust_sweep   => warn!("wallet dust sweep ended — shutting down"),
-                _ = wallet_funding      => warn!("wallet funding task ended — shutting down"),
+                _ = wallet_lifecycle    => warn!("wallet lifecycle task ended — shutting down"),
                 _ = ladder              => warn!("ladder evaluator ended — shutting down"),
                 _ = volume              => warn!("volume scheduler ended — shutting down"),
             }

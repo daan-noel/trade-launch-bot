@@ -31,7 +31,6 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Signature, Signer};
 use sqlx::PgPool;
-use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -919,37 +918,27 @@ async fn submit_transfer(
     Ok(sig)
 }
 
-/// Spawn the background funder. Long-lived; keeps every fundable role warm. Gate
-/// the *spawn* on `settings.funding.is_some()` at the call site (mirror the
-/// dust-sweep wiring) — this loop assumes funding is configured.
-pub fn spawn_wallet_funding(
-    pool: PgPool,
-    settings: LauncherSettings,
-    sink: Option<Arc<dyn EventSink>>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(FUND_INTERVAL);
-        loop {
-            tick.tick().await;
-            match fund_once(
-                &pool,
-                &settings,
-                FundScope::default(),
-                FundMode::Background,
-                sink.as_deref(),
-            )
-            .await
-            {
-                Ok(report) if report.outcomes.is_empty() => {}
-                Ok(report) => info!(
-                    spent_lamports = report.spent_lamports,
-                    wallets = report.outcomes.len(),
-                    "wallet funding pass complete"
-                ),
-                Err(e) => warn!(?e, "wallet funding pass failed"),
-            }
-        }
-    })
+/// The background funder's cadence (a warm-pool top-up), now gated inside the
+/// unified wallet-lifecycle tick (`wallet_lifecycle.rs`) rather than its own task.
+pub(crate) const FUND_PASS_INTERVAL: Duration = FUND_INTERVAL;
+
+/// Run one background warm-pool funding pass and log its summary. Called on cadence
+/// by the unified lifecycle tick; assumes funding is configured (the caller gates
+/// on `settings.funding.is_some()`).
+pub(crate) async fn run_background_funding_pass(
+    pool: &PgPool,
+    settings: &LauncherSettings,
+    sink: Option<&dyn EventSink>,
+) {
+    match fund_once(pool, settings, FundScope::default(), FundMode::Background, sink).await {
+        Ok(report) if report.outcomes.is_empty() => {}
+        Ok(report) => info!(
+            spent_lamports = report.spent_lamports,
+            wallets = report.outcomes.len(),
+            "wallet funding pass complete"
+        ),
+        Err(e) => warn!(?e, "wallet funding pass failed"),
+    }
 }
 
 #[cfg(test)]

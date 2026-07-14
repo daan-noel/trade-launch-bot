@@ -83,37 +83,47 @@ pub async fn generate_wallets(
     Ok(wallets)
 }
 
-/// Spawn the balance poller as a long-lived task. Cheap when idle — bounded to
-/// the (small) `generated` set via the partial index in migration `0004`.
-pub fn spawn_balance_poller(pool: PgPool, rpc_url: String) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("build reqwest client for wallet balance poller");
-        loop {
-            let pending = match poll_balances_once(&pool, &client, &rpc_url).await {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!(?e, "wallet balance poll failed");
-                    0
-                }
-            };
-            // Poll fast only while wallets are actively awaiting SOL; fall back to
-            // the idle cadence the moment the pool settles.
-            let wait = if pending > 0 {
-                BALANCE_POLL_ACTIVE_INTERVAL
-            } else {
-                BALANCE_POLL_IDLE_INTERVAL
-            };
-            tokio::time::sleep(wait).await;
-        }
-    })
+/// Cadence knobs for the unified wallet-lifecycle tick (`wallet_lifecycle.rs`),
+/// which now drives the balance poll (this crate no longer spawns a standalone
+/// balance-poller task). Exposed so the orchestrator picks the same active/idle
+/// base cadence this poll always used.
+pub(crate) const BALANCE_POLL_IDLE: Duration = BALANCE_POLL_IDLE_INTERVAL;
+pub(crate) const BALANCE_POLL_ACTIVE: Duration = BALANCE_POLL_ACTIVE_INTERVAL;
+pub(crate) const RESERVATION_SWEEP: Duration = RESERVATION_SWEEP_INTERVAL;
+
+/// Build the shared reqwest client the balance poll uses (10s timeout).
+pub(crate) fn balance_poll_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client for wallet balance poller")
+}
+
+/// One reservation + funding TTL sweep (extracted from the former standalone
+/// task so the unified lifecycle tick can drive it on the same 30s cadence).
+/// Cheap — bounded to the small `reserved`/`funding` sets by the partial indexes
+/// in migration `0004`.
+pub(crate) async fn sweep_reservations_once(pool: &PgPool) {
+    let cutoff = Utc::now() - RESERVATION_TTL;
+    match ManagedWalletRepo::release_expired_reservations(pool, cutoff).await {
+        Ok(0) => {}
+        Ok(released) => info!(released, "reservation TTL sweep released stranded wallets"),
+        Err(e) => warn!(?e, "reservation TTL sweep failed"),
+    }
+    match ManagedWalletRepo::revert_stale_funding(pool, cutoff).await {
+        Ok(0) => {}
+        Ok(reverted) => info!(reverted, "funding TTL sweep reverted stranded wallets"),
+        Err(e) => warn!(?e, "funding TTL sweep failed"),
+    }
 }
 
 /// Returns the number of pollable (`generated`/`funding`) wallets this pass saw,
 /// so the caller can pick the active vs idle cadence.
-async fn poll_balances_once(pool: &PgPool, client: &reqwest::Client, rpc_url: &str) -> Result<usize> {
+pub(crate) async fn poll_balances_once(
+    pool: &PgPool,
+    client: &reqwest::Client,
+    rpc_url: &str,
+) -> Result<usize> {
     // Both `generated` (manual funding) and `funding` (an automated treasury send
     // in flight) are watched — either promotes to `funded` when SOL lands. Only
     // this set drives the fast/idle cadence (`pending`).
@@ -233,28 +243,3 @@ async fn fetch_balances(
         .collect())
 }
 
-/// Spawn the reservation TTL sweep as a long-lived task. Cheap when idle —
-/// bounded to the (small) `reserved`/`funding` sets via the partial indexes in
-/// migration `0004`. Sweeps two stranded states with the same TTL: `reserved`
-/// wallets from an aborted launch, and `funding` wallets whose treasury send was
-/// dropped (SOL never left the treasury) — both would otherwise be stranded
-/// forever, invisible to every claim.
-pub fn spawn_reservation_sweep(pool: PgPool) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(RESERVATION_SWEEP_INTERVAL);
-        loop {
-            tick.tick().await;
-            let cutoff = Utc::now() - RESERVATION_TTL;
-            match ManagedWalletRepo::release_expired_reservations(&pool, cutoff).await {
-                Ok(0) => {}
-                Ok(released) => info!(released, "reservation TTL sweep released stranded wallets"),
-                Err(e) => warn!(?e, "reservation TTL sweep failed"),
-            }
-            match ManagedWalletRepo::revert_stale_funding(&pool, cutoff).await {
-                Ok(0) => {}
-                Ok(reverted) => info!(reverted, "funding TTL sweep reverted stranded wallets"),
-                Err(e) => warn!(?e, "funding TTL sweep failed"),
-            }
-        }
-    })
-}

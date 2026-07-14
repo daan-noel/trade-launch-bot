@@ -27,6 +27,7 @@ mod trader_config;
 mod wallet_encrypt;
 mod wallet_export;
 mod wallet_funding;
+mod wallet_lifecycle;
 mod wallet_pool;
 mod wallet_sweep;
 mod wallet_transfer;
@@ -42,7 +43,6 @@ pub use bundle_simulate::run_bundle_simulate;
 pub use confirm::spawn_bundle_confirm_watcher;
 
 pub use config::{FundingConfig, LauncherSettings, ManageConfig};
-pub use dust_sweep::spawn_dust_sweep;
 pub use events::{EventSink, LaunchStatusEvent};
 pub use funding_plan::{
     dev_launch_required_lamports, leg_required_lamports, FundPlan, FUNDING_HEADROOM_LAMPORTS,
@@ -67,12 +67,11 @@ pub use service::{
 pub use wallet_encrypt::run_wallet_encrypt;
 pub use wallet_export::{export_wallet_base58, run_wallet_export, ExportedKey};
 pub use wallet_funding::{
-    fund_for_launch, fund_once, spawn_wallet_funding, DirectJittered, FundMode, FundReport,
-    FundScope, FundingStrategy, StrategyParams, Transfer, WalletFundOutcome,
+    fund_for_launch, fund_once, DirectJittered, FundMode, FundReport, FundScope, FundingStrategy,
+    StrategyParams, Transfer, WalletFundOutcome,
 };
-pub use wallet_pool::{
-    generate_wallets, refresh_all_balances, spawn_balance_poller, spawn_reservation_sweep,
-};
+pub use wallet_lifecycle::spawn_wallet_lifecycle;
+pub use wallet_pool::{generate_wallets, refresh_all_balances};
 pub use wallet_sweep::{
     consolidate_all, sweep_used_and_retired, SweepReport, WalletSweepOutcome,
 };

@@ -29,26 +29,23 @@ use crate::wallet_sweep::WalletSweepOutcome;
 /// Only sweep wallets holding more than this — not worth a signed tx + fee for dust.
 /// Also the floor a `Max` operator transfer reuses (see `wallet_transfer`).
 pub(crate) const SWEEP_MIN_LAMPORTS: u64 = 100_000; // 0.0001 SOL
-const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
+/// Hourly dust-sweep cadence — now gated inside the unified wallet-lifecycle tick
+/// (`wallet_lifecycle.rs`) rather than its own task.
+pub(crate) const DUST_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 
-/// Spawn the dust sweep as a long-lived task. Cheap when idle — bounded to the
-/// `used` set (typically small; every entrant here is already terminal).
-pub fn spawn_dust_sweep(pool: PgPool, settings: LauncherSettings) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(SWEEP_INTERVAL);
-        loop {
-            tick.tick().await;
-            match sweep_once(&pool, &settings).await {
-                Ok(outcomes) => {
-                    let swept = outcomes.iter().filter(|o| o.retired).count();
-                    if swept > 0 {
-                        info!(swept, "dust sweep pass complete");
-                    }
-                }
-                Err(e) => warn!(?e, "dust sweep pass failed"),
+/// One hourly pass: resolve the treasury, then sweep every eligible `used` wallet.
+/// Driven by the unified wallet-lifecycle tick. Logs a one-line summary itself so
+/// the orchestrator just fires it on cadence.
+pub(crate) async fn run_dust_sweep_pass(pool: &PgPool, settings: &LauncherSettings) {
+    match sweep_once(pool, settings).await {
+        Ok(outcomes) => {
+            let swept = outcomes.iter().filter(|o| o.retired).count();
+            if swept > 0 {
+                info!(swept, "dust sweep pass complete");
             }
         }
-    })
+        Err(e) => warn!(?e, "dust sweep pass failed"),
+    }
 }
 
 /// One hourly pass: resolve the treasury, then sweep every eligible `used` wallet.
