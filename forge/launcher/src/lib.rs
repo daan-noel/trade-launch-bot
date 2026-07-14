@@ -15,6 +15,7 @@ mod config;
 mod dust_sweep;
 mod events;
 mod funding_plan;
+mod jito_leader;
 mod keystore;
 mod launch_sim_matrix;
 mod manage;

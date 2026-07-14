@@ -462,6 +462,11 @@ mod tests {
             jito_min_tip_sol: 0.001,
             jito_max_tip_sol: 0.05,
             jito_tip_percentile: 50,
+            leader_gate: crate::config::LeaderGateConfig {
+                enabled: false,
+                max_wait_ms: 0,
+                send_within_slots: 2,
+            },
             launch_alt: None,
             backup_dir: None,
             pinata_jwt: None,

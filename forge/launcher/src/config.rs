@@ -35,6 +35,9 @@ pub struct LauncherSettings {
     /// Landed-tip percentile the first attempt targets (`JITO_TIP_PERCENTILE`,
     /// 25|50|75|95|99) before the per-re-bid escalation climbs above it.
     pub jito_tip_percentile: u8,
+    /// Jito leader-schedule gate tuning (see [`crate::jito_leader`]) — bounds how a
+    /// bundle submit waits for a Jito-participating slot leader before firing.
+    pub leader_gate: LeaderGateConfig,
     /// Persistent launch Address Lookup Table (`PUMP_LAUNCH_ALT`). `None` (unset)
     /// keeps the legacy single-message create path; `Some` makes the launcher
     /// compile the create + dev-buy as a v0 tx against this table so it fits the
@@ -115,6 +118,39 @@ impl ManageConfig {
             jito_min_tip_sol: env_f64("MANAGE_JITO_MIN_TIP_SOL", 0.0)?,
             jito_max_tip_sol: env_f64("MANAGE_JITO_MAX_TIP_SOL", 0.0)?,
         }))
+    }
+}
+
+/// Jito leader-schedule gate tuning (see [`crate::jito_leader`]). Always present —
+/// the gate is on by default and disabling it (`JITO_LEADER_GATE_ENABLED=false`)
+/// reverts to today's ungated submit. Fail-open by construction: the gate is an
+/// optimization, never a hard dependency (an RPC error or spent budget submits
+/// anyway), so these knobs only shape *when* a submit fires, never *whether* it does.
+#[derive(Debug, Clone)]
+pub struct LeaderGateConfig {
+    /// Master switch (`JITO_LEADER_GATE_ENABLED`, default `true`). `false` skips the
+    /// getNextScheduledLeader poll entirely and submits immediately.
+    pub enabled: bool,
+    /// Hard cap on how long a submit waits for a Jito leader before firing anyway
+    /// (`JITO_LEADER_MAX_WAIT_MS`, default `2000`). Bounds worst-case launch latency:
+    /// a launch is never blocked indefinitely by an unlucky leader schedule.
+    pub max_wait_ms: u64,
+    /// Submit once a Jito leader is within this many slots of the current slot
+    /// (`JITO_LEADER_SEND_WITHIN_SLOTS`, default `2`). The block-engine forwards a
+    /// bundle to the upcoming leader, so firing a slot or two early is correct — the
+    /// bundle sits in the leader's queue rather than missing the slot.
+    pub send_within_slots: u64,
+}
+
+impl LeaderGateConfig {
+    /// Read the gate knobs from env (all optional, with defaults). A set-but-malformed
+    /// numeric var is fatal (see [`env_u64`]) — same rationale as the other configs.
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            enabled: env_flag("JITO_LEADER_GATE_ENABLED", true),
+            max_wait_ms: env_u64("JITO_LEADER_MAX_WAIT_MS", 2_000)?,
+            send_within_slots: env_u64("JITO_LEADER_SEND_WITHIN_SLOTS", 2)?,
+        })
     }
 }
 
@@ -243,6 +279,7 @@ impl LauncherSettings {
         let jito_min_tip_sol = env_f64("JITO_MIN_TIP_SOL", 0.0002)?;
         let jito_max_tip_sol = env_f64("JITO_MAX_TIP_SOL", 0.01)?;
         let jito_tip_percentile = env_u64("JITO_TIP_PERCENTILE", 75)? as u8;
+        let leader_gate = LeaderGateConfig::from_env()?;
         let launch_alt = match std::env::var("PUMP_LAUNCH_ALT") {
             Ok(v) if !v.trim().is_empty() => Some(
                 Pubkey::from_str(v.trim())
@@ -271,6 +308,7 @@ impl LauncherSettings {
             jito_min_tip_sol,
             jito_max_tip_sol,
             jito_tip_percentile,
+            leader_gate,
             launch_alt,
             backup_dir,
             pinata_jwt,
