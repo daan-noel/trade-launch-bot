@@ -1009,19 +1009,20 @@ async fn positions_refresh(
     Ok(HttpResponse::Ok().json(rows))
 }
 
-/// Dry-run a management action (post-launch management, Phase 2): seed + reconcile
-/// the mint's positions, then compute the per-wallet `ActionPlan` WITHOUT placing
-/// any trade. Always allowed (reading + previewing are safe); executing is the
-/// gated step.
+/// Dry-run a management action (post-launch management, Phase 2): freshen positions
+/// from the **feed** (zero RPC — so tweaking the sell % and re-previewing never hits
+/// the chain), then compute the per-wallet `ActionPlan` WITHOUT placing any trade.
+/// The preview is an estimate; `manage/execute` re-reconciles against chain (fatal
+/// on a sell) so the executed size is authoritative even if an external transfer
+/// left the feed view slightly behind. For an exact preview, hit "Refresh" on the
+/// holdings card first. Always allowed (reading + previewing are safe).
 async fn manage_preview(
     pool: web::Data<PgPool>,
-    settings: web::Data<Option<LauncherSettings>>,
     mint: web::Path<String>,
     body: web::Json<ManageRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let mint = mint.into_inner();
-    // Freshen positions so the preview sizes off current on-chain balances.
-    launcher::load_positions(pool.get_ref(), settings.get_ref().as_ref(), &mint)
+    launcher::read_positions(pool.get_ref(), &mint)
         .await
         .map_err(e500)?;
     let plan = launcher::build_plan(pool.get_ref(), &mint, &body)
