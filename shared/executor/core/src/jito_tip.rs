@@ -163,14 +163,17 @@ fn sol_to_lamports(sol: f64) -> u64 {
 }
 
 impl Engine {
-    /// Build the per-trade Jito tip instruction, sized from the live tip-floor
-    /// cache for retry `level` (0 = first attempt). The destination account is
-    /// fixed per trader instance; only the amount varies with the auction and the
-    /// escalation level. See [`JitoTipCache::tip_lamports_for_level`].
+    /// Build the per-trade tip instruction for a **single-tx** buy/sell, sized from
+    /// the live tip-floor cache for retry `level` (0 = first attempt). These txs
+    /// submit through the Helius `/fast` sender, so the tip goes to
+    /// `sender_tip_account` (a Helius Sender wallet) — NOT `jito_tip_account`: the
+    /// sender rejects a Jito-account tip with `-32602` and the tx never broadcasts.
+    /// The account is fixed per trader instance; only the amount varies with the
+    /// auction and the escalation level. See [`JitoTipCache::tip_lamports_for_level`].
     pub fn jito_tip_ix(&self, level: u8) -> Instruction {
         system_instruction::transfer(
             &self.config.signer.pubkey(),
-            &self.jito_tip_account,
+            &self.sender_tip_account,
             self.jito_tip_cache.tip_lamports_for_level(level),
         )
     }

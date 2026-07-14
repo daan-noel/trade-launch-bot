@@ -243,12 +243,20 @@ impl PumpFunTrader {
         )
         .0;
 
-        // Jito tip account — one chosen at random per trader instance from the
-        // `const [Pubkey; 8]`; the tip *amount* is sized per trade (engine).
+        // Tip accounts — one chosen at random per trader instance from each const
+        // pool; the tip *amount* is sized per trade (engine). The two pools are
+        // NOT interchangeable: the Jito block engine (launch bundles) requires a
+        // Jito tip account, while the Helius `/fast` sender (single-tx buy/sell)
+        // requires a Helius Sender wallet and rejects a Jito account (`-32602`).
+        let mut rng = rand::thread_rng();
         let jito_tip_account = protocol::JITO_TIP_ACCOUNTS
-            .choose(&mut rand::thread_rng())
+            .choose(&mut rng)
             .copied()
             .expect("JITO_TIP_ACCOUNTS is a non-empty const array");
+        let sender_tip_account = protocol::HELIUS_SENDER_TIP_ACCOUNTS
+            .choose(&mut rng)
+            .copied()
+            .expect("HELIUS_SENDER_TIP_ACCOUNTS is a non-empty const array");
 
         // Build the venue-agnostic engine with the pump SPL token-account sizes
         // (used to size the rent read + the buy-template pool). The rent values
@@ -256,6 +264,7 @@ impl PumpFunTrader {
         let engine = Engine::new(
             Arc::clone(&config),
             jito_tip_account,
+            sender_tip_account,
             protocol::TOKEN_ACCOUNT_SPACE,
             protocol::TOKEN_ACCOUNT_RENT_PLACEHOLDER,
             protocol::TOKEN_2022_ACCOUNT_SPACE,

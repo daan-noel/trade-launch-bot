@@ -1406,6 +1406,30 @@ mod tests {
     }
 
     #[test]
+    fn arming_to_buy_submitted_does_not_double_count_pending() {
+        // Regression: the write-ahead BuySubmitted marker must sync off the PRIOR
+        // Arming row, not `None`. Passing `None` re-counts an already-pending
+        // position, leaking `pending` (e.g. shows 2 for one real buy that never
+        // filled). Arming→BuySubmitted (and a BuySubmitted resend) is zero-delta.
+        let cache = StrategyRuntimeCache::new();
+        let rid = Uuid::new_v4();
+
+        let arming = position(rid, "MintA", "Arming");
+        cache.sync_position(None, &arming);
+        assert_eq!(cache.pending_count_by_rule(rid), 1, "Arming counted pending once");
+
+        let mut submitted = arming.clone();
+        submitted.status = "BuySubmitted".into();
+        cache.sync_position(Some(&arming), &submitted);
+        assert_eq!(cache.pending_count_by_rule(rid), 1, "still one pending after submit");
+
+        // A resend flips BuySubmitted→BuySubmitted (another signature) — also zero-delta.
+        cache.sync_position(Some(&submitted), &submitted);
+        assert_eq!(cache.pending_count_by_rule(rid), 1, "resend keeps pending at one");
+        assert_eq!(cache.holding_by_mint("MintA").len(), 1, "one row in the index");
+    }
+
+    #[test]
     fn sse_funnel_emits_delta_on_transition_and_removal() {
         let cache = StrategyRuntimeCache::new();
         let r = rule(

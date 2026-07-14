@@ -465,7 +465,20 @@ pub(crate) async fn buy_until_filled_or_give_up<E, F>(
                     .await
                     {
                         Ok(Ok(Some(updated))) => {
-                            runtime.sync_position(None, &updated);
+                            // Sync off the PRIOR cached row (already in the holding
+                            // index + counted `pending` since Arming), NOT `None`.
+                            // Passing `None` makes `sync_position` treat this as a
+                            // brand-new pending position and bump `pending_count` a
+                            // SECOND time for a row already counted at Arming — the
+                            // leak that shows `pending = 2` for a single real buy (and
+                            // +1 more per resend attempt). Arming→BuySubmitted (and a
+                            // BuySubmitted resend) is a zero-delta transition: both are
+                            // in-index, both pending, neither entered.
+                            let prev = runtime
+                                .holding_by_mint(&mint)
+                                .into_iter()
+                                .find(|p| p.id == updated.id);
+                            runtime.sync_position(prev.as_deref(), &updated);
                         }
                         Ok(Ok(None)) => {} // already advanced to Holding concurrently
                         Ok(Err(err)) => warn!(mint = %mint, sig = %sig,

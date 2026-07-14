@@ -59,7 +59,14 @@ pub struct Engine {
 
     // Jito tip: a fixed tip account (chosen once per instance) plus a
     // background-refreshed tip-floor cache that sizes the tip amount per trade.
+    // `jito_tip_account` is used ONLY on the Jito block-engine bundle path
+    // (`bundle_buy`/`create`), which requires a Jito tip account. The single-tx
+    // buy/sell tip (`jito_tip_ix`) submits through the Helius `/fast` sender, which
+    // requires one of Helius's OWN tip wallets and rejects a Jito account
+    // (`-32602`), so it uses `sender_tip_account` instead — the two must stay
+    // distinct (see `protocol::HELIUS_SENDER_TIP_ACCOUNTS`).
     pub jito_tip_account: Pubkey,
+    pub sender_tip_account: Pubkey,
     pub jito_tip_cache: Arc<JitoTipCache>,
 
     // Nonce management
@@ -122,6 +129,7 @@ impl Engine {
     pub fn new(
         config: Arc<TraderConfig>,
         jito_tip_account: Pubkey,
+        sender_tip_account: Pubkey,
         token_account_space: u64,
         token_account_rent: u64,
         token_2022_account_space: u64,
@@ -153,6 +161,7 @@ impl Engine {
             cu_ixs_curve_create: Vec::new(),
             cu_ixs_amm: Vec::new(),
             jito_tip_account,
+            sender_tip_account,
             jito_tip_cache: Arc::new(JitoTipCache::new(jito_cfg)),
             nonce_pubkeys: Vec::new(),
             nonce_cursor: AtomicUsize::new(0),

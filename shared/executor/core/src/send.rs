@@ -628,6 +628,7 @@ mod tests {
                 vec![solana_sdk::pubkey::Pubkey::new_unique()],
             )),
             solana_sdk::pubkey::Pubkey::new_unique(),
+            solana_sdk::pubkey::Pubkey::new_unique(),
             0,
             0,
             0,

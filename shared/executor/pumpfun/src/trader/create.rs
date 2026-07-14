@@ -767,6 +767,21 @@ mod tests {
 
     use solana_sdk::compute_budget::ComputeBudgetInstruction as CBI;
 
+    /// The whole-bundle Jito tip the create/launch path appends (`DecoStep::Tip`):
+    /// a transfer to a JITO tip account, since launches submit via the Jito block
+    /// engine. This is deliberately NOT `jito_tip_ix`, which targets a Helius
+    /// Sender wallet for the single-tx buy/sell path (`sender_tip_account`).
+    fn expected_bundle_tip_ix(
+        t: &PumpFunTrader,
+        level: u8,
+    ) -> solana_sdk::instruction::Instruction {
+        solana_sdk::system_instruction::transfer(
+            &t.config.signer.pubkey(),
+            &t.jito_tip_account,
+            t.jito_tip_cache.tip_lamports_for_level(level),
+        )
+    }
+
     /// Create-**only** must reproduce exactly `[cu_limit, cu_price, create, tip]`.
     #[test]
     fn golden_create_only_shape() {
@@ -793,7 +808,7 @@ mod tests {
             CBI::set_compute_unit_limit(compute.curve_create_cu),
             CBI::set_compute_unit_price(compute.price_micro_lamports),
             create_ix,
-            t.jito_tip_ix(0),
+            expected_bundle_tip_ix(&t, 0),
         ];
         assert_eq!(got, expected);
     }
@@ -856,7 +871,7 @@ mod tests {
             create_ix,
             ata_ix,
             buy_ix,
-            t.jito_tip_ix(0),
+            expected_bundle_tip_ix(&t, 0),
         ];
         assert_eq!(got, expected);
     }

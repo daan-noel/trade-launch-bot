@@ -135,6 +135,31 @@ pub const JITO_TIP_ACCOUNTS: [Pubkey; 8] = [
     pubkey!("3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT"),
 ];
 
+/// Helius **Sender** tip accounts (mainnet); one is chosen at random per trader
+/// instance for the single-tx buy/sell tip. These are DISTINCT from
+/// [`JITO_TIP_ACCOUNTS`]: the Helius `/fast` sender no longer credits Jito tip
+/// accounts and rejects a tx whose tip isn't paid to one of THESE wallets with
+/// `-32602 "transaction must send a tip of at least 200000 lamports to one of the
+/// following Helius wallets"` — i.e. the tx is dropped pre-broadcast (signed but
+/// never lands). Source: the sender's own rejection payload, captured 2026-07-14.
+/// The Jito **block engine** (launch bundles) still requires a Jito tip account,
+/// so the two lists must stay separate — `jito_tip_ix` uses these; `bundle_buy` /
+/// `create` keep [`JITO_TIP_ACCOUNTS`].
+pub const HELIUS_SENDER_TIP_ACCOUNTS: [Pubkey; 12] = [
+    pubkey!("4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE"),
+    pubkey!("4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey"),
+    pubkey!("D1Mc6j9xQWgR1o1Z7yU5nVVXFQiAYx7FG9AW1aVfwrUM"),
+    pubkey!("3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT"),
+    pubkey!("wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF"),
+    pubkey!("5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn"),
+    pubkey!("9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta"),
+    pubkey!("D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ"),
+    pubkey!("2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD"),
+    pubkey!("4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or"),
+    pubkey!("2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ"),
+    pubkey!("tKq5esiQyvgRyfFa4JEz4uAUmppKyKB1PiQD9JhyGJY"),
+];
+
 // ---------------------------------------------------------------------------
 // Unit conversions
 // ---------------------------------------------------------------------------
