@@ -130,23 +130,33 @@ impl ManageConfig {
 
 /// Jito leader-schedule gate tuning (see [`crate::jito_leader`]). Always present —
 /// the gate is on by default and disabling it (`JITO_LEADER_GATE_ENABLED=false`)
-/// reverts to today's ungated submit. Fail-open by construction: the gate is an
+/// reverts to ungated submit. Fail-open by construction: the gate is an
 /// optimization, never a hard dependency (an RPC error or spent budget submits
 /// anyway), so these knobs only shape *when* a submit fires, never *whether* it does.
+///
+/// The gate is built from two SOL-free, public reads: the Solana RPC
+/// `getSlotLeaders` (upcoming leader identities) intersected with the Jito
+/// validator identity set (`validators_url`). Jito's `getNextScheduledLeader` is
+/// NOT on the public block-engine HTTP API, so we derive the same answer from these.
 #[derive(Debug, Clone)]
 pub struct LeaderGateConfig {
     /// Master switch (`JITO_LEADER_GATE_ENABLED`, default `true`). `false` skips the
-    /// getNextScheduledLeader poll entirely and submits immediately.
+    /// leader-schedule poll entirely and submits immediately.
     pub enabled: bool,
     /// Hard cap on how long a submit waits for a Jito leader before firing anyway
     /// (`JITO_LEADER_MAX_WAIT_MS`, default `2000`). Bounds worst-case launch latency:
     /// a launch is never blocked indefinitely by an unlucky leader schedule.
     pub max_wait_ms: u64,
     /// Submit once a Jito leader is within this many slots of the current slot
-    /// (`JITO_LEADER_SEND_WITHIN_SLOTS`, default `2`). The block-engine forwards a
+    /// (`JITO_LEADER_SEND_WITHIN_SLOTS`, default `2`). The block engine forwards a
     /// bundle to the upcoming leader, so firing a slot or two early is correct — the
     /// bundle sits in the leader's queue rather than missing the slot.
     pub send_within_slots: u64,
+    /// Public Jito validator identity feed (`JITO_VALIDATORS_URL`, default the Jito
+    /// StakeNet). Its `validators[].identity_account`s are the set a `getSlotLeaders`
+    /// identity is checked against. A stakenet-listed validator runs the Jito client
+    /// and can build bundles — a strong proxy for "this slot can land my bundle".
+    pub validators_url: String,
 }
 
 impl LeaderGateConfig {
@@ -157,6 +167,9 @@ impl LeaderGateConfig {
             enabled: env_flag("JITO_LEADER_GATE_ENABLED", true),
             max_wait_ms: env_u64("JITO_LEADER_MAX_WAIT_MS", 2_000)?,
             send_within_slots: env_u64("JITO_LEADER_SEND_WITHIN_SLOTS", 2)?,
+            validators_url: std::env::var("JITO_VALIDATORS_URL").unwrap_or_else(|_| {
+                "https://kobe.mainnet.jito.network/api/v1/validators".to_string()
+            }),
         })
     }
 }

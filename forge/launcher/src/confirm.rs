@@ -467,6 +467,7 @@ mod tests {
                 enabled: false,
                 max_wait_ms: 0,
                 send_within_slots: 2,
+                validators_url: "http://127.0.0.1:1".to_string(),
             },
             launch_alt: None,
             backup_dir: None,

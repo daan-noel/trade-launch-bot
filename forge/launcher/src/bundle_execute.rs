@@ -248,16 +248,13 @@ async fn execute_bundle_inner(
         // Leader-schedule gate (fail-open, bounded): wait until a Jito validator is
         // the upcoming slot leader so this bundle lands in a slot that can build it.
         // The dominant drop cause is a non-Jito leader slot, NOT tip size — a tip we
-        // can't cure by escalating (see `jito_leader`). Both the first attempt and
-        // every confirm-watcher re-bid flow through here; `level` (= submit_attempts)
+        // can't cure by escalating (see `jito_leader`). It reads getSlotLeaders off the
+        // Solana RPC and intersects with the Jito validator set. Both the first attempt
+        // and every confirm-watcher re-bid flow through here; `level` (= submit_attempts)
         // scales the wait so each escalating re-bid hunts a leader harder, pairing the
         // tip ladder with the gate instead of re-firing a higher tip into a dead slot.
-        crate::jito_leader::wait_for_jito_leader(
-            &settings.leader_gate,
-            &settings.jito_block_engine_url,
-            level,
-        )
-        .await;
+        crate::jito_leader::wait_for_jito_leader(&settings.leader_gate, &settings.rpc_url, level)
+            .await;
 
         let jito_bundle_id =
             submit_jito_bundle(&settings.jito_block_engine_urls, &built.txs).await?;

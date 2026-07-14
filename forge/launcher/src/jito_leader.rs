@@ -4,27 +4,41 @@
 //! A Jito bundle can ONLY land when a Jito validator builds the block, i.e. is the
 //! slot leader. Submitting into a non-Jito leader slot drops the bundle *regardless
 //! of tip* — the measured, dominant cause of our launch drops (a 0.005 SOL tip, 70x
-//! market p99, still dropped 0 trades because the tip was never the problem). This
-//! queries the block engine's `getNextScheduledLeader` and waits — bounded — until a
-//! Jito leader is within a small slot window before returning, so the caller submits
-//! INTO a slot that can actually build the bundle.
+//! market p99, still dropped 0 trades because the tip was never the problem).
+//!
+//! **How it knows.** Jito's `getNextScheduledLeader` is NOT exposed on the public
+//! block-engine HTTP API (only `sendBundle` / `getBundleStatuses` / `getTipAccounts`
+//! are), so this derives the same answer from two SOL-free public reads:
+//!   1. Solana RPC `getSlotLeaders(current, N)` → the leader *identity* for each of
+//!      the next N slots.
+//!   2. The Jito validator identity set (StakeNet feed, `validators_url`) → who runs
+//!      the Jito client and can build bundles.
+//! If a Jito identity leads within `send_within_slots`, submit now; else wait
+//! (bounded) for the nearest Jito slot and re-poll.
 //!
 //! **Fail-open by construction.** The gate is an optimization, never a hard
-//! dependency: any RPC/parse error, a disabled gate, or an exhausted wait budget
-//! returns immediately so a launch is never blocked by a gate failure — worst case
-//! reverts to today's ungated submit.
+//! dependency: any RPC/parse error, a disabled gate, an empty validator set, or an
+//! exhausted wait budget returns immediately so a launch is never blocked by a gate
+//! failure — worst case reverts to ungated submit.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use crate::config::LeaderGateConfig;
 
 /// Approximate mainnet slot time (ms). Used only to *estimate* how long to sleep
-/// until the next Jito leader slot; the loop re-polls `currentSlot` afterward, so
-/// any drift in this constant self-corrects rather than compounding.
+/// until the next Jito leader slot; the loop re-polls `getSlot` afterward, so any
+/// drift in this constant self-corrects rather than compounding.
 const SLOT_MS: u64 = 450;
+
+/// How many upcoming slots to scan for a Jito leader each poll. Leaders lead in
+/// runs of 4 consecutive slots, so 64 slots ≈ 16 distinct leaders — a wide enough
+/// horizon that a Jito validator (a large fraction of stake) is almost always found,
+/// while keeping the `getSlotLeaders` response small.
+const LOOKAHEAD_SLOTS: u64 = 64;
 
 /// Cap on the per-level wait-budget multiplier. A re-bid climbs the tip ladder AND
 /// hunts a Jito leader harder (it has already burned a confirm timeout, so wasting
@@ -32,68 +46,85 @@ const SLOT_MS: u64 = 450;
 /// hunt is still bounded so a launch can't wait unboundedly across many re-bids.
 const MAX_WAIT_LEVEL_MULT: u64 = 4;
 
-/// The `getNextScheduledLeader` result — the next slot a Jito validator leads.
-#[derive(Debug, Deserialize)]
-struct NextLeader {
-    #[serde(rename = "currentSlot")]
-    current_slot: u64,
-    #[serde(rename = "nextLeaderSlot")]
-    next_leader_slot: u64,
-}
-
-/// Block until a Jito-participating validator is within `send_within_slots` of the
-/// current slot (so a `sendBundle` now lands in a slot that can build the bundle),
-/// or until the wait budget is spent — whichever comes first. See the module docs
-/// for the fail-open contract: this NEVER prevents a submit, it only delays one
-/// (bounded) to a slot that can actually land it.
+/// Block until a Jito-participating validator leads within `send_within_slots` of the
+/// current slot (so a `sendBundle` now lands in a slot that can build the bundle), or
+/// until the wait budget is spent — whichever comes first. See the module docs for
+/// the fail-open contract: this NEVER prevents a submit, it only delays one (bounded)
+/// to a slot that can actually land it.
 ///
-/// `level` is the tip-escalation level (0 = first attempt; a confirm-watcher re-bid
-/// passes its `submit_attempts`). It scales the wait budget so each escalating re-bid
-/// hunts a Jito leader harder — pairing the tip ladder with the gate — capped at
+/// `rpc_url` is the Solana RPC (Helius) for `getSlot`/`getSlotLeaders`. `level` is the
+/// tip-escalation level (0 = first attempt; a confirm-watcher re-bid passes its
+/// `submit_attempts`), scaling the wait budget so each escalating re-bid hunts a Jito
+/// leader harder — pairing the tip ladder with the gate — capped at
 /// [`MAX_WAIT_LEVEL_MULT`]× so the total hunt across re-bids stays bounded.
-pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, engine_url: &str, level: u8) {
+pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, rpc_url: &str, level: u8) {
     if !cfg.enabled {
         return;
     }
     let http = reqwest::Client::new();
+
+    // Jito validator identity set (fetched once per submit). On any failure the set is
+    // empty → we can't classify a leader → fail open and submit immediately.
+    let jito = match fetch_jito_identities(&http, &cfg.validators_url).await {
+        Ok(set) if !set.is_empty() => set,
+        Ok(_) => {
+            warn!("Jito validator set empty — submitting ungated");
+            return;
+        }
+        Err(e) => {
+            warn!(%e, "Jito validator-set fetch failed — submitting ungated");
+            return;
+        }
+    };
+
     let start = Instant::now();
     let mult = (level as u64 + 1).min(MAX_WAIT_LEVEL_MULT);
     let budget = Duration::from_millis(cfg.max_wait_ms.saturating_mul(mult));
 
     loop {
-        let leader = match fetch_next_leader(&http, engine_url).await {
+        let current = match rpc_u64(&http, rpc_url, "getSlot", serde_json::json!([])).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(%e, "getSlot failed — submitting ungated");
+                return;
+            }
+        };
+        let leaders = match fetch_slot_leaders(&http, rpc_url, current, LOOKAHEAD_SLOTS).await {
             Ok(l) => l,
             Err(e) => {
-                // Fail-open: a leader-schedule hiccup must not block a launch.
-                warn!(%e, "Jito leader-schedule fetch failed — submitting ungated");
+                warn!(%e, "getSlotLeaders failed — submitting ungated");
                 return;
             }
         };
 
-        let slots_until = leader.next_leader_slot.saturating_sub(leader.current_slot);
-        if slots_until <= cfg.send_within_slots {
-            debug!(
-                slots_until,
-                waited_ms = start.elapsed().as_millis(),
-                "Jito leader within window — releasing bundle submit"
-            );
-            return;
+        // Offset (in slots from `current`) of the nearest Jito-led slot, if any.
+        let nearest = leaders.iter().position(|id| jito.contains(id)).map(|p| p as u64);
+        match nearest {
+            Some(offset) if offset <= cfg.send_within_slots => {
+                debug!(
+                    offset,
+                    waited_ms = start.elapsed().as_millis(),
+                    "Jito leader within window — releasing bundle submit"
+                );
+                return;
+            }
+            _ => {}
         }
 
-        // Sleep until ~`send_within_slots` out, bounded by the remaining budget.
         let Some(remaining) = budget.checked_sub(start.elapsed()) else {
             warn!(
-                slots_until,
                 budget_ms = budget.as_millis(),
-                level,
-                "Jito leader-schedule wait budget spent — submitting anyway (leader not yet in window)"
+                level, "Jito leader-schedule wait budget spent — submitting anyway (no leader in window)"
             );
             return;
         };
-        let want = Duration::from_millis(slots_until.saturating_sub(cfg.send_within_slots) * SLOT_MS);
-        let sleep_for = want.min(remaining);
-        // `remaining` shrinks each loop, so this terminates: once it hits zero the
-        // `checked_sub` above returns `None` and we submit.
+        // Sleep toward the nearest Jito slot (or one slot if none found in the
+        // lookahead), bounded by the remaining budget.
+        let slots_out = nearest
+            .map(|o| o.saturating_sub(cfg.send_within_slots))
+            .unwrap_or(1)
+            .max(1);
+        let sleep_for = Duration::from_millis(slots_out * SLOT_MS).min(remaining);
         if sleep_for.is_zero() {
             return;
         }
@@ -101,29 +132,88 @@ pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, engine_url: &str, leve
     }
 }
 
-/// One `getNextScheduledLeader` JSON-RPC call against the block engine (served on the
-/// same `/api/v1/bundles` endpoint as `sendBundle`).
-async fn fetch_next_leader(http: &reqwest::Client, engine_url: &str) -> Result<NextLeader> {
+/// Fetch the Jito StakeNet validator identity set — the pubkeys that run the Jito
+/// client and can build bundles. One HTTP GET, parsed to a `HashSet` for O(1)
+/// leader membership tests.
+async fn fetch_jito_identities(http: &reqwest::Client, url: &str) -> Result<HashSet<String>> {
+    #[derive(Deserialize)]
+    struct Feed {
+        validators: Vec<ValidatorRow>,
+    }
+    #[derive(Deserialize)]
+    struct ValidatorRow {
+        identity_account: String,
+    }
+    let feed: Feed = http
+        .get(url)
+        .send()
+        .await
+        .context("Jito validators HTTP")?
+        .error_for_status()
+        .context("Jito validators status")?
+        .json()
+        .await
+        .context("parse Jito validators feed")?;
+    Ok(feed.validators.into_iter().map(|v| v.identity_account).collect())
+}
+
+/// `getSlotLeaders(start, limit)` → the leader identity (base58) for each of `limit`
+/// consecutive slots beginning at `start`.
+async fn fetch_slot_leaders(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    start: u64,
+    limit: u64,
+) -> Result<Vec<String>> {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "getNextScheduledLeader",
-        "params": []
+        "method": "getSlotLeaders",
+        "params": [start, limit]
     });
+    let v = rpc_call(http, rpc_url, &body).await?;
+    let arr = v
+        .get("result")
+        .and_then(|r| r.as_array())
+        .context("getSlotLeaders result not an array")?;
+    Ok(arr
+        .iter()
+        .filter_map(|x| x.as_str().map(str::to_string))
+        .collect())
+}
+
+/// A Solana JSON-RPC call whose `result` is a bare `u64` (e.g. `getSlot`).
+async fn rpc_u64(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<u64> {
+    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let v = rpc_call(http, rpc_url, &body).await?;
+    v.get("result")
+        .and_then(|r| r.as_u64())
+        .with_context(|| format!("{method} result not a u64"))
+}
+
+/// POST a JSON-RPC body to the Solana RPC and return the parsed response, bailing on
+/// an HTTP error or a JSON-RPC `error` member.
+async fn rpc_call(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value> {
     let resp = http
-        .post(engine_url)
-        .json(&body)
+        .post(rpc_url)
+        .json(body)
         .send()
         .await
-        .context("getNextScheduledLeader HTTP")?
+        .context("RPC HTTP")?
         .error_for_status()
-        .context("getNextScheduledLeader status")?;
-    let v: serde_json::Value = resp.json().await.context("parse getNextScheduledLeader")?;
+        .context("RPC status")?;
+    let v: serde_json::Value = resp.json().await.context("parse RPC response")?;
     if let Some(err) = v.get("error") {
-        bail!("getNextScheduledLeader error: {err}");
+        bail!("RPC error: {err}");
     }
-    let result = v
-        .get("result")
-        .context("getNextScheduledLeader response missing result")?;
-    serde_json::from_value(result.clone()).context("decode getNextScheduledLeader result")
+    Ok(v)
 }
