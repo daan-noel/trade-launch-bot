@@ -422,14 +422,40 @@ async fn run_grouped_sweep_job(
     // no separate `tokens` lookup is needed; trades arrive as slim, wallet-interned
     // `CorpusTrade` buffers in the same launch-window order the engine expects.
     let root = crate::lake::lake_root();
-    tracing::info!(lake = %root.display(), "grouped sweep: corpus source = Parquet lake (DuckDB)");
-    let mut corpus = match LakeSource::new(root).load(&sel).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("grouped sweep: lake corpus load failed: {e}");
-            let _ = early_tx.send(HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": e.to_string()})));
-            return;
+    let src = LakeSource::new(root.clone());
+
+    // Reuse the in-memory corpus cache when the last sweep loaded the **same
+    // selection against the same lake version** (the hash folds both). This skips a
+    // full DuckDB Parquet re-read on the common tune-the-rule loop — iterating
+    // strategy params/filters over one corpus. A fresh `lake-export` moves the lake
+    // version → hash miss → reload, so a stale corpus can never be served. The cache
+    // stores the **unfiltered** selection corpus, so this run's own field/label
+    // filters below re-apply either way.
+    let expected_hash = src.selection_hash(&sel);
+    let cached = {
+        let cache = state.sweep_corpus_cache.read().await;
+        cache.as_ref().filter(|c| c.corpus_hash == expected_hash).map(|c| {
+            crate::sweep::corpus::Corpus {
+                tokens: (*c.tokens).clone(),
+                hash: c.corpus_hash.clone(),
+                has_fingerprints: true,
+            }
+        })
+    };
+    let mut corpus = if let Some(c) = cached {
+        tracing::info!(lake = %root.display(),
+            "grouped sweep: corpus cache hit (selection + lake-version match) — skipping DuckDB load");
+        c
+    } else {
+        tracing::info!(lake = %root.display(), "grouped sweep: corpus source = Parquet lake (DuckDB)");
+        match src.load(&sel).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("grouped sweep: lake corpus load failed: {e}");
+                let _ = early_tx.send(HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": e.to_string()})));
+                return;
+            }
         }
     };
     if corpus.tokens.is_empty() {

@@ -208,17 +208,12 @@ pub async fn run_grouped(
     }
 }
 
-/// Tokio runtime worker threads — must stay in sync with `worker_threads` in
-/// `main.rs`'s `#[tokio::main]`. The sweep's rayon pool reserves these (plus the
-/// actix HTTP workers) so an in-process sweep can't starve the live trading hot
-/// path (ingest / sell-confirm) the data-scale guardrails protect.
-const TOKIO_WORKER_THREADS: usize = 4;
-
-/// Rayon threads for the in-process sweep. Sized against the *whole* thread
-/// budget, not just `cores`: reserve the tokio runtime ([`TOKIO_WORKER_THREADS`])
-/// and the actix HTTP workers (`HTTP_WORKERS`, default 2) so on a small box the
-/// sweep can't pin the cores ingest / sell-confirm run on. Override explicitly
-/// with `SWEEP_RAYON_THREADS`. Always ≥1.
+/// Rayon threads for the in-process sweep. `lab` is the **analysis box** — it
+/// runs no ingest/gRPC/trader, so a sweep never co-runs the live trading hot
+/// path the data-scale guardrails protect (that's `live`, on EC2). The sweep can
+/// therefore take the whole box minus one core, left for the OS + the idle actix
+/// HTTP workers so the UI stays responsive while a sweep runs. Override
+/// explicitly with `SWEEP_RAYON_THREADS`. Always ≥1.
 fn bounded_threads() -> usize {
     if let Some(n) = std::env::var("SWEEP_RAYON_THREADS")
         .ok()
@@ -229,14 +224,8 @@ fn bounded_threads() -> usize {
     }
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(TOKIO_WORKER_THREADS);
-    let http_workers = std::env::var("HTTP_WORKERS")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(2);
-    cores
-        .saturating_sub(TOKIO_WORKER_THREADS + http_workers)
-        .max(1)
+        .unwrap_or(1);
+    cores.saturating_sub(1).max(1)
 }
 
 // ---------------------------------------------------------------------------

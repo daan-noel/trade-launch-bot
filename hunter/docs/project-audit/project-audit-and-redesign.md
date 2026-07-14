@@ -48,13 +48,13 @@ Legend: ✅ done · 🟡 partial · ❌ open · ⚪ obsolete/moved. Paths are **
 | ID | Finding | Status | Current evidence / note |
 |---|---|---|---|
 | **C1** | Sell re-sends on non-reverted (Succeeded/Pending) tx — double-sell | ✅ (2026-07-14) | Fixed: `classify_sell_confirm` (`real.rs`) re-sends only on a confirmed same-route revert (or reverted route-change); Succeeded/Pending/RPC-error → extended feed-poll then terminal `ExitUnconfirmed` (new state, alarmed) — never a second sell. New tests pin it. |
-| **C2** | Lab sweep threads capped at cores−6 | ❌ | `hunter/lab/src/sweep/registry.rs:222-240` still `cores − (4 tokio + 2 http)`; docstring still cites the live hot path lab never runs. |
+| **C2** | Lab sweep threads capped at cores−6 | ✅ (2026-07-14) | `bounded_threads` (`sweep/registry.rs`) now defaults to `cores − 1` on `lab` (analysis box runs no ingest/gRPC/trader, so a sweep never co-runs the live hot path) — one core left for the OS + idle actix workers. `SWEEP_RAYON_THREADS` override + `≥1` floor kept; the live-hot-path rationale (`TOKIO_WORKER_THREADS`/`HTTP_WORKERS` reservation) dropped. |
 | **H1** | Market-cap formula wrong + inconsistent | ✅ (2026-07-14) | Real `tokens.total_supply_token` column added (migration 0003, populated at ingest from the `total_supply_for` Rust SSOT; backfill + `token_overview` view + sync script updated). `MARKET_CAP_SQL` + `market_cap_sol` repointed at `total_supply × price`. `initial_supply_token` doc-comment clarified as NOT-supply. |
 | **H2** | Ingest consumer couples strategy pings to DB backpressure | ✅ (2026-07-14) | `consumer.rs` now dispatches the cache update + reserve update + `ping_strategy` **before** the durable enqueue, and the Trade/Wallet/Token/Migration writes go through `enqueue_db_timeout` (500 ms bound + drop-metric). `notify_mint` deliberately stays after the Trade enqueue (sell-confirm ordering). |
 | **H3** | Lake day-files seal with no completeness check | ❌ | `hunter/lab/src/lake/export.rs:129-139` still skip-if-exists, no manifest/row-count, no re-seal. Sync (`hunter/scripts/db-incremental-sync.ps1`) reconciles `wallet_dict` but has no per-day `COUNT(*)` check for `trades`. |
 | **H4** | sim↔sweep/lake parity test `#[ignore]`d | ✅ | `hunter/lab/src/lake/duck.rs:452-524` `parity_tests` — un-ignored, self-skips when no lake present. (Proves sweep-load ↔ sim-load parity, not a lake-vs-PG baseline.) |
-| **H5** | Corpus load row-by-row, re-done every sweep | 🟡 | Redesigned to lake/DuckDB (PG `DbSource` retired). Still uses the **row API by design** (arrow-version isolation, `duck.rs:14-16`); sweep still reloads unconditionally (`grouped_sweep.rs:426`); `sweep_corpus_cache` is read only by the drill-in, not the next sweep; `stage_mints` still runs twice (`duck.rs:109,170`). |
-| **H6** | Single-rule simulate single-threaded, no `spawn_blocking` | ❌ | `hunter/lab/src/strategies/tpsl_sniper_2/backtest.rs:209` still a sequential `for` loop on the async worker; `SIM_PER_MINT_CAP` still `i64::MAX` (`sim_fetch.rs:34`, now intentional for full-history parity). |
+| **H5** | Corpus load row-by-row, re-done every sweep | ✅ (2026-07-14) | `sweep_corpus_cache` is now reused **at sweep start** (`grouped_sweep.rs`), not only the drill-in: `lake_hash` folds a **lake-version fingerprint** (partition set + token-dim mtime/len) so the cache key is `(selection, lake version)` — a same-selection re-run over an unchanged lake skips the DuckDB load; a fresh `lake-export` invalidates it. `stage_mints` now runs **once** (`resolve_candidates` stages `sel_mints` in both paths; `load_sync` no longer re-stages). Still the **row API by design** (arrow isolation) — the deferred arrow-batch path is the remaining optional "M". |
+| **H6** | Single-rule simulate single-threaded, no `spawn_blocking` | ✅ (2026-07-14) | The per-token entry→exit resolve is extracted to a pure `resolve_token` and run via `rayon` `par_iter` inside `tokio::task::spawn_blocking` across all three backtests (`tpsl_sniper_1/2`, `swing_1`) — off the actix worker, across cores. The DuckDB `LakeSource::load` now runs its whole synchronous read inside `spawn_blocking` too (benefits sweep + simulate). `SIM_PER_MINT_CAP` stays `i64::MAX` (intentional full-history parity). |
 | **H7** | Quote currency (SOL) fused into units/names — T1 blocker | ❌ hunter · ✅ forge | Hunter: pool PDA still hardcodes WSOL (`shared/ingest/pumpfun/src/pool.rs:47-56`); amounts still `f64` SOL via `/LAMPORTS_PER_SOL` (`shared/executor/core/src/engine.rs:438`); neutral `IngestEvent` still `sol: f64` (`shared/ingest/core/src/event.rs:26`); schema still `_lamports`/`_sol`. Forge implemented the full integer quote axis in its DB. |
 | **H8** | Venue recognition = pump-only string match — T2/T4 blocker | ❌ hunter · ✅ forge | Hunter/ingest still substring `contains(pump_id)` (`shared/ingest/pumpfun/src/venue.rs:73-79`), `enum TxRelevance { Curve, Amm }`, `venue CHECK IN ('curve','amm')`. Forge has the open `launchpads` registry + `launchpad_id`/`market_kind`. |
 | **H9** | `Protocol` builder is a false venue seam | ✅ | Replaced by real `Venue` / `IngestVenue` traits. `protocol.rs` demoted to a static constants/descriptor module in both stacks. (Still single-venue — `VenueId::PumpFun` is the only arm.) |
@@ -136,15 +136,29 @@ These were the original Phase 0 items.
    the single `MARKET_CAP_SQL` + `market_cap_sol` SSOT (already unified) at `total_supply × price`.
    The SSOT plumbing is done — only the underlying quantity is wrong. **S.**
 
-### Part 2 — Lab throughput (open) 🟡
+### Part 2 — Lab throughput ✅ SHIPPED 2026-07-14
+
+> **Status:** all three items implemented (`hunter-lab`). `cargo check -p hunter-lab` +
+> clippy clean (no new warnings in any `lab` file). Deviations from the sketch, all
+> deliberate:
+> - **C2** defaults to `cores − 1` and drops the `TOKIO_WORKER_THREADS`/`HTTP_WORKERS`
+>   reservation outright (lab runs no live hot path), keeping the `SWEEP_RAYON_THREADS`
+>   override + `≥1` floor.
+> - **H6** extracts a pure `resolve_token` per strategy and runs it via `rayon::par_iter`
+>   inside `spawn_blocking` across **all three** backtests (tpsl1/tpsl2/swing1), and moves
+>   the whole DuckDB `LakeSource::load` read into `spawn_blocking` (one shared win for
+>   sweep + simulate).
+> - **H5** folds a **lake-version fingerprint** into `lake_hash` so the existing
+>   `corpus_hash` compare doubles as the `(selection, lake version)` cache key — the
+>   sweep-start reuse needs no new cache field; `stage_mints` collapsed to one call.
 
 1. **C2 — rayon sizing.** Default `SWEEP_RAYON_THREADS = cores − 1` on lab; drop the live-hot-path
-   rationale. One-line-class, ~3.5× on the 8-core box. **S.**
+   rationale. One-line-class, ~3.5× on the 8-core box. **S.** ✅
 2. **H6 — parallel simulate + `spawn_blocking`.** `par_iter` the per-token resolve; wrap DuckDB load +
-   resolve in `spawn_blocking` so they stop occupying an actix worker. **S/M.**
+   resolve in `spawn_blocking` so they stop occupying an actix worker. **S/M.** ✅
 3. **H5 — corpus cache reuse.** Key `sweep_corpus_cache` by (Selection hash, lake version) and check it
    *before* `LakeSource::load` on sweep start (not just drill-in); fix `stage_mints`-twice. Arrow batch
-   load remains deferred (deliberate row-API isolation). **S** (cache) / **M** (arrow, optional).
+   load remains deferred (deliberate row-API isolation). **S** (cache) ✅ / **M** (arrow, optional — deferred).
 
 ### Part 3 — Modularity (H10 remainder) 🟡
 

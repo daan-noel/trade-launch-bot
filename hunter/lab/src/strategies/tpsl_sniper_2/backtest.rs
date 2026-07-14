@@ -1,11 +1,15 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use rayon::prelude::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use super::entry;
 use super::exit;
 use super::util::none_if_zero_u64;
+use crate::models::{Token, Tpsl2Rule};
+use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{round_trip_with_costs, CostModel};
 use crate::state::local_state::LocalState;
 use crate::strategies::sim_progress::SimProgress;
@@ -91,6 +95,97 @@ fn select_simulated_tokens(
     }
 
     results
+}
+
+/// Resolve one candidate token's simulated entry → exit into a
+/// [`BacktestTokenResult`], returning `None` when the token has no lake history
+/// or no usable fill. Pure and `Send`-safe (reads only the shared in-memory
+/// `histories` map + the rule), so the candidate set resolves across cores under
+/// `rayon` in [`run_backtest`].
+fn resolve_token(
+    token: &Token,
+    histories: &HashMap<String, Arc<Vec<CorpusTrade>>>,
+    rule: &Tpsl2Rule,
+) -> Option<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> {
+    let trades = histories.get(&token.mint_address)?;
+    // Fork A: resolve entry by **index**, the exact path the grouped sweep
+    // uses (`find_scalp_entry_indexed` → `find_worst_case_paper_entry_at`),
+    // so simulate and sweep pick byte-identical entries. The scalp signal is
+    // the *target* (trigger trade); the recorded *entry* is the worst-case
+    // adverse fill in the trigger's block (and the next) — the same resolver
+    // the live/paper poll uses — reproducing the real target↔entry slippage
+    // gap. They coincide only when no adverse trade exists.
+    let (trigger_idx, target) = entry::find_scalp_entry_indexed(trades, rule)?;
+    let entry_fill = entry::find_worst_case_paper_entry_at(trades, trigger_idx)?;
+    // No usable fill priced in the window → drop the token, mirroring paper's
+    // cleanup (it deletes the un-filled position rather than trade a 0-priced row).
+    if entry_fill.price <= 0.0 {
+        return None;
+    }
+    let target_price = target.price;
+    let target_token_amount = target.amount_tokens;
+    let target_time = target.block_time;
+    let target_tx = target.tx_signature;
+    let entry_price = entry_fill.price;
+    let entry_tx = entry_fill.tx_signature;
+    let entry_time = entry_fill.block_time;
+
+    // Exit ladder is driven from the recorded entry fill (price + time),
+    // exactly as the live/paper exit poll resolves it.
+    let exit = exit::find_trade_driven_exit(trades, entry_time, entry_price, rule);
+
+    let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
+        match exit {
+            Some(fill) => {
+                let secs = (fill.block_time - entry_time).num_seconds();
+                let (sol, pct) = round_trip_with_costs(
+                    entry_price,
+                    fill.price,
+                    rule.buy_amount_sol,
+                    &CostModel::pumpfun_default(),
+                );
+                (
+                    Some(fill.price),
+                    Some(fill.tx_signature),
+                    Some(fill.block_time),
+                    fill.reason.to_string(),
+                    Some(secs),
+                    Some(pct),
+                    Some(sol),
+                )
+            }
+            None => (None, None, None, "Open".to_string(), None, None, None),
+        };
+
+    let result = BacktestTokenResult {
+        mint_address: token.mint_address.clone(),
+        symbol: token.symbol.clone(),
+        target_price: Some(target_price),
+        target_token_amount: Some(target_token_amount),
+        target_time: Some(target_time),
+        target_tx: Some(target_tx),
+        entry_price,
+        // Filled from the enrichment batch fetch below (tokens_info ATH).
+        ath_price: None,
+        // Token count `buy_amount_sol / entry_price` (entry_price > 0 here —
+        // a 0-priced fill was dropped above). pnl_sol math is unchanged
+        // because `buy_amount_sol × pct == (buy_amount_sol/entry)×exit − buy_amount_sol`.
+        entry_token_amount: rule.buy_amount_sol / entry_price,
+        entry_tx,
+        entry_time,
+        exit_price,
+        exit_tx,
+        exit_time,
+        holding_secs,
+        pnl_percent,
+        pnl_sol,
+        exit_reason,
+        token: TokenEnrichment::default(),
+    };
+
+    // Admit by the trigger (target) time — when the position arms — so
+    // concurrency/total caps match the live admission order.
+    Some((target_time, exit_time, result))
 }
 
 /// Simulate a TPSL rule over historical trade data read from the Parquet lake
@@ -204,100 +299,36 @@ pub async fn run_backtest(
     .await
     .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?;
 
-    let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> =
-        Vec::with_capacity(tokens.len());
-    for token in tokens.iter() {
-        // Cooperative cancel: stop resolving but keep ticking so the bar reaches
-        // `total` (the partial result is discarded below on cancel anyway).
-        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            progress.tick();
-            continue;
-        }
-        let resolved = histories.get(&token.mint_address).and_then(|trades| {
-            // Fork A: resolve entry by **index**, the exact path the grouped sweep
-            // uses (`find_scalp_entry_indexed` → `find_worst_case_paper_entry_at`),
-            // so simulate and sweep pick byte-identical entries. The scalp signal is
-            // the *target* (trigger trade); the recorded *entry* is the worst-case
-            // adverse fill in the trigger's block (and the next) — the same resolver
-            // the live/paper poll uses — reproducing the real target↔entry slippage
-            // gap. They coincide only when no adverse trade exists.
-            let (trigger_idx, target) = entry::find_scalp_entry_indexed(trades, &rule)?;
-            let entry_fill = entry::find_worst_case_paper_entry_at(trades, trigger_idx)?;
-            // No usable fill priced in the window → drop the token, mirroring paper's
-            // cleanup (it deletes the un-filled position rather than trade a 0-priced row).
-            if entry_fill.price <= 0.0 {
-                return None;
-            }
-            let target_price = target.price;
-            let target_token_amount = target.amount_tokens;
-            let target_time = target.block_time;
-            let target_tx = target.tx_signature;
-            let entry_price = entry_fill.price;
-            let entry_tx = entry_fill.tx_signature;
-            let entry_time = entry_fill.block_time;
-
-            // Exit ladder is driven from the recorded entry fill (price + time),
-            // exactly as the live/paper exit poll resolves it.
-            let exit = exit::find_trade_driven_exit(trades, entry_time, entry_price, &rule);
-
-            let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
-                match exit {
-                    Some(fill) => {
-                        let secs = (fill.block_time - entry_time).num_seconds();
-                        let (sol, pct) = round_trip_with_costs(
-                            entry_price,
-                            fill.price,
-                            rule.buy_amount_sol,
-                            &CostModel::pumpfun_default(),
-                        );
-                        (
-                            Some(fill.price),
-                            Some(fill.tx_signature),
-                            Some(fill.block_time),
-                            fill.reason.to_string(),
-                            Some(secs),
-                            Some(pct),
-                            Some(sol),
-                        )
-                    }
-                    None => (None, None, None, "Open".to_string(), None, None, None),
-                };
-
-            let result = BacktestTokenResult {
-                mint_address: token.mint_address.clone(),
-                symbol: token.symbol.clone(),
-                target_price: Some(target_price),
-                target_token_amount: Some(target_token_amount),
-                target_time: Some(target_time),
-                target_tx: Some(target_tx),
-                entry_price,
-                // Filled from the enrichment batch fetch below (tokens_info ATH).
-                ath_price: None,
-                // Token count `buy_amount_sol / entry_price` (entry_price > 0 here —
-                // a 0-priced fill was dropped above). pnl_sol math is unchanged
-                // because `buy_amount_sol × pct == (buy_amount_sol/entry)×exit − buy_amount_sol`.
-                entry_token_amount: rule.buy_amount_sol / entry_price,
-                entry_tx,
-                entry_time,
-                exit_price,
-                exit_tx,
-                exit_time,
-                holding_secs,
-                pnl_percent,
-                pnl_sol,
-                exit_reason,
-                token: TokenEnrichment::default(),
-            };
-
-            // Admit by the trigger (target) time — when the position arms — so
-            // concurrency/total caps match the live admission order.
-            Some((target_time, exit_time, result))
-        });
-        progress.tick();
-        if let Some(r) = resolved {
-            candidates.push(r);
-        }
-    }
+    // Resolve every candidate's entry→exit **in parallel, off the async worker**.
+    // The per-token work is pure CPU over the in-memory `histories` map (no I/O),
+    // so `rayon` spreads it across cores while `spawn_blocking` keeps it from
+    // occupying an actix HTTP worker (was a sequential `for` on the async worker).
+    // One `tick()` per token — cancelled or not — keeps the bar reaching `total`;
+    // result order is irrelevant, `candidates` is sorted by entry time just below.
+    let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> = {
+        let tokens = tokens.clone();
+        let rule = rule.clone();
+        let progress = progress.clone();
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            tokens
+                .par_iter()
+                .filter_map(|token| {
+                    // Cooperative cancel: stop resolving but keep ticking so the bar
+                    // reaches `total` (the partial result is discarded below on cancel).
+                    let resolved = if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        None
+                    } else {
+                        resolve_token(token, &histories, &rule)
+                    };
+                    progress.tick();
+                    resolved
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| anyhow!("simulate resolve task panicked: {e}"))?
+    };
 
     // If a cancel landed mid-run, discard the partial result so the caller can
     // report a clean cancellation instead of an incomplete simulation.

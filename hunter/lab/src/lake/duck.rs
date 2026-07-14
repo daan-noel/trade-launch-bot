@@ -47,6 +47,14 @@ impl LakeSource {
         Self { root: root.into() }
     }
 
+    /// The corpus-cache identity for `sel` against this lake — **(selection, lake
+    /// version)**, the same value a completed [`load`](CorpusSource::load) stamps on
+    /// `Corpus::hash`. Lets a caller check the in-memory `sweep_corpus_cache` for a
+    /// reusable corpus *before* paying for a DuckDB load (grouped sweep + drill-in).
+    pub fn selection_hash(&self, sel: &Selection) -> String {
+        lake_hash(&self.root, sel)
+    }
+
     /// Open an in-memory DuckDB and confirm the lake has both datasets. A missing
     /// lake is a clear error (run the export first) rather than DuckDB's opaque
     /// "No files found".
@@ -68,6 +76,41 @@ impl LakeSource {
         let tokens_lit = sql_str(&tokens.to_string_lossy().replace('\\', "/"));
         let trades_lit = sql_str(&trades_glob(&self.root));
         Ok((conn, trades_lit, tokens_lit))
+    }
+
+    /// Synchronous DuckDB corpus assembly (Parquet scan + per-mint windowing +
+    /// fingerprint attach) — run on a blocking thread by [`CorpusSource::load`] so
+    /// the read never occupies an actix HTTP worker / the async runtime.
+    fn load_sync(&self, sel: &Selection) -> Result<Corpus> {
+        let (conn, trades_lit, tokens_lit) = self.connect()?;
+
+        // 1. Resolve candidate (mint, symbol) — explicit list or newest non-mayhem
+        //    tokens in the created window, capped — straight from the token dimension.
+        //    `resolve_candidates` also stages `sel_mints` (the ONE staging for the
+        //    run); the trade + fingerprint queries below join to it.
+        let candidates = resolve_candidates(&conn, &tokens_lit, sel)?;
+        if candidates.is_empty() {
+            return Ok(Corpus { tokens: Vec::new(), hash: empty_hash(), has_fingerprints: true });
+        }
+
+        // 2. Per-mint capped, ordered trade pull → per-token slim buffers. The SQL
+        //    returns tokens in `mint ASC`; reorder to the candidate order
+        //    (`created_at DESC`) so the corpus token order is deterministic
+        //    — within-group fold order then matches, down to f64 summation.
+        let mut tokens = load_corpus_tokens(&conn, &trades_lit, &candidates, sel)?;
+        let rank: HashMap<&str, usize> =
+            candidates.iter().enumerate().map(|(i, (m, _))| (m.as_str(), i)).collect();
+        tokens.sort_by_key(|t| rank.get(t.mint.as_str()).copied().unwrap_or(usize::MAX));
+
+        // 3. Attach grouping fingerprints from the token dimension (one query).
+        attach_fingerprints(&conn, &tokens_lit, &mut tokens)?;
+
+        tracing::info!(
+            tokens = tokens.len(),
+            trades = tokens.iter().map(|t| t.trades.len()).sum::<usize>(),
+            "corpus: loaded from Parquet lake (DuckDB)"
+        );
+        Ok(Corpus { tokens, hash: lake_hash(&self.root, sel), has_fingerprints: true })
     }
 }
 
@@ -94,43 +137,24 @@ fn partition_order(window: TradeWindow) -> &'static str {
 #[async_trait]
 impl CorpusSource for LakeSource {
     async fn load(&self, sel: &Selection) -> Result<Corpus> {
-        // DuckDB work is synchronous/CPU-bound; `lab` runs it from a batch context
-        // (not a hot server path), so executing inline is acceptable.
-        let (conn, trades_lit, tokens_lit) = self.connect()?;
-
-        // 1. Resolve candidate (mint, symbol) — explicit list or newest non-mayhem
-        //    tokens in the created window, capped — straight from the token dimension.
-        let candidates = resolve_candidates(&conn, &tokens_lit, sel)?;
-        if candidates.is_empty() {
-            return Ok(Corpus { tokens: Vec::new(), hash: empty_hash(), has_fingerprints: true });
-        }
-
-        // 2. Stage the selected mints in a temp table the trade + fp queries join to.
-        stage_mints(&conn, candidates.iter().map(|(m, _)| m.as_str()))?;
-
-        // 3. Per-mint capped, ordered trade pull → per-token slim buffers. The SQL
-        //    returns tokens in `mint ASC`; reorder to the candidate order
-        //    (`created_at DESC`) so the corpus token order is deterministic
-        //    — within-group fold order then matches, down to f64 summation.
-        let mut tokens = load_corpus_tokens(&conn, &trades_lit, &candidates, sel)?;
-        let rank: HashMap<&str, usize> =
-            candidates.iter().enumerate().map(|(i, (m, _))| (m.as_str(), i)).collect();
-        tokens.sort_by_key(|t| rank.get(t.mint.as_str()).copied().unwrap_or(usize::MAX));
-
-        // 4. Attach grouping fingerprints from the token dimension (one query).
-        attach_fingerprints(&conn, &tokens_lit, &mut tokens)?;
-
-        tracing::info!(
-            tokens = tokens.len(),
-            trades = tokens.iter().map(|t| t.trades.len()).sum::<usize>(),
-            "corpus: loaded from Parquet lake (DuckDB)"
-        );
-        Ok(Corpus { tokens, hash: lake_hash(&self.root, sel), has_fingerprints: true })
+        // The DuckDB read is synchronous + CPU-bound (columnar Parquet scan,
+        // per-mint `ROW_NUMBER` windowing, fingerprint join). Run it on a blocking
+        // thread so a sweep/simulate load can't pin an actix HTTP worker (or the
+        // async runtime) for its whole duration — the longest pre-fold phase, and
+        // on `lab` the box isn't the latency-critical path, so the thread hop is free.
+        let this = LakeSource::new(self.root.clone());
+        let sel = sel.clone();
+        tokio::task::spawn_blocking(move || this.load_sync(&sel))
+            .await
+            .context("DuckDB corpus load task panicked")?
     }
 }
 
-/// Stable-ish hash naming the lake corpus for cache/log identity (the lake itself is
-/// the durable store, so this need only disambiguate selections within a run).
+/// Hash naming the lake corpus for cache identity — keyed by **(selection, lake
+/// version)**. The `lake_version` term (partition set + token-dimension mtime/len)
+/// makes the hash change whenever the lake is re-exported, so a `sweep_corpus_cache`
+/// keyed on this can be reused across runs of the same selection yet is invalidated
+/// the instant a fresh `lake-export` lands — a stale corpus can never be served.
 fn lake_hash(root: &Path, sel: &Selection) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -152,22 +176,75 @@ fn lake_hash(root: &Path, sel: &Selection) -> String {
             m.hash(&mut h);
         }
     }
+    lake_version(root).hash(&mut h);
     format!("lake_{:016x}", h.finish())
+}
+
+/// Cheap fingerprint of the lake's on-disk state, folded into [`lake_hash`] so the
+/// corpus cache invalidates on re-export. Covers the two things a `lake-export`
+/// changes: the **set of day partitions** (a new day adds a `dt=…` dir) and the
+/// **token dimension file** (rewritten wholesale each export → its len+mtime move).
+/// A filesystem-metadata scan of a few dozen partition dirs — batch-path only (per
+/// load / per sweep-start), never a hot path. Errors fold to `0` (miss-safe: two
+/// unreadable states hash equal, so at worst a reload).
+fn lake_version(root: &Path) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::UNIX_EPOCH;
+    let mut h = DefaultHasher::new();
+
+    // Sorted partition-dir names (a new/removed day flips this) + each dir's mtime.
+    let mut parts: Vec<(String, u64)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(super::trades_dir(root)) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let mtime = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            parts.push((name, mtime));
+        }
+    }
+    parts.sort_unstable();
+    parts.hash(&mut h);
+
+    // Token dimension: len + mtime (re-exported in full every run).
+    if let Ok(m) = std::fs::metadata(tokens_file(root)) {
+        m.len().hash(&mut h);
+        m.modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .hash(&mut h);
+    }
+    h.finish()
 }
 
 fn empty_hash() -> String {
     "lake_empty".to_string()
 }
 
-/// Candidate `(mint, symbol)` pairs from the token dimension.
+/// Candidate `(mint, symbol)` pairs from the token dimension, in load order.
+///
+/// **Stages `sel_mints` with exactly the returned candidates — the single staging
+/// for the run** — so the trade + fingerprint queries can `IN (SELECT mint FROM
+/// sel_mints)` and [`LakeSource::load_sync`] never re-stages (the explicit path
+/// previously staged the raw `mints`, then `load` staged the capped candidates
+/// again — two rebuilds of the same temp table on every simulate read).
 fn resolve_candidates(
     conn: &Connection,
     tokens_lit: &str,
     sel: &Selection,
 ) -> Result<Vec<(String, String)>> {
     if let Some(mints) = &sel.mints {
-        // Explicit list: look up symbols, preserve the caller's order + cap.
-        stage_mints(conn, mints.iter().map(String::as_str))?;
+        // Explicit list: cap to the caller's order first, stage that exact set, then
+        // look up symbols against it (staging == candidates, so no re-stage in `load`).
+        let capped: Vec<&str> = mints.iter().map(String::as_str).take(sel.token_cap).collect();
+        stage_mints(conn, capped.iter().copied())?;
         let sql = format!(
             "SELECT mint, symbol FROM read_parquet({tokens_lit}) \
              WHERE mint IN (SELECT mint FROM sel_mints)"
@@ -177,10 +254,9 @@ fn resolve_candidates(
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<duckdb::Result<Vec<_>>>()?;
         let by_mint: HashMap<String, String> = rows.into_iter().collect();
-        Ok(mints
-            .iter()
-            .take(sel.token_cap)
-            .map(|m| (m.clone(), by_mint.get(m).cloned().unwrap_or_default()))
+        Ok(capped
+            .into_iter()
+            .map(|m| (m.to_string(), by_mint.get(m).cloned().unwrap_or_default()))
             .collect())
     } else {
         // Microseconds — `export_tokens` writes `created_at` as µs to match PG's
@@ -193,12 +269,14 @@ fn resolve_candidates(
              ORDER BY created_at DESC LIMIT ?"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
+        let rows: Vec<(String, String)> = stmt
             .query_map(
                 duckdb::params![after, before, sel.token_cap as i64],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )?
             .collect::<duckdb::Result<Vec<_>>>()?;
+        // Stage the selected mints for the trade + fingerprint queries to join to.
+        stage_mints(conn, rows.iter().map(|(m, _)| m.as_str()))?;
         Ok(rows)
     }
 }
