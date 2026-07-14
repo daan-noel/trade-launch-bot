@@ -18,6 +18,7 @@
 pub mod consumer;
 pub mod db_writer;
 pub mod map;
+pub mod metrics;
 pub mod pumpfun;
 pub mod watchdog;
 
@@ -26,3 +27,4 @@ mod roundtrip_test;
 
 pub use consumer::spawn_ingest;
 pub use ingest_laserstream::IngestHandle;
+pub use metrics::IngestMetrics;

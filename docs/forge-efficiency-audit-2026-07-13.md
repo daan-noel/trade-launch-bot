@@ -68,15 +68,18 @@ as `Option<Arc<dyn EventSink>>` into `spawn_bundle_confirm_watcher` / `spawn_wal
   3s→30s (`LaunchConsolePage.tsx`), Wallet Pool poll 5s→30s (`WalletPoolPage.tsx`); SSE is
   now the primary trigger, the poll a fallback.
 
-### Phase B — Ingest observability
+### Phase B — Ingest observability ✅ DONE 2026-07-14
 
 The heartbeat exists internally but nothing new is exposed, so a stall is invisible from
 outside until the watchdog force-exits.
 
-- [ ] **B1 — Surface ingest health on the status endpoint.** `IngestStatusResponse` is still
-  only `{configured, live}` (`forge/live/src/http.rs:170-183`). Add commit heartbeat age,
-  DB-writer buffer depth, and an event counter (hunter exposes `DbHeartbeat` + buffer/event
-  metrics). Shed counters are N/A now that nothing is shed.
+- [x] **B1 — Surface ingest health on the status endpoint.** New `IngestMetrics`
+  (`forge/live/src/ingest/metrics.rs`) bundles the shared `DbHeartbeat`, a per-flush
+  committed-event `AtomicU64` (bumped in `DbWriter::flush`), and a `WeakSender` peek at the
+  consumer→writer channel depth. `spawn_ingest` returns it; it's wired into `app_data` and
+  `GET /api/ingest` now carries a `health { commit_age_ms, buffer_depth, buffer_capacity,
+  events_total }` block (`http.rs` `IngestHealth`). Shed counters N/A (nothing is shed).
+  Frontend `IngestStatus.health?` type kept in sync. Additive — the toggle response omits it.
 
 ### Phase C — Task & RPC consolidation
 

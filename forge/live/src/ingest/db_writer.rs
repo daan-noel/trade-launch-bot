@@ -14,6 +14,7 @@
 //! backpressure is the (correct) overflow behavior for durable writes.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -67,6 +68,9 @@ pub struct DbWriter {
     /// Push bus: freshly-committed trades/tokens are broadcast to connected
     /// browsers over `/api/stream` (audit §1). No-op when no browser is connected.
     sse: SseHub,
+    /// Durable-rows-committed counter surfaced on `GET /api/ingest` (audit Phase B).
+    /// Bumped once per flush by the rows actually committed.
+    events: Arc<AtomicU64>,
 }
 
 impl DbWriter {
@@ -76,6 +80,7 @@ impl DbWriter {
         heartbeat: DbHeartbeat,
         trades_notify: Arc<Notify>,
         sse: SseHub,
+        events: Arc<AtomicU64>,
     ) -> Self {
         Self {
             pool,
@@ -84,6 +89,7 @@ impl DbWriter {
             heartbeat,
             trades_notify,
             sse,
+            events,
         }
     }
 
@@ -121,6 +127,9 @@ impl DbWriter {
         if batch.is_empty() {
             return;
         }
+        // Total ops in this flush — bumped onto the committed-event counter once the
+        // batch is written (an approximate but monotonic liveness signal).
+        let flushed = batch.len() as u64;
         let mut trades: Vec<IlTrade> = Vec::new();
         let mut tokens: Vec<IlTokenCreated> = Vec::new();
         let mut raws: Vec<RawTx> = Vec::new();
@@ -214,6 +223,7 @@ impl DbWriter {
         }
 
         self.heartbeat.stamp();
+        self.events.fetch_add(flushed, Ordering::Relaxed);
     }
 
     /// Intern a wallet address → `wallet_dict` id, memoized. On a cache hit no DB

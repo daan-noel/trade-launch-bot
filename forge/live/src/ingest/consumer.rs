@@ -22,6 +22,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use super::db_writer::{DbWriteOp, DbWriter, CHANNEL_CAPACITY};
+use super::metrics::IngestMetrics;
 use super::pumpfun::PumpFunAdapter;
 use super::watchdog::{spawn_watchdog, DbHeartbeat};
 use crate::sse::SseHub;
@@ -38,7 +39,7 @@ pub async fn spawn_ingest(
     api_key: String,
     trades_notify: Arc<Notify>,
     sse: SseHub,
-) -> anyhow::Result<(JoinHandle<()>, Arc<IngestHandle>)> {
+) -> anyhow::Result<(JoinHandle<()>, Arc<IngestHandle>, IngestMetrics)> {
     let adapter = PumpFunAdapter::resolve(&pool).await?;
     let (event_rx, handle) = Ingest::builder()
         .endpoint(endpoint)
@@ -52,7 +53,13 @@ pub async fn spawn_ingest(
     // Decoupled writer: hot recv loop → bounded channel → DbWriter task.
     let (tx, rx) = mpsc::channel::<DbWriteOp>(CHANNEL_CAPACITY);
     let heartbeat = DbHeartbeat::new();
-    tokio::spawn(DbWriter::new(pool, adapter, heartbeat.clone(), trades_notify, sse).run(rx));
+    // Health metrics (audit Phase B): commit-heartbeat age, queue depth (weak peek
+    // at the channel), and the committed-event counter the writer bumps per flush.
+    let metrics = IngestMetrics::new(heartbeat.clone(), tx.downgrade());
+    tokio::spawn(
+        DbWriter::new(pool, adapter, heartbeat.clone(), trades_notify, sse, metrics.events_counter())
+            .run(rx),
+    );
 
     // Watchdog on its own OS thread: force-exit if the writer stops committing
     // while the queue is backed up and the stream is live. `is_live` reads the
@@ -73,7 +80,7 @@ pub async fn spawn_ingest(
 
     info!("ingest transport spawned, paused (pump.fun/SOL adapter) — enable via PUT /api/ingest");
     let join = tokio::spawn(run_consumer(event_rx, tx));
-    Ok((join, handle))
+    Ok((join, handle, metrics))
 }
 
 /// Hot recv loop: forward durable work to the writer, tracking which txs produced

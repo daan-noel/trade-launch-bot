@@ -497,6 +497,21 @@ export interface LaunchStatus {
 export interface IngestStatus {
   configured: boolean;
   live: boolean;
+  /** Pipeline health (audit Phase B) — present on the status GET when ingest is
+   *  configured; absent on toggle responses / when unconfigured. */
+  health?: IngestHealth;
+}
+
+/** Live health of the ingest write pipeline (the signals the watchdog trips on). */
+export interface IngestHealth {
+  /** Millis since the DbWriter last committed a batch. */
+  commit_age_ms: number;
+  /** Ops queued in the consumer→writer channel (null once the channel is gone). */
+  buffer_depth: number | null;
+  /** The channel's fixed capacity. */
+  buffer_capacity: number;
+  /** Durable rows committed since boot. */
+  events_total: number;
 }
 
 export interface BootstrapPayload {

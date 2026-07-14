@@ -1,7 +1,7 @@
 //! Thin HTTP surface for the LIVE box: health + data-layer reads + launch trigger.
 
 use actix_web::{web, HttpRequest, HttpResponse};
-use crate::ingest::IngestHandle;
+use crate::ingest::{IngestHandle, IngestMetrics};
 use launcher::{
     arm_ladder, consolidate_all, create_metadata_template, dev_launch_required_lamports,
     execute_action, execute_bundle, execute_launch, export_wallet_base58, fund_for_launch,
@@ -172,13 +172,48 @@ struct IngestStatusResponse {
     /// `false` when the box booted without Helius creds — no handle exists to toggle.
     configured: bool,
     live: bool,
+    /// Pipeline health (audit Phase B) — absent when ingest isn't configured, or
+    /// omitted from a toggle response (only the status GET carries it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health: Option<IngestHealth>,
 }
 
-async fn ingest_status(handle: web::Data<Option<Arc<IngestHandle>>>) -> HttpResponse {
+/// Live health of the ingest write pipeline: the same signals the watchdog trips
+/// on, surfaced before it force-exits so a stall/lag is visible from outside.
+#[derive(Debug, Serialize)]
+struct IngestHealth {
+    /// Millis since the DbWriter last committed a batch (the watchdog's stall
+    /// clock). Small while a live stream is flowing; grows while paused/stalled.
+    commit_age_ms: u64,
+    /// Ops queued in the consumer→writer channel right now (`null` if the channel
+    /// is gone). A rising depth is the earliest sign the writer is falling behind.
+    buffer_depth: Option<usize>,
+    /// The channel's fixed capacity (the depth's denominator).
+    buffer_capacity: usize,
+    /// Durable rows committed since boot (trades + tokens + raw_txs).
+    events_total: u64,
+}
+
+impl IngestHealth {
+    fn from_metrics(m: &IngestMetrics) -> Self {
+        Self {
+            commit_age_ms: m.commit_idle_millis(),
+            buffer_depth: m.buffer_depth(),
+            buffer_capacity: m.buffer_capacity(),
+            events_total: m.events_total(),
+        }
+    }
+}
+
+async fn ingest_status(
+    handle: web::Data<Option<Arc<IngestHandle>>>,
+    metrics: web::Data<Option<IngestMetrics>>,
+) -> HttpResponse {
     let live = handle.as_ref().as_ref().map(|h| h.is_live()).unwrap_or(false);
     HttpResponse::Ok().json(IngestStatusResponse {
         configured: handle.is_some(),
         live,
+        health: metrics.as_ref().as_ref().map(IngestHealth::from_metrics),
     })
 }
 
@@ -201,6 +236,7 @@ async fn ingest_toggle(
             Ok(HttpResponse::Ok().json(IngestStatusResponse {
                 configured: true,
                 live: h.is_live(),
+                health: None,
             }))
         }
         None => Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
