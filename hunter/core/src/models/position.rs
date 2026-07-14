@@ -99,6 +99,11 @@ pub enum PositionStatus {
     /// its persisted `submitted_buy_signatures`.
     BuySubmitted,
     ExitPending,
+    /// Terminal (for automation): the sell may have landed — or may still land — but
+    /// the feed never confirmed the clear and the tx did not revert, so it is never
+    /// auto-re-sold (double-sell risk). Alarmed for manual review (C1). Distinct from
+    /// `ExitFailed`, which asserts nothing sold.
+    ExitUnconfirmed,
     End,
     /// Terminal: the exit attempt completed and failed (real: sell retries
     /// exhausted without clearing the balance; paper: no confirming trade
@@ -113,6 +118,7 @@ impl std::fmt::Display for PositionStatus {
             Self::Arming => write!(f, "Arming"),
             Self::BuySubmitted => write!(f, "BuySubmitted"),
             Self::ExitPending => write!(f, "ExitPending"),
+            Self::ExitUnconfirmed => write!(f, "ExitUnconfirmed"),
             Self::End => write!(f, "End"),
             Self::ExitFailed => write!(f, "ExitFailed"),
         }
@@ -128,6 +134,7 @@ impl std::str::FromStr for PositionStatus {
             "Arming" => Ok(Self::Arming),
             "BuySubmitted" => Ok(Self::BuySubmitted),
             "ExitPending" => Ok(Self::ExitPending),
+            "ExitUnconfirmed" => Ok(Self::ExitUnconfirmed),
             "End" => Ok(Self::End),
             "ExitFailed" => Ok(Self::ExitFailed),
             _ => Err(format!("Unknown status: {}", s)),
@@ -277,6 +284,7 @@ impl Position {
                 .to_string(),
             ),
             PositionStatus::ExitFailed => Some("ExitFailed".to_string()),
+            PositionStatus::ExitUnconfirmed => Some("ExitUnconfirmed".to_string()),
             PositionStatus::Holding
             | PositionStatus::Arming
             | PositionStatus::BuySubmitted

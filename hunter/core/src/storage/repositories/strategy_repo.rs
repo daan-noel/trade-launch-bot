@@ -1713,6 +1713,37 @@ impl StrategyRepo {
         Ok(acct)
     }
 
+    /// True if any OTHER position (excluding `exclude_id`) on this `(wallet, mint)` in
+    /// `mode` is still open — `Arming`/`BuySubmitted`/`Holding`/`ExitPending` — i.e.
+    /// may still hold tokens in the SHARED token account (two positions on one mint
+    /// intentionally reuse ONE account, see [`find_reusable_token_account`]). Gates the
+    /// rent-reclaim `close_token_account` so one position's exit never closes the
+    /// account out from under a sibling's bag (M1). Index-served by
+    /// `idx_strategy_positions_mint_address_status`. Restart-safe (reads the DB SSOT,
+    /// not an in-memory refcount).
+    pub async fn has_other_open_position_on_mint(
+        &self,
+        wallet: &str,
+        mint: &str,
+        mode: &str,
+        exclude_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM strategy_positions \
+                 WHERE wallet = $1 AND mint_address = $2 AND mode = $3 AND id <> $4 \
+                   AND status IN ('Arming','BuySubmitted','Holding','ExitPending') \
+             )",
+        )
+        .bind(wallet)
+        .bind(mint)
+        .bind(mode)
+        .bind(exclude_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     /// Terminally fail positions stuck in `ExitPending` past `stale_after` (orphaned
     /// mid-exit). Re-arming a half-done real exit risks a double-sell, so fail it.
     /// Returns rows affected.

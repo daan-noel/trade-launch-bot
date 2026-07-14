@@ -453,15 +453,9 @@ impl TokenState {
     }
 
     fn update_market_cap(&mut self, price: f64) {
-        // FDV in SOL = curve spot price (GMGN-style) × total supply, using the token's
-        // actual `initial_supply_token` so this matches the SQL/enrichment canonical
-        // (`current_price × initial_supply_token`); the mayhem-aware constant supply is
-        // only a fallback when the per-token value is unknown.
-        self.market_cap = Some(market_cap_sol(
-            price,
-            self.token.initial_supply_token,
-            self.token.is_mayhem_mode,
-        ));
+        // FDV in SOL = curve spot price (GMGN-style) × total supply (mayhem-aware),
+        // matching the SQL/enrichment canonical (`current_price × total_supply_token`).
+        self.market_cap = Some(market_cap_sol(price, self.token.is_mayhem_mode));
     }
 
     /// Count unique wallets across the retained trade history. For a token under

@@ -170,7 +170,8 @@ pub struct StrategyPosition {
     pub exit_tx_signatures: Value,
     /// Raw submitted buy signatures (`TEXT[]`).
     pub submitted_buy_signatures: Vec<String>,
-    /// `Arming` | `BuySubmitted` | `Holding` | `ExitPending` | `End` | `ExitFailed`.
+    /// `Arming` | `BuySubmitted` | `Holding` | `ExitPending` | `ExitUnconfirmed` |
+    /// `End` | `ExitFailed`.
     pub status: String,
     pub exit_reason: Option<String>,
     pub extra: Value,
@@ -325,6 +326,19 @@ impl StrategyPosition {
         self.exit_price = Some(exit_price);
         self.exit_time = Some(exit_time);
         self.status = "ExitFailed".to_string();
+        self.updated_at = Utc::now();
+    }
+
+    /// Terminally (for automation) mark the exit **unconfirmed** (C1): the sell may
+    /// have landed — or may still land — but the trade feed never confirmed the clear
+    /// and the tx did **not** revert, so re-selling would risk a double-sell. The
+    /// position is NEVER auto-re-evaluated or re-sold; it's alarmed for manual review.
+    /// Distinct from `ExitFailed`, which asserts nothing sold (safe to book the loss).
+    /// Records the hypothetical exit price/time for context.
+    pub fn mark_exit_unconfirmed(&mut self, exit_price: f64, exit_time: DateTime<Utc>) {
+        self.exit_price = Some(exit_price);
+        self.exit_time = Some(exit_time);
+        self.status = "ExitUnconfirmed".to_string();
         self.updated_at = Utc::now();
     }
 

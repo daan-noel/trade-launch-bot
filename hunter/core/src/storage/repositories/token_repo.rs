@@ -5,7 +5,7 @@ use sqlx::{types::Json, Postgres, PgPool};
 use uuid::Uuid;
 
 use crate::api::handlers::tokens::SqlArg;
-use crate::config::constants::{lamports_to_sol, sol_to_lamports};
+use crate::config::constants::{lamports_to_sol, sol_to_lamports, total_supply_for};
 use crate::models::token::Token;
 use crate::storage::token_enrichment::MARKET_CAP_SQL;
 
@@ -247,7 +247,7 @@ impl TokenRepo {
         let mut qb = sqlx::QueryBuilder::new(
             "INSERT INTO tokens \
              (mint_address, creator_wallet, name, symbol, token_program_id, \
-              bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, \
+              bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, \
               cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels, \
               creation_tx_signature, creation_slot, created_at) ",
         );
@@ -259,6 +259,9 @@ impl TokenRepo {
                 .push_bind(t.token_program_id.as_ref())
                 .push_bind(&t.bonding_curve_address)
                 .push_bind(t.initial_supply_token.map(|v| v as i64))
+                // H1: real market-cap basis — fixed pump.fun total supply (mayhem-aware),
+                // from the `total_supply_for` SSOT. Distinct from `initial_supply_token`.
+                .push_bind(total_supply_for(t.is_mayhem_mode) as i64)
                 .push_bind(t.initial_buy_sol.map(sol_to_lamports))
                 .push_bind(t.initial_buy_instruction.as_ref().map(Json))
                 .push_bind(t.cu_limit.map(|v| v as i64))
@@ -281,9 +284,9 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
-                    bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
+                    bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
                     creation_tx_signature, creation_slot, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             ON CONFLICT (mint_address) DO NOTHING
             "#,
         )
@@ -294,6 +297,8 @@ impl TokenRepo {
         .bind(token.token_program_id.as_ref())
         .bind(&token.bonding_curve_address)
         .bind(token.initial_supply_token.map(|v| v as i64))
+        // H1: fixed pump.fun total supply (mayhem-aware) from the `total_supply_for` SSOT.
+        .bind(total_supply_for(token.is_mayhem_mode) as i64)
         .bind(token.initial_buy_sol.map(sol_to_lamports))
         .bind(token.initial_buy_instruction.as_ref().map(|v| Json(v)))
         .bind(token.cu_limit.map(|v| v as i64))
@@ -316,9 +321,9 @@ impl TokenRepo {
             r#"
             INSERT INTO tokens
                 (mint_address, creator_wallet, name, symbol, token_program_id,
-                    bonding_curve_address, initial_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
+                    bonding_curve_address, initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, cu_limit, cu_price, is_mayhem_mode, is_cashback_enabled, ix_labels,
                     creation_tx_signature, creation_slot, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             ON CONFLICT (mint_address) DO UPDATE SET
                 creator_wallet = EXCLUDED.creator_wallet,
                 name = EXCLUDED.name,
@@ -326,6 +331,7 @@ impl TokenRepo {
                 token_program_id = EXCLUDED.token_program_id,
                 bonding_curve_address = EXCLUDED.bonding_curve_address,
                 initial_supply_token = EXCLUDED.initial_supply_token,
+                total_supply_token = EXCLUDED.total_supply_token,
                 initial_buy_lamports = EXCLUDED.initial_buy_lamports,
                 initial_buy_instruction = EXCLUDED.initial_buy_instruction,
                 cu_limit = EXCLUDED.cu_limit,
@@ -345,6 +351,8 @@ impl TokenRepo {
         .bind(token.token_program_id.as_ref())
         .bind(&token.bonding_curve_address)
         .bind(token.initial_supply_token.map(|v| v as i64))
+        // H1: fixed pump.fun total supply (mayhem-aware) from the `total_supply_for` SSOT.
+        .bind(total_supply_for(token.is_mayhem_mode) as i64)
         .bind(token.initial_buy_sol.map(sol_to_lamports))
         .bind(token.initial_buy_instruction.as_ref().map(|v| Json(v)))
         .bind(token.cu_limit.map(|v| v as i64))
@@ -669,9 +677,9 @@ mod parity_tests {
     ) {
         sqlx::query(
             "INSERT INTO tokens (mint_address, creator_wallet, name, symbol, \
-                initial_supply_token, initial_buy_lamports, initial_buy_instruction, \
+                initial_supply_token, total_supply_token, initial_buy_lamports, initial_buy_instruction, \
                 is_mayhem_mode, is_cashback_enabled, ix_labels, creation_tx_signature, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,false,false,'[\"buy\"]'::jsonb,$8,$9) \
+             VALUES ($1,$2,$3,$4,$5,1000000000000000,$6,$7,false,false,'[\"buy\"]'::jsonb,$8,$9) \
              ON CONFLICT (mint_address) DO NOTHING",
         )
         .bind(mint)

@@ -46,18 +46,15 @@ pub fn total_supply_for(is_mayhem_mode: bool) -> f64 {
     }
 }
 
-/// Market cap (FDV) in whole SOL = spot price × total token supply. Uses the token's
-/// actual on-chain `initial_supply_token` when known — the same quantity the
-/// SQL/enrichment canonical (`MARKET_CAP_SQL` = `current_price × initial_supply_token`)
-/// uses — so the live in-RAM market cap and the DB-computed value agree instead of
-/// silently diverging. Falls back to the mayhem-aware constant supply only when the
-/// per-token value is unavailable, so a live cell is never blank (the SQL side yields
-/// NULL there). THE single in-RAM market-cap definition (`token_cache` + `seed`).
-pub fn market_cap_sol(price: f64, initial_supply_token: Option<u64>, is_mayhem_mode: bool) -> f64 {
-    let supply = initial_supply_token
-        .map(|s| s as f64)
-        .unwrap_or_else(|| total_supply_for(is_mayhem_mode));
-    supply * price
+/// Market cap (FDV) in whole SOL = spot price × **total token supply** (H1). Uses the
+/// mayhem-aware constant supply ([`total_supply_for`]) — the real circulating basis —
+/// NOT `initial_supply_token`, which is the dev's first-buy amount, not supply. Matches
+/// the SQL/enrichment canonical (`MARKET_CAP_SQL` = `current_price × total_supply_token`,
+/// where the stored column is populated from this same [`total_supply_for`]) so the
+/// live in-RAM market cap and the DB-computed value agree. THE single in-RAM market-cap
+/// definition (`token_cache` + `seed`).
+pub fn market_cap_sol(price: f64, is_mayhem_mode: bool) -> f64 {
+    total_supply_for(is_mayhem_mode) * price
 }
 
 /// SOL (human `f64`) → lamports (exact `i64`), **rounded**. THE `trading_core`
@@ -82,12 +79,11 @@ mod unit_tests {
     use super::*;
 
     #[test]
-    fn market_cap_uses_per_token_supply_then_falls_back() {
-        // Per-token supply present → price × initial_supply_token (matches MARKET_CAP_SQL).
-        assert_eq!(market_cap_sol(2.0, Some(1_000), false), 2_000.0);
-        // Absent → mayhem-aware constant supply fallback (never blank).
-        assert_eq!(market_cap_sol(1.0, None, false), TOKEN_TOTAL_SUPPLY);
-        assert_eq!(market_cap_sol(1.0, None, true), TOKEN_TOTAL_SUPPLY * 2.0);
+    fn market_cap_uses_total_supply() {
+        // FDV = price × total supply (mayhem-aware); NOT the dev's first-buy (H1).
+        assert_eq!(market_cap_sol(1.0, false), TOKEN_TOTAL_SUPPLY);
+        assert_eq!(market_cap_sol(1.0, true), TOKEN_TOTAL_SUPPLY * 2.0);
+        assert_eq!(market_cap_sol(2.0, false), TOKEN_TOTAL_SUPPLY * 2.0);
     }
 
     #[test]

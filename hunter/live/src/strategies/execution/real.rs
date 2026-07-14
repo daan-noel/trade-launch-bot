@@ -113,6 +113,41 @@ pub(crate) fn snipe_reserves_from_cache(
     Some((vt as u128, vq_lamports as u128))
 }
 
+/// Reclaim the token account's rent by closing it — but ONLY when no OTHER open
+/// position shares this `(wallet, mint)` (M1). Two positions on one mint intentionally
+/// land in ONE shared token account (`find_reusable_token_account`), so closing it on
+/// the first position's exit would orphan the second's still-held bag. Off the hot
+/// path (spawned by callers). On a query error we DEFER (don't close) — a shared
+/// account might exist; the last position out reclaims the rent.
+async fn reclaim_token_account_if_last(
+    trader: &Arc<PumpFunTrader>,
+    repo: &StrategyRepo,
+    wallet: &str,
+    mint: &str,
+    mode: &str,
+    exclude_position: Uuid,
+) {
+    match repo
+        .has_other_open_position_on_mint(wallet, mint, mode, exclude_position)
+        .await
+    {
+        Ok(true) => {
+            debug!(mint = %mint,
+                "rent-reclaim close skipped: another open position still holds the shared token account");
+            return;
+        }
+        Ok(false) => {}
+        Err(err) => {
+            warn!(mint = %mint,
+                "rent-reclaim other-open check failed; deferring close (a shared account may exist): {err}");
+            return;
+        }
+    }
+    if let Err(err) = trader.close_token_account(mint, None).await {
+        debug!(mint = %mint, "rent-reclaim close skipped: {err}");
+    }
+}
+
 /// Close a position whose token balance was already externally cleared (manual sell),
 /// without sending any new on-chain sell. Records the close with `exit_price`/
 /// `exit_time`; `exit_sol` is approximated as `exit_price × entry_token_amount`
@@ -132,14 +167,17 @@ pub(crate) async fn close_externally_cleared_position(
     trader.release_sol_for_position(&position.id.to_string());
     let entry_amount = position.entry_token_amount.unwrap_or(0);
     let mint = position.mint_address.clone();
-    // Rent reclaim: the token account is already empty — fire-and-forget close.
+    // Rent reclaim: the token account is (for this position) empty — fire-and-forget
+    // close, but only if no sibling position still shares the account (M1).
     {
         let trader = trader.clone();
+        let repo = repo.clone();
+        let wallet = position.wallet.clone();
         let mint = mint.clone();
+        let mode = position.mode.clone();
+        let id = position.id;
         tokio::spawn(async move {
-            if let Err(err) = trader.close_token_account(&mint, None).await {
-                debug!(mint = %mint, "rent-reclaim close skipped: {err}");
-            }
+            reclaim_token_account_if_last(&trader, &repo, &wallet, &mint, &mode, id).await;
         });
     }
     let prev = position.clone();
@@ -407,20 +445,34 @@ pub(crate) async fn buy_until_filled_or_give_up<E, F>(
             let slot = signed_slot.clone();
             Box::new(move |sig: String| {
                 Box::pin(async move {
+                    // In-memory journal FIRST (synchronous): captures the signature for
+                    // THIS process's recovery before any await, so the write-ahead
+                    // guarantee doesn't depend on the DB round-trip below completing.
                     *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(sig.clone());
                     // Write-ahead durable marker: record this signature + flip the row
                     // to `BuySubmitted` BEFORE the tx is submitted, so a crash in the
                     // send→record gap can recover the entry (`redrive_orphaned_buy_
-                    // submitted`). Best-effort: the sig is also captured in `signed_slot`
-                    // for THIS process, so a failed persist only loses the cross-restart
-                    // marker.
-                    match repo.mark_buy_submitted(position_id, &sig).await {
-                        Ok(Some(updated)) => {
+                    // submitted`). Bounded (M2): this hook is awaited inside the caller's
+                    // durable-nonce slot hold (pump-trader's `build_trade_tx` … send), so
+                    // a stalled PG must never serialize buys behind a slow persist — cap
+                    // it. On timeout the in-memory journal above still covers this-process
+                    // recovery; only the cross-restart marker is (rarely) lost.
+                    const MARK_SUBMITTED_TIMEOUT: Duration = Duration::from_millis(250);
+                    match tokio::time::timeout(
+                        MARK_SUBMITTED_TIMEOUT,
+                        repo.mark_buy_submitted(position_id, &sig),
+                    )
+                    .await
+                    {
+                        Ok(Ok(Some(updated))) => {
                             runtime.sync_position(None, &updated);
                         }
-                        Ok(None) => {} // already advanced to Holding concurrently
-                        Err(err) => warn!(mint = %mint, sig = %sig,
+                        Ok(Ok(None)) => {} // already advanced to Holding concurrently
+                        Ok(Err(err)) => warn!(mint = %mint, sig = %sig,
                             "failed to persist BuySubmitted marker (continuing): {err}"),
+                        Err(_) => warn!(mint = %mint, sig = %sig,
+                            "BuySubmitted persist exceeded {MARK_SUBMITTED_TIMEOUT:?}; proceeding \
+                             (in-memory journal holds the write-ahead guarantee for this process)"),
                     }
                 })
             })
@@ -497,7 +549,7 @@ pub(crate) async fn buy_until_filled_or_give_up<E, F>(
                 // ACTUALLY changed — an unchanged creator (or a failed refresh) is a
                 // guaranteed-futile resend, so give up rather than re-pay fees. Gated on
                 // a CONFIRMED revert, so this can't double-buy; shares the SSOT decision
-                // with the sell path (`classify_sell_revert`) and pump-trader's own
+                // with the sell path (`classify_sell_confirm`) and pump-trader's own
                 // in-call heal.
                 match trader.refresh_creator(&mint).await {
                     Ok(fresh) if fresh != creator => {
@@ -677,6 +729,10 @@ pub(crate) async fn sell_and_close_position(
     // Position is terminal from this point — release the SOL commitment. Idempotent.
     trader.release_sol_for_position(&position.id.to_string());
     let mint = position.mint_address.clone();
+    // M1: serialize real exits on the same (wallet, mint). Two positions sharing ONE
+    // token account must not race the shared balance (or the rent-reclaim close); held
+    // for the whole sell+close. Different mints take different mutexes (no contention).
+    let _mint_exit_guard = runtime.mint_exit_lock(&position.wallet, &mint).lock_owned().await;
     let target_tokens = position.entry_token_amount.unwrap_or(0);
     let amount = target_tokens;
     let base_token_program = position
@@ -780,17 +836,47 @@ pub(crate) async fn sell_and_close_position(
             }
             return;
         }
+        SellOutcome::Unconfirmed { sigs } => {
+            // C1: the sell may have landed — or may still land — but the feed never
+            // confirmed the clear and the tx did NOT revert, so re-selling would risk a
+            // double-sell. Leave the position `ExitUnconfirmed` (NOT `ExitFailed`,
+            // which asserts nothing sold) and ALARM for manual review. NEVER fire a
+            // second sell, and NEVER close the (possibly still-funded) token account.
+            warn!(
+                position_id = %position.id, mint = %mint, exit_reason = %exit_reason,
+                alarm = true,
+                "SELL UNCONFIRMED — bag may or may not be sold; NOT re-selling and NOT \
+                 closing the token account. Marking ExitUnconfirmed for manual review"
+            );
+            let prev = position.clone();
+            position.mark_exit_unconfirmed(trigger_price, trigger_time);
+            position.exit_reason = Some(exit_reason.clone());
+            // Attribute whatever sell legs we did submit (for the manual review trail).
+            position.exit_tx_signatures = json!(sigs);
+            if let Err(err) = repo.update_position(&position).await {
+                warn!(
+                    position_id = %position.id, mint = %mint,
+                    "Failed to mark position {} ExitUnconfirmed: {err}", position.id
+                );
+            } else {
+                runtime.sync_position(Some(&prev), &position);
+            }
+            return;
+        }
     };
 
     // Rent reclaim (off the hot path): balance confirmed cleared, so close the now-
-    // empty token account to recover its ~0.002 SOL rent. Fire-and-forget.
+    // empty token account to recover its ~0.002 SOL rent — but only if no sibling
+    // position still shares it (M1). Fire-and-forget.
     {
         let trader = trader.clone();
+        let repo = repo.clone();
+        let wallet = position.wallet.clone();
         let mint = mint.clone();
+        let mode = position.mode.clone();
+        let id = position.id;
         tokio::spawn(async move {
-            if let Err(err) = trader.close_token_account(&mint, None).await {
-                debug!(mint = %mint, "rent-reclaim close skipped: {err}");
-            }
+            reclaim_token_account_if_last(&trader, &repo, &wallet, &mint, &mode, id).await;
         });
     }
 
@@ -834,30 +920,56 @@ pub(crate) async fn sell_and_close_position(
 enum SellOutcome {
     Cleared { sigs: Vec<String>, legs: Option<SigLegs> },
     Failed { sigs: Vec<String> },
+    /// The sell was sent but never confirmed the clear, and the sent tx did NOT revert
+    /// (Succeeded/Pending/status-unknown) — so it may have sold or may still land, and
+    /// re-sending would risk a double-sell (C1). The caller marks the position
+    /// `ExitUnconfirmed` and alarms; no second sell is ever fired. Carries the sell
+    /// signatures submitted so far for the manual-review trail.
+    Unconfirmed { sigs: Vec<String> },
 }
 
-/// After a feed-confirm sell's poll window elapses without clearing, one
-/// `signature_state_detailed` check decides whether re-sending is worth the fee,
-/// using the on-chain **program error code**. The route↔decision mapping (slippage
-/// retries, 2006 creator/coin_creator refresh, 6024 cashback refresh, 6005
-/// reroute) is the SSOT `pump_trader::classify_swap_revert` — shared with this
-/// crate's own trader-internal `confirm=true` heal (see `pump-trader`'s
-/// `sell.rs`/`buy.rs`/`amm.rs`) so the sync-error and feed-classify triggers apply
-/// the identical rule. `used_migrated` is the venue the sent tx used (true = AMM);
-/// `now_migrated` is the venue the next attempt would use, so a mid-exit migration
-/// always retries re-routed regardless of the code (a route change is this loop's
-/// own concern, not part of the shared per-code decision). Pure.
-fn classify_sell_revert<E>(
+/// Action after a feed-confirm sell's poll window elapses without clearing, decided
+/// from the sent tx's on-chain status. The double-sell safety rule — *re-send only on
+/// a confirmed on-chain revert* — is the exact sell-side twin of the buy path's
+/// [`classify_silent_send`] (C1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SellConfirmAction {
+    /// The sent tx **confirmed a revert** (so it sold nothing) — or the venue changed
+    /// mid-exit (a route change means the sent route is moot), which only fires on a
+    /// reverted status. Safe to act on the SSOT swap decision it carries (per-code
+    /// retry / refresh / re-route / stop).
+    Reclassify(SwapRetryDecision),
+    /// The sent tx came back **Succeeded / Pending / status-unknown** — it may have
+    /// sold or may still land, so re-sending would risk a double-sell. NEVER re-send;
+    /// the caller extends the feed poll and, failing a clear, marks `ExitUnconfirmed`.
+    WaitConfirm,
+}
+
+/// Map a sent sell's `signature_state_detailed` result to the post-poll action, using
+/// the on-chain **program error code** for the revert sub-classification. Only a
+/// **confirmed revert** (bought/sold nothing) — same route — is fed to the SSOT
+/// `pump_trader::classify_swap_revert` (slippage retries, 2006 creator/coin_creator
+/// refresh, 6024 cashback, 6005 reroute), shared with this crate's own trader-internal
+/// `confirm=true` heal so the sync-error and feed-classify triggers apply the identical
+/// rule. A **route change** mid-exit (`used_migrated != now_migrated`) only re-routes
+/// on a reverted status — a Succeeded/Pending/unknown tx is never blindly re-sold just
+/// because the token migrated. Every non-revert status → `WaitConfirm` (the C1 fix:
+/// the old `_ => Retry` re-sent on Succeeded/Pending/RPC-error → double-sell). Pure;
+/// generic over the error type so tests need no `anyhow` value.
+fn classify_sell_confirm<E>(
     state: &Result<SigStatus, E>,
     used_migrated: bool,
     now_migrated: bool,
-) -> SwapRetryDecision {
+) -> SellConfirmAction {
     match state {
         Ok(SigStatus::Reverted { custom }) if used_migrated == now_migrated => {
             let route = if used_migrated { SwapRoute::Amm } else { SwapRoute::Curve };
-            classify_swap_revert(*custom, route, SwapDirection::Sell)
+            SellConfirmAction::Reclassify(classify_swap_revert(*custom, route, SwapDirection::Sell))
         }
-        _ => SwapRetryDecision::Retry,
+        // Reverted (sold nothing) but the venue changed mid-exit → re-route the retry.
+        Ok(SigStatus::Reverted { .. }) => SellConfirmAction::Reclassify(SwapRetryDecision::Retry),
+        // Landed / pending / unknown → the sell may exist; never re-send (C1).
+        Ok(SigStatus::Succeeded) | Ok(SigStatus::Pending) | Err(_) => SellConfirmAction::WaitConfirm,
     }
 }
 
@@ -1028,7 +1140,86 @@ async fn sell_until_balance_cleared(
                     let now_migrated =
                         cache.get(&mint).map(|e| e.is_migrated).unwrap_or(is_migrated);
                     let state = trader.signature_state_detailed(&sig).await;
-                    match classify_sell_revert(&state, is_migrated, now_migrated) {
+                    let decision = match classify_sell_confirm(&state, is_migrated, now_migrated) {
+                        SellConfirmAction::Reclassify(d) => d,
+                        SellConfirmAction::WaitConfirm => {
+                            // C1: the sent tx Succeeded / is Pending / status unknown — it
+                            // may have sold or may still land, so we NEVER re-send (a
+                            // second sell would double-sell). Extend the feed poll on a
+                            // longer deadline; if the bag still never clears, give up as
+                            // `ExitUnconfirmed` (alarmed for manual review) rather than
+                            // firing another sell.
+                            warn!(mint = %mint, attempt, sig = %sig,
+                                "sell status inconclusive (landed/pending/unknown); NOT \
+                                 re-sending — extending feed poll before giving up");
+                            let ext_interval = Duration::from_millis(super::SELL_POLL_INTERVAL_MS);
+                            let ext_min_gap =
+                                Duration::from_millis(super::SELL_BALANCE_QUERY_MIN_INTERVAL_MS);
+                            let ext_deadline = Instant::now()
+                                + ext_interval * super::SELL_UNCONFIRMED_POLL_MAX_ATTEMPTS as u32;
+                            let mut ext_last_seq: Option<u64> = None;
+                            let mut ext_last_query_at: Option<Instant> = None;
+                            loop {
+                                let notified = guard.notified();
+                                tokio::pin!(notified);
+                                notified.as_mut().enable();
+
+                                let now = Instant::now();
+                                let at_deadline = now >= ext_deadline;
+                                let seq = guard.seq();
+                                let seq_advanced = ext_last_seq != Some(seq);
+                                let rate_ok = at_deadline
+                                    || ext_last_query_at
+                                        .map_or(true, |t| now.duration_since(t) >= ext_min_gap);
+                                if seq_advanced && rate_ok {
+                                    ext_last_query_at = Some(now);
+                                    // Same per-signature confirm as the main loop: sum only
+                                    // THIS position's own sell legs against its target.
+                                    match trade_repo
+                                        .sum_legs_by_signatures(
+                                            &wallet,
+                                            &mint,
+                                            &sell_sigs,
+                                            trading_core::models::trade::TradeType::Sell,
+                                        )
+                                        .await
+                                    {
+                                        Ok(legs) => {
+                                            let sold =
+                                                legs.as_ref().map(|l| l.token_amount).unwrap_or(0);
+                                            let remaining = target_tokens.saturating_sub(sold);
+                                            if (remaining as i64) <= super::PARTIAL_FILL_THRESHOLD {
+                                                info!(mint = %mint,
+                                                    "sell cleared during the extended (unconfirmed) poll");
+                                                return SellOutcome::Cleared {
+                                                    sigs: sell_sigs,
+                                                    legs,
+                                                };
+                                            }
+                                            ext_last_seq = Some(seq);
+                                        }
+                                        Err(err) => warn!(
+                                            "Failed to sum sell signature legs (extended poll): {err}"),
+                                    }
+                                }
+                                if at_deadline {
+                                    break;
+                                }
+                                let now = Instant::now();
+                                let fallback = ext_interval.min(ext_deadline - now);
+                                tokio::select! {
+                                    _ = &mut notified => {}
+                                    _ = sleep(fallback) => {}
+                                }
+                            }
+                            warn!(mint = %mint, sig = %sig, alarm = true,
+                                "SELL UNCONFIRMED — feed never confirmed the clear within the \
+                                 extended window and the tx did not revert; giving up WITHOUT a \
+                                 second sell (ExitUnconfirmed)");
+                            return SellOutcome::Unconfirmed { sigs: sell_sigs };
+                        }
+                    };
+                    match decision {
                         SwapRetryDecision::StopFeeBurn => {
                             let raw_code = match &state {
                                 Ok(SigStatus::Reverted { custom }) => *custom,
@@ -1287,12 +1478,20 @@ mod tests {
     use pump_trader::{AMM_EXCEEDED_SLIPPAGE, ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE,
         CURVE_MISSING_USER_VOLUME_ACCUMULATOR, CURVE_TOO_LITTLE_SOL_RECEIVED};
 
+    /// A confirmed revert on the same route is fed to the SSOT per-code decision.
+    fn reclass(
+        state: Result<SigStatus, &'static str>,
+        used_migrated: bool,
+        now_migrated: bool,
+    ) -> SellConfirmAction {
+        classify_sell_confirm(&state, used_migrated, now_migrated)
+    }
+
     #[test]
     fn structural_revert_same_route_stops_fee_burn() {
-        let structural = reverted(Some(6022));
         assert_eq!(
-            classify_sell_revert(&structural, false, false),
-            SwapRetryDecision::StopFeeBurn
+            reclass(reverted(Some(6022)), false, false),
+            SellConfirmAction::Reclassify(SwapRetryDecision::StopFeeBurn)
         );
     }
 
@@ -1300,21 +1499,21 @@ mod tests {
     fn slippage_revert_same_route_retries() {
         // Curve slippage floor on a curve route → retryable.
         assert_eq!(
-            classify_sell_revert(&reverted(Some(CURVE_TOO_LITTLE_SOL_RECEIVED)), false, false),
-            SwapRetryDecision::Retry
+            reclass(reverted(Some(CURVE_TOO_LITTLE_SOL_RECEIVED)), false, false),
+            SellConfirmAction::Reclassify(SwapRetryDecision::Retry)
         );
         // AMM slippage floor on an AMM route → retryable.
         assert_eq!(
-            classify_sell_revert(&reverted(Some(AMM_EXCEEDED_SLIPPAGE)), true, true),
-            SwapRetryDecision::Retry
+            reclass(reverted(Some(AMM_EXCEEDED_SLIPPAGE)), true, true),
+            SellConfirmAction::Reclassify(SwapRetryDecision::Retry)
         );
     }
 
     #[test]
     fn curve_constraint_seeds_refreshes_creator() {
         assert_eq!(
-            classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), false, false),
-            SwapRetryDecision::RefreshCreator
+            reclass(reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), false, false),
+            SellConfirmAction::Reclassify(SwapRetryDecision::RefreshCreator)
         );
     }
 
@@ -1323,28 +1522,24 @@ mod tests {
         // The same 2006 code on an AMM route means the pool's coin_creator rotated
         // — refresh the pool, not the curve creator.
         assert_eq!(
-            classify_sell_revert(&reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), true, true),
-            SwapRetryDecision::RefreshCoinCreator
+            reclass(reverted(Some(ANCHOR_CONSTRAINT_SEEDS)), true, true),
+            SellConfirmAction::Reclassify(SwapRetryDecision::RefreshCoinCreator)
         );
     }
 
     #[test]
     fn missing_uva_refreshes_cashback() {
         assert_eq!(
-            classify_sell_revert(
-                &reverted(Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR)),
-                false,
-                false
-            ),
-            SwapRetryDecision::RefreshCashback
+            reclass(reverted(Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR)), false, false),
+            SellConfirmAction::Reclassify(SwapRetryDecision::RefreshCashback)
         );
     }
 
     #[test]
     fn bonding_curve_complete_reroutes_migrated() {
         assert_eq!(
-            classify_sell_revert(&reverted(Some(BONDING_CURVE_COMPLETE)), false, false),
-            SwapRetryDecision::RerouteMigrated
+            reclass(reverted(Some(BONDING_CURVE_COMPLETE)), false, false),
+            SellConfirmAction::Reclassify(SwapRetryDecision::RerouteMigrated)
         );
     }
 
@@ -1354,25 +1549,40 @@ mod tests {
         // StopFeeBurn if we somehow get them on an AMM route (shouldn't happen,
         // but the guard must hold).
         assert_eq!(
-            classify_sell_revert(
-                &reverted(Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR)),
-                true,
-                true
-            ),
-            SwapRetryDecision::StopFeeBurn
+            reclass(reverted(Some(CURVE_MISSING_USER_VOLUME_ACCUMULATOR)), true, true),
+            SellConfirmAction::Reclassify(SwapRetryDecision::StopFeeBurn)
         );
         assert_eq!(
-            classify_sell_revert(&reverted(Some(BONDING_CURVE_COMPLETE)), true, true),
-            SwapRetryDecision::StopFeeBurn
+            reclass(reverted(Some(BONDING_CURVE_COMPLETE)), true, true),
+            SellConfirmAction::Reclassify(SwapRetryDecision::StopFeeBurn)
         );
     }
 
     #[test]
-    fn migration_mid_exit_always_retries() {
-        // Route changed (curve→AMM) → re-route regardless of the code.
+    fn migration_mid_exit_reroutes_only_on_a_reverted_status() {
+        // Route changed (curve→AMM) on a REVERTED tx → re-route regardless of the code.
         assert_eq!(
-            classify_sell_revert(&reverted(Some(6022)), false, true),
-            SwapRetryDecision::Retry
+            reclass(reverted(Some(6022)), false, true),
+            SellConfirmAction::Reclassify(SwapRetryDecision::Retry)
         );
+    }
+
+    #[test]
+    fn non_revert_status_never_resends_the_sell() {
+        // The C1 fix: a sell whose sent tx Succeeded / is Pending / errored on the
+        // status check must NEVER re-send (the old `_ => Retry` double-sold). Every
+        // such status → WaitConfirm, on EITHER route and even across a mid-exit
+        // migration (a landed sell isn't un-sold by the token migrating).
+        for used in [false, true] {
+            for now in [false, true] {
+                assert_eq!(reclass(Ok(SigStatus::Succeeded), used, now), SellConfirmAction::WaitConfirm);
+                assert_eq!(reclass(Ok(SigStatus::Pending), used, now), SellConfirmAction::WaitConfirm);
+                assert_eq!(reclass(Err("rpc down"), used, now), SellConfirmAction::WaitConfirm);
+            }
+        }
+        // And never a re-send decision for any of them.
+        for state in [Ok(SigStatus::Succeeded), Ok(SigStatus::Pending), Err("x")] {
+            assert_ne!(reclass(state, false, false), SellConfirmAction::Reclassify(SwapRetryDecision::Retry));
+        }
     }
 }

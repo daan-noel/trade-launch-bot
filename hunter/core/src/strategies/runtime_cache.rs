@@ -39,7 +39,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
-use tokio::sync::{broadcast, Semaphore};
+use tokio::sync::{broadcast, Mutex, Semaphore};
 use uuid::Uuid;
 
 use crate::models::ingest::{RuleNotifSnapshot, SseEvent};
@@ -207,6 +207,10 @@ struct UntilDeadArmerSlot {
     cancelled: Arc<AtomicBool>,
 }
 
+/// Per-`(wallet, mint)` exit-serialization mutex map (M1). Aliased so the field type
+/// stays readable (and off clippy's complex-type radar).
+type MintExitLocks = DashMap<(String, String), Arc<Mutex<()>>>;
+
 /// A deferred first-slot entry gate queued at token creation.
 #[derive(Clone, Debug)]
 pub struct PendingFirstSlotEntry {
@@ -255,6 +259,13 @@ pub struct StrategyRuntimeCache {
     paper_poll_sem: Arc<Semaphore>,
     exiting: Arc<DashSet<Uuid>>,
     entering: Arc<DashSet<Uuid>>,
+    /// Per-`(wallet, mint)` async mutex serializing **real exits** on the same mint
+    /// (M1). Two positions on one mint intentionally share ONE token account, so their
+    /// exits must not race the shared balance (or race each other's rent-reclaim
+    /// close). `try_begin_exit` is per-*position*; this is the per-*account* interlock.
+    /// Lazily created; not pruned — one small entry per distinct exited `(wallet,
+    /// mint)`, bounded by real trading volume (a live box restarts periodically).
+    mint_exit_locks: Arc<MintExitLocks>,
     /// Active **until-dead** scalp armers (entry watches with no `max_age`
     /// ceiling), keyed by position id. Bounded to [`MAX_UNTIL_DEAD_ARMERS`]: when
     /// full, the oldest un-entered armer is evicted so a never-dying token can't pin
@@ -318,6 +329,7 @@ impl StrategyRuntimeCache {
             paper_poll_sem: Arc::new(Semaphore::new(PAPER_POLL_CONCURRENCY)),
             exiting: Arc::new(DashSet::new()),
             entering: Arc::new(DashSet::new()),
+            mint_exit_locks: Arc::new(DashMap::new()),
             until_dead_armers: Arc::new(DashMap::new()),
             armer_seq: Arc::new(AtomicU64::new(0)),
             pending_first_slot: Arc::new(DashMap::new()),
@@ -533,6 +545,18 @@ impl StrategyRuntimeCache {
     /// Whether an exit is in flight for `position_id`.
     pub fn is_exiting(&self, position_id: Uuid) -> bool {
         self.exiting.contains(&position_id)
+    }
+
+    /// The per-`(wallet, mint)` exit serialization mutex (M1). The real exit path
+    /// `.lock_owned().await`s this for the whole sell+close, so two positions sharing
+    /// ONE token account on the same mint can never race the shared balance or the
+    /// rent-reclaim close. Lazily created; different mints take different mutexes, so
+    /// there is no cross-mint contention.
+    pub fn mint_exit_lock(&self, wallet: &str, mint: &str) -> Arc<Mutex<()>> {
+        self.mint_exit_locks
+            .entry((wallet.to_string(), mint.to_string()))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Claim `position_id` for an in-flight entry (a real snipe buy). Same

@@ -34,9 +34,10 @@ The repo did **not** follow this plan. Three larger currents overtook it:
    watchdog, reconcile off request path). That is the live perf track today — this hunter doc is not.
 
 **Net effect on this plan:** the *structural* recommendations (topology split, real venue seam) largely
-landed. The *quote/multi-venue data model* landed **in forge**. But the plan's **highest-priority items —
-the Phase 0 real-money bugs marked "ship before anything else" — were never shipped.** They are still
-live in the hunter trading path.
+landed. The *quote/multi-venue data model* landed **in forge**. The plan's **highest-priority items —
+the Phase 0 real-money bugs marked "ship before anything else" — were unshipped until 2026-07-14, when
+Part 1 (C1, M1, H2, M2, M3/M4, H1) was implemented** (see "Part 1 — SHIPPED" below; real-SOL smoke of
+the sell/close paths still pending).
 
 ---
 
@@ -46,10 +47,10 @@ Legend: ✅ done · 🟡 partial · ❌ open · ⚪ obsolete/moved. Paths are **
 
 | ID | Finding | Status | Current evidence / note |
 |---|---|---|---|
-| **C1** | Sell re-sends on non-reverted (Succeeded/Pending) tx — double-sell | ❌ | `hunter/live/src/strategies/execution/real.rs:860` still `_ => SwapRetryDecision::Retry`. Buy path *did* get the symmetric guard (`classify_silent_send`, `real.rs:59-73`); sell path did not. No `ExitUnconfirmed` state exists. **Still a real-money hazard.** |
+| **C1** | Sell re-sends on non-reverted (Succeeded/Pending) tx — double-sell | ✅ (2026-07-14) | Fixed: `classify_sell_confirm` (`real.rs`) re-sends only on a confirmed same-route revert (or reverted route-change); Succeeded/Pending/RPC-error → extended feed-poll then terminal `ExitUnconfirmed` (new state, alarmed) — never a second sell. New tests pin it. |
 | **C2** | Lab sweep threads capped at cores−6 | ❌ | `hunter/lab/src/sweep/registry.rs:222-240` still `cores − (4 tokio + 2 http)`; docstring still cites the live hot path lab never runs. |
-| **H1** | Market-cap formula wrong + inconsistent | 🟡 | SSOT now exists (`hunter/core/src/storage/token_enrichment.rs:42` `MARKET_CAP_SQL`, mirrored by `config/constants/token_math.rs:56` `market_cap_sol`) so SQL and in-RAM **agree** — but on the **still-wrong** value: formula is `price × initial_supply_token`, and `initial_supply_token` is still the dev's first-buy (`models/token.rs:21`), not supply. No real `total_supply` column. |
-| **H2** | Ingest consumer couples strategy pings to DB backpressure | ❌ | `hunter/live/src/ingest/consumer.rs:233-234` awaits `enqueue_db` before `ping_strategy` (`:282`). A lossy `enqueue_db_lossy` exists (`:392-402`) but is used only for Metrics/Raw, not the Trade/Wallet/Migration writes that gate the pings. |
+| **H1** | Market-cap formula wrong + inconsistent | ✅ (2026-07-14) | Real `tokens.total_supply_token` column added (migration 0003, populated at ingest from the `total_supply_for` Rust SSOT; backfill + `token_overview` view + sync script updated). `MARKET_CAP_SQL` + `market_cap_sol` repointed at `total_supply × price`. `initial_supply_token` doc-comment clarified as NOT-supply. |
+| **H2** | Ingest consumer couples strategy pings to DB backpressure | ✅ (2026-07-14) | `consumer.rs` now dispatches the cache update + reserve update + `ping_strategy` **before** the durable enqueue, and the Trade/Wallet/Token/Migration writes go through `enqueue_db_timeout` (500 ms bound + drop-metric). `notify_mint` deliberately stays after the Trade enqueue (sell-confirm ordering). |
 | **H3** | Lake day-files seal with no completeness check | ❌ | `hunter/lab/src/lake/export.rs:129-139` still skip-if-exists, no manifest/row-count, no re-seal. Sync (`hunter/scripts/db-incremental-sync.ps1`) reconciles `wallet_dict` but has no per-day `COUNT(*)` check for `trades`. |
 | **H4** | sim↔sweep/lake parity test `#[ignore]`d | ✅ | `hunter/lab/src/lake/duck.rs:452-524` `parity_tests` — un-ignored, self-skips when no lake present. (Proves sweep-load ↔ sim-load parity, not a lake-vs-PG baseline.) |
 | **H5** | Corpus load row-by-row, re-done every sweep | 🟡 | Redesigned to lake/DuckDB (PG `DbSource` retired). Still uses the **row API by design** (arrow-version isolation, `duck.rs:14-16`); sweep still reloads unconditionally (`grouped_sweep.rs:426`); `sweep_corpus_cache` is read only by the drill-in, not the next sweep; `stage_mints` still runs twice (`duck.rs:109,170`). |
@@ -58,10 +59,10 @@ Legend: ✅ done · 🟡 partial · ❌ open · ⚪ obsolete/moved. Paths are **
 | **H8** | Venue recognition = pump-only string match — T2/T4 blocker | ❌ hunter · ✅ forge | Hunter/ingest still substring `contains(pump_id)` (`shared/ingest/pumpfun/src/venue.rs:73-79`), `enum TxRelevance { Curve, Amm }`, `venue CHECK IN ('curve','amm')`. Forge has the open `launchpads` registry + `launchpad_id`/`market_kind`. |
 | **H9** | `Protocol` builder is a false venue seam | ✅ | Replaced by real `Venue` / `IngestVenue` traits. `protocol.rs` demoted to a static constants/descriptor module in both stacks. (Still single-venue — `VenueId::PumpFun` is the only arm.) |
 | **H10** | Strategy-code triplication across lab + core | 🟡 | A real `Strategy`/`ParamSpace` trait + generic sweep engine now exist (`hunter/lab/src/sweep/strategy.rs`), removing engine-level dup. But every concrete item is still duplicated: 3 sweep adapters (`tpsl1/tpsl2/swing1.rs`), `sweep_*`/`simulate_*_one_combo` clones in `registry.rs`, the `tpsl_sniper_1/2` decision clones (`util.rs` byte-identical), the frontend pages/columns, and **12 per-strategy sweep tables**. No `StrategyDescriptor`/`register_strategy!`/`sweep_dispatch<S>`. |
-| **M1** | Shared token account, no refcount / same-mint serialization | ❌ | `real.rs:136-144,787-794` still fire-and-forget `close_token_account` on any single exit; no `(wallet,mint)` refcount, no per-mint mutex. Compounds C1. |
-| **M2** | `mark_buy_submitted` DB persist held inside nonce slot | ❌ | `shared/executor/pumpfun/src/trader/buy.rs:314-321` still awaits the hook inline before send; no timeout, not spawned. |
-| **M3** | `wallet_dict` intern uses no-op `DO UPDATE` (dead tuples) | ❌ | `hunter/core/src/storage/repositories/wallet_dict_repo.rs:27,68` still `ON CONFLICT DO UPDATE SET address=EXCLUDED.address RETURNING id`; `id_for` SELECT (`:82`) exists but isn't tried first. |
-| **M4** | Confirm-loop wallet round-trip per call (2 RTs) | 🟡 | Still a separate `id_for` per query (`trade_repo.rs:402,448,505,692,746`), no cache/CTE — but downgraded from an intern write to a read-only SELECT, so the WAL/dead-tuple cost is gone. |
+| **M1** | Shared token account, no refcount / same-mint serialization | ✅ (2026-07-14) | Rent-reclaim `close_token_account` now gated by `has_other_open_position_on_mint` (DB check — restart-safe, replaces the proposed in-memory refcount) at both close sites (`reclaim_token_account_if_last`); same-mint real exits serialized by `runtime.mint_exit_lock` (per-`(wallet,mint)` async Mutex). |
+| **M2** | `mark_buy_submitted` DB persist held inside nonce slot | ✅ (2026-07-14) | Bounded in the `on_signed` hook (`real.rs`) with a 250 ms `tokio::time::timeout`; the shared executor stays DB-agnostic. In-memory `signed_slot` journal set synchronously first, so write-ahead recovery for this process is preserved even on timeout. |
+| **M3** | `wallet_dict` intern uses no-op `DO UPDATE` (dead tuples) | ✅ (2026-07-14) | `wallet_dict_repo.rs` rewritten: cache-first, SELECT fast path → `INSERT … ON CONFLICT DO NOTHING RETURNING id` → SELECT fallback. No more dead-tuple churn on the hot write path. |
+| **M4** | Confirm-loop wallet round-trip per call (2 RTs) | ✅ (2026-07-14) | Shared process-wide bounded `address→id` cache (`LazyLock<DashMap>`, cap 200k; ids are immutable so no invalidation) fronts `id_for`/`intern` — a resident id is 0 round-trips. |
 | **M8** | `/api/tokens` re-filters/re-sorts ~1M rows per poll | ✅ | `hunter/core/src/state/token_list_cache.rs` — staleness-bounded shared snapshot, filter-by-reference, page-only clone. (Different mechanism than the proposed per-query memo, but the per-poll full clone+sort is gone.) |
 | **M9** | Current-day analysis needs two uncoupled `--include-today` runs | ❌ | `sim_fetch.rs:144-161` still warn-only; `lake-export --include-today` exists but no chained `sync` command couples hop-1 (DB sync) to hop-2 (export). |
 | **M10** | Legacy `Position` model kept only for SSE wire shape | ❌ | `hunter/core/src/models/position.rs` + `system/stream.rs:181-184` `PositionResponse::from(...)` adapter still present. |
@@ -75,8 +76,8 @@ Legend: ✅ done · 🟡 partial · ❌ open · ⚪ obsolete/moved. Paths are **
 Original items not individually re-verified this pass (assume **open** unless noted): M5–M7, M11–M13, L1–L8, L10–L11. M5 (pump-specific ingest contract) tracks with H8; M12 (`runtime_cache` in shared core) — still relevant since the crate move didn't relocate it to `live`.
 
 **Docs↔code drift appendix:**
-- `initial_supply_token` documented as "first creator buy" while `MARKET_CAP_SQL` treats it as supply — **STILL TRUE** (root of H1; `models/token.rs:21` vs `token_enrichment.rs:42`).
-- `0001_init.sql:272` comment says `strategy_id` is `'tpsl1'|'tpsl2'` but the registry writes `tpsl_sniper_1/2` (`match_keys.rs:211`) — **STILL TRUE** (comment only).
+- `initial_supply_token` documented as "first creator buy" while `MARKET_CAP_SQL` treats it as supply — **FIXED 2026-07-14** (H1: `MARKET_CAP_SQL` now uses `total_supply_token`; `models/token.rs` comment clarified).
+- `0001_init.sql:272` comment says `strategy_id` is `'tpsl1'|'tpsl2'` but the registry writes `tpsl_sniper_1/2` (`match_keys.rs:211`) — **FIXED 2026-07-14** (comment now `'tpsl_sniper_1' | 'tpsl_sniper_2' | 'swing1' | …`).
 - `sharedEndpoints.ts` "Swing uses `getTokens`" — **FIXED/obsolete** (`getTokens` deleted; Swing uses `getTokensPage`).
 
 ---
@@ -87,9 +88,34 @@ Priority order is unchanged in spirit — **real-money safety > lab throughput >
 the redesign is now explicitly deprioritized below bugs/perf (forge is the multi-venue product; hunter
 stays pump/SOL for now, adopting forge's model later — see Part 5).
 
-### Part 1 — Real-money & correctness (ship first; still open) 🔴
+### Part 1 — Real-money & correctness ✅ SHIPPED 2026-07-14
 
-These are the original Phase 0 items. They never shipped and remain the top of the list.
+> **Status:** all six items below implemented on `master` (branch pre-merge), plus the
+> two live doc-drift comments. `cargo check`/clippy clean on `hunter-live`+`hunter-core`;
+> 17 `execution::real` + 12 `hunter-core` unit tests green (incl. the new
+> `non_revert_status_never_resends_the_sell`). One new migration
+> [`0003_part1_realmoney.sql`](../../core/migrations/0003_part1_realmoney.sql) (status
+> CHECK += `ExitUnconfirmed`; `tokens.total_supply_token` column + backfill; `token_overview`
+> view repoint). **Only real-SOL smoke of the sell/close paths remains.**
+>
+> Deviations from the original sketch (all deliberate, safer/leaner):
+> - **C1** added an `ExitUnconfirmed` terminal state (new `classify_sell_confirm` +
+>   extended feed-poll in `execution/real.rs`); re-send now fires **only** on a confirmed
+>   same-route revert (or a reverted route-change), never on Succeeded/Pending/RPC-error.
+> - **M1** guards the rent-reclaim `close_token_account` with a **DB "other open position
+>   on (wallet,mint)?" check** (`has_other_open_position_on_mint`) — restart-safe, no
+>   in-memory refcount — plus a per-`(wallet,mint)` async `Mutex` (`runtime.mint_exit_lock`)
+>   serializing same-mint real exits.
+> - **M2** bounds `mark_buy_submitted` with a 250 ms timeout in the `on_signed` hook
+>   (keeps the shared executor DB-agnostic) — the in-memory `signed_slot` journal still
+>   covers this-process write-ahead recovery.
+> - **M3/M4** use a shared bounded `address→id` cache (`LazyLock<DashMap>`, cap 200k) +
+>   SELECT-fast-path `INSERT … DO NOTHING` intern (kills the dead-tuple churn).
+> - **H1** stores `tokens.total_supply_token` (populated at ingest from `total_supply_for`,
+>   the Rust SSOT) and repoints `MARKET_CAP_SQL`/`market_cap_sol` at it; sync script carries
+>   the new column.
+
+These were the original Phase 0 items.
 
 1. **C1 — sell re-send guard.** Make `classify_sell_revert` (`real.rs:850-862`) symmetric with the
    already-shipped buy guard `classify_silent_send` (`real.rs:59-73`): re-send **only** on a confirmed

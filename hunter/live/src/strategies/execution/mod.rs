@@ -27,6 +27,12 @@ pub(crate) const BUY_POLL_INTERVAL_MS: u64 = 1_000;
 pub(crate) const SELL_MAX_ATTEMPTS: usize = 6;
 pub(crate) const SELL_POLL_MAX_ATTEMPTS: usize = 10;
 pub(crate) const SELL_POLL_INTERVAL_MS: u64 = 500;
+/// Extended feed-poll window (×`SELL_POLL_INTERVAL_MS`) granted to a sell whose sent
+/// tx came back Succeeded / Pending / status-unknown (C1). Such a tx may have sold or
+/// may still land, so the loop NEVER re-sends; it watches the feed for the clear over
+/// this longer deadline (index lag), then gives up as `ExitUnconfirmed` rather than
+/// firing a second sell. 40 × 500 ms = 20 s.
+pub(crate) const SELL_UNCONFIRMED_POLL_MAX_ATTEMPTS: usize = 40;
 /// Dust threshold (raw token base units) at or below which a remaining balance
 /// counts as cleared. `net_token_amount_by_wallet_and_mint` returns exact signed
 /// raw units (`i64`), so "essentially empty" is simply `<= 0` — any leftover of one

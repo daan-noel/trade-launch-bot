@@ -32,19 +32,21 @@ use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::PgPool;
 
-/// Canonical **market-cap** SQL expression — current spot price × on-chain supply.
+/// Canonical **market-cap** SQL expression — current spot price × **total supply**
+/// (`tokens.total_supply_token`, populated at ingest from the mayhem-aware
+/// `total_supply_for` SSOT; H1). NOT `initial_supply_token` (the dev's first-buy).
 /// Requires aliases `t` = tokens, `i` = tokens_info. THE single definition; every
 /// SQL site that projects/sorts/filters `market_cap` (this module's [`ENRICH_SELECT`]
 /// + sort/filter arms, `handlers::tokens`, `handlers::tokens::sql`, `token_repo`)
 /// references this const so the formula can never drift between the token-list SQL
 /// backends. The parenthesis is part of the expression so it composes inside
 /// `COALESCE(...)`/`(...)::text` without extra wrapping.
-pub const MARKET_CAP_SQL: &str = "(i.current_price * t.initial_supply_token)";
+pub const MARKET_CAP_SQL: &str = "(i.current_price * t.total_supply_token)";
 
 /// SQL column fragment for the token-enrichment projection. Requires the query to
 /// alias `tokens` as `t` and `tokens_info` as `i` (LEFT JOIN). Column names/order
 /// match [`TokenEnrichmentRow`]. `market_cap` is computed ([`MARKET_CAP_SQL`],
-/// `current_price × initial_supply_token`) — the canonical definition shared with
+/// `current_price × total_supply_token`) — the canonical definition shared with
 /// the token list; a guard test pins this literal to that const.
 /// `token_created_at` is deliberately not `created_at` (flatten-collision guard).
 pub const ENRICH_SELECT: &str = "t.mint_address, t.symbol, t.name, \
@@ -53,7 +55,7 @@ pub const ENRICH_SELECT: &str = "t.mint_address, t.symbol, t.name, \
     t.initial_buy_instruction, t.cu_limit, t.cu_price, t.is_mayhem_mode, \
     t.is_cashback_enabled, t.ix_labels, \
     i.ath_price, i.ath_timestamp, i.volume_sol, \
-    (i.current_price * t.initial_supply_token) AS market_cap, i.trade_count, \
+    (i.current_price * t.total_supply_token) AS market_cap, i.trade_count, \
     i.last_trade_at, i.current_price, i.is_dead, i.is_migrated, \
     (SELECT MAX(s.last_synced_at) FROM token_sync_state s \
        WHERE s.mint_address = t.mint_address) AS last_synced_at, \

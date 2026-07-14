@@ -269,7 +269,7 @@ FROM trades t;
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS strategy_rules (
     id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-    strategy_id             TEXT        NOT NULL,          -- 'tpsl1' | 'tpsl2' | …
+    strategy_id             TEXT        NOT NULL,          -- 'tpsl_sniper_1' | 'tpsl_sniper_2' | 'swing1' | …
     rule_name               TEXT        NOT NULL,
 
     buy_amount_sol          DOUBLE PRECISION NOT NULL,

@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -37,6 +38,16 @@ use super::db_writer::DbWriteOp;
 
 pub const DB_QUEUE_CAP: usize = 16384;
 pub const STRATEGY_QUEUE_CAP: usize = 512;
+
+/// Upper bound on how long a hot-path durable write (`Trade`/`Wallet`/`Token`/
+/// `Migration`) may block the ingest loop when the DbWriter is backpressured. The
+/// channel is deep (`DB_QUEUE_CAP`), so hitting this means PG has been stalled for
+/// half a second straight; rather than wedge ingest — and with it every real exit's
+/// strategy ping / sell-confirm feed — we shed the write and count it (H2). The
+/// strategy ping + reserve update are already dispatched *before* the enqueue, so a
+/// shed here never delays an exit decision, only the durable trail. (`Metrics`/`Raw`
+/// are shed non-blocking via `enqueue_db_lossy`.)
+const DB_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Counts of intentionally-shed messages under back-pressure.
 #[derive(Default)]
@@ -193,15 +204,20 @@ impl IngestConsumer {
         let slot = e.slot;
         let block_time = e.block_time;
         let token = token_from_event(e);
-        self.enqueue_db(DbWriteOp::Token(token.clone())).await;
-        self.enqueue_db(DbWriteOp::Wallet(creator)).await;
 
-        let token_state = TokenState::new(token);
+        // Hot path first: track the token in the in-RAM cache and fire the strategy
+        // fingerprint match BEFORE the durable enqueue, so a backpressured DbWriter
+        // can't delay an entry decision (H2). The strategy reads `token_cache`, not
+        // the DB, so this ordering is safe.
+        let token_state = TokenState::new(token.clone());
         let metrics = metrics_from_state(&mint, &token_state);
         self.token_cache.insert(mint.clone(), token_state);
+        self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
+
+        self.enqueue_db_timeout(DbWriteOp::Token(token)).await;
+        self.enqueue_db_timeout(DbWriteOp::Wallet(creator)).await;
         self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
 
-        self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
         self.emit_sse(SseEvent::TokenCreated {
             mint_address: mint,
             tx_signature: signature,
@@ -230,9 +246,14 @@ impl IngestConsumer {
         };
         core_trade.instruction_labels = Value::Null;
 
-        self.enqueue_db(DbWriteOp::Trade(db_trade)).await;
-        self.enqueue_db(DbWriteOp::Wallet(wallet.clone())).await;
-
+        // ── Hot path first (H2) ────────────────────────────────────────────────
+        // Update the in-RAM cache, refresh the trader's live reserves, and ping the
+        // strategy BEFORE the durable Trade/Wallet enqueue, so a backpressured
+        // DbWriter can't stall a real exit's decision. `notify_mint` stays *after*
+        // the Trade enqueue so the sell-confirm feed still observes the row-in-flight
+        // in the same order as before (the confirm loop re-queries `trades` on the
+        // next notify; waking it before the write is even queued could miss a
+        // last-leg clear under backpressure).
         let (metrics, to_warm) = match self.token_cache.get_mut(&mint) {
             Some(mut token_state) => {
                 token_state.add_trade(core_trade);
@@ -253,16 +274,23 @@ impl IngestConsumer {
             None => (None, None),
         };
 
-        self.trade_signals.notify_mint(&mint);
-
-        if let Some(metrics) = metrics {
-            self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
-        }
-
         if let Some((token_reserves, sol_reserves)) = reserve_snapshot {
             // The trader takes reserves as `f64` (spot-price ratio math; it's a
             // standalone lib). Cast the raw token reserves at this boundary.
             self.trader.update_live_reserves(&mint, token_reserves as f64, sol_reserves, is_amm);
+        }
+
+        self.ping_strategy(mint.clone(), IngestKind::Trade);
+
+        // ── Durable sinks (bounded; shed under sustained backpressure) ─────────
+        self.enqueue_db_timeout(DbWriteOp::Trade(db_trade)).await;
+        self.enqueue_db_timeout(DbWriteOp::Wallet(wallet.clone())).await;
+
+        // Wake the sell-confirm feed only after the Trade write is queued.
+        self.trade_signals.notify_mint(&mint);
+
+        if let Some(metrics) = metrics {
+            self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
         }
 
         if let Some(token_program) = to_warm {
@@ -279,7 +307,6 @@ impl IngestConsumer {
             });
         }
 
-        self.ping_strategy(mint.clone(), IngestKind::Trade);
         self.emit_sse(SseEvent::TradeExecuted {
             mint_address: mint,
             wallet,
@@ -309,8 +336,11 @@ impl IngestConsumer {
             self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
         }
 
-        self.enqueue_db(DbWriteOp::Migration { mint: mint.clone() }).await;
-        self.ping_strategy(mint, IngestKind::Migrated);
+        // Ping the strategy (re-routes any in-flight exit to the AMM) off the in-RAM
+        // `is_migrated` flag set above — before the durable enqueue, so a DB hiccup
+        // can't delay the re-route (H2).
+        self.ping_strategy(mint.clone(), IngestKind::Migrated);
+        self.enqueue_db_timeout(DbWriteOp::Migration { mint }).await;
     }
 
     fn on_creator_activity(&self, e: CreatorActivityEvent) {
@@ -383,9 +413,21 @@ impl IngestConsumer {
 
     // ── Sink helpers ───────────────────────────────────────────────────────────
 
-    async fn enqueue_db(&self, op: DbWriteOp) {
-        if let Err(e) = self.db_tx.send(op).await {
-            warn!("DbWriter channel closed — write not persisted: {e}");
+    /// Enqueue a hot-path durable write, bounded by [`DB_SEND_TIMEOUT`] so a
+    /// backpressured DbWriter can't wedge the ingest loop (and with it the strategy
+    /// pings / sell-confirm feed that gate real exits). On timeout the write is shed
+    /// and counted (H2); the strategy ping + reserve update already ran before this
+    /// call, so an exit decision is never delayed by the drop.
+    async fn enqueue_db_timeout(&self, op: DbWriteOp) {
+        match self.db_tx.send_timeout(op, DB_SEND_TIMEOUT).await {
+            Ok(()) => {}
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                self.shed.db_writes.fetch_add(1, Ordering::Relaxed);
+                warn!("DbWriter backpressured >{DB_SEND_TIMEOUT:?} — hot-path write shed");
+            }
+            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                warn!("DbWriter channel closed — write not persisted");
+            }
         }
     }
 

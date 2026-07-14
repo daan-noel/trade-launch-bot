@@ -18,7 +18,10 @@ pub struct Token {
     pub token_program_id: Option<String>,
     /// Bonding curve program address for this token.
     pub bonding_curve_address: Option<String>,
-    /// First creator buy amount, expressed in raw token units.
+    /// First creator buy amount, expressed in raw token units. **NOT** the token's
+    /// total supply — do not use it for market cap / FDV (H1). Total supply is the
+    /// fixed pump.fun constant (`config::constants::token_math::total_supply_for`),
+    /// persisted as `tokens.total_supply_token`.
     pub initial_supply_token: Option<u64>,
     /// First creator buy amount in SOL.
     pub initial_buy_sol: Option<f64>,

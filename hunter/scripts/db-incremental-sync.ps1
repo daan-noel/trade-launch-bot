@@ -487,13 +487,13 @@ COMMIT;
 -- the migration squash) -- a positional SELECT * would silently misalign columns.
 INSERT INTO tokens (
   mint_address, creator_wallet, name, symbol, bonding_curve_address, token_program_id,
-  initial_supply_token, initial_buy_lamports, cu_limit, cu_price, is_mayhem_mode,
+  initial_supply_token, total_supply_token, initial_buy_lamports, cu_limit, cu_price, is_mayhem_mode,
   is_cashback_enabled, creation_slot, creation_tx_signature, ix_labels,
   initial_buy_instruction, meta, created_at
 )
 SELECT
   t.mint_address, t.creator_wallet, t.name, t.symbol, t.bonding_curve_address, t.token_program_id,
-  t.initial_supply_token, t.initial_buy_lamports, t.cu_limit, t.cu_price, t.is_mayhem_mode,
+  t.initial_supply_token, t.total_supply_token, t.initial_buy_lamports, t.cu_limit, t.cu_price, t.is_mayhem_mode,
   t.is_cashback_enabled, t.creation_slot, t.creation_tx_signature, t.ix_labels,
   t.initial_buy_instruction, t.meta, t.created_at
 FROM ec2_sync_src.tokens t

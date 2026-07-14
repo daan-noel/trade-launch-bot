@@ -170,8 +170,7 @@ fn build_state(
         }
         if state.market_cap.is_none() {
             if let Some(price) = agg.newest_price {
-                state.market_cap =
-                    Some(market_cap_sol(price, state.token.initial_supply_token, state.token.is_mayhem_mode));
+                state.market_cap = Some(market_cap_sol(price, state.token.is_mayhem_mode));
             }
         }
     }
