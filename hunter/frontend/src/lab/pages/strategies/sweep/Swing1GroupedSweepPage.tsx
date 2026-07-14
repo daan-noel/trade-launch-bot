@@ -1,4 +1,5 @@
 import { SWING1_AXES } from '@lab/components/sweep/groupedTypes';
+import { swing1AxesShapeWarning } from '@shared/lib/swing1Axes';
 import { STORAGE_KEYS } from 'lib/storage';
 import { GroupedSweepView } from './GroupedSweepView';
 
@@ -52,6 +53,7 @@ export function Swing1GroupedSweepPage() {
       axes={SWING1_AXES}
       storageKey={`${STORAGE_KEYS.sweepConfig}.swing1`}
       title="Grouped Param Sweep · swing1"
+      axesWarning={swing1AxesShapeWarning}
     />
   );
 }

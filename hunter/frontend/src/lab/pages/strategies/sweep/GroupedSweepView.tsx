@@ -86,6 +86,9 @@ export interface GroupedSweepViewProps {
   storageKey: string;
   /** Page heading. */
   title: string;
+  /** Optional per-strategy advisory over the parsed axis spec (see
+   *  `SweepConfigForm`). swing1 passes its kill/volume band-overlap check. */
+  axesWarning?: (spec: Record<string, (number | null)[]>) => string | null;
 }
 
 /**
@@ -100,6 +103,7 @@ export function GroupedSweepView({
   axes,
   storageKey,
   title,
+  axesWarning,
 }: GroupedSweepViewProps) {
   const runsQuery = useGetGroupedSweepRunsQuery({ strategyId });
   const runs = runsQuery.data ?? [];
@@ -623,6 +627,7 @@ export function GroupedSweepView({
             onRun={run}
             reuseNonce={reuseNonce}
             reuseRun={activeRun}
+            axesWarning={axesWarning}
           />
         </div>
       </Accordion>

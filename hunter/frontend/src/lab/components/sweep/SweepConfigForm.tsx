@@ -8,6 +8,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Badge } from 'components/ui/Badge';
 import { Accordion } from 'components/ui/Accordion';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
+import { InlineAlert } from 'components/ui/Modal';
 import {
   GROUP_FIELDS,
   groupAxesBySubgroup,
@@ -42,6 +43,11 @@ interface SweepConfigFormProps {
   reuseNonce?: number;
   /** The run whose config to apply when `reuseNonce` bumps. */
   reuseRun?: GroupedSweepRunRecord | null;
+  /** Optional per-strategy sanity check over the parsed axis spec. Returns an
+   *  advisory string to surface (a non-blocking warning — the run still fires),
+   *  or `null` when the grid is clean. Used by swing1 to flag kill/volume band
+   *  overlaps the backend will prune. */
+  axesWarning?: (spec: Record<string, (number | null)[]>) => string | null;
 }
 
 function Field({
@@ -309,6 +315,7 @@ export function SweepConfigForm({
   onRun,
   reuseNonce,
   reuseRun,
+  axesWarning,
 }: SweepConfigFormProps) {
   // Defaults depend on this strategy's axes, so memoize per axis list.
   const DEFAULT_SWEEP_CONFIG = useMemo(() => defaultSweepConfig(axes), [axes]);
@@ -403,18 +410,27 @@ export function SweepConfigForm({
   const effectiveCap = Math.min(Math.max(1, maxCombos || DEFAULT_MAX_COMBOS), HARD_MAX_COMBOS);
   const overCap = projected > effectiveCap;
 
+  // Optional per-strategy advisory over the parsed grid (swing1 kill/volume band
+  // overlap). Non-blocking — the backend prunes the offending combos; this just
+  // warns up front. Recomputed from the same parsed axes the run would send.
+  const axesWarn = useMemo(
+    () => axesWarning?.(buildAxes()) ?? null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [axesWarning, axesText, axes],
+  );
+
   function toggleGroupField(f: GroupField) {
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
   }
 
-  function buildAxes(): GroupedSweepStartArgs['axes'] {
+  function buildAxes(): Record<string, (number | null)[]> {
     const spec: Record<string, (number | null)[]> = {};
     for (const a of axes) {
       // Backend types: take_profit/stop_loss are number[]; the rest (number|null)[].
       const vals = parseAxis(axesText[a.key] ?? '', a.nullable);
       spec[a.key] = a.nullable ? vals : vals.filter((v): v is number => v !== null);
     }
-    return spec as GroupedSweepStartArgs['axes'];
+    return spec;
   }
 
   function handleRun() {
@@ -446,7 +462,7 @@ export function SweepConfigForm({
           : methodKind === 'random'
             ? `random:${Math.max(1, randomN)}`
             : 'grid',
-      axes: buildAxes(),
+      axes: buildAxes() as GroupedSweepStartArgs['axes'],
       token_cap: tokenCap,
       // Only send an override when it differs from the default, so the backend
       // default stays authoritative otherwise.
@@ -582,6 +598,12 @@ export function SweepConfigForm({
           </Button>
         </div>
       </div>
+
+      {axesWarn && (
+        <div className="mt-2">
+          <InlineAlert variant="warning">{axesWarn}</InlineAlert>
+        </div>
+      )}
 
       {/* Group-by field picker + per-field value filters */}
       <div className="mt-3 border-t border-white/10 pt-3">

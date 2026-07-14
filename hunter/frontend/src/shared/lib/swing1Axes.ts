@@ -145,6 +145,50 @@ export const SWING1_AXES: AxisDef[] = [
 // form. This module stays the source for the sweep-config + detect axis GRID
 // (its labels, defaults, subgroup layout) only.
 
+// --- shape-sanity pre-run check ---------------------------------------------
+
+/** Pre-run advisory mirroring the backend `swing1_shape_sane` guard: a kill low
+ *  must be at least as deep as the volume ceiling (`kill_depth_min ≥
+ *  vol_depth_max`) and a volume low must last at least as long as the kill cap
+ *  (`vol_min_duration ≥ kill_max_duration`) — else the two phases' depth/duration
+ *  bands overlap and the classifier can't tell a flush from accumulation.
+ *
+ *  The backend now PRUNES any swept combo that violates this (so a "winner" you
+ *  copy always saves), which makes this advisory, not a blocker: it just tells
+ *  the user up front that part of their grid will be dropped. Only positive,
+ *  present candidate values bound a phase — `null`/`0` ("no bound") never trip
+ *  it. Pure; safe inside a `useMemo`. Returns a warning string, or `null` when
+ *  every combo is shape-valid. */
+export function swing1AxesShapeWarning(
+  spec: Record<string, (number | null)[]>,
+): string | null {
+  const bounded = (key: string): number[] =>
+    (spec[key] ?? []).filter((v): v is number => v != null && v !== 0);
+
+  const parts: string[] = [];
+
+  // Depth: some (kill, vol) pair has kill < vol ⟺ min(kills) < max(vols).
+  const kills = bounded('kill_depth_min_pct');
+  const vols = bounded('vol_depth_max_pct');
+  if (kills.length && vols.length && Math.min(...kills) < Math.max(...vols)) {
+    parts.push(
+      `Kill depth min < Vol depth max in some combos (min kill ${Math.min(...kills)} < max vol ${Math.max(...vols)})`,
+    );
+  }
+
+  // Duration: some (kill_max, vol_min) pair has vol_min < kill_max.
+  const killDur = bounded('kill_max_duration_ms');
+  const volDur = bounded('vol_min_duration_ms');
+  if (killDur.length && volDur.length && Math.min(...volDur) < Math.max(...killDur)) {
+    parts.push(
+      `Vol min duration < Kill max duration in some combos (min vol ${Math.min(...volDur)}ms < max kill ${Math.max(...killDur)}ms)`,
+    );
+  }
+
+  if (!parts.length) return null;
+  return `${parts.join('; ')} — the kill/volume bands overlap there, so those combos are skipped (a flush and accumulation would be indistinguishable). Widen the gap so every kill_depth_min ≥ every vol_depth_max.`;
+}
+
 // --- subgroup metadata + bucketing helper -----------------------------------
 
 /** Ordered, presentation-only metadata for the swing1 sub-buckets: the labelled

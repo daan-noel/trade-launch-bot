@@ -34,7 +34,38 @@ use crate::sweep::strategy::{
     index_of, lhs_index_plan, neighbor_indices, round_trip_with_costs, CostModel, ExitCode,
     ParamSpace, Strategy, SweepMethod, TokenOutcome,
 };
+use trading_core::strategies::rules::swing1_shape_sane;
 use trading_core::strategies::swing_1::{entry, exit};
+
+/// Drop combos that violate the swing1 shape-sanity invariants — the **same**
+/// [`swing1_shape_sane`] predicate rule validation uses (SSOT), so the sweep can
+/// never surface a "winner" you'd fail to save as a rule. Such a combo also has a
+/// degenerate phase classification (overlapping kill/volume depth or duration
+/// bands, so a flush and accumulation are indistinguishable), so its PnL is
+/// meaningless regardless of saveability. Logs the pruned count (no silent caps).
+fn prune_shape_invalid(combos: Vec<Swing1Combo>) -> Vec<Swing1Combo> {
+    let before = combos.len();
+    let kept: Vec<_> = combos
+        .into_iter()
+        .filter(|c| {
+            swing1_shape_sane(
+                c.raw.kill_depth_min_pct,
+                c.raw.vol_depth_max_pct,
+                c.raw.kill_max_duration_ms,
+                c.raw.vol_min_duration_ms,
+            )
+            .is_ok()
+        })
+        .collect();
+    if kept.len() < before {
+        tracing::info!(
+            pruned = before - kept.len(),
+            kept = kept.len(),
+            "swing1 sweep: dropped shape-invalid combos (kill/volume depth or duration bands overlap)"
+        );
+    }
+    kept
+}
 
 /// The full swing1 rule param set, every knob swept. `take_profit`/`stop_loss` are
 /// always-on; every other knob is `Option` and a `None` (the default axis when the
@@ -534,7 +565,7 @@ impl ParamSpace for Swing1Strategy {
     #[allow(unused_assignments)]
     fn sample(&self, method: SweepMethod) -> Vec<Swing1Combo> {
         let a = &self.axes;
-        match method {
+        let combos = match method {
             SweepMethod::Grid => {
                 // Full grid = Cartesian product of every axis, one combo per flat
                 // index (mixed-radix decode in `combo_at`). Pre-checked ≤ cap.
@@ -610,7 +641,8 @@ impl ParamSpace for Swing1Strategy {
                     })
                     .collect()
             }
-        }
+        };
+        prune_shape_invalid(combos)
     }
 
     /// Coordinate-move neighborhood: for each survivor, vary one axis at a time to
@@ -660,7 +692,7 @@ impl ParamSpace for Swing1Strategy {
             walk!(a.exit_next_kill_depth_min_pct, exit_next_kill_depth_min_pct);
             walk!(a.exit_next_kill_max_duration_ms, exit_next_kill_max_duration_ms);
         }
-        out
+        prune_shape_invalid(out)
     }
 
     /// Stable-sort the combo set so combos sharing the entry-gate knobs land
@@ -893,6 +925,37 @@ mod tests {
         let over = s.sample(SweepMethod::Random { n: grid * 4, seed: 7 });
         assert_eq!(over.len(), grid, "clamped to grid size");
         assert_eq!(distinct(&over), over.len(), "all distinct");
+    }
+
+    #[test]
+    fn sample_prunes_shape_invalid_combos() {
+        // A grid that straddles the `kill_depth_min ≥ vol_depth_max` invariant:
+        // kill ∈ {0.4, 0.6}, vol = 0.6. The (0.4, 0.6) combos are invalid (0.4 < 0.6)
+        // and must be pruned; (0.6, 0.6) is valid (equality allowed). Same predicate
+        // rule validation uses — the sweep never surfaces an unsaveable "winner".
+        let spec = AxesSpec {
+            kill_depth_min_pct: Some(vec![Some(0.4), Some(0.6)]),
+            vol_depth_max_pct: Some(vec![Some(0.6)]),
+            ..Default::default()
+        };
+        let mut s = strategy();
+        s.axes = Swing1Axes::from_spec(&spec);
+
+        let full_grid = s.axes.combo_count();
+        let combos = s.sample(SweepMethod::Grid);
+
+        // Every survivor satisfies the shared invariant …
+        assert!(combos.iter().all(|c| swing1_shape_sane(
+            c.raw.kill_depth_min_pct,
+            c.raw.vol_depth_max_pct,
+            c.raw.kill_max_duration_ms,
+            c.raw.vol_min_duration_ms,
+        )
+        .is_ok()));
+        // … the invalid (0.4, 0.6) half was dropped …
+        assert!(combos.len() < full_grid, "shape-invalid combos must be pruned");
+        // … and the valid (0.6, 0.6) half remains (fires, doesn't over-prune).
+        assert!(!combos.is_empty(), "valid combos must survive");
     }
 
     #[test]

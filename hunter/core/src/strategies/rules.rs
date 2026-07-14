@@ -158,10 +158,37 @@ fn validate_swing1(p: &Swing1Params) -> Result<(), String> {
     }
 
     // Shape sanity: a kill is deeper than the volume ceiling; a volume low lasts
-    // at least as long as the kill cap. Only checked when both sides are set.
+    // at least as long as the kill cap. SSOT predicate shared with the lab
+    // param-sweep so both reject the identical set of nonsensical combos.
+    swing1_shape_sane(
+        p.p_kill_depth_min_pct,
+        p.p_vol_depth_max_pct,
+        p.p_kill_max_duration_ms,
+        p.p_vol_min_duration_ms,
+    )?;
+    Ok(())
+}
+
+/// The two swing1 shape-sanity invariants, shared by rule validation
+/// ([`validate_swing1`]) and the lab param-sweep's combo filter so both reject
+/// the identical set of nonsensical combos:
+///   * a **kill** low must be at least as deep as the **volume** ceiling
+///     (`kill_depth_min ≥ vol_depth_max`) — else the depth bands overlap and the
+///     phase classifier can't separate a flush from accumulation;
+///   * a **volume** low must last at least as long as the **kill** cap
+///     (`vol_min_duration ≥ kill_max_duration`) — the same disjointness on time.
+///
+/// Each check fires only when both of its sides are set (nonzero); `0`/`None` =
+/// "no bound", so an unconfigured axis never trips it.
+pub fn swing1_shape_sane(
+    kill_depth_min_pct: Option<f64>,
+    vol_depth_max_pct: Option<f64>,
+    kill_max_duration_ms: Option<i64>,
+    vol_min_duration_ms: Option<i64>,
+) -> Result<(), String> {
     if let (Some(kd), Some(vd)) = (
-        p.p_kill_depth_min_pct.filter(|&x| x != 0.0),
-        p.p_vol_depth_max_pct.filter(|&x| x != 0.0),
+        kill_depth_min_pct.filter(|&x| x != 0.0),
+        vol_depth_max_pct.filter(|&x| x != 0.0),
     ) {
         if kd < vd {
             return Err(format!(
@@ -170,8 +197,8 @@ fn validate_swing1(p: &Swing1Params) -> Result<(), String> {
         }
     }
     if let (Some(km), Some(vm)) = (
-        p.p_kill_max_duration_ms.filter(|&x| x != 0),
-        p.p_vol_min_duration_ms.filter(|&x| x != 0),
+        kill_max_duration_ms.filter(|&x| x != 0),
+        vol_min_duration_ms.filter(|&x| x != 0),
     ) {
         if vm < km {
             return Err(format!(
