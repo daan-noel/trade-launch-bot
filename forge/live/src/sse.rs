@@ -156,6 +156,33 @@ impl SseHub {
         }
         self.emit(None, "wallet_pool", json!({}));
     }
+
+    /// Progress of the keystore-restore job (`POST /api/wallet_pool/restore`): the
+    /// current `phase` (`wallets` | `backfill` | `positions`) plus a `done`/`total`
+    /// counter so the Wallet Pool page can render a progress bar as the long
+    /// backfill loop advances. `total = 0` means "indeterminate" (a phase whose size
+    /// isn't known yet). Not mint-scoped — the restore panel on every open dashboard
+    /// gets it.
+    pub fn restore_progress(&self, phase: &str, done: usize, total: usize) {
+        if !self.has_subscribers() {
+            return;
+        }
+        self.emit(
+            None,
+            "restore_progress",
+            json!({ "phase": phase, "done": done, "total": total }),
+        );
+    }
+
+    /// Terminal frame for a keystore-restore run — carries the full `RestoreSummary`
+    /// so the page shows the final counts (wallets / trades / launches / mints /
+    /// positions) without a refetch. Not mint-scoped.
+    pub fn restore_complete(&self, summary: &Value) {
+        if !self.has_subscribers() {
+            return;
+        }
+        self.emit(None, "restore_complete", summary.clone());
+    }
 }
 
 /// Bridges the `SseHub` to the launcher's [`launcher::EventSink`] seam, so the

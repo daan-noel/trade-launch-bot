@@ -37,6 +37,7 @@ use platform_core::venue::{LaunchpadAdapter, MarketKind};
 use super::wallets::WalletRestore;
 use crate::ingest::map;
 use crate::ingest::pumpfun::PumpFunAdapter;
+use crate::sse::SseHub;
 
 /// Flush the buffered trade rows once they reach this many (bounds memory across a
 /// large history); matches the live writer's batch shape (one `UNNEST` per flush).
@@ -63,6 +64,7 @@ pub async fn backfill(
     settings: &LauncherSettings,
     adapter: &PumpFunAdapter,
     wallets: &WalletRestore,
+    sse: &SseHub,
 ) -> Result<BackfillOutcome> {
     // dev address → managed_wallet_id, for own-launch detection + linkage.
     let dev_by_address: HashMap<&str, Uuid> = wallets
@@ -83,6 +85,9 @@ pub async fn backfill(
     let mut trade_buf: Vec<platform_core::models::NewTrade> = Vec::with_capacity(TRADE_FLUSH_EVERY);
     let mut outcome = BackfillOutcome::default();
 
+    let total = signatures.len();
+    let mut done = 0usize;
+    sse.restore_progress("backfill", 0, total);
     for chunk in signatures.chunks(TX_FETCH_BATCH) {
         let results = get_transactions_batch(&settings.rpc_url, chunk)
             .await
@@ -116,6 +121,8 @@ pub async fn backfill(
                 flush_trades(pool, &mut trade_buf, &mut outcome).await;
             }
         }
+        done += chunk.len();
+        sse.restore_progress("backfill", done, total);
     }
     flush_trades(pool, &mut trade_buf, &mut outcome).await;
 

@@ -53,19 +53,22 @@ pub struct RestoreSummary {
 pub async fn run_restore(
     pool: PgPool,
     settings: LauncherSettings,
-    _sse: SseHub,
+    sse: SseHub,
 ) -> Result<RestoreSummary> {
     info!("keystore restore: starting");
 
     // Phase 1 — rebuild managed_wallets from the keystore folder.
+    sse.restore_progress("wallets", 0, 0);
     let wallets = wallets::restore_wallets(&pool, &settings).await?;
+    sse.restore_progress("wallets", wallets.by_address.len(), wallets.by_address.len());
 
     // Phase 2 — backfill trades / tokens / launches from on-chain history.
     let adapter = PumpFunAdapter::resolve(&pool).await?;
-    let backfilled = backfill::backfill(&pool, &settings, &adapter, &wallets).await?;
+    let backfilled = backfill::backfill(&pool, &settings, &adapter, &wallets, &sse).await?;
 
     // Phase 3 — reconcile token_positions for every mint we touched.
-    let positions_reconciled = positions::reconcile(&pool, &settings, &backfilled.mints).await?;
+    let positions_reconciled =
+        positions::reconcile(&pool, &settings, &backfilled.mints, &sse).await?;
 
     let summary = RestoreSummary {
         wallets_inserted: wallets.inserted,
@@ -76,5 +79,6 @@ pub async fn run_restore(
         positions_reconciled,
     };
     info!(?summary, "keystore restore: complete");
+    sse.restore_complete(&serde_json::to_value(&summary).unwrap_or_default());
     Ok(summary)
 }

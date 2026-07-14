@@ -7,6 +7,7 @@ import {
   useTransferSolMutation,
   useSweepWalletsMutation,
   useConsolidateWalletsMutation,
+  useRestoreFromKeystoreMutation,
   useExportWalletKeyMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
@@ -29,7 +30,13 @@ import {
   toneColorVar,
   AddressDisplay,
 } from '@shared/components/ui';
-import { connectWalletPoolStream } from '@shared/services/sse';
+import {
+  connectWalletPoolStream,
+  connectRestoreProgressStream,
+  connectRestoreCompleteStream,
+  type RestoreProgress,
+  type RestoreSummary,
+} from '@shared/services/sse';
 import { formatSol } from '@shared/lib/format';
 import type {
   ManagedWalletPool,
@@ -213,6 +220,47 @@ export function WalletPoolPage() {
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();
   const [refreshBalances, refreshing] = useRefreshWalletBalancesMutation();
+
+  // Keystore restore (recovery on a fresh box): kick the background job, then track
+  // its SSE progress + final summary. `restoreOpen` gates the confirm dialog.
+  const [restore, restoring] = useRestoreFromKeystoreMutation();
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<RestoreProgress | null>(null);
+  const [restoreSummary, setRestoreSummary] = useState<RestoreSummary | null>(null);
+  const [restoreRunning, setRestoreRunning] = useState(false);
+
+  // Subscribe to restore progress/complete for as long as the page is mounted, so a
+  // long backfill keeps updating even if the operator navigates away and back.
+  useEffect(() => {
+    const p = connectRestoreProgressStream((prog) => {
+      setRestoreRunning(true);
+      setRestoreSummary(null);
+      setRestoreProgress(prog);
+    });
+    const c = connectRestoreCompleteStream((summary) => {
+      setRestoreRunning(false);
+      setRestoreProgress(null);
+      setRestoreSummary(summary);
+      refetchWallets();
+    });
+    return () => {
+      p.close();
+      c.close();
+    };
+  }, [refetchWallets]);
+
+  const onRestore = async () => {
+    setMsg(null);
+    setRestoreSummary(null);
+    setRestoreOpen(false);
+    try {
+      setRestoreRunning(true);
+      await restore().unwrap();
+    } catch {
+      setRestoreRunning(false);
+      /* surfaced via mutation error below */
+    }
+  };
 
   // Operator sweep passes. Both return a `SweepReport`, shown in a result card.
   const [sweep, sweeping] = useSweepWalletsMutation();
@@ -572,6 +620,7 @@ export function WalletPoolPage() {
     apiErrorMessage(refreshing.error) ??
     apiErrorMessage(sweeping.error) ??
     apiErrorMessage(consolidating.error) ??
+    apiErrorMessage(restoring.error) ??
     apiErrorMessage(error);
 
   return (
@@ -616,11 +665,51 @@ export function WalletPoolPage() {
           >
             Consolidate → treasury
           </Button>
+          <Button
+            variant="ghost"
+            icon="refresh"
+            loading={restoring.isLoading || restoreRunning}
+            title={
+              'Recovery: rebuild the database from the copied keystore + on-chain history.\n\n' +
+              'Use this on a fresh box whose Postgres came up empty but whose keystore (.enc files) was copied across. It re-derives every managed wallet from the keystore, discovers which mints the dev wallets launched, and backfills all past trades, held mints (incl. co-buys), and current positions from the chain.\n\n' +
+              'Safe to run more than once — every write is idempotent. Needs the same keystore + KEK passphrase that encrypted the wallets.'
+            }
+            onClick={() => setRestoreOpen(true)}
+          >
+            Restore from keystore
+          </Button>
           <Button variant="primary" icon="coins" loading={funding.isLoading} onClick={() => onFund()}>
             Fund pool
           </Button>
         </div>
       </div>
+
+      {(restoreRunning || restoreProgress || restoreSummary) && (
+        <Banner tone={restoreSummary ? 'good' : 'info'}>
+          {restoreSummary ? (
+            <>
+              <strong>Restore complete.</strong> {restoreSummary.wallets_total} wallets (
+              {restoreSummary.wallets_inserted} new), {restoreSummary.launches} launches,{' '}
+              {restoreSummary.trades} trades, {restoreSummary.mints} mints,{' '}
+              {restoreSummary.positions_reconciled} positions reconciled.
+            </>
+          ) : (
+            <>
+              <strong>Restoring from keystore…</strong>{' '}
+              {restoreProgress ? (
+                <span className="mono">
+                  {restoreProgress.phase}
+                  {restoreProgress.total > 0
+                    ? ` ${restoreProgress.done}/${restoreProgress.total}`
+                    : ''}
+                </span>
+              ) : (
+                'starting…'
+              )}
+            </>
+          )}
+        </Banner>
+      )}
 
       {lowPoolRoles.length > 0 && (
         <Banner
@@ -1054,6 +1143,45 @@ export function WalletPoolPage() {
                   </div>
                 </div>
               )}
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {restoreOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setRestoreOpen(false)}
+        >
+          <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <Card title="Restore from keystore">
+              <Banner tone="info">
+                Rebuilds <code>managed_wallets</code>, <code>launches</code>, <code>tokens</code>,{' '}
+                <code>trades</code>, and <code>token_positions</code> from the copied keystore
+                folder + on-chain history — the recovery path for a fresh box whose Postgres came
+                up empty.
+              </Banner>
+              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm muted">
+                <li>Re-derives every managed wallet from its <code>.enc</code> blob (fresh ids; on-chain data joins by address).</li>
+                <li>Discovers which mints the dev wallets launched, and backfills all past trades + held mints (incl. co-buys).</li>
+                <li>
+                  Runs in the background — potentially thousands of RPC calls; progress shows above.
+                  Safe to run more than once (every write is idempotent).
+                </li>
+              </ul>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => setRestoreOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  icon="refresh"
+                  loading={restoring.isLoading}
+                  onClick={onRestore}
+                >
+                  Start restore
+                </Button>
+              </div>
             </Card>
           </div>
         </div>

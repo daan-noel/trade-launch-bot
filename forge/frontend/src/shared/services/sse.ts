@@ -148,3 +148,51 @@ export function connectWalletPoolStream(onChanged: () => void): StreamHandle {
   const unsub = subscribe('wallet_pool', () => onChanged());
   return { close: unsub };
 }
+
+/** A keystore-restore progress tick: which phase, and how far through it. */
+export interface RestoreProgress {
+  phase: 'wallets' | 'backfill' | 'positions';
+  done: number;
+  total: number;
+}
+
+/** The terminal keystore-restore summary (mirrors the backend `RestoreSummary`). */
+export interface RestoreSummary {
+  wallets_inserted: number;
+  wallets_total: number;
+  trades: number;
+  launches: number;
+  mints: number;
+  positions_reconciled: number;
+}
+
+/** Listen for `restore_progress` — the keystore-restore job advanced a phase. */
+export function connectRestoreProgressStream(
+  onProgress: (p: RestoreProgress) => void,
+): StreamHandle {
+  const unsub = subscribe('restore_progress', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onProgress(JSON.parse(e.data) as RestoreProgress);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/** Listen for `restore_complete` — the keystore-restore job finished; carries the
+ *  final summary counts. The caller refetches the pool off it. */
+export function connectRestoreCompleteStream(
+  onComplete: (s: RestoreSummary) => void,
+): StreamHandle {
+  const unsub = subscribe('restore_complete', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onComplete(JSON.parse(e.data) as RestoreSummary);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}

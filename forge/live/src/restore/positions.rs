@@ -19,20 +19,26 @@ use tracing::{info, warn};
 
 use launcher::{reconcile_positions, LauncherSettings};
 
+use crate::sse::SseHub;
+
 /// Reconcile positions for all `mints`. Returns the count of mints reconciled
 /// without error.
 pub async fn reconcile(
     pool: &PgPool,
     settings: &LauncherSettings,
     mints: &HashSet<String>,
+    sse: &SseHub,
 ) -> Result<usize> {
+    let total = mints.len();
     let mut reconciled = 0usize;
-    for mint in mints {
+    sse.restore_progress("positions", 0, total);
+    for (i, mint) in mints.iter().enumerate() {
         match reconcile_positions(pool, settings, mint).await {
             Ok(()) => reconciled += 1,
             Err(e) => warn!(%mint, ?e, "restore positions: reconcile failed — skipping mint"),
         }
+        sse.restore_progress("positions", i + 1, total);
     }
-    info!(reconciled, total = mints.len(), "restore positions: complete");
+    info!(reconciled, total, "restore positions: complete");
     Ok(reconciled)
 }

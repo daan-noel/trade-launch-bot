@@ -113,6 +113,44 @@ the reader half of forge's "sell/land-confirm stays feed-based, no RPC poll" rul
 - It never reads the chain over RPC — it reads only `bundles` + `trades` from the
   pool ingest already writes.
 
+## Keystore restore (recovery backfill, `forge/live/src/restore/`)
+
+The recovery path for a redeploy that came up with an **empty `forge_bot`** while
+the operator copied only the keystore folder (`.enc` blobs). It rebuilds the DB
+from the keystore + on-chain history by driving the **same decode+map path** as
+live ingest from the RPC backfill pager instead of the gRPC feed — the decoder
+can't tell the source apart, so the rows are identical.
+
+```
+POST /api/wallet_pool/restore ─▶ tokio::spawn run_restore (202 immediately)
+  1 wallets.rs   read_dir keystore → decrypt each {role}-{uuid}.enc → address
+                 → ManagedWalletRepo::insert_if_absent  (fresh ids, join by address)
+  2 backfill.rs  getSignaturesForAddress (every wallet, union+dedup)
+                 → getTransaction(base64) → rpc_to_protobuf → Decoder::decode_protobuf
+                 → map::{trade_to_row,token_created_to_row} → TradeRepo::insert_batch /
+                   TokenRepo::insert; creator ∈ dev wallets ⇒ mark_own_launch +
+                   LaunchRepo::insert (gated on find_by_mint) + set_create_signature
+  3 positions.rs launcher::reconcile_positions(mint) for every observed mint
+```
+
+Progress streams over `GET /api/stream` (`restore_progress` / `restore_complete`
+SSE frames); the Wallet Pool page's "Restore from keystore" button renders it.
+
+- **Real historical `block_time`** comes from `getTransaction.blockTime` and is fed
+  in as the decoder's `received_at` — it's part of the `trades` dedup PK, so it must
+  be exact, never "now".
+- **Idempotent throughout** (managed_wallets by address, trades by
+  `(block_time,tx_signature,leg_index)`, tokens by mint, launches gated on
+  `find_by_mint`, positions upsert on `(mint,wallet)`) — safe to re-run.
+- **RPC pager** lives in `shared/ingest/core` `backfill::` (`rpc-backfill` feature):
+  `get_signatures_for_address` + batched `get_transactions_batch` + the existing
+  `rpc_to_protobuf`. Additive-only for the hunter consumer.
+- **Unrecoverable from keystore alone:** original wallet ids / labels / status /
+  funding_source (fresh ids assigned) and `manage_actions` (no on-chain source).
+- **Deploy caveat:** the server `LAUNCHER_KEK_PASSPHRASE` must match the one that
+  encrypted the blobs, and the keystore dir (`WALLET_KEYSTORE`) must be bind-mounted
+  into the `live-api` container — otherwise the `.enc` files are invisible.
+
 ## Key rules
 
 - **Ingest is a module, not a crate.** `forge/live/src/ingest/`, inside `forge-live`.

@@ -159,6 +159,15 @@ export const api = baseApi.injectEndpoints({
       query: (body) => ({ url: '/api/wallet_pool/consolidate', method: 'POST', body }),
       invalidatesTags: ['Wallets'],
     }),
+    // Keystore restore: rebuild the whole DB (wallets/launches/tokens/trades/
+    // positions) from the copied keystore + on-chain history on a fresh box. The
+    // job runs in the background (202 Accepted immediately); progress + the final
+    // summary arrive over SSE (`restore_progress` / `restore_complete`), which the
+    // page uses to refetch — so no tag invalidation here (the data lands over the
+    // job's lifetime, not on this response).
+    restoreFromKeystore: build.mutation<{ status: string }, void>({
+      query: () => ({ url: '/api/wallet_pool/restore', method: 'POST' }),
+    }),
     // DANGER: returns raw base58 private key. Secret goes in the X-Export-Secret
     // header (never the URL/body cache). No tag invalidation — pure read, and we
     // do NOT want the key retained anywhere in the RTK cache.
@@ -330,6 +339,7 @@ export const {
   useTransferSolMutation,
   useSweepWalletsMutation,
   useConsolidateWalletsMutation,
+  useRestoreFromKeystoreMutation,
   useExportWalletKeyMutation,
   useLaunchesQuery,
   useExecuteLaunchMutation,
