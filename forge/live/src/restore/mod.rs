@@ -17,6 +17,9 @@ pub mod backfill;
 pub mod positions;
 pub mod wallets;
 
+#[cfg(test)]
+mod fixture_test;
+
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgPool;

@@ -37,6 +37,14 @@ impl PumpFunAdapter {
                 .ok_or_else(|| anyhow::anyhow!("quote_assets seed 'SOL' missing — run migrations"))?;
         Ok(Self { launchpad_id, sol_quote_asset_id })
     }
+
+    /// Test-only constructor with fixed interned ids — lets the pure map reuse be
+    /// exercised (e.g. the keystore-restore fixture decode test) without a DB round
+    /// trip through [`Self::resolve`].
+    #[cfg(test)]
+    pub(crate) fn for_test(launchpad_id: i16, sol_quote_asset_id: i16) -> Self {
+        Self { launchpad_id, sol_quote_asset_id }
+    }
 }
 
 impl LaunchpadAdapter for PumpFunAdapter {

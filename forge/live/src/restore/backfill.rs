@@ -275,8 +275,10 @@ async fn wallet_ref(
 
 /// The tx's on-chain `blockTime` (Unix seconds) as a UTC timestamp, or `None` when
 /// absent/not-yet-finalized. It's part of the trades dedup PK, so a tx without it
-/// can't be persisted correctly and is skipped by the caller.
-fn block_time_of(raw: &Value) -> Option<DateTime<Utc>> {
+/// can't be persisted correctly and is skipped by the caller. `pub(crate)` so the
+/// offline fixture test replays the same block_time the backfill would.
+pub(crate) fn block_time_of(raw: &Value) -> Option<DateTime<Utc>> {
     let secs = raw.get("blockTime").and_then(Value::as_i64)?;
     DateTime::<Utc>::from_timestamp(secs, 0)
 }
+
