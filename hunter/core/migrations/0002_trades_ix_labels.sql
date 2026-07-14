@@ -1,0 +1,22 @@
+-- ===========================================================================
+-- 0002 — promote ix_labels back onto `trades`.
+--
+-- The instruction-label array is already computed at ingest: it rides on the
+-- Trade event and populates `tokens.ix_labels` for the create tx. The `trades`
+-- projection dropped it (derive-don't-store), relying on re-deriving from
+-- `raw_txs` on read. Deployments that DON'T persist `raw_txs` (to save disk)
+-- have no payload to re-derive from, so the per-trade label is lost — the
+-- column is written straight from the in-hand value at ingest instead.
+--
+-- Cheap despite per-leg storage: label arrays are low-distinct-cardinality
+-- (`["buy"]`, `["create","buy",...]` repeat endlessly), so TimescaleDB columnar
+-- compression crushes them to ~free even with the per-leg duplication.
+--
+-- JSONB (not TEXT[]) to match `tokens.ix_labels` byte-for-byte, so the existing
+-- ix_count / ix_labels filter helpers in tokens/sql.rs work verbatim on trades.
+--
+-- Forward-only: rows written before this migration stay NULL (there is no
+-- raw_txs to backfill from). Nullable, no DEFAULT ⇒ metadata-only add, safe on
+-- the compressed hypertable.
+-- ===========================================================================
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS ix_labels JSONB;

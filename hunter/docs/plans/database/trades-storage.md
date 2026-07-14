@@ -80,7 +80,7 @@ Anchored to a real row (`sol=0.444288877`, `token=11758458159300`,
 | `id UUID` | **drop** — unreferenced; PK is the dedup key |
 | `ix_type` (`'Sell'`) | **drop** — ≡ `trade_type` |
 | `price_per_token` | **drop → derive** (`= sol_amount / token_amount`) |
-| `ix_labels` | **drop → derive** from [raw_txs](raw-txs-storage.md) on `(block_time, tx_signature)` |
+| `ix_labels` | **promoted back to a typed `JSONB` column** (migration `0002`). Originally drop-and-derive from [raw_txs](raw-txs-storage.md); re-added because deployments that don't persist `raw_txs` have nothing to derive from, and the label already rides on the ingest event (written at insert, near-free post-compression — low-distinct arrays). Forward-only: pre-`0002` rows stay `NULL`. |
 | `sol_amount` / `token_amount` / `*_reserves` | → `BIGINT` base units |
 | `block_time` | **keep, re-scoped** — partition + candle-bucket dimension (NOT an order key) |
 | `received_at` | **drop** — not an order key; was a dup of the ingest clock |
@@ -250,9 +250,11 @@ roughly highest payoff first:
 
 ## Open design questions
 
-- **`ix_labels`** — derived from [raw_txs](raw-txs-storage.md) (chosen). Promote a
-  specific label back to a typed `trades` column only if you `WHERE` on it at volume *and*
-  the derive window (raw_txs retention) is too short for that query.
+- **`ix_labels`** — **resolved: promoted to a typed `JSONB` column** (migration `0002`),
+  written at ingest from the in-hand event value. The derive-from-`raw_txs` path is only a
+  fallback, and it's dead when `raw_txs` isn't persisted (disk savings). JSONB matches
+  `tokens.ix_labels`, so the `ix_count` / `ix_labels` filter helpers in
+  [tokens/sql.rs](../../../core/src/api/handlers/tokens/sql.rs) apply verbatim to `trades`.
 - **`real_*_reserves`** — keep vs drop-and-derive (lever 4).
 - **`tx_signature` / `wallet_address` encoding** — `BYTEA` / interning (levers 1–2).
 - **`mint_address` width** — 44-byte base58 per row; an INT token ref would add a hot-path

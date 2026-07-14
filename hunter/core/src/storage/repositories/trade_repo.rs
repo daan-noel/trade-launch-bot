@@ -15,8 +15,8 @@ use crate::storage::repositories::wallet_dict_repo::WalletDictRepo;
 const SEED_MINT_CHUNK: usize = 1000;
 
 /// Rows per `insert_many` statement. A single Postgres statement is capped at
-/// 65535 bind parameters (the wire protocol's int16 count); at 13 binds/row the
-/// hard ceiling is 5041 rows, so this stays well under it. sqlx 0.6 silently
+/// 65535 bind parameters (the wire protocol's int16 count); at 14 binds/row the
+/// hard ceiling is 4681 rows, so this stays well under it. sqlx 0.6 silently
 /// wraps `len() as i16` past the cap, corrupting the Parse/Bind message into a
 /// Postgres parse error — exactly what the token_sync backfill hit on busy mints.
 const TRADE_INSERT_CHUNK: usize = 3000;
@@ -39,8 +39,9 @@ impl Clone for TradeRepo {
 // `wallet_dict`. The runtime `Trade` model is unchanged (f64 amounts, base58
 // signature string), so every read path reconstructs the model from the integer
 // columns via the conversion helpers at the bottom of this file. Columns the new
-// table dropped (`id`, `price_per_token`, `received_at`, `ix_type`, `ix_labels`,
-// `real_*_reserves`) are synthesized on read.
+// table dropped (`id`, `price_per_token`, `received_at`, `ix_type`,
+// `real_*_reserves`) are synthesized on read. `ix_labels` was re-added as a real
+// JSONB column (migration 0002), written at ingest and read back where projected.
 // ---------------------------------------------------------------------------
 
 /// One row read from the new `trades` table LEFT-joined to `wallet_dict`. All
@@ -67,6 +68,11 @@ struct TradeDbRow {
     reserve_lamports: Option<i64>,
     reserve_token: Option<i64>,
     venue: String,
+    // Defaulted so read queries that don't project `ix_labels` still map cleanly
+    // to `None` (only the trade-history reads select it). `None` = column absent
+    // from the SELECT *or* a NULL row (pre-0002 trades — no raw_txs to backfill).
+    #[sqlx(default)]
+    ix_labels: Option<sqlx::types::Json<serde_json::Value>>,
 }
 
 impl TryFrom<TradeDbRow> for Trade {
@@ -109,7 +115,9 @@ impl TryFrom<TradeDbRow> for Trade {
             real_token_reserves: None,
             // Synthesized "Buy"/"Sell" instruction label from the trade side.
             instruction_type: ix_type_str(trade_type).to_string(),
-            instruction_labels: serde_json::Value::Null,
+            // Real per-tx instruction labels when the read projected `ix_labels`
+            // (0002+ trades); `Null` when not selected or an unbackfilled old row.
+            instruction_labels: r.ix_labels.map(|j| j.0).unwrap_or(serde_json::Value::Null),
             venue: r.venue,
         })
     }
@@ -159,8 +167,8 @@ impl TradeRepo {
                 (mint_address, wallet_id, trade_type, venue,
                  amount_lamports, token_amount,
                  reserve_lamports, reserve_token,
-                 slot, tx_index, leg_index, block_time, tx_signature)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 slot, tx_index, leg_index, block_time, tx_signature, ix_labels)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING
             "#,
         )
@@ -177,6 +185,7 @@ impl TradeRepo {
         .bind(trade.leg_index as i16)
         .bind(trade.block_time)
         .bind(sig_base58_to_bytes(&trade.tx_signature)?)
+        .bind(sqlx::types::Json(&trade.instruction_labels))
         .execute(&self.pool)
         .await?;
 
@@ -197,7 +206,7 @@ impl TradeRepo {
     /// bind parameters (the wire protocol's int16 count), and sqlx 0.6 has no
     /// guard — it writes `len() as i16`, so past the ceiling the count silently
     /// wraps and Postgres rejects the malformed Parse/Bind ("DB parse error"). At
-    /// 13 binds/row the chunk stays well under the ceiling. Each chunk is safe to
+    /// 14 binds/row the chunk stays well under the ceiling. Each chunk is safe to
     /// retry (DO NOTHING is idempotent).
     pub async fn insert_many(&self, trades: &[Trade]) -> anyhow::Result<()> {
         if trades.is_empty() {
@@ -225,7 +234,7 @@ impl TradeRepo {
                 "INSERT INTO trades \
                  (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
-                  block_time, tx_signature) ",
+                  block_time, tx_signature, ix_labels) ",
             );
             // `push_values` cannot bubble a Result, so pre-resolve the fallible
             // signature decode into the loop's error path is not possible here;
@@ -247,7 +256,8 @@ impl TradeRepo {
                     .push_bind(t.tx_index as i32)
                     .push_bind(t.leg_index as i16)
                     .push_bind(t.block_time)
-                    .push_bind(sig_base58_to_bytes(&t.tx_signature).unwrap_or_default());
+                    .push_bind(sig_base58_to_bytes(&t.tx_signature).unwrap_or_default())
+                    .push_bind(sqlx::types::Json(&t.instruction_labels));
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
             qb.build().execute(&self.pool).await?;
@@ -545,7 +555,7 @@ impl TradeRepo {
             SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
-                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels
             FROM trades t
             LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
@@ -635,7 +645,7 @@ impl TradeRepo {
             SELECT t.mint_address, COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address, t.trade_type, t.venue,
                    t.amount_lamports, t.token_amount,
                    t.reserve_lamports, t.reserve_token,
-                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
+                   t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature, t.ix_labels
             FROM trades t
             LEFT JOIN wallet_dict w ON w.id = t.wallet_id
             WHERE t.mint_address = $1
