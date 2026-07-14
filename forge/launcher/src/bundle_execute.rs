@@ -258,7 +258,7 @@ async fn execute_bundle_inner(
         .await;
 
         let jito_bundle_id =
-            submit_jito_bundle(&settings.jito_block_engine_url, &built.txs).await?;
+            submit_jito_bundle(&settings.jito_block_engine_urls, &built.txs).await?;
         // `leg_signatures` is the CO-BUY set the confirm watcher checks against the
         // `trades` feed; the bundle is atomic, so all co-buys present ⟹ create landed.
         // Stamp the create leg's signature on the launch (status stays `pending`
@@ -478,7 +478,14 @@ fn check_wallet_reserved_to_bundle(wallet: &ManagedWallet, launch_id: Uuid) -> R
 /// actionable message rather than shipping it and getting an opaque rejection.
 const MAX_TX_WIRE_BYTES: usize = 1232;
 
-async fn submit_jito_bundle(url: &str, txs: &[VersionedTransaction]) -> Result<String> {
+/// Submit the atomic bundle to every configured block-engine URL **in parallel**,
+/// returning the bundle id from the first region that accepts it. The same signed
+/// bundle raced across regions lands via whichever region reaches the leader first;
+/// the txs share signatures, so on-chain inclusion is deduped — racing regions can
+/// only ever land the bundle once (no double-spend). One URL degrades to today's
+/// single-region submit. Fails only if EVERY region errors (returns the last error).
+async fn submit_jito_bundle(urls: &[String], txs: &[VersionedTransaction]) -> Result<String> {
+    // Encode + wire-size-check ONCE; the body is identical across regions.
     let mut encoded = Vec::with_capacity(txs.len());
     for (i, tx) in txs.iter().enumerate() {
         let wire = bincode::serialize(tx)?;
@@ -492,21 +499,61 @@ async fn submit_jito_bundle(url: &str, txs: &[VersionedTransaction]) -> Result<S
         }
         encoded.push(STANDARD.encode(wire));
     }
-
     // Jito's `sendBundle` defaults to base58-decoding each tx; we send base64
     // (v0 ALT legs are binary-dense), so the encoding option is mandatory — without
     // it Jito rejects with "transaction #0 could not be decoded".
-    let body = serde_json::json!({
+    let body = std::sync::Arc::new(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "sendBundle",
         "params": [encoded, { "encoding": "base64" }]
-    });
+    }));
 
+    if urls.is_empty() {
+        bail!("no Jito block-engine URLs configured");
+    }
+    // One shared client (cheap Arc clone per task) fans out concurrently.
     let client = reqwest::Client::new();
+    let mut set = tokio::task::JoinSet::new();
+    for url in urls {
+        let url = url.clone();
+        let body = body.clone();
+        let client = client.clone();
+        set.spawn(async move {
+            submit_one(&client, &url, &body)
+                .await
+                .map(|id| (url.clone(), id))
+                .map_err(|e| e.context(format!("region {url}")))
+        });
+    }
+
+    let mut last_err = None;
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Ok((url, id))) => {
+                // First region to accept wins; drop the rest (they'd land the same
+                // signatures, deduped on-chain, so cancelling them wastes nothing).
+                set.abort_all();
+                info!(region = %url, jito_bundle_id = %id, "atomic bundle accepted by Jito region");
+                return Ok(id);
+            }
+            Ok(Err(e)) => last_err = Some(e),
+            Err(join_err) => last_err = Some(anyhow::anyhow!("submit task join error: {join_err}")),
+        }
+    }
+    Err(last_err
+        .unwrap_or_else(|| anyhow::anyhow!("all Jito block-engine regions rejected the bundle")))
+}
+
+/// One `sendBundle` POST to a single block-engine region.
+async fn submit_one(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<String> {
     let resp = client
         .post(url)
-        .json(&body)
+        .json(body)
         .send()
         .await
         .context("Jito sendBundle HTTP")?;

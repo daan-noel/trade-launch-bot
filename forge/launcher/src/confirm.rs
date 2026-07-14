@@ -458,6 +458,7 @@ mod tests {
             keystore_dir: PathBuf::from("/nonexistent-keystore"),
             kek_passphrase: "test".to_string(),
             jito_block_engine_url: "http://127.0.0.1:1".to_string(),
+            jito_block_engine_urls: vec!["http://127.0.0.1:1".to_string()],
             bundle_max_retries: 2,
             jito_min_tip_sol: 0.001,
             jito_max_tip_sol: 0.05,

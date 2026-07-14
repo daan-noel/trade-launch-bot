@@ -15,8 +15,15 @@ pub struct LauncherSettings {
     pub keystore_dir: PathBuf,
     /// Passphrase for [`super::keystore::EnvKek`] (wraps ed25519 secrets at rest).
     pub kek_passphrase: String,
-    /// Jito block-engine JSON-RPC base (defaults to mainnet).
+    /// Jito block-engine JSON-RPC base (defaults to mainnet global). Used for the
+    /// leader-schedule poll (`getNextScheduledLeader`) and as the fallback submit URL.
     pub jito_block_engine_url: String,
+    /// Block-engine URLs a bundle is submitted to **in parallel** (`JITO_BLOCK_ENGINE_URLS`,
+    /// comma-separated regional endpoints). The same signed bundle raced across
+    /// regions lands via whichever region reaches the leader first; the txs share
+    /// signatures so they can only be included once on-chain (no double-spend). Falls
+    /// back to `[jito_block_engine_url]` when unset (single-region submit).
+    pub jito_block_engine_urls: Vec<String>,
     /// How many times the confirm watcher re-bids a `dropped` bundle before giving
     /// up (each re-bid climbs the Jito tip-escalation ladder: p95, p99, …). `0`
     /// disables auto re-bid — a dropped bundle stays dropped for a manual
@@ -275,6 +282,21 @@ impl LauncherSettings {
         let jito_block_engine_url = std::env::var("JITO_BLOCK_ENGINE_URL").unwrap_or_else(|_| {
             "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
         });
+        // Parallel submit fan-out. Empty/unset → single-region submit to the base URL.
+        let jito_block_engine_urls = {
+            let list: Vec<String> = std::env::var("JITO_BLOCK_ENGINE_URLS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if list.is_empty() {
+                vec![jito_block_engine_url.clone()]
+            } else {
+                list
+            }
+        };
         let bundle_max_retries = env_u64("BUNDLE_MAX_RETRIES", 2)? as u32;
         let jito_min_tip_sol = env_f64("JITO_MIN_TIP_SOL", 0.0002)?;
         let jito_max_tip_sol = env_f64("JITO_MAX_TIP_SOL", 0.01)?;
@@ -304,6 +326,7 @@ impl LauncherSettings {
             keystore_dir,
             kek_passphrase,
             jito_block_engine_url,
+            jito_block_engine_urls,
             bundle_max_retries,
             jito_min_tip_sol,
             jito_max_tip_sol,
