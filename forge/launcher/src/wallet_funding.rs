@@ -36,6 +36,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::config::{FundingConfig, LauncherSettings};
+use crate::events::EventSink;
 use crate::funding_plan::FundPlan;
 use crate::keystore::{self, EnvKek};
 use crate::service::PumpfunTemplateParams;
@@ -273,6 +274,7 @@ pub async fn fund_once(
     settings: &LauncherSettings,
     scope: FundScope,
     mode: FundMode,
+    sink: Option<&dyn EventSink>,
 ) -> Result<FundReport> {
     let Some(cfg) = settings.funding.as_ref() else {
         bail!("wallet funding not configured (FUND_ENABLED not set)");
@@ -492,7 +494,21 @@ pub async fn fund_once(
         writeback_treasury_balances(pool, &sources).await;
     }
 
+    // Push a coarse "pool changed" signal if this pass actually touched wallets, so
+    // the Wallet Pool page refetches instead of polling (audit Phase A2).
+    notify_pool_changed(sink, &report);
     Ok(report)
+}
+
+/// Emit the coarse wallet-pool push (no-op without a sink) when a funding pass
+/// moved SOL or claimed/reverted wallets — i.e. produced any per-wallet outcome.
+/// A fully warm no-op pass (empty report) emits nothing.
+fn notify_pool_changed(sink: Option<&dyn EventSink>, report: &FundReport) {
+    if let Some(sink) = sink {
+        if !report.outcomes.is_empty() {
+            sink.wallet_pool_changed();
+        }
+    }
 }
 
 /// Whether a single-wallet funding step wants the pass to keep going or stop
@@ -532,6 +548,7 @@ pub async fn fund_for_launch(
     bundler_count: Option<u32>,
     dev_wallet_id: Uuid,
     mode: FundMode,
+    sink: Option<&dyn EventSink>,
 ) -> Result<FundReport> {
     let Some(cfg) = settings.funding.as_ref() else {
         bail!("wallet funding not configured (FUND_ENABLED not set)");
@@ -657,6 +674,7 @@ pub async fn fund_for_launch(
         writeback_treasury_balances(pool, &sources).await;
     }
 
+    notify_pool_changed(sink, &report);
     Ok(report)
 }
 
@@ -904,12 +922,24 @@ async fn submit_transfer(
 /// Spawn the background funder. Long-lived; keeps every fundable role warm. Gate
 /// the *spawn* on `settings.funding.is_some()` at the call site (mirror the
 /// dust-sweep wiring) — this loop assumes funding is configured.
-pub fn spawn_wallet_funding(pool: PgPool, settings: LauncherSettings) -> JoinHandle<()> {
+pub fn spawn_wallet_funding(
+    pool: PgPool,
+    settings: LauncherSettings,
+    sink: Option<Arc<dyn EventSink>>,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(FUND_INTERVAL);
         loop {
             tick.tick().await;
-            match fund_once(&pool, &settings, FundScope::default(), FundMode::Background).await {
+            match fund_once(
+                &pool,
+                &settings,
+                FundScope::default(),
+                FundMode::Background,
+                sink.as_deref(),
+            )
+            .await
+            {
                 Ok(report) if report.outcomes.is_empty() => {}
                 Ok(report) => info!(
                     spent_lamports = report.spent_lamports,

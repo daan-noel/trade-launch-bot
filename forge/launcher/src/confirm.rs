@@ -27,6 +27,7 @@ use platform_core::storage::repositories::{
 
 use crate::bundle::legs_from_json;
 use crate::config::LauncherSettings;
+use crate::events::{EventSink, LaunchStatusEvent};
 use crate::{execute_bundle, keystore};
 
 /// Fallback re-check cadence. The watcher is normally woken by `trades_notify`
@@ -45,10 +46,15 @@ const CONFIRM_TIMEOUT: chrono::Duration = chrono::Duration::seconds(90);
 /// bundle at a higher Jito tip up to `bundle_max_retries`); `None` (the launcher
 /// env failed to parse at boot) keeps the watcher read-only — it still confirms
 /// landings and marks drops, it just can't re-bid.
+///
+/// `sink` (when the live bin wires one) receives each terminal launch/bundle
+/// transition as a push event so the Launch Console updates without polling; a
+/// `None` sink makes every emit a no-op (CLI paths, tests).
 pub fn spawn_bundle_confirm_watcher(
     pool: PgPool,
     settings: Option<LauncherSettings>,
     trades_notify: Arc<Notify>,
+    sink: Option<Arc<dyn EventSink>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(FALLBACK_INTERVAL);
@@ -60,14 +66,18 @@ pub fn spawn_bundle_confirm_watcher(
                 _ = trades_notify.notified() => {}
                 _ = tick.tick() => {}
             }
-            if let Err(e) = confirm_pending(&pool, settings.as_ref()).await {
+            if let Err(e) = confirm_pending(&pool, settings.as_ref(), sink.as_deref()).await {
                 warn!(?e, "bundle confirm pass failed");
             }
         }
     })
 }
 
-async fn confirm_pending(pool: &PgPool, settings: Option<&LauncherSettings>) -> anyhow::Result<()> {
+async fn confirm_pending(
+    pool: &PgPool,
+    settings: Option<&LauncherSettings>,
+    sink: Option<&dyn EventSink>,
+) -> anyhow::Result<()> {
     let pending = BundleRepo::find_awaiting_confirmation(pool).await?;
     if pending.is_empty() {
         return Ok(());
@@ -90,7 +100,7 @@ async fn confirm_pending(pool: &PgPool, settings: Option<&LauncherSettings>) -> 
             warn!(bundle_id = %id, launch_id = %bundle.launch_id, "launch not found for bundle — skipping");
             continue;
         };
-        if let Err(e) = confirm_one(pool, bundle, launch, settings).await {
+        if let Err(e) = confirm_one(pool, bundle, launch, settings, sink).await {
             warn!(bundle_id = %id, ?e, "bundle confirm check failed");
         }
     }
@@ -102,6 +112,7 @@ async fn confirm_one(
     bundle: Bundle,
     launch: Launch,
     settings: Option<&LauncherSettings>,
+    sink: Option<&dyn EventSink>,
 ) -> anyhow::Result<()> {
     // `leg_signatures` is the CO-BUY set (the create leg is `tx0`, its signature is
     // on the launch). The bundle is atomic, so all co-buys present in the feed ⟹ the
@@ -114,7 +125,7 @@ async fn confirm_one(
         .context("decode leg signature")?;
     if sigs.is_empty() {
         warn!(bundle_id = %bundle.id, "submitted bundle has no co-buy signatures — marking dropped");
-        finalize_dropped(pool, &bundle, &launch, settings).await;
+        finalize_dropped(pool, &bundle, &launch, settings, sink).await;
         return Ok(());
     }
 
@@ -122,7 +133,7 @@ async fn confirm_one(
         TradeRepo::find_signatures_present(pool, &launch.mint_address, &sigs).await?;
 
     if landed.len() == sigs.len() {
-        finalize_landed(pool, &bundle, &launch, settings).await;
+        finalize_landed(pool, &bundle, &launch, settings, sink).await;
         info!(bundle_id = %bundle.id, legs = sigs.len(), "atomic launch bundle landed (create + co-buys)");
         return Ok(());
     }
@@ -157,7 +168,7 @@ async fn confirm_one(
                         ?e,
                         "atomic launch bundle re-bid failed to re-submit — finalizing as dropped"
                     );
-                    finalize_dropped(pool, &bundle, &launch, Some(settings)).await;
+                    finalize_dropped(pool, &bundle, &launch, Some(settings), sink).await;
                 }
                 return Ok(());
             }
@@ -167,7 +178,7 @@ async fn confirm_one(
             attempts = bundle.submit_attempts,
             "atomic launch bundle dropped — nothing landed within timeout (retries exhausted)"
         );
-        finalize_dropped(pool, &bundle, &launch, settings).await;
+        finalize_dropped(pool, &bundle, &launch, settings, sink).await;
     } else {
         // Atomicity anomaly: a Jito bundle should never land partially. The create
         // co-landed (it's tx0), so the launch IS created — mark it so, but flag the
@@ -178,9 +189,30 @@ async fn confirm_one(
             total = sigs.len(),
             "atomic launch bundle partially landed — Jito atomicity anomaly, investigate"
         );
-        finalize_partial(pool, &bundle, &launch, settings).await;
+        finalize_partial(pool, &bundle, &launch, settings, sink).await;
     }
     Ok(())
+}
+
+/// Push one terminal launch/bundle transition to the frontend (no-op without a
+/// sink). Called after the DB writes so a subscriber that refetches off it sees
+/// the settled row.
+fn emit_launch_status(
+    sink: Option<&dyn EventSink>,
+    launch: &Launch,
+    launch_status: LaunchStatus,
+    bundle: &Bundle,
+    bundle_status: BundleStatus,
+) {
+    if let Some(sink) = sink {
+        sink.launch_status(&LaunchStatusEvent {
+            launch_id: launch.id,
+            mint_address: launch.mint_address.clone(),
+            launch_status: launch_status.as_str().to_string(),
+            bundle_id: Some(bundle.id),
+            bundle_status: Some(bundle_status.as_str().to_string()),
+        });
+    }
 }
 
 /// Terminal LANDED: the token is live and every co-buy filled. Flip the bundle +
@@ -191,6 +223,7 @@ async fn finalize_landed(
     bundle: &Bundle,
     launch: &Launch,
     settings: Option<&LauncherSettings>,
+    sink: Option<&dyn EventSink>,
 ) {
     if let Err(e) = BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Landed.as_str()).await {
         warn!(bundle_id = %bundle.id, %e, "failed to set bundle landed");
@@ -208,6 +241,7 @@ async fn finalize_landed(
     mark_bundle_wallets_used(pool, bundle).await;
     mark_dev_wallet_used(pool, launch).await;
     delete_mint_key(settings, launch.id);
+    emit_launch_status(sink, launch, LaunchStatus::Created, bundle, BundleStatus::Landed);
 }
 
 /// Terminal DROPPED (retries exhausted): the atomic bundle never landed, so the
@@ -219,6 +253,7 @@ async fn finalize_dropped(
     bundle: &Bundle,
     launch: &Launch,
     settings: Option<&LauncherSettings>,
+    sink: Option<&dyn EventSink>,
 ) {
     if let Err(e) = BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Dropped.as_str()).await
     {
@@ -229,6 +264,7 @@ async fn finalize_dropped(
     }
     release_bundle_wallets(pool, bundle, launch).await;
     delete_mint_key(settings, launch.id);
+    emit_launch_status(sink, launch, LaunchStatus::Failed, bundle, BundleStatus::Dropped);
 }
 
 /// PARTIAL (Jito atomicity anomaly — should not happen): some co-buys landed, so
@@ -240,6 +276,7 @@ async fn finalize_partial(
     bundle: &Bundle,
     launch: &Launch,
     settings: Option<&LauncherSettings>,
+    sink: Option<&dyn EventSink>,
 ) {
     if let Err(e) = BundleRepo::set_confirmed(pool, bundle.id, BundleStatus::Partial.as_str()).await
     {
@@ -256,6 +293,7 @@ async fn finalize_partial(
     mark_bundle_wallets_used(pool, bundle).await;
     mark_dev_wallet_used(pool, launch).await;
     delete_mint_key(settings, launch.id);
+    emit_launch_status(sink, launch, LaunchStatus::Created, bundle, BundleStatus::Partial);
 }
 
 /// Seed the dev cost-basis position for a landed launch (idempotent) — the dev-buy
@@ -536,7 +574,7 @@ mod tests {
             .unwrap();
 
         // One confirm pass: timeout → drop → re-bid → re-bid fails → finalize dropped.
-        confirm_pending(pool, Some(&dummy_settings())).await.unwrap();
+        confirm_pending(pool, Some(&dummy_settings()), None).await.unwrap();
 
         let launch = LaunchRepo::get(pool, launch_id).await.unwrap().unwrap();
         assert_eq!(

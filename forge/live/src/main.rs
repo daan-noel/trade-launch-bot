@@ -139,6 +139,11 @@ async fn main() -> anyhow::Result<()> {
     // work; when ingest is disabled it simply never receives feed events.
     let sse_hub = sse::SseHub::new();
 
+    // The launcher's background workers (confirm watcher + wallet funder) push
+    // status transitions through the crate-neutral `EventSink` seam; the SseHub is
+    // its SSE-backed impl. `Arc<dyn EventSink>` so both workers share one bus.
+    let event_sink: Arc<dyn launcher::EventSink> = Arc::new(sse_hub.clone());
+
     // Feed-based bundle-landing confirmation — cheap, always on (confirming reads
     // only `bundles`/`trades` from the already-connected pool). The launcher
     // settings (when configured) additionally let it auto re-bid a `dropped`
@@ -148,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
         pools.hot.clone(),
         launcher_settings.clone(),
         trades_notify.clone(),
+        Some(event_sink.clone()),
     );
 
     // Fresh-wallet pool: balance poller (generated/funding -> funded) +
@@ -165,7 +171,11 @@ async fn main() -> anyhow::Result<()> {
     ) = match launcher_settings.as_ref() {
         Some(s) => {
             let funding_task = if s.funding.is_some() {
-                Some(launcher::spawn_wallet_funding(pools.hot.clone(), s.clone()))
+                Some(launcher::spawn_wallet_funding(
+                    pools.hot.clone(),
+                    s.clone(),
+                    Some(event_sink.clone()),
+                ))
             } else {
                 warn!("wallet funding disabled — set FUND_ENABLED=true to enable");
                 None

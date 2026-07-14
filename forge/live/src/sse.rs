@@ -124,6 +124,50 @@ impl SseHub {
         }
         self.emit(None, "ingest_status", json!({ "live": live }));
     }
+
+    /// A launch reached a terminal status (created / failed / partial) — pushed
+    /// from the confirm watcher so the Launch Console updates without polling
+    /// `/api/launches/{id}/status`. Mint-scoped for symmetry with the trade
+    /// stream; the Launch Console (an unfiltered subscriber) matches on
+    /// `launch_id`.
+    fn launch_status(&self, ev: &launcher::LaunchStatusEvent) {
+        if !self.has_subscribers() {
+            return;
+        }
+        self.emit(
+            Some(ev.mint_address.clone()),
+            "launch_status",
+            json!({
+                "launch_id": ev.launch_id,
+                "mint_address": ev.mint_address,
+                "launch_status": ev.launch_status,
+                "bundle_id": ev.bundle_id,
+                "bundle_status": ev.bundle_status,
+            }),
+        );
+    }
+
+    /// The managed-wallet pool changed (a funding pass moved SOL / promoted
+    /// wallets). A bare, not-mint-scoped signal — the Wallet Pool page refetches
+    /// `GET /api/wallet_pool` off it.
+    fn wallet_pool_changed(&self) {
+        if !self.has_subscribers() {
+            return;
+        }
+        self.emit(None, "wallet_pool", json!({}));
+    }
+}
+
+/// Bridges the `SseHub` to the launcher's [`launcher::EventSink`] seam, so the
+/// background confirm watcher + wallet funder (in the `launcher` crate, which can't
+/// see this bin's SSE layer) push launch/funding events onto the same bus.
+impl launcher::EventSink for SseHub {
+    fn launch_status(&self, ev: &launcher::LaunchStatusEvent) {
+        SseHub::launch_status(self, ev);
+    }
+    fn wallet_pool_changed(&self) {
+        SseHub::wallet_pool_changed(self);
+    }
 }
 
 impl Default for SseHub {

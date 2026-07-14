@@ -116,3 +116,35 @@ export function connectIngestStatusStream(onStatus: (live: boolean) => void): St
   });
   return { close: unsub };
 }
+
+/** A pushed launch/bundle status transition (confirm-watcher terminal outcome). */
+export interface LaunchStatusEvent {
+  launch_id: string;
+  mint_address: string;
+  launch_status: string;
+  bundle_id: string | null;
+  bundle_status: string | null;
+}
+
+/** Listen for `launch_status` — a launch reached created/failed/partial. The
+ *  Launch Console refetches its status query when the id matches. */
+export function connectLaunchStatusStream(
+  onStatus: (e: LaunchStatusEvent) => void,
+): StreamHandle {
+  const unsub = subscribe('launch_status', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onStatus(JSON.parse(e.data) as LaunchStatusEvent);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/** Listen for `wallet_pool` — a funding pass moved SOL / promoted wallets. A bare
+ *  signal; the caller refetches `GET /api/wallet_pool`. */
+export function connectWalletPoolStream(onChanged: () => void): StreamHandle {
+  const unsub = subscribe('wallet_pool', () => onChanged());
+  return { close: unsub };
+}

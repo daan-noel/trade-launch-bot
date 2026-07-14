@@ -13,6 +13,7 @@ mod bundle_simulate;
 mod confirm;
 mod config;
 mod dust_sweep;
+mod events;
 mod funding_plan;
 mod keystore;
 mod launch_sim_matrix;
@@ -42,6 +43,7 @@ pub use confirm::spawn_bundle_confirm_watcher;
 
 pub use config::{FundingConfig, LauncherSettings, ManageConfig};
 pub use dust_sweep::spawn_dust_sweep;
+pub use events::{EventSink, LaunchStatusEvent};
 pub use funding_plan::{
     dev_launch_required_lamports, leg_required_lamports, FundPlan, FUNDING_HEADROOM_LAMPORTS,
 };

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   useWalletPoolQuery,
   useRefreshWalletBalancesMutation,
@@ -29,6 +29,7 @@ import {
   toneColorVar,
   AddressDisplay,
 } from '@shared/components/ui';
+import { connectWalletPoolStream } from '@shared/services/sse';
 import { formatSol } from '@shared/lib/format';
 import type {
   ManagedWalletPool,
@@ -190,12 +191,25 @@ export function WalletPoolPage() {
   const [showRetiredEmpty, setShowRetiredEmpty] = useState(false);
   const [showGenerated, setShowGenerated] = useState(false);
 
-  const { data: wallets = [], isFetching, error } = useWalletPoolQuery(roleFilter || undefined, {
-    // Poll while any wallet is mid-lifecycle (a treasury send in flight or awaiting
-    // manual funding); stop once the pool settles.
-    pollingInterval: 5000,
+  const {
+    data: wallets = [],
+    isFetching,
+    error,
+    refetch: refetchWallets,
+  } = useWalletPoolQuery(roleFilter || undefined, {
+    // The background funder PUSHES a `wallet_pool` event over SSE (audit Phase A)
+    // when a pass moves SOL / promotes wallets, and the subscription below refetches
+    // off it. This poll is demoted to a slow 30s gap-heal covering a missed push.
+    pollingInterval: 30000,
     skipPollingIfUnfocused: true,
   });
+
+  // SSE push: refetch the pool the instant a funding pass reports a change, so the
+  // page reflects autonomous background funding without fast polling.
+  useEffect(() => {
+    const h = connectWalletPoolStream(() => refetchWallets());
+    return () => h.close();
+  }, [refetchWallets]);
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();
   const [refreshBalances, refreshing] = useRefreshWalletBalancesMutation();

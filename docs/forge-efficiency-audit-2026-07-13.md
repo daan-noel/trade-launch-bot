@@ -46,21 +46,27 @@ Verified present in the current tree at the cited `file:line`.
 Four tranches, ordered by value/effort. Phase A is the last real double-poll class; B–D are
 piecemeal overhead cuts.
 
-### Phase A — Finish the SSE push surface (highest value)
+### Phase A — Finish the SSE push surface (highest value) ✅ DONE 2026-07-14
 
 The bus exists; two of the plan's event categories are still missing, so the Launch Console
 and wallet pages still poll for status the backend could push.
 
-- [ ] **A1 — Emit `launch`/`bundle` status over SSE.** `SseHub` publishes only
-  `trade_executed` / `token_created` / `ingest_status` (`forge/live/src/sse.rs:83-121`;
-  frontend `forge/frontend/src/shared/services/sse.ts:2-8`). Publish launch + bundle status
-  transitions from the confirm watcher / launch state writes.
-- [ ] **A2 — Emit wallet-funding events over SSE.** No funding event type exists. Publish
-  from the funding pass (`forge/live/src/wallet_funding.rs`) so the wallet pool reflects
-  fund progress without polling.
-- [ ] **A3 — Demote the now-redundant pollers to gap-heal.** Once A1/A2 land, drop the
-  Launch Console `/api/launches/{id}/status` 3s poll (`LaunchConsolePage.tsx:113`) and the
-  `WalletPoolPage.tsx:136` 5s poll to slow (~30s) fallbacks, matching hunter's model.
+Decoupling seam: the confirm watcher + wallet funder live in the `launcher` crate, which
+can't see the live bin's `SseHub`. Added a crate-neutral `EventSink` trait
+(`launcher/src/events.rs`, `LaunchStatusEvent`) that `SseHub` implements (`sse.rs`), passed
+as `Option<Arc<dyn EventSink>>` into `spawn_bundle_confirm_watcher` / `spawn_wallet_funding`
+(+ threaded through `fund_once`/`fund_for_launch` so the manual + JIT HTTP paths push too).
+
+- [x] **A1 — Emit `launch`/`bundle` status over SSE.** `SseHub::launch_status` +
+  `launch_status` frame emitted from every confirm-watcher terminal transition
+  (`finalize_landed`/`_dropped`/`_partial`). Frontend `connectLaunchStatusStream` refetches
+  the Launch Console status query on a matching `launch_id`.
+- [x] **A2 — Emit wallet-funding events over SSE.** `SseHub::wallet_pool_changed` + bare
+  `wallet_pool` frame emitted after any funding pass that touched wallets (`notify_pool_changed`
+  in `wallet_funding.rs`). Frontend `connectWalletPoolStream` refetches `GET /api/wallet_pool`.
+- [x] **A3 — Demote the now-redundant pollers to gap-heal.** Launch Console status poll
+  3s→30s (`LaunchConsolePage.tsx`), Wallet Pool poll 5s→30s (`WalletPoolPage.tsx`); SSE is
+  now the primary trigger, the poll a fallback.
 
 ### Phase B — Ingest observability
 

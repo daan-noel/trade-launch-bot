@@ -26,6 +26,7 @@ import {
   TradeTypePill,
 } from '@shared/components/ui';
 import { canonicalSteps } from '@shared/components/IxLayoutEditor';
+import { connectLaunchStatusStream } from '@shared/services/sse';
 import { formatSig, formatSol, ipfsToHttp, solscanTx } from '@shared/lib/format';
 import { toHumanUnits } from '@features/templates/legForm';
 import type {
@@ -121,19 +122,21 @@ export function LaunchConsolePage() {
       : 0;
   const devShort = devShortfall > 0;
 
-  // Status polling: keep the query alive after a launch, polling every 3s until
-  // the bundle reaches a terminal state, then stop (interval → 0). The launch id
-  // is mirrored into the URL (?launch=<id>) on execute so an accidental reload
-  // rehydrates it here and the Status card reattaches to the in-flight launch
-  // instead of losing it (the LaunchResult card can't be rebuilt — that's fine,
-  // the live status/bundle/trades all come from the poll below).
+  // Status: the confirm watcher PUSHES each terminal launch/bundle transition over
+  // SSE (audit Phase A), so the primary trigger is the `launch_status` stream below
+  // — it refetches the instant the backend settles. The poll is demoted to a slow
+  // 30s gap-heal that only covers a missed/disconnected push, then stops once the
+  // bundle is terminal. The launch id is mirrored into the URL (?launch=<id>) on
+  // execute so an accidental reload rehydrates it here and the Status card
+  // reattaches to the in-flight launch (the LaunchResult card can't be rebuilt —
+  // that's fine, the live status/bundle/trades all come from the query below).
   const [searchParams, setSearchParams] = useSearchParams();
   const launchId = result?.launch_id ?? searchParams.get('launch') ?? undefined;
   const [pollInterval, setPollInterval] = useState(0);
   useEffect(() => {
-    setPollInterval(launchId ? 3000 : 0);
+    setPollInterval(launchId ? 30000 : 0);
   }, [launchId]);
-  const { data: status } = useLaunchStatusQuery(launchId ?? '', {
+  const { data: status, refetch: refetchStatus } = useLaunchStatusQuery(launchId ?? '', {
     skip: !launchId,
     pollingInterval: pollInterval,
     skipPollingIfUnfocused: true,
@@ -142,6 +145,16 @@ export function LaunchConsolePage() {
   useEffect(() => {
     if (status && !shouldKeepPolling(status)) setPollInterval(0);
   }, [status]);
+
+  // SSE push: refetch the status the instant the backend pushes a transition for
+  // THIS launch (created/failed/partial) — the poll above is just the fallback.
+  useEffect(() => {
+    if (!launchId) return;
+    const h = connectLaunchStatusStream((e) => {
+      if (e.launch_id === launchId) refetchStatus();
+    });
+    return () => h.close();
+  }, [launchId, refetchStatus]);
 
   const onFund = async () => {
     if (!templateId || !walletId) return;

@@ -391,6 +391,7 @@ struct FundWalletsBody {
 async fn wallet_pool_fund(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
+    sse: web::Data<crate::sse::SseHub>,
     body: web::Json<FundWalletsBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let settings = launcher_settings(&settings)?;
@@ -412,6 +413,7 @@ async fn wallet_pool_fund(
         settings,
         FundScope { role, count: body.count },
         FundMode::Manual,
+        Some(sse.get_ref()),
     )
     .await
     .map_err(e500)?;
@@ -439,6 +441,7 @@ struct FundForLaunchBody {
 async fn wallet_pool_fund_for_launch(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
+    sse: web::Data<crate::sse::SseHub>,
     body: web::Json<FundForLaunchBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let settings = launcher_settings(&settings)?;
@@ -455,6 +458,7 @@ async fn wallet_pool_fund_for_launch(
         body.bundler_count,
         body.dev_wallet_id,
         FundMode::Background,
+        Some(sse.get_ref()),
     )
     .await
     .map_err(e500)?;
