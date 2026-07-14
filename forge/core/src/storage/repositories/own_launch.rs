@@ -31,6 +31,29 @@ impl ManagedWalletRepo {
         .await?)
     }
 
+    /// Insert idempotently by address — the keystore-restore path (`forge/live`
+    /// `src/restore/wallets.rs`), which rebuilds `managed_wallets` from the copied
+    /// `.enc` files on a fresh box. `address` is UNIQUE, so a re-run (or a wallet
+    /// the live feed already interned elsewhere) is a no-op `ON CONFLICT DO NOTHING`
+    /// rather than a duplicate-key error. Returns `true` when a NEW row landed
+    /// (`false` = the address was already present). The row lands `generated` (the
+    /// column default) with a DB-assigned fresh id — the keystore holds no lifecycle
+    /// metadata, and on-chain data joins by address, so a fresh id is harmless.
+    pub async fn insert_if_absent(pool: &PgPool, w: &NewManagedWallet) -> anyhow::Result<bool> {
+        let res = sqlx::query(
+            "INSERT INTO managed_wallets (address, label, role, key_ref, derivation_index) \
+             VALUES ($1,$2,$3,$4,$5) ON CONFLICT (address) DO NOTHING",
+        )
+        .bind(&w.address)
+        .bind(&w.label)
+        .bind(&w.role)
+        .bind(&w.key_ref)
+        .bind(w.derivation_index)
+        .execute(pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Not-retired wallets for a role — used by the launch console's wallet
     /// pickers. Broader than "claimable" (see [`Self::claim_funded`] for that).
     pub async fn by_role(pool: &PgPool, role: &str) -> anyhow::Result<Vec<ManagedWallet>> {

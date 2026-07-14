@@ -98,6 +98,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             "/api/wallet_pool/{id}/export",
             web::post().to(wallet_pool_export),
         )
+        .route(
+            "/api/wallet_pool/restore",
+            web::post().to(wallet_pool_restore),
+        )
         .route("/api/metadata_templates", web::get().to(metadata_templates_list))
         .route(
             "/api/metadata_templates",
@@ -638,6 +642,36 @@ async fn wallet_pool_export(
             "address": exported.address,
             "private_key_base58": exported.private_key_base58.as_str(),
         })))
+}
+
+/// `POST /api/wallet_pool/restore` — rebuild the DB (`managed_wallets`, `launches`,
+/// `tokens`, `trades`, `token_positions`) from the copied keystore folder + on-chain
+/// history, for a fresh redeploy that came up with an empty `forge_bot`. The job
+/// pages every wallet's signatures and re-decodes each tx through the live ingest
+/// path — potentially thousands of RPC calls — so it runs off the request thread:
+/// `tokio::spawn` it and return `202 Accepted` immediately; progress streams over
+/// `GET /api/stream`. Every write is idempotent, so a re-run is safe.
+async fn wallet_pool_restore(
+    pool: web::Data<PgPool>,
+    settings: web::Data<Option<LauncherSettings>>,
+    sse: web::Data<crate::sse::SseHub>,
+) -> Result<HttpResponse, actix_web::Error> {
+    // Clone the settings out of app_data so the spawned job owns them (503 if the
+    // box booted without a launcher config — no keystore/KEK/RPC to restore from).
+    let settings = launcher_settings(&settings)?.clone();
+    let pool = pool.get_ref().clone();
+    let sse = sse.get_ref().clone();
+
+    tokio::spawn(async move {
+        match crate::restore::run_restore(pool, settings, sse).await {
+            Ok(summary) => tracing::info!(?summary, "keystore restore finished"),
+            Err(e) => tracing::error!(error = ?e, "keystore restore failed"),
+        }
+    });
+
+    Ok(HttpResponse::Accepted().json(serde_json::json!({
+        "status": "restore started — progress streams over /api/stream"
+    })))
 }
 
 async fn metadata_templates_list(pool: web::Data<PgPool>) -> Result<HttpResponse, actix_web::Error> {

@@ -11,6 +11,7 @@
 
 mod http;
 mod ingest;
+mod restore;
 mod sol_price;
 mod sse;
 
