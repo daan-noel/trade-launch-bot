@@ -13,7 +13,9 @@ platform-core = { path = "../core", package = "forge-core" }
 launcher      = { path = "../launcher", package = "forge-launcher" }
 # Ingest host-adapter (src/ingest/) — folded in from the former ingest-host crate;
 # it bridges the borrowed ingest-laserstream transport onto platform-core rows.
-ingest-laserstream.workspace = true
+# `rpc-backfill` adds the getSignaturesForAddress/getTransaction pager +
+# rpc_to_protobuf that the keystore-restore backfill (src/restore/) drives.
+ingest-laserstream = { workspace = true, features = ["rpc-backfill"] }
 # Shared fail-closed bearer-auth middleware — same gate hunter's real-money bins
 # use; forge-live moves treasury SOL so its mutating routes get it too.
 http-auth.workspace = true

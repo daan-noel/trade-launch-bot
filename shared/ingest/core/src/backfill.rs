@@ -13,6 +13,11 @@ use solana_sdk::{message::VersionedMessage, transaction::VersionedTransaction};
 use crate::proto::geyser::{SubscribeUpdateTransaction, SubscribeUpdateTransactionInfo};
 use crate::proto::solana::storage::confirmed_block as scb;
 
+mod pager;
+pub use pager::{
+    get_signatures_for_address, get_transactions_batch, wrap_transaction_result, SignatureInfo,
+};
+
 /// Convert one RPC transaction result (`encoding="base64"`) into a
 /// [`SubscribeUpdateTransaction`] for [`crate::decode::Decoder::decode_protobuf`].
 ///

@@ -3307,12 +3307,14 @@ dependencies = [
 name = "ingest-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "bincode",
  "bs58 0.5.1",
  "chrono",
  "dashmap 4.0.2",
  "prost",
+ "reqwest",
  "serde_json",
  "solana-sdk",
  "thiserror",
