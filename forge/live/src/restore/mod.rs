@@ -7,13 +7,14 @@
 //! 1. [`wallets`]   — decrypt every `.enc` blob → insert its `managed_wallets` row.
 //! 2. [`backfill`]  — page every wallet's signatures, decode each tx through the
 //!    live ingest decode+map path, persist trades/tokens/launches.
-//! 3. `positions`   — reconcile `token_positions` for every mint we touched. *(step 3)*
+//! 3. [`positions`] — reconcile `token_positions` for every mint we touched.
 //!
 //! Driven by `POST /api/wallet_pool/restore` (a `tokio::spawn`ed background job);
 //! progress streams over the existing SSE bus. Every write is idempotent, so the
 //! whole run is safe to repeat.
 
 pub mod backfill;
+pub mod positions;
 pub mod wallets;
 
 use anyhow::Result;
@@ -41,6 +42,8 @@ pub struct RestoreSummary {
     pub launches: usize,
     /// Distinct mints observed in managed-wallet history (the reconcile set size).
     pub mints: usize,
+    /// Mints whose `token_positions` reconciled against chain without error.
+    pub positions_reconciled: usize,
 }
 
 /// Run the full keystore restore end-to-end. Long-running (pages + fetches every
@@ -61,12 +64,16 @@ pub async fn run_restore(
     let adapter = PumpFunAdapter::resolve(&pool).await?;
     let backfilled = backfill::backfill(&pool, &settings, &adapter, &wallets).await?;
 
+    // Phase 3 — reconcile token_positions for every mint we touched.
+    let positions_reconciled = positions::reconcile(&pool, &settings, &backfilled.mints).await?;
+
     let summary = RestoreSummary {
         wallets_inserted: wallets.inserted,
         wallets_total: wallets.by_address.len(),
         trades: backfilled.trades,
         launches: backfilled.launches,
         mints: backfilled.mints.len(),
+        positions_reconciled,
     };
     info!(?summary, "keystore restore: complete");
     Ok(summary)
