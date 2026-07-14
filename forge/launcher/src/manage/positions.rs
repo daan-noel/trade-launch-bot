@@ -7,7 +7,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use platform_core::models::{BundleStatus, PositionStatus, TokenPosition, WalletRole, WalletStatus};
+use platform_core::models::{
+    BundleStatus, LaunchStatus, PositionStatus, TokenPosition, WalletRole, WalletStatus,
+};
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, ManagedWalletRepo, TokenPositionRepo, TradeRepo,
 };
@@ -63,58 +65,105 @@ async fn seed_positions(pool: &PgPool, mint_address: &str) -> Result<()> {
         return Ok(());
     };
 
+    let bundle = match launch.bundle_id {
+        Some(bundle_id) => BundleRepo::get(pool, bundle_id).await?,
+        None => None,
+    };
+
+    // The dev-buy is fused into the create tx (`tx0` of the atomic bundle, or the
+    // standalone create tx on a bundler-less launch), so it shares the launch's fate:
+    // it bought iff the launch landed. Seed the dev position exactly like a co-buy
+    // leg — `open` on a landed outcome, `dropped` on a terminal drop/failure, and
+    // nothing while still in flight (a later read seeds the correct row once the
+    // confirm watcher resolves it). Seeding it unconditionally `open` was the bug: a
+    // failed launch showed a phantom "dev buy: open" with a nonzero cost basis and a
+    // zero balance.
     if let Some(dev_wallet_id) = launch.dev_wallet_id {
-        TokenPositionRepo::seed(
-            pool,
-            mint_address,
-            dev_wallet_id,
-            WalletRole::Dev.as_str(),
-            launch.dev_buy_quote.unwrap_or(0),
-        )
-        .await?;
+        match launch_bought(&launch.status, bundle.as_ref().map(|b| b.status.as_str())) {
+            Some(true) => {
+                TokenPositionRepo::seed(
+                    pool,
+                    mint_address,
+                    dev_wallet_id,
+                    WalletRole::Dev.as_str(),
+                    launch.dev_buy_quote.unwrap_or(0),
+                )
+                .await?;
+            }
+            Some(false) => {
+                TokenPositionRepo::seed_dropped(
+                    pool,
+                    mint_address,
+                    dev_wallet_id,
+                    WalletRole::Dev.as_str(),
+                )
+                .await?;
+            }
+            None => {} // still in flight — don't seed yet
+        }
     }
 
-    if let Some(bundle_id) = launch.bundle_id {
-        if let Some(bundle) = BundleRepo::get(pool, bundle_id).await? {
-            // A Jito bundle is atomic: `landed` ⇒ every leg bought; any other
-            // TERMINAL outcome (dropped/failed) ⇒ no leg bought, so those wallets
-            // hold nothing and spent nothing — seed them `dropped` at zero cost
-            // (not a phantom closed buy). While the bundle is still non-terminal
-            // (planned/submitting/submitted) we can't yet tell, so skip seeding
-            // and let a later read (once the confirm watcher resolves it) seed the
-            // correct row — `seed`/`seed_dropped` are DO-NOTHING idempotent, so the
-            // first terminal read wins and sticks.
-            match bundle.status.parse::<BundleStatus>() {
-                Ok(BundleStatus::Landed) => {
-                    for leg in legs_from_json(&bundle.legs)? {
-                        TokenPositionRepo::seed(
-                            pool,
-                            mint_address,
-                            leg.managed_wallet_id,
-                            WalletRole::Bundler.as_str(),
-                            leg.quote_amount,
-                        )
-                        .await?;
-                    }
+    if let Some(bundle) = &bundle {
+        // A Jito bundle is atomic: `landed`/`partial` ⇒ every present leg bought; any
+        // other TERMINAL outcome (dropped/failed) ⇒ no leg bought, so those wallets
+        // hold nothing and spent nothing — seed them `dropped` at zero cost (not a
+        // phantom closed buy). While the bundle is still non-terminal
+        // (planned/submitting/submitted) we can't yet tell, so skip seeding and let a
+        // later read (once the confirm watcher resolves it) seed the correct row —
+        // `seed`/`seed_dropped` are DO-NOTHING idempotent, so the first terminal read
+        // wins and sticks.
+        match bundle.status.parse::<BundleStatus>() {
+            Ok(BundleStatus::Landed) | Ok(BundleStatus::Partial) => {
+                for leg in legs_from_json(&bundle.legs)? {
+                    TokenPositionRepo::seed(
+                        pool,
+                        mint_address,
+                        leg.managed_wallet_id,
+                        WalletRole::Bundler.as_str(),
+                        leg.quote_amount,
+                    )
+                    .await?;
                 }
-                Ok(BundleStatus::Dropped) | Ok(BundleStatus::Failed) => {
-                    for leg in legs_from_json(&bundle.legs)? {
-                        TokenPositionRepo::seed_dropped(
-                            pool,
-                            mint_address,
-                            leg.managed_wallet_id,
-                            WalletRole::Bundler.as_str(),
-                        )
-                        .await?;
-                    }
-                }
-                // Non-terminal (or an unrecognized status) — don't seed yet.
-                _ => {}
             }
+            Ok(BundleStatus::Dropped) | Ok(BundleStatus::Failed) => {
+                for leg in legs_from_json(&bundle.legs)? {
+                    TokenPositionRepo::seed_dropped(
+                        pool,
+                        mint_address,
+                        leg.managed_wallet_id,
+                        WalletRole::Bundler.as_str(),
+                    )
+                    .await?;
+                }
+            }
+            // Non-terminal (or an unrecognized status) — don't seed yet.
+            _ => {}
         }
     }
 
     Ok(())
+}
+
+/// Did the launch's create (and its fused dev-buy) actually land? The dev-buy rides
+/// the create tx, which — for an atomic launch — is `tx0` of the bundle, so the
+/// bundle's terminal outcome is authoritative; a bundler-less launch has no bundle,
+/// so the launch's own status is. `Some(true)` = landed (seed the dev cost basis
+/// `open`), `Some(false)` = terminally dropped/failed (seed `dropped`), `None` = still
+/// in flight (don't seed yet). Takes the raw status strings so it's a pure decision
+/// the unit tests can pin without a full `Launch`/`Bundle` fixture.
+fn launch_bought(launch_status: &str, bundle_status: Option<&str>) -> Option<bool> {
+    if let Some(bundle_status) = bundle_status {
+        return match bundle_status.parse::<BundleStatus>() {
+            Ok(BundleStatus::Landed) | Ok(BundleStatus::Partial) => Some(true),
+            Ok(BundleStatus::Dropped) | Ok(BundleStatus::Failed) => Some(false),
+            _ => None,
+        };
+    }
+    match launch_status.parse::<LaunchStatus>() {
+        Ok(LaunchStatus::Created) => Some(true),
+        Ok(LaunchStatus::Failed) => Some(false),
+        _ => None,
+    }
 }
 
 /// The reconcile probe set: `owner_address -> (managed_wallet_id, role)`. Every
@@ -448,7 +497,31 @@ async fn fetch_ata_balances_batched(
 
 #[cfg(test)]
 mod tests {
-    use super::lot_by_address;
+    use super::{launch_bought, lot_by_address};
+
+    /// Regression (dev-buy phantom `open`): the dev-buy is fused into the create
+    /// (`tx0`), so a terminally dropped/failed atomic bundle means the dev never
+    /// bought — `launch_bought` MUST report `Some(false)` so the dev position is
+    /// seeded `dropped`, not a phantom `open` at a nonzero cost with a zero balance.
+    #[test]
+    fn launch_bought_reflects_bundle_outcome() {
+        // Atomic launch: the bundle's terminal outcome is authoritative.
+        assert_eq!(launch_bought("pending", Some("landed")), Some(true));
+        assert_eq!(launch_bought("pending", Some("partial")), Some(true));
+        assert_eq!(launch_bought("pending", Some("dropped")), Some(false));
+        assert_eq!(launch_bought("pending", Some("failed")), Some(false));
+        // Still in flight — can't tell yet, so don't seed either way.
+        assert_eq!(launch_bought("pending", Some("submitted")), None);
+        assert_eq!(launch_bought("pending", Some("planned")), None);
+    }
+
+    /// A bundler-less launch has no bundle, so its own status decides.
+    #[test]
+    fn launch_bought_bundlerless_uses_launch_status() {
+        assert_eq!(launch_bought("created", None), Some(true));
+        assert_eq!(launch_bought("failed", None), Some(false));
+        assert_eq!(launch_bought("pending", None), None);
+    }
 
     fn fill(addr: &str, side: &str, quote: i64, base: i64) -> (String, String, i64, i64) {
         (addr.to_string(), side.to_string(), quote, base)

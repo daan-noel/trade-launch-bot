@@ -142,7 +142,24 @@ async fn confirm_one(
         // Wallets stay `reserved` across the re-bid.
         if let Some(settings) = settings {
             if (bundle.submit_attempts as u32) <= settings.bundle_max_retries {
-                return rebid_dropped(pool, settings, &bundle).await;
+                // A successful re-bid returns the bundle to `submitted`; the watcher
+                // picks it up again next tick. But if the re-bid itself can't
+                // re-submit, `execute_bundle` leaves the bundle terminal `failed` —
+                // and this watcher only ever revisits `submitted` bundles
+                // (`find_awaiting_confirmation`), so nothing else would ever reconcile
+                // the launch off `pending` or release its reserved wallets. Own the
+                // terminal transition here, exactly as a clean drop would: fail the
+                // launch + release the dev/bundler wallets.
+                if let Err(e) = rebid_dropped(pool, settings, &bundle).await {
+                    warn!(
+                        bundle_id = %bundle.id,
+                        attempts = bundle.submit_attempts,
+                        ?e,
+                        "atomic launch bundle re-bid failed to re-submit — finalizing as dropped"
+                    );
+                    finalize_dropped(pool, &bundle, &launch, Some(settings)).await;
+                }
+                return Ok(());
             }
         }
         warn!(
@@ -379,5 +396,180 @@ async fn mark_bundle_wallets_used(pool: &PgPool, bundle: &Bundle) {
     };
     if let Err(e) = ManagedWalletRepo::mark_used(pool, &wallet_ids).await {
         warn!(bundle_id = %bundle.id, %e, "failed to mark bundler wallets used");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform_core::config::Settings;
+    use platform_core::models::{NewManagedWallet, WalletStatus};
+    use platform_core::storage::connect;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    /// A minimal `LauncherSettings` for the confirm pass. The re-bid it triggers
+    /// bails inside `execute_bundle` (the bundle has no `create_args`) BEFORE any
+    /// keystore / RPC / Jito call, so these values are never dereferenced — only
+    /// `bundle_max_retries` matters (it must admit the re-bid).
+    fn dummy_settings() -> LauncherSettings {
+        LauncherSettings {
+            rpc_url: "http://127.0.0.1:1".to_string(),
+            sender_urls: vec![],
+            nonce_accounts: vec![],
+            keystore_dir: PathBuf::from("/nonexistent-keystore"),
+            kek_passphrase: "test".to_string(),
+            jito_block_engine_url: "http://127.0.0.1:1".to_string(),
+            bundle_max_retries: 2,
+            jito_min_tip_sol: 0.001,
+            jito_max_tip_sol: 0.05,
+            jito_tip_percentile: 50,
+            launch_alt: None,
+            backup_dir: None,
+            pinata_jwt: None,
+            funding: None,
+            export_secret: None,
+            manage: None,
+            allow_fingerprint: true,
+        }
+    }
+
+    fn mk_wallet(addr: &str, role: WalletRole) -> NewManagedWallet {
+        NewManagedWallet {
+            address: addr.to_string(),
+            label: None,
+            role: role.as_str().to_string(),
+            key_ref: format!("{addr}.enc"),
+            derivation_index: None,
+        }
+    }
+
+    /// Regression (Fix 1): when the background re-bid can't re-submit a dropped
+    /// atomic bundle, `execute_bundle` leaves the bundle terminal `failed`. The
+    /// confirm watcher only ever revisits `submitted` bundles
+    /// (`find_awaiting_confirmation`), so nothing else would touch it again —
+    /// previously stranding the launch at `pending` with its wallets still
+    /// `reserved` (the exact bug seen in prod: launch=pending, bundle=failed, dev
+    /// buy "open"). The confirm pass must instead OWN the terminal transition: fail
+    /// the launch and release the dev + bundler wallets back to `funded`.
+    ///
+    /// DB-gated: set `PLATFORM_TEST_DATABASE_URL` to a DEDICATED throwaway DB (runs
+    /// migrations + mutates rows). Self-skips otherwise.
+    #[tokio::test]
+    async fn rebid_failure_finalizes_launch_and_releases_wallets() {
+        let Ok(url) = std::env::var("PLATFORM_TEST_DATABASE_URL") else {
+            eprintln!("SKIP confirm rebid_failure: set PLATFORM_TEST_DATABASE_URL to run it");
+            return;
+        };
+        std::env::set_var("DATABASE_URL", &url);
+        let settings = Settings::from_env().expect("settings");
+        let pools = connect(&settings).await.expect("connect + migrate");
+        let pool = &pools.hot;
+
+        let tag = Uuid::new_v4();
+        let mint = format!("REBIDTEST_{tag}");
+
+        // dev + one bundler wallet, both reserved to the launch below.
+        let dev = ManagedWalletRepo::insert(pool, &mk_wallet(&format!("REBIDTEST_dev_{tag}"), WalletRole::Dev))
+            .await
+            .unwrap();
+        let bundler =
+            ManagedWalletRepo::insert(pool, &mk_wallet(&format!("REBIDTEST_bnd_{tag}"), WalletRole::Bundler))
+                .await
+                .unwrap();
+
+        let launch_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO launches (id, mint_address, launchpad_id, variant, quote_asset_id, \
+             dev_wallet_id, dev_buy_quote, status) \
+             VALUES ($1, $2, 1, 'pumpfun.create_v2', 1, $3, 20000000, 'pending')",
+        )
+        .bind(launch_id)
+        .bind(&mint)
+        .bind(dev.id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        for w in [dev.id, bundler.id] {
+            sqlx::query(
+                "UPDATE managed_wallets SET status='reserved', reserved_by_launch_id=$2, \
+                 reserved_at=now() WHERE id=$1",
+            )
+            .bind(w)
+            .bind(launch_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        // A `submitted` bundle past the confirm timeout, with a co-buy signature that
+        // never appears in `trades` (no fills) → the pass declares it dropped and
+        // re-bids. `create_args` is NULL, so `execute_bundle` bails immediately —
+        // the deterministic "re-bid can't re-submit" failure this test guards.
+        // `submit_attempts=0` keeps it under `bundle_max_retries`, so the re-bid
+        // branch is taken rather than the retries-exhausted one.
+        let bundle_id = Uuid::new_v4();
+        let legs = serde_json::json!([{
+            "structure": {"layout": ["create_ata","core","cu_price","tip"], "variant": "buy_exact_sol_in",
+                "cu_limit": 1, "cu_price": 1, "ix_order": 0, "tip_quote": 0, "slippage_bps": 500},
+            "quote_amount": 10_000_000,
+            "managed_wallet_id": bundler.id,
+        }]);
+        sqlx::query(
+            "INSERT INTO bundles (id, launch_id, status, legs, leg_signatures, submitted_at, submit_attempts) \
+             VALUES ($1, $2, 'submitted', $3, $4, now() - interval '10 minutes', 0)",
+        )
+        .bind(bundle_id)
+        .bind(launch_id)
+        .bind(&legs)
+        // Any valid base58 string that is not a real landed signature.
+        .bind(vec!["4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi".to_string()])
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE launches SET bundle_id=$2 WHERE id=$1")
+            .bind(launch_id)
+            .bind(bundle_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // One confirm pass: timeout → drop → re-bid → re-bid fails → finalize dropped.
+        confirm_pending(pool, Some(&dummy_settings())).await.unwrap();
+
+        let launch = LaunchRepo::get(pool, launch_id).await.unwrap().unwrap();
+        assert_eq!(
+            launch.status,
+            LaunchStatus::Failed.as_str(),
+            "launch must be finalized `failed`, not stranded at `pending`"
+        );
+        let bundle = BundleRepo::get(pool, bundle_id).await.unwrap().unwrap();
+        assert_eq!(
+            bundle.status,
+            BundleStatus::Dropped.as_str(),
+            "bundle must be terminal `dropped` after the failed re-bid"
+        );
+        for id in [dev.id, bundler.id] {
+            let w = ManagedWalletRepo::get(pool, id).await.unwrap().unwrap();
+            assert_eq!(
+                w.status,
+                WalletStatus::Funded.as_str(),
+                "wallet must be released back to `funded`"
+            );
+            assert!(w.reserved_by_launch_id.is_none(), "reservation must be cleared");
+        }
+
+        // Cleanup — the bundle cascades on the launch delete.
+        sqlx::query("DELETE FROM launches WHERE id=$1")
+            .bind(launch_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM managed_wallets WHERE id = ANY($1)")
+            .bind(vec![dev.id, bundler.id])
+            .execute(pool)
+            .await
+            .unwrap();
     }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   useBootstrapQuery,
   useQuoteAssetsQuery,
@@ -122,8 +122,13 @@ export function LaunchConsolePage() {
   const devShort = devShortfall > 0;
 
   // Status polling: keep the query alive after a launch, polling every 3s until
-  // the bundle reaches a terminal state, then stop (interval → 0).
-  const launchId = result?.launch_id;
+  // the bundle reaches a terminal state, then stop (interval → 0). The launch id
+  // is mirrored into the URL (?launch=<id>) on execute so an accidental reload
+  // rehydrates it here and the Status card reattaches to the in-flight launch
+  // instead of losing it (the LaunchResult card can't be rebuilt — that's fine,
+  // the live status/bundle/trades all come from the poll below).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const launchId = result?.launch_id ?? searchParams.get('launch') ?? undefined;
   const [pollInterval, setPollInterval] = useState(0);
   useEffect(() => {
     setPollInterval(launchId ? 3000 : 0);
@@ -166,6 +171,14 @@ export function LaunchConsolePage() {
         },
       }).unwrap();
       setResult(r);
+      // Persist the launch id in the URL so a page reload can reattach to it.
+      setSearchParams(
+        (prev) => {
+          prev.set('launch', r.launch_id);
+          return prev;
+        },
+        { replace: true },
+      );
     } catch {
       /* surfaced below */
     }
