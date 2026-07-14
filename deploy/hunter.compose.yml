@@ -14,7 +14,7 @@
 # block so the stack is correct out-of-the-box; pass --env-file to override:
 #
 #   service   host port(s)                container   published?
-#   postgres  127.0.0.1:${DB_PORT:-5555}:5432  hunter-postgres  loopback-only (SSH tunnel)
+#   postgres  ${DB_PORT:-5555}:5432             hunter-postgres  PUBLIC (0.0.0.0 — lock at SG)
 #   live-api  (none)                      hunter-live-api   no — nginx-only upstream, binds ${LIVE_API_PORT:-8130}
 #   live-ui   ${LIVE_UI_HTTP_PORT:-8110}:80  ${LIVE_UI_HTTPS_PORT:-8111}:443   yes
 #   lab-api   127.0.0.1:${LAB_API_PORT:-8140}:8140  hunter-lab-api  loopback-only (SSH tunnel + `run --rm` batch)
@@ -84,10 +84,10 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      # Loopback-only: reachable on the host via an SSH tunnel / local mirror sync,
-      # never on 0.0.0.0 (a forgotten firewall rule would otherwise expose Postgres
-      # to the internet). In-network services reach it by the `postgres` hostname.
-      - "127.0.0.1:${DB_PORT:-5555}:5432"
+      # PUBLIC: published on 0.0.0.0 so the DB is reachable directly at
+      # <host>:${DB_PORT}. Postgres is exposed to the internet — protected ONLY by
+      # POSTGRES_PASSWORD. Lock the source IPs at the AWS security group.
+      - "${DB_PORT:-5555}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-hunter_bot}"]
       interval: 5s

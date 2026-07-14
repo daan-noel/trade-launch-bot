@@ -15,7 +15,7 @@
 # Defaults below MIRROR that block; pass --env-file to override:
 #
 #   service   host port(s)                container   published?
-#   postgres  127.0.0.1:${DB_PORT:-5556}:5432  forge-postgres  loopback-only (SSH tunnel)
+#   postgres  ${DB_PORT:-5556}:5432             forge-postgres  PUBLIC (0.0.0.0 — lock at SG)
 #   live-api  (none)                      forge-live-api    no — nginx-only upstream, binds ${LIVE_API_PORT:-8230}
 #   live-ui   ${LIVE_UI_HTTP_PORT:-8210}:80  ${LIVE_UI_HTTPS_PORT:-8211}:443   yes
 #   lab-api   127.0.0.1:${LAB_API_PORT:-8240}:8240  forge-lab-api  loopback-only (SSH tunnel; no UI/nginx)
@@ -86,9 +86,10 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      # Loopback-only: reachable on the host via an SSH tunnel / local mirror sync,
-      # never on 0.0.0.0. In-network services reach it by the `postgres` hostname.
-      - "127.0.0.1:${DB_PORT:-5556}:5432"
+      # PUBLIC: published on 0.0.0.0 so the DB is reachable directly at
+      # <host>:${DB_PORT}. Postgres is exposed to the internet — protected ONLY by
+      # POSTGRES_PASSWORD. Lock the source IPs at the AWS security group.
+      - "${DB_PORT:-5556}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-forge_bot}"]
       interval: 5s
