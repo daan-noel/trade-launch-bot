@@ -24,6 +24,10 @@ pub struct Trade {
     pub wallet: String,
     pub side: Side,
     pub sol: f64,
+    /// Exact quote lamports for this trade — the raw on-chain `u64`, never routed
+    /// through `f64`. Hosts whose quote is native SOL (9 decimals) persist this
+    /// directly instead of re-multiplying `sol` back to base units.
+    pub sol_lamports: u64,
     /// Raw token units — exact on-chain integer count (`u64`).
     pub tokens: u64,
     pub price: f64,
@@ -60,6 +64,11 @@ pub struct Reserves {
     pub virtual_token: Option<u64>,
     pub real_sol: Option<f64>,
     pub real_token: Option<u64>,
+    /// Exact raw-`u64` lamport mirrors of the SOL-side reserves above (the token
+    /// sides are already exact `u64`). Carried so a native-SOL host persists the
+    /// reserve without an `f64` round-trip; `None` when reserves are unknown.
+    pub virtual_sol_lamports: Option<u64>,
+    pub real_sol_lamports: Option<u64>,
 }
 
 // ── TokenCreated ──────────────────────────────────────────────────────────────

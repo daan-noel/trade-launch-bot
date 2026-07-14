@@ -1,11 +1,12 @@
 //! Pure event → row mappers (no DB, so they unit-test without a network).
 //!
 //! Maps the borrowed `ingest-laserstream` events onto platform-core rows through
-//! the pump.fun/SOL adapter. The crate's decoder already divides by
-//! `lamports_per_sol`, so `Trade.sol` / `Reserves.virtual_sol` are human SOL —
-//! we convert back to base units (lamports) here, since the quote is native SOL
-//! (9 decimals). Reserves use the venue-neutral `virtual_*` pair (the decoder
-//! copies AMM pool reserves into it), matching the single `reserve_quote/base`.
+//! the pump.fun/SOL adapter. The quote is native SOL (9 decimals), so amounts are
+//! taken from the event's EXACT raw-`u64` lamport fields (`Trade.sol_lamports` /
+//! `Reserves.virtual_sol_lamports`) — no `f64` round-trip (the human-SOL `sol` /
+//! `virtual_sol` mirrors exist only for non-lamport hosts). Reserves use the
+//! venue-neutral `virtual_*` pair (the decoder copies AMM pool reserves into it),
+//! matching the single `reserve_quote/base`.
 
 use ingest_laserstream::event::{
     RawTx as IlRawTx, Side, TokenCreated as IlTokenCreated, Trade as IlTrade, Venue,
@@ -58,9 +59,9 @@ pub fn trade_to_row(
         market_kind: kind.as_str().to_string(),
         quote_asset_id: adapter.quote_asset_id(kind),
         trade_type: trade_type_str(t.side).to_string(),
-        amount_quote: sol_to_lamports(t.sol),
+        amount_quote: t.sol_lamports as i64,
         amount_base: t.tokens as i64,
-        reserve_quote: t.reserves.virtual_sol.map(sol_to_lamports),
+        reserve_quote: t.reserves.virtual_sol_lamports.map(|x| x as i64),
         reserve_base: t.reserves.virtual_token.map(|x| x as i64),
         slot: t.slot as i64,
         tx_index: t.tx_index as i32,

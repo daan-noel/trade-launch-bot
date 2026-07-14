@@ -71,8 +71,9 @@ async fn pump_fun_events_project_onto_the_schema() {
         mint: MINT.to_string(),
         wallet: "ROUNDTRIP_wallet".to_string(),
         side: Side::Buy,
-        sol: 1.5,          // human SOL → 1_500_000_000 lamports
-        tokens: 1_000_000, // raw base units
+        sol: 1.5,                       // human-SOL mirror
+        sol_lamports: 1_500_000_000,    // exact quote lamports (what forge persists)
+        tokens: 1_000_000,              // raw base units
         price: 1.5e-6,
         signature: sig_b58,
         tx_index: 3,
@@ -85,6 +86,8 @@ async fn pump_fun_events_project_onto_the_schema() {
             virtual_token: Some(1_000_000_000),
             real_sol: Some(0.0),
             real_token: Some(0),
+            virtual_sol_lamports: Some(30_000_000_000),
+            real_sol_lamports: Some(0),
         },
         venue: Venue::Curve,
         instruction_type: "Buy".to_string(),

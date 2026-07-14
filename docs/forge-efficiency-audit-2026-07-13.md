@@ -103,13 +103,17 @@ outside until the watchdog force-exits.
   sends; reserve/cap rails apply to whichever figure is used). The balance poller itself
   stays the RPC source-of-truth writer.
 
-### Phase D — Micro
+### Phase D — Micro ✅ DONE 2026-07-14
 
-- [ ] **D1 — Carry raw `u64` lamports through the ingest event.** The decoder divides the
-  exact `u64` to an `f64` (`shared/ingest/pumpfun/src/decode/trade.rs:52`;
-  `event.rs:26` `pub sol: f64`) and forge multiplies it back with `sol_to_lamports`
-  (`forge/live/src/ingest/map.rs:61,63`). Add a raw-`u64` lamport field to the event and drop
-  the round-trip.
+- [x] **D1 — Carry raw `u64` lamports through the ingest event.** Added exact-lamport
+  mirrors alongside the human-SOL `f64`s: `Trade.sol_lamports` +
+  `Reserves.{virtual,real}_sol_lamports` (`shared/ingest/core/src/event.rs`), populated at all
+  three decoder construction sites (`trade.rs` curve `DecodedTradeEvent`/AMM `DecodedAmmTrade`
+  + new `compute_sol_change_lamports` for the balance-delta fallback in `grpc.rs`). Forge's
+  mapper now persists `t.sol_lamports` / `virtual_sol_lamports` directly
+  (`forge/live/src/ingest/map.rs`), dropping the `sol_to_lamports(t.sol)` f64 round-trip. The
+  `f64` fields stay for non-lamport hosts (hunter is a pure consumer — unaffected).
+  ingest-pumpfun unit tests green; forge-live + hunter-live compile.
 
 ---
 

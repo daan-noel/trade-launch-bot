@@ -16,9 +16,9 @@ use super::instructions::{
     InstructionKind,
 };
 use super::trade::{
-    build_amm_trade, compute_sol_change, decode_pump_swap_trades_from_inner,
-    decode_pump_swap_trades_from_logs, decode_trade_events_from_logs, DecodedAmmTrade,
-    DecodedTradeEvent, RawTradeEvent,
+    build_amm_trade, compute_sol_change, compute_sol_change_lamports,
+    decode_pump_swap_trades_from_inner, decode_pump_swap_trades_from_logs,
+    decode_trade_events_from_logs, DecodedAmmTrade, DecodedTradeEvent, RawTradeEvent,
 };
 use super::{DecodeOutput, Decoder, TxRelevance};
 
@@ -180,6 +180,7 @@ impl Decoder {
                 wallet: ev.user.clone(),
                 side,
                 sol: ev.sol_amount,
+                sol_lamports: ev.sol_amount_lamports,
                 tokens: ev.token_amount,
                 price,
                 signature: signature.clone(),
@@ -193,6 +194,8 @@ impl Decoder {
                     virtual_token: Some(ev.virtual_token_reserves),
                     real_sol: Some(ev.real_sol_reserves),
                     real_token: Some(ev.real_token_reserves),
+                    virtual_sol_lamports: Some(ev.virtual_sol_reserves_lamports),
+                    real_sol_lamports: Some(ev.real_sol_reserves_lamports),
                 },
                 venue: Venue::Curve,
                 instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
@@ -388,6 +391,8 @@ impl Decoder {
         };
 
         let sol_amount = compute_sol_change(&user, account_keys, pre_balances, post_balances);
+        let sol_lamports =
+            compute_sol_change_lamports(&user, account_keys, pre_balances, post_balances);
         let token_amount = compute_token_change_pb(&user_ata, &mint, account_keys, pre_token_balances, post_token_balances);
 
         if sol_amount < p.min_trade_sol {
@@ -401,6 +406,7 @@ impl Decoder {
             wallet: user,
             side,
             sol: sol_amount,
+            sol_lamports,
             tokens: token_amount,
             price,
             signature: signature.to_string(),

@@ -35,13 +35,19 @@ pub(super) struct RawTradeEvent {
 pub(super) struct DecodedTradeEvent {
     pub(super) mint: String,
     pub(super) sol_amount: f64,
+    /// Exact quote lamports — the raw on-chain `u64`, mirror of `sol_amount`.
+    pub(super) sol_amount_lamports: u64,
     /// Raw token units — exact on-chain `u64` (never cast through `f64`).
     pub(super) token_amount: u64,
     pub(super) is_buy: bool,
     pub(super) user: String,
     pub(super) virtual_sol_reserves: f64,
+    /// Exact raw-`u64` lamport mirror of `virtual_sol_reserves`.
+    pub(super) virtual_sol_reserves_lamports: u64,
     pub(super) virtual_token_reserves: u64,
     pub(super) real_sol_reserves: f64,
+    /// Exact raw-`u64` lamport mirror of `real_sol_reserves`.
+    pub(super) real_sol_reserves_lamports: u64,
     pub(super) real_token_reserves: u64,
 }
 
@@ -50,12 +56,15 @@ impl DecodedTradeEvent {
         Self {
             mint: bs58::encode(raw.mint).into_string(),
             sol_amount: raw.sol_amount as f64 / lamports_per_sol,
+            sol_amount_lamports: raw.sol_amount,
             token_amount: raw.token_amount,
             is_buy: raw.is_buy,
             user: bs58::encode(raw.user).into_string(),
             virtual_sol_reserves: raw.virtual_sol_reserves as f64 / lamports_per_sol,
+            virtual_sol_reserves_lamports: raw.virtual_sol_reserves,
             virtual_token_reserves: raw.virtual_token_reserves,
             real_sol_reserves: raw.real_sol_reserves as f64 / lamports_per_sol,
+            real_sol_reserves_lamports: raw.real_sol_reserves,
             real_token_reserves: raw.real_token_reserves,
         }
     }
@@ -155,11 +164,15 @@ pub(super) struct DecodedAmmTrade {
     /// Raw base-token units — exact on-chain `u64`.
     pub(super) base_amount: u64,
     pub(super) quote_amount: f64,
+    /// Exact quote lamports — the raw on-chain `u64`, mirror of `quote_amount`.
+    pub(super) quote_amount_lamports: u64,
     pub(super) pool: String,
     pub(super) user: String,
     /// Post-swap base-token reserves — raw `u64` units.
     pub(super) pool_base_reserves: u64,
     pub(super) pool_quote_reserves: f64,
+    /// Exact raw-`u64` lamport mirror of `pool_quote_reserves`.
+    pub(super) pool_quote_reserves_lamports: u64,
 }
 
 /// Turn a decoded PumpSwap `BuyEvent` into the neutral [`DecodedAmmTrade`]. SSOT for
@@ -174,10 +187,12 @@ fn amm_buy_trade(e: RawPumpSwapBuyEvent, lps: f64) -> DecodedAmmTrade {
         is_buy: true,
         base_amount: e.base_amount_out,
         quote_amount: e.user_quote_amount_in as f64 / lps,
+        quote_amount_lamports: e.user_quote_amount_in,
         pool: bs58::encode(e.pool).into_string(),
         user: bs58::encode(e.user).into_string(),
         pool_base_reserves: post_base,
         pool_quote_reserves: post_quote as f64 / lps,
+        pool_quote_reserves_lamports: post_quote,
     }
 }
 
@@ -192,10 +207,12 @@ fn amm_sell_trade(e: RawPumpSwapSellEvent, lps: f64) -> DecodedAmmTrade {
         is_buy: false,
         base_amount: e.base_amount_in,
         quote_amount: e.user_quote_amount_out as f64 / lps,
+        quote_amount_lamports: e.user_quote_amount_out,
         pool: bs58::encode(e.pool).into_string(),
         user: bs58::encode(e.user).into_string(),
         pool_base_reserves: post_base,
         pool_quote_reserves: post_quote as f64 / lps,
+        pool_quote_reserves_lamports: post_quote,
     }
 }
 
@@ -301,6 +318,7 @@ pub(super) fn build_amm_trade(
         wallet: ev.user.clone(),
         side,
         sol: ev.quote_amount,
+        sol_lamports: ev.quote_amount_lamports,
         tokens: ev.base_amount,
         price,
         signature: signature.to_string(),
@@ -314,6 +332,8 @@ pub(super) fn build_amm_trade(
             virtual_token: Some(ev.pool_base_reserves),
             real_sol: Some(ev.pool_quote_reserves),
             real_token: Some(ev.pool_base_reserves),
+            virtual_sol_lamports: Some(ev.pool_quote_reserves_lamports),
+            real_sol_lamports: Some(ev.pool_quote_reserves_lamports),
         },
         venue: Venue::Amm,
         instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
@@ -329,15 +349,27 @@ pub(super) fn compute_sol_change(
     pre: &[u64],
     post: &[u64],
 ) -> f64 {
+    compute_sol_change_lamports(wallet, account_keys, pre, post) as f64 / 1_000_000_000.0
+}
+
+/// The wallet's absolute lamport balance delta (exact `u64`) — the raw basis
+/// `compute_sol_change` divides to human SOL. Carried alongside so a native-SOL
+/// host persists the exact integer without an `f64` round-trip.
+pub(super) fn compute_sol_change_lamports(
+    wallet: &str,
+    account_keys: &[&str],
+    pre: &[u64],
+    post: &[u64],
+) -> u64 {
     account_keys
         .iter()
         .position(|k| *k == wallet)
         .map(|idx| {
             let pre_bal = pre.get(idx).copied().unwrap_or(0);
             let post_bal = post.get(idx).copied().unwrap_or(0);
-            (pre_bal as f64 - post_bal as f64).abs() / 1_000_000_000.0
+            pre_bal.abs_diff(post_bal)
         })
-        .unwrap_or(0.0)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
