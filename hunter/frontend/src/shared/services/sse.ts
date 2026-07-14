@@ -21,6 +21,66 @@ const listeners = new Map<string, Set<SseListener>>();
 const attached = new Set<string>();
 
 /**
+ * Connection health for the one shared EventSource. A raw `EventSource` gives no
+ * status to the UI and silently retries on drop — so a delta-driven page (rule
+ * lists, positions, token feed) can miss every frame during an outage and never
+ * know to catch up. We surface a status signal + a reopen hook so consumers can
+ * show a dot and refetch after a reconnect.
+ */
+export type SseStatus = 'connecting' | 'open' | 'error';
+
+let status: SseStatus = 'connecting';
+/** True once we've seen an error on the current connection, so the next `onopen`
+ * is a *re*connect (missed frames) rather than the first open (nothing missed). */
+let sawError = false;
+const statusListeners = new Set<(s: SseStatus) => void>();
+const reopenListeners = new Set<() => void>();
+
+function setStatus(next: SseStatus): void {
+  if (status === next) return;
+  status = next;
+  for (const fn of statusListeners) fn(next);
+}
+
+/** Current connection status (synchronous read for a fresh subscriber). */
+export function getSseStatus(): SseStatus {
+  return status;
+}
+
+/**
+ * Subscribe to connection-status changes (for a header dot / banner). Fires
+ * immediately with the current status, then on every transition. Returns an
+ * unsubscribe fn.
+ */
+export function subscribeSseStatus(cb: (s: SseStatus) => void): () => void {
+  statusListeners.add(cb);
+  cb(status);
+  return () => {
+    statusListeners.delete(cb);
+  };
+}
+
+/**
+ * Register a callback to run when the shared stream **reconnects** after an
+ * error (not on the first open) — i.e. when frames may have been missed and the
+ * caller should refetch to resync. Returns an unsubscribe fn. The `connect*`
+ * helpers whose callback is a bare "refetch" signal wire this automatically.
+ */
+export function onSseReopen(cb: () => void): () => void {
+  reopenListeners.add(cb);
+  return () => {
+    reopenListeners.delete(cb);
+  };
+}
+
+/** Combine several unsubscribe fns into one `close`-shaped handle. */
+function combine(...unsubs: Array<() => void>): () => void {
+  return () => {
+    for (const u of unsubs) u();
+  };
+}
+
+/**
  * Low-level: subscribe to a raw SSE event type on the shared connection,
  * returning an unsubscribe fn. The `connect*` helpers below wrap this with
  * payload parsing + id filtering; the background-jobs registry uses it directly
@@ -80,6 +140,24 @@ function subscribe(type: string, cb: SseListener): () => void {
   if (!shared) {
     shared = new EventSource(sseUrl());
     attached.clear();
+    sawError = false;
+    setStatus('connecting');
+    shared.onopen = () => {
+      // A reconnect (we previously errored) means frames were missed while the
+      // stream was down — tell resync consumers to refetch. The very first open
+      // missed nothing, so it only flips the status.
+      if (sawError) {
+        sawError = false;
+        for (const fn of reopenListeners) fn();
+      }
+      setStatus('open');
+    };
+    shared.onerror = () => {
+      // EventSource retries on its own; we don't close. Just record that the
+      // current connection is unhealthy so the next `onopen` counts as a resync.
+      sawError = true;
+      setStatus('error');
+    };
   }
   // Attach a DOM listener for this event type once; it fans out to every
   // current subscriber of that type.
@@ -110,6 +188,8 @@ function subscribe(type: string, cb: SseListener): () => void {
       shared.close();
       shared = null;
       attached.clear();
+      sawError = false;
+      setStatus('connecting');
     }
   };
 }
@@ -133,7 +213,12 @@ export function connectTradeStream(onTrade: (data: string) => void): StreamHandl
  * every subscriber that didn't open the stream with a `?mint` filter.
  */
 export function connectTokenCreatedStream(onCreated: () => void): StreamHandle {
-  const unsub = subscribe('token_created', () => onCreated());
+  // Bare "refetch the current page" signal — also fire it after a reconnect so a
+  // table that missed `token_created` frames during an outage catches up.
+  const unsub = combine(
+    subscribe('token_created', () => onCreated()),
+    onSseReopen(onCreated),
+  );
   return { close: unsub };
 }
 
@@ -174,15 +259,19 @@ export function connectTpslRulesChanged(
   strategy: TpslStrategy,
   onChanged: () => void,
 ): StreamHandle {
-  const unsub = subscribe('tpsl_rules_changed', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      const p = JSON.parse(e.data) as { strategy?: string };
-      if (p.strategy === strategy) onChanged();
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
+  const unsub = combine(
+    subscribe('tpsl_rules_changed', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const p = JSON.parse(e.data) as { strategy?: string };
+        if (p.strategy === strategy) onChanged();
+      } catch {
+        /* ignore malformed frames */
+      }
+    }),
+    // Rule-list deltas missed during an outage → refetch on reconnect.
+    onSseReopen(onChanged),
+  );
   return { close: unsub };
 }
 

@@ -12,7 +12,7 @@ import { Accordion } from 'components/ui/Accordion';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { buildSweepColumns } from '@lab/components/sweep/sweepColumns';
 import { buildGroupColumns } from '@lab/components/sweep/groupColumns';
-import { computeParamColumnColors, computePnlColumnColors } from 'lib/sweepParamColors';
+import { computeParamColumnColors, computePnlColumnColors } from '@lab/lib/sweepParamColors';
 import { SweepConfigForm } from '@lab/components/sweep/SweepConfigForm';
 import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory';
 import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';

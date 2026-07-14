@@ -54,12 +54,11 @@ import { fetchTokenSwings, getJobsStatus, startSwingRun, fetchSwingRunResult } f
 import { connectSwingDetectionFinished } from 'services/sse';
 import {
   apiErrorMessage,
-  TOKENS_LIST_LIMIT,
   useGetTokenDetailQuery,
   useGetTokenTradesQuery,
   useGetTokensPageQuery,
 } from 'store/apiSlice';
-import { sharedApi } from 'store/sharedEndpoints';
+import { labApi } from '@lab/store/labEndpoints';
 import type { AppDispatch, RootState } from '@lab/store';
 import {
   clearCreatedRange,
@@ -582,18 +581,15 @@ export function SwingDetectionPage() {
     setSwingAllError(null);
     setSwingAllProgress(null);
     try {
-      // Pull every filtered mint (sort doesn't matter for the set; cap at the
-      // shared list limit). Materialised once, then dropped.
+      // Pull just the filtered mint set — the server projects mints only (no full
+      // rows), reusing the table's exact filter args. One-shot; unsubscribed right
+      // after so it never lingers in the cache.
       const sub = dispatch(
-        sharedApi.endpoints.getTokensPage.initiate(
-          { ...queryArgs, page: 1, pageSize: TOKENS_LIST_LIMIT, sortKeys: [] },
-          { forceRefetch: true },
-        ),
+        labApi.endpoints.getTokenMints.initiate(queryArgs, { forceRefetch: true }),
       );
       let mints: string[];
       try {
-        const data = await sub.unwrap();
-        mints = data.items.map((t) => t.mint_address);
+        mints = await sub.unwrap();
       } finally {
         sub.unsubscribe();
       }

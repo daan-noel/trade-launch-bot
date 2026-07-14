@@ -13,7 +13,7 @@ import {
 } from '@lab/components/sweep/FingerprintGroupPicker';
 import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
-import { CreationHeatmap } from './CreationHeatmap';
+import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { GroupedCreationTrendChart } from './GroupedCreationTrendChart';
 import {
   RANGE_OPTIONS,
@@ -23,7 +23,7 @@ import {
   type CreationBucket,
   type CreationHeatCell,
   type CreationSegment,
-} from './creationStats';
+} from 'components/creation-stats/creationStats';
 import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,

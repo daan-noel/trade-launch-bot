@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
-import type { ParamColumnColor } from 'lib/sweepParamColors';
+import type { ParamColumnColor } from '@lab/lib/sweepParamColors';
 import type { SweepResultRecord } from './types';
 
 // --- formatters -------------------------------------------------------------

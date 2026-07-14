@@ -5,8 +5,31 @@ import { PriceUnitToggle } from 'components/ui/PriceUnitToggle';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
 import { useGetSolPriceQuery } from 'store/apiSlice';
 import { usePriceUnit } from 'context/PriceUnitContext';
+import { useSseStatus } from 'hooks/useSseStatus';
 import { cn } from 'lib/cn';
 import type { NavConfig } from './navTypes';
+
+/** Live health dot for the shared SSE stream — green open, amber retrying,
+ * dim while first connecting. Title carries the word for screen readers. */
+function SseStatusDot() {
+  const status = useSseStatus();
+  const { tone, label } =
+    status === 'open'
+      ? { tone: 'bg-emerald-400', label: 'Live stream connected' }
+      : status === 'error'
+        ? { tone: 'bg-amber-400 animate-pulse', label: 'Live stream reconnecting…' }
+        : { tone: 'bg-white/30', label: 'Live stream connecting…' };
+  return (
+    <span
+      role="status"
+      aria-label={label}
+      title={label}
+      className="flex size-4 items-center justify-center"
+    >
+      <span className={cn('size-1.5 rounded-full', tone)} />
+    </span>
+  );
+}
 
 function NavItem({ to, children }: { to: string; children: ReactNode }) {
   return (
@@ -92,6 +115,7 @@ export function Header({ nav, rightSlot }: { nav: NavConfig; rightSlot?: ReactNo
         </nav>
 
         <div className="ml-auto flex shrink-0 items-center gap-2.5">
+          <SseStatusDot />
           <TimezoneSelect />
           <PriceUnitToggle />
           {rightSlot}

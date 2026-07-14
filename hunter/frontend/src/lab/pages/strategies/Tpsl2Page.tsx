@@ -59,7 +59,6 @@ import {
 import { connectPaperTestStream, connectSimulationFinished } from 'services/sse';
 import { useBackgroundJobActions } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
-import { useSellTokenMutation } from '@live/store/liveEndpoints';
 import {
   fetchPaperResultCached,
   invalidatePaperResult,
@@ -440,11 +439,6 @@ export function Tpsl2Page() {
     const id = setTimeout(() => setPaperNotice(null), 9000);
     return () => clearTimeout(id);
   }, [paperNotice]);
-
-  const [actionError, setActionError] = useState<string | null>(null);
-
-  const [sellToken] = useSellTokenMutation();
-  const [sellingPositionMint, setSellingPositionMint] = useState<string | null>(null);
 
   // Rule table: no Run-control column — lab never executes a live/paper run
   // itself (no keys, no gRPC), that's deploy's job. Filtered once per mount.
@@ -864,23 +858,6 @@ export function Tpsl2Page() {
     [paperPositions],
   );
 
-  const handleSellPosition = useCallback(
-    async (mint: string) => {
-      setSellingPositionMint(mint);
-      setActionError(null);
-      try {
-        await sellToken({ mint_address: mint }).unwrap();
-      } catch (e) {
-        setActionError(
-          `Sell failed: ${apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'unknown error'}`,
-        );
-      } finally {
-        setSellingPositionMint(null);
-      }
-    },
-    [sellToken],
-  );
-
   // Positions for the selected rule — split into Current run + Old runs. Rendered
   // under whichever table owns the rule (real → below Real, paper → below Paper);
   // only one of isReal/isPaperRuleSelected is true at a time, so it renders once.
@@ -899,8 +876,6 @@ export function Tpsl2Page() {
       onInspect={onInspectPosition}
       useRowOverlay={positionRowOverlay}
       isReal={isRealRuleSelected}
-      sellingPositionMint={sellingPositionMint}
-      onSellPosition={handleSellPosition}
     />
   );
 
@@ -939,7 +914,6 @@ export function Tpsl2Page() {
         }
       />
 
-      {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
       {loading && <p className="text-text-dim">Loading rules…</p>}
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
 

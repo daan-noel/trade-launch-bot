@@ -16,6 +16,9 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/api")
             // Token list (unified TableRequest POST; swing-aware)
             .route("/tokens", web::post().to(handlers::tokens::list_tokens))
+            // Matched mint-address set only (same filter body) — Swing Detection All
+            // fans out over this instead of pulling every full row.
+            .route("/tokens/mints", web::post().to(handlers::tokens::list_token_mints))
             // Swing detection
             .route(
                 "/tokens/swings/batch",

@@ -1,4 +1,5 @@
 ﻿import { baseApi } from 'store/baseApi';
+import { tokensTableRequestBody, type TokensPageArgs } from 'store/sharedEndpoints';
 import type {
   GroupedSweepRunRecord,
   GroupedSweepGroupRecord,
@@ -8,7 +9,7 @@ import type {
 import type {
   GroupedCreationArgs,
   GroupedCreationResponse,
-} from 'components/creation-stats/groupedCreationStats';
+} from '@lab/components/creation-stats/groupedCreationStats';
 import type {
   MatchedTokensResponse,
   PaperResultResponse,
@@ -99,6 +100,17 @@ export const labApi = baseApi.injectEndpoints({
     // ranks combos PER group. Runs/groups are bounded, so the page pulls them
     // whole; a group's combo rows are fetched lazily on drill-in. Cached so
     // flipping between runs/groups reuses the data.
+    // Just the matched `mint_address` set for the current Tokens filter — no rows.
+    // "Swing Detection All" fans out over the full filtered set, so it reads the
+    // mints from here instead of pulling ~20k full token rows via `getTokensPage`
+    // only to `.map` them down to mints. Reuses the SAME `tokensTableRequestBody`
+    // builder, so the set matches the visible table exactly. One-shot imperative
+    // fetch (no cache retention) driven from the page's Run handler.
+    getTokenMints: builder.query<string[], TokensPageArgs>({
+      query: (a) => ({ url: '/api/tokens/mints', method: 'POST', body: tokensTableRequestBody(a) }),
+      transformResponse: (r: { mints: string[] }) => r.mints,
+      keepUnusedDataFor: 0,
+    }),
     getGroupedSweepRuns: builder.query<
       GroupedSweepRunRecord[],
       { strategyId: string; limit?: number }

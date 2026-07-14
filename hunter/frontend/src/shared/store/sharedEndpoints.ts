@@ -60,6 +60,39 @@ export interface TokensPageArgs {
  */
 export const TOKENS_LIST_LIMIT = 20_000;
 
+/**
+ * Serialize `TokensPageArgs` into the unified `TableRequest` POST body — the ONE
+ * place the DataTable view-state (`toTableRequest`) and the global `TokenFilters`
+ * panel (`tokenFiltersToSpecs`, panel-wins on key collision) fold together, plus
+ * the Tokens-only `trackedOnly` / `swingRunId` riders. Shared so `getTokensPage`
+ * and the mints-only `getTokenMints` (lab) build a byte-identical filter body and
+ * can't drift.
+ */
+export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toTableRequest> {
+  // Numeric columns needn't be enumerated: the backend re-parses each raw
+  // per-column predicate string, so an empty `numericCols` here yields the
+  // identical lowered filter (see `lower_filter`).
+  const body = toTableRequest(
+    {
+      page: a.page,
+      pageSize: a.pageSize,
+      sortKeys: a.sortKeys,
+      search: a.search,
+      colFilters: a.colFilters,
+      structuredFilters: a.structuredFilters,
+    },
+    new Set(),
+  );
+  // Fold the global panel into the same filters map (panel-wins on collision).
+  Object.assign(body.filters, tokenFiltersToSpecs(a.filters, a.timezone));
+  if (a.trackedOnly) body.trackedOnly = true;
+  if (a.swingRunId) {
+    body.swingRunId = a.swingRunId;
+    if (a.swingChainLatencyMs != null) body.swingChainLatencyMs = a.swingChainLatencyMs;
+  }
+  return body;
+}
+
 export interface TokensResponse {
   total: number;
   /** Filtered count restricted to the live, cache-tracked subset (≤ `total`).
@@ -103,30 +136,7 @@ export const sharedApi = baseApi.injectEndpoints({
     // tokens; the LAB bin runs it over a full in-RAM snapshot. A short retention
     // keeps abandoned filter/sort/page permutations from accumulating.
     getTokensPage: builder.query<TokensResponse, TokensPageArgs>({
-      query: (a) => {
-        // Numeric columns needn't be enumerated: the backend re-parses each raw
-        // per-column predicate string, so an empty `numericCols` here yields the
-        // identical lowered filter (see `lower_filter`).
-        const body = toTableRequest(
-          {
-            page: a.page,
-            pageSize: a.pageSize,
-            sortKeys: a.sortKeys,
-            search: a.search,
-            colFilters: a.colFilters,
-            structuredFilters: a.structuredFilters,
-          },
-          new Set(),
-        );
-        // Fold the global panel into the same filters map (panel-wins on collision).
-        Object.assign(body.filters, tokenFiltersToSpecs(a.filters, a.timezone));
-        if (a.trackedOnly) body.trackedOnly = true;
-        if (a.swingRunId) {
-          body.swingRunId = a.swingRunId;
-          if (a.swingChainLatencyMs != null) body.swingChainLatencyMs = a.swingChainLatencyMs;
-        }
-        return { url: '/api/tokens', method: 'POST', body };
-      },
+      query: (a) => ({ url: '/api/tokens', method: 'POST', body: tokensTableRequestBody(a) }),
       transformResponse: withCreatedMs,
       keepUnusedDataFor: 30,
     }),

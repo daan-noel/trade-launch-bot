@@ -5,8 +5,8 @@ import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
 import { SuspenseFallback } from 'components/ui/SuspenseFallback';
 import { BackgroundJobsProvider } from '@lab/context/BackgroundJobsContext';
-import { BackgroundJobsIndicator } from 'components/layout/BackgroundJobsIndicator';
-import { GroupedCreationSection } from 'components/creation-stats/GroupedCreationSection';
+import { BackgroundJobsIndicator } from '@lab/components/layout/BackgroundJobsIndicator';
+import { GroupedCreationSection } from '@lab/components/creation-stats/GroupedCreationSection';
 import { labNav } from './nav';
 
 // Code-split each route into its own chunk. Pages export named (not default)

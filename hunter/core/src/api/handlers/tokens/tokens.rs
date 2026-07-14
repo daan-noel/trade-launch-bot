@@ -360,6 +360,24 @@ pub fn build_tokens_list(
     (body, etag)
 }
 
+/// Filter-only projection of the token list to just the matched `mint_address`
+/// set. Runs the SAME `q.matches` reduction as [`build_tokens_list`] but skips
+/// sort/page/serialize and clones only the mint strings — the lean backend for a
+/// "run over every filtered token" action (Swing Detection All), so fanning out
+/// over the full filtered set no longer ships ~20k full token rows over the wire.
+/// Order is unspecified and no swing-sort stats are needed: the caller wants the
+/// set, not a page.
+pub fn collect_filtered_mints(state: &CoreState, q: &TokenQuery, tracked_only: bool) -> Vec<String> {
+    let now = chrono::Utc::now();
+    let snapshot = state.token_list.get(&state.token_cache, now);
+    let matched: Vec<&TokenSummary> = if tracked_only {
+        snapshot.tracked_filtered(|t| q.matches(t, now))
+    } else {
+        snapshot.merged_filtered(|t| q.matches(t, now))
+    };
+    matched.into_iter().map(|t| t.mint_address.clone()).collect()
+}
+
 // `list_tokens` (the `GET /api/tokens` handler) lives in the `backend` crate
 // (`api::handlers::tokens::list`) because it takes `LocalState` and computes swing
 // stats; it calls the core `build_tokens_list` + `is_swing_sort_col` below.

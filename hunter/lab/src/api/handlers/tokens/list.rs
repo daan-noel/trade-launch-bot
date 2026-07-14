@@ -12,7 +12,7 @@ use trading_core::api::table_query::TableRequest;
 use crate::analyzers::swing_analyzer::{compute_chain_stats, ChainStats};
 use crate::state::local_state::LocalState;
 
-use super::{build_tokens_list, is_swing_sort_col, TokenQuery};
+use super::{build_tokens_list, collect_filtered_mints, is_swing_sort_col, TokenQuery};
 
 /// `POST /api/tokens` — list tokens over the unified [`TableRequest`] body.
 pub async fn list_tokens(
@@ -94,4 +94,33 @@ pub async fn list_tokens(
         .insert_header((header::CACHE_CONTROL, "no-cache"))
         .content_type("application/json")
         .body(body)
+}
+
+/// `POST /api/tokens/mints` — the matched `mint_address` set for a
+/// [`TableRequest`] filter, and nothing else. "Swing Detection All" fans out over
+/// every filtered token; returning only the mints (not full rows) keeps that
+/// "run over everything" fetch tiny even at the 50k list ceiling, instead of
+/// serializing/transferring the whole page envelope just to read its mints. No
+/// swing-sort branch — order is irrelevant to the caller.
+pub async fn list_token_mints(
+    state: web::Data<Arc<LocalState>>,
+    body: web::Json<TableRequest>,
+) -> impl Responder {
+    let state = state.get_ref().clone();
+    let body = body.into_inner();
+    let tracked_only = body.tracked_only;
+    let q = TokenQuery::from_table_request(&body);
+
+    // Same blocking-pool discipline as `list_tokens`: the filter reduction over a
+    // large snapshot is CPU work that mustn't stall the few async request threads.
+    let mints = web::block(move || collect_filtered_mints(&state, &q, tracked_only)).await;
+
+    match mints {
+        Ok(mints) => HttpResponse::Ok().json(serde_json::json!({ "mints": mints })),
+        Err(e) => {
+            tracing::error!("list_token_mints blocking build failed: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "failed to build token mints" }))
+        }
+    }
 }

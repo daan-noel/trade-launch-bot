@@ -74,6 +74,7 @@ cargo run   -p hunter-lab              # analysis box: needs Postgres; NO keys /
 cargo run   -p hunter-lab -- lake-export # batch: export sealed days local-PG -> Parquet lake ($SWEEP_LAKE_DIR)
 cargo run   -p hunter-live -- probe <ladder|fanout|simulate-sell|holdings> [args]
 cd frontend; npm run dev               # both apps concurrently: live :5173, lab :5174 (separate dev servers)
+npm run lint                           # ESLint boundary gate ONLY (shared⊬@live/@lab, live⊬@lab, lab⊬@live); not a general lint
 npm run dev:live                       # live app only (:5173, proxies /api -> live bin :8130)
 npm run dev:lab                        # lab app only  (:5174, proxies /api -> lab bin :8140)
 npm run build:live                     # tsc (checks BOTH trees) && vite build (live config) → LIVE-ONLY dist/index.html
@@ -130,8 +131,9 @@ Clippy `too_many_arguments` is `#[allow]`-ed on trade-path fns by design.
 
 - **Backend:** `cargo check -p hunter-live` + `-p hunter-lab` clean; clippy on touched
   code; test when logic changed.
-- **Frontend:** `npm run build:live` clean; no extra re-render on SOL/USD tick or
-  live-trade stream.
+- **Frontend:** `npm run build:live` clean + `npm run lint` clean (the import-boundary
+  gate: never cross shared→`@live`/`@lab`, live→`@lab`, lab→`@live` — relocate the code
+  instead); no extra re-render on SOL/USD tick or live-trade stream.
 - **Docs — update the tier that changed** (see [../CLAUDE.md](../CLAUDE.md) docs
   discipline): rules → this file; structure/data-flow → `docs/arch/[subsystem].md`;
   algorithm/decision detail → `docs/plans/[subsystem]/[topic].md`.

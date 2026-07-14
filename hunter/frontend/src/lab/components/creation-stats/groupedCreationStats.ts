@@ -13,7 +13,7 @@ import {
   type GroupField,
 } from '@lab/components/sweep/groupedTypes';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
-import type { CreationBucket, CreationSegment } from './creationStats';
+import type { CreationBucket, CreationSegment } from 'components/creation-stats/creationStats';
 
 export { GROUP_FIELDS, GROUP_FIELD_LABELS };
 export type { GroupField };

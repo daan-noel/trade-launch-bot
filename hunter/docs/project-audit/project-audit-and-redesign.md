@@ -66,9 +66,9 @@ Legend: ✅ done · 🟡 partial · ❌ open · ⚪ obsolete/moved. Paths are **
 | **M8** | `/api/tokens` re-filters/re-sorts ~1M rows per poll | ✅ | `hunter/core/src/state/token_list_cache.rs` — staleness-bounded shared snapshot, filter-by-reference, page-only clone. (Different mechanism than the proposed per-query memo, but the per-poll full clone+sort is gone.) |
 | **M9** | Current-day analysis needs two uncoupled `--include-today` runs | ❌ | `sim_fetch.rs:144-161` still warn-only; `lake-export --include-today` exists but no chained `sync` command couples hop-1 (DB sync) to hop-2 (export). |
 | **M10** | Legacy `Position` model kept only for SSE wire shape | ❌ | `hunter/core/src/models/position.rs` + `system/stream.rs:181-184` `PositionResponse::from(...)` adapter still present. |
-| **M14** | FE boundary cross-imports; no lint enforcement | ❌ (worse) | **No ESLint config exists at all** (only `knip.json`). Offenders remain and multiplied: shared→`@lab` in 4 files (`GroupedCreationSection.tsx:8-13`, `BackgroundJobsIndicator.tsx:3-8`, …), lab→`@live` in 3 pages. |
-| **M15** | Shared SSE has no `onerror`/`onopen` — silent death | ❌ | `hunter/frontend/src/shared/services/sse.ts:80-93` still event-listeners only; no status signal, no resync on reconnect. |
-| **M16** | `SwingDetectionPage` pulls up to 20k full records | ❌ | `sharedEndpoints.ts:61` `TOKENS_LIST_LIMIT=20_000`; `SwingDetectionPage.tsx:588` still one-shot (now discards to mints client-side, server still ships the rows). |
+| **M14** | FE boundary cross-imports; no lint enforcement | ✅ (2026-07-14) | ESLint flat config (`frontend/eslint.config.js`, `npm run lint`) with `no-restricted-imports` boundary zones (shared ⊬ `@live`/`@lab`; live ⊬ `@lab`; lab ⊬ `@live`) — boundary-only (the `@typescript-eslint`/`react-hooks` plugins are registered just so existing disable comments resolve; no rules enabled). Offenders relocated: the grouped-creation trio (`GroupedCreationSection`/`GroupedCreationTrendChart`/`groupedCreationStats`) + `BackgroundJobsIndicator` + `sweepParamColors` moved shared→`lab/` (the shared `creationStats.ts` stayed — `sharedEndpoints` uses it); the 3 lab strategy pages dropped the live-only `sellToken` (lab can't sell — no keys/trader). Lint is green (0 violations) and the rule fires on a probe. |
+| **M15** | Shared SSE has no `onerror`/`onopen` — silent death | ✅ (2026-07-14) | `sse.ts` now tracks connection status (`connecting`/`open`/`error`) via `onopen`/`onerror`, exposes `subscribeSseStatus`/`getSseStatus` + a `useSseStatus` hook (header health dot), and an `onSseReopen` resync hook: the idempotent "refetch" subscribers (`connectTokenCreatedStream`, `connectTpslRulesChanged`) re-fire on a *reconnect* (error→open) so a page that missed frames during an outage catches up. |
+| **M16** | `SwingDetectionPage` pulls up to 20k full records | ✅ (2026-07-14) | New lab-only `POST /api/tokens/mints` (`core::collect_filtered_mints` runs the SAME `q.matches` filter as `build_tokens_list`, projects `mint_address` only) + `labApi.getTokenMints` (reuses the shared `tokensTableRequestBody` builder — SSOT with `getTokensPage`). "Swing Detection All" reads the mint set from it instead of pulling ~20k full rows to `.map` down to mints. |
 | **M17** | `PriceUnit` hard SOL/USD binary, one global rate | ❌ | `shared/types/index.ts:3` unchanged; `usePriceDisplay.ts` still hardcodes `◎`; `TokenRecord` has no quote field. Pairs with H7. |
 | **M18** | Oversized components | ❌ (worse) | `TokenPriceChart.tsx` grew 1862→**1931** lines; lab strategy pages ~1187–1296. |
 | **L9** | FE dead code (`getTokens`/`TransactionsPage` …) | ✅ | Removed; only doc references remain. |
@@ -130,14 +130,16 @@ stays pump/SOL for now, adopting forge's model later — see Part 5).
 >    picked up, this is the one with an ongoing cost — but it's a nice-to-have, not a need, and pairs
 >    with M18.
 
-### Part 4 — Frontend cleanup 🟡
+### Part 4 — Frontend cleanup 🟡 (M14/M15/M16 shipped; M18/M17 deferred)
 
-- **M14 — introduce ESLint** (none exists) with `no-restricted-imports` boundary zones (shared ⊬ @live/@lab;
-  live ⊬ @lab; lab ⊬ @live), CI-gated; relocate the current offenders.
-- **M15 — SSE hardening:** `onerror`/`onopen`, connection-status signal, resync refetch on reopen. Small, real.
-- **M16 — window/server-side** the SwingDetectionPage 20k pull.
-- **M18 — extract `TokenPriceChart` (1931 lines)** and the strategy pages (pairs with Part 3.4).
-- **M17 — quote-aware price display** — deferred with Part 5 (needs the quote axis).
+> **M14/M15/M16 shipped 2026-07-14 and their plan bullets were removed as finished** — the
+> outcome is recorded in the status table above (M14, M15, M16 all ✅): ESLint import-boundary
+> gate + offender relocation, SSE `onopen`/`onerror` status + reopen-resync, and the mints-only
+> `POST /api/tokens/mints` behind "Swing Detection All". Remaining, both deferred:
+
+- **M18 — extract `TokenPriceChart` (1931 lines)** and the strategy pages ❌ *deferred* — pairs with
+  Part 3.4 and New-plan #1's fork-vs-share (hunter/forge) decision, which must be made first.
+- **M17 — quote-aware price display** ❌ *deferred* with Part 5 (needs the quote axis).
 
 ### Part 5 — Venue/quote/schema-v2 redesign (future hunter goal) 🔵 *deferred*
 
@@ -186,7 +188,7 @@ a USDC-paired pump token (T1) must be addable without touching anything outside 
 Part 1 (real-money, no deps)  ──►  ✅ SHIPPED; only real-SOL smoke of sell/close paths remains
 Part 2 (lab throughput)       ──►  ✅ SHIPPED
 Part 3 (modularity)           ──►  ⛔ DECLINED — intentional separation; revisit per-item at strategy #4
-Part 4 (frontend)             ──►  independent (M17 waits on Part 5)
+Part 4 (frontend)             ──►  M14/M15/M16 ✅ SHIPPED; M18 waits on New-plan #1 fork decision, M17 on Part 5
 Part 5 (venue/quote port)     ──►  deferred; port from forge when prioritized
 New-plan #1 (SSOT drift)      ──►  do before any hunter/forge shared refactor (esp. chart M18)
 ```
