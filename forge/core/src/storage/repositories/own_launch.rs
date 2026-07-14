@@ -147,6 +147,13 @@ impl ManagedWalletRepo {
     /// manual "mark funded" toggle, avoids bookkeeping drift). Promotes from
     /// **both** `generated` (manual funding) and `funding` (an automated treasury
     /// send that just landed). A no-op promotion for wallets already past those.
+    ///
+    /// Symmetrically **demotes** `funded` back to `generated` when the balance
+    /// falls back below the floor — the operator "Sweep & retire"/"Consolidate →
+    /// treasury" drains call this after every drain, and without the demotion a
+    /// drained wallet stayed `funded` at 0 SOL, so `claim_funded` could hand it to
+    /// the next launch with no gas to execute. `used`/`reserved`/`retired` are
+    /// untouched (their own state machines own that transition).
     pub async fn record_balance(
         pool: &PgPool,
         id: Uuid,
@@ -155,7 +162,11 @@ impl ManagedWalletRepo {
     ) -> anyhow::Result<ManagedWallet> {
         Ok(sqlx::query_as::<_, ManagedWallet>(
             "UPDATE managed_wallets SET balance_lamports = $2, balance_checked_at = now(), \
-             status = CASE WHEN status IN ('generated','funding') AND $2 >= $3 THEN 'funded' ELSE status END \
+             status = CASE \
+                 WHEN status IN ('generated','funding') AND $2 >= $3 THEN 'funded' \
+                 WHEN status = 'funded' AND $2 < $3 THEN 'generated' \
+                 ELSE status \
+             END \
              WHERE id = $1 RETURNING *",
         )
         .bind(id)

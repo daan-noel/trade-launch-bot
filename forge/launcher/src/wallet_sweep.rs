@@ -149,8 +149,10 @@ impl SweepReport {
 }
 
 /// Button 1: sweep `used` wallets (dust-sweep semantics — skips open-position
-/// holders) AND reclaim already-`retired` wallets (residual SOL + close empty
-/// token accounts). Everything lands in the first (oldest) non-retired treasury.
+/// holders), reclaim already-`retired` wallets (residual SOL + close empty
+/// token accounts), AND reclaim stranded `generated` dust (below the funded
+/// floor, so it was never going to auto-promote — see the `generated` path
+/// below). Everything lands in the first (oldest) non-retired treasury.
 pub async fn sweep_used_and_retired(
     pool: &PgPool,
     settings: &LauncherSettings,
@@ -175,13 +177,27 @@ pub async fn sweep_used_and_retired(
     let retired =
         ManagedWalletRepo::find_by_status(pool, WalletStatus::Retired.as_str(), None).await?;
 
+    // `generated` wallets below the funded floor: a `generated` wallet only
+    // promotes to `funded` once its cached balance clears `MIN_FUNDED_LAMPORTS`
+    // (wallet_pool.rs's balance poller), so anything stuck under that floor —
+    // stray/partial deposit, or dust left behind after `record_balance` demotes a
+    // drained `funded` wallet back to `generated` — is stranded forever otherwise.
+    // Wallets at/above the floor are left alone: they're mid-promotion, not
+    // stranded, and this button must never race the funding poller.
+    let generated_dust = ManagedWalletRepo::find_by_status(pool, WalletStatus::Generated.as_str(), None)
+        .await?
+        .into_iter()
+        .filter(|w| w.balance_lamports.unwrap_or(0) < MIN_FUNDED_LAMPORTS)
+        .collect::<Vec<_>>();
+
     // `used` path — the exact hourly dust sweep (open-position holders held back).
     let mut outcomes =
         sweep_used_wallets(&rpc, pool, settings, &kek, treasury.id, treasury_addr).await?;
 
-    // `retired` path — reclaim residual SOL + close empty ATAs on already-shredded
-    // wallets. (A retired wallet is never the picked treasury, which is non-retired.)
-    for wallet in retired {
+    // `retired` + `generated`-dust paths — reclaim residual SOL + close empty ATAs
+    // on wallets that were never re-promoted by this sweep. (Neither set is ever
+    // the picked treasury, which is non-retired and typically well-funded.)
+    for wallet in retired.into_iter().chain(generated_dust) {
         let outcome = match drain_to_treasury(
             &rpc,
             &http,
@@ -197,7 +213,7 @@ pub async fn sweep_used_and_retired(
         {
             Ok(o) => o,
             Err(e) => {
-                warn!(managed_wallet_id = %wallet.id, %e, "retired-wallet reclaim failed");
+                warn!(managed_wallet_id = %wallet.id, %e, "stranded-wallet reclaim failed");
                 WalletSweepOutcome::errored(&wallet, e)
             }
         };
@@ -327,8 +343,10 @@ async fn drain_to_treasury(
     }
 
     // Refresh the cached balance so the pool table reflects the drain at once.
-    // `record_balance` only promotes `generated`/`funding` → `funded`, so it never
-    // un-retires a wallet. Best-effort — the drain already succeeded.
+    // `record_balance` also demotes `funded` → `generated` when the drain took the
+    // balance back below the funded floor (so a drained wallet can't be handed to
+    // the next launch as if it still had gas); `used`/`reserved`/`retired` are left
+    // alone — it never un-retires a wallet. Best-effort — the drain already succeeded.
     match rpc.get_balance(&owner).await {
         Ok(bal) => {
             if let Err(e) =
