@@ -5,14 +5,15 @@
 //!
 //! Three phases, each its own submodule:
 //! 1. [`wallets`]   — decrypt every `.enc` blob → insert its `managed_wallets` row.
-//! 2. `backfill`    — page every wallet's signatures, decode each tx through the
-//!    live ingest decode+map path, persist trades/tokens/launches. *(step 2)*
+//! 2. [`backfill`]  — page every wallet's signatures, decode each tx through the
+//!    live ingest decode+map path, persist trades/tokens/launches.
 //! 3. `positions`   — reconcile `token_positions` for every mint we touched. *(step 3)*
 //!
 //! Driven by `POST /api/wallet_pool/restore` (a `tokio::spawn`ed background job);
 //! progress streams over the existing SSE bus. Every write is idempotent, so the
 //! whole run is safe to repeat.
 
+pub mod backfill;
 pub mod wallets;
 
 use anyhow::Result;
@@ -22,6 +23,7 @@ use tracing::info;
 
 use launcher::LauncherSettings;
 
+use crate::ingest::pumpfun::PumpFunAdapter;
 use crate::sse::SseHub;
 
 /// What a restore run rebuilt — returned to the caller and logged on completion.
@@ -33,6 +35,12 @@ pub struct RestoreSummary {
     pub wallets_inserted: usize,
     /// Total managed wallets known after the wallet phase (inserted + pre-existing).
     pub wallets_total: usize,
+    /// Trade rows inserted from the on-chain backfill (post-dedup).
+    pub trades: u64,
+    /// Own-launch `launches` rows discovered + inserted.
+    pub launches: usize,
+    /// Distinct mints observed in managed-wallet history (the reconcile set size).
+    pub mints: usize,
 }
 
 /// Run the full keystore restore end-to-end. Long-running (pages + fetches every
@@ -49,9 +57,16 @@ pub async fn run_restore(
     // Phase 1 — rebuild managed_wallets from the keystore folder.
     let wallets = wallets::restore_wallets(&pool, &settings).await?;
 
+    // Phase 2 — backfill trades / tokens / launches from on-chain history.
+    let adapter = PumpFunAdapter::resolve(&pool).await?;
+    let backfilled = backfill::backfill(&pool, &settings, &adapter, &wallets).await?;
+
     let summary = RestoreSummary {
         wallets_inserted: wallets.inserted,
         wallets_total: wallets.by_address.len(),
+        trades: backfilled.trades,
+        launches: backfilled.launches,
+        mints: backfilled.mints.len(),
     };
     info!(?summary, "keystore restore: complete");
     Ok(summary)

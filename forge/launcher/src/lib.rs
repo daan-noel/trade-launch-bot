@@ -49,7 +49,8 @@ pub use funding_plan::{
     dev_launch_required_lamports, leg_required_lamports, FundPlan, FUNDING_HEADROOM_LAMPORTS,
 };
 pub use keystore::{
-    read_keypair_bytes, resolve_signer, write_envelope, write_envelope_to_keystore, EnvKek, Kek,
+    read_keypair_bytes, resolve_signer, variant_for_token_program, write_envelope,
+    write_envelope_to_keystore, EnvKek, Kek,
 };
 pub use launch_sim_matrix::run_launch_sim_matrix;
 pub use manage::{

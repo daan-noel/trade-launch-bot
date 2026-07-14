@@ -258,6 +258,20 @@ pub fn token_program_for_variant(variant: &str) -> &'static str {
     }
 }
 
+/// Inverse of [`token_program_for_variant`]: the launch `variant` string for a
+/// token's on-chain program id. The legacy SPL Token program means a `create_v1`
+/// launch; anything else (Token-2022, or an unknown/absent program) maps to
+/// `create_v2`, the current pump.fun default — matching the `else` branch of
+/// [`token_program_for_variant`]. Used by the keystore-restore backfill to label a
+/// discovered own-launch's `launches.variant` from its decoded create tx.
+pub fn variant_for_token_program(token_program_id: Option<&str>) -> &'static str {
+    if token_program_id == Some(pump_trader::protocol::TOKEN_PROGRAM_ID) {
+        "pumpfun.create_v1"
+    } else {
+        "pumpfun.create_v2"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
