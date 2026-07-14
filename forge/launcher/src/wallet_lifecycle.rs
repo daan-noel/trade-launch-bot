@@ -38,7 +38,7 @@ use crate::wallet_pool::{
 /// slow step fires on the first tick — matching the old `tokio::interval` tasks,
 /// which each ran an immediate first pass.
 fn due(last: Option<Instant>, interval: Duration, now: Instant) -> bool {
-    last.map_or(true, |t| now.duration_since(t) >= interval)
+    last.is_none_or(|t| now.duration_since(t) >= interval)
 }
 
 /// Spawn the unified wallet-lifecycle task. Gated at the call site on

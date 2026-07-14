@@ -143,7 +143,15 @@ async fn sweep_wallet(
         return Ok(WalletSweepOutcome::skipped(wallet, "is the destination treasury"));
     }
     let address = Pubkey::from_str(&wallet.address).context("parse wallet address")?;
-    let balance = rpc.get_balance(&address).await.context("fetch wallet balance")?;
+    // Reuse a fresh cached balance when one exists (audit Phase C2) — usually a
+    // `used` wallet isn't poller-refreshed, so this falls through to a live read;
+    // it only skips the RPC right after an operator "Refresh balances" stamped it.
+    // The actual sweep re-reads on-chain (SweepAll probe), so this read is only the
+    // above-floor pre-check.
+    let balance = match crate::wallet_pool::fresh_cached_balance(wallet) {
+        Some(b) => b,
+        None => rpc.get_balance(&address).await.context("fetch wallet balance")?,
+    };
 
     if balance <= SWEEP_MIN_LAMPORTS {
         // Not worth a signed tx + fee — retire directly, dust left behind. Stamp the

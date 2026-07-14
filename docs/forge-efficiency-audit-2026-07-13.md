@@ -81,20 +81,27 @@ outside until the watchdog force-exits.
   events_total }` block (`http.rs` `IngestHealth`). Shed counters N/A (nothing is shed).
   Frontend `IngestStatus.health?` type kept in sync. Additive — the toggle response omits it.
 
-### Phase C — Task & RPC consolidation
+### Phase C — Task & RPC consolidation ✅ DONE 2026-07-14
 
-- [ ] **C1 — Fold the same-table wallet-lifecycle pollers into one tick.** Still 6
-  independent fixed-interval tasks, each its own `select!` arm
-  (`forge/live/src/main.rs:165-186,313-318`): balance poller (30s), reservation sweep (30s),
-  funding (60s), dust sweep (3600s), ladder evaluator, volume scheduler. The balance poller
-  and reservation sweep touch the same `managed_wallets` table on overlapping cadences with
-  no shared wake-up. Collapse the wallet-lifecycle loops into one `poll→promote→sweep→top-up`
-  tick.
-- [ ] **C2 — Read the cached balance instead of re-RPCing across 3 tasks.** Balance poller
-  (`wallet_pool.rs:141`), funding (`wallet_funding.rs:177,693`), and dust sweep
-  (`dust_sweep.rs:149`) each independently RPC-read balances; a DB cache
-  (`managed_wallets.balance_lamports`) already exists. Read the cache first; issue a fresh
-  `get_balance` only when stale or immediately pre-send.
+> ⚠️ Autonomous real-SOL machinery (funding + dust). Refactored to reuse the existing
+> per-step helpers verbatim (C1) + a staleness-gated cache read (C2), cargo/clippy clean,
+> but NOT runtime-verified here — needs a mainnet funding + dust smoke before deploy.
+
+- [x] **C1 — Fold the same-table wallet-lifecycle pollers into one tick.** New
+  `spawn_wallet_lifecycle` (`launcher/src/wallet_lifecycle.rs`) folds the balance poll,
+  reservation/funding TTL sweep, warm-pool funder, and hourly dust sweep into ONE
+  `poll→promote→sweep→top-up→dust` tick; each step keeps its cadence via a wall-clock gate,
+  reusing the existing bodies (`poll_balances_once`, `sweep_reservations_once`,
+  `run_background_funding_pass`, `run_dust_sweep_pass`) — scheduling change only. `main.rs`
+  drops from 6 select arms to 3 (ladder + volume stay separate — trading, not lifecycle).
+- [x] **C2 — Read the cached balance instead of re-RPCing.** `fresh_cached_balance`
+  (`wallet_pool.rs`, 15s window > the tick's 5s active cadence) returns the poller's
+  just-written `balance_lamports` when fresh, else `None`. Funding's treasury-pool build +
+  per-target shortfall (`wallet_funding.rs`) and the dust sweep's above-floor pre-check
+  (`dust_sweep.rs`) reuse it, so a warm lifecycle tick skips the redundant `get_balance`;
+  a stale/absent cache falls back to a live read. Pre-send correctness unchanged (exact
+  sends; reserve/cap rails apply to whichever figure is used). The balance poller itself
+  stays the RPC source-of-truth writer.
 
 ### Phase D — Micro
 

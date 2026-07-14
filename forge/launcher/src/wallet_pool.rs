@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use platform_core::models::{NewManagedWallet, WalletRole, WalletStatus};
+use platform_core::models::{ManagedWallet, NewManagedWallet, WalletRole, WalletStatus};
 use platform_core::storage::repositories::ManagedWalletRepo;
 use std::str::FromStr;
 use solana_sdk::signature::{Keypair, Signer};
@@ -90,6 +90,27 @@ pub async fn generate_wallets(
 pub(crate) const BALANCE_POLL_IDLE: Duration = BALANCE_POLL_IDLE_INTERVAL;
 pub(crate) const BALANCE_POLL_ACTIVE: Duration = BALANCE_POLL_ACTIVE_INTERVAL;
 pub(crate) const RESERVATION_SWEEP: Duration = RESERVATION_SWEEP_INTERVAL;
+
+/// Freshness window for reusing the cached `balance_lamports` in place of a fresh
+/// RPC read (audit Phase C2). Comfortably longer than the lifecycle tick's active
+/// 5s cadence — so a wallet the poller just refreshed counts as fresh — but short
+/// enough that a reused figure is never meaningfully stale for a spend decision.
+pub(crate) const BALANCE_FRESH_WINDOW: chrono::Duration = chrono::Duration::seconds(15);
+
+/// The wallet's cached balance IFF it was checked on-chain within
+/// [`BALANCE_FRESH_WINDOW`], else `None` (the caller must RPC). Lets funding / dust
+/// reuse the balance the unified lifecycle poll wrote moments earlier instead of
+/// issuing a second identical `get_balance`. Pre-send correctness is unchanged: a
+/// fresh cache value is a confirmed-commitment read from seconds ago, and the
+/// reserve/cap rails still apply to whichever figure is used.
+pub(crate) fn fresh_cached_balance(w: &ManagedWallet) -> Option<u64> {
+    let checked = w.balance_checked_at?;
+    if Utc::now() - checked <= BALANCE_FRESH_WINDOW {
+        u64::try_from(w.balance_lamports?).ok()
+    } else {
+        None
+    }
+}
 
 /// Build the shared reqwest client the balance poll uses (10s timeout).
 pub(crate) fn balance_poll_client() -> reqwest::Client {

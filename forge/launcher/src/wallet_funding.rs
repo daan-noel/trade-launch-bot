@@ -174,10 +174,16 @@ async fn build_treasury_pool(
                 continue;
             }
         };
-        let balance = rpc
-            .get_balance(&pubkey)
-            .await
-            .with_context(|| format!("fetch treasury {} balance", w.address))?;
+        // Reuse the balance the lifecycle poll just wrote when it's still fresh
+        // (audit Phase C2) — the poller refreshes every treasury each pass, so a
+        // warm funding tick skips this RPC entirely; else read on-chain.
+        let balance = match crate::wallet_pool::fresh_cached_balance(&w) {
+            Some(b) => b,
+            None => rpc
+                .get_balance(&pubkey)
+                .await
+                .with_context(|| format!("fetch treasury {} balance", w.address))?,
+        };
         let signer = keystore::resolve_signer(&settings.keystore_dir, &w.key_ref, kek)
             .with_context(|| format!("resolve treasury {} signer", w.address))?;
         sources.push(TreasurySource { wallet: w, pubkey, signer, balance, spent: 0 });
@@ -706,11 +712,19 @@ async fn fund_wallet_to_target(
         }
     };
 
-    let balance = ctx
-        .rpc
-        .get_balance(&target_pk)
-        .await
-        .with_context(|| format!("fetch target {} balance", wallet.address))?;
+    // Reuse the lifecycle poll's fresh cache for this wallet when available (audit
+    // Phase C2) — a `generated`/`funding` target is refreshed every tick, so the
+    // shortfall is computed off a seconds-old confirmed read without a second RPC;
+    // a stale/absent cache (e.g. JIT launch funding a `funded` wallet) falls back
+    // to a fresh read.
+    let balance = match crate::wallet_pool::fresh_cached_balance(&wallet) {
+        Some(b) => b,
+        None => ctx
+            .rpc
+            .get_balance(&target_pk)
+            .await
+            .with_context(|| format!("fetch target {} balance", wallet.address))?,
+    };
     let shortfall = target.saturating_sub(balance);
 
     // Already at/above target — no send. Promote a `generated`/`funding` wallet
