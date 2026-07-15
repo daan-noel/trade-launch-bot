@@ -8,7 +8,7 @@ import {
   type CreationHeatCell,
   type CreationMetric,
 } from './creationStats';
-import { formatWithCommas } from 'utils/format';
+import { formatCompact, formatWithCommas } from 'utils/format';
 
 interface CreationHeatmapProps {
   cells: CreationHeatCell[];
@@ -42,15 +42,29 @@ export const CreationHeatmap = memo(function CreationHeatmap({
   metric,
   total,
 }: CreationHeatmapProps) {
-  const { lookup, maxCount } = useMemo(() => {
+  // For the rate views, shade by each cell's position within the observed
+  // min→max spread (contrast stretch), not by the absolute 0..1 rate. Nearly
+  // every token dies, so dead-rate clusters ~0.9–1.0 and migrate-rate ~0.0–0.1;
+  // absolute shading would paint the whole grid one flat tone and hide the
+  // cyclical pattern. `count` already normalizes against `maxCount` the same way.
+  const { lookup, maxCount, rateMin, rateSpan } = useMemo(() => {
     const map = new Map<number, CreationHeatCell>();
     let max = 0;
+    let rMin = Infinity;
+    let rMax = -Infinity;
     for (const c of cells) {
       map.set(c.dow * 24 + c.hour, c);
       if (c.count > max) max = c.count;
+      if (metric !== 'count') {
+        const v = metricValue(c, metric);
+        if (v != null) {
+          if (v < rMin) rMin = v;
+          if (v > rMax) rMax = v;
+        }
+      }
     }
-    return { lookup: map, maxCount: max };
-  }, [cells]);
+    return { lookup: map, maxCount: max, rateMin: rMin, rateSpan: rMax > rMin ? rMax - rMin : 0 };
+  }, [cells, metric]);
 
   return (
     <div className="overflow-x-auto">
@@ -78,6 +92,8 @@ export const CreationHeatmap = memo(function CreationHeatmap({
             lookup={lookup}
             metric={metric}
             maxCount={maxCount}
+            rateMin={rateMin}
+            rateSpan={rateSpan}
             total={total}
           />
         ))}
@@ -92,10 +108,12 @@ interface RowProps {
   lookup: Map<number, CreationHeatCell>;
   metric: CreationMetric;
   maxCount: number;
+  rateMin: number;
+  rateSpan: number;
   total: number;
 }
 
-function Row({ label, dow, lookup, metric, maxCount, total }: RowProps) {
+function Row({ label, dow, lookup, metric, maxCount, rateMin, rateSpan, total }: RowProps) {
   return (
     <>
       <div className="flex items-center pr-1.5 font-semibold text-text-dim">
@@ -109,8 +127,21 @@ function Row({ label, dow, lookup, metric, maxCount, total }: RowProps) {
             ? maxCount > 0
               ? cell.count / maxCount
               : 0
-            : value; // rates already 0..1
+            : value == null
+              ? null // no matured outcome → "no data" wash
+              : rateSpan > 0
+                ? (value - rateMin) / rateSpan // contrast-stretch across cells
+                : 1; // every cell equal → flat full tone
         const share = total > 0 ? cell.count / total : 0;
+        // In-cell readout: compact count, or integer percent for the rate views.
+        const cellLabel =
+          metric === 'count'
+            ? cell.count > 0
+              ? formatCompact(cell.count, 1)
+              : ''
+            : value == null
+              ? ''
+              : `${Math.round(value * 100)}%`;
         const title =
           `${label} ${h}:00\n` +
           `Created: ${formatWithCommas(cell.count)} (${(share * 100).toFixed(1)}%)\n` +
@@ -121,9 +152,11 @@ function Row({ label, dow, lookup, metric, maxCount, total }: RowProps) {
           <div
             key={h}
             title={title}
-            className="aspect-square rounded-[2px] border border-white/5"
+            className="flex aspect-square items-center justify-center overflow-hidden rounded-[2px] border border-white/5 text-center font-mono leading-none tabular-nums text-white/85"
             style={{ background: heatColor(metric, norm) }}
-          />
+          >
+            {cellLabel}
+          </div>
         );
       })}
     </>

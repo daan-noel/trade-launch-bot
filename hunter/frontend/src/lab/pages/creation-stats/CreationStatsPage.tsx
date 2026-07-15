@@ -156,7 +156,7 @@ export function CreationStatsPage({
           <span className="text-[10px] text-text-dim">
             {metric === 'count'
               ? 'shade = share of total created'
-              : 'shade = rate (matured tokens with known outcome)'}
+              : 'shade = rate, scaled across cells · label = actual %'}
           </span>
         </div>
         {heat.isLoading ? (
