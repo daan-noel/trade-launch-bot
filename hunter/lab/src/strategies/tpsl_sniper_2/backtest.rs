@@ -119,7 +119,32 @@ fn resolve_token(
                     Some(quantize_f32(sol)),
                 )
             }
-            None => (None, None, None, "Open".to_string(), None, None, None),
+            None => {
+                // Still open at end of history — mark unrealized PnL at the last
+                // price, so the simulate drill-in shows the SAME number the grouped
+                // sweep does for the same open token (the sweep's `resolve_exit`
+                // open arm marks-to-last identically; see `sweep::strategies::tpsl2`).
+                // Exit-fill fields stay `None` (no sell fired) and it's still an
+                // "Open" outcome — only the PnL is marked. Priced through the same
+                // `CostModel` and quantized through `f32` for byte-identical parity.
+                let last_price =
+                    trades.last().map(|t| t.price_per_token).unwrap_or(entry_price);
+                let (sol, pct) = round_trip_with_costs(
+                    entry_price,
+                    last_price,
+                    rule.buy_amount_sol,
+                    &CostModel::pumpfun_default(),
+                );
+                (
+                    None,
+                    None,
+                    None,
+                    "Open".to_string(),
+                    None,
+                    Some(quantize_f32(pct)),
+                    Some(quantize_f32(sol)),
+                )
+            }
         };
 
     let result = BacktestTokenResult {

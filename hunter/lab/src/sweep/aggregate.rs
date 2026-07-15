@@ -290,8 +290,9 @@ mod tests {
     fn open_positions_excluded_from_headline_pnl_and_win_rate() {
         // Parity plan C2: a still-open mark-to-last-price must not move the
         // headline total_pnl_sol / win_rate / mean / best / worst — those are
-        // realized-only, matching a single-rule simulate's `pnl=None` convention
-        // for an open row. `n_fired` still counts the open position.
+        // realized-only. Both the sweep drill-in and the single-rule simulate now
+        // *display* an open row's mark-to-last PnL per token, but the aggregate
+        // excludes it here. `n_fired` still counts the open position.
         let mut a = ComboAgg::default();
         a.record(&outcome(1.0, 50.0, ExitCode::TakeProfit, 10));
         a.record(&outcome(-1.0, -50.0, ExitCode::StopLoss, 10));
