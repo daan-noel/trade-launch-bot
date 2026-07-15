@@ -101,6 +101,34 @@ fn validate_tpsl2(p: &Tpsl2Params) -> Result<(), String> {
     if !super::tpsl_sniper_2::entry::rule_configures_any_scalp_gate(&p.to_rule()) {
         return Err("Rule configures no scalp entry gate".into());
     }
+
+    // Pairing invariant: higher-low seconds is a sub-parameter of the pullback
+    // gate (see `entry::scalp` — the higher-low scan only runs, and the entry
+    // gate only checks it, when `p_entry_pullback_pct` is set). Shared with the
+    // lab param-sweep so both reject the identical set of meaningless combos.
+    tpsl2_higher_low_gate_sane(p.p_entry_pullback_pct, p.p_entry_higher_low_secs)?;
+    Ok(())
+}
+
+/// The tpsl2 pullback/higher-low pairing invariant, shared by rule validation
+/// ([`validate_tpsl2`]) and the lab param-sweep's combo filter so both reject the
+/// identical set of nonsensical combos: `p_entry_higher_low_secs` only has an
+/// effect while the pullback gate (`p_entry_pullback_pct`) is enabled — the
+/// higher-low scan is gated on `pullback.is_some()` in `entry::scalp`, so setting
+/// higher-low seconds alone is a silent no-op.
+///
+/// `0`/`None` = "no bound" on either side, so an unconfigured axis never trips it.
+pub fn tpsl2_higher_low_gate_sane(
+    pullback_pct: Option<f64>,
+    higher_low_secs: Option<u64>,
+) -> Result<(), String> {
+    let pullback_on = pullback_pct.filter(|&x| x != 0.0).is_some();
+    let higher_low_on = higher_low_secs.filter(|&x| x != 0).is_some();
+    if higher_low_on && !pullback_on {
+        return Err(
+            "Higher-Low Seconds has no effect without Pullback % — set Pullback % or clear Higher-Low Seconds".into(),
+        );
+    }
     Ok(())
 }
 
@@ -441,6 +469,27 @@ mod tests {
         // And through the registry.
         let reparsed = StrategyImpl::Swing1.parse_params(&params_to_value(&StrategyParams::Swing1(p.clone()))).unwrap();
         assert_eq!(reparsed, StrategyParams::Swing1(p));
+    }
+
+    #[test]
+    fn tpsl2_higher_low_requires_pullback() {
+        let mut rule = crate::models::Tpsl2Rule::new(
+            "r".into(), None, None, None, json!([]), "paper".into(), 1.0,
+            50.0, 20.0, None, None, None, None, Some(0.1), None, None, None, None,
+        );
+        // A real scalp gate configured (so "no scalp entry gate" doesn't fire
+        // first) plus higher-low seconds set without a pullback gate → rejected
+        // (it's a sub-parameter of the pullback gate and would be silently
+        // ignored).
+        rule.p_entry_min_age_secs = Some(5);
+        rule.p_entry_higher_low_secs = Some(30);
+        let d = draft(StrategyImpl::Tpsl2, StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule)));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("Higher-Low Seconds")));
+
+        // With a pullback gate configured → builds.
+        rule.p_entry_pullback_pct = Some(10.0);
+        let d = draft(StrategyImpl::Tpsl2, StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule)));
+        assert!(build_rule(&d).is_ok());
     }
 
     #[test]

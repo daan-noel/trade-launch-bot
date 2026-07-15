@@ -1,4 +1,5 @@
 ﻿import { TPSL2_AXES } from '@lab/components/sweep/groupedTypes';
+import { tpsl2AxesGateWarning } from '@shared/lib/tpsl2Axes';
 import { STORAGE_KEYS } from 'lib/storage';
 import { GroupedSweepView } from './GroupedSweepView';
 
@@ -32,6 +33,7 @@ export function Tpsl2GroupedSweepPage() {
       axes={TPSL2_AXES}
       storageKey={STORAGE_KEYS.sweepConfig}
       title="Grouped Param Sweep · TPSL2"
+      axesWarning={tpsl2AxesGateWarning}
     />
   );
 }

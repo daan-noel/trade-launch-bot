@@ -22,6 +22,34 @@ use crate::sweep::strategy::{
 use crate::sweep::projection::CorpusTrade;
 use crate::models::Tpsl2Rule;
 use crate::strategies::tpsl_sniper_2::{entry, exit};
+use trading_core::strategies::rules::tpsl2_higher_low_gate_sane;
+
+/// Drop combos that violate the tpsl2 pullback/higher-low pairing invariant —
+/// the **same** [`tpsl2_higher_low_gate_sane`] predicate rule validation uses
+/// (SSOT), so the sweep never surfaces a "winner" you'd fail to save as a rule.
+/// Such a combo is also pure waste: `entry_higher_low_secs` is silently ignored by
+/// the live entry gate whenever `entry_pullback_pct` is disabled (see
+/// `entry::scalp`), so every value of `entry_higher_low_secs` at a given disabled-
+/// pullback point resolves a byte-identical entry — sweeping more than one is a
+/// redundant re-run of the same decision. Logs the pruned count (no silent caps).
+fn prune_gate_invalid(combos: Vec<Tpsl2Combo>) -> Vec<Tpsl2Combo> {
+    let before = combos.len();
+    let kept: Vec<_> = combos
+        .into_iter()
+        .filter(|c| {
+            tpsl2_higher_low_gate_sane(c.raw.entry_pullback_pct, c.raw.entry_higher_low_secs)
+                .is_ok()
+        })
+        .collect();
+    if kept.len() < before {
+        tracing::info!(
+            pruned = before - kept.len(),
+            kept = kept.len(),
+            "tpsl2 sweep: dropped combos where higher-low seconds is set without a pullback gate (silent no-op on live)"
+        );
+    }
+    kept
+}
 
 /// The full TPSL2 rule param set, every knob swept. `take_profit`/`stop_loss` are
 /// always-on; every other knob is `Option` and a `None` (the default axis when
@@ -364,7 +392,7 @@ impl ParamSpace for Tpsl2Strategy {
     #[allow(unused_assignments)]
     fn sample(&self, method: SweepMethod) -> Vec<Tpsl2Combo> {
         let a = &self.axes;
-        match method {
+        let combos = match method {
             SweepMethod::Grid => {
                 // Full grid = Cartesian product of all 13 axes, one combo per flat
                 // index (mixed-radix decode in `combo_at`). The grid is pre-checked
@@ -449,7 +477,8 @@ impl ParamSpace for Tpsl2Strategy {
                     })
                     .collect()
             }
-        }
+        };
+        prune_gate_invalid(combos)
     }
 
     /// Coordinate-move neighborhood: for each survivor, vary one axis at a time to
@@ -489,7 +518,7 @@ impl ParamSpace for Tpsl2Strategy {
             walk!(a.entry_higher_low_secs, entry_higher_low_secs);
             walk!(a.entry_min_liquidity_sol, entry_min_liquidity_sol);
         }
-        out
+        prune_gate_invalid(out)
     }
 
     /// Stable-sort the combo set so combos sharing the 7 scalp-gate knobs land
@@ -780,5 +809,56 @@ mod tests {
                 prev = Some(k);
             }
         }
+    }
+
+    #[test]
+    fn sample_prunes_higher_low_without_pullback() {
+        // A grid where higher-low seconds is swept but pullback is left disabled:
+        // entry_pullback_pct ∈ {None}, entry_higher_low_secs ∈ {None, Some(30)}.
+        // The (None, Some(30)) combo is meaningless — the live gate never reads
+        // higher-low seconds while pullback is disabled — and must be pruned.
+        let spec = AxesSpec {
+            entry_pullback_pct: Some(vec![None]),
+            entry_higher_low_secs: Some(vec![None, Some(30)]),
+            ..Default::default()
+        };
+        let mut s = strategy();
+        s.axes = Tpsl2Axes::from_spec(&spec);
+
+        let full_grid = s.axes.combo_count();
+        let combos = s.sample(SweepMethod::Grid);
+
+        // Every survivor satisfies the shared invariant …
+        assert!(combos.iter().all(|c| tpsl2_higher_low_gate_sane(
+            c.raw.entry_pullback_pct,
+            c.raw.entry_higher_low_secs,
+        )
+        .is_ok()));
+        // … the meaningless (None, Some(30)) half was dropped …
+        assert!(combos.len() < full_grid, "gate-invalid combos must be pruned");
+        // … and the valid (None, None) half remains (fires, doesn't over-prune).
+        assert!(!combos.is_empty(), "valid combos must survive");
+    }
+
+    #[test]
+    fn sample_keeps_higher_low_when_pullback_enabled() {
+        // Same higher_low_secs sweep, but pullback is also swept including a
+        // non-disabled value — those combos are meaningful and must survive.
+        let spec = AxesSpec {
+            entry_pullback_pct: Some(vec![None, Some(10.0)]),
+            entry_higher_low_secs: Some(vec![None, Some(30)]),
+            ..Default::default()
+        };
+        let mut s = strategy();
+        s.axes = Tpsl2Axes::from_spec(&spec);
+
+        let combos = s.sample(SweepMethod::Grid);
+        assert!(
+            combos
+                .iter()
+                .any(|c| c.raw.entry_pullback_pct == Some(10.0)
+                    && c.raw.entry_higher_low_secs == Some(30)),
+            "a pullback-enabled combo with higher-low secs set must survive"
+        );
     }
 }
