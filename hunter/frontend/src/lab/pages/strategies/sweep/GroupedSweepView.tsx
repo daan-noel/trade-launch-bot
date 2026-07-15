@@ -166,6 +166,7 @@ export function GroupedSweepView({
   const activeRunId = (selectedRunId && runs.some((r) => r.id === selectedRunId))
     ? selectedRunId
     : (runs[0]?.id ?? null);
+  const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
 
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   // A new run invalidates the drilled-in group.
@@ -216,7 +217,13 @@ export function GroupedSweepView({
           type="button"
           onClick={async (e) => {
             e.stopPropagation();
-            const json = serializeGroupFingerprintJson(strategyId as Strategy, group);
+            // Promote at the run's own bucket width so the pasted rule matches the
+            // same bucket the group was formed on (legacy runs → default width).
+            const json = serializeGroupFingerprintJson(
+              strategyId as Strategy,
+              group,
+              activeRun?.bucket_width_sol ?? undefined,
+            );
             try {
               await navigator.clipboard.writeText(json);
               setCopiedGroupId(group.id);
@@ -230,7 +237,7 @@ export function GroupedSweepView({
         </button>
       );
     },
-    [copiedGroupId, strategyId],
+    [copiedGroupId, strategyId, activeRun?.bucket_width_sol],
   );
 
   const [startSweep, startState] = useStartGroupedSweepMutation();
@@ -305,7 +312,6 @@ export function GroupedSweepView({
   );
   const groups = groupsQuery.data ?? [];
   const activeGroup = groups.find((g) => g.id === activeGroupId) ?? null;
-  const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
   // Tokens covered by the persisted groups (Σ group token_count). For a partial
   // run this is below the run's total token_count; the history Population row shows
   // it as done/total. `null` while groups are still loading so the row falls back

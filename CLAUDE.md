@@ -43,9 +43,14 @@ cargo check -p executor-pumpfun   # a shared crate
 ```
 
 Use `--target-dir target-check` when a bin `.exe` is running (it locks `target/`).
-**Always pass the ABSOLUTE path** — `--target-dir C:\Users\User\Documents\Bot\target-check`
-— so every crate/CWD shares the one dir instead of spawning a per-subdir copy (each copy
-re-compiles the giant `libduckdb-sys` amalgamation, ~20 GB / minutes each).
+**Always pass the ABSOLUTE path, with FORWARD slashes** —
+`--target-dir "C:/Users/User/Documents/Bot/target-check"` — so every crate/CWD shares the
+one dir instead of spawning a per-subdir copy (each copy re-compiles the giant
+`libduckdb-sys` amalgamation, ~20 GB / minutes each). Forward slashes are mandatory:
+cargo accepts them on Windows, and they survive the Bash tool. A **backslash** path
+(`C:\Users\...`) works in PowerShell but the Bash tool eats the `\` escapes, collapsing it
+to `C:UsersUserDocumentsBottarget-check`, which cargo then creates as a junk drive-relative
+folder in the CWD.
 
 A global **sccache** (`~/.cargo/config.toml`, `rustc-wrapper = "sccache"`) caches *rustc*
 output across all target dirs and across `cargo clean`. It does **not** cache the DuckDB

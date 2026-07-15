@@ -137,11 +137,13 @@ impl GroupSink for NoopSink {
     fn group_done(&self, _index: usize, _group: &GroupResult, _combo_params: &[Value]) {}
 }
 
-/// Partition token indices by exact-value group key. Pure `O(tokens)` pass.
-pub fn partition(corpus: &Corpus, fields: &[GroupField]) -> HashMap<GroupKey, Vec<usize>> {
+/// Partition token indices by exact-value group key at bucket `width` (the per-run
+/// partition width for the continuous SOL fields; see [`group_key`]). Pure
+/// `O(tokens)` pass.
+pub fn partition(corpus: &Corpus, fields: &[GroupField], width: f64) -> HashMap<GroupKey, Vec<usize>> {
     let mut groups: HashMap<GroupKey, Vec<usize>> = HashMap::new();
     for (i, tt) in corpus.tokens.iter().enumerate() {
-        groups.entry(group_key(&tt.fp, fields)).or_default().push(i);
+        groups.entry(group_key(&tt.fp, fields, width)).or_default().push(i);
     }
     groups
 }
@@ -161,6 +163,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     params: &[S::Params],
     corpus: &Corpus,
     fields: &[GroupField],
+    width: f64,
     min_tokens: usize,
     coverage: CoverageFloor,
     observer: &dyn SweepObserver,
@@ -169,7 +172,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     let floor = min_tokens.max(1);
     // Decorate with the tie-break key once (JSON-serializing inside the comparator
     // re-ran it O(n log n) times); sort, then drop the decoration.
-    let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields)
+    let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields, width)
         .into_iter()
         .filter(|(_, idx)| idx.len() >= floor)
         .map(|(key, idx)| (key.to_json().to_string(), key, idx))
@@ -317,6 +320,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     refine: Option<RefineSpec>,
     corpus: &Corpus,
     fields: &[GroupField],
+    width: f64,
     min_tokens: usize,
     coverage: CoverageFloor,
     cap: usize,
@@ -332,7 +336,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     let Some(spec) = refine else {
         // No refine: the single pass is the final one — persist its groups.
         let groups = run_grouped_sweep(
-            strategy, &coarse, corpus, fields, min_tokens, coverage, observer, sink,
+            strategy, &coarse, corpus, fields, width, min_tokens, coverage, observer, sink,
         )?;
         return Ok((coarse, groups));
     };
@@ -347,6 +351,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
         &coarse,
         corpus,
         fields,
+        width,
         min_tokens,
         coverage,
         coarse_observer,
@@ -394,7 +399,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
     // Final pass owns the bar and produces the persistable groups (combo-id space
     // now fixed), so it carries the real sink.
     let groups = run_grouped_sweep(
-        strategy, &union, corpus, fields, min_tokens, coverage, observer, sink,
+        strategy, &union, corpus, fields, width, min_tokens, coverage, observer, sink,
     )?;
     Ok((union, groups))
 }
@@ -691,6 +696,9 @@ mod tests {
 
     /// A permissive floor (any single fire is eligible) for the small fixtures.
     const OPEN_FLOOR: CoverageFloor = CoverageFloor { min_fired_abs: 1, fire_frac: 0.0 };
+    /// Default per-run bucket width for these tests (grouping fields here are all
+    /// discrete, so the exact width is immaterial — it just satisfies the signature).
+    const WIDTH: f64 = crate::sweep::grouping::SOL_BUCKET_WIDTH;
 
     #[test]
     fn groups_by_exact_field_and_picks_best_combo() {
@@ -701,6 +709,7 @@ mod tests {
             &params,
             &corpus(),
             &[GroupField::TokenProgramId],
+            WIDTH,
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -740,6 +749,7 @@ mod tests {
             &params,
             &corpus,
             &[GroupField::TokenProgramId],
+            WIDTH,
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -811,6 +821,7 @@ mod tests {
             &params,
             &corpus(),
             &[GroupField::TokenProgramId],
+            WIDTH,
             2,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -843,6 +854,7 @@ mod tests {
             None,
             &corpus(),
             &[crate::sweep::grouping::GroupField::TokenProgramId],
+            WIDTH,
             1,
             OPEN_FLOOR,
             100,
@@ -867,6 +879,7 @@ mod tests {
             Some(RefineSpec { top_k: 1 }),
             &corpus(),
             &[],
+            WIDTH,
             1,
             OPEN_FLOOR,
             100,
@@ -894,6 +907,7 @@ mod tests {
             Some(RefineSpec { top_k: 1 }),
             &corpus(),
             &[],
+            WIDTH,
             1,
             OPEN_FLOOR,
             3,
@@ -931,6 +945,7 @@ mod tests {
             &params,
             &corpus(), // devA(2) + devB(1) → 2 surviving groups
             &[GroupField::TokenProgramId],
+            WIDTH,
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,
@@ -962,6 +977,7 @@ mod tests {
             Some(RefineSpec { top_k: 1 }),
             &corpus(),
             &[],
+            WIDTH,
             1,
             OPEN_FLOOR,
             100,
@@ -984,6 +1000,7 @@ mod tests {
             &params,
             &corpus(),
             &[],
+            WIDTH,
             1,
             OPEN_FLOOR,
             &crate::sweep::progress::NoopObserver,

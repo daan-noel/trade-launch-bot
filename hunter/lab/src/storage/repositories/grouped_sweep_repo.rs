@@ -74,6 +74,7 @@ struct RunDbRow {
     max_combos: Option<i32>,
     label: Option<String>,
     buy_amount_sol: Option<f32>,
+    bucket_width_sol: Option<f32>,
 }
 
 impl From<RunDbRow> for GroupedSweepRun {
@@ -102,6 +103,7 @@ impl From<RunDbRow> for GroupedSweepRun {
             max_combos: r.max_combos,
             label: r.label,
             buy_amount_sol: r.buy_amount_sol.map(|v| v as f64),
+            bucket_width_sol: r.bucket_width_sol.map(|v| v as f64),
         }
     }
 }
@@ -249,9 +251,10 @@ impl GroupedSweepRepo {
              (id, strategy_id, source, method, created_after, created_before, \
               curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
               combo_count, corpus_hash, created_at, status, groups_done, \
-              ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol) \
+              ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol, \
+              bucket_width_sol) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
-                     $18,$19,$20,$21,$22,$23)",
+                     $18,$19,$20,$21,$22,$23,$24)",
             self.tables.runs
         );
         sqlx::query(&run_sql)
@@ -278,6 +281,7 @@ impl GroupedSweepRepo {
             .bind(run.max_combos)
             .bind(&run.label)
             .bind(run.buy_amount_sol.map(|v| v as f32))
+            .bind(run.bucket_width_sol.map(|v| v as f32))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -486,7 +490,8 @@ impl GroupedSweepRepo {
             "SELECT id, strategy_id, source, method, created_after, created_before, \
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
-                    ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol \
+                    ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol, \
+                    bucket_width_sol \
              FROM {} WHERE id = $1",
             self.tables.runs
         );
@@ -559,7 +564,8 @@ impl GroupedSweepRepo {
             "SELECT id, strategy_id, source, method, created_after, created_before, \
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
-                    ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol \
+                    ix_labels_filter, field_filters, token_cap, max_combos, label, buy_amount_sol, \
+                    bucket_width_sol \
              FROM {} ORDER BY created_at DESC LIMIT $1",
             self.tables.runs
         );

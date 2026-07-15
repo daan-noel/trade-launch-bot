@@ -48,6 +48,8 @@ export interface GroupedCreationResponse {
   to: string;
   segment: string;
   group_by: GroupField[];
+  /** The applied (clamped) bucket width (SOL) for the continuous SOL group fields. */
+  bucket_width: number;
   /** The applied per-field value filters echoed back (`{cu_limit:["300000"]}`). */
   field_filters: Record<string, string[]>;
   /** The applied exact instruction-label set filter, or `null` when none. */
@@ -68,6 +70,10 @@ export interface GroupedCreationArgs {
   groupBy: GroupField[];
   /** Number of top groups to return. */
   top: number;
+  /** Bucket width (SOL) for the continuous SOL group fields — the same knob the
+   *  grouped sweep uses, so the dashboard groups a corpus identically to a sweep at
+   *  this width. Omitted ⇒ the backend default (0.1). */
+  bucketWidth?: number;
   /** Per-field value filters restricting the corpus before partitioning (keys =
    *  GroupField tags, values = allowed string forms). Independent of `groupBy`.
    *  Empty/omitted ⇒ no filter. `ix_labels` uses `ixLabelsFilter` instead. */

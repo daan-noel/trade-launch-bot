@@ -7,7 +7,6 @@ import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
   BUCKETED_GROUP_FIELDS,
-  SOL_BUCKET_WIDTH,
   type GroupField,
 } from './groupedTypes';
 
@@ -23,6 +22,10 @@ interface FingerprintGroupPickerProps {
   onSetFieldFilter: (field: string, value: string) => void;
   cashbackFilter: CashbackFilter;
   onSetCashback: (v: CashbackFilter) => void;
+  /** Bucket width (SOL) the continuous SOL fields (◎) are binned at — the one knob
+   *  the partition, the promoted rule's matcher, and this dashboard all share. */
+  bucketWidthSol: number;
+  onSetBucketWidth: (v: number) => void;
   /** Raw JSON-array text for the exact ix_labels set filter. */
   ixLabelsText: string;
   onSetIxLabels: (v: string) => void;
@@ -39,25 +42,32 @@ const NUMERIC_FIELDS = GROUP_FIELDS.filter(
   (f) => f !== 'ix_labels' && f !== 'is_cashback_enabled',
 );
 
-/** Units note shown at the bottom of each numeric field's filter tooltip. */
-// Discrete fields group on their exact value; the continuous SOL amounts are
-// grouped into fixed 0.1-SOL buckets (chips read as ranges like "1.0–1.1"), so the
-// value filter here is best used to pin a bucket rather than an exact amount.
-const FIELD_UNIT_HINTS: Partial<Record<GroupField, string>> = {
-  cu_limit: 'Raw integer (e.g. 200000), exact grouping. Match values shown in group keys.',
-  cu_price: 'Raw integer (e.g. 1000), exact grouping. Match values shown in group keys.',
-  max_cost_lamports: 'Grouped into 0.1-SOL buckets (chips read as ranges, e.g. 1.0–1.1).',
-  spendable_lamports_in: 'Grouped into 0.1-SOL buckets (chips read as ranges, e.g. 1.0–1.1).',
-  initial_buy_sol: 'Grouped into 0.1-SOL buckets (chips read as ranges, e.g. 1.0–1.1).',
-  first_slot_buy_sol: 'Creation-slot buy SOL, grouped into 0.1-SOL buckets (ranges, e.g. 1.0–1.1).',
-  first_slot_sell_sol: 'Creation-slot sell SOL, grouped into 0.1-SOL buckets (ranges, e.g. 1.0–1.1).',
-};
+/** Units note shown at the bottom of each numeric field's filter tooltip. Discrete
+ *  fields group on their exact value; the continuous SOL amounts are grouped into
+ *  `width`-wide buckets (chips read as ranges like "1.0–1.1"), so the value filter
+ *  here is best used to pin a bucket rather than an exact amount. */
+function fieldUnitHint(field: GroupField, width: number): string {
+  switch (field) {
+    case 'cu_limit':
+      return 'Raw integer (e.g. 200000), exact grouping. Match values shown in group keys.';
+    case 'cu_price':
+      return 'Raw integer (e.g. 1000), exact grouping. Match values shown in group keys.';
+    case 'first_slot_buy_sol':
+      return `Creation-slot buy SOL, grouped into ${width}-SOL buckets (ranges, e.g. 1.0–1.1).`;
+    case 'first_slot_sell_sol':
+      return `Creation-slot sell SOL, grouped into ${width}-SOL buckets (ranges, e.g. 1.0–1.1).`;
+    default:
+      return BUCKETED_GROUP_FIELDS.has(field)
+        ? `Grouped into ${width}-SOL buckets (chips read as ranges, e.g. 1.0–1.1).`
+        : 'Comma-separated numbers.';
+  }
+}
 
 /** Tooltip for a numeric field's filter input — explains the 3-state interaction
  *  (neutral wording so it reads correctly on the sweep page and the dashboard). */
-function fieldFilterTooltip(field: GroupField, isGrouped: boolean): string {
+function fieldFilterTooltip(field: GroupField, isGrouped: boolean, width: number): string {
   const label = GROUP_FIELD_LABELS[field];
-  const units = FIELD_UNIT_HINTS[field] ?? 'Comma-separated numbers.';
+  const units = fieldUnitHint(field, width);
   const whenOn = isGrouped
     ? '☑ ON  + values here → only tokens matching a value are kept,\n        then split into one group PER value (narrowed grouping).\n☑ ON  + empty       → all values included, each in its own group (default).'
     : '☐ OFF + values here → only tokens matching a value are kept,\n        all combined into ONE group.\n☐ OFF + empty       → no filter; all values pass through (default).';
@@ -112,6 +122,8 @@ export function FingerprintGroupPicker({
   onSetFieldFilter,
   cashbackFilter,
   onSetCashback,
+  bucketWidthSol,
+  onSetBucketWidth,
   ixLabelsText,
   onSetIxLabels,
   ixFilter,
@@ -215,7 +227,7 @@ export function FingerprintGroupPicker({
                 value={filterText}
                 onChange={(e) => onSetFieldFilter(f, e.target.value)}
                 placeholder="all values"
-                title={fieldFilterTooltip(f, isGrouped)}
+                title={fieldFilterTooltip(f, isGrouped, bucketWidthSol)}
                 className="min-w-0 flex-1 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none"
               />
               {hasFilter ? (
@@ -228,8 +240,8 @@ export function FingerprintGroupPicker({
               ) : (
                 BUCKETED_GROUP_FIELDS.has(f) && (
                   <BucketChip
-                    width={SOL_BUCKET_WIDTH}
-                    title={`Continuous SOL amount — grouped into ${SOL_BUCKET_WIDTH}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.`}
+                    width={bucketWidthSol}
+                    title={`Continuous SOL amount — grouped into ${bucketWidthSol}-SOL buckets. Group chips read as ranges (e.g. "1.0–1.1"), not exact values.`}
                   />
                 )
               )}
@@ -323,13 +335,38 @@ export function FingerprintGroupPicker({
         })()}
       </div>
 
+      {/* Bucket width — the one knob that sizes every ◎ bucketed SOL field. Lives
+          here (not in the outer form) so it sits with the fields it governs, and so
+          the sweep page and the dashboard expose it identically. */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-white/5 pt-1.5">
+        <label
+          className="flex items-center gap-1.5 text-[11px] text-text-mid"
+          title="Width (SOL) of each bucket the continuous SOL fields (◎) are binned into. The partition, a promoted rule's live matcher, and this view all group at this width, so what you group by = what you match."
+        >
+          <BucketChip width={bucketWidthSol} className="align-middle" />
+          <span className="font-bold uppercase tracking-wider text-text-dim/80">Bucket width (SOL)</span>
+          <input
+            type="number"
+            min={0.000001}
+            step={0.05}
+            value={bucketWidthSol}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              onSetBucketWidth(Number.isFinite(n) && n > 0 ? n : 0.1);
+            }}
+            className="w-20 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none"
+          />
+        </label>
+        <span className="text-[10px] text-text-dim/55">applies to the ◎ bucketed SOL fields</span>
+      </div>
+
       {/* Legend — which fields bucket and how (so grouping behavior is self-explaining). */}
-      <p className="border-t border-white/5 pt-1.5 text-[11px] leading-snug text-text-dim/70">
-        <BucketChip width={SOL_BUCKET_WIDTH} className="align-middle" />{' '}
+      <p className="text-[11px] leading-snug text-text-dim/70">
+        <BucketChip width={bucketWidthSol} className="align-middle" />{' '}
         <span className="text-text-mid">
           {[...BUCKETED_GROUP_FIELDS].map((f) => GROUP_FIELD_LABELS[f]).join(', ')}
         </span>{' '}
-        are continuous SOL amounts, so they group by <b>{SOL_BUCKET_WIDTH}-SOL ranges</b> —
+        are continuous SOL amounts, so they group by <b>{bucketWidthSol}-SOL ranges</b> —
         group chips read as{' '}
         <span className="font-mono">1.0–1.1</span>, not exact values. Every other field
         groups on its <b>exact</b> value.

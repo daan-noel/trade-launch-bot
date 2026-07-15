@@ -185,6 +185,10 @@ pub async fn run_grouped(
     refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
+    // Per-run bucket width (SOL) for the continuous SOL grouping fields — the same
+    // width the created rule's matcher + the creation-stats dashboard use, so
+    // "what you swept = what you run". Discrete fields ignore it.
+    width: f64,
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
@@ -196,21 +200,21 @@ pub async fn run_grouped(
     match strategy_id {
         "tpsl1" => {
             sweep_tpsl1(
-                axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
+                axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
                 buy_amount_sol, coarse_observer, observer, sink,
             )
             .await
         }
         "tpsl2" => {
             sweep_tpsl2(
-                axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
+                axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
                 buy_amount_sol, coarse_observer, observer, sink,
             )
             .await
         }
         "swing_1" => {
             sweep_swing1(
-                axes_json, method, refine, corpus, fields, min_tokens, floor, max_combos,
+                axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
                 buy_amount_sol, coarse_observer, observer, sink,
             )
             .await
@@ -253,6 +257,9 @@ async fn sweep_tpsl2(
     refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
+    // Per-run bucket width (SOL) for the continuous SOL grouping fields (see
+    // `run_grouped`). Threaded verbatim into the engine's `partition`.
+    width: f64,
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
@@ -323,6 +330,7 @@ async fn sweep_tpsl2(
                     refine,
                     &corpus,
                     &fields,
+                    width,
                     min_tokens,
                     floor,
                     cap,
@@ -378,6 +386,9 @@ async fn sweep_swing1(
     refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
+    // Per-run bucket width (SOL) for the continuous SOL grouping fields (see
+    // `run_grouped`). Threaded verbatim into the engine's `partition`.
+    width: f64,
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
@@ -437,6 +448,7 @@ async fn sweep_swing1(
                     refine,
                     &corpus,
                     &fields,
+                    width,
                     min_tokens,
                     floor,
                     cap,
@@ -491,6 +503,9 @@ async fn sweep_tpsl1(
     refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
+    // Per-run bucket width (SOL) for the continuous SOL grouping fields (see
+    // `run_grouped`). Threaded verbatim into the engine's `partition`.
+    width: f64,
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
@@ -553,6 +568,7 @@ async fn sweep_tpsl1(
                     refine,
                     &corpus,
                     &fields,
+                    width,
                     min_tokens,
                     floor,
                     cap,

@@ -88,6 +88,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     [rawGroupBy],
   );
   const [top, setTop] = useLocalStorage<number>(STORAGE_KEYS.groupedTop, 8);
+  // Bucket width (SOL) for the continuous SOL group fields — the same knob the
+  // grouped sweep uses, so this dashboard groups a corpus identically to a sweep.
+  const [bucketWidth, setBucketWidth] = useLocalStorage<number>(STORAGE_KEYS.groupedBucketWidth, 0.1);
   const [bucket, setBucket] = useLocalStorage<CreationBucket>(STORAGE_KEYS.groupedBucket, 'day');
   const [rangeDays, setRangeDays] = useLocalStorage<number>(STORAGE_KEYS.groupedRange, 30);
   const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(STORAGE_KEYS.groupedFilters, {});
@@ -122,6 +125,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       segment,
       groupBy,
       top,
+      // Send only a non-default width so the 0.1 case keeps a stable cache key.
+      ...(bucketWidth !== 0.1 ? { bucketWidth } : {}),
       ...(Object.keys(fieldFilters).length > 0 ? { fieldFilters } : {}),
       // ix_labels grouping and the exact-set filter are mutually exclusive
       // (matches the sweep page): drop the filter when grouping by ix_labels.
@@ -129,7 +134,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         ? { ixLabelsFilter: ixFilter.labels }
         : {}),
     };
-  }, [effBucket, tz, from, segment, groupBy, top, fieldFiltersText, cashbackFilter, ixFilter.labels]);
+  }, [effBucket, tz, from, segment, groupBy, top, bucketWidth, fieldFiltersText, cashbackFilter, ixFilter.labels]);
 
   const { data, isFetching, isError, error } = useGetGroupedCreationStatsQuery(applied ?? skipToken);
 
@@ -230,6 +235,8 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           onSetFieldFilter={(f, v) => setFieldFiltersText((prev) => ({ ...prev, [f]: v }))}
           cashbackFilter={cashbackFilter}
           onSetCashback={setCashbackFilter}
+          bucketWidthSol={bucketWidth}
+          onSetBucketWidth={setBucketWidth}
           ixLabelsText={ixLabelsText}
           onSetIxLabels={setIxLabelsText}
           ixFilter={ixFilter}

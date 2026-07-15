@@ -20,9 +20,10 @@
 //! cashback, ix-labels) and **binned** for the continuous SOL-amount fields (initial
 //! buy, max cost, spendable-in, first-slot buy/sell) — these are effectively
 //! continuous, so exact grouping would make every token its own group. Binning lives
-//! entirely inside [`render_field`] (via [`bucket_sol_label`]) at width [`SOL_BUCKET_WIDTH`]
-//! — no engine, schema, or API change. See `creation_stats_repo` for the matching
-//! dashboard SQL bin (kept in lockstep so both surfaces produce identical labels).
+//! entirely inside [`render_field`] (via [`bucket_sol_label`]) at a **per-run** width
+//! passed into [`group_key`] (default [`SOL_BUCKET_WIDTH`]) — no engine or schema change.
+//! See `creation_stats_repo` for the matching dashboard SQL bin (kept in lockstep at the
+//! same width so both surfaces produce identical labels).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -101,9 +102,11 @@ fn bucket_sol_label(v: f64, width: f64, decimals: usize) -> String {
 
 /// Bucket a lamports amount by converting to human SOL first, so the label reads in
 /// SOL (matching the field's "SOL cost"/"SOL in" display name) rather than raw
-/// lamports. Same binning as [`bucket_sol_label`].
-fn bucket_lamports_as_sol(lamports: i64) -> String {
-    bucket_sol_label(lamports as f64 / 1_000_000_000.0, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS)
+/// lamports. Same binning as [`bucket_sol_label`]. `width` is the per-run bucket
+/// width; `decimals` must be [`decimals_for`]`(width)` so the label edge (always a
+/// multiple of `width`) renders exactly — see [`render_field`].
+fn bucket_lamports_as_sol(lamports: i64, width: f64, decimals: usize) -> String {
+    bucket_sol_label(lamports as f64 / 1_000_000_000.0, width, decimals)
 }
 
 /// Token-creation metadata used **only** for grouping — never read by any
@@ -233,18 +236,25 @@ impl GroupKey {
     }
 }
 
-/// Compute the group key for one token's fingerprint under the chosen fields.
-pub fn group_key(fp: &TokenFingerprint, fields: &[GroupField]) -> GroupKey {
-    GroupKey(fields.iter().map(|f| (*f, render_field(fp, *f))).collect())
+/// Compute the group key for one token's fingerprint under the chosen fields at
+/// bucket `width` (the per-run partition width for the continuous SOL fields;
+/// discrete fields ignore it). Pass [`SOL_BUCKET_WIDTH`] for the default.
+pub fn group_key(fp: &TokenFingerprint, fields: &[GroupField], width: f64) -> GroupKey {
+    // Derive decimals once from the width so every continuous field renders its
+    // (width-multiple) edge exactly — the invariant that keeps the label byte-for-byte
+    // identical to the dashboard SQL `to_char` (see `creation_stats_repo::sol_bucket_sql`).
+    let decimals = decimals_for(width);
+    GroupKey(fields.iter().map(|f| (*f, render_field(fp, *f, width, decimals))).collect())
 }
 
 /// Group-key string for one field. `None`/empty → [`MISSING`].
 ///
 /// Discrete fields (program id, CU limit/price, cashback, ix-labels) render their
 /// **exact** value. The continuous SOL-amount fields (initial buy, max cost,
-/// spendable-in, first-slot buy/sell) are **binned** into [`SOL_BUCKET_WIDTH`]-wide
-/// ranges — this is the single seam where a value becomes a coarse, groupable key.
-fn render_field(fp: &TokenFingerprint, f: GroupField) -> String {
+/// spendable-in, first-slot buy/sell) are **binned** into `width`-wide ranges at
+/// `decimals` = [`decimals_for`]`(width)` places — this is the single seam where a
+/// value becomes a coarse, groupable key.
+fn render_field(fp: &TokenFingerprint, f: GroupField, width: f64, decimals: usize) -> String {
     let opt = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_else(|| MISSING.to_string());
     let miss = || MISSING.to_string();
     match f {
@@ -256,21 +266,23 @@ fn render_field(fp: &TokenFingerprint, f: GroupField) -> String {
         GroupField::IsCashbackEnabled => fp.is_cashback_enabled.to_string(),
         // Continuous SOL amounts → binned SOL ranges. Lamports fields convert to SOL
         // first so the label reads in SOL (matching their "SOL cost"/"SOL in" name).
-        GroupField::MaxCostLamports => fp.max_cost_lamports.map(bucket_lamports_as_sol).unwrap_or_else(miss),
+        GroupField::MaxCostLamports => {
+            fp.max_cost_lamports.map(|l| bucket_lamports_as_sol(l, width, decimals)).unwrap_or_else(miss)
+        }
         GroupField::SpendableLamportsIn => {
-            fp.spendable_lamports_in.map(bucket_lamports_as_sol).unwrap_or_else(miss)
+            fp.spendable_lamports_in.map(|l| bucket_lamports_as_sol(l, width, decimals)).unwrap_or_else(miss)
         }
         GroupField::InitialBuySol => fp
             .initial_buy_sol
-            .map(|v| bucket_sol_label(v, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS))
+            .map(|v| bucket_sol_label(v, width, decimals))
             .unwrap_or_else(miss),
         GroupField::FirstSlotBuySol => fp
             .first_slot_buy_sol
-            .map(|v| bucket_sol_label(v, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS))
+            .map(|v| bucket_sol_label(v, width, decimals))
             .unwrap_or_else(miss),
         GroupField::FirstSlotSellSol => fp
             .first_slot_sell_sol
-            .map(|v| bucket_sol_label(v, SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS))
+            .map(|v| bucket_sol_label(v, width, decimals))
             .unwrap_or_else(miss),
         GroupField::IxLabels => {
             if fp.ix_labels.is_empty() {
@@ -304,7 +316,7 @@ mod tests {
 
     #[test]
     fn exact_single_field_key() {
-        let k = group_key(&fp(), &[GroupField::TokenProgramId]);
+        let k = group_key(&fp(), &[GroupField::TokenProgramId], SOL_BUCKET_WIDTH);
         assert_eq!(k.0, vec![(GroupField::TokenProgramId, "Tokenkeg".to_string())]);
         assert_eq!(k.to_json(), json!({ "token_program_id": "Tokenkeg" }));
     }
@@ -313,7 +325,7 @@ mod tests {
     fn compound_key_in_selection_order() {
         // max_cost_lamports is a continuous SOL amount → binned (1_000_000_000
         // lamports = 1.0 SOL → the [1.0, 1.1) bucket); cu_limit is discrete → exact.
-        let k = group_key(&fp(), &[GroupField::MaxCostLamports, GroupField::CuLimit]);
+        let k = group_key(&fp(), &[GroupField::MaxCostLamports, GroupField::CuLimit], SOL_BUCKET_WIDTH);
         assert_eq!(
             k.to_json(),
             json!({ "max_cost_lamports": "1.0–1.1", "cu_limit": "200000" })
@@ -323,20 +335,20 @@ mod tests {
     #[test]
     fn missing_value_gets_sentinel_not_collision() {
         // cu_price is None → sentinel, distinct from a real "0".
-        let missing = group_key(&fp(), &[GroupField::CuPrice]);
+        let missing = group_key(&fp(), &[GroupField::CuPrice], SOL_BUCKET_WIDTH);
         let mut z = fp();
         z.cu_price = Some(0);
-        let zero = group_key(&z, &[GroupField::CuPrice]);
+        let zero = group_key(&z, &[GroupField::CuPrice], SOL_BUCKET_WIDTH);
         assert_ne!(missing, zero);
         assert_eq!(missing.0[0].1, MISSING);
     }
 
     #[test]
     fn empty_fields_is_single_all_group() {
-        let a = group_key(&fp(), &[]);
+        let a = group_key(&fp(), &[], SOL_BUCKET_WIDTH);
         let mut other = fp();
         other.token_program_id = Some("OtherProgram".into());
-        let b = group_key(&other, &[]);
+        let b = group_key(&other, &[], SOL_BUCKET_WIDTH);
         assert_eq!(a, b, "no grouping ⇒ every token shares the ALL key");
         assert_eq!(a.to_json(), json!({}));
     }
@@ -345,7 +357,7 @@ mod tests {
     fn labels_normalized_order_preserved_and_joined() {
         // exact on-chain sequence preserved — consecutive duplicates are kept
         assert_eq!(normalize_labels(&json!(["b", "a", "a"])), vec!["b", "a", "a"]);
-        let k = group_key(&fp(), &[GroupField::IxLabels]);
+        let k = group_key(&fp(), &[GroupField::IxLabels], SOL_BUCKET_WIDTH);
         assert_eq!(k.0[0].1, "Pump.Fun: Create | System: Transfer");
     }
 
@@ -356,9 +368,9 @@ mod tests {
             assert_eq!(GroupField::from_tag(f.as_str()), Some(f));
         }
         // Present value renders its bucket; None → sentinel (own group, no "0" collision).
-        let buy = group_key(&fp(), &[GroupField::FirstSlotBuySol]);
+        let buy = group_key(&fp(), &[GroupField::FirstSlotBuySol], SOL_BUCKET_WIDTH);
         assert_eq!(buy.0[0].1, "2.2–2.3"); // 2.25 ∈ [2.2, 2.3)
-        let sell = group_key(&fp(), &[GroupField::FirstSlotSellSol]);
+        let sell = group_key(&fp(), &[GroupField::FirstSlotSellSol], SOL_BUCKET_WIDTH);
         assert_eq!(sell.0[0].1, MISSING);
     }
 
@@ -367,7 +379,7 @@ mod tests {
         let label = |buy: f64| {
             let mut f = fp();
             f.initial_buy_sol = Some(buy);
-            group_key(&f, &[GroupField::InitialBuySol]).0[0].1.clone()
+            group_key(&f, &[GroupField::InitialBuySol], SOL_BUCKET_WIDTH).0[0].1.clone()
         };
         assert_eq!(label(2.34), "2.3–2.4", "mid-bucket");
         assert_eq!(label(0.3), "0.3–0.4", "on-edge → upper bucket (0.1 not f64-exact)");
@@ -377,7 +389,23 @@ mod tests {
         // None still forms its own sentinel group.
         let mut none = fp();
         none.initial_buy_sol = None;
-        assert_eq!(group_key(&none, &[GroupField::InitialBuySol]).0[0].1, MISSING);
+        assert_eq!(group_key(&none, &[GroupField::InitialBuySol], SOL_BUCKET_WIDTH).0[0].1, MISSING);
+    }
+
+    #[test]
+    fn per_run_width_changes_bucket_labels_and_decimals() {
+        // The same value renders a different bucket label at a different per-run
+        // width, and the decimals track the width (decimals_for) so the edge — always
+        // a multiple of width — is rendered exactly (no rounding vs the dashboard SQL).
+        let label = |buy: f64, width: f64| {
+            let mut f = fp();
+            f.initial_buy_sol = Some(buy);
+            group_key(&f, &[GroupField::InitialBuySol], width).0[0].1.clone()
+        };
+        assert_eq!(label(2.34, 0.1), "2.3–2.4", "width 0.1 → 1 decimal");
+        assert_eq!(label(2.34, 0.25), "2.25–2.50", "width 0.25 → 2 decimals, [2.25,2.50)");
+        assert_eq!(label(2.34, 1.0), "2–3", "width 1.0 → 0 decimals");
+        assert_eq!(label(0.62, 0.25), "0.50–0.75");
     }
 
     #[test]

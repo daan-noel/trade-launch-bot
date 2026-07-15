@@ -282,6 +282,11 @@ pub struct GroupedCreationQuery {
     pub group_by: Option<String>,
     /// Number of top groups (by volume) to return. Clamped to [1, MAX_TOP_GROUPS].
     pub top: Option<i64>,
+    /// Bucket width (SOL) for the continuous SOL group fields — the same knob the
+    /// grouped sweep uses, so the dashboard groups a corpus identically to a sweep
+    /// at this width. Omitted/invalid ⇒ the default (`grouping::SOL_BUCKET_WIDTH`,
+    /// 0.1); floored server-side at `grouping::MIN_BUCKET_WIDTH_SOL`.
+    pub bucket_width: Option<f64>,
     /// Per-field value filters restricting the corpus *before* partitioning, as a
     /// JSON object `{"cu_limit":["300000"],"is_cashback_enabled":["true"]}` (keys =
     /// `GroupField` tags, values = allowed string forms matching the group key).
@@ -327,6 +332,8 @@ pub struct GroupedCreationResponse {
     pub segment: String,
     /// The grouping fields echoed back (serde tags, in selection order).
     pub group_by: Vec<String>,
+    /// The applied (clamped) bucket width (SOL) for the continuous SOL group fields.
+    pub bucket_width: f64,
     /// The applied per-field value filters echoed back (`{"cu_limit":["300000"]}`).
     pub field_filters: serde_json::Value,
     /// The applied exact instruction-label set filter, or `null` when none.
@@ -425,6 +432,12 @@ pub async fn get_grouped_creation_stats(
     let (mayhem, cashback) = parse_segment(&segment);
     let (from, to) = resolve_window(query.from.as_deref(), query.to.as_deref(), now);
     let top = clamp_top(query.top);
+    // Clamp the bucket width like the sweep handler: invalid/sub-floor ⇒ default,
+    // so the dashboard groups a corpus at the same width a sweep would.
+    let bucket_width = match query.bucket_width {
+        Some(w) if w.is_finite() && w >= crate::grouping::MIN_BUCKET_WIDTH_SOL => w,
+        _ => crate::grouping::SOL_BUCKET_WIDTH,
+    };
 
     let fields = match parse_group_by(query.group_by.as_deref()) {
         Ok(f) => f,
@@ -460,7 +473,7 @@ pub async fn get_grouped_creation_stats(
 
     let repo = state.creation_stats_repo();
     let data = match repo
-        .grouped(&fields, bucket, top, &field_filters, ix_labels_filter.as_deref(), filter)
+        .grouped(&fields, bucket, top, &field_filters, ix_labels_filter.as_deref(), bucket_width, filter)
         .await
     {
         Ok(d) => d,
@@ -490,6 +503,7 @@ pub async fn get_grouped_creation_stats(
         to,
         segment,
         group_by: fields.iter().map(|f| f.as_str().to_string()).collect(),
+        bucket_width,
         field_filters: field_filters_json,
         ix_labels_filter,
         total,

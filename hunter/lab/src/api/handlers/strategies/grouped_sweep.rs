@@ -53,6 +53,14 @@ pub struct StartGroupedSweepBody {
     /// Fingerprint fields to group by (exact-value). Empty ⇒ one "ALL" group.
     #[serde(default)]
     pub group_by: Vec<GroupField>,
+    /// Per-run bucket width (SOL) for the **continuous** SOL grouping fields
+    /// (initial-buy, max-cost, spendable-in, first-slot buy/sell). This is the
+    /// single width the partition, the created rule's live matcher, and the
+    /// creation-stats dashboard all bucket by — so "what you swept = what you run".
+    /// Discrete fields ignore it. Omitted ⇒ [`grouping::SOL_BUCKET_WIDTH`] (0.1);
+    /// clamped to a [`grouping::MIN_BUCKET_WIDTH_SOL`] floor server-side.
+    #[serde(default = "default_bucket_width_sol")]
+    pub bucket_width_sol: f64,
     /// Optional exact-set instruction-label filter: when set (and non-empty),
     /// restrict the corpus to tokens whose normalized `ix_labels` set EXACTLY
     /// equals these labels, then sweep that slice. The page offers this as the
@@ -105,6 +113,9 @@ pub struct StartGroupedSweepBody {
 
 fn default_min_tokens() -> usize {
     10
+}
+fn default_bucket_width_sol() -> f64 {
+    crate::sweep::grouping::SOL_BUCKET_WIDTH
 }
 fn default_min_fired_abs() -> u64 {
     10
@@ -386,6 +397,19 @@ async fn run_grouped_sweep_job(
 
     let token_cap = b.token_cap.clamp(1, 100_000);
     let min_tokens = b.min_tokens.max(1);
+    // Per-run bucket width for the continuous SOL grouping fields. Mirror the rule
+    // validator (`strategies::rules::check_bucket_width`): a non-finite or sub-floor
+    // width falls back to the default rather than 400-ing, so a stray input can't
+    // block a run. Floored at MIN_BUCKET_WIDTH_SOL to keep the 1e-9 ratio-epsilon
+    // valid and edge labels from exploding in decimals.
+    let bucket_width = {
+        let w = b.bucket_width_sol;
+        if w.is_finite() && w >= crate::sweep::grouping::MIN_BUCKET_WIDTH_SOL {
+            w
+        } else {
+            crate::sweep::grouping::SOL_BUCKET_WIDTH
+        }
+    };
     let floor = CoverageFloor {
         min_fired_abs: b.min_fired_abs,
         fire_frac: b.fire_frac.clamp(0.0, 1.0),
@@ -625,6 +649,9 @@ async fn run_grouped_sweep_job(
         max_combos: b.max_combos.map(|v| v as i32),
         label: None,
         buy_amount_sol: Some(b.buy_amount_sol),
+        // The clamped width actually used to partition (not the raw request), so
+        // re-run + promotion restore exactly what this run swept.
+        bucket_width_sol: Some(bucket_width),
     };
     let repo = GroupedSweepRepo::new(state.batch_db.clone(), tables);
     if let Err(e) = repo.insert_run(&run).await {
@@ -730,7 +757,9 @@ async fn run_grouped_sweep_job(
         let mut map: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         for t in &corpus.tokens {
-            let key_str = group_key(&t.fp, &b.group_by).to_json().to_string();
+            // MUST use the same `bucket_width` the engine partitions by, or these
+            // group-key strings won't match the engine's group keys and mints go missing.
+            let key_str = group_key(&t.fp, &b.group_by, bucket_width).to_json().to_string();
             map.entry(key_str).or_default().push(t.mint.clone());
         }
         Arc::new(map)
@@ -749,6 +778,7 @@ async fn run_grouped_sweep_job(
         refine,
         corpus,
         b.group_by.clone(),
+        bucket_width,
         min_tokens,
         floor,
         b.max_combos,
@@ -1246,6 +1276,10 @@ pub async fn list_token_results(
             }
         };
     let target_key = group.group_key.clone();
+    // Re-partition at the SAME width the run swept, so the re-computed group keys
+    // match the stored `target_key`. Legacy rows (NULL) fall back to the default,
+    // which is exactly the width they were swept at.
+    let run_width = run.bucket_width_sol.unwrap_or(crate::sweep::grouping::SOL_BUCKET_WIDTH);
 
     // Helper: apply the run's ix_labels + field filters to an owned token vec.
     let apply_filters = |mut tokens: Vec<crate::sweep::corpus::CorpusToken>| -> Vec<crate::sweep::corpus::CorpusToken> {
@@ -1278,7 +1312,7 @@ pub async fn list_token_results(
                 tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
             }
         }
-        tokens.retain(|t| group_key(&t.fp, &grouping_fields).to_json() == target_key);
+        tokens.retain(|t| group_key(&t.fp, &grouping_fields, run_width).to_json() == target_key);
         tokens
     };
 

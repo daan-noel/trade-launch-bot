@@ -101,6 +101,10 @@ const MISSING_SENTINEL = '∅';
 export function serializeGroupFingerprint(
   strategy: Strategy,
   group: GroupedSweepGroupRecord,
+  // The run's bucket width — the rule must match at the SAME width the group was
+  // partitioned by, else its live matcher (`grouping::same_bucket`) buckets tokens
+  // differently than the sweep did. Legacy runs (null) fall back to the default.
+  bucketWidthSol: number = SOL_BUCKET_WIDTH,
 ): RuleParamsBlob {
   const params: Record<string, unknown> = {};
   let hasBucketed = false;
@@ -122,7 +126,7 @@ export function serializeGroupFingerprint(
     }
   }
   // Bucket width only matters when a binned SOL field is present.
-  if (hasBucketed) params.bucket_width_sol = SOL_BUCKET_WIDTH;
+  if (hasBucketed) params.bucket_width_sol = bucketWidthSol;
   return { strategy, version: 1, params };
 }
 
@@ -130,8 +134,9 @@ export function serializeGroupFingerprint(
 export function serializeGroupFingerprintJson(
   strategy: Strategy,
   group: GroupedSweepGroupRecord,
+  bucketWidthSol: number = SOL_BUCKET_WIDTH,
 ): string {
-  return JSON.stringify(serializeGroupFingerprint(strategy, group), null, 2);
+  return JSON.stringify(serializeGroupFingerprint(strategy, group, bucketWidthSol), null, 2);
 }
 
 // --- TPSL2 editable axes ----------------------------------------------------
@@ -252,6 +257,10 @@ export interface GroupedSweepRunRecord {
   /** Notional (SOL) each simulated round-trip was priced at; `null` on legacy
    *  runs (backend defaulted to 1.0 SOL). */
   buy_amount_sol: number | null;
+  /** Bucket width (SOL) the continuous SOL group fields were binned at — the width
+   *  a promoted rule's matcher must use so it matches the same bucket the group was
+   *  formed on. `null` on legacy runs (backend defaulted to 0.1). */
+  bucket_width_sol: number | null;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */
@@ -372,4 +381,8 @@ export interface GroupedSweepStartArgs {
   /** Notional (SOL) to price every simulated round-trip at. Set to the live
    *  `buy_amount_sol` so backtest PnL% matches live results. Omitted ⇒ 1.0 SOL. */
   buy_amount_sol?: number;
+  /** Bucket width (SOL) for the continuous SOL group fields — the one width the
+   *  partition, the created rule's matcher, and the creation-stats dashboard share.
+   *  Omitted ⇒ `SOL_BUCKET_WIDTH` (0.1); floored server-side. */
+  bucket_width_sol?: number;
 }

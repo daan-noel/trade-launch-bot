@@ -201,13 +201,16 @@ export const labApi = baseApi.injectEndpoints({
       GroupedCreationResponse,
       GroupedCreationArgs
     >({
-      query: ({ bucket, tz, from, segment, groupBy, top, fieldFilters, ixLabelsFilter }) => {
+      query: ({ bucket, tz, from, segment, groupBy, top, bucketWidth, fieldFilters, ixLabelsFilter }) => {
         const p = new URLSearchParams();
         p.set('bucket', bucket);
         p.set('tz', tz);
         p.set('segment', segment);
         p.set('group_by', groupBy.join(','));
         p.set('top', String(top));
+        // Only attach a non-default width so the cache key stays stable for the
+        // common 0.1 case; omitted ⇒ backend default.
+        if (bucketWidth != null) p.set('bucket_width', String(bucketWidth));
         if (from) p.set('from', from);
         // Only attach filter params when non-empty so the cache key stays stable.
         if (fieldFilters && Object.keys(fieldFilters).length > 0) {

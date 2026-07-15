@@ -189,6 +189,11 @@ interface SweepConfig {
   maxCombos: number;
   curveOnly: boolean;
   buyAmountSol: number;
+  /** Bucket width (SOL) the continuous SOL group fields (initial-buy, max-cost,
+   *  spendable-in, first-slot buy/sell) are binned at. The one width the partition,
+   *  the created rule's matcher, and the creation-stats dashboard all share, so
+   *  "what you swept = what you run". Ignored by discrete group fields. */
+  bucketWidthSol: number;
 }
 
 /** Default form state for a strategy — its `axesText` is prefilled from that
@@ -210,6 +215,7 @@ function defaultSweepConfig(axes: AxisDef[]): SweepConfig {
     maxCombos: DEFAULT_MAX_COMBOS,
     curveOnly: false,
     buyAmountSol: 1.0,
+    bucketWidthSol: 0.1,
   };
 }
 
@@ -280,6 +286,7 @@ function runToConfig(run: GroupedSweepRunRecord, axes: AxisDef[], defaults: Swee
     maxCombos: run.max_combos ?? defaults.maxCombos,
     curveOnly: run.curve_only,
     buyAmountSol: run.buy_amount_sol ?? defaults.buyAmountSol,
+    bucketWidthSol: run.bucket_width_sol ?? defaults.bucketWidthSol,
   };
 }
 
@@ -359,6 +366,7 @@ export function SweepConfigForm({
     maxCombos,
     curveOnly,
     buyAmountSol,
+    bucketWidthSol,
   } = config;
 
   /** Patch one config field (always writes back a complete object). */
@@ -375,6 +383,7 @@ export function SweepConfigForm({
   const setMaxCombos = (v: number) => setField('maxCombos', v);
   const setCurveOnly = (v: boolean) => setField('curveOnly', v);
   const setBuyAmountSol = (v: number) => setField('buyAmountSol', v);
+  const setBucketWidthSol = (v: number) => setField('bucketWidthSol', v);
   const setIxLabelsFilter = (v: string) => setField('ixLabelsFilter', v);
   const setCashbackFilter = (v: SweepConfig['cashbackFilter']) => setField('cashbackFilter', v);
   const setFieldFilterText = (field: string, value: string) =>
@@ -451,6 +460,9 @@ export function SweepConfigForm({
       created_before: toUtc(createdBefore),
       curve_only: curveOnly,
       group_by: groupBy,
+      // The one bucket width the partition + created rule's matcher + the
+      // creation-stats dashboard share ("swept = run"). Discrete group fields ignore it.
+      bucket_width_sol: bucketWidthSol,
       // Send the exact-set filter only when grouping by ix_labels is OFF and the
       // textarea parsed to a non-empty label set.
       ix_labels_filter: !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined,
@@ -625,6 +637,8 @@ export function SweepConfigForm({
             onSetFieldFilter={setFieldFilterText}
             cashbackFilter={cashbackFilter}
             onSetCashback={setCashbackFilter}
+            bucketWidthSol={bucketWidthSol}
+            onSetBucketWidth={(n) => setBucketWidthSol(n <= 0 ? 0.1 : n)}
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={setIxLabelsFilter}
             ixFilter={ixFilter}

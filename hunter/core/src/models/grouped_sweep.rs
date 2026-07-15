@@ -53,6 +53,11 @@ pub struct GroupedSweepRun {
     /// Notional (SOL) every simulated round-trip in this run was priced at.
     /// `None` on legacy rows — callers fall back to the server default (1.0 SOL).
     pub buy_amount_sol: Option<f64>,
+    /// Per-run bucket width (SOL) the continuous SOL grouping fields were binned at
+    /// — the same width the created rule's matcher + the creation-stats dashboard
+    /// use ("swept = run"). `None` on legacy rows → callers fall back to the default
+    /// (`grouping::SOL_BUCKET_WIDTH`, 0.1). Stored for display + re-run + promotion.
+    pub bucket_width_sol: Option<f64>,
     /// Lifecycle: `running` (in flight), `completed` (full sweep), or
     /// `cancelled` (cancelled / crash-recovered → only `groups_done` groups
     /// present). Phase 4 partial persistence — a `cancelled` run is honest about

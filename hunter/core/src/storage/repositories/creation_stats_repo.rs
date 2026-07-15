@@ -198,19 +198,36 @@ pub struct GroupedTrendPointRow {
     pub count: i64,
 }
 
-/// SQL bucket-label expression for a continuous SOL amount. Bins `sol_expr` (a
-/// float8 **SOL** expression, or NULL) into [`SOL_BUCKET_WIDTH`]-wide `"lo–hi"` ranges,
-/// `∅` when NULL. Kept byte-for-byte in lockstep with `grouping::bucket_sol_label`:
-/// same `+ 1e-9` boundary epsilon (0.1 isn't f64-exact), same 1-decimal rounding
-/// (`to_char … '0.0'` ⇔ Rust `{:.1}`), same en-dash separator — so the dashboard and
-/// the sweep produce identical group keys. `sol_expr` is built from fixed field
-/// literals (never user text), so interpolation is injection-safe.
-fn sol_bucket_sql(sol_expr: &str) -> String {
-    // width 0.1 / 1 decimal — mirror of `grouping::{SOL_BUCKET_WIDTH, SOL_BUCKET_DECIMALS}`.
-    let lo = format!("floor(({sol_expr}) / 0.1 + 1e-9) * 0.1");
+/// SQL bucket-label expression for a continuous SOL amount at bucket `width`. Bins
+/// `sol_expr` (a float8 **SOL** expression, or NULL) into `width`-wide `"lo–hi"`
+/// ranges, `∅` when NULL. Kept byte-for-byte in lockstep with
+/// `grouping::bucket_sol_label` at the SAME width: same `+ 1e-9` boundary epsilon
+/// (0.1 isn't f64-exact), same `decimals_for(width)` fractional digits, same en-dash
+/// separator — so the dashboard and the sweep produce identical group keys.
+///
+/// **Rounding safety:** the bucket edge is always a multiple of `width`, so rendering
+/// it at exactly `decimals_for(width)` places is lossless — Postgres `to_char`
+/// (half-away-from-zero) and Rust `{:.n}` (half-to-even) can never disagree on a
+/// value that has no `(decimals+1)`-th digit. This holds ONLY while the `to_char`
+/// mask carries exactly `decimals_for(width)` trailing zeros; keep the two in sync.
+///
+/// `sol_expr` is built from fixed field literals (never user text) and `width` is a
+/// server-clamped float, so interpolation is injection-safe.
+fn sol_bucket_sql(sol_expr: &str, width: f64) -> String {
+    let decimals = crate::grouping::decimals_for(width);
+    // `FM` strips padding; the trailing `0`s force exactly `decimals` fractional
+    // digits (mirroring Rust `{:.decimals$}`). No dot at all for whole-SOL widths.
+    let mask = if decimals == 0 {
+        "FM99999990".to_string()
+    } else {
+        format!("FM99999990.{}", "0".repeat(decimals))
+    };
+    // `{width}` prints f64 as its shortest round-tripping decimal, which Postgres
+    // parses back to the identical float8 — so `/ width` matches Rust's `/ width`.
+    let lo = format!("floor(({sol_expr}) / {width} + 1e-9) * {width}");
     format!(
         "CASE WHEN ({sol_expr}) IS NULL THEN '∅' \
-         ELSE to_char({lo}, 'FM99999990.0') || '–' || to_char(({lo}) + 0.1, 'FM99999990.0') END"
+         ELSE to_char({lo}, '{mask}') || '–' || to_char(({lo}) + {width}, '{mask}') END"
     )
 }
 
@@ -220,7 +237,7 @@ fn sol_bucket_sql(sol_expr: &str) -> String {
 /// missing, `" | "`-joined on-chain-order labels for `ix_labels`); the continuous
 /// SOL-amount fields are **binned** via [`sol_bucket_sql`]. Fields come from the fixed
 /// [`GroupField`] enum (never user free-text), so interpolating these is injection-safe.
-fn group_field_sql(f: GroupField) -> String {
+fn group_field_sql(f: GroupField, width: f64) -> String {
     match f {
         GroupField::TokenProgramId => "COALESCE(t.token_program_id, '∅')".to_string(),
         GroupField::CuLimit => "COALESCE(t.cu_limit::text, '∅')".to_string(),
@@ -230,16 +247,16 @@ fn group_field_sql(f: GroupField) -> String {
         // human SOL first so the label reads in SOL (matches the "SOL cost"/"SOL in"
         // display name + the sweep's `bucket_lamports_as_sol`).
         GroupField::MaxCostLamports => {
-            sol_bucket_sql("(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9")
+            sol_bucket_sql("(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9", width)
         }
         GroupField::SpendableLamportsIn => {
-            sol_bucket_sql("(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9")
+            sol_bucket_sql("(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9", width)
         }
-        GroupField::InitialBuySol => sol_bucket_sql("t.initial_buy_lamports::float8 / 1e9"),
+        GroupField::InitialBuySol => sol_bucket_sql("t.initial_buy_lamports::float8 / 1e9", width),
         // First-slot buy/sell are trade-derived, sourced from `tokens_info` (the `ti`
         // alias the LEFT JOIN in `grouped()` adds) — the only non-`tokens` group fields.
-        GroupField::FirstSlotBuySol => sol_bucket_sql("ti.first_slot_buy_lamports::float8 / 1e9"),
-        GroupField::FirstSlotSellSol => sol_bucket_sql("ti.first_slot_sell_lamports::float8 / 1e9"),
+        GroupField::FirstSlotBuySol => sol_bucket_sql("ti.first_slot_buy_lamports::float8 / 1e9", width),
+        GroupField::FirstSlotSellSol => sol_bucket_sql("ti.first_slot_sell_lamports::float8 / 1e9", width),
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
         // preserves array position; duplicates are kept intentionally.
@@ -265,6 +282,9 @@ impl CreationStatsRepo {
     /// one-to-one on `mint_address`, so it doesn't change group cardinality. Shares
     /// the same TZ-aware bucketing + segment filter as
     /// [`heatmap`]/[`trend`]; the window is caller-clamped so the scan is bounded.
+    // Each arg is an independent query dimension the handler already carries;
+    // bundling them into a struct would only add indirection for one call site.
+    #[allow(clippy::too_many_arguments)]
     pub async fn grouped(
         &self,
         fields: &[GroupField],
@@ -272,6 +292,10 @@ impl CreationStatsRepo {
         top: i64,
         field_filters: &[(GroupField, Vec<String>)],
         ix_labels_filter: Option<&[String]>,
+        // Bucket width (SOL) for the continuous SOL group fields — the same knob the
+        // grouped sweep uses, so the dashboard's group labels match a sweep at this
+        // width ("swept = run"). Discrete fields ignore it.
+        bucket_width: f64,
         f: StatsFilter<'_>,
     ) -> anyhow::Result<GroupedCreation> {
         // Build the group-key JSON object expression from the selected fields.
@@ -281,7 +305,7 @@ impl CreationStatsRepo {
         } else {
             let pairs: Vec<String> = fields
                 .iter()
-                .map(|fld| format!("'{}', {}", fld.as_str(), group_field_sql(*fld)))
+                .map(|fld| format!("'{}', {}", fld.as_str(), group_field_sql(*fld, bucket_width)))
                 .collect();
             format!("jsonb_build_object({})", pairs.join(", "))
         };
@@ -296,7 +320,7 @@ impl CreationStatsRepo {
         let mut filter_binds: Vec<Vec<String>> = Vec::new();
         let mut idx = 7;
         for (fld, vals) in field_filters {
-            preds.push_str(&format!("\n  AND {} = ANY(${idx})", group_field_sql(*fld)));
+            preds.push_str(&format!("\n  AND {} = ANY(${idx})", group_field_sql(*fld, bucket_width)));
             filter_binds.push(vals.clone());
             idx += 1;
         }
