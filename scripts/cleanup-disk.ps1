@@ -4,9 +4,11 @@
 
 .DESCRIPTION
     Two independent, safe-by-default cleanup passes:
-      1. Cargo: wipes Bot/target and Bot/target-check (pure rebuild cache; a full
-         rebuild is slower afterward but nothing is lost). Skips files locked by
-         any currently-running hunter-*/forge-* binary instead of failing.
+      1. Cargo: wipes Bot/target-check (the duplicate check cache) by default, and
+         keeps Bot/target so its DuckDB (libduckdb-sys) build is preserved and the
+         next build stays incremental. Pass -DeepClean to also wipe Bot/target
+         (pure rebuild cache; nothing is lost, but you pay a full DuckDB rebuild).
+         Skips files locked by any running hunter-*/forge-* binary instead of failing.
       2. Docker: removes dangling volumes (0 container links - orphaned, e.g.
          leftovers from old project names), prunes stale build-cache layers, and
          removes exited containers. NEVER touches a volume that's attached to a
@@ -21,14 +23,20 @@
 .PARAMETER SkipCargo
     Only run the Docker cleanup.
 
+.PARAMETER DeepClean
+    Also wipe Bot/target (not just target-check). Reclaims the most space but forces
+    a full rebuild afterward, including the expensive DuckDB C++ amalgamation.
+
 .EXAMPLE
     .\cleanup-disk.ps1 -WhatIf
     .\cleanup-disk.ps1
+    .\cleanup-disk.ps1 -DeepClean
 #>
 param(
     [switch]$WhatIf,
     [switch]$SkipDocker,
-    [switch]$SkipCargo
+    [switch]$SkipCargo,
+    [switch]$DeepClean
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,8 +96,17 @@ if (-not $SkipCargo) {
         Write-Host "  Note: these processes are running from target/ and may lock some files:"
         $locking | ForEach-Object { Write-Host "    PID $($_.Id): $($_.ProcessName) ($($_.Path))" }
     }
+    # Default: wipe only the duplicate `target-check`. Keeping `target` preserves
+    # its libduckdb-sys (DuckDB) build — a ~20 GB / multi-minute C++ amalgamation
+    # that sccache does NOT cache (MSVC/cl.exe) — so the next build stays
+    # incremental instead of recompiling DuckDB from scratch. Use -DeepClean to
+    # also wipe `target` (you'll pay a full DuckDB rebuild afterward).
     Remove-TargetDir "$repoRoot\target-check" "target-check"
-    Remove-TargetDir "$repoRoot\target" "target"
+    if ($DeepClean) {
+        Remove-TargetDir "$repoRoot\target" "target"
+    } else {
+        Write-Host "  target: kept (preserves DuckDB build; pass -DeepClean to wipe)"
+    }
 }
 
 if (-not $SkipDocker) {

@@ -43,6 +43,18 @@ cargo check -p executor-pumpfun   # a shared crate
 ```
 
 Use `--target-dir target-check` when a bin `.exe` is running (it locks `target/`).
+**Always pass the ABSOLUTE path** — `--target-dir C:\Users\User\Documents\Bot\target-check`
+— so every crate/CWD shares the one dir instead of spawning a per-subdir copy (each copy
+re-compiles the giant `libduckdb-sys` amalgamation, ~20 GB / minutes each).
+
+A global **sccache** (`~/.cargo/config.toml`, `rustc-wrapper = "sccache"`) caches *rustc*
+output across all target dirs and across `cargo clean`. It does **not** cache the DuckDB
+C++ objects: those are built by cc-rs/`cl.exe`, and MSVC caching needs `cl.exe` on PATH
+(a VS Developer prompt) plus `CC = CXX = "sccache cl.exe"`. Outside a dev prompt cc-rs
+finds `cl.exe` by full VS path and a bare-`cl.exe` override fails with `ToolNotFound` and
+breaks every MSVC build — so leave `CC/CXX` unset unless you always build from vcvars.
+To avoid re-compiling DuckDB, prefer **not wiping** the DuckDB build (keep the persistent
+`target-check`) over re-running it.
 
 ## Shared crates (`shared/`) — no workspace deps
 
