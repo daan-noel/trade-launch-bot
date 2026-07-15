@@ -24,6 +24,7 @@ import type { Swing1DetectParams } from '@lab/services/swing1Detect';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import {
   serializeGroupFingerprintJson,
+  GROUP_FIELD_LABELS,
   type AxisDef,
   type GroupedSweepStartArgs,
   type GroupedSweepRunRecord,
@@ -66,13 +67,61 @@ function comboTarget(r: ComboTokenResult): InspectTarget {
   };
 }
 
-/** Run-picker groups label: a completed run shows its full group count; a running
- *  or cancelled (partial) run shows "done / total" so the picker reveals at a
- *  glance that it isn't a full sweep. */
+/** Column widths for the run-picker's monospace-aligned option text (paired with
+ *  `font-mono` on the `<select>`) — keeps date/method/token/group/combo fields
+ *  lined up vertically across rows so scanning a long run list reads like a
+ *  table instead of five variable-length fragments per row. */
+const RUN_COL = { date: 11, method: 6, ix: 6, tokens: 11, groups: 13, combos: 8 } as const;
+
+/** Fixed-width run-picker timestamp (`MM/DD HH:mm`, 24h, no year) — built from
+ *  Date getters rather than `toLocaleString` so the width/field-order is
+ *  guaranteed constant across locales, which the column alignment depends on. */
+function formatRunPickerDate(iso: string): string {
+  const d = new Date(iso);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
+
+/** Run-picker groups field: a completed run shows its plain group count; a
+ *  running or cancelled (partial) run is tagged "run"/"part" so the picker
+ *  reveals at a glance that it isn't a full sweep. */
 function runGroupsLabel(r: GroupedSweepRunRecord): string {
-  if (r.status === 'completed') return `${r.group_count} groups`;
-  const tag = r.status === 'running' ? 'running' : 'partial';
-  return `${tag} ${r.groups_done}/${r.group_count} groups`;
+  if (r.status === 'completed') return r.group_count.toLocaleString();
+  const tag = r.status === 'running' ? 'run' : 'part';
+  return `${tag} ${r.groups_done.toLocaleString()}/${r.group_count.toLocaleString()}`;
+}
+
+/** Run-picker instruction-label filter field: the exact-set filter's size when
+ *  the run was pinned to specific `ix_labels`, else "All" (unfiltered, or
+ *  grouped by `ix_labels` so every label set is its own group). */
+function runIxLabel(r: GroupedSweepRunRecord): string {
+  return r.ix_labels_filter && r.ix_labels_filter.length > 0
+    ? `${r.ix_labels_filter.length}_IXs`
+    : 'All';
+}
+
+/** Full grouping-field breakdown for the run-picker option's hover tooltip —
+ *  dropped from the visible (column-aligned) text because it's redundant with
+ *  the always-shown `SelectedSweepHistory` detail panel below the picker once
+ *  a run is selected, but it's still one hover away. */
+function runGroupingTooltip(r: GroupedSweepRunRecord): string {
+  return r.grouping_spec.length
+    ? `Grouped by: ${r.grouping_spec.map((f) => GROUP_FIELD_LABELS[f]).join(', ')}`
+    : 'Ungrouped (ALL tokens)';
+}
+
+/** Monospace-aligned run-picker line: fixed-width date/method/ix/token/group/combo
+ *  columns line up across rows. The label (when set) is the one variable-width
+ *  field, so it trails the aligned columns rather than leading them. */
+function runPickerLine(r: GroupedSweepRunRecord): string {
+  const date = formatRunPickerDate(r.created_at).padEnd(RUN_COL.date);
+  const method = r.method.toUpperCase().padEnd(RUN_COL.method);
+  const ix = runIxLabel(r).padEnd(RUN_COL.ix);
+  const tokens = `${r.token_count.toLocaleString()}_Tokens`.padStart(RUN_COL.tokens);
+  const groups = `${runGroupsLabel(r)}_Groups`.padEnd(RUN_COL.groups);
+  const combos = `${r.combo_count.toLocaleString()}`.padStart(RUN_COL.combos);
+  const suffix = r.label ? `  · ${r.label}` : '';
+  return `${date} - ${method} - ${ix} - ${tokens} --- ${groups}× ${combos}_Combos${suffix}`;
 }
 
 export interface GroupedSweepViewProps {
@@ -658,16 +707,13 @@ export function GroupedSweepView({
                 </label>
                 <select
                   id="grouped-sweep-run"
-                  className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary"
+                  className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary font-mono tabular-nums"
                   value={activeRunId ?? ''}
                   onChange={(e) => setSelectedRunId(e.target.value)}
                 >
                   {runs.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.label ? `${r.label} · ` : ''}
-                      {new Date(r.created_at).toLocaleString()} · {r.method} ·{' '}
-                      {r.grouping_spec.length ? r.grouping_spec.join('+') : 'ALL'} ·{' '}
-                      {r.token_count} tokens · {runGroupsLabel(r)} × {r.combo_count} combos
+                    <option key={r.id} value={r.id} title={runGroupingTooltip(r)}>
+                      {runPickerLine(r)}
                     </option>
                   ))}
                 </select>
