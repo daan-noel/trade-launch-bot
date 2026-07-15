@@ -15,7 +15,9 @@ use crate::sweep::projection::CorpusTrade;
 // core simulation kernel (one copy of the math, shared by live/paper/sweep). The
 // sweep re-exports them so existing `crate::sweep::strategy::{CostModel, …}`
 // paths keep resolving while the logic lives in exactly one place (Phase 4 dedup).
-pub use trading_core::strategies::kernel::{round_trip_with_costs, CostModel, ExitCode};
+pub use trading_core::strategies::kernel::{
+    quantize_f32, round_trip_with_costs, CostModel, ExitCode,
+};
 
 /// How a sweep samples a strategy's param space. Pluggable so a strategy can
 /// grid the high-leverage knobs and random/Latin-hypercube the rest, and so the

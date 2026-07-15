@@ -148,6 +148,17 @@ pub fn round_trip_with_costs(
     (pnl_sol, pnl_sol / notional_sol * 100.0)
 }
 
+/// Round a PnL figure through `f32` precision and back. The sweep's
+/// [`TokenOutcome`] stores `pnl_sol`/`pnl_percent` as `f32` (register-friendly,
+/// no per-outcome allocation across millions of `(combo × token)` rows); a
+/// single-rule simulate keeps `f64` end-to-end. Left unrounded, the two paths'
+/// headline numbers drift by float noise even when every decision and cost input
+/// is identical. Simulate calls this on both `round_trip_with_costs` outputs
+/// before display/summation so it quantizes exactly like the sweep does.
+pub fn quantize_f32(x: f64) -> f64 {
+    x as f32 as f64
+}
+
 /// **Canonical "return %"** — the single definition of realized return shared by
 /// the live rules table, the lab rules table, the positions-summary panel, and the
 /// sweep. Capital-weighted: net PnL as a percent of the total SOL *deployed* across

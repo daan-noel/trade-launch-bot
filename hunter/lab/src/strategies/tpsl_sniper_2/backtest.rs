@@ -10,7 +10,7 @@ use super::exit;
 use super::util::none_if_zero_u64;
 use crate::models::{Token, Tpsl2Rule};
 use crate::sweep::projection::CorpusTrade;
-use crate::sweep::strategy::{round_trip_with_costs, CostModel};
+use crate::sweep::strategy::{quantize_f32, round_trip_with_costs, CostModel};
 use crate::state::local_state::LocalState;
 use crate::strategies::sim_progress::SimProgress;
 use crate::strategies::token_enrich::{self, TokenEnrichment};
@@ -151,8 +151,10 @@ fn resolve_token(
                     Some(fill.block_time),
                     fill.reason.to_string(),
                     Some(secs),
-                    Some(pct),
-                    Some(sol),
+                    // Round through `f32` so a tpsl2 backtest quantizes identically
+                    // to the sweep's `TokenOutcome` (parity plan A3).
+                    Some(quantize_f32(pct)),
+                    Some(quantize_f32(sol)),
                 )
             }
             None => (None, None, None, "Open".to_string(), None, None, None),

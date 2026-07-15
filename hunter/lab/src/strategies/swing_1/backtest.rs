@@ -9,6 +9,7 @@ use super::entry;
 use super::exit;
 use crate::models::{Swing1Rule, Token};
 use crate::sweep::projection::CorpusTrade;
+use crate::sweep::strategy::{quantize_f32, round_trip_with_costs, CostModel};
 use crate::state::local_state::LocalState;
 use crate::strategies::sim_progress::SimProgress;
 use crate::strategies::token_enrich::{self, TokenEnrichment};
@@ -100,16 +101,24 @@ fn resolve_token(
         match exit {
             Some(fill) => {
                 let secs = (fill.block_time - entry_time).num_seconds();
-                let pct = ((fill.price - entry_price) / entry_price) * 100.0;
-                let sol = rule.buy_amount_sol * (pct / 100.0);
+                // Costed round-trip (fees + slippage + fixed Jito/priority cost),
+                // the same `CostModel` every sweep prices its combos with — a
+                // frictionless price-to-price % understated the live cost of
+                // trading swing1 (parity plan A1).
+                let (sol, pct) = round_trip_with_costs(
+                    entry_price,
+                    fill.price,
+                    rule.buy_amount_sol,
+                    &CostModel::pumpfun_default(),
+                );
                 (
                     Some(fill.price),
                     Some(fill.tx_signature),
                     Some(fill.block_time),
                     fill.reason.as_str().to_string(),
                     Some(secs),
-                    Some(pct),
-                    Some(sol),
+                    Some(quantize_f32(pct)),
+                    Some(quantize_f32(sol)),
                 )
             }
             None => (None, None, None, "Open".to_string(), None, None, None),

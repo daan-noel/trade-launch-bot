@@ -119,7 +119,7 @@ fn default_axes() -> serde_json::Value {
     serde_json::Value::Object(Default::default())
 }
 fn default_buy_amount_sol() -> f64 {
-    1.0
+    registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL
 }
 
 #[derive(serde::Deserialize)]
@@ -1328,7 +1328,7 @@ pub async fn list_token_results(
 
     // Re-simulate on a blocking thread (CPU-bound but short: one combo × N tokens).
     let strategy_id = query.strategy_id.clone();
-    let buy_amount_sol = run.buy_amount_sol.unwrap_or(1.0);
+    let buy_amount_sol = run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL);
     let result = tokio::task::spawn_blocking(move || {
         registry::simulate_one_combo(&strategy_id, &tokens, &params_json, buy_amount_sol)
     })

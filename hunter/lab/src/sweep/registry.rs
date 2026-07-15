@@ -30,6 +30,20 @@ use crate::sweep::strategies::tpsl1::{
 use crate::sweep::strategies::tpsl2::{AxesSpec, Tpsl2Axes, Tpsl2Strategy};
 use crate::sweep::strategy::{ExitCode, ParamSpace, RefineSpec, SweepMethod};
 
+/// Notional (SOL) a grouped-sweep run prices every combo's round-trip at when the
+/// request omits `buy_amount_sol` — the single fallback both `start_grouped_sweep`
+/// (`default_buy_amount_sol`) and the token-results drill-in replay
+/// (`run.buy_amount_sol.unwrap_or(..)`) share, so a stored run and its later
+/// re-simulation can never quantize at two different notionals.
+///
+/// This is **not** wired to any saved `strategy_rules` row — a sweep run explores
+/// many candidate combos, not one rule — so a sweep group and a single-rule
+/// simulate of the "same" combo only produce identical PnL when the caller
+/// explicitly sets this to the rule's `buy_amount_sol` (parity plan A2; see
+/// `docs/plans/sweep/sweep-sim-parity.md`'s comparison-hygiene note until Phase 3
+/// makes simulate replay the sweep group directly).
+pub const SWEEP_DEFAULT_BUY_AMOUNT_SOL: f64 = 1.0;
+
 /// Minimal no-op observer for single-combo re-simulation (no progress to report).
 struct Noop;
 impl SweepObserver for Noop {
@@ -326,7 +340,8 @@ async fn sweep_tpsl2(
 }
 
 /// Synthetic TPSL2 base rule the swept params overlay. Only `buy_amount_sol` is
-/// meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]); every other field is either
+/// meaningful (the caller's request value, [`SWEEP_DEFAULT_BUY_AMOUNT_SOL`] when
+/// omitted — see its doc for the parity caveat); every other field is either
 /// overwritten by the swept axes or unused in the grouped sweep, so we build it
 /// in-memory instead of requiring a DB template rule.
 fn sweep_base_rule_tpsl2(buy_amount_sol: f64) -> Tpsl2Rule {
@@ -725,8 +740,9 @@ fn simulate_swing1_one_combo(
 }
 
 /// Synthetic TPSL1 base rule the swept params overlay. As with TPSL2, only
-/// `buy_amount_sol` is meaningful (see [`SWEEP_BASE_BUY_AMOUNT_SOL`]) — every other
-/// field is overwritten by the swept exit ladder or unused in the grouped sweep.
+/// `buy_amount_sol` is meaningful (see [`SWEEP_DEFAULT_BUY_AMOUNT_SOL`]) — every
+/// other field is overwritten by the swept exit ladder or unused in the grouped
+/// sweep.
 fn sweep_base_rule_tpsl1(buy_amount_sol: f64) -> Tpsl1Rule {
     Tpsl1Rule::new(
         "sweep-synthetic-base".into(),
