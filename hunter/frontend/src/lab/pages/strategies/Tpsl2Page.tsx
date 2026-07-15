@@ -23,6 +23,7 @@ import { ruleColumns as allRuleColumns, RuleRowProvider } from 'components/tpsl2
 import { SimSummaryCard } from 'components/tpsl2/SimSummaryCard';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
 import { PaperResultSection } from '@lab/components/strategies/PaperResultSection';
+import { RuleSimProgressBar } from '@lab/components/strategies/RuleSimProgressBar';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
 import { inspectFromPosition, inspectFromSim, markerRowOverlay } from 'components/strategy/inspectTarget';
 import {
@@ -653,13 +654,20 @@ export function Tpsl2Page() {
   const handleSimulateAll = useCallback(async () => {
     setSimAllLoading(true);
     try {
-      await startSimulateAll('tpsl2', analysisRange);
+      const res = await startSimulateAll('tpsl2', analysisRange);
+      // Register only the rules the backend actually queued (fresh ones are
+      // skipped server-side and emit no frames) so each shows its inline progress
+      // bar the same instant a single 🧪 run does, before the first SSE frame.
+      for (const id of res.started_ids) {
+        const name = rules.find((r) => r.id === id)?.rule_name ?? id;
+        markStarting('simulation', id, `Sim: ${name}`);
+      }
     } catch (e) {
       setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulate All failed'));
     } finally {
       setSimAllLoading(false);
     }
-  }, [analysisRange]);
+  }, [analysisRange, rules, markStarting]);
 
   // Open / close the Matched view for a rule (toggle). Paging is driven by
   // `useServerTable` (enabled while `matchedRuleId` is set); switching rules resets
@@ -770,6 +778,10 @@ export function Tpsl2Page() {
       onSimulate: handleSimulate,
       onMatched: handleMatched,
       onPaperResult: handlePaperResult,
+      // Stable component reference — the bar reads live progress from the
+      // background-jobs registry itself, so passing it here never re-renders the
+      // page on a progress tick (only the leaf bars do).
+      SimProgress: RuleSimProgressBar,
     }),
     [
       simLoading,

@@ -506,7 +506,11 @@ pub async fn simulate_all_swing1_rules(
         }
     };
 
-    let mut started = 0usize;
+    // `started_ids` are exactly the rules we queue a backtest for; a fresh cache
+    // hit is skipped here and never emits a progress/finished frame, so the client
+    // marks only these for its per-row progress bar (marking a skipped rule would
+    // leave a phantom bar with no frame to clear it).
+    let mut started_ids: Vec<Uuid> = Vec::new();
     let mut skipped = 0usize;
     for rule in &rules {
         let key = trading_core::strategies::match_keys::sim_key(rule);
@@ -531,10 +535,15 @@ pub async fn simulate_all_swing1_rules(
             },
         )
         .await;
-        started += 1;
+        started_ids.push(rule.id);
     }
 
-    HttpResponse::Accepted().json(json!({ "started": started, "skipped": skipped, "total": rules.len() }))
+    HttpResponse::Accepted().json(json!({
+        "started": started_ids.len(),
+        "started_ids": started_ids,
+        "skipped": skipped,
+        "total": rules.len(),
+    }))
 }
 
 /// `POST /api/strategies/swing1/rules/{rule_id}/simulate/cancel` — cooperative

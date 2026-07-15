@@ -15,7 +15,10 @@ use dashmap::DashMap;
 use crate::models::Token;
 use crate::sweep::projection::CorpusTrade;
 
-const CACHE_TTL: Duration = Duration::from_secs(600);
+/// Kept in lock-step with [`SimResults`](super::sim_results)' `RESULT_TTL` (60 min):
+/// a re-opened rule whose per-token result survived must also find its shared
+/// candidate scan + lake histories still warm, so the fingerprint fast path holds.
+const CACHE_TTL: Duration = Duration::from_secs(3600);
 
 /// Cache key for a fingerprint-scoped analysis window. `fingerprint_key` comes
 /// from [`trading_core::strategies::match_keys::fingerprint_key`].

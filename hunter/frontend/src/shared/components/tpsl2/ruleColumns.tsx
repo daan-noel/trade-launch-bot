@@ -1,4 +1,4 @@
-import { createContext, useContext, type MouseEvent } from 'react';
+import { createContext, useContext, type ComponentType, type MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import type { RuleLastSimulation, RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from 'components/strategy/cellFormat';
@@ -206,6 +206,11 @@ export interface RuleAnalysisHandlers {
   onSimulate: (rule: RuleRecord) => void;
   onMatched: (rule: RuleRecord) => void;
   onPaperResult: (rule: RuleRecord) => void;
+  /** Optional inline live progress bar for an in-flight backtest (single run or a
+   *  "Simulate All" batch). Injected by the page — a `@lab` component that reads
+   *  the background-jobs registry — so this shared column never imports the
+   *  `@lab` context (`shared ⊬ @lab`). Renders nothing when the rule isn't running. */
+  SimProgress?: ComponentType<{ ruleId: string }>;
 }
 
 /** Read-only analysis tools, in their own column so they read as a group
@@ -222,38 +227,41 @@ function AnalysisControls({ rule }: { rule: RuleRecord }) {
   const matchedActive = a.matchedActiveId === rule.id;
   const paperActive = a.paperActiveId === rule.id;
   return (
-    <div className="flex items-center gap-1 justify-center">
-      <IconButton
-        disabled={a.simLoading}
-        onClick={stop(() => a.onSimulate(rule))}
-        active={simActive}
-        activeClassName="border-primary/70 bg-primary/20 text-primary shadow-[0_0_8px_color-mix(in_srgb,var(--color-primary)_35%,transparent)]"
-        className="text-primary"
-        title="Simulate — backtest this rule over historical tokens"
-      >
-        🧪
-      </IconButton>
-      <IconButton
-        disabled={a.matchedLoading}
-        onClick={stop(() => a.onMatched(rule))}
-        active={matchedActive}
-        activeClassName="border-[#9370db]/70 bg-[#9370db]/20 text-[#9370db] shadow-[0_0_8px_rgba(147,112,219,0.35)]"
-        title="Matched tokens — tokens in the DB that pass this rule's entry filter"
-      >
-        🎯
-      </IconButton>
-      {rule.trade_mode === 'paper' && (
+    <div className="flex flex-col items-stretch gap-1">
+      <div className="flex items-center gap-1 justify-center">
         <IconButton
-          disabled={a.paperLoading}
-          onClick={stop(() => a.onPaperResult(rule))}
-          active={paperActive}
-          activeClassName="border-info/70 bg-info/20 text-info shadow-[0_0_8px_rgba(6,182,212,0.35)]"
-          className="text-info"
-          title="Paper test result — positions from the latest paper run"
+          disabled={a.simLoading}
+          onClick={stop(() => a.onSimulate(rule))}
+          active={simActive}
+          activeClassName="border-primary/70 bg-primary/20 text-primary shadow-[0_0_8px_color-mix(in_srgb,var(--color-primary)_35%,transparent)]"
+          className="text-primary"
+          title="Simulate — backtest this rule over historical tokens"
         >
-          📄
+          🧪
         </IconButton>
-      )}
+        <IconButton
+          disabled={a.matchedLoading}
+          onClick={stop(() => a.onMatched(rule))}
+          active={matchedActive}
+          activeClassName="border-[#9370db]/70 bg-[#9370db]/20 text-[#9370db] shadow-[0_0_8px_rgba(147,112,219,0.35)]"
+          title="Matched tokens — tokens in the DB that pass this rule's entry filter"
+        >
+          🎯
+        </IconButton>
+        {rule.trade_mode === 'paper' && (
+          <IconButton
+            disabled={a.paperLoading}
+            onClick={stop(() => a.onPaperResult(rule))}
+            active={paperActive}
+            activeClassName="border-info/70 bg-info/20 text-info shadow-[0_0_8px_rgba(6,182,212,0.35)]"
+            className="text-info"
+            title="Paper test result — positions from the latest paper run"
+          >
+            📄
+          </IconButton>
+        )}
+      </div>
+      {a.SimProgress && <a.SimProgress ruleId={rule.id} />}
     </div>
   );
 }

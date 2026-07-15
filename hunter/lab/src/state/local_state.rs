@@ -72,7 +72,7 @@ pub struct LocalState {
     /// the lifetime of the starting request (the old `FETCH_ERROR` source).
     pub sim_results: Arc<SimResults>,
     /// Long-lived per-rule "last simulation" rollup, powering the rules table's
-    /// inline column. Deliberately decoupled from `sim_results`' 10-minute TTL
+    /// inline column. Deliberately decoupled from `sim_results`' 60-minute TTL
     /// (that cache bounds the *raw* per-token rows; this is a handful of scalars
     /// meant to persist until the rule is re-simulated) — see [`sim_summary`]
     /// for the full rationale. Written by [`crate::strategies::sim_spawn`]

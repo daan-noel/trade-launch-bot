@@ -33,8 +33,12 @@ use uuid::Uuid;
 
 /// How long a finished result is retained. The Simulated table pages/sorts against
 /// it interactively (many quick follow-up reads), so this must comfortably outlive
-/// a browsing session.
-const RESULT_TTL: Duration = Duration::from_secs(600);
+/// a browsing session — including a long "Simulate All" batch where the first rules
+/// finish long before the last, then get clicked into for detail. 60 min so an
+/// unchanged single-rule re-open hits the `peek_if` fast path instead of re-walking
+/// trades. `lab` is single-user on the workstation (RAM headroom); the twin
+/// `analysis_cache::CACHE_TTL` is kept in lock-step.
+const RESULT_TTL: Duration = Duration::from_secs(3600);
 
 /// Terminal outcome of a backtest, ready to serve from the result endpoints.
 #[derive(Clone)]

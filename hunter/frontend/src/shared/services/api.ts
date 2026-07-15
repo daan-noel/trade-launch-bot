@@ -711,11 +711,14 @@ export async function startSimulation(
  *  `range` are skipped server-side, so repeated clicks are cheap. Each job runs
  *  through the same detached pipeline as a single `startSimulation`; watch for
  *  their `simulation_finished` SSE frames (or just wait for the rules list to
- *  refresh) rather than this call, which only reports how many were queued. */
+ *  refresh) rather than this call. `started_ids` are exactly the rules a backtest
+ *  was queued for (freshly-cached ones are omitted, and never fire a progress /
+ *  finished frame), so the caller can `markStarting` those and only those for the
+ *  per-row progress bar without leaving a phantom bar on a skipped rule. */
 export async function startSimulateAll(
   strategy: 'tpsl1' | 'tpsl2' | 'swing1',
   range: { from?: string; to?: string },
-): Promise<{ started: number; skipped: number; total: number }> {
+): Promise<{ started: number; started_ids: string[]; skipped: number; total: number }> {
   const qs = new URLSearchParams();
   if (range.from) qs.set('from', range.from);
   if (range.to) qs.set('to', range.to);

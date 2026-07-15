@@ -1,7 +1,7 @@
 //! Long-lived per-rule "last simulation" rollup — deliberately **not** the same
 //! store as [`SimResults`](super::sim_results). That cache holds the full
-//! per-token row set (potentially large) behind a 10-minute TTL sized for the
-//! Simulated table's interactive paging session; evicting it after 10 minutes is
+//! per-token row set (potentially large) behind a 60-minute TTL sized for the
+//! Simulated table's interactive paging session; evicting it eventually is
 //! fine because a stale miss just costs a re-run. A rollup is a handful of
 //! scalars — cheap enough to keep for the life of the process — and it powers an
 //! always-visible column on the rules table, so it must not vanish on the same
