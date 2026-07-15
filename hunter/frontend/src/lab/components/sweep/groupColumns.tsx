@@ -28,6 +28,11 @@ function solText(v: number) {
   return `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
 }
 
+/** Signed percent, 1 decimal (mirrors sweepColumns `pctText`) — `+20.6%`. */
+function pctText(v: number) {
+  return `${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 1)}%`;
+}
+
 /** Wrap cell text in a colored span (mirrors sweepColumns `tone`). */
 function tone(text: ReactNode, cls: string): ReactNode {
   return <span className={cn('font-medium', cls)}>{text}</span>;
@@ -206,30 +211,142 @@ export function buildGroupColumns(paramKeys: string[]): ColumnDef<GroupedSweepGr
       filterNumber: (g) => g.fired_count,
       searchValue: () => '',
     },
+    // The winning combo's full stat line — same metrics (and formatting) as the
+    // drill-in "Combos for group" table, so the group row reads as a complete
+    // readout of its crowned combo. Order mirrors that table; the low-signal
+    // columns (Mean/P90/Std %, Median hold) start hidden behind the Columns
+    // toggle, matching the combos table.
     {
       key: 'best_score',
-      label: 'Best score',
+      label: 'Score',
       group: 'metrics',
       tooltip:
-        'Robust realized score (μ−Z·σ/√n over closed trades) of this group’s best combo — the ranking metric (matches the drill-in table’s default sort)',
+        'Robust realized score (μ−1.64·σ/√n over closed trades, in PnL %) of this group’s best combo — the ranking metric (matches the drill-in table’s default sort). Blank when < 2 closed trades.',
       sortable: true,
       render: (g) =>
         g.best_score == null
           ? tone('—', 'text-text-dim')
-          : tone(formatDecimalTrim(g.best_score, 1), goodBad(g.best_score)),
+          : tone(pctText(g.best_score), goodBad(g.best_score)),
       sortValue: (g) => g.best_score,
       filterNumber: (g) => g.best_score,
       searchValue: () => '',
     },
     {
-      key: 'best_expectancy_sol',
-      label: 'Best exp.',
+      key: 'best_win_rate',
+      label: 'Win %',
       group: 'metrics',
-      tooltip: 'Mean net PnL per trade (SOL) of this group’s best combo (secondary readout)',
+      tooltip: 'Share of the best combo’s fired tokens with PnL > 0',
+      sortable: true,
+      render: (g) => tone(`${(g.best_win_rate * 100).toFixed(0)}%`, goodBad(g.best_win_rate, 0.5)),
+      sortValue: (g) => g.best_win_rate,
+      filterNumber: (g) => g.best_win_rate,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_total_pnl_sol',
+      label: 'Total PnL',
+      group: 'metrics',
+      tooltip: 'Summed net PnL across all of the best combo’s fired tokens (SOL)',
+      sortable: true,
+      render: (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol)),
+      sortValue: (g) => g.best_total_pnl_sol,
+      filterNumber: (g) => g.best_total_pnl_sol,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_expectancy_sol',
+      label: 'Expectancy',
+      group: 'metrics',
+      tooltip: 'Mean net PnL per trade (SOL) of this group’s best combo',
       sortable: true,
       render: (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol)),
       sortValue: (g) => g.best_expectancy_sol,
       filterNumber: (g) => g.best_expectancy_sol,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_profit_factor',
+      label: 'Profit factor',
+      group: 'metrics',
+      tooltip: 'Gross wins ÷ gross losses for the best combo (∞ = no losing trades)',
+      sortable: true,
+      render: (g) =>
+        tone(
+          g.best_profit_factor == null ? '∞' : g.best_profit_factor.toFixed(2),
+          goodBad(g.best_profit_factor ?? 10, 1),
+        ),
+      sortValue: (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY,
+      filterNumber: (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_median_pnl_pct',
+      label: 'Median %',
+      group: 'metrics',
+      tooltip: 'Median per-trade return of the best combo',
+      sortable: true,
+      render: (g) => tone(pctText(g.best_median_pnl_pct), goodBad(g.best_median_pnl_pct)),
+      sortValue: (g) => g.best_median_pnl_pct,
+      filterNumber: (g) => g.best_median_pnl_pct,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_mean_pnl_pct',
+      label: 'Mean %',
+      group: 'metrics',
+      defaultVisible: false,
+      tooltip: 'Mean per-trade return of the best combo',
+      sortable: true,
+      render: (g) => tone(pctText(g.best_mean_pnl_pct), goodBad(g.best_mean_pnl_pct)),
+      sortValue: (g) => g.best_mean_pnl_pct,
+      filterNumber: (g) => g.best_mean_pnl_pct,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_p90_pnl_pct',
+      label: 'P90 %',
+      group: 'metrics',
+      defaultVisible: false,
+      tooltip: '90th-percentile per-trade return of the best combo',
+      sortable: true,
+      render: (g) => tone(pctText(g.best_p90_pnl_pct), goodBad(g.best_p90_pnl_pct)),
+      sortValue: (g) => g.best_p90_pnl_pct,
+      filterNumber: (g) => g.best_p90_pnl_pct,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_std_pnl_pct',
+      label: 'Std %',
+      group: 'metrics',
+      defaultVisible: false,
+      tooltip: 'Stddev of the best combo’s per-trade return — the dispersion/risk term in Score',
+      sortable: true,
+      render: (g) => tone(`${formatDecimalTrim(g.best_std_pnl_pct, 1)}%`, 'text-text-mid'),
+      sortValue: (g) => g.best_std_pnl_pct,
+      filterNumber: (g) => g.best_std_pnl_pct,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_avg_holding_secs',
+      label: 'Avg hold',
+      group: 'metrics',
+      tooltip: 'Mean holding time of the best combo’s closed trades',
+      sortable: true,
+      render: (g) => tone(fmtSecs(g.best_avg_holding_secs), 'text-accent'),
+      sortValue: (g) => g.best_avg_holding_secs,
+      filterNumber: (g) => g.best_avg_holding_secs,
+      searchValue: () => '',
+    },
+    {
+      key: 'best_median_holding_secs',
+      label: 'Median hold',
+      group: 'metrics',
+      defaultVisible: false,
+      tooltip: 'Median holding time of the best combo’s closed trades',
+      sortable: true,
+      render: (g) => tone(fmtSecs(g.best_median_holding_secs), 'text-accent'),
+      sortValue: (g) => g.best_median_holding_secs,
+      filterNumber: (g) => g.best_median_holding_secs,
       searchValue: () => '',
     },
 

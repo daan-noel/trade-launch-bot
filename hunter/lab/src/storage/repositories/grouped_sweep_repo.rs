@@ -106,6 +106,11 @@ impl From<RunDbRow> for GroupedSweepRun {
     }
 }
 
+// The `best_*_pnl`/`best_win_rate`/`best_*_holding_secs` fields are LEFT-JOINed in
+// from the winning combo's `_results` row (`0007` narrows those to `real`/f32);
+// `Option` because the join is LEFT (a missing `_results` row must never hide a
+// group — though retention always keeps `best_combo`, so in practice they're
+// present). Widened back to the model's f64 in the `From` impl below.
 #[derive(sqlx::FromRow)]
 struct GroupDbRow {
     id: Uuid,
@@ -116,6 +121,15 @@ struct GroupDbRow {
     best_combo_id: i32,
     best_score: Option<f64>,
     best_expectancy_sol: f64,
+    best_win_rate: Option<f32>,
+    best_total_pnl_sol: Option<f32>,
+    best_profit_factor: Option<f32>,
+    best_mean_pnl_pct: Option<f32>,
+    best_median_pnl_pct: Option<f32>,
+    best_p90_pnl_pct: Option<f32>,
+    best_std_pnl_pct: Option<f32>,
+    best_avg_holding_secs: Option<f32>,
+    best_median_holding_secs: Option<f32>,
     best_params: sqlx::types::Json<Value>,
 }
 
@@ -130,6 +144,15 @@ impl From<GroupDbRow> for GroupedSweepGroupSummary {
             best_combo_id: r.best_combo_id,
             best_score: r.best_score,
             best_expectancy_sol: r.best_expectancy_sol,
+            best_win_rate: r.best_win_rate.unwrap_or(0.0) as f64,
+            best_total_pnl_sol: r.best_total_pnl_sol.unwrap_or(0.0) as f64,
+            best_profit_factor: r.best_profit_factor.map(|v| v as f64),
+            best_mean_pnl_pct: r.best_mean_pnl_pct.unwrap_or(0.0) as f64,
+            best_median_pnl_pct: r.best_median_pnl_pct.unwrap_or(0.0) as f64,
+            best_p90_pnl_pct: r.best_p90_pnl_pct.unwrap_or(0.0) as f64,
+            best_std_pnl_pct: r.best_std_pnl_pct.unwrap_or(0.0) as f64,
+            best_avg_holding_secs: r.best_avg_holding_secs.unwrap_or(0.0) as f64,
+            best_median_holding_secs: r.best_median_holding_secs.unwrap_or(0.0) as f64,
             best_params: r.best_params.0,
         }
     }
@@ -477,10 +500,19 @@ impl GroupedSweepRepo {
     /// Look up a single group by id. Returns `None` when the id is unknown.
     pub async fn get_group(&self, group_id: Uuid) -> anyhow::Result<Option<GroupedSweepGroupSummary>> {
         let sql = format!(
-            "SELECT id, group_index, group_key, token_count, fired_count, \
-                    best_combo_id, best_score, best_expectancy_sol, best_params \
-             FROM {} WHERE id = $1",
-            self.tables.groups
+            "SELECT g.id, g.group_index, g.group_key, g.token_count, g.fired_count, \
+                    g.best_combo_id, g.best_score, g.best_expectancy_sol, \
+                    r.win_rate AS best_win_rate, r.total_pnl_sol AS best_total_pnl_sol, \
+                    r.profit_factor AS best_profit_factor, r.mean_pnl_pct AS best_mean_pnl_pct, \
+                    r.median_pnl_pct AS best_median_pnl_pct, r.p90_pnl_pct AS best_p90_pnl_pct, \
+                    r.std_pnl_pct AS best_std_pnl_pct, r.avg_holding_secs AS best_avg_holding_secs, \
+                    r.median_holding_secs AS best_median_holding_secs, \
+                    g.best_params \
+             FROM {groups} g \
+             LEFT JOIN {results} r ON r.group_id = g.id AND r.combo_id = g.best_combo_id \
+             WHERE g.id = $1",
+            groups = self.tables.groups,
+            results = self.tables.results,
         );
         let row = sqlx::query_as::<_, GroupDbRow>(&sql)
             .bind(group_id)
@@ -577,11 +609,20 @@ impl GroupedSweepRepo {
         run_id: Uuid,
     ) -> anyhow::Result<Vec<GroupedSweepGroupSummary>> {
         let sql = format!(
-            "SELECT id, group_index, group_key, token_count, fired_count, \
-                    best_combo_id, best_score, best_expectancy_sol, best_params \
-             FROM {} WHERE run_id = $1 \
-             ORDER BY best_score DESC NULLS LAST, group_index ASC",
-            self.tables.groups
+            "SELECT g.id, g.group_index, g.group_key, g.token_count, g.fired_count, \
+                    g.best_combo_id, g.best_score, g.best_expectancy_sol, \
+                    r.win_rate AS best_win_rate, r.total_pnl_sol AS best_total_pnl_sol, \
+                    r.profit_factor AS best_profit_factor, r.mean_pnl_pct AS best_mean_pnl_pct, \
+                    r.median_pnl_pct AS best_median_pnl_pct, r.p90_pnl_pct AS best_p90_pnl_pct, \
+                    r.std_pnl_pct AS best_std_pnl_pct, r.avg_holding_secs AS best_avg_holding_secs, \
+                    r.median_holding_secs AS best_median_holding_secs, \
+                    g.best_params \
+             FROM {groups} g \
+             LEFT JOIN {results} r ON r.group_id = g.id AND r.combo_id = g.best_combo_id \
+             WHERE g.run_id = $1 \
+             ORDER BY g.best_score DESC NULLS LAST, g.group_index ASC",
+            groups = self.tables.groups,
+            results = self.tables.results,
         );
         let rows = sqlx::query_as::<_, GroupDbRow>(&sql)
             .bind(run_id)

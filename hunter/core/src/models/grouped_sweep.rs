@@ -80,6 +80,24 @@ pub struct GroupedSweepGroupSummary {
     /// trades); `None` when it has < 2 closed trades. The page's headline metric.
     pub best_score: Option<f64>,
     pub best_expectancy_sol: f64,
+    // --- Winning combo's full stat line (JOINed from the `_results` row for
+    // `best_combo_id`, which retention always keeps — see `retained_combo_ids`).
+    // These are the same numbers the drill-in "Combos for group" table shows for
+    // the crowned combo, surfaced on the group row so the headline is a full
+    // readout, not just score/expectancy. SSOT: read from `_results`, never
+    // re-persisted onto the group row. ---
+    /// Winning combo's win rate (fraction 0..1).
+    pub best_win_rate: f64,
+    /// Winning combo's realized total PnL in SOL — the group table's default sort.
+    pub best_total_pnl_sol: f64,
+    /// Winning combo's profit factor; `None` = no losing trades (UI shows ∞).
+    pub best_profit_factor: Option<f64>,
+    pub best_mean_pnl_pct: f64,
+    pub best_median_pnl_pct: f64,
+    pub best_p90_pnl_pct: f64,
+    pub best_std_pnl_pct: f64,
+    pub best_avg_holding_secs: f64,
+    pub best_median_holding_secs: f64,
     pub best_params: Value,
 }
 

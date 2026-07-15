@@ -731,7 +731,7 @@ export function GroupedSweepView({
             rowKey={(g) => g.id}
             rowActions={groupRowActions}
             groupLabels={{ metrics: 'Metrics', entry: 'Entry', exit: 'Exit' }}
-            defaultSort={{ col: 'best_score', dir: 'desc' }}
+            defaultSort={{ col: 'best_total_pnl_sol', dir: 'desc' }}
             searchable
             colFilters
             colToggle

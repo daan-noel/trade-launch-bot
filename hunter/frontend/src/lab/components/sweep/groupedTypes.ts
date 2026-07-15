@@ -268,6 +268,21 @@ export interface GroupedSweepGroupRecord {
    *  — the headline ranking metric; `null` when it has < 2 closed trades. */
   best_score: number | null;
   best_expectancy_sol: number;
+  // The winning combo's full stat line (same numbers the drill-in "Combos for
+  // group" table shows for the crowned combo), so the group row reads as a full
+  // readout. Names mirror `SweepResultRecord` with a `best_` prefix.
+  /** Winning combo's win rate (fraction 0..1). */
+  best_win_rate: number;
+  /** Winning combo's realized total PnL (SOL) — the group table's default sort. */
+  best_total_pnl_sol: number;
+  /** Winning combo's profit factor; `null` = no losing trades (UI shows ∞). */
+  best_profit_factor: number | null;
+  best_mean_pnl_pct: number;
+  best_median_pnl_pct: number;
+  best_p90_pnl_pct: number;
+  best_std_pnl_pct: number;
+  best_avg_holding_secs: number;
+  best_median_holding_secs: number;
   best_params: Record<string, number | null>;
 }
 
