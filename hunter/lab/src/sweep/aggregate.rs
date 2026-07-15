@@ -16,7 +16,10 @@
 //! holding time, and the exit-reason mix.
 
 use crate::sweep::strategy::TokenOutcome;
-use trading_core::strategies::kernel::{RunAgg, RunMetrics, TokenOutcome as CoreOutcome};
+use trading_core::models::grouped_sweep::ComboTokenResult;
+use trading_core::strategies::kernel::{
+    exact_run_metrics, ExitCode, RunAgg, RunMetrics, TokenOutcome as CoreOutcome,
+};
 
 /// Streaming accumulator for one combo across every token it fired on. A thin
 /// wrapper over the core kernel's [`RunAgg`]: it owns no statistics of its own, so
@@ -131,12 +134,75 @@ impl ComboMetrics {
             n_exit_open: m.n_exit_open,
         }
     }
+
+    /// Exact-quantile metrics for a single re-simulated combo's per-token rows —
+    /// the drill-in view's counterpart to a sweep's (sketch-approximated)
+    /// persisted row. `rows` is bounded (one combo × one group's tokens), so
+    /// holding every value in memory for an exact percentile is cheap — unlike
+    /// the full combos × tokens sweep [`ComboAgg`] streams through
+    /// [`RunAgg`](trading_core::strategies::kernel::RunAgg) for. See
+    /// [`trading_core::strategies::kernel::exact_run_metrics`] (parity plan D1).
+    pub fn exact_from_rows(combo_id: u32, rows: &[ComboTokenResult]) -> Self {
+        let outcomes: Vec<CoreOutcome> = rows
+            .iter()
+            .filter(|r| r.fired)
+            .map(|r| CoreOutcome {
+                fired: r.fired,
+                holding_secs: r.holding_secs,
+                pnl_percent: r.pnl_pct,
+                pnl_sol: r.pnl_sol,
+                exit: ExitCode::from_reason(&r.exit),
+            })
+            .collect();
+        Self::from_run(combo_id, exact_run_metrics(outcomes.iter()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sweep::strategy::ExitCode;
+
+    fn combo_row(pnl_sol: f32, pnl_pct: f32, exit: &str, holding: i64, fired: bool) -> ComboTokenResult {
+        ComboTokenResult {
+            mint_address: "mint".into(),
+            symbol: "SYM".into(),
+            fired,
+            pnl_sol,
+            pnl_pct,
+            holding_secs: holding,
+            exit: exit.into(),
+            entry_time: None,
+            entry_price: None,
+            entry_tx: None,
+            entry_slot: None,
+            exit_time: None,
+            exit_price: None,
+            exit_tx: None,
+            exit_slot: None,
+            created_at: None,
+            ath_price: None,
+            token: Default::default(),
+        }
+    }
+
+    #[test]
+    fn exact_from_rows_matches_exact_run_metrics_and_excludes_unfired() {
+        let rows = vec![
+            combo_row(2.0, 100.0, "TakeProfit", 10, true),
+            combo_row(-1.0, -50.0, "StopLoss", 20, true),
+            combo_row(5.0, 999.0, "Open", 0, true),
+            combo_row(0.0, 0.0, "NoEntry", 0, false), // must be ignored
+        ];
+        let m = ComboMetrics::exact_from_rows(3, &rows);
+        assert_eq!(m.combo_id, 3);
+        assert_eq!(m.n_fired, 3, "the unfired NoEntry row must not count");
+        assert_eq!(m.n_open, 1);
+        assert_eq!(m.n_closed, 2);
+        assert!((m.total_pnl_sol - 1.0).abs() < 1e-9, "open PnL excluded from the total");
+        assert_eq!(m.best_pnl_pct, 100.0);
+        assert_eq!(m.worst_pnl_pct, -50.0);
+    }
 
     fn outcome(pnl_sol: f32, pnl_pct: f32, exit: ExitCode, holding: i64) -> TokenOutcome {
         TokenOutcome {

@@ -328,6 +328,15 @@ export interface ComboTokenResult {
   is_dead: boolean;
 }
 
+/** `GET …/token-results` response: the drill-in's per-token rows plus an
+ *  **exact** (no-sketch) metrics summary over exactly those rows — the
+ *  bounded-N counterpart to a sweep group's persisted (DDSketch-approximated)
+ *  `SweepResultRecord`. See `docs/plans/sweep/sweep-sim-parity.md` (D1). */
+export interface ComboTokenResultsResponse {
+  rows: ComboTokenResult[];
+  metrics: SweepResultRecord;
+}
+
 // --- start request ----------------------------------------------------------
 
 export interface GroupedSweepStartArgs {

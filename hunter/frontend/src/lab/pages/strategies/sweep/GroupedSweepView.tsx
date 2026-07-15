@@ -361,7 +361,10 @@ export function GroupedSweepView({
     },
     { skip: !activeRunId || !activeGroupId || activeComboId === null },
   );
-  const tokenResults = tokenResultsQuery.data ?? [];
+  const tokenResults = tokenResultsQuery.data?.rows ?? [];
+  // Exact (no-sketch) metrics over exactly this drill-in's row set — currently
+  // unused by this view; the backend now computes it (parity plan D1) so a
+  // future "exact vs sweep-approx" comparison doesn't need a separate fetch.
   const tokenResultsErr = apiErrorMessage(tokenResultsQuery.error, 'Failed to load token results');
 
   const [showNotFired, setShowNotFired] = useState(true);

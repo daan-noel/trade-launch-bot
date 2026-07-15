@@ -4,7 +4,7 @@ import type {
   GroupedSweepRunRecord,
   GroupedSweepGroupRecord,
   GroupedSweepStartArgs,
-  ComboTokenResult,
+  ComboTokenResultsResponse,
 } from '@lab/components/sweep/groupedTypes';
 import type {
   GroupedCreationArgs,
@@ -132,7 +132,7 @@ export const labApi = baseApi.injectEndpoints({
     // `useStreamedSweepResults` (the backend `results` route streams
     // application/x-ndjson and needs page/limit/sort) — not an RTK query.
     getComboTokenResults: builder.query<
-      ComboTokenResult[],
+      ComboTokenResultsResponse,
       { strategyId: string; runId: string; groupId: string; comboId: number }
     >({
       query: ({ strategyId, runId, groupId, comboId }) =>

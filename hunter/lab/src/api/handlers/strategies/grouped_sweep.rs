@@ -1323,7 +1323,10 @@ pub async fn list_token_results(
     };
 
     if tokens.is_empty() {
-        return HttpResponse::Ok().json(serde_json::json!([]));
+        return HttpResponse::Ok().json(serde_json::json!({
+            "rows": [],
+            "metrics": metrics_to_result(&ComboMetrics::exact_from_rows(query.combo_id as u32, &[])),
+        }));
     }
 
     // Re-simulate on a blocking thread (CPU-bound but short: one combo × N tokens).
@@ -1399,7 +1402,15 @@ pub async fn list_token_results(
         }
     }
 
-    HttpResponse::Ok().json(rows)
+    // Exact-quantile summary over this exact row set — the drill-in's own
+    // small-N aggregate, computed with no sketch approximation (unlike the
+    // group's persisted `ComboMetrics`, which streams through the bounded
+    // DDSketch because a wide sweep can't hold every token's PnL in memory).
+    // Same shape as a ranked-combo-table row so the frontend can reuse one
+    // type (parity plan D1).
+    let metrics = metrics_to_result(&ComboMetrics::exact_from_rows(query.combo_id as u32, &rows));
+
+    HttpResponse::Ok().json(serde_json::json!({ "rows": rows, "metrics": metrics }))
 }
 
 fn bad_strategy(strategy_id: &str) -> HttpResponse {

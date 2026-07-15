@@ -374,6 +374,119 @@ impl RunAgg {
     }
 }
 
+/// Exact-quantile counterpart to [`RunAgg`] for a **bounded** set of outcomes —
+/// e.g. one sweep combo's per-token rows when re-simulated standalone (the
+/// grouped-sweep drill-in), never the full combos × tokens sweep (unbounded;
+/// that's exactly why [`RunAgg`] streams through a fixed-size sketch instead of
+/// holding every value). Same realized-only semantics as `RunAgg::record`/
+/// `finalize` (a still-`Open` mark contributes to `n_fired`/`n_open` only, never
+/// to a PnL/win-rate/holding figure), but `median_pnl_pct`/`p90_pnl_pct`/
+/// `median_holding_secs` are exact nearest-rank percentiles over the collected
+/// values instead of the sketch's ~15% relative error — so a drill-in's summary
+/// can be compared directly against a single-rule simulate's own small-N exact
+/// aggregate (parity plan D1).
+pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -> RunMetrics {
+    let mut fired = 0u64;
+    let mut open = 0u64;
+    let mut wins = 0u64;
+    let mut pnl_sol_sum = 0.0f64;
+    let mut gross_win_sol = 0.0f64;
+    let mut gross_loss_sol = 0.0f64;
+    let mut closed_pct: Vec<f64> = Vec::new();
+    let mut closed_holding: Vec<i64> = Vec::new();
+    let mut exit_counts = [0u32; 9];
+
+    for o in outcomes {
+        if !o.fired {
+            continue;
+        }
+        fired += 1;
+        if o.exit == ExitCode::Open {
+            open += 1;
+        } else {
+            let pnl_sol = o.pnl_sol as f64;
+            let pnl_pct = o.pnl_percent as f64;
+            pnl_sol_sum += pnl_sol;
+            if pnl_sol > 0.0 {
+                wins += 1;
+                gross_win_sol += pnl_sol;
+            } else if pnl_sol < 0.0 {
+                gross_loss_sol += -pnl_sol;
+            }
+            closed_pct.push(pnl_pct);
+            closed_holding.push(o.holding_secs);
+        }
+        exit_counts[exit_index(o.exit)] += 1;
+    }
+
+    let n_closed = closed_pct.len() as u64;
+    let n = n_closed as f64;
+    closed_pct.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let (median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct) = if closed_pct.is_empty() {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        (
+            exact_quantile_f64(&closed_pct, 0.5),
+            exact_quantile_f64(&closed_pct, 0.9),
+            *closed_pct.last().expect("non-empty"),
+            closed_pct[0],
+        )
+    };
+    let closed_pct_sum: f64 = closed_pct.iter().sum();
+    let closed_pct_sum_sq: f64 = closed_pct.iter().map(|p| p * p).sum();
+    let mean_pnl_pct = if n_closed == 0 { 0.0 } else { closed_pct_sum / n };
+    closed_holding.sort_unstable();
+    let (avg_holding_secs, median_holding_secs) = if closed_holding.is_empty() {
+        (0.0, 0.0)
+    } else {
+        (closed_holding.iter().sum::<i64>() as f64 / n, exact_quantile_i64(&closed_holding, 0.5))
+    };
+    let profit_factor =
+        if gross_loss_sol > 0.0 { Some(gross_win_sol / gross_loss_sol) } else { None };
+    let (std_pnl_pct, score) = robust_score(n_closed, closed_pct_sum, closed_pct_sum_sq);
+
+    RunMetrics {
+        n_fired: fired,
+        n_open: open,
+        n_closed,
+        win_rate: if n_closed == 0 { 0.0 } else { wins as f64 / n },
+        total_pnl_sol: pnl_sol_sum,
+        expectancy_sol: if n_closed == 0 { 0.0 } else { pnl_sol_sum / n },
+        mean_pnl_pct,
+        median_pnl_pct,
+        p90_pnl_pct,
+        best_pnl_pct,
+        worst_pnl_pct,
+        std_pnl_pct,
+        profit_factor,
+        score,
+        avg_holding_secs,
+        median_holding_secs,
+        n_exit_take_profit: exit_counts[0],
+        n_exit_stop_loss: exit_counts[1],
+        n_exit_trailing: exit_counts[2],
+        n_exit_stall: exit_counts[3],
+        n_exit_time: exit_counts[4],
+        n_exit_liquidity: exit_counts[5],
+        n_exit_open: exit_counts[6],
+        n_exit_next_kill: exit_counts[7],
+        n_exit_dead: exit_counts[8],
+    }
+}
+
+/// Nearest-rank percentile `q` (`0.0..=1.0`) over an ascending-sorted, non-empty
+/// slice. `q=0.5`/`q=0.9` are the median/p90 [`exact_run_metrics`] needs.
+fn exact_quantile_f64(sorted: &[f64], q: f64) -> f64 {
+    let idx = (((sorted.len() - 1) as f64) * q).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+/// [`exact_quantile_f64`]'s `i64` counterpart (holding-time seconds).
+fn exact_quantile_i64(sorted: &[i64], q: f64) -> f64 {
+    let idx = (((sorted.len() - 1) as f64) * q).round() as usize;
+    sorted[idx.min(sorted.len() - 1)] as f64
+}
+
 /// One-sided lower-confidence bound on realized per-trade return:
 /// `μ − Z·σ/√n` over closed positions. `(stddev, Some(score))`, or `(0, None)`
 /// when n < 2 (one closed trade is no evidence of a repeatable edge).
@@ -497,5 +610,72 @@ mod tests {
         let friction = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::pumpfun_default()).0;
         let free = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::frictionless()).0;
         assert!(friction < free, "costs must drag PnL down");
+    }
+
+    // ── exact_run_metrics (parity plan D1) ──────────────────────────────────
+
+    fn outcome(pnl_sol: f32, pnl_pct: f32, exit: ExitCode, holding: i64) -> TokenOutcome {
+        TokenOutcome { fired: true, holding_secs: holding, pnl_percent: pnl_pct, pnl_sol, exit }
+    }
+
+    #[test]
+    fn exact_metrics_matches_streaming_agg_on_the_same_outcomes() {
+        // exact_run_metrics must agree with RunAgg (the streaming/sketch path) on
+        // every field RunAgg computes exactly already — the only thing that should
+        // ever differ is that median/p90/median_holding_secs stop being approximate.
+        let rows = vec![
+            outcome(2.0, 100.0, ExitCode::TakeProfit, 10),
+            outcome(-1.0, -50.0, ExitCode::StopLoss, 20),
+            outcome(5.0, 999.0, ExitCode::Open, 0),
+            TokenOutcome::no_entry(),
+        ];
+        let mut agg = RunAgg::default();
+        for o in &rows {
+            agg.record(o);
+        }
+        let streaming = agg.finalize();
+        let exact = exact_run_metrics(rows.iter());
+        assert_eq!(exact.n_fired, streaming.n_fired);
+        assert_eq!(exact.n_open, streaming.n_open);
+        assert_eq!(exact.n_closed, streaming.n_closed);
+        assert!((exact.win_rate - streaming.win_rate).abs() < 1e-9);
+        assert!((exact.total_pnl_sol - streaming.total_pnl_sol).abs() < 1e-9);
+        assert!((exact.mean_pnl_pct - streaming.mean_pnl_pct).abs() < 1e-9);
+        assert_eq!(exact.profit_factor, streaming.profit_factor);
+        assert!((exact.score.unwrap() - streaming.score.unwrap()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exact_median_and_p90_have_no_sketch_error() {
+        // 1..=1000 → exact median is 500 or 501 (nearest-rank on 1000 values picks
+        // one deterministically), exact p90 is exactly 900 — no ~15% band needed.
+        let rows: Vec<TokenOutcome> =
+            (1..=1000).map(|v| outcome(0.1, v as f32, ExitCode::TakeProfit, v)).collect();
+        let m = exact_run_metrics(rows.iter());
+        assert!((500.0..=501.0).contains(&m.median_pnl_pct), "median {}", m.median_pnl_pct);
+        assert_eq!(m.p90_pnl_pct, 900.0);
+    }
+
+    #[test]
+    fn exact_metrics_excludes_open_from_headline_figures() {
+        let rows = vec![
+            outcome(1.0, 50.0, ExitCode::TakeProfit, 10),
+            outcome(-1.0, -50.0, ExitCode::StopLoss, 10),
+            outcome(1_000.0, 5_000.0, ExitCode::Open, 0),
+        ];
+        let m = exact_run_metrics(rows.iter());
+        assert_eq!(m.n_fired, 3);
+        assert_eq!(m.n_open, 1);
+        assert!((m.total_pnl_sol - 0.0).abs() < 1e-9);
+        assert_eq!(m.best_pnl_pct, 50.0);
+        assert_eq!(m.worst_pnl_pct, -50.0);
+    }
+
+    #[test]
+    fn exact_metrics_over_no_outcomes_is_all_zero() {
+        let m = exact_run_metrics(std::iter::empty());
+        assert_eq!(m.n_fired, 0);
+        assert_eq!(m.score, None);
+        assert_eq!(m.profit_factor, None);
     }
 }
