@@ -10,10 +10,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use tokio::sync::OnceCell;
 
 use crate::models::Token;
 use crate::sweep::projection::CorpusTrade;
+
+/// The lake trade histories for one fingerprint's candidate set: `mint → trades`.
+type Histories = Arc<HashMap<String, Arc<Vec<CorpusTrade>>>>;
 
 /// Kept in lock-step with [`SimResults`](super::sim_results)' `RESULT_TTL` (60 min):
 /// a re-opened rule whose per-token result survived must also find its shared
@@ -49,7 +54,17 @@ impl AnalysisCacheKey {
 #[derive(Default)]
 pub struct AnalysisCache {
     candidates: DashMap<AnalysisCacheKey, (Instant, Arc<Vec<Token>>)>,
-    histories: DashMap<AnalysisCacheKey, (Instant, Arc<HashMap<String, Arc<Vec<CorpusTrade>>>>)>,
+    histories: DashMap<AnalysisCacheKey, (Instant, Histories)>,
+    /// Single-flight cells for an in-progress candidate scan, keyed identically to
+    /// `candidates`. Concurrent same-fingerprint rules (a "Simulate All" batch)
+    /// collapse onto one scan — the leader runs it, followers await the same cell —
+    /// so a cold cache can't stampede the batch pool with N identical whole-table
+    /// scans. Entries are transient: removed once the leader resolves (the result
+    /// lands in the TTL `candidates` map, which later arrivals then hit directly).
+    candidates_inflight: DashMap<AnalysisCacheKey, Arc<OnceCell<Arc<Vec<Token>>>>>,
+    /// Single-flight cells for an in-progress lake-history load — the history twin
+    /// of `candidates_inflight`. Same fingerprint ⇒ same mint set ⇒ one lake read.
+    histories_inflight: DashMap<AnalysisCacheKey, Arc<OnceCell<Histories>>>,
 }
 
 impl AnalysisCache {
@@ -98,6 +113,51 @@ impl AnalysisCache {
         self.histories
             .insert(key, (Instant::now(), Arc::clone(&arc)));
         arc
+    }
+
+    /// Get-or-create the single-flight cell for a candidate scan at `key`. Returns
+    /// `(cell, leader)`: exactly one caller gets `leader == true` (it should run the
+    /// scan and [`clear_candidate_inflight`](Self::clear_candidate_inflight) after);
+    /// the rest await the same cell. The `entry` guard is dropped before returning,
+    /// so callers never hold a shard lock across the scan's `.await`.
+    pub fn candidate_inflight(
+        &self,
+        key: &AnalysisCacheKey,
+    ) -> (Arc<OnceCell<Arc<Vec<Token>>>>, bool) {
+        match self.candidates_inflight.entry(key.clone()) {
+            Entry::Occupied(e) => (e.get().clone(), false),
+            Entry::Vacant(e) => {
+                let cell = Arc::new(OnceCell::new());
+                e.insert(cell.clone());
+                (cell, true)
+            }
+        }
+    }
+
+    /// Drop the candidate single-flight cell once its scan has resolved. Called by
+    /// the leader; late arrivals take the TTL fast path instead.
+    pub fn clear_candidate_inflight(&self, key: &AnalysisCacheKey) {
+        self.candidates_inflight.remove(key);
+    }
+
+    /// History twin of [`candidate_inflight`](Self::candidate_inflight).
+    pub fn history_inflight(
+        &self,
+        key: &AnalysisCacheKey,
+    ) -> (Arc<OnceCell<Histories>>, bool) {
+        match self.histories_inflight.entry(key.clone()) {
+            Entry::Occupied(e) => (e.get().clone(), false),
+            Entry::Vacant(e) => {
+                let cell = Arc::new(OnceCell::new());
+                e.insert(cell.clone());
+                (cell, true)
+            }
+        }
+    }
+
+    /// History twin of [`clear_candidate_inflight`](Self::clear_candidate_inflight).
+    pub fn clear_history_inflight(&self, key: &AnalysisCacheKey) {
+        self.histories_inflight.remove(key);
     }
 
     /// Mint addresses derived from a cached or freshly scanned candidate set.
