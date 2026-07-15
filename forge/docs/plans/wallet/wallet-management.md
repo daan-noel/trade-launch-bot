@@ -82,9 +82,20 @@ balance is below the dust/fee floor, it's retired without a sweep.)
 ## Funding: the "Fund Pool" button
 
 ### What it does
-On the wallet pool page, **Fund pool** / **Fund** sends
-`POST /api/wallet_pool/fund` with `{ role?, count? }`. The button always sends
-`{ role: undefined }` → top up **both** dev and bundler roles.
+On the wallet pool page there are **three** manual Fund surfaces, all posting
+`POST /api/wallet_pool/fund` with `{ role?, count? }` — they differ only in the
+`role` they scope to:
+
+| Surface | `role` sent | Effect |
+| --- | --- | --- |
+| **Fund pool** (header) | `undefined` | Top up **all** fundable roles (dev + bundler) to target |
+| **Fund `<roles>`** (low-pool banner) | one call per **low** fundable role | Top up only the role(s) the banner flagged short |
+| **Fund** (per-role summary card, dev/bundler only) | that one role | Top up just that role to its target |
+
+`onFund(roles?)` drives all three: `undefined` runs a single all-roles pass; a
+list runs one scoped pass per role and tallies the outcomes into one summary.
+Treasury and trading are never fundable via this path (treasury is the source),
+so no per-role Fund button is rendered for them.
 
 Call chain:
 `WalletPoolPage.onFund`
@@ -132,6 +143,26 @@ acceptable on this supervised path since the SOL never left treasury.)
 There is also a separate just-in-time path,
 `POST /api/wallet_pool/fund_for_launch` (`fund_for_launch`, `FundMode::Background`
 with exact template-derived amounts) — distinct from the pool "Fund" button.
+
+### Automatic background funder + runtime toggle
+Beyond the manual buttons, an **automatic warm-pool funder** runs as step 3 of
+the unified wallet-lifecycle tick ([wallet_lifecycle.rs](../crates/launcher/src/wallet_lifecycle.rs)):
+every ~60s it runs `run_background_funding_pass` → `fund_once(.., FundMode::Background)`,
+topping the fundable roles up to their warm targets without any operator action.
+A shortfall pre-gate makes it a no-op when the pool is already warm.
+
+This automatic pass has a **runtime on/off toggle** (no redeploy):
+
+- `GET /api/wallet_pool/auto_fund` → `{ configured, enabled }`
+- `PUT /api/wallet_pool/auto_fund` `{ enabled: bool }`
+
+Backed by a shared `Arc<AtomicBool>` (`auto_fund_enabled` in `main.rs`, read each
+tick by the lifecycle loop, written by the HTTP handler). It **starts on** when
+funding is configured (`FUND_ENABLED=true`), preserving prior always-on
+behaviour, and `configured` is false when `FUND_ENABLED` is unset (nothing to
+toggle → the UI hides the control). The **Auto-fund On/Off** badge in the wallet
+pool header drives it. This flag gates **only** the autonomous pass — the manual
+Fund buttons and `fund_for_launch` run on demand regardless of its state.
 
 ### Funding config (env vars)
 [`FundingConfig`](../crates/launcher/src/config.rs):

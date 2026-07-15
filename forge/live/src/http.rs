@@ -17,6 +17,7 @@ use platform_core::models::{
 use serde::Serialize;
 use sqlx::PgPool;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -83,6 +84,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route(
             "/api/wallet_pool/fund_for_launch",
             web::post().to(wallet_pool_fund_for_launch),
+        )
+        .route(
+            "/api/wallet_pool/auto_fund",
+            web::get().to(wallet_pool_auto_fund_status),
+        )
+        .route(
+            "/api/wallet_pool/auto_fund",
+            web::put().to(wallet_pool_auto_fund_toggle),
         )
         .route(
             "/api/wallet_pool/refresh_balances",
@@ -458,6 +467,56 @@ async fn wallet_pool_fund(
     .await
     .map_err(e500)?;
     Ok(HttpResponse::Ok().json(report))
+}
+
+#[derive(Debug, Serialize)]
+struct AutoFundStatus {
+    /// `false` when funding isn't configured (`FUND_ENABLED` unset) — there is no
+    /// background funder to toggle, so the UI hides the control.
+    configured: bool,
+    /// Whether the AUTOMATIC background warm-pool funder is currently running.
+    /// Independent of the manual `Fund pool` / `fund_for_launch` endpoints, which
+    /// stay available regardless.
+    enabled: bool,
+}
+
+/// Read the runtime state of the automatic background warm-pool funder.
+async fn wallet_pool_auto_fund_status(
+    settings: web::Data<Option<LauncherSettings>>,
+    auto_fund: web::Data<Arc<AtomicBool>>,
+) -> HttpResponse {
+    let configured = settings
+        .get_ref()
+        .as_ref()
+        .is_some_and(|s| s.funding.is_some());
+    HttpResponse::Ok().json(AutoFundStatus {
+        configured,
+        enabled: configured && auto_fund.load(Ordering::Relaxed),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct SetAutoFundBody {
+    enabled: bool,
+}
+
+/// Pause/resume the automatic background warm-pool funder at runtime (no
+/// redeploy). Only the autonomous top-up pass is gated — the manual Fund
+/// endpoints are unaffected. Requires `FUND_ENABLED=true` (503 otherwise).
+async fn wallet_pool_auto_fund_toggle(
+    settings: web::Data<Option<LauncherSettings>>,
+    auto_fund: web::Data<Arc<AtomicBool>>,
+    body: web::Json<SetAutoFundBody>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let settings = launcher_settings(&settings)?;
+    if settings.funding.is_none() {
+        return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
+            "error": "wallet funding disabled — set FUND_ENABLED=true to enable"
+        })));
+    }
+    let enabled = body.into_inner().enabled;
+    auto_fund.store(enabled, Ordering::Relaxed);
+    Ok(HttpResponse::Ok().json(AutoFundStatus { configured: true, enabled }))
 }
 
 #[derive(serde::Deserialize)]

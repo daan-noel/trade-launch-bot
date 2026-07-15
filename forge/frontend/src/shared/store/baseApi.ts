@@ -19,6 +19,7 @@ export const baseApi = createApi({
     'Wallets',
     'Launches',
     'Ingest',
+    'AutoFund',
     'Dimensions',
     'Positions',
     'ManageActions',

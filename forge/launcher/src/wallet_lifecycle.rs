@@ -17,6 +17,7 @@
 //! only the scheduling is shared. The two RPC-heavy launcher tasks that are NOT
 //! wallet-lifecycle (ladder evaluator, volume scheduler — trading) stay separate.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,9 +45,18 @@ fn due(last: Option<Instant>, interval: Duration, now: Instant) -> bool {
 /// Spawn the unified wallet-lifecycle task. Gated at the call site on
 /// `launcher_settings.is_some()`; the funding step self-skips when funding isn't
 /// configured (`settings.funding.is_none()`).
+///
+/// `auto_fund` is a runtime kill switch for step 3 (the warm-pool top-up pass)
+/// ONLY — shared with the HTTP layer so an operator can pause/resume the
+/// autonomous funder from the dashboard without a redeploy (`GET`/`PUT
+/// /api/wallet_pool/auto_fund`). It starts `true` when funding is configured
+/// (`FUND_ENABLED=true`), preserving prior behaviour. Toggling it off never
+/// disables the manual `Fund pool` / `fund_for_launch` endpoints — those run
+/// on-demand regardless; it only stops the background pass from firing.
 pub fn spawn_wallet_lifecycle(
     pool: PgPool,
     settings: LauncherSettings,
+    auto_fund: Arc<AtomicBool>,
     sink: Option<Arc<dyn EventSink>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -72,8 +82,12 @@ pub fn spawn_wallet_lifecycle(
                 sweep_reservations_once(&pool).await;
                 last_reservation = Some(now);
             }
-            // 3) Warm-pool funding top-up (60s) — only when funding is configured.
-            if funding_enabled && due(last_funding, FUND_PASS_INTERVAL, now) {
+            // 3) Warm-pool funding top-up (60s) — only when funding is configured
+            //    AND the runtime auto-fund toggle is on (operator kill switch).
+            if funding_enabled
+                && auto_fund.load(Ordering::Relaxed)
+                && due(last_funding, FUND_PASS_INTERVAL, now)
+            {
                 run_background_funding_pass(&pool, &settings, sink.as_deref()).await;
                 last_funding = Some(now);
             }

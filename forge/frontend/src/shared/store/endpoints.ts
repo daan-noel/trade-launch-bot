@@ -1,6 +1,7 @@
 import { baseApi } from './baseApi';
 import type {
   ActionPlan,
+  AutoFundStatus,
   BootstrapPayload,
   Bundle,
   FundReport,
@@ -135,6 +136,17 @@ export const api = baseApi.injectEndpoints({
     fundPool: build.mutation<FundReport, { role?: string; count?: number }>({
       query: (body) => ({ url: '/api/wallet_pool/fund', method: 'POST', body }),
       invalidatesTags: ['Wallets'],
+    }),
+    // Runtime on/off for the AUTOMATIC background warm-pool funder (the 60s top-up
+    // pass). Manual funding above is unaffected. `configured` is false when
+    // FUND_ENABLED is unset — the UI hides the toggle in that case.
+    autoFundStatus: build.query<AutoFundStatus, void>({
+      query: () => '/api/wallet_pool/auto_fund',
+      providesTags: ['AutoFund'],
+    }),
+    setAutoFund: build.mutation<AutoFundStatus, boolean>({
+      query: (enabled) => ({ url: '/api/wallet_pool/auto_fund', method: 'PUT', body: { enabled } }),
+      invalidatesTags: ['AutoFund'],
     }),
     fundForLaunch: build.mutation<
       FundReport,
@@ -335,6 +347,8 @@ export const {
   useRefreshWalletBalancesMutation,
   useGenerateWalletsMutation,
   useFundPoolMutation,
+  useAutoFundStatusQuery,
+  useSetAutoFundMutation,
   useFundForLaunchMutation,
   useTransferSolMutation,
   useSweepWalletsMutation,

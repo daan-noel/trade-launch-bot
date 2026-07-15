@@ -1,9 +1,12 @@
+import clsx from 'clsx';
 import { useEffect, useMemo, useState } from 'react';
 import {
   useWalletPoolQuery,
   useRefreshWalletBalancesMutation,
   useGenerateWalletsMutation,
   useFundPoolMutation,
+  useAutoFundStatusQuery,
+  useSetAutoFundMutation,
   useTransferSolMutation,
   useSweepWalletsMutation,
   useConsolidateWalletsMutation,
@@ -20,6 +23,7 @@ import {
   DataTable,
   Field,
   FilterToggle,
+  Icon,
   IconButton,
   Input,
   Select,
@@ -52,6 +56,10 @@ const NON_SOURCE_STATUSES = new Set<WalletStatus>(['funding', 'reserved', 'retir
 
 const LOW_POOL_THRESHOLD = 3;
 const ROLES: WalletRole[] = ['dev', 'bundler', 'treasury', 'trading'];
+// Only these roles are funded treasury→pool (dev launches, bundlers co-buy). Treasury
+// is the SOURCE and trading isn't part of the launch warm-pool, so the per-role/low-pool
+// Fund actions are offered only for these — mirrors the backend's fundable-role set.
+const FUNDABLE_ROLES: WalletRole[] = ['dev', 'bundler'];
 const STATUSES: WalletStatus[] = ['generated', 'funding', 'funded', 'reserved', 'used', 'retired'];
 
 // The steady balance poller only live-refreshes `generated`/`funding` (+ the treasury
@@ -124,26 +132,38 @@ function RoleSummaryCard({
   total,
   active,
   onSelect,
+  onFund,
+  funding,
 }: {
   role: string;
   counts: Record<string, number>;
   total: number;
   active: boolean;
   onSelect: () => void;
+  // Present only for fundable roles (dev/bundler) — renders a scoped Fund action
+  // that tops just this role up to its warm target, drawing from the treasury.
+  onFund?: () => void;
+  funding?: boolean;
 }) {
   const funded = counts.funded ?? 0;
   const low = funded < LOW_POOL_THRESHOLD;
   const accent = roleColorVar(role);
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className="panel px-3.5 py-3 text-left transition-colors hover:border-[var(--color-line-2)]"
-      style={{
-        borderLeft: `3px solid ${accent}`,
-        outline: active ? `1px solid ${accent}` : undefined,
-      }}
-    >
+    <div className="relative">
+      <button
+        type="button"
+        onClick={onSelect}
+        className={clsx(
+          'panel w-full px-3.5 py-3 text-left transition-colors hover:border-[var(--color-line-2)]',
+          // Reserve room so the absolutely-positioned Fund badge never overlaps the
+          // status chips at the bottom of the card.
+          onFund && 'pb-10',
+        )}
+        style={{
+          borderLeft: `3px solid ${accent}`,
+          outline: active ? `1px solid ${accent}` : undefined,
+        }}
+      >
       <div className="flex items-center justify-between">
         <RolePill role={role} />
         <span className="text-xs muted">{total} total</span>
@@ -182,7 +202,26 @@ function RoleSummaryCard({
           </span>
         ))}
       </div>
-    </button>
+      </button>
+      {onFund && (
+        // Sibling of the filter button (not nested — that would be invalid HTML),
+        // absolutely positioned over the card's bottom-right so clicking it funds
+        // this role instead of toggling the filter.
+        <button
+          type="button"
+          disabled={funding}
+          onClick={onFund}
+          title={`Fund ${role} wallets up to their warm target (from the treasury)`}
+          className={clsx(
+            'badge badge-neutral absolute bottom-2.5 right-2.5 cursor-pointer',
+            funding && 'opacity-60',
+          )}
+        >
+          <Icon name="coins" />
+          Fund
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -220,6 +259,14 @@ export function WalletPoolPage() {
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();
   const [refreshBalances, refreshing] = useRefreshWalletBalancesMutation();
+
+  // Runtime on/off for the automatic background warm-pool funder. Hidden entirely
+  // when funding isn't configured (FUND_ENABLED unset → `configured: false`).
+  const { data: autoFund } = useAutoFundStatusQuery(undefined, {
+    pollingInterval: 30_000,
+    skipPollingIfUnfocused: true,
+  });
+  const [setAutoFund, settingAutoFund] = useSetAutoFundMutation();
 
   // Keystore restore (recovery on a fresh box): kick the background job, then track
   // its SSE progress + final summary. `restoreOpen` gates the confirm dialog.
@@ -460,6 +507,12 @@ export function WalletPoolPage() {
   const lowPoolRoles = Object.entries(counts).filter(
     ([, s]) => (s.funded ?? 0) < LOW_POOL_THRESHOLD,
   );
+  // The low roles the treasury pass can actually top up (dev/bundler). The banner
+  // Fund button scopes to exactly these, so it never spends on a role that isn't
+  // fundable — and never runs a redundant all-roles pass when only one is short.
+  const lowFundableRoles = lowPoolRoles
+    .map(([role]) => role)
+    .filter((role) => FUNDABLE_ROLES.includes(role as WalletRole));
 
   const onGenerate = async () => {
     if (genCount < 1) return;
@@ -484,21 +537,34 @@ export function WalletPoolPage() {
     }
   };
 
-  const onFund = async (role?: string) => {
+  // Treasury → pool funding. `roles` undefined = one pass over all fundable roles
+  // (the header "Fund pool" catch-all); a list = one scoped pass per role, used by
+  // the low-pool banner and the per-role card buttons so we only top up what's
+  // actually short instead of every role. Outcomes across the passes are tallied
+  // into a single summary line.
+  const onFund = async (roles?: string[]) => {
     setMsg(null);
+    const passes = roles && roles.length > 0 ? roles.map((r) => r as string) : [undefined];
     try {
-      const report = await fund({ role }).unwrap();
-      if (report.outcomes.length === 0) {
+      let spentLamports = 0;
+      const tally: Record<string, number> = {};
+      for (const role of passes) {
+        const report = await fund({ role }).unwrap();
+        spentLamports += report.spent_lamports;
+        for (const o of report.outcomes) tally[o.result] = (tally[o.result] ?? 0) + 1;
+      }
+      const touched = Object.values(tally).reduce((a, b) => a + b, 0);
+      if (touched === 0) {
         setMsg('Nothing to fund — pool already warm (or no treasury configured).');
       } else {
-        const by = (r: string) => report.outcomes.filter((o) => o.result === r).length;
+        const by = (r: string) => tally[r] ?? 0;
         const parts = [
           by('sent') && `${by('sent')} sent`,
           by('dry_run') && `${by('dry_run')} dry-run`,
           by('failed') && `${by('failed')} failed`,
           by('skipped_cap') && `${by('skipped_cap')} skipped (safety cap)`,
         ].filter(Boolean);
-        setMsg(`Funding pass: ${parts.join(', ') || 'no transfers'} — ${formatSol(report.spent_lamports)} spent.`);
+        setMsg(`Funding pass: ${parts.join(', ') || 'no transfers'} — ${formatSol(spentLamports)} spent.`);
       }
     } catch {
       /* surfaced via mutation error below */
@@ -682,6 +748,33 @@ export function WalletPoolPage() {
           >
             Restore from keystore
           </Button>
+          {autoFund?.configured && (
+            <button
+              type="button"
+              disabled={settingAutoFund.isLoading}
+              onClick={() => setAutoFund(!autoFund.enabled)}
+              title={
+                'Automatic background warm-pool funder.\n\n' +
+                'When ON, a background pass runs every ~60s and tops the dev/bundler wallets ' +
+                'up to their warm targets from the treasury — no clicks needed. When OFF, the ' +
+                'pool is only funded when you press a Fund button.\n\n' +
+                'This toggle affects ONLY the automatic pass; the manual Fund buttons work either way.'
+              }
+              className={clsx(
+                'badge cursor-pointer',
+                autoFund.enabled ? 'badge-good' : 'badge-bad',
+                settingAutoFund.isLoading && 'opacity-60',
+              )}
+            >
+              <span
+                className={clsx(
+                  'h-1.5 w-1.5 rounded-full',
+                  autoFund.enabled ? 'bg-[var(--color-good)]' : 'bg-[var(--color-bad)]',
+                )}
+              />
+              Auto-fund {autoFund.enabled ? 'On' : 'Off'}
+            </button>
+          )}
           <Button variant="primary" icon="coins" loading={funding.isLoading} onClick={() => onFund()}>
             Fund pool
           </Button>
@@ -719,9 +812,18 @@ export function WalletPoolPage() {
         <Banner
           tone="warn"
           actions={
-            <Button variant="primary" size="sm" icon="coins" loading={funding.isLoading} onClick={() => onFund()}>
-              Fund
-            </Button>
+            lowFundableRoles.length > 0 ? (
+              <Button
+                variant="primary"
+                size="sm"
+                icon="coins"
+                loading={funding.isLoading}
+                title={`Top up ${lowFundableRoles.join(' + ')} from the treasury — only the low role${lowFundableRoles.length > 1 ? 's' : ''}, not the whole pool`}
+                onClick={() => onFund(lowFundableRoles)}
+              >
+                Fund {lowFundableRoles.join(' + ')}
+              </Button>
+            ) : undefined
           }
         >
           <strong>Low pool:</strong>{' '}
@@ -961,6 +1063,8 @@ export function WalletPoolPage() {
               total={total}
               active={roleFilter === role}
               onSelect={() => setRoleFilter(roleFilter === role ? '' : role)}
+              onFund={FUNDABLE_ROLES.includes(role) ? () => onFund([role]) : undefined}
+              funding={funding.isLoading}
             />
           );
         })}
