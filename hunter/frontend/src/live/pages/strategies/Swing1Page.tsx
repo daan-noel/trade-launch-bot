@@ -552,7 +552,7 @@ export function Swing1Page() {
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       } else {
         const created = await createSwing1Rule(buildCreatePayload(SWING1_SPEC, form));
-        setRules((prev) => [...prev, created]);
+        setRules((prev) => [created, ...prev]);
       }
       setModalOpen(false);
     } catch (e) {

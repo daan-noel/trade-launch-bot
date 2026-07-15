@@ -569,7 +569,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
         setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
       } else {
         const created = await createRule(buildCreatePayload(spec, form));
-        setRules((prev) => [...prev, created]);
+        setRules((prev) => [created, ...prev]);
       }
       setModalOpen(false);
     } catch (e) {

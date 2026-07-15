@@ -599,7 +599,7 @@ export function Tpsl1Page() {
         }
       } else {
         const created = await createTpsl1Rule(buildCreatePayload(TPSL1_SPEC, form));
-        setRules((prev) => [...prev, created]);
+        setRules((prev) => [created, ...prev]);
       }
       setModalOpen(false);
     } catch (e) {
