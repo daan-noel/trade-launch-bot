@@ -21,6 +21,7 @@ use trading_core::strategies::registry::tpsl1_decision_rule;
 pub struct BacktestTokenResult {
     pub mint_address: String,
     pub symbol: String,
+    pub created_at: DateTime<Utc>,
     pub entry_price: f64,
     /// All-time-high price from `tokens_info` — row-owned, filled from the
     /// enrichment batch fetch (same source as Positions/Sweep), not recomputed
@@ -128,6 +129,7 @@ fn resolve_token(
     let result = BacktestTokenResult {
         mint_address: token.mint_address.clone(),
         symbol: token.symbol.clone(),
+        created_at: token.created_at,
         entry_price,
         // Filled from the enrichment batch fetch below (tokens_info ATH).
         ath_price: None,

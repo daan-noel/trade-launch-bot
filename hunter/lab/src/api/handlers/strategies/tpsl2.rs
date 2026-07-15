@@ -606,18 +606,18 @@ pub async fn paper_result_tpsl_rule(
     };
 
     let mints: Vec<String> = positions.iter().map(|p| p.mint_address.clone()).collect();
-    let symbols = app_state
+    let token_info = app_state
         .token_repo()
         .find_symbols_for(&mints)
         .await
         .unwrap_or_else(|e| {
-            tracing::warn!("Failed to load token symbols for paper result: {e}");
+            tracing::warn!("Failed to load token info for paper result: {e}");
             HashMap::new()
         });
 
     let tokens: Vec<BacktestTokenResult> = positions
         .into_iter()
-        .map(|p| paper_position_to_sim_result(p, &symbols))
+        .map(|p| paper_position_to_sim_result(p, &token_info))
         .collect();
 
     HttpResponse::Ok().json(PaperResultResponse {
@@ -688,7 +688,7 @@ fn exit_reason_or_derived(p: &StrategyPosition) -> Option<String> {
 /// Map one recorded paper [`StrategyPosition`] into the simulation-shaped result.
 pub(crate) fn paper_position_to_sim_result(
     p: StrategyPosition,
-    symbols: &HashMap<String, String>,
+    token_info: &HashMap<String, (String, DateTime<Utc>)>,
 ) -> BacktestTokenResult {
     let pnl_percent = p.pnl_pct();
     let exit_reason = exit_reason_or_derived(&p).unwrap_or_else(|| "Open".to_string());
@@ -706,12 +706,15 @@ pub(crate) fn paper_position_to_sim_result(
         .exit_price
         .map(|x| x.max(p.entry_price.unwrap_or(0.0)))
         .or(p.entry_price);
-    let symbol = symbols.get(&p.mint_address).cloned().unwrap_or_default();
+    let info = token_info.get(&p.mint_address);
+    let symbol = info.map(|(s, _)| s.clone()).unwrap_or_default();
+    let created_at = info.map(|(_, c)| *c).unwrap_or(p.created_at);
     let entry_tx = p.entry_tx_sigs().first().cloned().unwrap_or_default();
     let exit_tx = p.exit_tx_sigs().last().cloned();
     BacktestTokenResult {
         symbol,
         mint_address: p.mint_address,
+        created_at,
         target_price: p.target_price,
         target_token_amount: p.target_token_amount.map(|a| a as f64),
         target_time: p.target_time,

@@ -118,6 +118,7 @@ fn resolve_token(
     let base = BacktestBase {
         mint_address: token.mint_address.clone(),
         symbol: token.symbol.clone(),
+        created_at: token.created_at,
         entry_price,
         // Filled from the enrichment batch fetch below (tokens_info ATH).
         ath_price: None,

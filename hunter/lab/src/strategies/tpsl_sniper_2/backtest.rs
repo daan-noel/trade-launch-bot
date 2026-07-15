@@ -22,6 +22,7 @@ use trading_core::strategies::registry::tpsl2_decision_rule;
 pub struct BacktestTokenResult {
     pub mint_address: String,
     pub symbol: String,
+    pub created_at: DateTime<Utc>,
     /// Trigger-trade (scalp signal) snapshot — the trade that *armed* the
     /// position, distinct from the worst-case `entry_*` fill below. The gap
     /// between the two is the modeled adverse slippage (mirrors live/paper).
@@ -160,6 +161,7 @@ fn resolve_token(
     let result = BacktestTokenResult {
         mint_address: token.mint_address.clone(),
         symbol: token.symbol.clone(),
+        created_at: token.created_at,
         target_price: Some(target_price),
         target_token_amount: Some(target_token_amount),
         target_time: Some(target_time),
