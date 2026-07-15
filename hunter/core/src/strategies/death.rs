@@ -86,6 +86,22 @@ pub fn find_death_point<T: TradeRow>(
     })
 }
 
+/// Deterministic "as of" instant for the analysis-only death-close fallback: the
+/// block_time of the token's last (chronologically newest) trade in `trades`, or
+/// `entry_time` when there are none. `trades` is assumed slot/time-sorted
+/// upstream — the same assumption [`find_death_point`]'s callers and the ladder's
+/// market-fill fallback already rely on.
+///
+/// Feeding [`find_death_point`] the corpus's own last trade instead of
+/// `Utc::now()` makes a death verdict a pure function of the (fixed) trade
+/// history: the same token/corpus resolves the same Dead/Open call whether swept
+/// today or replayed next week, and whether by the grouped sweep or a
+/// single-rule simulate reading the same lake slice — see
+/// `docs/plans/sweep/sweep-sim-parity.md` (C1).
+pub fn analysis_as_of<T: TradeRow>(trades: &[T], entry_time: DateTime<Utc>) -> DateTime<Utc> {
+    trades.last().map(|t| t.block_time()).unwrap_or(entry_time)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +178,33 @@ mod tests {
         let trades = vec![trade(0.5, 1.0, Some(5.0), 2, -10)]; // before entry
         let now = base() + Duration::seconds(10_000);
         assert!(find_death_point(&trades, base(), now).is_none());
+    }
+
+    #[test]
+    fn analysis_as_of_is_the_corpus_last_trade_not_the_wall_clock() {
+        // The whole point of C1 (parity plan): a fixed trade history must resolve
+        // the same death verdict no matter when the analysis runs. `analysis_as_of`
+        // is the corpus's own last trade time — never `Utc::now()`.
+        let trades = vec![trade(0.5, 1.0, Some(5.0), 2, 10), trade(0.4, 1.0, Some(4.0), 3, 250)];
+        assert_eq!(analysis_as_of(&trades, base()), base() + Duration::seconds(250));
+    }
+
+    #[test]
+    fn analysis_as_of_falls_back_to_entry_time_when_no_trades() {
+        let trades: Vec<Trade> = vec![];
+        assert_eq!(analysis_as_of(&trades, base()), base());
+    }
+
+    #[test]
+    fn death_verdict_over_a_fixed_corpus_is_stable_regardless_of_when_it_is_asked() {
+        // Same trade history, same entry — the last meaningful trade is only 250s
+        // before the corpus's own last trade (< DEAD_QUIET_SECS from
+        // `analysis_as_of`), so the token reads alive no matter what the real
+        // wall-clock happens to be when this runs (it would read Dead under the
+        // old `Utc::now()` call site, since real time is always > +250s from a
+        // fixed `base()` in the past).
+        let trades = vec![trade(0.5, 1.0, Some(5.0), 2, 10), trade(0.4, 0.5, Some(5.0), 3, 250)];
+        let as_of = analysis_as_of(&trades, base());
+        assert!(find_death_point(&trades, base(), as_of).is_none(), "alive: still within quiet window of its own last trade");
     }
 }

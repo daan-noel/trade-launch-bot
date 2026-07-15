@@ -190,7 +190,9 @@ pub struct RunMetrics {
     pub n_fired: u64,
     pub n_open: u64,
     pub n_closed: u64,
+    /// Realized-only (`wins / n_closed`) — a still-`Open` mark is not a win/loss yet.
     pub win_rate: f64,
+    /// Realized-only: the sum of closed positions' PnL, never a still-`Open` mark.
     pub total_pnl_sol: f64,
     pub expectancy_sol: f64,
     pub mean_pnl_pct: f64,
@@ -227,9 +229,15 @@ pub struct RunMetrics {
 /// Confidence multiplier for the robust score's one-sided lower bound (~95% z).
 const SCORE_Z: f64 = 1.64;
 
-/// Streaming accumulator across every token a run fires on. PnL stats mark open
-/// positions to last price; holding-time stats and the robust score use closed
-/// positions only. O(1) per run — interior quantiles via a fixed [`QuantileSketch`].
+/// Streaming accumulator across every token a run fires on. Every PnL/holding/
+/// win-rate stat is **realized-only** (closed positions — includes the
+/// analysis-only death-close, excludes a still-`Open` mark-to-last-price): an
+/// unrealized mark isn't a trade outcome yet, so folding it into "win rate" or
+/// "total PnL" mixed marks-to-market with realized returns and made a sweep's
+/// headline numbers depend on exactly when the corpus window happened to end
+/// (parity plan C2). `n_fired`/`n_open` still count every position taken,
+/// `Open` still included, so the UI can show "X open" alongside the realized
+/// figures. O(1) per run — interior quantiles via a fixed [`QuantileSketch`].
 ///
 /// Public so the analysis path can fold into the **same** accumulator the live /
 /// paper kernel uses: `lab`'s per-combo sweep wraps one of these per combo (its
@@ -243,7 +251,6 @@ pub struct RunAgg {
     pnl_sol_sum: f64,
     gross_win_sol: f64,
     gross_loss_sol: f64,
-    pnl_pct_sum: f64,
     pnl_min: f32,
     pnl_max: f32,
     pnl_sketch: QuantileSketch,
@@ -263,7 +270,6 @@ impl Default for RunAgg {
             pnl_sol_sum: 0.0,
             gross_win_sol: 0.0,
             gross_loss_sol: 0.0,
-            pnl_pct_sum: 0.0,
             pnl_min: f32::INFINITY,
             pnl_max: f32::NEG_INFINITY,
             pnl_sketch: QuantileSketch::default(),
@@ -278,25 +284,28 @@ impl Default for RunAgg {
 
 impl RunAgg {
     /// Fold one token's outcome into the accumulator. No-entry rows are ignored.
+    /// A still-`Open` outcome counts toward `n_fired`/`n_open`/its exit-count
+    /// slot only — its mark-to-last-price PnL is unrealized, so it never touches
+    /// the PnL sums, win/loss counters, quantile sketch, or holding-time stats
+    /// (parity plan C2).
     pub fn record(&mut self, o: &TokenOutcome) {
         if !o.fired {
             return;
         }
         self.fired += 1;
-        self.pnl_sol_sum += o.pnl_sol as f64;
-        self.pnl_pct_sum += o.pnl_percent as f64;
-        self.pnl_min = self.pnl_min.min(o.pnl_percent);
-        self.pnl_max = self.pnl_max.max(o.pnl_percent);
-        self.pnl_sketch.record(o.pnl_percent as f64);
-        if o.pnl_sol > 0.0 {
-            self.wins += 1;
-            self.gross_win_sol += o.pnl_sol as f64;
-        } else if o.pnl_sol < 0.0 {
-            self.gross_loss_sol += -(o.pnl_sol as f64);
-        }
         if o.exit == ExitCode::Open {
             self.open += 1;
         } else {
+            self.pnl_sol_sum += o.pnl_sol as f64;
+            self.pnl_min = self.pnl_min.min(o.pnl_percent);
+            self.pnl_max = self.pnl_max.max(o.pnl_percent);
+            self.pnl_sketch.record(o.pnl_percent as f64);
+            if o.pnl_sol > 0.0 {
+                self.wins += 1;
+                self.gross_win_sol += o.pnl_sol as f64;
+            } else if o.pnl_sol < 0.0 {
+                self.gross_loss_sol += -(o.pnl_sol as f64);
+            }
             self.holding_sum += o.holding_secs;
             self.holding_sketch.record(o.holding_secs as f64);
             let p = o.pnl_percent as f64;
@@ -306,10 +315,13 @@ impl RunAgg {
         self.exit_counts[exit_index(o.exit)] += 1;
     }
 
-    /// Collapse the accumulator to the final rolled-up [`RunMetrics`].
+    /// Collapse the accumulator to the final rolled-up [`RunMetrics`]. Every
+    /// PnL/win-rate/holding figure is realized-only (denominator `n_closed`,
+    /// never `n_fired`) — see [`RunAgg`]'s doc.
     pub fn finalize(self) -> RunMetrics {
-        let n = self.fired as f64;
-        let (median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct) = if self.fired == 0 {
+        let n_closed = self.fired - self.open;
+        let n = n_closed as f64;
+        let (median_pnl_pct, p90_pnl_pct, best_pnl_pct, worst_pnl_pct) = if n_closed == 0 {
             (0.0, 0.0, 0.0, 0.0)
         } else {
             (
@@ -319,12 +331,11 @@ impl RunAgg {
                 self.pnl_min as f64,
             )
         };
-        let mean_pnl_pct = if self.fired == 0 { 0.0 } else { self.pnl_pct_sum / n };
-        let n_closed = self.fired - self.open;
+        let mean_pnl_pct = if n_closed == 0 { 0.0 } else { self.closed_pct_sum / n };
         let (avg_holding_secs, median_holding_secs) = if n_closed == 0 {
             (0.0, 0.0)
         } else {
-            (self.holding_sum as f64 / n_closed as f64, self.holding_sketch.quantile(0.5))
+            (self.holding_sum as f64 / n, self.holding_sketch.quantile(0.5))
         };
         let profit_factor = if self.gross_loss_sol > 0.0 {
             Some(self.gross_win_sol / self.gross_loss_sol)
@@ -337,9 +348,9 @@ impl RunAgg {
             n_fired: self.fired,
             n_open: self.open,
             n_closed,
-            win_rate: if self.fired == 0 { 0.0 } else { self.wins as f64 / n },
+            win_rate: if n_closed == 0 { 0.0 } else { self.wins as f64 / n },
             total_pnl_sol: self.pnl_sol_sum,
-            expectancy_sol: if self.fired == 0 { 0.0 } else { self.pnl_sol_sum / n },
+            expectancy_sol: if n_closed == 0 { 0.0 } else { self.pnl_sol_sum / n },
             mean_pnl_pct,
             median_pnl_pct,
             p90_pnl_pct,

@@ -499,7 +499,8 @@ pub fn find_trade_driven_exit<T: TradeRow>(
         // leave it `Open`. Analysis-only; live closes silent tokens via its clock
         // sweep. See `strategies::death`.
         .or_else(|| {
-            crate::strategies::death::find_death_point(trades, entry_time, Utc::now()).map(|d| {
+            let as_of = crate::strategies::death::analysis_as_of(trades, entry_time);
+            crate::strategies::death::find_death_point(trades, entry_time, as_of).map(|d| {
                 ExitFill {
                     price: d.price,
                     tx_signature: d.tx_signature,

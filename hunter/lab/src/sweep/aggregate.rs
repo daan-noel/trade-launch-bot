@@ -221,6 +221,29 @@ mod tests {
     }
 
     #[test]
+    fn open_positions_excluded_from_headline_pnl_and_win_rate() {
+        // Parity plan C2: a still-open mark-to-last-price must not move the
+        // headline total_pnl_sol / win_rate / mean / best / worst — those are
+        // realized-only, matching a single-rule simulate's `pnl=None` convention
+        // for an open row. `n_fired` still counts the open position.
+        let mut a = ComboAgg::default();
+        a.record(&outcome(1.0, 50.0, ExitCode::TakeProfit, 10));
+        a.record(&outcome(-1.0, -50.0, ExitCode::StopLoss, 10));
+        // A huge unrealized open winner — must not leak into any realized figure.
+        a.record(&outcome(1_000.0, 5_000.0, ExitCode::Open, 0));
+        let m = a.finalize(0);
+        assert_eq!(m.n_fired, 3);
+        assert_eq!(m.n_open, 1);
+        assert_eq!(m.n_closed, 2);
+        assert!((m.total_pnl_sol - 0.0).abs() < 1e-9, "open PnL excluded from total");
+        assert!((m.win_rate - 0.5).abs() < 1e-9, "win rate over closed trades only");
+        assert!((m.mean_pnl_pct - 0.0).abs() < 1e-9);
+        assert_eq!(m.best_pnl_pct, 50.0, "open mark must not become the best");
+        assert_eq!(m.worst_pnl_pct, -50.0);
+        assert!((m.expectancy_sol - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn best_worst_and_mean_are_exact() {
         // best/worst (running min/max) and mean (running sum) stay precise even
         // though median/p90 go through the approximate sketch.
