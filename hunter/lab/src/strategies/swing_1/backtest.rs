@@ -11,6 +11,7 @@ use crate::models::{Swing1Rule, Token};
 use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::{quantize_f32, round_trip_with_costs, CostModel};
 use crate::state::local_state::LocalState;
+use crate::strategies::admission::select_simulated_tokens;
 use crate::strategies::sim_progress::SimProgress;
 use crate::strategies::token_enrich::{self, TokenEnrichment};
 use crate::storage::repositories::token_repo::TokenRepo;
@@ -37,45 +38,6 @@ pub struct BacktestTokenResult {
     pub base: BacktestBase,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub swing_legs: Option<Vec<SwingLeg>>,
-}
-
-/// Apply the rule's concurrency / total-token caps to entry-time-sorted
-/// candidates, mirroring how the live run admits tokens: a token is skipped when
-/// `max_concurrent_tokens` are still open at its entry, and admission stops once
-/// `max_total_tokens` have been selected.
-fn select_simulated_tokens(
-    candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)>,
-    max_concurrent_tokens: Option<usize>,
-    max_total_tokens: Option<usize>,
-) -> Vec<BacktestTokenResult> {
-    let mut active_exits: Vec<Option<DateTime<Utc>>> = Vec::new();
-    let mut results: Vec<BacktestTokenResult> = Vec::new();
-    let mut selected_count: usize = 0;
-
-    for (entry_time, exit_time, result) in candidates {
-        if let Some(total_max) = max_total_tokens {
-            if selected_count >= total_max {
-                break;
-            }
-        }
-
-        active_exits.retain(|active_exit| match active_exit {
-            Some(exit_time) => *exit_time > entry_time,
-            None => true,
-        });
-
-        if let Some(max_open) = max_concurrent_tokens {
-            if active_exits.len() >= max_open {
-                continue;
-            }
-        }
-
-        active_exits.push(exit_time);
-        results.push(result);
-        selected_count += 1;
-    }
-
-    results
 }
 
 /// Resolve one candidate token's simulated entry → exit into a

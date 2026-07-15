@@ -5,6 +5,7 @@
 
 pub use trading_core::strategies::analysis;
 
+pub mod admission;
 pub mod candidate_cache;
 pub mod matched_mints;
 pub mod sim_fetch;

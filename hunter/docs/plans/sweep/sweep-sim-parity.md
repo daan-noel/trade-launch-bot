@@ -86,16 +86,38 @@ Exact on both already: `n_fired/open/closed`, `win_rate`, `total_pnl_sol`, `mean
    "realized" win_rate/PnL shouldn't include marks. (Alternative: mark-to-last on both.)
 
 ### Phase 3 — Population (the structural root)
-6. **B1/B2/B12:** make simulate **replay the sweep group's exact persisted mint list** rather
-   than re-deriving via a live PG scan — the sweep already stores per-group mints. This is the
-   clean SSOT fix: one candidate set, no PG-vs-lake / freshness / group-vs-universe drift.
-7. **B3:** unify caps — null them for the comparison, or add the admission pass to the sweep.
-   Collapse the **3 copies** of `select_simulated_tokens` into one shared fn regardless.
-8. **B8/B9/B10:** bucket width — honor `rule.bucket_width_sol` in grouping (or pin 0.1);
-   ix_labels — lossless representation on both sides + guard test (see `ix-labels` note below);
-   cashback — add a rule criterion or forbid grouping by it when a rule comparison is intended.
-9. **B4/B5/B6/B7/B11:** align mayhem policy, raise `token_cap`, thread `curve_only`,
-   `min_tokens=1`, and read the compared combo pre-retention.
+6. **B1/B2/B12 — NOT DONE, deliberately deferred.** Make simulate **replay the sweep
+   group's exact persisted mint list** rather than re-deriving via a live PG scan — the
+   sweep already stores per-group mints. This is the clean SSOT fix (one candidate set,
+   no PG-vs-lake / freshness / group-vs-universe drift) but it's a real feature, not a
+   bugfix: single-rule simulate's API surface (`run_backtest` + the 3 REST endpoints) has
+   no concept of "replay this sweep run/group" today, so this needs a new request shape,
+   corpus-source variant, and (likely) frontend wiring to invoke it — same shape as the
+   "Architectural end-state" below, just for one field instead of the whole engine.
+   Everything B1/B2/B12 would fix (B4/B5/B6/B7/B11 below) is a symptom of the two paths
+   deriving their candidate set independently; landing this item removes them as a side
+   effect instead of patching each one.
+7. **B3 — DONE.** Collapsed the **3 byte-identical copies** of `select_simulated_tokens`
+   (tpsl1/tpsl2/swing1 `backtest.rs`) into one generic fn,
+   `lab::strategies::admission::select_simulated_tokens`, with its own unit tests. Unifying
+   the *caps themselves* between a sweep run and a rule (null them for the comparison, or
+   add the admission pass to the sweep) is still a per-comparison hygiene concern, same
+   status as `buy_amount_sol` (A2) — no rule-to-run linkage exists to assert against yet.
+8. **B8/B9/B10 — NOT DONE.** Bucket width: grouping's `render_field` hardcodes
+   `SOL_BUCKET_WIDTH = 0.1` with no width parameter at all (not "defaults to 0.1" — there
+   is no override path), while the live/analysis *matcher* already reads a per-rule
+   `bucket_width_sol`. Threading a width through `group_key`/`render_field`/
+   `bucket_sol_label` is mechanical but ripples into the dashboard SQL bin
+   (`creation_stats_repo`, which must stay in lockstep) and the grouped-sweep request/
+   frontend. ix_labels: the lossless-encoding sub-fix below is scoped but also touches the
+   frontend (`groupedTypes.ts`) and is unfixed. Cashback: still no rule criterion exists —
+   grouping by `is_cashback_enabled` remains unreproducible from a rule.
+9. **B4/B5/B6/B7/B11 — NOT DONE**, and mostly subsumed by item 6 above once it lands
+   (mayhem policy already nets out equal; `token_cap`/`curve_only`/`min_tokens` are sweep
+   **request** knobs simulate has no equivalent field for, same non-issue as A2's
+   `buy_amount_sol` until there's a rule↔run linkage to source them from; retention is
+   inherent to the sweep's bounded-storage design for the *wide* multi-combo case, not
+   something to "fix" for a single-combo drill-in).
 
 ### Phase 4 — Aggregation
 10. **D1:** for the single-combo drill-in, compute **exact** quantiles over the retained rows
