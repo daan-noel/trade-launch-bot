@@ -6,6 +6,7 @@ import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
+import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl2/TokenInspectModal';
 import {
   carriedSwingRowOverlay,
@@ -631,23 +632,26 @@ export function Swing1Page() {
 
   // Current run + old runs, each with its own summary + table.
   const positionsSection = (
-    <RunPositionsPanel
-      strategy={STRATEGY}
-      selectedRuleId={selectedRuleId}
-      selectedRuleName={selectedRuleName}
-      rules={rules}
-      columns={positionColumns}
-      existingKeys={POSITION_KEYS}
-      fetchPositions={fetchSwing1RulePositions}
-      fetchSummary={fetchSwing1RulePositionsSummary}
-      price={price}
-      useRowOverlay={swing1RowOverlay}
-      selectedKey={inspect?.key ?? null}
-      onInspect={handleInspect}
-      isReal={isRealRuleSelected}
-      sellingPositionMint={sellingPositionMint}
-      onSellPosition={handleSellPosition}
-    />
+    <>
+      <RunPositionsPanel
+        strategy={STRATEGY}
+        selectedRuleId={selectedRuleId}
+        selectedRuleName={selectedRuleName}
+        rules={rules}
+        columns={positionColumns}
+        existingKeys={POSITION_KEYS}
+        fetchPositions={fetchSwing1RulePositions}
+        fetchSummary={fetchSwing1RulePositionsSummary}
+        price={price}
+        useRowOverlay={swing1RowOverlay}
+        selectedKey={inspect?.key ?? null}
+        onInspect={handleInspect}
+        isReal={isRealRuleSelected}
+        sellingPositionMint={sellingPositionMint}
+        onSellPosition={handleSellPosition}
+      />
+      <ArmedHistoryPanel strategy={STRATEGY} selectedRuleId={selectedRuleId} />
+    </>
   );
 
   return (

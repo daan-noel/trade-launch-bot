@@ -6,6 +6,7 @@ import { SectionDivider } from 'components/ui/SectionDivider';
 import { Button } from 'components/ui/Button';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { RunPositionsPanel } from 'components/strategy/RunPositionsPanel';
+import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { TokenInspectModal, type InspectTarget } from 'components/tpsl1/TokenInspectModal';
 import { inspectFromPosition, markerRowOverlay } from 'components/strategy/inspectTarget';
 import { positionColumns, POSITION_KEYS } from 'components/strategy/strategyColumns';
@@ -645,23 +646,26 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   // Current run + old runs, each with its own summary + table. Rendered under the
   // rule table that owns the selected rule (only one is selected at a time).
   const positionsSection = (
-    <RunPositionsPanel
-      strategy={strategy}
-      selectedRuleId={selectedRuleId}
-      selectedRuleName={selectedRuleName}
-      rules={rules}
-      columns={positionColumns}
-      existingKeys={POSITION_KEYS}
-      fetchPositions={fetchPositions}
-      fetchSummary={fetchSummary}
-      price={price}
-      selectedKey={inspect?.key ?? null}
-      onInspect={handleInspect}
-      useRowOverlay={tpslRowOverlay}
-      isReal={isRealRuleSelected}
-      sellingPositionMint={sellingPositionMint}
-      onSellPosition={handleSellPosition}
-    />
+    <>
+      <RunPositionsPanel
+        strategy={strategy}
+        selectedRuleId={selectedRuleId}
+        selectedRuleName={selectedRuleName}
+        rules={rules}
+        columns={positionColumns}
+        existingKeys={POSITION_KEYS}
+        fetchPositions={fetchPositions}
+        fetchSummary={fetchSummary}
+        price={price}
+        selectedKey={inspect?.key ?? null}
+        onInspect={handleInspect}
+        useRowOverlay={tpslRowOverlay}
+        isReal={isRealRuleSelected}
+        sellingPositionMint={sellingPositionMint}
+        onSellPosition={handleSellPosition}
+      />
+      <ArmedHistoryPanel strategy={strategy} selectedRuleId={selectedRuleId} />
+    </>
   );
 
   const label = strategy === 'tpsl1' ? 'TPSL1' : 'TPSL2';

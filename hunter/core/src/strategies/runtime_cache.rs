@@ -33,7 +33,7 @@
 //! secondary index** (`time_exit_holding`), so the per-second sweep never re-walks a
 //! token's retained history. Both are kept in lockstep with the holding index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -71,6 +71,12 @@ const MAX_FIRST_SLOT_PENDING: usize = 32;
 /// Backstop timeout for deferred first-slot entry gates (seconds). Resolves with
 /// whatever first-slot totals have accumulated so far.
 pub const FIRST_SLOT_GATE_TIMEOUT_SECS: i64 = 5;
+
+/// Max armed-but-never-fired records retained per rule for the current run (see
+/// [`ArmedRecord`]). A bounded drop-oldest ring so a rule that arms on a busy token
+/// flow for a long active session can't grow this unbounded on the RAM-constrained
+/// live box — the view is a recent-history debug aid, not an exhaustive ledger.
+const MAX_ARMED_HISTORY_PER_RULE: usize = 256;
 
 /// Pointer to a rule's current run — the run new positions are stamped with and the
 /// run the result view surfaces. Both modes carry a run now (real *and* paper), so
@@ -218,6 +224,23 @@ pub struct PendingFirstSlotEntry {
     seq: u64,
 }
 
+/// One candidate that **armed but never fired** — a position that entered `Arming`
+/// (matched a rule, watching the live feed for its entry trigger) and left the index
+/// without ever taking an entry (the trigger never fired, its arming window closed,
+/// it was evicted by the armer cap, or the rule was stopped). Retained per-rule for
+/// the current run only ([`StrategyRuntimeCache::armed_history_by_rule`]) so you can
+/// see what a rule caught-and-passed-on while it was active. In-memory only.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ArmedRecord {
+    pub mint_address: String,
+    pub position_id: Uuid,
+    pub strategy_id: String,
+    /// When the position first armed (its `created_at`).
+    pub armed_at: DateTime<Utc>,
+    /// When it left the index un-entered (the removal moment).
+    pub ended_at: DateTime<Utc>,
+}
+
 /// In-memory strategy state for the hot path (rules + parsed params + open
 /// positions + per-rule counters), shared across all strategies.
 ///
@@ -280,6 +303,12 @@ pub struct StrategyRuntimeCache {
     pending_first_slot: Arc<DashMap<(String, Uuid), PendingFirstSlotEntry>>,
     /// Monotonic counter assigning each pending first-slot entry its eviction `seq`.
     first_slot_seq: Arc<AtomicU64>,
+    /// Per-rule ring of candidates that **armed but never fired** this run, keyed by
+    /// `rule_id` (see [`ArmedRecord`]). Appended from the removal funnel when an
+    /// `Arming` position leaves the index un-entered; bounded to
+    /// [`MAX_ARMED_HISTORY_PER_RULE`] (drop-oldest); purged on `clear_rule` so a fresh
+    /// run starts empty (the "delete on new run" the view wants). In-memory only.
+    armed_history: Arc<DashMap<Uuid, VecDeque<ArmedRecord>>>,
     /// Optional cold-lane SSE sender for `tpsl_positions_changed` deltas, set once at
     /// boot by the live edge ([`set_sse_sender`](Self::set_sse_sender)). Unset in unit
     /// tests and the `lab` bin, where [`emit_position_delta`](Self::emit_position_delta)
@@ -334,6 +363,7 @@ impl StrategyRuntimeCache {
             armer_seq: Arc::new(AtomicU64::new(0)),
             pending_first_slot: Arc::new(DashMap::new()),
             first_slot_seq: Arc::new(AtomicU64::new(0)),
+            armed_history: Arc::new(DashMap::new()),
             sse_tx: OnceLock::new(),
         }
     }
@@ -759,6 +789,41 @@ impl StrategyRuntimeCache {
         self.total_count_by_rule.remove(&rule_id);
         self.closed_stats_by_rule.remove(&rule_id);
         self.current_run_by_rule.remove(&rule_id);
+        // The armed-but-never-fired history is scoped to the run that just ended —
+        // drop it so the fresh run starts with an empty view. (A pause→resume keeps
+        // it: `resume_run` doesn't call `clear_rule`, only a Fresh `start_run` does.)
+        self.armed_history.remove(&rule_id);
+    }
+
+    // ── Armed-but-never-fired history ─────────────────────────────────────────
+
+    /// The current run's candidates that **armed but never fired** for a rule,
+    /// oldest first (see [`ArmedRecord`]). Empty once a fresh run clears it via
+    /// [`clear_rule`](Self::clear_rule). In-memory only — a live-bin restart resets it.
+    pub fn armed_history_by_rule(&self, rule_id: Uuid) -> Vec<ArmedRecord> {
+        self.armed_history
+            .get(&rule_id)
+            .map(|e| e.value().iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Append an armed-but-never-fired record for a rule's current run, bounded to
+    /// [`MAX_ARMED_HISTORY_PER_RULE`] (drop-oldest). Called from the removal funnel
+    /// ([`remove_position`](Self::remove_position)) when an `Arming` position leaves
+    /// the index un-entered.
+    fn record_arm_expired(&self, rule_id: Uuid, position: &StrategyPosition) {
+        let record = ArmedRecord {
+            mint_address: position.mint_address.clone(),
+            position_id: position.id,
+            strategy_id: position.strategy_id.clone(),
+            armed_at: position.created_at,
+            ended_at: Utc::now(),
+        };
+        let mut entry = self.armed_history.entry(rule_id).or_default();
+        entry.push_back(record);
+        while entry.len() > MAX_ARMED_HISTORY_PER_RULE {
+            entry.pop_front();
+        }
     }
 
     // ── DB load / reload (boot + rule-change edges) ───────────────────────────
@@ -1105,6 +1170,14 @@ impl StrategyRuntimeCache {
         } else if position.is_in_holding_index() {
             // Not yet entered (Arming/BuySubmitted) — pending, not holding.
             self.adjust_pending_count(rule_id, -1);
+            // Armed-but-never-fired audit: a position removed while still `Arming`
+            // (no buy ever sent) armed on the feed but its entry trigger never fired
+            // — the window closed, the armer cap evicted it, or the rule was stopped;
+            // every such drop reaches this funnel. `BuySubmitted` is excluded (a buy
+            // DID fire, it just didn't fill). Retained for the current run's view.
+            if position.status == "Arming" {
+                self.record_arm_expired(rule_id, position);
+            }
         }
         if position.is_closed() {
             if let Some(mut e) = self.closed_stats_by_rule.get_mut(&rule_id) {
@@ -1835,5 +1908,55 @@ mod tests {
         assert!(taken.contains(&rule_b));
         assert!(!cache.has_first_slot_pending_for_mint("mint1"));
         assert!(!cache.has_first_slot_pending());
+    }
+
+    // ── Armed-but-never-fired history ─────────────────────────────────────────
+
+    /// Removing an `Arming` position records it in the rule's armed history; a
+    /// `BuySubmitted` removal (a buy DID fire) does not; and `clear_rule` — the
+    /// in-memory twin of a fresh `start_run` — wipes the history.
+    #[test]
+    fn armed_history_records_arming_drops_and_clears_on_new_run() {
+        let cache = StrategyRuntimeCache::new();
+        let rid = Uuid::new_v4();
+
+        // An armed candidate whose trigger never fired, dropped from the index.
+        let armed = position(rid, "MintArmed", "Arming");
+        cache.sync_position(None, &armed); // enters the index as pending
+        cache.remove_position(&armed);
+
+        let hist = cache.armed_history_by_rule(rid);
+        assert_eq!(hist.len(), 1, "an Arming drop is recorded");
+        assert_eq!(hist[0].mint_address, "MintArmed");
+        assert_eq!(hist[0].position_id, armed.id);
+
+        // A BuySubmitted drop (a buy fired but didn't fill) is NOT armed-but-never-fired.
+        let submitted = position(rid, "MintSubmitted", "BuySubmitted");
+        cache.sync_position(None, &submitted);
+        cache.remove_position(&submitted);
+        assert_eq!(
+            cache.armed_history_by_rule(rid).len(),
+            1,
+            "BuySubmitted removal is excluded"
+        );
+
+        // A fresh run (clear_rule) starts the view empty.
+        cache.clear_rule(rid);
+        assert!(cache.armed_history_by_rule(rid).is_empty(), "cleared on new run");
+    }
+
+    /// The per-rule ring is bounded — the oldest records drop once it overflows.
+    #[test]
+    fn armed_history_is_bounded_drop_oldest() {
+        let cache = StrategyRuntimeCache::new();
+        let rid = Uuid::new_v4();
+        for i in 0..(MAX_ARMED_HISTORY_PER_RULE + 5) {
+            let p = position(rid, &format!("Mint{i}"), "Arming");
+            cache.record_arm_expired(rid, &p);
+        }
+        let hist = cache.armed_history_by_rule(rid);
+        assert_eq!(hist.len(), MAX_ARMED_HISTORY_PER_RULE, "capped at the ring size");
+        // Oldest-first retention: the first 5 mints were evicted.
+        assert_eq!(hist[0].mint_address, "Mint5");
     }
 }

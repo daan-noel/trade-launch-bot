@@ -26,6 +26,16 @@ export interface SellTokenArgs {
   slippage_bps?: number;
 }
 
+/** One candidate that armed on the live feed but never fired (its entry trigger
+ *  never came). In-memory, current-run only — resets when a fresh run starts. */
+export interface ArmedRecord {
+  mint_address: string;
+  position_id: string;
+  strategy_id: string;
+  armed_at: string;
+  ended_at: string;
+}
+
 /**
  * Live-only RTK Query endpoints — bundled exclusively in the live-trading
  * build: wallet holdings/prices, buy/sell, cashback, and the live-mode kill
@@ -87,6 +97,13 @@ export const liveApi = baseApi.injectEndpoints({
       query: () => ({ url: '/api/cashback/claim', method: 'POST' }),
       invalidatesTags: ['Cashback'],
     }),
+    // Current-run "armed but never fired" candidates for a rule — read straight
+    // from the in-memory runtime cache (these rows are deleted on drop, so there's
+    // no DB history). A convenience read; the panel polls it while a rule is open.
+    getArmedHistory: builder.query<ArmedRecord[], { strategy: string; ruleId: string }>({
+      query: ({ strategy, ruleId }) =>
+        `/api/strategies/${strategy}/rules/${ruleId}/armed-history`,
+    }),
     getLiveMode: builder.query<boolean, void>({
       query: () => '/api/system/live',
       transformResponse: (r: { live: boolean }) => r.live,
@@ -113,6 +130,7 @@ export const {
   useSellTokenMutation,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
+  useGetArmedHistoryQuery,
   useGetLiveModeQuery,
   useSetLiveModeMutation,
 } = liveApi;

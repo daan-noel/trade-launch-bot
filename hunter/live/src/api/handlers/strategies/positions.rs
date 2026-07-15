@@ -512,6 +512,26 @@ pub async fn get_positions_by_wallet(
     }
 }
 
+/// GET /api/strategies/{strategy}/rules/{rule_id}/armed-history
+///
+/// The current run's candidates that **armed but never fired** for a rule —
+/// positions that reached `Arming` (matched, watching the feed for the entry
+/// trigger) and left un-entered because the trigger never fired, the arming window
+/// closed, the armer cap evicted them, or the rule was stopped. Read straight from
+/// the in-memory runtime cache (not the DB — these rows are deleted on drop); the
+/// list resets when a fresh run starts. Oldest first.
+pub async fn get_armed_history_by_rule(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<(String, Uuid)>,
+) -> impl Responder {
+    let (strategy, rule_id) = path.into_inner();
+    if let Err(resp) = strategy_id(&strategy) {
+        return resp;
+    }
+    let records = app_state.strategy.runtime().armed_history_by_rule(rule_id);
+    HttpResponse::Ok().json(records)
+}
+
 /// GET /api/strategies/{strategy}/positions/{position_id}
 pub async fn get_position(
     app_state: web::Data<Arc<DeployState>>,

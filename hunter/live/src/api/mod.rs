@@ -82,6 +82,13 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/rules/{rule_id}/positions",
                 web::post().to(handlers::strategies::positions::get_positions_by_rule),
             )
+            // Current-run "armed but never fired" candidates (in-memory runtime cache,
+            // not the DB). Distinct `/armed-history` suffix — no clash with the routes
+            // above/below.
+            .route(
+                "/strategies/{strategy}/rules/{rule_id}/armed-history",
+                web::get().to(handlers::strategies::positions::get_armed_history_by_rule),
+            )
             .route(
                 "/strategies/{strategy}/positions",
                 web::get().to(handlers::strategies::positions::list_positions),
