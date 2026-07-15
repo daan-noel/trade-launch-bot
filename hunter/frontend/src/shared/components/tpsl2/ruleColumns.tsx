@@ -1,6 +1,6 @@
 import { createContext, useContext, type MouseEvent } from 'react';
 import type { ColumnDef } from 'components/table/types';
-import type { RuleRecord } from 'types';
+import type { RuleLastSimulation, RuleRecord } from 'types';
 import { dashF, dashNum, dashPercent } from 'components/strategy/cellFormat';
 import { formatAge } from 'utils/format';
 import { paramTip } from 'lib/tpslParamHelp';
@@ -35,6 +35,38 @@ function pnlClass(v: number): string {
   if (v > 0) return 'text-green';
   if (v < 0) return 'text-red';
   return 'text-text-dim';
+}
+
+/** Shared render for a `last_simulation` field: `-` when the rule has never
+ *  been simulated, dimmed (`opacity-60`) when `is_stale` (params edited since
+ *  that run — the Sim Age column carries the ⚠ explaining why). `pnl` applies
+ *  {@link pnlClass} on top of the base styling. */
+function LastSimCell({
+  rule,
+  render,
+  bold = false,
+  pnl = false,
+}: {
+  rule: RuleRecord;
+  render: (s: RuleLastSimulation) => string;
+  bold?: boolean;
+  pnl?: boolean;
+}) {
+  const s = rule.last_simulation;
+  if (!s) return <span className="text-text-dim">-</span>;
+  return (
+    <span
+      className={cn(
+        'font-mono',
+        bold && 'font-bold',
+        pnl && pnlClass(s.total_pnl_sol),
+        s.is_stale && 'opacity-60',
+      )}
+      title={s.is_stale ? 'Rule edited since this run — re-simulate for current numbers' : undefined}
+    >
+      {render(s)}
+    </span>
+  );
 }
 
 /** Read-only lifecycle badge. The clickable activate/pause/stop controls now
@@ -642,6 +674,76 @@ export const ruleColumns: ColumnDef<RuleRecord>[] = [
       ),
       sortValue: (r) => r.total_pnl_sol,
       searchValue: (r) => String(r.total_pnl_sol),
+    },
+    // Last-simulation rollup — computed server-side in-memory (no DB row, see
+    // hunter's `state::sim_summary`) whenever 🧪 Simulate finishes; `-` until a
+    // rule has been simulated at least once. Dimmed + a ⚠ once the rule's params
+    // have changed since that run (`is_stale`), so a stale number never reads as
+    // current without a visual cue.
+    {
+      key: 'last_sim_fired',
+      label: 'Sim N',
+      tooltip: 'Tokens the last simulation fired on.',
+      group: 'last_sim',
+      sortable: true,
+      render: (r) => <LastSimCell rule={r} render={(s) => dashNum(s.n_fired)} />,
+      sortValue: (r) => r.last_simulation?.n_fired ?? -1,
+      searchValue: () => '',
+    },
+    {
+      key: 'last_sim_win_rate',
+      label: 'Sim Win %',
+      tooltip: 'Win rate from the rule’s last simulation.',
+      group: 'last_sim',
+      sortable: true,
+      render: (r) => (
+        <LastSimCell rule={r} bold render={(s) => dashPercent(s.win_rate * 100)} />
+      ),
+      sortValue: (r) => r.last_simulation?.win_rate ?? -1,
+      searchValue: () => '',
+    },
+    {
+      key: 'last_sim_pnl',
+      label: 'Sim PnL ◎',
+      tooltip: 'Total realized SOL PnL from the rule’s last simulation.',
+      group: 'last_sim',
+      sortable: true,
+      render: (r) => (
+        <LastSimCell
+          rule={r}
+          bold
+          pnl
+          render={(s) => dashF(s.total_pnl_sol, 4)}
+        />
+      ),
+      sortValue: (r) => r.last_simulation?.total_pnl_sol ?? Number.NEGATIVE_INFINITY,
+      searchValue: () => '',
+    },
+    {
+      key: 'last_sim_age',
+      label: 'Sim Age',
+      tooltip: 'Time since the last simulation finished. ⚠ = rule edited since — re-simulate for current numbers.',
+      group: 'last_sim',
+      sortable: true,
+      render: (r) => {
+        const s = r.last_simulation;
+        if (!s) return <span className="text-text-dim">-</span>;
+        const ageSecs = Math.max(0, Math.floor((Date.now() - new Date(s.computed_at).getTime()) / 1000));
+        return (
+          <span
+            className={cn('font-mono', s.is_stale ? 'text-warning' : 'text-text-dim')}
+            title={
+              s.is_stale
+                ? 'Rule edited since this run — re-simulate for current numbers'
+                : `Simulated ${new Date(s.computed_at).toLocaleString()}`
+            }
+          >
+            {formatAge(ageSecs)} ago{s.is_stale ? ' ⚠' : ''}
+          </span>
+        );
+      },
+      sortValue: (r) => (r.last_simulation ? new Date(r.last_simulation.computed_at).getTime() : 0),
+      searchValue: () => '',
     },
     {
       key: 'controls',

@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::state::local_state::LocalState;
 use crate::state::sim_results::SimOutcome;
+use crate::state::sim_summary::SimSummary;
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::StrategyRule;
 use trading_core::strategies::match_keys::sim_key;
@@ -97,7 +98,26 @@ pub async fn spawn_rule_simulation(
         )
         .await
         {
-            Ok(rows) => SimOutcome::Done(Arc::new(rows)),
+            Ok(rows) => {
+                // Roll up before the rows move into the outcome — a handful of
+                // scalars kept long-lived on `last_sim_summary`, decoupled from
+                // `sim_results`' 10-minute TTL so the rules table's column
+                // doesn't blink out mid-session. See `state::sim_summary`.
+                let r = crate::strategies::sim_query::summarize(&rows);
+                app_state.last_sim_summary.insert(
+                    rid,
+                    SimSummary {
+                        n_fired: r.n_fired,
+                        closed: r.closed,
+                        win_rate: r.win_rate,
+                        avg_pnl_pct: r.avg_pnl_pct,
+                        total_pnl_sol: r.total_pnl_sol,
+                        computed_at: Utc::now(),
+                        sim_key: sim_key_owned.clone(),
+                    },
+                );
+                SimOutcome::Done(Arc::new(rows))
+            }
             Err(e) => classify_backtest_error(&e),
         };
         app_state

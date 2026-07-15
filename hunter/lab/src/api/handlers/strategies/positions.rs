@@ -285,34 +285,12 @@ pub fn sim_result_summary(state: &LocalState, rule_id: Uuid, req: TableRequest) 
         Err(resp) => return resp,
     };
     let filtered = crate::strategies::sim_query::filter_rows(&rows, &req);
-    let num = |row: &serde_json::Value, k: &str| -> Option<f64> {
-        row.get(k).and_then(serde_json::Value::as_f64)
-    };
-    let total = filtered.len();
-    let mut closed = 0usize;
-    let mut wins = 0usize;
-    let mut pnl_pct_sum = 0.0;
-    let mut pnl_pct_n = 0usize;
-    let mut pnl_sol_sum = 0.0;
-    for row in filtered.iter() {
-        let is_closed = row.get("exit_time").map(|v| !v.is_null()).unwrap_or(false);
-        if is_closed {
-            closed += 1;
-            if num(row, "pnl_sol").unwrap_or(0.0) > 0.0 {
-                wins += 1;
-            }
-        }
-        if let Some(p) = num(row, "pnl_percent") {
-            pnl_pct_sum += p;
-            pnl_pct_n += 1;
-        }
-        pnl_sol_sum += num(row, "pnl_sol").unwrap_or(0.0);
-    }
+    let r = crate::strategies::sim_query::summarize(&filtered);
     HttpResponse::Ok().json(json!({
-        "total_tokens": total,
-        "closed_tokens": closed,
-        "win_rate": if closed > 0 { wins as f64 / closed as f64 } else { 0.0 },
-        "avg_pnl_percent": if pnl_pct_n > 0 { pnl_pct_sum / pnl_pct_n as f64 } else { 0.0 },
-        "total_pnl_sol": pnl_sol_sum,
+        "total_tokens": r.n_fired,
+        "closed_tokens": r.closed,
+        "win_rate": r.win_rate,
+        "avg_pnl_percent": r.avg_pnl_pct,
+        "total_pnl_sol": r.total_pnl_sol,
     }))
 }

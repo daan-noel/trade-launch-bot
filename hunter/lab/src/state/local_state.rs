@@ -9,6 +9,7 @@ use super::core_state::CoreState;
 use super::job_progress::ProgressCell;
 use super::analysis_cache::AnalysisCache;
 use super::sim_results::SimResults;
+use super::sim_summary::SimSummaryCache;
 use super::swing_results::SwingResults;
 use super::swing_run_cache::SwingRunCache;
 use crate::sweep::corpus::CorpusToken;
@@ -70,6 +71,13 @@ pub struct LocalState {
     /// `simulation_finished` SSE fires, so a long run's result is never tied to
     /// the lifetime of the starting request (the old `FETCH_ERROR` source).
     pub sim_results: Arc<SimResults>,
+    /// Long-lived per-rule "last simulation" rollup, powering the rules table's
+    /// inline column. Deliberately decoupled from `sim_results`' 10-minute TTL
+    /// (that cache bounds the *raw* per-token rows; this is a handful of scalars
+    /// meant to persist until the rule is re-simulated) — see [`sim_summary`]
+    /// for the full rationale. Written by [`crate::strategies::sim_spawn`]
+    /// whenever a backtest finishes successfully.
+    pub last_sim_summary: Arc<SimSummaryCache>,
     /// Per-run cooperative cancel flags for in-flight "Swing Detection All" runs,
     /// the swing analogue of `sim_cancels`. Keyed by the client run id (`String`)
     /// like [`Self::swing_runs`], not a rule `Uuid`. The start handler inserts a
@@ -111,6 +119,7 @@ impl LocalState {
             sweep_progress: Arc::new(ProgressCell::default()),
             sim_progress: Arc::new(DashMap::new()),
             sim_results: Arc::new(SimResults::new()),
+            last_sim_summary: Arc::new(SimSummaryCache::new()),
             swing_cancels: Arc::new(DashMap::new()),
             swing_progress: Arc::new(DashMap::new()),
             swing_results: Arc::new(SwingResults::new()),

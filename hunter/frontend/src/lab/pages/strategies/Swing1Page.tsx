@@ -64,6 +64,7 @@ import {
   fetchSwing1RulePositionsSummary,
   fetchSwing1Rules,
   startSimulation,
+  startSimulateAll,
   updateSwing1Rule,
 } from 'services/api';
 import { connectPaperTestStream, connectSimulationFinished } from 'services/sse';
@@ -437,6 +438,9 @@ export function Swing1Page() {
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [simError, setSimError] = useState<string | null>(null);
   const [simLoading, setSimLoading] = useState(false);
+  // "Simulate All" — queues a backtest for every rule missing/stale a
+  // last-simulation rollup; see Tpsl1Page's twin for the full rationale.
+  const [simAllLoading, setSimAllLoading] = useState(false);
 
   // Matched view: which rule's matched set is open (null = closed) + its query.
   const [matchedRuleId, setMatchedRuleId] = useState<string | null>(null);
@@ -710,6 +714,19 @@ export function Swing1Page() {
     [markStarting, markFinished, analysisRange],
   );
 
+  // Queue a backtest for every rule missing/stale a last-simulation rollup; see
+  // Tpsl1Page's twin for the full rationale.
+  const handleSimulateAll = useCallback(async () => {
+    setSimAllLoading(true);
+    try {
+      await startSimulateAll(STRATEGY_SEG, analysisRange);
+    } catch (e) {
+      setSimError(apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0], 'Simulate All failed'));
+    } finally {
+      setSimAllLoading(false);
+    }
+  }, [analysisRange]);
+
   // Open / close the Matched view for a rule (toggle). Paging is driven by
   // `useServerTable` (enabled while `matchedRuleId` is set); switching rules resets
   // the query to page 1 so the new set starts fresh.
@@ -737,6 +754,24 @@ export function Swing1Page() {
     });
     return () => handle.close();
   }, [simRuleId, markFinished, reloadSim]);
+
+  // Any rule's last-simulation rollup just landed (single-row simulate, or one
+  // of a "Simulate All" batch) — silently refresh the rule list; see Tpsl1Page's
+  // twin for the full rationale.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const handle = connectSimulationFinished(() => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        loadRules(true);
+      }, 300);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      handle.close();
+    };
+  }, [loadRules]);
 
   const handlePaperResult = useCallback(
     async (rule: RuleRecord) => {
@@ -1003,9 +1038,19 @@ export function Swing1Page() {
         title="Swing 1 Strategies"
         count={!loading && !error ? rules.length : undefined}
         action={
-          <Button variant="primary" onClick={openAdd}>
-            + Add Rule
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              onClick={handleSimulateAll}
+              disabled={simAllLoading || rules.length === 0}
+              title="Backtest every rule missing or stale a last-simulation result — already-fresh rules are skipped"
+            >
+              {simAllLoading ? 'Queueing…' : '🧪 Simulate All'}
+            </Button>
+            <Button variant="primary" onClick={openAdd}>
+              + Add Rule
+            </Button>
+          </div>
         }
       />
 

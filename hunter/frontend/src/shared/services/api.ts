@@ -706,6 +706,24 @@ export async function startSimulation(
   await request(url, { method: 'POST' });
 }
 
+/** Start a backtest for every rule of `strategy` whose last-simulation rollup is
+ *  missing or stale (params edited since that run) — rules already fresh for
+ *  `range` are skipped server-side, so repeated clicks are cheap. Each job runs
+ *  through the same detached pipeline as a single `startSimulation`; watch for
+ *  their `simulation_finished` SSE frames (or just wait for the rules list to
+ *  refresh) rather than this call, which only reports how many were queued. */
+export async function startSimulateAll(
+  strategy: 'tpsl1' | 'tpsl2' | 'swing1',
+  range: { from?: string; to?: string },
+): Promise<{ started: number; skipped: number; total: number }> {
+  const qs = new URLSearchParams();
+  if (range.from) qs.set('from', range.from);
+  if (range.to) qs.set('to', range.to);
+  const s = qs.toString();
+  const url = `${API_BASE}/api/strategies/${strategy}/rules/simulate-all${s ? `?${s}` : ''}`;
+  return request(url, { method: 'POST' });
+}
+
 /** Strategy-agnostic cancel for a rule's in-flight simulation (the backend keys
  *  the cancel flag by rule_id across both tpsl snipers). No-op if none running. */
 export async function cancelSimulation(ruleId: string): Promise<void> {

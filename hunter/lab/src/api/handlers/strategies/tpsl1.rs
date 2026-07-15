@@ -77,9 +77,15 @@ fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
 /// flags a paper rule whose latest run is `Finished`. `counters` carries the
 /// per-rule position counts computed from the synced DB rows (the lab has no
 /// runtime cache, so these come from `strategy_positions`, not live state); pass
-/// `&RuleCounters::default()` for an all-zero row. The shape matches the deploy
-/// edge's `rule_to_json`.
-fn rule_to_json(rule: &StrategyRule, paper_finished: bool, counters: &RuleCounters) -> Value {
+/// `&RuleCounters::default()` for an all-zero row. `last_sim` is the rule's
+/// last-simulation rollup (see [`last_sim_json`]), `None` for a rule never
+/// simulated. The shape matches the deploy edge's `rule_to_json`.
+fn rule_to_json(
+    rule: &StrategyRule,
+    paper_finished: bool,
+    counters: &RuleCounters,
+    last_sim: Option<Value>,
+) -> Value {
     let mut obj: Map<String, Value> = match &rule.params {
         Value::Object(m) => m.clone(),
         _ => Map::new(),
@@ -105,6 +111,7 @@ fn rule_to_json(rule: &StrategyRule, paper_finished: bool, counters: &RuleCounte
     obj.insert("win_rate".into(), json!(counters.win_rate));
     obj.insert("avg_pnl_pct".into(), json!(counters.avg_pnl_pct));
     obj.insert("total_pnl_sol".into(), json!(counters.total_pnl_sol));
+    obj.insert("last_simulation".into(), last_sim.unwrap_or(Value::Null));
 
     // Locally a rule never runs, so lifecycle is `Active` if the (snapshot-restored)
     // flag is set, `Finished` for a completed paper run, else `Idle`.
@@ -126,6 +133,15 @@ async fn paper_finished(repo: &StrategyRepo, rule: &StrategyRule) -> bool {
         return false;
     }
     matches!(repo.latest_run(rule.id, "paper").await, Ok(Some(run)) if run.status == "Finished")
+}
+
+/// The rule's last-simulation rollup, if it has ever been simulated — an in-RAM
+/// lookup (no DB), `stale`-flagged when the rule's params have changed since that
+/// run. See `state::sim_summary` for why this isn't `sim_results`.
+fn last_sim_json(app_state: &LocalState, rule: &StrategyRule) -> Option<Value> {
+    let summary = app_state.last_sim_summary.get(&rule.id)?;
+    let current_key = trading_core::strategies::match_keys::sim_key(rule);
+    serde_json::to_value(summary.view(&current_key)).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +181,7 @@ pub async fn list_tpsl_rules(app_state: web::Data<Arc<LocalState>>) -> impl Resp
                 r,
                 finished.contains(&r.id),
                 counters.get(&r.id).unwrap_or(&default_counters),
+                last_sim_json(&app_state, r),
             )
         })
         .collect();
@@ -187,7 +204,8 @@ pub async fn get_tpsl_rule(
                 .ok()
                 .and_then(|m| m.get(&rule.id).cloned())
                 .unwrap_or_default();
-            HttpResponse::Ok().json(rule_to_json(&rule, pf, &counters))
+            let last_sim = last_sim_json(&app_state, &rule);
+            HttpResponse::Ok().json(rule_to_json(&rule, pf, &counters, last_sim))
         }
         Ok(_) => HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
         Err(e) => {
@@ -226,8 +244,10 @@ pub async fn create_tpsl_rule(
     };
     let repo = app_state.strategy_repo();
     match rules::create(&repo, &draft).await {
-        // A just-created rule has no positions yet → zero counters.
-        Ok(rule) => HttpResponse::Created().json(rule_to_json(&rule, false, &RuleCounters::default())),
+        // A just-created rule has no positions/simulations yet → zero counters, no last_sim.
+        Ok(rule) => {
+            HttpResponse::Created().json(rule_to_json(&rule, false, &RuleCounters::default(), None))
+        }
         Err(e) => rule_error(e, "create rule"),
     }
 }
@@ -300,7 +320,8 @@ pub async fn update_tpsl_rule(
                 .ok()
                 .and_then(|m| m.get(&rule.id).cloned())
                 .unwrap_or_default();
-            HttpResponse::Ok().json(rule_to_json(&rule, pf, &counters))
+            let last_sim = last_sim_json(&app_state, &rule);
+            HttpResponse::Ok().json(rule_to_json(&rule, pf, &counters, last_sim))
         }
         Err(e) => rule_error(e, "update rule"),
     }
@@ -534,6 +555,58 @@ pub async fn simulate_tpsl_rule(
         },
     )
     .await
+}
+
+/// Start a backtest for every tpsl1 rule whose cached rollup is missing or stale
+/// (never simulated, or params edited since the last run) — the rules table's
+/// "Simulate All" action. Rules already fresh for `[since, until)` are skipped
+/// (mirrors the cache-hit short-circuit `spawn_rule_simulation` already does per
+/// rule); the rest are queued through the same detached pipeline a single
+/// simulate uses, so concurrency stays bounded by `backtest_sem`.
+///
+/// POST /api/strategies/tpsl1/rules/simulate-all
+pub async fn simulate_all_tpsl_rules(
+    app_state: web::Data<Arc<LocalState>>,
+    range: web::Query<AnalysisRange>,
+) -> impl Responder {
+    let (since, until) = (range.from, range.to);
+    let rules = match app_state.strategy_repo().find_rules_by_strategy(STRATEGY_ID).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to list TPSL rules for simulate-all: {e}");
+            return HttpResponse::InternalServerError().json(json!({"error": "Failed to list rules"}));
+        }
+    };
+
+    let mut started = 0usize;
+    let mut skipped = 0usize;
+    for rule in &rules {
+        let key = trading_core::strategies::match_keys::sim_key(rule);
+        if app_state.sim_results.peek_if(&rule.id, &key, since, until).is_some() {
+            skipped += 1;
+            continue;
+        }
+        crate::strategies::sim_spawn::spawn_rule_simulation(
+            app_state.clone(),
+            rule.id,
+            since,
+            until,
+            rule,
+            |state, rid, since, until, cancel, cell| {
+                Box::pin(async move {
+                    let rows = crate::strategies::tpsl_sniper_1::run_backtest(
+                        state, rid, since, until, cancel, cell,
+                    )
+                    .await?;
+                    crate::strategies::sim_spawn::rows_to_json(rows)
+                })
+            },
+        )
+        .await;
+        started += 1;
+    }
+
+    HttpResponse::Accepted().json(json!({ "started": started, "skipped": skipped, "total": rules.len() }))
 }
 
 /// `POST /api/strategies/tpsl1/rules/{rule_id}/simulate/cancel` — cooperative

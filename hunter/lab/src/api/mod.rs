@@ -59,6 +59,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 web::post().to(handlers::strategies::tpsl1::create_tpsl_rule),
             )
             .route(
+                "/strategies/tpsl1/rules/simulate-all",
+                web::post().to(handlers::strategies::tpsl1::simulate_all_tpsl_rules),
+            )
+            .route(
                 "/strategies/tpsl1/rules/{rule_id}",
                 web::get().to(handlers::strategies::tpsl1::get_tpsl_rule),
             )
@@ -116,6 +120,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 web::post().to(handlers::strategies::tpsl2::create_tpsl_rule),
             )
             .route(
+                "/strategies/tpsl2/rules/simulate-all",
+                web::post().to(handlers::strategies::tpsl2::simulate_all_tpsl_rules),
+            )
+            .route(
                 "/strategies/tpsl2/rules/{rule_id}",
                 web::get().to(handlers::strategies::tpsl2::get_tpsl_rule),
             )
@@ -171,6 +179,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/swing1/rules",
                 web::post().to(handlers::strategies::swing1::create_swing1_rule),
+            )
+            .route(
+                "/strategies/swing1/rules/simulate-all",
+                web::post().to(handlers::strategies::swing1::simulate_all_swing1_rules),
             )
             .route(
                 "/strategies/swing1/rules/{rule_id}",

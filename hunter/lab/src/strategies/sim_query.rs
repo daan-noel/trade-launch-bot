@@ -70,6 +70,49 @@ pub fn filter_rows(rows: &[Value], req: &TableRequest) -> Vec<Value> {
     filter_table_request(rows, req, resolve)
 }
 
+/// Aggregate rollup over a finished sim's rows — the one definition of "closed"
+/// (has an `exit_time`), "win" (`pnl_sol > 0`), and the averages, shared by the
+/// filtered Simulated-summary card ([`super::super::api::handlers::strategies::positions::sim_result_summary`])
+/// and the unfiltered rules-table last-simulation rollup ([`super::sim_spawn`]) —
+/// same source rows, same definitions, one place to keep them in sync.
+pub struct SimRollup {
+    pub n_fired: usize,
+    pub closed: usize,
+    pub win_rate: f64,
+    pub avg_pnl_pct: f64,
+    pub total_pnl_sol: f64,
+}
+
+pub fn summarize(rows: &[Value]) -> SimRollup {
+    let num = |row: &Value, k: &str| -> Option<f64> { row.get(k).and_then(Value::as_f64) };
+    let mut closed = 0usize;
+    let mut wins = 0usize;
+    let mut pnl_pct_sum = 0.0;
+    let mut pnl_pct_n = 0usize;
+    let mut pnl_sol_sum = 0.0;
+    for row in rows {
+        let is_closed = row.get("exit_time").map(|v| !v.is_null()).unwrap_or(false);
+        if is_closed {
+            closed += 1;
+            if num(row, "pnl_sol").unwrap_or(0.0) > 0.0 {
+                wins += 1;
+            }
+        }
+        if let Some(p) = num(row, "pnl_percent") {
+            pnl_pct_sum += p;
+            pnl_pct_n += 1;
+        }
+        pnl_sol_sum += num(row, "pnl_sol").unwrap_or(0.0);
+    }
+    SimRollup {
+        n_fired: rows.len(),
+        closed,
+        win_rate: if closed > 0 { wins as f64 / closed as f64 } else { 0.0 },
+        avg_pnl_pct: if pnl_pct_n > 0 { pnl_pct_sum / pnl_pct_n as f64 } else { 0.0 },
+        total_pnl_sol: pnl_sol_sum,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

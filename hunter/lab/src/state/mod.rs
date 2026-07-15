@@ -10,5 +10,6 @@ pub mod local_state;
 pub mod job_progress;
 pub mod analysis_cache;
 pub mod sim_results;
+pub mod sim_summary;
 pub mod swing_results;
 pub mod swing_run_cache;

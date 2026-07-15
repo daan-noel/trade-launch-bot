@@ -92,6 +92,20 @@ export interface FetchTokensResult {
   items: TokenRecord[];
 }
 
+/** A rule's last-simulation rollup — computed server-side in-memory (no DB row)
+ *  whenever a backtest finishes; see hunter's `state::sim_summary`. `win_rate`
+ *  is a fraction (0..1), matching `SimulatedSummary.win_rate` (× 100 to render).
+ *  `is_stale` flags a rollup from before the rule's params were last edited. */
+export interface RuleLastSimulation {
+  n_fired: number;
+  closed: number;
+  win_rate: number;
+  avg_pnl_pct: number;
+  total_pnl_sol: number;
+  computed_at: string;
+  is_stale: boolean;
+}
+
 export interface RuleRecord {
   id: string;
   rule_name: string;
@@ -162,6 +176,9 @@ export interface RuleRecord {
   win_rate: number;
   avg_pnl_pct: number;
   total_pnl_sol: number;
+  /** Rollup of this rule's last finished backtest, `null` if never simulated
+   *  (or the process restarted since — the cache is in-RAM, not persisted). */
+  last_simulation: RuleLastSimulation | null;
   created_at: string;
   updated_at: string;
 }
