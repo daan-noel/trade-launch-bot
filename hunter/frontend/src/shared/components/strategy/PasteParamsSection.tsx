@@ -1,5 +1,9 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { cn } from 'lib/cn';
+import { Textarea } from 'components/ui/Input';
+import { Accordion } from 'components/ui/Accordion';
+import { Button } from 'components/ui/Button';
+import { Badge } from 'components/ui/Badge';
 import {
   parseBlob,
   type ApplyResult,
@@ -28,15 +32,17 @@ interface Props {
 }
 
 export function PasteParamsSection({ strategy, live, onApply }: Props) {
-  const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState('');
   const [mode, setMode] = useState<PasteMode>('merge');
   const [result, setResult] = useState<ApplyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isEmpty = text.trim().length === 0;
 
-  // Validate + apply a JSON blob string. Shared by the textarea's Apply button
-  // and the one-click "From clipboard" button.
-  const applyText = (raw: string) => {
+  // Validate + apply a JSON blob string. `m` defaults to the current mode state,
+  // but callers that just changed the mode (see the Mode toggle below) pass the
+  // new value explicitly — state hasn't re-rendered yet at that point.
+  const applyText = (raw: string, m: PasteMode = mode) => {
     setError(null);
     setResult(null);
     const blob = parseBlob(raw);
@@ -48,10 +54,25 @@ export function PasteParamsSection({ strategy, live, onApply }: Props) {
       setError(`Strategy mismatch: blob is "${blob.strategy}", form is "${strategy}" — not applied`);
       return;
     }
-    setResult(onApply(blob, mode));
+    setResult(onApply(blob, m));
   };
 
   const handleApply = () => applyText(text);
+
+  // Switching mode re-applies immediately if there's already a blob loaded, so
+  // toggling merge/replace always reflects what would actually happen instead
+  // of leaving a stale result on screen.
+  const handleModeChange = (m: PasteMode) => {
+    setMode(m);
+    if (!isEmpty) applyText(text, m);
+  };
+
+  const handleClear = () => {
+    setText('');
+    setResult(null);
+    setError(null);
+    textareaRef.current?.focus();
+  };
 
   // Read the clipboard and apply in one click. Mirrors the ⎘ Copy buttons, so
   // copy→paste is a two-click round-trip without touching the textarea. Fills
@@ -68,89 +89,126 @@ export function PasteParamsSection({ strategy, live, onApply }: Props) {
     }
   };
 
-  return (
-    <div className="rounded-lg border border-white/10 bg-white/3 p-2.5">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-1.5 text-left text-[10px] font-bold uppercase tracking-wider text-text-dim hover:text-text"
-      >
-        <span className="text-[8px]">{expanded ? '▾' : '▸'}</span>
-        Paste params
-      </button>
+  // Pasting directly into the box applies immediately — the box only ever
+  // holds one blob, so a paste replaces its contents rather than inserting at
+  // the cursor. Makes keyboard paste (Ctrl/Cmd+V) a one-step round-trip too,
+  // matching "From clipboard".
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const raw = e.clipboardData.getData('text');
+    if (!raw.trim()) return;
+    e.preventDefault();
+    setText(raw);
+    applyText(raw);
+  };
 
-      {expanded && (
-        <div className="mt-2 flex flex-col gap-2">
-          <textarea
+  // Ctrl/Cmd+Enter applies without leaving the keyboard — handy after
+  // hand-editing a pasted value.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      applyText(text);
+    }
+  };
+
+  return (
+    <Accordion
+      padding="sm"
+      defaultOpen={false}
+      title={
+        <span className="text-[11px] font-bold uppercase tracking-wider text-text-dim">
+          ⎘ Paste params
+        </span>
+      }
+    >
+      <div className="flex flex-col gap-2">
+        <div className="relative">
+          <Textarea
+            ref={textareaRef}
+            autoResize
             rows={3}
             value={text}
             onChange={(e) => { setText(e.target.value); setResult(null); setError(null); }}
-            placeholder='Paste JSON from "Copy params" (rule row ⎘ or sweep combo ⎘)…'
-            className="w-full resize-none rounded-md border border-white/10 bg-surface px-2.5 py-1.5 font-mono text-[11px] text-text placeholder:text-text-dim/50 focus:border-white/25 focus:outline-none"
+            onPaste={handlePaste}
+            onKeyDown={handleKeyDown}
+            className={cn(
+              'max-h-72 overflow-y-auto border px-2.5 py-1.5 font-mono text-[11px] text-text focus:border-white/25',
+              isEmpty
+                ? 'min-h-20 border-dashed border-white/15 bg-white/2 hover:border-white/25'
+                : 'border-solid border-white/10 bg-surface',
+            )}
           />
-
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-text-dim">Mode</span>
-            {(['merge', 'replace'] as PasteMode[]).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={cn(
-                  'rounded border px-2 py-0.5 text-[10px] font-semibold capitalize transition-colors',
-                  mode === m
-                    ? 'border-primary/50 bg-primary/15 text-primary'
-                    : 'border-white/10 text-text-dim hover:border-white/20 hover:text-text',
-                )}
-              >
-                {m}
-              </button>
-            ))}
-            <div className="flex-1" />
-            <button
-              type="button"
-              onClick={handleClipboard}
-              className="rounded border border-white/10 px-3 py-1 text-[11px] font-semibold text-text-dim hover:border-white/20 hover:text-text"
-            >
-              ⎘ From clipboard
-            </button>
-            <button
-              type="button"
-              onClick={handleApply}
-              disabled={!text.trim()}
-              className="rounded bg-primary/15 px-3 py-1 text-[11px] font-semibold text-primary hover:bg-primary/25 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Apply
-            </button>
-          </div>
-
-          {live && (
-            <p className="text-[10px] text-text-dim/70">
-              Rule is live — only sizing params (buy amount, concurrency) will be applied.
-            </p>
-          )}
-          {error && <p className="text-[10px] text-red">{error}</p>}
-          {result && (
-            <p className="text-[10px] text-text-dim">
-              <span className="text-green">applied {result.applied}</span>
-              {result.skipped > 0 && (
-                <> · <span className="text-warning">skipped {result.skipped} (frozen)</span></>
-              )}
-              {result.dropped > 0 && (
-                <> · <span className="text-red/80">dropped {result.dropped} (unknown)</span></>
-              )}
-              {result.emptyGroups.length > 0 && (
-                <>
-                  {' '}· <span className="text-warning">
-                    not included in this blob: {result.emptyGroups.map((g) => GROUP_LABEL[g]).join(', ')}
-                    {' '}(fill in manually)
-                  </span>
-                </>
-              )}
-            </p>
+          {isEmpty && (
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 px-6 text-center">
+              <span className="text-base text-text-dim/50">⎘</span>
+              <span className="text-[11px] font-medium text-text-dim/70">
+                Paste JSON from "Copy params" (rule row ⎘ or sweep combo ⎘)
+              </span>
+              <span className="text-[10px] text-text-dim/40">or press Ctrl/Cmd+V</span>
+            </div>
           )}
         </div>
-      )}
-    </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-text-dim">Mode</span>
+            <div className="flex rounded-lg border border-white/6 bg-white/3 p-0.5">
+              {(['merge', 'replace'] as PasteMode[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => handleModeChange(m)}
+                  className={cn(
+                    'w-24 rounded-md px-2.5 py-1 text-[11px] font-semibold capitalize transition-all duration-150',
+                    mode === m ? 'bg-primary/12 text-primary shadow-sm' : 'text-text-dim hover:text-text',
+                  )}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {!isEmpty && (
+              <Button className='w-56' variant="ghost" size="md" onClick={handleClear}>
+                ✕ Clear
+              </Button>
+            )}
+            <Button className='w-56' variant="ghost" size="md" onClick={handleClipboard}>
+              ⎘ Paste
+            </Button>
+            <Button className='w-56' variant="primary" size="md" onClick={handleApply} disabled={isEmpty}>
+              Apply
+            </Button>
+          </div>
+        </div>
+
+        {live && (
+          <p className="text-[10px] text-text-dim/70">
+            Rule is live — only sizing params (buy amount, concurrency) will be applied.
+          </p>
+        )}
+        {error && <p className="text-[10px] text-red">⚠ {error}</p>}
+        {result && (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant="success" size="sm">✓ {result.applied} applied</Badge>
+              {result.skipped > 0 && (
+                <Badge variant="warning" size="sm">⚠ {result.skipped} skipped (frozen)</Badge>
+              )}
+              {result.dropped > 0 && (
+                <Badge variant="danger" size="sm">✕ {result.dropped} dropped (unknown)</Badge>
+              )}
+            </div>
+            {result.emptyGroups.length > 0 && (
+              <p className="text-[10px] text-warning">
+                not included in this blob: {result.emptyGroups.map((g) => GROUP_LABEL[g]).join(', ')}
+                {' '}(fill in manually)
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </Accordion>
   );
 }
