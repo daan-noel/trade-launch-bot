@@ -69,8 +69,8 @@ pub use service::{
 pub use wallet_encrypt::run_wallet_encrypt;
 pub use wallet_export::{export_wallet_base58, run_wallet_export, ExportedKey};
 pub use wallet_funding::{
-    fund_for_launch, fund_once, DirectJittered, FundMode, FundReport, FundScope, FundingStrategy,
-    StrategyParams, Transfer, WalletFundOutcome,
+    fund_once, DirectJittered, FundReport, FundScope, FundingStrategy, StrategyParams, Transfer,
+    WalletFundOutcome,
 };
 pub use wallet_lifecycle::spawn_wallet_lifecycle;
 pub use wallet_pool::{generate_wallets, refresh_all_balances};

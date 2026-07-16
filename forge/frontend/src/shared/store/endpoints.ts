@@ -1,7 +1,6 @@
 import { baseApi } from './baseApi';
 import type {
   ActionPlan,
-  AutoFundStatus,
   BootstrapPayload,
   Bundle,
   FundReport,
@@ -133,27 +132,12 @@ export const api = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['Wallets'],
     }),
+    // Operator-triggered treasury -> pool funding ("Fund pool"). Confirms each
+    // send and promotes the funded wallets in the same request — there is no
+    // background funder. Requires FUND_ENABLED=true (503 otherwise).
     fundPool: build.mutation<FundReport, { role?: string; count?: number }>({
       query: (body) => ({ url: '/api/wallet_pool/fund', method: 'POST', body }),
       invalidatesTags: ['Wallets'],
-    }),
-    // Runtime on/off for the AUTOMATIC background warm-pool funder (the 60s top-up
-    // pass). Manual funding above is unaffected. `configured` is false when
-    // FUND_ENABLED is unset — the UI hides the toggle in that case.
-    autoFundStatus: build.query<AutoFundStatus, void>({
-      query: () => '/api/wallet_pool/auto_fund',
-      providesTags: ['AutoFund'],
-    }),
-    setAutoFund: build.mutation<AutoFundStatus, boolean>({
-      query: (enabled) => ({ url: '/api/wallet_pool/auto_fund', method: 'PUT', body: { enabled } }),
-      invalidatesTags: ['AutoFund'],
-    }),
-    fundForLaunch: build.mutation<
-      FundReport,
-      { template_id: string; dev_wallet_id: string; bundler_count?: number }
-    >({
-      query: (body) => ({ url: '/api/wallet_pool/fund_for_launch', method: 'POST', body }),
-      invalidatesTags: ['Wallets', 'Bootstrap'],
     }),
     transferSol: build.mutation<TransferReport, TransferArgs>({
       query: (body) => ({ url: '/api/wallet_pool/transfer', method: 'POST', body }),
@@ -347,9 +331,6 @@ export const {
   useRefreshWalletBalancesMutation,
   useGenerateWalletsMutation,
   useFundPoolMutation,
-  useAutoFundStatusQuery,
-  useSetAutoFundMutation,
-  useFundForLaunchMutation,
   useTransferSolMutation,
   useSweepWalletsMutation,
   useConsolidateWalletsMutation,

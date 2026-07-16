@@ -3,7 +3,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   useBootstrapQuery,
   useQuoteAssetsQuery,
-  useFundForLaunchMutation,
   useExecuteLaunchMutation,
   useLaunchStatusQuery,
   useLaunchRequirementQuery,
@@ -20,7 +19,6 @@ import {
   Input,
   KV,
   KVRow,
-  RolePill,
   Select,
   StatusPill,
   TradeTypePill,
@@ -30,7 +28,6 @@ import { connectLaunchStatusStream } from '@shared/services/sse';
 import { formatSig, formatSol, ipfsToHttp, solscanTx } from '@shared/lib/format';
 import { toHumanUnits } from '@features/templates/legForm';
 import type {
-  FundReport,
   LaunchResult,
   LaunchStatus,
   LaunchTemplate,
@@ -38,7 +35,6 @@ import type {
   MetadataTemplate,
   QuoteAsset,
   TradePriced,
-  WalletFundOutcome,
 } from '@shared/types';
 
 const TERMINAL_BUNDLE = new Set(['landed', 'dropped', 'partial', 'failed']);
@@ -62,9 +58,7 @@ export function LaunchConsolePage() {
   const [metaTemplateId, setMetaTemplateId] = useState('');
   const [bundlerCount, setBundlerCount] = useState('');
   const [result, setResult] = useState<LaunchResult | null>(null);
-  const [fundReport, setFundReport] = useState<FundReport | null>(null);
 
-  const [fundForLaunch, fundState] = useFundForLaunchMutation();
   const [executeLaunch, launchState] = useExecuteLaunchMutation();
 
   // Seed selections once bootstrap arrives.
@@ -156,21 +150,6 @@ export function LaunchConsolePage() {
     return () => h.close();
   }, [launchId, refetchStatus]);
 
-  const onFund = async () => {
-    if (!templateId || !walletId) return;
-    setFundReport(null);
-    try {
-      const report = await fundForLaunch({
-        template_id: templateId,
-        dev_wallet_id: walletId,
-        bundler_count: bundlerCount ? Number(bundlerCount) : undefined,
-      }).unwrap();
-      setFundReport(report);
-    } catch {
-      /* surfaced below */
-    }
-  };
-
   const onLaunch = async () => {
     if (!templateId || !walletId) return;
     setResult(null);
@@ -197,7 +176,7 @@ export function LaunchConsolePage() {
     }
   };
 
-  const error = apiErrorMessage(fundState.error) ?? apiErrorMessage(launchState.error);
+  const error = apiErrorMessage(launchState.error);
 
   return (
     <div className="space-y-4">
@@ -305,23 +284,22 @@ export function LaunchConsolePage() {
         )}
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button icon="coins" loading={fundState.isLoading} disabled={!templateId || !walletId} onClick={onFund}
-            title="Top the dev wallet + bundler legs up to this template's amounts">
-            Fund for launch
-          </Button>
           <Button variant="primary" icon="rocket" loading={launchState.isLoading}
             disabled={!templateId || !walletId || !metaTemplateId || !devWalletReady || devShort} onClick={onLaunch}
             title={
               devShort
-                ? `Dev wallet short ${formatSol(devShortfall)} — fund it first`
+                ? `Dev wallet short ${formatSol(devShortfall)} — fund it on the Wallet Pool page first`
                 : devWalletReady
                   ? ''
-                  : 'Dev wallet not funded yet — Fund for launch first'
+                  : 'Dev wallet not funded yet — fund it on the Wallet Pool page first'
             }>
             Launch
           </Button>
           {!devWalletReady && selectedDevWallet && (
-            <span className="text-xs muted">Dev wallet is <StatusPill status={selectedDevWallet.status} /> — fund it first.</span>
+            <span className="text-xs muted">
+              Dev wallet is <StatusPill status={selectedDevWallet.status} /> — fund it on the{' '}
+              <Link to="/wallets">Wallet Pool</Link> page first.
+            </span>
           )}
           {devWalletReady && devShort && (
             <span className="text-xs" style={{ color: 'var(--color-bad)' }}>
@@ -331,8 +309,6 @@ export function LaunchConsolePage() {
         </div>
         {error && <Banner tone="bad" className="mt-3">{error}</Banner>}
       </Card>
-
-      {fundReport && <FundReportCard report={fundReport} />}
 
       {result && (
         <Card title="Launch result">
@@ -502,35 +478,6 @@ function MetadataSummary({
           </KV>
         </div>
       </div>
-    </Card>
-  );
-}
-
-function FundReportCard({ report }: { report: FundReport }) {
-  const columns: Column<WalletFundOutcome>[] = [
-    { header: 'Role', render: (o) => <RolePill role={o.role} /> },
-    { header: 'Address', render: (o) => <AddressDisplay value={o.address} /> },
-    { header: 'Amount', align: 'right', render: (o) => <span className="mono">{formatSol(o.amount_lamports)}</span> },
-    { header: 'Result', render: (o) => <StatusPill status={o.result} /> },
-    {
-      header: 'Tx',
-      render: (o) =>
-        o.signature ? <AddressDisplay value={o.signature} kind="tx" /> : <span className="muted">—</span>,
-    },
-  ];
-  const capped = report.outcomes.some((o) => o.result === 'skipped_cap');
-  return (
-    <Card title="Fund-for-launch result">
-      <p className="text-xs muted mb-2">
-        Spent <strong>{formatSol(report.spent_lamports)}</strong> across {report.outcomes.length} wallet(s).
-      </p>
-      <DataTable columns={columns} rows={report.outcomes} rowKey={(o) => o.managed_wallet_id} />
-      {capped && (
-        <Banner tone="bad" className="mt-3">
-          A safety rail stopped funding early — the launch may be under-funded. Check treasury balance /
-          FUND_MAX_SPEND_PER_INTERVAL_LAMPORTS.
-        </Banner>
-      )}
     </Card>
   );
 }

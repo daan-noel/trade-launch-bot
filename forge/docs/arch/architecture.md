@@ -83,7 +83,7 @@ joined in one `tokio::select!` (any task ending ⇒ process exits):
 | --- | --- | --- |
 | SOL/USD poller | `sol_price::run_poller` | keeps `quote_assets.usd_rate` fresh for `trades_priced` |
 | bundle-confirm watcher | `launcher::spawn_bundle_confirm_watcher` | feed-based bundle-landing confirm + auto re-bid; always on |
-| wallet-lifecycle | `launcher::spawn_wallet_lifecycle` | unified poll→promote→sweep→top-up→dust tick (needs launcher cfg) |
+| wallet-lifecycle | `launcher::spawn_wallet_lifecycle` | DB-only reservation-TTL safety sweep (60s); needs launcher cfg. Fund/balance are operator-triggered (buttons) — no idle Helius RPC |
 | ladder evaluator | `launcher::spawn_ladder_evaluator` | fires sell-ladder rungs (self-skips until `MANAGE_ENABLED`) |
 | volume scheduler | `launcher::spawn_volume_scheduler` | volume-bot scheduler (self-skips until `MANAGE_ENABLED`) |
 | ingest | `ingest::spawn_ingest` | **optional** — only with `HELIUS_LASERSTREAM_URL` + `HELIUS_API_KEY` |
@@ -165,7 +165,7 @@ full `/api/...` paths and sit behind the bearer gate.
 
 - **`forge-live`** (`http::configure`): `/health` · `/api/stream` (SSE) · ingest toggle
   (`GET`/`PUT /api/ingest`) · `/api/bootstrap` · dimensions (`quote_assets`, `launchpads`) ·
-  `launch_templates` CRUD · `wallet_pool` (list/generate/fund/fund_for_launch/refresh_balances/
+  `launch_templates` CRUD · `wallet_pool` (list/generate/fund/refresh_balances/
   transfer/sweep/consolidate/`{id}/export`) · `metadata_templates` CRUD · `launches`
   (list/`requirement`/`{id}`/`{id}/status`/`execute`) · `bundles/{id}`(+`/execute`) · per-token
   `overview`/`trades`/`positions`(+`/refresh`) · `manage` (preview/execute/actions/ladders/volume).

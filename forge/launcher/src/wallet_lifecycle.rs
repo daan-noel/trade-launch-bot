@@ -1,106 +1,35 @@
-//! Unified wallet-lifecycle tick (audit Phase C1).
+//! Reservation-TTL sweep — the sole surviving wallet-lifecycle background loop.
 //!
-//! Folds four formerly-independent background loops that all revolve around the
-//! `managed_wallets` lifecycle into ONE task with a shared wake-up:
-//!
-//! 1. **poll + promote** — RPC-refresh `generated`/`funding` (+ treasury) balances,
-//!    promoting to `funded` when SOL lands (drives the adaptive base cadence);
-//! 2. **sweep** — reservation + funding TTL sweep of stranded claims (30s);
-//! 3. **top-up** — warm-pool funding pass (60s, only when funding is configured);
-//! 4. **dust** — hourly sweep of `used` wallets home to the treasury.
-//!
-//! Previously these ran as four separate `tokio::select!` arms on overlapping
-//! fixed cadences — two of them (balance poll + reservation sweep) hit the same
-//! table every 30s with no coordination. Collapsing them into a single
-//! poll→promote→sweep→top-up→dust tick removes that redundancy; each step keeps
-//! its own cadence via a wall-clock gate, so behaviour per step is unchanged —
-//! only the scheduling is shared. The two RPC-heavy launcher tasks that are NOT
-//! wallet-lifecycle (ladder evaluator, volume scheduler — trading) stay separate.
+//! All fund/balance work is now **operator-triggered** (the "Fund pool" and
+//! "Refresh balances" buttons). The former automatic loops — the balance poll,
+//! the warm-pool auto-funder, and the hourly dust sweep — were removed so the box
+//! makes **zero idle Helius RPC calls**. What remains is one DB-only safety timer:
+//! it releases wallets stranded `reserved` (an aborted/crashed launch) or `funding`
+//! (a treasury send that never landed) past their TTL, returning them to the
+//! claimable pool. No RPC, no SOL movement.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::PgPool;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
-use tracing::warn;
 
-use crate::config::LauncherSettings;
-use crate::dust_sweep::{run_dust_sweep_pass, DUST_SWEEP_INTERVAL};
-use crate::events::EventSink;
-use crate::wallet_funding::{run_background_funding_pass, FUND_PASS_INTERVAL};
-use crate::wallet_pool::{
-    balance_poll_client, poll_balances_once, sweep_reservations_once, BALANCE_POLL_ACTIVE,
-    BALANCE_POLL_IDLE, RESERVATION_SWEEP,
-};
+use crate::wallet_pool::sweep_reservations_once;
 
-/// Whether a cadence-gated step is due. `None` (never run) is always due, so each
-/// slow step fires on the first tick — matching the old `tokio::interval` tasks,
-/// which each ran an immediate first pass.
-fn due(last: Option<Instant>, interval: Duration, now: Instant) -> bool {
-    last.is_none_or(|t| now.duration_since(t) >= interval)
-}
+/// How often the DB-only reservation/funding TTL sweep runs. The TTL itself is 15
+/// minutes (`wallet_pool::RESERVATION_TTL`); a 60s cadence reclaims a stranded
+/// wallet promptly at no on-chain cost.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Spawn the unified wallet-lifecycle task. Gated at the call site on
-/// `launcher_settings.is_some()`; the funding step self-skips when funding isn't
-/// configured (`settings.funding.is_none()`).
-///
-/// `auto_fund` is a runtime kill switch for step 3 (the warm-pool top-up pass)
-/// ONLY — shared with the HTTP layer so an operator can pause/resume the
-/// autonomous funder from the dashboard without a redeploy (`GET`/`PUT
-/// /api/wallet_pool/auto_fund`). It starts `true` when funding is configured
-/// (`FUND_ENABLED=true`), preserving prior behaviour. Toggling it off never
-/// disables the manual `Fund pool` / `fund_for_launch` endpoints — those run
-/// on-demand regardless; it only stops the background pass from firing.
-pub fn spawn_wallet_lifecycle(
-    pool: PgPool,
-    settings: LauncherSettings,
-    auto_fund: Arc<AtomicBool>,
-    sink: Option<Arc<dyn EventSink>>,
-) -> JoinHandle<()> {
+/// Spawn the reservation-TTL sweep. Gated at the call site on
+/// `launcher_settings.is_some()` (no launcher config ⇒ no managed wallets to
+/// sweep). Pure DB work: `release_expired_reservations` + `revert_stale_funding`
+/// over the tiny `reserved`/`funding` sets (partial-indexed in migration `0004`).
+pub fn spawn_wallet_lifecycle(pool: PgPool) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let client = balance_poll_client();
-        let funding_enabled = settings.funding.is_some();
-        let mut last_reservation: Option<Instant> = None;
-        let mut last_funding: Option<Instant> = None;
-        let mut last_dust: Option<Instant> = None;
-
+        let mut tick = tokio::time::interval(SWEEP_INTERVAL);
         loop {
-            // 1) Balance poll + promote — drives the adaptive base cadence below.
-            let pending = match poll_balances_once(&pool, &client, &settings.rpc_url).await {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!(?e, "wallet balance poll failed");
-                    0
-                }
-            };
-
-            let now = Instant::now();
-            // 2) Reservation + funding TTL sweep (unchanged 30s cadence).
-            if due(last_reservation, RESERVATION_SWEEP, now) {
-                sweep_reservations_once(&pool).await;
-                last_reservation = Some(now);
-            }
-            // 3) Warm-pool funding top-up (60s) — only when funding is configured
-            //    AND the runtime auto-fund toggle is on (operator kill switch).
-            if funding_enabled
-                && auto_fund.load(Ordering::Relaxed)
-                && due(last_funding, FUND_PASS_INTERVAL, now)
-            {
-                run_background_funding_pass(&pool, &settings, sink.as_deref()).await;
-                last_funding = Some(now);
-            }
-            // 4) Hourly dust sweep of `used` wallets → treasury.
-            if due(last_dust, DUST_SWEEP_INTERVAL, now) {
-                run_dust_sweep_pass(&pool, &settings).await;
-                last_dust = Some(now);
-            }
-
-            // Adaptive sleep: fast while wallets are mid-funding, idle otherwise —
-            // the same cadence the standalone balance poller used.
-            let wait = if pending > 0 { BALANCE_POLL_ACTIVE } else { BALANCE_POLL_IDLE };
-            tokio::time::sleep(wait).await;
+            tick.tick().await;
+            sweep_reservations_once(&pool).await;
         }
     })
 }

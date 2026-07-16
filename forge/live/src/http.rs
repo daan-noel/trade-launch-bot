@@ -4,12 +4,11 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use crate::ingest::{IngestHandle, IngestMetrics};
 use launcher::{
     arm_ladder, consolidate_all, create_metadata_template, dev_launch_required_lamports,
-    execute_action, execute_bundle, execute_launch, export_wallet_base58, fund_for_launch,
-    fund_once, start_volume_bot, sweep_used_and_retired, transfer_between_wallets,
-    update_metadata_template, FundMode, FundPlan, FundScope, InsufficientDevBalance, LadderRung,
-    LaunchRequest, LauncherSettings, ManageRequest, NewMetadataTemplateRequest,
-    PumpfunTemplateParams, TransferAmount, UpdateMetadataTemplateRequest, VolumeConfig,
-    WalletSelection,
+    execute_action, execute_bundle, execute_launch, export_wallet_base58, fund_once,
+    start_volume_bot, sweep_used_and_retired, transfer_between_wallets, update_metadata_template,
+    FundPlan, FundScope, InsufficientDevBalance, LadderRung, LaunchRequest, LauncherSettings,
+    ManageRequest, NewMetadataTemplateRequest, PumpfunTemplateParams, TransferAmount,
+    UpdateMetadataTemplateRequest, VolumeConfig, WalletSelection,
 };
 use platform_core::models::{
     Bundle, Launch, NewLaunchTemplate, TradePriced, UpdateLaunchTemplate, WalletRole,
@@ -17,7 +16,6 @@ use platform_core::models::{
 use serde::Serialize;
 use sqlx::PgPool;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -81,18 +79,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         .route("/api/wallet_pool", web::get().to(wallet_pool_list))
         .route("/api/wallet_pool/generate", web::post().to(wallet_pool_generate))
         .route("/api/wallet_pool/fund", web::post().to(wallet_pool_fund))
-        .route(
-            "/api/wallet_pool/fund_for_launch",
-            web::post().to(wallet_pool_fund_for_launch),
-        )
-        .route(
-            "/api/wallet_pool/auto_fund",
-            web::get().to(wallet_pool_auto_fund_status),
-        )
-        .route(
-            "/api/wallet_pool/auto_fund",
-            web::put().to(wallet_pool_auto_fund_toggle),
-        )
         .route(
             "/api/wallet_pool/refresh_balances",
             web::post().to(wallet_pool_refresh_balances),
@@ -461,102 +447,6 @@ async fn wallet_pool_fund(
         pool.get_ref(),
         settings,
         FundScope { role, count: body.count },
-        FundMode::Manual,
-        Some(sse.get_ref()),
-    )
-    .await
-    .map_err(e500)?;
-    Ok(HttpResponse::Ok().json(report))
-}
-
-#[derive(Debug, Serialize)]
-struct AutoFundStatus {
-    /// `false` when funding isn't configured (`FUND_ENABLED` unset) — there is no
-    /// background funder to toggle, so the UI hides the control.
-    configured: bool,
-    /// Whether the AUTOMATIC background warm-pool funder is currently running.
-    /// Independent of the manual `Fund pool` / `fund_for_launch` endpoints, which
-    /// stay available regardless.
-    enabled: bool,
-}
-
-/// Read the runtime state of the automatic background warm-pool funder.
-async fn wallet_pool_auto_fund_status(
-    settings: web::Data<Option<LauncherSettings>>,
-    auto_fund: web::Data<Arc<AtomicBool>>,
-) -> HttpResponse {
-    let configured = settings
-        .get_ref()
-        .as_ref()
-        .is_some_and(|s| s.funding.is_some());
-    HttpResponse::Ok().json(AutoFundStatus {
-        configured,
-        enabled: configured && auto_fund.load(Ordering::Relaxed),
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct SetAutoFundBody {
-    enabled: bool,
-}
-
-/// Pause/resume the automatic background warm-pool funder at runtime (no
-/// redeploy). Only the autonomous top-up pass is gated — the manual Fund
-/// endpoints are unaffected. Requires `FUND_ENABLED=true` (503 otherwise).
-async fn wallet_pool_auto_fund_toggle(
-    settings: web::Data<Option<LauncherSettings>>,
-    auto_fund: web::Data<Arc<AtomicBool>>,
-    body: web::Json<SetAutoFundBody>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let settings = launcher_settings(&settings)?;
-    if settings.funding.is_none() {
-        return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
-            "error": "wallet funding disabled — set FUND_ENABLED=true to enable"
-        })));
-    }
-    let enabled = body.into_inner().enabled;
-    auto_fund.store(enabled, Ordering::Relaxed);
-    Ok(HttpResponse::Ok().json(AutoFundStatus { configured: true, enabled }))
-}
-
-#[derive(serde::Deserialize)]
-struct FundForLaunchBody {
-    /// The launch template whose dev-buy + per-leg amounts drive the funding.
-    template_id: Uuid,
-    /// The specific dev wallet this launch will use (funded to the launch gate).
-    dev_wallet_id: Uuid,
-    /// "Use N bundlers" override — unset falls back to the template's
-    /// `bundle_leg_count`. Must match what the subsequent launch passes.
-    #[serde(default)]
-    bundler_count: Option<u32>,
-}
-
-/// Just-in-time, template-driven pre-launch funding (docs/jit-funding-plan.md):
-/// tops the chosen dev wallet + `leg_count` bundler wallets up to the amounts the
-/// selected template will actually spend, drawing from the treasury pool. Runs in
-/// `FundMode::Background` (confirms each send) so the wallets are `funded` — and
-/// so claimable by `execute_launch` — the moment this returns. Requires
-/// `FUND_ENABLED=true` (503 otherwise).
-async fn wallet_pool_fund_for_launch(
-    pool: web::Data<PgPool>,
-    settings: web::Data<Option<LauncherSettings>>,
-    sse: web::Data<crate::sse::SseHub>,
-    body: web::Json<FundForLaunchBody>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let settings = launcher_settings(&settings)?;
-    if settings.funding.is_none() {
-        return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
-            "error": "wallet funding disabled — set FUND_ENABLED=true to enable"
-        })));
-    }
-    let body = body.into_inner();
-    let report = fund_for_launch(
-        pool.get_ref(),
-        settings,
-        body.template_id,
-        body.bundler_count,
-        body.dev_wallet_id,
-        FundMode::Background,
         Some(sse.get_ref()),
     )
     .await

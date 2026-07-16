@@ -5,8 +5,6 @@ import {
   useRefreshWalletBalancesMutation,
   useGenerateWalletsMutation,
   useFundPoolMutation,
-  useAutoFundStatusQuery,
-  useSetAutoFundMutation,
   useTransferSolMutation,
   useSweepWalletsMutation,
   useConsolidateWalletsMutation,
@@ -259,14 +257,6 @@ export function WalletPoolPage() {
   const [generate, gen] = useGenerateWalletsMutation();
   const [fund, funding] = useFundPoolMutation();
   const [refreshBalances, refreshing] = useRefreshWalletBalancesMutation();
-
-  // Runtime on/off for the automatic background warm-pool funder. Hidden entirely
-  // when funding isn't configured (FUND_ENABLED unset → `configured: false`).
-  const { data: autoFund } = useAutoFundStatusQuery(undefined, {
-    pollingInterval: 30_000,
-    skipPollingIfUnfocused: true,
-  });
-  const [setAutoFund, settingAutoFund] = useSetAutoFundMutation();
 
   // Keystore restore (recovery on a fresh box): kick the background job, then track
   // its SSE progress + final summary. `restoreOpen` gates the confirm dialog.
@@ -748,33 +738,6 @@ export function WalletPoolPage() {
           >
             Restore from keystore
           </Button>
-          {autoFund?.configured && (
-            <button
-              type="button"
-              disabled={settingAutoFund.isLoading}
-              onClick={() => setAutoFund(!autoFund.enabled)}
-              title={
-                'Automatic background warm-pool funder.\n\n' +
-                'When ON, a background pass runs every ~60s and tops the dev/bundler wallets ' +
-                'up to their warm targets from the treasury — no clicks needed. When OFF, the ' +
-                'pool is only funded when you press a Fund button.\n\n' +
-                'This toggle affects ONLY the automatic pass; the manual Fund buttons work either way.'
-              }
-              className={clsx(
-                'badge cursor-pointer',
-                autoFund.enabled ? 'badge-good' : 'badge-bad',
-                settingAutoFund.isLoading && 'opacity-60',
-              )}
-            >
-              <span
-                className={clsx(
-                  'h-1.5 w-1.5 rounded-full',
-                  autoFund.enabled ? 'bg-[var(--color-good)]' : 'bg-[var(--color-bad)]',
-                )}
-              />
-              Auto-fund {autoFund.enabled ? 'On' : 'Off'}
-            </button>
-          )}
           <Button variant="primary" icon="coins" loading={funding.isLoading} onClick={() => onFund()}>
             Fund pool
           </Button>

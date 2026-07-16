@@ -51,8 +51,8 @@ Treasury sent SOL to it, but the transfer is **not confirmed on-chain yet**.
 ### 3. `funded` — loaded and ready
 The SOL arrived (balance ≥ minimum). The wallet is now **warm in the pool**,
 waiting to be picked for a launch. This is your "ready pool."
-> *A few seconds later the balance poller sees the SOL landed → status becomes
-> `funded`.*
+> *The Fund pass confirms the transfer, reads the wallet's new balance, and flips
+> it to `funded` before the click returns.*
 
 ### 4. `reserved` — assigned to one launch
 A launch starts, grabs a `funded` wallet, and **stamps it to that specific
@@ -100,10 +100,11 @@ so no per-role Fund button is rendered for them.
 Call chain:
 `WalletPoolPage.onFund`
 → `POST /api/wallet_pool/fund` ([http.rs](../crates/live/src/http.rs))
-→ `fund_once(scope, FundMode::Manual)`
+→ `fund_once(scope)`
 ([wallet_funding.rs](../crates/launcher/src/wallet_funding.rs))
-→ claims `generated` wallets to `funding`, submits treasury transfers
-→ balance poller later promotes them to `funded`.
+→ claims `generated` wallets to `funding`, sends + **confirms** treasury transfers
+→ `promote_funded` reads their balances back and flips them to `funded` in the
+same request.
 
 ### It funds to a target, NOT "all wallets"
 Per role, the number funded per press is:
@@ -133,36 +134,23 @@ Defaults: **dev target = 2**, **bundler target = 5**
 - **Master switch** — if `FUND_ENABLED` is off, the endpoint returns `503`.
 
 ### How completion is detected
-Manual funding is **fire-and-forget** (submit, don't wait) so the HTTP call
-returns fast. A background **balance poller** (`spawn_balance_poller`) watches
-wallets in `generated`/`funding`, and promotes `funding → funded` the moment the
-observed on-chain balance reaches `MIN_FUNDED_LAMPORTS`. There is no manual "mark
-funded". (A rare accepted-but-dropped tx can leave a wallet stuck in `funding`;
-acceptable on this supervised path since the SOL never left treasury.)
+Funding is **operator-triggered only** (the "Fund pool" button → `fund_once`).
+Each transfer is **confirmed**, then the pass does a single post-fund
+`getMultipleAccounts` read-back over the funded wallets and promotes
+`funding → funded` the moment the observed balance reaches `MIN_FUNDED_LAMPORTS`
+(`promote_funded`). So **one click leaves the pool claimable** — there is no
+background balance poll and no manual "mark funded". (A rare post-fund read
+failure leaves a wallet in `funding`; the operator's next **Refresh balances**
+click — the only other thing that writes cached balances — reconciles it, since
+the SOL has landed and only the DB status lags.)
 
-There is also a separate just-in-time path,
-`POST /api/wallet_pool/fund_for_launch` (`fund_for_launch`, `FundMode::Background`
-with exact template-derived amounts) — distinct from the pool "Fund" button.
-
-### Automatic background funder + runtime toggle
-Beyond the manual buttons, an **automatic warm-pool funder** runs as step 3 of
-the unified wallet-lifecycle tick ([wallet_lifecycle.rs](../crates/launcher/src/wallet_lifecycle.rs)):
-every ~60s it runs `run_background_funding_pass` → `fund_once(.., FundMode::Background)`,
-topping the fundable roles up to their warm targets without any operator action.
-A shortfall pre-gate makes it a no-op when the pool is already warm.
-
-This automatic pass has a **runtime on/off toggle** (no redeploy):
-
-- `GET /api/wallet_pool/auto_fund` → `{ configured, enabled }`
-- `PUT /api/wallet_pool/auto_fund` `{ enabled: bool }`
-
-Backed by a shared `Arc<AtomicBool>` (`auto_fund_enabled` in `main.rs`, read each
-tick by the lifecycle loop, written by the HTTP handler). It **starts on** when
-funding is configured (`FUND_ENABLED=true`), preserving prior always-on
-behaviour, and `configured` is false when `FUND_ENABLED` is unset (nothing to
-toggle → the UI hides the control). The **Auto-fund On/Off** badge in the wallet
-pool header drives it. This flag gates **only** the autonomous pass — the manual
-Fund buttons and `fund_for_launch` run on demand regardless of its state.
+**Removed** (2026-07-16, to zero out idle Helius RPC on the EC2 box): the
+automatic balance poll, the autonomous warm-pool funder + its
+`GET`/`PUT /api/wallet_pool/auto_fund` runtime toggle, the JIT
+`POST /api/wallet_pool/fund_for_launch` path, and the hourly automatic dust
+sweep. Funding, balance refresh, and dust sweeping are now **all button-driven**.
+`FUND_ENABLED=true` now enables *only* the manual "Fund pool" button (nothing
+spends SOL unattended).
 
 ### Funding config (env vars)
 [`FundingConfig`](../crates/launcher/src/config.rs):
@@ -177,7 +165,7 @@ Fund buttons and `fund_for_launch` run on demand regardless of its state.
 | `FUND_AMOUNT_JITTER_PCT` | 0.15 | ±jitter on each amount (obfuscation) |
 | `FUND_TARGET_FUNDED_DEV` | 2 | Warm dev wallets to keep |
 | `FUND_TARGET_FUNDED_BUNDLER` | 5 | Warm bundler wallets to keep |
-| `FUND_MAX_DELAY_MS` | 8_000 | Timing jitter (background funder only) |
+| `FUND_MAX_DELAY_MS` | 8_000 | (Unused — was timing jitter for the removed background funder) |
 | `FUND_DRY_RUN` | off | Plan/log without sending |
 
 ## Manual sweeps: the "Sweep & retire" and "Consolidate → treasury" buttons
@@ -187,7 +175,7 @@ Two operator-triggered reclaim passes on the Wallet Pool page, in
 `treasury` wallet and share one token-account closer.
 
 ### "Sweep & retire" (`POST /api/wallet_pool/sweep`)
-Runs the same `used`-wallet dust sweep the hourly task does (skipping wallets that
+Runs the `used`-wallet dust sweep (`sweep_used_wallets`, skipping wallets that
 still hold an **open token position** — their SOL is the gas they need to sell),
 then **reclaims already-`retired` wallets**: sweeps any residual SOL home and
 **closes their _empty_ SPL token accounts** to reclaim the rent. Non-empty accounts

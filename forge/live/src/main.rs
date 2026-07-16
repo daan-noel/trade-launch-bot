@@ -157,35 +157,21 @@ async fn main() -> anyhow::Result<()> {
         Some(event_sink.clone()),
     );
 
-    // Fresh-wallet pool: ONE unified wallet-lifecycle task (audit Phase C1) folds
-    // the balance poll (generated/funding -> funded) + reservation/funding TTL
-    // sweep + warm-pool funder (only when FUND_ENABLED) + hourly dust sweep
-    // (used -> retired) into a single poll→promote→sweep→top-up→dust tick. The two
-    // non-wallet-lifecycle launcher loops — the sell-ladder evaluator and the
-    // volume scheduler (both trading; self-skip until MANAGE_ENABLED) — stay
+    // Wallet-pool background work is now a single DB-only safety timer: the
+    // reservation/funding TTL sweep (releases wallets stranded `reserved`/`funding`
+    // by a crashed/aborted launch). The former automatic balance poll, warm-pool
+    // funder, and hourly dust sweep were removed — funding + balance refresh are
+    // operator-triggered ("Fund pool" / "Refresh balances" buttons), so the box
+    // makes zero idle Helius RPC calls. The two trading loops (sell-ladder
+    // evaluator, volume scheduler; both self-skip until MANAGE_ENABLED) stay
     // separate.
-    // Runtime kill switch for the AUTOMATIC background warm-pool funder (step 3 of
-    // the lifecycle tick). Shared with the HTTP layer so an operator can pause/
-    // resume the autonomous funder from the dashboard (GET/PUT
-    // /api/wallet_pool/auto_fund) without a redeploy. Starts `true` iff funding is
-    // configured (FUND_ENABLED=true) — preserving prior always-on behaviour. Manual
-    // Fund endpoints are unaffected by this flag.
-    let auto_fund_enabled = Arc::new(std::sync::atomic::AtomicBool::new(
-        launcher_settings.as_ref().is_some_and(|s| s.funding.is_some()),
-    ));
-
     let (wallet_lifecycle_task, ladder_task, volume_task) = match launcher_settings.as_ref() {
         Some(s) => {
             if s.funding.is_none() {
-                warn!("wallet funding disabled — set FUND_ENABLED=true to enable");
+                warn!("wallet funding disabled — set FUND_ENABLED=true to enable the \"Fund pool\" button");
             }
             (
-                Some(launcher::spawn_wallet_lifecycle(
-                    pools.hot.clone(),
-                    s.clone(),
-                    auto_fund_enabled.clone(),
-                    Some(event_sink.clone()),
-                )),
+                Some(launcher::spawn_wallet_lifecycle(pools.hot.clone())),
                 Some(launcher::spawn_ladder_evaluator(pools.hot.clone(), s.clone())),
                 Some(launcher::spawn_volume_scheduler(pools.hot.clone(), s.clone())),
             )
@@ -251,7 +237,6 @@ async fn main() -> anyhow::Result<()> {
             .app_data(web::Data::new(ingest_handle.clone()))
             .app_data(web::Data::new(ingest_metrics.clone()))
             .app_data(web::Data::new(launcher_settings.clone()))
-            .app_data(web::Data::new(auto_fund_enabled.clone()))
             .app_data(web::Data::new(api_auth.clone()))
             .app_data(web::Data::new(sse_hub.clone()))
             .configure(http::configure)

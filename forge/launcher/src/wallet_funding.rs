@@ -1,29 +1,33 @@
 //! Wallet funding orchestration (docs/wallet-funding-plan.md): the inverse of
 //! `dust_sweep.rs`. Sends SOL treasury -> pool so `generated` wallets become
-//! `funded` and claimable for launches. The pool could already generate wallets,
-//! detect incoming SOL, and reclaim dust — this closes the loop by *sending* SOL
-//! in.
+//! `funded` and claimable for launches. The pool could already generate wallets
+//! and reclaim dust — this closes the loop by *sending* SOL in.
+//!
+//! **Operator-triggered only.** The autonomous background funder and the JIT
+//! per-launch funder were removed; the sole entry point is [`fund_once`], driven
+//! by the "Fund pool" button (`POST /api/wallet_pool/fund`). Nothing here spends
+//! SOL unattended. Each send is confirmed and the wallet promoted to `funded`
+//! in-place, so one button click leaves the pool claimable with no background poll.
 //!
 //! Deliberately a plain `solana-client` transfer (NOT pump-trader's Jito/
 //! multi-sender/retry machinery) — funding has no landing urgency, unlike a snipe
 //! buy. Same choice as [`crate::dust_sweep`].
 //!
-//! SAFETY: this spends real SOL autonomously. Every send is gated by
-//! [`FundingConfig`]'s reserve floor + per-interval cap, and the whole subsystem
-//! is off unless `FUND_ENABLED=true` (see `config.rs`). `FUND_DRY_RUN=true` plans
-//! + logs transfers but sends nothing.
+//! SAFETY: this spends real SOL. Every send is gated by [`FundingConfig`]'s
+//! reserve floor + per-interval cap, and the whole subsystem is off unless
+//! `FUND_ENABLED=true` (see `config.rs`). `FUND_DRY_RUN=true` plans + logs
+//! transfers but sends nothing.
 //!
-//! Obfuscation = Tier 1: one transfer per tx, jittered amount + timing, direct
+//! Obfuscation = Tier 1: one transfer per tx, jittered amount, direct
 //! treasury->wallet. Tier 2 (multi-hop fan-out) is left as an unimplemented
 //! [`FundingStrategy`] impl behind the same seam.
 
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use platform_core::models::{ManagedWallet, WalletRole, WalletStatus};
-use platform_core::storage::repositories::{LaunchTemplateRepo, ManagedWalletRepo};
+use platform_core::models::{ManagedWallet, WalletRole};
+use platform_core::storage::repositories::ManagedWalletRepo;
 use rand::Rng;
 use serde::Serialize;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -36,24 +40,21 @@ use uuid::Uuid;
 
 use crate::config::{FundingConfig, LauncherSettings};
 use crate::events::EventSink;
-use crate::funding_plan::FundPlan;
 use crate::keystore::{self, EnvKek};
-use crate::service::PumpfunTemplateParams;
 use crate::wallet_pool::MIN_FUNDED_LAMPORTS;
 
-/// How often the background funder tops the pool up. Cheap when idle — a single
-/// `funded_count` per fundable role, no work when every role is already warm.
-const FUND_INTERVAL: Duration = Duration::from_secs(60);
+/// Solana JSON-RPC `getMultipleAccounts` caps at 100 pubkeys per call — the
+/// post-fund balance read-back chunks the sent wallets to this.
+const RPC_BATCH_SIZE: usize = 100;
 
 /// Serializes every funding pass in this process. The reserve floor + per-interval
 /// spend cap are enforced against a pass-local treasury snapshot (`TreasuryPool`
-/// captured at pass start + a running `spent`), so two passes running at once —
-/// the background funder, a manual `POST /api/wallet_pool/fund`, and a JIT
-/// `fund_for_launch` can all fire independently — each sees the other's spend as
-/// zero and could together spend N× the cap or breach the reserve. Holding this
-/// across a whole pass makes the snapshot authoritative: at most one pass reads
-/// balances, spends, and writes them back at a time. Correctness over latency —
-/// real SOL is moving, and a warm-pool pass is a fast no-op.
+/// captured at pass start + a running `spent`), so two concurrent "Fund pool"
+/// clicks each see the other's spend as zero and could together spend N× the cap
+/// or breach the reserve. Holding this across a whole pass makes the snapshot
+/// authoritative: at most one pass reads balances, spends, and writes them back at
+/// a time. Correctness over latency — real SOL is moving, and a warm-pool pass is
+/// a fast no-op.
 pub(crate) static FUNDING_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -86,8 +87,7 @@ pub trait FundingStrategy {
 }
 
 /// Tier 1: one direct transfer per target, amount jittered within
-/// `[amount*(1-j), amount*(1+j)]`. Timing jitter (inter-send sleep) is applied by
-/// `fund_once`, not here, so this stays pure.
+/// `[amount*(1-j), amount*(1+j)]`.
 pub struct DirectJittered;
 
 impl FundingStrategy for DirectJittered {
@@ -174,9 +174,8 @@ async fn build_treasury_pool(
                 continue;
             }
         };
-        // Reuse the balance the lifecycle poll just wrote when it's still fresh
-        // (audit Phase C2) — the poller refreshes every treasury each pass, so a
-        // warm funding tick skips this RPC entirely; else read on-chain.
+        // Reuse the balance a recent "Refresh balances" wrote when it's still
+        // fresh (audit Phase C2); else read on-chain.
         let balance = match crate::wallet_pool::fresh_cached_balance(&w) {
             Some(b) => b,
             None => rpc
@@ -192,11 +191,10 @@ async fn build_treasury_pool(
 }
 
 /// Reflect each source treasury's spend on its cached balance immediately, so the
-/// Wallet Pool page shows the drop right after the pass instead of a stale number
-/// until the next poll. Optimistic (ignores tx fees); the balance poller
-/// reconciles the exact on-chain value within one cycle. `record_balance`'s
-/// promotion CASE only fires for `generated`/`funding`, so it never mutates a
-/// treasury's status.
+/// Wallet Pool page shows the drop right after the pass instead of a stale number.
+/// Optimistic (ignores tx fees); the operator "Refresh balances" reconciles the
+/// exact on-chain value. `record_balance`'s promotion CASE only fires for
+/// `generated`/`funding`, so it never mutates a treasury's status.
 async fn writeback_treasury_balances(pool: &PgPool, sources: &TreasuryPool) {
     for s in &sources.sources {
         if s.spent == 0 {
@@ -212,41 +210,24 @@ async fn writeback_treasury_balances(pool: &PgPool, sources: &TreasuryPool) {
     }
 }
 
-/// Scope for a single funding pass. Defaults (both `None`) = the background
-/// behavior: top every fundable role up to its warm target. The manual endpoint
-/// narrows it (a specific role and/or an explicit count).
+/// Scope for a single funding pass. Defaults (both `None`) = top every fundable
+/// role up to its warm target. The endpoint narrows it (a specific role and/or an
+/// explicit count).
 #[derive(Debug, Clone, Default)]
 pub struct FundScope {
     pub role: Option<WalletRole>,
     pub count: Option<i64>,
 }
 
-/// Delivery mode for a funding pass — how each transfer is sent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FundMode {
-    /// Autonomous background funder: confirm each send and apply the timing
-    /// jitter between them (de-correlates the transfers — Tier-1 obfuscation).
-    Background,
-    /// Operator-triggered manual pass (`POST /api/wallet_pool/fund`): submit each
-    /// transfer without blocking on confirmation and skip the timing jitter, so
-    /// the endpoint returns promptly instead of serially awaiting N confirmations
-    /// (plus up to N jitter sleeps). The balance poller still promotes
-    /// `funding -> funded` when the SOL lands; a rare accepted-but-dropped tx
-    /// leaves the wallet in `funding` (its SOL never left the treasury), which is
-    /// acceptable on this supervised path.
-    Manual,
-}
-
-/// What happened to one wallet in a funding pass — the manual endpoint's
-/// per-wallet response, and the log detail for the background pass.
+/// What happened to one wallet in a funding pass — the endpoint's per-wallet
+/// response, and the log detail.
 #[derive(Debug, Serialize)]
 pub struct WalletFundOutcome {
     pub managed_wallet_id: Uuid,
     pub address: String,
     pub role: String,
     pub amount_lamports: u64,
-    /// `sent` | `dry_run` | `failed` | `skipped_cap` | `skipped_bad_address` |
-    /// `skipped_funded` (JIT: already at/above its target, no top-up needed).
+    /// `sent` | `dry_run` | `failed` | `skipped_cap` | `skipped_bad_address`.
     pub result: &'static str,
     pub signature: Option<String>,
     pub error: Option<String>,
@@ -269,16 +250,17 @@ fn role_plan(role: WalletRole, cfg: &FundingConfig) -> Option<(u64, i64)> {
     }
 }
 
-/// Run one funding pass. Resolves the treasury, tops up each in-scope fundable
-/// role, and returns a per-wallet report. Best-effort: a single wallet's failure
-/// reverts just that wallet (`funding` -> `generated`) and the pass continues; a
-/// safety-rail breach (reserve floor / per-interval cap) reverts every
-/// still-unsent claim and stops.
+/// Run one operator-triggered funding pass ("Fund pool"). Resolves the treasury,
+/// tops up each in-scope fundable role, CONFIRMS each send, then promotes the
+/// funded wallets to `funded` off a fresh on-chain read — so the pool is claimable
+/// the moment this returns, with no background poll. Best-effort: a single
+/// wallet's failure reverts just that wallet (`funding` -> `generated`) and the
+/// pass continues; a safety-rail breach (reserve floor / per-interval cap) reverts
+/// every still-unsent claim and stops.
 pub async fn fund_once(
     pool: &PgPool,
     settings: &LauncherSettings,
     scope: FundScope,
-    mode: FundMode,
     sink: Option<&dyn EventSink>,
 ) -> Result<FundReport> {
     let Some(cfg) = settings.funding.as_ref() else {
@@ -290,12 +272,14 @@ pub async fn fund_once(
     let _funding_guard = FUNDING_LOCK.lock().await;
 
     let mut report = FundReport::default();
+    // (id, pubkey) of every wallet a send confirmed for — promoted after the pass.
+    let mut sent: Vec<(Uuid, Pubkey)> = Vec::new();
 
     // Cheap indexed shortfall gate BEFORE paying for the treasury RPC snapshot
-    // (audit §5): a periodic top-up pass over a fully warm pool otherwise builds
-    // the treasury pool — N `get_balance` RPCs — every 60s only to fund nothing.
-    // An explicit `count` (a manual fund request) always proceeds; the automatic
-    // pass (count = None) bails when `funded_count` already meets every target.
+    // (audit §5): a top-up over a fully warm pool otherwise builds the treasury
+    // pool — N `get_balance` RPCs — only to fund nothing. An explicit `count`
+    // always proceeds; a top-up (count = None) bails when `funded_count` already
+    // meets every target.
     if scope.count.is_none() {
         let roles: Vec<WalletRole> = match scope.role {
             Some(r) => vec![r],
@@ -323,7 +307,6 @@ pub async fn fund_once(
         warn!("wallet funding: no treasury wallet configured (role=treasury) — skipping");
         return Ok(report);
     }
-    let funding_source = "auto-fund (treasury pool)".to_string();
     let strategy = DirectJittered;
     let plan_from = sources.sources[0].pubkey; // representative; DirectJittered ignores it
 
@@ -348,7 +331,7 @@ pub async fn fund_once(
         }
 
         let claimed =
-            ManagedWalletRepo::claim_for_funding(pool, role.as_str(), n, &funding_source).await?;
+            ManagedWalletRepo::claim_for_funding(pool, role.as_str(), n, "fund pool (manual)").await?;
         if claimed.is_empty() {
             info!(role = role.as_str(), want = n, "wallet funding: no `generated` wallets to fund");
             continue;
@@ -436,27 +419,19 @@ pub async fn fund_once(
                 let src = &sources.sources[source_idx];
                 (src.signer.clone(), src.pubkey)
             };
-            // Background pass confirms each send (so a failed send reverts the
-            // claim); the manual pass fires and returns (the poller confirms via
-            // balance arrival) — see `FundMode`.
-            let send_result = match mode {
-                FundMode::Background => {
-                    send_transfer(&rpc, &src_signer, src_pubkey, t.target, t.lamports).await
-                }
-                FundMode::Manual => {
-                    submit_transfer(&rpc, &src_signer, src_pubkey, t.target, t.lamports).await
-                }
-            };
-            match send_result {
+            // Confirm each send so a failed send reverts the claim and only landed
+            // wallets are promoted below.
+            match send_transfer(&rpc, &src_signer, src_pubkey, t.target, t.lamports).await {
                 Ok(sig) => {
                     sources.sources[source_idx].spent += t.lamports;
                     report.spent_lamports += t.lamports;
+                    sent.push((t.managed_wallet_id, t.target));
                     info!(
                         managed_wallet_id = %t.managed_wallet_id,
                         address = %t.target,
                         lamports = t.lamports,
                         sig = %sig,
-                        "wallet funding: transfer sent (poller will promote funding -> funded)"
+                        "wallet funding: transfer sent"
                     );
                     report.outcomes.push(WalletFundOutcome {
                         managed_wallet_id: t.managed_wallet_id,
@@ -482,20 +457,14 @@ pub async fn fund_once(
                     });
                 }
             }
-
-            // Timing jitter — de-correlate the sends in time (background funder
-            // only; the manual pass skips it for a snappy response). Compute the
-            // delay in a tight scope so the (non-Send) RNG never crosses the await.
-            if mode == FundMode::Background && cfg.max_delay_ms > 0 {
-                let delay = rand::thread_rng().gen_range(0..=cfg.max_delay_ms);
-                tokio::time::sleep(Duration::from_millis(delay)).await;
-            }
         }
     }
 
-    // Reflect each source treasury's spend on its cached balance immediately (see
-    // `writeback_treasury_balances`).
+    // Promote every wallet whose send confirmed to `funded`, off a fresh on-chain
+    // read — the manual counterpart of the old balance poll, done once at the end
+    // of the pass so a single click leaves the pool claimable.
     if !cfg.dry_run {
+        promote_funded(pool, &rpc, &sent).await;
         writeback_treasury_balances(pool, &sources).await;
     }
 
@@ -503,6 +472,32 @@ pub async fn fund_once(
     // the Wallet Pool page refetches instead of polling (audit Phase A2).
     notify_pool_changed(sink, &report);
     Ok(report)
+}
+
+/// Read the on-chain balance of every wallet a send confirmed for and stamp it via
+/// `record_balance`, which promotes `funding` -> `funded` once the balance clears
+/// `MIN_FUNDED_LAMPORTS`. A failed read leaves the wallet in `funding` — the
+/// operator's next "Refresh balances" click reconciles it (the SOL has landed;
+/// only the DB status lags).
+async fn promote_funded(pool: &PgPool, rpc: &RpcClient, sent: &[(Uuid, Pubkey)]) {
+    for chunk in sent.chunks(RPC_BATCH_SIZE) {
+        let pubkeys: Vec<Pubkey> = chunk.iter().map(|(_, pk)| *pk).collect();
+        let accounts = match rpc.get_multiple_accounts(&pubkeys).await {
+            Ok(a) => a,
+            Err(e) => {
+                warn!(?e, "wallet funding: post-fund balance read failed — wallets stay `funding` until Refresh");
+                continue;
+            }
+        };
+        for ((id, _), acct) in chunk.iter().zip(accounts) {
+            let lamports = acct.map(|a| a.lamports).unwrap_or(0) as i64;
+            if let Err(e) =
+                ManagedWalletRepo::record_balance(pool, *id, lamports, MIN_FUNDED_LAMPORTS).await
+            {
+                warn!(?e, managed_wallet_id = %id, "wallet funding: promote after fund failed");
+            }
+        }
+    }
 }
 
 /// Emit the coarse wallet-pool push (no-op without a sink) when a funding pass
@@ -514,363 +509,6 @@ fn notify_pool_changed(sink: Option<&dyn EventSink>, report: &FundReport) {
             sink.wallet_pool_changed();
         }
     }
-}
-
-/// Whether a single-wallet funding step wants the pass to keep going or stop
-/// (a safety-rail breach stops the whole pass — a partially funded launch must
-/// not proceed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FundStep {
-    Continue,
-    Stop,
-}
-
-/// Shared context for a JIT per-launch funding pass — the boot config + the one
-/// RPC client + the delivery mode, threaded to each per-wallet step.
-struct LaunchFundCtx<'a> {
-    pool: &'a PgPool,
-    rpc: &'a RpcClient,
-    cfg: &'a FundingConfig,
-    mode: FundMode,
-}
-
-/// Just-in-time, template-driven funding for ONE launch (docs/jit-funding-plan.md).
-/// Derives the exact per-wallet need from the launch template ([`FundPlan`]) and
-/// tops up **only the shortfall** so the dev wallet + `leg_count` bundler wallets
-/// are `funded` to their template amounts before `execute_launch` claims them.
-///
-/// Unlike the flat warm-pool [`fund_once`], amounts are per-launch (dev = create
-/// floor + dev-buy; leg = leg buy + tip + fees), not `FUND_AMOUNT_*` constants,
-/// and there's no ±amount jitter (JIT funds the exact need). Draws from the whole
-/// treasury source pool, same as `fund_once`. Runs in [`FundMode::Background`]
-/// (confirm each send) so a wallet is promoted to `funded` only after its SOL has
-/// actually landed — a launch claiming a not-yet-landed wallet would fail its
-/// balance gate.
-pub async fn fund_for_launch(
-    pool: &PgPool,
-    settings: &LauncherSettings,
-    template_id: Uuid,
-    bundler_count: Option<u32>,
-    dev_wallet_id: Uuid,
-    mode: FundMode,
-    sink: Option<&dyn EventSink>,
-) -> Result<FundReport> {
-    let Some(cfg) = settings.funding.as_ref() else {
-        bail!("wallet funding not configured (FUND_ENABLED not set)");
-    };
-
-    // Serialize against every other funding pass — see `FUNDING_LOCK`. A JIT launch
-    // fund and the background funder must not race on the treasury snapshot/cap.
-    let _funding_guard = FUNDING_LOCK.lock().await;
-
-    let mut report = FundReport::default();
-
-    // Template → per-launch funding requirement (single source of truth with the
-    // pre-launch gate — see `funding_plan`).
-    let template = LaunchTemplateRepo::get(pool, template_id)
-        .await?
-        .context("launch template not found")?;
-    let params: PumpfunTemplateParams =
-        serde_json::from_value(template.params.clone()).context("parse template params")?;
-    let plan = FundPlan::from_params(
-        &template.variant,
-        &params,
-        bundler_count,
-        settings.launch_tip_ceiling_lamports(),
-    )?;
-
-    let rpc =
-        RpcClient::new_with_commitment(settings.rpc_url.clone(), CommitmentConfig::confirmed());
-    let kek = EnvKek::from_passphrase(&settings.kek_passphrase);
-    let mut sources = build_treasury_pool(pool, settings, &rpc, &kek).await?;
-    if sources.sources.is_empty() {
-        warn!("wallet funding: no treasury wallet configured (role=treasury) — skipping");
-        return Ok(report);
-    }
-
-    let ctx = LaunchFundCtx { pool, rpc: &rpc, cfg, mode };
-
-    // 1) Dev wallet — the SPECIFIC wallet this launch will use, funded to the gate.
-    let dev = ManagedWalletRepo::get(pool, dev_wallet_id)
-        .await?
-        .context("dev wallet not found")?;
-    if dev.role != WalletRole::Dev.as_str() {
-        bail!("wallet {} is role={}, expected dev", dev.id, dev.role);
-    }
-    if dev.status != WalletStatus::Generated.as_str()
-        && dev.status != WalletStatus::Funded.as_str()
-    {
-        bail!(
-            "dev wallet {} is status={}, expected `generated` or `funded`",
-            dev.id,
-            dev.status
-        );
-    }
-    // A `generated` dev wallet must be claimed to `funding` first (so a concurrent
-    // funder can't double-fund it); a `funded` one is topped up in place.
-    let dev = if dev.status == WalletStatus::Generated.as_str() {
-        match ManagedWalletRepo::claim_specific_for_funding(pool, dev.id, "jit-fund (launch)")
-            .await?
-        {
-            Some(claimed) => claimed,
-            None => bail!("dev wallet {} is no longer `generated` (claimed elsewhere)", dev.id),
-        }
-    } else {
-        dev
-    };
-    let step = fund_wallet_to_target(&ctx, &mut sources, &mut report, dev, plan.dev_lamports).await?;
-
-    // 2) Bundler legs — ensure `leg_count` bundler wallets are `funded` to
-    //    `per_leg`. `execute_launch` claims its legs at RANDOM from the funded
-    //    bundler pool, so EVERY funded bundler must meet `per_leg` (not just N of
-    //    them) or a randomly-drawn leg could be under-funded. Top all funded
-    //    bundlers up first (counting them toward the target), then claim
-    //    `generated` ones to reach `leg_count`.
-    if step == FundStep::Continue && plan.leg_count > 0 {
-        let mut have: u32 = 0;
-        let funded = ManagedWalletRepo::find_by_status(
-            pool,
-            WalletStatus::Funded.as_str(),
-            Some(WalletRole::Bundler.as_str()),
-        )
-        .await?;
-        let mut stopped = false;
-        for w in funded {
-            match fund_wallet_to_target(&ctx, &mut sources, &mut report, w, plan.per_leg_lamports)
-                .await?
-            {
-                FundStep::Continue => have += 1,
-                FundStep::Stop => {
-                    stopped = true;
-                    break;
-                }
-            }
-        }
-
-        let short = plan.leg_count.saturating_sub(have);
-        if !stopped && short > 0 {
-            let claimed = ManagedWalletRepo::claim_for_funding(
-                pool,
-                WalletRole::Bundler.as_str(),
-                short as i64,
-                "jit-fund (launch)",
-            )
-            .await?;
-            if (claimed.len() as u32) < short {
-                warn!(
-                    launch_template = %template.id,
-                    want = short,
-                    got = claimed.len(),
-                    "wallet funding: bundler `generated` pool short for launch — generate more bundlers"
-                );
-            }
-            for w in claimed {
-                if fund_wallet_to_target(&ctx, &mut sources, &mut report, w, plan.per_leg_lamports)
-                    .await?
-                    == FundStep::Stop
-                {
-                    break;
-                }
-            }
-        }
-    }
-
-    if !cfg.dry_run {
-        writeback_treasury_balances(pool, &sources).await;
-    }
-
-    notify_pool_changed(sink, &report);
-    Ok(report)
-}
-
-/// Top ONE wallet up to `target` lamports, drawing the shortfall from the
-/// treasury pool. Reads the wallet's live balance, sends only `target - balance`
-/// (nothing if already ≥ target), and — in [`FundMode::Background`] — promotes it
-/// to `funded` once the send confirms. A `funding` claim is reverted on any
-/// failure/dry-run/rail-hit; a `funded` wallet is left funded (`revert_funding`
-/// only touches `funding`, so it's a safe no-op there). Returns [`FundStep::Stop`]
-/// when a safety rail breaks, so the caller aborts the rest of the launch's
-/// funding.
-async fn fund_wallet_to_target(
-    ctx: &LaunchFundCtx<'_>,
-    sources: &mut TreasuryPool,
-    report: &mut FundReport,
-    wallet: ManagedWallet,
-    target: u64,
-) -> Result<FundStep> {
-    let is_funding = wallet.status == WalletStatus::Funding.as_str();
-
-    let target_pk = match Pubkey::from_str(&wallet.address) {
-        Ok(pk) => pk,
-        Err(e) => {
-            if is_funding {
-                let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
-            }
-            warn!(managed_wallet_id = %wallet.id, %e, "wallet funding: bad address — skipped");
-            report.outcomes.push(bad_address_outcome(&wallet));
-            return Ok(FundStep::Continue);
-        }
-    };
-
-    // Reuse the lifecycle poll's fresh cache for this wallet when available (audit
-    // Phase C2) — a `generated`/`funding` target is refreshed every tick, so the
-    // shortfall is computed off a seconds-old confirmed read without a second RPC;
-    // a stale/absent cache (e.g. JIT launch funding a `funded` wallet) falls back
-    // to a fresh read.
-    let balance = match crate::wallet_pool::fresh_cached_balance(&wallet) {
-        Some(b) => b,
-        None => ctx
-            .rpc
-            .get_balance(&target_pk)
-            .await
-            .with_context(|| format!("fetch target {} balance", wallet.address))?,
-    };
-    let shortfall = target.saturating_sub(balance);
-
-    // Already at/above target — no send. Promote a `generated`/`funding` wallet
-    // to `funded` off its real observed balance so a launch can claim it.
-    if shortfall == 0 {
-        if let Err(e) =
-            ManagedWalletRepo::record_balance(ctx.pool, wallet.id, balance as i64, MIN_FUNDED_LAMPORTS)
-                .await
-        {
-            warn!(?e, managed_wallet_id = %wallet.id, "wallet funding: failed to record target balance");
-        }
-        report.outcomes.push(WalletFundOutcome {
-            managed_wallet_id: wallet.id,
-            address: wallet.address.clone(),
-            role: wallet.role.clone(),
-            amount_lamports: 0,
-            result: "skipped_funded",
-            signature: None,
-            error: None,
-        });
-        return Ok(FundStep::Continue);
-    }
-
-    // Safety rails — same basis as `fund_once`: aggregate per-interval cap +
-    // single-source reserve coverage.
-    let over_cap = report.spent_lamports + shortfall > ctx.cfg.max_spend_per_interval_lamports;
-    let source_idx = sources.pick_source(shortfall, ctx.cfg.treasury_reserve_lamports);
-    if over_cap || source_idx.is_none() {
-        if is_funding {
-            let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
-        }
-        warn!(
-            managed_wallet_id = %wallet.id,
-            over_cap,
-            under_reserve = source_idx.is_none(),
-            spent = report.spent_lamports,
-            "wallet funding: safety rail hit funding a launch — stopping"
-        );
-        report.outcomes.push(WalletFundOutcome {
-            managed_wallet_id: wallet.id,
-            address: wallet.address.clone(),
-            role: wallet.role.clone(),
-            amount_lamports: shortfall,
-            result: "skipped_cap",
-            signature: None,
-            error: None,
-        });
-        return Ok(FundStep::Stop);
-    }
-    let source_idx = source_idx.expect("pick_source is Some (checked above)");
-
-    if ctx.cfg.dry_run {
-        if is_funding {
-            let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
-        }
-        info!(
-            managed_wallet_id = %wallet.id,
-            address = %wallet.address,
-            lamports = shortfall,
-            "wallet funding (DRY RUN): would top up for launch"
-        );
-        report.outcomes.push(WalletFundOutcome {
-            managed_wallet_id: wallet.id,
-            address: wallet.address.clone(),
-            role: wallet.role.clone(),
-            amount_lamports: shortfall,
-            result: "dry_run",
-            signature: None,
-            error: None,
-        });
-        return Ok(FundStep::Continue);
-    }
-
-    let (src_signer, src_pubkey) = {
-        let src = &sources.sources[source_idx];
-        (src.signer.clone(), src.pubkey)
-    };
-    let send_result = match ctx.mode {
-        FundMode::Background => {
-            send_transfer(ctx.rpc, &src_signer, src_pubkey, target_pk, shortfall).await
-        }
-        FundMode::Manual => {
-            submit_transfer(ctx.rpc, &src_signer, src_pubkey, target_pk, shortfall).await
-        }
-    };
-    match send_result {
-        Ok(sig) => {
-            sources.sources[source_idx].spent += shortfall;
-            report.spent_lamports += shortfall;
-            // Background confirmed the send, so the SOL has landed — promote to
-            // `funded` now (off the projected balance) rather than waiting a poll
-            // cycle, so the launch can claim it immediately. Manual leaves the
-            // promotion to the balance poller (the tx may not have landed yet).
-            if ctx.mode == FundMode::Background {
-                let projected = balance.saturating_add(shortfall) as i64;
-                if let Err(e) = ManagedWalletRepo::record_balance(
-                    ctx.pool,
-                    wallet.id,
-                    projected,
-                    MIN_FUNDED_LAMPORTS,
-                )
-                .await
-                {
-                    warn!(?e, managed_wallet_id = %wallet.id, "wallet funding: send ok but promote failed");
-                }
-            }
-            info!(
-                managed_wallet_id = %wallet.id,
-                address = %wallet.address,
-                lamports = shortfall,
-                sig = %sig,
-                "wallet funding: launch top-up sent"
-            );
-            report.outcomes.push(WalletFundOutcome {
-                managed_wallet_id: wallet.id,
-                address: wallet.address.clone(),
-                role: wallet.role.clone(),
-                amount_lamports: shortfall,
-                result: "sent",
-                signature: Some(sig.to_string()),
-                error: None,
-            });
-        }
-        Err(e) => {
-            if is_funding {
-                let _ = ManagedWalletRepo::revert_funding(ctx.pool, &[wallet.id]).await;
-            }
-            warn!(managed_wallet_id = %wallet.id, %e, "wallet funding: launch top-up failed");
-            report.outcomes.push(WalletFundOutcome {
-                managed_wallet_id: wallet.id,
-                address: wallet.address.clone(),
-                role: wallet.role.clone(),
-                amount_lamports: shortfall,
-                result: "failed",
-                signature: None,
-                error: Some(format!("{e}")),
-            });
-        }
-    }
-
-    if ctx.mode == FundMode::Background && ctx.cfg.max_delay_ms > 0 {
-        let delay = rand::thread_rng().gen_range(0..=ctx.cfg.max_delay_ms);
-        tokio::time::sleep(Duration::from_millis(delay)).await;
-    }
-
-    Ok(FundStep::Continue)
 }
 
 fn bad_address_outcome(w: &ManagedWallet) -> WalletFundOutcome {
@@ -885,9 +523,9 @@ fn bad_address_outcome(w: &ManagedWallet) -> WalletFundOutcome {
     }
 }
 
-/// Send + confirm a funding transfer (background pass). No retry — the caller
-/// reverts the claim on error and the next pass re-attempts. Phase 2.F: the
-/// treasury→pool move is a typed `TransferSol` executed through the SSOT
+/// Send + confirm a funding transfer. No retry — the caller reverts the claim on
+/// error and the operator re-clicks "Fund pool" to re-attempt. Phase 2.F: the
+/// treasury->pool move is a typed `TransferSol` executed through the SSOT
 /// [`crate::plan_exec::execute_transfer`] (exact lamports, treasury pays the fee).
 async fn send_transfer(
     rpc: &RpcClient,
@@ -907,52 +545,6 @@ async fn send_transfer(
     .await?
     .context("funding transfer produced no signature")?;
     Ok(sig)
-}
-
-/// Submit a funding transfer WITHOUT waiting for confirmation (manual pass):
-/// returns as soon as the RPC accepts the tx. The balance poller promotes
-/// `funding -> funded` when the SOL lands — see [`FundMode::Manual`].
-async fn submit_transfer(
-    rpc: &RpcClient,
-    treasury_signer: &Arc<dyn Signer + Send + Sync>,
-    from: Pubkey,
-    to: Pubkey,
-    lamports: u64,
-) -> Result<Signature> {
-    let (sig, _) = crate::plan_exec::execute_transfer(
-        rpc,
-        treasury_signer.as_ref(),
-        from,
-        to,
-        crate::plan_exec::TransferMode::Exact(lamports),
-        false, // submit only
-    )
-    .await?
-    .context("funding transfer produced no signature")?;
-    Ok(sig)
-}
-
-/// The background funder's cadence (a warm-pool top-up), now gated inside the
-/// unified wallet-lifecycle tick (`wallet_lifecycle.rs`) rather than its own task.
-pub(crate) const FUND_PASS_INTERVAL: Duration = FUND_INTERVAL;
-
-/// Run one background warm-pool funding pass and log its summary. Called on cadence
-/// by the unified lifecycle tick; assumes funding is configured (the caller gates
-/// on `settings.funding.is_some()`).
-pub(crate) async fn run_background_funding_pass(
-    pool: &PgPool,
-    settings: &LauncherSettings,
-    sink: Option<&dyn EventSink>,
-) {
-    match fund_once(pool, settings, FundScope::default(), FundMode::Background, sink).await {
-        Ok(report) if report.outcomes.is_empty() => {}
-        Ok(report) => info!(
-            spent_lamports = report.spent_lamports,
-            wallets = report.outcomes.len(),
-            "wallet funding pass complete"
-        ),
-        Err(e) => warn!(?e, "wallet funding pass failed"),
-    }
 }
 
 #[cfg(test)]

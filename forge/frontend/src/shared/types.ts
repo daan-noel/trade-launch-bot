@@ -261,15 +261,6 @@ export interface FundReport {
   outcomes: WalletFundOutcome[];
 }
 
-// Runtime state of the automatic background warm-pool funder — GET/PUT
-// `/api/wallet_pool/auto_fund`. `configured` is false when FUND_ENABLED is unset
-// (nothing to toggle); `enabled` is whether the autonomous 60s top-up pass runs.
-// Independent of the manual Fund buttons, which work regardless.
-export interface AutoFundStatus {
-  configured: boolean;
-  enabled: boolean;
-}
-
 // Operator wallet-to-wallet SOL move — `POST /api/wallet_pool/transfer`.
 export interface TransferArgs {
   from_id: string;
