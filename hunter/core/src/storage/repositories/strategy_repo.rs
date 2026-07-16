@@ -204,6 +204,52 @@ struct RuleCountersRow {
     closed_entry_lamports: i64,
 }
 
+/// Shared aggregate column list for the batched per-rule latest-run counters
+/// (`rule_counters_for_latest_paper_runs` / `rule_counters_for_latest_runs`). Kept
+/// in ONE place so the win/open/closed predicates can't drift from each other — and
+/// they mirror [`StrategyRepo::positions_summary`] so the rule-row and the Positions
+/// Summary panel always agree. Expects a `latest l(rule_id, run_id)` CTE LEFT-JOINed
+/// to `strategy_positions p` and a trailing `GROUP BY l.rule_id`.
+const RULE_COUNTERS_SELECT: &str = "\
+    l.rule_id AS rule_id, \
+    COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL) AS total, \
+    COUNT(p.*) FILTER (WHERE p.status IN ('Holding','Arming','BuySubmitted')) AS open, \
+    COUNT(p.*) FILTER (WHERE p.status IN ('Arming','BuySubmitted')) AS pending, \
+    COUNT(p.*) FILTER (WHERE p.status = 'End' AND p.exit_lamports > p.entry_lamports) AS win, \
+    COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed') \
+                         AND NOT (p.status = 'End' AND p.exit_lamports > p.entry_lamports)) AS loss, \
+    COALESCE(SUM(COALESCE(p.exit_lamports,0) - p.entry_lamports) \
+             FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
+    COALESCE(SUM(p.entry_lamports) \
+             FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports";
+
+/// Fold the raw batched rows into the `rule_id → RuleCounters` map (win-rate +
+/// capital-weighted return derived here). Shared by both `rule_counters_*` queries.
+fn map_rule_counters(rows: Vec<RuleCountersRow>) -> HashMap<Uuid, RuleCounters> {
+    rows.into_iter()
+        .map(|r| {
+            let closed = r.win + r.loss;
+            let win_rate = if closed > 0 { r.win as f64 / closed as f64 * 100.0 } else { 0.0 };
+            // Canonical capital-weighted return — sign-locked to `total_pnl_sol`.
+            let avg_pnl_pct =
+                weighted_return_pct(r.total_pnl_lamports as f64, r.closed_entry_lamports as f64);
+            (
+                r.rule_id,
+                RuleCounters {
+                    total_positions: r.total,
+                    open_positions: r.open,
+                    pending_positions: r.pending,
+                    win_count: r.win,
+                    loss_count: r.loss,
+                    win_rate,
+                    avg_pnl_pct,
+                    total_pnl_sol: lamports_to_sol(r.total_pnl_lamports),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Raw aggregate row behind [`StrategyRepo::positions_summary`]. Lamport sums are
 /// `BIGINT` (cast in SQL), pct/secs sums `DOUBLE PRECISION`; the repo folds these
 /// into the human-facing [`PositionsSummary`] (SOL division, win-rate/avg derive).
@@ -1334,58 +1380,60 @@ impl StrategyRepo {
         &self,
         strategy_id: &str,
     ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
-        // `latest` = each rule's newest paper run; join its positions and aggregate.
-        // Predicates mirror `positions_summary` exactly so the rule-row counts and
-        // the Positions Summary panel can't drift.
-        let sql = "\
-            WITH latest AS ( \
+        // `latest` = each rule's newest paper run; join its positions and aggregate
+        // via the shared `RULE_COUNTERS_SELECT` (predicates mirror `positions_summary`).
+        let sql = format!(
+            "WITH latest AS ( \
                 SELECT DISTINCT ON (rule_id) rule_id, id AS run_id \
                 FROM strategy_runs \
                 WHERE mode = 'paper' AND rule_id IS NOT NULL AND strategy_id = $1 \
                 ORDER BY rule_id, run_seq DESC \
             ) \
-            SELECT l.rule_id AS rule_id, \
-              COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL) AS total, \
-              COUNT(p.*) FILTER (WHERE p.status IN ('Holding','Arming','BuySubmitted')) AS open, \
-              COUNT(p.*) FILTER (WHERE p.status IN ('Arming','BuySubmitted')) AS pending, \
-              COUNT(p.*) FILTER (WHERE p.status = 'End' AND p.exit_lamports > p.entry_lamports) AS win, \
-              COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed') \
-                                   AND NOT (p.status = 'End' AND p.exit_lamports > p.entry_lamports)) AS loss, \
-              COALESCE(SUM(COALESCE(p.exit_lamports,0) - p.entry_lamports) \
-                       FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
-              COALESCE(SUM(p.entry_lamports) \
-                       FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports \
+            SELECT {RULE_COUNTERS_SELECT} \
             FROM latest l \
             LEFT JOIN strategy_positions p ON p.run_id = l.run_id \
-            GROUP BY l.rule_id";
-        let rows = sqlx::query_as::<_, RuleCountersRow>(sql)
+            GROUP BY l.rule_id"
+        );
+        let rows = sqlx::query_as::<_, RuleCountersRow>(&sql)
             .bind(strategy_id)
             .fetch_all(&self.pool)
             .await?;
+        Ok(map_rule_counters(rows))
+    }
 
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                let closed = r.win + r.loss;
-                let win_rate = if closed > 0 { r.win as f64 / closed as f64 * 100.0 } else { 0.0 };
-                // Canonical capital-weighted return — sign-locked to `total_pnl_sol`.
-                let avg_pnl_pct =
-                    weighted_return_pct(r.total_pnl_lamports as f64, r.closed_entry_lamports as f64);
-                (
-                    r.rule_id,
-                    RuleCounters {
-                        total_positions: r.total,
-                        open_positions: r.open,
-                        pending_positions: r.pending,
-                        win_count: r.win,
-                        loss_count: r.loss,
-                        win_rate,
-                        avg_pnl_pct,
-                        total_pnl_sol: lamports_to_sol(r.total_pnl_lamports),
-                    },
-                )
-            })
-            .collect())
+    /// Batched per-rule counters scoped to each rule's **latest run in the rule's own
+    /// `trade_mode`** — the DB source for the **live** rules-list row. Because the
+    /// latest run of an active rule is its current (`Running`) run and the latest run
+    /// of a stopped rule is its last run, this gives "current-run stats while active,
+    /// last-run stats while inactive" from ONE query. Used so the row survives a
+    /// restart and covers inactive rules — the in-memory `closed_stats` cache only
+    /// warms active + `Running` rules on boot ([`load_from_db`]). Aggregation mirrors
+    /// [`positions_summary`] via the shared `RULE_COUNTERS_SELECT`; rules with no run
+    /// / no positions are simply absent (caller defaults them to zero).
+    pub async fn rule_counters_for_latest_runs(
+        &self,
+        strategy_id: &str,
+    ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
+        // `latest` = each rule's newest run IN ITS OWN mode (join on r.trade_mode so a
+        // rule that ever switched modes still resolves to its current mode's run).
+        let sql = format!(
+            "WITH latest AS ( \
+                SELECT DISTINCT ON (r.id) r.id AS rule_id, run.id AS run_id \
+                FROM strategy_rules r \
+                JOIN strategy_runs run ON run.rule_id = r.id AND run.mode = r.trade_mode \
+                WHERE r.strategy_id = $1 \
+                ORDER BY r.id, run.run_seq DESC \
+            ) \
+            SELECT {RULE_COUNTERS_SELECT} \
+            FROM latest l \
+            LEFT JOIN strategy_positions p ON p.run_id = l.run_id \
+            GROUP BY l.rule_id"
+        );
+        let rows = sqlx::query_as::<_, RuleCountersRow>(&sql)
+            .bind(strategy_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(map_rule_counters(rows))
     }
 
     /// Page-bounded positions for a strategy family — the HTTP list view.

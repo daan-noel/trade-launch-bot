@@ -23,6 +23,7 @@ use crate::state::deploy_state::DeployState;
 use crate::strategies::PaperActivation;
 use trading_core::models::StrategyRule;
 use trading_core::strategies::registry::StrategyImpl;
+use trading_core::storage::repositories::strategy_repo::RuleCounters;
 use trading_core::strategies::rules::{params_to_value, RuleDraft, RuleError};
 use trading_core::strategies::runtime_cache::StrategyRuntimeCache;
 
@@ -57,8 +58,22 @@ fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
 }
 
 /// Build the frontend rule shape: the params JSONB merged with the universal
-/// columns, the live runtime counters (from the cache), and a derived lifecycle.
-fn rule_to_json(rule: &StrategyRule, cache: &StrategyRuntimeCache) -> Value {
+/// columns, the run summary counters, and a derived lifecycle.
+///
+/// Counter source follows the row's display logic: an **active** rule shows its
+/// **current run** live from the in-memory cache (ticks as positions arm/fill/close);
+/// an **inactive** rule shows its **last run** from the DB (`db_counters`, the rule's
+/// latest-run aggregate) so the row survives restarts and shows a stopped rule's
+/// realized result — the cache only warms active + `Running` rules on boot. Both
+/// resolve to the same run when active (latest == current), so the two agree. The
+/// in-memory cache remains authoritative for entry-gating caps regardless.
+/// `db_counters` is `None` at the mutation endpoints (the frontend refetches the
+/// list, whose read path supplies them) and defaults to zero.
+fn rule_to_json(
+    rule: &StrategyRule,
+    cache: &StrategyRuntimeCache,
+    db_counters: Option<&RuleCounters>,
+) -> Value {
     let mut obj: Map<String, Value> = match &rule.params {
         Value::Object(m) => m.clone(),
         _ => Map::new(),
@@ -75,24 +90,45 @@ fn rule_to_json(rule: &StrategyRule, cache: &StrategyRuntimeCache) -> Value {
     obj.insert("created_at".into(), json!(rule.created_at));
     obj.insert("updated_at".into(), json!(rule.updated_at));
 
-    // Live runtime counters (per current run).
-    let open = cache.holding_count_by_rule(rule.id);
-    let pending = cache.pending_count_by_rule(rule.id);
-    let total = cache.total_count_by_rule(rule.id);
-    let stats = cache.closed_stats_by_rule(rule.id);
-    let closed = stats.closed();
-    let win_rate = if closed > 0 { stats.wins as f64 / closed as f64 * 100.0 } else { 0.0 };
-    // Canonical capital-weighted return (sign-locked to `total_pnl_sol`).
-    let avg_pnl_pct = stats.avg_pnl_pct();
+    // Run summary counters: active → live current-run (cache); inactive → last-run (DB).
+    let (open, pending, total, wins, losses, win_rate, avg_pnl_pct, total_pnl_sol) =
+        if rule.is_active {
+            let stats = cache.closed_stats_by_rule(rule.id);
+            let closed = stats.closed();
+            // Canonical capital-weighted return (sign-locked to `total_pnl_sol`).
+            (
+                cache.holding_count_by_rule(rule.id),
+                cache.pending_count_by_rule(rule.id),
+                cache.total_count_by_rule(rule.id),
+                stats.wins,
+                stats.losses,
+                if closed > 0 { stats.wins as f64 / closed as f64 * 100.0 } else { 0.0 },
+                stats.avg_pnl_pct(),
+                stats.sum_pnl_sol,
+            )
+        } else if let Some(c) = db_counters {
+            (
+                c.open_positions,
+                c.pending_positions,
+                c.total_positions,
+                c.win_count,
+                c.loss_count,
+                c.win_rate,
+                c.avg_pnl_pct,
+                c.total_pnl_sol,
+            )
+        } else {
+            (0, 0, 0, 0, 0, 0.0, 0.0, 0.0)
+        };
 
     obj.insert("open_positions".into(), json!(open));
     obj.insert("pending_positions".into(), json!(pending));
     obj.insert("total_positions".into(), json!(total));
-    obj.insert("win_count".into(), json!(stats.wins));
-    obj.insert("loss_count".into(), json!(stats.losses));
+    obj.insert("win_count".into(), json!(wins));
+    obj.insert("loss_count".into(), json!(losses));
     obj.insert("win_rate".into(), json!(win_rate));
     obj.insert("avg_pnl_pct".into(), json!(avg_pnl_pct));
-    obj.insert("total_pnl_sol".into(), json!(stats.sum_pnl_sol));
+    obj.insert("total_pnl_sol".into(), json!(total_pnl_sol));
 
     // Lifecycle label (derived from `is_active` + the cache counters — no extra
     // query): Active → still entering; Draining → paused but holdings exiting;
@@ -128,10 +164,23 @@ pub async fn list_rules(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    match app_state.strategy.repo().find_rules_by_strategy(strategy.id()).await {
+    let repo = app_state.strategy.repo();
+    match repo.find_rules_by_strategy(strategy.id()).await {
         Ok(rules) => {
             let cache = cache(&app_state);
-            let out: Vec<Value> = rules.iter().map(|r| rule_to_json(r, cache)).collect();
+            // One batched query for every inactive rule's last-run stats. A failure
+            // just leaves inactive rows at zero (logged) rather than failing the list.
+            let counters = repo
+                .rule_counters_for_latest_runs(strategy.id())
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("rule counters fetch failed: {e}");
+                    Default::default()
+                });
+            let out: Vec<Value> = rules
+                .iter()
+                .map(|r| rule_to_json(r, cache, counters.get(&r.id)))
+                .collect();
             HttpResponse::Ok().json(out)
         }
         Err(e) => {
@@ -150,8 +199,17 @@ pub async fn get_rule(
     if let Err(resp) = resolve_strategy(&strategy) {
         return resp;
     }
-    match app_state.strategy.repo().find_rule(rule_id).await {
-        Ok(Some(rule)) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state))),
+    let repo = app_state.strategy.repo();
+    match repo.find_rule(rule_id).await {
+        Ok(Some(rule)) => {
+            // Inactive rules read their last-run stats from the DB; fetch the strategy's
+            // batched counters and pick this rule's (unused for an active rule).
+            let counters = repo
+                .rule_counters_for_latest_runs(&rule.strategy_id)
+                .await
+                .unwrap_or_default();
+            HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state), counters.get(&rule.id)))
+        }
         Ok(None) => HttpResponse::NotFound().json(json!({"error": "Rule not found"})),
         Err(e) => {
             tracing::error!("Failed to get rule {rule_id}: {e}");
@@ -202,7 +260,7 @@ pub async fn create_rule(
     };
 
     match app_state.strategy.create_rule(&draft).await {
-        Ok(rule) => HttpResponse::Created().json(rule_to_json(&rule, cache(&app_state))),
+        Ok(rule) => HttpResponse::Created().json(rule_to_json(&rule, cache(&app_state), None)),
         Err(e) => rule_error(e, "create rule"),
     }
 }
@@ -296,7 +354,7 @@ pub async fn update_rule(
     }
 
     match app_state.strategy.save_rule(&rule).await {
-        Ok(()) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state))),
+        Ok(()) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state), None)),
         Err(e) => rule_error(e, "update rule"),
     }
 }
@@ -361,7 +419,7 @@ pub async fn activate_rule(
     }
     let activation = body.map(|b| b.into_inner().paper_run).unwrap_or_default().into();
     match app_state.strategy.activate_rule(rule_id, activation).await {
-        Ok(rule) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state))),
+        Ok(rule) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state), None)),
         Err(e) => lifecycle_error(rule_id, "activate", e),
     }
 }
@@ -376,7 +434,7 @@ pub async fn pause_rule(
         return resp;
     }
     match app_state.strategy.pause_rule(rule_id).await {
-        Ok(rule) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state))),
+        Ok(rule) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state), None)),
         Err(e) => lifecycle_error(rule_id, "pause", e),
     }
 }
@@ -391,7 +449,7 @@ pub async fn stop_rule(
         return resp;
     }
     match app_state.strategy.stop_and_close_rule(rule_id).await {
-        Ok((rule, _count)) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state))),
+        Ok((rule, _count)) => HttpResponse::Ok().json(rule_to_json(&rule, cache(&app_state), None)),
         Err(e) => lifecycle_error(rule_id, "stop", e),
     }
 }
@@ -465,7 +523,7 @@ pub async fn pause_all_rules(
     };
     let cache = cache(&app_state);
     match app_state.strategy.pause_all_rules(strategy.id(), query.mode.as_str()).await {
-        Ok(results) => bulk_response(results, |r| rule_to_json(r, cache)),
+        Ok(results) => bulk_response(results, |r| rule_to_json(r, cache, None)),
         Err(e) => {
             tracing::error!("Failed to pause all rules: {e}");
             HttpResponse::InternalServerError().json(json!({"error": "Failed to pause all rules"}))
@@ -488,7 +546,7 @@ pub async fn stop_all_rules(
     };
     let cache = cache(&app_state);
     match app_state.strategy.stop_all_rules(strategy.id(), query.mode.as_str()).await {
-        Ok(results) => bulk_response(results, |(r, _count)| rule_to_json(r, cache)),
+        Ok(results) => bulk_response(results, |(r, _count)| rule_to_json(r, cache, None)),
         Err(e) => {
             tracing::error!("Failed to stop all rules: {e}");
             HttpResponse::InternalServerError().json(json!({"error": "Failed to stop all rules"}))
