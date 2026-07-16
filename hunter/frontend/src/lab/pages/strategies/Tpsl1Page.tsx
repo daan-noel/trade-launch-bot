@@ -1037,7 +1037,6 @@ export function Tpsl1Page() {
 
       {!loading && !error && (
         <RuleRowProvider value={rowContext}>
-          {realRules.length > 0 && (
             <Accordion
               className="mb-4"
               bordered={false}
@@ -1065,11 +1064,10 @@ export function Tpsl1Page() {
                 emptyMessage="No real rules"
               />
             </Accordion>
-          )}
 
           {isRealRuleSelected && positionsSection}
 
-          {realRules.length > 0 && <SectionDivider gap="xl" />}
+          <SectionDivider gap="xl" />
 
           <Accordion
             bordered={false}
@@ -1102,9 +1100,9 @@ export function Tpsl1Page() {
         </RuleRowProvider>
       )}
 
-      {(matchedRuleId || matchedError) && <SectionDivider />}
+      {(matchedError || (matchedRuleId && (matchedLoading || matchedTotal > 0))) && <SectionDivider />}
       {matchedError && <InlineAlert variant="error">{matchedError}</InlineAlert>}
-      {matchedRuleId && !matchedError && (
+      {matchedRuleId && !matchedError && (matchedLoading || matchedTotal > 0) && (
         <section>
           <SectionHeading
             title="Matched Tokens"
@@ -1166,6 +1164,7 @@ export function Tpsl1Page() {
               }}
             />
           )}
+          {(simTableLoading || simTotal > 0) && (
           <section>
             <SectionHeading
               title="Simulated Tokens"
@@ -1194,6 +1193,7 @@ export function Tpsl1Page() {
               emptyMessage="No tokens matched this rule's entry criteria."
             />
           </section>
+          )}
         </>
       )}
 

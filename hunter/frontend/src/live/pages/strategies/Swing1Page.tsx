@@ -685,7 +685,6 @@ export function Swing1Page() {
 
       {!loading && !error && (
         <RuleRowProvider value={rowContext}>
-          {realRules.length > 0 && (
             <Accordion
               className="mb-4"
               bordered={false}
@@ -714,11 +713,10 @@ export function Swing1Page() {
                 tableId={`${STRATEGY}_rules_real`} emptyMessage="No real rules"
               />
             </Accordion>
-          )}
 
           {isRealRuleSelected && positionsSection}
 
-          {realRules.length > 0 && <SectionDivider gap="xl" />}
+          <SectionDivider gap="xl" />
 
           <Accordion
             bordered={false}

@@ -706,7 +706,6 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
 
       {!loading && !error && (
         <RuleRowProvider value={rowContext}>
-          {realRules.length > 0 && (
             <Accordion
               className="mb-4"
               bordered={false}
@@ -735,11 +734,10 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
                 tableId={`${strategy}_rules_real`} emptyMessage="No real rules"
               />
             </Accordion>
-          )}
 
           {isRealRuleSelected && positionsSection}
 
-          {realRules.length > 0 && <SectionDivider gap="xl" />}
+          <SectionDivider gap="xl" />
 
           <Accordion
             bordered={false}
