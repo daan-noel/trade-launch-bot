@@ -49,7 +49,7 @@ import {
   updateTpsl2Rule,
 } from 'services/api';
 import { apiErrorMessage } from 'store/apiSlice';
-import { useSellTokenMutation } from '@live/store/liveEndpoints';
+import { useCloseRulePositionMutation } from '@live/store/liveEndpoints';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
@@ -441,8 +441,8 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
 
   const [inspect, setInspect] = useState<{ key: string; target: InspectTarget } | null>(null);
 
-  const [sellToken] = useSellTokenMutation();
-  const [sellingPositionMint, setSellingPositionMint] = useState<string | null>(null);
+  const [closeRulePosition] = useCloseRulePositionMutation();
+  const [sellingPositionId, setSellingPositionId] = useState<string | null>(null);
 
   // Position deltas keep both lists live via the hooks themselves:
   // `usePolledRules` patches each rule's counts/lifecycle in place and
@@ -629,15 +629,20 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
   );
 
 
-  const handleSellPosition = useCallback(async (mint: string) => {
-    setSellingPositionMint(mint);
+  const handleSellPosition = useCallback(async (row: RulePositionRecord) => {
+    // Optimistic bridge: the button reads `sellingPositionId` immediately, then the
+    // backend marks the position ExitPending and the `tpsl_positions_changed` stream
+    // patches `row.status` — which hides the button on its own. Clearing the id in
+    // `finally` is safe because the SSE status has taken over by then (and if the
+    // request errored, the row is still Holding so the button correctly reappears).
+    setSellingPositionId(row.id);
     setActionError(null);
-    try { await sellToken({ mint_address: mint }).unwrap(); }
+    try { await closeRulePosition({ strategy, positionId: row.id }).unwrap(); }
     catch (e) {
       setActionError(`Sell failed: ${apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'unknown error'}`);
     }
-    finally { setSellingPositionMint(null); }
-  }, [sellToken]);
+    finally { setSellingPositionId(null); }
+  }, [closeRulePosition, strategy]);
 
   const handleInspect = useCallback((row: RulePositionRecord | null) => {
     setInspect(row ? { key: row.id, target: inspectFromPosition(row) } : null);
@@ -661,7 +666,7 @@ export function TpslPage({ strategy }: { strategy: 'tpsl1' | 'tpsl2' }) {
         onInspect={handleInspect}
         useRowOverlay={tpslRowOverlay}
         isReal={isRealRuleSelected}
-        sellingPositionMint={sellingPositionMint}
+        sellingPositionId={sellingPositionId}
         onSellPosition={handleSellPosition}
       />
       <ArmedHistoryPanel strategy={strategy} selectedRuleId={selectedRuleId} />

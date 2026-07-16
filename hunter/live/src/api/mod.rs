@@ -101,6 +101,13 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions/wallet/{wallet}",
                 web::get().to(handlers::strategies::positions::get_positions_by_wallet),
             )
+            // Per-row "Sell ALL" — force-close ONE position via the position-aware
+            // path (row shows ExitPending→closed over SSE). More specific than the
+            // `{position_id}` GET below (extra `/close` segment), so ordering is safe.
+            .route(
+                "/strategies/{strategy}/positions/{position_id}/close",
+                web::post().to(handlers::strategies::positions::close_position),
+            )
             .route(
                 "/strategies/{strategy}/positions/{position_id}",
                 web::get().to(handlers::strategies::positions::get_position),

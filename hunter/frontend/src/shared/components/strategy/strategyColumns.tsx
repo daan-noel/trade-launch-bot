@@ -310,6 +310,10 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     render: (r) => {
       if (r.status === 'Arming') return <span className="italic text-text-dim">Arming</span>;
       if (r.status === 'BuySubmitted') return <span className="italic text-warning">Buying…</span>;
+      // A sell is in flight (manual "Sell ALL", a rule Stop & close, or a ladder/time
+      // exit): the position is marked ExitPending and the on-chain sell is running.
+      // Amber "Selling…" so the row itself shows live progress, not just the button.
+      if (r.status === 'ExitPending') return <span className="italic text-warning">Selling…</span>;
       if (r.status === 'TakeProfit') return <span className="font-bold text-green">TP</span>;
       if (r.status === 'StopLoss') return <span className="font-bold text-red">SL</span>;
       return <span className="text-text-dim">{r.status}</span>;

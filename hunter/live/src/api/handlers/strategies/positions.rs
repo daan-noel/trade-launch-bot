@@ -551,3 +551,33 @@ pub async fn get_position(
         }
     }
 }
+
+/// POST /api/strategies/{strategy}/positions/{position_id}/close
+///
+/// Force-close ONE open position now — backs the per-row "Sell ALL" button on the
+/// rule positions table. Unlike the raw `POST /api/solana/wallet/sell`
+/// (`manual_sell`, which sells the wallet's balance by mint and never touches the
+/// `StrategyPosition`), this routes through the position-aware close path so the row
+/// transitions `Holding → ExitPending → closed` over the existing
+/// `tpsl_positions_changed` stream — the operator sees live, reload-proof status.
+/// Real rows sell on-chain in a spawned task; the response returns as soon as the
+/// close has begun (202-style semantics), the terminal state arrives over SSE.
+pub async fn close_position(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<(String, Uuid)>,
+) -> impl Responder {
+    let (strategy, position_id) = path.into_inner();
+    if let Err(resp) = strategy_id(&strategy) {
+        return resp;
+    }
+    match app_state.strategy.close_position(position_id).await {
+        Ok(true) => HttpResponse::Accepted().json(serde_json::json!({ "closing": true })),
+        Ok(false) => HttpResponse::NotFound()
+            .json(serde_json::json!({"error": "No open position to close"})),
+        Err(e) => {
+            tracing::error!("Failed to close position {position_id}: {e}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to close position"}))
+        }
+    }
+}

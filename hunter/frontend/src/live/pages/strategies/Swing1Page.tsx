@@ -42,7 +42,7 @@ import {
   updateSwing1Rule,
 } from 'services/api';
 import { apiErrorMessage } from 'store/apiSlice';
-import { useSellTokenMutation } from '@live/store/liveEndpoints';
+import { useCloseRulePositionMutation } from '@live/store/liveEndpoints';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { cn } from 'lib/cn';
@@ -424,8 +424,8 @@ export function Swing1Page() {
     { key: string; target: InspectTarget; swingOverlay: ChartSwingOverlay | null } | null
   >(null);
 
-  const [sellToken] = useSellTokenMutation();
-  const [sellingPositionMint, setSellingPositionMint] = useState<string | null>(null);
+  const [closeRulePosition] = useCloseRulePositionMutation();
+  const [sellingPositionId, setSellingPositionId] = useState<string | null>(null);
 
   // Position deltas keep both lists live via the hooks themselves:
   // `usePolledRules` patches each rule's counts/lifecycle in place and
@@ -612,15 +612,16 @@ export function Swing1Page() {
   );
 
 
-  const handleSellPosition = useCallback(async (mint: string) => {
-    setSellingPositionMint(mint);
+  const handleSellPosition = useCallback(async (row: RulePositionRecord) => {
+    // Optimistic bridge until the ExitPending delta lands over SSE; see TpslPage.
+    setSellingPositionId(row.id);
     setActionError(null);
-    try { await sellToken({ mint_address: mint }).unwrap(); }
+    try { await closeRulePosition({ strategy: STRATEGY, positionId: row.id }).unwrap(); }
     catch (e) {
       setActionError(`Sell failed: ${apiErrorMessage(e as Parameters<typeof apiErrorMessage>[0]) ?? 'unknown error'}`);
     }
-    finally { setSellingPositionMint(null); }
-  }, [sellToken]);
+    finally { setSellingPositionId(null); }
+  }, [closeRulePosition]);
 
   const handleInspect = useCallback((row: RulePositionRecord | null) => {
     if (!row) { setInspect(null); return; }
@@ -647,7 +648,7 @@ export function Swing1Page() {
         selectedKey={inspect?.key ?? null}
         onInspect={handleInspect}
         isReal={isRealRuleSelected}
-        sellingPositionMint={sellingPositionMint}
+        sellingPositionId={sellingPositionId}
         onSellPosition={handleSellPosition}
       />
       <ArmedHistoryPanel strategy={STRATEGY} selectedRuleId={selectedRuleId} />

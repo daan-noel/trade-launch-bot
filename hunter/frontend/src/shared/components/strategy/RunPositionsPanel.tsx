@@ -80,10 +80,14 @@ interface RunPositionsPanelProps {
    *  overlay is strategy-specific (tpsl = markers; swing1 = legs). */
   useRowOverlay?: ChartOverlayHook<RulePositionRecord>;
   /** Real-rule sell wiring — enables the "Sell ALL" action on the current-run table
-   *  only (old runs are closed). Omit for paper/lab, where there's nothing to sell. */
+   *  only (old runs are closed). Omit for paper/lab, where there's nothing to sell.
+   *  Keyed by position id (not mint) so two wallets holding the same mint under one
+   *  rule sell independently; the click force-closes THAT position via the
+   *  position-aware path, and the row's own `status` (ExitPending, pushed over SSE)
+   *  takes over the "Selling…" state once the optimistic bridge ends. */
   isReal?: boolean;
-  sellingPositionMint?: string | null;
-  onSellPosition?: (mint: string) => void;
+  sellingPositionId?: string | null;
+  onSellPosition?: (row: RulePositionRecord) => void;
 }
 
 /** Heading row for a positions section (marker + title + count + rule name). */
@@ -135,7 +139,7 @@ export function RunPositionsPanel({
   onInspect,
   useRowOverlay,
   isReal = false,
-  sellingPositionMint,
+  sellingPositionId,
   onSellPosition,
 }: RunPositionsPanelProps) {
   // Numeric-filtering keys must include the token-info columns `TokenTable`
@@ -193,14 +197,18 @@ export function RunPositionsPanel({
 
   const currentRowActions = useCallback(
     (row: RulePositionRecord) => {
+      // Show the button only while the row is a live holding. Once the close begins
+      // the backend flips the row to `ExitPending` (pushed over SSE) and the button
+      // disappears on its own — `sellingPositionId` is just the optimistic bridge for
+      // the sub-second gap between the click and that delta arriving.
       if (!onSellPosition || row.status !== 'Holding') return null;
-      const isSelling = sellingPositionMint === row.mint_address;
+      const isSelling = sellingPositionId === row.id;
       return (
         <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
             disabled={isSelling}
-            onClick={() => onSellPosition(row.mint_address)}
+            onClick={() => onSellPosition(row)}
             className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
           >
             {isSelling ? 'Selling…' : 'Sell ALL'}
@@ -208,7 +216,7 @@ export function RunPositionsPanel({
         </div>
       );
     },
-    [onSellPosition, sellingPositionMint],
+    [onSellPosition, sellingPositionId],
   );
 
   const ruleName = selectedRuleName ?? '';

@@ -1334,50 +1334,7 @@ impl StrategyService {
         let now = Utc::now();
 
         for position in positions {
-            let position_id = position.id;
-            // 0-entry positions never received a fill — delete them rather than
-            // stamping a ManualClose exit at price 0. Claim the guard first so this
-            // can't race a concurrent ladder/time exit.
-            if position.entry_price.is_none() {
-                let Some(_guard) = self.runtime.try_begin_exit(position_id) else {
-                    continue;
-                };
-                let _ = self.repo.delete_position(position_id).await;
-                self.runtime.remove_position(&position);
-                continue;
-            }
-            // The last observed mark is the honest exit price; fall back to entry for
-            // a token the WS cache has since evicted.
-            let exit_price = self
-                .token_cache
-                .get(&position.mint_address)
-                .and_then(|e| e.value().current_price)
-                .unwrap_or_else(|| position.entry_price.unwrap_or(0.0));
-
-            if rule.trade_mode == "paper" {
-                // Claim the shared exit guard so this manual close can't race a
-                // concurrent ladder/time exit into a double-close.
-                let Some(_guard) = self.runtime.try_begin_exit(position_id) else {
-                    continue;
-                };
-                paper::record_time_exit(
-                    &self.repo,
-                    &self.runtime,
-                    &self.sse_tx,
-                    position,
-                    exit_price,
-                    now,
-                    MANUAL_CLOSE_REASON.to_string(),
-                    &rule,
-                )
-                .await;
-                // `record_time_exit` closes synchronously; `_guard` drops here.
-            } else {
-                // Real: `trigger_real_exit` claims the guard, marks ExitPending, and
-                // spawns the slow sell off the request path.
-                self.trigger_real_exit(position, exit_price, now, MANUAL_CLOSE_REASON.to_string())
-                    .await;
-            }
+            self.close_one_position(position, &rule, now).await;
         }
 
         // Re-check emptiness: the loop above may have just deleted the last 0-entry
@@ -1390,6 +1347,93 @@ impl StrategyService {
         }
 
         Ok((rule, count))
+    }
+
+    /// Force-close ONE open position now: a never-filled 0-entry row is deleted
+    /// (rather than stamping a `ManualClose` exit at price 0); a paper row closes in
+    /// place; a real row marks `ExitPending` (pushed to SSE immediately, so its table
+    /// row shows "Selling…") and sells on-chain in a spawned task off the request
+    /// path. Shared by [`stop_and_close_rule`] (bulk) and [`close_position`] (the
+    /// per-row "Sell ALL" button) so both take the exact same proven path.
+    async fn close_one_position(
+        &self,
+        position: StrategyPosition,
+        rule: &StrategyRule,
+        now: DateTime<Utc>,
+    ) {
+        let position_id = position.id;
+        // 0-entry positions never received a fill — delete them rather than stamping
+        // a ManualClose exit at price 0. Claim the guard first so this can't race a
+        // concurrent ladder/time exit.
+        if position.entry_price.is_none() {
+            let Some(_guard) = self.runtime.try_begin_exit(position_id) else {
+                return;
+            };
+            let _ = self.repo.delete_position(position_id).await;
+            self.runtime.remove_position(&position);
+            return;
+        }
+        // The last observed mark is the honest exit price; fall back to entry for a
+        // token the WS cache has since evicted.
+        let exit_price = self
+            .token_cache
+            .get(&position.mint_address)
+            .and_then(|e| e.value().current_price)
+            .unwrap_or_else(|| position.entry_price.unwrap_or(0.0));
+
+        if rule.trade_mode == "paper" {
+            // Claim the shared exit guard so this manual close can't race a concurrent
+            // ladder/time exit into a double-close.
+            let Some(_guard) = self.runtime.try_begin_exit(position_id) else {
+                return;
+            };
+            paper::record_time_exit(
+                &self.repo,
+                &self.runtime,
+                &self.sse_tx,
+                position,
+                exit_price,
+                now,
+                MANUAL_CLOSE_REASON.to_string(),
+                rule,
+            )
+            .await;
+            // `record_time_exit` closes synchronously; `_guard` drops here.
+        } else {
+            // Real: `trigger_real_exit` claims the guard, marks ExitPending, and spawns
+            // the slow sell off the request path.
+            self.trigger_real_exit(position, exit_price, now, MANUAL_CLOSE_REASON.to_string())
+                .await;
+        }
+    }
+
+    /// Force-close a single open position now — backs the per-row "Sell ALL" on the
+    /// rule positions table. Routing this through the position-aware close path
+    /// (instead of the raw `manual_sell` wallet endpoint, which never touched the
+    /// `StrategyPosition`) is what makes the row transition `Holding → ExitPending →
+    /// closed` over the existing `tpsl_positions_changed` stream — real, reload-proof,
+    /// cross-tab status instead of a frozen button. Returns `false` when no open
+    /// position with `position_id` exists (already closed / unknown id).
+    pub async fn close_position(&self, position_id: Uuid) -> anyhow::Result<bool> {
+        // Authoritative live snapshot — the in-memory holding index is the source of
+        // truth across both modes (same as `stop_and_close_rule`).
+        let Some(position) = self
+            .runtime
+            .all_holding_positions()
+            .into_iter()
+            .find(|p| p.id == position_id)
+            .map(|p| (*p).clone())
+        else {
+            return Ok(false);
+        };
+        let Some(rule_id) = position.rule_id else {
+            return Ok(false);
+        };
+        let Some(rule) = self.runtime.rule_by_id(rule_id) else {
+            return Ok(false);
+        };
+        self.close_one_position(position, &rule, Utc::now()).await;
+        Ok(true)
     }
 
     /// Pause every currently active rule for `strategy_id` in `trade_mode`. Each

@@ -84,6 +84,18 @@ export const liveApi = baseApi.injectEndpoints({
     sellToken: builder.mutation<{ success: boolean }, SellTokenArgs>({
       query: (body) => ({ url: '/api/solana/wallet/sell', method: 'POST', body }),
     }),
+    // Per-row "Sell ALL" on the rule positions table. Unlike `sellToken` (a raw
+    // wallet sell by mint), this force-closes the specific strategy position via the
+    // position-aware path, so the row transitions Holding → ExitPending → closed over
+    // the `tpsl_positions_changed` SSE stream — live, reload-proof status. The backend
+    // returns 202 as soon as the close begins; the terminal state arrives over SSE, so
+    // no cache tag is invalidated here (the stream patches the row).
+    closeRulePosition: builder.mutation<{ closing: boolean }, { strategy: string; positionId: string }>({
+      query: ({ strategy, positionId }) => ({
+        url: `/api/strategies/${strategy}/positions/${positionId}/close`,
+        method: 'POST',
+      }),
+    }),
     // Accrued pump.fun cashback — a read-only on-chain status (two account
     // reads). Cached, not polled: cashback accrues slowly, so the wallet card
     // refreshes on mount / after a claim, never on the live price tick.
@@ -128,6 +140,7 @@ export const {
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
+  useCloseRulePositionMutation,
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
   useGetArmedHistoryQuery,
