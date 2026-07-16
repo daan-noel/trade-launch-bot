@@ -41,7 +41,12 @@ import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { usePolledRules } from 'hooks/usePolledRules';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
-import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import {
+  isTableQueryActive,
+  toSummaryBody,
+  toTableRequest,
+  type TableRequestBody,
+} from 'services/tableRequest';
 import type { TableQuery } from 'components/table/types';
 import { useDispatch } from 'react-redux';
 import {
@@ -1103,9 +1108,15 @@ export function Tpsl2Page() {
         </RuleRowProvider>
       )}
 
-      {(matchedError || (matchedRuleId && (matchedLoading || matchedTotal > 0))) && <SectionDivider />}
+      {(matchedError ||
+        (matchedRuleId &&
+          (matchedLoading || matchedTotal > 0 || isTableQueryActive(matchedQuery)))) && (
+        <SectionDivider />
+      )}
       {matchedError && <InlineAlert variant="error">{matchedError}</InlineAlert>}
-      {matchedRuleId && !matchedError && (matchedLoading || matchedTotal > 0) && (
+      {matchedRuleId &&
+        !matchedError &&
+        (matchedLoading || matchedTotal > 0 || isTableQueryActive(matchedQuery)) && (
         <section>
           <SectionHeading
             title="Matched Tokens"
@@ -1168,7 +1179,7 @@ export function Tpsl2Page() {
               }}
             />
           )}
-          {(simTableLoading || simTotal > 0) && (
+          {(simTableLoading || simTotal > 0 || isTableQueryActive(simQuery)) && (
           <section>
             <SectionHeading
               title="Simulated Tokens"

@@ -98,7 +98,12 @@ import {
   invalidateStrategyMatched,
 } from '@lab/store/strategyResultCache';
 import { useServerTable } from 'hooks/useServerTable';
-import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import {
+  isTableQueryActive,
+  toSummaryBody,
+  toTableRequest,
+  type TableRequestBody,
+} from 'services/tableRequest';
 import type { AppDispatch } from '@lab/store';
 import type {
   MatchedTokenRecord,
@@ -1100,9 +1105,15 @@ export function Tpsl1Page() {
         </RuleRowProvider>
       )}
 
-      {(matchedError || (matchedRuleId && (matchedLoading || matchedTotal > 0))) && <SectionDivider />}
+      {(matchedError ||
+        (matchedRuleId &&
+          (matchedLoading || matchedTotal > 0 || isTableQueryActive(matchedQuery)))) && (
+        <SectionDivider />
+      )}
       {matchedError && <InlineAlert variant="error">{matchedError}</InlineAlert>}
-      {matchedRuleId && !matchedError && (matchedLoading || matchedTotal > 0) && (
+      {matchedRuleId &&
+        !matchedError &&
+        (matchedLoading || matchedTotal > 0 || isTableQueryActive(matchedQuery)) && (
         <section>
           <SectionHeading
             title="Matched Tokens"
@@ -1164,7 +1175,7 @@ export function Tpsl1Page() {
               }}
             />
           )}
-          {(simTableLoading || simTotal > 0) && (
+          {(simTableLoading || simTotal > 0 || isTableQueryActive(simQuery)) && (
           <section>
             <SectionHeading
               title="Simulated Tokens"
