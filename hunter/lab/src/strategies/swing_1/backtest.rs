@@ -49,6 +49,7 @@ fn resolve_token(
     token: &Token,
     histories: &HashMap<String, Arc<Vec<CorpusTrade>>>,
     rule: &Swing1Rule,
+    as_of: DateTime<Utc>,
 ) -> Option<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> {
     let trades = histories.get(&token.mint_address)?;
     // swing1 entry: kill→volume latch + higher-low confirm → worst-case
@@ -57,7 +58,10 @@ fn resolve_token(
     let (_trigger_idx, fill) = entry::find_phase_entry(trades, rule)?;
     let (entry_price, entry_tx, entry_time) = (fill.price, fill.tx_signature, fill.block_time);
 
-    let exit = exit::find_trade_driven_exit(trades, entry_time, entry_price, rule);
+    // Death-close judged against the run's wall-clock `now` (matching live), so a
+    // token that stopped trading before the lake's end is booked `Dead` (a loss at
+    // its death point), not left `Open`. See `find_trade_driven_exit_as_of`.
+    let exit = exit::find_trade_driven_exit_as_of(trades, entry_time, entry_price, rule, as_of);
 
     let (exit_price, exit_tx, exit_time, exit_reason, holding_secs, pnl_percent, pnl_sol) =
         match exit {
@@ -232,6 +236,10 @@ pub async fn run_backtest(
     // `histories` map, spread across cores by `rayon` inside `spawn_blocking`. One
     // `tick()` per token keeps the bar reaching `total`; order is irrelevant (sorted
     // by entry time below).
+    // One wall-clock `now` for the whole run — the death-close "present" (matching
+    // live), uniform across every token so the deadness verdict is internally
+    // consistent within this simulation.
+    let as_of = Utc::now();
     let mut candidates: Vec<(DateTime<Utc>, Option<DateTime<Utc>>, BacktestTokenResult)> = {
         let tokens = tokens.clone();
         let rule = rule.clone();
@@ -244,7 +252,7 @@ pub async fn run_backtest(
                     let resolved = if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                         None
                     } else {
-                        resolve_token(token, &histories, &rule)
+                        resolve_token(token, &histories, &rule, as_of)
                     };
                     progress.tick();
                     resolved

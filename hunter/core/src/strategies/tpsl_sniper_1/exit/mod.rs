@@ -390,13 +390,32 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     entry_price: f64,
     rule: &Tpsl1Rule,
 ) -> Option<ExitFill> {
+    // Default death-close "as of" = the token's own last trade. Analysis drivers that
+    // know the whole corpus's end (grouped sweep / single-rule simulate) call
+    // [`find_trade_driven_exit_as_of`] instead — see it for the parity rationale.
+    let as_of = crate::strategies::death::analysis_as_of(trades, entry_time);
+    find_trade_driven_exit_as_of(trades, entry_time, entry_price, rule, as_of)
+}
+
+/// [`find_trade_driven_exit`] with an explicit death-close **as-of** instant — the
+/// analysis "present" the quiet-clock deadness check ([`crate::strategies::death`])
+/// measures silence against. Analysis drivers pass the **corpus-wide** last-trade time
+/// so a token that died mid-window (its last trade meaningful, no dust tail) is booked
+/// `Dead` at its death point instead of left `Open` — matching live's wall-clock
+/// verdict. See swing1's twin for the full rationale.
+pub fn find_trade_driven_exit_as_of<T: TradeRow>(
+    trades: &[T],
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    rule: &Tpsl1Rule,
+    as_of: DateTime<Utc>,
+) -> Option<ExitFill> {
     exit_walk(trades, entry_time, entry_price, rule, true)
         // Death-close fallback: ladder never fired but the token is provably dead
         // (liquidity gone + silent) → close at the last meaningful trade rather than
         // leave it `Open`. Analysis-only; live closes silent tokens via its clock
         // sweep. See `strategies::death`.
         .or_else(|| {
-            let as_of = crate::strategies::death::analysis_as_of(trades, entry_time);
             crate::strategies::death::find_death_point(trades, entry_time, as_of).map(|d| {
                 ExitFill {
                     price: d.price,

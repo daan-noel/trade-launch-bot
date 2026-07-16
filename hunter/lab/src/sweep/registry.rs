@@ -284,7 +284,11 @@ async fn sweep_tpsl2(
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
     let axes_json = serde_json::to_value(&axes).context("serializing resolved TPSL2 axes")?;
 
-    let strategy = Tpsl2Strategy::new(sweep_base_rule_tpsl2(buy_amount_sol), axes);
+    // Judge deadness against the run's wall-clock `now` (matching live), captured once
+    // so it's uniform across the whole run. Over the sealed lake `now` ≫ every last
+    // trade, so a token that stopped trading is booked `Dead` not `Open`.
+    let strategy = Tpsl2Strategy::new(sweep_base_rule_tpsl2(buy_amount_sol), axes)
+        .with_as_of(chrono::Utc::now());
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -416,7 +420,11 @@ async fn sweep_swing1(
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
     let axes_json = serde_json::to_value(&axes).context("serializing resolved swing1 axes")?;
 
-    let strategy = Swing1Strategy::new(sweep_base_rule_swing1(buy_amount_sol), axes);
+    // Judge deadness against the run's wall-clock `now` (matching live), captured once
+    // so it's uniform across the whole run. Over the sealed lake `now` ≫ every last
+    // trade, so a token that stopped trading is booked `Dead` not `Open`.
+    let strategy = Swing1Strategy::new(sweep_base_rule_swing1(buy_amount_sol), axes)
+        .with_as_of(chrono::Utc::now());
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -531,7 +539,11 @@ async fn sweep_tpsl1(
     // Store the resolved axes (post-defaults/dedup) so the run is reproducible.
     let axes_json = serde_json::to_value(&axes).context("serializing resolved TPSL1 axes")?;
 
-    let strategy = Tpsl1Strategy::new(sweep_base_rule_tpsl1(buy_amount_sol), axes);
+    // Judge deadness against the run's wall-clock `now` (matching live), captured once
+    // so it's uniform across the whole run. Over the sealed lake `now` ≫ every last
+    // trade, so a token that stopped trading is booked `Dead` not `Open`.
+    let strategy = Tpsl1Strategy::new(sweep_base_rule_tpsl1(buy_amount_sol), axes)
+        .with_as_of(chrono::Utc::now());
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -631,7 +643,11 @@ fn simulate_tpsl2_one_combo(
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
-    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(buy_amount_sol));
+    // Same death-close "present" contract as the grouped sweep: judge against run
+    // time (matching live). For the sealed lake this resolves the same Dead/Open
+    // verdict a sweep did, so the drill-in stays PnL-consistent with the stored row.
+    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(buy_amount_sol))
+        .with_as_of(chrono::Utc::now());
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;
@@ -674,7 +690,8 @@ fn simulate_tpsl1_one_combo(
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
-    let strategy = Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1(buy_amount_sol));
+    let strategy = Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1(buy_amount_sol))
+        .with_as_of(chrono::Utc::now());
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;
@@ -717,7 +734,8 @@ fn simulate_swing1_one_combo(
     params_json: &Value,
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
-    let strategy = Swing1Strategy::for_replay(sweep_base_rule_swing1(buy_amount_sol));
+    let strategy = Swing1Strategy::for_replay(sweep_base_rule_swing1(buy_amount_sol))
+        .with_as_of(chrono::Utc::now());
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;

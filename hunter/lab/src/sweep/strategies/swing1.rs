@@ -159,6 +159,15 @@ pub struct Swing1Strategy {
     axes: Swing1Axes,
     /// Execution costs applied to every simulated round-trip.
     costs: CostModel,
+    /// The analysis "present" for the death-close quiet-clock — the sweep/simulate
+    /// **run time** (`Utc::now()`), captured once so it's uniform across the whole run
+    /// (matching live/paper, which judge deadness against wall-clock `now`). `None` ⇒
+    /// fall back to each token's own last trade (the pre-fix per-token behavior, kept
+    /// only for unit tests that don't set it). Over the sealed-days lake `now` is
+    /// always ≫ every last trade, so a token that stopped trading is booked `Dead`,
+    /// not `Open` — see
+    /// [`trading_core::strategies::swing_1::exit::find_trade_driven_exit_as_of`].
+    as_of: Option<DateTime<Utc>>,
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
@@ -410,12 +419,25 @@ impl Swing1Axes {
 
 impl Swing1Strategy {
     pub fn new(base: Swing1Rule, axes: Swing1Axes) -> Self {
-        Self { base, axes, costs: CostModel::pumpfun_default() }
+        Self { base, axes, costs: CostModel::pumpfun_default(), as_of: None }
     }
 
     /// Minimal strategy for re-simulating a single stored combo (drill-in endpoint).
     pub fn for_replay(base: Swing1Rule) -> Self {
-        Self { base, axes: Swing1Axes::default(), costs: CostModel::pumpfun_default() }
+        Self {
+            base,
+            axes: Swing1Axes::default(),
+            costs: CostModel::pumpfun_default(),
+            as_of: None,
+        }
+    }
+
+    /// Set the death-close "present" — the run's wall-clock `now` (see
+    /// [`Swing1Strategy::as_of`]). Called once by the driver so deadness is judged
+    /// against run time (like live), uniformly across the whole run.
+    pub fn with_as_of(mut self, as_of: DateTime<Utc>) -> Self {
+        self.as_of = Some(as_of);
+        self
     }
 
     /// Pair a scalar param set with its resolved [`Swing1Rule`] (built once here,
@@ -809,7 +831,13 @@ impl Strategy for Swing1Strategy {
         let rule = &params.rule;
         let notional = rule.buy_amount_sol;
 
-        match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
+        // Death-close "present": the run's wall-clock `now` (matching live), or this
+        // token's own last trade when unset (unit tests only). Over the sealed lake
+        // `now` ≫ every last trade, so a token that stopped trading is booked `Dead`.
+        let as_of = self
+            .as_of
+            .unwrap_or_else(|| trading_core::strategies::death::analysis_as_of(trades, entry_time));
+        match exit::find_trade_driven_exit_as_of(trades, entry_time, entry_price, rule, as_of) {
             Some(f) => {
                 let (pnl_sol, pnl_percent) =
                     round_trip_with_costs(entry_price, f.price, notional, &self.costs);

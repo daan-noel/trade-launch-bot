@@ -117,6 +117,11 @@ pub struct Tpsl2Strategy {
     axes: Tpsl2Axes,
     /// Execution costs applied to every simulated round-trip (Rec 1).
     costs: CostModel,
+    /// The analysis "present" for the death-close quiet-clock — the run's wall-clock
+    /// `now`, captured once (matching live). `None` ⇒ per-token last trade (unit tests
+    /// only). See
+    /// [`trading_core::strategies::tpsl_sniper_2::exit::find_trade_driven_exit_as_of`].
+    as_of: Option<DateTime<Utc>>,
 }
 
 /// Grid axes for the coarse pass. Each `Vec` is one knob's candidate values.
@@ -278,7 +283,14 @@ impl Tpsl2Axes {
 
 impl Tpsl2Strategy {
     pub fn new(base: Tpsl2Rule, axes: Tpsl2Axes) -> Self {
-        Self { base, axes, costs: CostModel::pumpfun_default() }
+        Self { base, axes, costs: CostModel::pumpfun_default(), as_of: None }
+    }
+
+    /// Set the death-close "present" — the run's wall-clock `now` (see
+    /// [`Tpsl2Strategy::as_of`]).
+    pub fn with_as_of(mut self, as_of: DateTime<Utc>) -> Self {
+        self.as_of = Some(as_of);
+        self
     }
 
     /// Pair a scalar param set with its resolved `Tpsl2Rule` (built once here, not
@@ -345,7 +357,12 @@ impl Tpsl2Strategy {
 
     /// Minimal strategy for re-simulating a single stored combo.
     pub fn for_replay(base: Tpsl2Rule) -> Self {
-        Self { base, axes: Tpsl2Axes::default(), costs: CostModel::pumpfun_default() }
+        Self {
+            base,
+            axes: Tpsl2Axes::default(),
+            costs: CostModel::pumpfun_default(),
+            as_of: None,
+        }
     }
 
     /// Reconstruct a combo from the `params_json` stored in the results table.
@@ -614,8 +631,13 @@ impl Strategy for Tpsl2Strategy {
         let rule = &params.rule;
         let notional = rule.buy_amount_sol;
 
-        // (3) Exit decision via the shared ladder.
-        match exit::find_trade_driven_exit(trades, entry_time, entry_price, rule) {
+        // (3) Exit decision via the shared ladder. Death-close "present" = the run's
+        // wall-clock `now` when set, else this token's own last trade — see
+        // `resolve_exit`'s swing1 twin.
+        let as_of = self
+            .as_of
+            .unwrap_or_else(|| trading_core::strategies::death::analysis_as_of(trades, entry_time));
+        match exit::find_trade_driven_exit_as_of(trades, entry_time, entry_price, rule, as_of) {
             Some(f) => {
                 let (pnl_sol, pnl_percent) =
                     round_trip_with_costs(entry_price, f.price, notional, &self.costs);

@@ -25,7 +25,7 @@ use trading_core::models::trade::TradeRow;
 use trading_core::models::Swing1Rule;
 use trading_core::strategies::swing_1::{
     entry::find_phase_entry,
-    exit::find_trade_driven_exit,
+    exit::find_trade_driven_exit_as_of,
     funnel::{build_swing1_funnel, Swing1LatchInfo, Swing1LowVerdict},
     swing::SwingLeg,
 };
@@ -206,7 +206,15 @@ fn build_response(mint: String, trades: &[CorpusTrade], rule: &Swing1Rule) -> Sw
                     price: fill.price,
                     time: fill.block_time.to_rfc3339(),
                 });
-                if let Some(ef) = find_trade_driven_exit(trades, fill.block_time, fill.price, rule) {
+                // Death-close judged against run-time `now` (matching live + the sim),
+                // so a token that stopped trading shows its `Dead` exit on the chart.
+                if let Some(ef) = find_trade_driven_exit_as_of(
+                    trades,
+                    fill.block_time,
+                    fill.price,
+                    rule,
+                    chrono::Utc::now(),
+                ) {
                     exit_info = Some(Swing1ExitInfo {
                         reason: ef.reason.as_str().to_string(),
                         price: ef.price,

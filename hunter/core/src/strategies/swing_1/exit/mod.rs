@@ -489,6 +489,32 @@ pub fn find_trade_driven_exit<T: TradeRow>(
     entry_price: f64,
     rule: &Swing1Rule,
 ) -> Option<ExitFill> {
+    // Default death-close "as of" = the token's own last trade. Analysis drivers that
+    // know the whole corpus's end (grouped sweep / single-rule simulate) call
+    // [`find_trade_driven_exit_as_of`] instead — see it for why the per-token default
+    // under-detects deadness.
+    let as_of = crate::strategies::death::analysis_as_of(trades, entry_time);
+    find_trade_driven_exit_as_of(trades, entry_time, entry_price, rule, as_of)
+}
+
+/// [`find_trade_driven_exit`] with an explicit death-close **as-of** instant — the
+/// analysis "present" the quiet-clock deadness check ([`crate::strategies::death`])
+/// measures silence against.
+///
+/// The per-token default (`trades.last()`) can't see a token that died *after* its
+/// own data ends: when the last trade is itself meaningful (a final dump, no dust
+/// tail) the quiet clock has zero seconds to run, so a dead token is mislabeled
+/// `Open`. The grouped sweep / single-rule simulate therefore pass the **corpus-wide**
+/// last-trade time, the static analogue of live's wall-clock `now`, so a token silent
+/// since long before the dataset's end is booked `Dead` at its death point — matching
+/// live/paper's verdict.
+pub fn find_trade_driven_exit_as_of<T: TradeRow>(
+    trades: &[T],
+    entry_time: DateTime<Utc>,
+    entry_price: f64,
+    rule: &Swing1Rule,
+    as_of: DateTime<Utc>,
+) -> Option<ExitFill> {
     // Analysis path (backtest / grouped sweep / detect): market-fill at the first
     // firing trade when no firing's window ever holds a fill, so a token that
     // provably crossed an exit isn't mislabeled `Open` (see tpsl2's twin).
@@ -499,7 +525,6 @@ pub fn find_trade_driven_exit<T: TradeRow>(
         // leave it `Open`. Analysis-only; live closes silent tokens via its clock
         // sweep. See `strategies::death`.
         .or_else(|| {
-            let as_of = crate::strategies::death::analysis_as_of(trades, entry_time);
             crate::strategies::death::find_death_point(trades, entry_time, as_of).map(|d| {
                 ExitFill {
                     price: d.price,
@@ -694,6 +719,42 @@ mod tests {
         assert_eq!(f.reason, ExitReason::TakeProfit);
         assert!((f.price - 2.0).abs() < 1e-9, "fills at the firing trade, got {}", f.price);
         assert!(find_trade_driven_exit_with_slot(&trades, base(), 1.0, &rule).is_none());
+    }
+
+    #[test]
+    fn dead_on_meaningful_last_trade_needs_run_as_of() {
+        // A token that dies right after a meaningful trade (a final dump, no dust
+        // tail): reserves gone + silent. With the per-token default as-of (its OWN
+        // last trade) the quiet clock has 0s to run, so the death-close can't fire and
+        // the position is mislabeled `Open` — the sim/sweep bug. With an explicit
+        // run-time as-of well past the last trade (the sealed-lake analogue of live's
+        // wall-clock `now`) it books `Dead` at the death point. This is the
+        // sim/sweep ↔ live deadness parity fix.
+        let rule = rule_tp_sl(500.0, 99.0); // ladder never fires on the flat path below
+        let mk = |kind, secs, price, slot, reserves: f64| {
+            let mut t = tr(kind, secs, price, slot);
+            t.real_reserve_sol = Some(reserves); // < 30 ⇒ liquidity gone (Signal 1)
+            t
+        };
+        let trades = vec![
+            mk(TradeType::Buy, 1, 1.0, 2, 5.0),
+            mk(TradeType::Sell, 10, 1.0, 3, 4.0), // meaningful (1.0 SOL) LAST trade
+        ];
+
+        // Per-token default: as-of = the token's own last trade (base()+10s), so the
+        // silence gap is 0 < DEAD_QUIET_SECS → not dead → left `Open` (None here).
+        assert!(
+            find_trade_driven_exit(&trades, base(), 1.0, &rule).is_none(),
+            "per-token as-of can't see the silence after the token's own last trade"
+        );
+
+        // Run-time as-of, well past the last trade: quiet ≫ 300s → Dead at the death
+        // point (the last meaningful trade, price 1.0).
+        let as_of = base() + Duration::seconds(10 + 400);
+        let f = find_trade_driven_exit_as_of(&trades, base(), 1.0, &rule, as_of)
+            .expect("run-time as-of books the silent-dead token");
+        assert_eq!(f.reason, ExitReason::Dead);
+        assert!((f.price - 1.0).abs() < 1e-9, "priced at the last meaningful trade");
     }
 
     // ── Incremental memo parity (Phase A DoD gate) ───────────────────────────
