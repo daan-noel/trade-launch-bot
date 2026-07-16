@@ -89,12 +89,25 @@ pub fn build_manage_trader_config(
         signer,
         nonce_accounts,
     );
-    config.launch_alt_address = settings.launch_alt;
+    // Manage buys/sells are plain legacy txs — the launch ALT is only for the
+    // oversized create+dev-buy path, never a manage trade. Leaving it set would
+    // make `initialize()` fetch the ALT account (one `getAccountInfo`) on EVERY
+    // manage leg for nothing, so keep it `None` here.
+    config.launch_alt_address = None;
     config.durable_nonce = false;
     config.retry.confirm_max_retries = 40;
     config.retry.confirm_poll_ms = 1_500;
     config.retry.confirm_poll_schedule_ms = vec![500, 750, 1_000, 1_500, 2_000];
     config.compute.price_micro_lamports = manage.cu_price_micro_lamports;
+    // Cold, operator-timed path: a fresh trader is built per manage leg and lives
+    // only for that one trade, so the default 2 s background blockhash refresher
+    // would fire `getLatestBlockhash` ~30× across a slow confirm for a single tx.
+    // Reuse the once-primed blockhash for the whole leg (30 s max-age is well
+    // inside the ~60 s validity window) and push the background refresh out of the
+    // op's lifetime — `build_recent_tx` still fetches on demand if the cache goes
+    // stale, so freshness is never at risk.
+    config.cache.blockhash_max_age_ms = 30_000;
+    config.cache.blockhash_refresh_ms = 300_000;
     // Zero (default) → the appended tip ix is a no-op transfer; no tip paid on RPC.
     config.jito.min_sol = manage.jito_min_tip_sol;
     config.jito.max_sol = manage.jito_max_tip_sol;

@@ -14,7 +14,29 @@ use crate::protocol;
 use crate::types::TokenProgram;
 use solana_sdk::address_lookup_table::{state::AddressLookupTable, AddressLookupTableAccount};
 use solana_sdk::pubkey::Pubkey;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tracing::info;
+
+/// Process-wide cache of the pump `Global` account's wallet-INDEPENDENT read
+/// fields (`fee_recipient`, `stable_quote_mint`) — the only on-chain read in
+/// [`PumpFunTrader::fetch_global_account`]. They change only on rare pump
+/// governance action, so re-reading them on every trader init is waste (forge
+/// rebuilds a trader per manage leg). The wallet-SPECIFIC PDAs
+/// (`user_volume_accumulator`) are always derived locally, never cached.
+static GLOBAL_READ_CACHE: OnceLock<Mutex<Option<GlobalRead>>> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+struct GlobalRead {
+    fee_recipient: Pubkey,
+    stable_quote_mint: Option<Pubkey>,
+    fetched_at: Instant,
+}
+
+/// TTL for a cached `Global` read. Short enough that a fee-recipient rotation is
+/// picked up quickly, long enough that a multi-leg manage action (trader-per-leg,
+/// whole run in seconds) reads it once instead of once per leg.
+const GLOBAL_READ_TTL: Duration = Duration::from_secs(60);
 
 impl PumpFunTrader {
     // -----------------------------------------------------------------------
@@ -71,32 +93,10 @@ impl PumpFunTrader {
     async fn fetch_global_account(&self) -> Result<GlobalAccount> {
         let (global_pda, _) = Pubkey::find_program_address(&[b"global"], &protocol::PUMP_FUN);
 
-        // Fetch fee_recipient (offset 41) + the stable quote mint from chain in
-        // one read. Layout (after the 8-byte discriminator): the
-        // `whitelisted_quote_mints[0]` pubkey sits at byte 1013 — see the `Global`
-        // struct in the pump IDL. Parsed best-effort: a shorter/older account or a
-        // default (all-zero) slot just yields no stable mint (claim path skipped).
-        const OFF_FEE_RECIPIENT: usize = 41;
-        const OFF_STABLE_QUOTE_MINT: usize = 1013;
-        let (fee_recipient, stable_quote_mint) = {
-            let account = self
-                .rpc
-                .get_account(&global_pda)
-                .await
-                .context("Failed to fetch pump global account")?;
-            if account.data.len() < OFF_FEE_RECIPIENT + 32 {
-                bail!("Global account data too short");
-            }
-            let fee_recipient =
-                Pubkey::try_from(&account.data[OFF_FEE_RECIPIENT..OFF_FEE_RECIPIENT + 32])
-                    .context("Failed to parse fee_recipient")?;
-            let stable_quote_mint = account
-                .data
-                .get(OFF_STABLE_QUOTE_MINT..OFF_STABLE_QUOTE_MINT + 32)
-                .and_then(|s| Pubkey::try_from(s).ok())
-                .filter(|pk| *pk != Pubkey::default());
-            (fee_recipient, stable_quote_mint)
-        };
+        // Wallet-independent read (fee_recipient + stable_quote_mint), served from
+        // a short-TTL process cache so repeated trader inits don't each pay a
+        // `getAccountInfo`. The wallet-specific PDAs below are always derived local.
+        let (fee_recipient, stable_quote_mint) = self.cached_global_read(&global_pda).await?;
 
         let (global_volume_accumulator, _) =
             Pubkey::find_program_address(&[b"global_volume_accumulator"], &protocol::PUMP_FUN);
@@ -120,6 +120,59 @@ impl PumpFunTrader {
             fee_config,
             stable_quote_mint,
         })
+    }
+
+    /// Read the pump `Global` account's wallet-independent fields
+    /// (`fee_recipient` + `stable_quote_mint`) through [`GLOBAL_READ_CACHE`],
+    /// hitting the RPC only on a cold/stale entry. Layout (after the 8-byte
+    /// discriminator): `fee_recipient` at offset 41; `whitelisted_quote_mints[0]`
+    /// at byte 1013 — see the `Global` struct in the pump IDL. `stable_quote_mint`
+    /// is best-effort: a shorter/older account or a default (all-zero) slot yields
+    /// `None` (the claim path is skipped).
+    async fn cached_global_read(
+        &self,
+        global_pda: &Pubkey,
+    ) -> Result<(Pubkey, Option<Pubkey>)> {
+        let cell = GLOBAL_READ_CACHE.get_or_init(|| Mutex::new(None));
+
+        // Fast path: a fresh cached read (fee_recipient is process-global, so any
+        // trader's cached value is valid for every wallet).
+        if let Ok(guard) = cell.lock() {
+            if let Some(g) = *guard {
+                if g.fetched_at.elapsed() <= GLOBAL_READ_TTL {
+                    return Ok((g.fee_recipient, g.stable_quote_mint));
+                }
+            }
+        }
+
+        // Cold/stale: read on-chain, then refresh the cache.
+        const OFF_FEE_RECIPIENT: usize = 41;
+        const OFF_STABLE_QUOTE_MINT: usize = 1013;
+        let account = self
+            .rpc
+            .get_account(global_pda)
+            .await
+            .context("Failed to fetch pump global account")?;
+        if account.data.len() < OFF_FEE_RECIPIENT + 32 {
+            bail!("Global account data too short");
+        }
+        let fee_recipient =
+            Pubkey::try_from(&account.data[OFF_FEE_RECIPIENT..OFF_FEE_RECIPIENT + 32])
+                .context("Failed to parse fee_recipient")?;
+        let stable_quote_mint = account
+            .data
+            .get(OFF_STABLE_QUOTE_MINT..OFF_STABLE_QUOTE_MINT + 32)
+            .and_then(|s| Pubkey::try_from(s).ok())
+            .filter(|pk| *pk != Pubkey::default());
+
+        if let Ok(mut guard) = cell.lock() {
+            *guard = Some(GlobalRead {
+                fee_recipient,
+                stable_quote_mint,
+                fetched_at: Instant::now(),
+            });
+        }
+        Ok((fee_recipient, stable_quote_mint))
     }
 
     // -----------------------------------------------------------------------

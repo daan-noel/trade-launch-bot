@@ -268,31 +268,42 @@ impl Engine {
         // 4. Parse & deduplicate nonce accounts.
         self.collect_nonce_pubkeys()?;
 
-        // 5. Pre-fetch all nonce hashes. Fetch each hash first (async), then take
-        // the sync lock only for the inserts — a `std::sync::Mutex` guard must not
-        // be held across `.await`.
-        info!("🔧 Pre-fetching nonce hashes...");
-        {
-            let mut fetched = Vec::with_capacity(self.nonce_pubkeys.len());
-            for &pubkey in &self.nonce_pubkeys {
-                let hash = self.fetch_nonce_hash_async(&pubkey).await?;
-                fetched.push((pubkey, hash));
+        // 5. Pre-fetch all nonce hashes — ONLY in durable-nonce mode. A
+        // recent-blockhash consumer (`durable_nonce=false`, e.g. forge's
+        // per-wallet ephemeral signers) never acquires a nonce slot on the trade
+        // path (`build_trade_tx` → `build_recent_tx`), so reading each nonce
+        // account here is pure waste — one `getAccountInfo` per nonce account on
+        // EVERY trader init (and forge rebuilds a trader per manage leg). Skip it
+        // and leave the slots empty; the hot path never touches them. Hunter
+        // (`durable_nonce=true`) is unchanged.
+        if self.config.durable_nonce {
+            // Fetch each hash first (async), then take the sync lock only for the
+            // inserts — a `std::sync::Mutex` guard must not be held across `.await`.
+            info!("🔧 Pre-fetching nonce hashes...");
+            {
+                let mut fetched = Vec::with_capacity(self.nonce_pubkeys.len());
+                for &pubkey in &self.nonce_pubkeys {
+                    let hash = self.fetch_nonce_hash_async(&pubkey).await?;
+                    fetched.push((pubkey, hash));
+                }
+                let mut slots = self.nonce_slots.lock().unwrap_or_else(|p| p.into_inner());
+                for (pubkey, hash) in fetched {
+                    slots.insert(
+                        pubkey,
+                        NonceSlot {
+                            cached_hash: Some(hash),
+                            in_use: false,
+                        },
+                    );
+                }
             }
-            let mut slots = self.nonce_slots.lock().unwrap_or_else(|p| p.into_inner());
-            for (pubkey, hash) in fetched {
-                slots.insert(
-                    pubkey,
-                    NonceSlot {
-                        cached_hash: Some(hash),
-                        in_use: false,
-                    },
-                );
-            }
+            info!(
+                "✅ Nonce hashes cached for {} account(s)",
+                self.nonce_pubkeys.len()
+            );
+        } else {
+            info!("⏭️  Recent-blockhash mode — skipping nonce prefetch (no nonce reads)");
         }
-        info!(
-            "✅ Nonce hashes cached for {} account(s)",
-            self.nonce_pubkeys.len()
-        );
 
         // 6. Recent-blockhash refresher. Prime once, then refresh in background.
         match self.rpc.get_latest_blockhash().await {
