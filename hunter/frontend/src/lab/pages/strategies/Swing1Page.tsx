@@ -406,13 +406,22 @@ export function Swing1Page() {
   // Simulation progress/running is tracked app-wide so it survives navigation
   // (the backtest runs on the backend regardless); the global indicator renders
   // its progress bar + cancel.
-  const { markStarting, markFinished } = useBackgroundJobActions();
+  const { markStarting, markFinished, setCoveredSimIds } = useBackgroundJobActions();
 
   // Rule list: one initial load then a visibility-gated silent poll, deduped
   // into a shared hook (see usePolledRules). `loadRules` is the silent/forced
   // refresh used by the paper-test SSE handler below.
   const { rules, setRules, loading, error, refresh: loadRules } =
     usePolledRules(fetchSwing1Rules, STRATEGY);
+
+  // While this page is mounted its rules show sim progress inline (per-row bars),
+  // so tell the global indicator to suppress those simulation jobs — it still
+  // surfaces sweeps and any sim for a rule not on this page. Cleared on unmount.
+  const coveredRuleIds = useMemo(() => rules.map((r) => r.id), [rules]);
+  useEffect(() => {
+    setCoveredSimIds(coveredRuleIds);
+    return () => setCoveredSimIds([]);
+  }, [coveredRuleIds, setCoveredSimIds]);
 
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   // Positions for the selected rule are split into Current run + Old runs by

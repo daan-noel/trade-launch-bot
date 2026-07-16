@@ -115,6 +115,11 @@ interface BackgroundJobActions {
    *  SSE-driven removal. */
   markFinished: (kind: JobKind, id: string) => void;
   cancel: (job: BackgroundJob) => void;
+  /** The active strategy page publishes the rule IDs it renders per-row here (and
+   *  clears them on unmount). The global indicator hides exactly those simulation
+   *  jobs — they already show as inline row bars — while still surfacing sweeps,
+   *  swings, and any simulation not on the current page. */
+  setCoveredSimIds: (ids: string[]) => void;
 }
 
 /** Live job state — changes on every `*_progress` frame; consumed only by the
@@ -123,6 +128,9 @@ interface BackgroundJobsState {
   jobs: BackgroundJob[];
   /** Whether a job of this kind/id is currently tracked (running). */
   isRunning: (kind: JobKind, id: string) => boolean;
+  /** Rule IDs the active strategy page shows a per-row sim bar for — the global
+   *  indicator suppresses these simulation jobs (see {@link setCoveredSimIds}). */
+  coveredSimIds: ReadonlySet<string>;
 }
 
 const BackgroundJobActionsContext = createContext<BackgroundJobActions | null>(null);
@@ -133,6 +141,9 @@ const keyOf = (kind: JobKind, id: string) => (kind === 'sweep' ? SWEEP_KEY : id)
 export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   const dispatch = useDispatch<AppDispatch>();
   const [jobs, setJobs] = useState<Map<string, BackgroundJob>>(new Map());
+  // Rule IDs whose sim progress the mounted strategy page already shows per-row,
+  // so the global indicator can hide those (and only those) simulation jobs.
+  const [coveredSimIds, setCoveredSimIdsState] = useState<ReadonlySet<string>>(() => new Set());
 
   /** Insert or update one job, preserving fields the caller didn't supply.
    *  Pass `phase` when the update carries per-phase progress so the phases map
@@ -271,6 +282,15 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
 
   const markFinished = useCallback((kind: JobKind, id: string) => remove(kind, id), [remove]);
 
+  // Replace the covered set, no-op'ing when the membership is unchanged so the
+  // per-poll `rules` array churn never re-renders the indicator or state consumers.
+  const setCoveredSimIds = useCallback((ids: string[]) => {
+    setCoveredSimIdsState((prev) => {
+      if (prev.size === ids.length && ids.every((id) => prev.has(id))) return prev;
+      return new Set(ids);
+    });
+  }, []);
+
   const isRunning = useCallback((kind: JobKind, id: string) => jobs.has(keyOf(kind, id)), [jobs]);
 
   const cancel = useCallback(
@@ -290,13 +310,13 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   // `markStarting`/`cancel` depend only on the stable `upsert`, so this value is
   // referentially stable — action-only consumers skip the progress-tick renders.
   const actions = useMemo<BackgroundJobActions>(
-    () => ({ markStarting, markFinished, cancel }),
-    [markStarting, markFinished, cancel],
+    () => ({ markStarting, markFinished, cancel, setCoveredSimIds }),
+    [markStarting, markFinished, cancel, setCoveredSimIds],
   );
 
   const state = useMemo<BackgroundJobsState>(
-    () => ({ jobs: Array.from(jobs.values()), isRunning }),
-    [jobs, isRunning],
+    () => ({ jobs: Array.from(jobs.values()), isRunning, coveredSimIds }),
+    [jobs, isRunning, coveredSimIds],
   );
 
   return (
