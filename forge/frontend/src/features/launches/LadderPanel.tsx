@@ -26,6 +26,22 @@ export function LadderPanel({ mint }: { mint: string }) {
   const [armLadder, armState] = useArmLadderMutation();
   const [cancelLadder] = useCancelLadderMutation();
 
+  // Optimistic cancel feedback: the DELETE is a near-instant flag flip, but the badge
+  // only repaints on refetch, so a click looked dead. Track the ladder being
+  // cancelled to disable its button + show a pending affordance until the mutation
+  // resolves (invalidates `Ladders` → refetch → badge flips to cancelled).
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const runCancel = async (id: string) => {
+    setCancellingId(id);
+    try {
+      await cancelLadder(id).unwrap();
+    } catch {
+      /* keep current status; the query refetch reconciles */
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
   const [group, setGroup] = useState<Group>('all');
   const [metric, setMetric] = useState<Metric>('market_cap_usd');
   const [threshold, setThreshold] = useState(100_000);
@@ -120,7 +136,12 @@ export function LadderPanel({ mint }: { mint: string }) {
           <div className="space-y-2 pt-2">
             <div className="field-label">Ladders</div>
             {ladders.map((l) => (
-              <LadderRow key={l.id} ladder={l} onCancel={() => cancelLadder(l.id)} />
+              <LadderRow
+                key={l.id}
+                ladder={l}
+                busy={cancellingId === l.id}
+                onCancel={() => runCancel(l.id)}
+              />
             ))}
           </div>
         )}
@@ -129,13 +150,13 @@ export function LadderPanel({ mint }: { mint: string }) {
   );
 }
 
-function LadderRow({ ladder, onCancel }: { ladder: SellLadder; onCancel: () => void }) {
-  const tone = ladder.status === 'armed' ? 'good' : ladder.status === 'done' ? 'info' : 'neutral';
+function LadderRow({ ladder, busy, onCancel }: { ladder: SellLadder; busy: boolean; onCancel: () => void }) {
+  const tone = busy ? 'info' : ladder.status === 'armed' ? 'good' : ladder.status === 'done' ? 'info' : 'neutral';
   const sel = ladder.selection?.role ?? 'all';
   return (
     <div className="flex items-center justify-between gap-3 rounded border border-[var(--color-border)] px-3 py-2">
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Badge tone={tone}>{ladder.status}</Badge>
+        <Badge tone={tone}>{busy ? 'cancelling…' : ladder.status}</Badge>
         <span className="muted text-xs">{sel}</span>
         {ladder.rungs.map((r, i) => (
           <span key={i} className={`text-xs mono ${r.fired ? 'muted line-through' : ''}`}>
@@ -144,7 +165,7 @@ function LadderRow({ ladder, onCancel }: { ladder: SellLadder; onCancel: () => v
         ))}
       </div>
       {ladder.status === 'armed' && (
-        <IconButton icon="close" label="Cancel ladder" size="sm" variant="ghost" onClick={onCancel} />
+        <IconButton icon="close" label="Cancel ladder" size="sm" variant="ghost" disabled={busy} onClick={onCancel} />
       )}
     </div>
   );

@@ -236,6 +236,7 @@ async fn run_cycle(
             // reaches the role/token-scope branch.
             token_scoped: true,
         },
+        None, // automated volume-bot cycle — no live operator surface
     )
     .await?;
     let buy_spend = confirmed_quote(&buy.plan, "buy", |l| l.spend_quote);
@@ -256,6 +257,7 @@ async fn run_cycle(
                 selection: one,
                 token_scoped: true, // inert for sell (position-scoped) + explicit id
             },
+            None, // automated volume-bot cycle — no live operator surface
         )
         .await
         {

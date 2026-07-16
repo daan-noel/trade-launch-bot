@@ -1060,6 +1060,7 @@ async fn manage_preview(
 async fn manage_execute(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
+    sse: web::Data<crate::sse::SseHub>,
     mint: web::Path<String>,
     body: web::Json<ManageRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
@@ -1070,7 +1071,11 @@ async fn manage_execute(
         })));
     }
     let mint = mint.into_inner();
-    let action = execute_action(pool.get_ref(), settings, &mint, &body)
+    // Pass the SSE hub as the progress sink: the request still blocks until every
+    // leg is chain-confirmed (the caller gets the authoritative audit row), but
+    // per-leg `action_progress` frames fan out over the separate `/api/stream`
+    // connection so the operator watches "N of M" live instead of a frozen spinner.
+    let action = execute_action(pool.get_ref(), settings, &mint, &body, Some(sse.get_ref()))
         .await
         .map_err(e500)?;
     Ok(HttpResponse::Ok().json(action))

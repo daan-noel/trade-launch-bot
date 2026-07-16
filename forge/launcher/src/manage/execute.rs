@@ -25,6 +25,7 @@ use super::model::{ManageRequest, PlanLeg};
 use super::plan::build_plan;
 use super::positions::{load_positions, reconcile_positions};
 use crate::config::{LauncherSettings, ManageConfig};
+use crate::events::{ActionProgressEvent, EventSink};
 use crate::keystore::{self, EnvKek};
 use crate::plan_exec::TransferMode;
 use crate::trader_config::build_manage_trader_config;
@@ -54,6 +55,10 @@ pub async fn execute_action(
     settings: &LauncherSettings,
     mint: &str,
     req: &ManageRequest,
+    // Live progress sink. `Some` on the operator HTTP path (so the browser sees
+    // per-leg "N of M" status over SSE while this blocking call runs); `None` on the
+    // automated ladder/volume callers, where nobody is watching a live surface.
+    sink: Option<&dyn EventSink>,
 ) -> Result<ManageAction> {
     let manage_cfg = settings
         .manage
@@ -110,6 +115,28 @@ pub async fn execute_action(
     )
     .await?;
 
+    // Live progress emitter (no-op when `sink` is None). `done` = legs confirmed so
+    // far, `total` = legs_total — the same pair the finalized audit row reports, so
+    // the "N of M" the operator watches live matches the terminal banner exactly.
+    // Mint-scoped: only the token-detail page for this mint wakes.
+    let emit = |status: &str, done: i32, error: Option<&str>| {
+        if let Some(sink) = sink {
+            sink.action_progress(&ActionProgressEvent {
+                action_id: action.id,
+                mint_address: Some(mint.to_string()),
+                kind: plan.kind.clone(),
+                status: status.to_string(),
+                done: done.max(0) as usize,
+                total: legs_total.max(0) as usize,
+                error: error.map(str::to_string),
+            });
+        }
+    };
+
+    // Start frame: 0 of N, so the surface flips to "running" the instant the first
+    // (slow, chain-confirmed) leg begins rather than after it lands.
+    emit("running", 0, None);
+
     let mut legs = plan.legs;
     let mut confirmed = 0i32;
     for leg in &mut legs {
@@ -150,6 +177,9 @@ pub async fn execute_action(
                 warn!(%mint, managed_wallet_id = %leg.managed_wallet_id, side = %leg.side, error = %e, "manage leg failed");
             }
         }
+        // Per-leg progress: the confirmed count advances live, so the operator sees
+        // "3 of 8" tick up while the remaining (sequential, chain-confirmed) legs run.
+        emit("running", confirmed, None);
     }
 
     // Refresh positions from chain + feed (drained balances / new buyer holdings).
@@ -165,6 +195,20 @@ pub async fn execute_action(
         ManageStatus::Failed
     };
     let error = (status == ManageStatus::Failed).then(|| "all legs failed".to_string());
+
+    // Terminal frame: map the audit status to the progress vocabulary
+    // (Completed→done, Partial→partial, Failed→failed) so the surface stops showing
+    // "running" and renders the final tone even before the HTTP response is read.
+    let progress_status = match status {
+        ManageStatus::Completed => "done",
+        ManageStatus::Partial => "partial",
+        ManageStatus::Failed => "failed",
+        _ => "done",
+    };
+    let terminal_err = error.as_deref().or_else(|| {
+        (status == ManageStatus::Partial).then_some("some legs failed")
+    });
+    emit(progress_status, confirmed, terminal_err);
 
     ManageActionRepo::set_result(
         pool,

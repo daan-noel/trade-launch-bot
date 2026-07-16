@@ -183,6 +183,30 @@ impl SseHub {
         }
         self.emit(None, "restore_complete", summary.clone());
     }
+
+    /// A long-running manage action advanced (a per-wallet "sell all", a sweep, a
+    /// consolidate): start / per-leg / terminal. Carries `action_id` + `done`/`total`
+    /// so the triggering surface shows live "N of M" status instead of a frozen
+    /// spinner. Mint-scoped when the action targets a token (sell); wallet-wide
+    /// actions pass `mint_address = None` and reach every subscriber.
+    fn action_progress(&self, ev: &launcher::ActionProgressEvent) {
+        if !self.has_subscribers() {
+            return;
+        }
+        self.emit(
+            ev.mint_address.clone(),
+            "action_progress",
+            json!({
+                "action_id": ev.action_id,
+                "mint_address": ev.mint_address,
+                "kind": ev.kind,
+                "status": ev.status,
+                "done": ev.done,
+                "total": ev.total,
+                "error": ev.error,
+            }),
+        );
+    }
 }
 
 /// Bridges the `SseHub` to the launcher's [`launcher::EventSink`] seam, so the
@@ -194,6 +218,9 @@ impl launcher::EventSink for SseHub {
     }
     fn wallet_pool_changed(&self) {
         SseHub::wallet_pool_changed(self);
+    }
+    fn action_progress(&self, ev: &launcher::ActionProgressEvent) {
+        SseHub::action_progress(self, ev);
     }
 }
 

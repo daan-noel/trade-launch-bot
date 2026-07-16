@@ -30,6 +30,23 @@ export function VolumePanel({ mint }: { mint: string }) {
   const [resumeBot] = useResumeVolumeBotMutation();
   const [stopBot] = useStopVolumeBotMutation();
 
+  // Optimistic per-row control state: these actions are near-instant DB flips, but
+  // the badge only repaints on the next refetch (the list polls every 10s), so a
+  // click looked dead. Track which bot is mid-action to disable its buttons and show
+  // a pending affordance until the mutation resolves (which invalidates `Volume` →
+  // immediate refetch → badge flips).
+  const [busyBotId, setBusyBotId] = useState<string | null>(null);
+  const runBotAction = async (id: string, fn: (id: string) => { unwrap: () => Promise<unknown> }) => {
+    setBusyBotId(id);
+    try {
+      await fn(id).unwrap();
+    } catch {
+      /* the row keeps its current status; the 10s poll reconciles */
+    } finally {
+      setBusyBotId(null);
+    }
+  };
+
   const [group, setGroup] = useState<Group>('trading');
   const [cfg, setCfg] = useState<VolumeConfig>({
     buy_sol_min: 0.01,
@@ -122,9 +139,10 @@ export function VolumePanel({ mint }: { mint: string }) {
               <BotRow
                 key={b.id}
                 bot={b}
-                onPause={() => pauseBot(b.id)}
-                onResume={() => resumeBot(b.id)}
-                onStop={() => stopBot(b.id)}
+                busy={busyBotId === b.id}
+                onPause={() => runBotAction(b.id, pauseBot)}
+                onResume={() => runBotAction(b.id, resumeBot)}
+                onStop={() => runBotAction(b.id, stopBot)}
               />
             ))}
           </div>
@@ -136,21 +154,29 @@ export function VolumePanel({ mint }: { mint: string }) {
 
 function BotRow({
   bot,
+  busy,
   onPause,
   onResume,
   onStop,
 }: {
   bot: VolumeBot;
+  busy: boolean;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 }) {
-  const tone = bot.status === 'running' ? 'good' : bot.status === 'paused' ? 'info' : 'neutral';
+  const tone = busy
+    ? 'info'
+    : bot.status === 'running'
+      ? 'good'
+      : bot.status === 'paused'
+        ? 'info'
+        : 'neutral';
   const c = bot.config;
   return (
     <div className="flex items-center justify-between gap-3 rounded border border-[var(--color-border)] px-3 py-2">
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Badge tone={tone}>{bot.status}</Badge>
+        <Badge tone={tone}>{busy ? 'working…' : bot.status}</Badge>
         <span className="muted text-xs">{bot.selection?.role ?? 'trading'}</span>
         <span className="text-xs mono">
           {c.buy_sol_min}–{c.buy_sol_max} SOL / {c.interval_secs_min}–{c.interval_secs_max}s · sell {c.sell_back_pct}%
@@ -162,13 +188,13 @@ function BotRow({
       </div>
       <div className="flex items-center gap-2">
         {bot.status === 'running' && (
-          <IconButton icon="pause" label="Pause bot" size="sm" variant="ghost" onClick={onPause} />
+          <IconButton icon="pause" label="Pause bot" size="sm" variant="ghost" disabled={busy} onClick={onPause} />
         )}
         {bot.status === 'paused' && (
-          <IconButton icon="play" label="Resume bot" size="sm" variant="ghost" onClick={onResume} />
+          <IconButton icon="play" label="Resume bot" size="sm" variant="ghost" disabled={busy} onClick={onResume} />
         )}
         {bot.status !== 'stopped' && (
-          <IconButton icon="stop" label="Stop bot" size="sm" variant="danger" onClick={onStop} />
+          <IconButton icon="stop" label="Stop bot" size="sm" variant="danger" disabled={busy} onClick={onStop} />
         )}
       </div>
     </div>

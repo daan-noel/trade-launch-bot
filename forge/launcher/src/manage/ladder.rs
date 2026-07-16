@@ -138,7 +138,8 @@ async fn evaluate_once(pool: &PgPool, settings: &LauncherSettings) -> Result<()>
                 selection: selection.clone(),
                 token_scoped: true, // inert for sell (position-scoped)
             };
-            match execute_action(pool, settings, &ladder.mint_address, &req).await {
+            // No live sink — automated ladder rung, no operator watching a surface.
+            match execute_action(pool, settings, &ladder.mint_address, &req, None).await {
                 Ok(a) => info!(
                     ladder_id = %ladder.id, mint = %ladder.mint_address, metric = %rung.metric,
                     threshold = rung.threshold, value = v, action = %a.status,

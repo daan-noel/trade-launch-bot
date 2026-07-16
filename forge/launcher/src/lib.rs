@@ -44,7 +44,7 @@ pub use bundle_simulate::run_bundle_simulate;
 pub use confirm::spawn_bundle_confirm_watcher;
 
 pub use config::{FundingConfig, LauncherSettings, ManageConfig};
-pub use events::{EventSink, LaunchStatusEvent};
+pub use events::{ActionProgressEvent, EventSink, LaunchStatusEvent};
 pub use funding_plan::{
     dev_launch_required_lamports, leg_required_lamports, FundPlan, FUNDING_HEADROOM_LAMPORTS,
 };

@@ -196,3 +196,34 @@ export function connectRestoreCompleteStream(
   });
   return { close: unsub };
 }
+
+/** Live progress of a long-running manage action (a per-wallet "sell all", sweep,
+ *  or consolidate). Emitted at start (`running`, done 0), after each leg (done
+ *  bumped), and once at the terminal outcome. `mint_address` is null for wallet-wide
+ *  actions (sweep/consolidate). */
+export interface ActionProgress {
+  action_id: string;
+  mint_address: string | null;
+  kind: string;
+  status: 'running' | 'partial' | 'done' | 'failed';
+  done: number;
+  total: number;
+  error: string | null;
+}
+
+/** Listen for `action_progress` — a manage action advanced. Mint-scoped on the wire
+ *  (wallet-wide actions carry a null mint and reach everyone); consumers still filter
+ *  by mint since the shared connection is unfiltered. */
+export function connectActionProgressStream(
+  onProgress: (p: ActionProgress) => void,
+): StreamHandle {
+  const unsub = subscribe('action_progress', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onProgress(JSON.parse(e.data) as ActionProgress);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}

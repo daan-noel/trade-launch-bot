@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   useManagePreviewMutation,
   useManageExecuteMutation,
   useManageActionsQuery,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
+import { connectActionProgressStream, type ActionProgress } from '@shared/services/sse';
 import {
   AddressDisplay,
   AgeCell,
@@ -46,10 +47,25 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
   const [sol, setSol] = useState(0.05);
   const [plan, setPlan] = useState<ActionPlan | null>(null);
   const [result, setResult] = useState<ManageAction | null>(null);
+  // Live per-leg progress, pushed over SSE while a (blocking) execute runs. The
+  // request still returns the authoritative audit row; this just lets the operator
+  // watch "N of M wallets confirmed" tick up instead of staring at a spinner — and
+  // it also surfaces an execute triggered from another tab (mint-scoped frames).
+  const [progress, setProgress] = useState<ActionProgress | null>(null);
 
   const [preview, previewState] = useManagePreviewMutation();
   const [execute, executeState] = useManageExecuteMutation();
   const { data: actions = [] } = useManageActionsQuery({ mint }, { skip: !mint });
+
+  useEffect(() => {
+    const h = connectActionProgressStream((p) => {
+      // Sell actions are mint-scoped; wallet-wide actions carry a null mint and
+      // reach everyone — ignore frames for other tokens.
+      if (p.mint_address && p.mint_address !== mint) return;
+      setProgress(p);
+    });
+    return () => h.close();
+  }, [mint]);
 
   const qd = overview?.quote_decimals ?? 9;
   const qs = overview?.quote_symbol ?? 'SOL';
@@ -107,6 +123,7 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
       )
     )
       return;
+    setProgress(null);
     try {
       setResult(await execute({ mint, body: body() }).unwrap());
       setPlan(null);
@@ -226,6 +243,16 @@ export function ManagePanel({ mint, overview }: { mint: string; overview: TokenO
         )}
 
         {executeErr && <Banner tone="bad">{executeErr}</Banner>}
+
+        {/* Live progress: shown while the execute request is in flight, or whenever a
+            `running` frame is arriving (e.g. an execute triggered from another tab). */}
+        {(executeState.isLoading || progress?.status === 'running') && (
+          <Banner tone="warn">
+            {progress
+              ? `${progress.kind} in progress — ${progress.done}/${progress.total} wallet(s) confirmed…`
+              : 'Starting…'}
+          </Banner>
+        )}
 
         {result && (
           <Banner tone={result.status === 'completed' ? 'good' : result.status === 'failed' ? 'bad' : 'warn'}>
