@@ -683,16 +683,52 @@ Determinism rules (violation = bug):
 - [ ] 5.8 Re-run standing verification checks (bf61547f-style): dead tokens book `Dead`
       not `Open`; win-rates comparable to pre-redesign baselines for equivalent conditions.
 
-### Phase 6 — Event-log tooling (small, high leverage)
+### Phase 6 — Event-log tooling (small, high leverage) ✅ 2026-07-17
 
-- [ ] 6.1 Log replay CLI/endpoint on lab: load a recorded live log (or a slice by
-      mint/time), re-run `reduce`, dump every event→effect decision as JSON
-      (`POST /api/replay/inspect`). This is the time-travel debugger backend
-      (frontend viewer = FE plan phase FE6).
-- [ ] 6.2 Doc: `docs/plans/strategy-redesign/event-log.md` — format, rotation,
-      retention, replay semantics, recovery procedure.
+- [x] 6.1 Log replay endpoint on lab: `POST /api/replay/inspect` loads a recorded
+      live log (all day-files, or one `date`), re-runs `reduce` over it, and dumps every
+      `event → effects` decision as JSON. `hunter/lab/src/api/handlers/replay.rs`
+      (handler, loads rules from PG) + `hunter/lab/src/strategies/replay_inspect.rs`
+      (fold driver). Rules come from PG (the log omits `RulesReloaded`) → replays against
+      the *current* rule set; synthetic 500 ms ticks are interleaved on the
+      `TICK_MS` grid (empty-tracked-set skip keeps quiet gaps O(1)); the real logged
+      `FillConfirmed`/`FillFailed` are replayed verbatim (no sim fills). `mint`/`since`/
+      `until` narrow only the **output** (whole log still folded — cross-token caps
+      honored); `date` narrows the loaded files. `Effect` is projected to a serializable
+      `effect`-tagged dump. **SSOT move:** `LoggedEvent` (the on-disk format) lifted from
+      `live/.../event_log.rs` into `hunter/engine/src/event_log.rs` so the writer (live
+      recorder) and reader (lab inspector) share one definition. 5 lab tests + engine
+      compiles/tests green; clippy clean. Frontend viewer = FE plan FE6.
+- [x] 6.2 Doc: `docs/plans/strategy-redesign/event-log.md` — format (SSOT), rotation,
+      retention, env vars, recorder, boot-recovery semantics, replay/inspection
+      endpoint + slicing caveats, parity rationale, file map.
 
 ### Phase 7 — Deletion + docs (leave no dead vocabulary)
+
+> **⛔ BLOCKED (assessed 2026-07-17).** Every deletion target in §3 still has compile-time
+> references *outside* the deletion set, so nothing here can be deleted yet without
+> breaking `hunter-lab`/`hunter-live`. The blockers are **prerequisite unfinished work**,
+> not Phase-7 work:
+> 1. **Phase 5.4–5.6 (sweep rewrite) — not done.** The legacy sweep is still wired into
+>    the lab bin: `lab/src/sweep/registry.rs` dispatches `Tpsl1/Tpsl2/Swing1Strategy` and
+>    reads `Tpsl1/Tpsl2/Swing1Rule`; reached from `lab/main.rs` + `grouped_sweep.rs`
+>    handler. Deleting the sweep strategy files (and the typed rule models, and the core
+>    `tpsl_sniper_*`/`swing_1` dirs they pull) won't compile until the sweep is on the
+>    generic engine.
+> 2. **Legacy per-strategy rule handlers — never retired.** `lab/src/api/handlers/
+>    strategies/{tpsl1,tpsl2,swing1}.rs` (+ `tokens/swing1_detect.rs`, `swing_probe.rs`),
+>    routed at `lab/src/api/mod.rs:77-255`, still call `crate::strategies::
+>    {tpsl_sniper_1,tpsl_sniper_2,swing_1}::run_backtest` and `StrategyImpl::from_id`.
+>    These block the lab backtest dirs + `registry.rs` (`StrategyImpl`) + the typed models.
+> 3. **Legacy live service kept for compile (Phase-4 debt).** `StrategyService` is still
+>    constructed at `live/main.rs:702` and held on `DeployState.strategy`, read by the
+>    live `rules.rs`/`positions.rs` handlers → blocks `service.rs`/`runner.rs`/`execution/*`.
+> 4. **Shared-core domain still on the registry:** `core/strategies/{match_keys,rules,
+>    runtime_cache}.rs` + `core/models/mod.rs:32-34` import `StrategyImpl`/typed models.
+>
+> Only `live/src/strategies/execution/*.rs` is otherwise ref-free, and even it waits on
+> `service.rs` (blocker 3). **Do 5.4–5.6 + retire the legacy lab rule handlers first**,
+> then Phase 7 becomes a clean sweep.
 
 - [ ] 7.1 Delete (list in §3 "Deleted at the end"); grep-sweep for `tpsl`, `swing_1`,
       `strategy_id`, `scalp`, `LadderParams`, `StrategyImpl`, `exit_state`.

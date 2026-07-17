@@ -20,12 +20,11 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use hunter_engine::event::{Event, Fill, FillFailReason, IntentId, Mint, PositionId};
-use hunter_engine::grouping::TokenFingerprint;
-use hunter_engine::metrics::{Ts, TradeLite};
+use hunter_engine::event::Event;
+use hunter_engine::event_log::LoggedEvent;
+use hunter_engine::metrics::Ts;
 
 /// Env: directory the event log is written to (created if missing).
 const ENV_DIR: &str = "EVENT_LOG_DIR";
@@ -34,99 +33,9 @@ const ENV_RETENTION: &str = "EVENT_LOG_RETENTION_DAYS";
 const DEFAULT_DIR: &str = "event_log";
 const DEFAULT_RETENTION_DAYS: i64 = 7;
 
-/// The serializable subset of [`Event`] the log persists (no `Tick`, no
-/// `RulesReloaded`). Every inner type is already `Serialize`/`Deserialize`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum LoggedEvent {
-    TokenCreated { mint: Mint, fp: Box<TokenFingerprint>, at: Ts },
-    FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },
-    Trade { mint: Mint, trade: TradeLite },
-    FillConfirmed { intent: IntentId, fill: Fill },
-    FillFailed { intent: IntentId, reason: FillFailReason },
-    Migrated { mint: Mint, at: Ts },
-    ManualClose { position: PositionId },
-}
-
-impl LoggedEvent {
-    /// Project an engine event onto the loggable subset (`None` for `Tick` /
-    /// `RulesReloaded`, which are never logged).
-    fn from_event(event: &Event) -> Option<Self> {
-        Some(match event {
-            Event::TokenCreated { mint, fp, at } => {
-                LoggedEvent::TokenCreated { mint: mint.clone(), fp: fp.clone(), at: *at }
-            }
-            Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
-                LoggedEvent::FirstSlotSettled {
-                    mint: mint.clone(),
-                    buy_lamports: *buy_lamports,
-                    sell_lamports: *sell_lamports,
-                    at: *at,
-                }
-            }
-            Event::Trade { mint, trade } => {
-                LoggedEvent::Trade { mint: mint.clone(), trade: *trade }
-            }
-            Event::FillConfirmed { intent, fill } => {
-                LoggedEvent::FillConfirmed { intent: intent.clone(), fill: *fill }
-            }
-            Event::FillFailed { intent, reason } => {
-                LoggedEvent::FillFailed { intent: intent.clone(), reason: *reason }
-            }
-            Event::Migrated { mint, at } => LoggedEvent::Migrated { mint: mint.clone(), at: *at },
-            Event::ManualClose { position } => LoggedEvent::ManualClose { position: *position },
-            Event::Tick { .. } | Event::RulesReloaded { .. } => return None,
-        })
-    }
-
-    /// The event's mint, when it has one (used to gate recovery per token).
-    fn mint(&self) -> Option<&str> {
-        match self {
-            LoggedEvent::TokenCreated { mint, .. }
-            | LoggedEvent::FirstSlotSettled { mint, .. }
-            | LoggedEvent::Trade { mint, .. }
-            | LoggedEvent::Migrated { mint, .. } => Some(mint.as_str()),
-            _ => None,
-        }
-    }
-
-    /// The event's timestamp, when it carries one (used to bound recovery by age).
-    fn at(&self) -> Option<Ts> {
-        match self {
-            LoggedEvent::TokenCreated { at, .. }
-            | LoggedEvent::FirstSlotSettled { at, .. }
-            | LoggedEvent::Migrated { at, .. } => Some(*at),
-            LoggedEvent::Trade { trade, .. } => Some(trade.at),
-            _ => None,
-        }
-    }
-
-    /// A pre-entry event (safe to replay for re-arming; fills/closes are not).
-    fn is_pre_entry(&self) -> bool {
-        matches!(
-            self,
-            LoggedEvent::TokenCreated { .. }
-                | LoggedEvent::FirstSlotSettled { .. }
-                | LoggedEvent::Trade { .. }
-                | LoggedEvent::Migrated { .. }
-        )
-    }
-
-    fn into_event(self) -> Event {
-        match self {
-            LoggedEvent::TokenCreated { mint, fp, at } => Event::TokenCreated { mint, fp, at },
-            LoggedEvent::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
-                Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at }
-            }
-            LoggedEvent::Trade { mint, trade } => Event::Trade { mint, trade },
-            LoggedEvent::FillConfirmed { intent, fill } => Event::FillConfirmed { intent, fill },
-            LoggedEvent::FillFailed { intent, reason } => Event::FillFailed { intent, reason },
-            LoggedEvent::Migrated { mint, at } => Event::Migrated { mint, at },
-            LoggedEvent::ManualClose { position } => Event::ManualClose { position },
-        }
-    }
-}
-
-/// Append-only recorder with daily rotation + retention pruning.
+/// Append-only recorder with daily rotation + retention pruning. The on-disk
+/// format ([`LoggedEvent`]) is defined once in `hunter_engine::event_log` — the SSOT
+/// shared with the lab replay inspector (plan 6.1).
 pub struct EventLogRecorder {
     dir: PathBuf,
     retention_days: i64,

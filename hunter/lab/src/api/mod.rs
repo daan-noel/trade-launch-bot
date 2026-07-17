@@ -37,6 +37,12 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/tokens/{mint}/metric-series",
                 web::get().to(handlers::tokens::token_metric_series),
             )
+            // Redesign: time-travel debugger — replay a recorded event log through
+            // the engine and dump every event→effect decision (plan 6.1)
+            .route(
+                "/replay/inspect",
+                web::post().to(handlers::replay::inspect_replay),
+            )
             // Trader Analysis: mints a wallet traded (recent-first, days+limit)
             .route(
                 "/wallets/{wallet}/tokens",

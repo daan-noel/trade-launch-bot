@@ -1,0 +1,114 @@
+//! The on-disk event-log **format** — the single serializable projection of
+//! [`Event`] that the live recorder writes and the lab inspector reads (plan
+//! decision 12, phases 4.6 + 6.1).
+//!
+//! Living in the pure engine crate makes it the SSOT for the log wire shape: the
+//! `live` recorder ([`crate::event_log::LoggedEvent::from_event`] → JSONL) and the
+//! `lab` time-travel debugger ([`LoggedEvent::into_event`] ← JSONL) both speak this
+//! one type, so the two can never drift. The file I/O (rotation, retention,
+//! recovery) stays in the impure bins — only the format lives here.
+//!
+//! Two events are deliberately **not** loggable: `Tick` (regenerable — replay
+//! derives ticks from timestamps) and `RulesReloaded` (rules are reloaded from PG,
+//! never the log). Every other variant round-trips.
+
+use serde::{Deserialize, Serialize};
+
+use crate::event::{Event, Fill, FillFailReason, IntentId, Mint, PositionId};
+use crate::grouping::TokenFingerprint;
+use crate::metrics::{Ts, TradeLite};
+
+/// The serializable subset of [`Event`] the log persists (no `Tick`, no
+/// `RulesReloaded`). Every inner type is already `Serialize`/`Deserialize`, so a
+/// line written by the live recorder deserializes byte-for-byte on the lab side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoggedEvent {
+    TokenCreated { mint: Mint, fp: Box<TokenFingerprint>, at: Ts },
+    FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },
+    Trade { mint: Mint, trade: TradeLite },
+    FillConfirmed { intent: IntentId, fill: Fill },
+    FillFailed { intent: IntentId, reason: FillFailReason },
+    Migrated { mint: Mint, at: Ts },
+    ManualClose { position: PositionId },
+}
+
+impl LoggedEvent {
+    /// Project an engine event onto the loggable subset (`None` for `Tick` /
+    /// `RulesReloaded`, which are never logged).
+    pub fn from_event(event: &Event) -> Option<Self> {
+        Some(match event {
+            Event::TokenCreated { mint, fp, at } => {
+                LoggedEvent::TokenCreated { mint: mint.clone(), fp: fp.clone(), at: *at }
+            }
+            Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
+                LoggedEvent::FirstSlotSettled {
+                    mint: mint.clone(),
+                    buy_lamports: *buy_lamports,
+                    sell_lamports: *sell_lamports,
+                    at: *at,
+                }
+            }
+            Event::Trade { mint, trade } => {
+                LoggedEvent::Trade { mint: mint.clone(), trade: *trade }
+            }
+            Event::FillConfirmed { intent, fill } => {
+                LoggedEvent::FillConfirmed { intent: intent.clone(), fill: *fill }
+            }
+            Event::FillFailed { intent, reason } => {
+                LoggedEvent::FillFailed { intent: intent.clone(), reason: *reason }
+            }
+            Event::Migrated { mint, at } => LoggedEvent::Migrated { mint: mint.clone(), at: *at },
+            Event::ManualClose { position } => LoggedEvent::ManualClose { position: *position },
+            Event::Tick { .. } | Event::RulesReloaded { .. } => return None,
+        })
+    }
+
+    /// The event's mint, when it has one (used to gate recovery / filter by token).
+    pub fn mint(&self) -> Option<&str> {
+        match self {
+            LoggedEvent::TokenCreated { mint, .. }
+            | LoggedEvent::FirstSlotSettled { mint, .. }
+            | LoggedEvent::Trade { mint, .. }
+            | LoggedEvent::Migrated { mint, .. } => Some(mint.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The event's timestamp, when it carries one (used to bound recovery by age
+    /// and to interleave synthetic ticks on replay).
+    pub fn at(&self) -> Option<Ts> {
+        match self {
+            LoggedEvent::TokenCreated { at, .. }
+            | LoggedEvent::FirstSlotSettled { at, .. }
+            | LoggedEvent::Migrated { at, .. } => Some(*at),
+            LoggedEvent::Trade { trade, .. } => Some(trade.at),
+            LoggedEvent::FillConfirmed { fill, .. } => Some(fill.at),
+            _ => None,
+        }
+    }
+
+    /// A pre-entry event (safe to replay for re-arming; fills/closes are not).
+    pub fn is_pre_entry(&self) -> bool {
+        matches!(
+            self,
+            LoggedEvent::TokenCreated { .. }
+                | LoggedEvent::FirstSlotSettled { .. }
+                | LoggedEvent::Trade { .. }
+                | LoggedEvent::Migrated { .. }
+        )
+    }
+
+    pub fn into_event(self) -> Event {
+        match self {
+            LoggedEvent::TokenCreated { mint, fp, at } => Event::TokenCreated { mint, fp, at },
+            LoggedEvent::FirstSlotSettled { mint, buy_lamports, sell_lamports, at } => {
+                Event::FirstSlotSettled { mint, buy_lamports, sell_lamports, at }
+            }
+            LoggedEvent::Trade { mint, trade } => Event::Trade { mint, trade },
+            LoggedEvent::FillConfirmed { intent, fill } => Event::FillConfirmed { intent, fill },
+            LoggedEvent::FillFailed { intent, reason } => Event::FillFailed { intent, reason },
+            LoggedEvent::Migrated { mint, at } => Event::Migrated { mint, at },
+            LoggedEvent::ManualClose { position } => Event::ManualClose { position },
+        }
+    }
+}

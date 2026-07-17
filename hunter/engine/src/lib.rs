@@ -22,6 +22,7 @@
 pub mod arm;
 pub mod deadness;
 pub mod event;
+pub mod event_log;
 pub mod fingerprint;
 pub mod grouping;
 pub mod metrics;
@@ -30,6 +31,7 @@ pub mod rule_params;
 pub mod state;
 
 pub use event::{Effect, Event};
+pub use event_log::LoggedEvent;
 pub use reduce::reduce;
 pub use state::EngineState;
 
