@@ -1,0 +1,23 @@
+# hunter-engine — the pure, deterministic strategy engine (fingerprint +
+# metrics generic engine; see hunter/docs/plans/strategy-redesign/).
+#
+# PURITY IS THE CONTRACT: this crate must never depend on tokio, sqlx, rand, or
+# anything that reaches a clock, network, DB, or entropy. The engine is a pure
+# fold over an ordered event stream — impurity here breaks live↔replay parity.
+# A guard test in src/lib.rs fails the build-tests if a banned dep sneaks in.
+[package]
+name = "hunter-engine"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "hunter_engine"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+smallvec = { version = "1", features = ["serde"] }
+# Types only (timestamps carried on events) — default features OFF so the
+# "clock" feature (system-time access) is never compiled in.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }

@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use trading_core::config::constants::MAX_FILL_WAIT_SLOTS;
 use trading_core::models::ingest::SseEvent;
-use trading_core::models::{StrategyPosition, StrategyRule};
+use trading_core::models::{StrategyPosition, LegacyStrategyRule};
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo;
 use trading_core::strategies::registry::{StrategyImpl, StrategyParams, Swing1Params, Tpsl2Params};
@@ -48,7 +48,7 @@ fn cache_trades(token_cache: &TokenCache, mint: &str) -> Option<(Arc<Vec<CachedT
 }
 
 /// The cap a paper run finishes at, in `u64` (0 / unset ⇒ no cap ⇒ never auto-finishes).
-fn run_cap(rule: &StrategyRule) -> Option<u64> {
+fn run_cap(rule: &LegacyStrategyRule) -> Option<u64> {
     rule.max_total_tokens.filter(|&c| c > 0).map(|c| c as u64)
 }
 
@@ -76,7 +76,7 @@ pub(crate) fn spawn_entry_fill_poll(
     token_cache: Arc<TokenCache>,
     mint: String,
     position_id: Uuid,
-    rule: StrategyRule,
+    rule: LegacyStrategyRule,
     params: StrategyParams,
 ) {
     let poll_sem = runtime.paper_poll_sem();
@@ -394,7 +394,7 @@ pub(crate) fn spawn_exit_fill_poll(
     position_id: Uuid,
     entry_price: f64,
     entry_time_db: Option<DateTime<Utc>>,
-    rule: StrategyRule,
+    rule: LegacyStrategyRule,
     params: StrategyParams,
     trigger_price: f64,
     trigger_time: DateTime<Utc>,
@@ -522,7 +522,7 @@ pub(crate) async fn record_time_exit(
     exit_price: f64,
     exit_time: DateTime<Utc>,
     reason: String,
-    rule: &StrategyRule,
+    rule: &LegacyStrategyRule,
 ) {
     // Time/manual exits are synthetic (exit_time = now, exit_price = last mark), so
     // no on-chain trade ever matches — skip the `trades` lookup entirely. Full-bag

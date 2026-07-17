@@ -12,14 +12,14 @@ use crate::models::Token;
 use crate::state::analysis_cache::{AnalysisCache, AnalysisCacheKey};
 use crate::state::local_state::LocalState;
 use crate::strategies::candidate_cache::get_or_scan_candidates;
-use trading_core::models::StrategyRule;
+use trading_core::models::LegacyStrategyRule;
 use trading_core::strategies::match_keys::fingerprint_key;
 
 /// Materialize (or reuse) the matched mint set for `strategy_rule` over
 /// `[since, until)`.
 pub async fn resolve_matched_mints(
     state: &LocalState,
-    strategy_rule: &StrategyRule,
+    strategy_rule: &LegacyStrategyRule,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
     scan: Pin<Box<dyn Future<Output = Result<Vec<Token>>> + Send>>,

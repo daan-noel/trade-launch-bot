@@ -1,3 +1,4 @@
+pub mod fingerprint;
 pub mod grouped_sweep;
 pub mod ingest;
 pub mod portfolio;
@@ -19,8 +20,10 @@ pub mod wallet_profile_tag;
 pub use portfolio::{unrealized_pnl, ManagedMint, UnrealizedPnl};
 pub use position::{Position, PositionResponse, PositionStatus};
 pub use raw_tx::RawTx;
+pub use fingerprint::Fingerprint;
 pub use strategy::{
-    PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
+    LegacyStrategyRule, PositionsSummary, StrategyPosition, StrategyRule, StrategyRun,
+    StrategyRunMetrics,
 };
 pub use token::Token;
 pub use token_sync_state::TokenSyncState;

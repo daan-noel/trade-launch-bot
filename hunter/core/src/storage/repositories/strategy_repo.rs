@@ -9,7 +9,7 @@ use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::strategies::kernel::weighted_return_pct;
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    PositionsSummary, StrategyPosition, StrategyRule, StrategyRun, StrategyRunMetrics,
+    PositionsSummary, StrategyPosition, LegacyStrategyRule, StrategyRun, StrategyRunMetrics,
 };
 use crate::storage::token_enrichment::{
     enrich_filter_sql, enrich_sort_sql, FilterKind, TokenEnrichmentRow, ENRICH_SELECT,
@@ -21,7 +21,8 @@ use crate::storage::token_enrichment::{
 // bind/read as `i64` directly. SOL ↔ lamports use the shared `config::constants`
 // DB-boundary helpers.
 
-/// Repo spanning the unified strategy schema: `strategy_rules`,
+/// Repo spanning the unified strategy schema: `strategy_rules_legacy` (the
+/// pre-0004 rules — the redesigned `strategy_rules` lives on `RuleRepo`),
 /// `strategy_runs`, `strategy_run_metrics`, `strategy_positions`.
 #[derive(Clone)]
 pub struct StrategyRepo {
@@ -33,7 +34,7 @@ pub struct StrategyRepo {
 // ---------------------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
-struct StrategyRuleDbRow {
+struct LegacyStrategyRuleDbRow {
     id: Uuid,
     strategy_id: String,
     rule_name: String,
@@ -47,8 +48,8 @@ struct StrategyRuleDbRow {
     updated_at: DateTime<Utc>,
 }
 
-impl From<StrategyRuleDbRow> for StrategyRule {
-    fn from(r: StrategyRuleDbRow) -> Self {
+impl From<LegacyStrategyRuleDbRow> for LegacyStrategyRule {
+    fn from(r: LegacyStrategyRuleDbRow) -> Self {
         Self {
             id: r.id,
             strategy_id: r.strategy_id,
@@ -645,12 +646,13 @@ impl StrategyRepo {
         &self.pool
     }
 
-    // -- Rules ----------------------------------------------------------------
+    // -- Rules (LEGACY — pre-0004 tpsl/swing rules, read-only reference table;
+    //    the generic engine's rule CRUD lives on `RuleRepo`) --------------------
 
-    pub async fn insert_rule(&self, rule: &StrategyRule) -> anyhow::Result<()> {
+    pub async fn insert_rule(&self, rule: &LegacyStrategyRule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO strategy_rules
+            INSERT INTO strategy_rules_legacy
                 (id, strategy_id, rule_name, buy_amount_sol, trade_mode, is_active,
                  max_concurrent_tokens, max_total_tokens, params, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -672,10 +674,10 @@ impl StrategyRepo {
         Ok(())
     }
 
-    pub async fn update_rule(&self, rule: &StrategyRule) -> anyhow::Result<()> {
+    pub async fn update_rule(&self, rule: &LegacyStrategyRule) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE strategy_rules SET
+            UPDATE strategy_rules_legacy SET
                 rule_name = $2,
                 buy_amount_sol = $3,
                 trade_mode = $4,
@@ -700,40 +702,40 @@ impl StrategyRepo {
         Ok(())
     }
 
-    pub async fn find_rule(&self, id: Uuid) -> anyhow::Result<Option<StrategyRule>> {
-        let row = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
-            "SELECT {RULE_COLS} FROM strategy_rules WHERE id = $1"
+    pub async fn find_rule(&self, id: Uuid) -> anyhow::Result<Option<LegacyStrategyRule>> {
+        let row = sqlx::query_as::<_, LegacyStrategyRuleDbRow>(&format!(
+            "SELECT {RULE_COLS} FROM strategy_rules_legacy WHERE id = $1"
         ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(StrategyRule::from))
+        Ok(row.map(LegacyStrategyRule::from))
     }
 
     pub async fn find_rules_by_strategy(
         &self,
         strategy_id: &str,
-    ) -> anyhow::Result<Vec<StrategyRule>> {
-        let rows = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
-            "SELECT {RULE_COLS} FROM strategy_rules WHERE strategy_id = $1 ORDER BY created_at DESC"
+    ) -> anyhow::Result<Vec<LegacyStrategyRule>> {
+        let rows = sqlx::query_as::<_, LegacyStrategyRuleDbRow>(&format!(
+            "SELECT {RULE_COLS} FROM strategy_rules_legacy WHERE strategy_id = $1 ORDER BY created_at DESC"
         ))
         .bind(strategy_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(StrategyRule::from).collect())
+        Ok(rows.into_iter().map(LegacyStrategyRule::from).collect())
     }
 
-    pub async fn find_active_rules(&self) -> anyhow::Result<Vec<StrategyRule>> {
-        let rows = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
-            "SELECT {RULE_COLS} FROM strategy_rules WHERE is_active ORDER BY created_at DESC"
+    pub async fn find_active_rules(&self) -> anyhow::Result<Vec<LegacyStrategyRule>> {
+        let rows = sqlx::query_as::<_, LegacyStrategyRuleDbRow>(&format!(
+            "SELECT {RULE_COLS} FROM strategy_rules_legacy WHERE is_active ORDER BY created_at DESC"
         ))
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(StrategyRule::from).collect())
+        Ok(rows.into_iter().map(LegacyStrategyRule::from).collect())
     }
 
     pub async fn delete_rule(&self, id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM strategy_rules WHERE id = $1")
+        sqlx::query("DELETE FROM strategy_rules_legacy WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -1419,7 +1421,7 @@ impl StrategyRepo {
         let sql = format!(
             "WITH latest AS ( \
                 SELECT DISTINCT ON (r.id) r.id AS rule_id, run.id AS run_id \
-                FROM strategy_rules r \
+                FROM strategy_rules_legacy r \
                 JOIN strategy_runs run ON run.rule_id = r.id AND run.mode = r.trade_mode \
                 WHERE r.strategy_id = $1 \
                 ORDER BY r.id, run.run_seq DESC \
@@ -1522,9 +1524,12 @@ impl StrategyRepo {
     /// A mint can have several open positions — the caller picks the one that matters.
     pub async fn managed_mints(&self, real_only: bool) -> anyhow::Result<Vec<ManagedMint>> {
         let rows: Vec<(String, Option<Uuid>, Option<String>, String, String)> = sqlx::query_as(
-            "SELECT p.mint_address, p.rule_id, r.rule_name, p.status, p.mode \
+            // Positions may reference a generic-engine rule (`strategy_rules`) or a
+            // pre-0004 rule (`strategy_rules_legacy`) — resolve the name from either.
+            "SELECT p.mint_address, p.rule_id, COALESCE(r.rule_name, rl.rule_name), p.status, p.mode \
              FROM strategy_positions p \
              LEFT JOIN strategy_rules r ON r.id = p.rule_id \
+             LEFT JOIN strategy_rules_legacy rl ON rl.id = p.rule_id \
              WHERE p.status NOT IN ('End', 'ExitFailed') \
                AND ($1 = false OR p.mode = 'real') \
              ORDER BY p.created_at DESC",

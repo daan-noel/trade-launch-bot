@@ -3,11 +3,48 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-/// A configured strategy rule — the authored knobs that spawn runs.
-/// Backs the `strategy_rules` table (unified schema, replacing per-strategy
-/// tpsl1/tpsl2 tables). `params` holds the strategy-specific tuning as JSON.
+/// A configured rule for the generic fingerprint + metrics engine. Backs the
+/// `strategy_rules` table (0004 redesign schema). Columns say *how* the rule
+/// trades; `params` (JSONB) says *when* — strict `take_profit`/`stop_loss` plus
+/// `entry`/`exit` metric-condition groups, parsed/validated by
+/// [`crate::strategies::rule_params::RuleParams`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyRule {
+    pub id: Uuid,
+    /// Human-facing rule label.
+    pub rule_name: String,
+    /// The token-creation shape this rule arms on (`fingerprints` row).
+    pub fingerprint_id: Uuid,
+    /// Execution mode: `paper` or `real`.
+    pub trade_mode: String,
+    /// Whether the rule is eligible to fire.
+    pub is_active: bool,
+    /// Buy size per fired token — exact lamports at rest.
+    pub buy_amount_lamports: i64,
+    /// Cap on concurrently-open tokens.
+    pub max_concurrent_tokens: i64,
+    /// Cap on total tokens across the rule's lifetime (0 = unlimited).
+    pub max_total_tokens: i64,
+    /// TP/SL + entry/exit metric conditions as JSON (redesign plan §5 shape).
+    pub params: Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl StrategyRule {
+    /// Buy size as human SOL (`f64`) — display/API convenience over the exact
+    /// lamports column.
+    pub fn buy_amount_sol(&self) -> f64 {
+        crate::config::constants::lamports_to_sol(self.buy_amount_lamports)
+    }
+}
+
+/// LEGACY (pre-0004 schema, now `strategy_rules_legacy`) — a configured rule of
+/// the named tpsl1/tpsl2/swing1 strategies. Kept read-only for reference while
+/// the old strategy modules still compile; deleted with them in Phase 6 of the
+/// strategy redesign.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyStrategyRule {
     pub id: Uuid,
     /// Strategy family identifier (e.g. `tpsl_sniper_1`).
     pub strategy_id: String,

@@ -1,23 +1,28 @@
-//! Unified rule-CRUD **domain**, keyed by `strategy_id` — validate → build a
-//! [`StrategyRule`] → repo write. Replaces the hand-cloned `tpsl1`/`tpsl2` modules
-//! in `api/handlers/strategies/tpsl_rules_core.rs`: one domain validates and
-//! assembles every strategy's rule because the strategy-specific checks are
-//! dispatched through the [`registry`](super::registry) params, not branched per
-//! handler.
+//! Rule-CRUD **domain** — validate → build a rule → repo write.
 //!
-//! Touches only validation + the `strategy_repo`; never the runtime cache, SSE,
-//! or RPC. The calling edge (Phase 3 handlers) appends its side effects
-//! (cache reload + `rules_changed` on `live`, nothing on `lab`) and owns the
-//! request→draft mapping + the live-edit frozen-field guard.
+//! Two vocabularies coexist here mid-redesign:
+//! * **Generic engine** ([`RuleDraft`] → [`StrategyRule`], `strategy_rules`):
+//!   fingerprint reference + [`RuleParams`] metric conditions. The permanent one.
+//! * **Legacy** ([`LegacyRuleDraft`] → [`LegacyStrategyRule`],
+//!   `strategy_rules_legacy`): the named tpsl1/tpsl2/swing1 strategies,
+//!   dispatched through the [`registry`](super::registry). Deleted in Phase 6
+//!   of the strategy redesign along with its handler callers.
+//!
+//! Touches only validation + the repos; never the runtime cache, SSE, or RPC.
+//! The calling edge appends its side effects (cache reload + `rules_changed`
+//! on `live`, nothing on `lab`) and owns the request→draft mapping + the
+//! live-edit frozen-field guard.
 
 use chrono::Utc;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::models::StrategyRule;
+use crate::models::{LegacyStrategyRule, StrategyRule};
+use crate::storage::repositories::rule_repo::RuleRepo;
 use crate::storage::repositories::strategy_repo::StrategyRepo;
 
 use super::registry::{StrategyImpl, StrategyParams, Swing1Params, Tpsl1Params, Tpsl2Params};
+use super::rule_params::RuleParams;
 
 /// Outcome of a rule CRUD write, mapped to an HTTP status by the calling edge.
 #[derive(Debug)]
@@ -28,10 +33,113 @@ pub enum RuleError {
     Repo(anyhow::Error),
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Generic engine (fingerprint + metrics) rule CRUD
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The authored inputs for a new generic rule. `params` is the raw JSON body —
+/// [`build_rule`] parses/validates it against the metric registry
+/// ([`RuleParams::parse`]) and stores the canonical serialization.
+#[derive(Debug, Clone)]
+pub struct RuleDraft {
+    pub rule_name: String,
+    pub fingerprint_id: Uuid,
+    pub trade_mode: String,
+    pub buy_amount_lamports: i64,
+    pub max_concurrent_tokens: i64,
+    /// 0 = unlimited.
+    pub max_total_tokens: i64,
+    pub params: Value,
+}
+
+/// Validate the typed-column knobs shared by create and edit.
+fn validate_rule_fields(
+    rule_name: &str,
+    trade_mode: &str,
+    buy_amount_lamports: i64,
+    max_concurrent_tokens: i64,
+    max_total_tokens: i64,
+) -> Result<(), String> {
+    if rule_name.trim().is_empty() {
+        return Err("rule_name must not be empty".into());
+    }
+    if trade_mode != "paper" && trade_mode != "real" {
+        return Err("trade_mode must be 'paper' or 'real'".into());
+    }
+    if buy_amount_lamports <= 0 {
+        return Err("buy_amount_lamports must be > 0".into());
+    }
+    if max_concurrent_tokens < 1 {
+        return Err("max_concurrent_tokens must be >= 1".into());
+    }
+    if max_total_tokens < 0 {
+        return Err("max_total_tokens must be >= 0 (0 = unlimited)".into());
+    }
+    Ok(())
+}
+
+/// Validate + assemble a new (unpersisted) [`StrategyRule`] from a draft. The
+/// new rule is inactive (`is_active = false`); a lifecycle endpoint activates
+/// it. Params are stored in their canonical serialization
+/// ([`RuleParams::to_value`]) so the JSONB shape can't drift by author.
+pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
+    validate_rule_fields(
+        &draft.rule_name,
+        &draft.trade_mode,
+        draft.buy_amount_lamports,
+        draft.max_concurrent_tokens,
+        draft.max_total_tokens,
+    )?;
+    let params = RuleParams::parse(&draft.params)?;
+    let now = Utc::now();
+    Ok(StrategyRule {
+        id: Uuid::new_v4(),
+        rule_name: draft.rule_name.clone(),
+        fingerprint_id: draft.fingerprint_id,
+        trade_mode: draft.trade_mode.clone(),
+        is_active: false,
+        buy_amount_lamports: draft.buy_amount_lamports,
+        max_concurrent_tokens: draft.max_concurrent_tokens,
+        max_total_tokens: draft.max_total_tokens,
+        params: params.to_value(),
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// Validate, build, and persist a new generic rule.
+pub async fn create(repo: &RuleRepo, draft: &RuleDraft) -> Result<StrategyRule, RuleError> {
+    let rule = build_rule(draft).map_err(RuleError::Invalid)?;
+    repo.insert(&rule).await.map_err(RuleError::Repo)?;
+    Ok(rule)
+}
+
+/// Re-validate a fully-formed generic rule and persist the edit. The caller
+/// merges its request patch into the loaded rule first (request-shaped,
+/// edge-side) and enforces any live-edit frozen-field guard.
+pub async fn save(repo: &RuleRepo, rule: &StrategyRule) -> Result<(), RuleError> {
+    validate_rule_fields(
+        &rule.rule_name,
+        &rule.trade_mode,
+        rule.buy_amount_lamports,
+        rule.max_concurrent_tokens,
+        rule.max_total_tokens,
+    )
+    .map_err(RuleError::Invalid)?;
+    RuleParams::parse(&rule.params)
+        .map_err(|e| RuleError::Invalid(format!("invalid params: {e}")))?;
+    repo.update(rule).await.map_err(RuleError::Repo)?;
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LEGACY (tpsl1/tpsl2/swing1) rule CRUD — deleted in redesign Phase 6
+// ═══════════════════════════════════════════════════════════════════════════
+
 /// The authored inputs for a new rule: the universal (typed-column) knobs plus
 /// the strategy-specific [`StrategyParams`] brain.
 #[derive(Debug, Clone)]
-pub struct RuleDraft {
+pub struct LegacyRuleDraft {
     pub strategy: StrategyImpl,
     pub rule_name: String,
     pub buy_amount_sol: f64,
@@ -259,9 +367,9 @@ fn check_bucket_width(w: f64) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate + assemble a new (unpersisted) [`StrategyRule`] from a draft. The new
+/// Validate + assemble a new (unpersisted) [`LegacyStrategyRule`] from a draft. The new
 /// rule is inactive (`is_active = false`); a lifecycle endpoint activates it.
-pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
+pub fn build_legacy_rule(draft: &LegacyRuleDraft) -> Result<LegacyStrategyRule, String> {
     if draft.params.strategy() != draft.strategy {
         return Err("params do not match the rule's strategy".into());
     }
@@ -271,7 +379,7 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
     validate(&draft.params)?;
 
     let now = Utc::now();
-    Ok(StrategyRule {
+    Ok(LegacyStrategyRule {
         id: Uuid::new_v4(),
         strategy_id: draft.strategy.id().to_string(),
         rule_name: draft.rule_name.clone(),
@@ -289,8 +397,8 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
 // ── Repo orchestration (the calling edge appends cache reload / SSE) ───────────
 
 /// Validate, build, and persist a new rule.
-pub async fn create(repo: &StrategyRepo, draft: &RuleDraft) -> Result<StrategyRule, RuleError> {
-    let rule = build_rule(draft).map_err(RuleError::Invalid)?;
+pub async fn create_legacy(repo: &StrategyRepo, draft: &LegacyRuleDraft) -> Result<LegacyStrategyRule, RuleError> {
+    let rule = build_legacy_rule(draft).map_err(RuleError::Invalid)?;
     repo.insert_rule(&rule).await.map_err(RuleError::Repo)?;
     Ok(rule)
 }
@@ -298,7 +406,7 @@ pub async fn create(repo: &StrategyRepo, draft: &RuleDraft) -> Result<StrategyRu
 /// Re-validate a fully-formed rule's params and persist the edit. The caller
 /// merges its request patch into the loaded rule first (request-shaped, edge-side)
 /// and enforces any live-edit frozen-field guard.
-pub async fn save(repo: &StrategyRepo, rule: &StrategyRule) -> Result<(), RuleError> {
+pub async fn save_legacy(repo: &StrategyRepo, rule: &LegacyStrategyRule) -> Result<(), RuleError> {
     let strategy = StrategyImpl::from_id(&rule.strategy_id)
         .ok_or_else(|| RuleError::Invalid(format!("unknown strategy_id '{}'", rule.strategy_id)))?;
     let params = strategy
@@ -334,8 +442,8 @@ mod tests {
         }
     }
 
-    fn draft(strategy: StrategyImpl, params: StrategyParams) -> RuleDraft {
-        RuleDraft {
+    fn draft(strategy: StrategyImpl, params: StrategyParams) -> LegacyRuleDraft {
+        LegacyRuleDraft {
             strategy,
             rule_name: "r".into(),
             buy_amount_sol: 1.0,
@@ -349,7 +457,7 @@ mod tests {
     #[test]
     fn valid_tpsl1_rule_builds() {
         let d = draft(StrategyImpl::Tpsl1, StrategyParams::Tpsl1(tpsl1_params(50.0, 20.0)));
-        let rule = build_rule(&d).expect("valid");
+        let rule = build_legacy_rule(&d).expect("valid");
         assert_eq!(rule.strategy_id, "tpsl_sniper_1");
         assert!(!rule.is_active);
         assert_eq!(rule.max_concurrent_tokens, Some(3));
@@ -361,27 +469,27 @@ mod tests {
     #[test]
     fn take_profit_must_be_positive() {
         let d = draft(StrategyImpl::Tpsl1, StrategyParams::Tpsl1(tpsl1_params(0.0, 20.0)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("Take Profit")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("Take Profit")));
     }
 
     #[test]
     fn out_of_range_percent_rejected() {
         let d = draft(StrategyImpl::Tpsl1, StrategyParams::Tpsl1(tpsl1_params(50.0, 150.0)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("Stop Loss")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("Stop Loss")));
     }
 
     #[test]
     fn mismatched_strategy_and_params_rejected() {
         // Tpsl2 strategy with Tpsl1 params.
         let d = draft(StrategyImpl::Tpsl2, StrategyParams::Tpsl1(tpsl1_params(50.0, 20.0)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("do not match")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("do not match")));
     }
 
     #[test]
     fn bad_trade_mode_rejected() {
         let mut d = draft(StrategyImpl::Tpsl1, StrategyParams::Tpsl1(tpsl1_params(50.0, 20.0)));
         d.trade_mode = "live".into();
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("trade_mode")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("trade_mode")));
     }
 
     #[test]
@@ -394,13 +502,13 @@ mod tests {
         // No scalp gate configured → rejected.
         let no_gate = StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule));
         let d = draft(StrategyImpl::Tpsl2, no_gate);
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("scalp entry gate")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("scalp entry gate")));
 
         // With a scalp gate (min age) configured → builds.
         rule.p_entry_min_age_secs = Some(5);
         let with_gate = StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule));
         let d = draft(StrategyImpl::Tpsl2, with_gate);
-        assert!(build_rule(&d).is_ok());
+        assert!(build_legacy_rule(&d).is_ok());
     }
 
     fn swing1_rule_min() -> crate::models::Swing1Rule {
@@ -422,7 +530,7 @@ mod tests {
     fn valid_swing1_rule_builds() {
         let p = StrategyParams::Swing1(Swing1Params::from_rule(&swing1_rule_min()));
         let d = draft(StrategyImpl::Swing1, p);
-        let rule = build_rule(&d).expect("valid swing1");
+        let rule = build_legacy_rule(&d).expect("valid swing1");
         assert_eq!(rule.strategy_id, "swing_1");
     }
 
@@ -432,7 +540,7 @@ mod tests {
         let mut r = swing1_rule_min();
         r.p_swing_min_leg_trades = None;
         let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("swing-detection")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("swing-detection")));
 
         // No kill/volume axis → rejected.
         let mut r = swing1_rule_min();
@@ -442,13 +550,13 @@ mod tests {
         r.p_vol_min_duration_ms = None;
         r.p_vol_min_up_duration_ms = None;
         let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("kill or volume")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("kill or volume")));
 
         // No entry pullback → rejected.
         let mut r = swing1_rule_min();
         r.p_entry_pullback_pct = None;
         let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("higher-low")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("higher-low")));
     }
 
     #[test]
@@ -457,7 +565,7 @@ mod tests {
         r.p_kill_depth_min_pct = Some(0.2); // shallower than the 0.3 volume ceiling
         r.p_vol_depth_max_pct = Some(0.3);
         let d = draft(StrategyImpl::Swing1, StrategyParams::Swing1(Swing1Params::from_rule(&r)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("Kill Depth Min")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("Kill Depth Min")));
     }
 
     #[test]
@@ -484,12 +592,12 @@ mod tests {
         rule.p_entry_min_age_secs = Some(5);
         rule.p_entry_higher_low_secs = Some(30);
         let d = draft(StrategyImpl::Tpsl2, StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("Higher-Low Seconds")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("Higher-Low Seconds")));
 
         // With a pullback gate configured → builds.
         rule.p_entry_pullback_pct = Some(10.0);
         let d = draft(StrategyImpl::Tpsl2, StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule)));
-        assert!(build_rule(&d).is_ok());
+        assert!(build_legacy_rule(&d).is_ok());
     }
 
     #[test]
@@ -501,6 +609,91 @@ mod tests {
         rule.p_entry_min_age_secs = Some(60);
         rule.p_entry_max_age_secs = Some(30); // max <= min → empty window
         let d = draft(StrategyImpl::Tpsl2, StrategyParams::Tpsl2(Tpsl2Params::from_rule(&rule)));
-        assert!(matches!(build_rule(&d), Err(e) if e.contains("Max Age")));
+        assert!(matches!(build_legacy_rule(&d), Err(e) if e.contains("Max Age")));
+    }
+}
+
+#[cfg(test)]
+mod generic_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn generic_draft(params: Value) -> RuleDraft {
+        RuleDraft {
+            rule_name: "r".into(),
+            fingerprint_id: Uuid::new_v4(),
+            trade_mode: "paper".into(),
+            buy_amount_lamports: 1_000_000_000, // 1 SOL
+            max_concurrent_tokens: 3,
+            max_total_tokens: 0,
+            params,
+        }
+    }
+
+    fn valid_params() -> Value {
+        json!({
+            "take_profit": 100,
+            "stop_loss": 30,
+            "entry": {
+                "m_snapshot": {
+                    "time": [
+                        {"operator": ">", "value": 10},
+                        {"operator": "<", "value": 30}
+                    ]
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn valid_generic_rule_builds_inactive_with_canonical_params() {
+        let rule = build_rule(&generic_draft(valid_params())).expect("valid");
+        assert!(!rule.is_active);
+        assert_eq!(rule.buy_amount_lamports, 1_000_000_000);
+        assert!((rule.buy_amount_sol() - 1.0).abs() < 1e-12);
+        // Stored params are the canonical serialization — re-parsing and
+        // re-serializing is a fixed point.
+        let reparsed = RuleParams::parse(&rule.params).unwrap();
+        assert_eq!(reparsed.to_value(), rule.params);
+    }
+
+    #[test]
+    fn generic_field_validation() {
+        let mut d = generic_draft(valid_params());
+        d.trade_mode = "live".into();
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("trade_mode")));
+
+        let mut d = generic_draft(valid_params());
+        d.buy_amount_lamports = 0;
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("buy_amount_lamports")));
+
+        let mut d = generic_draft(valid_params());
+        d.max_concurrent_tokens = 0;
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("max_concurrent_tokens")));
+
+        let mut d = generic_draft(valid_params());
+        d.rule_name = "  ".into();
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("rule_name")));
+    }
+
+    #[test]
+    fn generic_params_registry_checked() {
+        // A typo'd metric can't silently no-op — it fails the save.
+        let d = generic_draft(json!({
+            "entry": {"m_snapshot": {"tyme": [{"operator": ">", "value": 1}]}}
+        }));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("tyme")));
+
+        // Contradictory conditions fail the save.
+        let d = generic_draft(json!({
+            "entry": {"m_snapshot": {"time": [
+                {"operator": ">", "value": 30},
+                {"operator": "<", "value": 10}
+            ]}}
+        }));
+        assert!(matches!(build_rule(&d), Err(e) if e.contains("contradictory")));
+
+        // Fingerprint-only rule (empty params) is legal: enter on arm, TP/SL off.
+        assert!(build_rule(&generic_draft(json!({}))).is_ok());
     }
 }

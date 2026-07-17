@@ -44,7 +44,7 @@ use uuid::Uuid;
 
 use crate::models::ingest::{RuleNotifSnapshot, SseEvent};
 use crate::models::position::Position;
-use crate::models::{StrategyPosition, StrategyRule, StrategyRun};
+use crate::models::{StrategyPosition, LegacyStrategyRule, StrategyRun};
 use crate::state::token_cache::CachedTrade;
 use crate::storage::repositories::strategy_repo::StrategyRepo;
 
@@ -249,8 +249,8 @@ pub struct ArmedRecord {
 /// real rule ids are disjoint, so the shared maps never collide.
 #[derive(Clone)]
 pub struct StrategyRuntimeCache {
-    active_rules: Arc<RwLock<Arc<Vec<StrategyRule>>>>,
-    rules_by_id: Arc<RwLock<HashMap<Uuid, StrategyRule>>>,
+    active_rules: Arc<RwLock<Arc<Vec<LegacyStrategyRule>>>>,
+    rules_by_id: Arc<RwLock<HashMap<Uuid, LegacyStrategyRule>>>,
     /// Each active rule's params, parsed once at [`set_rules`] time so the hot
     /// path reads a typed [`StrategyParams`] with zero per-event JSON cost.
     params_by_id: Arc<RwLock<HashMap<Uuid, StrategyParams>>>,
@@ -394,7 +394,7 @@ impl StrategyRuntimeCache {
     /// unparseable params is dropped from the active set (and skipped in the params
     /// map) rather than poisoning the whole reload; the count of dropped rules is
     /// returned so the caller can log it.
-    pub fn set_rules(&self, rules: Vec<StrategyRule>) -> usize {
+    pub fn set_rules(&self, rules: Vec<LegacyStrategyRule>) -> usize {
         let mut by_id = HashMap::with_capacity(rules.len());
         let mut params = HashMap::with_capacity(rules.len());
         let mut ladders = HashMap::with_capacity(rules.len());
@@ -426,12 +426,12 @@ impl StrategyRuntimeCache {
     }
 
     /// Snapshot of the active rules (cheap `Arc` clone — no Vec copy).
-    pub fn active_rules(&self) -> Arc<Vec<StrategyRule>> {
+    pub fn active_rules(&self) -> Arc<Vec<LegacyStrategyRule>> {
         self.active_rules.read().unwrap().clone()
     }
 
     /// A single rule by id (a clone — callers shouldn't hold the lock).
-    pub fn rule_by_id(&self, rule_id: Uuid) -> Option<StrategyRule> {
+    pub fn rule_by_id(&self, rule_id: Uuid) -> Option<LegacyStrategyRule> {
         self.rules_by_id.read().unwrap().get(&rule_id).cloned()
     }
 
@@ -978,7 +978,7 @@ impl StrategyRuntimeCache {
     pub async fn start_run(
         &self,
         repo: &StrategyRepo,
-        rule: &StrategyRule,
+        rule: &LegacyStrategyRule,
     ) -> anyhow::Result<StrategyRun> {
         let run_seq = repo.next_run_seq(rule.id, &rule.trade_mode).await?;
         let now = Utc::now();
@@ -1327,7 +1327,7 @@ fn fe_strategy_label(strategy_id: &str) -> &'static str {
 /// typed columns (`rule_name` / `trade_mode`) + its parsed params. Both param
 /// variants carry the same `p_*` notification fields; an absent/unparsed params map
 /// degrades to neutral defaults rather than dropping the snapshot.
-fn rule_notif_snapshot(rule: &StrategyRule, params: Option<&StrategyParams>) -> RuleNotifSnapshot {
+fn rule_notif_snapshot(rule: &LegacyStrategyRule, params: Option<&StrategyParams>) -> RuleNotifSnapshot {
     macro_rules! from_params {
         ($p:expr) => {
             RuleNotifSnapshot {
@@ -1379,9 +1379,9 @@ mod tests {
     use serde_json::{json, Value};
     use uuid::Uuid;
 
-    fn rule(strategy_id: &str, params: Value) -> StrategyRule {
+    fn rule(strategy_id: &str, params: Value) -> LegacyStrategyRule {
         let now = Utc::now();
-        StrategyRule {
+        LegacyStrategyRule {
             id: Uuid::new_v4(),
             strategy_id: strategy_id.into(),
             rule_name: "r".into(),

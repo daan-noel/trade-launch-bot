@@ -1,7 +1,9 @@
 # Strategy redesign — Fingerprint + Metrics generic engine (implementation plan)
 
-Status: **PLANNED** (design settled 2026-07-16; architecture upgraded same day to the
-deterministic event-log engine — all five "best solution" upgrades adopted; not started)
+Status: **IN PROGRESS** (design settled 2026-07-16; architecture upgraded same day to the
+deterministic event-log engine — all five "best solution" upgrades adopted).
+**Phase 0 complete 2026-07-16** (plus 1.2 pulled forward); next: Phase 1 (1.1 JSON
+serialization remainder, 1.3–1.8).
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
 [frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
@@ -426,25 +428,43 @@ Determinism rules (violation = bug):
 > + `hunter-engine` (`--target-dir "C:/Users/User/Documents/Bot/target-check"` if a bin is
 > running), clippy clean on touched code, tests listed in the phase green, no new warnings.
 
-### Phase 0 — Schema + crate scaffold (foundation, no behavior change)
+### Phase 0 — Schema + crate scaffold (foundation, no behavior change) ✅ 2026-07-16
 
-- [ ] 0.1 Write migration `hunter/core/migrations/0004_strategy_redesign.sql` (§4).
-- [ ] 0.2 Create crate `hunter/engine` (workspace member; deps: serde, serde_json,
-      smallvec, chrono default-features-off). Add a guard test that fails if
-      `Cargo.toml` gains tokio/sqlx/rand (simple string check keeps the purity promise).
-- [ ] 0.3 Move `grouping.rs` core→engine (with `trading_core` re-export shim); keep the
-      `sol_bucket_sql` twin guard test against `creation_stats_repo.rs` pointing at the
-      new location.
-- [ ] 0.4 New model `hunter/core/src/models/fingerprint.rs` + rework
-      `models/strategy.rs::StrategyRule` (`fingerprint_id`, `buy_amount_lamports`; drop
-      `strategy_id`).
-- [ ] 0.5 `engine/src/rule_params.rs`: serde model + `Operator` + validation (§5), with
-      unit tests: round-trip of the `strategy-redesign-answer-1.md` example, every
-      rejection case, absent-side semantics.
-- [ ] 0.6 `FingerprintRepo` (CRUD + `find_or_create` for sweep promotion) in
-      `hunter/core/src/storage/repositories/`; retarget `StrategyRepo` rule CRUD.
-- [ ] 0.7 Rule CRUD domain `core/src/strategies/rules.rs`: new `RuleDraft`
-      (fingerprint_id + params JSON), validation via engine registry.
+- [x] 0.1 Write migration `hunter/core/migrations/0004_strategy_redesign.sql` (§4).
+      *Note:* existing `strategy_positions.strategy_id` values were left as-is
+      (historical reference); only new engine writes will use `'generic'`.
+- [x] 0.2 Create crate `hunter/engine` (workspace member; deps: serde, serde_json,
+      smallvec, chrono default-features-off). Purity guard test in `src/lib.rs`
+      (comment-stripped manifest scan for tokio/sqlx/rand/actix/reqwest + asserts
+      chrono keeps default features off).
+- [x] 0.3 Move `grouping.rs` core→engine (git-mv, verbatim). `trading_core` shim:
+      `pub use hunter_engine::{grouping, metrics};` in `lib.rs` — every existing
+      `crate::grouping`/`trading_core::grouping` path (incl. the `sol_bucket_sql` twin
+      guard test in `creation_stats_repo.rs`) compiles unchanged against the new SSOT.
+- [x] 0.4 New model `hunter/core/src/models/fingerprint.rs` + rework
+      `models/strategy.rs::StrategyRule`. *Implementation:* the old struct was renamed
+      **`LegacyStrategyRule`** (still consumed by the not-yet-deleted tpsl/swing code —
+      dies in Phase 7); the canonical `StrategyRule` name belongs to the new model, so
+      Phases 1–6 build against final vocabulary.
+- [x] 0.5 `engine/src/rule_params.rs`: registry-guided parse (`RuleParams::parse`, the
+      one save/load entry point) + canonical `to_value()` + validation (§5); unit tests
+      cover the docs-example round-trip, every rejection case, absent-side semantics.
+      *Pulled forward:* `engine/src/metrics/mod.rs` (registry data: groups → metrics →
+      unit/tolerance/kind/monotonic/strict-params — the 1.1 skeleton; JSON serialization
+      for the registry endpoint still pending) and `metrics/evaluator.rs` (1.2, done).
+- [x] 0.6 `FingerprintRepo` (insert/find/list/update/delete + `find_or_create` over the
+      identity predicate — `IS NOT DISTINCT FROM` per axis, `name` excluded).
+      *Deviation:* new-table rule CRUD lives on a new **`RuleRepo`**
+      (`storage/repositories/rule_repo.rs`) rather than inside `StrategyRepo` — the
+      legacy rule fns keep their names (55+ call sites in Phase-7-doomed files) but now
+      point at `strategy_rules_legacy`; `managed_mints` resolves rule names from both
+      tables via COALESCE. End state: rules CRUD = `RuleRepo`, runs/positions/metrics =
+      `StrategyRepo`.
+- [x] 0.7 Rule CRUD domain `core/src/strategies/rules.rs`: new `RuleDraft`
+      (fingerprint_id + raw params JSON) → `build_rule`/`create`/`save` over `RuleRepo`;
+      params persisted in canonical `RuleParams::to_value()` form. Legacy tpsl/swing
+      draft shapes renamed (`LegacyRuleDraft`/`create_legacy`/`save_legacy`), deleted
+      with their handler callers in Phases 4/7.
 
 ### Phase 1 — Metrics framework (`hunter/engine/src/metrics/`)
 
@@ -452,8 +472,9 @@ Determinism rules (violation = bug):
       `MetricKind { Static, Dynamic }`, compile-time **registry** (groups → metrics →
       unit → eq-tolerance → monotonic flag → strict params). Registry serializes to JSON
       for the `/api/meta/strategy-registry` endpoint (frontend contract — FE plan §1).
-- [ ] 1.2 `metrics/evaluator.rs`: `eval(conditions, value, tol) -> bool` — `=`/`!=` via
+- [x] 1.2 `metrics/evaluator.rs`: `eval(conditions, value, tol) -> bool` — `=`/`!=` via
       `|v-x| <= tol/2`; exhaustive unit tests incl. tolerance edges and NaN guards.
+      (Done in Phase 0 alongside `rule_params`.)
 - [ ] 1.3 `metrics/snapshot.rs`: `time` (monotonic ✓, s, tol 0.5), `liquidity` (SOL,
       tol 0.1) — from creation time + current `reserve_sol` (canonical reserve pair).
 - [ ] 1.4 `metrics/price_path.rs`: incremental `{peak_price, last_price, last_move_at}` →

@@ -10,7 +10,7 @@
 //!   • dispatches entry/exit resolution to the unchanged `find_*` fns.
 //!
 //! Universal knobs (`buy_amount_sol`, `trade_mode`, caps) are the typed columns on
-//! [`StrategyRule`](crate::models::StrategyRule); only the strategy-specific
+//! [`LegacyStrategyRule`](crate::models::LegacyStrategyRule); only the strategy-specific
 //! gates live in params. [`Tpsl1Params::to_rule`] / [`Tpsl2Params::to_rule`]
 //! rebuild the `Tpsl1Rule` / `Tpsl2Rule` the decision fns expect (universal
 //! fields filled with inert placeholders the gates never read), so the registry
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::models::trade::TradeRow;
-use crate::models::{StrategyRule, Swing1Rule, Token, Tpsl1Rule, Tpsl2Rule};
+use crate::models::{LegacyStrategyRule, Swing1Rule, Token, Tpsl1Rule, Tpsl2Rule};
 
 use super::{swing_1 as sw1, tpsl_sniper_1 as t1, tpsl_sniper_2 as t2};
 
@@ -90,11 +90,11 @@ where
 }
 
 /// Rebuild the `Tpsl1Rule` the tpsl1 decision/backtest layer consumes from a
-/// unified [`StrategyRule`]: the gate params come from the `params` JSONB (via
+/// unified [`LegacyStrategyRule`]: the gate params come from the `params` JSONB (via
 /// [`Tpsl1Params::to_rule`]); the universal knobs (`id`, name, `buy_amount_sol`,
 /// `trade_mode`, caps) are copied from the row's typed columns (`to_rule` leaves
 /// them as inert placeholders). Errors only if `params` isn't valid tpsl1 JSON.
-pub fn tpsl1_decision_rule(sr: &StrategyRule) -> Result<Tpsl1Rule, serde_json::Error> {
+pub fn tpsl1_decision_rule(sr: &LegacyStrategyRule) -> Result<Tpsl1Rule, serde_json::Error> {
     let StrategyParams::Tpsl1(p) = StrategyImpl::Tpsl1.parse_params(&sr.params)? else {
         unreachable!("Tpsl1.parse_params always yields Tpsl1 params")
     };
@@ -109,8 +109,8 @@ pub fn tpsl1_decision_rule(sr: &StrategyRule) -> Result<Tpsl1Rule, serde_json::E
 }
 
 /// tpsl2 twin of [`tpsl1_decision_rule`] — rebuild the `Tpsl2Rule` from a unified
-/// [`StrategyRule`].
-pub fn tpsl2_decision_rule(sr: &StrategyRule) -> Result<Tpsl2Rule, serde_json::Error> {
+/// [`LegacyStrategyRule`].
+pub fn tpsl2_decision_rule(sr: &LegacyStrategyRule) -> Result<Tpsl2Rule, serde_json::Error> {
     let StrategyParams::Tpsl2(p) = StrategyImpl::Tpsl2.parse_params(&sr.params)? else {
         unreachable!("Tpsl2.parse_params always yields Tpsl2 params")
     };
@@ -125,8 +125,8 @@ pub fn tpsl2_decision_rule(sr: &StrategyRule) -> Result<Tpsl2Rule, serde_json::E
 }
 
 /// swing1 twin of [`tpsl1_decision_rule`] — rebuild the `Swing1Rule` from a
-/// unified [`StrategyRule`].
-pub fn swing1_decision_rule(sr: &StrategyRule) -> Result<Swing1Rule, serde_json::Error> {
+/// unified [`LegacyStrategyRule`].
+pub fn swing1_decision_rule(sr: &LegacyStrategyRule) -> Result<Swing1Rule, serde_json::Error> {
     let StrategyParams::Swing1(p) = StrategyImpl::Swing1.parse_params(&sr.params)? else {
         unreachable!("Swing1.parse_params always yields Swing1 params")
     };
@@ -198,7 +198,7 @@ impl Tpsl1Params {
 
     /// Rebuild the `Tpsl1Rule` the decision fns consume. Universal fields are
     /// inert placeholders the entry/exit gates never read (`buy_amount_sol`,
-    /// `trade_mode`, caps live on `StrategyRule`); `is_active` is forced true so
+    /// `trade_mode`, caps live on `LegacyStrategyRule`); `is_active` is forced true so
     /// the single-rule match gate evaluates.
     pub fn to_rule(&self) -> Tpsl1Rule {
         let mut r = Tpsl1Rule::new(

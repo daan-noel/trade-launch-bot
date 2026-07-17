@@ -1,0 +1,49 @@
+//! # hunter-engine — pure, deterministic strategy engine
+//!
+//! The one implementation of the fingerprint + metrics generic strategy engine
+//! (design SSOT: `hunter/docs/plans/strategy-redesign/fingerprint-metrics-engine-plan.md`).
+//! Live paper, live real, simulate/backtest, and sweep all drive **this** code;
+//! they differ only in who produces events and who consumes effects — so
+//! identical data yields identical decisions by construction.
+//!
+//! **Purity is enforced by the crate graph:** no tokio, no sqlx, no rand, no
+//! clock (`chrono` is compiled without its `clock` feature — all time arrives
+//! on events). The guard test below fails if the manifest regresses.
+//!
+//! Current contents (grows through the redesign phases):
+//! * [`grouping`] — bucket SSOT (`bucket_index`/`same_bucket`/`group_key`),
+//!   moved from `trading_core` (which re-exports it during the transition).
+//! * [`metrics`] — the self-describing metric registry + condition evaluator.
+//! * [`rule_params`] — typed, registry-checked `strategy_rules.params`.
+
+pub mod grouping;
+pub mod metrics;
+pub mod rule_params;
+
+#[cfg(test)]
+mod purity_guard {
+    /// The purity promise as a test: the engine's manifest must never gain a
+    /// dependency that can reach a runtime, DB, entropy, or the system clock.
+    /// (String check on our own Cargo.toml — crude but exactly as strong as
+    /// the promise needs.)
+    #[test]
+    fn manifest_has_no_impure_deps() {
+        // Comments may *mention* the banned names (this promise is documented
+        // in the manifest header) — only non-comment lines count.
+        let manifest: String = include_str!("../Cargo.toml")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in ["tokio", "sqlx", "rand", "actix", "reqwest"] {
+            assert!(
+                !manifest.contains(banned),
+                "hunter-engine must stay pure: found banned dependency '{banned}' in Cargo.toml"
+            );
+        }
+        assert!(
+            manifest.contains("default-features = false"),
+            "chrono must keep default features (incl. 'clock') disabled"
+        );
+    }
+}

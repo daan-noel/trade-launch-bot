@@ -9,6 +9,10 @@ name = "trading_core"
 path = "src/lib.rs"
 
 [dependencies]
+# The pure strategy engine (grouping/metrics/rule_params SSOT) — re-exported
+# from this crate during the strategy-redesign transition.
+hunter-engine = { path = "../engine" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 

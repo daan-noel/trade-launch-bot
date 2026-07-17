@@ -6,9 +6,13 @@
 pub mod analyzers;
 pub mod api;
 pub mod config;
-pub mod grouping;
 pub mod ingest;
 pub mod models;
+
+// Moved into the pure `hunter-engine` crate (strategy redesign) — re-exported
+// here so `trading_core::grouping`/`::metrics` paths keep working during the
+// transition. New code may import `hunter_engine::*` directly.
+pub use hunter_engine::{grouping, metrics};
 pub mod services;
 pub mod state;
 pub mod storage;

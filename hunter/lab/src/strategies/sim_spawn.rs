@@ -17,7 +17,7 @@ use crate::state::local_state::LocalState;
 use crate::state::sim_results::SimOutcome;
 use crate::state::sim_summary::SimSummary;
 use trading_core::models::ingest::SseEvent;
-use trading_core::models::StrategyRule;
+use trading_core::models::LegacyStrategyRule;
 use trading_core::strategies::match_keys::sim_key;
 
 type BacktestFut =
@@ -30,7 +30,7 @@ pub async fn spawn_rule_simulation(
     rid: Uuid,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
-    strategy_rule: &StrategyRule,
+    strategy_rule: &LegacyStrategyRule,
     run_backtest: impl FnOnce(
         web::Data<Arc<LocalState>>,
         Uuid,

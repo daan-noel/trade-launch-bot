@@ -34,10 +34,10 @@ use crate::{
 };
 
 use trading_core::api::table_query::TableRequest;
-use trading_core::models::{StrategyPosition, StrategyRule};
+use trading_core::models::{StrategyPosition, LegacyStrategyRule};
 use trading_core::storage::repositories::strategy_repo::{PositionQuery, RuleCounters, StrategyRepo};
 use trading_core::strategies::registry::StrategyImpl;
-use trading_core::strategies::rules::{self, params_to_value, RuleDraft, RuleError};
+use trading_core::strategies::rules::{self, params_to_value, LegacyRuleDraft, RuleError};
 
 /// The strategy this handler module serves (canonical `strategy_id`).
 const STRATEGY_ID: &str = "tpsl_sniper_1";
@@ -81,7 +81,7 @@ fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
 /// last-simulation rollup (see [`last_sim_json`]), `None` for a rule never
 /// simulated. The shape matches the deploy edge's `rule_to_json`.
 fn rule_to_json(
-    rule: &StrategyRule,
+    rule: &LegacyStrategyRule,
     paper_finished: bool,
     counters: &RuleCounters,
     last_sim: Option<Value>,
@@ -128,7 +128,7 @@ fn rule_to_json(
 }
 
 /// True when `rule` is a paper rule whose latest run is `Finished` (one query).
-async fn paper_finished(repo: &StrategyRepo, rule: &StrategyRule) -> bool {
+async fn paper_finished(repo: &StrategyRepo, rule: &LegacyStrategyRule) -> bool {
     if rule.trade_mode != "paper" {
         return false;
     }
@@ -138,7 +138,7 @@ async fn paper_finished(repo: &StrategyRepo, rule: &StrategyRule) -> bool {
 /// The rule's last-simulation rollup, if it has ever been simulated — an in-RAM
 /// lookup (no DB), `stale`-flagged when the rule's params have changed since that
 /// run. See `state::sim_summary` for why this isn't `sim_results`.
-fn last_sim_json(app_state: &LocalState, rule: &StrategyRule) -> Option<Value> {
+fn last_sim_json(app_state: &LocalState, rule: &LegacyStrategyRule) -> Option<Value> {
     let summary = app_state.last_sim_summary.get(&rule.id)?;
     let current_key = trading_core::strategies::match_keys::sim_key(rule);
     serde_json::to_value(summary.view(&current_key)).ok()
@@ -215,13 +215,13 @@ pub async fn get_tpsl_rule(
     }
 }
 
-/// Read the [`RuleDraft`] inputs from the flat request body (params parse off the
+/// Read the [`LegacyRuleDraft`] inputs from the flat request body (params parse off the
 /// body; the universal columns are read out explicitly).
-fn draft_from_body(body: &Value) -> Result<RuleDraft, HttpResponse> {
+fn draft_from_body(body: &Value) -> Result<LegacyRuleDraft, HttpResponse> {
     let params = STRATEGY
         .parse_params(body)
         .map_err(|e| HttpResponse::BadRequest().json(json!({"error": format!("invalid params: {e}")})))?;
-    Ok(RuleDraft {
+    Ok(LegacyRuleDraft {
         strategy: STRATEGY,
         rule_name: body.get(RULE_NAME).and_then(Value::as_str).unwrap_or("").to_string(),
         buy_amount_sol: body.get(BUY_AMOUNT).and_then(Value::as_f64).unwrap_or(0.0),
@@ -243,7 +243,7 @@ pub async fn create_tpsl_rule(
         Err(resp) => return resp,
     };
     let repo = app_state.strategy_repo();
-    match rules::create(&repo, &draft).await {
+    match rules::create_legacy(&repo, &draft).await {
         // A just-created rule has no positions/simulations yet → zero counters, no last_sim.
         Ok(rule) => {
             HttpResponse::Created().json(rule_to_json(&rule, false, &RuleCounters::default(), None))
@@ -311,7 +311,7 @@ pub async fn update_tpsl_rule(
         }
     }
 
-    match rules::save(&repo, &rule).await {
+    match rules::save_legacy(&repo, &rule).await {
         Ok(()) => {
             let pf = paper_finished(&repo, &rule).await;
             let counters = repo

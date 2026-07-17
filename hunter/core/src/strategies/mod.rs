@@ -18,6 +18,8 @@ pub mod match_keys;
 pub mod registry;
 pub mod rules;
 pub mod runtime_cache;
+// Lives in the pure `hunter-engine` crate; re-exported for path stability.
+pub use hunter_engine::rule_params;
 pub mod swing_1;
 pub mod tpsl_sniper_1;
 pub mod tpsl_sniper_2;

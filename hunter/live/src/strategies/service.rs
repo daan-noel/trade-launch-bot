@@ -29,14 +29,14 @@ use uuid::Uuid;
 use pump_trader::constants::LAMPORTS_PER_SOL;
 use trading_core::config::constants::{resolve_buy_slippage_bps, resolve_sell_slippage_bps};
 use trading_core::models::ingest::SseEvent;
-use trading_core::models::{StrategyPosition, StrategyRule, Token};
+use trading_core::models::{StrategyPosition, LegacyStrategyRule, Token};
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 use trading_core::strategies::death;
 use trading_core::strategies::exit_state::clock_entry_time;
 use trading_core::strategies::registry::{StrategyImpl, StrategyParams};
-use trading_core::strategies::rules::{self, RuleDraft, RuleError};
+use trading_core::strategies::rules::{self, LegacyRuleDraft, RuleError};
 use trading_core::strategies::runtime_cache::{ExitGuard, StrategyRuntimeCache, FIRST_SLOT_GATE_TIMEOUT_SECS};
 
 use crate::state::token_cache::TokenCache;
@@ -324,7 +324,7 @@ impl StrategyService {
         &self,
         mint: &str,
         token: &Token,
-        rule: StrategyRule,
+        rule: LegacyStrategyRule,
         params: StrategyParams,
         strat: StrategyImpl,
     ) {
@@ -1253,7 +1253,7 @@ impl StrategyService {
         &self,
         rule_id: Uuid,
         activation: PaperActivation,
-    ) -> anyhow::Result<StrategyRule> {
+    ) -> anyhow::Result<LegacyStrategyRule> {
         let mut rule = self
             .repo
             .find_rule(rule_id)
@@ -1287,7 +1287,7 @@ impl StrategyService {
     /// Pause a rule (entries off; open positions left to drain via the exit ladder —
     /// `on_trade_executed` / the time sweep still exit them). Marks the current run
     /// `Stopped`. Returns the updated rule.
-    pub async fn pause_rule(&self, rule_id: Uuid) -> anyhow::Result<StrategyRule> {
+    pub async fn pause_rule(&self, rule_id: Uuid) -> anyhow::Result<LegacyStrategyRule> {
         let mut rule = self
             .repo
             .find_rule(rule_id)
@@ -1314,7 +1314,7 @@ impl StrategyService {
     pub async fn stop_and_close_rule(
         &self,
         rule_id: Uuid,
-    ) -> anyhow::Result<(StrategyRule, usize)> {
+    ) -> anyhow::Result<(LegacyStrategyRule, usize)> {
         // Grabbed before `pause_rule` (→ `stop_run` → `finalize_run`) so we can
         // re-check emptiness below even if that first pass left the run `Stopped`
         // because a since-deleted 0-entry position was still on it at the time.
@@ -1358,7 +1358,7 @@ impl StrategyService {
     async fn close_one_position(
         &self,
         position: StrategyPosition,
-        rule: &StrategyRule,
+        rule: &LegacyStrategyRule,
         now: DateTime<Utc>,
     ) {
         let position_id = position.id;
@@ -1445,7 +1445,7 @@ impl StrategyService {
         &self,
         strategy_id: &str,
         trade_mode: &str,
-    ) -> anyhow::Result<Vec<(Uuid, anyhow::Result<StrategyRule>)>> {
+    ) -> anyhow::Result<Vec<(Uuid, anyhow::Result<LegacyStrategyRule>)>> {
         let rules = self.repo.find_rules_by_strategy(strategy_id).await?;
         let mut out = Vec::new();
         for r in rules.into_iter().filter(|r| r.trade_mode == trade_mode && r.is_active) {
@@ -1462,7 +1462,7 @@ impl StrategyService {
         &self,
         strategy_id: &str,
         trade_mode: &str,
-    ) -> anyhow::Result<Vec<(Uuid, anyhow::Result<(StrategyRule, usize)>)>> {
+    ) -> anyhow::Result<Vec<(Uuid, anyhow::Result<(LegacyStrategyRule, usize)>)>> {
         let rules = self.repo.find_rules_by_strategy(strategy_id).await?;
         let mut out = Vec::new();
         for r in rules.into_iter().filter(|r| {
@@ -1479,8 +1479,8 @@ impl StrategyService {
 
     /// Validate + persist a new (inactive) rule, then refresh the rules cache and
     /// notify SSE. A lifecycle endpoint activates it afterward.
-    pub async fn create_rule(&self, draft: &RuleDraft) -> Result<StrategyRule, RuleError> {
-        let rule = rules::create(&self.repo, draft).await?;
+    pub async fn create_rule(&self, draft: &LegacyRuleDraft) -> Result<LegacyStrategyRule, RuleError> {
+        let rule = rules::create_legacy(&self.repo, draft).await?;
         self.runtime.reload_rules(&self.repo).await.map_err(RuleError::Repo)?;
         self.emit_rules_changed(&rule.strategy_id);
         Ok(rule)
@@ -1488,8 +1488,8 @@ impl StrategyService {
 
     /// Re-validate + persist an edited rule (the edge merges its request patch and
     /// enforces any frozen-field guard first), then refresh the cache + notify SSE.
-    pub async fn save_rule(&self, rule: &StrategyRule) -> Result<(), RuleError> {
-        rules::save(&self.repo, rule).await?;
+    pub async fn save_rule(&self, rule: &LegacyStrategyRule) -> Result<(), RuleError> {
+        rules::save_legacy(&self.repo, rule).await?;
         self.runtime.reload_rules(&self.repo).await.map_err(RuleError::Repo)?;
         self.emit_rules_changed(&rule.strategy_id);
         Ok(())

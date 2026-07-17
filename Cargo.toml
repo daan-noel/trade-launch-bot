@@ -17,6 +17,7 @@
 members = [
     # hunter
     "hunter/core",
+    "hunter/engine",
     "hunter/live",
     "hunter/lab",
     # shared standalone crates (used by BOTH products)

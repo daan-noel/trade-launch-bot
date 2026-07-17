@@ -21,10 +21,10 @@ use uuid::Uuid;
 
 use crate::state::deploy_state::DeployState;
 use crate::strategies::PaperActivation;
-use trading_core::models::StrategyRule;
+use trading_core::models::LegacyStrategyRule;
 use trading_core::strategies::registry::StrategyImpl;
 use trading_core::storage::repositories::strategy_repo::RuleCounters;
-use trading_core::strategies::rules::{params_to_value, RuleDraft, RuleError};
+use trading_core::strategies::rules::{params_to_value, LegacyRuleDraft, RuleError};
 use trading_core::strategies::runtime_cache::StrategyRuntimeCache;
 
 // ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
 /// `db_counters` is `None` at the mutation endpoints (the frontend refetches the
 /// list, whose read path supplies them) and defaults to zero.
 fn rule_to_json(
-    rule: &StrategyRule,
+    rule: &LegacyStrategyRule,
     cache: &StrategyRuntimeCache,
     db_counters: Option<&RuleCounters>,
 ) -> Value {
@@ -249,7 +249,7 @@ pub async fn create_rule(
     let rule_name = body.get(RULE_NAME).and_then(Value::as_str).unwrap_or("").to_string();
     let buy_amount_sol = body.get(BUY_AMOUNT).and_then(Value::as_f64).unwrap_or(0.0);
     let trade_mode = body.get(TRADE_MODE).and_then(Value::as_str).unwrap_or("paper").to_string();
-    let draft = RuleDraft {
+    let draft = LegacyRuleDraft {
         strategy,
         rule_name,
         buy_amount_sol,

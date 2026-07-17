@@ -12,13 +12,13 @@ use std::hash::{Hash, Hasher};
 
 use serde_json::Value;
 
-use crate::models::StrategyRule;
+use crate::models::LegacyStrategyRule;
 use crate::strategies::registry::{StrategyImpl, StrategyParams};
 
 /// Stable string for the token-creation fingerprint (Stage‑1 filters only).
 /// Two rules with the same fingerprint over the same analysis window share one
 /// whole-table scan + one lake load.
-pub fn fingerprint_key(rule: &StrategyRule) -> String {
+pub fn fingerprint_key(rule: &LegacyStrategyRule) -> String {
     let Some(strategy) = StrategyImpl::from_id(&rule.strategy_id) else {
         return hash_label("unknown");
     };
@@ -32,7 +32,7 @@ pub fn fingerprint_key(rule: &StrategyRule) -> String {
 /// Stable string for a full backtest configuration (fingerprint + entry/exit/
 /// sizing). Unchanged → the finished sim result can be reused without re-walking
 /// trades.
-pub fn sim_key(rule: &StrategyRule) -> String {
+pub fn sim_key(rule: &LegacyStrategyRule) -> String {
     let mut h = DefaultHasher::new();
     rule.strategy_id.hash(&mut h);
     rule.buy_amount_sol.to_bits().hash(&mut h);
@@ -206,7 +206,7 @@ mod fingerprint_key_parity_tests {
         use chrono::Utc;
         use uuid::Uuid;
 
-        let mut base = StrategyRule {
+        let mut base = LegacyStrategyRule {
             id: Uuid::new_v4(),
             strategy_id: "tpsl_sniper_1".into(),
             rule_name: "r".into(),
