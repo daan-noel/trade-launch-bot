@@ -36,7 +36,7 @@ use spl_associated_token_account::{
 };
 use std::str::FromStr;
 use std::time::Instant;
-use tracing::info;
+use tracing::{debug, info};
 
 // Anchor instruction discriminators (from pump_amm.json). We use the original
 // `buy` (exact base out, max quote in); `buy_exact_quote_in` would also work.
@@ -620,8 +620,13 @@ impl PumpFunTrader {
         base_token_program_id: &str,
     ) -> Result<AmmPoolInfo> {
         if let Some(info) = self.amm_pool_cache.get(token_mint).map(|r| *r) {
+            debug!(mint = %token_mint, "amm_pool_info cache hit (feed harvest; no RPC)");
             return Ok(info);
         }
+        info!(
+            mint = %token_mint,
+            "amm_pool_info cold path — RPC fallback (no feed harvest since boot)"
+        );
 
         let mint = Pubkey::from_str(token_mint)?;
         let pool = match pool_override {
@@ -861,6 +866,14 @@ impl PumpFunTrader {
         else {
             return false;
         };
+        info!(
+            mint = %token_mint,
+            pool = %info.pool,
+            cashback = info.is_cashback_coin,
+            fee_share_marker = ?info.fee_share_marker.map(|p| p.to_string()),
+            creator_vault = %info.coin_creator_vault_authority,
+            "AMM pool facts harvested from feed (zero RPC)"
+        );
         self.amm_pool_cache.insert(token_mint.to_string(), info);
         true
     }
@@ -1120,6 +1133,9 @@ async fn rpc_json_call(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
+    // Visible in the smoke "RPC log" — `getTransaction` here is the cold
+    // fee-share-marker fallback only; steady-state harvest must keep this quiet.
+    info!(method = method, "executor RPC read");
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
     let resp = http
         .post(rpc_url)

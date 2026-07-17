@@ -333,6 +333,10 @@ impl Engine {
                     if cache.is_fresher_than(Duration::from_millis(refresh_ms)) {
                         continue; // push feed already covered this tick
                     }
+                    info!(
+                        refresh_ms,
+                        "blockhash watchdog: cache stale — getLatestBlockhash RPC"
+                    );
                     match rpc.get_latest_blockhash().await {
                         Ok(hash) => cache.store(hash),
                         Err(e) => warn!("Blockhash refresh failed: {e}"),

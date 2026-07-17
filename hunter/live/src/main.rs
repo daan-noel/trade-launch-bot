@@ -511,12 +511,12 @@ async fn main() -> anyhow::Result<()> {
         signer,
         nonce_accounts.clone(),
     );
-    // RPC-reduction tuning (docs/plans/rpc/helius-rpc-reduction-plan.md): the
-    // LaserStream push hooks below keep the blockhash cache ~400 ms fresh and
-    // re-arm nonce slots at feed speed, so the executor's pollers are demoted to
-    // stall fallbacks. 10 s watchdog tick (fetches only when the feed stalls);
-    // 30 s max-age stays well inside the ~60 s hash validity window; the 2 s
-    // first-delay lets the nonce push win before the fallback poll spends reads.
+    // RPC-reduction tuning: the LaserStream push hooks below keep the blockhash
+    // cache ~400 ms fresh and re-arm nonce slots at feed speed, so the executor's
+    // pollers are demoted to stall fallbacks. 10 s watchdog tick (fetches only
+    // when the feed stalls); 30 s max-age stays well inside the ~60 s hash
+    // validity window; the 2 s first-delay lets the nonce push win before the
+    // fallback poll spends reads.
     trader_config.cache.blockhash_refresh_ms = 10_000;
     trader_config.cache.blockhash_max_age_ms = 30_000;
     trader_config.nonce.refresh_first_delay_ms = 2_000;
