@@ -45,6 +45,7 @@ export const labNav: NavConfig = {
         { to: '/strategies/rules', label: 'Rules' },
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
         { to: '/strategies/simulate', label: 'Simulate' },
+        { to: '/strategies/metric-panes', label: 'Metric panes' },
         { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1 (legacy)' },
         { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2 (legacy)' },
         { to: '/strategies/swing1', label: 'Swing 1 (legacy)' },

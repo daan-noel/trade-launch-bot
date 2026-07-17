@@ -308,15 +308,23 @@ pages listed in §2. **Kept:** `DataTable` + server-table plumbing, `sse.ts` mul
       paged entered-tokens table + chart-marker wiring; the summary funnel ships now). The
       per-exit-reason breakdown (TP/SL/metrics/dead) also needs a richer summary aggregate.
 
-### FE4 — Chart metric panes  (needs backend Phase 5.7)
+### FE4 — Chart metric panes  (needs backend Phase 5.7) ✅ 2026-07-17 (lab, standalone panes)
 
-- [ ] 4.1 Check `lightweight-charts` version; upgrade to v5 if needed (migration commit
-      isolated from feature commits).
-- [ ] 4.2 `MetricPanes.tsx`: pane add/remove from registry picker, series fetch via
-      `metric-series` endpoint, shared crosshair/time-scale with the price pane.
-- [ ] 4.3 Rule overlay: rule selector → threshold lines per visible pane + entry/exit
-      markers (existing plugin); persists pane/rule prefs to localStorage like the
-      toolbar does.
+> **Scoping note:** the metric-series endpoint is **lab-only** (needs the lake), so the
+> panes are a lab feature. Rendered as a **self-contained SVG line-pane layer**
+> (`@lab/components/strategy/MetricPanes.tsx`) rather than threaded into the 1.9k-line
+> `TokenPriceChart` — so the shared-crosshair / under-price-chart placement (§3.3) is a
+> **deferred** follow-up. lightweight-charts is already v5 (4.1 no-op).
+
+- [x] 4.1 `lightweight-charts` confirmed v5 (`^5.2.0`) — no migration needed.
+- [x] 4.2 `MetricPanes.tsx`: registry-driven pane picker (metric × window), series fetch
+      via `getMetricSeries` (`/api/tokens/{mint}/metric-series`), SVG line pane per metric
+      (null-break segments). `@lab/pages/strategies/MetricPanesPage.tsx` (mint via `?mint=`
+      or input) + route + nav.
+- [x] 4.3 Rule overlay: rule selector → each visible pane draws that rule's condition
+      thresholds (entry = teal, exit = amber dashed) on that metric; pane/window/rule prefs
+      persist to `localStorage`. Entry/exit *markers* deferred with the price-chart
+      integration (needs sim decision points).
 
 ### FE5 — Sweep UI + promote + cleanup  (needs backend Phase 5.4–5.6)
 

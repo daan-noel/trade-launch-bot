@@ -17,7 +17,7 @@ import type {
   SimulatedTokenResult,
   TraderTokenRow,
 } from 'types';
-import type { EngineSimRequest, SimStartResponse } from 'lib/strategy/types';
+import type { EngineSimRequest, SimStartResponse, MetricSeriesResponse } from 'lib/strategy/types';
 
 /** Args for the per-rule strategy result reads (matched / simulate / paper),
  *  shared by both strategy pages so tpsl1 and tpsl2 keep distinct cache keys. */
@@ -104,6 +104,16 @@ export const labApi = baseApi.injectEndpoints({
         // Aggregate over the full run (summary ignores pagination).
         body: { pagination: { page: 1, pageSize: 1 }, sorting: [], search: '', filters: {} },
       }),
+    }),
+    // On-demand metric series for a token's chart panes (redesign 5.7) — every
+    // metric's value at every trade, recomputed from the lake + PG tail with the
+    // SAME engine compute the live/sweep paths use (never persisted).
+    getMetricSeries: builder.query<MetricSeriesResponse, { mint: string; windows?: number[] }>({
+      query: ({ mint, windows }) => {
+        const w = windows && windows.length ? `?windows=${windows.join(',')}` : '';
+        return `/api/tokens/${encodeURIComponent(mint)}/metric-series${w}`;
+      },
+      keepUnusedDataFor: 60,
     }),
     getStrategyPaperResult: builder.query<PaperResultResponse, StrategyRuleArg>({
       query: ({ strategy, ruleId }) =>
@@ -272,4 +282,5 @@ export const {
   useGetTraderTokensQuery,
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
+  useGetMetricSeriesQuery,
 } = labApi;

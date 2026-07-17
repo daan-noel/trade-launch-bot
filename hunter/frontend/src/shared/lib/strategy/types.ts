@@ -91,6 +91,26 @@ export interface ArmedEntry {
   state: string;
 }
 
+/** One computed metric column from `GET /api/tokens/{mint}/metric-series`. */
+export interface MetricSeriesColumn {
+  metric: string;
+  group: string;
+  unit: string;
+  /** Present only for dynamic (`m_time_window`) metrics. */
+  window_size_sec: number | null;
+  /** One value per event (aligned with `at`); non-finite ⇒ `null`. */
+  values: Array<number | null>;
+}
+
+/** `GET /api/tokens/{mint}/metric-series` response — every metric's value at every
+ *  trade, as parallel arrays. Computed on demand (never persisted). Lab-only. */
+export interface MetricSeriesResponse {
+  mint_address: string;
+  /** RFC3339 timestamps aligned with every column's `values`. */
+  at: string[];
+  series: MetricSeriesColumn[];
+}
+
 /** Inline dry-run draft for `POST /api/strategies/simulate`. NOTE: this uses
  *  `buy_amount_sol` (f64 SOL) — the one amount that is SOL, not lamports, on the
  *  wire (the simulate handler's draft contract). */
