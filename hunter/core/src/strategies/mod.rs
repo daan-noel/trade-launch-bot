@@ -13,6 +13,7 @@
 pub mod analysis;
 pub mod death;
 pub mod exit_state;
+pub mod fingerprint_axes;
 pub mod kernel;
 pub mod match_keys;
 pub mod registry;

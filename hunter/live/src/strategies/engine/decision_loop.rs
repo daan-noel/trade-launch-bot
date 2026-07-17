@@ -52,7 +52,9 @@ use super::sinks::Sink;
 use super::{exec_paper, ArmedRegistry, EngineCommand, EngineHandle, PositionRegistry};
 
 /// The clock tick — 500 ms, sized to ~400 ms slot latency (plan decision 5).
-const TICK: Duration = Duration::from_millis(500);
+/// Derived from the engine's [`hunter_engine::TICK_MS`] SSOT so live + lab replay
+/// tick at the one cadence (plan 5.3).
+const TICK: Duration = Duration::from_millis(hunter_engine::TICK_MS as u64);
 /// How often (in ticks) to prune the producer's per-mint maps to the live set.
 const PRUNE_EVERY_TICKS: u64 = 240; // ≈ every 2 min
 

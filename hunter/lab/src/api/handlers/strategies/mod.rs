@@ -3,6 +3,7 @@
 //! paper-result reads). The rule domain (`tpsl_rules_core`) lives in
 //! `trading_core` and is shared with the deploy edge.
 
+pub mod engine;
 pub mod grouped_sweep;
 pub mod positions;
 pub mod swing1;

@@ -14,8 +14,13 @@ tests + a seeded-fuzz property test). **Phase 4 built 2026-07-16** (live adapter
 the runtime; legacy `StrategyService` kept for compile only, reapers NOT spawned);
 CRUD/registry/armed HTTP on the live bin; two new `SseEvent` variants; `EVENT_LOG_*`
 env; `cargo check` clean on live+lab, clippy-clean on new code. **Runtime paper smoke
-(4.9) still pending** — needs the live stack + a matching fresh token.); next: Phase 5
-(analysis adapters).
+(4.9) still pending** — needs the live stack + a matching fresh token.). **Phase 5
+part 1 built 2026-07-17** (analysis-simulate cluster: 5.1 `lab/src/strategies/replay.rs`
+global-ordered replay driver + sim fills + results collector; 5.2 generic
+`POST /api/strategies/simulate` over replay; 5.3 parity by construction — converters
+hoisted to `core::strategies::fingerprint_axes` SSOT + engine `TICK_MS` SSOT + guard
+tests; 5.7 metric-series endpoint; `cargo check`/tests green on all four bins); next:
+Phase 5 part 2 (5.4–5.6 sweep precompute-then-scan rewrite, 5.8 runtime verification).
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
 [frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
@@ -632,18 +637,34 @@ Determinism rules (violation = bug):
 
 ### Phase 5 — Analysis adapters (hunter-lab)
 
-- [ ] 5.1 `strategies/replay.rs`: lake→events producer — `CorpusTrade`s in canonical
-      order (`slot → tx_index → leg_index → block_time`), synthetic 500 ms `Tick`s
-      between timestamps and after last trade up to `as_of` = run-time now (deadness
-      as-of precedent); sim fill model emits `FillConfirmed` inline; results collector
-      consumes `PositionUpdate`s.
-- [ ] 5.2 Generic simulate: `POST /api/strategies/simulate` accepting `rule_id` **or an
-      inline params draft** (frontend dry-run needs unsaved drafts) + corpus window;
-      replaces per-strategy simulate routes; keep result-cache plumbing
-      (`state/{sim_results,sim_summary}.rs`), swap the resolver.
-- [ ] 5.3 **Live↔replay parity test** (keystone): same event vector through the live
-      loop's dispatch path and the replay driver ⇒ identical effects; guard test that
-      both use the one tick constant.
+**Progress 2026-07-17:** 5.1 + 5.2 + 5.3 + 5.7 built (analysis-simulate cluster).
+5.4–5.6 (sweep rewrite) and 5.8 (runtime verification) remain.
+
+- [x] 5.1 `strategies/replay.rs`: lake→events producer — `ReplayToken`s expanded into
+      one **globally time-ordered** event stream (`TokenCreated`/`FirstSlotSettled`/
+      `Trade` merged by `(time, mint, kind)`), synthetic 500 ms `Tick`s between event
+      timestamps and after last trade up to `as_of` = run-time now (deadness as-of),
+      with tick emission stopping the moment no token is active (bounded by
+      `DEAD_QUIET_SECS`). Sim fill model mirrors `exec_paper` (fills at the deciding
+      event's spot, `FillConfirmed` fed back inline); `PositionOutcome` collector →
+      `EngineBacktestResult` rows (legacy serde shape; PnL via the shared `CostModel`).
+      **One shared `EngineState` in global order** so cross-token caps apply exactly
+      as live. 7 tests incl. the cross-token concurrency-cap parity + determinism.
+- [x] 5.2 Generic simulate: `POST /api/strategies/simulate` accepting `rule_id` **or an
+      inline params draft** (`EngineSimRequest`), over the optional `{since,until}`
+      window; candidate scan = instant-fingerprint match (two-phase resolves inside
+      the fold); reuses `analysis_cache` single-flight + `SimResults`/`SimProgress`/SSE;
+      results served by the strategy-agnostic `positions::sim_result_page/summary`.
+      New handlers `api/handlers/strategies/engine.rs` + `strategies/engine_sim.rs`.
+      Caps applied **in the fold**, not post-hoc (no `select_simulated_tokens`).
+- [x] 5.3 **Live↔replay parity** (keystone): guaranteed *by construction* — both edges
+      call the one `reduce`, feed observed axes through the shared
+      `fingerprint_axes::{observed_axes,fp_to_engine,rule_to_loaded}` SSOT (moved to
+      core; live `convert.rs` now re-exports), and derive the tick from the engine's
+      `TICK_MS` SSOT. Guard tests: replay ticks at `TICK_MS` (`tick_matches_engine_ssot`),
+      cross-token cap parity, determinism. *(A cross-crate event-vector diff harness is
+      deferred; the shared-`reduce` + shared-converters design makes divergence a
+      compile/const mismatch, which the guards catch.)*
 - [ ] 5.4 Sweep scan (`hunter/lab/src/sweep/`): keep `grouped_engine.rs` partitioning
       (`group_key`) + `GroupedSweepRepo` streaming persistence; replace the three
       wrappers with the generic axes model — axis = (side, group, metric, operator,
@@ -654,9 +675,11 @@ Determinism rules (violation = bug):
       (decision 13's drift lock).
 - [ ] 5.6 Promotion: winning combo + group → `FingerprintRepo::find_or_create` (at the
       run's bucket width) + `rules::create`; returns the draft for the frontend editor.
-- [ ] 5.7 Metric-series endpoint `GET /api/tokens/{mint}/metric-series?windows=…` —
-      replay one token through `metrics/series.rs` on demand (chart panes; metrics are
-      never persisted).
+- [x] 5.7 Metric-series endpoint `GET /api/tokens/{mint}/metric-series?windows=…` —
+      replays one token's full history (lake ∪ PG tail) through `metrics/series.rs` on
+      demand, returning every metric's value at every trade as parallel arrays
+      (`m_time_window` metrics per requested window; non-finite ⇒ `null`). Never
+      persisted. `api/handlers/tokens/metric_series.rs`.
 - [ ] 5.8 Re-run standing verification checks (bf61547f-style): dead tokens book `Dead`
       not `Open`; win-rates comparable to pre-redesign baselines for equivalent conditions.
 

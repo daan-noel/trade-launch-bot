@@ -15,6 +15,9 @@ path = "src/main.rs"
 # Sweep CU cost-model constants come from `trading_core::config::constants`, so
 # the analysis bin never pulls the trading/RPC stack (`pump-trader`).
 trading_core = { path = "../core", package = "hunter-core" }
+# The pure strategy engine (fold + metrics + fingerprint matcher) — the replay
+# driver + generic simulate/sweep scan drive the same `reduce` the live loop does.
+hunter-engine = { path = "../engine" }
 # Shared fail-closed bearer-auth middleware (SSOT for the mutating-route gate).
 http-auth = { path = "../../shared/http-auth" }
 

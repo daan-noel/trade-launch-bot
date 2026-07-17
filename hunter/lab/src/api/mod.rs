@@ -32,6 +32,11 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/tokens/{mint}/swing1-detect",
                 web::post().to(handlers::tokens::detect_token_swing1),
             )
+            // Redesign: every metric's series over a token's trades (chart panes)
+            .route(
+                "/tokens/{mint}/metric-series",
+                web::get().to(handlers::tokens::token_metric_series),
+            )
             // Trader Analysis: mints a wallet traded (recent-first, days+limit)
             .route(
                 "/wallets/{wallet}/tokens",
@@ -49,6 +54,23 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             )
             .route("/jobs/swings/{run_id}/cancel", web::post().to(handlers::system::cancel_swing))
             .route("/jobs/swings/{run_id}/result", web::get().to(handlers::system::swing_result))
+            // ── Generic engine simulate (redesign) — one surface for every rule ──
+            .route(
+                "/strategies/simulate",
+                web::post().to(handlers::strategies::engine::simulate_engine),
+            )
+            .route(
+                "/strategies/simulate/{run_id}/cancel",
+                web::post().to(handlers::strategies::engine::cancel_engine_simulation),
+            )
+            .route(
+                "/strategies/simulate/{run_id}/result",
+                web::post().to(handlers::strategies::engine::engine_sim_result),
+            )
+            .route(
+                "/strategies/simulate/{run_id}/result/summary",
+                web::post().to(handlers::strategies::engine::engine_sim_result_summary),
+            )
             // ── Strategy rule authoring + backtest — tpsl_sniper_1 ──
             .route(
                 "/strategies/tpsl1/rules",

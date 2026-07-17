@@ -3010,6 +3010,7 @@ dependencies = [
  "futures-util",
  "http-auth",
  "hunter-core",
+ "hunter-engine",
  "memory-stats",
  "parquet",
  "rand 0.8.6",
