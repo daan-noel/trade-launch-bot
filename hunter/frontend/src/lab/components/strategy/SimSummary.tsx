@@ -1,20 +1,20 @@
 import { dashPercent, dashF } from 'components/strategy/cellFormat';
-import type { PositionsSummary } from 'types';
+import type { SimulatedSummary } from 'types';
 
-/** Compact funnel summary of a finished simulation run (dry-run + SimulatePage).
- *  `PositionsSummary` is the population-wide aggregate the sim result-summary
- *  endpoint returns (SOL fields are human SOL; win_rate/avg_pnl_pct are percents).
- *  NOTE: an exit-reason breakdown (TP / SL / metrics / dead) is not in this
- *  summary — surfacing it would need a richer aggregate (deferred). */
-export function SimSummary({ summary }: { summary: PositionsSummary }) {
+/** Compact funnel summary of a finished simulation run (dry-run panel).
+ *  SimulatePage renders the same fields as separate DataTable columns instead.
+ *  Wire shape is the lab `sim_result_summary` rollup (`SimulatedSummary`):
+ *  `win_rate` is a 0..1 fraction; `avg_pnl_percent` / `total_pnl_sol` are already
+ *  display units. */
+export function SimSummary({ summary }: { summary: SimulatedSummary }) {
+  const winPct = summary.win_rate != null ? summary.win_rate * 100 : null;
   const cells: Array<[string, string]> = [
-    ['entered', String(summary.tokens)],
-    ['open', String(summary.open)],
-    ['win', String(summary.win)],
-    ['loss', String(summary.loss)],
-    ['win rate', dashPercent(summary.win_rate)],
-    ['avg pnl', dashPercent(summary.avg_pnl_pct)],
+    ['entered', String(summary.total_tokens ?? '—')],
+    ['closed', String(summary.closed_tokens ?? '—')],
+    ['win rate', dashPercent(winPct)],
+    ['avg pnl', dashPercent(summary.avg_pnl_percent)],
   ];
+  const pnl = summary.total_pnl_sol;
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
       {cells.map(([k, v]) => (
@@ -24,8 +24,16 @@ export function SimSummary({ summary }: { summary: PositionsSummary }) {
       ))}
       <span className="text-text-dim">
         PnL{' '}
-        <b className={summary.total_pnl_sol >= 0 ? 'text-green tabular-nums' : 'text-red tabular-nums'}>
-          {dashF(summary.total_pnl_sol, 3)}◎
+        <b
+          className={
+            pnl == null || !Number.isFinite(pnl)
+              ? 'text-text tabular-nums'
+              : pnl >= 0
+                ? 'text-green tabular-nums'
+                : 'text-red tabular-nums'
+          }
+        >
+          {dashF(pnl, 3)}◎
         </b>
       </span>
     </div>

@@ -16,18 +16,21 @@ import type { SweepResultRecord } from './types';
 
 // --- formatters -------------------------------------------------------------
 
-function fmtSecs(v: number): string {
-  if (v <= 0) return '—';
+function fmtSecs(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v) || v <= 0) return '—';
   if (v < 90) return `${Math.round(v)}s`;
   if (v < 5400) return `${(v / 60).toFixed(1)}m`;
   return `${(v / 3600).toFixed(1)}h`;
 }
-const pctText = (v: number) => `${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 1)}%`;
-const solText = (v: number) => `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
+const pctText = (v: number | null | undefined) =>
+  v == null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 1)}%`;
+const solText = (v: number | null | undefined) =>
+  v == null || !Number.isFinite(v) ? '—' : `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
 const tone = (text: ReactNode, cls: string): ReactNode => (
   <span className={cn('font-medium', cls)}>{text}</span>
 );
-const goodBad = (v: number, pivot = 0) => (v >= pivot ? 'text-green' : 'text-red');
+const goodBad = (v: number | null | undefined, pivot = 0) =>
+  v != null && Number.isFinite(v) && v >= pivot ? 'text-green' : 'text-red';
 function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   return (
     <span
@@ -137,9 +140,17 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
       (r) => (r.score == null ? tone('—', 'text-text-dim') : tone(pctText(r.score), goodBad(r.score))),
       { tooltip: 'Robust rank: mean − 1.64·σ/√n over closed trades. Blank when < 2 closed trades.' },
     ),
-    metric('win_rate', 'Win %', 'pnl', (r) => r.win_rate, (r) => tone(`${(r.win_rate * 100).toFixed(0)}%`, goodBad(r.win_rate, 0.5)), {
-      tooltip: 'Share of fired tokens with PnL > 0',
-    }),
+    metric(
+      'win_rate',
+      'Win %',
+      'pnl',
+      (r) => r.win_rate,
+      (r) =>
+        r.win_rate == null || !Number.isFinite(r.win_rate)
+          ? tone('—', 'text-text-dim')
+          : tone(`${(r.win_rate * 100).toFixed(0)}%`, goodBad(r.win_rate, 0.5)),
+      { tooltip: 'Share of fired tokens with PnL > 0' },
+    ),
     metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol))),
     metric('expectancy_sol', 'Expectancy', 'pnl', (r) => r.expectancy_sol, (r) => tone(solText(r.expectancy_sol), goodBad(r.expectancy_sol))),
     metric(
@@ -234,11 +245,21 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
     gm('fired_count', 'Fired', (g) => g.fired_count, (g) => tone(String(g.fired_count), 'text-info'), {
       tooltip: "The best combo's fired count — the sample size behind its score",
     }),
-    gm('best_score', 'Score', (g) => g.best_score, (g) =>
-      g.best_score == null ? tone('—', 'text-text-dim') : tone(pctText(g.best_score), goodBad(g.best_score)), {
-      tooltip: "Robust score of this group's best combo (matches the drill-in default sort).",
-    }),
-    gm('best_win_rate', 'Win %', (g) => g.best_win_rate, (g) => tone(`${(g.best_win_rate * 100).toFixed(0)}%`, goodBad(g.best_win_rate, 0.5))),
+    gm(
+      'best_score',
+      'Score',
+      (g) => g.best_score,
+      (g) =>
+        g.best_score == null
+          ? tone('—', 'text-text-dim')
+          : tone(pctText(g.best_score), goodBad(g.best_score)),
+      { tooltip: "Robust score of this group's best combo (matches the drill-in default sort)." },
+    ),
+    gm('best_win_rate', 'Win %', (g) => g.best_win_rate, (g) =>
+      g.best_win_rate == null || !Number.isFinite(g.best_win_rate)
+        ? tone('—', 'text-text-dim')
+        : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, goodBad(g.best_win_rate, 0.5)),
+    ),
     gm('best_total_pnl_sol', 'Total PnL', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol))),
     gm('best_expectancy_sol', 'Expectancy', (g) => g.best_expectancy_sol, (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol))),
     gm('best_profit_factor', 'Profit factor', (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY, (g) =>

@@ -66,6 +66,10 @@ interface TokenTradeChartProps {
    *  gold glow/ring, standing out among the other tracked wallets. If it isn't
    *  a saved profile wallet, a synthetic marker entry is injected so it shows. */
   highlightWallet?: string | null;
+  /** Wall-clock crosshair time for sibling panes (metric series). */
+  onCrosshairTimeChange?: (timeSec: number | null) => void;
+  /** Visible wall-clock window for sibling panes (time-grouping mode only). */
+  onVisibleTimeRangeChange?: (range: { from: number; to: number } | null) => void;
 }
 
 /** Maps tx signature → kind for entry/exit row highlighting in the trades table.
@@ -126,6 +130,8 @@ export function TokenTradeChart({
   externalSelection = null,
   tableId,
   highlightWallet = null,
+  onCrosshairTimeChange,
+  onVisibleTimeRangeChange,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
@@ -300,6 +306,8 @@ export function TokenTradeChart({
         connectSwings={connectSwings}
         onConnectSwingsChange={onConnectSwingsChange}
         profileWallets={profileWallets}
+        onCrosshairTimeChange={onCrosshairTimeChange}
+        onVisibleTimeRangeChange={onVisibleTimeRangeChange}
       />
 
       {showSelectionPanel && (

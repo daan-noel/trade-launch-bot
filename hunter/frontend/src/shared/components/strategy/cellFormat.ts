@@ -8,13 +8,15 @@ export function dashNum(val: number | null | undefined, zero = 0): string {
   return String(val);
 }
 
-export function dashF(val: number, precision: number): string {
-  if (val === 0) return '-';
+export function dashF(val: number | null | undefined, precision: number): string {
+  // Guard null/undefined — a field-name mismatch against the wire shape used to
+  // crash here via `undefined.toFixed` inside formatDecimalTrim.
+  if (val == null || val === 0 || Number.isNaN(val)) return '-';
   return formatDecimalTrim(val, precision);
 }
 
-export function dashPercent(val: number): string {
-  if (val === 0) return '-';
+export function dashPercent(val: number | null | undefined): string {
+  if (val == null || val === 0 || Number.isNaN(val)) return '-';
   return `${formatDecimalTrim(val, 1)}%`;
 }
 

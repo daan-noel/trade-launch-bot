@@ -26,6 +26,11 @@ pub struct MetricSeriesQuery {
     pub windows: Option<String>,
     #[serde(default)]
     pub curve_only: bool,
+    /// Optional fingerprint context. Reserved for flow-metric columns that need a
+    /// pattern config (`metric_config`); today the series is pure trade replay and
+    /// this id is accepted but unused so the FE can wire it ahead of that work.
+    #[serde(default)]
+    pub fingerprint_id: Option<String>,
 }
 
 /// One computed series in the response.
@@ -44,7 +49,8 @@ struct SeriesOut {
 const DEFAULT_WINDOWS: &[f64] = &[10.0, 30.0, 60.0];
 
 /// `GET /api/tokens/{mint}/metric-series?windows=10,30,60&curve_only=false` — every
-/// metric's value at every trade of the token, as parallel arrays.
+/// metric's value at every trade of the token, as parallel arrays (plus per-event
+/// spot `price` for chart entry/exit markers).
 pub async fn token_metric_series(
     state: web::Data<Arc<LocalState>>,
     path: web::Path<String>,
@@ -52,6 +58,7 @@ pub async fn token_metric_series(
 ) -> impl Responder {
     let mint = path.into_inner();
     let windows = parse_windows(query.windows.as_deref());
+    let _fingerprint_id = query.fingerprint_id.as_deref(); // reserved — see query struct
 
     let trades = match fetch_full_history_one(&state.trade_repo(), &mint, query.curve_only).await {
         Ok(t) => t,
@@ -64,7 +71,7 @@ pub async fn token_metric_series(
 
     if trades.is_empty() {
         return HttpResponse::Ok().json(serde_json::json!({
-            "mint_address": mint, "at": [], "series": [],
+            "mint_address": mint, "at": [], "price": [], "series": [],
         }));
     }
 
@@ -151,9 +158,17 @@ fn build_series(mint: &str, trades: &[crate::sweep::projection::CorpusTrade], wi
         })
         .collect();
 
+    // Non-finite prices (pre-first-trade) → null, matching metric `values`.
+    let price: Vec<Option<f64>> = series
+        .price
+        .iter()
+        .map(|p| p.is_finite().then_some(*p))
+        .collect();
+
     serde_json::json!({
         "mint_address": mint,
         "at": series.at,
+        "price": price,
         "series": out,
     })
 }

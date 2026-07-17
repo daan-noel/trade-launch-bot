@@ -443,7 +443,7 @@ function ComboTokenResults({
         label: 'PnL (SOL)',
         render: (r) => (
           <span className={r.pnl_sol > 0 ? 'text-success' : r.pnl_sol < 0 ? 'text-danger' : 'text-text-dim'}>
-            {r.fired ? r.pnl_sol.toFixed(4) : '—'}
+            {r.fired && r.pnl_sol != null ? r.pnl_sol.toFixed(4) : '—'}
           </span>
         ),
         searchValue: () => '',
@@ -456,7 +456,7 @@ function ComboTokenResults({
         label: 'PnL %',
         render: (r) => (
           <span className={r.pnl_pct > 0 ? 'text-success' : r.pnl_pct < 0 ? 'text-danger' : 'text-text-dim'}>
-            {r.fired ? `${r.pnl_pct.toFixed(1)}%` : '—'}
+            {r.fired && r.pnl_pct != null ? `${r.pnl_pct.toFixed(1)}%` : '—'}
           </span>
         ),
         searchValue: () => '',

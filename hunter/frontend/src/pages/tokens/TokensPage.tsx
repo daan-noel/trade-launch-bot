@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useDispatch } from 'react-redux';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
@@ -19,7 +19,7 @@ import { Button } from 'components/ui/Button';
 import { StatusButton } from 'components/ui/StatusButton';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTokenCreatedStream, connectTradeStream } from 'services/sse';
-import type { LiveTrade, TokenLiveStats, TokenRecord } from 'types';
+import type { LiveTrade, TokenDetailRecord, TokenLiveStats, TokenRecord } from 'types';
 import {
   apiErrorMessage,
   useGetTokenDetailQuery,
@@ -53,7 +53,19 @@ function loadLive(): boolean {
   return getJSON<boolean>(LS_LIVE_KEY, false);
 }
 
-export function TokensPage() {
+export interface TokensPageDetailChartArgs {
+  detail: TokenDetailRecord | null;
+  loading: boolean;
+  error: string | null;
+  mint: string;
+}
+
+export function TokensPage({
+  /** Lab injects chart + metric panes; live keeps the default trade chart. */
+  renderDetailChart,
+}: {
+  renderDetailChart?: (args: TokensPageDetailChartArgs) => ReactNode;
+} = {}) {
   const dispatch = useDispatch<AppDispatch>();
   // Built once and held stable: the rate-dependent cells read the unit/USD-rate
   // from context themselves (see priceCells), so a rate tick no longer rebuilds
@@ -360,7 +372,16 @@ export function TokensPage() {
           className="mt-3.5 flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3"
         >
           <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
-          <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
+          {renderDetailChart ? (
+            renderDetailChart({
+              detail: detail ?? null,
+              loading: detailLoading,
+              error: detailError,
+              mint: selectedMint,
+            })
+          ) : (
+            <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
+          )}
         </div>
       )}
     </div>

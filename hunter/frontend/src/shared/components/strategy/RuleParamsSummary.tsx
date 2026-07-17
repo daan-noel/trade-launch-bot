@@ -53,6 +53,7 @@ function sideChips(side: Record<string, Record<string, unknown>> | undefined): S
     for (const [metric, conds] of Object.entries(body)) {
       if (metric === 'window_size_sec' || !Array.isArray(conds)) continue;
       for (const c of conds as Cond[]) {
+        if (typeof c?.operator !== 'string' || typeof c?.value !== 'number') continue;
         out.push({
           group,
           metric,

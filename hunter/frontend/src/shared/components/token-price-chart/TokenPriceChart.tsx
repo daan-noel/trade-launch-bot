@@ -522,6 +522,8 @@ export function TokenPriceChart({
   onBarClick,
   selectedBar = null,
   onRangeChange,
+  onCrosshairTimeChange,
+  onVisibleTimeRangeChange,
   swingOverlay = null,
   highlightChain = null,
   selectedSwingLegKey = null,
@@ -551,6 +553,10 @@ export function TokenPriceChart({
   onBarClickRef.current = onBarClick;
   const onRangeChangeRef = useRef(onRangeChange);
   onRangeChangeRef.current = onRangeChange;
+  const onCrosshairTimeChangeRef = useRef(onCrosshairTimeChange);
+  onCrosshairTimeChangeRef.current = onCrosshairTimeChange;
+  const onVisibleTimeRangeChangeRef = useRef(onVisibleTimeRangeChange);
+  onVisibleTimeRangeChangeRef.current = onVisibleTimeRangeChange;
   const onSwingLegClickRef = useRef(onSwingLegClick);
   onSwingLegClickRef.current = onSwingLegClick;
   const selectedSwingLegKeyRef = useRef(selectedSwingLegKey);
@@ -788,7 +794,10 @@ export function TokenPriceChart({
     chainTooltip: ChartChainTooltipState | null;
     rangeTooltip: ChartRangeTooltipState | null;
     walletMarkersTooltip: ChartWalletMarkersTooltipState | null;
+    crosshairTimeSec: number | null;
   } | null>(null);
+  const groupModeRef = useRef(groupMode);
+  groupModeRef.current = groupMode;
 
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
 
@@ -918,6 +927,7 @@ export function TokenPriceChart({
       setChainTooltip(next.chainTooltip);
       setRangeTooltip(next.rangeTooltip);
       setWalletMarkersTooltip(next.walletMarkersTooltip);
+      onCrosshairTimeChangeRef.current?.(next.crosshairTimeSec);
     };
     const scheduleCrosshair = () => {
       if (crosshairRafRef.current == null) {
@@ -936,6 +946,7 @@ export function TokenPriceChart({
         chainTooltip: null as ChartChainTooltipState | null,
         rangeTooltip: null as ChartRangeTooltipState | null,
         walletMarkersTooltip: null as ChartWalletMarkersTooltipState | null,
+        crosshairTimeSec: null as number | null,
       };
       pendingCrosshairRef.current = next;
       const setCrosshair = (v: ChartCrosshairInfo | null) => {
@@ -956,6 +967,9 @@ export function TokenPriceChart({
       const setWalletMarkersTooltip = (v: ChartWalletMarkersTooltipState | null) => {
         next.walletMarkersTooltip = v;
       };
+      const setCrosshairTimeSec = (v: number | null) => {
+        next.crosshairTimeSec = v;
+      };
       // Schedule the single per-frame flush; every early return below has already
       // recorded its intent into `next` via the shadowed setters above.
       scheduleCrosshair();
@@ -972,6 +986,7 @@ export function TokenPriceChart({
         setBarTooltip(null);
         setWalletMarkersTooltip(null);
         setRangeTooltip(null);
+        setCrosshairTimeSec(null);
         return;
       }
       setChainTooltip(null);
@@ -987,6 +1002,7 @@ export function TokenPriceChart({
         setSwingTooltip(null);
         setBarTooltip(null);
         setWalletMarkersTooltip(null);
+        setCrosshairTimeSec(null);
         return;
       }
       setRangeTooltip(null);
@@ -1034,6 +1050,7 @@ export function TokenPriceChart({
         setCrosshair(null);
         setBarTooltip(null);
         setWalletMarkersTooltip(null);
+        setCrosshairTimeSec(null);
         return;
       }
       const bar = barsRef.current.find((b) => b.time === param.time);
@@ -1041,6 +1058,7 @@ export function TokenPriceChart({
         setCrosshair(null);
         setBarTooltip(null);
         setWalletMarkersTooltip(null);
+        setCrosshairTimeSec(null);
         return;
       }
       const info: ChartCrosshairInfo = {
@@ -1054,6 +1072,23 @@ export function TokenPriceChart({
         liquiditySol: bar.liquiditySol,
       };
       setCrosshair(info);
+      // Resolve wall-clock seconds for sibling panes (metric series). Time mode
+      // uses the bar key directly; slot mode maps to the last trade in that slot.
+      if (groupModeRef.current === 'time') {
+        setCrosshairTimeSec(Number(param.time));
+      } else {
+        const slot = Number(param.time);
+        let wall: number | null = null;
+        for (let i = sortedTradesRef.current.length - 1; i >= 0; i--) {
+          const t = sortedTradesRef.current[i];
+          if (t.slot === slot) {
+            const ms = Date.parse(t.block_time);
+            wall = Number.isFinite(ms) ? ms / 1000 : null;
+            break;
+          }
+        }
+        setCrosshairTimeSec(wall);
+      }
       const onWalletMarker =
         param.point != null &&
         (walletMarkersPrimRef.current?.containsPoint(param.point.x, param.point.y) ?? false);
@@ -1168,12 +1203,21 @@ export function TokenPriceChart({
     chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
 
     const onVisibleTimeRangeChange = (range: { from: Time; to: Time } | null) => {
-      if (!range) return;
+      if (!range) {
+        onVisibleTimeRangeChangeRef.current?.(null);
+        return;
+      }
       const from = Number(range.from);
       const to = Number(range.to);
       setSliderWindow((prev) =>
         prev && prev.from === from && prev.to === to ? prev : { from, to },
       );
+      // Slot mode's time scale is slot indices — only forward wall-clock windows.
+      if (groupModeRef.current === 'time') {
+        onVisibleTimeRangeChangeRef.current?.({ from, to });
+      } else {
+        onVisibleTimeRangeChangeRef.current?.(null);
+      }
     };
     chart.timeScale().subscribeVisibleTimeRangeChange(onVisibleTimeRangeChange);
 
@@ -1197,6 +1241,8 @@ export function TokenPriceChart({
       chartRef.current = null;
       setCrosshair(null);
       setBarTooltip(null);
+      onCrosshairTimeChangeRef.current?.(null);
+      onVisibleTimeRangeChangeRef.current?.(null);
       setSwingTooltip(null);
       setChainTooltip(null);
       setRangeTooltip(null);

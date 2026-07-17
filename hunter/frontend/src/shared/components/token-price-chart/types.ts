@@ -207,6 +207,12 @@ export interface ChartRangeSelectionDetail extends ChartRangeSelection {
   intervalSec: number;
 }
 
+/** Visible wall-clock window from the price chart (unix seconds). */
+export interface ChartVisibleTimeRange {
+  from: number;
+  to: number;
+}
+
 /** Tooltip shown when the crosshair hovers the range-selection label chip. */
 export interface ChartRangeTooltipState {
   stats: ChartRangeStats;
@@ -291,6 +297,12 @@ export interface TokenPriceChartProps {
   /** Fired when the drag-selected time range changes; null clears it. Carries
    *  the grouping context so the consumer can filter trades to the range. */
   onRangeChange?: (range: ChartRangeSelectionDetail | null) => void;
+  /** Wall-clock unix seconds under the crosshair (null when leaving the chart).
+   *  Slot-mode charts resolve the hovered bar's last trade time. */
+  onCrosshairTimeChange?: (timeSec: number | null) => void;
+  /** Visible wall-clock window (unix seconds) after pan/zoom. Only emitted in
+   *  time-grouping mode (slot mode uses slot indices on the time scale). */
+  onVisibleTimeRangeChange?: (range: ChartVisibleTimeRange | null) => void;
   /** Swing detection legs to draw as an overlay line. */
   swingOverlay?: ChartSwingOverlay | null;
   /** Longest swing chain to highlight as a translucent band (after batch detection). */

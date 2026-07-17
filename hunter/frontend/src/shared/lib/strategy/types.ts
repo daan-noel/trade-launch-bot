@@ -123,6 +123,8 @@ export interface MetricSeriesResponse {
   mint_address: string;
   /** RFC3339 timestamps aligned with every column's `values`. */
   at: string[];
+  /** Spot price (SOL) at each event — aligned with `at`; non-finite ⇒ `null`. */
+  price?: Array<number | null>;
   series: MetricSeriesColumn[];
 }
 

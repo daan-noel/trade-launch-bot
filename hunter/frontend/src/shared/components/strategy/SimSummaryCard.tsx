@@ -74,8 +74,13 @@ export function SimSummaryCard({
     },
     {
       label: 'Win Rate',
-      value: `${winRate.toFixed(1)}%`,
-      cls: winRate >= 50 ? 'text-primary' : 'text-red',
+      value: winRate != null && Number.isFinite(winRate) ? `${winRate.toFixed(1)}%` : '—',
+      cls:
+        winRate != null && Number.isFinite(winRate)
+          ? winRate >= 50
+            ? 'text-primary'
+            : 'text-red'
+          : undefined,
     },
     {
       label: 'Return %',

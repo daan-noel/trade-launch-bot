@@ -13,7 +13,7 @@ import { labNav } from './nav';
 // components, so map the named export onto `default` in each lazy() call.
 const HomePage = lazy(() => import('pages/home/HomePage').then((m) => ({ default: m.HomePage })));
 const CreationStatsPage = lazy(() => import('@lab/pages/creation-stats/CreationStatsPage').then((m) => ({ default: m.CreationStatsPage })));
-const TokensPage = lazy(() => import('pages/tokens/TokensPage').then((m) => ({ default: m.TokensPage })));
+const TokensPage = lazy(() => import('@lab/pages/tokens/LabTokensPage').then((m) => ({ default: m.LabTokensPage })));
 const TraderAnalysisPage = lazy(() => import('@lab/pages/analysis/TraderAnalysisPage').then((m) => ({ default: m.TraderAnalysisPage })));
 const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) => ({ default: m.ProfilesPage })));
 const RulesPage = lazy(() => import('@lab/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));

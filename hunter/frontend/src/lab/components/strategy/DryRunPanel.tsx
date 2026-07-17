@@ -6,7 +6,7 @@ import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
 import { lamportsToSol, type EngineRuleDraft } from 'lib/strategy/types';
-import type { PositionsSummary } from 'types';
+import type { SimulatedSummary } from 'types';
 import {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
@@ -30,7 +30,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
   const [start] = useStartEngineSimulationMutation();
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [running, setRunning] = useState(false);
-  const [summary, setSummary] = useState<PositionsSummary | null>(null);
+  const [summary, setSummary] = useState<SimulatedSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [windowHours, setWindowHours] = useState(24);
   const handleRef = useRef<{ close: () => void } | null>(null);

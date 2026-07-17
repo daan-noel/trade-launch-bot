@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { Button } from 'components/ui/Button';
 import { Badge } from 'components/ui/Badge';
+import { dashF, dashPercent } from 'components/strategy/cellFormat';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
@@ -12,21 +13,22 @@ import {
   fingerprintParamsCell,
   fingerprintParamsSearchText,
 } from 'components/strategy/FingerprintParamsSummary';
-import { lamportsToSol, type StrategyRule } from 'lib/strategy/types';
-import type { PositionsSummary } from 'types';
+import { lamportsToSol, type Fingerprint, type StrategyRule } from 'lib/strategy/types';
+import type { SimulatedSummary } from 'types';
 import {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
 } from '@lab/store/labEndpoints';
-import { SimSummary } from '@lab/components/strategy/SimSummary';
 
-type RunState = { running: boolean; summary?: PositionsSummary; error?: string };
+type RunState = { running: boolean; summary?: SimulatedSummary; error?: string };
+
+const DASH = <span className="text-text-dim/60">—</span>;
 
 /**
  * Full-corpus simulate for saved rules (lab app, FE3.2). Replaces the per-strategy
  * simulate flows with one generic surface: run a saved rule over the whole lake,
- * show its funnel summary inline. The dry-run panel (unsaved-draft loop) lives in
- * the rule editor; this page is for the persisted rules.
+ * show its funnel summary as sortable/filterable columns. The dry-run panel
+ * (unsaved-draft loop) lives in the rule editor; this page is for persisted rules.
  */
 export function SimulatePage() {
   const { data: rules = [], isLoading } = useGetStrategyRulesQuery();
@@ -66,7 +68,87 @@ export function SimulatePage() {
     }
   };
 
-  const columns: ColumnDef<StrategyRule>[] = [
+  const columns = useMemo(() => buildColumns(runs, fpById), [runs, fpById]);
+
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      <h1 className="text-lg font-semibold text-text">Simulate</h1>
+      <p className="text-[12px] text-text-dim">
+        Run a saved rule over the full lake corpus. For unsaved drafts use the dry-run panel
+        in the rule editor.
+      </p>
+      <DataTable
+        columns={columns}
+        rows={rules}
+        rowKey={(r) => r.id}
+        loading={isLoading}
+        searchable
+        tableId="simulate-rules"
+        emptyMessage="No rules yet — author one on the Rules page."
+        rowActions={(r) => (
+          <Button
+            variant="primary"
+            size="xs"
+            disabled={runs[r.id]?.running}
+            onClick={() => runRule(r)}
+          >
+            {runs[r.id]?.running ? 'Running…' : 'Simulate'}
+          </Button>
+        )}
+      />
+    </div>
+  );
+}
+
+function buildColumns(
+  runs: Record<string, RunState>,
+  fpById: Map<string, Fingerprint>,
+): ColumnDef<StrategyRule>[] {
+  const runOf = (r: StrategyRule) => runs[r.id];
+  const summaryOf = (r: StrategyRule) => runOf(r)?.summary;
+
+  /** One SimulatedSummary numeric field as its own sortable/filterable column. */
+  const simMetric = (
+    key: string,
+    label: string,
+    value: (s: SimulatedSummary) => number,
+    renderVal: (s: SimulatedSummary) => ReactNode,
+    opts?: { tooltip?: string; displayUnits?: (n: number) => number },
+  ): ColumnDef<StrategyRule> => {
+    const units = opts?.displayUnits ?? ((n: number) => n);
+    return {
+      key,
+      label,
+      group: 'sim',
+      tooltip: opts?.tooltip,
+      sortable: true,
+      render: (r) => {
+        const run = runOf(r);
+        if (!run) return DASH;
+        if (run.running) return <span className="text-text-dim">…</span>;
+        if (run.error || !run.summary) return DASH;
+        return renderVal(run.summary);
+      },
+      sortValue: (r) => {
+        const s = summaryOf(r);
+        return s ? value(s) : null;
+      },
+      filterNumber: (r) => {
+        const s = summaryOf(r);
+        return s ? units(value(s)) : null;
+      },
+      filterValue: (r) => {
+        const s = summaryOf(r);
+        return s ? String(units(value(s))) : '';
+      },
+      searchValue: (r) => {
+        const s = summaryOf(r);
+        return s ? String(units(value(s))) : '';
+      },
+    };
+  };
+
+  return [
     {
       key: 'rule_name',
       label: 'Rule',
@@ -128,46 +210,56 @@ export function SimulatePage() {
       searchValue: (r) => ruleParamsSearchText(r.params),
     },
     {
-      key: 'result',
-      label: 'Result',
+      key: 'sim_run',
+      label: 'Run',
+      group: 'sim',
+      tooltip: 'Last simulate run status for this rule',
       render: (r) => {
-        const s = runs[r.id];
-        if (!s) return <span className="text-text-dim/60">—</span>;
-        if (s.running) return <span className="text-text-dim">running…</span>;
-        if (s.error) return <span className="text-red">{s.error}</span>;
-        if (s.summary) return <SimSummary summary={s.summary} />;
+        const run = runOf(r);
+        if (!run) return DASH;
+        if (run.running) return <span className="text-text-dim">running…</span>;
+        if (run.error) return <span className="text-red">{run.error}</span>;
+        if (run.summary) return <span className="text-text-dim">done</span>;
         return <span className="text-text-dim/60">cancelled</span>;
       },
-      searchValue: () => '',
+      searchValue: (r) => {
+        const run = runOf(r);
+        if (!run) return '';
+        if (run.running) return 'running';
+        if (run.error) return run.error;
+        if (run.summary) return 'done';
+        return 'cancelled';
+      },
     },
+    simMetric('sim_entered', 'Entered', (s) => s.total_tokens, (s) => (
+      <span className="tabular-nums text-text">{s.total_tokens}</span>
+    ), { tooltip: 'Tokens that took a position' }),
+    simMetric('sim_closed', 'Closed', (s) => s.closed_tokens, (s) => (
+      <span className="tabular-nums text-text">{s.closed_tokens}</span>
+    ), { tooltip: 'Tokens that closed a position' }),
+    simMetric(
+      'sim_win_rate',
+      'Win %',
+      (s) => s.win_rate,
+      (s) => <span className="tabular-nums text-text">{dashPercent(s.win_rate * 100)}</span>,
+      { tooltip: 'Share of closed tokens with PnL > 0', displayUnits: (n) => n * 100 },
+    ),
+    simMetric(
+      'sim_avg_pnl',
+      'Avg PnL',
+      (s) => s.avg_pnl_percent,
+      (s) => <span className="tabular-nums text-text">{dashPercent(s.avg_pnl_percent)}</span>,
+      { tooltip: 'Average PnL % over closed tokens' },
+    ),
+    simMetric(
+      'sim_total_pnl',
+      'Total PnL',
+      (s) => s.total_pnl_sol,
+      (s) => {
+        const cls = s.total_pnl_sol >= 0 ? 'text-green' : 'text-red';
+        return <span className={`tabular-nums ${cls}`}>{dashF(s.total_pnl_sol, 3)}◎</span>;
+      },
+      { tooltip: 'Sum of realized PnL in SOL' },
+    ),
   ];
-
-  return (
-    <div className="flex flex-col gap-3 p-4">
-      <h1 className="text-lg font-semibold text-text">Simulate</h1>
-      <p className="text-[12px] text-text-dim">
-        Run a saved rule over the full lake corpus. For unsaved drafts use the dry-run panel
-        in the rule editor.
-      </p>
-      <DataTable
-        columns={columns}
-        rows={rules}
-        rowKey={(r) => r.id}
-        loading={isLoading}
-        searchable
-        tableId="simulate-rules"
-        emptyMessage="No rules yet — author one on the Rules page."
-        rowActions={(r) => (
-          <Button
-            variant="primary"
-            size="xs"
-            disabled={runs[r.id]?.running}
-            onClick={() => runRule(r)}
-          >
-            {runs[r.id]?.running ? 'Running…' : 'Simulate'}
-          </Button>
-        )}
-      />
-    </div>
-  );
 }

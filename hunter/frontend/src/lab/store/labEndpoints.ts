@@ -10,7 +10,7 @@ import type {
   GroupedCreationArgs,
   GroupedCreationResponse,
 } from '@lab/components/creation-stats/groupedCreationStats';
-import type { PositionsSummary, TraderTokenRow } from 'types';
+import type { SimulatedSummary, TraderTokenRow } from 'types';
 import type { InspectRequest, InspectRun } from '@lab/services/replayInspect';
 import type {
   EngineSimRequest,
@@ -34,7 +34,7 @@ export const labApi = baseApi.injectEndpoints({
     startEngineSimulation: builder.mutation<SimStartResponse, EngineSimRequest>({
       query: (body) => ({ url: '/api/strategies/simulate', method: 'POST', body }),
     }),
-    getEngineSimSummary: builder.mutation<PositionsSummary, string>({
+    getEngineSimSummary: builder.mutation<SimulatedSummary, string>({
       query: (runId) => ({
         url: `/api/strategies/simulate/${encodeURIComponent(runId)}/result/summary`,
         method: 'POST',
@@ -45,10 +45,16 @@ export const labApi = baseApi.injectEndpoints({
     // On-demand metric series for a token's chart panes (redesign 5.7) — every
     // metric's value at every trade, recomputed from the lake + PG tail with the
     // SAME engine compute the live/sweep paths use (never persisted).
-    getMetricSeries: builder.query<MetricSeriesResponse, { mint: string; windows?: number[] }>({
-      query: ({ mint, windows }) => {
-        const w = windows && windows.length ? `?windows=${windows.join(',')}` : '';
-        return `/api/tokens/${encodeURIComponent(mint)}/metric-series${w}`;
+    getMetricSeries: builder.query<
+      MetricSeriesResponse,
+      { mint: string; windows?: number[]; fingerprintId?: string | null }
+    >({
+      query: ({ mint, windows, fingerprintId }) => {
+        const params = new URLSearchParams();
+        if (windows && windows.length) params.set('windows', windows.join(','));
+        if (fingerprintId) params.set('fingerprint_id', fingerprintId);
+        const q = params.toString();
+        return `/api/tokens/${encodeURIComponent(mint)}/metric-series${q ? `?${q}` : ''}`;
       },
       keepUnusedDataFor: 60,
     }),

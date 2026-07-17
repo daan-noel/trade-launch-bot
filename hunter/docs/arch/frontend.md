@@ -120,6 +120,16 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   sibling view can follow), Rules/Fingerprints/Simulate/Metric-panes authoring, and the
   generic Grouped Sweep (§ above; `sweep/` + `strategy/` components,
   `useStreamedSweepResults`, `BackgroundJobsContext`).
+  **Metric panes** (`/strategies/metric-panes` + lab Tokens detail): `LabTokenInspect`
+  stacks `TokenTradeChart` above registry-driven `MetricPanes`. Shared wall-clock
+  crosshair / visible range (`TokenPriceChart.onCrosshairTimeChange` /
+  `onVisibleTimeRangeChange`); selecting a rule auto-loads its metrics/windows,
+  overlays thresholds, and paints first metric entry/exit fires as `eventMarkers`.
+  Values are **readout-first**: a sticky strip lists every selected metric's
+  crosshair/latest number; each pane has a large value rail + sparkline min/max
+  and labeled thresholds (shape is secondary). Series from
+  `GET /api/tokens/{mint}/metric-series` (optional `fingerprint_id`, per-event
+  `price`). Helpers in `lib/strategy/metricPanes.ts`.
   The shared `TokenTradeChart`/`TokenPriceChart` take an optional `highlightWallet` — its
   markers render larger with a gold glow+ring (`ProfileWalletInfo.isHighlighted` →
   `walletMarkersPlugin`), and a non-tracked input address gets a synthetic marker entry.
@@ -154,6 +164,9 @@ next load (no per-metric frontend work).
   used by Rules, Simulate, and `FingerprintPicker`).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
+  Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
+  shows the `SimulatedSummary` rollup as separate DataTable columns (Entered / Closed /
+  Win % / Avg PnL / Total PnL, plus a Run status) so sort/search/filter work per field.
 
 ## Grouped sweep — generic engine (`strategies/sweep/`, redesign FE5)
 

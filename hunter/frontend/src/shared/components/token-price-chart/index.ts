@@ -9,4 +9,5 @@ export type {
   ChartSwingOverlay,
   ChartChainHighlight,
   ChartRangeSelectionDetail,
+  ChartVisibleTimeRange,
 } from './types';
