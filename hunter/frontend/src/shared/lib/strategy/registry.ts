@@ -24,12 +24,16 @@ export interface StrictParamSpec {
   required: boolean;
 }
 
-/** One metric within a group. `eq_tolerance` is its own `=`/`!=` bucket width. */
+/** One metric within a group. `eq_tolerance` is its own `=`/`!=` bucket width.
+ *  `hue` is the backend SSOT UI color (HSL degrees); the FE applies a fixed
+ *  per-operator shade on top (see `metricColors.ts`). */
 export interface MetricSpec {
   name: string;
   unit: MetricUnit;
   eq_tolerance: number;
   monotonic: boolean;
+  /** HSL hue `[0, 359]` — group siblings share a nearby family. */
+  hue: number;
 }
 
 /** One metric group (one JSON key under `entry`/`exit`). */

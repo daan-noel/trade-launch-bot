@@ -20,15 +20,15 @@ const REG: StrategyRegistry = {
       kind: 'static',
       strict_params: [],
       metrics: [
-        { name: 'time', unit: 'seconds', eq_tolerance: 0.5, monotonic: true },
-        { name: 'liquidity', unit: 'sol', eq_tolerance: 0.1, monotonic: false },
+        { name: 'time', unit: 'seconds', eq_tolerance: 0.5, monotonic: true, hue: 200 },
+        { name: 'liquidity', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 185 },
       ],
     },
     {
       name: 'm_time_window',
       kind: 'dynamic',
       strict_params: [{ name: 'window_size_sec', required: true }],
-      metrics: [{ name: 'net_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false }],
+      metrics: [{ name: 'net_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 285 }],
     },
   ],
 };

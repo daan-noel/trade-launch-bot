@@ -243,12 +243,16 @@ let rowSeq = 0;
 /** A fresh axis row with sensible defaults for its kind. The id mixes a counter
  *  with a random suffix so a freshly-added row can never collide with a row
  *  restored from `localStorage` (whose ids were minted in a prior session). */
-export function newAxisRow(kind: AxisKind, reg?: StrategyRegistry): GenericAxisRow {
+export function newAxisRow(
+  kind: AxisKind,
+  reg?: StrategyRegistry,
+  side: MetricAxisSide = 'entry',
+): GenericAxisRow {
   const firstOp = reg?.operators[0] ?? '>';
   return {
     id: `axis-${rowSeq++}-${Math.random().toString(36).slice(2, 7)}`,
     kind,
-    side: 'entry',
+    side,
     group: '',
     metric: '',
     operator: firstOp,

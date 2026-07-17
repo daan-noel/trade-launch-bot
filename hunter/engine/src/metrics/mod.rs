@@ -152,13 +152,16 @@ impl MetricKind {
     }
 }
 
-/// Registry entry for one metric: name, unit, `=`-tolerance, monotonicity.
+/// Registry entry for one metric: name, unit, `=`-tolerance, monotonicity, UI hue.
 ///
 /// `eq_tolerance` is the metric's own bucket-equality width for `=`/`!=`
 /// (deliberately independent of any fingerprint's `bucket_size_amount`).
 /// `monotonic` (non-decreasing over a token's life) powers derived
 /// unsatisfiability disarm — an entry upper bound on a monotonic metric that is
 /// permanently crossed can never re-satisfy.
+/// `hue` is the SSOT UI color (HSL degrees 0..359) for badges / axis tints —
+/// metrics in the same group share a nearby hue family; the frontend applies a
+/// fixed per-operator shade offset on top.
 #[derive(Debug, Clone, Copy)]
 pub struct MetricSpec {
     pub id: MetricId,
@@ -166,6 +169,8 @@ pub struct MetricSpec {
     pub unit: Unit,
     pub eq_tolerance: f64,
     pub monotonic: bool,
+    /// HSL hue in degrees `[0, 359]`. Group siblings stay in the same family.
+    pub hue: u16,
 }
 
 /// A strict (non-condition) group parameter, e.g. `m_time_window`'s
@@ -206,6 +211,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_snapshot",
         kind: MetricKind::Static,
         strict_params: &[],
+        // Sky family (~185–200).
         metrics: &[
             MetricSpec {
                 id: MetricId::Time,
@@ -213,6 +219,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: true,
+                hue: 200,
             },
             MetricSpec {
                 id: MetricId::Liquidity,
@@ -220,6 +227,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
+                hue: 185,
             },
         ],
     },
@@ -228,6 +236,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_price_path",
         kind: MetricKind::Static,
         strict_params: &[],
+        // Amber family (~35–48).
         metrics: &[
             MetricSpec {
                 id: MetricId::Stall,
@@ -235,6 +244,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: false,
+                hue: 35,
             },
             MetricSpec {
                 id: MetricId::Trail,
@@ -242,6 +252,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
+                hue: 48,
             },
         ],
     },
@@ -250,6 +261,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_time_window",
         kind: MetricKind::Dynamic,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
+        // Violet family (~255–300).
         metrics: &[
             MetricSpec {
                 id: MetricId::GrossFlow,
@@ -257,6 +269,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
+                hue: 270,
             },
             MetricSpec {
                 id: MetricId::NetFlow,
@@ -264,6 +277,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
+                hue: 285,
             },
             MetricSpec {
                 id: MetricId::Buy,
@@ -271,6 +285,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
+                hue: 255,
             },
             MetricSpec {
                 id: MetricId::Sell,
@@ -278,6 +293,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
+                hue: 300,
             },
         ],
     },
@@ -337,6 +353,7 @@ pub fn registry_json() -> serde_json::Value {
                         "unit": m.unit.as_str(),
                         "eq_tolerance": m.eq_tolerance,
                         "monotonic": m.monotonic,
+                        "hue": m.hue,
                     })
                 })
                 .collect();
@@ -423,11 +440,30 @@ mod tests {
                 assert_eq!(m_json["unit"], m.unit.as_str());
                 assert_eq!(m_json["eq_tolerance"], m.eq_tolerance);
                 assert_eq!(m_json["monotonic"], m.monotonic);
+                assert_eq!(m_json["hue"], m.hue);
             }
         }
         // m_time_window advertises its required strict param.
         let tw = groups.iter().find(|g| g["name"] == "m_time_window").unwrap();
         assert_eq!(tw["strict_params"][0]["name"], "window_size_sec");
         assert_eq!(tw["strict_params"][0]["required"], true);
+    }
+
+    #[test]
+    fn hues_in_range_and_grouped_nearby() {
+        for g in REGISTRY {
+            let hues: Vec<u16> = g.metrics.iter().map(|m| m.hue).collect();
+            for &h in &hues {
+                assert!(h < 360, "{} hue {h} out of range", g.name);
+            }
+            let lo = *hues.iter().min().unwrap();
+            let hi = *hues.iter().max().unwrap();
+            assert!(
+                hi - lo <= 60,
+                "{} hue family too wide (span={}): {hues:?}",
+                g.name,
+                hi - lo,
+            );
+        }
     }
 }

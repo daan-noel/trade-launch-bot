@@ -1,7 +1,9 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, type CSSProperties, type ReactNode } from 'react';
 import type { ColumnDef } from 'components/table/types';
 import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
+import { findMetric, useStrategyRegistry, type Operator } from 'lib/strategy/registry';
+import { metricColorStyle } from 'lib/strategy/metricColors';
 import { GROUP_FIELD_LABELS, type GroupField, type GroupedSweepGroupRecord } from './groupedTypes';
 import type { SweepResultRecord } from './types';
 
@@ -26,13 +28,14 @@ const tone = (text: ReactNode, cls: string): ReactNode => (
   <span className={cn('font-medium', cls)}>{text}</span>
 );
 const goodBad = (v: number, pivot = 0) => (v >= pivot ? 'text-green' : 'text-red');
-function chip(text: ReactNode, cls?: string): ReactNode {
+function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   return (
     <span
       className={cn(
         'inline-block rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[11px] leading-tight',
         cls,
       )}
+      style={style}
     >
       {text}
     </span>
@@ -54,21 +57,50 @@ interface RuleParamsJson {
   exit?: Record<string, Record<string, unknown>>;
 }
 
+interface SideChip {
+  group: string;
+  metric: string;
+  operator: string;
+  text: string;
+}
+
 /** Terse chips for one side's metric conditions, e.g. `time>10`, `net_flow(10s)>5`. */
-function sideChips(side: Record<string, Record<string, unknown>> | undefined): string[] {
+function sideChips(side: Record<string, Record<string, unknown>> | undefined): SideChip[] {
   if (!side) return [];
-  const out: string[] = [];
-  for (const body of Object.values(side)) {
+  const out: SideChip[] = [];
+  for (const [group, body] of Object.entries(side)) {
     const window = typeof body.window_size_sec === 'number' ? body.window_size_sec : null;
     const suffix = window != null ? `(${window}s)` : '';
     for (const [metric, conds] of Object.entries(body)) {
       if (metric === 'window_size_sec' || !Array.isArray(conds)) continue;
       for (const c of conds as Cond[]) {
-        out.push(`${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`);
+        out.push({
+          group,
+          metric,
+          operator: c.operator,
+          text: `${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`,
+        });
       }
     }
   }
   return out;
+}
+
+/** One metric-condition chip tinted from the registry hue (+ fixed op shade). */
+function MetricCondChip({ chip: c }: { chip: SideChip }) {
+  const { data: registry } = useStrategyRegistry();
+  const hue = findMetric(registry, c.group, c.metric)?.hue;
+  const tint = metricColorStyle({
+    hue,
+    group: c.group,
+    metric: c.metric,
+    operator: c.operator as Operator,
+  });
+  return chip(c.text, undefined, {
+    borderColor: tint.border,
+    backgroundColor: tint.background,
+    color: tint.color,
+  });
 }
 
 /** Compact chip cluster for a combo's / group's `RuleParams`. */
@@ -84,7 +116,9 @@ export function ruleParamsCell(raw: unknown): ReactNode {
         <>
           <span className="text-[9px] uppercase text-accent/70">in</span>
           {entry.map((c, i) => (
-            <Fragment key={`e${i}`}>{chip(c, 'text-secondary')}</Fragment>
+            <Fragment key={`e${i}`}>
+              <MetricCondChip chip={c} />
+            </Fragment>
           ))}
         </>
       )}
@@ -92,7 +126,9 @@ export function ruleParamsCell(raw: unknown): ReactNode {
         <>
           <span className="text-[9px] uppercase text-warning/70">out</span>
           {exit.map((c, i) => (
-            <Fragment key={`x${i}`}>{chip(c, 'text-secondary')}</Fragment>
+            <Fragment key={`x${i}`}>
+              <MetricCondChip chip={c} />
+            </Fragment>
           ))}
         </>
       )}
