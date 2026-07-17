@@ -303,7 +303,13 @@ impl TradeRepo {
     /// `(mint, slot, side)` match is done in Rust — the drill-in set is small
     /// (one group's tokens × at most 2 slots each), so the over-fetch is bounded.
     /// Returns a map keyed by `(mint, slot, is_buy)` → base58 signature. A fill
-    /// whose slot has no matching row (or multiple) is simply absent from the map.
+    /// whose slot has no trade at all is simply absent from the map.
+    ///
+    /// Side is a **preference, not a filter**: tpsl fills are real buys/sells so the
+    /// side always matches, but a generic-engine fill's slot is the trade that
+    /// *priced* the fill — which may be the opposite side. When the requested side
+    /// isn't present at the slot, the other side's signature is returned so the
+    /// chart still marks the candle the fill executed against.
     pub async fn resolve_fill_signatures(
         &self,
         keys: &[(String, u64, bool)],
@@ -314,7 +320,6 @@ impl TradeRepo {
         }
         let mints: Vec<String> = keys.iter().map(|(m, _, _)| m.clone()).collect();
         let slots: Vec<i64> = keys.iter().map(|(_, s, _)| *s as i64).collect();
-        let wanted: HashSet<(String, u64, bool)> = keys.iter().cloned().collect();
 
         let rows: Vec<(String, i64, String, Vec<u8>)> = sqlx::query_as(
             r#"
@@ -329,17 +334,28 @@ impl TradeRepo {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut out: HashMap<(String, u64, bool), String> = HashMap::new();
+        // Per `(mint, slot)`, keep the first signature seen for each side. A fill maps
+        // to one trade; if a slot+side has several rows (multi-leg or several buys in
+        // the fill slot) the first wins — any of them links the bar to the right candle.
+        let mut by_slot: HashMap<(String, u64), (Option<String>, Option<String>)> = HashMap::new();
         for (mint, slot, trade_type, sig_bytes) in rows {
-            let is_buy = trade_type == "buy";
-            let key = (mint, slot as u64, is_buy);
-            if !wanted.contains(&key) {
-                continue;
+            let entry = by_slot.entry((mint, slot as u64)).or_default();
+            let slot_side = if trade_type == "buy" { &mut entry.0 } else { &mut entry.1 };
+            if slot_side.is_none() {
+                *slot_side = Some(sig_bytes_to_base58(&sig_bytes));
             }
-            // A fill maps to one trade; if the slot+side has several rows (multi-leg
-            // or multiple buys in the fill slot) the first resolved signature wins —
-            // any of them links the chart bar to the right candle.
-            out.entry(key).or_insert_with(|| sig_bytes_to_base58(&sig_bytes));
+        }
+
+        let mut out: HashMap<(String, u64, bool), String> = HashMap::new();
+        for (mint, slot, want_buy) in keys.iter().cloned() {
+            if let Some((buy_sig, sell_sig)) = by_slot.get(&(mint.clone(), slot)) {
+                // Prefer the requested side; fall back to the other side's trade.
+                let (preferred, fallback) =
+                    if want_buy { (buy_sig, sell_sig) } else { (sell_sig, buy_sig) };
+                if let Some(sig) = preferred.clone().or_else(|| fallback.clone()) {
+                    out.insert((mint, slot, want_buy), sig);
+                }
+            }
         }
         Ok(out)
     }

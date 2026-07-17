@@ -57,6 +57,12 @@ pub struct MetricSeries {
     values: Vec<f64>,
     /// Event timestamps, one per recorded row.
     pub at: Vec<Ts>,
+    /// Slot of the trade on each row: `Some(slot)` on a trade row, `None` on a tick
+    /// (or when fed via [`push_trade`] with no slot). Lets the sweep drill-in map a
+    /// fill row to the real trade it fills against — the first trade at/after the
+    /// fill row (see the drill-in's `fill_trade_slot`) → its `tx_signature`. Not
+    /// carried across ticks, so a fill never resolves back to a stale earlier trade.
+    pub slot: Vec<Option<u64>>,
     /// Canonical spot price at each event (`NaN` before the first trade).
     pub price: Vec<f64>,
     /// SOL reserves at each event (`NaN` before the first trade).
@@ -85,6 +91,7 @@ impl MetricSeries {
             n_cols,
             values: Vec::new(),
             at: Vec::new(),
+            slot: Vec::new(),
             price: Vec::new(),
             reserve_sol: Vec::new(),
             dead: Vec::new(),
@@ -97,8 +104,15 @@ impl MetricSeries {
         self.last_meaningful_at
     }
 
-    /// Fold a trade and record a row at its timestamp.
+    /// Fold a trade and record a row at its timestamp (no slot — the metric-series
+    /// API path, which doesn't resolve fills back to trades).
     pub fn push_trade(&mut self, t: TradeLite) {
+        self.push_trade_at(t, None);
+    }
+
+    /// Fold a trade recorded at its real corpus `slot` — the sweep drill-in path,
+    /// so the fill row can be resolved back to the trade's `tx_signature`.
+    pub fn push_trade_at(&mut self, t: TradeLite, slot: Option<u64>) {
         let at = t.at;
         // Advance the deadness clock exactly as `reduce` does on a `Trade` event:
         // a trade that clears the meaningful floor and is not out of order refreshes
@@ -107,16 +121,16 @@ impl MetricSeries {
             self.last_meaningful_at = at;
         }
         self.track.on_trade(t);
-        self.record(at);
+        self.record(at, slot);
     }
 
     /// Advance to `now` (no trade) and record a row.
     pub fn push_tick(&mut self, now: Ts) {
         self.track.on_tick(now);
-        self.record(now);
+        self.record(now, None);
     }
 
-    fn record(&mut self, now: Ts) {
+    fn record(&mut self, now: Ts, slot: Option<u64>) {
         // Append this row's columns into the flat buffer (stride `n_cols`); the
         // buffer grows by one row per event with no per-row allocation.
         self.values.reserve(self.n_cols);
@@ -126,6 +140,7 @@ impl MetricSeries {
         let reserves = self.track.current_reserves();
         let dead = is_dead_verdict(reserves.is_finite().then_some(reserves), self.last_meaningful_at, now);
         self.at.push(now);
+        self.slot.push(slot);
         self.price.push(self.track.current_price());
         self.reserve_sol.push(reserves);
         self.dead.push(dead);

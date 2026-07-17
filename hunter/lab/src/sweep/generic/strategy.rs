@@ -384,7 +384,7 @@ pub(crate) fn build_series(
         // straight to the trade (skipping the provably-static remainder).
         let horizon = grid.gap_horizon(created, last_trade_at, series.last_meaningful_at());
         emit_gap_ticks(&mut series, &mut next_tick, at, horizon, tick, created);
-        series.push_trade(trade_lite(ct));
+        series.push_trade_at(trade_lite(ct), Some(ct.slot));
         if at > last_trade_at {
             last_trade_at = at;
         }
@@ -646,28 +646,33 @@ pub(crate) fn resolve_exit(
         EntryResolution::NoEntry => return TokenOutcome::no_entry(),
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
+    // Slot of the real trade the entry fills against — the first trade at/after the
+    // fill row (the fill row's own trade, or the next print when the fill lands on a
+    // tick). Resolved back to a `tx_signature` by the drill-in handler so the chart
+    // marks the entry candle *at or after* the entry signal, never a stale earlier one.
+    let entry_slot = fill_trade_slot(series, fill_row);
     let n = series.n_rows();
     let has_exit_metrics = c.has_exit_metrics();
     let exit_cols = resolve_cols(series, &c.exit_reqs);
     for j in (fill_row + 1)..n {
         if series.dead[j] {
-            return closed(ExitCode::Dead, entry_price, entry_at, series.price[j], series.at[j], buy_amount_sol, cost);
+            return closed(ExitCode::Dead, entry_price, entry_at, entry_slot, series.price[j], series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
         }
         let p = series.price[j];
         if p.is_finite() {
             if let Some(sl) = c.stop_loss {
                 if p <= entry_price * (1.0 - sl / 100.0) {
-                    return closed(ExitCode::StopLoss, entry_price, entry_at, p, series.at[j], buy_amount_sol, cost);
+                    return closed(ExitCode::StopLoss, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
                 }
             }
             if let Some(tp) = c.take_profit {
                 if p >= entry_price * (1.0 + tp / 100.0) {
-                    return closed(ExitCode::TakeProfit, entry_price, entry_at, p, series.at[j], buy_amount_sol, cost);
+                    return closed(ExitCode::TakeProfit, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
                 }
             }
         }
         if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, &exit_cols, j) {
-            return closed(ExitCode::Metrics, entry_price, entry_at, p, series.at[j], buy_amount_sol, cost);
+            return closed(ExitCode::Metrics, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
         }
     }
     // Open: mark to the last finite price (unrealized — excluded from the realized
@@ -682,11 +687,19 @@ pub(crate) fn resolve_exit(
         exit: ExitCode::Open,
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
-        entry_slot: None,
+        entry_slot,
         exit_time: None,
         exit_price: None,
         exit_slot: None,
     }
+}
+
+/// The real trade a fill resolved on series `row` executes against: the first trade
+/// row at or after `row`. A fill that lands on a trade row returns that trade; a fill
+/// that lands on a tick (a time/stall/metrics decision between prints) returns the
+/// next print — the trade the chart marker snaps to, at or after the decision.
+fn fill_trade_slot(series: &MetricSeries, row: usize) -> Option<u64> {
+    (row..series.n_rows()).find_map(|j| series.slot[j])
 }
 
 /// The scan as one call (entry then exit) — the guard test's per-token driver and
@@ -706,8 +719,10 @@ fn closed(
     exit: ExitCode,
     entry_price: f64,
     entry_at: DateTime<Utc>,
+    entry_slot: Option<u64>,
     exit_price: f64,
     exit_at: DateTime<Utc>,
+    exit_slot: Option<u64>,
     buy_amount_sol: f64,
     cost: &CostModel,
 ) -> TokenOutcome {
@@ -720,9 +735,9 @@ fn closed(
         exit,
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
-        entry_slot: None,
+        entry_slot,
         exit_time: Some(exit_at),
         exit_price: Some(exit_price),
-        exit_slot: None,
+        exit_slot,
     }
 }

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
+import { TokenTable } from 'components/tokens/TokenTable';
 import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
@@ -10,7 +11,7 @@ import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
-import type { InspectTarget } from 'components/strategy/inspectTarget';
+import { markerRowOverlay, type InspectTarget } from 'components/strategy/inspectTarget';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -64,6 +65,9 @@ function comboTarget(r: ComboTokenResult): InspectTarget {
     exitLabel: r.fired ? r.exit : null,
   };
 }
+
+/** Per-row entry/exit markers for the token-results charts grid. */
+const comboRowOverlay = markerRowOverlay(comboTarget);
 
 /**
  * Generic-engine grouped sweep view (redesign FE5.2 + 5.3). One page replaces the
@@ -252,35 +256,16 @@ export function GenericSweepView() {
 
   const runsErr = apiErrorMessage(runsQuery.error, 'Failed to load sweep runs');
   const groupsErr = apiErrorMessage(groupsQuery.error, 'Failed to load groups');
-  // Simple = configure → run → promote from groups. Full unlocks combo/token drill.
-  const [viewMode, setViewMode] = useState<'simple' | 'full'>('simple');
-
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
         <h1 className="text-lg font-extrabold text-text">Grouped Sweep</h1>
         <span className="text-sm text-text-mid">
-          Configure → run → promote · Full drill for combo/token inspect
+          Configure → run → promote · drill into combos/tokens
         </span>
         <Badge variant="primary" className="font-mono">
           {runs.length} runs · {groups.length} groups
         </Badge>
-        <div className="ml-auto flex rounded-md border border-white/10 p-0.5">
-          <button
-            type="button"
-            className={`rounded px-2.5 py-1 text-[11px] font-semibold ${viewMode === 'simple' ? 'bg-primary text-black' : 'text-text-dim hover:text-text'}`}
-            onClick={() => setViewMode('simple')}
-          >
-            Simple
-          </button>
-          <button
-            type="button"
-            className={`rounded px-2.5 py-1 text-[11px] font-semibold ${viewMode === 'full' ? 'bg-primary text-black' : 'text-text-dim hover:text-text'}`}
-            onClick={() => setViewMode('full')}
-          >
-            Full drill
-          </button>
-        </div>
       </div>
 
       {activeRunId && (
@@ -434,22 +419,7 @@ export function GenericSweepView() {
             emptyMessage="No groups cleared the min-tokens threshold for this run."
           />
 
-          {activeGroupId && viewMode === 'simple' && (
-            <div className="mt-4 rounded-md border border-white/8 bg-white/2 px-3 py-3 text-sm text-text-mid">
-              Group selected. Use <span className="text-primary font-semibold">Promote</span> on
-              the row to create a rule, or switch to{' '}
-              <button
-                type="button"
-                className="text-accent underline hover:text-primary"
-                onClick={() => setViewMode('full')}
-              >
-                Full drill
-              </button>{' '}
-              to rank combos and inspect tokens.
-            </div>
-          )}
-
-          {activeGroupId && viewMode === 'full' && (
+          {activeGroupId && (
             <div className="mt-4">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-bold text-secondary">Combos for group</h3>
@@ -608,6 +578,9 @@ function ComboTokenResults({
     ],
     [],
   );
+  // The combo's own column keys — everything else in the shared token-info set is
+  // appended by TokenTable so the drill-in carries the full enrichment columns.
+  const existingKeys = useMemo(() => new Set(columns.map((c) => c.key)), [columns]);
 
   return (
     <div className="mt-4">
@@ -625,8 +598,11 @@ function ComboTokenResults({
 
       {err && <InlineAlert variant="error">{err}</InlineAlert>}
 
-      <DataTable
+      <TokenTable
         columns={columns}
+        existingKeys={existingKeys}
+        charts
+        useRowOverlay={comboRowOverlay}
         rows={visible}
         rowKey={(r) => r.mint_address}
         searchable

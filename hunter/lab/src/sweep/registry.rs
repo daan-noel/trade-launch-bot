@@ -994,10 +994,10 @@ fn exit_label(code: ExitCode) -> &'static str {
 /// precompute-then-scan the grouped sweep used — no axes model needed. Deadness is
 /// judged against wall-clock `now`, matching the sweep / live.
 ///
-/// NOTE: the generic scan resolves fills to sparse-series rows (timestamps), not to
-/// trade slots, so `entry_slot`/`exit_slot` stay `None` and the handler's fill →
-/// `tx_signature` lookup is skipped for generic combos (the row's PnL/timings still
-/// render; only the chart's entry/exit tx markers are absent).
+/// The scan carries each fill row's `entry_slot`/`exit_slot` (the slot of the real
+/// trade the fill executes against — the fill row's own trade, or the next print when
+/// the fill lands on a tick), so the handler's fill → `tx_signature` lookup resolves
+/// the chart's entry/exit tx markers here the same way it does for tpsl combos.
 fn simulate_generic_one_combo(
     tokens: &[CorpusToken],
     params_json: &Value,
@@ -1045,7 +1045,7 @@ fn simulate_generic_one_combo(
             exit: exit_label(o.exit).to_string(),
             entry_time: o.entry_time.map(|t| t.to_rfc3339()),
             entry_price: o.entry_price,
-            // No slot on the sparse series ⇒ no signature lookup (see fn doc).
+            // Resolved from `entry_slot`/`exit_slot` by the handler post-sim.
             entry_tx: None,
             entry_slot: o.entry_slot,
             exit_time: o.exit_time.map(|t| t.to_rfc3339()),
