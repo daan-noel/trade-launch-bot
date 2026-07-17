@@ -15,8 +15,8 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use trading_core::models::{Fingerprint, StrategyRule};
-use trading_core::strategies::rules::{self, RuleDraft, RuleError};
+use trading_core::models::Fingerprint;
+use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
 
 use crate::state::deploy_state::DeployState;
 
@@ -81,10 +81,7 @@ pub async fn create_fingerprint(
     app_state: web::Data<Arc<DeployState>>,
     body: web::Json<Value>,
 ) -> impl Responder {
-    let fp = match parse_fingerprint(&body, Uuid::new_v4()) {
-        Ok(fp) => fp,
-        Err(e) => return HttpResponse::BadRequest().json(json!({"error": e})),
-    };
+    let fp = Fingerprint::from_json(&body, Uuid::new_v4(), Utc::now());
     if !fp.has_any_criterion() {
         return HttpResponse::BadRequest()
             .json(json!({"error": "fingerprint must configure at least one match criterion"}));
@@ -102,10 +99,7 @@ pub async fn update_fingerprint(
     body: web::Json<Value>,
 ) -> impl Responder {
     let id = path.into_inner();
-    let fp = match parse_fingerprint(&body, id) {
-        Ok(fp) => fp,
-        Err(e) => return HttpResponse::BadRequest().json(json!({"error": e})),
-    };
+    let fp = Fingerprint::from_json(&body, id, Utc::now());
     match app_state.fingerprint_repo.update(&fp).await {
         Ok(()) => {
             app_state.engine.reload_rules().await;
@@ -154,7 +148,7 @@ pub async fn create_rule(
     app_state: web::Data<Arc<DeployState>>,
     body: web::Json<Value>,
 ) -> impl Responder {
-    let draft = match parse_rule_draft(&body) {
+    let draft = match RuleDraft::from_json(&body) {
         Ok(d) => d,
         Err(e) => return HttpResponse::BadRequest().json(json!({"error": e})),
     };
@@ -177,7 +171,7 @@ pub async fn update_rule(
     let Ok(Some(mut rule)) = app_state.rule_repo.find(id).await else {
         return HttpResponse::NotFound().json(json!({"error": "rule not found"}));
     };
-    apply_rule_body(&mut rule, &body);
+    apply_rule_update(&mut rule, &body);
     match rules::save(&app_state.rule_repo, &rule).await {
         Ok(()) => {
             app_state.engine.reload_rules().await;
@@ -232,75 +226,7 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
     }
 }
 
-// ── Parsing helpers ──────────────────────────────────────────────────────────
-
-fn parse_fingerprint(body: &Value, id: Uuid) -> Result<Fingerprint, String> {
-    let now = Utc::now();
-    Ok(Fingerprint {
-        id,
-        name: body.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
-        cu_limit: opt_i64(body, "cu_limit"),
-        cu_price: opt_i64(body, "cu_price"),
-        init_buy_lamports: opt_i64(body, "init_buy_lamports"),
-        max_cost_lamports: opt_i64(body, "max_cost_lamports"),
-        spendable_lamports_in: opt_i64(body, "spendable_lamports_in"),
-        first_slot_buy_lamports: opt_i64(body, "first_slot_buy_lamports"),
-        first_slot_sell_lamports: opt_i64(body, "first_slot_sell_lamports"),
-        bucket_size_amount: body.get("bucket_size_amount").and_then(Value::as_f64).unwrap_or(0.1),
-        ix_labels: body.get("ix_labels").and_then(|v| v.as_array()).map(|a| {
-            a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
-        }),
-        created_at: now,
-        updated_at: now,
-    })
-}
-
-fn parse_rule_draft(body: &Value) -> Result<RuleDraft, String> {
-    let fingerprint_id = body
-        .get("fingerprint_id")
-        .and_then(Value::as_str)
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .ok_or("fingerprint_id is required (uuid)")?;
-    Ok(RuleDraft {
-        rule_name: body.get("rule_name").and_then(Value::as_str).unwrap_or("").to_string(),
-        fingerprint_id,
-        trade_mode: body.get("trade_mode").and_then(Value::as_str).unwrap_or("paper").to_string(),
-        buy_amount_lamports: opt_i64(body, "buy_amount_lamports").unwrap_or(0),
-        max_concurrent_tokens: opt_i64(body, "max_concurrent_tokens").unwrap_or(1),
-        max_total_tokens: opt_i64(body, "max_total_tokens").unwrap_or(0),
-        params: body.get("params").cloned().unwrap_or_else(|| json!({})),
-    })
-}
-
-/// Overlay the mutable fields of an update body onto a loaded rule.
-fn apply_rule_body(rule: &mut StrategyRule, body: &Value) {
-    if let Some(v) = body.get("rule_name").and_then(Value::as_str) {
-        rule.rule_name = v.to_string();
-    }
-    if let Some(v) = opt_i64(body, "buy_amount_lamports") {
-        rule.buy_amount_lamports = v;
-    }
-    if let Some(v) = opt_i64(body, "max_concurrent_tokens") {
-        rule.max_concurrent_tokens = v;
-    }
-    if let Some(v) = opt_i64(body, "max_total_tokens") {
-        rule.max_total_tokens = v;
-    }
-    if let Some(v) = body.get("trade_mode").and_then(Value::as_str) {
-        rule.trade_mode = v.to_string();
-    }
-    if let Some(v) = body.get("params").cloned() {
-        rule.params = v;
-    }
-    rule.updated_at = Utc::now();
-}
-
-/// Read an optional integer field (accepts a JSON number or numeric string).
-fn opt_i64(body: &Value, key: &str) -> Option<i64> {
-    body.get(key).and_then(|v| {
-        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-    })
-}
+// ── Error helpers ────────────────────────────────────────────────────────────
 
 fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
     match e {

@@ -37,8 +37,11 @@ export interface RuleEditorProps {
   onCancel?: () => void;
   submitting?: boolean;
   error?: string | null;
-  /** Lab-only dry-run panel (FE3); rendered beneath the builder when provided. */
-  dryRunSlot?: ReactNode;
+  /** Lab-only dry-run panel (FE3): given the editor's live draft (or `null` when
+   *  no fingerprint is chosen) and whether it is valid enough to simulate,
+   *  returns the panel rendered beneath the builder. Injected by the lab page so
+   *  the shared editor never imports the lab-only simulate endpoints. */
+  renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
 }
 
 /** Wrapper that waits for the registry (the editor renders entirely from it). */
@@ -56,7 +59,7 @@ function RuleEditorInner({
   onCancel,
   submitting,
   error,
-  dryRunSlot,
+  renderDryRun,
   registry,
 }: RuleEditorProps & { registry: StrategyRegistry }) {
   const [ruleName, setRuleName] = useState(initial?.rule_name ?? '');
@@ -110,17 +113,21 @@ function RuleEditorInner({
   if (jsonError) errors.push(`JSON: ${jsonError}`);
   const canSubmit = errors.length === 0 && !submitting;
 
+  // The editor's live draft — shared by submit and the dry-run render-prop.
+  const currentDraft: RuleEditorDraft | null = fingerprintId
+    ? {
+        rule_name: ruleName.trim(),
+        fingerprint_id: fingerprintId,
+        trade_mode: mode,
+        buy_amount_lamports: buyLamports,
+        max_concurrent_tokens: maxConcurrent ?? 1,
+        max_total_tokens: maxTotal ?? 0,
+        params: ruleParamsToJson(params),
+      }
+    : null;
+
   const submit = () => {
-    if (!fingerprintId) return;
-    onSubmit({
-      rule_name: ruleName.trim(),
-      fingerprint_id: fingerprintId,
-      trade_mode: mode,
-      buy_amount_lamports: buyLamports,
-      max_concurrent_tokens: maxConcurrent ?? 1,
-      max_total_tokens: maxTotal ?? 0,
-      params: ruleParamsToJson(params),
-    });
+    if (currentDraft) onSubmit(currentDraft);
   };
 
   return (
@@ -245,7 +252,7 @@ function RuleEditorInner({
         </TabsPanel>
       </Tabs>
 
-      {dryRunSlot}
+      {renderDryRun?.(currentDraft, canSubmit)}
 
       {errors.length > 0 && (
         <ul className="flex flex-col gap-0.5 text-[11px] text-red">

@@ -40,11 +40,14 @@ export const labNav: NavConfig = {
     {
       kind: 'group',
       label: 'Strategies',
-      basePath: '/strategies/tpsl',
+      basePath: '/strategies',
       items: [
-        { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1' },
-        { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2' },
-        { to: '/strategies/swing1', label: 'Swing 1' },
+        { to: '/strategies/rules', label: 'Rules' },
+        { to: '/strategies/fingerprints', label: 'Fingerprints' },
+        { to: '/strategies/simulate', label: 'Simulate' },
+        { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1 (legacy)' },
+        { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2 (legacy)' },
+        { to: '/strategies/swing1', label: 'Swing 1 (legacy)' },
       ],
     },
 

@@ -18,6 +18,12 @@ use uuid::Uuid;
 
 use crate::config::constants::lamports_to_sol;
 
+/// Read an optional integer field from an HTTP JSON body (accepts a JSON number
+/// or a numeric string). Shared SSOT for the generic-engine CRUD parse paths.
+pub fn opt_i64(body: &serde_json::Value, key: &str) -> Option<i64> {
+    body.get(key).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+}
+
 /// A `fingerprints` row. See module docs for matching semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Fingerprint {
@@ -66,6 +72,33 @@ impl Fingerprint {
 
     pub fn first_slot_sell_sol(&self) -> Option<f64> {
         self.first_slot_sell_lamports.map(lamports_to_sol)
+    }
+
+    /// Parse a fingerprint from a raw HTTP JSON body — the SSOT for the wire
+    /// shape, shared by the live + lab CRUD handlers. Amounts are lamports on
+    /// the wire; `id` and the timestamps are caller-supplied (not read from the
+    /// body). Lenient: absent/unparseable numeric fields are `None`.
+    pub fn from_json(body: &serde_json::Value, id: Uuid, now: DateTime<Utc>) -> Self {
+        Fingerprint {
+            id,
+            name: body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            cu_limit: opt_i64(body, "cu_limit"),
+            cu_price: opt_i64(body, "cu_price"),
+            init_buy_lamports: opt_i64(body, "init_buy_lamports"),
+            max_cost_lamports: opt_i64(body, "max_cost_lamports"),
+            spendable_lamports_in: opt_i64(body, "spendable_lamports_in"),
+            first_slot_buy_lamports: opt_i64(body, "first_slot_buy_lamports"),
+            first_slot_sell_lamports: opt_i64(body, "first_slot_sell_lamports"),
+            bucket_size_amount: body
+                .get("bucket_size_amount")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.1),
+            ix_labels: body.get("ix_labels").and_then(|v| v.as_array()).map(|a| {
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+            }),
+            created_at: now,
+            updated_at: now,
+        }
     }
 
     /// Whether any matchable criterion is configured. The matcher requires at

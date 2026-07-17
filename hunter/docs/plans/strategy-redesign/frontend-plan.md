@@ -286,13 +286,27 @@ pages listed in §2. **Kept:** `DataTable` + server-table plumbing, `sse.ts` mul
 - [x] 2.4 Perf: bounded armed/holding sets held in `Map` state, rows memoized, one
       page-level 1 s age tick (no per-SOL/trade re-render). Live route + nav.
 
-### FE3 — Dry-run + generic simulate  (needs backend Phase 5.1–5.3)
+### FE3 — Dry-run + generic simulate  (needs backend Phase 5.1–5.3) ✅ 2026-07-17
 
-- [ ] 3.1 `DryRunPanel.tsx` in the lab RuleEditor: draft params → `POST
-      /api/strategies/simulate` (inline params), funnel summary + entered-tokens table.
-- [ ] 3.2 Lab `SimulatePage`: full-corpus runs for saved rules (replaces per-strategy
-      simulate flows), result cache views kept.
-- [ ] 3.3 Entered-token row → token chart route with decision markers.
+> **Backend added this phase (the FE1-deferred lab mount):** the CRUD/registry parse
+> helpers moved to core SSOT (`Fingerprint::from_json`, `RuleDraft::from_json`,
+> `apply_rule_update`, `opt_i64`) — live `engine.rs` refactored onto them; the **lab bin
+> now serves** `/api/meta/strategy-registry` + fingerprint/rule CRUD
+> (`lab/.../engine_crud.rs`, `reload_rules` is a no-op — no running engine, live picks up
+> rules on reload). This unblocks lab authoring + the dry-run editor.
+> **Boundary structure:** page bodies extracted to shared `RulesView`/`FingerprintsView`;
+> `RuleEditor` gained a `renderDryRun` render-prop; the lab-only `DryRunPanel` is injected
+> by the lab page (shared editor never imports lab-only endpoints).
+
+- [x] 3.1 `@lab/components/strategy/DryRunPanel.tsx`: draft (inline) → `POST
+      /api/strategies/simulate` over a chosen window → `simulation_finished` SSE → funnel
+      summary (`SimSummary`). Injected into the shared editor via `renderDryRun`.
+- [x] 3.2 `@lab/pages/strategies/SimulatePage.tsx`: full-corpus runs for saved rules
+      (one generic surface; per-rule Run → SSE → inline `SimSummary`). Lab authoring twins
+      `RulesPage`/`FingerprintsPage` + routes + nav.
+- [~] 3.3 Entered-token row → token chart with decision markers — **deferred** (needs the
+      paged entered-tokens table + chart-marker wiring; the summary funnel ships now). The
+      per-exit-reason breakdown (TP/SL/metrics/dead) also needs a richer summary aggregate.
 
 ### FE4 — Chart metric panes  (needs backend Phase 5.7)
 

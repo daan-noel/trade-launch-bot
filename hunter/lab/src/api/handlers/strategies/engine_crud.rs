@@ -1,0 +1,223 @@
+//! Rule-authoring CRUD + metric registry — the lab twin of the live engine
+//! handlers (`hunter/live/.../strategies/engine.rs`). The lab bin serves
+//! fingerprint/rule CRUD + the registry so the lab app can author + dry-run rules
+//! on the workstation corpus (FE3).
+//!
+//! Unlike the live handlers there is NO running engine here, so these do **not**
+//! call `engine.reload_rules()`: rules just persist to the lab DB; a synced or
+//! restarted live bin picks them up on its next reload. All parsing + validation
+//! is the shared SSOT in `trading_core::{models::Fingerprint, strategies::rules}`.
+
+use std::sync::Arc;
+
+use actix_web::{web, HttpResponse, Responder};
+use uuid::Uuid;
+
+use trading_core::models::Fingerprint;
+use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
+use trading_core::storage::repositories::rule_repo::RuleRepo;
+use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
+
+use crate::state::local_state::LocalState;
+
+fn fp_repo(state: &LocalState) -> FingerprintRepo {
+    FingerprintRepo::new(state.core.db.clone())
+}
+fn rule_repo(state: &LocalState) -> RuleRepo {
+    RuleRepo::new(state.core.db.clone())
+}
+
+fn srv_err(ctx: &str, e: impl std::fmt::Display) -> HttpResponse {
+    tracing::warn!("{ctx}: {e}");
+    HttpResponse::InternalServerError().json(serde_json::json!({ "error": format!("{ctx} failed") }))
+}
+fn rule_err(e: RuleError, ctx: &str) -> HttpResponse {
+    match e {
+        RuleError::Invalid(m) => HttpResponse::BadRequest().json(serde_json::json!({ "error": m })),
+        RuleError::Repo(err) => srv_err(ctx, err),
+    }
+}
+
+/// GET `/api/meta/strategy-registry` (lab twin — pure, no state).
+pub async fn strategy_registry() -> impl Responder {
+    HttpResponse::Ok().json(hunter_engine::metrics::registry_json())
+}
+
+/// GET `/api/fingerprints` — with a folded-in `used_by` rule count (see live twin).
+pub async fn list_fingerprints(app_state: web::Data<Arc<LocalState>>) -> impl Responder {
+    let fps = match fp_repo(&app_state).list().await {
+        Ok(v) => v,
+        Err(e) => return srv_err("list fingerprints", e),
+    };
+    let mut usage: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+    match rule_repo(&app_state).list().await {
+        Ok(rules) => {
+            for r in &rules {
+                *usage.entry(r.fingerprint_id).or_insert(0) += 1;
+            }
+        }
+        Err(e) => return srv_err("list fingerprints (usage)", e),
+    }
+    let out: Vec<serde_json::Value> = fps
+        .iter()
+        .map(|fp| {
+            let mut v = serde_json::to_value(fp).unwrap_or_else(|_| serde_json::json!({}));
+            if let serde_json::Value::Object(map) = &mut v {
+                map.insert(
+                    "used_by".into(),
+                    serde_json::json!(usage.get(&fp.id).copied().unwrap_or(0)),
+                );
+            }
+            v
+        })
+        .collect();
+    HttpResponse::Ok().json(out)
+}
+
+/// GET `/api/fingerprints/{id}`.
+pub async fn get_fingerprint(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    match fp_repo(&app_state).find(path.into_inner()).await {
+        Ok(Some(fp)) => HttpResponse::Ok().json(fp),
+        Ok(None) => {
+            HttpResponse::NotFound().json(serde_json::json!({ "error": "fingerprint not found" }))
+        }
+        Err(e) => srv_err("get fingerprint", e),
+    }
+}
+
+/// POST `/api/fingerprints`.
+pub async fn create_fingerprint(
+    app_state: web::Data<Arc<LocalState>>,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    let fp = Fingerprint::from_json(&body, Uuid::new_v4(), chrono::Utc::now());
+    if !fp.has_any_criterion() {
+        return HttpResponse::BadRequest().json(
+            serde_json::json!({ "error": "fingerprint must configure at least one match criterion" }),
+        );
+    }
+    match fp_repo(&app_state).insert(&fp).await {
+        Ok(()) => HttpResponse::Created().json(fp),
+        Err(e) => srv_err("create fingerprint", e),
+    }
+}
+
+/// PUT `/api/fingerprints/{id}`.
+pub async fn update_fingerprint(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    let fp = Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now());
+    match fp_repo(&app_state).update(&fp).await {
+        Ok(()) => HttpResponse::Ok().json(fp),
+        Err(e) => srv_err("update fingerprint", e),
+    }
+}
+
+/// DELETE `/api/fingerprints/{id}` (FK-guarded).
+pub async fn delete_fingerprint(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    match fp_repo(&app_state).delete(path.into_inner()).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(e) => HttpResponse::Conflict()
+            .json(serde_json::json!({ "error": format!("cannot delete fingerprint (in use?): {e}") })),
+    }
+}
+
+/// GET `/api/strategy-rules`.
+pub async fn list_rules(app_state: web::Data<Arc<LocalState>>) -> impl Responder {
+    match rule_repo(&app_state).list().await {
+        Ok(v) => HttpResponse::Ok().json(v),
+        Err(e) => srv_err("list rules", e),
+    }
+}
+
+/// GET `/api/strategy-rules/{id}`.
+pub async fn get_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    match rule_repo(&app_state).find(path.into_inner()).await {
+        Ok(Some(r)) => HttpResponse::Ok().json(r),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" })),
+        Err(e) => srv_err("get rule", e),
+    }
+}
+
+/// POST `/api/strategy-rules`.
+pub async fn create_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    let draft = match RuleDraft::from_json(&body) {
+        Ok(d) => d,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+    };
+    match rules::create(&rule_repo(&app_state), &draft).await {
+        Ok(rule) => HttpResponse::Created().json(rule),
+        Err(e) => rule_err(e, "create rule"),
+    }
+}
+
+/// PUT `/api/strategy-rules/{id}`.
+pub async fn update_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+    body: web::Json<serde_json::Value>,
+) -> impl Responder {
+    let repo = rule_repo(&app_state);
+    let Ok(Some(mut rule)) = repo.find(path.into_inner()).await else {
+        return HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" }));
+    };
+    apply_rule_update(&mut rule, &body);
+    match rules::save(&repo, &rule).await {
+        Ok(()) => HttpResponse::Ok().json(rule),
+        Err(e) => rule_err(e, "update rule"),
+    }
+}
+
+/// DELETE `/api/strategy-rules/{id}`.
+pub async fn delete_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    match rule_repo(&app_state).delete(path.into_inner()).await {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(e) => srv_err("delete rule", e),
+    }
+}
+
+async fn set_rule_active(state: &LocalState, id: Uuid, active: bool) -> HttpResponse {
+    let repo = rule_repo(state);
+    let Ok(Some(mut rule)) = repo.find(id).await else {
+        return HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" }));
+    };
+    rule.is_active = active;
+    rule.updated_at = chrono::Utc::now();
+    match repo.update(&rule).await {
+        Ok(()) => HttpResponse::Ok().json(rule),
+        Err(e) => srv_err("toggle rule active", e),
+    }
+}
+
+/// POST `/api/strategy-rules/{id}/activate`.
+pub async fn activate_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    set_rule_active(&app_state, path.into_inner(), true).await
+}
+
+/// POST `/api/strategy-rules/{id}/pause`.
+pub async fn pause_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    set_rule_active(&app_state, path.into_inner(), false).await
+}

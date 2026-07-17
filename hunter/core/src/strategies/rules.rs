@@ -17,6 +17,7 @@ use chrono::Utc;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::models::fingerprint::opt_i64;
 use crate::models::{LegacyStrategyRule, StrategyRule};
 use crate::storage::repositories::rule_repo::RuleRepo;
 use crate::storage::repositories::strategy_repo::StrategyRepo;
@@ -50,6 +51,59 @@ pub struct RuleDraft {
     /// 0 = unlimited.
     pub max_total_tokens: i64,
     pub params: Value,
+}
+
+impl RuleDraft {
+    /// Parse a create body from raw HTTP JSON — SSOT for the wire shape (shared
+    /// by the live + lab CRUD handlers). `fingerprint_id` is required; every
+    /// other field falls back to its default ([`build_rule`] / [`RuleParams::parse`]
+    /// do the real validation). Amounts are lamports on the wire.
+    pub fn from_json(body: &Value) -> Result<Self, String> {
+        let fingerprint_id = body
+            .get("fingerprint_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .ok_or("fingerprint_id is required (uuid)")?;
+        Ok(RuleDraft {
+            rule_name: body.get("rule_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            fingerprint_id,
+            trade_mode: body
+                .get("trade_mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("paper")
+                .to_string(),
+            buy_amount_lamports: opt_i64(body, "buy_amount_lamports").unwrap_or(0),
+            max_concurrent_tokens: opt_i64(body, "max_concurrent_tokens").unwrap_or(1),
+            max_total_tokens: opt_i64(body, "max_total_tokens").unwrap_or(0),
+            params: body.get("params").cloned().unwrap_or_else(|| serde_json::json!({})),
+        })
+    }
+}
+
+/// Overlay the mutable fields of a PUT body onto a loaded rule — SSOT for the
+/// patch shape (shared by live + lab). `fingerprint_id` and `is_active` are
+/// intentionally not patchable here (fingerprint frozen post-create; active
+/// state only via the lifecycle endpoints).
+pub fn apply_rule_update(rule: &mut StrategyRule, body: &Value) {
+    if let Some(v) = body.get("rule_name").and_then(|v| v.as_str()) {
+        rule.rule_name = v.to_string();
+    }
+    if let Some(v) = opt_i64(body, "buy_amount_lamports") {
+        rule.buy_amount_lamports = v;
+    }
+    if let Some(v) = opt_i64(body, "max_concurrent_tokens") {
+        rule.max_concurrent_tokens = v;
+    }
+    if let Some(v) = opt_i64(body, "max_total_tokens") {
+        rule.max_total_tokens = v;
+    }
+    if let Some(v) = body.get("trade_mode").and_then(|v| v.as_str()) {
+        rule.trade_mode = v.to_string();
+    }
+    if let Some(v) = body.get("params").cloned() {
+        rule.params = v;
+    }
+    rule.updated_at = Utc::now();
 }
 
 /// Validate the typed-column knobs shared by create and edit.

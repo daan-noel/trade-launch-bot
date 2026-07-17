@@ -77,6 +77,60 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/simulate/{run_id}/result/summary",
                 web::post().to(handlers::strategies::engine::engine_sim_result_summary),
             )
+            // ── Generic rule-authoring CRUD + registry (lab twin of the live
+            //    engine handlers) — lets the lab app author + dry-run rules ──
+            .route(
+                "/meta/strategy-registry",
+                web::get().to(handlers::strategies::engine_crud::strategy_registry),
+            )
+            .route(
+                "/fingerprints",
+                web::get().to(handlers::strategies::engine_crud::list_fingerprints),
+            )
+            .route(
+                "/fingerprints",
+                web::post().to(handlers::strategies::engine_crud::create_fingerprint),
+            )
+            .route(
+                "/fingerprints/{id}",
+                web::get().to(handlers::strategies::engine_crud::get_fingerprint),
+            )
+            .route(
+                "/fingerprints/{id}",
+                web::put().to(handlers::strategies::engine_crud::update_fingerprint),
+            )
+            .route(
+                "/fingerprints/{id}",
+                web::delete().to(handlers::strategies::engine_crud::delete_fingerprint),
+            )
+            .route(
+                "/strategy-rules",
+                web::get().to(handlers::strategies::engine_crud::list_rules),
+            )
+            .route(
+                "/strategy-rules",
+                web::post().to(handlers::strategies::engine_crud::create_rule),
+            )
+            .route(
+                "/strategy-rules/{id}",
+                web::get().to(handlers::strategies::engine_crud::get_rule),
+            )
+            .route(
+                "/strategy-rules/{id}",
+                web::put().to(handlers::strategies::engine_crud::update_rule),
+            )
+            .route(
+                "/strategy-rules/{id}",
+                web::delete().to(handlers::strategies::engine_crud::delete_rule),
+            )
+            .route(
+                "/strategy-rules/{id}/activate",
+                web::post().to(handlers::strategies::engine_crud::activate_rule),
+            )
+            .route(
+                "/strategy-rules/{id}/pause",
+                web::post().to(handlers::strategies::engine_crud::pause_rule),
+            )
             // ── Strategy rule authoring + backtest — tpsl_sniper_1 ──
             .route(
                 "/strategies/tpsl1/rules",

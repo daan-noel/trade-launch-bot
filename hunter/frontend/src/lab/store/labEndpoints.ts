@@ -13,9 +13,11 @@ import type {
 import type {
   MatchedTokensResponse,
   PaperResultResponse,
+  PositionsSummary,
   SimulatedTokenResult,
   TraderTokenRow,
 } from 'types';
+import type { EngineSimRequest, SimStartResponse } from 'lib/strategy/types';
 
 /** Args for the per-rule strategy result reads (matched / simulate / paper),
  *  shared by both strategy pages so tpsl1 and tpsl2 keep distinct cache keys. */
@@ -87,6 +89,21 @@ export const labApi = baseApi.injectEndpoints({
       query: (a) => `/api/jobs/simulations/${encodeURIComponent(a.ruleId)}/result`,
       providesTags: (_r, _e, a) => [strategyResultTag(a)],
       keepUnusedDataFor: 60,
+    }),
+    // Generic-engine simulate (redesign 5.2). Start a run for a saved rule or an
+    // inline dry-run draft; the run is detached and its result stored server-side,
+    // collected once the `simulation_finished` SSE fires (same pattern as the
+    // legacy per-strategy simulate). The summary aggregates over the whole run.
+    startEngineSimulation: builder.mutation<SimStartResponse, EngineSimRequest>({
+      query: (body) => ({ url: '/api/strategies/simulate', method: 'POST', body }),
+    }),
+    getEngineSimSummary: builder.mutation<PositionsSummary, string>({
+      query: (runId) => ({
+        url: `/api/strategies/simulate/${encodeURIComponent(runId)}/result/summary`,
+        method: 'POST',
+        // Aggregate over the full run (summary ignores pagination).
+        body: { pagination: { page: 1, pageSize: 1 }, sorting: [], search: '', filters: {} },
+      }),
     }),
     getStrategyPaperResult: builder.query<PaperResultResponse, StrategyRuleArg>({
       query: ({ strategy, ruleId }) =>
@@ -253,4 +270,6 @@ export const {
   useRenameGroupedSweepRunMutation,
   usePruneGroupedSweepsMutation,
   useGetTraderTokensQuery,
+  useStartEngineSimulationMutation,
+  useGetEngineSimSummaryMutation,
 } = labApi;

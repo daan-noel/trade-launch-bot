@@ -4,6 +4,7 @@
 //! `trading_core` and is shared with the deploy edge.
 
 pub mod engine;
+pub mod engine_crud;
 pub mod grouped_sweep;
 pub mod positions;
 pub mod swing1;

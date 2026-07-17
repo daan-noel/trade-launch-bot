@@ -21,6 +21,9 @@ const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) =
 const Tpsl1Page = lazy(() => import('@lab/pages/strategies/Tpsl1Page').then((m) => ({ default: m.Tpsl1Page })));
 const Tpsl2Page = lazy(() => import('@lab/pages/strategies/Tpsl2Page').then((m) => ({ default: m.Tpsl2Page })));
 const Swing1Page = lazy(() => import('@lab/pages/strategies/Swing1Page').then((m) => ({ default: m.Swing1Page })));
+const RulesPage = lazy(() => import('@lab/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
+const FingerprintsPage = lazy(() => import('@lab/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
+const SimulatePage = lazy(() => import('@lab/pages/strategies/SimulatePage').then((m) => ({ default: m.SimulatePage })));
 const Tpsl1GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Tpsl1GroupedSweepPage').then((m) => ({ default: m.Tpsl1GroupedSweepPage })));
 const Tpsl2GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Tpsl2GroupedSweepPage').then((m) => ({ default: m.Tpsl2GroupedSweepPage })));
 const Swing1GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Swing1GroupedSweepPage').then((m) => ({ default: m.Swing1GroupedSweepPage })));
@@ -56,6 +59,9 @@ export default function App() {
                   <Route path="analysis/swing-detection" element={<SwingDetectionPage />} />
                   <Route path="analysis/swing1-detect" element={<Swing1DetectPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />
+                  <Route path="strategies/rules" element={<RulesPage />} />
+                  <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
+                  <Route path="strategies/simulate" element={<SimulatePage />} />
                   <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
                   <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
                   <Route path="strategies/swing1" element={<Swing1Page />} />

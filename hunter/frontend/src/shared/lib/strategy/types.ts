@@ -91,6 +91,35 @@ export interface ArmedEntry {
   state: string;
 }
 
+/** Inline dry-run draft for `POST /api/strategies/simulate`. NOTE: this uses
+ *  `buy_amount_sol` (f64 SOL) — the one amount that is SOL, not lamports, on the
+ *  wire (the simulate handler's draft contract). */
+export interface EngineRuleDraft {
+  fingerprint_id: string;
+  params: Record<string, unknown>;
+  buy_amount_sol: number;
+  max_concurrent_tokens?: number;
+  max_total_tokens?: number;
+  trade_mode?: TradeMode;
+}
+
+/** `POST /api/strategies/simulate` body — a saved rule (`rule_id`) or an inline
+ *  `draft` (ignored if `rule_id` is set), over an optional creation window. */
+export interface EngineSimRequest {
+  rule_id?: string;
+  draft?: EngineRuleDraft;
+  since?: string;
+  until?: string;
+}
+
+/** `202` response of `POST /api/strategies/simulate`. `run_id` = the rule id for
+ *  a saved rule, or a fresh id for a draft; the `simulation_finished` SSE carries
+ *  it back as `rule_id`. */
+export interface SimStartResponse {
+  started: boolean;
+  run_id: string;
+}
+
 /** `strategy_armed_changed` SSE payload — a (token, rule) arm/disarm transition. */
 export interface ArmedChangedEvent {
   rule_id: string;
