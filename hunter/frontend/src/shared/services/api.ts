@@ -127,6 +127,38 @@ export function fetchSimulatedPage(
   );
 }
 
+/** POST one page of a generic-engine simulate run (`POST /api/strategies/simulate/{run_id}/result`).
+ *  `run_id` is the rule id for a saved-rule run (same key as the rules table). */
+export function fetchEngineSimPage(
+  runId: string,
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<{ items: import('types').SimulatedTokenResult[]; total: number }> {
+  return postTablePage(
+    `/api/strategies/simulate/${encodeURIComponent(runId)}/result`,
+    body,
+    (json) => (json as { tokens: import('types').SimulatedTokenResult[] }).tokens,
+    signal,
+  );
+}
+
+/** POST the filtered aggregate for a generic-engine simulate run. */
+export function fetchEngineSimSummary(
+  runId: string,
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<import('types').SimulatedSummary> {
+  return request(
+    `${API_BASE}/api/strategies/simulate/${encodeURIComponent(runId)}/result/summary`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
+}
+
 /** Whole-population roll-up for the Holdings summary bar (server-computed over the
  *  filtered set). Mirrors the Rust `HoldingsTableSummary`. */
 export interface HoldingsTableSummary {

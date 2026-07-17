@@ -144,8 +144,42 @@ pub fn full_combo_aggs_fit(n_combos: usize, wave: usize, max_series_bytes: usize
 
 /// Progress-bar pass count. Each token still visits every combo batch (even in
 /// wave-outer — series is reused, but `token_done` fires once per batch).
+///
+/// Prefer [`sweep_progress_ticks`] when the fold may **shard** the combo space —
+/// each shard re-folds every token, so the real tick count is
+/// `tokens × Σ batches_per_shard`, not `tokens × ceil(n_combos / batch)`.
 pub fn sweep_progress_passes(n_combos: usize, batch: usize) -> usize {
     combo_batch_count(n_combos, batch)
+}
+
+/// How many [`SweepObserver::token_done`] ticks [`run_sweep`] will emit for
+/// `n_tokens` over `n_combos` with the given fold `batch` and series footprint.
+///
+/// Must stay in lock-step with [`run_sweep`]'s shard plan + per-shard batch clamp:
+/// when combo sharding splits the param vec, each shard folds the full token set
+/// again, so under-counting here makes the global bar's `processed` overrun `total`
+/// (e.g. coarse LHS on a large group).
+pub fn sweep_progress_ticks(
+    n_tokens: usize,
+    n_combos: usize,
+    batch: usize,
+    max_series_bytes: usize,
+) -> usize {
+    if n_tokens == 0 || n_combos == 0 {
+        return 0;
+    }
+    let threads = rayon::current_num_threads().max(1);
+    let wave = crate::sweep::registry::series_wave_size(max_series_bytes, threads);
+    let shards = crate::sweep::shard::plan_shards(n_combos, wave, max_series_bytes);
+    let hard = crate::sweep::registry::hard_max_combo_batch();
+    let mut ticks = 0usize;
+    for range in &shards {
+        let shard_n = range.len();
+        // Same clamp as `run_sweep_unsharded`.
+        let shard_batch = batch.clamp(1, shard_n.max(1).min(hard));
+        ticks = ticks.saturating_add(n_tokens.saturating_mul(combo_batch_count(shard_n, shard_batch)));
+    }
+    ticks
 }
 
 /// Run every combo against every token; fold into one ranked [`ComboMetrics`] per combo.
@@ -750,5 +784,46 @@ mod tests {
         assert_eq!(combo_batch_count(7, 3), 3);
         assert_eq!(combo_batch_count(6, 3), 2);
         assert_eq!(combo_batch_count(0, 3), 1);
+    }
+
+    #[test]
+    fn progress_ticks_match_unsharded_passes() {
+        // Small combo sets stay in one shard → ticks == tokens × batch passes.
+        let n_tokens = 100;
+        let n_combos = 50;
+        let batch = 20;
+        let passes = sweep_progress_passes(n_combos, batch);
+        assert_eq!(
+            sweep_progress_ticks(n_tokens, n_combos, batch, 0),
+            n_tokens * passes
+        );
+        assert_eq!(sweep_progress_ticks(0, n_combos, batch, 0), 0);
+        assert_eq!(sweep_progress_ticks(n_tokens, 0, batch, 0), 0);
+    }
+
+    #[test]
+    fn progress_ticks_follow_shard_plan() {
+        // Denominator must equal Σ (tokens × batches_per_shard), never the naive
+        // tokens × ceil(N/batch) alone — that under-count is what made the coarse
+        // bar show processed > total when `run_sweep` sharded.
+        let n_tokens = 10;
+        let n_combos = 100_000;
+        let batch = HARD_MAX_COMBO_BATCH;
+        let max_series = 64 * 1024 * 1024;
+        let threads = rayon::current_num_threads().max(1);
+        let wave = crate::sweep::registry::series_wave_size(max_series, threads);
+        let shards = crate::sweep::shard::plan_shards(n_combos, wave, max_series);
+        let expected: usize = shards
+            .iter()
+            .map(|r| {
+                let shard_n = r.len();
+                let shard_batch = batch.clamp(1, shard_n.max(1).min(HARD_MAX_COMBO_BATCH));
+                n_tokens * combo_batch_count(shard_n, shard_batch)
+            })
+            .sum();
+        let ticks = sweep_progress_ticks(n_tokens, n_combos, batch, max_series);
+        assert_eq!(ticks, expected);
+        let naive = n_tokens * sweep_progress_passes(n_combos, batch);
+        assert!(ticks >= naive, "ticks={ticks} naive={naive} shards={}", shards.len());
     }
 }

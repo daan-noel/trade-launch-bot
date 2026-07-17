@@ -172,6 +172,9 @@ next load (no per-metric frontend work).
   Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
   shows the `SimulatedSummary` rollup as separate DataTable columns (Entered / Closed /
   Win % / Avg PnL / Total PnL, plus a Run status) so sort/search/filter work per field.
+  On load it hydrates every rule's resident sim summary and lists each finished run's
+  per-token positions below (`POST /api/strategies/simulate/{run_id}/result`,
+  `simColumns` + `TokenTable`) — no row-select gate.
 
 ## Grouped sweep — generic engine (`strategies/sweep/`, redesign FE5)
 

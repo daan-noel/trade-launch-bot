@@ -97,12 +97,14 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     {
       key: 'rule_name',
       label: 'Name',
+      group: 'name',
       render: (r) => <span className="font-medium text-text">{r.rule_name}</span>,
       searchValue: (r) => r.rule_name,
     },
     {
       key: 'status',
       label: 'Status',
+      group: 'status',
       render: (r) => (
         <Badge variant={r.is_active ? 'success' : 'neutral'}>{r.is_active ? 'Active' : 'Idle'}</Badge>
       ),
@@ -111,6 +113,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     {
       key: 'mode',
       label: 'Mode',
+      group: 'status',
       render: (r) => (
         <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
       ),
@@ -119,6 +122,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     {
       key: 'fingerprint',
       label: 'Fingerprint',
+      group: 'fingerprint',
       render: (r) => {
         const fp = fpById.get(r.fingerprint_id);
         return (
@@ -153,6 +157,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     {
       key: 'params',
       label: 'Params',
+      group: 'params',
       render: (r) => ruleParamsCell(r.params),
       searchValue: (r) => ruleParamsSearchText(r.params),
     },

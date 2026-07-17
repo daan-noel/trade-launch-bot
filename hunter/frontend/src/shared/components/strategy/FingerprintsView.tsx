@@ -111,12 +111,14 @@ export function FingerprintsView() {
       {
         key: 'name',
         label: 'Name',
+        group: 'name',
         render: (r) => <span className="font-medium text-text">{r.name || r.id.slice(0, 8)}</span>,
         searchValue: (r) => r.name,
       },
       {
         key: 'cu_limit',
         label: 'cu_limit',
+        group: 'cu',
         render: (r) => intCell(r.cu_limit),
         searchValue: (r) => String(r.cu_limit ?? ''),
         sortValue: (r) => r.cu_limit,
@@ -127,6 +129,7 @@ export function FingerprintsView() {
       {
         key: 'cu_price',
         label: 'cu_price',
+        group: 'cu',
         render: (r) => intCell(r.cu_price),
         searchValue: (r) => String(r.cu_price ?? ''),
         sortValue: (r) => r.cu_price,
@@ -137,6 +140,7 @@ export function FingerprintsView() {
       {
         key: 'init_buy',
         label: 'init_buy',
+        group: 'init_buy',
         render: (r) => solCell(r.init_buy_lamports),
         searchValue: (r) => String(lamportsToSol(r.init_buy_lamports) ?? ''),
         sortValue: (r) => r.init_buy_lamports,
@@ -147,6 +151,7 @@ export function FingerprintsView() {
       {
         key: 'max_cost',
         label: 'max_cost',
+        group: 'init_buy',
         render: (r) => solCell(r.max_cost_lamports),
         searchValue: (r) => String(lamportsToSol(r.max_cost_lamports) ?? ''),
         sortValue: (r) => r.max_cost_lamports,
@@ -157,6 +162,7 @@ export function FingerprintsView() {
       {
         key: 'spendable',
         label: 'spendable',
+        group: 'init_buy',
         render: (r) => solCell(r.spendable_lamports_in),
         searchValue: (r) => String(lamportsToSol(r.spendable_lamports_in) ?? ''),
         sortValue: (r) => r.spendable_lamports_in,
@@ -167,6 +173,7 @@ export function FingerprintsView() {
       {
         key: 'fs_buy',
         label: 'fs_buy',
+        group: 'fs',
         render: (r) => solCell(r.first_slot_buy_lamports),
         searchValue: (r) => String(lamportsToSol(r.first_slot_buy_lamports) ?? ''),
         sortValue: (r) => r.first_slot_buy_lamports,
@@ -177,6 +184,7 @@ export function FingerprintsView() {
       {
         key: 'fs_sell',
         label: 'fs_sell',
+        group: 'fs',
         render: (r) => solCell(r.first_slot_sell_lamports),
         searchValue: (r) => String(lamportsToSol(r.first_slot_sell_lamports) ?? ''),
         sortValue: (r) => r.first_slot_sell_lamports,
@@ -187,6 +195,7 @@ export function FingerprintsView() {
       {
         key: 'ix_count',
         label: 'ix count',
+        group: 'ix',
         render: (r) => {
           const n = r.ix_labels?.length;
           if (n == null || n === 0) return dash();
@@ -201,6 +210,7 @@ export function FingerprintsView() {
       {
         key: 'ix_labels',
         label: 'ix_labels',
+        group: 'ix',
         width: '220px',
         render: (r) =>
           r.ix_labels?.length ? <IxLabelsDisplay labels={r.ix_labels} copyJson /> : dash(),
@@ -210,6 +220,7 @@ export function FingerprintsView() {
       {
         key: 'bucket',
         label: 'Bucket',
+        group: 'bucket',
         render: (r) => <span className="font-mono tabular-nums">{r.bucket_size_amount}◎</span>,
         searchValue: (r) => String(r.bucket_size_amount),
         sortValue: (r) => r.bucket_size_amount,
@@ -220,7 +231,8 @@ export function FingerprintsView() {
       {
         key: 'used_by',
         label: 'Used by',
-        render: (r) => <Badge variant={r.used_by ? 'info' : 'neutral'}>{r.used_by ?? 0}</Badge>,
+        group: 'used',
+        render: (r) => <Badge className="text-lg" variant={r.used_by ? 'info' : 'neutral'}>{r.used_by ?? 0}</Badge>,
         searchValue: (r) => String(r.used_by ?? 0),
         sortValue: (r) => r.used_by ?? 0,
         filterNumber: (r) => r.used_by ?? 0,

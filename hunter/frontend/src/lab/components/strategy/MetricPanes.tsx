@@ -348,6 +348,7 @@ export function MetricPanes({
 
 /** Compact metric number for the HUD / pane rail. */
 function formatMetric(v: number): string {
+  if (!Number.isFinite(v)) return '—';
   const a = Math.abs(v);
   if (a >= 1000) return v.toFixed(0);
   if (a >= 100) return v.toFixed(1);
@@ -366,8 +367,14 @@ function metricThresholds(
     const sc = params[side];
     if (!sc) continue;
     for (const g of Object.values(sc)) {
-      const conds = g.metrics[metric];
-      if (conds) for (const c of conds) out.push({ side, value: c.value });
+      // `metrics[metric]` is DNF (`Condition[][]`) — flatten arms → atoms.
+      const arms = g.metrics[metric];
+      if (!arms) continue;
+      for (const arm of arms) {
+        for (const c of arm) {
+          if (Number.isFinite(c.value)) out.push({ side, value: c.value });
+        }
+      }
     }
   }
   return out;

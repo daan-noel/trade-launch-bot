@@ -1,19 +1,40 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
-import type { ColumnDef } from 'components/table/types';
+import type { ColumnDef, TableQuery } from 'components/table/types';
 import { Button } from 'components/ui/Button';
+import { Badge } from 'components/ui/Badge';
+import { InlineAlert } from 'components/ui/Modal';
+import { SectionDivider } from 'components/ui/SectionDivider';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { dashF, dashPercent } from 'components/strategy/cellFormat';
+import {
+  inspectFromSim,
+  markerRowOverlay,
+  type InspectTarget,
+} from 'components/strategy/inspectTarget';
+import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
+import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
+import { fetchEngineSimPage, fetchEngineSimSummary } from 'services/api';
+import {
+  isTableQueryActive,
+  toSummaryBody,
+  toTableRequest,
+  type TableRequestBody,
+} from 'services/tableRequest';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { ruleParamsCell, ruleParamsSearchText } from 'components/strategy/RuleParamsSummary';
 import {
   fingerprintParamsCell,
   fingerprintParamsSearchText,
 } from 'components/strategy/FingerprintParamsSummary';
-import { lamportsToSol, type Fingerprint, type StrategyRule } from 'lib/strategy/types';
-import type { SimulatedSummary } from 'types';
+import { DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
+import { useServerTable } from 'hooks/useServerTable';
+import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
+import type { SimulatedSummary, SimulatedTokenResult } from 'types';
 import {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
@@ -22,12 +43,16 @@ import {
 type RunState = { running: boolean; summary?: SimulatedSummary; error?: string };
 
 const DASH = <span className="text-text-dim/60">—</span>;
+const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
+const keyByMint = (r: { mint_address: string }) => r.mint_address;
+const simRowOverlay = markerRowOverlay(inspectFromSim);
 
 /**
  * Full-corpus simulate for saved rules (lab app, FE3.2). Replaces the per-strategy
  * simulate flows with one generic surface: run a saved rule over the whole lake,
- * show its funnel summary as sortable/filterable columns. The dry-run panel
- * (unsaved-draft loop) lives in the rule editor; this page is for persisted rules.
+ * show every rule's funnel summary as sortable/filterable columns, and list the
+ * per-token positions of the selected rule below. The dry-run panel (unsaved-draft
+ * loop) lives in the rule editor; this page is for persisted rules.
  */
 export function SimulatePage() {
   const { data: rules = [], isLoading } = useGetStrategyRulesQuery();
@@ -35,9 +60,48 @@ export function SimulatePage() {
   const [start] = useStartEngineSimulationMutation();
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [runs, setRuns] = useState<Record<string, RunState>>({});
+  const [bulkMode, setBulkMode] = useState<TradeMode | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
+  const [inspect, setInspect] = useState<{ key: string; target: InspectTarget } | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const handleRef = useRef<{ close: () => void } | null>(null);
+  const hydratedIds = useRef<Set<string>>(new Set());
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
+
+  const paperCount = useMemo(() => rules.filter((r) => r.trade_mode === 'paper').length, [rules]);
+  const realCount = useMemo(() => rules.filter((r) => r.trade_mode === 'real').length, [rules]);
+
+  // Hydrate every rule's resident sim summary on load (and when new rules appear),
+  // so the table columns + position panels show without needing a row click.
+  useEffect(() => {
+    if (rules.length === 0) return;
+    let cancelled = false;
+    const pending = rules.filter((r) => !hydratedIds.current.has(r.id));
+    if (pending.length === 0) return;
+
+    void (async () => {
+      await Promise.all(
+        pending.map(async (rule) => {
+          hydratedIds.current.add(rule.id);
+          try {
+            const summary = await fetchSummary(rule.id).unwrap();
+            if (cancelled) return;
+            setRuns((r) => {
+              if (r[rule.id]?.running) return r;
+              return { ...r, [rule.id]: { running: false, summary } };
+            });
+          } catch {
+            /* no resident result for this rule */
+          }
+        }),
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rules, fetchSummary]);
 
   // One page-level subscription routes each finished run to its rule (run_id ==
   // rule_id for saved rules).
@@ -50,16 +114,19 @@ export function SimulatePage() {
       }
       try {
         const summary = await fetchSummary(id).unwrap();
+        hydratedIds.current.add(id);
         setRuns((r) => ({ ...r, [id]: { running: false, summary } }));
       } catch (e) {
         setRuns((r) => ({ ...r, [id]: { running: false, error: apiErrorMessage(e as never) ?? 'summary failed' } }));
       }
+      setReloadNonce((n) => n + 1);
     });
     return () => handleRef.current?.close();
   }, [fetchSummary]);
 
   const runRule = async (rule: StrategyRule) => {
     setRuns((r) => ({ ...r, [rule.id]: { running: true } }));
+    setSelectedRuleId(rule.id);
     try {
       await start({ rule_id: rule.id }).unwrap();
     } catch (e) {
@@ -67,15 +134,71 @@ export function SimulatePage() {
     }
   };
 
+  /** Queue a lake backtest for every saved rule in `mode` that isn't already running. */
+  const runAll = async (mode: TradeMode) => {
+    const targets = rules.filter((r) => r.trade_mode === mode && !runs[r.id]?.running);
+    if (targets.length === 0) return;
+    setBulkMode(mode);
+    setRuns((prev) => {
+      const next = { ...prev };
+      for (const r of targets) next[r.id] = { running: true };
+      return next;
+    });
+    try {
+      await Promise.all(
+        targets.map(async (rule) => {
+          try {
+            await start({ rule_id: rule.id }).unwrap();
+          } catch (e) {
+            setRuns((r) => ({
+              ...r,
+              [rule.id]: { running: false, error: apiErrorMessage(e as never) ?? 'start failed' },
+            }));
+          }
+        }),
+      );
+    } finally {
+      setBulkMode(null);
+    }
+  };
+
   const columns = useMemo(() => buildColumns(runs, fpById), [runs, fpById]);
+
+  // Only the selected rule's positions render below the table; every rule's summary
+  // is still hydrated for the table's metric columns.
+  const selectedRule = useMemo(
+    () => rules.find((r) => r.id === selectedRuleId) ?? null,
+    [rules, selectedRuleId],
+  );
+  const selectedRun = selectedRuleId ? runs[selectedRuleId] : undefined;
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-lg font-semibold text-text">Simulate</h1>
-        <span className="text-sm text-text-mid">
-          Lake backtest for saved rules · drafts use Rules dry-run
-        </span>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-baseline gap-3">
+          <h1 className="text-lg font-semibold text-text">Simulate</h1>
+          <span className="text-sm text-text-mid">
+            Lake backtest for saved rules · drafts use Rules dry-run
+          </span>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Button
+            variant="subtle"
+            size="sm"
+            disabled={paperCount === 0 || bulkMode !== null}
+            onClick={() => runAll('paper')}
+          >
+            {bulkMode === 'paper' ? 'Starting paper…' : `Simulate All Paper (${paperCount})`}
+          </Button>
+          <Button
+            variant="subtle"
+            size="sm"
+            disabled={realCount === 0 || bulkMode !== null}
+            onClick={() => runAll('real')}
+          >
+            {bulkMode === 'real' ? 'Starting real…' : `Simulate All Real (${realCount})`}
+          </Button>
+        </div>
       </div>
       <DataTable
         columns={columns}
@@ -85,18 +208,130 @@ export function SimulatePage() {
         searchable
         tableId="simulate-rules"
         emptyMessage="No rules yet — author one on the Rules page."
+        selectedKey={selectedRuleId}
+        onSelect={setSelectedRuleId}
         rowActions={(r) => (
           <Button
             variant="primary"
             size="xs"
             disabled={runs[r.id]?.running}
-            onClick={() => runRule(r)}
+            onClick={() => void runRule(r)}
           >
             {runs[r.id]?.running ? 'Running…' : 'Simulate'}
           </Button>
         )}
       />
+
+      {selectedRule && (selectedRun?.running || selectedRun?.summary) && <SectionDivider gap="md" />}
+
+      {selectedRule && selectedRun?.running && (
+        <p className="text-sm text-text-dim">
+          Simulating <span className="font-medium text-text">{selectedRule.rule_name}</span>…
+        </p>
+      )}
+
+      {selectedRule && selectedRun?.summary && !selectedRun.running && (
+        <RuleSimPositionsPanel
+          key={selectedRule.id}
+          rule={selectedRule}
+          reloadNonce={reloadNonce}
+          onInspect={setInspect}
+          inspectKey={inspect?.key ?? null}
+        />
+      )}
+
+      {inspect && (
+        <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />
+      )}
     </div>
+  );
+}
+
+/** The selected rule's finished sim positions — own server-side table, rendered only
+ *  for the row the user picked in the rules table above. */
+function RuleSimPositionsPanel({
+  rule,
+  reloadNonce,
+  onInspect,
+  inspectKey,
+}: {
+  rule: StrategyRule;
+  reloadNonce: number;
+  onInspect: (v: { key: string; target: InspectTarget } | null) => void;
+  inspectKey: string | null;
+}) {
+  const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
+  const simBody = useMemo(() => toTableRequest(simQuery, SIM_NUMERIC_COLS), [simQuery]);
+  const simSummaryBody = useMemo(
+    () => toSummaryBody(simQuery, SIM_NUMERIC_COLS),
+    [simQuery.search, simQuery.colFilters, simQuery.structuredFilters],
+  );
+
+  const {
+    items: simTokens,
+    total: simTotal,
+    loading: simTableLoading,
+    error: simTableError,
+    reload: reloadSim,
+  } = useServerTable<SimulatedTokenResult, SimulatedSummary>(
+    true,
+    simBody,
+    (body, signal) => fetchEngineSimPage(rule.id, body as TableRequestBody, signal),
+    (summaryBody, signal) =>
+      fetchEngineSimSummary(rule.id, summaryBody as TableRequestBody, signal),
+    simSummaryBody,
+  );
+
+  useEffect(() => {
+    reloadSim();
+  }, [reloadNonce, reloadSim]);
+
+  const onSelectSim = useCallback(
+    (key: string | null) => {
+      const row = key ? simTokens.find((t) => t.mint_address === key) ?? null : null;
+      onInspect(row ? { key: row.mint_address, target: inspectFromSim(row) } : null);
+    },
+    [simTokens, onInspect],
+  );
+
+  if (simTableError) {
+    if (simTableError.includes('no simulation result')) return null;
+    return <InlineAlert variant="error">{simTableError}</InlineAlert>;
+  }
+
+  if (!simTableLoading && simTotal === 0 && !isTableQueryActive(simQuery)) {
+    return null;
+  }
+
+  return (
+    <section id={`sim-positions-${rule.id}`}>
+      <div className="mb-3.5 flex items-center gap-2.5">
+        <span className="h-4 w-1 rounded-full bg-info" />
+        <h3 className="text-sm font-bold text-text">Simulated Positions</h3>
+        <Badge variant="info" size="sm" className="font-mono font-normal">
+          {simTotal}
+        </Badge>
+        <span className="truncate font-mono text-[11px] text-text-dim">{rule.rule_name}</span>
+      </div>
+      <TokenTable
+        columns={simColumns}
+        existingKeys={SIM_KEYS}
+        mintSetFilter
+        charts
+        useRowOverlay={simRowOverlay}
+        rows={simTokens}
+        rowKey={keyByMint}
+        selectedKey={inspectKey}
+        onSelect={onSelectSim}
+        serverSide
+        serverTotal={simTotal}
+        onQueryChange={setSimQuery}
+        loading={simTableLoading}
+        resetKey={rule.id}
+        tableId={`simulate-positions-${rule.id}`}
+        emptyMessage="No positions in this simulation result."
+      />
+    </section>
   );
 }
 
@@ -152,19 +387,30 @@ function buildColumns(
     {
       key: 'rule_name',
       label: 'Rule',
+      group: 'name',
       render: (r) => (
         <div className="flex min-w-40 flex-col gap-0.5">
           <span className="font-medium text-text">{r.rule_name}</span>
           <span className="text-[10px] text-text-dim">
-            {r.is_active ? 'armed on live' : 'idle on live'} · {r.trade_mode}
+            {r.is_active ? 'armed on live' : 'idle on live'}
           </span>
         </div>
       ),
-      searchValue: (r) => `${r.rule_name} ${r.is_active ? 'active' : 'idle'} ${r.trade_mode}`,
+      searchValue: (r) => `${r.rule_name} ${r.is_active ? 'active' : 'idle'}`,
+    },
+    {
+      key: 'mode',
+      label: 'Mode',
+      group: 'status',
+      render: (r) => (
+        <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
+      ),
+      searchValue: (r) => r.trade_mode,
     },
     {
       key: 'fingerprint',
       label: 'Fingerprint',
+      group: 'fingerprint',
       render: (r) => {
         const fp = fpById.get(r.fingerprint_id);
         return (
@@ -189,6 +435,7 @@ function buildColumns(
     {
       key: 'params',
       label: 'Params',
+      group: 'params',
       render: (r) => ruleParamsCell(r.params),
       searchValue: (r) => ruleParamsSearchText(r.params),
     },
