@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
@@ -16,6 +16,8 @@ export function LabTokenInspect({
   error = null,
   tableId = 'lab_token_inspect_trades',
   showDetailPanel = true,
+  /** Sweep/sim entry·exit markers merged with metric-pane fires. */
+  extraEventMarkers = [],
 }: {
   detail: TokenDetailRecord | null;
   loading?: boolean;
@@ -23,16 +25,22 @@ export function LabTokenInspect({
   tableId?: string;
   /** When false, only chart + panes (caller already rendered the detail panel). */
   showDetailPanel?: boolean;
+  extraEventMarkers?: ChartEventMarker[];
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
   /** Who last drove the shared crosshair — only pane hover is pushed into the price chart. */
   const [crosshairSource, setCrosshairSource] = useState<'chart' | 'panes' | null>(null);
   const [visibleTimeRange, setVisibleTimeRange] = useState<ChartVisibleTimeRange | null>(null);
-  const [eventMarkers, setEventMarkers] = useState<ChartEventMarker[]>([]);
+  const [paneMarkers, setPaneMarkers] = useState<ChartEventMarker[]>([]);
 
   const onEventMarkersChange = useCallback((markers: ChartEventMarker[]) => {
-    setEventMarkers(markers);
+    setPaneMarkers(markers);
   }, []);
+
+  const eventMarkers = useMemo(
+    () => [...extraEventMarkers, ...paneMarkers],
+    [extraEventMarkers, paneMarkers],
+  );
 
   const onChartCrosshair = useCallback((t: number | null) => {
     setCrosshairSource(t == null ? null : 'chart');

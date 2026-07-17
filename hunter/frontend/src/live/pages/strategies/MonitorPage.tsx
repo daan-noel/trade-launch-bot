@@ -6,6 +6,7 @@ import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { connectArmedChanged, connectStrategyPositionUpdate } from 'services/sse';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useGetArmedQuery } from '@live/store/liveEndpoints';
@@ -22,6 +23,15 @@ type HoldingRow = {
 const HOLDING_STATUSES = new Set(['BuySubmitted', 'Holding', 'ExitPending']);
 const armedKey = (ruleId: string, mint: string) => `${ruleId}|${mint}`;
 
+/** Path segment only validates; history is keyed by rule_id in the runtime. */
+const HISTORY_STRATEGY = 'tpsl2';
+
+const HOLDING_LABEL: Record<string, string> = {
+  BuySubmitted: 'Buy submitted',
+  Holding: 'Holding',
+  ExitPending: 'Exit pending',
+};
+
 /**
  * Armed monitor (live app): the generic engine's armed (token, rule) pairs and
  * open holdings in real time. Armed state is push-only via `strategy_armed_changed`
@@ -37,6 +47,7 @@ export function MonitorPage() {
   const [disarmedToday, setDisarmedToday] = useState<Record<string, number>>({});
   const [enteredToday, setEnteredToday] = useState(0);
   const [now, setNow] = useState(() => performance.now());
+  const [historyRuleId, setHistoryRuleId] = useState<string | null>(null);
 
   const rulesById = useMemo(() => new Map(rules.map((r) => [r.id, r.rule_name])), [rules]);
 
@@ -110,6 +121,21 @@ export function MonitorPage() {
   const holdingRows = useMemo(() => [...holding.values()], [holding]);
   const ruleName = (id: string) => rulesById.get(id) ?? id.slice(0, 8);
 
+  const historyRuleOptions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of armedRows) ids.add(r.ruleId);
+    for (const r of holdingRows) ids.add(r.ruleId);
+    for (const r of rules) {
+      if (r.is_active) ids.add(r.id);
+    }
+    return [...ids].map((id) => ({ id, name: ruleName(id) }));
+  }, [armedRows, holdingRows, rules, rulesById]);
+
+  useEffect(() => {
+    if (historyRuleId && historyRuleOptions.some((o) => o.id === historyRuleId)) return;
+    setHistoryRuleId(historyRuleOptions[0]?.id ?? null);
+  }, [historyRuleId, historyRuleOptions]);
+
   const armedColumns: ColumnDef<ArmedRow>[] = [
     {
       key: 'mint',
@@ -171,9 +197,11 @@ export function MonitorPage() {
       key: 'status',
       label: 'Status',
       render: (r) => (
-        <Badge variant={r.status === 'Holding' ? 'success' : 'info'}>{r.status}</Badge>
+        <Badge variant={r.status === 'Holding' ? 'success' : 'info'}>
+          {HOLDING_LABEL[r.status] ?? r.status}
+        </Badge>
       ),
-      searchValue: (r) => r.status,
+      searchValue: (r) => HOLDING_LABEL[r.status] ?? r.status,
     },
     {
       key: 'entry',
@@ -209,7 +237,9 @@ export function MonitorPage() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-lg font-extrabold text-text">Armed</h1>
-        <span className="text-sm text-text-mid">Rules waiting on entry · open holdings</span>
+        <span className="text-sm text-text-mid">
+          Ops view · waiting on entry + live holdings (Positions = inventory with PnL)
+        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
@@ -218,13 +248,6 @@ export function MonitorPage() {
         <StatTile label="Entered (session)" value={enteredToday} />
         <StatTile label="Disarmed (session)" value={disarmedTotal} sub={disarmSub} tone="muted" />
       </div>
-
-      {disarmedTotal > 0 && (
-        <p className="text-xs text-text-dim">
-          Why left armed this session:{' '}
-          <span className="text-text-mid">{disarmSub}</span>
-        </p>
-      )}
 
       <section className="flex flex-col gap-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-text-dim">
@@ -253,6 +276,29 @@ export function MonitorPage() {
           emptyMessage="No open positions."
         />
       </section>
+
+      {historyRuleOptions.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-text-dim" htmlFor="armed-history-rule">
+              Never-fired history
+            </label>
+            <select
+              id="armed-history-rule"
+              className="rounded-md border border-white/10 bg-bg-panel px-2 py-1 text-xs text-text"
+              value={historyRuleId ?? ''}
+              onChange={(e) => setHistoryRuleId(e.target.value || null)}
+            >
+              {historyRuleOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <ArmedHistoryPanel strategy={HISTORY_STRATEGY} selectedRuleId={historyRuleId} />
+        </section>
+      )}
     </div>
   );
 }

@@ -45,13 +45,15 @@ export function LiveTradingPage() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
         <h1 className="text-lg font-extrabold text-text">Positions</h1>
-        <span className="text-sm text-text-mid">Open real positions across strategies</span>
+        <span className="text-sm text-text-mid">
+          Bot inventory · open strategy positions (Trade = execute · Wallet = bag)
+        </span>
       </div>
 
       {errMsg && <InlineAlert variant="error">{errMsg}</InlineAlert>}
 
       <div className="mb-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-5">
-        <StatTile label="Open Positions" value={positions.length} sub="real" />
+        <StatTile label="Open Positions" value={positions.length} sub="strategy" />
         <StatTile label="SOL Deployed" value={`◎${formatCompact(totalDeployed, 2)}`} />
         {perStrategy.map((s) => (
           <StatTile

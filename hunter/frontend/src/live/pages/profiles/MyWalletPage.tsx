@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
+import { Link } from 'react-router-dom';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { Badge } from 'components/ui/Badge';
@@ -422,6 +423,9 @@ export function MyWalletPage() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-extrabold text-text">Wallet</h1>
+        <span className="text-sm text-text-mid">
+          Bag overview · row Buy/Sell for quick fills · Trade desk for mint-first
+        </span>
         <Badge variant="primary" className="font-mono">
           {total} tokens
         </Badge>
@@ -435,13 +439,19 @@ export function MyWalletPage() {
         >
           {hideDust ? '✓ ' : ''}Hide dust
         </Button>
-        <div className='flex-grow' />
-        <Button variant="primary" size="md" onClick={handleManualBuyOpen}>
+        <div className="flex-grow" />
+        <Button variant="subtle" size="sm" onClick={handleManualBuyOpen}>
           + Manual Buy
         </Button>
-        <Button variant="danger" size="md" onClick={handleManualSellOpen}>
-          - Manual Sell
+        <Button variant="subtle" size="sm" onClick={handleManualSellOpen}>
+          − Manual Sell
         </Button>
+        <Link
+          to="/trade"
+          className="inline-flex min-h-8 items-center justify-center rounded-md border border-primary bg-primary/15 px-3 text-[12px] font-semibold text-primary transition hover:bg-primary/25"
+        >
+          Trade desk →
+        </Link>
       </div>
 
       {summary && summary.positions > 0 && <HoldingsSummaryBar summary={summary} />}

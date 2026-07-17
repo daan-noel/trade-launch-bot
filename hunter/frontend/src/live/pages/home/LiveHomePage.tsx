@@ -44,7 +44,9 @@ export function LiveHomePage() {
     <div className="pt-2">
       <div className="mb-4 flex flex-wrap items-baseline gap-3">
         <h1 className="text-2xl font-extrabold text-text">Command Center</h1>
-        <span className="text-sm text-text-mid">Your money, right now</span>
+        <span className="text-sm text-text-mid">
+          Glance → act · Wallet = bag · Positions = bot inventory · Trade = execute
+        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
@@ -72,17 +74,17 @@ export function LiveHomePage() {
           <StatTile
             label="Open Positions"
             value={summary?.open_position_count ?? '—'}
-            sub="real"
+            sub="strategy"
           />
         </Link>
         <Link to="/strategies/rules" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
-          <StatTile label="Active Rules" value={summary?.active_rules ?? '—'} sub="real" />
+          <StatTile label="Active Rules" value={summary?.active_rules ?? '—'} sub="armed on live" />
         </Link>
         <StatTile
-          label="Live Mode"
+          label="Trading"
           value={live == null ? '—' : live ? 'ON' : 'OFF'}
           tone={live ? 'green' : 'muted'}
-          sub="header kill-switch"
+          sub="header switch"
         />
       </div>
 

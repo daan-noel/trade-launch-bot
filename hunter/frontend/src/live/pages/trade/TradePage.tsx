@@ -152,7 +152,9 @@ export function TradePage() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
         <h1 className="text-lg font-extrabold text-text">Trade</h1>
-        <span className="text-sm text-text-mid">Manual buy / sell by mint</span>
+        <span className="text-sm text-text-mid">
+          Mint-first execute desk · Wallet = bag overview · Positions = bot inventory
+        </span>
       </div>
 
       <div className="mb-3 flex flex-wrap items-end gap-2">

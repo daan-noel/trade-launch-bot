@@ -17,7 +17,6 @@ import {
 import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
-import { SideDrawer } from 'components/ui/SideDrawer';
 import { StatusButton } from 'components/ui/StatusButton';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTokenCreatedStream, connectTradeStream } from 'services/sse';
@@ -113,6 +112,16 @@ export function TokensPage({
     },
     [setSearchParams],
   );
+
+  const detailRef = useRef<HTMLDivElement>(null);
+  // Scroll detail into view on select (including `?mint=` deep-links).
+  useEffect(() => {
+    if (!selectedMint) return;
+    const id = window.requestAnimationFrame(() => {
+      detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [selectedMint]);
 
   // The query args, shared by the live query and the adjacent-page prefetch
   // below so both hit identical cache keys.
@@ -301,16 +310,15 @@ export function TokensPage({
     };
   }, [live]);
 
-  const drawerTitle = detail?.symbol
-    ? `${detail.symbol}`
-    : selectedMint
-      ? `${selectedMint.slice(0, 8)}…`
-      : 'Token';
-
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-extrabold text-text">Tokens</h1>
+        <span className="text-sm text-text-mid">
+          {renderDetailChart
+            ? 'Universe · select a row for chart + metric panes'
+            : 'Universe · select a row for detail + chart'}
+        </span>
         <Badge
           variant={trackedOnly ? 'neutral' : 'primary'}
           className="cursor-pointer font-mono"
@@ -327,7 +335,8 @@ export function TokensPage({
         </Badge>
         <StatusButton
           state={live ? 'live' : 'dead'}
-          label={live ? 'ACTIVE' : 'PAUSED'}
+          label={live ? 'STREAM ON' : 'STREAM OFF'}
+          title="Table live updates only — not the header trading switch"
           onClick={() => setLive((v) => !v)}
           className={cn(
             'px-4 py-0.5 text-[10px]',
@@ -386,28 +395,27 @@ export function TokensPage({
         />
       )}
 
-      <SideDrawer
-        open={!!selectedMint}
-        onClose={() => selectMint(null)}
-        title={drawerTitle}
-        widthClass="w-[min(720px,100vw)]"
-      >
-        {selectedMint && (
-          <div className="flex flex-col gap-2.5">
-            <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
-            {renderDetailChart ? (
-              renderDetailChart({
-                detail: detail ?? null,
-                loading: detailLoading,
-                error: detailError,
-                mint: selectedMint,
-              })
-            ) : (
-              <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
-            )}
-          </div>
-        )}
-      </SideDrawer>
+      {/* Detail lives BELOW the table (outside its x-scroll) so the chart
+          sizes to page width. Row select highlights + fills this panel. */}
+      {selectedMint && (
+        <div
+          ref={detailRef}
+          id={`detail-${selectedMint}`}
+          className="mt-3.5 scroll-mt-16 flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3"
+        >
+          <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
+          {renderDetailChart ? (
+            renderDetailChart({
+              detail: detail ?? null,
+              loading: detailLoading,
+              error: detailError,
+              mint: selectedMint,
+            })
+          ) : (
+            <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
+          )}
+        </div>
+      )}
     </div>
   );
 }

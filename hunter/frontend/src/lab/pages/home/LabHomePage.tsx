@@ -7,7 +7,7 @@ import { GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigFor
 const SHORTCUTS: { to: string; label: string; blurb: string }[] = [
   { to: '/tokens', label: 'Tokens', blurb: 'Universe + metric panes' },
   { to: '/strategies/simulate', label: 'Simulate', blurb: 'Run saved rules on the lake' },
-  { to: '/strategies/sweep', label: 'Sweep', blurb: 'Grouped param search' },
+  { to: '/strategies/sweep', label: 'Grouped sweep', blurb: 'Param search → promote' },
   { to: '/analysis/trader', label: 'Trader', blurb: 'Wallet → tokens + charts' },
 ];
 
@@ -25,7 +25,7 @@ export function LabHomePage() {
     <div className="pt-2">
       <div className="mb-4 flex flex-wrap items-baseline gap-3">
         <h1 className="text-2xl font-extrabold text-text">Research</h1>
-        <span className="text-sm text-text-mid">Pick a path, or resume recent work</span>
+        <span className="text-sm text-text-mid">Pick a path, or resume a recent sweep</span>
       </div>
 
       <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
@@ -84,7 +84,7 @@ export function LabHomePage() {
               return (
                 <li key={r.id}>
                   <Link
-                    to="/strategies/sweep"
+                    to={`/strategies/sweep?run=${encodeURIComponent(r.id)}`}
                     className="flex flex-wrap items-center gap-2 rounded-md border border-white/6 bg-white/2 px-3 py-2 text-sm transition hover:border-primary/30"
                   >
                     <span className="font-mono text-[11px] text-text-dim">{when}</span>

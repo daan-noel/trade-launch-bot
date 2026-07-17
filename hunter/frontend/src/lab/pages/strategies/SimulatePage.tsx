@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { Button } from 'components/ui/Button';
-import { Badge } from 'components/ui/Badge';
 import { dashF, dashPercent } from 'components/strategy/cellFormat';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
@@ -72,11 +71,12 @@ export function SimulatePage() {
 
   return (
     <div className="flex flex-col gap-3">
-      <h1 className="text-lg font-semibold text-text">Simulate</h1>
-      <p className="text-[12px] text-text-dim">
-        Run a saved rule over the full lake corpus. For unsaved drafts use the dry-run panel
-        in the rule editor.
-      </p>
+      <div className="flex flex-wrap items-baseline gap-3">
+        <h1 className="text-lg font-semibold text-text">Simulate</h1>
+        <span className="text-sm text-text-mid">
+          Lake backtest for saved rules · drafts use Rules dry-run
+        </span>
+      </div>
       <DataTable
         columns={columns}
         rows={rules}
@@ -152,22 +152,15 @@ function buildColumns(
     {
       key: 'rule_name',
       label: 'Rule',
-      render: (r) => <span className="font-medium text-text">{r.rule_name}</span>,
-      searchValue: (r) => r.rule_name,
-    },
-    {
-      key: 'status',
-      label: 'Status',
       render: (r) => (
-        <Badge variant={r.is_active ? 'success' : 'neutral'}>{r.is_active ? 'Active' : 'Idle'}</Badge>
+        <div className="flex min-w-40 flex-col gap-0.5">
+          <span className="font-medium text-text">{r.rule_name}</span>
+          <span className="text-[10px] text-text-dim">
+            {r.is_active ? 'armed on live' : 'idle on live'} · {r.trade_mode}
+          </span>
+        </div>
       ),
-      searchValue: (r) => (r.is_active ? 'active' : 'idle'),
-    },
-    {
-      key: 'mode',
-      label: 'Mode',
-      render: (r) => <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>,
-      searchValue: (r) => r.trade_mode,
+      searchValue: (r) => `${r.rule_name} ${r.is_active ? 'active' : 'idle'} ${r.trade_mode}`,
     },
     {
       key: 'fingerprint',
@@ -192,16 +185,6 @@ function buildColumns(
       searchValue: (r) => String(lamportsToSol(r.buy_amount_lamports)),
       sortValue: (r) => r.buy_amount_lamports,
       sortable: true,
-    },
-    {
-      key: 'caps',
-      label: 'Caps',
-      render: (r) => (
-        <span className="tabular-nums text-text-dim">
-          {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
-        </span>
-      ),
-      searchValue: (r) => `${r.max_concurrent_tokens}/${r.max_total_tokens}`,
     },
     {
       key: 'params',

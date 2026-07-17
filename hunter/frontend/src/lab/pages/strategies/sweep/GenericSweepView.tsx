@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
@@ -9,7 +10,6 @@ import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
-import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
 import type { InspectTarget } from 'components/strategy/inspectTarget';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
@@ -26,6 +26,7 @@ import { useStreamedSweepResults, COMBO_PAGE_SIZE } from '@lab/hooks/useStreamed
 import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory';
 import { GenericSweepConfigForm, GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigForm';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
+import { SweepTokenInspectModal } from '@lab/components/sweep/SweepTokenInspectModal';
 import { buildGenericComboColumns, buildGenericGroupColumns } from '@lab/components/sweep/genericSweepColumns';
 import type {
   GroupedSweepGroupRecord,
@@ -74,6 +75,8 @@ function comboTarget(r: ComboTokenResult): InspectTarget {
  */
 export function GenericSweepView() {
   const strategyId = GENERIC_STRATEGY_ID;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const runFromUrl = searchParams.get('run');
   const runsQuery = useGetGroupedSweepRunsQuery({ strategyId });
   const runs = useMemo(() => runsQuery.data ?? [], [runsQuery.data]);
 
@@ -81,15 +84,47 @@ export function GenericSweepView() {
     `${STORAGE_KEYS.sweepSel}.generic`,
     null,
   );
+
+  // Home / deep-link `?run=` wins over localStorage once runs are loaded.
+  useEffect(() => {
+    if (!runFromUrl || runs.length === 0) return;
+    if (!runs.some((r) => r.id === runFromUrl)) return;
+    if (selectedRunId === runFromUrl) return;
+    setSelectedRunId(runFromUrl);
+  }, [runFromUrl, runs, selectedRunId, setSelectedRunId]);
+
   const activeRunId = selectedRunId && runs.some((r) => r.id === selectedRunId)
     ? selectedRunId
     : (runs[0]?.id ?? null);
   const activeRun = runs.find((r) => r.id === activeRunId) ?? null;
 
+  // Keep URL in sync so resume links and refresh stay on the same run.
+  useEffect(() => {
+    if (!activeRunId) return;
+    setSearchParams(
+      (prev) => {
+        if (prev.get('run') === activeRunId) return prev;
+        const next = new URLSearchParams(prev);
+        next.set('run', activeRunId);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [activeRunId, setSearchParams]);
+
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   useEffect(() => setActiveGroupId(null), [activeRunId]);
   const [activeComboId, setActiveComboId] = useState<number | null>(null);
   useEffect(() => setActiveComboId(null), [activeGroupId]);
+
+  const selectRun = useCallback(
+    (id: string) => {
+      setSelectedRunId(id);
+      setActiveGroupId(null);
+      setActiveComboId(null);
+    },
+    [setSelectedRunId],
+  );
 
   // --- run lifecycle (start / delete / prune) ---
   const [startSweep, startState] = useStartGroupedSweepMutation();
@@ -220,7 +255,9 @@ export function GenericSweepView() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
         <h1 className="text-lg font-extrabold text-text">Grouped Sweep</h1>
-        <span className="text-sm text-text-mid">Generic engine</span>
+        <span className="text-sm text-text-mid">
+          Configure → run → promote · Full drill for combo/token inspect
+        </span>
         <Badge variant="primary" className="font-mono">
           {runs.length} runs · {groups.length} groups
         </Badge>
@@ -241,6 +278,43 @@ export function GenericSweepView() {
           </button>
         </div>
       </div>
+
+      {activeRunId && (
+        <nav
+          aria-label="Sweep drill path"
+          className="sticky top-14 z-40 mb-3 flex flex-wrap items-center gap-1.5 rounded-md border border-white/8 bg-bg/90 px-3 py-2 text-[12px] backdrop-blur-md"
+        >
+          <button
+            type="button"
+            className="font-semibold text-primary hover:underline"
+            onClick={() => {
+              setActiveGroupId(null);
+              setActiveComboId(null);
+            }}
+          >
+            Run
+          </button>
+          <span className="text-text-dim">›</span>
+          {activeGroup ? (
+            <button
+              type="button"
+              className="max-w-[28rem] truncate font-medium text-text hover:underline"
+              title={groupBreadcrumb(activeGroup)}
+              onClick={() => setActiveComboId(null)}
+            >
+              {groupBreadcrumb(activeGroup)}
+            </button>
+          ) : (
+            <span className="text-text-dim">pick a group</span>
+          )}
+          {activeComboId !== null && (
+            <>
+              <span className="text-text-dim">›</span>
+              <span className="font-mono text-secondary">combo #{activeComboId}</span>
+            </>
+          )}
+        </nav>
+      )}
 
       <Accordion title="Configure sweep" defaultOpen={runs.length === 0}>
         <div ref={formRef}>
@@ -281,7 +355,7 @@ export function GenericSweepView() {
                     id="generic-sweep-run"
                     className="rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-primary font-mono tabular-nums"
                     value={activeRunId ?? ''}
-                    onChange={(e) => setSelectedRunId(e.target.value)}
+                    onChange={(e) => selectRun(e.target.value)}
                   >
                     {runs.map((r) => (
                       <option key={r.id} value={r.id}>{runPickerLine(r)}</option>
@@ -365,7 +439,7 @@ export function GenericSweepView() {
           )}
 
           {activeGroupId && viewMode === 'full' && (
-            <div className="mt-12">
+            <div className="mt-4">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-bold text-secondary">Combos for group</h3>
                 {activeGroup && (
@@ -518,7 +592,7 @@ function ComboTokenResults({
   );
 
   return (
-    <div className="mt-10">
+    <div className="mt-4">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-bold text-secondary">Tokens for combo #{comboId}</h3>
         <span className="text-xs text-text-dim">
@@ -550,8 +624,16 @@ function ComboTokenResults({
       />
 
       {selectedRow && (
-        <TokenInspectModal target={comboTarget(selectedRow)} onClose={() => setSelected(null)} />
+        <SweepTokenInspectModal target={comboTarget(selectedRow)} onClose={() => setSelected(null)} />
       )}
     </div>
   );
+}
+
+function groupBreadcrumb(g: GroupedSweepGroupRecord): string {
+  const keys = Object.keys(g.group_key);
+  if (keys.length === 0) return 'ALL tokens';
+  return Object.entries(g.group_key)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' · ');
 }

@@ -39,13 +39,17 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 - **Per-mode `App.tsx` + `nav.ts`:** static route table + `NavConfig` (`{identity, items[]}`), no
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
-  `Research & Backtesting` / `LAB`, no toggle. Live money nav is collapsed to
+  `Research & Backtesting` / `LAB`, no toggle.   Live money nav is collapsed to
   **Positions** (`/positions`, redirects from `/live-trading`) · **Wallet** · **Trade**;
   Armed lives under Strategies (`/strategies/armed`, redirects from `/strategies/monitor`).
   Lab flattens single-child groups (Tokens, Trader Analysis are leaf links).
   Metric panes are not a peer nav item — they live in lab Tokens detail
   (`/strategies/metric-panes` redirects to `/tokens?mint=`). The per-app **color** is NOT in the nav config — it's
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
+
+**Operator clarity (jobs):** Wallet = bag overview; Positions = bot inventory;
+Trade = mint-first execute; Armed = waiting/holdings ops. Tokens table stream toggle
+is **STREAM ON/OFF** (not the header trading kill switch).
 
 ## Store — split `createApi` (the isolation seam)
 
@@ -100,20 +104,26 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 ## Pages by mode
 
 - **Shared:** Tokens (live-ingest monitor — `token_created`/`trade_executed` SSE;
-  detail opens in a right **SideDrawer**; advanced filters behind a disclosure;
-  `?mint=` deep-links selection), Profiles, Settings, NotFound.
+  detail panel below the table with scroll-into-view on select; table stream
+  toggle labeled **STREAM ON/OFF** so it is not confused with the header trading
+  kill switch; advanced filters behind a disclosure; `?mint=` deep-links
+  selection), Profiles, Settings, NotFound.
 - **Live (`@live/pages`):** **Home command center** (`home/LiveHomePage` — KPI tiles
   deep-link to Wallet / Positions / Rules; widgets `TopHoldingsWidget`/`LiveTradeFeed`/
-  `StrategyStrip` over `/api/portfolio/{summary,holdings,positions}`), SyncToken,
-  MyWallet (**position manager**), **Positions** (`/positions` — cross-strategy real
-  open positions; Trade deep-link per row), **Armed** (`/strategies/armed`), Trade
-  (`?mint=` preload), Rules/Fingerprints
+  `StrategyStrip` over `/api/portfolio/{summary,holdings,positions}`), SyncToken
+  (`/tokens/sync`, legacy `/token/sync` redirects),
+  MyWallet (**bag overview** — row Buy/Sell + demoted Manual Buy/Sell; Trade desk link),
+  **Positions** (`/positions` — bot inventory / cross-strategy real open positions),
+  **Armed** (`/strategies/armed` — waiting + holdings + never-fired history), Trade
+  (**mint-first execute** desk, `?mint=` preload), Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `useTradeStream`,
   `usePositionNotifications`; `syncTokenSlice`).
-- **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps +
-  running jobs), Creation Stats, Tokens (detail = chart + metric panes via
-  `LabTokenInspect`), **TraderAnalysis**, Rules/Fingerprints/Simulate/Replay, and the
-  generic Grouped Sweep (Simple = configure→promote; Full drill = combo/token inspect;
+- **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
+  deep-linked with `?run=` + running jobs), Creation Stats, Tokens (detail = chart +
+  metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules/Fingerprints/Simulate
+  (sim table demotes live Active/Mode into a muted rule subtitle)/Replay, and the
+  generic Grouped Sweep (sticky Run › Group › Combo breadcrumb; Simple = configure→promote;
+  Full drill = combo/token inspect via `SweepTokenInspectModal` with metric panes;
   `sweep/` + `strategy/` components, `useStreamedSweepResults`, `BackgroundJobsContext`).
   **Metric panes** (lab Tokens detail; old `/strategies/metric-panes` redirects): `LabTokenInspect`
   stacks `TokenTradeChart` above registry-driven `MetricPanes`. Shared wall-clock

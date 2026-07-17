@@ -52,7 +52,11 @@ export function StrategyStrip() {
       ) : (
         <div className="grid grid-cols-3 gap-2">
           {rows.map((r) => (
-            <div key={r.strategy_id} className="rounded-md border border-white/5 bg-white/2 px-2.5 py-1.5">
+            <Link
+              key={r.strategy_id}
+              to="/positions"
+              className="rounded-md border border-white/5 bg-white/2 px-2.5 py-1.5 transition hover:border-primary/35 hover:bg-white/4"
+            >
               <div className="text-[11px] font-semibold text-text">
                 {STRATEGY_LABEL[r.strategy_id] ?? r.strategy_id}
               </div>
@@ -60,7 +64,7 @@ export function StrategyStrip() {
                 <span className="text-primary">{r.open} open</span>
                 <span className="text-text-dim">◎{formatCompact(r.deployedSol, 2)}</span>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}

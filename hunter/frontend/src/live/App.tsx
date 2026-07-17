@@ -53,7 +53,8 @@ export default function App() {
               >
                 <Route index element={<HomePage />} />
                 <Route path="tokens" element={<TokensPage />} />
-                <Route path="token/sync" element={<SyncTokenPage />} />
+                <Route path="tokens/sync" element={<SyncTokenPage />} />
+                <Route path="token/sync" element={<RedirectPreserve to="/tokens/sync" />} />
                 <Route path="strategies/armed" element={<MonitorPage />} />
                 <Route path="strategies/monitor" element={<RedirectPreserve to="/strategies/armed" />} />
                 <Route path="strategies/rules" element={<RulesPage />} />

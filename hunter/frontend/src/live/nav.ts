@@ -13,10 +13,10 @@ export const liveNav: NavConfig = {
     {
       kind: 'group',
       label: 'Tokens',
-      basePath: '/token',
+      basePath: '/tokens',
       items: [
         { to: '/tokens', label: 'All tokens' },
-        { to: '/token/sync', label: 'Sync token' },
+        { to: '/tokens/sync', label: 'Sync token' },
       ],
     },
     {

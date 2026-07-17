@@ -45,7 +45,7 @@ export const ArmedHistoryPanel = memo(function ArmedHistoryPanel({
 
   return (
     <Accordion
-      className="mt-4"
+      className="mt-1"
       padding="sm"
       defaultOpen={false}
       title="Armed · never fired"
