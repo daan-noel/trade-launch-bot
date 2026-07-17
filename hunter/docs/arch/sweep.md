@@ -36,19 +36,17 @@ Decision parity: a strategy's `simulate` calls the same pure fns the live path u
 
 ## Workstation resource fences (lab-only)
 
-Grouped sweep runs hard **inside** a reserved slice of the analysis box so the desktop stays usable. No mid-run throttle.
+Grouped sweep runs hard **inside** a reserved slice of the analysis box so the desktop stays usable. No mid-run throttle. **No env overrides** — values are auto-detected / hardcoded:
 
-| Env | Default when empty | Role |
-| --- | --- | --- |
-| `SWEEP_RAYON_THREADS` | `max(1, cores / 2)` | Preferred rayon pool size; set to `cores − 1` for walk-away max speed |
-| `SWEEP_MEMORY_BUDGET_MB` | 2048 | Fold-accumulator batch sizing only |
-| `SWEEP_ADMISSION_BUDGET_MB` | 4096 | Series-precompute ceiling before host-RAM cap |
-| `SWEEP_RAM_RESERVE_MB` | 4096 | Host RAM left free for OS/UI; effective admission = `min(admission, available − reserve)` |
-| `SWEEP_PER_MINT_CAP` | uncapped (`i64::MAX`) | Last-resort corpus shrink — breaks full-history parity with simulate |
+| Policy | Value |
+| --- | --- |
+| Rayon threads | `max(1, cores / 2)` (e.g. 8 on 16 logical CPUs) |
+| RAM reserve | prefer leaving 4 GB free for OS/UI |
+| Admission ceiling | `min(4 GB cap, available − 4 GB)`; if free RAM is already under 4 GB (common after corpus load on a 16 GB box), use **half of remaining free** instead of a 0-byte budget |
 
-At generic-sweep start the engine estimates `threads × largest_token_series`, **auto-lowers threads** to fit the effective admission budget, and rejects only if even 1 thread overflows. Start log includes cores, preferred/actual threads, RSS, and host total/available MB.
+At generic-sweep start the engine estimates `threads × largest_token_series`, **auto-lowers threads** to fit that ceiling, and rejects only if even 1 thread overflows. Start log includes cores, preferred/actual threads, RSS, and host total/available MB.
 
-**Last-resort corpus/combo shrink knobs** (manual; change *what* is computed, not the machine fence) — use only when admission still fails after thread reduction:
+**Last-resort corpus/combo shrink knobs** (manual UI / rare opt-in; change *what* is computed) — use only when admission still fails after thread reduction:
 
 | Knob | Where | Effect | Fidelity cost |
 | --- | --- | --- | --- |
@@ -57,8 +55,7 @@ At generic-sweep start the engine estimates `threads × largest_token_series`, *
 | `min_tokens` | UI | Drops tiny groups | Fewer groups ranked |
 | `max_combos` / narrower axes / `random:N` / `refine:N:K` | UI | Fewer combos | Less param coverage |
 | `curve_only` | UI | Drops AMM legs | No post-migration path |
-| `SWEEP_PER_MINT_CAP` | env | Caps trades/token | Breaks simulate parity |
-| `SWEEP_MEMORY_BUDGET_MB` | env | Smaller fold batches | More passes (often slower wall-clock) |
+| `SWEEP_PER_MINT_CAP` | optional env (not in `.env.example`) | Caps trades/token | Breaks simulate parity |
 
 ## Persistence + API
 

@@ -102,58 +102,66 @@ pub(crate) fn sweep_memory_budget_bytes() -> u64 {
         .saturating_mul(1024 * 1024) as u64
 }
 
-/// Default ceiling (MB) on the **series precompute** transient a generic sweep may
-/// hold — the peak is `threads × the largest token's sparse series`, which the
-/// admission guard (plan §P4) estimates up front and rejects against rather than
-/// letting a pathological rule×corpus abort mid-run. Deliberately **separate** from
-/// the fold budget above: conflating the two is what caused the earlier false-OOM
-/// regression. The sparse grid bounds a series ∝ trades, so at workstation scale
-/// this is generous headroom — it only trips on a genuinely oversized run. Override
-/// with `SWEEP_ADMISSION_BUDGET_MB`.
+/// Ceiling (MB) on the **series precompute** transient a generic sweep may hold —
+/// the peak is `threads × the largest token's sparse series`. Used as a fallback
+/// when host free RAM cannot be read; otherwise admission is derived from
+/// host available RAM (see [`host_series_ceiling_bytes`]).
 const DEFAULT_SWEEP_ADMISSION_BUDGET_MB: usize = 4096;
 
-/// The generic-sweep precompute admission budget in bytes
-/// (`SWEEP_ADMISSION_BUDGET_MB` or the default), saturating.
-pub(crate) fn sweep_admission_budget_bytes() -> u64 {
-    std::env::var("SWEEP_ADMISSION_BUDGET_MB")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&m| m >= 1)
-        .unwrap_or(DEFAULT_SWEEP_ADMISSION_BUDGET_MB)
-        .saturating_mul(1024 * 1024) as u64
+/// Series-precompute admission fallback budget in bytes (hardcoded constant).
+fn sweep_admission_budget_bytes() -> u64 {
+    (DEFAULT_SWEEP_ADMISSION_BUDGET_MB as u64).saturating_mul(1024 * 1024)
 }
 
-/// Default host RAM (MB) left free for the OS + desktop UI during series-precompute
-/// admission. Override with `SWEEP_RAM_RESERVE_MB`.
-const DEFAULT_SWEEP_RAM_RESERVE_MB: usize = 4096;
+/// Target host RAM (MB) to leave free for the OS + desktop UI after series
+/// precompute. Hardcoded — not an env override.
+const SWEEP_RAM_RESERVE_MB: usize = 4096;
 
-/// Host RAM reserve in bytes (`SWEEP_RAM_RESERVE_MB` or the default).
 fn sweep_ram_reserve_bytes() -> u64 {
-    std::env::var("SWEEP_RAM_RESERVE_MB")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&m| m >= 1)
-        .unwrap_or(DEFAULT_SWEEP_RAM_RESERVE_MB)
-        .saturating_mul(1024 * 1024) as u64
+    (SWEEP_RAM_RESERVE_MB as u64).saturating_mul(1024 * 1024)
 }
 
-/// Effective series-precompute admission ceiling: the configured
-/// `SWEEP_ADMISSION_BUDGET_MB`, further capped by `available_ram − reserve` when
-/// host memory is readable. Returns `(budget_bytes, host_total_mb, host_avail_mb)`.
+/// How much of currently-available host RAM may be used for series precompute.
+///
+/// Prefer `available − reserve`. When the box is already under the reserve
+/// (common on a 16 GB workstation after the corpus is loaded into RSS),
+/// `available − reserve` would be **0** and falsely reject tiny series — so
+/// fall back to half of whatever is still free.
+fn host_series_ceiling_bytes(available: u64, reserve: u64) -> u64 {
+    if available > reserve {
+        available - reserve
+    } else {
+        available / 2
+    }
+}
+
+/// Effective series-precompute admission ceiling from host free RAM:
+/// `min(hardcoded admission cap, host_series_ceiling(available))`. Falls back
+/// to the hardcoded cap alone when host memory is unreadable.
+/// Returns `(budget_bytes, host_total_mb, host_avail_mb)`.
 fn effective_admission_budget_bytes() -> (u64, Option<u64>, Option<u64>) {
-    let configured = sweep_admission_budget_bytes();
+    let fallback = sweep_admission_budget_bytes();
     match crate::sweep::obs::host_memory_bytes() {
         Some((total, available)) => {
             let reserve = sweep_ram_reserve_bytes();
-            let host_ceiling = available.saturating_sub(reserve);
-            let budget = configured.min(host_ceiling);
+            let host_ceiling = host_series_ceiling_bytes(available, reserve);
+            if available <= reserve {
+                tracing::warn!(
+                    host_avail_mb = available / (1024 * 1024),
+                    ram_reserve_mb = reserve / (1024 * 1024),
+                    degraded_ceiling_mb = host_ceiling / (1024 * 1024),
+                    "generic sweep: host free RAM already under desktop reserve — \
+                     using half of remaining free for series admission"
+                );
+            }
+            let budget = fallback.min(host_ceiling);
             (
                 budget,
                 Some(total / (1024 * 1024)),
                 Some(available / (1024 * 1024)),
             )
         }
-        None => (configured, None, None),
+        None => (fallback, None, None),
     }
 }
 
@@ -327,19 +335,10 @@ fn detect_cores() -> usize {
 }
 
 /// Rayon threads for the in-process sweep. `lab` is the **analysis box** — it
-/// runs no ingest/gRPC/trader, so a sweep never co-runs the live trading hot
-/// path. Default is **half the logical cores** so the desktop OS/UI stay
-/// responsive while a sweep runs (e.g. 8 on a 16-core workstation). Override
-/// explicitly with `SWEEP_RAYON_THREADS` for walk-away max throughput (e.g.
-/// `cores − 1`). Always ≥1. Host-RAM admission may still lower the count further.
+/// runs no ingest/gRPC/trader. Uses **half the logical cores** so the desktop
+/// OS/UI stay responsive (e.g. 8 on a 16-core workstation). Always ≥1.
+/// Host-RAM admission may still lower the count further at sweep start.
 fn bounded_threads() -> usize {
-    if let Some(n) = std::env::var("SWEEP_RAYON_THREADS")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&n| n >= 1)
-    {
-        return n;
-    }
     (detect_cores() / 2).max(1)
 }
 
@@ -397,11 +396,10 @@ async fn sweep_generic(
     let preferred_threads = bounded_threads();
     let cores = detect_cores();
 
-    // Admission (plan §P4): the per-token series precompute — not the fold
-    // accumulators — is the sweep's real memory cost. Estimate the worst-case
-    // transient (`threads × the largest token's sparse series`) and either lower
-    // threads to fit or reject up front. Budget = min(configured admission,
-    // available host RAM − reserve) so the desktop stays usable.
+    // Admission: the per-token series precompute — not the fold accumulators —
+    // is the sweep's real memory cost. Estimate worst-case transient
+    // (`threads × largest token series`) and either lower threads to fit or
+    // reject up front. Budget = min(hardcoded cap, available host RAM − reserve).
     let max_series_bytes = corpus
         .tokens
         .iter()
@@ -416,8 +414,8 @@ async fn sweep_generic(
         None => {
             bail!(
                 "estimated series precompute for largest token ({} MB) exceeds the \
-                 {} MB admission budget even at 1 thread — narrow the corpus or axes, \
-                 or raise SWEEP_ADMISSION_BUDGET_MB / lower SWEEP_RAM_RESERVE_MB",
+                 {} MB admission budget even at 1 thread — narrow the corpus or axes \
+                 (token_cap / date range / fewer combos)",
                 mb(max_series_bytes as u64),
                 mb(admission_budget)
             );
@@ -440,7 +438,7 @@ async fn sweep_generic(
         max_token_series_mb = mb(max_series_bytes as u64),
         peak_precompute_mb = mb(peak_bytes),
         budget_mb = mb(admission_budget),
-        configured_admission_mb = mb(sweep_admission_budget_bytes()),
+        admission_cap_mb = mb(sweep_admission_budget_bytes()),
         ram_reserve_mb = mb(sweep_ram_reserve_bytes()),
         host_total_mb,
         host_avail_mb,
@@ -1062,9 +1060,30 @@ mod tests {
 
     #[test]
     fn default_threads_are_half_cores() {
-        // Without SWEEP_RAYON_THREADS, default is cores/2 (floor 1).
-        std::env::remove_var("SWEEP_RAYON_THREADS");
         let cores = detect_cores();
         assert_eq!(bounded_threads(), (cores / 2).max(1));
+    }
+
+    #[test]
+    fn host_series_ceiling_subtracts_reserve_when_room() {
+        let reserve = 4u64 * 1024 * 1024 * 1024;
+        let available = 8u64 * 1024 * 1024 * 1024;
+        assert_eq!(
+            host_series_ceiling_bytes(available, reserve),
+            4u64 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn host_series_ceiling_degrades_not_zero_when_under_reserve() {
+        // The bug: available < reserve → saturating_sub gave 0 and rejected 16 MB.
+        let reserve = 4u64 * 1024 * 1024 * 1024;
+        let available = 2u64 * 1024 * 1024 * 1024;
+        assert_eq!(
+            host_series_ceiling_bytes(available, reserve),
+            1u64 * 1024 * 1024 * 1024
+        );
+        // 16 MB series must still fit at 1 thread under the degraded ceiling.
+        assert!(threads_fitting_admission(8, 16 * 1024 * 1024, available / 2).is_some());
     }
 }
