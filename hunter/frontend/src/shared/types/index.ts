@@ -421,10 +421,14 @@ export interface SweepProgressEvent {
 }
 
 /** Payload of the `sweep_finished` SSE event: the single-flight grouped sweep
- *  for `strategy_id` ended (`cancelled` = user abort vs normal finish/error). */
+ *  for `strategy_id` ended (`cancelled` = user abort vs normal finish/error).
+ *  `error` is set only on a post-admission refusal (e.g. not enough free RAM);
+ *  that path deletes the run row, so this is the client's only signal — it is
+ *  surfaced as a toast instead of leaving the page on a run that vanishes. */
 export interface SweepFinishedEvent {
   strategy_id: string;
   cancelled: boolean;
+  error?: string | null;
 }
 
 /** Payload of the `simulation_finished` SSE event: the backtest for `rule_id`

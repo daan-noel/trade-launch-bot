@@ -35,7 +35,7 @@ use serde_json::Value;
 
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
-use crate::sweep::engine::{combo_batch_size, run_sweep, sweep_progress_passes, sweep_progress_ticks};
+use crate::sweep::engine::{combo_batch_size, run_sweep};
 use crate::sweep::grouping::{group_key, GroupField, GroupKey};
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::{RefineSpec, Strategy, TokenOutcome};
@@ -199,40 +199,22 @@ pub fn run_grouped_sweep<S: Strategy>(
 
     // Phase 2.5: sweep the combo space in budget-sized batches so peak accumulator
     // memory is `threads × batch × ComboAgg`, independent of the total combo count.
-    // The batch is global (same for every group + pass). Progress ticks differ by
-    // path: small groups fold serially (`tokens × n_batches`); large groups go
-    // through `run_sweep`, which may **shard** combos and re-fold every token per
-    // shard — use `sweep_progress_ticks` so the bar's denominator matches the
-    // actual `token_done` count (otherwise processed overruns total mid-run).
+    // The batch is global (same for every group + pass), but it — and how `run_sweep`
+    // shards the combo space — are **memory-timed** decisions the engine re-makes
+    // against live free RAM as it folds. So progress is measured in the one unit that
+    // is invariant to all that chunking: **(token, combo) evaluations**. Every combo
+    // is evaluated against every token exactly once, so the total is simply
+    // `Σ group_tokens × n_combos` regardless of how RAM split it into batches/shards,
+    // and `token_done`'s per-chunk increments always sum back to it (no more predicting
+    // the shard plan up front, which drifted from the real plan and overran the bar).
     let batch = combo_batch_size(params.len(), threads);
-    let n_passes = sweep_progress_passes(params.len(), batch);
     let n_combos = params.len();
-
-    let mut total_work = 0usize;
-    for (_, idx) in &surviving {
-        let n_tok = idx.len();
-        if n_tok == 0 {
-            continue;
-        }
-        if n_tok < large_min {
-            total_work = total_work.saturating_add(n_tok.saturating_mul(n_passes));
-        } else {
-            let max_series = idx
-                .iter()
-                .map(|&i| strategy.token_state_bytes_estimate(&corpus.tokens[i]))
-                .max()
-                .unwrap_or(0);
-            total_work = total_work.saturating_add(sweep_progress_ticks(
-                n_tok, n_combos, batch, max_series,
-            ));
-        }
-    }
-    observer.set_total(total_work);
+    let total_tokens: usize = surviving.iter().map(|(_, idx)| idx.len()).sum();
+    observer.set_total(total_tokens, n_combos);
 
     // Phase 0.3 — RSS at the structural peak (corpus + the partition map resident)
     // and a wall-clock origin for the per-sweep duration, both logged again at done.
     let sweep_started = std::time::Instant::now();
-    let total_tokens: usize = surviving.iter().map(|(_, idx)| idx.len()).sum();
     tracing::info!(
         groups = surviving.len(),
         n_fields = fields.len(),
@@ -240,8 +222,7 @@ pub fn run_grouped_sweep<S: Strategy>(
         combos = n_combos,
         tokens = total_tokens,
         batch,
-        n_passes,
-        progress_ticks = total_work,
+        eval_total = (total_tokens as u64).saturating_mul(n_combos as u64),
         rss_mb = crate::sweep::obs::process_rss_mb(),
         "grouped sweep: partitioned corpus, sweeping each group"
     );
@@ -516,7 +497,9 @@ fn sweep_group_serial<S: Strategy>(
             for (combo_id, o) in outs.iter().enumerate() {
                 aggs[combo_id].record(o);
             }
-            observer.token_done();
+            // Report this fold's evaluations (one token × `chunk` combos); summed over
+            // the group's tokens and batches this equals `group_tokens × n_combos`.
+            observer.token_done(chunk.len());
         }
         metrics.extend(
             aggs.into_iter()

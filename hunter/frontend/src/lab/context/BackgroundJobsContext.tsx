@@ -21,6 +21,7 @@ import {
   getJobsStatus,
 } from 'services/api';
 import { apiSlice } from 'store/apiSlice';
+import { useToast } from 'components/ui/Toast';
 import type { AppDispatch } from '@lab/store';
 import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
 
@@ -140,6 +141,7 @@ const keyOf = (kind: JobKind, id: string) => (kind === 'sweep' ? SWEEP_KEY : id)
 
 export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
   const dispatch = useDispatch<AppDispatch>();
+  const { addToast } = useToast();
   const [jobs, setJobs] = useState<Map<string, BackgroundJob>>(new Map());
   // Rule IDs whose sim progress the mounted strategy page already shows per-row,
   // so the global indicator can hide those (and only those) simulation jobs.
@@ -255,10 +257,14 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         /* ignore malformed frames */
       }
     });
-    const sweepFinished = connectSweepFinished(() => {
+    const sweepFinished = connectSweepFinished((ev) => {
       remove('sweep', SWEEP_KEY);
       // A finished sweep persisted a new run — refresh the runs list app-wide.
       dispatch(apiSlice.util.invalidateTags(['GroupedSweep']));
+      // A post-admission refusal (e.g. free RAM under the desktop reserve)
+      // deletes its run row and reaches the client only here — surface the
+      // reason so the page shows why instead of a run that silently vanishes.
+      if (ev.error) addToast('Sweep refused', ev.error, 'danger');
     });
     const simFinished = connectSimulationFinished((ev) => remove('simulation', ev.rule_id));
     const swingFinished = connectSwingDetectionFinished((ev) => remove('swing', ev.run_id));
@@ -271,7 +277,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       simFinished.close();
       swingFinished.close();
     };
-  }, [upsert, remove, dispatch]);
+  }, [upsert, remove, dispatch, addToast]);
 
   const markStarting = useCallback(
     (kind: JobKind, id: string, label: string) => {

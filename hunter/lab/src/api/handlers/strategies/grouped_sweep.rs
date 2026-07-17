@@ -369,6 +369,10 @@ async fn run_grouped_sweep_job(
         progress: Arc<crate::state::job_progress::ProgressCell>,
         sse_tx: tokio::sync::broadcast::Sender<crate::models::ingest::SseEvent>,
         strategy_id: String,
+        // Set by the post-admission error path before it returns; the run row is
+        // deleted there, so carrying the reason on the terminal frame is the
+        // client's only signal (else a refused run reads as a frozen page).
+        error: Option<String>,
     }
     impl Drop for Gate {
         fn drop(&mut self) {
@@ -377,15 +381,17 @@ async fn run_grouped_sweep_job(
             let _ = self.sse_tx.send(crate::models::ingest::SseEvent::SweepFinished {
                 strategy_id: self.strategy_id.clone(),
                 cancelled: self.cancel.load(Ordering::Acquire),
+                error: self.error.take(),
             });
         }
     }
-    let _gate = Gate {
+    let mut gate = Gate {
         running: state.sweep_running.clone(),
         cancel: state.sweep_cancel.clone(),
         progress: state.sweep_progress.clone(),
         sse_tx: state.sse_tx.clone(),
         strategy_id: b.strategy_id.clone(),
+        error: None,
     };
 
     // Clear any stale cancel request + progress snapshot from a prior run before
@@ -815,12 +821,16 @@ async fn run_grouped_sweep_job(
                 // refresh on the `SweepFinished` SSE frame.
                 return;
             }
-            // Config errors (bad axes / over-cap grid) fail before any group
+            // Config errors (bad axes / over-cap grid) and post-admission
+            // refusals (e.g. the RAM-admission guard) fail before any group
             // folds, leaving an empty placeholder run — drop it so it doesn't
             // litter the picker as a 0-group cancelled run. (The client briefly
             // navigated to this now-deleted run; the runs-list refresh on
-            // `SweepFinished` drops it back to the newest surviving run.)
+            // `SweepFinished` drops it back to the newest surviving run.) The
+            // reason rides the terminal frame so the client shows a toast rather
+            // than sitting on a run that silently vanishes.
             tracing::error!("grouped sweep failed: {e}");
+            gate.error = Some(e.to_string());
             if let Err(del) = repo.delete_run(run_id).await {
                 tracing::error!("grouped sweep: cleanup of failed run failed: {del}");
             }

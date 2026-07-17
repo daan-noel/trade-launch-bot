@@ -230,12 +230,15 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
         SseEvent::SweepFinished {
             strategy_id,
             cancelled,
+            error,
         } => {
             // Not mint-scoped: terminal signal for the single-flight sweep.
+            // `error` is `null` on a normal finish/cancel; a string on a
+            // post-admission refusal the client surfaces as a toast.
             (
                 None,
                 "sweep_finished",
-                json!({ "strategy_id": strategy_id, "cancelled": cancelled }),
+                json!({ "strategy_id": strategy_id, "cancelled": cancelled, "error": error }),
             )
         }
         SseEvent::SimulationFinished { rule_id, cancelled } => {

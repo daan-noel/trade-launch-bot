@@ -48,8 +48,8 @@ pub const SWEEP_DEFAULT_BUY_AMOUNT_SOL: f64 = 1.0;
 /// Minimal no-op observer for single-combo re-simulation (no progress to report).
 struct Noop;
 impl SweepObserver for Noop {
-    fn set_total(&self, _: usize) {}
-    fn token_done(&self) {}
+    fn set_total(&self, _total_tokens: usize, _combos_per_token: usize) {}
+    fn token_done(&self, _combos_folded: usize) {}
     fn cancelled(&self) -> bool { false }
 }
 
@@ -430,8 +430,8 @@ fn bounded_threads() -> usize {
 #[allow(clippy::too_many_arguments)]
 async fn sweep_generic(
     axes_json: Value,
-    mut method: SweepMethod,
-    mut refine: Option<RefineSpec>,
+    method: SweepMethod,
+    refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
     width: f64,
@@ -451,28 +451,18 @@ async fn sweep_generic(
         .context("invalid generic axes request")?;
     let model = AxesModel::resolve(&req).map_err(|e| anyhow!("axes: {e}"))?;
 
-    // Grid guard: reject an explosive full grid before doing any sweep work.
+    // Grid guard: reject an explosive full grid before doing any sweep work. A full
+    // grid runs exactly as chosen (capped by `cap` = the caller's Max combos/group);
+    // we do NOT silently swap it for a coarse LHS + refine. That auto-convert only
+    // ever triggered when the caller had explicitly raised `max_combos` ≥ 200k (the
+    // default 100k cap can't reach the threshold), i.e. it overrode an explicit choice
+    // every time — so it's gone. A caller who wants coarse+refine asks for it via
+    // `refine:N:K`; one whose grid is too big for RAM is refused by admission below
+    // with actionable guidance.
     if matches!(method, SweepMethod::Grid) {
         let n = model.combo_count();
         if n > cap {
             bail!("grid has {n} combos, over the {cap} cap — narrow the axes, raise max_combos, or use random:N");
-        }
-        // Smarter search: huge grids without an explicit refine → coarse LHS + refine.
-        if refine.is_none()
-            && n != usize::MAX
-            && n >= crate::sweep::shard::AUTO_REFINE_GRID_COMBOS
-        {
-            let coarse = crate::sweep::shard::AUTO_REFINE_COARSE_N.min(cap);
-            tracing::warn!(
-                grid_combos = n,
-                coarse,
-                "generic sweep: auto-converting huge grid to lhs:{coarse} + refine \
-                 (use refine:N:K explicitly, or random:N, to choose coverage yourself)"
-            );
-            method = SweepMethod::LatinHypercube { n: coarse, seed: 42 };
-            refine = Some(RefineSpec {
-                top_k: RefineSpec::DEFAULT_TOP_K,
-            });
         }
     }
 

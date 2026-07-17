@@ -131,10 +131,15 @@ pub enum SseEvent {
     /// Terminal frame for the grouped sweep: the single-flight run for
     /// `strategy_id` has ended (`cancelled` distinguishes a user abort from a
     /// normal finish/error). Lets a global progress indicator clear itself
-    /// without polling. Not mint-scoped — always delivered.
+    /// without polling. Not mint-scoped — always delivered. `error` carries the
+    /// reason when the run failed *after* admission (e.g. a RAM-admission
+    /// refusal) — that path deletes the run row, so this frame is the client's
+    /// only signal, and it surfaces the string as a toast instead of a frozen
+    /// page. `None` on a normal finish or a user cancel.
     SweepFinished {
         strategy_id: String,
         cancelled: bool,
+        error: Option<String>,
     },
     /// Terminal frame for a rule simulation (backtest): the run for `rule_id` has
     /// ended. The per-rule analogue of [`SseEvent::SweepFinished`]. Not

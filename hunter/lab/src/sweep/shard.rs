@@ -77,13 +77,6 @@ pub fn max_parallel_shards(
     by_ram.min(threads.max(1)).min(4).max(1)
 }
 
-/// Threshold above which a full `Grid` without refine is auto-converted to
-/// coarse LHS + refine (smarter search — same coverage intent, far less RAM).
-pub const AUTO_REFINE_GRID_COMBOS: usize = 200_000;
-
-/// Coarse draw count used when auto-refining a huge grid.
-pub const AUTO_REFINE_COARSE_N: usize = 50_000;
-
 #[cfg(test)]
 mod tests {
     use super::*;

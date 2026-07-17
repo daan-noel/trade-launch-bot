@@ -25,6 +25,7 @@ export function LiveModeControl() {
         state={liveMode ? 'live' : 'dead'}
         label={liveMode ? 'Helius / LIVE' : 'Helius / DEAD'}
         onClick={toggleLive}
+        className={liveMode ? 'animate-pulse' : undefined}
       />
     </>
   );
