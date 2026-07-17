@@ -512,9 +512,25 @@ async fn sweep_generic(
         }
     };
     let wave = series_wave_size(max_series_bytes, threads);
-    let series_peak = (wave as u64).saturating_mul(max_series_bytes as u64);
+    // Series peak = `threads × one token's series`. The cross-group Phase-2 driver
+    // runs one small group per worker, each building→folding→dropping a single
+    // `MetricSeries` at a time (grouped_engine::sweep_group_serial), so `threads`
+    // series are resident at the pool's peak; Phase-1's wave (≤ threads) fits the
+    // same envelope. (`wave == threads` here, but model it on `threads` directly so
+    // the guard stays honest if the wave sizing changes.) Pre-fix this path cached a
+    // whole group's series per worker — ~4·threads² resident — which this estimate
+    // never modeled and which OOM'd 16 GB boxes.
+    let series_peak = (threads as u64).saturating_mul(max_series_bytes as u64);
+    // Fold buffers (ComboAgg + in-flight TokenOutcome) are resident once PER WORKER
+    // under the cross-group `par_iter` (and per parallel shard in Phase 1), not once
+    // globally — so multiply the per-worker fold footprint at the actual batch by
+    // `threads`. `planned` (≥ the realised sample) keeps this a conservative upper
+    // bound on `batch`, hence on the footprint.
+    let admit_batch = crate::sweep::engine::combo_batch_size(planned, threads);
+    let fold_peak =
+        (threads as u64).saturating_mul(crate::sweep::engine::fold_footprint_bytes(admit_batch, threads));
     let shard_peak = crate::sweep::shard::max_combos_per_shard(wave, max_series_bytes).min(planned);
-    admit_generic_combo_side(shard_peak, series_peak, fold_budget)?;
+    admit_generic_combo_side(shard_peak, series_peak, fold_peak)?;
 
     if threads < preferred_threads || wave < threads {
         tracing::warn!(
@@ -538,6 +554,7 @@ async fn sweep_generic(
         peak_precompute_mb = mb(series_peak),
         budget_mb = mb(admission_budget),
         fold_budget_mb = mb(fold_budget),
+        fold_peak_mb = mb(fold_peak),
         admission_cap_mb = mb(sweep_admission_budget_bytes()),
         ram_reserve_mb = mb(sweep_ram_reserve_bytes()),
         host_total_mb,
@@ -555,11 +572,12 @@ async fn sweep_generic(
         tracing::warn!(combos = params.len(), cap, "grouped sweep: clamping sampled combos to cap");
         params.truncate(cap);
     }
-    // Re-check shard peak against realised sample size.
+    // Re-check shard peak against realised sample size. `fold_peak` was estimated at
+    // `planned` (≥ the realised sample), so it stays a valid conservative bound here.
     let realised_shard = crate::sweep::shard::max_combos_per_shard(wave, max_series_bytes)
         .min(params.len());
     if realised_shard != shard_peak {
-        admit_generic_combo_side(realised_shard, series_peak, fold_budget)?;
+        admit_generic_combo_side(realised_shard, series_peak, fold_peak)?;
     }
 
     let (combo_count, groups) = tokio::task::spawn_blocking(

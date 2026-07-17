@@ -463,6 +463,18 @@ fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
 /// `threads × batch × ComboAgg`. Combo ids stay global (`offset + local`), and each
 /// token is folded once per batch (the `tokens × n_batches` progress total accounts
 /// for it).
+///
+/// **Series is built → folded → dropped per token** — never a whole-group cache.
+/// Each token's `TokenState` (the generic engine's heavy `MetricSeries`) lives only
+/// for its own fold, so this fn holds **one** series at a time and the cross-group
+/// `par_iter` peaks at `threads × one series` (mirrors the large path's bounded
+/// wave). The old code cached every token's series to group-end (`group_tokens ×
+/// series`), so with `threads` groups in flight the pool held ~`4·threads²` series
+/// at once — the RAM blow-up that OOM'd 16 GB boxes on the redesigned engine (with
+/// the legacy `()` state the cache was free, so it was safe before). In the common
+/// single-batch case each series is still built exactly once (the outer loop runs
+/// once); only a multi-batch group rebuilds per batch — the same CPU-for-RAM trade
+/// the large path's pass-outer branch already makes.
 fn sweep_group_serial<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
@@ -475,26 +487,25 @@ fn sweep_group_serial<S: Strategy>(
 
     let n_combos = params.len();
     let batch = batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::hard_max_combo_batch()));
-    // Cache TokenState per group token so series is built once across combo passes.
-    let mut states: Vec<Option<S::TokenState>> = (0..idx.len()).map(|_| None).collect();
     let mut metrics: Vec<ComboMetrics> = Vec::with_capacity(n_combos);
     for (b, chunk) in params.chunks(batch).enumerate() {
         let offset = b * batch;
         let bound: Vec<S::BoundParams> = chunk.iter().map(|p| strategy.bind_param(p)).collect();
         let mut aggs = vec![ComboAgg::default(); chunk.len()];
         let mut outs: Vec<TokenOutcome> = Vec::with_capacity(chunk.len());
-        for (local, &ti) in idx.iter().enumerate() {
+        for &ti in idx.iter() {
             if observer.cancelled() {
                 bail!("sweep cancelled");
             }
-            let state = states[local]
-                .get_or_insert_with(|| strategy.prepare_token(&corpus.tokens[ti]));
+            // Build the token's series for this fold only; it is dropped at the end
+            // of the iteration, so peak resident series is one per worker.
+            let state = strategy.prepare_token(&corpus.tokens[ti]);
             if fill_outcomes_with_state(
                 strategy,
                 chunk,
                 &bound,
                 &corpus.tokens[ti],
-                state,
+                &state,
                 observer,
                 &mut outs,
             )
