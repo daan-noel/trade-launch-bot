@@ -29,7 +29,10 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
-use crate::metrics::evaluator::{Condition, Operator};
+use crate::metrics::evaluator::{
+    check_expr_satisfiable, condition_expr_to_value, normalize_condition_expr,
+    parse_condition_expr, ConditionExpr,
+};
 use crate::metrics::{group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, REGISTRY};
 
 /// Typed, registry-checked `params`. See module docs for the JSON shape.
@@ -50,14 +53,15 @@ pub struct RuleParams {
 pub struct SideConditions(pub BTreeMap<MetricGroupId, GroupConditions>);
 
 /// One group's authored content: strict params beside per-metric condition
-/// lists (all conditions AND together — across metrics and groups too).
+/// exprs (DNF: OR of AND-arms within a metric; across metrics/groups the side
+/// combinator is entry-AND / exit-OR — see `arm.rs`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GroupConditions {
     /// Strict (non-condition) params, e.g. `window_size_sec` — names validated
     /// against the group's registry entry.
     pub strict: BTreeMap<String, f64>,
-    /// `{operator, value}` lists per metric of this group.
-    pub metrics: BTreeMap<MetricId, Vec<Condition>>,
+    /// DNF condition arms per metric of this group.
+    pub metrics: BTreeMap<MetricId, ConditionExpr>,
 }
 
 impl GroupConditions {
@@ -181,14 +185,18 @@ fn parse_opt_side(v: Option<&Value>, side_name: &str) -> Result<Option<SideCondi
                         })?;
                         group.strict.insert(key.clone(), n);
                     } else if let Some(m) = spec.metric_by_name(key) {
-                        let conds: Vec<Condition> =
-                            serde_json::from_value(val.clone()).map_err(|e| {
-                                format!(
-                                    "{side_name}.{group_name}.{key}: invalid condition list \
-                                     (expect [{{\"operator\": \">\", \"value\": 10}}, ...]): {e}"
-                                )
-                            })?;
-                        group.metrics.insert(m.id, conds);
+                        let arms = parse_condition_expr(val).map_err(|e| {
+                            format!(
+                                "{side_name}.{group_name}.{key}: invalid condition list \
+                                 (expect [{{\"operator\": \">\", \"value\": 10}}, ...] \
+                                 or nested OR arms): {e}"
+                            )
+                        })?;
+                        // Same metric, different ops: AND if feasible, else OR.
+                        group.metrics.insert(
+                            m.id,
+                            normalize_condition_expr(arms, m.eq_tolerance),
+                        );
                     } else {
                         // Better message when the metric exists in another group.
                         let owner = REGISTRY
@@ -243,23 +251,31 @@ fn validate_group(
             spec.name
         ));
     }
-    for (metric_id, conds) in &group.metrics {
+    for (metric_id, arms) in &group.metrics {
         let m = metric_spec(*metric_id);
-        if conds.is_empty() {
+        if arms.is_empty() {
             return Err(format!(
                 "{side_name}.{}.{}: empty condition list",
                 spec.name, m.name
             ));
         }
-        for c in conds {
-            if !c.value.is_finite() {
+        for (ai, arm) in arms.iter().enumerate() {
+            if arm.is_empty() {
                 return Err(format!(
-                    "{side_name}.{}.{}: condition value must be finite",
+                    "{side_name}.{}.{}: empty OR arm {ai}",
                     spec.name, m.name
                 ));
             }
+            for c in arm {
+                if !c.value.is_finite() {
+                    return Err(format!(
+                        "{side_name}.{}.{}: condition value must be finite",
+                        spec.name, m.name
+                    ));
+                }
+            }
         }
-        check_satisfiable(conds, m.eq_tolerance).map_err(|why| {
+        check_expr_satisfiable(arms, m.eq_tolerance).map_err(|why| {
             format!(
                 "{side_name}.{}.{}: contradictory conditions ({why})",
                 spec.name, m.name
@@ -269,54 +285,6 @@ fn validate_group(
     Ok(())
 }
 
-/// Reject condition sets no value can ever satisfy (e.g. `> 30` AND `< 10`,
-/// or `= 20` AND `!= 20`). Conditions AND together, so the feasible set is an
-/// interval intersection; `=`/`!=` contribute their `±tol/2` bands.
-fn check_satisfiable(conds: &[Condition], tol: f64) -> Result<(), String> {
-    let half = tol / 2.0;
-    // Feasible interval [lo, hi] with strict-bound flags.
-    let (mut lo, mut lo_strict) = (f64::NEG_INFINITY, false);
-    let (mut hi, mut hi_strict) = (f64::INFINITY, false);
-    let mut ne_bands: Vec<(f64, f64)> = Vec::new();
-    for c in conds {
-        match c.operator {
-            Operator::Gt => raise_lo(&mut lo, &mut lo_strict, c.value, true),
-            Operator::Gte => raise_lo(&mut lo, &mut lo_strict, c.value, false),
-            Operator::Lt => drop_hi(&mut hi, &mut hi_strict, c.value, true),
-            Operator::Lte => drop_hi(&mut hi, &mut hi_strict, c.value, false),
-            Operator::Eq => {
-                raise_lo(&mut lo, &mut lo_strict, c.value - half, false);
-                drop_hi(&mut hi, &mut hi_strict, c.value + half, false);
-            }
-            Operator::Ne => ne_bands.push((c.value - half, c.value + half)),
-        }
-    }
-    if lo > hi || (lo == hi && (lo_strict || hi_strict)) {
-        return Err(format!("bounds cross: feasible range is empty around {lo}"));
-    }
-    // A != band that swallows the whole (bounded) feasible interval kills it.
-    for (b_lo, b_hi) in ne_bands {
-        if lo.is_finite() && hi.is_finite() && b_lo <= lo && hi <= b_hi {
-            return Err(format!("'!=' band [{b_lo}, {b_hi}] covers the feasible range"));
-        }
-    }
-    Ok(())
-}
-
-fn raise_lo(lo: &mut f64, lo_strict: &mut bool, v: f64, strict: bool) {
-    if v > *lo || (v == *lo && strict) {
-        *lo = v;
-        *lo_strict = strict;
-    }
-}
-
-fn drop_hi(hi: &mut f64, hi_strict: &mut bool, v: f64, strict: bool) {
-    if v < *hi || (v == *hi && strict) {
-        *hi = v;
-        *hi_strict = strict;
-    }
-}
-
 fn side_to_value(side: &SideConditions) -> Value {
     let mut groups = Map::new();
     for (group_id, group) in &side.0 {
@@ -324,10 +292,10 @@ fn side_to_value(side: &SideConditions) -> Value {
         for (name, v) in &group.strict {
             obj.insert(name.clone(), (*v).into());
         }
-        for (metric_id, conds) in &group.metrics {
+        for (metric_id, arms) in &group.metrics {
             obj.insert(
                 metric_spec(*metric_id).name.to_string(),
-                serde_json::to_value(conds).expect("Condition serializes"),
+                condition_expr_to_value(arms),
             );
         }
         groups.insert(group_spec(*group_id).name.to_string(), Value::Object(obj));
@@ -338,6 +306,7 @@ fn side_to_value(side: &SideConditions) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::evaluator::{Condition, Operator};
     use serde_json::json;
 
     /// The canonical params example from the design docs
@@ -382,7 +351,7 @@ mod tests {
         assert_eq!(tw.strict_param("window_size_sec"), Some(10.0));
         assert_eq!(
             tw.metrics[&MetricId::GrossFlow],
-            vec![Condition { operator: Operator::Eq, value: 15.0 }]
+            vec![vec![Condition { operator: Operator::Eq, value: 15.0 }]]
         );
         // Full round-trip: to_value → parse → identical struct.
         let reparsed = RuleParams::parse(&parsed.to_value()).unwrap();
@@ -461,23 +430,31 @@ mod tests {
     }
 
     #[test]
-    fn contradictory_pairs_rejected() {
-        // > 30 AND < 10 — the plan's canonical impossible entry.
-        let e = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
+    fn same_metric_unsat_and_normalizes_to_or() {
+        // Flat `< 30, >= 70` (legacy AND) → OR arms, promotable / savable.
+        let p = RuleParams::parse(&json!({"exit": {"m_snapshot": {"liquidity": [
+            {"operator": "<", "value": 30},
+            {"operator": ">=", "value": 70}
+        ]}}}))
+        .unwrap();
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics
+            [&MetricId::Liquidity];
+        assert_eq!(arms.len(), 2);
+
+        // Crossed time bounds similarly become OR (not rejected).
+        let p = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
             {"operator": ">", "value": 30},
             {"operator": "<", "value": 10}
         ]}}}))
-        .unwrap_err();
-        assert!(e.contains("contradictory"), "{e}");
+        .unwrap();
+        assert_eq!(
+            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time].len(),
+            2
+        );
+    }
 
-        // = 20 AND != 20 — the != band covers the whole = band.
-        let e = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
-            {"operator": "=", "value": 20},
-            {"operator": "!=", "value": 20}
-        ]}}}))
-        .unwrap_err();
-        assert!(e.contains("contradictory"), "{e}");
-
+    #[test]
+    fn same_metric_feasible_and_stays_and() {
         // > 10 AND >= 10 AND < 30 is fine (redundant, not contradictory).
         assert!(RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
             {"operator": ">", "value": 10},
@@ -486,20 +463,35 @@ mod tests {
         ]}}}))
         .is_ok());
 
-        // Touching bounds with a strict side: > 10 AND <= 10 is empty.
-        let e = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
-            {"operator": ">", "value": 10},
-            {"operator": "<=", "value": 10}
-        ]}}}))
-        .unwrap_err();
-        assert!(e.contains("contradictory"), "{e}");
-
-        // >= 10 AND <= 10 is the single point 10 — satisfiable.
-        assert!(RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
+        // >= 10 AND <= 10 is the single point 10 — satisfiable AND.
+        let p = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
             {"operator": ">=", "value": 10},
             {"operator": "<=", "value": 10}
         ]}}}))
+        .unwrap();
+        assert_eq!(
+            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time].len(),
+            1
+        );
+
+        // Explicit nested OR arms left as authored.
+        assert!(RuleParams::parse(&json!({"exit": {"m_snapshot": {"liquidity": [
+            [{"operator": "<", "value": 30}],
+            [{"operator": ">=", "value": 70}]
+        ]}}}))
         .is_ok());
+    }
+
+    #[test]
+    fn multi_arm_all_unsat_still_rejected() {
+        // Explicit `|` of two unsatisfiable AND arms — normalize does not expand
+        // multi-arm exprs, so the whole metric stays contradictory.
+        let e = RuleParams::parse(&json!({"entry": {"m_snapshot": {"time": [
+            [{"operator": ">", "value": 30}, {"operator": "<", "value": 10}],
+            [{"operator": ">", "value": 50}, {"operator": "<", "value": 20}]
+        ]}}}))
+        .unwrap_err();
+        assert!(e.contains("contradictory"), "{e}");
     }
 
     #[test]
@@ -520,9 +512,13 @@ mod tests {
     fn non_finite_condition_value_rejected() {
         // JSON can't carry NaN/inf, so exercise validate() directly.
         let mut group = GroupConditions::default();
-        group
-            .metrics
-            .insert(MetricId::Time, vec![Condition { operator: Operator::Gt, value: f64::NAN }]);
+        group.metrics.insert(
+            MetricId::Time,
+            vec![vec![Condition {
+                operator: Operator::Gt,
+                value: f64::NAN,
+            }]],
+        );
         let mut side = SideConditions::default();
         side.0.insert(MetricGroupId::Snapshot, group);
         let p = RuleParams { take_profit: None, stop_loss: None, entry: Some(side), exit: None };

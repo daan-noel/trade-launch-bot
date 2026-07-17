@@ -1,24 +1,29 @@
 // `RuleParams` — the TS mirror of the backend `hunter_engine::rule_params::RuleParams`
 // (the typed form of `strategy_rules.params` JSONB). The wire JSON mixes a group's
-// **strict params** (e.g. `window_size_sec`) with its **metric condition lists** at
+// **strict params** (e.g. `window_size_sec`) with its **metric condition exprs** at
 // the same level inside each `entry`/`exit` group object, so JSON⇄form conversion
 // is registry-guided (the registry says which keys are strict params vs metrics).
 //
-// This is the one generic serializer that replaces the deleted per-strategy
-// `lib/params` spec/blob engine (FE plan §1).
+// Metric conditions are DNF (`Condition[][]`): `,` AND within an arm, `|` OR across
+// arms. Wire JSON is flat for a single arm (legacy) and nested for multi-arm.
 
-import type { Condition } from './grammar';
+import {
+  conditionExprFromJson,
+  conditionExprToJson,
+  normalizeConditionExpr,
+  type ConditionExpr,
+} from './grammar';
 import type { StrategyRegistry } from './registry';
 
 /** Editor-friendly form of one side's (entry/exit) groups, keyed by group name. */
 export type SideConditions = Record<string, GroupConditions>;
 
-/** One group's authored content: strict params beside per-metric condition lists. */
+/** One group's authored content: strict params beside per-metric condition exprs. */
 export interface GroupConditions {
   /** Strict params by name, e.g. `{ window_size_sec: 10 }`. */
   strict: Record<string, number>;
-  /** `{operator, value}` lists per metric name. */
-  metrics: Record<string, Condition[]>;
+  /** DNF condition arms per metric name. */
+  metrics: Record<string, ConditionExpr>;
 }
 
 /** The whole rule `params` object in form shape. */
@@ -57,9 +62,9 @@ function sideToJson(side: SideConditions | undefined): Record<string, unknown> |
   for (const [groupName, group] of Object.entries(side)) {
     const g: Record<string, unknown> = {};
     let hasMetric = false;
-    for (const [metric, conds] of Object.entries(group.metrics)) {
-      if (conds.length > 0) {
-        g[metric] = conds;
+    for (const [metric, arms] of Object.entries(group.metrics)) {
+      if (arms.length > 0) {
+        g[metric] = conditionExprToJson(arms);
         hasMetric = true;
       }
     }
@@ -103,7 +108,11 @@ function sideFromJson(
       if (spec?.strict_params.some((sp) => sp.name === key)) {
         if (typeof val === 'number') group.strict[key] = val;
       } else if (Array.isArray(val)) {
-        group.metrics[key] = val as Condition[];
+        const arms = conditionExprFromJson(val);
+        if (arms) {
+          const tol = spec?.metrics.find((m) => m.name === key)?.eq_tolerance ?? 0;
+          group.metrics[key] = normalizeConditionExpr(arms, tol);
+        }
       }
     }
     side[groupName] = group;

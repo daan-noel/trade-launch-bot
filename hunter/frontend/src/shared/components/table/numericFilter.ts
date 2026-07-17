@@ -60,15 +60,13 @@ export function parseFilterSpec(text: string): FilterSpec | null {
   return null;
 }
 
-// ── Compound comma-AND grammar (strategy conditions + client filtering) ───────
+// ── Compound condition grammar (strategy conditions + client filtering) ───────
 //
-// The rule-condition grammar (plan §2): comma = AND, so `">10, <=30"` is two
-// ANDed comparisons and `"1..10"` is `>=1 AND <=10`. This is the shared SSOT the
-// strategy `lib/strategy/grammar` wraps and DataTable client-side filtering can
-// adopt. Unlike {@link parseFilterSpec}, this is **strict**: a fragment that
-// isn't a recognized comparison/range makes the whole parse fail (`null`) — there
-// is no `contains` fallback, so a malformed rule fragment surfaces as an error
-// instead of silently matching nothing.
+// The rule-condition grammar (plan §2): `,` = AND, `|` = OR (DNF: OR of AND
+// arms). `">10, <=30"` is one AND arm; `"<30 | >=70"` is two OR arms; `"1..10"`
+// expands to `>=1 AND <=10` inside one arm. Shared SSOT the strategy
+// `lib/strategy/grammar` wraps. Unlike {@link parseFilterSpec}, this is **strict**:
+// a malformed fragment fails the whole parse (`null`) — no `contains` fallback.
 
 /** The comparison operators of the condition grammar (JSON-wire form, matching
  *  the backend `hunter_engine::metrics::evaluator::Operator` renames). */
@@ -80,23 +78,21 @@ export interface Comparison {
   value: number;
 }
 
+/** DNF: OR of AND-arms. `[[a,b],[c]]` ⇔ `(a ∧ b) ∨ c`. Empty `[]` = unconstrained. */
+export type ComparisonExpr = Comparison[][];
+
 // Same numeric shapes as CMP_RE/RANGE_RE but keeping the operator token verbatim
 // (`==` normalized to `=` below) so the parsed list round-trips to the wire form.
 const COMPARE_RE = /^(>=|<=|==|!=|>|<|=)\s*(-?\d+(?:\.\d+)?)$/;
 
-/**
- * Parse a compound comma-AND condition string into a list of {@link Comparison}s.
- * `">10, <=30"` → `[{'>',10},{'<=',30}]`; `"1..10"` → `[{'>=',1},{'<=',10}]`;
- * `""` (or whitespace) → `[]` (unconstrained). Returns `null` if ANY fragment is
- * malformed (strict — no substring fallback), so callers can flag the input.
- */
-export function parseConditionList(text: string): Comparison[] | null {
+/** Parse one AND arm (`", "`-joined fragments). Empty/trailing comma → `null`. */
+function parseAndArm(text: string): Comparison[] | null {
   const trimmed = text.trim();
-  if (trimmed === '') return [];
+  if (trimmed === '') return null; // empty OR arm is malformed
   const out: Comparison[] = [];
   for (const rawFrag of trimmed.split(',')) {
     const frag = rawFrag.trim();
-    if (frag === '') return null; // empty/trailing-comma fragment is malformed
+    if (frag === '') return null;
     const range = RANGE_RE.exec(frag);
     if (range) {
       let lo = parseFloat(range[1]);
@@ -113,32 +109,51 @@ export function parseConditionList(text: string): Comparison[] | null {
   return out;
 }
 
-/** Inverse of {@link parseConditionList}: canonical `"op value, op value"` text
- *  (single-spaced, comma-joined). Order = list order — a save may reorder vs the
- *  raw text the user typed (documented in the input hint). */
-export function formatConditionList(list: Comparison[]): string {
-  return list.map((c) => `${c.op} ${c.value}`).join(', ');
+/**
+ * Parse a compound condition string into DNF arms.
+ * `">10, <=30"` → `[[{'>',10},{'<=',30}]]`; `"<30 | >=70"` → `[[{'<',30}],[{'>=',70}]]`;
+ * `"1..10"` → `[[{'>=',1},{'<=',10}]]`; `""` → `[]` (unconstrained).
+ * Returns `null` if any arm/fragment is malformed (strict).
+ */
+export function parseConditionList(text: string): ComparisonExpr | null {
+  const trimmed = text.trim();
+  if (trimmed === '') return [];
+  const arms: ComparisonExpr = [];
+  for (const rawArm of trimmed.split('|')) {
+    const arm = parseAndArm(rawArm);
+    if (!arm) return null;
+    arms.push(arm);
+  }
+  return arms;
 }
 
-/** A client-side predicate for a compound condition list (all AND). */
-export function conditionListPredicate(list: Comparison[]): (n: number) => boolean {
+/** Inverse of {@link parseConditionList}: canonical `"op value, op value | …"` text. */
+export function formatConditionList(arms: ComparisonExpr): string {
+  return arms.map((arm) => arm.map((c) => `${c.op} ${c.value}`).join(', ')).join(' | ');
+}
+
+/** Client-side predicate for a DNF condition expr (any arm all-true). Empty ⇒ true. */
+export function conditionListPredicate(arms: ComparisonExpr): (n: number) => boolean {
   return (n) =>
-    list.every((c) => {
-      switch (c.op) {
-        case '>':
-          return n > c.value;
-        case '>=':
-          return n >= c.value;
-        case '<':
-          return n < c.value;
-        case '<=':
-          return n <= c.value;
-        case '=':
-          return n === c.value;
-        case '!=':
-          return n !== c.value;
-      }
-    });
+    arms.length === 0 ||
+    arms.some((arm) =>
+      arm.every((c) => {
+        switch (c.op) {
+          case '>':
+            return n > c.value;
+          case '>=':
+            return n >= c.value;
+          case '<':
+            return n < c.value;
+          case '<=':
+            return n <= c.value;
+          case '=':
+            return n === c.value;
+          case '!=':
+            return n !== c.value;
+        }
+      }),
+    );
 }
 
 /**

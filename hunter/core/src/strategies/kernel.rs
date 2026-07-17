@@ -41,7 +41,7 @@ pub enum ExitCode {
     /// **closed** loss in the rollup. See [`crate::strategies::death`].
     Dead = 9,
     /// The generic engine's single metric-condition exit (`ExitReason::Metrics`):
-    /// all of a rule's exit metric conditions became true. Collapses the legacy
+    /// any of a rule's exit metric conditions became true. Collapses the legacy
     /// ladder's granular metric exits (trailing / stall / time / liquidity /
     /// next-kill) into one bucket — the redesigned engine has no per-metric exit
     /// codes, only "an exit condition group fired". Only the generic sweep/replay

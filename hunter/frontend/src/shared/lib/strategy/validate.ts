@@ -4,7 +4,7 @@
 // problems inline instead of round-tripping to the server. The backend remains
 // the authority; this is a fast-feedback pre-check.
 
-import type { Condition } from './grammar';
+import { normalizeConditionExpr, type Condition, type ConditionExpr } from './grammar';
 import type { RuleParams, SideConditions, GroupConditions } from './ruleParams';
 import { findGroup, findMetric, type StrategyRegistry } from './registry';
 
@@ -51,33 +51,48 @@ function validateSide(
         errors.push(`${side}.${groupName}.${name} must be a finite number > 0`);
       }
     }
-    for (const [metric, list] of Object.entries(group.metrics)) {
-      if (list.length === 0) continue;
+    for (const [metric, arms] of Object.entries(group.metrics)) {
+      if (arms.length === 0) continue;
       const m = findMetric(reg, groupName, metric);
       if (!m) {
         errors.push(`${side}.${groupName}: unknown metric '${metric}'`);
         continue;
       }
-      if (list.some((c) => !Number.isFinite(c.value))) {
+      // Same metric, different ops: validate the normalized form (AND→OR when needed).
+      const normalized = normalizeConditionExpr(arms, m.eq_tolerance);
+      if (normalized.some((arm) => arm.length === 0 || arm.some((c) => !Number.isFinite(c.value)))) {
         errors.push(`${side}.${groupName}.${metric}: condition value must be finite`);
         continue;
       }
-      const why = unsatisfiableReason(list, m.eq_tolerance);
+      const why = unsatisfiableReason(normalized, m.eq_tolerance);
       if (why) errors.push(`${side}.${groupName}.${metric}: contradictory conditions (${why})`);
     }
   }
 }
 
 function groupHasConstraint(group: GroupConditions): boolean {
-  return Object.values(group.metrics).some((list) => list.length > 0);
+  return Object.values(group.metrics).some((arms) => arms.length > 0);
 }
 
 /**
- * Port of the backend `check_satisfiable`: conditions AND together, so the
- * feasible set is an interval intersection; `=`/`!=` contribute `±tol/2` bands.
- * Returns a reason string when no value can satisfy the set, else `null`.
+ * Port of the backend `check_satisfiable` over DNF: an expr is unsatisfiable
+ * only when every OR arm is. Within an arm, conditions AND (interval
+ * intersection); `=`/`!=` contribute `±tol/2` bands.
  */
-export function unsatisfiableReason(conds: Condition[], tol: number): string | null {
+export function unsatisfiableReason(arms: ConditionExpr, tol: number): string | null {
+  if (arms.length === 0) return null;
+  const reasons: string[] = [];
+  for (const arm of arms) {
+    const why = armUnsatisfiableReason(arm, tol);
+    if (!why) return null; // at least one arm is feasible
+    reasons.push(why);
+  }
+  return reasons[0] ?? 'all OR arms unsatisfiable';
+}
+
+export { normalizeConditionExpr } from './grammar';
+
+function armUnsatisfiableReason(conds: Condition[], tol: number): string | null {
   const half = tol / 2;
   let lo = -Infinity;
   let loStrict = false;

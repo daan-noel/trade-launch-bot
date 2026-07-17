@@ -69,17 +69,20 @@ user-chosen operators instead of operators hardcoded in Rust `check_*` fns.
    `entry`/`exit`, each holding metric groups; groups hold strict params
    (e.g. `window_size_sec`) beside per-metric `{operator, value}` lists
    (shape: `Bot/docs/strategy-redesign-answer-1.md`).
-4. **Operators**: `>` `>=` `<` `<=` `=` `!=`. Within one metric, its condition list
-   **AND**s (forms ranges, e.g. `10 < stall < 30`). Across metrics the combinator is
-   **side-dependent**: **entry ANDs** (all metrics must confirm before committing
-   capital); **exit ORs** (any one satisfied metric fires the sell — asymmetric, and
-   consistent with TP/SL/dead, which already OR alongside the metric exit). `=` is
-   bucket-equality using the **metric's own default tolerance** declared in its metric
-   file (time/stall 0.5 s, trail 1 %, SOL metrics 0.1 SOL) — deliberately independent of
-   the fingerprint's `bucket_size_amount`. Absent group/metric/TP/SL = unconstrained.
+4. **Operators**: `>` `>=` `<` `<=` `=` `!=`. Within one metric, conditions form
+   **DNF**: `,` **AND**s inside an arm (ranges, e.g. `10 < stall < 30`); `|` **OR**s
+   across arms (e.g. `liquidity < 30 | liquidity >= 70`). A single AND arm that is
+   unsatisfiable (same metric, crossed ops — `< 30, >= 70`) is **normalized to OR**
+   at parse/input (sweep assemble, rule save, condition editor) so every metric
+   input path treats same-field multi-op logically. Across *different* metrics the
+   combinator is **side-dependent**: **entry ANDs**; **exit ORs** (any one satisfied
+   metric fires the sell — asymmetric with TP/SL/dead). `=` is bucket-equality using
+   the **metric's own default tolerance** declared in its metric file (time/stall
+   0.5 s, trail 1 %, SOL metrics 0.1 SOL) — deliberately independent of the
+   fingerprint's `bucket_size_amount`. Absent group/metric/TP/SL = unconstrained.
 5. **Lifecycle**: armed per **(token, rule)**. Evaluation on **every trade AND every
    500 ms clock tick** (tick sized to ~400 ms slot latency; entry and exit both fire on
-   ticks). Exit = TP hit `OR` SL hit `OR` all exit metrics true. Disarm on dead-token
+   ticks). Exit = TP hit `OR` SL hit `OR` any exit metric true. Disarm on dead-token
    verdict, migration, or **derived unsatisfiability** (entry upper bound on a monotonic
    metric permanently crossed, e.g. `time < 30` at 30 s). After exit a token is **done
    forever for that rule**; concurrent positions across rules are allowed. (Both have
@@ -184,7 +187,7 @@ user-chosen operators instead of operators hardcoded in Rust `check_*` fns.
       │
       │◄─────────────── every trade  AND  every 500ms tick ──────────────┐
       ▼                                                                  │
- exit check:  TP hit   OR   SL hit   OR   ALL exit metrics true ── no ───┘
+ exit check:  TP hit   OR   SL hit   OR   any exit metric true ── no ───┘
       │ yes
       ▼
  EXIT ──▶ CLOSED ──▶ token done forever for this rule*
@@ -406,7 +409,7 @@ pub struct RuleParams {
 pub struct SideConditions(pub BTreeMap<MetricGroupId, GroupConditions>);
 pub struct GroupConditions {
     pub strict: GroupParams,               // e.g. window_size_sec — validated per group
-    pub metrics: BTreeMap<MetricId, Vec<Condition>>,
+    pub metrics: BTreeMap<MetricId, ConditionExpr>, // DNF: Vec<Vec<Condition>>
 }
 pub struct Condition { pub operator: Operator, pub value: f64 }
 pub enum Operator { Gt, Gte, Lt, Lte, Eq, Ne }   // ">" ">=" "<" "<=" "=" "!="

@@ -1,7 +1,7 @@
 import { Input } from 'components/ui/Input';
 import { cn } from 'lib/cn';
 import { ConditionInput } from './ConditionInput';
-import type { Condition } from 'lib/strategy/grammar';
+import type { ConditionExpr } from 'lib/strategy/grammar';
 import type { SideConditions, GroupConditions } from 'lib/strategy/ruleParams';
 import type { StrategyRegistry, MetricUnit } from 'lib/strategy/registry';
 
@@ -30,7 +30,7 @@ export function ConditionSideEditor({
 }: ConditionSideEditorProps) {
   const group = (name: string): GroupConditions => value[name] ?? { strict: {}, metrics: {} };
 
-  const setMetric = (groupName: string, metric: string, conds: Condition[]) => {
+  const setMetric = (groupName: string, metric: string, conds: ConditionExpr) => {
     const g = group(groupName);
     onChange({ ...value, [groupName]: { ...g, metrics: { ...g.metrics, [metric]: conds } } });
   };
@@ -86,6 +86,7 @@ export function ConditionSideEditor({
                     value={g.metrics[m.name] ?? []}
                     onChange={(conds) => setMetric(gspec.name, m.name, conds)}
                     unit={m.unit as MetricUnit}
+                    eqTolerance={m.eq_tolerance}
                     disabled={disabled}
                   />
                 </div>

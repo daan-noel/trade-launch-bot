@@ -1,9 +1,9 @@
 // Helpers for the lab metric-pane overlay: extract which metrics/windows a rule
-// uses, evaluate conditions the same way the engine does (AND + `=` bucket
-// tolerance), and find first entry/exit fire indices for chart markers.
+// uses, evaluate conditions the same way the engine does (DNF: OR of AND arms +
+// `=` bucket tolerance), and find first entry/exit fire indices for chart markers.
 
 import type { ChartEventMarker } from 'components/token-price-chart';
-import type { Condition } from './grammar';
+import type { Condition, ConditionExpr } from './grammar';
 import type { RuleParams, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { MetricSeriesColumn, MetricSeriesResponse, StrategyRule } from './types';
@@ -45,8 +45,8 @@ export function extractRuleMetricPrefs(
           ? group.strict.window_size_sec
           : null;
       if (w != null) windows.add(w);
-      for (const [metric, conds] of Object.entries(group.metrics)) {
-        if (!conds?.length) continue;
+      for (const [metric, arms] of Object.entries(group.metrics)) {
+        if (!arms?.length) continue;
         metrics.add(metric);
         const key = metricColKey(metric, kind === 'dynamic' ? w : null);
         if (!paneKeys.includes(key)) paneKeys.push(key);
@@ -83,13 +83,14 @@ export function evalMetricCondition(cond: Condition, value: number, eqTolerance:
   }
 }
 
-/** All conditions on a metric AND together (empty ⇒ true). */
+/** DNF: any OR arm whose conditions all hold (empty arms ⇒ true). */
 export function evalMetricConditions(
-  conds: Condition[],
+  arms: ConditionExpr,
   value: number,
   eqTolerance: number,
 ): boolean {
-  return conds.every((c) => evalMetricCondition(c, value, eqTolerance));
+  if (arms.length === 0) return true;
+  return arms.some((arm) => arm.every((c) => evalMetricCondition(c, value, eqTolerance)));
 }
 
 function seriesLookup(series: MetricSeriesColumn[]): Map<string, MetricSeriesColumn> {
@@ -98,31 +99,62 @@ function seriesLookup(series: MetricSeriesColumn[]): Map<string, MetricSeriesCol
   return map;
 }
 
-function sidePassesAt(
+/** Collect authored (group, metric, arms) rows for one side. */
+function sideMetricRows(
   side: SideConditions | undefined,
-  idx: number,
-  byKey: Map<string, MetricSeriesColumn>,
   registry: StrategyRegistry | undefined,
-): boolean {
-  if (!side) return true;
-  const groups = Object.entries(side);
-  if (groups.length === 0) return true;
-  for (const [groupName, group] of groups) {
+): Array<{ groupName: string; metric: string; arms: ConditionExpr; dynamic: boolean; window: number | null }> {
+  if (!side) return [];
+  const out: Array<{
+    groupName: string;
+    metric: string;
+    arms: ConditionExpr;
+    dynamic: boolean;
+    window: number | null;
+  }> = [];
+  for (const [groupName, group] of Object.entries(side)) {
     const gSpec = registry?.groups.find((g) => g.name === groupName);
     const w =
       typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
         ? group.strict.window_size_sec
         : null;
-    const metricEntries = Object.entries(group.metrics).filter(([, c]) => c?.length);
-    if (metricEntries.length === 0) continue;
-    for (const [metric, conds] of metricEntries) {
-      const col = byKey.get(metricColKey(metric, gSpec?.kind === 'dynamic' ? w : null));
-      const value = col?.values[idx];
-      const tol = gSpec?.metrics.find((m) => m.name === metric)?.eq_tolerance ?? 0;
-      if (value == null || !evalMetricConditions(conds, value, tol)) return false;
+    for (const [metric, arms] of Object.entries(group.metrics)) {
+      if (!arms?.length) continue;
+      out.push({
+        groupName,
+        metric,
+        arms,
+        dynamic: gSpec?.kind === 'dynamic',
+        window: w,
+      });
     }
   }
-  return true;
+  return out;
+}
+
+/**
+ * Side combinator mirrors the engine (`arm.rs`): entry ANDs across metrics;
+ * exit ORs (any one satisfied metric fires). Within a metric, DNF still applies.
+ */
+function sidePassesAt(
+  side: SideConditions | undefined,
+  idx: number,
+  byKey: Map<string, MetricSeriesColumn>,
+  registry: StrategyRegistry | undefined,
+  combinator: 'and' | 'or',
+): boolean {
+  const rows = sideMetricRows(side, registry);
+  // Callers only invoke when the side has at least one metric; empty ⇒ vacuous
+  // entry-true / exit-false matching the engine.
+  if (rows.length === 0) return combinator === 'and';
+  const pred = (row: (typeof rows)[number]): boolean => {
+    const gSpec = registry?.groups.find((g) => g.name === row.groupName);
+    const col = byKey.get(metricColKey(row.metric, row.dynamic ? row.window : null));
+    const value = col?.values[idx];
+    const tol = gSpec?.metrics.find((m) => m.name === row.metric)?.eq_tolerance ?? 0;
+    return value != null && evalMetricConditions(row.arms, value, tol);
+  };
+  return combinator === 'and' ? rows.every(pred) : rows.some(pred);
 }
 
 /** Per-metric pass/fail at one series index (for the crosshair readout). */
@@ -144,8 +176,8 @@ export function metricConditionStatesAt(
         typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
           ? group.strict.window_size_sec
           : null;
-      for (const [metric, conds] of Object.entries(group.metrics)) {
-        if (!conds?.length) continue;
+      for (const [metric, arms] of Object.entries(group.metrics)) {
+        if (!arms?.length) continue;
         const col = byKey.get(metricColKey(metric, gSpec?.kind === 'dynamic' ? w : null));
         const value = col?.values[idx] ?? null;
         const tol = gSpec?.metrics.find((m) => m.name === metric)?.eq_tolerance ?? 0;
@@ -153,7 +185,7 @@ export function metricConditionStatesAt(
           side: sideName,
           metric,
           value,
-          ok: value != null && evalMetricConditions(conds, value, tol),
+          ok: value != null && evalMetricConditions(arms, value, tol),
         });
       }
     }
@@ -180,7 +212,7 @@ export function findRuleFireMarkers(
   let entryIdx: number | null = null;
   if (hasEntry) {
     for (let i = 0; i < n; i++) {
-      if (sidePassesAt(params.entry, i, byKey, registry)) {
+      if (sidePassesAt(params.entry, i, byKey, registry, 'and')) {
         entryIdx = i;
         break;
       }
@@ -191,7 +223,7 @@ export function findRuleFireMarkers(
   if (hasExit) {
     const start = entryIdx != null ? entryIdx + 1 : 0;
     for (let i = start; i < n; i++) {
-      if (sidePassesAt(params.exit, i, byKey, registry)) {
+      if (sidePassesAt(params.exit, i, byKey, registry, 'or')) {
         exitIdx = i;
         break;
       }

@@ -7,12 +7,7 @@ import { cn } from 'lib/cn';
 import { formatDecimalTrim } from 'utils/format';
 import { findMetric, useStrategyRegistry, type Operator } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
-
-/** One `{operator, value}` condition (the wire shape). */
-interface Cond {
-  operator: string;
-  value: number;
-}
+import { conditionExprFromJson } from 'lib/strategy/grammar';
 
 /** Nested `params` blob as stored on `strategy_rules.params` / sweep combos. */
 interface RuleParamsJson {
@@ -27,6 +22,8 @@ interface SideChip {
   metric: string;
   operator: string;
   text: string;
+  /** When true, render a `|` separator before this chip (OR between arms). */
+  orBefore?: boolean;
 }
 
 function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
@@ -43,23 +40,29 @@ function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   );
 }
 
-/** Terse chips for one side's metric conditions, e.g. `time>10`, `net_flow(10s)>5`. */
+/** Terse chips for one side's metric conditions, e.g. `time>10`, `liquidity<30 | liquidity>=70`. */
 function sideChips(side: Record<string, Record<string, unknown>> | undefined): SideChip[] {
   if (!side) return [];
   const out: SideChip[] = [];
   for (const [group, body] of Object.entries(side)) {
     const window = typeof body.window_size_sec === 'number' ? body.window_size_sec : null;
     const suffix = window != null ? `(${window}s)` : '';
-    for (const [metric, conds] of Object.entries(body)) {
-      if (metric === 'window_size_sec' || !Array.isArray(conds)) continue;
-      for (const c of conds as Cond[]) {
-        if (typeof c?.operator !== 'string' || typeof c?.value !== 'number') continue;
-        out.push({
-          group,
-          metric,
-          operator: c.operator,
-          text: `${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`,
-        });
+    for (const [metric, raw] of Object.entries(body)) {
+      if (metric === 'window_size_sec' || !Array.isArray(raw)) continue;
+      const arms = conditionExprFromJson(raw);
+      if (!arms) continue;
+      for (let ai = 0; ai < arms.length; ai++) {
+        const arm = arms[ai];
+        for (let ci = 0; ci < arm.length; ci++) {
+          const c = arm[ci];
+          out.push({
+            group,
+            metric,
+            operator: c.operator,
+            text: `${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`,
+            orBefore: ai > 0 && ci === 0,
+          });
+        }
       }
     }
   }
@@ -91,11 +94,20 @@ function MetricCondChip({ chip: c }: { chip: SideChip }) {
     metric: c.metric,
     operator: c.operator as Operator,
   });
-  return chip(c.text, undefined, {
-    borderColor: tint.border,
-    backgroundColor: tint.background,
-    color: tint.color,
-  });
+  return (
+    <>
+      {c.orBefore && (
+        <span className="font-mono text-[10px] text-text-dim/70" aria-hidden>
+          |
+        </span>
+      )}
+      {chip(c.text, undefined, {
+        borderColor: tint.border,
+        backgroundColor: tint.background,
+        color: tint.color,
+      })}
+    </>
+  );
 }
 
 /** Preserve first-seen group order; chips within a group stay contiguous. */
@@ -173,8 +185,14 @@ export function ruleParamsSearchText(raw: unknown): string {
   const parts: string[] = [];
   if (take_profit != null) parts.push(`TP ${formatDecimalTrim(take_profit, 1)}%`);
   if (stop_loss != null) parts.push(`SL ${formatDecimalTrim(stop_loss, 1)}%`);
-  for (const c of entry) parts.push(`in ${c.text}`);
-  for (const c of exit) parts.push(`out ${c.text}`);
+  for (const c of entry) {
+    if (c.orBefore) parts.push('|');
+    parts.push(`in ${c.text}`);
+  }
+  for (const c of exit) {
+    if (c.orBefore) parts.push('|');
+    parts.push(`out ${c.text}`);
+  }
   if (parts.length === 0) return 'fingerprint only';
   return parts.join(' ');
 }

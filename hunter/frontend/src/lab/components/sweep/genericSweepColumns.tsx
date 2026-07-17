@@ -167,7 +167,7 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
     count('n_exit_take_profit', 'TP', 'text-green', (r) => r.n_exit_take_profit, { tooltip: 'Exited on take-profit' }),
     count('n_exit_stop_loss', 'SL', 'text-red', (r) => r.n_exit_stop_loss, { tooltip: 'Exited on stop-loss' }),
     count('n_exit_metrics', 'Metrics', 'text-text-mid', (r) => r.n_exit_metrics ?? 0, {
-      tooltip: 'Exited because all exit metric conditions became true',
+      tooltip: 'Exited because any exit metric condition became true',
     }),
     count('n_exit_dead', 'Dead', 'text-red', (r) => r.n_exit_dead, {
       tooltip: 'Analysis death-close: token died silent, booked at the last meaningful trade',

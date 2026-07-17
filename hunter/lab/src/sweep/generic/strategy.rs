@@ -509,9 +509,11 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
         let mut found = false;
         for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()) {
             if req.metric == metric {
-                for c in &req.conds {
-                    max = max.max(c.value);
-                    found = true;
+                for arm in &req.conds {
+                    for c in arm {
+                        max = max.max(c.value);
+                        found = true;
+                    }
                 }
             }
         }
@@ -593,10 +595,10 @@ fn reqs_any_satisfied(
 }
 
 fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usize], row: usize) -> bool {
-    c.mono_bounds
+    c.mono_kills
         .iter()
         .zip(mono_cols)
-        .any(|(mb, &col)| mb.crossed(value_at_col(series, col, row)))
+        .any(|(k, &col)| k.permanently_false(value_at_col(series, col, row)))
 }
 
 /// Walk the series to the entry decision, mirroring the armed-side `decide_arm`:
@@ -609,7 +611,7 @@ pub(crate) fn resolve_entry(series: &MetricSeries, c: &CompiledRule) -> EntryRes
     // Resolve each requirement's flat column index once, not per row.
     let entry_cols = resolve_cols(series, &c.entry_reqs);
     let mono_cols: Vec<usize> =
-        c.mono_bounds.iter().map(|mb| col_idx_of(series, mb.metric, mb.window)).collect();
+        c.mono_kills.iter().map(|k| col_idx_of(series, k.metric, k.window)).collect();
     let enter_on_arm = c.enter_on_arm();
     for i in 0..n {
         if series.dead[i] {

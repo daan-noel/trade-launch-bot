@@ -4,7 +4,7 @@
 //! `PendingFirstSlot → Armed → EntryPending → Entered → ExitPending → End/…` with
 //! `Disarmed`/`Done` terminals. [`CompiledRule`] is a [`LoadedRule`] pre-chewed at
 //! `RulesReloaded` into exactly what the hot path needs — a flat list of metric
-//! reads per side and the derived monotonic bounds that let a hopeless entry
+//! reads per side and the derived monotonic kills that let a hopeless entry
 //! disarm itself (plan §2.2, §3.2) — so no JSON/param walking ever happens per
 //! event.
 
@@ -14,25 +14,25 @@ use crate::event::{
     DisarmReason, ExitReason, IntentId, LoadedRule, PositionId, RuleId, TradeMode,
 };
 use crate::fingerprint::FingerprintId;
-use crate::metrics::evaluator::{eval, Condition, Operator};
+use crate::metrics::evaluator::{eval, Condition, ConditionExpr, Operator};
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{group_spec, metric_spec, MetricId, MetricKind, Ts};
 
 /// One metric read a rule side needs: the metric, the window it lives in (dynamic
-/// metrics only), its `=`-tolerance, and the condition list to AND. Precomputed so
+/// metrics only), its `=`-tolerance, and the DNF condition arms. Precomputed so
 /// evaluation is a flat loop of `track.value(..)` + `eval(..)` reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricReq {
     pub metric: MetricId,
     pub window: Option<f64>,
     pub tolerance: f64,
-    pub conds: Vec<Condition>,
+    /// DNF: OR of AND-arms.
+    pub conds: ConditionExpr,
 }
 
-/// A derived monotonic upper bound from an **entry** condition: because a monotonic
-/// metric (only `time` today) never decreases, once its value crosses this
-/// threshold the condition can never re-satisfy — so the whole entry (all
-/// conditions AND) is permanently unsatisfiable and the arm disarms.
+/// A derived monotonic upper bound from an **entry** condition arm: because a
+/// monotonic metric (only `time` today) never decreases, once its value crosses
+/// this threshold the arm can never re-satisfy.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MonoBound {
     pub metric: MetricId,
@@ -45,8 +45,8 @@ pub struct MonoBound {
 
 impl MonoBound {
     /// True once a monotonic metric's `value` has crossed this derived entry
-    /// upper bound (so the entry can never again be satisfied). Non-finite ⇒ not
-    /// crossed. Public so the sweep scan can replicate the fold's derived-disarm.
+    /// upper bound. Non-finite ⇒ not crossed. Public so the sweep scan can
+    /// replicate the fold's derived-disarm.
     pub fn crossed(self, value: f64) -> bool {
         if !value.is_finite() {
             return false;
@@ -59,9 +59,68 @@ impl MonoBound {
     }
 }
 
+/// Per entry-metric derived mono-kill (OR of arms). The metric req is permanently
+/// false only when **every** OR arm is dead; an arm with no upper mono bound
+/// (`None`) never dies from a rising clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonoMetricKill {
+    pub metric: MetricId,
+    pub window: Option<f64>,
+    /// Per OR arm: killing upper bound, or `None` if the arm never dies.
+    pub arms: SmallVec<[Option<MonoBound>; 2]>,
+}
+
+impl MonoMetricKill {
+    /// True when every OR arm is permanently unsatisfiable at `value`.
+    pub fn permanently_false(&self, value: f64) -> bool {
+        !self.arms.is_empty()
+            && self.arms.iter().all(|arm| match arm {
+                None => false,
+                Some(b) => b.crossed(value),
+            })
+    }
+}
+
+/// Tightest mono upper bound in one AND arm, if any.
+fn arm_mono_upper(
+    arm: &[Condition],
+    half_tol: f64,
+    metric: MetricId,
+    window: Option<f64>,
+) -> Option<MonoBound> {
+    let mut best: Option<(f64, bool)> = None;
+    for c in arm {
+        let bound = match c.operator {
+            Operator::Lt => Some((c.value, true)),
+            Operator::Lte => Some((c.value, false)),
+            Operator::Eq => Some((c.value + half_tol, false)),
+            Operator::Gt | Operator::Gte | Operator::Ne => None,
+        };
+        if let Some((th, ge)) = bound {
+            best = Some(match best {
+                None => (th, ge),
+                Some((bth, bge)) => {
+                    // Prefer the bound that crosses first on a rising metric.
+                    if th < bth || (th == bth && ge && !bge) {
+                        (th, ge)
+                    } else {
+                        (bth, bge)
+                    }
+                }
+            });
+        }
+    }
+    best.map(|(threshold, cross_at_ge)| MonoBound {
+        metric,
+        window,
+        threshold,
+        cross_at_ge,
+    })
+}
+
 /// A [`LoadedRule`] pre-chewed for the hot path. Metric reads are flattened, the
 /// distinct windows are listed for [`TokenTrack::ensure_window`], and the entry
-/// monotonic bounds are precomputed for derived-unsatisfiability disarm.
+/// monotonic kills are precomputed for derived-unsatisfiability disarm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledRule {
     pub id: RuleId,
@@ -79,8 +138,8 @@ pub struct CompiledRule {
     pub exit_reqs: Vec<MetricReq>,
     /// Distinct `window_size_sec` values this rule reads (both sides).
     pub windows: SmallVec<[f64; 2]>,
-    /// Entry monotonic upper bounds (for derived-unsatisfiability disarm).
-    pub mono_bounds: SmallVec<[MonoBound; 2]>,
+    /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
+    pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
 }
 
 impl CompiledRule {
@@ -101,30 +160,28 @@ impl CompiledRule {
             }
         }
 
-        // Monotonic entry bounds — every upper bound any entry condition places on a
-        // monotonic metric. Crossing any one makes the AND-ed entry hopeless.
-        let mut mono_bounds: SmallVec<[MonoBound; 2]> = SmallVec::new();
+        // Monotonic entry kills — per metric, OR of arm upper bounds.
+        let mut mono_kills: SmallVec<[MonoMetricKill; 2]> = SmallVec::new();
         for r in &entry_reqs {
             if !metric_spec(r.metric).monotonic {
                 continue;
             }
             let half = r.tolerance / 2.0;
-            for c in &r.conds {
-                let bound = match c.operator {
-                    Operator::Lt => Some((c.value, true)),
-                    Operator::Lte => Some((c.value, false)),
-                    // `= v` holds only up to v + tol/2; past that a rising metric is done.
-                    Operator::Eq => Some((c.value + half, false)),
-                    Operator::Gt | Operator::Gte | Operator::Ne => None,
-                };
-                if let Some((threshold, cross_at_ge)) = bound {
-                    mono_bounds.push(MonoBound {
-                        metric: r.metric,
-                        window: r.window,
-                        threshold,
-                        cross_at_ge,
-                    });
+            let mut arms: SmallVec<[Option<MonoBound>; 2]> = SmallVec::new();
+            let mut any_bound = false;
+            for arm in &r.conds {
+                let bound = arm_mono_upper(arm, half, r.metric, r.window);
+                if bound.is_some() {
+                    any_bound = true;
                 }
+                arms.push(bound);
+            }
+            if any_bound {
+                mono_kills.push(MonoMetricKill {
+                    metric: r.metric,
+                    window: r.window,
+                    arms,
+                });
             }
         }
 
@@ -140,7 +197,7 @@ impl CompiledRule {
             entry_reqs,
             exit_reqs,
             windows,
-            mono_bounds,
+            mono_kills,
         }
     }
 
@@ -163,17 +220,19 @@ impl CompiledRule {
     /// Whether the exit fires at `now`. Exit metrics **OR** across metrics (any one
     /// authored reason to bail fires the sell) — asymmetric with entry's AND, and
     /// consistent with TP/SL/dead, which already OR alongside this. Within a single
-    /// metric its condition list still ANDs (so a range like `10 < stall < 30` stays
-    /// one unit). `false` when the rule authored no exit metrics — the caller falls
-    /// back to TP/SL/dead only.
+    /// metric its condition expr is DNF (`,` AND / `|` OR). `false` when the rule
+    /// authored no exit metrics — the caller falls back to TP/SL/dead only.
     pub fn exit_metrics_satisfied(&self, track: &TokenTrack, now: Ts) -> bool {
         self.has_exit_metrics() && reqs_any_satisfied(&self.exit_reqs, track, now)
     }
 
-    /// Whether a monotonic entry bound is permanently crossed at `now` — the entry
-    /// can never re-satisfy, so the arm should disarm ([`DisarmReason::Unsatisfiable`]).
+    /// Whether a monotonic entry metric is permanently unsatisfiable at `now` —
+    /// the entry can never re-satisfy, so the arm should disarm
+    /// ([`DisarmReason::Unsatisfiable`]).
     pub fn entry_unsatisfiable(&self, track: &TokenTrack, now: Ts) -> bool {
-        self.mono_bounds.iter().any(|b| b.crossed(track.value(b.metric, b.window, now)))
+        self.mono_kills
+            .iter()
+            .any(|k| k.permanently_false(track.value(k.metric, k.window, now)))
     }
 }
 
@@ -184,8 +243,7 @@ fn reqs_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
 }
 
 /// OR across metric reads in `reqs` at `now` (the **exit** combinator — any one
-/// satisfied metric fires). Empty ⇒ `false` (no reason to exit). A single metric's
-/// own condition list still ANDs inside `eval`.
+/// satisfied metric fires). Empty ⇒ `false` (no reason to exit).
 fn reqs_any_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
     reqs.iter().any(|r| eval(&r.conds, track.value(r.metric, r.window, now), r.tolerance))
 }
@@ -269,12 +327,11 @@ mod tests {
         let c = CompiledRule::compile(&rule(json!({ "take_profit": 100 })));
         assert!(c.enter_on_arm());
         assert!(c.entry_reqs.is_empty());
-        assert!(c.mono_bounds.is_empty());
+        assert!(c.mono_kills.is_empty());
     }
 
     #[test]
     fn windows_deduped_across_sides() {
-        // Both sides read the same 10 s window → one distinct window.
         let c = CompiledRule::compile(&rule(json!({
             "entry": { "m_time_window": { "window_size_sec": 10, "buy": [{"operator": ">", "value": 1}] } },
             "exit":  { "m_time_window": { "window_size_sec": 10, "sell": [{"operator": ">", "value": 1}] } }
@@ -283,36 +340,66 @@ mod tests {
     }
 
     #[test]
-    fn time_upper_bound_becomes_mono_bound() {
-        // entry time < 30 → a monotonic bound crossed at value >= 30.
+    fn time_upper_bound_becomes_mono_kill() {
         let c = CompiledRule::compile(&rule(json!({
             "entry": { "m_snapshot": { "time": [{"operator": "<", "value": 30}] } }
         })));
-        assert_eq!(c.mono_bounds.len(), 1);
-        let b = c.mono_bounds[0];
-        assert_eq!(b.metric, MetricId::Time);
+        assert_eq!(c.mono_kills.len(), 1);
+        let k = &c.mono_kills[0];
+        assert_eq!(k.metric, MetricId::Time);
+        assert_eq!(k.arms.len(), 1);
+        let b = k.arms[0].unwrap();
         assert_eq!(b.threshold, 30.0);
         assert!(b.cross_at_ge);
-        assert!(!b.crossed(29.9));
-        assert!(b.crossed(30.0));
+        assert!(!k.permanently_false(29.9));
+        assert!(k.permanently_false(30.0));
+    }
+
+    #[test]
+    fn or_with_open_arm_never_mono_kills() {
+        // `time < 30 | time >= 70` — after 30 the first arm dies but the second lives.
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": { "m_snapshot": { "time": [
+                [{"operator": "<", "value": 30}],
+                [{"operator": ">=", "value": 70}]
+            ] } }
+        })));
+        assert_eq!(c.mono_kills.len(), 1);
+        let k = &c.mono_kills[0];
+        assert_eq!(k.arms.len(), 2);
+        assert!(k.arms[0].is_some());
+        assert!(k.arms[1].is_none());
+        assert!(!k.permanently_false(30.0));
+        assert!(!k.permanently_false(100.0));
+    }
+
+    #[test]
+    fn or_of_two_upper_bounds_kills_when_both_crossed() {
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": { "m_snapshot": { "time": [
+                [{"operator": "<", "value": 30}],
+                [{"operator": "<", "value": 50}]
+            ] } }
+        })));
+        let k = &c.mono_kills[0];
+        assert!(!k.permanently_false(40.0)); // arm2 still live
+        assert!(k.permanently_false(50.0));
     }
 
     #[test]
     fn lower_bound_on_monotonic_metric_is_not_a_mono_bound() {
-        // `time > 10` never becomes unsatisfiable on a rising clock.
         let c = CompiledRule::compile(&rule(json!({
             "entry": { "m_snapshot": { "time": [{"operator": ">", "value": 10}] } }
         })));
-        assert!(c.mono_bounds.is_empty());
+        assert!(c.mono_kills.is_empty());
     }
 
     #[test]
     fn non_monotonic_metric_never_produces_a_mono_bound() {
-        // liquidity has an upper bound here but is not monotonic → no derived disarm.
         let c = CompiledRule::compile(&rule(json!({
             "entry": { "m_snapshot": { "liquidity": [{"operator": "<", "value": 5}] } }
         })));
-        assert!(c.mono_bounds.is_empty());
+        assert!(c.mono_kills.is_empty());
     }
 
     #[test]
@@ -320,9 +407,6 @@ mod tests {
         use crate::metrics::{Side, TradeLite};
         use chrono::{Duration, TimeZone, Utc};
 
-        // Two independently-driven m_snapshot metrics on both sides: `time`
-        // (seconds since creation, set by `now`) and `liquidity` (last trade's
-        // reserves). Same conditions on entry and exit so only the combinator differs.
         let conds = json!({
             "m_snapshot": {
                 "time":      [{"operator": ">", "value": 1000}],
@@ -334,17 +418,13 @@ mod tests {
         })));
 
         let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
-        let now = created + Duration::seconds(10); // time = 10 (fails `> 1000`)
+        let now = created + Duration::seconds(10);
         let mut track = TokenTrack::new(created);
-        // Fold a trade with high reserves → liquidity = 2000 (satisfies `> 999`).
         track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 2000.0, at: now });
 
-        // Exit ORs: liquidity alone satisfied ⇒ exit fires.
         assert!(compiled.exit_metrics_satisfied(&track, now));
-        // Entry ANDs: time is unsatisfied ⇒ entry does NOT fire on the same state.
         assert!(!compiled.entry_satisfied(&track, now));
 
-        // With neither metric satisfied (low liquidity, early time), exit stays put.
         let mut cold = TokenTrack::new(created);
         cold.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 5.0, at: now });
         assert!(!compiled.exit_metrics_satisfied(&cold, now));
@@ -352,11 +432,10 @@ mod tests {
 
     #[test]
     fn eq_on_time_bounds_at_upper_edge() {
-        // time = 20 (tol 0.5) is done once time passes 20.25.
         let c = CompiledRule::compile(&rule(json!({
             "entry": { "m_snapshot": { "time": [{"operator": "=", "value": 20}] } }
         })));
-        let b = c.mono_bounds[0];
+        let b = c.mono_kills[0].arms[0].unwrap();
         assert_eq!(b.threshold, 20.25);
         assert!(!b.cross_at_ge);
         assert!(!b.crossed(20.25));

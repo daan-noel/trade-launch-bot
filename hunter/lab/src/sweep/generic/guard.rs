@@ -110,7 +110,7 @@ fn loaded(params: RuleParams) -> LoadedRule {
 /// `RuleParams` with a single exit metric condition.
 fn exit_metric(group: MetricGroupId, metric: MetricId, op: Operator, value: f64) -> RuleParams {
     let mut gc = GroupConditions::default();
-    gc.metrics.insert(metric, vec![Condition { operator: op, value }]);
+    gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
     let mut side = SideConditions::default();
     side.0.insert(group, gc);
     RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side) }
@@ -244,7 +244,7 @@ fn scan_matches_replay_metrics_exit_rule() {
 fn scan_matches_replay_entry_gated_rule() {
     // Entry gated on time > 2s (so entry defers past the first trade), TP 20%.
     let mut gc = GroupConditions::default();
-    gc.metrics.insert(MetricId::Time, vec![Condition { operator: Operator::Gt, value: 2.0 }]);
+    gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
     let mut entry = SideConditions::default();
     entry.0.insert(MetricGroupId::Snapshot, gc);
     let params =
@@ -292,7 +292,7 @@ fn scan_matches_replay_time_gate_across_gap() {
     // Entry gated on time > 3600 s — qualifies mid-gap, so the fill lands on a tick
     // deep inside the quiet span the sparse grid must still emit.
     let mut gc = GroupConditions::default();
-    gc.metrics.insert(MetricId::Time, vec![Condition { operator: Operator::Gt, value: 3600.0 }]);
+    gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 3600.0 }]]);
     let mut entry = SideConditions::default();
     entry.0.insert(MetricGroupId::Snapshot, gc);
     let params =
@@ -314,7 +314,7 @@ fn scan_matches_replay_window_flow_across_gap() {
     // through the gap, so the decay-region ticks must be present and exact.
     let mut gc = GroupConditions::default();
     gc.strict.insert("window_size_sec".to_string(), 60.0);
-    gc.metrics.insert(MetricId::GrossFlow, vec![Condition { operator: Operator::Lte, value: 0.0 }]);
+    gc.metrics.insert(MetricId::GrossFlow, vec![vec![Condition { operator: Operator::Lte, value: 0.0 }]]);
     let mut exit = SideConditions::default();
     exit.0.insert(MetricGroupId::TimeWindow, gc);
     let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit) };

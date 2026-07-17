@@ -18,9 +18,9 @@
 //! against [`hunter_engine::metrics`] so a typo is a hard error, never a silent
 //! no-op — the same contract rule-save validation enforces.
 
-use hunter_engine::metrics::evaluator::{Condition, Operator};
+use hunter_engine::metrics::evaluator::{coalesce_contributions, Condition, Operator};
 use hunter_engine::metrics::series::SeriesColumn;
-use hunter_engine::metrics::{group_by_name, MetricGroupId, MetricId, MetricKind};
+use hunter_engine::metrics::{group_by_name, metric_spec, MetricGroupId, MetricId, MetricKind};
 use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
 use serde::{Deserialize, Serialize};
 
@@ -277,14 +277,34 @@ impl AxesModel {
                     if let Some(w) = window {
                         gc.strict.insert("window_size_sec".to_string(), *w);
                     }
+                    // Stage each axis contribution as its own single-condition arm;
+                    // coalesce below: AND when the combined list is satisfiable
+                    // (range `> a, < b`), else one OR arm per contribution (`< a | > b`).
                     gc.metrics
                         .entry(*metric)
                         .or_default()
-                        .push(Condition { operator: *operator, value: val });
+                        .push(vec![Condition { operator: *operator, value: val }]);
                 }
             }
         }
+        coalesce_side(&mut rp.entry);
+        coalesce_side(&mut rp.exit);
         rp
+    }
+}
+
+/// Flatten staged per-axis arms into the metric's DNF expr (same rule on entry
+/// and exit): AND when satisfiable, else OR. That makes both orientations work:
+/// * `> lows × < highs` → ranges when `a < b`, outside OR when crossed
+/// * `< lows × > highs` → outside OR when crossed, ranges when the pair forms an interval
+fn coalesce_side(side: &mut Option<SideConditions>) {
+    let Some(side) = side else { return };
+    for group in side.0.values_mut() {
+        for (metric_id, arms) in group.metrics.iter_mut() {
+            let flat: Vec<Condition> = arms.iter().flatten().copied().collect();
+            let tol = metric_spec(*metric_id).eq_tolerance;
+            *arms = coalesce_contributions(flat, tol);
+        }
     }
 }
 
@@ -445,10 +465,10 @@ mod tests {
         assert_eq!(p0.take_profit, Some(100.0));
         let entry0 = p0.entry.as_ref().unwrap();
         let conds0 = &entry0.0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
-        assert_eq!(conds0[0].value, 5.0);
+        assert_eq!(conds0[0][0].value, 5.0);
         let entry1 = p1.entry.as_ref().unwrap();
         let conds1 = &entry1.0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
-        assert_eq!(conds1[0].value, 10.0);
+        assert_eq!(conds1[0][0].value, 10.0);
         // The assembled params must survive the canonical parse (promotable).
         RuleParams::parse(&p0.to_value()).unwrap();
     }
@@ -468,7 +488,7 @@ mod tests {
         // Combo 1 = time > 5 as usual.
         let p1 = m.combo_params(1);
         let conds = &p1.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
-        assert_eq!(conds[0].value, 5.0);
+        assert_eq!(conds[0][0].value, 5.0);
         // Both survive the canonical parse (promotable).
         RuleParams::parse(&p0.to_value()).unwrap();
         RuleParams::parse(&p1.to_value()).unwrap();
@@ -542,5 +562,91 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).unwrap();
         assert!(m.axes[0].is_entry(), "entry axis must sort first");
+    }
+
+    #[test]
+    fn exit_range_orientation_ands_when_feasible() {
+        // `> lows × < highs` — the range orientation: AND when a < b.
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", ">", None, vec![0.0, 5.0]),
+                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", "<", None, vec![40.0, 70.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).unwrap();
+        assert_eq!(m.combo_count(), 4);
+        for i in 0..m.combo_count() {
+            let p = m.combo_params(i);
+            let arms =
+                &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Liquidity];
+            assert_eq!(arms.len(), 1, "combo {i}: feasible opposing bounds must AND");
+            assert_eq!(arms[0].len(), 2);
+            RuleParams::parse(&p.to_value()).unwrap();
+        }
+    }
+
+    #[test]
+    fn exit_outside_orientation_ors_when_crossed() {
+        // `< low × > high` with crossed values → OR outside band.
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", "<", None, vec![30.0]),
+                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", ">", None, vec![70.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).unwrap();
+        let p = m.combo_params(0);
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Liquidity];
+        assert_eq!(arms.len(), 2);
+        assert_eq!(arms[0][0].operator, Operator::Lt);
+        assert_eq!(arms[1][0].operator, Operator::Gt);
+        RuleParams::parse(&p.to_value()).unwrap();
+    }
+
+    #[test]
+    fn exit_outside_orientation_ands_when_pair_forms_interval() {
+        // `< 10 × > 0` is a satisfiable interval, not an outside band.
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", "<", None, vec![10.0]),
+                metric_axis(AxisSide::Exit, "m_snapshot", "liquidity", ">", None, vec![0.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).unwrap();
+        let p = m.combo_params(0);
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Liquidity];
+        assert_eq!(arms.len(), 1);
+        assert_eq!(arms[0].len(), 2);
+    }
+
+    #[test]
+    fn entry_same_metric_compatible_axes_stay_and() {
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![10.0]),
+                metric_axis(AxisSide::Entry, "m_snapshot", "time", "<", None, vec![50.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).unwrap();
+        let p = m.combo_params(0);
+        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        assert_eq!(arms.len(), 1);
+        assert_eq!(arms[0].len(), 2);
+        RuleParams::parse(&p.to_value()).unwrap();
+    }
+
+    #[test]
+    fn entry_same_metric_crossed_bounds_become_or() {
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![50.0]),
+                metric_axis(AxisSide::Entry, "m_snapshot", "time", "<", None, vec![10.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).unwrap();
+        let p = m.combo_params(0);
+        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        assert_eq!(arms.len(), 2);
+        RuleParams::parse(&p.to_value()).unwrap();
     }
 }
