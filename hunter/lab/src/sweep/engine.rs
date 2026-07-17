@@ -18,36 +18,20 @@ use crate::sweep::strategy::{Strategy, TokenOutcome};
 /// load is amortised to noise against the inner `simulate` work.
 const CANCEL_CHECK_STRIDE: usize = 256;
 
-/// Resolve every combo's outcome for one token's `trades` into `out` (cleared
-/// first), one [`TokenOutcome`] per combo in `params` order. The expensive entry
-/// is resolved **once per distinct `entry_key`** and reused across that key's exit
-/// sub-grid: on a grid the exit axes are the low-order digits, so a token's combos
-/// arrive as contiguous same-entry blocks and the entry recomputes E×/token, not
-/// E·X× (a scattered `random:N` order still resolves correctly — only the reuse
-/// rate falls). Param-independent per-token state ([`Strategy::prepare_token`])
-/// is computed once up front and shared across every entry resolve. The cancel
-/// flag is polled every [`CANCEL_CHECK_STRIDE`] combos **and before each fresh entry
-/// resolve** (the expensive unit for swing1) so
-/// a large combo set bails mid-token; on a cancel `out` is left **partial** and
-/// `Err(())` is returned — the caller must discard it (never fold a short `out`,
-/// which is indexed by `combo_id`).
-///
-/// Shared by the parallel [`run_sweep`] and the serial per-group fold in
-/// `grouped_engine`, so both resolve entries identically.
-pub(crate) fn fill_outcomes<S: Strategy>(
+/// Resolve every combo's outcome for one token into `out` (cleared first), using
+/// a **precomputed** [`Strategy::TokenState`]. Shared by the wave driver (series
+/// once per token) and the legacy `fill_outcomes` wrapper.
+pub(crate) fn fill_outcomes_with_state<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
     token: &crate::sweep::corpus::CorpusToken,
+    token_state: &S::TokenState,
     observer: &dyn SweepObserver,
     out: &mut Vec<TokenOutcome>,
 ) -> std::result::Result<(), ()> {
     out.clear();
     let trades: &[CorpusTrade] = &token.trades;
     let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
-    // Param-independent per-token state, computed once here and shared across
-    // every entry resolution on this token rather than rebuilt per distinct
-    // entry-param tuple.
-    let token_state = strategy.prepare_token(token);
     for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
         if observer.cancelled() {
             return Err(());
@@ -59,23 +43,36 @@ pub(crate) fn fill_outcomes<S: Strategy>(
                 None => true,
             };
             if stale {
-                // A fresh entry resolve is the expensive unit of work — for swing1 a
-                // full-history swing scan, orders of magnitude past a tpsl combo eval.
-                // Poll cancel here too so a cancel lands within one resolve instead of a
-                // whole CANCEL_CHECK_STRIDE of them (the per-chunk check alone assumes
-                // cheap per-combo work). Near-free for tpsl: the entry key rarely
-                // changes, so this fires seldom.
                 if observer.cancelled() {
                     return Err(());
                 }
-                let entry = strategy.resolve_entry(trades, &token_state, p);
+                let entry = strategy.resolve_entry(trades, token_state, p);
                 entry_cache = Some((key, entry));
             }
             let entry = &entry_cache.as_ref().unwrap().1;
-            out.push(strategy.resolve_exit(trades, &token_state, entry, p));
+            out.push(strategy.resolve_exit(trades, token_state, entry, p));
         }
     }
     Ok(())
+}
+
+/// Resolve every combo's outcome for one token's `trades` into `out` (cleared
+/// first), one [`TokenOutcome`] per combo in `params` order. Calls
+/// [`Strategy::prepare_token`] once then [`fill_outcomes_with_state`]. Prefer the
+/// wave driver in [`run_sweep`] for heavy `TokenState` (generic `MetricSeries`) so
+/// series is not rebuilt per combo pass.
+///
+/// Shared by the parallel [`run_sweep`] helpers and the serial per-group fold in
+/// `grouped_engine`, so both resolve entries identically.
+pub(crate) fn fill_outcomes<S: Strategy>(
+    strategy: &S,
+    params: &[S::Params],
+    token: &crate::sweep::corpus::CorpusToken,
+    observer: &dyn SweepObserver,
+    out: &mut Vec<TokenOutcome>,
+) -> std::result::Result<(), ()> {
+    let token_state = strategy.prepare_token(token);
+    fill_outcomes_with_state(strategy, params, token, &token_state, observer, out)
 }
 
 /// Headline counts for a completed sweep. Read by the engine's correctness tests
@@ -89,23 +86,34 @@ pub struct SweepStats {
     pub fired: u64,
 }
 
-/// Largest combo batch whose fold accumulators stay within the memory budget
-/// (Phase 2.5). The fold holds `threads × batch × sizeof(ComboAgg)` resident, so a
-/// combo set too big to hold at once is swept in sequential batches of this size
-/// instead of being rejected. The returned batch is in `1..=n_combos` (`1` when even
-/// a single combo per thread would exceed the budget — `ComboAgg` is sub-KB, so this
-/// floor never actually OOMs). Sized against the same `SWEEP_MEMORY_BUDGET_MB` the
-/// registry guard reads.
+/// Largest combo batch whose fold peak stays within the memory budget (Phase 2.5).
+///
+/// Peak for one batch ≈
+///   `batch × sizeof(ComboAgg)` (folder)
+/// + `inflight × batch × sizeof(TokenOutcome)` (rayon producers + bounded queue)
+///
+/// so `batch = budget / (sizeof(ComboAgg) + inflight × sizeof(TokenOutcome))`.
+/// Also hard-capped at [`HARD_MAX_COMBO_BATCH`] so a fragmented 16 GB box never
+/// tries a single ~180 MB contiguous alloc that aborts the process.
 pub fn combo_batch_size(n_combos: usize, threads: usize) -> usize {
     if n_combos == 0 {
         return 1;
     }
-    let per = std::mem::size_of::<ComboAgg>().max(1) as u64;
     let threads = threads.max(1) as u64;
+    // Producers (~threads) + a few queued buffers (fold_batch channel depth ≤ 32).
+    let inflight = threads.saturating_mul(3).max(4);
+    let per = (std::mem::size_of::<ComboAgg>() as u64)
+        .saturating_add(inflight.saturating_mul(std::mem::size_of::<TokenOutcome>() as u64))
+        .max(1);
     let budget = crate::sweep::registry::sweep_memory_budget_bytes();
-    let max_batch = (budget / (threads * per)).max(1);
-    (max_batch as usize).min(n_combos)
+    let max_batch = (budget / per).max(1) as usize;
+    max_batch.min(n_combos).min(HARD_MAX_COMBO_BATCH).max(1)
 }
+
+/// Absolute ceiling on one fold batch's combo count — independent of the byte
+/// budget. Prevents a single `vec![ComboAgg; batch]` from demanding hundreds of MB
+/// of contiguous address space on a RAM-fragmented workstation.
+const HARD_MAX_COMBO_BATCH: usize = 65_536;
 
 /// Number of `batch`-sized passes needed to cover `n_combos` combos (≥ 1). Used by
 /// the grouped driver to scale the progress total: each token is folded once per
@@ -194,7 +202,11 @@ fn fold_batch<S: Strategy>(
     observer: &dyn SweepObserver,
 ) -> Result<(u64, u64, Vec<ComboAgg>)> {
     let n_combos = params.len();
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<TokenOutcome>>(256);
+    // Bound queued outcome buffers to ~2× pool size (was 256). With large batches,
+    // a deep queue of `Vec<TokenOutcome>` of length `batch` can OOM the box before
+    // the folder drains them.
+    let channel_depth = rayon::current_num_threads().saturating_mul(2).clamp(4, 32);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<TokenOutcome>>(channel_depth);
     // Buffer-recycle channel (folder → producers): the folder returns each drained
     // outcome buffer here so a producer can refill it instead of allocating a fresh
     // `vec![; n_combos]` (≈ `n_combos × sizeof(TokenOutcome)`) for every token. At
@@ -514,10 +526,10 @@ mod tests {
 
     #[test]
     fn combo_batch_size_floors_at_one_and_caps_at_combos() {
-        // A huge budget ⇒ one batch covers everything; the batch never exceeds the
-        // combo count.
+        // Small combo counts fit in one batch; never exceed n_combos or the hard cap.
         assert_eq!(combo_batch_size(5, 4), 5);
         assert_eq!(combo_batch_size(0, 4), 1);
+        assert!(combo_batch_size(1_000_000, 8) <= HARD_MAX_COMBO_BATCH);
         assert_eq!(combo_batch_count(7, 3), 3);
         assert_eq!(combo_batch_count(6, 3), 2);
         assert_eq!(combo_batch_count(0, 3), 1);

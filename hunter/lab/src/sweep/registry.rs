@@ -71,35 +71,25 @@ fn effective_cap(max_combos: Option<usize>) -> usize {
     max_combos.unwrap_or(MAX_COMBOS).clamp(1, HARD_MAX_COMBOS)
 }
 
-/// Default ceiling (MB) on the per-combo fold accumulators a single run may hold at
-/// once. The sweep folds combos in batches of `combo_batch_size` so peak ≈
-/// `threads × BATCH × sizeof(ComboAgg)`; this budget is what sizes `BATCH` (Phase
-/// 2.5). A combo set too big to hold at once is swept in sequential batches rather
-/// than rejected (the prior behaviour) — `HARD_MAX_COMBOS` still bounds the work.
-/// Override with `SWEEP_MEMORY_BUDGET_MB`.
-///
-/// A bigger batch = fewer series-rebuild passes (`n_batches` ↓), and the series
-/// precompute (not this budget) is the sweep's real memory cost, now bounded ∝
-/// trades by the sparse grid (plan §P2). `lab` is the analysis workstation — it
-/// never ships to the 4 GB EC2 box (only `live` does), so this is sized for the
-/// workstation: 2 GB batches HARD_MAX_COMBOS (~600 MB of `ComboAgg` at 2 threads)
-/// in a single pass. The old 256 MB default was conservatively sized against the
-/// server, which this budget never runs on. Admission (plan §P4) accounts the
-/// precompute separately via `SWEEP_ADMISSION_BUDGET_MB` — the two budgets are
-/// deliberately not shared (reusing one caused the earlier false-OOM regression).
-const DEFAULT_SWEEP_MEMORY_BUDGET_MB: usize = 2048;
+/// Hard cap (MB) on fold-side peak memory (ComboAgg + in-flight TokenOutcome
+/// buffers). Host-aware sizing below never exceeds this — a 2 GB fold budget on a
+/// 16 GB box (after corpus load) was scheduling ~400k-combo batches whose single
+/// `vec![ComboAgg; batch]` alloc (~180 MB) aborted the process.
+const SWEEP_FOLD_BUDGET_CAP_MB: usize = 256;
 
-/// The fold-accumulator memory budget in bytes (`SWEEP_MEMORY_BUDGET_MB` or the
-/// default), saturating so a fat-fingered override can't wrap. `pub(crate)` so the
-/// engine's combo-batching ([`crate::sweep::engine::combo_batch_size`]) sizes a
-/// batch against the same budget this guard enforces.
+/// Floor (MB) so a nearly-full box still makes progress with tiny batches.
+const SWEEP_FOLD_BUDGET_FLOOR_MB: usize = 32;
+
+/// Fold-accumulator + outcome-buffer budget in bytes. Derived from host free RAM
+/// (`available / 8`, clamped to 32..=256 MB) — no env override. `pub(crate)` so
+/// [`crate::sweep::engine::combo_batch_size`] sizes batches against the same value.
 pub(crate) fn sweep_memory_budget_bytes() -> u64 {
-    std::env::var("SWEEP_MEMORY_BUDGET_MB")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&m| m >= 1)
-        .unwrap_or(DEFAULT_SWEEP_MEMORY_BUDGET_MB)
-        .saturating_mul(1024 * 1024) as u64
+    let cap = (SWEEP_FOLD_BUDGET_CAP_MB as u64).saturating_mul(1024 * 1024);
+    let floor = (SWEEP_FOLD_BUDGET_FLOOR_MB as u64).saturating_mul(1024 * 1024);
+    match crate::sweep::obs::host_memory_bytes() {
+        Some((_, available)) => (available / 8).clamp(floor, cap),
+        None => cap,
+    }
 }
 
 /// Ceiling (MB) on the **series precompute** transient a generic sweep may hold —

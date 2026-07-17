@@ -241,6 +241,10 @@ impl Strategy for GenericSweepStrategy {
     fn params_json(&self, params: &Self::Params) -> serde_json::Value {
         self.model.combo_params(params.idx).to_value()
     }
+
+    fn token_state_bytes_estimate(&self, token: &CorpusToken) -> usize {
+        self.series_bytes_estimate(token)
+    }
 }
 
 // ───────────────────────────── decode / encode ─────────────────────────────

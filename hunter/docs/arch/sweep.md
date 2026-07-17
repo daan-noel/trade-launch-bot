@@ -42,7 +42,8 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 | --- | --- |
 | Rayon threads | `max(1, cores / 2)` (e.g. 8 on 16 logical CPUs) |
 | RAM reserve | prefer leaving 4 GB free for OS/UI |
-| Admission ceiling | `min(4 GB cap, available − 4 GB)`; if free RAM is already under 4 GB (common after corpus load on a 16 GB box), use **half of remaining free** instead of a 0-byte budget |
+| Series admission | `min(4 GB cap, available − 4 GB)`; if free RAM is already under 4 GB (common after corpus load on a 16 GB box), use **half of remaining free** instead of a 0-byte budget |
+| Fold batch budget | `available / 8` clamped to 32..=256 MB; hard max **65 536** combos per batch (prevents ~180 MB single allocs that abort the process) |
 
 At generic-sweep start the engine estimates `threads × largest_token_series`, **auto-lowers threads** to fit that ceiling, and rejects only if even 1 thread overflows. Start log includes cores, preferred/actual threads, RSS, and host total/available MB.
 

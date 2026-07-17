@@ -313,6 +313,15 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// Flatten one param set to a JSON object stored with the combo's result row,
     /// so the UI can show/sort by any knob without a per-strategy schema.
     fn params_json(&self, params: &Self::Params) -> serde_json::Value;
+
+    /// Estimated resident bytes of [`Strategy::prepare_token`] for this token.
+    /// Used to size the series **wave** (how many heavy `TokenState`s may stay
+    /// alive together). Default `0` — unit/`()` state strategies (legacy tpsl /
+    /// swing wrappers) keep full rayon parallelism. The generic engine returns
+    /// its `MetricSeries` estimate.
+    fn token_state_bytes_estimate(&self, _token: &crate::sweep::corpus::CorpusToken) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]
