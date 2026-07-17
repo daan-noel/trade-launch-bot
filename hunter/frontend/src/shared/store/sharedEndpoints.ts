@@ -15,6 +15,13 @@ import type {
   WalletProfile,
 } from 'types';
 import type { StrategyRegistry } from 'lib/strategy/registry';
+import type {
+  Fingerprint,
+  FingerprintDraft,
+  StrategyRule,
+  CreateRuleBody,
+  UpdateRuleBody,
+} from 'lib/strategy/types';
 
 /**
  * Args for the server-side paginated Tokens view: the backend filters/sorts/pages so
@@ -201,6 +208,63 @@ export const sharedApi = baseApi.injectEndpoints({
       query: () => '/api/meta/strategy-registry',
       keepUnusedDataFor: 3600,
     }),
+
+    // ── Fingerprints (generic engine, live bin) ──────────────────────────────
+    // Shared match specs many rules reference. Amounts are lamports on the wire;
+    // the form components convert to/from SOL. The list carries a folded-in
+    // `used_by` rule count for the library + delete guard.
+    getFingerprints: builder.query<Fingerprint[], void>({
+      query: () => '/api/fingerprints',
+      providesTags: ['Fingerprint'],
+    }),
+    getFingerprint: builder.query<Fingerprint, string>({
+      query: (id) => `/api/fingerprints/${id}`,
+      providesTags: ['Fingerprint'],
+    }),
+    createFingerprint: builder.mutation<Fingerprint, FingerprintDraft>({
+      query: (body) => ({ url: '/api/fingerprints', method: 'POST', body }),
+      invalidatesTags: ['Fingerprint'],
+    }),
+    updateFingerprint: builder.mutation<Fingerprint, { id: string; body: FingerprintDraft }>({
+      query: ({ id, body }) => ({ url: `/api/fingerprints/${id}`, method: 'PUT', body }),
+      // A fingerprint edit can change which tokens rules match — refresh rules too.
+      invalidatesTags: ['Fingerprint', 'StrategyRule'],
+    }),
+    deleteFingerprint: builder.mutation<void, string>({
+      query: (id) => ({ url: `/api/fingerprints/${id}`, method: 'DELETE' }),
+      invalidatesTags: ['Fingerprint'],
+    }),
+
+    // ── Strategy rules (generic engine, live bin) ────────────────────────────
+    getStrategyRules: builder.query<StrategyRule[], void>({
+      query: () => '/api/strategy-rules',
+      providesTags: ['StrategyRule'],
+    }),
+    getStrategyRule: builder.query<StrategyRule, string>({
+      query: (id) => `/api/strategy-rules/${id}`,
+      providesTags: ['StrategyRule'],
+    }),
+    createStrategyRule: builder.mutation<StrategyRule, CreateRuleBody>({
+      query: (body) => ({ url: '/api/strategy-rules', method: 'POST', body }),
+      // A new rule bumps its fingerprint's used-by count.
+      invalidatesTags: ['StrategyRule', 'Fingerprint'],
+    }),
+    updateStrategyRule: builder.mutation<StrategyRule, { id: string; body: UpdateRuleBody }>({
+      query: ({ id, body }) => ({ url: `/api/strategy-rules/${id}`, method: 'PUT', body }),
+      invalidatesTags: ['StrategyRule'],
+    }),
+    deleteStrategyRule: builder.mutation<void, string>({
+      query: (id) => ({ url: `/api/strategy-rules/${id}`, method: 'DELETE' }),
+      invalidatesTags: ['StrategyRule', 'Fingerprint'],
+    }),
+    activateStrategyRule: builder.mutation<StrategyRule, string>({
+      query: (id) => ({ url: `/api/strategy-rules/${id}/activate`, method: 'POST' }),
+      invalidatesTags: ['StrategyRule'],
+    }),
+    pauseStrategyRule: builder.mutation<StrategyRule, string>({
+      query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
+      invalidatesTags: ['StrategyRule'],
+    }),
     updateSettings: builder.mutation<AppSettings, Partial<AppSettings>>({
       query: (patch) => ({
         url: '/api/system/settings',
@@ -241,4 +305,16 @@ export const {
   useGetProfilesQuery,
   useUpdateSettingsMutation,
   useGetStrategyRegistryQuery,
+  useGetFingerprintsQuery,
+  useGetFingerprintQuery,
+  useCreateFingerprintMutation,
+  useUpdateFingerprintMutation,
+  useDeleteFingerprintMutation,
+  useGetStrategyRulesQuery,
+  useGetStrategyRuleQuery,
+  useCreateStrategyRuleMutation,
+  useUpdateStrategyRuleMutation,
+  useDeleteStrategyRuleMutation,
+  useActivateStrategyRuleMutation,
+  usePauseStrategyRuleMutation,
 } = sharedApi;

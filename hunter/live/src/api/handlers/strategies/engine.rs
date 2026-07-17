@@ -34,12 +34,34 @@ pub async fn list_armed(app_state: web::Data<Arc<DeployState>>) -> impl Responde
 
 // ── Fingerprints ─────────────────────────────────────────────────────────────
 
-/// GET /api/fingerprints
+/// GET /api/fingerprints — each row annotated with `used_by` (how many rules
+/// reference it), so the library can show "used by N" and guard deletion. The
+/// count is folded in from the small rules list (no extra SQL / model change).
 pub async fn list_fingerprints(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match app_state.fingerprint_repo.list().await {
-        Ok(v) => HttpResponse::Ok().json(v),
-        Err(e) => server_error("list fingerprints", e),
+    let fps = match app_state.fingerprint_repo.list().await {
+        Ok(v) => v,
+        Err(e) => return server_error("list fingerprints", e),
+    };
+    let mut usage: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+    match app_state.rule_repo.list().await {
+        Ok(rules) => {
+            for r in &rules {
+                *usage.entry(r.fingerprint_id).or_insert(0) += 1;
+            }
+        }
+        Err(e) => return server_error("list fingerprints (usage)", e),
     }
+    let out: Vec<Value> = fps
+        .iter()
+        .map(|fp| {
+            let mut v = serde_json::to_value(fp).unwrap_or_else(|_| json!({}));
+            if let Value::Object(map) = &mut v {
+                map.insert("used_by".into(), json!(usage.get(&fp.id).copied().unwrap_or(0)));
+            }
+            v
+        })
+        .collect();
+    HttpResponse::Ok().json(out)
 }
 
 /// GET /api/fingerprints/{id}

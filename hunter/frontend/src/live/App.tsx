@@ -19,6 +19,8 @@ const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) =
 const Tpsl1Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl1' }) })));
 const Tpsl2Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl2' }) })));
 const Swing1Page = lazy(() => import('@live/pages/strategies/Swing1Page').then((m) => ({ default: m.Swing1Page })));
+const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
+const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const LiveTradingPage = lazy(() => import('@live/pages/strategies/LiveTradingPage').then((m) => ({ default: m.LiveTradingPage })));
 const TradePage = lazy(() => import('@live/pages/trade/TradePage').then((m) => ({ default: m.TradePage })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
@@ -48,6 +50,8 @@ export default function App() {
                 <Route index element={<HomePage />} />
                 <Route path="tokens" element={<TokensPage />} />
                 <Route path="token/sync" element={<SyncTokenPage />} />
+                <Route path="strategies/rules" element={<RulesPage />} />
+                <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
                 <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
                 <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
                 <Route path="strategies/swing1" element={<Swing1Page />} />

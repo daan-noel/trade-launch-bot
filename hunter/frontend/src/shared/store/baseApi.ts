@@ -30,6 +30,8 @@ export const baseApi = createApi({
     'Cashback',
     'GroupedSweep',
     'TokenBatch',
+    'Fingerprint',
+    'StrategyRule',
   ],
   endpoints: () => ({}),
 });

@@ -240,21 +240,32 @@ pages listed in §2. **Kept:** `DataTable` + server-table plumbing, `sse.ts` mul
 - [x] 0.4 `components/strategy/ConditionInput.tsx` (grammar input + parsed chips +
       red-underline malformed hint + unit adornment; text-first with blur snap-back).
 
-### FE1 — Fingerprints + Rules pages  (needs backend Phase 0 + 2 + 4.8 CRUD)
+### FE1 — Fingerprints + Rules pages  (needs backend Phase 0 + 2 + 4.8 CRUD) ✅ 2026-07-17 (live app)
 
-- [ ] 1.1 `FingerprintsPage` (both apps): DataTable list (fields, bucket width, used-by-N
-      count), create/edit form (SOL-denominated inputs; lamports conversion at API
-      boundary), delete guarded by used-by.
-- [ ] 1.2 `FingerprintPicker.tsx`: searchable select + used-by + inline "+ new" +
-      👁 recent-matching-tokens preview (needs a small backend
-      `GET /api/fingerprints/{id}/matches?since=…` — add to backend 4.8 scope).
-- [ ] 1.3 `RuleEditor.tsx` + `ConditionSideEditor.tsx` + JSON tab; lock semantics ported
-      (sizing editable while live, conditions locked).
-- [ ] 1.4 `RulesPage` (live + lab): one list for all rules (mode partition kept),
-      row actions (edit/duplicate/activate/delete), `usePolledRules`-style SSE refresh.
-- [ ] 1.5 Route/nav swap for rules+fingerprints; leave old per-strategy pages mounted
-      until FE5 cleanup (they operate legacy tables only).
-- [ ] 1.6 **System is operable end-to-end here** (create fingerprint → rule → activate).
+> **Scoping note:** the CRUD/registry/armed endpoints are **live-bin only** (Phase 4.8
+> mounted them on live, not lab), and amounts are **lamports** on the wire. FE1 mounts
+> the pages in the **live app** (where the operable create→rule→activate flow lives);
+> lab-app authoring parity + the lab-bin CRUD routes are folded into **FE3** (where the
+> lab dry-run makes authoring there meaningful). Backend add this phase: `used_by` rule
+> count folded into `GET /api/fingerprints`. The 👁 recent-matches preview
+> (`GET /api/fingerprints/{id}/matches`) is **deferred** with its backend endpoint.
+
+- [x] 1.1 `@live/pages/strategies/FingerprintsPage.tsx`: DataTable list (criteria chips,
+      bucket width, used-by badge) + create/edit `FingerprintForm` (SOL inputs → lamports
+      at the API boundary) + used-by-guarded delete.
+- [x] 1.2 `components/strategy/FingerprintPicker.tsx`: select + per-row used-by + inline
+      "+ new" (modal `FingerprintForm`, auto-selects the result). 👁 recent-matches
+      preview deferred (backend endpoint absent).
+- [x] 1.3 `components/strategy/RuleEditor.tsx` + `ConditionSideEditor.tsx` +
+      `ConditionInput` (FE0) + Builder/JSON tabs; lock semantics ported (sizing/caps
+      editable while live, fingerprint + conditions locked when `is_active`).
+- [x] 1.4 `@live/pages/strategies/RulesPage.tsx`: one DataTable for all generic rules
+      (mode/status badges), row actions edit/duplicate/activate-pause/delete; RTK Query
+      cache-tag invalidation on every mutation (SSE live-count refresh lands with FE2).
+- [x] 1.5 Live route/nav entries for `strategies/rules` + `strategies/fingerprints`; old
+      per-strategy pages kept (relabeled "legacy"), removed in FE5.
+- [x] 1.6 **Operable end-to-end** (create fingerprint → rule → activate) — code-complete;
+      live-stack runtime smoke pending (same gate as backend 4.9).
 
 ### FE2 — Live monitor  (needs backend Phase 4)
 

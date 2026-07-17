@@ -1,0 +1,92 @@
+// Wire types for the generic-engine fingerprint + rule HTTP surface
+// (live-bin handlers `strategies::engine`). The HTTP boundary speaks **lamports**
+// for every amount axis (the models store `BIGINT` lamports and the `*_sol()`
+// accessors are non-serialized); `bucket_size_amount` is already SOL. The UI
+// speaks SOL, so the form components convert with the helpers below.
+
+/** 1 SOL in lamports — the one divisor for the fingerprint/rule amount axes. */
+export const LAMPORTS_PER_SOL = 1_000_000_000;
+
+/** Lamports (i64 wire) → human SOL, or `null` passthrough. */
+export function lamportsToSol(l: number | null | undefined): number | null {
+  return l == null ? null : l / LAMPORTS_PER_SOL;
+}
+
+/** Human SOL → lamports (i64 wire, rounded), or `null` passthrough. */
+export function solToLamports(s: number | null | undefined): number | null {
+  return s == null ? null : Math.round(s * LAMPORTS_PER_SOL);
+}
+
+/** A `fingerprints` row (response shape). All `*_lamports` axes are lamports. */
+export interface Fingerprint {
+  id: string;
+  name: string;
+  cu_limit: number | null;
+  cu_price: number | null;
+  init_buy_lamports: number | null;
+  max_cost_lamports: number | null;
+  spendable_lamports_in: number | null;
+  first_slot_buy_lamports: number | null;
+  first_slot_sell_lamports: number | null;
+  /** SOL width of the match bucket (default 0.1). */
+  bucket_size_amount: number;
+  ix_labels: string[] | null;
+  created_at: string;
+  updated_at: string;
+  /** How many rules reference this fingerprint — folded in by the list endpoint
+   *  (`GET /api/fingerprints`); absent on single-row responses. */
+  used_by?: number;
+}
+
+/** The create/update body for a fingerprint (lamports on the wire). `id`,
+ *  `created_at`, `updated_at`, `used_by` are server-owned and never sent. */
+export type FingerprintDraft = Omit<
+  Fingerprint,
+  'id' | 'created_at' | 'updated_at' | 'used_by'
+>;
+
+/** Trade modes for a rule. */
+export type TradeMode = 'paper' | 'real';
+
+/** A `strategy_rules` row (response shape). `buy_amount_lamports` is lamports;
+ *  `params` is the canonical rule-params JSONB. */
+export interface StrategyRule {
+  id: string;
+  rule_name: string;
+  fingerprint_id: string;
+  trade_mode: TradeMode;
+  is_active: boolean;
+  buy_amount_lamports: number;
+  max_concurrent_tokens: number;
+  max_total_tokens: number;
+  params: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** POST /api/strategy-rules body. `fingerprint_id` required; `is_active` is
+ *  forced false on create (lifecycle endpoints toggle it). */
+export interface CreateRuleBody {
+  rule_name: string;
+  fingerprint_id: string;
+  trade_mode: TradeMode;
+  buy_amount_lamports: number;
+  max_concurrent_tokens: number;
+  max_total_tokens: number;
+  params: Record<string, unknown>;
+}
+
+/** PUT /api/strategy-rules/{id} patch — `fingerprint_id`/`is_active` NOT patchable. */
+export type UpdateRuleBody = Partial<
+  Pick<
+    CreateRuleBody,
+    'rule_name' | 'trade_mode' | 'buy_amount_lamports' | 'max_concurrent_tokens' | 'max_total_tokens' | 'params'
+  >
+>;
+
+/** One armed (token, rule) pair from `GET /api/strategies/armed`. */
+export interface ArmedEntry {
+  rule_id: string;
+  mint_address: string;
+  state: string;
+}
