@@ -160,10 +160,14 @@ impl CompiledRule {
         !self.exit_reqs.is_empty()
     }
 
-    /// Whether every exit metric condition holds at `now` (AND). `false` when the
-    /// rule authored no exit metrics — the caller falls back to TP/SL/dead only.
+    /// Whether the exit fires at `now`. Exit metrics **OR** across metrics (any one
+    /// authored reason to bail fires the sell) — asymmetric with entry's AND, and
+    /// consistent with TP/SL/dead, which already OR alongside this. Within a single
+    /// metric its condition list still ANDs (so a range like `10 < stall < 30` stays
+    /// one unit). `false` when the rule authored no exit metrics — the caller falls
+    /// back to TP/SL/dead only.
     pub fn exit_metrics_satisfied(&self, track: &TokenTrack, now: Ts) -> bool {
-        self.has_exit_metrics() && reqs_satisfied(&self.exit_reqs, track, now)
+        self.has_exit_metrics() && reqs_any_satisfied(&self.exit_reqs, track, now)
     }
 
     /// Whether a monotonic entry bound is permanently crossed at `now` — the entry
@@ -173,9 +177,17 @@ impl CompiledRule {
     }
 }
 
-/// AND every metric read in `reqs` at `now`. Empty ⇒ `true` (vacuous).
+/// AND every metric read in `reqs` at `now` (the **entry** combinator). Empty ⇒
+/// `true` (vacuous).
 fn reqs_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
     reqs.iter().all(|r| eval(&r.conds, track.value(r.metric, r.window, now), r.tolerance))
+}
+
+/// OR across metric reads in `reqs` at `now` (the **exit** combinator — any one
+/// satisfied metric fires). Empty ⇒ `false` (no reason to exit). A single metric's
+/// own condition list still ANDs inside `eval`.
+fn reqs_any_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
+    reqs.iter().any(|r| eval(&r.conds, track.value(r.metric, r.window, now), r.tolerance))
 }
 
 /// Flatten one side's parsed conditions into [`MetricReq`]s. A dynamic group's
@@ -301,6 +313,41 @@ mod tests {
             "entry": { "m_snapshot": { "liquidity": [{"operator": "<", "value": 5}] } }
         })));
         assert!(c.mono_bounds.is_empty());
+    }
+
+    #[test]
+    fn exit_metrics_or_across_metrics_but_entry_ands() {
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+
+        // Two independently-driven m_snapshot metrics on both sides: `time`
+        // (seconds since creation, set by `now`) and `liquidity` (last trade's
+        // reserves). Same conditions on entry and exit so only the combinator differs.
+        let conds = json!({
+            "m_snapshot": {
+                "time":      [{"operator": ">", "value": 1000}],
+                "liquidity": [{"operator": ">", "value": 999}]
+            }
+        });
+        let compiled = CompiledRule::compile(&rule(json!({
+            "entry": conds, "exit": conds, "take_profit": 100
+        })));
+
+        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let now = created + Duration::seconds(10); // time = 10 (fails `> 1000`)
+        let mut track = TokenTrack::new(created);
+        // Fold a trade with high reserves → liquidity = 2000 (satisfies `> 999`).
+        track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 2000.0, at: now });
+
+        // Exit ORs: liquidity alone satisfied ⇒ exit fires.
+        assert!(compiled.exit_metrics_satisfied(&track, now));
+        // Entry ANDs: time is unsatisfied ⇒ entry does NOT fire on the same state.
+        assert!(!compiled.entry_satisfied(&track, now));
+
+        // With neither metric satisfied (low liquidity, early time), exit stays put.
+        let mut cold = TokenTrack::new(created);
+        cold.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 5.0, at: now });
+        assert!(!compiled.exit_metrics_satisfied(&cold, now));
     }
 
     #[test]

@@ -69,7 +69,11 @@ user-chosen operators instead of operators hardcoded in Rust `check_*` fns.
    `entry`/`exit`, each holding metric groups; groups hold strict params
    (e.g. `window_size_sec`) beside per-metric `{operator, value}` lists
    (shape: `Bot/docs/strategy-redesign-answer-1.md`).
-4. **Operators**: `>` `>=` `<` `<=` `=` `!=`. All conditions **AND**. `=` is
+4. **Operators**: `>` `>=` `<` `<=` `=` `!=`. Within one metric, its condition list
+   **AND**s (forms ranges, e.g. `10 < stall < 30`). Across metrics the combinator is
+   **side-dependent**: **entry ANDs** (all metrics must confirm before committing
+   capital); **exit ORs** (any one satisfied metric fires the sell — asymmetric, and
+   consistent with TP/SL/dead, which already OR alongside the metric exit). `=` is
    bucket-equality using the **metric's own default tolerance** declared in its metric
    file (time/stall 0.5 s, trail 1 %, SOL metrics 0.1 SOL) — deliberately independent of
    the fingerprint's `bucket_size_amount`. Absent group/metric/TP/SL = unconstrained.

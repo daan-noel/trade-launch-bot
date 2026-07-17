@@ -514,6 +514,7 @@ fn resolve_cols(series: &MetricSeries, reqs: &[hunter_engine::arm::MetricReq]) -
     reqs.iter().map(|r| col_idx_of(series, r.metric, r.window)).collect()
 }
 
+/// Entry combinator: AND across metrics (mirror of `arm::reqs_satisfied`).
 fn reqs_satisfied(
     series: &MetricSeries,
     reqs: &[hunter_engine::arm::MetricReq],
@@ -523,6 +524,19 @@ fn reqs_satisfied(
     reqs.iter()
         .zip(cols)
         .all(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance))
+}
+
+/// Exit combinator: OR across metrics (mirror of `arm::reqs_any_satisfied`). Any
+/// one satisfied exit metric fires; a single metric's own cond list still ANDs.
+fn reqs_any_satisfied(
+    series: &MetricSeries,
+    reqs: &[hunter_engine::arm::MetricReq],
+    cols: &[usize],
+    row: usize,
+) -> bool {
+    reqs.iter()
+        .zip(cols)
+        .any(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance))
 }
 
 fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usize], row: usize) -> bool {
@@ -599,7 +613,7 @@ pub(crate) fn resolve_exit(
                 }
             }
         }
-        if has_exit_metrics && reqs_satisfied(series, &c.exit_reqs, &exit_cols, j) {
+        if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, &exit_cols, j) {
             return closed(ExitCode::Metrics, entry_price, entry_at, p, series.at[j], buy_amount_sol, cost);
         }
     }
