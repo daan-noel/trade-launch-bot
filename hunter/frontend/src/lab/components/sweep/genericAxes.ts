@@ -34,11 +34,13 @@ export interface GenericAxisRow {
   operator: Operator;
   /** Dynamic-metric axes only — the trailing window (seconds); '' = unset. */
   window: string;
-  /** Swept values: a comma list (`5, 10, 15`) and/or ranges (`10..40 step 10`). */
+  /** Swept values: a comma list (`5, 10, 15`), ranges (`10..40 step 10`), and —
+   *  on metric axes — the `off` sentinel (that combo omits the condition). */
   valuesText: string;
 }
 
-/** The wire form of one axis — matches the backend `AxisSpec` serde struct. */
+/** The wire form of one axis — matches the backend `AxisSpec` serde struct.
+ *  `null` in `values` is the `off` sentinel (metric axes only). */
 export interface AxisSpecWire {
   kind: AxisKind;
   side?: MetricAxisSide;
@@ -46,7 +48,7 @@ export interface AxisSpecWire {
   metric?: string;
   operator?: Operator;
   window?: number;
-  values: number[];
+  values: (number | null)[];
 }
 
 /** The `axes` payload for a `strategy_id="generic"` sweep — the backend
@@ -63,12 +65,15 @@ const RANGE_RE =
   /^(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)(?:\s*(?:step|:)\s*(-?\d+(?:\.\d+)?))?$/i;
 
 /**
- * Parse the axis values box into a deduped, ascending number list. Each
- * comma-separated fragment is either a plain number (`50`) or an inclusive range
- * `lo..hi[ step s]` (`10..40 step 10` → 10,20,30,40; `1..5` → 1,5). Blank / NaN
- * fragments and a non-positive step are dropped.
+ * Parse the axis values box into a deduped list: `off` first (if present), then
+ * numbers ascending — mirroring the backend's resolve order so pick 0 is always
+ * the off sentinel. Each comma-separated fragment is a plain number (`50`), an
+ * inclusive range `lo..hi[ step s]` (`10..40 step 10` → 10,20,30,40; `1..5` →
+ * 1,5), or the literal `off` (→ `null`). Blank / unrecognized fragments and a
+ * non-positive step are dropped (see [`invalidValueFragments`] to surface them).
  */
-export function parseValueList(text: string): number[] {
+export function parseValueList(text: string): (number | null)[] {
+  let off = false;
   const seen = new Set<number>();
   const out: number[] = [];
   const push = (n: number) => {
@@ -80,6 +85,10 @@ export function parseValueList(text: string): number[] {
   for (const raw of text.split(',')) {
     const frag = raw.trim();
     if (frag === '') continue;
+    if (/^off$/i.test(frag)) {
+      off = true;
+      continue;
+    }
     const range = RANGE_RE.exec(frag);
     if (range) {
       let lo = parseFloat(range[1]);
@@ -105,7 +114,21 @@ export function parseValueList(text: string): number[] {
     push(Number(frag));
   }
   out.sort((a, b) => a - b);
-  return out;
+  return off ? [null, ...out] : out;
+}
+
+/** The fragments of a values box that parse to nothing — neither a number, a
+ *  range, `off`, nor blank. Surfaced as a row error so a typo (`of`, `1O`)
+ *  can't silently vanish from the grid. */
+export function invalidValueFragments(text: string): string[] {
+  const bad: string[] = [];
+  for (const raw of text.split(',')) {
+    const frag = raw.trim();
+    if (frag === '' || /^off$/i.test(frag) || RANGE_RE.test(frag)) continue;
+    if (Number.isFinite(Number(frag))) continue;
+    bad.push(frag);
+  }
+  return bad;
 }
 
 /** The registry group a metric row names, if any. */
@@ -118,8 +141,8 @@ export function rowNeedsWindow(row: GenericAxisRow, reg: StrategyRegistry | unde
   return row.kind === 'metric' && rowGroup(row, reg)?.kind === 'dynamic';
 }
 
-/** The parsed values for one row (deduped, ascending). */
-export function rowValues(row: GenericAxisRow): number[] {
+/** The parsed values for one row (deduped; `off` first, then ascending). */
+export function rowValues(row: GenericAxisRow): (number | null)[] {
   return parseValueList(row.valuesText);
 }
 
@@ -131,13 +154,17 @@ export function axisRowError(
   row: GenericAxisRow,
   reg: StrategyRegistry | undefined,
 ): string | null {
+  const bad = invalidValueFragments(row.valuesText);
+  if (bad.length > 0) return `unrecognized value${bad.length > 1 ? 's' : ''}: ${bad.join(', ')}`;
   const values = rowValues(row);
   if (values.length === 0) return 'add at least one value';
   if (row.kind === 'take_profit' || row.kind === 'stop_loss') {
-    if (values.some((v) => v <= 0)) return 'TP / SL values must be > 0';
+    if (values.includes(null)) return "'off' only applies to metric axes — omit the axis instead";
+    if (values.some((v) => v != null && v <= 0)) return 'TP / SL values must be > 0';
     return null;
   }
   // metric axis
+  if (values.every((v) => v == null)) return "add at least one number besides 'off'";
   const group = rowGroup(row, reg);
   if (!row.group || !group) return 'pick a metric group';
   if (!row.metric || !group.metrics.some((m) => m.name === row.metric)) return 'pick a metric';

@@ -155,7 +155,7 @@ function axesSpecToRows(spec: unknown): GenericAxisRow[] {
     metric: a.metric ?? '',
     operator: a.operator ?? '>',
     window: a.window != null ? String(a.window) : '',
-    valuesText: (a.values ?? []).join(', '),
+    valuesText: (a.values ?? []).map((v) => (v == null ? 'off' : v)).join(', '),
   }));
 }
 

@@ -64,7 +64,7 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
           Axes
           <InfoTooltip
             title="Sweep axes"
-            body="Each row is one swept dimension. A combo picks one value per axis; the values assemble one rule. Values accept a comma list (5, 10, 15) and ranges (10..40 step 10). Entry axes vary slowest so combos stay contiguous."
+            body="Each row is one swept dimension. A combo picks one value per axis; the values assemble one rule. Values accept a comma list (5, 10, 15), ranges (10..40 step 10), and — on metric rows — 'off' (that combo omits the condition, sweeping with-vs-without). Entry axes vary slowest so combos stay contiguous."
           />
         </span>
         <span />
@@ -221,7 +221,7 @@ function AxisRow({
           fieldSize="sm"
           value={row.valuesText}
           onChange={(e) => onPatch({ valuesText: e.target.value })}
-          placeholder={isMetric ? '5, 10, 15  ·  10..40 step 10' : '50, 100, 200'}
+          placeholder={isMetric ? 'off, 5, 10  ·  10..40 step 10' : '50, 100, 200'}
           unit={valueUnit || undefined}
           aria-invalid={!!err}
           className={cn('min-w-[10rem]', err && 'border-red/70 focus:border-red')}

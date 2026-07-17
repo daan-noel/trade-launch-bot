@@ -3,6 +3,7 @@ import type { StrategyRegistry } from 'lib/strategy/registry';
 import {
   axisRowError,
   comboCount,
+  invalidValueFragments,
   newAxisRow,
   parseValueList,
   serializeAxisRows,
@@ -55,6 +56,17 @@ describe('parseValueList', () => {
   it('flips a reversed range', () => {
     expect(parseValueList('40..10 step 10')).toEqual([10, 20, 30, 40]);
   });
+  it('parses off (any case, deduped) as a leading null', () => {
+    expect(parseValueList('off, 10, 20')).toEqual([null, 10, 20]);
+    expect(parseValueList('10, OFF, Off, 20')).toEqual([null, 10, 20]);
+  });
+});
+
+describe('invalidValueFragments', () => {
+  it('surfaces fragments that parse to nothing', () => {
+    expect(invalidValueFragments('5, of, 10..20 step 5, 1O, off, ')).toEqual(['of', '1O']);
+    expect(invalidValueFragments('off, 5, 10')).toEqual([]);
+  });
 });
 
 describe('axisRowError', () => {
@@ -83,6 +95,20 @@ describe('axisRowError', () => {
     );
     expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: '50, 100' }, REG)).toBeNull();
   });
+  it('accepts off on a metric row, rejects it on TP/SL and alone', () => {
+    expect(
+      axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: 'off, 5' }), REG),
+    ).toBeNull();
+    expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: 'off, 100' }, REG)).toMatch(/only applies to metric axes/);
+    expect(
+      axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: 'off' }), REG),
+    ).toBe("add at least one number besides 'off'");
+  });
+  it('flags unrecognized fragments instead of silently dropping them', () => {
+    expect(
+      axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: '5, of' }), REG),
+    ).toBe('unrecognized value: of');
+  });
 });
 
 describe('serializeAxisRows + comboCount', () => {
@@ -106,6 +132,12 @@ describe('serializeAxisRows + comboCount', () => {
 
   it('combo count is 0 when an axis has no values', () => {
     expect(comboCount([metricRow({ group: 'm_snapshot', metric: 'time', valuesText: '' })], REG)).toBe(0);
+  });
+
+  it('serializes off as null and counts it as a grid point', () => {
+    const withOff = [metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: 'off, 5, 10' })];
+    expect(serializeAxisRows(withOff, REG)[0].values).toEqual([null, 5, 10]);
+    expect(comboCount(withOff, REG)).toBe(3);
   });
 });
 

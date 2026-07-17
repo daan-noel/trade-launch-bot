@@ -9,7 +9,9 @@
 //!
 //! Axis kinds (the wire `kind` tag, default `"metric"`):
 //! * `metric` — a `(side, group, metric, operator[, window])` condition; each
-//!   value becomes a `{operator, value}` condition on that metric.
+//!   value becomes a `{operator, value}` condition on that metric. A `null`
+//!   value is the **off** sentinel: that combo simply omits the condition
+//!   (sweeping with-vs-without in one grid). Off is metric-only.
 //! * `take_profit` / `stop_loss` — each value sets the rule's TP / SL %.
 //!
 //! Group / metric are named (the registry enums aren't serde) and resolved
@@ -51,8 +53,10 @@ pub struct AxisSpec {
     /// Dynamic-metric axes only — the trailing window (seconds).
     #[serde(default)]
     pub window: Option<f64>,
-    /// The swept values. Must be non-empty; deduped + sorted on resolve.
-    pub values: Vec<f64>,
+    /// The swept values. Must be non-empty; deduped + sorted on resolve. On a
+    /// metric axis a `null` is the **off** sentinel (combo omits the condition);
+    /// TP/SL axes reject it (absent TP/SL is authored by omitting the axis).
+    pub values: Vec<Option<f64>>,
 }
 
 fn default_kind() -> String {
@@ -70,6 +74,8 @@ pub struct AxesRequest {
 #[derive(Clone, Debug)]
 pub enum ResolvedAxis {
     /// A metric condition axis: each value → `{operator, value}` on the metric.
+    /// A `None` value is the **off** pick — that combo carries no condition on
+    /// this metric (sorted first, so pick 0 is always off when present).
     Metric {
         side: AxisSide,
         group: MetricGroupId,
@@ -77,7 +83,7 @@ pub enum ResolvedAxis {
         operator: Operator,
         /// Present iff the metric's group is dynamic (`m_time_window`).
         window: Option<f64>,
-        values: Vec<f64>,
+        values: Vec<Option<f64>>,
     },
     /// Take-profit %.
     TakeProfit { values: Vec<f64> },
@@ -91,13 +97,6 @@ impl ResolvedAxis {
         match self {
             ResolvedAxis::Metric { values, .. } => values.len(),
             ResolvedAxis::TakeProfit { values } | ResolvedAxis::StopLoss { values } => values.len(),
-        }
-    }
-
-    fn value_at(&self, idx: usize) -> f64 {
-        match self {
-            ResolvedAxis::Metric { values, .. } => values[idx],
-            ResolvedAxis::TakeProfit { values } | ResolvedAxis::StopLoss { values } => values[idx],
         }
     }
 
@@ -213,11 +212,13 @@ impl AxesModel {
     fn assemble(&self, picks: &[usize]) -> RuleParams {
         let mut rp = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None };
         for (axis, &pick) in self.axes.iter().zip(picks) {
-            let val = axis.value_at(pick);
             match axis {
-                ResolvedAxis::TakeProfit { .. } => rp.take_profit = Some(val),
-                ResolvedAxis::StopLoss { .. } => rp.stop_loss = Some(val),
-                ResolvedAxis::Metric { side, group, metric, operator, window, .. } => {
+                ResolvedAxis::TakeProfit { values } => rp.take_profit = Some(values[pick]),
+                ResolvedAxis::StopLoss { values } => rp.stop_loss = Some(values[pick]),
+                ResolvedAxis::Metric { side, group, metric, operator, window, values } => {
+                    // The off pick: no condition, no group entry, no window —
+                    // this combo behaves as if the axis were never authored.
+                    let Some(val) = values[pick] else { continue };
                     let side_slot = match side {
                         AxisSide::Entry => &mut rp.entry,
                         AxisSide::Exit => &mut rp.exit,
@@ -240,26 +241,37 @@ impl AxesModel {
 
 /// Resolve + validate a single axis spec against the registry.
 fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
-    let mut values = spec.values.clone();
-    if values.is_empty() {
+    if spec.values.is_empty() {
         return Err("`values` must be non-empty".to_string());
     }
-    if values.iter().any(|v| !v.is_finite()) {
+    let has_off = spec.values.iter().any(Option::is_none);
+    let mut numbers: Vec<f64> = spec.values.iter().flatten().copied().collect();
+    if numbers.iter().any(|v| !v.is_finite()) {
         return Err("`values` must all be finite".to_string());
     }
+    if numbers.is_empty() {
+        // An all-off axis is the same as not authoring the axis — reject the no-op.
+        return Err("`values` needs at least one number besides `off`".to_string());
+    }
     // Dedup + sort for a stable, minimal grid.
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    values.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
+    numbers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    numbers.dedup_by(|a, b| (*a - *b).abs() < f64::EPSILON);
 
     match spec.kind.as_str() {
         "take_profit" | "stop_loss" => {
-            if values.iter().any(|v| *v <= 0.0) {
+            if has_off {
+                return Err(
+                    "TP/SL axes cannot carry `off` — omit the axis to leave the guard off"
+                        .to_string(),
+                );
+            }
+            if numbers.iter().any(|v| *v <= 0.0) {
                 return Err("TP/SL values must be > 0".to_string());
             }
             Ok(if spec.kind == "take_profit" {
-                ResolvedAxis::TakeProfit { values }
+                ResolvedAxis::TakeProfit { values: numbers }
             } else {
-                ResolvedAxis::StopLoss { values }
+                ResolvedAxis::StopLoss { values: numbers }
             })
         }
         "metric" => {
@@ -283,6 +295,12 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
                 }),
                 MetricKind::Static => None, // a window on a static metric is ignored
             };
+            // Off first (pick 0), then the numbers ascending.
+            let mut values: Vec<Option<f64>> = Vec::with_capacity(numbers.len() + 1);
+            if has_off {
+                values.push(None);
+            }
+            values.extend(numbers.into_iter().map(Some));
             Ok(ResolvedAxis::Metric {
                 side,
                 group: group.id,
@@ -332,12 +350,20 @@ mod tests {
             metric: Some(metric.to_string()),
             operator: Some(serde_json::from_str(&format!("\"{op}\"")).unwrap()),
             window,
-            values: vals,
+            values: vals.into_iter().map(Some).collect(),
         }
     }
 
     fn tp(vals: Vec<f64>) -> AxisSpec {
-        AxisSpec { kind: "take_profit".to_string(), side: None, group: None, metric: None, operator: None, window: None, values: vals }
+        AxisSpec {
+            kind: "take_profit".to_string(),
+            side: None,
+            group: None,
+            metric: None,
+            operator: None,
+            window: None,
+            values: vals.into_iter().map(Some).collect(),
+        }
     }
 
     #[test]
@@ -376,6 +402,58 @@ mod tests {
         assert_eq!(conds1[0].value, 10.0);
         // The assembled params must survive the canonical parse (promotable).
         RuleParams::parse(&p0.to_value()).unwrap();
+    }
+
+    #[test]
+    fn off_pick_omits_the_condition() {
+        let mut spec = metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![5.0]);
+        spec.values.push(None); // off — must sort to pick 0
+        let req = AxesRequest { axes: vec![spec, tp(vec![100.0])] };
+        let m = AxesModel::resolve(&req).unwrap();
+        assert_eq!(m.combo_count(), 2 * 1);
+        // Combo 0 = the off pick: no entry conditions at all ⇒ enter on arm.
+        let p0 = m.combo_params(0);
+        assert!(p0.entry.is_none());
+        assert!(p0.enter_on_arm());
+        assert_eq!(p0.take_profit, Some(100.0));
+        // Combo 1 = time > 5 as usual.
+        let p1 = m.combo_params(1);
+        let conds = &p1.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        assert_eq!(conds[0].value, 5.0);
+        // Both survive the canonical parse (promotable).
+        RuleParams::parse(&p0.to_value()).unwrap();
+        RuleParams::parse(&p1.to_value()).unwrap();
+    }
+
+    #[test]
+    fn off_pick_on_dynamic_group_omits_window_too() {
+        let mut spec =
+            metric_axis(AxisSide::Entry, "m_time_window", "net_flow", ">", Some(10.0), vec![2.5]);
+        spec.values.insert(0, None);
+        let req = AxesRequest { axes: vec![spec] };
+        let m = AxesModel::resolve(&req).unwrap();
+        // The off combo must not leave a metric-less group behind (validation
+        // rejects a group carrying only window_size_sec).
+        let p0 = m.combo_params(0);
+        assert!(p0.entry.is_none());
+        RuleParams::parse(&p0.to_value()).unwrap();
+        RuleParams::parse(&m.combo_params(1).to_value()).unwrap();
+    }
+
+    #[test]
+    fn all_off_axis_rejected() {
+        let mut spec = metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![]);
+        spec.values.push(None);
+        let e = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
+        assert!(e.contains("besides `off`"), "{e}");
+    }
+
+    #[test]
+    fn tp_sl_reject_off() {
+        let mut spec = tp(vec![100.0]);
+        spec.values.push(None);
+        let e = AxesModel::resolve(&AxesRequest { axes: vec![spec] }).unwrap_err();
+        assert!(e.contains("cannot carry `off`"), "{e}");
     }
 
     #[test]

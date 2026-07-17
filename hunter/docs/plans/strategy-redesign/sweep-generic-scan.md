@@ -48,7 +48,12 @@ An axis is one swept dimension; a combo picks one value per axis, assembling one
 - **metric axis** `(side, group, metric, operator[, window])` — each value → a
   `{operator, value}` condition on that metric. Group/metric are named and resolved
   against `hunter_engine::metrics` (a typo is a hard error, not a silent no-op);
-  dynamic (`m_time_window`) metrics require a `window`.
+  dynamic (`m_time_window`) metrics require a `window`. A `null` value (typed as
+  `off` in the UI) is the **off sentinel**: that combo omits the condition entirely
+  (no condition, no group entry, no `window_size_sec` — as if the axis were never
+  authored), sweeping with-vs-without a condition in one grid. Off sorts first
+  (pick 0), an all-off axis is rejected as a no-op, and TP/SL axes reject it
+  (absent TP/SL is authored by omitting the axis).
 - **`take_profit` / `stop_loss` axis** — each value sets the rule's TP / SL %.
 
 `combo_count` = product of axis value counts; `combo_params(idx)` mixed-radix
