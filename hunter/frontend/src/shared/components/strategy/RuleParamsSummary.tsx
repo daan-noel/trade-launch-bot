@@ -98,35 +98,71 @@ function MetricCondChip({ chip: c }: { chip: SideChip }) {
   });
 }
 
-/** Compact chip cluster for a rule's / combo's `RuleParams`. */
+/** Preserve first-seen group order; chips within a group stay contiguous. */
+function chipsByGroup(chips: SideChip[]): { group: string; chips: SideChip[] }[] {
+  const order: string[] = [];
+  const map = new Map<string, SideChip[]>();
+  for (const c of chips) {
+    let bucket = map.get(c.group);
+    if (!bucket) {
+      bucket = [];
+      map.set(c.group, bucket);
+      order.push(c.group);
+    }
+    bucket.push(c);
+  }
+  return order.map((group) => ({ group, chips: map.get(group)! }));
+}
+
+function SideBlock({
+  side,
+  chips,
+  labelCls,
+}: {
+  side: 'in' | 'out';
+  chips: SideChip[];
+  labelCls: string;
+}): ReactNode {
+  if (chips.length === 0) return null;
+  return (
+    <div className="grid grid-cols-[1.5rem_auto_1fr] items-start gap-x-1.5 gap-y-0.5">
+      {chipsByGroup(chips).map(({ group, chips: groupChips }, gi) => (
+        <Fragment key={`${side}-${group}`}>
+          <span className={cn('pt-0.5 text-[9px] uppercase leading-tight', labelCls)}>
+            {gi === 0 ? side : ''}
+          </span>
+          <span className="pt-0.5 text-[10px] leading-tight text-text-dim" title={group}>
+            {group}
+          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {groupChips.map((c, i) => (
+              <MetricCondChip key={`${side}-${group}-${i}`} chip={c} />
+            ))}
+          </div>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/** Compact chip cluster for a rule's / combo's `RuleParams`.
+ *  Metric conditions stack one row per metric group; side label on the first
+ *  row only so later groups stay indented under it. */
 export function ruleParamsCell(raw: unknown): ReactNode {
   const { take_profit, stop_loss, entry, exit } = parseParams(raw);
+  const hasTpsl = take_profit != null || stop_loss != null;
+  const empty = !hasTpsl && entry.length === 0 && exit.length === 0;
   return (
-    <div className="flex flex-wrap items-center gap-1 text-left">
-      {take_profit != null && chip(`TP ${formatDecimalTrim(take_profit, 1)}%`, 'text-green')}
-      {stop_loss != null && chip(`SL ${formatDecimalTrim(stop_loss, 1)}%`, 'text-red')}
-      {entry.length > 0 && (
-        <>
-          <span className="text-[9px] uppercase text-accent/70">in</span>
-          {entry.map((c, i) => (
-            <Fragment key={`e${i}`}>
-              <MetricCondChip chip={c} />
-            </Fragment>
-          ))}
-        </>
+    <div className="flex flex-col items-start gap-1 text-left">
+      {hasTpsl && (
+        <div className="flex flex-wrap items-center gap-1">
+          {take_profit != null && chip(`TP ${formatDecimalTrim(take_profit, 1)}%`, 'text-green')}
+          {stop_loss != null && chip(`SL ${formatDecimalTrim(stop_loss, 1)}%`, 'text-red')}
+        </div>
       )}
-      {exit.length > 0 && (
-        <>
-          <span className="text-[9px] uppercase text-warning/70">out</span>
-          {exit.map((c, i) => (
-            <Fragment key={`x${i}`}>
-              <MetricCondChip chip={c} />
-            </Fragment>
-          ))}
-        </>
-      )}
-      {take_profit == null && stop_loss == null && entry.length === 0 && exit.length === 0 &&
-        chip('fingerprint only', 'text-text-dim')}
+      <SideBlock side="in" chips={entry} labelCls="text-accent/70" />
+      <SideBlock side="out" chips={exit} labelCls="text-warning/70" />
+      {empty && chip('fingerprint only', 'text-text-dim')}
     </div>
   );
 }
