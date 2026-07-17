@@ -151,4 +151,30 @@ pub enum SseEvent {
         run_id: String,
         cancelled: bool,
     },
+    /// A generic-engine (fingerprint + metrics redesign) position transition — the
+    /// new-engine analogue of [`SseEvent::TpslPositionsChanged`], emitted by the
+    /// engine's `PositionUpdate` sink. Mint-scoped. `status` is the
+    /// `strategy_positions` lifecycle string (`BuySubmitted` | `Holding` |
+    /// `ExitPending` | `End` | `ExitFailed` | `ExitUnconfirmed`); `exit_reason` is
+    /// set on the exit statuses. The client patches the one position row in place.
+    StrategyPositionUpdate {
+        rule_id: uuid::Uuid,
+        mint_address: String,
+        position_id: uuid::Uuid,
+        status: String,
+        exit_reason: Option<String>,
+        entry_price: Option<f64>,
+        exit_price: Option<f64>,
+    },
+    /// A generic-engine (token, rule) arming transition — armed or disarmed —
+    /// emitted by the engine's `ArmedChanged` sink. There is no legacy analogue
+    /// (armed state was pull-only before the redesign). Mint-scoped. `state` is
+    /// `"armed"` | `"disarmed"`; `reason` is the disarm reason (`dead` | `migrated`
+    /// | `unsatisfiable`) when disarmed.
+    StrategyArmedChanged {
+        rule_id: uuid::Uuid,
+        mint_address: String,
+        state: String,
+        reason: Option<String>,
+    },
 }

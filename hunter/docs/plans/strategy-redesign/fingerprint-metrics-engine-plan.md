@@ -7,7 +7,15 @@ deterministic event-log engine — all five "best solution" upgrades adopted).
 2026-07-16** (fingerprint matcher: `engine/src/fingerprint.rs`, two-phase
 first-slot, 11 tests). **Phase 3 complete 2026-07-16** (the engine fold: `event.rs`
 + `state.rs` + `arm.rs` + `reduce.rs` + `deadness.rs` moved from core; 20 golden-log
-tests + a seeded-fuzz property test); next: Phase 4 (live adapters).
+tests + a seeded-fuzz property test). **Phase 4 built 2026-07-16** (live adapters:
+`live/src/strategies/engine/` = `decision_loop` + `producers` + `sinks` + `exec_paper`
++ `exec_real` + `event_log` + `reapers` + `convert`; new engine loop wired into
+`main.rs` over the same `strategy_rx` ping channel (old `StrategyRunner` retired from
+the runtime; legacy `StrategyService` kept for compile only, reapers NOT spawned);
+CRUD/registry/armed HTTP on the live bin; two new `SseEvent` variants; `EVENT_LOG_*`
+env; `cargo check` clean on live+lab, clippy-clean on new code. **Runtime paper smoke
+(4.9) still pending** — needs the live stack + a matching fresh token.); next: Phase 5
+(analysis adapters).
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
 [frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
@@ -569,38 +577,58 @@ Determinism rules (violation = bug):
 
 ### Phase 4 — Live adapters (hunter-live)
 
-- [ ] 4.1 `strategies/loop.rs`: THE serialized decision loop (`select!` over ingest pings,
-      500 ms `Tick` interval, fill notifications, rule reloads, manual commands) — every
-      `reduce` call happens here; effects dispatched after each call. Replaces
-      `runner.rs` + `service.rs` orchestration. (Decision 11: no mint-sharding.)
-- [ ] 4.2 `producers.rs`: ingest→`Event` bridge (`TokenCreated` with instant fp axes,
-      `Trade`, `Migrated`); slot-close detector emitting `FirstSlotSettled`;
-      `token_is_fresh` (`MAX_SNIPE_AGE_SECS`) live-only gate applied at the producer.
-- [ ] 4.3 `exec_real.rs`: `SubmitBuy`/`SubmitSell` → executor submit-and-return; fills
-      confirmed from the **trades feed** (own-wallet match → `FillConfirmed`);
-      **confirmation watchdog**: no feed fill within N slots ⇒ one RPC cross-check ⇒
-      `FillConfirmed`/`FillFailed`. Sell-confirm budget preserved: feed-first, RPC only
-      as timeout fallback (this closes the audited feed-confirm gap). Buy retry/give-up
-      policy expressed as engine reaction to `FillFailed` (bounded attempts).
-- [ ] 4.4 `exec_paper.rs`: worst-case fill model (port `resolve_paper_*` semantics) →
-      emits `FillConfirmed` from real indexed trades; death close for paper stays
-      engine-driven (Dead exit reason), no separate sweep task.
-- [ ] 4.5 `sinks.rs`: `PositionUpdate` → PG writer (channel, existing repo) + position
-      SSE (keep today's delta events so `useRulePositions` keeps working);
-      `ArmedChanged` → new SSE event type (coalesced ≤2/s per token) + armed snapshot
-      endpoint `GET /api/strategies/armed` (frontend live monitor).
-- [ ] 4.6 `event_log.rs`: recorder (append every event pre-reduce; rotate daily;
-      `EVENT_LOG_DIR`/retention envs — add to `hunter/.env` + `.env.example` per env
-      rules) + **boot recovery**: replay log tail (bounded by `MAX_SNIPE_AGE_SECS`) to
-      rebuild armed state; reconcile positions against PG (PG wins).
-- [ ] 4.7 Keep recovery reapers (`redrive_orphaned_*`, `reconcile_externally_cleared_*`,
-      `fail_stale_exit_pending`) — retarget to emit `ManualClose`/`FillFailed` events
-      instead of mutating positions directly (single transition point preserved).
-- [ ] 4.8 `http.rs`: rules + fingerprints CRUD on the live bin;
-      `GET /api/meta/strategy-registry` (serialized engine registry — FE contract).
-- [ ] 4.9 Runtime smoke (paper): permissive rule → watch arm→enter→exit via SSE/logs;
-      quiet-token stall exit fires on tick; kill the bin mid-arm → boot recovery
-      restores armed state from the log.
+- [x] 4.1 THE serialized decision loop — `strategies/engine/decision_loop.rs` (`loop`
+      is a keyword). `select!` over the same `strategy_rx` ping channel, a 500 ms `Tick`,
+      a `fill_rx` (executor fills), and a `cmd_rx` (rule reloads / manual closes). Every
+      `reduce` call happens here; effects dispatched two-pass (state effects → PG+SSE
+      first, so a durable row exists before the submit is spawned; then submit effects).
+      `spawn_engine` returns `EngineHandles { handle, armed, positions, task }`.
+- [x] 4.2 `producers.rs`: `StrategyPing` + `TokenCache` → `Event`s (mirrors the old
+      runner dispatch). `TokenCreated` (observed axes via `convert::observed_axes`, gated
+      by `token_is_fresh`), one `Trade` per new cached trade via a per-mint absolute
+      cursor (a dropped/coalesced ping never loses flow), `FirstSlotSettled` on the
+      window-closed latch, `Migrated`. `reserve_sol` fed from `real_reserve_sol` (deadness
+      parity). `retain`/`forget` bound the per-mint maps.
+- [x] 4.3 `exec_real.rs`: `SubmitBuy` → `buy_token_snipe_write_ahead` (write-ahead
+      `mark_buy_submitted` in the `on_signed` hook) → feed-confirm (`find_fill_by_signature`,
+      woken by `TradeSignals`) with an **RPC watchdog** (`signature_state_detailed`).
+      `SubmitSell` → `sell_token_once`/`amm_sell` (escalating tip) → confirm by
+      `sum_legs_by_signatures` vs held amount. **Double-fire safety preserved:** emits
+      `FillFailed` (⇒ engine resubmit) ONLY when safe (never-signed / confirmed revert /
+      definitively-unsold); a truly-ambiguous outcome emits **nothing** and leaves the
+      durable row for the reaper. Reuses `snipe_reserves_from_cache`.
+- [x] 4.4 `exec_paper.rs`: transaction-free fill at the token's canonical spot at the
+      instant the engine decided (parity with the sim path — both fill at the spot the
+      triggering event carries). No sigs stashed. Death close stays engine-driven (`Dead`).
+- [x] 4.5 `sinks.rs`: `PositionUpdate` → `strategy_positions` writer (lazy one-run-per-rule
+      via `insert_run`; `record_entry_fill`/`close`; fill sigs threaded via the
+      intent-keyed `FillSigStore` since the pure `Fill` carries none) + a **new**
+      `SseEvent::StrategyPositionUpdate` (the legacy `TpslPositionsChanged` shape needs the
+      legacy runtime cache — the new FE plan consumes the new variant). `ArmedChanged` →
+      `SseEvent::StrategyArmedChanged` + the `ArmedRegistry` snapshot behind
+      `GET /api/strategies/armed`.
+- [x] 4.6 `event_log.rs`: JSONL recorder (loggable-subset `LoggedEvent`, no `Tick`/
+      `RulesReloaded`; daily rotation; `EVENT_LOG_DIR`/`EVENT_LOG_RETENTION_DAYS` added to
+      `hunter/.env` + `.env.example`). **Boot recovery** is conservative — `recover_armed`
+      replays the recent tail (bounded by `MAX_SNIPE_AGE_SECS`) to **re-arm only** tokens
+      with no open PG position (held mints + any mint that reached a fill in the log are
+      excluded, so no re-entry). Effects discarded on replay. *Deferred:* full re-adoption
+      of open positions into engine state (PG + the reaper own them).
+- [x] 4.7 Reaper — `reapers.rs` PG **backstop** (`fail_stale_exit_pending` +
+      `delete_stale_unentered`, both modes, 60 s). *Deviation from "emit events":* an opaque
+      engine intent isn't reconstructible from a bare PG row, so the reaper settles the
+      durable row directly, well past the point the engine could still act — same safety
+      property, no event round-trip. Old `StrategyService` reapers are NOT spawned (they'd
+      race the engine over `strategy_positions`).
+- [x] 4.8 HTTP on the live bin (`api/handlers/strategies/engine.rs` + routes):
+      `/api/strategy-rules` CRUD + activate/pause (over `RuleRepo` + `strategies::rules`),
+      `/api/fingerprints` CRUD, `GET /api/meta/strategy-registry` (`registry_json()`),
+      `GET /api/strategies/armed`. Every mutation ends in `engine.reload_rules()`.
+      `DeployState` gained `engine`/`armed`/`rule_repo`/`fingerprint_repo`.
+- [ ] 4.9 Runtime smoke (paper) — **PENDING**: needs the live stack (Postgres w/ migration
+      0004 + Helius ingest) and a fresh token matching a rule's fingerprint. Compile-clean
+      + engine golden/property tests + core tests green; the decision logic is the
+      Phase-3-tested `reduce`, the adapters are thin.
 
 ### Phase 5 — Analysis adapters (hunter-lab)
 

@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 trading_core = { path = "../core", package = "hunter-core" }
+# The pure strategy engine the live adapters wrap (event/effect fold + types).
+hunter-engine = { path = "../engine" }
 ingest-laserstream = { package = "ingest-pumpfun", path = "../../shared/ingest/pumpfun", features = ["raw-tx", "rpc-backfill"] }
 # `probe`/`claim` are off by default in the crate; the live box uses both.
 # Key stays `pump-trader` (lib `pump_trader`) via the façade; package renamed to
@@ -45,6 +47,7 @@ anyhow = "1"
 
 # Shared state
 dashmap = "4.0"
+smallvec = "1"
 
 # Config
 dotenvy = "0.15"

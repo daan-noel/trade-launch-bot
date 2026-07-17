@@ -3,8 +3,11 @@ use std::sync::Arc;
 use dashmap::{DashMap, DashSet};
 use tokio::sync::{watch, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 
+use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
+use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::strategies::runtime_cache::StrategyRuntimeCache;
+use crate::strategies::engine::{ArmedRegistry, EngineHandle};
 use crate::strategies::StrategyService;
 use crate::trader::PumpFunTrader;
 
@@ -29,6 +32,16 @@ pub struct DeployState {
     /// and owns the rule-CRUD lifecycle (activate / pause / stop-and-close) the
     /// handlers call. Cheaply `Clone` (Arc-backed); the runner holds a sibling clone.
     pub strategy: StrategyService,
+    /// Handle to the generic fingerprint+metrics engine loop — rule/fingerprint
+    /// CRUD handlers ping it to reload, and manual position closes route through it.
+    pub engine: EngineHandle,
+    /// Live snapshot of armed (token, rule) pairs (the `GET /api/strategies/armed`
+    /// source; the engine sink writes it).
+    pub armed: ArmedRegistry,
+    /// Generic `strategy_rules` repo (new-engine rule CRUD handlers).
+    pub rule_repo: RuleRepo,
+    /// `fingerprints` repo (new-engine fingerprint CRUD handlers).
+    pub fingerprint_repo: FingerprintRepo,
     /// Live PumpSwap pool → mint index (shared with the ingest pipeline and WS
     /// task). A token sync registers a migrated token's pool here to subscribe.
     pub pool_index: Arc<DashMap<String, String>>,
@@ -56,6 +69,10 @@ impl DeployState {
         core: Arc<CoreState>,
         trader: Arc<PumpFunTrader>,
         strategy: StrategyService,
+        engine: EngineHandle,
+        armed: ArmedRegistry,
+        rule_repo: RuleRepo,
+        fingerprint_repo: FingerprintRepo,
         pool_index: Arc<DashMap<String, String>>,
         pools_changed: Arc<Notify>,
         trade_signals: Arc<TradeSignals>,
@@ -65,6 +82,10 @@ impl DeployState {
             core,
             trader,
             strategy,
+            engine,
+            armed,
+            rule_repo,
+            fingerprint_repo,
             pool_index,
             pools_changed,
             trade_signals,

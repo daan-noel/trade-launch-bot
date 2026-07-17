@@ -254,6 +254,49 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 json!({ "run_id": run_id, "cancelled": cancelled }),
             )
         }
+        SseEvent::StrategyPositionUpdate {
+            rule_id,
+            mint_address,
+            position_id,
+            status,
+            exit_reason,
+            entry_price,
+            exit_price,
+        } => {
+            // Mint-scoped: the generic engine's position transition. The client
+            // patches the one row keyed by `position_id`.
+            (
+                Some(mint_address.clone()),
+                "strategy_position_update",
+                json!({
+                    "rule_id": rule_id,
+                    "mint_address": mint_address,
+                    "position_id": position_id,
+                    "status": status,
+                    "exit_reason": exit_reason,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                }),
+            )
+        }
+        SseEvent::StrategyArmedChanged {
+            rule_id,
+            mint_address,
+            state: armed_state,
+            reason,
+        } => {
+            // Mint-scoped: the generic engine's (token, rule) arming transition.
+            (
+                Some(mint_address.clone()),
+                "strategy_armed_changed",
+                json!({
+                    "rule_id": rule_id,
+                    "mint_address": mint_address,
+                    "state": armed_state,
+                    "reason": reason,
+                }),
+            )
+        }
     };
 
     let frame = format!(

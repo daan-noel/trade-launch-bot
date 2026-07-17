@@ -14,6 +14,46 @@ use actix_web::web;
 pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
+            // ── Generic fingerprint + metrics engine (strategy redesign) ──
+            // The metric registry the frontend renders its rule-authoring UI from.
+            .route(
+                "/meta/strategy-registry",
+                web::get().to(handlers::strategies::engine::strategy_registry),
+            )
+            // Live armed (token, rule) snapshot for the monitor.
+            .route("/strategies/armed", web::get().to(handlers::strategies::engine::list_armed))
+            // Fingerprints CRUD (shared by many rules).
+            .route("/fingerprints", web::get().to(handlers::strategies::engine::list_fingerprints))
+            .route("/fingerprints", web::post().to(handlers::strategies::engine::create_fingerprint))
+            .route(
+                "/fingerprints/{id}",
+                web::get().to(handlers::strategies::engine::get_fingerprint),
+            )
+            .route(
+                "/fingerprints/{id}",
+                web::put().to(handlers::strategies::engine::update_fingerprint),
+            )
+            .route(
+                "/fingerprints/{id}",
+                web::delete().to(handlers::strategies::engine::delete_fingerprint),
+            )
+            // Generic rules CRUD + activate/pause.
+            .route("/strategy-rules", web::get().to(handlers::strategies::engine::list_rules))
+            .route("/strategy-rules", web::post().to(handlers::strategies::engine::create_rule))
+            .route(
+                "/strategy-rules/{id}/activate",
+                web::post().to(handlers::strategies::engine::activate_rule),
+            )
+            .route(
+                "/strategy-rules/{id}/pause",
+                web::post().to(handlers::strategies::engine::pause_rule),
+            )
+            .route("/strategy-rules/{id}", web::get().to(handlers::strategies::engine::get_rule))
+            .route("/strategy-rules/{id}", web::put().to(handlers::strategies::engine::update_rule))
+            .route(
+                "/strategy-rules/{id}",
+                web::delete().to(handlers::strategies::engine::delete_rule),
+            )
             // Token list (unified TableRequest POST; no swing-chain stats on live)
             .route("/tokens", web::post().to(handlers::tokens::list_tokens))
             // Token sync

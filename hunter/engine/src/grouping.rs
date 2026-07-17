@@ -117,7 +117,7 @@ fn bucket_lamports_as_sol(lamports: i64, width: f64, decimals: usize) -> String 
 /// Token-creation metadata used **only** for grouping — never read by any
 /// `simulate()`. Carried on each corpus token so grouping is a pure in-memory
 /// pass with no extra DB hit in the sweep loop.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TokenFingerprint {
     pub token_program_id: Option<String>,
     pub initial_buy_sol: Option<f64>,

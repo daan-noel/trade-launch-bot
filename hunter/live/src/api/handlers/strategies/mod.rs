@@ -3,5 +3,6 @@
 //! path segment — see [`positions`]. The legacy per-strategy `tpsl{1,2}_positions`
 //! modules were retired in Phase 3.
 
+pub mod engine;
 pub mod positions;
 pub mod rules;

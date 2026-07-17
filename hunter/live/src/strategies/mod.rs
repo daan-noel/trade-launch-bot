@@ -15,6 +15,7 @@
 //! modules were retired in Phase 3.
 pub use trading_core::strategies::analysis;
 
+pub mod engine;
 pub mod execution;
 pub mod runner;
 pub mod service;

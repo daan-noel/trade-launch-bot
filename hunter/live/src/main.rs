@@ -675,22 +675,8 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Bound the in-memory token cache: evict mints that have gone quiet beyond the
-    // activity window and hold no open position, so the cache doesn't grow one
-    // entry per created mint for the life of the process. The held-mint exemption
-    // reads the strategy runtime caches' in-memory holding indexes (paper + real),
-    // so no DB round trip and no coupling into `strategies/`.
-    {
-        let token_cache = token_cache.clone();
-        let sc = strategy_cache.clone();
-        let evict_repo =
-            trading_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
-        tokio::spawn(state::token_cache::run_token_cache_eviction(
-            token_cache,
-            move |mint: &str| sc.is_mint_held(mint),
-            evict_repo,
-        ));
-    }
+    // (The token-cache eviction task is spawned after the engine loop below, so its
+    // held-mint exemption can also consult the engine's live position registry.)
 
     // Built after the transport branch so `DeployState` shares the active
     // pipeline's pool→mint index and migration signal with the HTTP handlers (a
@@ -709,9 +695,10 @@ async fn main() -> anyhow::Result<()> {
         settings_tx.clone(),
         sol_price.clone(),
     ));
-    // The one unified live service: owns the runtime cache + repo and the rule-CRUD
-    // lifecycle. Its background reapers are spawned here so `DeployState` and the
-    // runner can share the same handle (cheap Arc-backed clones).
+    // The legacy unified service is still constructed so `DeployState` + the legacy
+    // rule/position handlers compile (deleted in Phase 7); its background reapers are
+    // **not** spawned — the generic engine now owns `strategy_positions`, and running
+    // the old reapers alongside it would race over the same rows.
     let strategy_service = strategies::StrategyService::new(
         db.clone(),
         trader.clone(),
@@ -721,12 +708,49 @@ async fn main() -> anyhow::Result<()> {
         trade_signals.clone(),
         settings_tx.subscribe(),
     );
-    strategy_service.spawn_background_tasks();
+
+    // ── The generic fingerprint + metrics engine (strategy redesign, Phase 4) ──
+    // THE serialized decision loop, driven by the same ingest ping channel the old
+    // `StrategyRunner` drained (`strategy_rx`), a 500 ms tick, and confirmed fills.
+    let rule_repo =
+        trading_core::storage::repositories::rule_repo::RuleRepo::new(db.clone());
+    let fingerprint_repo =
+        trading_core::storage::repositories::fingerprint_repo::FingerprintRepo::new(db.clone());
+    let engine_handles = strategies::engine::spawn_engine(strategies::engine::EngineDeps {
+        ping_rx: strategy_rx,
+        rule_repo: rule_repo.clone(),
+        fp_repo: fingerprint_repo.clone(),
+        strategy_repo:
+            trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone()),
+        trade_repo: trading_core::storage::repositories::trade_repo::TradeRepo::new(db.clone()),
+        token_cache: token_cache.clone(),
+        trader: trader.clone(),
+        trade_signals: trade_signals.clone(),
+        sse_tx: sse_tx.clone(),
+        settings: settings_tx.subscribe(),
+    });
+    let strategies::engine::EngineHandles {
+        handle: engine_handle,
+        armed: engine_armed,
+        positions: engine_positions,
+        task: strategy_task,
+    } = engine_handles;
+
+    // Recovery reaper backstop: settles durable `strategy_positions` rows the engine
+    // loop can't resolve itself (a dead sell task's stuck `ExitPending`, an ambiguous
+    // buy's abandoned `BuySubmitted`). Fire-and-forget — advisory cleanup, never fatal.
+    let _engine_reaper = strategies::engine::reapers::spawn_reaper(
+        trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone()),
+    );
 
     let deploy_state = Arc::new(state::deploy_state::DeployState::new(
         core_state.clone(),
         trader.clone(),
         strategy_service.clone(),
+        engine_handle,
+        engine_armed,
+        rule_repo,
+        fingerprint_repo,
         pool_index,
         pools_changed,
         trade_signals.clone(),
@@ -768,8 +792,22 @@ async fn main() -> anyhow::Result<()> {
     // tracked subset, never the 100K+ universe. `lab` still runs the refresher to
     // build a full in-RAM snapshot (it has the RAM and wants the speed).
 
-    let strategy_runner = strategies::StrategyRunner::new(strategy_service, token_cache.clone());
-    let strategy_task = tokio::spawn(strategy_runner.run(strategy_rx));
+    // Bound the in-memory token cache: evict mints that have gone quiet beyond the
+    // activity window and hold no open position. The held-mint exemption now consults
+    // BOTH the legacy runtime cache (historical rows) and the generic engine's live
+    // position registry, so an engine-held token's price feed is never evicted mid-hold.
+    {
+        let token_cache = token_cache.clone();
+        let sc = strategy_cache.clone();
+        let positions = engine_positions.clone();
+        let evict_repo =
+            trading_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
+        tokio::spawn(state::token_cache::run_token_cache_eviction(
+            token_cache,
+            move |mint: &str| sc.is_mint_held(mint) || positions.is_mint_held(mint),
+            evict_repo,
+        ));
+    }
 
     // Initialize SOL price cache immediately, then start the poller.
     match services::sol_price::fetch_latest_sol_price().await {
@@ -852,7 +890,7 @@ async fn main() -> anyhow::Result<()> {
     let outcome: anyhow::Result<()> = tokio::select! {
         res = consumer_task  => Err(task_fault("Ingest consumer", res)),
         res = db_writer_task => Err(task_fault("DbWriter", res)),
-        res = strategy_task => Err(task_fault("Strategy runner", res)),
+        res = strategy_task => Err(task_fault("Strategy engine", res)),
         res = price_task    => Err(task_fault("SOL price poller", res)),
         res = async {
             match server_task {
