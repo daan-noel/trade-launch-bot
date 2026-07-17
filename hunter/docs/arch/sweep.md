@@ -40,12 +40,18 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 
 | Policy | Value |
 | --- | --- |
-| Rayon threads | `max(1, cores / 2)` (e.g. 8 on 16 logical CPUs) |
-| RAM reserve | prefer leaving 4 GB free for OS/UI |
-| Series admission | `min(4 GB cap, available − 4 GB)`; if free RAM is already under 4 GB (common after corpus load on a 16 GB box), use **half of remaining free** instead of a 0-byte budget |
-| Fold batch budget | `available / 8` clamped to 32..=256 MB; hard max **65 536** combos per batch (prevents ~180 MB single allocs that abort the process) |
+| Rayon threads | `max(1, cores − 2)` (e.g. 14 on 16 logical CPUs) |
+| RAM reserve | keep **2 GB** free for OS/UI (`usable = free − 2 GB`; no half-of-free degradation) |
+| Series admission | `min(12 GB cap, usable)`; refuse when usable is 0 |
+| Fold batch budget | `usable / 4` clamped to 32..=512 MB; hard max **65 536** combos/batch (8192 when under reserve) |
+| Driver | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
+| Sharding | large `N` split into RAM-sized combo ranges; up to 4 shards in parallel (RAM-capped); spill+merge |
+| Smarter search | full `grid` with ≥200k combos and no refine → auto `lhs:50000` + refine (override with explicit `refine:` / `random:`) |
+| Combo materialisation | index-only `GenericCombo { idx }`; `CompiledRule` bound per batch; combo JSON for **retained survivors only** |
+| Combo-side admission | peak priced as **one shard**, not full N |
+| Horizon clamps | sparse-grid ceilings ~7d; gap tick hard-cap; `combo_count` checked mul |
 
-At generic-sweep start the engine estimates `threads × largest_token_series`, **auto-lowers threads** to fit that ceiling, and rejects only if even 1 thread overflows. Start log includes cores, preferred/actual threads, RSS, and host total/available MB.
+Start log includes cores, threads, wave, planned/shard-peak combos, RSS, host total/available MB.
 
 **Last-resort corpus/combo shrink knobs** (manual UI / rare opt-in; change *what* is computed) — use only when admission still fails after thread reduction:
 

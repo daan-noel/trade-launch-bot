@@ -404,12 +404,15 @@ impl Strategy for Tpsl1Strategy {
     type EntryKey = ();
     // No param-independent per-token state to hoist.
     type TokenState = ();
+    type BoundParams = ();
 
     fn entry_key(&self, _params: &Tpsl1Combo) {}
 
+    fn bind_param(&self, _params: &Tpsl1Combo) {}
+
     fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
 
-    fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _params: &Tpsl1Combo) -> Tpsl1Entry {
+    fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), _params: &Tpsl1Combo) -> Tpsl1Entry {
         // (1) Entry fill — the live/backtest fill resolution (cap 1, matching
         // `run_backtest`). TPSL1 has no per-trade entry gate; the token-creation
         // filter ran upstream when the corpus was selected.
@@ -430,6 +433,7 @@ impl Strategy for Tpsl1Strategy {
         &self,
         trades: &[CorpusTrade],
         _state: &(),
+        _bound: &(),
         entry: &Tpsl1Entry,
         params: &Tpsl1Combo,
     ) -> TokenOutcome {

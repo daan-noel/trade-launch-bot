@@ -24,19 +24,23 @@ const CANCEL_CHECK_STRIDE: usize = 256;
 pub(crate) fn fill_outcomes_with_state<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
+    bound: &[S::BoundParams],
     token: &crate::sweep::corpus::CorpusToken,
     token_state: &S::TokenState,
     observer: &dyn SweepObserver,
     out: &mut Vec<TokenOutcome>,
 ) -> std::result::Result<(), ()> {
+    assert_eq!(params.len(), bound.len());
     out.clear();
     let trades: &[CorpusTrade] = &token.trades;
     let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
-    for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
+    for (chunk_i, chunk) in params.chunks(CANCEL_CHECK_STRIDE).enumerate() {
         if observer.cancelled() {
             return Err(());
         }
-        for p in chunk {
+        let base = chunk_i * CANCEL_CHECK_STRIDE;
+        for (j, p) in chunk.iter().enumerate() {
+            let i = base + j;
             let key = strategy.entry_key(p);
             let stale = match &entry_cache {
                 Some((k, _)) => k != &key,
@@ -46,11 +50,11 @@ pub(crate) fn fill_outcomes_with_state<S: Strategy>(
                 if observer.cancelled() {
                     return Err(());
                 }
-                let entry = strategy.resolve_entry(trades, token_state, p);
+                let entry = strategy.resolve_entry(trades, token_state, &bound[i], p);
                 entry_cache = Some((key, entry));
             }
             let entry = &entry_cache.as_ref().unwrap().1;
-            out.push(strategy.resolve_exit(trades, token_state, entry, p));
+            out.push(strategy.resolve_exit(trades, token_state, &bound[i], entry, p));
         }
     }
     Ok(())
@@ -71,8 +75,9 @@ pub(crate) fn fill_outcomes<S: Strategy>(
     observer: &dyn SweepObserver,
     out: &mut Vec<TokenOutcome>,
 ) -> std::result::Result<(), ()> {
+    let bound: Vec<S::BoundParams> = params.iter().map(|p| strategy.bind_param(p)).collect();
     let token_state = strategy.prepare_token(token);
-    fill_outcomes_with_state(strategy, params, token, &token_state, observer, out)
+    fill_outcomes_with_state(strategy, params, &bound, token, &token_state, observer, out)
 }
 
 /// Headline counts for a completed sweep. Read by the engine's correctness tests
@@ -88,32 +93,33 @@ pub struct SweepStats {
 
 /// Largest combo batch whose fold peak stays within the memory budget (Phase 2.5).
 ///
-/// Peak for one batch ≈
+/// With the series-once wave driver, peak for one pass ≈
 ///   `batch × sizeof(ComboAgg)` (folder)
-/// + `inflight × batch × sizeof(TokenOutcome)` (rayon producers + bounded queue)
+/// + `inflight × batch × sizeof(TokenOutcome)` (wave producers + bounded queue)
+/// + `wave × TokenState` (held across all combo passes for that wave)
 ///
-/// so `batch = budget / (sizeof(ComboAgg) + inflight × sizeof(TokenOutcome))`.
-/// Also hard-capped at [`HARD_MAX_COMBO_BATCH`] so a fragmented 16 GB box never
-/// tries a single ~180 MB contiguous alloc that aborts the process.
+/// Batch sizing still accounts for ComboAgg + outcome buffers; series are capped
+/// separately by [`crate::sweep::registry::series_wave_size`]. Hard-capped at
+/// [`HARD_MAX_COMBO_BATCH`].
 pub fn combo_batch_size(n_combos: usize, threads: usize) -> usize {
     if n_combos == 0 {
         return 1;
     }
     let threads = threads.max(1) as u64;
-    // Producers (~threads) + a few queued buffers (fold_batch channel depth ≤ 32).
     let inflight = threads.saturating_mul(3).max(4);
     let per = (std::mem::size_of::<ComboAgg>() as u64)
         .saturating_add(inflight.saturating_mul(std::mem::size_of::<TokenOutcome>() as u64))
         .max(1);
     let budget = crate::sweep::registry::sweep_memory_budget_bytes();
     let max_batch = (budget / per).max(1) as usize;
-    max_batch.min(n_combos).min(HARD_MAX_COMBO_BATCH).max(1)
+    let hard = crate::sweep::registry::hard_max_combo_batch();
+    max_batch.min(n_combos).min(hard).max(1)
 }
 
 /// Absolute ceiling on one fold batch's combo count — independent of the byte
 /// budget. Prevents a single `vec![ComboAgg; batch]` from demanding hundreds of MB
 /// of contiguous address space on a RAM-fragmented workstation.
-const HARD_MAX_COMBO_BATCH: usize = 65_536;
+pub(crate) const HARD_MAX_COMBO_BATCH: usize = 65_536;
 
 /// Number of `batch`-sized passes needed to cover `n_combos` combos (≥ 1). Used by
 /// the grouped driver to scale the progress total: each token is folded once per
@@ -122,22 +128,32 @@ pub fn combo_batch_count(n_combos: usize, batch: usize) -> usize {
     n_combos.div_ceil(batch.max(1)).max(1)
 }
 
-/// Run every combo against every token; fold the per-(combo, token) outcomes
-/// into one ranked [`ComboMetrics`] row per combo. Parallel over tokens; the
-/// inner loop runs all combos for one token before moving on. The writer thread
-/// owns the accumulators so the hot loop never locks.
+/// Whether holding `n_combos` [`ComboAgg`]s + one series wave fits usable RAM.
+/// When true, [`run_sweep`] uses **wave-outer** (series once per token).
+pub fn full_combo_aggs_fit(n_combos: usize, wave: usize, max_series_bytes: usize) -> bool {
+    let agg = (n_combos as u64).saturating_mul(std::mem::size_of::<ComboAgg>() as u64);
+    let series = (wave as u64).saturating_mul(max_series_bytes as u64);
+    let fold = crate::sweep::registry::sweep_memory_budget_bytes();
+    let need = agg.saturating_add(series).saturating_add(fold);
+    match crate::sweep::registry::usable_host_bytes() {
+        Some(usable) => need <= usable.saturating_sub(256 * 1024 * 1024),
+        // Unknown host RAM: only fit small full-agg sets (legacy-safe).
+        None => agg <= 64 * 1024 * 1024,
+    }
+}
+
+/// Progress-bar pass count. Each token still visits every combo batch (even in
+/// wave-outer — series is reused, but `token_done` fires once per batch).
+pub fn sweep_progress_passes(n_combos: usize, batch: usize) -> usize {
+    combo_batch_count(n_combos, batch)
+}
+
+/// Run every combo against every token; fold into one ranked [`ComboMetrics`] per combo.
 ///
-/// `observer` reports one `token_done` per folded token (for the progress bar)
-/// and is polled for cancellation: once `cancelled()` is set, the per-token
-/// producers stop scheduling new tokens via `try_for_each_with`, AND the inner
-/// combo loop bails between chunks of [`CANCEL_CHECK_STRIDE`] combos. Without the
-/// inner check, a single token folds the full combo set (up to `HARD_MAX_COMBOS`)
-/// before the next cancel poll — seconds of work per in-flight token — so a cancel
-/// couldn't land promptly on a large-combo run. With it, the worst-case stop
-/// latency is one chunk × the ≤pool-size in-flight tokens. A token that bails
-/// mid-loop produces a short `outs` (fewer than `n_combos`); it is NEVER sent to
-/// the folder (which indexes by `combo_id`), and the caller discards the partial
-/// aggregates after checking `cancelled()`.
+/// Large combo spaces are **sharded** ([`crate::sweep::shard`]): each shard runs
+/// wave-outer or pass-outer under the RAM ceiling, spills metrics to disk, then
+/// shards merge. Pass-outer also streams finalized batches through
+/// [`crate::sweep::spill`] so peak metrics RAM stays O(batch).
 pub fn run_sweep<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
@@ -146,36 +162,243 @@ pub fn run_sweep<S: Strategy>(
     batch: usize,
 ) -> Result<(SweepStats, Vec<ComboMetrics>)> {
     let n_combos = params.len();
-    let batch = batch.clamp(1, n_combos.max(1));
-    let projected = corpus.token_count() as u64 * n_combos as u64;
-    tracing::info!(
-        tokens = corpus.token_count(),
-        combos = n_combos,
-        batch,
-        n_batches = combo_batch_count(n_combos, batch),
-        projected_evals = projected,
-        "sweep: starting (folding to per-combo metrics, batched)"
-    );
-
-    // Fold the combo space in budget-sized batches (Phase 2.5): each batch is a full
-    // token-fold over only its combos, finalised to `ComboMetrics` and freed before
-    // the next, so peak accumulator memory is `batch × ComboAgg`, not the full combo
-    // count. Combo ids are kept global (`offset + local`) so the metrics vector is
-    // indexed by `combo_id` exactly as a single-batch run would be.
-    let mut metrics: Vec<ComboMetrics> = Vec::with_capacity(n_combos);
-    let mut total_rows = 0u64;
-    let mut total_fired = 0u64;
-    for (b, chunk) in params.chunks(batch).enumerate() {
-        let offset = b * batch;
-        let (rows, fired, aggs) = fold_batch(strategy, chunk, corpus, observer)?;
-        total_rows += rows;
-        total_fired += fired;
-        metrics.extend(
-            aggs.into_iter()
-                .enumerate()
-                .map(|(i, a)| a.finalize((offset + i) as u32)),
+    if n_combos > HARD_MAX_COMBOS_GUARD {
+        anyhow::bail!(
+            "combo count {n_combos} exceeds hard guard {HARD_MAX_COMBOS_GUARD} — \
+             refuse to allocate fold buffers"
         );
     }
+    if n_combos == 0 {
+        return Ok((
+            SweepStats {
+                tokens: corpus.token_count(),
+                combos: 0,
+                rows: 0,
+                fired: 0,
+            },
+            Vec::new(),
+        ));
+    }
+
+    let threads = rayon::current_num_threads().max(1);
+    let max_series = corpus
+        .tokens
+        .iter()
+        .map(|t| strategy.token_state_bytes_estimate(t))
+        .max()
+        .unwrap_or(0);
+    let wave = crate::sweep::registry::series_wave_size(max_series, threads);
+    let shards = crate::sweep::shard::plan_shards(n_combos, wave, max_series);
+
+    if shards.len() == 1 {
+        return run_sweep_unsharded(strategy, params, corpus, observer, batch, 0);
+    }
+
+    let shard_len = shards.first().map(|r| r.len()).unwrap_or(1);
+    let parallel =
+        crate::sweep::shard::max_parallel_shards(shard_len, wave, max_series, threads);
+    tracing::info!(
+        combos = n_combos,
+        shards = shards.len(),
+        parallel,
+        wave,
+        max_series_mb = max_series / (1024 * 1024),
+        "sweep: combo sharding (spill+merge)"
+    );
+
+    let mut spill_paths = Vec::with_capacity(shards.len());
+    let mut total_rows = 0u64;
+    let mut total_fired = 0u64;
+
+    for chunk in shards.chunks(parallel) {
+        if observer.cancelled() {
+            break;
+        }
+        let chunk_results: Vec<Result<(u64, u64, std::path::PathBuf)>> = chunk
+            .par_iter()
+            .map(|range| {
+                let (stats, metrics) = run_sweep_unsharded(
+                    strategy,
+                    &params[range.clone()],
+                    corpus,
+                    observer,
+                    batch,
+                    range.start as u32,
+                )?;
+                let path = crate::sweep::spill::write_metrics_spill(&metrics)?;
+                Ok((stats.rows, stats.fired, path))
+            })
+            .collect();
+
+        for r in chunk_results {
+            let (rows, fired, path) = r?;
+            total_rows += rows;
+            total_fired += fired;
+            spill_paths.push(path);
+        }
+    }
+
+    let metrics = crate::sweep::spill::merge_spill_paths(spill_paths)?;
+    Ok((
+        SweepStats {
+            tokens: corpus.token_count(),
+            combos: n_combos,
+            rows: total_rows,
+            fired: total_fired,
+        },
+        metrics,
+    ))
+}
+
+/// One shard (or the whole combo set when unsharded). `id_base` is added to every
+/// finalized `combo_id` so shards stitch into a global index space.
+fn run_sweep_unsharded<S: Strategy>(
+    strategy: &S,
+    params: &[S::Params],
+    corpus: &Corpus,
+    observer: &dyn SweepObserver,
+    batch: usize,
+    id_base: u32,
+) -> Result<(SweepStats, Vec<ComboMetrics>)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let n_combos = params.len();
+    let batch = batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::hard_max_combo_batch()));
+    let threads = rayon::current_num_threads().max(1);
+    let max_series = corpus
+        .tokens
+        .iter()
+        .map(|t| strategy.token_state_bytes_estimate(t))
+        .max()
+        .unwrap_or(0);
+    let wave = crate::sweep::registry::series_wave_size(max_series, threads);
+    let wave_outer = full_combo_aggs_fit(n_combos, wave, max_series);
+    let n_batches = combo_batch_count(n_combos, batch);
+    tracing::debug!(
+        combos = n_combos,
+        batch,
+        n_batches,
+        wave,
+        wave_outer,
+        id_base,
+        "sweep: shard starting"
+    );
+
+    let series_builds = AtomicUsize::new(0);
+    let mut total_rows = 0u64;
+    let mut total_fired = 0u64;
+
+    let metrics = if wave_outer {
+        let mut aggs = vec![ComboAgg::default(); n_combos];
+        for wave_tokens in corpus.tokens.chunks(wave) {
+            if observer.cancelled() {
+                break;
+            }
+            let states: Vec<S::TokenState> = wave_tokens
+                .par_iter()
+                .map(|t| {
+                    series_builds.fetch_add(1, Ordering::Relaxed);
+                    strategy.prepare_token(t)
+                })
+                .collect();
+            for (pass_i, chunk) in params.chunks(batch).enumerate() {
+                if observer.cancelled() {
+                    break;
+                }
+                let offset = pass_i * batch;
+                let bound: Vec<S::BoundParams> =
+                    chunk.iter().map(|p| strategy.bind_param(p)).collect();
+                let (rows, fired) = fold_wave_into(
+                    strategy,
+                    chunk,
+                    &bound,
+                    wave_tokens,
+                    &states,
+                    &mut aggs[offset..offset + chunk.len()],
+                    observer,
+                )?;
+                total_rows += rows;
+                total_fired += fired;
+            }
+        }
+        aggs.into_iter()
+            .enumerate()
+            .map(|(i, a)| a.finalize(id_base + i as u32))
+            .collect()
+    } else {
+        // Stream finalized batches to disk so peak metrics RAM stays O(batch).
+        let mut spill = crate::sweep::spill::MetricsSpill::create()?;
+        let mut written = 0usize;
+        for (pass_i, chunk) in params.chunks(batch).enumerate() {
+            if observer.cancelled() {
+                let pad: Vec<_> = (written..n_combos)
+                    .map(|i| ComboAgg::default().finalize(id_base + i as u32))
+                    .collect();
+                spill.push_batch(&pad)?;
+                written = n_combos;
+                break;
+            }
+            let hard = crate::sweep::registry::hard_max_combo_batch();
+            if chunk.len() > hard {
+                anyhow::bail!(
+                    "combo pass length {} exceeds hard_max_combo_batch {}",
+                    chunk.len(),
+                    hard
+                );
+            }
+            let mut aggs = vec![ComboAgg::default(); chunk.len()];
+            let offset = pass_i * batch;
+            let bound: Vec<S::BoundParams> =
+                chunk.iter().map(|p| strategy.bind_param(p)).collect();
+
+            for wave_tokens in corpus.tokens.chunks(wave) {
+                if observer.cancelled() {
+                    break;
+                }
+                let states: Vec<S::TokenState> = wave_tokens
+                    .par_iter()
+                    .map(|t| {
+                        series_builds.fetch_add(1, Ordering::Relaxed);
+                        strategy.prepare_token(t)
+                    })
+                    .collect();
+                let (rows, fired) = fold_wave_into(
+                    strategy,
+                    chunk,
+                    &bound,
+                    wave_tokens,
+                    &states,
+                    &mut aggs,
+                    observer,
+                )?;
+                total_rows += rows;
+                total_fired += fired;
+            }
+
+            let batch_metrics: Vec<_> = aggs
+                .into_iter()
+                .enumerate()
+                .map(|(i, a)| a.finalize(id_base + (offset + i) as u32))
+                .collect();
+            written += batch_metrics.len();
+            spill.push_batch(&batch_metrics)?;
+        }
+        if written < n_combos {
+            let pad: Vec<_> = (written..n_combos)
+                .map(|i| ComboAgg::default().finalize(id_base + i as u32))
+                .collect();
+            spill.push_batch(&pad)?;
+        }
+        spill.finish_load()?
+    };
+
+    let builds = series_builds.load(Ordering::Relaxed);
+    tracing::debug!(
+        series_builds = builds,
+        combos = n_combos,
+        wave_outer,
+        "sweep: shard done"
+    );
 
     Ok((
         SweepStats {
@@ -188,91 +411,81 @@ pub fn run_sweep<S: Strategy>(
     ))
 }
 
-/// Fold one combo batch over the whole corpus: parallel over tokens, all of this
-/// batch's combos inner, a single writer thread accumulating one [`ComboAgg`] per
-/// batch combo. Returns the batch's `(rows, fired, aggs)` (aggs indexed by the
-/// batch-local combo position). Reports one `token_done` per folded token, so a run
-/// of `n_batches` batches reports `tokens × n_batches` units — the grouped driver
-/// scales `set_total` to match. Cancel handling is unchanged: a bail leaves the
-/// aggs partial and the caller discards them.
-fn fold_batch<S: Strategy>(
+/// Refuse absurd combo counts before any fold alloc (defense in depth vs a
+/// wrapping `combo_count` that slipped past the grid guard).
+const HARD_MAX_COMBOS_GUARD: usize = 1_000_000;
+
+/// Fold one combo pass over one wave of tokens that already have `TokenState`.
+/// `bound` must match `params` (compiled once per batch). Merges into `aggs`
+/// (same length as `params`). Returns `(rows, fired)` for this wave.
+fn fold_wave_into<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
-    corpus: &Corpus,
+    bound: &[S::BoundParams],
+    tokens: &[crate::sweep::corpus::CorpusToken],
+    states: &[S::TokenState],
+    aggs: &mut [ComboAgg],
     observer: &dyn SweepObserver,
-) -> Result<(u64, u64, Vec<ComboAgg>)> {
+) -> Result<(u64, u64)> {
+    assert_eq!(tokens.len(), states.len());
+    assert_eq!(aggs.len(), params.len());
+    assert_eq!(bound.len(), params.len());
     let n_combos = params.len();
-    // Bound queued outcome buffers to ~2× pool size (was 256). With large batches,
-    // a deep queue of `Vec<TokenOutcome>` of length `batch` can OOM the box before
-    // the folder drains them.
+    let hard_cap = crate::sweep::registry::hard_max_combo_batch();
+    if n_combos > hard_cap {
+        anyhow::bail!("fold_wave_into: n_combos {n_combos} > hard_max_combo_batch {hard_cap}");
+    }
+
     let channel_depth = rayon::current_num_threads().saturating_mul(2).clamp(4, 32);
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<TokenOutcome>>(channel_depth);
-    // Buffer-recycle channel (folder → producers): the folder returns each drained
-    // outcome buffer here so a producer can refill it instead of allocating a fresh
-    // `vec![; n_combos]` (≈ `n_combos × sizeof(TokenOutcome)`) for every token. At
-    // big-group scale (thousands of tokens × `n_batches`) that alloc/free churn was
-    // pure overhead. Unbounded (the folder only ever holds one buffer at a time);
-    // the `Receiver` is shared across producers behind a short-held `Mutex`.
     let (ret_tx, ret_rx) = std::sync::mpsc::channel::<Vec<TokenOutcome>>();
     let ret_rx = std::sync::Mutex::new(ret_rx);
 
-    std::thread::scope(|scope| -> Result<(u64, u64, Vec<ComboAgg>)> {
-        // Single fold thread: drains outcomes and accumulates per combo.
+    // Folder owns a copy for the wave; we write it back when done.
+    let mut local_aggs = aggs.to_vec();
+    let (rows, fired, merged) = std::thread::scope(|scope| -> Result<(u64, u64, Vec<ComboAgg>)> {
         let folder = scope.spawn(move || -> (u64, u64, Vec<ComboAgg>) {
-            let mut aggs = vec![ComboAgg::default(); n_combos];
             let mut rows = 0u64;
             let mut fired = 0u64;
             while let Ok(outs) = rx.recv() {
                 for (combo_id, o) in outs.iter().enumerate() {
-                    aggs[combo_id].record(o);
+                    local_aggs[combo_id].record(o);
                     rows += 1;
                     if o.fired {
                         fired += 1;
                     }
                 }
-                // One folded token = one progress unit. The folder is single-
-                // threaded, so this is uncontended (no lock on the hot path).
                 observer.token_done();
-                // Hand the buffer back for reuse (cleared by `fill_outcomes` on the
-                // next refill). Ignore the error if every producer has already gone.
                 let _ = ret_tx.send(outs);
             }
-            (rows, fired, aggs)
+            (rows, fired, local_aggs)
         });
 
-        // Producers: one token at a time, all combos inner (slice stays hot).
-        // Cooperative cancel: `try_for_each_with` lets us return `Err` to make
-        // rayon stop scheduling further tokens at once, so a cancel aborts the
-        // run promptly instead of draining the whole remaining corpus. The
-        // caller discards the partial aggregates, so the early exit is safe.
-        let _ = corpus
-            .tokens
-            .par_iter()
-            .try_for_each_with(tx.clone(), |tx, tt| {
+        let produce = tokens.par_iter().zip(states.par_iter()).try_for_each(
+            |(tt, state)| -> std::result::Result<(), ()> {
                 if observer.cancelled() {
                     return Err(());
                 }
-                // Reuse a recycled outcome buffer if one is waiting, else allocate.
-                // `fill_outcomes` clears it before refilling, so a stale buffer is
-                // safe. The `Mutex` is held only for a non-blocking `try_recv`.
                 let mut outs = ret_rx
                     .lock()
                     .ok()
                     .and_then(|rx| rx.try_recv().ok())
                     .unwrap_or_else(|| Vec::with_capacity(n_combos));
-                // Fold all combos for this token (entry resolved once per key,
-                // cancel polled mid-fold — see `fill_outcomes`). A partial `outs`
-                // on bail is never sent; the caller discards the run's aggregates
-                // once it sees `cancelled()`.
-                fill_outcomes(strategy, params, tt, observer, &mut outs)?;
-                // Folder never drops early; ignore only on shutdown races.
+                fill_outcomes_with_state(
+                    strategy, params, bound, tt, state, observer, &mut outs,
+                )?;
                 let _ = tx.send(outs);
                 Ok(())
-            });
+            },
+        );
         drop(tx);
+        let result = folder.join().expect("sweep folder panicked");
+        let _ = produce;
+        Ok(result)
+    })?;
 
-        Ok(folder.join().expect("sweep folder thread panicked"))
-    })
+    aggs.clone_from_slice(&merged);
+    Ok((rows, fired))
 }
 
 #[cfg(test)]
@@ -299,12 +512,14 @@ mod tests {
         type Entry = bool;
         type EntryKey = ();
         type TokenState = ();
+        type BoundParams = ();
         fn entry_key(&self, _p: &f64) {}
+        fn bind_param(&self, _p: &f64) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
-        fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _p: &f64) -> bool {
+        fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,
@@ -424,14 +639,16 @@ mod tests {
         type Entry = i64;
         type EntryKey = i64;
         type TokenState = ();
+        type BoundParams = ();
         fn entry_key(&self, p: &(i64, f64)) -> i64 {
             p.0
         }
+        fn bind_param(&self, _p: &(i64, f64)) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
-        fn resolve_entry(&self, _trades: &[CorpusTrade], _state: &(), p: &(i64, f64)) -> i64 {
+        fn resolve_entry(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), p: &(i64, f64)) -> i64 {
             p.0
         }
-        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
             TokenOutcome {
                 fired: true,
                 holding_secs: 0,

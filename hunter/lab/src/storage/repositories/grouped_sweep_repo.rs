@@ -313,10 +313,8 @@ impl GroupedSweepRepo {
     }
 
     /// Write the per-run combo→`params` dictionary once, up front (migration `0007`
-    /// dedup). `combo_params[i]` is the param JSON for `combo_id = i` — identical
-    /// across every group in the run, so it lives here instead of on every results
-    /// row and is JOINed back by [`list_results_paged`]. Bulk-inserted in chunks (3
-    /// binds/row); `ON CONFLICT DO NOTHING` keeps it idempotent if `begin` re-fires.
+    /// dedup). `combo_params[i]` is the param JSON for `combo_id = i`. Prefer
+    /// [`insert_combos_indexed`] for retention-sized sparse inserts.
     pub async fn insert_combos(
         &self,
         run_id: Uuid,
@@ -325,17 +323,33 @@ impl GroupedSweepRepo {
         if combo_params.is_empty() {
             return Ok(());
         }
+        let rows: Vec<(i32, Value)> = combo_params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i as i32, p.clone()))
+            .collect();
+        self.insert_combos_indexed(run_id, &rows).await
+    }
+
+    /// Insert `(combo_id, params)` rows (retention survivors). Idempotent via
+    /// `ON CONFLICT DO NOTHING` so overlapping groups sharing a combo_id are fine.
+    pub async fn insert_combos_indexed(
+        &self,
+        run_id: Uuid,
+        rows: &[(i32, Value)],
+    ) -> anyhow::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         let t = self.tables;
-        // 3 binds/row → 20k rows stays well under the 65535 bind-parameter ceiling.
-        for (b, chunk) in combo_params.chunks(20_000).enumerate() {
-            let offset = b * 20_000;
+        for chunk in rows.chunks(20_000) {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
                 "INSERT INTO {} (run_id, combo_id, params) ",
                 t.combos
             ));
-            qb.push_values(chunk.iter().enumerate(), |mut bind, (i, p)| {
+            qb.push_values(chunk.iter(), |mut bind, (id, p)| {
                 bind.push_bind(run_id)
-                    .push_bind((offset + i) as i32)
+                    .push_bind(*id)
                     .push_bind(sqlx::types::Json(p));
             });
             qb.push(" ON CONFLICT (run_id, combo_id) DO NOTHING");

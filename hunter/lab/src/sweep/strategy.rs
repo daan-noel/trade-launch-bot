@@ -271,11 +271,23 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// that token. Lets a strategy hoist work that depends only on the trade
     /// slice out of the per-entry-key resolve, where it would otherwise rebuild
     /// once per distinct entry tuple. A strategy with no such state sets this to
-    /// `()`.
-    type TokenState;
+    /// `()`. Must be `Send + Sync` — the wave driver builds/scans states across
+    /// rayon threads.
+    type TokenState: Send + Sync;
+
+    /// Per-combo state the engine materialises **once per combo batch** via
+    /// [`Strategy::bind_param`] before scanning tokens (e.g. `CompiledRule` for
+    /// the generic engine). Lets `Params` stay index-only / tiny while the hot
+    /// loop reads a bound form. Unit `()` for strategies whose `Params` are
+    /// already the scan input.
+    type BoundParams: Send + Sync;
 
     /// The entry-param signature of a combo. Combos sharing it share an entry.
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
+
+    /// Bind one combo's [`Strategy::Params`] into [`Strategy::BoundParams`] once
+    /// per batch (not per token). Default strategies return `()`.
+    fn bind_param(&self, params: &Self::Params) -> Self::BoundParams;
 
     /// Compute the shared [`Strategy::TokenState`] for one token, **once** before
     /// any combo runs against it. Receives the whole [`CorpusToken`] (not just its
@@ -284,28 +296,23 @@ pub trait Strategy: ParamSpace + Send + Sync {
     fn prepare_token(&self, token: &crate::sweep::corpus::CorpusToken) -> Self::TokenState;
 
     /// Resolve the entry on one token's full trade history under a combo's **entry**
-    /// params, given the pre-computed [`Strategy::TokenState`]. The expensive half
-    /// (the scalp walk); called once per distinct [`Strategy::entry_key`] per token.
-    /// The history is the slim, wallet-interned [`CorpusTrade`] projection (not the
-    /// heavy `Trade`); the shared entry fns run over it via the `TradeRow`
-    /// abstraction. Pure — safe from many `rayon` threads.
+    /// params, given the pre-computed [`Strategy::TokenState`] and batch-bound
+    /// [`Strategy::BoundParams`]. Pure — safe from many `rayon` threads.
     fn resolve_entry(
         &self,
         trades: &[CorpusTrade],
         state: &Self::TokenState,
+        bound: &Self::BoundParams,
         params: &Self::Params,
     ) -> Self::Entry;
 
     /// Resolve the exit + economics given a pre-resolved `entry`, under a combo's
-    /// **exit** params. Called once per combo. Also receives the shared
-    /// [`Strategy::TokenState`] so an exit feature can reuse param-independent
-    /// per-token precompute instead of rebuilding it per combo. Returns a `Copy`
-    /// [`TokenOutcome`]; PnL is priced through the core [`CostModel`] (see
-    /// [`round_trip_with_costs`]).
+    /// **exit** params / bound form. Returns a `Copy` [`TokenOutcome`].
     fn resolve_exit(
         &self,
         trades: &[CorpusTrade],
         state: &Self::TokenState,
+        bound: &Self::BoundParams,
         entry: &Self::Entry,
         params: &Self::Params,
     ) -> TokenOutcome;

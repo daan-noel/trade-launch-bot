@@ -694,18 +694,16 @@ async fn run_grouped_sweep_job(
             let mut total_groups = 0i32;
             while let Some(msg) = rx.recv().await {
                 match msg {
-                    SweepWrite::Begin { group_count, combo_params } => {
+                    SweepWrite::Begin {
+                        group_count,
+                        combo_count,
+                    } => {
                         total_groups = group_count;
                         if let Err(e) = repo
-                            .update_run_counts(run_id, group_count, combo_params.len() as i32)
+                            .update_run_counts(run_id, group_count, combo_count)
                             .await
                         {
                             tracing::error!("grouped sweep: update_run_counts failed: {e}");
-                        }
-                        // Write the per-run combo→params dictionary once, up front
-                        // (0007 dedup) — every results row JOINs back to it.
-                        if let Err(e) = repo.insert_combos(run_id, &combo_params).await {
-                            tracing::error!("grouped sweep: insert_combos failed: {e}");
                         }
                         // Announce the saving phase so the frontend switches from
                         // the sweep bar to a fresh saving bar before any DB writes.
@@ -715,6 +713,11 @@ async fn run_grouped_sweep_job(
                             processed: 0,
                             total: group_count as u64,
                         });
+                    }
+                    SweepWrite::Combos(rows) => {
+                        if let Err(e) = repo.insert_combos_indexed(run_id, &rows).await {
+                            tracing::error!("grouped sweep: insert_combos_indexed failed: {e}");
+                        }
                     }
                     SweepWrite::Group(g) => match repo.append_group(run_id, &g).await {
                         Ok(()) => {
@@ -860,10 +863,11 @@ async fn run_grouped_sweep_job(
 enum SweepWrite {
     Begin {
         group_count: i32,
-        /// The per-run combo→`params` dictionary (`combo_params[combo_id]`),
-        /// persisted once via `insert_combos` (migration `0007` dedup).
-        combo_params: Vec<serde_json::Value>,
+        combo_count: i32,
     },
+    /// Retained combo params for one group — inserted before the group rows so
+    /// the results JOIN finds them. Never the full N-combo dictionary.
+    Combos(Vec<(i32, serde_json::Value)>),
     Group(Box<GroupedSweepGroupWrite>),
 }
 
@@ -880,46 +884,56 @@ struct HandlerSink {
 }
 
 impl GroupSink for HandlerSink {
-    fn begin(&self, group_count: usize, combo_params: &[serde_json::Value]) {
+    fn begin(&self, group_count: usize, combo_count: usize) {
         let _ = self.tx.send(SweepWrite::Begin {
             group_count: group_count as i32,
-            combo_params: combo_params.to_vec(),
+            combo_count: combo_count as i32,
         });
     }
 
-    fn group_done(&self, group_index: usize, group: &GroupResult, combo_params: &[serde_json::Value]) {
+    fn group_done(
+        &self,
+        group_index: usize,
+        group: &GroupResult,
+        retained_params: &[(u32, serde_json::Value)],
+    ) {
         let key_str = group.key.to_json().to_string();
         let mints = self.group_mints.get(&key_str).cloned().unwrap_or_default();
-        let write = group_to_write(group_index, group, combo_params, mints);
+        let write = group_to_write(group_index, group, retained_params, mints);
+        // Insert retained combo rows before the group so JOINs resolve.
+        let combo_rows: Vec<(i32, serde_json::Value)> = retained_params
+            .iter()
+            .map(|(id, v)| (*id as i32, v.clone()))
+            .collect();
+        if !combo_rows.is_empty() {
+            let _ = self.tx.send(SweepWrite::Combos(combo_rows));
+        }
         let _ = self.tx.send(SweepWrite::Group(Box::new(write)));
     }
 }
 
-/// Flatten one fully-folded group into the repo's write unit. `group_index` is the
-/// engine's deterministic order (largest group first). `fired_count` is the best
-/// combo's `n_fired` — the sample size behind the group's headline pick.
-/// `combo_params[combo_id]` is each ranked combo's param JSON.
-/// `mints` is the Option-C mint list for this group (empty for old-schema writes).
+/// Flatten one fully-folded group into the repo's write unit. `retained_params`
+/// is `(combo_id, params_json)` for the retention set only.
 fn group_to_write(
     group_index: usize,
     g: &GroupResult,
-    combo_params: &[serde_json::Value],
+    retained_params: &[(u32, serde_json::Value)],
     mints: Vec<String>,
 ) -> GroupedSweepGroupWrite {
     let param_at = |id: u32| -> serde_json::Value {
-        combo_params.get(id as usize).cloned().unwrap_or(serde_json::Value::Null)
+        retained_params
+            .iter()
+            .find(|(cid, _)| *cid == id)
+            .map(|(_, v)| v.clone())
+            .unwrap_or(serde_json::Value::Null)
     };
     let fired_count = g
         .metrics
         .get(g.best_combo_id as usize)
         .map(|m| m.n_fired as i64)
         .unwrap_or(0);
-    // Storage retention: persist only the metric-extreme survivors per group (plus
-    // best_combo). The engine already evaluated every combo, so this only trims
-    // INSERT rows/binds — no sweep-eval cost. Same pure fn the compaction probe
-    // uses, so existing and future data are selected identically.
-    let cfg = crate::sweep::retention::RetentionCfg::default();
-    let keep = crate::sweep::retention::retained_combo_ids(&g.metrics, g.best_combo_id, &cfg);
+    let keep: std::collections::HashSet<u32> =
+        retained_params.iter().map(|(id, _)| *id).collect();
     let results = g
         .metrics
         .iter()

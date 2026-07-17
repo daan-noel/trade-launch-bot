@@ -578,6 +578,7 @@ impl Strategy for Tpsl2Strategy {
     type Entry = Tpsl2Entry;
     type EntryKey = Tpsl2EntryKey;
     type TokenState = ();
+    type BoundParams = ();
 
     fn entry_key(&self, params: &Tpsl2Combo) -> Tpsl2EntryKey {
         let p = &params.raw;
@@ -594,7 +595,9 @@ impl Strategy for Tpsl2Strategy {
 
     fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
 
-    fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), params: &Tpsl2Combo) -> Tpsl2Entry {
+    fn bind_param(&self, _params: &Tpsl2Combo) {}
+
+    fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), params: &Tpsl2Combo) -> Tpsl2Entry {
         let rule = &params.rule;
         // (1) Decision: the scalp-entry trigger — the live gate logic, unchanged.
         // The indexed variant hands back the trigger's position so the worst-case
@@ -621,6 +624,7 @@ impl Strategy for Tpsl2Strategy {
         &self,
         trades: &[CorpusTrade],
         _state: &(),
+        _bound: &(),
         entry: &Tpsl2Entry,
         params: &Tpsl2Combo,
     ) -> TokenOutcome {

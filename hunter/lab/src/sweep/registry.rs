@@ -72,62 +72,53 @@ fn effective_cap(max_combos: Option<usize>) -> usize {
 }
 
 /// Hard cap (MB) on fold-side peak memory (ComboAgg + in-flight TokenOutcome
-/// buffers). Host-aware sizing below never exceeds this — a 2 GB fold budget on a
-/// 16 GB box (after corpus load) was scheduling ~400k-combo batches whose single
-/// `vec![ComboAgg; batch]` alloc (~180 MB) aborted the process.
-const SWEEP_FOLD_BUDGET_CAP_MB: usize = 256;
+/// buffers). Raised vs the old 256 MB so a 14 GB usable box can take larger
+/// combo batches (fewer series rebuild passes).
+const SWEEP_FOLD_BUDGET_CAP_MB: usize = 512;
 
 /// Floor (MB) so a nearly-full box still makes progress with tiny batches.
 const SWEEP_FOLD_BUDGET_FLOOR_MB: usize = 32;
 
-/// Fold-accumulator + outcome-buffer budget in bytes. Derived from host free RAM
-/// (`available / 8`, clamped to 32..=256 MB) — no env override. `pub(crate)` so
-/// [`crate::sweep::engine::combo_batch_size`] sizes batches against the same value.
+/// Fold-accumulator + outcome-buffer budget in bytes. `usable/4` clamped to
+/// 32..=512 MB, where usable = host free − desktop reserve.
 pub(crate) fn sweep_memory_budget_bytes() -> u64 {
     let cap = (SWEEP_FOLD_BUDGET_CAP_MB as u64).saturating_mul(1024 * 1024);
     let floor = (SWEEP_FOLD_BUDGET_FLOOR_MB as u64).saturating_mul(1024 * 1024);
-    match crate::sweep::obs::host_memory_bytes() {
-        Some((_, available)) => (available / 8).clamp(floor, cap),
+    match usable_host_bytes() {
+        Some(usable) => (usable / 4).clamp(floor, cap),
         None => cap,
     }
 }
 
-/// Ceiling (MB) on the **series precompute** transient a generic sweep may hold —
-/// the peak is `threads × the largest token's sparse series`. Used as a fallback
-/// when host free RAM cannot be read; otherwise admission is derived from
-/// host available RAM (see [`host_series_ceiling_bytes`]).
-const DEFAULT_SWEEP_ADMISSION_BUDGET_MB: usize = 4096;
+/// Ceiling (MB) on the **series precompute** transient when host RAM is unreadable.
+const DEFAULT_SWEEP_ADMISSION_BUDGET_MB: usize = 12 * 1024;
 
-/// Series-precompute admission fallback budget in bytes (hardcoded constant).
 fn sweep_admission_budget_bytes() -> u64 {
     (DEFAULT_SWEEP_ADMISSION_BUDGET_MB as u64).saturating_mul(1024 * 1024)
 }
 
-/// Target host RAM (MB) to leave free for the OS + desktop UI after series
-/// precompute. Hardcoded — not an env override.
-const SWEEP_RAM_RESERVE_MB: usize = 4096;
+/// Host RAM (MB) to leave free for OS + desktop UI. Matches the workstation
+/// contract: use almost everything, keep ~2 GB for local interactivity.
+const SWEEP_RAM_RESERVE_MB: usize = 2048;
 
 fn sweep_ram_reserve_bytes() -> u64 {
     (SWEEP_RAM_RESERVE_MB as u64).saturating_mul(1024 * 1024)
 }
 
-/// How much of currently-available host RAM may be used for series precompute.
-///
-/// Prefer `available − reserve`. When the box is already under the reserve
-/// (common on a 16 GB workstation after the corpus is loaded into RSS),
-/// `available − reserve` would be **0** and falsely reject tiny series — so
-/// fall back to half of whatever is still free.
-fn host_series_ceiling_bytes(available: u64, reserve: u64) -> u64 {
-    if available > reserve {
-        available - reserve
-    } else {
-        available / 2
-    }
+/// `available − reserve`, or `None` if host memory is unreadable. `Some(0)` when
+/// free RAM is already under the desktop reserve — callers must refuse or shrink.
+pub(crate) fn usable_host_bytes() -> Option<u64> {
+    let (_, available) = crate::sweep::obs::host_memory_bytes()?;
+    Some(available.saturating_sub(sweep_ram_reserve_bytes()))
 }
 
-/// Effective series-precompute admission ceiling from host free RAM:
-/// `min(hardcoded admission cap, host_series_ceiling(available))`. Falls back
-/// to the hardcoded cap alone when host memory is unreadable.
+/// How much of currently-available host RAM may be used for the sweep peak.
+/// Strict: `available − reserve` (no half-of-free degradation — that hid OOMs).
+fn host_series_ceiling_bytes(available: u64, reserve: u64) -> u64 {
+    available.saturating_sub(reserve)
+}
+
+/// Effective series+fold admission ceiling from host free RAM.
 /// Returns `(budget_bytes, host_total_mb, host_avail_mb)`.
 fn effective_admission_budget_bytes() -> (u64, Option<u64>, Option<u64>) {
     let fallback = sweep_admission_budget_bytes();
@@ -139,9 +130,8 @@ fn effective_admission_budget_bytes() -> (u64, Option<u64>, Option<u64>) {
                 tracing::warn!(
                     host_avail_mb = available / (1024 * 1024),
                     ram_reserve_mb = reserve / (1024 * 1024),
-                    degraded_ceiling_mb = host_ceiling / (1024 * 1024),
                     "generic sweep: host free RAM already under desktop reserve — \
-                     using half of remaining free for series admission"
+                     usable budget is 0; run will be refused unless series is trivial"
                 );
             }
             let budget = fallback.min(host_ceiling);
@@ -153,6 +143,103 @@ fn effective_admission_budget_bytes() -> (u64, Option<u64>, Option<u64>) {
         }
         None => (fallback, None, None),
     }
+}
+
+/// How many heavy [`Strategy::TokenState`]s (e.g. `MetricSeries`) may stay alive
+/// together. `0`-byte estimates (legacy tpsl/swing `()`) → full thread pool.
+/// Otherwise `min(threads, series_budget / max_series)`, with series_budget =
+/// admission ceiling minus the fold budget so ComboAgg/outcome buffers still fit.
+pub(crate) fn series_wave_size(max_series_bytes: usize, threads: usize) -> usize {
+    let threads = threads.max(1);
+    if max_series_bytes == 0 {
+        return threads;
+    }
+    let (admission, _, _) = effective_admission_budget_bytes();
+    let fold = sweep_memory_budget_bytes();
+    let series_budget = admission.saturating_sub(fold);
+    if series_budget < max_series_bytes as u64 {
+        return 1; // at least one token; admission may still reject later
+    }
+    let by_budget = (series_budget / max_series_bytes as u64) as usize;
+    by_budget.min(threads).max(1)
+}
+
+/// True when host free RAM is already ≤ the desktop reserve (degraded mode).
+pub(crate) fn host_under_ram_reserve() -> bool {
+    match crate::sweep::obs::host_memory_bytes() {
+        Some((_, available)) => available <= sweep_ram_reserve_bytes(),
+        None => false,
+    }
+}
+
+/// Fold batch hard cap: full [`crate::sweep::engine::HARD_MAX_COMBO_BATCH`] when
+/// usable RAM remains; **8192** when already under the desktop reserve.
+pub(crate) fn hard_max_combo_batch() -> usize {
+    if host_under_ram_reserve() {
+        8_192
+    } else {
+        crate::sweep::engine::HARD_MAX_COMBO_BATCH
+    }
+}
+
+/// Index-only combo vec (`GenericCombo { idx }`) + final `ComboMetrics` slot.
+/// CompiledRules are bound per batch (not resident × N); combo JSON is deferred
+/// to retained survivors only (~660/group).
+const GENERIC_PER_COMBO_RESIDENT_BYTES: u64 = 280;
+
+/// Slack for rayon stacks / allocator freelists inside the usable budget.
+const SWEEP_ALLOC_SLACK_BYTES: u64 = 256 * 1024 * 1024;
+
+pub(crate) fn estimate_generic_combo_side_bytes(n_combos: usize) -> u64 {
+    (n_combos as u64).saturating_mul(GENERIC_PER_COMBO_RESIDENT_BYTES)
+}
+
+/// Refuse when estimated peak cannot fit in `usable = free − 2 GB reserve`
+/// (minus slack). Under-reserve (`usable == 0`) always refuses non-trivial runs.
+fn admit_generic_combo_side(n_combos: usize, series_peak: u64, fold: u64) -> Result<()> {
+    let combo_side = estimate_generic_combo_side_bytes(n_combos);
+    let need = combo_side
+        .saturating_add(series_peak)
+        .saturating_add(fold);
+    let Some(usable_raw) = usable_host_bytes() else {
+        return Ok(());
+    };
+    let usable = usable_raw.saturating_sub(SWEEP_ALLOC_SLACK_BYTES);
+    if need > usable {
+        let mb = |b: u64| b / (1024 * 1024);
+        let avail = crate::sweep::obs::host_memory_bytes().map(|(_, a)| a).unwrap_or(0);
+        bail!(
+            "estimated resident peak ~{} MB ({} combos × ~{} B + fold {} MB + series {} MB) \
+             exceeds usable RAM {} MB (host free {} MB − {} MB desktop reserve − {} MB slack) — \
+             use random:N, narrow axes, tighten token/date filters, or free RAM before retrying",
+            mb(need),
+            n_combos,
+            GENERIC_PER_COMBO_RESIDENT_BYTES,
+            mb(fold),
+            mb(series_peak),
+            mb(usable),
+            mb(avail),
+            SWEEP_RAM_RESERVE_MB,
+            mb(SWEEP_ALLOC_SLACK_BYTES),
+        );
+    }
+    Ok(())
+}
+
+/// Planned combo count for admission (before `sample` materialises CompiledRules).
+fn planned_combo_count(method: SweepMethod, model_combos: usize, cap: usize) -> Result<usize> {
+    if model_combos == 0 {
+        return Ok(0);
+    }
+    if model_combos == usize::MAX {
+        bail!("grid combo_count overflowed — refuse to sample");
+    }
+    Ok(match method {
+        SweepMethod::Grid => model_combos.min(cap),
+        SweepMethod::Random { n, .. } | SweepMethod::LatinHypercube { n, .. } => {
+            n.min(model_combos).min(cap)
+        }
+    })
 }
 
 /// Largest thread count `≤ preferred` whose estimated peak
@@ -324,12 +411,11 @@ fn detect_cores() -> usize {
         .unwrap_or(1)
 }
 
-/// Rayon threads for the in-process sweep. `lab` is the **analysis box** — it
-/// runs no ingest/gRPC/trader. Uses **half the logical cores** so the desktop
-/// OS/UI stay responsive (e.g. 8 on a 16-core workstation). Always ≥1.
-/// Host-RAM admission may still lower the count further at sweep start.
+/// Rayon threads for the in-process sweep. Leaves **2 logical CPUs** for the
+/// desktop (e.g. 14 on a 16-core workstation). Always ≥1. Host-RAM admission may
+/// still lower the count further at sweep start.
 fn bounded_threads() -> usize {
-    (detect_cores() / 2).max(1)
+    detect_cores().saturating_sub(2).max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -344,8 +430,8 @@ fn bounded_threads() -> usize {
 #[allow(clippy::too_many_arguments)]
 async fn sweep_generic(
     axes_json: Value,
-    method: SweepMethod,
-    refine: Option<RefineSpec>,
+    mut method: SweepMethod,
+    mut refine: Option<RefineSpec>,
     corpus: Corpus,
     fields: Vec<GroupField>,
     width: f64,
@@ -371,9 +457,96 @@ async fn sweep_generic(
         if n > cap {
             bail!("grid has {n} combos, over the {cap} cap — narrow the axes, raise max_combos, or use random:N");
         }
+        // Smarter search: huge grids without an explicit refine → coarse LHS + refine.
+        if refine.is_none()
+            && n != usize::MAX
+            && n >= crate::sweep::shard::AUTO_REFINE_GRID_COMBOS
+        {
+            let coarse = crate::sweep::shard::AUTO_REFINE_COARSE_N.min(cap);
+            tracing::warn!(
+                grid_combos = n,
+                coarse,
+                "generic sweep: auto-converting huge grid to lhs:{coarse} + refine \
+                 (use refine:N:K explicitly, or random:N, to choose coverage yourself)"
+            );
+            method = SweepMethod::LatinHypercube { n: coarse, seed: 42 };
+            refine = Some(RefineSpec {
+                top_k: RefineSpec::DEFAULT_TOP_K,
+            });
+        }
     }
-    // The (validated) request axes are echoed back for storage / re-run below.
+
+    let preferred_threads = bounded_threads();
+    let cores = detect_cores();
+
+    // Admission BEFORE sample. Peak is one **shard** (sharding + spill handle the
+    // rest of N), not the full combo dictionary.
+    let planned = planned_combo_count(method, model.combo_count(), cap)?;
+    if planned == 0 {
+        bail!("param space is empty");
+    }
     let strategy = GenericSweepStrategy::new(model, buy_amount_sol, chrono::Utc::now());
+    let max_series_bytes = corpus
+        .tokens
+        .iter()
+        .map(|t| strategy.series_bytes_estimate(t))
+        .max()
+        .unwrap_or(0);
+    let (admission_raw, host_total_mb, host_avail_mb) = effective_admission_budget_bytes();
+    let fold_budget = sweep_memory_budget_bytes();
+    let admission_budget = admission_raw.saturating_sub(fold_budget);
+    let mb = |b: u64| b / (1024 * 1024);
+    let threads = match threads_fitting_admission(preferred_threads, max_series_bytes, admission_budget)
+    {
+        Some(n) => n,
+        None => {
+            bail!(
+                "estimated series precompute for largest token ({} MB) exceeds the \
+                 {} MB series budget (admission {} MB − fold {} MB) even at 1 thread — \
+                 narrow the corpus or axes (token_cap / date range / fewer combos)",
+                mb(max_series_bytes as u64),
+                mb(admission_budget),
+                mb(admission_raw),
+                mb(fold_budget)
+            );
+        }
+    };
+    let wave = series_wave_size(max_series_bytes, threads);
+    let series_peak = (wave as u64).saturating_mul(max_series_bytes as u64);
+    let shard_peak = crate::sweep::shard::max_combos_per_shard(wave, max_series_bytes).min(planned);
+    admit_generic_combo_side(shard_peak, series_peak, fold_budget)?;
+
+    if threads < preferred_threads || wave < threads {
+        tracing::warn!(
+            preferred_threads,
+            threads,
+            wave,
+            max_token_series_mb = mb(max_series_bytes as u64),
+            budget_mb = mb(admission_budget),
+            "generic sweep: lowered concurrency to fit series+fold admission budget"
+        );
+    }
+    tracing::info!(
+        cores,
+        preferred_threads,
+        threads,
+        wave,
+        planned_combos = planned,
+        shard_peak_combos = shard_peak,
+        combo_side_mb = mb(estimate_generic_combo_side_bytes(shard_peak)),
+        max_token_series_mb = mb(max_series_bytes as u64),
+        peak_precompute_mb = mb(series_peak),
+        budget_mb = mb(admission_budget),
+        fold_budget_mb = mb(fold_budget),
+        admission_cap_mb = mb(sweep_admission_budget_bytes()),
+        ram_reserve_mb = mb(sweep_ram_reserve_bytes()),
+        host_total_mb,
+        host_avail_mb,
+        rss_mb = crate::sweep::obs::process_rss_mb(),
+        "generic sweep: series+combo-side admission estimate"
+    );
+
+    // The (validated) request axes are echoed back for storage / re-run below.
     let mut params = strategy.sample(method);
     if params.is_empty() {
         bail!("param space is empty");
@@ -382,59 +555,12 @@ async fn sweep_generic(
         tracing::warn!(combos = params.len(), cap, "grouped sweep: clamping sampled combos to cap");
         params.truncate(cap);
     }
-
-    let preferred_threads = bounded_threads();
-    let cores = detect_cores();
-
-    // Admission: the per-token series precompute — not the fold accumulators —
-    // is the sweep's real memory cost. Estimate worst-case transient
-    // (`threads × largest token series`) and either lower threads to fit or
-    // reject up front. Budget = min(hardcoded cap, available host RAM − reserve).
-    let max_series_bytes = corpus
-        .tokens
-        .iter()
-        .map(|t| strategy.series_bytes_estimate(t))
-        .max()
-        .unwrap_or(0);
-    let (admission_budget, host_total_mb, host_avail_mb) = effective_admission_budget_bytes();
-    let mb = |b: u64| b / (1024 * 1024);
-    let threads = match threads_fitting_admission(preferred_threads, max_series_bytes, admission_budget)
-    {
-        Some(n) => n,
-        None => {
-            bail!(
-                "estimated series precompute for largest token ({} MB) exceeds the \
-                 {} MB admission budget even at 1 thread — narrow the corpus or axes \
-                 (token_cap / date range / fewer combos)",
-                mb(max_series_bytes as u64),
-                mb(admission_budget)
-            );
-        }
-    };
-    if threads < preferred_threads {
-        tracing::warn!(
-            preferred_threads,
-            threads,
-            max_token_series_mb = mb(max_series_bytes as u64),
-            budget_mb = mb(admission_budget),
-            "generic sweep: lowered rayon threads to fit series-precompute admission budget"
-        );
+    // Re-check shard peak against realised sample size.
+    let realised_shard = crate::sweep::shard::max_combos_per_shard(wave, max_series_bytes)
+        .min(params.len());
+    if realised_shard != shard_peak {
+        admit_generic_combo_side(realised_shard, series_peak, fold_budget)?;
     }
-    let peak_bytes = (threads as u64).saturating_mul(max_series_bytes as u64);
-    tracing::info!(
-        cores,
-        preferred_threads,
-        threads,
-        max_token_series_mb = mb(max_series_bytes as u64),
-        peak_precompute_mb = mb(peak_bytes),
-        budget_mb = mb(admission_budget),
-        admission_cap_mb = mb(sweep_admission_budget_bytes()),
-        ram_reserve_mb = mb(sweep_ram_reserve_bytes()),
-        host_total_mb,
-        host_avail_mb,
-        rss_mb = crate::sweep::obs::process_rss_mb(),
-        "generic sweep: series-precompute admission estimate"
-    );
 
     let (combo_count, groups) = tokio::task::spawn_blocking(
         move || -> Result<(usize, Vec<GroupResult>)> {
@@ -1049,31 +1175,37 @@ mod tests {
     }
 
     #[test]
-    fn default_threads_are_half_cores() {
+    fn combo_side_estimate_scales_with_combos() {
+        assert_eq!(estimate_generic_combo_side_bytes(0), 0);
+        assert_eq!(
+            estimate_generic_combo_side_bytes(1_000),
+            1_000 * GENERIC_PER_COMBO_RESIDENT_BYTES
+        );
+        // Index-only: ~945k × 280 B ≈ 250 MB — not multi-GB.
+        let approx = estimate_generic_combo_side_bytes(944_784);
+        assert!(approx > 200 * 1024 * 1024 && approx < 400 * 1024 * 1024);
+    }
+
+    #[test]
+    fn default_threads_leave_two_cores() {
         let cores = detect_cores();
-        assert_eq!(bounded_threads(), (cores / 2).max(1));
+        assert_eq!(bounded_threads(), cores.saturating_sub(2).max(1));
     }
 
     #[test]
     fn host_series_ceiling_subtracts_reserve_when_room() {
-        let reserve = 4u64 * 1024 * 1024 * 1024;
+        let reserve = 2u64 * 1024 * 1024 * 1024;
         let available = 8u64 * 1024 * 1024 * 1024;
         assert_eq!(
             host_series_ceiling_bytes(available, reserve),
-            4u64 * 1024 * 1024 * 1024
+            6u64 * 1024 * 1024 * 1024
         );
     }
 
     #[test]
-    fn host_series_ceiling_degrades_not_zero_when_under_reserve() {
-        // The bug: available < reserve → saturating_sub gave 0 and rejected 16 MB.
-        let reserve = 4u64 * 1024 * 1024 * 1024;
-        let available = 2u64 * 1024 * 1024 * 1024;
-        assert_eq!(
-            host_series_ceiling_bytes(available, reserve),
-            1u64 * 1024 * 1024 * 1024
-        );
-        // 16 MB series must still fit at 1 thread under the degraded ceiling.
-        assert!(threads_fitting_admission(8, 16 * 1024 * 1024, available / 2).is_some());
+    fn host_series_ceiling_is_zero_when_under_reserve() {
+        let reserve = 2u64 * 1024 * 1024 * 1024;
+        let available = 1u64 * 1024 * 1024 * 1024;
+        assert_eq!(host_series_ceiling_bytes(available, reserve), 0);
     }
 }

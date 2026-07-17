@@ -148,9 +148,19 @@ impl AxesModel {
         Ok(Self { axes: resolved })
     }
 
-    /// Total combos = product of every axis's value count.
+    /// Total combos = product of every axis's value count. Uses checked
+    /// multiplication — a wrapping `product()` can yield a bogus huge count that
+    /// then tries to allocate petabytes when sampling a grid.
     pub fn combo_count(&self) -> usize {
-        self.axes.iter().map(|a| a.len()).product()
+        let mut n: usize = 1;
+        for a in &self.axes {
+            let len = a.len().max(1);
+            match n.checked_mul(len) {
+                Some(p) => n = p,
+                None => return usize::MAX,
+            }
+        }
+        n
     }
 
     /// The distinct precompute columns every combo could read — the union fed to

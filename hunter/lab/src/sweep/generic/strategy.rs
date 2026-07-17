@@ -44,13 +44,12 @@ use crate::strategies::replay::TAIL_MARGIN_SECS;
 
 use super::axes::AxesModel;
 
-/// One swept combo: its grid index (for refine / entry-key math) and the
-/// pre-chewed [`CompiledRule`] the scan reads. The `RuleParams` JSON is derived
-/// from the index on demand ([`GenericSweepStrategy::params_json`]).
-#[derive(Clone)]
+/// One swept combo: **index only** into the axes grid. The [`CompiledRule`] is
+/// bound once per combo batch via [`Strategy::bind_param`] — never resident × N
+/// up front (that was the multi-GB cliff at ~1M combos).
+#[derive(Clone, Copy, Debug)]
 pub struct GenericCombo {
     pub idx: usize,
-    pub compiled: CompiledRule,
 }
 
 /// The generic engine as a sweep [`Strategy`]. Holds the resolved axes model, the
@@ -111,7 +110,7 @@ impl GenericSweepStrategy {
     }
 
     fn combo(&self, idx: usize) -> GenericCombo {
-        GenericCombo { idx, compiled: self.compile_combo(idx) }
+        GenericCombo { idx }
     }
 
     /// Per-axis value counts, in combo-significance order (index 0 most significant).
@@ -136,6 +135,10 @@ impl ParamSpace for GenericSweepStrategy {
     fn sample(&self, method: SweepMethod) -> Vec<Self::Params> {
         let total = self.model.combo_count();
         if total == 0 {
+            return Vec::new();
+        }
+        if total == usize::MAX {
+            tracing::error!("combo_count overflowed — refusing to sample");
             return Vec::new();
         }
         match method {
@@ -210,9 +213,14 @@ impl Strategy for GenericSweepStrategy {
     type Entry = EntryResolution;
     type EntryKey = u64;
     type TokenState = MetricSeries;
+    type BoundParams = CompiledRule;
 
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey {
         self.model.entry_key(params.idx)
+    }
+
+    fn bind_param(&self, params: &Self::Params) -> Self::BoundParams {
+        self.compile_combo(params.idx)
     }
 
     fn prepare_token(&self, token: &CorpusToken) -> Self::TokenState {
@@ -223,19 +231,21 @@ impl Strategy for GenericSweepStrategy {
         &self,
         _trades: &[CorpusTrade],
         series: &Self::TokenState,
-        params: &Self::Params,
+        bound: &Self::BoundParams,
+        _params: &Self::Params,
     ) -> Self::Entry {
-        resolve_entry(series, &params.compiled)
+        resolve_entry(series, bound)
     }
 
     fn resolve_exit(
         &self,
         _trades: &[CorpusTrade],
         series: &Self::TokenState,
+        bound: &Self::BoundParams,
         entry: &Self::Entry,
-        params: &Self::Params,
+        _params: &Self::Params,
     ) -> TokenOutcome {
-        resolve_exit(series, &params.compiled, entry, self.buy_amount_sol, &self.cost)
+        resolve_exit(series, bound, entry, self.buy_amount_sol, &self.cost)
     }
 
     fn params_json(&self, params: &Self::Params) -> serde_json::Value {
@@ -294,13 +304,36 @@ pub struct SparseGrid {
 }
 
 impl SparseGrid {
+    /// Hard ceiling on sparse-grid horizons (secs). A fat-fingered `time`/`stall`/
+    /// window axis (e.g. 1e12) must not turn `gap_horizon` into DateTime::MAX and
+    /// emit centuries of 500 ms ticks (the alloc that printed ~419 TB).
+    const MAX_HORIZON_SECS: f64 = 7.0 * 24.0 * 3600.0;
+
+    fn clamp_secs(s: f64) -> f64 {
+        if !s.is_finite() || s <= 0.0 {
+            0.0
+        } else {
+            s.min(Self::MAX_HORIZON_SECS)
+        }
+    }
+
     /// The last grid instant in a gap at which any swept condition could still
     /// change, given the trade state entering the gap: `last_trade_at` (the newest
     /// folded trade, ≥ every metric clock's origin) and `last_meaningful_at` (the
     /// deadness clock). Dense ticks are emitted up to here; ticks past it are all
     /// provably static and skipped.
     fn gap_horizon(&self, created: Ts, last_trade_at: Ts, last_meaningful_at: Ts) -> Ts {
-        let secs = |s: f64| Duration::milliseconds((s * 1000.0).ceil() as i64);
+        let secs = |s: f64| {
+            let ms = (Self::clamp_secs(s) * 1000.0).ceil();
+            // chrono::Duration::milliseconds panics / overflows on absurd inputs —
+            // clamp to i64::MAX/2 ms (~3e8 years still, but finite adds).
+            let ms_i = if ms.is_finite() {
+                ms.min((i64::MAX / 2) as f64) as i64
+            } else {
+                0
+            };
+            Duration::milliseconds(ms_i.max(0))
+        };
         let mut h = last_trade_at;
         // Flow decay: a trade influences the largest window until `trade + window`.
         h = h.max(last_trade_at + secs(self.max_window_secs));
@@ -370,6 +403,9 @@ pub(crate) fn build_series(
 /// emitting the settled ticks in between (that arithmetic jump is what makes the
 /// grid sparse over long quiet gaps). Post-state matches the old dense loop's
 /// (`next_tick` = smallest grid tick ≥ `stop`) so the caller's next gap is unaffected.
+///
+/// Hard-capped at [`MAX_TICKS_PER_GAP`] so a corrupt timestamp / horizon cannot
+/// push billions of rows and abort with a multi-hundred-TB allocation.
 fn emit_gap_ticks(
     series: &mut MetricSeries,
     next_tick: &mut Ts,
@@ -378,12 +414,22 @@ fn emit_gap_ticks(
     tick: Duration,
     created: Ts,
 ) {
+    /// ~2 days of 500 ms ticks — beyond the sparse-grid horizon clamp.
+    const MAX_TICKS_PER_GAP: usize = 2 * 24 * 3600 * 2;
+    let mut emitted = 0usize;
     while *next_tick < stop && *next_tick <= horizon {
+        if emitted >= MAX_TICKS_PER_GAP {
+            // Jump to stop without further emits — decisions past the clamp are
+            // identical for settled monotone clocks under the horizon cap.
+            break;
+        }
         series.push_tick(*next_tick);
         *next_tick += tick;
+        emitted += 1;
     }
     if *next_tick < stop {
-        // Stopped at the horizon, not at `stop` — jump to the next on-grid tick ≥ stop.
+        // Stopped at the horizon (or tick cap), not at `stop` — jump to the next
+        // on-grid tick ≥ stop.
         let delta_ms = stop.signed_duration_since(created).num_milliseconds();
         let k = (delta_ms + TICK_MS - 1) / TICK_MS; // ceil ⇒ smallest grid tick ≥ stop
         *next_tick = created + Duration::milliseconds(k * TICK_MS);
@@ -400,7 +446,9 @@ pub(crate) fn estimate_sparse_rows(token: &CorpusToken, grid: &SparseGrid, as_of
     }
     let created = token.created_at;
     let tick_ms = TICK_MS.max(1);
-    let horizon_ms = ((grid.max_window_secs.max(grid.time_horizon_secs).max(grid.stall_horizon_secs)
+    let horizon_ms = ((SparseGrid::clamp_secs(grid.max_window_secs)
+        .max(SparseGrid::clamp_secs(grid.time_horizon_secs))
+        .max(SparseGrid::clamp_secs(grid.stall_horizon_secs))
         + DEAD_QUIET_SECS as f64)
         * 1000.0)
         .ceil() as i64;
@@ -409,7 +457,8 @@ pub(crate) fn estimate_sparse_rows(token: &CorpusToken, grid: &SparseGrid, as_of
     // One row per trade, plus at most `horizon_ms / tick` dense ticks per gap.
     for ct in trades.iter() {
         let gap_ms = ct.block_time.signed_duration_since(prev).num_milliseconds().max(0);
-        rows += 1 + (gap_ms.min(horizon_ms) / tick_ms) as usize;
+        let ticks = (gap_ms.min(horizon_ms).max(0) / tick_ms) as usize;
+        rows = rows.saturating_add(1).saturating_add(ticks);
         if ct.block_time > prev {
             prev = ct.block_time;
         }
@@ -417,7 +466,7 @@ pub(crate) fn estimate_sparse_rows(token: &CorpusToken, grid: &SparseGrid, as_of
     // Tail gap (bounded by DEAD_QUIET + TAIL_MARGIN as well as the run's `as_of`).
     let tail_cap = prev + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS);
     let tail_ms = as_of.min(tail_cap).signed_duration_since(prev).num_milliseconds().max(0);
-    rows += (tail_ms.min(horizon_ms) / tick_ms) as usize;
+    rows = rows.saturating_add((tail_ms.min(horizon_ms).max(0) / tick_ms) as usize);
     rows
 }
 

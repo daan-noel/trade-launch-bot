@@ -774,6 +774,7 @@ impl Strategy for Swing1Strategy {
     /// swing1 has no param-independent per-token precompute; the swing scan
     /// depends on the entry axes and runs in `resolve_entry`.
     type TokenState = ();
+    type BoundParams = ();
 
     fn entry_key(&self, params: &Swing1Combo) -> Swing1EntryKey {
         let p = &params.raw;
@@ -800,10 +801,13 @@ impl Strategy for Swing1Strategy {
 
     fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
 
+    fn bind_param(&self, _params: &Swing1Combo) {}
+
     fn resolve_entry(
         &self,
         trades: &[CorpusTrade],
         _state: &(),
+        _bound: &(),
         params: &Swing1Combo,
     ) -> Swing1Entry {
         // The shared pure entry: latch the kill→volume transition, take the first
@@ -821,6 +825,7 @@ impl Strategy for Swing1Strategy {
         &self,
         trades: &[CorpusTrade],
         _state: &(),
+        _bound: &(),
         entry: &Swing1Entry,
         params: &Swing1Combo,
     ) -> TokenOutcome {

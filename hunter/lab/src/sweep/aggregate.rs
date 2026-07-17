@@ -60,7 +60,7 @@ impl ComboAgg {
 /// One ranked param-pair row: the combo's aggregated outcome across all tokens.
 /// Field-for-field the core [`RunMetrics`] columns plus a `combo_id`, so a sweep
 /// row and a live/paper run's `strategy_run_metrics` stay directly comparable.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ComboMetrics {
     pub combo_id: u32,
     pub n_fired: u64,

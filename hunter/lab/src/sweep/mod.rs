@@ -46,5 +46,7 @@ pub mod progress;
 pub mod projection;
 pub mod registry;
 pub mod retention;
+pub mod shard;
+pub mod spill;
 pub mod strategies;
 pub mod strategy;

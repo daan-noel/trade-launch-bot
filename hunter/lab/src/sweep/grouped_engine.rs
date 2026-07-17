@@ -35,7 +35,7 @@ use serde_json::Value;
 
 use crate::sweep::aggregate::{ComboAgg, ComboMetrics};
 use crate::sweep::corpus::Corpus;
-use crate::sweep::engine::{combo_batch_count, combo_batch_size, fill_outcomes, run_sweep};
+use crate::sweep::engine::{combo_batch_size, run_sweep, sweep_progress_passes};
 use crate::sweep::grouping::{group_key, GroupField, GroupKey};
 use crate::sweep::progress::SweepObserver;
 use crate::sweep::strategy::{RefineSpec, Strategy, TokenOutcome};
@@ -119,12 +119,18 @@ pub trait GroupSink: Sync {
     fn wants_groups(&self) -> bool {
         true
     }
-    /// Fired once before the first group, with the surviving group count and the
-    /// final per-combo param JSON (`combo_params[combo_id]`) — the per-run combo
-    /// dictionary a sink persists once (so `params` isn't repeated per group).
-    fn begin(&self, _group_count: usize, _combo_params: &[Value]) {}
-    /// Fired once per fully-folded group.
-    fn group_done(&self, group_index: usize, group: &GroupResult, combo_params: &[Value]);
+    /// Fired once before the first group with surviving group/combo counts.
+    /// Combo JSON is **not** materialised here — only retained survivors are
+    /// inserted per [`group_done`](GroupSink::group_done).
+    fn begin(&self, _group_count: usize, _combo_count: usize) {}
+    /// Fired once per fully-folded group. `retained_params` is `(combo_id, params_json)`
+    /// for the retention set (+ best) only — never the full grid.
+    fn group_done(
+        &self,
+        group_index: usize,
+        group: &GroupResult,
+        retained_params: &[(u32, Value)],
+    );
 }
 
 /// A sink that discards every group — the silent coarse refine pass and any
@@ -134,7 +140,13 @@ impl GroupSink for NoopSink {
     fn wants_groups(&self) -> bool {
         false
     }
-    fn group_done(&self, _index: usize, _group: &GroupResult, _combo_params: &[Value]) {}
+    fn group_done(
+        &self,
+        _index: usize,
+        _group: &GroupResult,
+        _retained_params: &[(u32, Value)],
+    ) {
+    }
 }
 
 /// Partition token indices by exact-value group key at bucket `width` (the per-run
@@ -191,13 +203,11 @@ pub fn run_grouped_sweep<S: Strategy>(
     // cleanly: each token is folded once per batch, so the bar's denominator is
     // `tokens × n_batches`.
     let batch = combo_batch_size(params.len(), threads);
-    let n_batches = combo_batch_count(params.len(), batch);
+    let n_passes = sweep_progress_passes(params.len(), batch);
 
-    // Total work unit = tokens across all surviving groups × the batch count; lets
-    // the bar show a real percentage that climbs smoothly through every group's
-    // per-token fold (re-walked once per combo batch).
+    // Total work unit = tokens × combo-batch passes (`token_done` per batch).
     let total_tokens: usize = surviving.iter().map(|(_, idx)| idx.len()).sum();
-    observer.set_total(total_tokens * n_batches);
+    observer.set_total(total_tokens * n_passes);
 
     // Phase 0.3 — RSS at the structural peak (corpus + the partition map resident)
     // and a wall-clock origin for the per-sweep duration, both logged again at done.
@@ -208,7 +218,7 @@ pub fn run_grouped_sweep<S: Strategy>(
         min_tokens = floor,
         combos = params.len(),
         batch,
-        n_batches,
+        n_passes,
         rss_mb = crate::sweep::obs::process_rss_mb(),
         "grouped sweep: partitioned corpus, sweeping each group"
     );
@@ -217,17 +227,11 @@ pub fn run_grouped_sweep<S: Strategy>(
     // regardless of which phase produced each result.
     let mut results: Vec<Option<GroupResult>> = (0..surviving.len()).map(|_| None).collect();
 
-    // Phase 4 — per-group incremental emit. Build the per-combo param JSON once
-    // (skipped entirely when the sink doesn't want groups, e.g. the silent coarse
-    // refine pass) and announce the group/combo counts before the first group.
+    // Phase 4 — per-group incremental emit. Announce counts only; combo JSON is
+    // built per group for retained survivors (~660) — never the full N-combo grid.
     let emit = sink.wants_groups();
-    let combo_params: Vec<Value> = if emit {
-        params.iter().map(|p| strategy.params_json(p)).collect()
-    } else {
-        Vec::new()
-    };
     if emit {
-        sink.begin(surviving.len(), &combo_params);
+        sink.begin(surviving.len(), params.len());
     }
 
     // Phase 1 — large groups: intra-group parallel, one group at a time.
@@ -247,7 +251,8 @@ pub fn run_grouped_sweep<S: Strategy>(
         let mut gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
         // Emit a fully-folded group for incremental persistence before storing it.
         if emit {
-            sink.group_done(pos, &gr, &combo_params);
+            let retained = retained_combo_params(strategy, params, &gr);
+            sink.group_done(pos, &gr, &retained);
             free_persisted_metrics(&mut gr);
         }
         results[pos] = Some(gr);
@@ -271,7 +276,8 @@ pub fn run_grouped_sweep<S: Strategy>(
             // Called from rayon workers, so out of order; `pos` carries the
             // deterministic group_index.
             if emit {
-                sink.group_done(pos, &gr, &combo_params);
+                let retained = retained_combo_params(strategy, params, &gr);
+                sink.group_done(pos, &gr, &retained);
                 free_persisted_metrics(&mut gr);
             }
             Ok((pos, gr))
@@ -442,18 +448,34 @@ fn sweep_group_serial<S: Strategy>(
     observer: &dyn SweepObserver,
     batch: usize,
 ) -> Result<Vec<ComboMetrics>> {
+    use crate::sweep::engine::fill_outcomes_with_state;
+
     let n_combos = params.len();
-    let batch = batch.clamp(1, n_combos.max(1));
+    let batch = batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::hard_max_combo_batch()));
+    // Cache TokenState per group token so series is built once across combo passes.
+    let mut states: Vec<Option<S::TokenState>> = (0..idx.len()).map(|_| None).collect();
     let mut metrics: Vec<ComboMetrics> = Vec::with_capacity(n_combos);
     for (b, chunk) in params.chunks(batch).enumerate() {
         let offset = b * batch;
+        let bound: Vec<S::BoundParams> = chunk.iter().map(|p| strategy.bind_param(p)).collect();
         let mut aggs = vec![ComboAgg::default(); chunk.len()];
         let mut outs: Vec<TokenOutcome> = Vec::with_capacity(chunk.len());
-        for &i in idx {
+        for (local, &ti) in idx.iter().enumerate() {
             if observer.cancelled() {
                 bail!("sweep cancelled");
             }
-            if fill_outcomes(strategy, chunk, &corpus.tokens[i], observer, &mut outs).is_err()
+            let state = states[local]
+                .get_or_insert_with(|| strategy.prepare_token(&corpus.tokens[ti]));
+            if fill_outcomes_with_state(
+                strategy,
+                chunk,
+                &bound,
+                &corpus.tokens[ti],
+                state,
+                observer,
+                &mut outs,
+            )
+            .is_err()
             {
                 bail!("sweep cancelled");
             }
@@ -469,6 +491,26 @@ fn sweep_group_serial<S: Strategy>(
         );
     }
     Ok(metrics)
+}
+
+/// Build `(combo_id, params_json)` only for retention survivors (+ best).
+fn retained_combo_params<S: Strategy>(
+    strategy: &S,
+    params: &[S::Params],
+    gr: &GroupResult,
+) -> Vec<(u32, Value)> {
+    let cfg = crate::sweep::retention::RetentionCfg::default();
+    let keep = crate::sweep::retention::retained_combo_ids(&gr.metrics, gr.best_combo_id, &cfg);
+    let mut out: Vec<(u32, Value)> = keep
+        .iter()
+        .filter_map(|&id| {
+            let p = params.get(id as usize)?;
+            Some((id, strategy.params_json(p)))
+        })
+        .collect();
+    out.sort_by_key(|(id, _)| *id);
+    out.dedup_by_key(|(id, _)| *id);
+    out
 }
 
 /// Drop a group's per-combo `metrics` once a [`GroupSink`] has persisted them.
@@ -602,12 +644,14 @@ mod tests {
         type Entry = bool;
         type EntryKey = ();
         type TokenState = ();
+        type BoundParams = ();
         fn entry_key(&self, _p: &f64) {}
+        fn bind_param(&self, _p: &f64) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
-        fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _p: &f64) -> bool {
+        fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), entry: &bool, p: &f64) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,
@@ -929,11 +973,19 @@ mod tests {
         groups: std::sync::Mutex<Vec<(usize, usize)>>, // (group_index, combo_params.len())
     }
     impl GroupSink for RecordingSink {
-        fn begin(&self, group_count: usize, combo_params: &[Value]) {
-            self.begins.lock().unwrap().push((group_count, combo_params.len()));
+        fn begin(&self, group_count: usize, combo_count: usize) {
+            self.begins.lock().unwrap().push((group_count, combo_count));
         }
-        fn group_done(&self, group_index: usize, _g: &GroupResult, combo_params: &[Value]) {
-            self.groups.lock().unwrap().push((group_index, combo_params.len()));
+        fn group_done(
+            &self,
+            group_index: usize,
+            _g: &GroupResult,
+            retained_params: &[(u32, Value)],
+        ) {
+            self.groups
+                .lock()
+                .unwrap()
+                .push((group_index, retained_params.len()));
         }
     }
 
@@ -958,11 +1010,14 @@ mod tests {
         assert_eq!(groups.len(), 2);
         // begin fired exactly once with (surviving groups, combo count).
         assert_eq!(*sink.begins.lock().unwrap(), vec![(2, 3)]);
-        // One group_done per group, each carrying the 3-combo param JSON; indices
-        // cover both deterministic slots regardless of arrival order.
+        // One group_done per group with retained-only params (≤ full combo count).
         let mut done = sink.groups.lock().unwrap().clone();
         done.sort();
-        assert_eq!(done, vec![(0, 3), (1, 3)]);
+        assert_eq!(done.len(), 2);
+        assert_eq!(done[0].0, 0);
+        assert_eq!(done[1].0, 1);
+        assert!(done[0].1 >= 1 && done[0].1 <= 3);
+        assert!(done[1].1 >= 1 && done[1].1 <= 3);
     }
 
     #[test]
@@ -991,7 +1046,10 @@ mod tests {
         assert_eq!(final_params.len(), 4, "union grew by the refined neighbor");
         assert_eq!(groups.len(), 1);
         assert_eq!(*sink.begins.lock().unwrap(), vec![(1, 4)], "only the final pass emits");
-        assert_eq!(*sink.groups.lock().unwrap(), vec![(0, 4)]);
+        let done = sink.groups.lock().unwrap().clone();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].0, 0);
+        assert!(done[0].1 >= 1 && done[0].1 <= 4);
     }
 
     #[test]
