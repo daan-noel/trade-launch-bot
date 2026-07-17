@@ -28,7 +28,7 @@ use crate::sweep::corpus::CorpusToken;
 use crate::sweep::projection::CorpusTrade;
 use crate::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
-use super::strategy::{build_series, columns_for, scan};
+use super::strategy::{build_series, columns_for, scan, sparse_grid_for};
 
 const BUY_SOL: f64 = 1.0;
 const FP_ID: uuid::Uuid = uuid::Uuid::from_u128(0x1234);
@@ -152,6 +152,7 @@ fn assert_parity(label: &str, params: RuleParams, tokens: &[(CorpusToken, Replay
     // token independently, so single-token replay is the right reference.
     let compiled = CompiledRule::compile(&rule);
     let cols = columns_for(&compiled);
+    let grid = sparse_grid_for(&compiled);
 
     for (corpus_tok, replay_tok) in tokens {
         let replay_out = run_replay(
@@ -163,7 +164,7 @@ fn assert_parity(label: &str, params: RuleParams, tokens: &[(CorpusToken, Replay
         let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
         let (r_fired, r_exit, r_entry, r_exit_price, r_pnl_sol, r_pnl_pct) = replay_tuple(po, &cost);
 
-        let series = build_series(corpus_tok, cols.clone(), as_of);
+        let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
         let outcome = scan(&series, &compiled, BUY_SOL, &cost);
 
         assert_eq!(
@@ -256,4 +257,66 @@ fn scan_matches_replay_pure_dead_open_rule() {
     // No TP/SL/exit metrics: every fired token rides to Dead or Open.
     let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None };
     assert_parity("dead_open", params, &corpus(), at(1000.0));
+}
+
+// ───────────────────── sparse-grid parity (plan §P2) ─────────────────────
+//
+// The sparse series omits provably-static ticks in long quiet gaps. These
+// fixtures put the decision points *inside* those gaps — a long silence, a
+// dead-flip mid-gap, a mid-gap time/stall threshold (with `=` tolerance), a
+// window flow that decays across the gap, and a token that revives after the
+// gap — so a dropped or misplaced tick surfaces as a scan≠replay divergence.
+
+/// Fixtures with multi-hour gaps between trades — the sparse grid's stress case.
+fn gappy_corpus() -> Vec<(CorpusToken, ReplayToken)> {
+    vec![
+        // Revive: 2 h silence (flows decay to 0, time/stall grow) then a live trade.
+        token("revive", vec![ct(0.0, true, 2.0, 1.0, 100.0), ct(7200.0, true, 2.0, 1.2, 100.0)]),
+        // Dead mid-gap: liquidity gone, silent past the 300 s quiet window inside a
+        // long gap, then a late trade (the verdict is booked before it lands).
+        token("dead_midgap", vec![ct(0.0, true, 1.0, 1.0, 5.0), ct(7200.0, true, 1.0, 1.0, 5.0)]),
+        // Healthy but idle: one trade, reserves fine, rides to Open in the tail.
+        token("idle", vec![ct(0.0, true, 2.0, 1.0, 100.0)]),
+    ]
+}
+
+#[test]
+fn scan_matches_replay_gappy_dead_open() {
+    // Enter-on-arm, no exits: dead_midgap → Dead mid-gap, revive/idle → Open.
+    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None };
+    assert_parity("gappy_dead_open", params, &gappy_corpus(), at(100_000.0));
+}
+
+#[test]
+fn scan_matches_replay_time_gate_across_gap() {
+    // Entry gated on time > 3600 s — qualifies mid-gap, so the fill lands on a tick
+    // deep inside the quiet span the sparse grid must still emit.
+    let mut gc = GroupConditions::default();
+    gc.metrics.insert(MetricId::Time, vec![Condition { operator: Operator::Gt, value: 3600.0 }]);
+    let mut entry = SideConditions::default();
+    entry.0.insert(MetricGroupId::Snapshot, gc);
+    let params =
+        RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None };
+    assert_parity("time_gate_gap", params, &gappy_corpus(), at(100_000.0));
+}
+
+#[test]
+fn scan_matches_replay_stall_eq_exit_across_gap() {
+    // Exit when stall ≈ 1800 s (`=` with the metric's tolerance) — a tolerance-edged
+    // threshold reached only inside the gap. Exercises both region boundaries.
+    let params = exit_metric(MetricGroupId::PricePath, MetricId::Stall, Operator::Eq, 1800.0);
+    assert_parity("stall_eq_gap", params, &gappy_corpus(), at(100_000.0));
+}
+
+#[test]
+fn scan_matches_replay_window_flow_across_gap() {
+    // Exit when the 60 s gross-flow window drops to 0 — flows decay to 0 partway
+    // through the gap, so the decay-region ticks must be present and exact.
+    let mut gc = GroupConditions::default();
+    gc.strict.insert("window_size_sec".to_string(), 60.0);
+    gc.metrics.insert(MetricId::GrossFlow, vec![Condition { operator: Operator::Lte, value: 0.0 }]);
+    let mut exit = SideConditions::default();
+    exit.0.insert(MetricGroupId::TimeWindow, gc);
+    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit) };
+    assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
 }

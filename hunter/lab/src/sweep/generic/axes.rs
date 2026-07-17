@@ -167,6 +167,45 @@ impl AxesModel {
         cols
     }
 
+    /// Largest flow window (`window_size_sec`) any metric axis reads — `0.0` if the
+    /// swept rules read no `m_time_window` metrics. Sizes the sparse grid's decay
+    /// region (plan §P2): past `last_trade + this`, every window flow is 0.
+    pub fn max_window_secs(&self) -> f64 {
+        self.axes
+            .iter()
+            .filter_map(|a| match a {
+                ResolvedAxis::Metric { window: Some(w), .. } => Some(*w),
+                _ => None,
+            })
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// The largest swept condition value (+ the metric's `=`-tolerance) placed on
+    /// `metric` across every axis and both sides — `0.0` if the metric isn't swept.
+    /// For the monotone/static `time`/`stall` metrics this is the sparse grid's
+    /// horizon: past it, no `metric` condition can change truth (plan §P2). The
+    /// full `eq_tolerance` is a safe superset of every operator's settle point
+    /// (including `=`'s upper tolerance edge and derived mono-bounds).
+    pub fn metric_value_ceiling(&self, metric: MetricId) -> f64 {
+        let mut max = 0.0_f64;
+        let mut found = false;
+        for a in &self.axes {
+            if let ResolvedAxis::Metric { metric: m, values, .. } = a {
+                if *m == metric {
+                    for v in values.iter().flatten() {
+                        max = max.max(*v);
+                        found = true;
+                    }
+                }
+            }
+        }
+        if found {
+            max + hunter_engine::metrics::metric_spec(metric).eq_tolerance
+        } else {
+            0.0
+        }
+    }
+
     /// The `window_size_sec` used by the entry side's `m_time_window` group (if
     /// any) — the number of high-order entry axes' first window. Used only by the
     /// entry-cache key packing; correctness comes from the assembled RuleParams.

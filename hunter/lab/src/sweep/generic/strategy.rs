@@ -62,6 +62,10 @@ pub struct GenericSweepStrategy {
     cost: CostModel,
     /// The union of every axis's precompute columns (built once).
     columns: Vec<SeriesColumn>,
+    /// The sparse-grid horizons derived from the swept axes — sizes the precompute
+    /// so a long-lived token records rows only where a decision could change
+    /// (plan §P2). Built once; the same grid serves every token.
+    grid: SparseGrid,
 }
 
 impl GenericSweepStrategy {
@@ -69,7 +73,24 @@ impl GenericSweepStrategy {
     /// the deadness clock advances toward (matches `run_replay`'s `ReplayConfig`).
     pub fn new(model: AxesModel, buy_amount_sol: f64, as_of: Ts) -> Self {
         let columns = model.columns();
-        Self { model, buy_amount_sol, as_of, cost: CostModel::pumpfun_default(), columns }
+        let grid = SparseGrid {
+            max_window_secs: model.max_window_secs(),
+            time_horizon_secs: model.metric_value_ceiling(MetricId::Time),
+            stall_horizon_secs: model.metric_value_ceiling(MetricId::Stall),
+        };
+        Self { model, buy_amount_sol, as_of, cost: CostModel::pumpfun_default(), columns, grid }
+    }
+
+    /// Estimate the worst-case resident bytes of one token's precomputed series —
+    /// the admission guard's per-token unit (plan §P4). A row costs `n_cols` f64s
+    /// in the flat buffer plus the `at`/`price`/`reserve_sol`/`dead` parallel vecs.
+    pub fn series_bytes_estimate(&self, token: &CorpusToken) -> usize {
+        let rows = estimate_sparse_rows(token, &self.grid, self.as_of);
+        let per_row = self.columns.len() * std::mem::size_of::<f64>()
+            + std::mem::size_of::<Ts>()   // at
+            + 2 * std::mem::size_of::<f64>() // price + reserve_sol
+            + std::mem::size_of::<bool>(); // dead
+        rows.saturating_mul(per_row)
     }
 
     /// Compile combo `idx` into a `CompiledRule` (dummy fingerprint + unlimited
@@ -195,7 +216,7 @@ impl Strategy for GenericSweepStrategy {
     }
 
     fn prepare_token(&self, token: &CorpusToken) -> Self::TokenState {
-        build_series(token, self.columns.clone(), self.as_of)
+        build_series(token, self.columns.clone(), &self.grid, self.as_of)
     }
 
     fn resolve_entry(
@@ -244,16 +265,73 @@ fn encode_picks(picks: &[usize], lens: &[usize]) -> usize {
 
 // ───────────────────────────── precompute ──────────────────────────────────
 
+/// The horizons that size a token's **sparse** tick grid (plan §P2). Between two
+/// trades the token state is almost entirely static — price, reserves, liquidity
+/// and trail are constant; only window flows (until a trade ages out of the
+/// largest window), the monotone `time`/`stall` clocks, and the one-shot dead
+/// verdict can change. So within a gap we only need dense 500 ms ticks up to the
+/// last instant any of those could still flip a swept condition; past it every
+/// tick is provably identical to its predecessor and is omitted. Every emitted
+/// tick lands on the same `created + k·TICK` grid the dense series used, so its
+/// values are bit-identical — the scan can never disagree with a full replay.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SparseGrid {
+    /// Largest registered flow window (secs); `0` if the rule reads no flows. A
+    /// trade keeps changing flows until `trade + this`, after which all flows are 0.
+    pub max_window_secs: f64,
+    /// Max swept `time` condition value + its `=`-tolerance (secs since creation);
+    /// `0` if `time` isn't swept. `time` is monotone, so past this every `time`
+    /// condition is settled forever.
+    pub time_horizon_secs: f64,
+    /// Max swept `stall` condition value + its `=`-tolerance (secs). `stall` grows
+    /// monotonically within a gap, so past `last_trade + this` every `stall`
+    /// condition is settled for that gap.
+    pub stall_horizon_secs: f64,
+}
+
+impl SparseGrid {
+    /// The last grid instant in a gap at which any swept condition could still
+    /// change, given the trade state entering the gap: `last_trade_at` (the newest
+    /// folded trade, ≥ every metric clock's origin) and `last_meaningful_at` (the
+    /// deadness clock). Dense ticks are emitted up to here; ticks past it are all
+    /// provably static and skipped.
+    fn gap_horizon(&self, created: Ts, last_trade_at: Ts, last_meaningful_at: Ts) -> Ts {
+        let secs = |s: f64| Duration::milliseconds((s * 1000.0).ceil() as i64);
+        let mut h = last_trade_at;
+        // Flow decay: a trade influences the largest window until `trade + window`.
+        h = h.max(last_trade_at + secs(self.max_window_secs));
+        // `time` is measured from creation.
+        h = h.max(created + secs(self.time_horizon_secs));
+        // `stall` is measured from the last price move (≤ last_trade_at); using
+        // last_trade_at is a safe upper bound (it only over-emits, never drops).
+        h = h.max(last_trade_at + secs(self.stall_horizon_secs));
+        // Dead flips once, at the first tick past the quiet window.
+        h = h.max(last_meaningful_at + Duration::seconds(DEAD_QUIET_SECS));
+        h
+    }
+}
+
 /// Build one token's [`MetricSeries`] over the same event stream a single-token
 /// `run_replay` folds: trades interleaved with 500 ms ticks on a grid anchored at
 /// `created_at + TICK`, then a tail up to `min(as_of, last_trade + DEAD_QUIET +
 /// TAIL_MARGIN)`. Trades map to `TradeLite` exactly as `replay::load_tokens` does
 /// (REAL reserves for deadness parity; canonical spot price).
 ///
+/// Ticks are emitted **sparsely** ([`SparseGrid`]): every trade, plus grid ticks
+/// only up to each gap's [`gap_horizon`](SparseGrid::gap_horizon). Omitted ticks
+/// are provably identical (w.r.t. the swept conditions) to the last emitted row,
+/// so the scan reads the same decisions a dense series would — but a week-long
+/// token records rows ∝ its trades, not ∝ its wall-clock lifespan.
+///
 /// Trades are folded in the corpus's load order (slot → tx_index → leg), which is
 /// block-time-monotonic — the order `run_replay` also folds them in (its global
 /// `at` sort is stable and block_time tracks slot), so the two never diverge.
-pub(crate) fn build_series(token: &CorpusToken, columns: Vec<SeriesColumn>, as_of: Ts) -> MetricSeries {
+pub(crate) fn build_series(
+    token: &CorpusToken,
+    columns: Vec<SeriesColumn>,
+    grid: &SparseGrid,
+    as_of: Ts,
+) -> MetricSeries {
     let created = token.created_at;
     let mut series = MetricSeries::new(created, columns);
     let trades = &token.trades;
@@ -265,10 +343,10 @@ pub(crate) fn build_series(token: &CorpusToken, columns: Vec<SeriesColumn>, as_o
     let mut last_trade_at = created;
     for ct in trades.iter() {
         let at = ct.block_time;
-        while next_tick < at {
-            series.push_tick(next_tick);
-            next_tick += tick;
-        }
+        // Gap before this trade: dense ticks only up to the gap horizon, then jump
+        // straight to the trade (skipping the provably-static remainder).
+        let horizon = grid.gap_horizon(created, last_trade_at, series.last_meaningful_at());
+        emit_gap_ticks(&mut series, &mut next_tick, at, horizon, tick, created);
         series.push_trade(trade_lite(ct));
         if at > last_trade_at {
             last_trade_at = at;
@@ -278,11 +356,65 @@ pub(crate) fn build_series(token: &CorpusToken, columns: Vec<SeriesColumn>, as_o
     // than the window past which every token is provably dead + pruned.
     let cap = last_trade_at + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS);
     let tail_end = as_of.min(cap);
-    while next_tick < tail_end {
-        series.push_tick(next_tick);
-        next_tick += tick;
-    }
+    let horizon = grid.gap_horizon(created, last_trade_at, series.last_meaningful_at());
+    emit_gap_ticks(&mut series, &mut next_tick, tail_end, horizon, tick, created);
     series
+}
+
+/// Emit grid ticks in `[next_tick, stop)` but no further than `horizon`; then
+/// fast-forward `next_tick` onto the grid to the first tick ≥ `stop` **without**
+/// emitting the settled ticks in between (that arithmetic jump is what makes the
+/// grid sparse over long quiet gaps). Post-state matches the old dense loop's
+/// (`next_tick` = smallest grid tick ≥ `stop`) so the caller's next gap is unaffected.
+fn emit_gap_ticks(
+    series: &mut MetricSeries,
+    next_tick: &mut Ts,
+    stop: Ts,
+    horizon: Ts,
+    tick: Duration,
+    created: Ts,
+) {
+    while *next_tick < stop && *next_tick <= horizon {
+        series.push_tick(*next_tick);
+        *next_tick += tick;
+    }
+    if *next_tick < stop {
+        // Stopped at the horizon, not at `stop` — jump to the next on-grid tick ≥ stop.
+        let delta_ms = stop.signed_duration_since(created).num_milliseconds();
+        let k = (delta_ms + TICK_MS - 1) / TICK_MS; // ceil ⇒ smallest grid tick ≥ stop
+        *next_tick = created + Duration::milliseconds(k * TICK_MS);
+    }
+}
+
+/// Worst-case row count of a token's sparse series — the admission estimate
+/// (plan §P4). Upper-bounds each gap's dense span by the grid horizon so it never
+/// under-counts (which would defeat the guard), without building the series.
+pub(crate) fn estimate_sparse_rows(token: &CorpusToken, grid: &SparseGrid, as_of: Ts) -> usize {
+    let trades = &token.trades;
+    if trades.is_empty() {
+        return 0;
+    }
+    let created = token.created_at;
+    let tick_ms = TICK_MS.max(1);
+    let horizon_ms = ((grid.max_window_secs.max(grid.time_horizon_secs).max(grid.stall_horizon_secs)
+        + DEAD_QUIET_SECS as f64)
+        * 1000.0)
+        .ceil() as i64;
+    let mut rows = 0usize;
+    let mut prev = created;
+    // One row per trade, plus at most `horizon_ms / tick` dense ticks per gap.
+    for ct in trades.iter() {
+        let gap_ms = ct.block_time.signed_duration_since(prev).num_milliseconds().max(0);
+        rows += 1 + (gap_ms.min(horizon_ms) / tick_ms) as usize;
+        if ct.block_time > prev {
+            prev = ct.block_time;
+        }
+    }
+    // Tail gap (bounded by DEAD_QUIET + TAIL_MARGIN as well as the run's `as_of`).
+    let tail_cap = prev + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS);
+    let tail_ms = as_of.min(tail_cap).signed_duration_since(prev).num_milliseconds().max(0);
+    rows += (tail_ms.min(horizon_ms) / tick_ms) as usize;
+    rows
 }
 
 fn trade_lite(ct: &CorpusTrade) -> TradeLite {
@@ -311,6 +443,34 @@ pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
     cols
 }
 
+/// The [`SparseGrid`] one compiled rule needs — the guard-test counterpart of the
+/// axes-model grid the live sweep builds. Its horizons are the rule's own
+/// `time`/`stall` condition ceilings (+ tolerance) and largest flow window, so the
+/// sparse series it drives records every tick this rule's scan could branch on.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
+    let max_window_secs = compiled.windows.iter().cloned().fold(0.0_f64, f64::max);
+    // Max condition value + eq-tolerance for a monotone/static metric across both sides.
+    let ceiling = |metric: MetricId| -> f64 {
+        let mut max = 0.0_f64;
+        let mut found = false;
+        for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()) {
+            if req.metric == metric {
+                for c in &req.conds {
+                    max = max.max(c.value);
+                    found = true;
+                }
+            }
+        }
+        if found { max + hunter_engine::metrics::metric_spec(metric).eq_tolerance } else { 0.0 }
+    };
+    SparseGrid {
+        max_window_secs,
+        time_horizon_secs: ceiling(MetricId::Time),
+        stall_horizon_secs: ceiling(MetricId::Stall),
+    }
+}
+
 fn col_of(metric: MetricId, window: Option<f64>) -> SeriesColumn {
     match window {
         Some(w) => SeriesColumn::Window(metric, w),
@@ -329,32 +489,47 @@ pub enum EntryResolution {
     Entered { fill_row: usize, price: f64, at: Ts },
 }
 
-/// Read a metric requirement's precomputed value at `row` (`NaN` if the column
-/// wasn't recorded — never satisfies a condition).
-fn req_value(series: &MetricSeries, metric: MetricId, window: Option<f64>, row: usize) -> f64 {
-    let target = col_of(metric, window);
-    match series.columns().iter().position(|c| *c == target) {
-        Some(idx) => series.rows[row][idx],
-        None => f64::NAN,
+/// Column index (into the flat series) resolved once per requirement, hoisted out
+/// of the per-row scan loop (plan §P1). `usize::MAX` = the column wasn't recorded,
+/// which reads as `NaN` and satisfies no condition.
+const MISSING_COL: usize = usize::MAX;
+
+fn col_idx_of(series: &MetricSeries, metric: MetricId, window: Option<f64>) -> usize {
+    series.col_index(col_of(metric, window)).unwrap_or(MISSING_COL)
+}
+
+/// Value at a pre-resolved column index (`NaN` for an unrecorded column).
+#[inline]
+fn value_at_col(series: &MetricSeries, col: usize, row: usize) -> f64 {
+    if col == MISSING_COL {
+        f64::NAN
+    } else {
+        series.value_at(row, col)
     }
 }
 
-fn entry_satisfied(series: &MetricSeries, c: &CompiledRule, row: usize) -> bool {
-    c.entry_reqs
-        .iter()
-        .all(|r| eval(&r.conds, req_value(series, r.metric, r.window, row), r.tolerance))
+/// One side's requirements paired with their resolved column indices (built once
+/// per scan, indexed in lockstep with the `CompiledRule`'s req list).
+fn resolve_cols(series: &MetricSeries, reqs: &[hunter_engine::arm::MetricReq]) -> Vec<usize> {
+    reqs.iter().map(|r| col_idx_of(series, r.metric, r.window)).collect()
 }
 
-fn exit_metrics_satisfied(series: &MetricSeries, c: &CompiledRule, row: usize) -> bool {
-    c.exit_reqs
-        .iter()
-        .all(|r| eval(&r.conds, req_value(series, r.metric, r.window, row), r.tolerance))
+fn reqs_satisfied(
+    series: &MetricSeries,
+    reqs: &[hunter_engine::arm::MetricReq],
+    cols: &[usize],
+    row: usize,
+) -> bool {
+    reqs.iter()
+        .zip(cols)
+        .all(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance))
 }
 
-fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, row: usize) -> bool {
+fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usize], row: usize) -> bool {
     c.mono_bounds
         .iter()
-        .any(|mb| mb.crossed(req_value(series, mb.metric, mb.window, row)))
+        .zip(mono_cols)
+        .any(|(mb, &col)| mb.crossed(value_at_col(series, col, row)))
 }
 
 /// Walk the series to the entry decision, mirroring the armed-side `decide_arm`:
@@ -363,15 +538,20 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, row: usize) -> b
 /// tick-timed decision before the first print defers to that print — exactly the
 /// engine's `pending_buys` wait-for-price).
 pub(crate) fn resolve_entry(series: &MetricSeries, c: &CompiledRule) -> EntryResolution {
-    let n = series.rows.len();
+    let n = series.n_rows();
+    // Resolve each requirement's flat column index once, not per row.
+    let entry_cols = resolve_cols(series, &c.entry_reqs);
+    let mono_cols: Vec<usize> =
+        c.mono_bounds.iter().map(|mb| col_idx_of(series, mb.metric, mb.window)).collect();
+    let enter_on_arm = c.enter_on_arm();
     for i in 0..n {
         if series.dead[i] {
             return EntryResolution::NoEntry;
         }
-        if entry_unsatisfiable(series, c, i) {
+        if entry_unsatisfiable(series, c, &mono_cols, i) {
             return EntryResolution::NoEntry;
         }
-        if c.enter_on_arm() || entry_satisfied(series, c, i) {
+        if enter_on_arm || reqs_satisfied(series, &c.entry_reqs, &entry_cols, i) {
             // Fill at the first finite, positive price at or after the decision.
             for j in i..n {
                 let p = series.price[j];
@@ -399,7 +579,9 @@ pub(crate) fn resolve_exit(
         EntryResolution::NoEntry => return TokenOutcome::no_entry(),
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
-    let n = series.rows.len();
+    let n = series.n_rows();
+    let has_exit_metrics = c.has_exit_metrics();
+    let exit_cols = resolve_cols(series, &c.exit_reqs);
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return closed(ExitCode::Dead, entry_price, entry_at, series.price[j], series.at[j], buy_amount_sol, cost);
@@ -417,7 +599,7 @@ pub(crate) fn resolve_exit(
                 }
             }
         }
-        if c.has_exit_metrics() && exit_metrics_satisfied(series, c, j) {
+        if has_exit_metrics && reqs_satisfied(series, &c.exit_reqs, &exit_cols, j) {
             return closed(ExitCode::Metrics, entry_price, entry_at, p, series.at[j], buy_amount_sol, cost);
         }
     }

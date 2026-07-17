@@ -78,12 +78,16 @@ fn effective_cap(max_combos: Option<usize>) -> usize {
 /// than rejected (the prior behaviour) — `HARD_MAX_COMBOS` still bounds the work.
 /// Override with `SWEEP_MEMORY_BUDGET_MB`.
 ///
-/// 256 MB is generous: at MAX_COMBOS=5_000 combos × 2 threads × ~600 B/ComboAgg
-/// actual peak is ~6 MB. Even at HARD_MAX_COMBOS=500_000 it's ~600 MB, so a
-/// 256 MB default batches those in ~2 passes with zero quality impact. The old
-/// 1024 MB default appeared verbatim in the holistic admission guard (rss + corpus +
-/// this), causing false OOM rejections on 4 GB boxes running a live server process.
-const DEFAULT_SWEEP_MEMORY_BUDGET_MB: usize = 256;
+/// A bigger batch = fewer series-rebuild passes (`n_batches` ↓), and the series
+/// precompute (not this budget) is the sweep's real memory cost, now bounded ∝
+/// trades by the sparse grid (plan §P2). `lab` is the analysis workstation — it
+/// never ships to the 4 GB EC2 box (only `live` does), so this is sized for the
+/// workstation: 2 GB batches HARD_MAX_COMBOS (~600 MB of `ComboAgg` at 2 threads)
+/// in a single pass. The old 256 MB default was conservatively sized against the
+/// server, which this budget never runs on. Admission (plan §P4) accounts the
+/// precompute separately via `SWEEP_ADMISSION_BUDGET_MB` — the two budgets are
+/// deliberately not shared (reusing one caused the earlier false-OOM regression).
+const DEFAULT_SWEEP_MEMORY_BUDGET_MB: usize = 2048;
 
 /// The fold-accumulator memory budget in bytes (`SWEEP_MEMORY_BUDGET_MB` or the
 /// default), saturating so a fat-fingered override can't wrap. `pub(crate)` so the
@@ -95,6 +99,27 @@ pub(crate) fn sweep_memory_budget_bytes() -> u64 {
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&m| m >= 1)
         .unwrap_or(DEFAULT_SWEEP_MEMORY_BUDGET_MB)
+        .saturating_mul(1024 * 1024) as u64
+}
+
+/// Default ceiling (MB) on the **series precompute** transient a generic sweep may
+/// hold — the peak is `threads × the largest token's sparse series`, which the
+/// admission guard (plan §P4) estimates up front and rejects against rather than
+/// letting a pathological rule×corpus abort mid-run. Deliberately **separate** from
+/// the fold budget above: conflating the two is what caused the earlier false-OOM
+/// regression. The sparse grid bounds a series ∝ trades, so at workstation scale
+/// this is generous headroom — it only trips on a genuinely oversized run. Override
+/// with `SWEEP_ADMISSION_BUDGET_MB`.
+const DEFAULT_SWEEP_ADMISSION_BUDGET_MB: usize = 4096;
+
+/// The generic-sweep precompute admission budget in bytes
+/// (`SWEEP_ADMISSION_BUDGET_MB` or the default), saturating.
+pub(crate) fn sweep_admission_budget_bytes() -> u64 {
+    std::env::var("SWEEP_ADMISSION_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&m| m >= 1)
+        .unwrap_or(DEFAULT_SWEEP_ADMISSION_BUDGET_MB)
         .saturating_mul(1024 * 1024) as u64
 }
 
@@ -317,6 +342,41 @@ async fn sweep_generic(
     }
 
     let threads = bounded_threads();
+
+    // Admission (plan §P4): the per-token series precompute — not the fold
+    // accumulators — is the sweep's real memory cost. Estimate the worst-case
+    // transient (`threads × the largest token's sparse series`) and reject up front
+    // with a clear message instead of letting a pathological rule×corpus abort
+    // mid-run. The sparse grid bounds each series ∝ trades, so this only trips on a
+    // genuinely oversized run; the budget is separate from the fold budget.
+    let max_series_bytes = corpus
+        .tokens
+        .iter()
+        .map(|t| strategy.series_bytes_estimate(t))
+        .max()
+        .unwrap_or(0);
+    let peak_bytes = (threads as u64).saturating_mul(max_series_bytes as u64);
+    let admission_budget = sweep_admission_budget_bytes();
+    let mb = |b: u64| b / (1024 * 1024);
+    tracing::info!(
+        threads,
+        max_token_series_mb = mb(max_series_bytes as u64),
+        peak_precompute_mb = mb(peak_bytes),
+        budget_mb = mb(admission_budget),
+        rss_mb = crate::sweep::obs::process_rss_mb(),
+        "generic sweep: series-precompute admission estimate"
+    );
+    if peak_bytes > admission_budget {
+        bail!(
+            "estimated series precompute {} MB (threads {} × largest token {} MB) exceeds the \
+             {} MB admission budget — narrow the corpus or axes, or raise SWEEP_ADMISSION_BUDGET_MB",
+            mb(peak_bytes),
+            threads,
+            mb(max_series_bytes as u64),
+            mb(admission_budget)
+        );
+    }
+
     let (combo_count, groups) = tokio::task::spawn_blocking(
         move || -> Result<(usize, Vec<GroupResult>)> {
             let pool = rayon::ThreadPoolBuilder::new()

@@ -30,7 +30,10 @@ impl SeriesColumn {
 }
 
 /// Per-event metric values for one token over a fixed column set. `at[i]` is the
-/// timestamp of event `i`; `rows[i][c]` is column `c`'s value at that event.
+/// timestamp of event `i`; the metric values live in one **flat** row-major buffer
+/// ([`value_at`](Self::value_at)) with `n_cols` stride — one allocation for the
+/// whole series (not one per row), so the scan reads cache-linearly and long
+/// tokens don't pay per-row allocator overhead (plan §P1).
 ///
 /// Beyond the metric columns, each row also carries the three rule-independent
 /// facts the per-combo scan needs but that no metric expresses: the canonical
@@ -47,10 +50,13 @@ pub struct MetricSeries {
     /// The last trade at or before `now` whose SOL cleared the meaningful-trade
     /// floor — the deadness clock (mirrors `EngineState`'s `last_meaningful_at`).
     last_meaningful_at: Ts,
+    /// Column count = row stride into [`values`](Self::values).
+    n_cols: usize,
+    /// Flat row-major metric values: row `r`, column `c` → `values[r * n_cols + c]`.
+    /// Read through [`value_at`](Self::value_at).
+    values: Vec<f64>,
     /// Event timestamps, one per recorded row.
     pub at: Vec<Ts>,
-    /// One value per column per event (`rows[event][column]`).
-    pub rows: Vec<Vec<f64>>,
     /// Canonical spot price at each event (`NaN` before the first trade).
     pub price: Vec<f64>,
     /// SOL reserves at each event (`NaN` before the first trade).
@@ -71,16 +77,24 @@ impl MetricSeries {
                 track.ensure_window(*ws);
             }
         }
+        let n_cols = columns.len();
         Self {
             track,
             columns,
             last_meaningful_at: created_at,
+            n_cols,
+            values: Vec::new(),
             at: Vec::new(),
-            rows: Vec::new(),
             price: Vec::new(),
             reserve_sol: Vec::new(),
             dead: Vec::new(),
         }
+    }
+
+    /// The deadness clock (newest meaningful-trade time) after every fold so far —
+    /// the sparse-grid builder reads it to place the dead-flip tick (plan §P2).
+    pub fn last_meaningful_at(&self) -> Ts {
+        self.last_meaningful_at
     }
 
     /// Fold a trade and record a row at its timestamp.
@@ -103,11 +117,15 @@ impl MetricSeries {
     }
 
     fn record(&mut self, now: Ts) {
-        let row: Vec<f64> = self.columns.iter().map(|c| c.eval(&self.track, now)).collect();
+        // Append this row's columns into the flat buffer (stride `n_cols`); the
+        // buffer grows by one row per event with no per-row allocation.
+        self.values.reserve(self.n_cols);
+        for c in &self.columns {
+            self.values.push(c.eval(&self.track, now));
+        }
         let reserves = self.track.current_reserves();
         let dead = is_dead_verdict(reserves.is_finite().then_some(reserves), self.last_meaningful_at, now);
         self.at.push(now);
-        self.rows.push(row);
         self.price.push(self.track.current_price());
         self.reserve_sol.push(reserves);
         self.dead.push(dead);
@@ -118,10 +136,30 @@ impl MetricSeries {
         &self.columns
     }
 
+    /// Number of recorded event rows.
+    pub fn n_rows(&self) -> usize {
+        self.at.len()
+    }
+
+    /// The metric value at `(row, col_idx)` from the flat buffer. `col_idx` is a
+    /// column position resolved once via [`col_index`](Self::col_index) — the scan
+    /// hoists it out of its per-row loop (plan §P1) instead of re-searching per read.
+    #[inline]
+    pub fn value_at(&self, row: usize, col_idx: usize) -> f64 {
+        self.values[row * self.n_cols + col_idx]
+    }
+
+    /// Resolve a column's index in this series' fixed column set (`None` if the
+    /// column wasn't recorded). Columns are constant for the whole series, so a
+    /// scan resolves each requirement's index once per run, not per row.
+    pub fn col_index(&self, col: SeriesColumn) -> Option<usize> {
+        self.columns.iter().position(|c| *c == col)
+    }
+
     /// Values of one column across all recorded events (`None` if not recorded).
     pub fn column_values(&self, col: SeriesColumn) -> Option<Vec<f64>> {
-        let idx = self.columns.iter().position(|c| *c == col)?;
-        Some(self.rows.iter().map(|r| r[idx]).collect())
+        let idx = self.col_index(col)?;
+        Some((0..self.n_rows()).map(|r| self.value_at(r, idx)).collect())
     }
 }
 
@@ -206,7 +244,9 @@ mod tests {
                 Ev::Tick(now) => s.push_tick(*now),
             }
         }
-        s.rows.iter().map(|r| r.iter().map(|v| v.to_bits()).collect()).collect()
+        (0..s.n_rows())
+            .map(|r| (0..s.columns().len()).map(|c| s.value_at(r, c).to_bits()).collect())
+            .collect()
     }
 
     #[test]
