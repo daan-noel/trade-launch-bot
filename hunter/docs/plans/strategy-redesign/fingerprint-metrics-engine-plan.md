@@ -24,9 +24,9 @@ tests; 5.7 metric-series endpoint; `cargo check`/tests green on all four bins).
 model + `GenericSweepStrategy` reusing the `Strategy` trait / `grouped_engine`
 partition + persistence, `grouped_sweep_*` migration 0003, `"generic"` registry
 wiring; 5.5 scan ≡ `run_replay` guard test; 5.6 `promote_group` endpoint. Deep-dive:
-[sweep-generic-scan.md](sweep-generic-scan.md). 5.8 full win-rate baseline pending a
-DB reconcile — see below). Phase 7 deletion: the **5.4–5.6 sweep-rewrite blocker is
-cleared** (a generic sweep now exists), but the legacy sweep files + per-strategy
+[sweep-generic-scan.md](sweep-generic-scan.md). **5.8 verified end-to-end** on the live
+lab bin + real lake corpus, after fixing an `0004` core-migration boot bug — see 5.8).
+Phase 7 deletion: the **5.4–5.6 sweep-rewrite blocker is cleared** (a generic sweep now exists), but the legacy sweep files + per-strategy
 rule handlers + live `StrategyService` (Phase 7 blockers 2–4) still need retiring
 before the deletion sweep.
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
@@ -646,8 +646,10 @@ Determinism rules (violation = bug):
 ### Phase 5 — Analysis adapters (hunter-lab)
 
 **Progress 2026-07-17:** 5.1 + 5.2 + 5.3 + 5.7 built (analysis-simulate cluster).
-**5.4 + 5.5 + 5.6 built 2026-07-17** (precompute-then-scan sweep — deep-dive
-[sweep-generic-scan.md](sweep-generic-scan.md)). 5.8 win-rate baseline pending.
+**5.4 + 5.5 + 5.6 built + 5.8 verified 2026-07-17** — precompute-then-scan sweep
+(deep-dive [sweep-generic-scan.md](sweep-generic-scan.md)); 5.8 run end-to-end on the
+live lab bin + real lake (Dead-not-Open + win-rate curve + promote all confirmed).
+**Phase 5 COMPLETE.**
 
 - [x] 5.1 `strategies/replay.rs`: lake→events producer — `ReplayToken`s expanded into
       one **globally time-ordered** event stream (`TokenCreated`/`FirstSlotSettled`/
@@ -702,16 +704,22 @@ Determinism rules (violation = bug):
       demand, returning every metric's value at every trade as parallel arrays
       (`m_time_window` metrics per requested window; non-finite ⇒ `null`). Never
       persisted. `api/handlers/tokens/metric_series.rs`.
-- [~] 5.8 Re-run standing verification checks (bf61547f-style). **Dead-not-Open is
-      proven by the 5.5 guard** (the dead token books `ExitCode::Dead` in both the scan
-      and the full engine replay). The full win-rate baseline comparison is **pending a
-      DB reconcile**: the local `hunter_bot` DB is in a partially-applied `0004` (core)
-      state (`idx_strategy_rules_active`/`strategy_rules` exist, `fingerprints` doesn't,
-      `_sqlx_migrations` records only ≤ v3), so `hunter-lab` can't boot to run a live
-      generic sweep — a pre-existing branch DB quirk, not this phase. Lab migration 0003
-      itself validated clean (applied + rolled back against the real schema). **User
-      action:** reconcile the DB (drop-and-rerun on this branch) then drive a `"generic"`
-      sweep over the lake to compare win-rates.
+- [x] 5.8 Standing verification checks — **run end-to-end 2026-07-17** against the live
+      lab bin + real lake corpus (after fixing the `0004` core-migration boot bug, below).
+      A `"generic"` TP×SL grid over 3770 lake tokens confirmed **dead tokens book `Dead`,
+      not `Open`** (only 3/3770 `Open`; 2733–3415 `Dead` per combo) and a **sane monotonic
+      win-rate curve** (TP 50→30.9%, 100→21.2%, 200→14.1%; `n_exit_metrics`=0 with no exit
+      metrics). A grouped sweep (`group_by=[cu_limit]`, entry `time>2/5`) → **promote**
+      produced a fingerprint with exact `cu_limit=520000` at the run's 0.1 width + the
+      winning combo's params as a ready-to-save draft; a second promote reused the same
+      fingerprint (`find_or_create` dedup verified, 1 row).
+      - **Migration fix (prereq):** core `0004` had an index-name collision — `0001`
+        creates `idx_strategy_rules_active` on `strategy_rules`; `0004` renames that table
+        to `_legacy` (index name moves with it) then `CREATE INDEX idx_strategy_rules_active`
+        on the new table → "already exists", so `0004` failed + rolled back on **every**
+        boot (it had never applied on any DB seeded from `0001`). Fixed by renaming the
+        legacy index (`ALTER INDEX … RENAME TO idx_strategy_rules_legacy_active`) right
+        after the table rename.
 
 ### Phase 6 — Event-log tooling (small, high leverage) ✅ 2026-07-17
 

@@ -30,6 +30,10 @@ CREATE TABLE fingerprints (
 -- 2. Legacy rules kept read-only for reference — the params vocabulary is
 --    incompatible with the new engine, so old rules are NOT migrated.
 ALTER TABLE strategy_rules RENAME TO strategy_rules_legacy;
+-- Renaming the table does NOT rename its indexes (Postgres keeps their names),
+-- so `idx_strategy_rules_active` from 0001 would still occupy that name and the
+-- new-table index below would collide. Rename the legacy index out of the way.
+ALTER INDEX idx_strategy_rules_active RENAME TO idx_strategy_rules_legacy_active;
 
 -- 3. New rules table. Columns say HOW the rule trades; params JSONB says WHEN
 --    (strict take_profit/stop_loss + entry/exit metric-condition groups with
