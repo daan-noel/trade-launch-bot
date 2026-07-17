@@ -99,7 +99,7 @@ impl LakeSource {
         //    — within-group fold order then matches, down to f64 summation.
         let mut tokens = load_corpus_tokens(&conn, &trades_lit, &candidates, sel)?;
         let rank: HashMap<&str, usize> =
-            candidates.iter().enumerate().map(|(i, (m, _))| (m.as_str(), i)).collect();
+            candidates.iter().enumerate().map(|(i, (m, _, _))| (m.as_str(), i)).collect();
         tokens.sort_by_key(|t| rank.get(t.mint.as_str()).copied().unwrap_or(usize::MAX));
 
         // 3. Attach grouping fingerprints from the token dimension (one query).
@@ -239,24 +239,29 @@ fn resolve_candidates(
     conn: &Connection,
     tokens_lit: &str,
     sel: &Selection,
-) -> Result<Vec<(String, String)>> {
+) -> Result<Vec<(String, String, i64)>> {
     if let Some(mints) = &sel.mints {
         // Explicit list: cap to the caller's order first, stage that exact set, then
         // look up symbols against it (staging == candidates, so no re-stage in `load`).
         let capped: Vec<&str> = mints.iter().map(String::as_str).take(sel.token_cap).collect();
         stage_mints(conn, capped.iter().copied())?;
         let sql = format!(
-            "SELECT mint, symbol FROM read_parquet({tokens_lit}) \
+            "SELECT mint, symbol, created_at FROM read_parquet({tokens_lit}) \
              WHERE mint IN (SELECT mint FROM sel_mints)"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+            })?
             .collect::<duckdb::Result<Vec<_>>>()?;
-        let by_mint: HashMap<String, String> = rows.into_iter().collect();
+        let by_mint: HashMap<String, (String, i64)> = rows.into_iter().collect();
         Ok(capped
             .into_iter()
-            .map(|m| (m.to_string(), by_mint.get(m).cloned().unwrap_or_default()))
+            .map(|m| {
+                let (sym, created) = by_mint.get(m).cloned().unwrap_or_default();
+                (m.to_string(), sym, created)
+            })
             .collect())
     } else {
         // Microseconds — `export_tokens` writes `created_at` as µs to match PG's
@@ -264,19 +269,19 @@ fn resolve_candidates(
         let after = sel.created_after.map(|t| t.timestamp_micros()).unwrap_or(i64::MIN);
         let before = sel.created_before.map(|t| t.timestamp_micros()).unwrap_or(i64::MAX);
         let sql = format!(
-            "SELECT mint, symbol FROM read_parquet({tokens_lit}) \
+            "SELECT mint, symbol, created_at FROM read_parquet({tokens_lit}) \
              WHERE is_mayhem_mode = false AND created_at >= ? AND created_at < ? \
              ORDER BY created_at DESC LIMIT ?"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(String, String)> = stmt
+        let rows: Vec<(String, String, i64)> = stmt
             .query_map(
                 duckdb::params![after, before, sel.token_cap as i64],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
             )?
             .collect::<duckdb::Result<Vec<_>>>()?;
         // Stage the selected mints for the trade + fingerprint queries to join to.
-        stage_mints(conn, rows.iter().map(|(m, _)| m.as_str()))?;
+        stage_mints(conn, rows.iter().map(|(m, _, _)| m.as_str()))?;
         Ok(rows)
     }
 }
@@ -298,11 +303,15 @@ fn stage_mints<'a>(conn: &Connection, mints: impl Iterator<Item = &'a str>) -> R
 fn load_corpus_tokens(
     conn: &Connection,
     trades_lit: &str,
-    candidates: &[(String, String)],
+    candidates: &[(String, String, i64)],
     sel: &Selection,
 ) -> Result<Vec<CorpusToken>> {
     let symbols: HashMap<&str, &str> =
-        candidates.iter().map(|(m, s)| (m.as_str(), s.as_str())).collect();
+        candidates.iter().map(|(m, s, _)| (m.as_str(), s.as_str())).collect();
+    // mint → creation time (µs epoch) — the metric-clock origin carried onto each
+    // `CorpusToken` for the generic engine (simulate-parity, see `CorpusToken`).
+    let created: HashMap<&str, i64> =
+        candidates.iter().map(|(m, _, c)| (m.as_str(), *c)).collect();
     let order = partition_order(sel.window);
     let curve_filter = if sel.curve_only { "AND t.venue = 'curve'" } else { "" };
     // Simulate needs `tx_signature` (Solscan links); the sweep leaves it out so its
@@ -358,7 +367,7 @@ fn load_corpus_tokens(
 
         if cur_mint.as_deref() != Some(mint.as_str()) {
             if let Some(prev) = cur_mint.take() {
-                push_token(&mut tokens, prev, &symbols, &mut cur_trades);
+                push_token(&mut tokens, prev, &symbols, &created, &mut cur_trades);
             }
             cur_mint = Some(mint.clone());
         }
@@ -386,7 +395,7 @@ fn load_corpus_tokens(
         });
     }
     if let Some(prev) = cur_mint.take() {
-        push_token(&mut tokens, prev, &symbols, &mut cur_trades);
+        push_token(&mut tokens, prev, &symbols, &created, &mut cur_trades);
     }
     Ok(tokens)
 }
@@ -397,12 +406,21 @@ fn push_token(
     out: &mut Vec<CorpusToken>,
     mint: String,
     symbols: &HashMap<&str, &str>,
+    created: &HashMap<&str, i64>,
     trades: &mut Vec<CorpusTrade>,
 ) {
     let symbol = symbols.get(mint.as_str()).copied().unwrap_or_default().to_string();
+    // Fall back to the first trade's block time if the token row is missing a
+    // creation stamp (should never happen — every candidate carries one).
+    let created_at = created
+        .get(mint.as_str())
+        .copied()
+        .map(micros_to_utc)
+        .unwrap_or_else(|| trades.first().map(|t| t.block_time).unwrap_or_else(Utc::now));
     out.push(CorpusToken {
         symbol,
         mint,
+        created_at,
         trades: Arc::new(std::mem::take(trades)),
         fp: TokenFingerprint::default(),
     });

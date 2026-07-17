@@ -146,6 +146,9 @@ pub struct GroupedSweepResult {
     /// Analysis-only death-closes: positions closed at the last meaningful trade
     /// because the token died silent (see `trading_core::strategies::death`).
     pub n_exit_dead: i32,
+    /// Generic-engine metric-condition exits (`ExitCode::Metrics`); 0 for the
+    /// legacy tpsl/swing sweeps.
+    pub n_exit_metrics: i32,
     pub n_exit_open: i32,
 }
 

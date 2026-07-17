@@ -29,9 +29,12 @@ use crate::sweep::aggregate::ComboMetrics;
 use crate::lake::duck::LakeSource;
 use crate::sweep::corpus::{sweep_per_mint_cap, CorpusSource, Selection};
 use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
-use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField};
+use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField, SOL_BUCKET_WIDTH};
 use crate::sweep::registry;
 use crate::sweep::strategy::parse_method;
+use trading_core::config::constants::sol_to_lamports;
+use trading_core::models::Fingerprint;
+use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 
 // ---------------------------------------------------------------------------
 // Request / query bodies
@@ -969,6 +972,7 @@ fn metrics_to_result(m: &ComboMetrics) -> GroupedSweepResult {
         n_exit_liquidity: m.n_exit_liquidity as i32,
         n_exit_next_kill: m.n_exit_next_kill as i32,
         n_exit_dead: m.n_exit_dead as i32,
+        n_exit_metrics: m.n_exit_metrics as i32,
         n_exit_open: m.n_exit_open as i32,
     }
 }
@@ -1186,6 +1190,164 @@ pub async fn prune_runs(
             HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Promote a winning group + combo → fingerprint + pre-filled rule draft (5.6)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct PromoteQuery {
+    pub strategy_id: String,
+    /// Which combo to promote. Omitted ⇒ the group's crowned `best_combo_id`.
+    #[serde(default)]
+    pub combo_id: Option<i32>,
+}
+
+/// `POST /api/strategies/sweeps/{run_id}/groups/{group_id}/promote?strategy_id=generic[&combo_id=N]`
+///
+/// Turns a swept group's winning combo into a ready-to-save rule (plan 5.6):
+/// find-or-creates the group's fingerprint **at the run's bucket width** (so the
+/// promoted rule's live matcher buckets exactly as the sweep partitioned), then
+/// returns a pre-filled [`RuleDraft`](trading_core::strategies::rules::RuleDraft)-
+/// shaped body the frontend opens in the rule editor (review → dry-run → save).
+/// The rule itself is NOT persisted here — the editor's save endpoint does that.
+pub async fn promote_group(
+    state: web::Data<Arc<LocalState>>,
+    path: web::Path<(Uuid, Uuid)>,
+    query: web::Query<PromoteQuery>,
+) -> impl Responder {
+    let tables = match registry::tables_for(&query.strategy_id) {
+        Some(t) => t,
+        None => return bad_strategy(&query.strategy_id),
+    };
+    let (run_id, group_id) = path.into_inner();
+    let repo = GroupedSweepRepo::new(state.db.clone(), tables);
+
+    let run = match repo.get_run(run_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return HttpResponse::NotFound().json(serde_json::json!({"error": "run not found"})),
+        Err(e) => {
+            tracing::error!("promote: get_run failed: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+    let group = match repo.get_group(group_id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return HttpResponse::NotFound().json(serde_json::json!({"error": "group not found"})),
+        Err(e) => {
+            tracing::error!("promote: get_group failed: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
+    // The combo's params: an explicit `combo_id` from the `_combos` dict, else the
+    // group's crowned `best_params`.
+    let combo_id = query.combo_id.unwrap_or(group.best_combo_id);
+    let params = match query.combo_id {
+        Some(cid) => match repo.get_combo_params(run_id, cid).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                return HttpResponse::NotFound()
+                    .json(serde_json::json!({"error": format!("combo {cid} not found in run")}))
+            }
+            Err(e) => {
+                tracing::error!("promote: get_combo_params failed: {e}");
+                return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+            }
+        },
+        None => group.best_params.clone(),
+    };
+
+    // Fingerprint at the run's bucket width (fall back to the default for pre-0002
+    // runs), find-or-created so identical winning groups map onto ONE fingerprint.
+    let width = run.bucket_width_sol.unwrap_or(SOL_BUCKET_WIDTH);
+    let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
+    let fp = fingerprint_from_group_key(&group.group_key, width, name);
+    let fp = match FingerprintRepo::new(state.db.clone()).find_or_create(&fp).await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!("promote: find_or_create fingerprint failed: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+        }
+    };
+
+    let buy_amount_sol = run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL);
+    let draft = serde_json::json!({
+        "rule_name": format!("promoted g{} c{}", group.group_index, combo_id),
+        "fingerprint_id": fp.id,
+        "trade_mode": "paper",
+        "buy_amount_lamports": sol_to_lamports(buy_amount_sol),
+        "max_concurrent_tokens": 1,
+        "max_total_tokens": 0,
+        "params": params,
+        // Echo the resolved fingerprint so the editor can render its criteria
+        // without a second fetch.
+        "fingerprint": fp,
+    });
+    HttpResponse::Ok().json(draft)
+}
+
+/// First 8 chars of a UUID, for a compact human label.
+fn short_id(id: Uuid) -> String {
+    id.to_string().chars().take(8).collect()
+}
+
+/// Rebuild a [`Fingerprint`] from a stored group key at bucket `width`. The group
+/// key is `{field_tag: label}` where continuous SOL fields carry the bucket's
+/// `"lo–hi"` label (lower edge = a `width`-multiple) — the representative used is
+/// that lower edge, which lies in the bucket, so the fingerprint's `same_bucket`
+/// match reproduces the group's membership exactly. Grouping-only fields
+/// (`token_program_id`, `is_cashback_enabled`) have no fingerprint axis and the
+/// `∅` "missing" label is skipped.
+fn fingerprint_from_group_key(gk: &serde_json::Value, width: f64, name: String) -> Fingerprint {
+    let now = Utc::now();
+    let mut fp = Fingerprint {
+        id: Uuid::new_v4(),
+        name,
+        cu_limit: None,
+        cu_price: None,
+        init_buy_lamports: None,
+        max_cost_lamports: None,
+        spendable_lamports_in: None,
+        first_slot_buy_lamports: None,
+        first_slot_sell_lamports: None,
+        bucket_size_amount: width,
+        ix_labels: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let Some(obj) = gk.as_object() else { return fp };
+    for (tag, val) in obj {
+        let Some(field) = GroupField::from_tag(tag) else { continue };
+        let Some(s) = val.as_str() else { continue };
+        if s == "∅" {
+            continue; // the grouping "missing" sentinel — not part of identity
+        }
+        match field {
+            GroupField::CuLimit => fp.cu_limit = s.parse().ok(),
+            GroupField::CuPrice => fp.cu_price = s.parse().ok(),
+            GroupField::InitialBuySol => fp.init_buy_lamports = parse_lo_lamports(s),
+            GroupField::MaxCostLamports => fp.max_cost_lamports = parse_lo_lamports(s),
+            GroupField::SpendableLamportsIn => fp.spendable_lamports_in = parse_lo_lamports(s),
+            GroupField::FirstSlotBuySol => fp.first_slot_buy_lamports = parse_lo_lamports(s),
+            GroupField::FirstSlotSellSol => fp.first_slot_sell_lamports = parse_lo_lamports(s),
+            GroupField::IxLabels => {
+                fp.ix_labels = Some(s.split(" | ").map(str::to_string).collect())
+            }
+            // Grouping-only axes with no fingerprint identity.
+            GroupField::TokenProgramId | GroupField::IsCashbackEnabled => {}
+        }
+    }
+    fp
+}
+
+/// Parse a `"lo–hi"` SOL bucket label's lower edge into lamports (a plain numeric
+/// label with no separator parses whole). `None` if it isn't numeric.
+fn parse_lo_lamports(label: &str) -> Option<i64> {
+    let lo = label.split('–').next()?.trim();
+    let sol: f64 = lo.parse().ok()?;
+    Some(sol_to_lamports(sol))
 }
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,13 @@ pub enum ExitCode {
     /// produces this (it closes silent tokens via its clock sweep). Counts as a
     /// **closed** loss in the rollup. See [`crate::strategies::death`].
     Dead = 9,
+    /// The generic engine's single metric-condition exit (`ExitReason::Metrics`):
+    /// all of a rule's exit metric conditions became true. Collapses the legacy
+    /// ladder's granular metric exits (trailing / stall / time / liquidity /
+    /// next-kill) into one bucket — the redesigned engine has no per-metric exit
+    /// codes, only "an exit condition group fired". Only the generic sweep/replay
+    /// emits it; the legacy strategies never do.
+    Metrics = 10,
 }
 
 impl ExitCode {
@@ -55,6 +62,7 @@ impl ExitCode {
             "LiquidityExit" => ExitCode::LiquidityExit,
             "NextKill" => ExitCode::NextKill,
             "Dead" => ExitCode::Dead,
+            "Metrics" => ExitCode::Metrics,
             "Open" => ExitCode::Open,
             _ => ExitCode::Open,
         }
@@ -221,6 +229,9 @@ pub struct RunMetrics {
     /// meaningful trade because the token died silent. 0 in live rollups. Counts as
     /// closed (loss), so it lifts `n_closed` and lowers `n_open`.
     pub n_exit_dead: u32,
+    /// Generic-engine metric-condition exits (`ExitCode::Metrics`). 0 for the
+    /// legacy strategies (which use the granular ladder codes above).
+    pub n_exit_metrics: u32,
     pub n_exit_open: u32,
 }
 
@@ -258,7 +269,7 @@ pub struct RunAgg {
     closed_pct_sum_sq: f64,
     holding_sum: i64,
     holding_sketch: QuantileSketch,
-    exit_counts: [u32; 9],
+    exit_counts: [u32; 10],
 }
 
 impl Default for RunAgg {
@@ -277,7 +288,7 @@ impl Default for RunAgg {
             closed_pct_sum_sq: 0.0,
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
-            exit_counts: [0; 9],
+            exit_counts: [0; 10],
         }
     }
 }
@@ -370,6 +381,7 @@ impl RunAgg {
             n_exit_open: self.exit_counts[6],
             n_exit_next_kill: self.exit_counts[7],
             n_exit_dead: self.exit_counts[8],
+            n_exit_metrics: self.exit_counts[9],
         }
     }
 }
@@ -394,7 +406,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     let mut gross_loss_sol = 0.0f64;
     let mut closed_pct: Vec<f64> = Vec::new();
     let mut closed_holding: Vec<i64> = Vec::new();
-    let mut exit_counts = [0u32; 9];
+    let mut exit_counts = [0u32; 10];
 
     for o in outcomes {
         if !o.fired {
@@ -471,6 +483,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
         n_exit_open: exit_counts[6],
         n_exit_next_kill: exit_counts[7],
         n_exit_dead: exit_counts[8],
+        n_exit_metrics: exit_counts[9],
     }
 }
 
@@ -512,6 +525,7 @@ fn exit_index(e: ExitCode) -> usize {
         ExitCode::Open | ExitCode::NoEntry => 6,
         ExitCode::NextKill => 7,
         ExitCode::Dead => 8,
+        ExitCode::Metrics => 9,
     }
 }
 

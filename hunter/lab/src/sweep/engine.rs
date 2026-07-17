@@ -37,16 +37,17 @@ const CANCEL_CHECK_STRIDE: usize = 256;
 pub(crate) fn fill_outcomes<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
-    trades: &[CorpusTrade],
+    token: &crate::sweep::corpus::CorpusToken,
     observer: &dyn SweepObserver,
     out: &mut Vec<TokenOutcome>,
 ) -> std::result::Result<(), ()> {
     out.clear();
+    let trades: &[CorpusTrade] = &token.trades;
     let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
     // Param-independent per-token state, computed once here and shared across
     // every entry resolution on this token rather than rebuilt per distinct
     // entry-param tuple.
-    let token_state = strategy.prepare_token(trades);
+    let token_state = strategy.prepare_token(token);
     for chunk in params.chunks(CANCEL_CHECK_STRIDE) {
         if observer.cancelled() {
             return Err(());
@@ -251,7 +252,7 @@ fn fold_batch<S: Strategy>(
                 // cancel polled mid-fold — see `fill_outcomes`). A partial `outs`
                 // on bail is never sent; the caller discards the run's aggregates
                 // once it sees `cancelled()`.
-                fill_outcomes(strategy, params, &tt.trades, observer, &mut outs)?;
+                fill_outcomes(strategy, params, tt, observer, &mut outs)?;
                 // Folder never drops early; ignore only on shutdown races.
                 let _ = tx.send(outs);
                 Ok(())
@@ -287,7 +288,7 @@ mod tests {
         type EntryKey = ();
         type TokenState = ();
         fn entry_key(&self, _p: &f64) {}
-        fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+        fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
@@ -329,6 +330,7 @@ mod tests {
         CorpusToken::from_trades(
             mint.into(),
             mint.into(),
+            Utc::now(),
             crate::sweep::grouping::TokenFingerprint::default(),
             &trades,
         )
@@ -368,7 +370,7 @@ mod tests {
         let tok = token("m", 3);
         let obs = CancelOnSecondPoll { polls: std::sync::atomic::AtomicUsize::new(0) };
         let mut out = Vec::new();
-        let r = fill_outcomes(&strat, &params, &tok.trades, &obs, &mut out);
+        let r = fill_outcomes(&strat, &params, &tok, &obs, &mut out);
         assert!(r.is_err(), "must bail on the pre-resolve cancel poll");
         assert!(out.is_empty(), "bailed before folding any combo");
     }
@@ -413,7 +415,7 @@ mod tests {
         fn entry_key(&self, p: &(i64, f64)) -> i64 {
             p.0
         }
-        fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+        fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, _trades: &[CorpusTrade], _state: &(), p: &(i64, f64)) -> i64 {
             p.0
         }

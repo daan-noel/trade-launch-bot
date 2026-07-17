@@ -33,6 +33,13 @@ use crate::sweep::projection::{project_trades, CorpusTrade};
 pub struct CorpusToken {
     pub mint: String,
     pub symbol: String,
+    /// Token creation time (from the `tokens` dimension) — the metric clock's
+    /// origin. The generic engine's `time`/`stall` metrics + synthetic-tick grid
+    /// are anchored here, so this MUST be the same `created_at` single-rule
+    /// simulate feeds `ReplayToken`, or sweep and simulate would disagree on any
+    /// `time`-based condition (the 5.3 parity keystone). The legacy tpsl/swing
+    /// sweeps ignore it (they resolve entry/exit from trades alone).
+    pub created_at: DateTime<Utc>,
     pub trades: Arc<Vec<CorpusTrade>>,
     pub fp: TokenFingerprint,
 }
@@ -44,12 +51,14 @@ impl CorpusToken {
     pub fn from_trades<T: TradeRow<Wallet = String>>(
         mint: String,
         symbol: String,
+        created_at: DateTime<Utc>,
         fp: TokenFingerprint,
         trades: &[T],
     ) -> Self {
         Self {
             mint,
             symbol,
+            created_at,
             fp,
             trades: Arc::new(project_trades(trades)),
         }

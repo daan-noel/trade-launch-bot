@@ -192,6 +192,7 @@ struct ResultDbRow {
     n_exit_liquidity: i32,
     n_exit_next_kill: i32,
     n_exit_dead: i32,
+    n_exit_metrics: i32,
     n_exit_open: i32,
 }
 
@@ -224,6 +225,7 @@ impl From<ResultDbRow> for GroupedSweepResult {
             n_exit_liquidity: r.n_exit_liquidity,
             n_exit_next_kill: r.n_exit_next_kill,
             n_exit_dead: r.n_exit_dead,
+            n_exit_metrics: r.n_exit_metrics,
             n_exit_open: r.n_exit_open,
         }
     }
@@ -390,7 +392,7 @@ impl GroupedSweepRepo {
                   worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
                   avg_holding_secs, median_holding_secs, n_exit_take_profit, n_exit_stop_loss, \
                   n_exit_trailing, n_exit_stall, n_exit_time, n_exit_liquidity, \
-                  n_exit_next_kill, n_exit_dead, n_exit_open) ",
+                  n_exit_next_kill, n_exit_dead, n_exit_metrics, n_exit_open) ",
                 t.results
             ));
             qb.push_values(chunk, |mut b, r| {
@@ -421,6 +423,7 @@ impl GroupedSweepRepo {
                     .push_bind(r.n_exit_liquidity)
                     .push_bind(r.n_exit_next_kill)
                     .push_bind(r.n_exit_dead)
+                    .push_bind(r.n_exit_metrics)
                     .push_bind(r.n_exit_open);
             });
             qb.build().execute(&mut tx).await?;
@@ -683,7 +686,7 @@ impl GroupedSweepRepo {
                     r.expectancy_sol, r.avg_holding_secs, r.median_holding_secs, \
                     r.n_exit_take_profit, r.n_exit_stop_loss, r.n_exit_trailing, r.n_exit_stall, \
                     r.n_exit_time, r.n_exit_liquidity, r.n_exit_next_kill, \
-                    r.n_exit_dead, r.n_exit_open \
+                    r.n_exit_dead, r.n_exit_metrics, r.n_exit_open \
              FROM {} r JOIN {} c ON c.run_id = r.run_id AND c.combo_id = r.combo_id \
              WHERE r.run_id = $1 AND r.group_id = $2 \
              ORDER BY {} LIMIT $3 OFFSET $4",

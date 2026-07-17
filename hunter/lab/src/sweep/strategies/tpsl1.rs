@@ -407,7 +407,7 @@ impl Strategy for Tpsl1Strategy {
 
     fn entry_key(&self, _params: &Tpsl1Combo) {}
 
-    fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+    fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
 
     fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _params: &Tpsl1Combo) -> Tpsl1Entry {
         // (1) Entry fill — the live/backtest fill resolution (cap 1, matching

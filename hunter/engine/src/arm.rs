@@ -44,7 +44,10 @@ pub struct MonoBound {
 }
 
 impl MonoBound {
-    fn crossed(self, value: f64) -> bool {
+    /// True once a monotonic metric's `value` has crossed this derived entry
+    /// upper bound (so the entry can never again be satisfied). Non-finite ⇒ not
+    /// crossed. Public so the sweep scan can replicate the fold's derived-disarm.
+    pub fn crossed(self, value: f64) -> bool {
         if !value.is_finite() {
             return false;
         }

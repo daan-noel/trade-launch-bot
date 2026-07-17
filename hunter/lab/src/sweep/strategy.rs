@@ -278,8 +278,10 @@ pub trait Strategy: ParamSpace + Send + Sync {
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
 
     /// Compute the shared [`Strategy::TokenState`] for one token, **once** before
-    /// any combo runs against it. Pure over the slim [`CorpusTrade`] slice.
-    fn prepare_token(&self, trades: &[CorpusTrade]) -> Self::TokenState;
+    /// any combo runs against it. Receives the whole [`CorpusToken`] (not just its
+    /// trade slice) so the generic engine can anchor its metric clock at the token's
+    /// `created_at`; a strategy that resolves purely from trades reads `token.trades`.
+    fn prepare_token(&self, token: &crate::sweep::corpus::CorpusToken) -> Self::TokenState;
 
     /// Resolve the entry on one token's full trade history under a combo's **entry**
     /// params, given the pre-computed [`Strategy::TokenState`]. The expensive half

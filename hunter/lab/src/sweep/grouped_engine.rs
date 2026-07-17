@@ -453,7 +453,7 @@ fn sweep_group_serial<S: Strategy>(
             if observer.cancelled() {
                 bail!("sweep cancelled");
             }
-            if fill_outcomes(strategy, chunk, &corpus.tokens[i].trades, observer, &mut outs).is_err()
+            if fill_outcomes(strategy, chunk, &corpus.tokens[i], observer, &mut outs).is_err()
             {
                 bail!("sweep cancelled");
             }
@@ -603,7 +603,7 @@ mod tests {
         type EntryKey = ();
         type TokenState = ();
         fn entry_key(&self, _p: &f64) {}
-        fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+        fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
@@ -641,6 +641,7 @@ mod tests {
         CorpusToken::from_trades(
             mint.into(),
             mint.into(),
+            Utc::now(),
             TokenFingerprint {
                 token_program_id: Some(program.into()),
                 ..Default::default()
@@ -678,6 +679,7 @@ mod tests {
             n_exit_liquidity: 0,
             n_exit_next_kill: 0,
             n_exit_dead: 0,
+            n_exit_metrics: 0,
             n_exit_open: 0,
         }
     }

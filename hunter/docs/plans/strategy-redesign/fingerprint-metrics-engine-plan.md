@@ -19,8 +19,16 @@ part 1 built 2026-07-17** (analysis-simulate cluster: 5.1 `lab/src/strategies/re
 global-ordered replay driver + sim fills + results collector; 5.2 generic
 `POST /api/strategies/simulate` over replay; 5.3 parity by construction — converters
 hoisted to `core::strategies::fingerprint_axes` SSOT + engine `TICK_MS` SSOT + guard
-tests; 5.7 metric-series endpoint; `cargo check`/tests green on all four bins); next:
-Phase 5 part 2 (5.4–5.6 sweep precompute-then-scan rewrite, 5.8 runtime verification).
+tests; 5.7 metric-series endpoint; `cargo check`/tests green on all four bins).
+**Phase 5 part 2 built 2026-07-17** (precompute-then-scan sweep: 5.4 generic axes
+model + `GenericSweepStrategy` reusing the `Strategy` trait / `grouped_engine`
+partition + persistence, `grouped_sweep_*` migration 0003, `"generic"` registry
+wiring; 5.5 scan ≡ `run_replay` guard test; 5.6 `promote_group` endpoint. Deep-dive:
+[sweep-generic-scan.md](sweep-generic-scan.md). 5.8 full win-rate baseline pending a
+DB reconcile — see below). Phase 7 deletion: the **5.4–5.6 sweep-rewrite blocker is
+cleared** (a generic sweep now exists), but the legacy sweep files + per-strategy
+rule handlers + live `StrategyService` (Phase 7 blockers 2–4) still need retiring
+before the deletion sweep.
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
 [frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
@@ -638,7 +646,8 @@ Determinism rules (violation = bug):
 ### Phase 5 — Analysis adapters (hunter-lab)
 
 **Progress 2026-07-17:** 5.1 + 5.2 + 5.3 + 5.7 built (analysis-simulate cluster).
-5.4–5.6 (sweep rewrite) and 5.8 (runtime verification) remain.
+**5.4 + 5.5 + 5.6 built 2026-07-17** (precompute-then-scan sweep — deep-dive
+[sweep-generic-scan.md](sweep-generic-scan.md)). 5.8 win-rate baseline pending.
 
 - [x] 5.1 `strategies/replay.rs`: lake→events producer — `ReplayToken`s expanded into
       one **globally time-ordered** event stream (`TokenCreated`/`FirstSlotSettled`/
@@ -665,23 +674,44 @@ Determinism rules (violation = bug):
       cross-token cap parity, determinism. *(A cross-crate event-vector diff harness is
       deferred; the shared-`reduce` + shared-converters design makes divergence a
       compile/const mismatch, which the guards catch.)*
-- [ ] 5.4 Sweep scan (`hunter/lab/src/sweep/`): keep `grouped_engine.rs` partitioning
-      (`group_key`) + `GroupedSweepRepo` streaming persistence; replace the three
-      wrappers with the generic axes model — axis = (side, group, metric, operator,
-      values[]; window for dynamic) — combos scan precomputed `MetricSeries` (§2.6).
-      Tables collapse to one set `grouped_sweep_{runs,groups,results,combos}`
-      (lab migration).
-- [ ] 5.5 **Scan≡engine guard test**: full replay vs scan agree on a sample corpus
-      (decision 13's drift lock).
-- [ ] 5.6 Promotion: winning combo + group → `FingerprintRepo::find_or_create` (at the
-      run's bucket width) + `rules::create`; returns the draft for the frontend editor.
+- [x] 5.4 Sweep scan (`hunter/lab/src/sweep/generic/`): kept `grouped_engine.rs`
+      partitioning + `GroupedSweepRepo` streaming persistence; **`GenericSweepStrategy`
+      implements the existing `Strategy` trait** (`prepare_token` = per-token
+      `MetricSeries` precompute; `resolve_entry`/`resolve_exit` = the scan reusing the
+      engine's `eval` + `Dead>SL>TP>Metrics` priority + `round_trip_with_costs`), so
+      the whole handler/partition/refine/persistence is reused. Axes model = `axes.rs`
+      (`(side, group, metric, operator, values[]; window)` + TP/SL axes → `RuleParams`,
+      registry-resolved). Tables collapsed to one `grouped_sweep_{runs,groups,results,
+      combos}` set (`0003_generic_grouped_sweep.sql`, `"generic"` registry id).
+      `MetricSeries` extended with per-row `price`/`reserve_sol`/`dead`; `prepare_token`
+      widened to `&CorpusToken` for real `created_at` (carried from the lake); new
+      `ExitCode::Metrics` + `n_exit_metrics` for the single metric-exit taxonomy.
+- [x] 5.5 **Scan≡engine guard test** (`generic/guard.rs`, 4 tests): single-token
+      `run_replay` (real fold) ≡ scan on a corpus covering TP/SL/Metrics/Dead/Open +
+      entry-gated rules — identical fired/exit-code/entry+exit price/PnL. Parity holds
+      by construction (shared `TokenTrack` values, tick grid, `TradeLite` map, evaluator,
+      cost model); the guard fails first on any drift. **Proves the 5.8 "Dead not Open"
+      invariant** directly (the dead token books `ExitCode::Dead` both ways).
+- [x] 5.6 Promotion `POST …/groups/{group_id}/promote?strategy_id=generic[&combo_id=N]`:
+      rebuilds the group's `Fingerprint` from its `group_key` at the run's bucket width
+      (SOL fields → bucket lower-edge representative) → `FingerprintRepo::find_or_create`,
+      returns a pre-filled `RuleDraft`-shaped body for the editor (review → dry-run →
+      save; rule not persisted here).
 - [x] 5.7 Metric-series endpoint `GET /api/tokens/{mint}/metric-series?windows=…` —
       replays one token's full history (lake ∪ PG tail) through `metrics/series.rs` on
       demand, returning every metric's value at every trade as parallel arrays
       (`m_time_window` metrics per requested window; non-finite ⇒ `null`). Never
       persisted. `api/handlers/tokens/metric_series.rs`.
-- [ ] 5.8 Re-run standing verification checks (bf61547f-style): dead tokens book `Dead`
-      not `Open`; win-rates comparable to pre-redesign baselines for equivalent conditions.
+- [~] 5.8 Re-run standing verification checks (bf61547f-style). **Dead-not-Open is
+      proven by the 5.5 guard** (the dead token books `ExitCode::Dead` in both the scan
+      and the full engine replay). The full win-rate baseline comparison is **pending a
+      DB reconcile**: the local `hunter_bot` DB is in a partially-applied `0004` (core)
+      state (`idx_strategy_rules_active`/`strategy_rules` exist, `fingerprints` doesn't,
+      `_sqlx_migrations` records only ≤ v3), so `hunter-lab` can't boot to run a live
+      generic sweep — a pre-existing branch DB quirk, not this phase. Lab migration 0003
+      itself validated clean (applied + rolled back against the real schema). **User
+      action:** reconcile the DB (drop-and-rerun on this branch) then drive a `"generic"`
+      sweep over the lake to compare win-rates.
 
 ### Phase 6 — Event-log tooling (small, high leverage) ✅ 2026-07-17
 

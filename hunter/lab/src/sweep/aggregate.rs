@@ -98,6 +98,9 @@ pub struct ComboMetrics {
     /// Analysis-only death-closes: positions closed at the last meaningful trade
     /// because the token died silent (see `trading_core::strategies::death`).
     pub n_exit_dead: u32,
+    /// Generic-engine metric-condition exits (`ExitCode::Metrics`). 0 for the
+    /// legacy tpsl/swing sweeps (their ladder uses the granular codes above).
+    pub n_exit_metrics: u32,
     pub n_exit_open: u32,
 }
 
@@ -131,6 +134,7 @@ impl ComboMetrics {
             n_exit_liquidity: m.n_exit_liquidity,
             n_exit_next_kill: m.n_exit_next_kill,
             n_exit_dead: m.n_exit_dead,
+            n_exit_metrics: m.n_exit_metrics,
             n_exit_open: m.n_exit_open,
         }
     }

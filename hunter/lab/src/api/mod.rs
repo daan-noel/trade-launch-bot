@@ -296,6 +296,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/sweeps/{run_id}/groups/{group_id}/token-results",
                 web::get().to(handlers::strategies::grouped_sweep::list_token_results),
+            )
+            .route(
+                "/strategies/sweeps/{run_id}/groups/{group_id}/promote",
+                web::post().to(handlers::strategies::grouped_sweep::promote_group),
             ),
     );
 }

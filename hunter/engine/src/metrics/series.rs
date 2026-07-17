@@ -10,6 +10,7 @@
 
 use super::track::TokenTrack;
 use super::{MetricId, TradeLite, Ts};
+use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
 
 /// One column of a [`MetricSeries`] — a static metric, or a dynamic metric at a
 /// specific `window_size_sec`.
@@ -30,14 +31,33 @@ impl SeriesColumn {
 
 /// Per-event metric values for one token over a fixed column set. `at[i]` is the
 /// timestamp of event `i`; `rows[i][c]` is column `c`'s value at that event.
+///
+/// Beyond the metric columns, each row also carries the three rule-independent
+/// facts the per-combo scan needs but that no metric expresses: the canonical
+/// spot [`price`](Self::price) at the event (the fill price a `SubmitBuy`/`SubmitSell`
+/// would take, and the TP/SL reference), the [`reserve_sol`](Self::reserve_sol),
+/// and the precomputed [`dead`](Self::dead) verdict. `dead` is rule-independent, so
+/// computing it once per event here — not per combo — is the precompute-then-scan
+/// win (plan §2.6): the scan reads `Dead > SL > TP > Metrics` off these columns
+/// with the exact values the live engine's [`reduce`](crate::reduce) sees.
 #[derive(Debug, Clone)]
 pub struct MetricSeries {
     track: TokenTrack,
     columns: Vec<SeriesColumn>,
+    /// The last trade at or before `now` whose SOL cleared the meaningful-trade
+    /// floor — the deadness clock (mirrors `EngineState`'s `last_meaningful_at`).
+    last_meaningful_at: Ts,
     /// Event timestamps, one per recorded row.
     pub at: Vec<Ts>,
     /// One value per column per event (`rows[event][column]`).
     pub rows: Vec<Vec<f64>>,
+    /// Canonical spot price at each event (`NaN` before the first trade).
+    pub price: Vec<f64>,
+    /// SOL reserves at each event (`NaN` before the first trade).
+    pub reserve_sol: Vec<f64>,
+    /// The dead-token verdict at each event — the same `is_dead_verdict` the live
+    /// engine computes per token per event, precomputed once here.
+    pub dead: Vec<bool>,
 }
 
 impl MetricSeries {
@@ -51,12 +71,27 @@ impl MetricSeries {
                 track.ensure_window(*ws);
             }
         }
-        Self { track, columns, at: Vec::new(), rows: Vec::new() }
+        Self {
+            track,
+            columns,
+            last_meaningful_at: created_at,
+            at: Vec::new(),
+            rows: Vec::new(),
+            price: Vec::new(),
+            reserve_sol: Vec::new(),
+            dead: Vec::new(),
+        }
     }
 
     /// Fold a trade and record a row at its timestamp.
     pub fn push_trade(&mut self, t: TradeLite) {
         let at = t.at;
+        // Advance the deadness clock exactly as `reduce` does on a `Trade` event:
+        // a trade that clears the meaningful floor and is not out of order refreshes
+        // `last_meaningful_at`.
+        if t.sol >= DEAD_MEANINGFUL_TRADE_SOL && at >= self.last_meaningful_at {
+            self.last_meaningful_at = at;
+        }
         self.track.on_trade(t);
         self.record(at);
     }
@@ -69,8 +104,13 @@ impl MetricSeries {
 
     fn record(&mut self, now: Ts) {
         let row: Vec<f64> = self.columns.iter().map(|c| c.eval(&self.track, now)).collect();
+        let reserves = self.track.current_reserves();
+        let dead = is_dead_verdict(reserves.is_finite().then_some(reserves), self.last_meaningful_at, now);
         self.at.push(now);
         self.rows.push(row);
+        self.price.push(self.track.current_price());
+        self.reserve_sol.push(reserves);
+        self.dead.push(dead);
     }
 
     /// The recorded columns, in row order.
@@ -182,6 +222,27 @@ mod tests {
         assert_eq!(a, reference, "series diverged from TokenTrack");
         // Sanity: one row per event.
         assert_eq!(a.len(), script().len());
+    }
+
+    #[test]
+    fn records_price_reserves_and_deadness_per_row() {
+        // A token that trades then goes silent with drained liquidity should flip
+        // `dead` once past the quiet window with low reserves.
+        let created = ts(0.0);
+        let mut s = MetricSeries::new(created, columns());
+        // Live trade: finite price + healthy reserves ⇒ alive.
+        s.push_trade(trade(Side::Buy, 3.0, 1.0, 15.0, 0.0));
+        assert_eq!(s.price.last().copied(), Some(1.0));
+        assert_eq!(s.reserve_sol.last().copied(), Some(15.0));
+        assert!(!s.dead.last().copied().unwrap());
+        // A tiny dust trade drops reserves under the dead floor but does NOT refresh
+        // the meaningful-trade clock (sol < DEAD_MEANINGFUL_TRADE_SOL).
+        s.push_trade(trade(Side::Sell, 0.01, 0.9, 1.0, 1.0));
+        // Long after the last meaningful trade with reserves gone ⇒ dead.
+        s.push_tick(ts(1.0 + crate::deadness::DEAD_QUIET_SECS as f64 + 5.0));
+        assert!(s.dead.last().copied().unwrap(), "silent + drained token must read dead");
+        // Price on a tick carries the last print (no trade at the tick).
+        assert_eq!(s.price.last().copied(), Some(0.9));
     }
 
     #[test]

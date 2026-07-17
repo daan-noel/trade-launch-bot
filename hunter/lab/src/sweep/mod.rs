@@ -35,6 +35,7 @@
 pub mod aggregate;
 pub mod corpus;
 pub mod engine;
+pub mod generic;
 pub mod grouped_engine;
 // `grouping` is strategy-blind shared data (TokenFingerprint/GroupField/GroupKey)
 // that a core handler + core repo also need, so it lives in `trading_core`; this

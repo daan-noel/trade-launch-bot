@@ -592,7 +592,7 @@ impl Strategy for Tpsl2Strategy {
         }
     }
 
-    fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+    fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
 
     fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), params: &Tpsl2Combo) -> Tpsl2Entry {
         let rule = &params.rule;

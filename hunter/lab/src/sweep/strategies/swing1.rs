@@ -798,7 +798,7 @@ impl Strategy for Swing1Strategy {
         }
     }
 
-    fn prepare_token(&self, _trades: &[CorpusTrade]) {}
+    fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
 
     fn resolve_entry(
         &self,

@@ -56,7 +56,7 @@ const TOKEN_SCALE: f64 = 1_000_000.0;
 
 /// Margin past `DEAD_QUIET_SECS` to keep ticking the tail so the dead verdict (and
 /// any exit it drives) definitely lands before we stop.
-const TAIL_MARGIN_SECS: i64 = 60;
+pub const TAIL_MARGIN_SECS: i64 = 60;
 
 /// One token to replay: the metadata a result row needs, its observed creation
 /// axes (built through the shared [`observed_axes`](trading_core::strategies::fingerprint_axes::observed_axes)

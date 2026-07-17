@@ -28,6 +28,7 @@ use crate::sweep::strategies::tpsl1::{
     AxesSpec as Tpsl1AxesSpec, Tpsl1Axes, Tpsl1Strategy,
 };
 use crate::sweep::strategies::tpsl2::{AxesSpec, Tpsl2Axes, Tpsl2Strategy};
+use crate::sweep::generic::{AxesModel, AxesRequest, GenericSweepStrategy};
 use crate::sweep::strategy::{ExitCode, ParamSpace, RefineSpec, SweepMethod};
 
 /// Notional (SOL) a grouped-sweep run prices every combo's round-trip at when the
@@ -129,10 +130,21 @@ const SWING1_TABLES: GroupedSweepTables = GroupedSweepTables {
     combos: "swing_1_grouped_sweep_combos",
 };
 
+/// The redesigned generic engine's single (unprefixed) grouped-sweep table set —
+/// the one set the three legacy per-strategy sets collapse into (plan §5.4).
+/// Created in `lab/migrations/0003_generic_grouped_sweep.sql`.
+const GENERIC_TABLES: GroupedSweepTables = GroupedSweepTables {
+    runs: "grouped_sweep_runs",
+    groups: "grouped_sweep_groups",
+    results: "grouped_sweep_results",
+    combos: "grouped_sweep_combos",
+};
+
 /// The DB table triple for a strategy's grouped sweeps, or `None` for an unknown
 /// / not-yet-wired strategy.
 pub fn tables_for(strategy_id: &str) -> Option<GroupedSweepTables> {
     match strategy_id {
+        "generic" => Some(GENERIC_TABLES),
         "tpsl1" => Some(TPSL1_TABLES),
         "tpsl2" => Some(TPSL2_TABLES),
         "swing_1" => Some(SWING1_TABLES),
@@ -142,7 +154,7 @@ pub fn tables_for(strategy_id: &str) -> Option<GroupedSweepTables> {
 
 /// Strategy ids with a grouped-sweep implementation (for error messages / UI).
 pub fn strategy_ids() -> &'static [&'static str] {
-    &["tpsl1", "tpsl2", "swing_1"]
+    &["generic", "tpsl1", "tpsl2", "swing_1"]
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +210,13 @@ pub async fn run_grouped(
     sink: Arc<dyn GroupSink + Send + Sync>,
 ) -> Result<GroupedSweepOutput> {
     match strategy_id {
+        "generic" => {
+            sweep_generic(
+                axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
+                buy_amount_sol, coarse_observer, observer, sink,
+            )
+            .await
+        }
         "tpsl1" => {
             sweep_tpsl1(
                 axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
@@ -244,6 +263,80 @@ fn bounded_threads() -> usize {
         .map(|n| n.get())
         .unwrap_or(1);
     cores.saturating_sub(1).max(1)
+}
+
+// ---------------------------------------------------------------------------
+// Generic (redesigned-engine) strategy entry point
+// ---------------------------------------------------------------------------
+
+/// The redesigned engine's grouped sweep (plan §5.4): resolve the request's axes
+/// against the metric registry, enumerate combos into `RuleParams`, and run the
+/// precompute-then-scan [`GenericSweepStrategy`] through the same partition +
+/// persistence the legacy strategies use. Deadness is judged against the run's
+/// wall-clock `now` (matching live / single-rule simulate).
+#[allow(clippy::too_many_arguments)]
+async fn sweep_generic(
+    axes_json: Value,
+    method: SweepMethod,
+    refine: Option<RefineSpec>,
+    corpus: Corpus,
+    fields: Vec<GroupField>,
+    width: f64,
+    min_tokens: usize,
+    floor: CoverageFloor,
+    max_combos: Option<usize>,
+    buy_amount_sol: f64,
+    coarse_observer: Arc<dyn SweepObserver + Send>,
+    observer: Arc<dyn SweepObserver + Send>,
+    sink: Arc<dyn GroupSink + Send + Sync>,
+) -> Result<GroupedSweepOutput> {
+    let cap = effective_cap(max_combos);
+
+    // Resolve + validate the axes against the metric registry (a typo'd group /
+    // metric / operator, or a dynamic metric missing its window, is a hard error).
+    let req: AxesRequest = serde_json::from_value(axes_json.clone())
+        .context("invalid generic axes request")?;
+    let model = AxesModel::resolve(&req).map_err(|e| anyhow!("axes: {e}"))?;
+
+    // Grid guard: reject an explosive full grid before doing any sweep work.
+    if matches!(method, SweepMethod::Grid) {
+        let n = model.combo_count();
+        if n > cap {
+            bail!("grid has {n} combos, over the {cap} cap — narrow the axes, raise max_combos, or use random:N");
+        }
+    }
+    // The (validated) request axes are echoed back for storage / re-run below.
+    let strategy = GenericSweepStrategy::new(model, buy_amount_sol, chrono::Utc::now());
+    let mut params = strategy.sample(method);
+    if params.is_empty() {
+        bail!("param space is empty");
+    }
+    if params.len() > cap {
+        tracing::warn!(combos = params.len(), cap, "grouped sweep: clamping sampled combos to cap");
+        params.truncate(cap);
+    }
+
+    let threads = bounded_threads();
+    let (combo_count, groups) = tokio::task::spawn_blocking(
+        move || -> Result<(usize, Vec<GroupResult>)> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("grouped-sweep-{i}"))
+                .stack_size(8 * 1024 * 1024)
+                .build()
+                .map_err(|e| anyhow!("rayon pool build failed: {e}"))?;
+            pool.install(|| {
+                let (final_params, groups) = run_grouped_with_refine(
+                    &strategy, params, refine, &corpus, &fields, width, min_tokens, floor, cap,
+                    coarse_observer.as_ref(), observer.as_ref(), sink.as_ref(),
+                )?;
+                Ok((final_params.len(), groups))
+            })
+        },
+    )
+    .await??;
+
+    Ok(GroupedSweepOutput { combo_count, axes_json, groups })
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +728,7 @@ fn exit_label(code: ExitCode) -> &'static str {
         ExitCode::LiquidityExit => "LiquidityExit",
         ExitCode::NextKill => "NextKill",
         ExitCode::Dead => "Dead",
+        ExitCode::Metrics => "Metrics",
     }
 }
 
@@ -654,7 +748,7 @@ fn simulate_tpsl2_one_combo(
     let mut results = Vec::with_capacity(tokens.len());
     for tt in tokens {
         let mut outs = Vec::with_capacity(1);
-        let _ = fill_outcomes(&strategy, params, &tt.trades, &noop, &mut outs);
+        let _ = fill_outcomes(&strategy, params, tt, &noop, &mut outs);
         let o = outs
             .into_iter()
             .next()
@@ -698,7 +792,7 @@ fn simulate_tpsl1_one_combo(
     let mut results = Vec::with_capacity(tokens.len());
     for tt in tokens {
         let mut outs = Vec::with_capacity(1);
-        let _ = fill_outcomes(&strategy, params, &tt.trades, &noop, &mut outs);
+        let _ = fill_outcomes(&strategy, params, tt, &noop, &mut outs);
         let o = outs
             .into_iter()
             .next()
@@ -742,7 +836,7 @@ fn simulate_swing1_one_combo(
     let mut results = Vec::with_capacity(tokens.len());
     for tt in tokens {
         let mut outs = Vec::with_capacity(1);
-        let _ = fill_outcomes(&strategy, params, &tt.trades, &noop, &mut outs);
+        let _ = fill_outcomes(&strategy, params, tt, &noop, &mut outs);
         let o = outs
             .into_iter()
             .next()
