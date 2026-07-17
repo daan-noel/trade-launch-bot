@@ -90,3 +90,26 @@ export interface ArmedEntry {
   mint_address: string;
   state: string;
 }
+
+/** `strategy_armed_changed` SSE payload — a (token, rule) arm/disarm transition. */
+export interface ArmedChangedEvent {
+  rule_id: string;
+  mint_address: string;
+  /** `"armed"` | `"disarmed"`. */
+  state: string;
+  /** Disarm reason (`dead` | `migrated` | `unsatisfiable`) when disarmed. */
+  reason?: string | null;
+}
+
+/** `strategy_position_update` SSE payload — one generic-engine position delta. */
+export interface StrategyPositionUpdateEvent {
+  rule_id: string;
+  mint_address: string;
+  position_id: string;
+  /** `strategy_positions` lifecycle: `BuySubmitted` | `Holding` | `ExitPending` |
+   *  `End` | `ExitFailed` | `ExitUnconfirmed`. */
+  status: string;
+  exit_reason?: string | null;
+  entry_price?: number | null;
+  exit_price?: number | null;
+}

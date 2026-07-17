@@ -267,15 +267,24 @@ pages listed in §2. **Kept:** `DataTable` + server-table plumbing, `sse.ts` mul
 - [x] 1.6 **Operable end-to-end** (create fingerprint → rule → activate) — code-complete;
       live-stack runtime smoke pending (same gate as backend 4.9).
 
-### FE2 — Live monitor  (needs backend Phase 4)
+### FE2 — Live monitor  (needs backend Phase 4) ✅ 2026-07-17 (functional; rich columns deferred)
 
-- [ ] 2.1 `sse.ts`: `connectArmedChanged` (+ reopen refetch of snapshot, same pattern as
-      positions).
-- [ ] 2.2 `MonitorPage` armed table (blocking-condition + value→need + ETA + disarm
-      countdown) + holding table (reuse position SSE + `strategyColumns` badges).
-- [ ] 2.3 Header stat strip (armed/holding/today counters from snapshot + deltas).
-- [ ] 2.4 Perf check: 37+ armed rows updating ≤2/s each — memoized rows, no table-wide
-      re-render (hunter FE budget).
+> **Scoping note:** the engine's `ArmedDelta` / armed snapshot carry only
+> `{mint, rule, state, reason?}` — **not** per-condition evaluation detail. The rich
+> "blocking condition / value→need / ETA / disarm countdown" columns (§3.2) need the
+> pure engine to compute + attach the first-failing-condition + current value to every
+> `ArmedDelta` (a hot-tick-path change) — **deferred** as its own backend item. FE2
+> ships the functional monitor built on the data that exists today.
+
+- [x] 2.1 `sse.ts`: `connectArmedChanged` (arm/disarm deltas + `onReopen` snapshot
+      refetch) + `connectStrategyPositionUpdate`. `getArmed` snapshot in `liveEndpoints`.
+- [x] 2.2 `MonitorPage` armed table (token · rule · age) + holding table (token · rule ·
+      status · entry price), both live via SSE. Rich distance-to-fire columns deferred
+      (see note).
+- [x] 2.3 Header stat strip (armed / holding / entered-session / disarmed-by-reason
+      session counters from snapshot + deltas).
+- [x] 2.4 Perf: bounded armed/holding sets held in `Map` state, rows memoized, one
+      page-level 1 s age tick (no per-SOL/trade re-render). Live route + nav.
 
 ### FE3 — Dry-run + generic simulate  (needs backend Phase 5.1–5.3)
 

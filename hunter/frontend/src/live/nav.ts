@@ -23,6 +23,7 @@ export const liveNav: NavConfig = {
       label: 'Strategies',
       basePath: '/strategies',
       items: [
+        { to: '/strategies/monitor', label: 'Live monitor' },
         { to: '/strategies/rules', label: 'Rules' },
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
         { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1 (legacy)' },

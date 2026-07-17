@@ -374,3 +374,45 @@ export function connectTpslPositionsChanged(
   });
   return { close: unsub };
 }
+
+/**
+ * Generic-engine armed-state stream (`strategy_armed_changed`) — a (token, rule)
+ * pair armed or disarmed. The live monitor keeps its own armed map from these
+ * deltas; on reconnect it refetches the `/api/strategies/armed` snapshot via the
+ * `onReopen` callback so a missed frame during an outage self-heals.
+ */
+export function connectArmedChanged(
+  onDelta: (delta: import('lib/strategy/types').ArmedChangedEvent) => void,
+  onReopen?: () => void,
+): StreamHandle {
+  const unsub = combine(
+    subscribe('strategy_armed_changed', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        onDelta(JSON.parse(e.data) as import('lib/strategy/types').ArmedChangedEvent);
+      } catch {
+        /* ignore malformed frames */
+      }
+    }),
+    onReopen ? onSseReopen(onReopen) : () => {},
+  );
+  return { close: unsub };
+}
+
+/**
+ * Generic-engine position stream (`strategy_position_update`) — one position
+ * lifecycle delta the monitor / rules list patches in place.
+ */
+export function connectStrategyPositionUpdate(
+  onDelta: (delta: import('lib/strategy/types').StrategyPositionUpdateEvent) => void,
+): StreamHandle {
+  const unsub = subscribe('strategy_position_update', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onDelta(JSON.parse(e.data) as import('lib/strategy/types').StrategyPositionUpdateEvent);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}

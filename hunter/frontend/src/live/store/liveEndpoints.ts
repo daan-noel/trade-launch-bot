@@ -7,6 +7,7 @@ import type {
   CashbackStatus,
   CashbackClaimResult,
 } from 'types';
+import type { ArmedEntry } from 'lib/strategy/types';
 
 export interface BuyTokenArgs {
   mint_address: string;
@@ -112,6 +113,12 @@ export const liveApi = baseApi.injectEndpoints({
     // Current-run "armed but never fired" candidates for a rule — read straight
     // from the in-memory runtime cache (these rows are deleted on drop, so there's
     // no DB history). A convenience read; the panel polls it while a rule is open.
+    // Generic-engine armed snapshot for the live monitor — the currently-armed
+    // (token, rule) pairs. Live deltas ride the `strategy_armed_changed` SSE;
+    // this is the initial + reconnect refetch.
+    getArmed: builder.query<ArmedEntry[], void>({
+      query: () => '/api/strategies/armed',
+    }),
     getArmedHistory: builder.query<ArmedRecord[], { strategy: string; ruleId: string }>({
       query: ({ strategy, ruleId }) =>
         `/api/strategies/${strategy}/rules/${ruleId}/armed-history`,
@@ -144,6 +151,7 @@ export const {
   useGetCashbackStatusQuery,
   useClaimCashbackMutation,
   useGetArmedHistoryQuery,
+  useGetArmedQuery,
   useGetLiveModeQuery,
   useSetLiveModeMutation,
 } = liveApi;
