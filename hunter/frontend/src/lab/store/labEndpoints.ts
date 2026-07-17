@@ -84,6 +84,15 @@ export const labApi = baseApi.injectEndpoints({
     >({
       query: ({ strategyId, runId }) =>
         `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups?strategy_id=${encodeURIComponent(strategyId)}`,
+      // Per-run id tag: the background-jobs registry invalidates it (throttled)
+      // on each `sweep_group_done` SSE frame, so a viewed in-progress run's
+      // groups table fills in live as groups persist. Also provides the broad
+      // 'GroupedSweep' tag so the terminal `SweepFinished` refresh (and
+      // delete/prune) refetches the final state.
+      providesTags: (_result, _err, { runId }) => [
+        { type: 'GroupedSweepGroups' as const, id: runId },
+        'GroupedSweep',
+      ],
       keepUnusedDataFor: 120,
     }),
     // NOTE: per-group results are read via the NDJSON streaming reader in

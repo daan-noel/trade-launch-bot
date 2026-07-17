@@ -26,7 +26,7 @@ import { useStreamedSweepResults, COMBO_PAGE_SIZE } from '@lab/hooks/useStreamed
 import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory';
 import { GenericSweepConfigForm, GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigForm';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
-import { SweepTokenInspectModal } from '@lab/components/sweep/SweepTokenInspectModal';
+import { LabTokenInspectModal } from '@lab/components/strategy/LabTokenInspectModal';
 import { buildGenericComboColumns, buildGenericGroupColumns } from '@lab/components/sweep/genericSweepColumns';
 import type {
   GroupedSweepGroupRecord,
@@ -130,8 +130,12 @@ export function GenericSweepView() {
   const [startSweep, startState] = useStartGroupedSweepMutation();
   const startErr = apiErrorMessage(startState.error, 'Failed to start sweep');
   const { markStarting } = useBackgroundJobActions();
-  const { isRunning } = useBackgroundJobsState();
+  const { isRunning, jobs } = useBackgroundJobsState();
   const sweepRunning = isRunning('sweep', 'sweep') || startState.isLoading;
+  // Live persisted-group counters from the `sweep_group_done` SSE stream — the
+  // run row's `groups_done` only refreshes on the terminal frame, so the
+  // in-progress banner prefers these when the running job matches this run.
+  const sweepJob = jobs.find((j) => j.kind === 'sweep') ?? null;
 
   const [deleteRun, deleteState] = useDeleteGroupedSweepRunMutation();
   const [pruneRuns, pruneState] = usePruneGroupedSweepsMutation();
@@ -396,11 +400,18 @@ export function GenericSweepView() {
 
           {activeRun && activeRun.status !== 'completed' && (
             <InlineAlert variant="warning">
-              {activeRun.status === 'running' ? 'In-progress' : 'Partial'} run — {activeRun.groups_done} of{' '}
-              {activeRun.group_count} groups
+              {activeRun.status === 'running' ? 'In-progress' : 'Partial'} run —{' '}
+              {(sweepJob && sweepJob.runId === activeRun.id ? sweepJob.groupsDone : null) ??
+                activeRun.groups_done}{' '}
+              of{' '}
+              {(sweepJob && sweepJob.runId === activeRun.id ? sweepJob.groupCount : null) ??
+                activeRun.group_count}{' '}
+              groups
               {activeRun.status === 'running'
-                ? ' persisted so far. More groups will appear as they finish.'
-                : ' completed before the run was cancelled — this is not a full sweep.'}
+                ? ' persisted so far — each is browsable below as soon as it lands.'
+                : activeRun.status === 'partial'
+                  ? ' persisted before a write error ended the run — this is not a full sweep.'
+                  : ' completed before the run was cancelled — this is not a full sweep.'}
             </InlineAlert>
           )}
 
@@ -479,6 +490,9 @@ export function GenericSweepView() {
                   runId={activeRunId ?? ''}
                   groupId={activeGroupId}
                   comboId={activeComboId}
+                  comboParams={
+                    results.find((r) => r.combo_id === activeComboId)?.params ?? null
+                  }
                   onClose={() => setActiveComboId(null)}
                 />
               )}
@@ -501,12 +515,16 @@ function ComboTokenResults({
   runId,
   groupId,
   comboId,
+  comboParams,
   onClose,
 }: {
   strategyId: string;
   runId: string;
   groupId: string;
   comboId: number;
+  /** The combo's swept `RuleParams` blob — pins the inspect's metric panes to the
+   *  exact params that produced these rows. Null when the row paged out of view. */
+  comboParams: Record<string, unknown> | null;
   onClose: () => void;
 }) {
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
@@ -624,7 +642,16 @@ function ComboTokenResults({
       />
 
       {selectedRow && (
-        <SweepTokenInspectModal target={comboTarget(selectedRow)} onClose={() => setSelected(null)} />
+        <LabTokenInspectModal
+          target={comboTarget(selectedRow)}
+          titleSuffix="Sweep inspect"
+          ruleOverride={
+            comboParams
+              ? { paramsJson: comboParams, fingerprintId: null, label: `combo #${comboId}` }
+              : null
+          }
+          onClose={() => setSelected(null)}
+        />
       )}
     </div>
   );

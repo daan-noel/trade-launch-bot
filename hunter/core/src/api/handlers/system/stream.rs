@@ -227,6 +227,26 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 json!({ "strategy_id": strategy_id, "phase": phase, "processed": processed, "total": total }),
             )
         }
+        SseEvent::SweepGroupDone {
+            strategy_id,
+            run_id,
+            group_index,
+            groups_done,
+            group_count,
+        } => {
+            // Not mint-scoped: one persisted group of the single-flight sweep.
+            (
+                None,
+                "sweep_group_done",
+                json!({
+                    "strategy_id": strategy_id,
+                    "run_id": run_id,
+                    "group_index": group_index,
+                    "groups_done": groups_done,
+                    "group_count": group_count,
+                }),
+            )
+        }
         SseEvent::SweepFinished {
             strategy_id,
             cancelled,

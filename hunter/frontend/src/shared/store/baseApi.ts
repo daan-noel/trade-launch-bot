@@ -29,6 +29,7 @@ export const baseApi = createApi({
     'Profiles',
     'Cashback',
     'GroupedSweep',
+    'GroupedSweepGroups',
     'TokenBatch',
     'Fingerprint',
     'StrategyRule',

@@ -76,6 +76,16 @@ function JobCard({ job, now, onCancel }: { job: BackgroundJob; now: number; onCa
           onCancel={onCancel}
         />
       )}
+      {job.groupCount != null && (
+        // Persistence is a concurrent drain, not a phase — groups commit while
+        // later groups still fold, and each committed group is browsable NOW.
+        <div className="mt-1.5 flex items-center justify-between border-t border-white/8 pt-1.5 text-[10px] text-text-dim">
+          <span>Groups saved (browsable now)</span>
+          <span className="font-mono">
+            {job.groupsDone ?? 0}/{job.groupCount}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

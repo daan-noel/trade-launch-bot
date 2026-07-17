@@ -76,8 +76,10 @@ export interface GroupedSweepRunRecord {
   combo_count: number;
   corpus_hash: string | null;
   created_at: string;
-  /** Lifecycle: `running` | `completed` | `cancelled` (honestly partial). */
-  status: 'running' | 'completed' | 'cancelled';
+  /** Lifecycle: `running` | `completed` | `cancelled` (user abort, honestly
+   *  partial) | `partial` (engine finished but a DB write error left some
+   *  groups uncommitted — not a full sweep). */
+  status: 'running' | 'completed' | 'cancelled' | 'partial';
   /** Groups persisted so far; equals `group_count` for a `completed` run. */
   groups_done: number;
   /** The exact-set instruction-label corpus filter the run used, or `null`. */

@@ -960,6 +960,7 @@ pub fn simulate_one_combo(
     buy_amount_sol: f64,
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
+        "generic" => simulate_generic_one_combo(tokens, params_json, buy_amount_sol),
         "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json, buy_amount_sol),
         "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json, buy_amount_sol),
         "swing_1" => simulate_swing1_one_combo(tokens, params_json, buy_amount_sol),
@@ -984,6 +985,79 @@ fn exit_label(code: ExitCode) -> &'static str {
         ExitCode::Dead => "Dead",
         ExitCode::Metrics => "Metrics",
     }
+}
+
+/// Re-simulate a single stored **generic** (redesigned-engine) combo per token —
+/// the drill-in counterpart of [`sweep_generic`]. The stored `params_json` is a
+/// canonical [`RuleParams`] object (what [`GenericSweepStrategy::params_json`]
+/// emits), so we compile it straight to a [`CompiledRule`] and run the same
+/// precompute-then-scan the grouped sweep used — no axes model needed. Deadness is
+/// judged against wall-clock `now`, matching the sweep / live.
+///
+/// NOTE: the generic scan resolves fills to sparse-series rows (timestamps), not to
+/// trade slots, so `entry_slot`/`exit_slot` stay `None` and the handler's fill →
+/// `tx_signature` lookup is skipped for generic combos (the row's PnL/timings still
+/// render; only the chart's entry/exit tx markers are absent).
+fn simulate_generic_one_combo(
+    tokens: &[CorpusToken],
+    params_json: &Value,
+    buy_amount_sol: f64,
+) -> Result<Vec<ComboTokenResult>> {
+    use hunter_engine::arm::CompiledRule;
+    use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
+    use hunter_engine::fingerprint::FingerprintId;
+    use hunter_engine::rule_params::RuleParams;
+    use trading_core::config::constants::sol_to_lamports;
+    use trading_core::strategies::kernel::CostModel;
+
+    use crate::sweep::generic::strategy::{build_series, columns_for, scan, sparse_grid_for};
+
+    let params = RuleParams::parse(params_json)
+        .map_err(|e| anyhow!("invalid generic combo params: {e}"))?;
+    // Dummy fingerprint + unlimited caps: like the sweep, a single-combo drill-in
+    // judges each token independently and never models cross-token concurrency.
+    let loaded = LoadedRule {
+        id: RuleId(uuid::Uuid::nil()),
+        fingerprint_id: FingerprintId(uuid::Uuid::nil()),
+        trade_mode: TradeMode::Paper,
+        buy_amount_lamports: sol_to_lamports(buy_amount_sol).max(0) as u64,
+        max_concurrent_tokens: u32::MAX,
+        max_total_tokens: 0,
+        params,
+    };
+    let compiled = CompiledRule::compile(&loaded);
+    let columns = columns_for(&compiled);
+    let grid = sparse_grid_for(&compiled);
+    let as_of = chrono::Utc::now();
+    let cost = CostModel::pumpfun_default();
+
+    let mut results = Vec::with_capacity(tokens.len());
+    for tt in tokens {
+        let series = build_series(tt, columns.clone(), &grid, as_of);
+        let o = scan(&series, &compiled, buy_amount_sol, &cost);
+        results.push(ComboTokenResult {
+            mint_address: tt.mint.clone(),
+            symbol: tt.symbol.clone(),
+            fired: o.fired,
+            pnl_sol: o.pnl_sol,
+            pnl_pct: o.pnl_percent,
+            holding_secs: o.holding_secs,
+            exit: exit_label(o.exit).to_string(),
+            entry_time: o.entry_time.map(|t| t.to_rfc3339()),
+            entry_price: o.entry_price,
+            // No slot on the sparse series ⇒ no signature lookup (see fn doc).
+            entry_tx: None,
+            entry_slot: o.entry_slot,
+            exit_time: o.exit_time.map(|t| t.to_rfc3339()),
+            exit_price: o.exit_price,
+            exit_tx: None,
+            exit_slot: o.exit_slot,
+            created_at: None,
+            ath_price: None,
+            token: Default::default(),
+        });
+    }
+    Ok(results)
 }
 
 fn simulate_tpsl2_one_combo(

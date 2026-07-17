@@ -44,7 +44,8 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 | RAM reserve | keep **2 GB** free for OS/UI (`usable = free − 2 GB`; no half-of-free degradation) |
 | Series admission | `min(12 GB cap, usable)`; refuse when usable is 0 |
 | Fold batch budget | `usable / 4` clamped to 32..=512 MB; hard max **65 536** combos/batch (8192 when under reserve) |
-| Driver | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
+| Driver (large groups) | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
+| Driver (small groups) | `sweep_group_serial`: **token-outer** (series built once/token, combos folded in batches over it) when the full `n_combos × ComboAgg` set fits across all workers; else **batch-outer** fallback (bounded `batch × ComboAgg`, series rebuilt once/batch). Single-batch groups are token-outer either way, so the fallback only pays on over-RAM multi-batch groups — it no longer multiplies the dominant series-build cost by `n_batches` |
 | Sharding | large `N` split into RAM-sized combo ranges; up to 4 shards in parallel (RAM-capped); spill+merge |
 | Smarter search | full `grid` with ≥200k combos and no refine → auto `lhs:50000` + refine (override with explicit `refine:` / `random:`) |
 | Combo materialisation | index-only `GenericCombo { idx }`; `CompiledRule` bound per batch; combo JSON for **retained survivors only** |
@@ -66,7 +67,11 @@ Start log includes cores, threads, wave, planned/shard-peak combos, RSS, host to
 
 ## Persistence + API
 
-Tables per strategy: `<strategy>_grouped_sweep_{runs,groups,combos,results}` — **lab-only**, defined in `lab/migrations/` and applied by `lab::storage::lab_migrations` (never on EC2/live; see [@arch/database.md](@arch/database.md)). Generic `grouped_sweep_repo.rs` (table-name-driven). Incremental writes: run header up front (`status='running'`), groups appended one at a time, finalized on completion. Crash-recovery: `reconcile_orphaned_runs` at boot. Retention filter applied write-time so only ~660 rows/group are ever inserted.
+Tables per strategy: `<strategy>_grouped_sweep_{runs,groups,combos,results}` — **lab-only**, defined in `lab/migrations/` and applied by `lab::storage::lab_migrations` (never on EC2/live; see [@arch/database.md](@arch/database.md)). Generic `grouped_sweep_repo.rs` (table-name-driven). Incremental writes: run header up front (`status='running'`), groups appended one at a time by a single DB-writer task fed over an unbounded channel, finalized on completion via `finalize_run`. Crash-recovery: `reconcile_orphaned_runs` at boot. Retention filter applied write-time so only ~660 rows/group are ever inserted.
+
+**Terminal status is honest about partial persistence.** The writer task tracks the persisted-group tally + the first write error; `finalize_run` stamps `completed` only when every folded group actually committed, else `partial` (an engine-complete run whose DB writes fell short) — distinct from `cancelled` (user abort). The reason rides the `SweepFinished` SSE frame's `error` field so the client toasts it.
+
+**Live per-group visibility (no wait for the whole run).** Each committed group emits a `SweepGroupDone` SSE frame `{run_id, group_index, groups_done, group_count}` (plus one announce frame with `group_index: null` when the surviving counts are first known). The frontend (`BackgroundJobsContext`) throttles a per-run `GroupedSweepGroups` cache invalidation off these frames, so the groups table streams in mid-run (largest group first) and a "groups saved N/M" counter renders. Persistence is a concurrent drain, **not** a progress phase — the progress phases are strictly sequential `corpus → coarse → sweep` (`SweepProgress` observer; `corpus` = the DuckDB lake load, indeterminate `total: 0`; `coarse` = refine runs only). The old `saving` phase interleaved with `sweep` frames and made the phase bars flip-flop.
 
 API: `POST /api/strategies/sweeps` (start, detached → 202 with `run_id`), `POST .../cancel`, `DELETE .../sweeps/{run_id}`, `PATCH .../sweeps/{run_id}` (rename), `DELETE .../sweeps?before=` (prune), `GET` for runs/groups/results.
 

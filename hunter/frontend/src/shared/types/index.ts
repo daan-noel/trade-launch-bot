@@ -412,12 +412,26 @@ export interface SimulationProgressEvent {
 
 /** Payload of the `sweep_progress` SSE event: `processed` of `total` tokens
  *  folded across all surviving groups of the in-flight grouped sweep. `phase`
- *  identifies which phase is reporting: `"coarse"` | `"sweep"` | `"saving"`. */
+ *  identifies which phase is reporting: `"corpus"` (lake load; `total: 0` ⇒
+ *  indeterminate) | `"coarse"` (refine runs only) | `"sweep"`. */
 export interface SweepProgressEvent {
   strategy_id: string;
   phase: string;
   processed: number;
   total: number;
+}
+
+/** Payload of the `sweep_group_done` SSE event: one grouped-sweep group is
+ *  fully folded AND committed — its rows are readable from the run's `groups`
+ *  endpoint right now, mid-run. One frame per persisted group plus an announce
+ *  frame (`group_index: null`, `groups_done: 0`) when the surviving counts are
+ *  first known. Drives the live groups-table refresh + "persisted N/M". */
+export interface SweepGroupDoneEvent {
+  strategy_id: string;
+  run_id: string;
+  group_index: number | null;
+  groups_done: number;
+  group_count: number;
 }
 
 /** Payload of the `sweep_finished` SSE event: the single-flight grouped sweep

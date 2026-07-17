@@ -484,7 +484,6 @@ fn trade_lite(ct: &CorpusTrade) -> TradeLite {
 
 /// The union of precompute columns a compiled rule reads (both sides). Used by the
 /// guard test to build a series for one rule without the axes model.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
     let mut cols = Vec::new();
     for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()) {
@@ -500,7 +499,6 @@ pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
 /// axes-model grid the live sweep builds. Its horizons are the rule's own
 /// `time`/`stall` condition ceilings (+ tolerance) and largest flow window, so the
 /// sparse series it drives records every tick this rule's scan could branch on.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
     let max_window_secs = compiled.windows.iter().cloned().fold(0.0_f64, f64::max);
     // Max condition value + eq-tolerance for a monotone/static metric across both sides.
@@ -691,8 +689,8 @@ pub(crate) fn resolve_exit(
     }
 }
 
-/// The scan as one call (entry then exit) — the guard test's per-token driver.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The scan as one call (entry then exit) — the guard test's per-token driver and
+/// the single-combo drill-in's per-token driver (`simulate_generic_one_combo`).
 pub(crate) fn scan(
     series: &MetricSeries,
     c: &CompiledRule,

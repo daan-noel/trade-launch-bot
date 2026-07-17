@@ -436,14 +436,8 @@ fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
 
 /// Fold one small group's tokens **single-threaded** into per-combo metrics. Used
 /// inside the cross-group `par_iter`, so this must stay serial (no nested pool).
-/// Resolves entries via the shared [`fill_outcomes`], so it matches `run_sweep`'s
-/// decisions exactly. Bails on cancel (the caller discards the run).
-///
-/// Combos are folded in `batch`-sized passes (Phase 2.5): peak accumulator memory is
-/// `batch × ComboAgg` per group, so the cross-group `par_iter` peaks at
-/// `threads × batch × ComboAgg`. Combo ids stay global (`offset + local`), and each
-/// token is folded once per batch (the `tokens × n_batches` progress total accounts
-/// for it).
+/// Resolves entries via the shared [`fill_outcomes_with_state`], so it matches
+/// `run_sweep`'s decisions exactly. Bails on cancel (the caller discards the run).
 ///
 /// **Series is built → folded → dropped per token** — never a whole-group cache.
 /// Each token's `TokenState` (the generic engine's heavy `MetricSeries`) lives only
@@ -452,10 +446,26 @@ fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
 /// wave). The old code cached every token's series to group-end (`group_tokens ×
 /// series`), so with `threads` groups in flight the pool held ~`4·threads²` series
 /// at once — the RAM blow-up that OOM'd 16 GB boxes on the redesigned engine (with
-/// the legacy `()` state the cache was free, so it was safe before). In the common
-/// single-batch case each series is still built exactly once (the outer loop runs
-/// once); only a multi-batch group rebuilds per batch — the same CPU-for-RAM trade
-/// the large path's pass-outer branch already makes.
+/// the legacy `()` state the cache was free, so it was safe before).
+///
+/// **Loop order is picked per group** (the small-path analogue of the large path's
+/// wave-outer/pass-outer choice):
+/// - **Token-outer** when every worker can hold the full `n_combos × ComboAgg`
+///   accumulator set at once (`full_combo_aggs_fit` scaled by `threads`, since
+///   `threads` of these serial folds run concurrently): each token's series is
+///   built **exactly once**, combos folded over it in `batch`-sized chunks (the
+///   chunking only bounds the `TokenOutcome` scratch buffer). This kills the
+///   multi-batch series rebuild — previously a `n_batches×` multiplier on the
+///   dominant series-build cost.
+/// - **Batch-outer fallback** when the full accumulator set does NOT fit: peak
+///   accumulator memory stays `batch × ComboAgg` per worker, at the cost of
+///   rebuilding each series once per batch — the same CPU-for-RAM trade the large
+///   path's pass-outer branch makes. (With a single batch the two orders are
+///   identical, so the fallback only ever pays on over-RAM multi-batch runs.)
+///
+/// Either way combo ids stay global (`offset + local`) and progress is reported in
+/// evaluations (`Σ token_done(chunk) = group_tokens × n_combos`), so the observer
+/// total is loop-order-invariant.
 fn sweep_group_serial<S: Strategy>(
     strategy: &S,
     params: &[S::Params],
@@ -464,10 +474,86 @@ fn sweep_group_serial<S: Strategy>(
     observer: &dyn SweepObserver,
     batch: usize,
 ) -> Result<Vec<ComboMetrics>> {
-    use crate::sweep::engine::fill_outcomes_with_state;
+    use crate::sweep::engine::{fill_outcomes_with_state, full_combo_aggs_fit};
 
     let n_combos = params.len();
     let batch = batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::hard_max_combo_batch()));
+    let n_batches = n_combos.div_ceil(batch.max(1)).max(1);
+
+    // Token-outer (series once per token) whenever the whole accumulator set fits
+    // across all concurrently-folding workers. Only a multi-batch group differs
+    // between the orders, but token-outer is also the natural single-batch shape,
+    // so it is the primary path.
+    if n_batches == 1 || {
+        let threads = rayon::current_num_threads().max(1);
+        let max_series = idx
+            .iter()
+            .map(|&i| strategy.token_state_bytes_estimate(&corpus.tokens[i]))
+            .max()
+            .unwrap_or(0);
+        // Scale combos by `threads` so the agg term models every worker's resident
+        // set; the `threads` wave models one live series per worker.
+        let fits = full_combo_aggs_fit(n_combos.saturating_mul(threads), threads, max_series);
+        if fits {
+            tracing::debug!(
+                group_tokens = idx.len(),
+                combos = n_combos,
+                n_batches,
+                "grouped sweep: small-group token-outer fold (series built once per token)"
+            );
+        } else {
+            tracing::debug!(
+                group_tokens = idx.len(),
+                combos = n_combos,
+                n_batches,
+                "grouped sweep: small-group batch-outer fallback (full aggs over-RAM; \
+                 series rebuilt per batch)"
+            );
+        }
+        fits
+    } {
+        let bound: Vec<S::BoundParams> = params.iter().map(|p| strategy.bind_param(p)).collect();
+        let mut aggs = vec![ComboAgg::default(); n_combos];
+        let mut outs: Vec<TokenOutcome> = Vec::with_capacity(batch.min(n_combos));
+        for &ti in idx.iter() {
+            if observer.cancelled() {
+                bail!("sweep cancelled");
+            }
+            // Build the token's series ONCE; every combo chunk folds over it, then
+            // it drops — peak resident series stays one per worker.
+            let state = strategy.prepare_token(&corpus.tokens[ti]);
+            for (b, chunk) in params.chunks(batch).enumerate() {
+                let offset = b * batch;
+                if fill_outcomes_with_state(
+                    strategy,
+                    chunk,
+                    &bound[offset..offset + chunk.len()],
+                    &corpus.tokens[ti],
+                    &state,
+                    observer,
+                    &mut outs,
+                )
+                .is_err()
+                {
+                    bail!("sweep cancelled");
+                }
+                for (j, o) in outs.iter().enumerate() {
+                    aggs[offset + j].record(o);
+                }
+                // One token × `chunk` combos evaluated; sums to the same
+                // `group_tokens × n_combos` total as the batch-outer order.
+                observer.token_done(chunk.len());
+            }
+        }
+        return Ok(aggs
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| a.finalize(i as u32))
+            .collect());
+    }
+
+    // Batch-outer fallback: bounded accumulators (`batch × ComboAgg`), series
+    // rebuilt once per batch.
     let mut metrics: Vec<ComboMetrics> = Vec::with_capacity(n_combos);
     for (b, chunk) in params.chunks(batch).enumerate() {
         let offset = b * batch;
@@ -789,6 +875,39 @@ mod tests {
         assert_eq!(groups[0].best_combo_id, 1);
         assert_eq!(groups[0].best_score, Some(3.0));
         assert!((groups[0].best_expectancy_sol - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sweep_group_serial_is_batch_invariant() {
+        // The token-outer fold chunks the combo space in `batch`-sized passes and
+        // records each into `aggs[offset + j]`. A single-batch fold and a
+        // per-combo (batch=1) fold must produce byte-identical per-combo metrics —
+        // proving the offset bookkeeping and the chunked inner loop don't corrupt
+        // the aggregation. (Mock's tiny agg + zero series means both runs stay on
+        // the token-outer path; batch only changes how the pass loop chunks.)
+        let c = corpus(); // 3 tokens; every combo fires on each
+        let idx: Vec<usize> = (0..c.tokens.len()).collect();
+        let params = Mock.sample(SweepMethod::Grid); // [1.0, 3.0, 2.0]
+
+        let whole =
+            sweep_group_serial(&Mock, &params, &c, &idx, &crate::sweep::progress::NoopObserver, 3)
+                .unwrap();
+        let chunked =
+            sweep_group_serial(&Mock, &params, &c, &idx, &crate::sweep::progress::NoopObserver, 1)
+                .unwrap();
+
+        assert_eq!(whole.len(), 3);
+        assert_eq!(chunked.len(), 3);
+        for (w, ch) in whole.iter().zip(chunked.iter()) {
+            assert_eq!(w.combo_id, ch.combo_id, "combo_id offsets must match across batching");
+            assert_eq!(w.n_fired, ch.n_fired);
+            assert_eq!(w.n_closed, ch.n_closed);
+            assert!((w.total_pnl_sol - ch.total_pnl_sol).abs() < 1e-9);
+            assert_eq!(w.score.is_some(), ch.score.is_some());
+        }
+        // combo 1 (param 3.0) is still the highest-PnL combo under both batchings.
+        assert_eq!(whole[1].combo_id, 1);
+        assert!((whole[1].total_pnl_sol - 3.0 * 3.0).abs() < 1e-9, "3 tokens × 3.0 PnL");
     }
 
     #[test]

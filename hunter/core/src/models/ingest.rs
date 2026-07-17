@@ -119,7 +119,9 @@ pub enum SseEvent {
     },
     /// Progress of an in-flight grouped param-sweep for `strategy_id`: `processed`
     /// of `total` candidate tokens folded across all surviving groups. `phase`
-    /// identifies which phase is reporting (`"coarse"` | `"sweep"` | `"saving"`).
+    /// identifies which phase is reporting (`"corpus"` = lake load, `total: 0` ⇒
+    /// indeterminate; `"coarse"` = refine runs only; `"sweep"` = the folding
+    /// pass). Persistence is NOT a phase — it reports via [`SseEvent::SweepGroupDone`].
     /// Throttled to ~100 frames per run plus a final `processed == total`
     /// (or the count where it was cancelled). Not mint-scoped — always delivered.
     SweepProgress {
@@ -127,6 +129,22 @@ pub enum SseEvent {
         phase: String,
         processed: u64,
         total: u64,
+    },
+    /// One grouped-sweep group has been fully folded **and persisted** — the
+    /// signal that its rows are readable via the run's `groups` endpoint right
+    /// now, mid-run. Emitted by the sweep's DB-writer task once per committed
+    /// group, plus one announce frame (`group_index: None`, `groups_done: 0`)
+    /// when the surviving group/combo counts are first known. Lets the frontend
+    /// stream group results into the table while the sweep is still folding,
+    /// and drive a "persisted N/M" counter. Not mint-scoped — always delivered.
+    SweepGroupDone {
+        strategy_id: String,
+        run_id: uuid::Uuid,
+        /// Deterministic index of the group that just persisted; `None` on the
+        /// initial announce frame.
+        group_index: Option<u64>,
+        groups_done: u64,
+        group_count: u64,
     },
     /// Terminal frame for the grouped sweep: the single-flight run for
     /// `strategy_id` has ended (`cancelled` distinguishes a user abort from a

@@ -26,12 +26,13 @@ export interface RuleMetricPrefs {
   paneKeys: string[];
 }
 
-/** Pull metrics + windows (+ fingerprint) from a selected rule. */
-export function extractRuleMetricPrefs(
-  rule: StrategyRule,
+/** Metrics + windows + default panes constrained by an (already-parsed) params
+ *  form — the shared core of `extractRuleMetricPrefs`, also used for ad-hoc
+ *  params without a saved rule (e.g. a sweep combo's blob). */
+export function metricPrefsFromParams(
+  params: RuleParams,
   registry: StrategyRegistry | undefined,
-): RuleMetricPrefs {
-  const params = ruleParamsFromJson(rule.params, registry);
+): Omit<RuleMetricPrefs, 'fingerprintId'> {
   const metrics = new Set<string>();
   const windows = new Set<number>();
   const paneKeys: string[] = [];
@@ -55,11 +56,19 @@ export function extractRuleMetricPrefs(
   }
 
   return {
-    fingerprintId: rule.fingerprint_id,
     metrics: [...metrics],
     windows: windows.size ? [...windows].sort((a, b) => a - b) : [...DEFAULT_WINDOWS],
     paneKeys,
   };
+}
+
+/** Pull metrics + windows (+ fingerprint) from a selected rule. */
+export function extractRuleMetricPrefs(
+  rule: StrategyRule,
+  registry: StrategyRegistry | undefined,
+): RuleMetricPrefs {
+  const params = ruleParamsFromJson(rule.params, registry);
+  return { fingerprintId: rule.fingerprint_id, ...metricPrefsFromParams(params, registry) };
 }
 
 /** Judge one condition — mirrors `hunter_engine::metrics::evaluator::eval_one`. */

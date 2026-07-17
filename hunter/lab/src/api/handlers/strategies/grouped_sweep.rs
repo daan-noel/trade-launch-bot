@@ -481,6 +481,18 @@ async fn run_grouped_sweep_job(
         c
     } else {
         tracing::info!(lake = %root.display(), "grouped sweep: corpus source = Parquet lake (DuckDB)");
+        // P0 visibility — the DuckDB lake read is the longest silent pre-fold
+        // phase (no engine frames until partitioning). Announce it with an
+        // indeterminate frame (`total: 0`) so the dashboard shows a labeled
+        // "Loading corpus" bar instead of an unexplained spinner; the next
+        // phase's first frame marks it done client-side. Cache hits skip this
+        // (the load is instant, a flashed phase would just be noise).
+        let _ = state.sse_tx.send(crate::models::ingest::SseEvent::SweepProgress {
+            strategy_id: b.strategy_id.clone(),
+            phase: "corpus".to_string(),
+            processed: 0,
+            total: 0,
+        });
         match src.load(&sel).await {
             Ok(c) => c,
             Err(e) => {
@@ -619,7 +631,7 @@ async fn run_grouped_sweep_job(
     // incrementally and a cancel/crash keeps whatever finished. `group_count` /
     // `combo_count` are placeholders (0) here, set by the engine's `begin` once
     // the surviving + combo sets are known; `axes_spec` is the raw request axes
-    // until `finalize_completed` swaps in the resolved set. Counts/status/axes are
+    // until `finalize_run` swaps in the resolved set. Counts/status/axes are
     // re-stamped at the terminal step.
     let run_id = Uuid::new_v4();
     let run = GroupedSweepRun {
@@ -687,8 +699,16 @@ async fn run_grouped_sweep_job(
     // order from the cross-group small-group phase) are serialized through one
     // unbounded channel into one task, so concurrent folds never race the
     // connection. It drains until the sink (and thus the sender) drops when the
-    // sweep ends, then returns the persisted-group tally. Unbounded so the sync
-    // engine callback never blocks a rayon worker.
+    // sweep ends, then returns the persisted-group tally + the first write
+    // error (if any) so the terminal status can be honest about missing groups.
+    // Unbounded so the sync engine callback never blocks a rayon worker.
+    //
+    // P0 visibility — each committed group emits a `SweepGroupDone` frame (its
+    // rows are readable NOW), so the frontend streams groups into the table
+    // mid-run and renders a "persisted N/M" counter. Persistence is a concurrent
+    // drain, not a stage, so it is deliberately NOT a progress *phase* (the old
+    // `"saving"` phase interleaved with `"sweep"` frames and made the phase bars
+    // flip-flop between active/done for the whole run).
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SweepWrite>();
     let writer = {
         let db = state.batch_db.clone();
@@ -696,50 +716,59 @@ async fn run_grouped_sweep_job(
         let writer_strategy_id = b.strategy_id.clone();
         actix_web::rt::spawn(async move {
             let repo = GroupedSweepRepo::new(db, tables);
-            let mut groups_done = 0i32;
-            let mut total_groups = 0i32;
+            let mut groups_done = 0u64;
+            let mut total_groups = 0u64;
+            let mut first_error: Option<String> = None;
             while let Some(msg) = rx.recv().await {
                 match msg {
                     SweepWrite::Begin {
                         group_count,
                         combo_count,
                     } => {
-                        total_groups = group_count;
+                        total_groups = group_count as u64;
                         if let Err(e) = repo
                             .update_run_counts(run_id, group_count, combo_count)
                             .await
                         {
                             tracing::error!("grouped sweep: update_run_counts failed: {e}");
+                            first_error.get_or_insert_with(|| format!("update_run_counts: {e}"));
                         }
-                        // Announce the saving phase so the frontend switches from
-                        // the sweep bar to a fresh saving bar before any DB writes.
-                        let _ = writer_sse_tx.send(crate::models::ingest::SseEvent::SweepProgress {
+                        // Announce the surviving group count up front so the
+                        // frontend can show "persisted 0/N" before the first
+                        // group commits.
+                        let _ = writer_sse_tx.send(crate::models::ingest::SseEvent::SweepGroupDone {
                             strategy_id: writer_strategy_id.clone(),
-                            phase: "saving".to_string(),
-                            processed: 0,
-                            total: group_count as u64,
+                            run_id,
+                            group_index: None,
+                            groups_done: 0,
+                            group_count: total_groups,
                         });
                     }
                     SweepWrite::Combos(rows) => {
                         if let Err(e) = repo.insert_combos_indexed(run_id, &rows).await {
                             tracing::error!("grouped sweep: insert_combos_indexed failed: {e}");
+                            first_error.get_or_insert_with(|| format!("insert_combos_indexed: {e}"));
                         }
                     }
                     SweepWrite::Group(g) => match repo.append_group(run_id, &g).await {
                         Ok(()) => {
                             groups_done += 1;
-                            let _ = writer_sse_tx.send(crate::models::ingest::SseEvent::SweepProgress {
+                            let _ = writer_sse_tx.send(crate::models::ingest::SseEvent::SweepGroupDone {
                                 strategy_id: writer_strategy_id.clone(),
-                                phase: "saving".to_string(),
-                                processed: groups_done as u64,
-                                total: total_groups as u64,
+                                run_id,
+                                group_index: Some(g.group_index as u64),
+                                groups_done,
+                                group_count: total_groups,
                             });
                         }
-                        Err(e) => tracing::error!("grouped sweep: append_group failed: {e}"),
+                        Err(e) => {
+                            tracing::error!("grouped sweep: append_group failed: {e}");
+                            first_error.get_or_insert_with(|| format!("append_group: {e}"));
+                        }
                     },
                 }
             }
-            groups_done
+            (groups_done, first_error)
         })
     };
 
@@ -802,8 +831,11 @@ async fn run_grouped_sweep_job(
     .await;
 
     // The sweep is done — the sink dropped, so the writer drains and returns how
-    // many groups actually persisted (the partial count on cancel/error).
-    let groups_done = writer.await.unwrap_or(0);
+    // many groups actually persisted (the partial count on cancel/error) plus
+    // the first write error, if any.
+    let (groups_done, write_error) = writer
+        .await
+        .unwrap_or((0, Some("sweep DB-writer task panicked".to_string())));
 
     let output = match result {
         Ok(o) => o,
@@ -838,12 +870,28 @@ async fn run_grouped_sweep_job(
         }
     };
 
-    // Full success — stamp the terminal status, authoritative counts, and the
-    // resolved axes (only known now). The client picks the finalized run up via
-    // the runs-list refresh on the `SweepFinished` SSE frame.
+    // Engine success — stamp the terminal status, authoritative counts, and the
+    // resolved axes (only known now). `completed` only when every folded group
+    // actually committed; a write error (or a writer shortfall) stamps `partial`
+    // instead, and the reason rides the terminal `SweepFinished` frame so the
+    // client surfaces it rather than trusting a silently-thinner run.
+    let folded = output.groups.len() as u64;
+    let status = if write_error.is_none() && groups_done == folded {
+        "completed"
+    } else {
+        "partial"
+    };
+    if let Some(err) = write_error {
+        gate.error = Some(format!(
+            "sweep persisted {groups_done}/{folded} groups — first write error: {err}"
+        ));
+    } else if groups_done != folded {
+        gate.error = Some(format!("sweep persisted only {groups_done}/{folded} groups"));
+    }
     if let Err(e) = repo
-        .finalize_completed(
+        .finalize_run(
             run_id,
+            status,
             output.groups.len() as i32,
             output.combo_count as i32,
             &output.axes_json,
@@ -857,8 +905,10 @@ async fn run_grouped_sweep_job(
     tracing::info!(
         run_id = %run_id,
         strategy = %run.strategy_id,
+        status,
         tokens = run.token_count,
         groups = output.groups.len(),
+        groups_persisted = groups_done,
         combos = output.combo_count,
         rss_mb = crate::sweep::obs::process_rss_mb(),
         elapsed_s = clock.elapsed_secs(),

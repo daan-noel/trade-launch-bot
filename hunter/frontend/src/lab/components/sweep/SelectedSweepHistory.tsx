@@ -21,6 +21,7 @@ const STATUS_BADGE: Record<GroupedSweepRunRecord['status'], 'primary' | 'warning
   completed: 'primary',
   running: 'warning',
   cancelled: 'danger',
+  partial: 'danger',
 };
 
 function Row({ label, children }: { label: string; children: ReactNode }) {

@@ -21,7 +21,7 @@ import {
   simColumns,
   SIM_KEYS,
 } from 'components/strategy/strategyColumns';
-import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
+import { LabTokenInspectModal } from '@lab/components/strategy/LabTokenInspectModal';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import {
@@ -72,7 +72,11 @@ export function SimulatePage() {
   const [runs, setRuns] = useState<Record<string, RunState>>({});
   const [bulkMode, setBulkMode] = useState<TradeMode | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  const [inspect, setInspect] = useState<{ key: string; target: InspectTarget } | null>(null);
+  const [inspect, setInspect] = useState<{
+    key: string;
+    target: InspectTarget;
+    rule: StrategyRule;
+  } | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const handleRef = useRef<{ close: () => void } | null>(null);
   const hydratedIds = useRef<Set<string>>(new Set());
@@ -251,7 +255,16 @@ export function SimulatePage() {
       )}
 
       {inspect && (
-        <TokenInspectModal target={inspect.target} onClose={() => setInspect(null)} />
+        <LabTokenInspectModal
+          target={inspect.target}
+          titleSuffix="Sim inspect"
+          ruleOverride={{
+            paramsJson: inspect.rule.params,
+            fingerprintId: inspect.rule.fingerprint_id,
+            label: inspect.rule.rule_name,
+          }}
+          onClose={() => setInspect(null)}
+        />
       )}
     </div>
   );
@@ -272,7 +285,7 @@ function RuleSimPositionsPanel({
 }: {
   rule: StrategyRule;
   reloadNonce: number;
-  onInspect: (v: { key: string; target: InspectTarget } | null) => void;
+  onInspect: (v: { key: string; target: InspectTarget; rule: StrategyRule } | null) => void;
   inspectKey: string | null;
 }) {
   const [view, setView] = useState<ResultView>('positions');
@@ -326,9 +339,9 @@ function RuleSimPositionsPanel({
   const onSelectSim = useCallback(
     (key: string | null) => {
       const row = key ? simTokens.find((t) => t.mint_address === key) ?? null : null;
-      onInspect(row ? { key: row.mint_address, target: inspectFromSim(row) } : null);
+      onInspect(row ? { key: row.mint_address, target: inspectFromSim(row), rule } : null);
     },
-    [simTokens, onInspect],
+    [simTokens, onInspect, rule],
   );
 
   const isMatched = view === 'matched';

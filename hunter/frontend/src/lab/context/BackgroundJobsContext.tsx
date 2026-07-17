@@ -4,6 +4,7 @@
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -23,7 +24,7 @@ import {
 import { apiSlice } from 'store/apiSlice';
 import { useToast } from 'components/ui/Toast';
 import type { AppDispatch } from '@lab/store';
-import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
+import type { SimulationProgressEvent, SweepGroupDoneEvent, SweepProgressEvent } from 'types';
 
 /**
  * App-wide registry of long-running background jobs (grouped sweep, rule
@@ -57,7 +58,7 @@ import type { SimulationProgressEvent, SweepProgressEvent } from 'types';
  */
 export type JobKind = 'sweep' | 'simulation' | 'swing';
 
-/** Progress state for one named phase of a sweep (coarse / sweep / saving). */
+/** Progress state for one named phase of a sweep (corpus / coarse / sweep). */
 export interface PhaseProgress {
   label: string;
   processed: number | null;
@@ -66,10 +67,16 @@ export interface PhaseProgress {
   done: boolean;
 }
 
+// Phases are strictly sequential on the wire (corpus → coarse → sweep) — that
+// invariant is what lets `upsert` mark the previous phase done when a new one
+// arrives. Persistence ("saving") is deliberately NOT a phase: it drains
+// concurrently with the sweep fold, so its old phase frames interleaved with
+// sweep frames and made both bars flip-flop between active/done. It now reports
+// through `sweep_group_done` (the `groupsDone`/`groupCount` counter) instead.
 const PHASE_LABELS: Record<string, string> = {
+  corpus: 'Loading corpus',
   coarse: 'Coarse sweep',
   sweep: 'Sweep',
-  saving: 'Saving results',
 };
 
 export interface BackgroundJob {
@@ -92,11 +99,18 @@ export interface BackgroundJob {
    *  measures work done *since we started watching*, keeping ETA honest for
    *  recovered jobs. */
   firstSeenProcessed: number;
-  /** Per-phase progress, keyed by phase string ("coarse" / "sweep" / "saving").
+  /** Per-phase progress, keyed by phase string ("corpus" / "coarse" / "sweep").
    *  Empty until the first phase-tagged frame arrives (falls back to single bar). */
   phases: Map<string, PhaseProgress>;
   /** The phase key that most recently received a progress frame. */
   activePhase: string | null;
+  /** Groups committed to the DB so far (sweep jobs; from `sweep_group_done`).
+   *  Null until the writer's announce frame. Groups are readable mid-run. */
+  groupsDone: number | null;
+  /** Total surviving groups this run will persist (sweep jobs). */
+  groupCount: number | null;
+  /** The run id the counters (and live group refetches) belong to. */
+  runId: string | null;
 }
 
 /** Singleton key for the single-flight grouped sweep. */
@@ -197,6 +211,9 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
           firstSeenProcessed: existing?.firstSeenProcessed ?? processed ?? 0,
           phases: newPhases,
           activePhase: newActivePhase,
+          groupsDone: patch.groupsDone !== undefined ? patch.groupsDone : existing?.groupsDone ?? null,
+          groupCount: patch.groupCount !== undefined ? patch.groupCount : existing?.groupCount ?? null,
+          runId: patch.runId !== undefined ? patch.runId : existing?.runId ?? null,
         });
         return next;
       });
@@ -213,6 +230,32 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
+
+  // Throttled per-run groups refetch driven by `sweep_group_done`: fire at most
+  // one invalidation per window, with a trailing call so the last group of a
+  // burst always lands. Single-flight sweep ⇒ one runId at a time, so plain refs
+  // suffice.
+  const groupsInvalidateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const groupsInvalidateLastAt = useRef(0);
+  const invalidateRunGroups = useCallback(
+    (runId: string) => {
+      const WINDOW_MS = 2000;
+      const fire = () => {
+        groupsInvalidateLastAt.current = Date.now();
+        dispatch(apiSlice.util.invalidateTags([{ type: 'GroupedSweepGroups', id: runId }]));
+      };
+      const since = Date.now() - groupsInvalidateLastAt.current;
+      if (since >= WINDOW_MS) {
+        fire();
+      } else if (!groupsInvalidateTimer.current) {
+        groupsInvalidateTimer.current = setTimeout(() => {
+          groupsInvalidateTimer.current = null;
+          fire();
+        }, WINDOW_MS - since);
+      }
+    },
+    [dispatch],
+  );
 
   // One set of subscriptions for the whole session; seed from the status snapshot
   // so a job already running at load time is recovered. The progress streams are
@@ -243,7 +286,33 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       if (typeof e.data !== 'string') return;
       try {
         const p = JSON.parse(e.data) as SweepProgressEvent;
-        upsert('sweep', SWEEP_KEY, { processed: p.processed, total: p.total }, p.phase);
+        // `total: 0` = a declared-but-unsized phase (the corpus lake load) —
+        // map to nulls so the bar renders indeterminate instead of a full 0/0.
+        const sized = p.total > 0;
+        upsert(
+          'sweep',
+          SWEEP_KEY,
+          { processed: sized ? p.processed : null, total: sized ? p.total : null },
+          p.phase,
+        );
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    const offSweepGroupDone = sseSubscribe('sweep_group_done', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const g = JSON.parse(e.data) as SweepGroupDoneEvent;
+        upsert('sweep', SWEEP_KEY, {
+          groupsDone: g.groups_done,
+          groupCount: g.group_count,
+          runId: g.run_id,
+        });
+        // The group's rows are committed and readable NOW — refetch the run's
+        // groups list so results stream into the table mid-run. Throttled: tiny
+        // groups can persist many times per second, and each invalidation
+        // refetches every subscribed groups query.
+        if (g.group_index != null) invalidateRunGroups(g.run_id);
       } catch {
         /* ignore malformed frames */
       }
@@ -260,11 +329,14 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     const sweepFinished = connectSweepFinished((ev) => {
       remove('sweep', SWEEP_KEY);
       // A finished sweep persisted a new run — refresh the runs list app-wide.
+      // `GroupedSweepGroups` queries also provide 'GroupedSweep', so the final
+      // groups state refetches here too.
       dispatch(apiSlice.util.invalidateTags(['GroupedSweep']));
-      // A post-admission refusal (e.g. free RAM under the desktop reserve)
-      // deletes its run row and reaches the client only here — surface the
-      // reason so the page shows why instead of a run that silently vanishes.
-      if (ev.error) addToast('Sweep refused', ev.error, 'danger');
+      // `error` reaches the client only here: a post-admission refusal (run row
+      // deleted — e.g. free RAM under the desktop reserve) or a partial finish
+      // (run kept, some groups failed to persist). Surface the reason instead
+      // of a run that silently vanishes or silently thins.
+      if (ev.error) addToast('Sweep problem', ev.error, 'danger');
     });
     const simFinished = connectSimulationFinished((ev) => remove('simulation', ev.rule_id));
     const swingFinished = connectSwingDetectionFinished((ev) => remove('swing', ev.run_id));
@@ -272,16 +344,31 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
       offSweepProgress();
+      offSweepGroupDone();
       offSimProgress();
       sweepFinished.close();
       simFinished.close();
       swingFinished.close();
+      if (groupsInvalidateTimer.current) {
+        clearTimeout(groupsInvalidateTimer.current);
+        groupsInvalidateTimer.current = null;
+      }
     };
-  }, [upsert, remove, dispatch, addToast]);
+  }, [upsert, remove, dispatch, addToast, invalidateRunGroups]);
 
   const markStarting = useCallback(
     (kind: JobKind, id: string, label: string) => {
-      upsert(kind, id, { label, processed: null, total: null, cancelling: false, phases: new Map(), activePhase: null });
+      upsert(kind, id, {
+        label,
+        processed: null,
+        total: null,
+        cancelling: false,
+        phases: new Map(),
+        activePhase: null,
+        groupsDone: null,
+        groupCount: null,
+        runId: null,
+      });
     },
     [upsert],
   );

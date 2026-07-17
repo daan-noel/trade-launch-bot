@@ -11,6 +11,7 @@ import {
   findRuleFireMarkers,
   metricColKey,
   metricConditionStatesAt,
+  metricPrefsFromParams,
   nearestSeriesIndex,
   parseSeriesAtSec,
 } from 'lib/strategy/metricPanes';
@@ -46,6 +47,18 @@ function loadPrefs(): Prefs {
   return { panes: [], windows: [...DEFAULT_WINDOWS], ruleId: null, autoPanes: true };
 }
 
+/** Pin the pane overlay to explicit params instead of the saved-rule dropdown —
+ *  e.g. the exact sweep combo / simulated rule the caller is inspecting, so the
+ *  `· metrics` markers are computed from the same params that produced the run. */
+export interface MetricPanesRuleOverride {
+  /** Raw `RuleParams` JSON (a rule's `params` or a sweep combo's blob). */
+  paramsJson: unknown;
+  /** Fingerprint to key the metric-series fetch by (null = none). */
+  fingerprintId: string | null;
+  /** Shown in place of the rule dropdown (e.g. "combo #37", the rule name). */
+  label: string;
+}
+
 export interface MetricPanesProps {
   mint: string;
   /** Shared wall-clock crosshair (unix seconds) — from price chart or pane hover. */
@@ -56,6 +69,8 @@ export interface MetricPanesProps {
   onCrosshairTimeChange?: (timeSec: number | null) => void;
   /** Emit first metric entry/exit fires as chart markers. */
   onEventMarkersChange?: (markers: ChartEventMarker[]) => void;
+  /** When set, overlay these params (not the dropdown rule's). */
+  ruleOverride?: MetricPanesRuleOverride | null;
 }
 
 /**
@@ -70,14 +85,26 @@ export function MetricPanes({
   visibleTimeRange = null,
   onCrosshairTimeChange,
   onEventMarkersChange,
+  ruleOverride = null,
 }: MetricPanesProps) {
   const { data: registry } = useStrategyRegistry();
   const { data: rules = [] } = useGetStrategyRulesQuery();
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
 
   const selectedRule = useMemo(
-    () => rules.find((r) => r.id === prefs.ruleId) ?? null,
-    [rules, prefs.ruleId],
+    () => (ruleOverride ? null : rules.find((r) => r.id === prefs.ruleId) ?? null),
+    [ruleOverride, rules, prefs.ruleId],
+  );
+
+  // Override params are derived, never written into prefs — closing the inspect
+  // leaves the user's saved dropdown/pane selection untouched.
+  const overrideParams: RuleParams | null = useMemo(
+    () => (ruleOverride && registry ? ruleParamsFromJson(ruleOverride.paramsJson, registry) : null),
+    [ruleOverride, registry],
+  );
+  const overridePrefs = useMemo(
+    () => (overrideParams ? metricPrefsFromParams(overrideParams, registry) : null),
+    [overrideParams, registry],
   );
 
   // When a rule is selected (and autoPanes is on), adopt its metrics + windows.
@@ -91,8 +118,9 @@ export function MetricPanes({
     }));
   }, [selectedRule, registry, prefs.autoPanes]);
 
-  const windows =
-    prefs.autoPanes && selectedRule && registry
+  const windows = overridePrefs
+    ? overridePrefs.windows
+    : prefs.autoPanes && selectedRule && registry
       ? extractRuleMetricPrefs(selectedRule, registry).windows
       : prefs.windows;
 
@@ -100,7 +128,7 @@ export function MetricPanes({
     {
       mint,
       windows,
-      fingerprintId: selectedRule?.fingerprint_id ?? null,
+      fingerprintId: ruleOverride ? ruleOverride.fingerprintId : selectedRule?.fingerprint_id ?? null,
     },
     { skip: !mint },
   );
@@ -114,8 +142,15 @@ export function MetricPanes({
   }, [prefs]);
 
   const ruleParams: RuleParams | null = useMemo(() => {
+    if (overrideParams) return overrideParams;
     return selectedRule && registry ? ruleParamsFromJson(selectedRule.params, registry) : null;
-  }, [selectedRule, registry]);
+  }, [overrideParams, selectedRule, registry]);
+
+  /** Panes actually rendered: the override's own metrics until the user toggles. */
+  const panes =
+    overridePrefs && prefs.autoPanes && overridePrefs.paneKeys.length
+      ? overridePrefs.paneKeys
+      : prefs.panes;
 
   const atSec = useMemo(() => parseSeriesAtSec(data?.at ?? []), [data?.at]);
 
@@ -173,7 +208,7 @@ export function MetricPanes({
 
   /** One readable number per selected pane — crosshair when hovering, else latest. */
   const valueStrip = useMemo(() => {
-    return prefs.panes.map((key) => {
+    return panes.map((key) => {
       const meta = allColumns.find((c) => c.key === key);
       const col = seriesByKey.get(key);
       if (!meta || !col) return { key, label: key, text: '—', ok: null as boolean | null };
@@ -195,13 +230,15 @@ export function MetricPanes({
         ok: cond ? cond.ok : null,
       };
     });
-  }, [prefs.panes, allColumns, seriesByKey, crosshairIdx, conditionByMetric]);
+  }, [panes, allColumns, seriesByKey, crosshairIdx, conditionByMetric]);
 
   const togglePane = (key: string) =>
     setPrefs((p) => ({
       ...p,
       autoPanes: false,
-      panes: p.panes.includes(key) ? p.panes.filter((k) => k !== key) : [...p.panes, key],
+      // Seed from the rendered set so the first manual toggle under an override
+      // edits the override's panes instead of resurfacing stale saved ones.
+      panes: panes.includes(key) ? panes.filter((k) => k !== key) : [...panes, key],
     }));
 
   const xDomain: ChartVisibleTimeRange | null = useMemo(() => {
@@ -241,7 +278,7 @@ export function MetricPanes({
         <span className="text-[11px] font-semibold uppercase text-text-dim">panes</span>
         {allColumns.map((c) => (
           <label key={c.key} className="flex items-center gap-1.5 text-[12px] text-text-dim">
-            <Checkbox checked={prefs.panes.includes(c.key)} onChange={() => togglePane(c.key)} />
+            <Checkbox checked={panes.includes(c.key)} onChange={() => togglePane(c.key)} />
             <span className="font-mono">
               {c.metric}
               {c.window != null && <span className="text-text-dim/60">@{c.window}s</span>}
@@ -250,25 +287,34 @@ export function MetricPanes({
         ))}
         <div className="ml-auto flex items-center gap-2">
           <span className="text-[11px] text-text-dim">rule overlay</span>
-          <Select
-            fieldSize="sm"
-            value={prefs.ruleId ?? ''}
-            onChange={(e) =>
-              setPrefs((p) => ({
-                ...p,
-                ruleId: e.target.value || null,
-                autoPanes: true,
-              }))
-            }
-            className="min-w-40"
-          >
-            <option value="">none</option>
-            {rules.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.rule_name}
-              </option>
-            ))}
-          </Select>
+          {ruleOverride ? (
+            <span
+              className="rounded border border-white/10 bg-surface px-2 py-1 font-mono text-[12px] text-secondary"
+              title="Thresholds + fire markers use the exact params of the inspected run"
+            >
+              {ruleOverride.label}
+            </span>
+          ) : (
+            <Select
+              fieldSize="sm"
+              value={prefs.ruleId ?? ''}
+              onChange={(e) =>
+                setPrefs((p) => ({
+                  ...p,
+                  ruleId: e.target.value || null,
+                  autoPanes: true,
+                }))
+              }
+              className="min-w-40"
+            >
+              <option value="">none</option>
+              {rules.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.rule_name}
+                </option>
+              ))}
+            </Select>
+          )}
         </div>
       </div>
 
@@ -300,7 +346,7 @@ export function MetricPanes({
       {error && <p className="text-[12px] text-red">metric series unavailable for this token.</p>}
       {isFetching && <p className="text-[12px] text-text-dim">computing…</p>}
 
-      {prefs.panes.length === 0 ? (
+      {panes.length === 0 ? (
         <p className="text-[12px] text-text-dim/70">
           Pick a metric above, or select a rule to auto-load its conditions.
         </p>
@@ -314,7 +360,7 @@ export function MetricPanes({
             }
           }}
         >
-          {prefs.panes.map((key) => {
+          {panes.map((key) => {
             const col = seriesByKey.get(key);
             const meta = allColumns.find((c) => c.key === key);
             if (!col || !meta) {

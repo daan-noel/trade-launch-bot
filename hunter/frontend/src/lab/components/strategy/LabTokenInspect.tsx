@@ -4,7 +4,7 @@ import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import type { TokenDetailRecord } from 'types';
-import { MetricPanes } from '@lab/components/strategy/MetricPanes';
+import { MetricPanes, type MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
 
 /**
  * Lab token inspect: trade-history chart + metric panes sharing crosshair /
@@ -18,6 +18,7 @@ export function LabTokenInspect({
   showDetailPanel = true,
   /** Sweep/sim entry·exit markers merged with metric-pane fires. */
   extraEventMarkers = [],
+  ruleOverride = null,
 }: {
   detail: TokenDetailRecord | null;
   loading?: boolean;
@@ -26,6 +27,8 @@ export function LabTokenInspect({
   /** When false, only chart + panes (caller already rendered the detail panel). */
   showDetailPanel?: boolean;
   extraEventMarkers?: ChartEventMarker[];
+  /** Pin the metric panes to the inspected run's exact params (see MetricPanes). */
+  ruleOverride?: MetricPanesRuleOverride | null;
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
   /** Who last drove the shared crosshair — only pane hover is pushed into the price chart. */
@@ -78,6 +81,7 @@ export function LabTokenInspect({
             visibleTimeRange={visibleTimeRange}
             onCrosshairTimeChange={onPanesCrosshair}
             onEventMarkersChange={onEventMarkersChange}
+            ruleOverride={ruleOverride}
           />
         </div>
       ) : null}

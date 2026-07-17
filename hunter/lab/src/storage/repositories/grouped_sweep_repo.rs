@@ -453,23 +453,28 @@ impl GroupedSweepRepo {
         Ok(())
     }
 
-    /// Mark a run `completed` and stamp its authoritative final counts + the
-    /// resolved (post-defaults/dedup) axes, which are only known once the sweep
-    /// returns. `groups_done` is left as the tally [`append_group`] maintained.
-    pub async fn finalize_completed(
+    /// Stamp a run's terminal `status` (`'completed'`, or `'partial'` when the
+    /// engine finished but not every group actually committed — a DB write error
+    /// mid-run) plus its authoritative final counts + the resolved
+    /// (post-defaults/dedup) axes, which are only known once the sweep returns.
+    /// `groups_done` is left as the tally [`append_group`] maintained, so a
+    /// `partial` run honestly reads as "`groups_done` / `group_count`".
+    pub async fn finalize_run(
         &self,
         run_id: Uuid,
+        status: &str,
         group_count: i32,
         combo_count: i32,
         axes_spec: &Value,
     ) -> anyhow::Result<()> {
         let sql = format!(
-            "UPDATE {} SET status = 'completed', group_count = $2, combo_count = $3, \
-             axes_spec = $4 WHERE id = $1",
+            "UPDATE {} SET status = $2, group_count = $3, combo_count = $4, \
+             axes_spec = $5 WHERE id = $1",
             self.tables.runs
         );
         sqlx::query(&sql)
             .bind(run_id)
+            .bind(status)
             .bind(group_count)
             .bind(combo_count)
             .bind(sqlx::types::Json(axes_spec))

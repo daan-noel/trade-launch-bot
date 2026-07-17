@@ -67,7 +67,7 @@ pub trait SweepObserver: Sync {
 pub struct SweepProgress {
     sse_tx: broadcast::Sender<SseEvent>,
     strategy_id: String,
-    /// Which phase this observer represents: `"coarse"` | `"sweep"` | `"saving"`.
+    /// Which phase this observer represents: `"corpus"` | `"coarse"` | `"sweep"`.
     phase: String,
     /// Total work in **evaluations** (`total_tokens × combos_per_token`).
     total: AtomicUsize,
