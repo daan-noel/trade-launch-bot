@@ -17,7 +17,7 @@ interface StrategyRow {
 }
 
 /** Compact per-strategy real-money strip: open positions + SOL deployed per
- *  strategy, linking to the cross-strategy Live-Trading monitor. */
+ *  strategy, linking to the cross-strategy Positions page. */
 export function StrategyStrip() {
   const { data: positions = [], isLoading } = useGetPortfolioPositionsQuery(true);
 
@@ -37,12 +37,12 @@ export function StrategyStrip() {
   return (
     <div className="rounded-lg border border-white/5 bg-white/2 p-3">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-bold text-text">Real Trading · by strategy</h2>
+        <h2 className="text-sm font-bold text-text">Real positions · by strategy</h2>
         <Link
-          to="/live-trading"
+          to="/positions"
           className="text-[11px] text-accent hover:text-primary hover:underline"
         >
-          Monitor →
+          Positions →
         </Link>
       </div>
       {isLoading ? (

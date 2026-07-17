@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
+import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { connectArmedChanged, connectStrategyPositionUpdate } from 'services/sse';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
@@ -21,15 +23,10 @@ const HOLDING_STATUSES = new Set(['BuySubmitted', 'Holding', 'ExitPending']);
 const armedKey = (ruleId: string, mint: string) => `${ruleId}|${mint}`;
 
 /**
- * Live monitor (live app): the generic engine's armed (token, rule) pairs and
- * open positions in real time, plus a session stat strip. Armed state is push-only
- * — it is fed by the `strategy_armed_changed` SSE with the `/api/strategies/armed`
- * snapshot as the initial + reconnect refetch; positions ride
- * `strategy_position_update`.
- *
- * NOTE: the rich "blocking condition / value→need / ETA / disarm countdown"
- * columns (FE plan §3.2) are deferred — they need the engine to enrich `ArmedDelta`
- * with per-condition evaluation detail (it currently carries only mint/rule/state).
+ * Armed monitor (live app): the generic engine's armed (token, rule) pairs and
+ * open holdings in real time. Armed state is push-only via `strategy_armed_changed`
+ * SSE; positions ride `strategy_position_update`. Session disarm reasons are the
+ * explicit "why it left armed" signal available today.
  */
 export function MonitorPage() {
   const { data: rules = [] } = useGetStrategyRulesQuery();
@@ -43,8 +40,6 @@ export function MonitorPage() {
 
   const rulesById = useMemo(() => new Map(rules.map((r) => [r.id, r.rule_name])), [rules]);
 
-  // Seed / reseed the armed map from the snapshot, preserving the client-observed
-  // arm time for pairs we already know (the snapshot carries no timestamp).
   useEffect(() => {
     if (!snapshot) return;
     setArmed((prev) => {
@@ -57,7 +52,6 @@ export function MonitorPage() {
     });
   }, [snapshot]);
 
-  // Live armed deltas.
   useEffect(() => {
     const h = connectArmedChanged(
       (d) => {
@@ -85,7 +79,6 @@ export function MonitorPage() {
     return () => h.close();
   }, [refetch]);
 
-  // Live position deltas → holding table + entered counter.
   useEffect(() => {
     const h = connectStrategyPositionUpdate((d) => {
       setHolding((prev) => {
@@ -100,7 +93,7 @@ export function MonitorPage() {
             entryPrice: d.entry_price ?? null,
           });
         } else {
-          next.delete(d.position_id); // End / ExitFailed / ExitUnconfirmed
+          next.delete(d.position_id);
         }
         return next;
       });
@@ -108,7 +101,6 @@ export function MonitorPage() {
     return () => h.close();
   }, []);
 
-  // One page-level 1s tick drives the age column (bounded armed set — cheap).
   useEffect(() => {
     const id = setInterval(() => setNow(performance.now()), 1000);
     return () => clearInterval(id);
@@ -132,12 +124,33 @@ export function MonitorPage() {
       searchValue: (r) => ruleName(r.ruleId),
     },
     {
+      key: 'status',
+      label: 'Status',
+      render: () => <Badge variant="info">Waiting for entry</Badge>,
+      searchValue: () => 'waiting',
+    },
+    {
       key: 'age',
       label: 'Age',
       render: (r) => <span className="tabular-nums text-text-dim">{fmtAge(Date.now() - r.armedAt)}</span>,
       searchValue: () => '',
       sortValue: (r) => r.armedAt,
       sortable: true,
+    },
+    {
+      key: 'trade',
+      label: '',
+      width: '64px',
+      render: (r) => (
+        <Link
+          to={`/trade?mint=${encodeURIComponent(r.mint)}`}
+          className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Trade
+        </Link>
+      ),
+      searchValue: () => '',
     },
   ];
 
@@ -168,29 +181,53 @@ export function MonitorPage() {
       render: (r) => <span className="tabular-nums">{r.entryPrice ?? '—'}</span>,
       searchValue: (r) => String(r.entryPrice ?? ''),
     },
+    {
+      key: 'trade',
+      label: '',
+      width: '64px',
+      render: (r) => (
+        <Link
+          to={`/trade?mint=${encodeURIComponent(r.mint)}`}
+          className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Trade
+        </Link>
+      ),
+      searchValue: () => '',
+    },
   ];
 
   const disarmedTotal = Object.values(disarmedToday).reduce((a, b) => a + b, 0);
-  void now; // referenced so the 1s tick re-renders the age column
+  const disarmSub =
+    Object.entries(disarmedToday)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(' · ') || undefined;
+  void now;
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <h1 className="text-lg font-semibold text-text">Live monitor</h1>
-      <div className="flex flex-wrap gap-3">
-        <Stat label="armed" value={armed.size} tone="info" />
-        <Stat label="holding" value={holding.size} tone="success" />
-        <Stat label="entered (session)" value={enteredToday} />
-        <Stat
-          label="disarmed (session)"
-          value={disarmedTotal}
-          sub={Object.entries(disarmedToday)
-            .map(([k, v]) => `${k} ${v}`)
-            .join(' · ')}
-        />
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-baseline gap-3">
+        <h1 className="text-lg font-extrabold text-text">Armed</h1>
+        <span className="text-sm text-text-mid">Rules waiting on entry · open holdings</span>
       </div>
 
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+        <StatTile label="Armed" value={armed.size} tone="primary" />
+        <StatTile label="Holding" value={holding.size} tone="green" />
+        <StatTile label="Entered (session)" value={enteredToday} />
+        <StatTile label="Disarmed (session)" value={disarmedTotal} sub={disarmSub} tone="muted" />
+      </div>
+
+      {disarmedTotal > 0 && (
+        <p className="text-xs text-text-dim">
+          Why left armed this session:{' '}
+          <span className="text-text-mid">{disarmSub}</span>
+        </p>
+      )}
+
       <section className="flex flex-col gap-2">
-        <h2 className="text-[12px] font-semibold uppercase tracking-wide text-text-dim">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-text-dim">
           Armed ({armed.size})
         </h2>
         <DataTable
@@ -205,7 +242,7 @@ export function MonitorPage() {
       </section>
 
       <section className="flex flex-col gap-2">
-        <h2 className="text-[12px] font-semibold uppercase tracking-wide text-text-dim">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-text-dim">
           Holding ({holding.size})
         </h2>
         <DataTable
@@ -216,30 +253,6 @@ export function MonitorPage() {
           emptyMessage="No open positions."
         />
       </section>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  sub,
-  tone,
-}: {
-  label: string;
-  value: number;
-  sub?: string;
-  tone?: 'info' | 'success';
-}) {
-  const dot = tone === 'info' ? 'bg-primary' : tone === 'success' ? 'bg-green' : 'bg-white/30';
-  return (
-    <div className="flex min-w-28 flex-col gap-0.5 rounded-md border border-white/8 bg-white/2 px-3 py-2">
-      <div className="flex items-center gap-1.5">
-        <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-        <span className="text-[11px] uppercase text-text-dim">{label}</span>
-      </div>
-      <span className="text-lg font-semibold tabular-nums text-text">{value}</span>
-      {sub && <span className="text-[10px] text-text-dim/70">{sub}</span>}
     </div>
   );
 }

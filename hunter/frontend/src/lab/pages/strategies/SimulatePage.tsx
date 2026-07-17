@@ -71,7 +71,7 @@ export function SimulatePage() {
   const columns = useMemo(() => buildColumns(runs, fpById), [runs, fpById]);
 
   return (
-    <div className="flex flex-col gap-3 p-4">
+    <div className="flex flex-col gap-3">
       <h1 className="text-lg font-semibold text-text">Simulate</h1>
       <p className="text-[12px] text-text-dim">
         Run a saved rule over the full lake corpus. For unsaved drafts use the dry-run panel

@@ -213,14 +213,33 @@ export function GenericSweepView() {
 
   const runsErr = apiErrorMessage(runsQuery.error, 'Failed to load sweep runs');
   const groupsErr = apiErrorMessage(groupsQuery.error, 'Failed to load groups');
+  // Simple = configure → run → promote from groups. Full unlocks combo/token drill.
+  const [viewMode, setViewMode] = useState<'simple' | 'full'>('simple');
 
   return (
-    <div className="p-4">
+    <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
-        <h2 className="text-base font-bold text-primary">Grouped Sweep · Generic engine</h2>
+        <h1 className="text-lg font-extrabold text-text">Grouped Sweep</h1>
+        <span className="text-sm text-text-mid">Generic engine</span>
         <Badge variant="primary" className="font-mono">
           {runs.length} runs · {groups.length} groups
         </Badge>
+        <div className="ml-auto flex rounded-md border border-white/10 p-0.5">
+          <button
+            type="button"
+            className={`rounded px-2.5 py-1 text-[11px] font-semibold ${viewMode === 'simple' ? 'bg-primary text-black' : 'text-text-dim hover:text-text'}`}
+            onClick={() => setViewMode('simple')}
+          >
+            Simple
+          </button>
+          <button
+            type="button"
+            className={`rounded px-2.5 py-1 text-[11px] font-semibold ${viewMode === 'full' ? 'bg-primary text-black' : 'text-text-dim hover:text-text'}`}
+            onClick={() => setViewMode('full')}
+          >
+            Full drill
+          </button>
+        </div>
       </div>
 
       <Accordion title="Configure sweep" defaultOpen={runs.length === 0}>
@@ -330,7 +349,22 @@ export function GenericSweepView() {
             emptyMessage="No groups cleared the min-tokens threshold for this run."
           />
 
-          {activeGroupId && (
+          {activeGroupId && viewMode === 'simple' && (
+            <div className="mt-4 rounded-md border border-white/8 bg-white/2 px-3 py-3 text-sm text-text-mid">
+              Group selected. Use <span className="text-primary font-semibold">Promote</span> on
+              the row to create a rule, or switch to{' '}
+              <button
+                type="button"
+                className="text-accent underline hover:text-primary"
+                onClick={() => setViewMode('full')}
+              >
+                Full drill
+              </button>{' '}
+              to rank combos and inspect tokens.
+            </div>
+          )}
+
+          {activeGroupId && viewMode === 'full' && (
             <div className="mt-12">
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-bold text-secondary">Combos for group</h3>

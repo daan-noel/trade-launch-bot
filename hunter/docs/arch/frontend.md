@@ -39,7 +39,12 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 - **Per-mode `App.tsx` + `nav.ts`:** static route table + `NavConfig` (`{identity, items[]}`), no
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
-  `Research & Backtesting` / `LAB`, no toggle. The per-app **color** is NOT in the nav config — it's
+  `Research & Backtesting` / `LAB`, no toggle. Live money nav is collapsed to
+  **Positions** (`/positions`, redirects from `/live-trading`) · **Wallet** · **Trade**;
+  Armed lives under Strategies (`/strategies/armed`, redirects from `/strategies/monitor`).
+  Lab flattens single-child groups (Tokens, Trader Analysis are leaf links).
+  Metric panes are not a peer nav item — they live in lab Tokens detail
+  (`/strategies/metric-panes` redirects to `/tokens?mint=`). The per-app **color** is NOT in the nav config — it's
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
 ## Store — split `createApi` (the isolation seam)
@@ -94,33 +99,23 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
 
 ## Pages by mode
 
-- **Shared:** Home (minimal — lab still uses `pages/home/HomePage`), Dashboard, Tokens
-  (live-ingest monitor — `token_created`/`trade_executed` SSE), OtherProfiles, Settings, NotFound.
-- **Live (`@live/pages`):** **Home command center** (`home/LiveHomePage` — routed at the live
-  index over the shared Home; KPI row + `home/` widgets `TopHoldingsWidget`/`LiveTradeFeed`/
-  `StrategyStrip` over `/api/portfolio/{summary,holdings,positions}`), SyncToken, Transactions,
-  MyWallet (**position manager**: `HoldingsSummaryBar` header + cost-basis/PnL columns +
-  `managed_by` bot badge + double-sell confirm interlock; the holdings table is **server-side**
-  via `POST /api/portfolio/holdings/query` + `/summary` (short-TTL scan cache) with a client
-  price-poll overlaying live value/price on the current page; Home widgets still read the full
-  `GET /api/portfolio/holdings`)
-  (+ `InputSyncStatus`, `wallet/`, `transactions/` components; `useTradeStream`,
+- **Shared:** Tokens (live-ingest monitor — `token_created`/`trade_executed` SSE;
+  detail opens in a right **SideDrawer**; advanced filters behind a disclosure;
+  `?mint=` deep-links selection), Profiles, Settings, NotFound.
+- **Live (`@live/pages`):** **Home command center** (`home/LiveHomePage` — KPI tiles
+  deep-link to Wallet / Positions / Rules; widgets `TopHoldingsWidget`/`LiveTradeFeed`/
+  `StrategyStrip` over `/api/portfolio/{summary,holdings,positions}`), SyncToken,
+  MyWallet (**position manager**), **Positions** (`/positions` — cross-strategy real
+  open positions; Trade deep-link per row), **Armed** (`/strategies/armed`), Trade
+  (`?mint=` preload), Rules/Fingerprints
+  (+ `InputSyncStatus`, `wallet/` components; `useTradeStream`,
   `usePositionNotifications`; `syncTokenSlice`).
-- **Lab (`@lab/pages`):** Analysis, SwingDetection, **TraderAnalysis** (paste a wallet →
-  the **standard** full token table — the shared `tokenColumns()`, unchanged, client-side
-  sort/filter/search via `DataTable` — **plus** a synced lazy charts grid below that mirrors
-  the table's current sort/filter/page. The wallet-specific stats (buys / sells / last
-  traded) live in each chart card's header, **not** as table columns, so nothing duplicates
-  the token columns. Each `TokenTradeChart` has the wallet's buys/sells **spotlighted** among
-  the tracked markers; recent-trade-first (backend order, no `defaultSort`);
-  `useGetTraderTokensQuery` → `GET /api/wallets/:wallet/tokens` returns `TraderTokenRow`
-  (full `TokenRecord` + `wallet_{last_trade_at,buy_count,sell_count}`), a PG read since the
-  default 7d window includes today, which the lake lacks. The table→charts sync uses
-  `DataTable`'s `onVisibleRowsChange` callback — fires the memoized on-screen page rows so a
-  sibling view can follow), Rules/Fingerprints/Simulate/Metric-panes authoring, and the
-  generic Grouped Sweep (§ above; `sweep/` + `strategy/` components,
-  `useStreamedSweepResults`, `BackgroundJobsContext`).
-  **Metric panes** (`/strategies/metric-panes` + lab Tokens detail): `LabTokenInspect`
+- **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps +
+  running jobs), Creation Stats, Tokens (detail = chart + metric panes via
+  `LabTokenInspect`), **TraderAnalysis**, Rules/Fingerprints/Simulate/Replay, and the
+  generic Grouped Sweep (Simple = configure→promote; Full drill = combo/token inspect;
+  `sweep/` + `strategy/` components, `useStreamedSweepResults`, `BackgroundJobsContext`).
+  **Metric panes** (lab Tokens detail; old `/strategies/metric-panes` redirects): `LabTokenInspect`
   stacks `TokenTradeChart` above registry-driven `MetricPanes`. Shared wall-clock
   crosshair / visible range (`TokenPriceChart.onCrosshairTimeChange` /
   `onVisibleTimeRangeChange`); selecting a rule auto-loads its metrics/windows,

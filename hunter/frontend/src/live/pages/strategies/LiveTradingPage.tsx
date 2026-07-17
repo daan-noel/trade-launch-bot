@@ -14,12 +14,8 @@ const STRATEGY_LABEL: Record<string, string> = {
 };
 
 /**
- * Live Trading roll-up (Phase 4) — the cross-strategy REAL-money monitor. Reads
- * `GET /api/portfolio/positions` (real-only) and shows a per-strategy summary strip
- * plus one combined open-positions table across tpsl1/tpsl2/swing1.
- *
- * Realized-P&L-over-time and per-strategy win-rate need a closed-position summary
- * aggregate that isn't exposed yet — deferred to a follow-up (see the plan's 4.3).
+ * Positions roll-up — cross-strategy REAL-money open positions.
+ * Reads `GET /api/portfolio/positions` (real-only).
  */
 export function LiveTradingPage() {
   const { data: positions = [], isLoading, isFetching, error } = useGetPortfolioPositionsQuery(true);
@@ -48,8 +44,8 @@ export function LiveTradingPage() {
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
-        <h2 className="text-lg font-extrabold text-text">Live Trading</h2>
-        <span className="text-sm text-text-mid">Real positions across all strategies</span>
+        <h1 className="text-lg font-extrabold text-text">Positions</h1>
+        <span className="text-sm text-text-mid">Open real positions across strategies</span>
       </div>
 
       {errMsg && <InlineAlert variant="error">{errMsg}</InlineAlert>}

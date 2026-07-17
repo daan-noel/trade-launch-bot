@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import {
   CHART_COLORS,
   CHART_GROUP_MODES,
@@ -292,6 +292,7 @@ export function ChartToolbar({
   onShowChainHighlightChange,
   onRangeSelectModeChange,
 }: ChartToolbarProps) {
+  const [showMore, setShowMore] = useState(false);
   const intervalsDisabled = groupMode === 'slot';
   // Memoize so crosshair-move re-renders don't rebuild the formatters per pixel.
   const formatChartPrice = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
@@ -308,6 +309,16 @@ export function ChartToolbar({
   ) : null;
 
   const showStatusBadges = isMigrated != null;
+
+  // Surface "More" as active when any advanced toggle is on.
+  const moreActive =
+    showMore ||
+    trimEmptyBars ||
+    showAthLine ||
+    showMigrationLine ||
+    showSwingOverlay ||
+    showChainHighlight ||
+    rangeSelectMode;
 
   return (
     <div
@@ -354,9 +365,8 @@ export function ChartToolbar({
         </div>
       </div>
 
-      {/* Right: two rows of controls, stacked and right-aligned */}
+      {/* Right: essentials always; overlays behind More */}
       <div className="flex shrink-0 flex-col items-end gap-1.5">
-        {/* Row 1: grouping, interval, style, metric, markers, trim, ATH, migration */}
         <div className="flex flex-wrap items-center gap-2">
           <div
             className="flex rounded-md p-0.5"
@@ -474,143 +484,161 @@ export function ChartToolbar({
             <BuySellCountsIcon />
           </IconToggleButton>
 
-          <IconToggleButton
-            active={trimEmptyBars}
-            onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
-            label="Toggle trimming of empty candles"
-            tooltip="Hide flat candles for intervals with no trades"
-          >
-            <TrimGapsIcon />
-          </IconToggleButton>
-
-          <label
+          <button
+            type="button"
+            onClick={() => setShowMore((v) => !v)}
+            aria-expanded={showMore}
             className={cn(
-              'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
-              !athLineAvailable && 'cursor-not-allowed opacity-40',
+              'rounded-md px-2 py-1 text-[11px] font-semibold transition-colors',
+              moreActive ? 'text-[#0a0a0a]' : 'hover:text-white',
             )}
-            style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-            title={
-              athLineAvailable
-                ? 'Show all-time high price line'
-                : 'No ATH price recorded for this token'
+            style={
+              moreActive
+                ? { backgroundColor: CHART_COLORS.activePill }
+                : { backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }
             }
           >
-            <Checkbox
-              boxSize="sm"
-              checked={showAthLine}
-              disabled={!athLineAvailable}
-              onChange={(e) => onShowAthLineChange(e.target.checked)}
-              className="accent-[#f0b429]"
-            />
-            <span style={showAthLine && athLineAvailable ? { color: CHART_COLORS.athLine } : undefined}>
-              ATH
-            </span>
-          </label>
-
-          <label
-            className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold"
-            style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-            title="Show pump.fun bonding-curve graduation price"
-          >
-            <Checkbox
-              boxSize="sm"
-              checked={showMigrationLine}
-              onChange={(e) => onShowMigrationLineChange(e.target.checked)}
-              className="accent-[#5dade2]"
-            />
-            <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
-              Migration
-            </span>
-          </label>
+            More
+          </button>
         </div>
 
-        {/* Row 2: swing overlay, chain highlight, range select */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div
-            className={cn(
-              'flex items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[11px] font-semibold',
-              !swingOverlayAvailable && 'cursor-not-allowed opacity-40',
-            )}
-            style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-          >
+        {showMore && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <IconToggleButton
+              active={trimEmptyBars}
+              onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
+              label="Toggle trimming of empty candles"
+              tooltip="Hide flat candles for intervals with no trades"
+            >
+              <TrimGapsIcon />
+            </IconToggleButton>
+
             <label
               className={cn(
-                'flex cursor-pointer items-center gap-1.5',
-                !swingOverlayAvailable && 'cursor-not-allowed',
+                'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
+                !athLineAvailable && 'cursor-not-allowed opacity-40',
               )}
+              style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
               title={
-                swingOverlayAvailable
-                  ? 'Show swing detection path on chart'
-                  : 'Run swing detection to overlay results'
+                athLineAvailable
+                  ? 'Show all-time high price line'
+                  : 'No ATH price recorded for this token'
               }
             >
               <Checkbox
                 boxSize="sm"
-                checked={showSwingOverlay}
-                disabled={!swingOverlayAvailable}
-                onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
-                className="accent-[#e879f9]"
+                checked={showAthLine}
+                disabled={!athLineAvailable}
+                onChange={(e) => onShowAthLineChange(e.target.checked)}
+                className="accent-[#f0b429]"
               />
-              <span
-                style={
-                  showSwingOverlay && swingOverlayAvailable
-                    ? { color: CHART_COLORS.swingOverlay }
-                    : undefined
-                }
-              >
-                Swings
+              <span style={showAthLine && athLineAvailable ? { color: CHART_COLORS.athLine } : undefined}>
+                ATH
               </span>
             </label>
-            <Button
-              variant="subtle"
-              size="xs"
-              active={connectSwings}
-              disabled={!swingOverlayAvailable || !showSwingOverlay}
-              className="!min-h-0 shrink-0 border-0 bg-transparent px-1.5 py-0.5 normal-case tracking-normal hover:bg-white/6"
-              title={
-                swingOverlayAvailable
-                  ? connectSwings
-                    ? 'Disconnect swing legs on chart'
-                    : 'Connect sequential swing legs on chart'
-                  : 'Run swing detection to connect swings'
-              }
-              aria-label={
-                swingOverlayAvailable
-                  ? connectSwings
-                    ? 'Disconnect swing legs on chart'
-                    : 'Connect sequential swing legs on chart'
-                  : 'Run swing detection to connect swings'
-              }
-              onClick={() => onConnectSwingsChange(!connectSwings)}
+
+            <label
+              className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold"
+              style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+              title="Show pump.fun bonding-curve graduation price"
             >
-              <ConnectSwingsIcon connected={connectSwings} />
-            </Button>
+              <Checkbox
+                boxSize="sm"
+                checked={showMigrationLine}
+                onChange={(e) => onShowMigrationLineChange(e.target.checked)}
+                className="accent-[#5dade2]"
+              />
+              <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
+                Migration
+              </span>
+            </label>
+
+            <div
+              className={cn(
+                'flex items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[11px] font-semibold',
+                !swingOverlayAvailable && 'cursor-not-allowed opacity-40',
+              )}
+              style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+            >
+              <label
+                className={cn(
+                  'flex cursor-pointer items-center gap-1.5',
+                  !swingOverlayAvailable && 'cursor-not-allowed',
+                )}
+                title={
+                  swingOverlayAvailable
+                    ? 'Show swing detection path on chart'
+                    : 'Run swing detection to overlay results'
+                }
+              >
+                <Checkbox
+                  boxSize="sm"
+                  checked={showSwingOverlay}
+                  disabled={!swingOverlayAvailable}
+                  onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
+                  className="accent-[#e879f9]"
+                />
+                <span
+                  style={
+                    showSwingOverlay && swingOverlayAvailable
+                      ? { color: CHART_COLORS.swingOverlay }
+                      : undefined
+                  }
+                >
+                  Swings
+                </span>
+              </label>
+              <Button
+                variant="subtle"
+                size="xs"
+                active={connectSwings}
+                disabled={!swingOverlayAvailable || !showSwingOverlay}
+                className="!min-h-0 shrink-0 border-0 bg-transparent px-1.5 py-0.5 normal-case tracking-normal hover:bg-white/6"
+                title={
+                  swingOverlayAvailable
+                    ? connectSwings
+                      ? 'Disconnect swing legs on chart'
+                      : 'Connect sequential swing legs on chart'
+                    : 'Run swing detection to connect swings'
+                }
+                aria-label={
+                  swingOverlayAvailable
+                    ? connectSwings
+                      ? 'Disconnect swing legs on chart'
+                      : 'Connect sequential swing legs on chart'
+                    : 'Run swing detection to connect swings'
+                }
+                onClick={() => onConnectSwingsChange(!connectSwings)}
+              >
+                <ConnectSwingsIcon connected={connectSwings} />
+              </Button>
+            </div>
+
+            <IconToggleButton
+              active={showChainHighlight}
+              disabled={!chainHighlightAvailable}
+              activeColor={CHART_COLORS.chainBandLabelBg}
+              onClick={() => onShowChainHighlightChange(!showChainHighlight)}
+              label="Toggle longest chain highlight"
+              tooltip={
+                chainHighlightAvailable
+                  ? 'Longest chain highlight'
+                  : 'Run swing detection to highlight the longest chain'
+              }
+            >
+              <ChainLinkIcon />
+            </IconToggleButton>
+
+            <IconToggleButton
+              active={rangeSelectMode}
+              onClick={() => onRangeSelectModeChange(!rangeSelectMode)}
+              label="Toggle range-select mode"
+              tooltip="Drag to select a time range; hover its label for totals"
+            >
+              <RangeSelectIcon />
+            </IconToggleButton>
           </div>
-
-          <IconToggleButton
-            active={showChainHighlight}
-            disabled={!chainHighlightAvailable}
-            activeColor={CHART_COLORS.chainBandLabelBg}
-            onClick={() => onShowChainHighlightChange(!showChainHighlight)}
-            label="Toggle longest chain highlight"
-            tooltip={
-              chainHighlightAvailable
-                ? 'Longest chain highlight'
-                : 'Run swing detection to highlight the longest chain'
-            }
-          >
-            <ChainLinkIcon />
-          </IconToggleButton>
-
-          <IconToggleButton
-            active={rangeSelectMode}
-            onClick={() => onRangeSelectModeChange(!rangeSelectMode)}
-            label="Toggle range-select mode"
-            tooltip="Drag to select a time range; hover its label for totals"
-          >
-            <RangeSelectIcon />
-          </IconToggleButton>
-        </div>
+        )}
       </div>
     </div>
   );

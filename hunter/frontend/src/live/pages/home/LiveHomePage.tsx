@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { StatTile } from 'components/ui/StatTile';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
@@ -21,10 +22,8 @@ function pnlTone(v: number): 'green' | 'red' | 'default' {
 }
 
 /**
- * Home "Command Center" (live build) — the single pane of glass. Mostly
- * aggregation over the Phase-1 portfolio endpoints. Kept glanceable and cheap: the
- * summary is fetched on mount (no aggressive poll — it runs a wallet scan
- * server-side) and refreshes when a trade invalidates the WalletHoldings tag.
+ * Home "Command Center" (live build) — the single pane of glass. KPI tiles deep-link
+ * to the owning page so glance → act stays one click.
  */
 export function LiveHomePage() {
   const { data: summary } = useGetPortfolioSummaryQuery();
@@ -39,8 +38,6 @@ export function LiveHomePage() {
       ? (summary.total_unrealized_pnl_sol / summary.total_cost_basis_sol) * 100
       : null;
   const realizedToday = summary?.realized_pnl_today_sol ?? null;
-  // usdRate is here for future USD/SOL toggling of the tiles; SOL is the native
-  // unit for these portfolio figures so we show ◎ regardless.
   void usdRate;
 
   return (
@@ -51,32 +48,41 @@ export function LiveHomePage() {
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
-        <StatTile
-          label="Wallet Value"
-          value={valueSol != null ? `◎${formatCompact(valueSol, 2)}` : '—'}
-          sub={valueUsd != null ? formatUsd(valueUsd) : undefined}
-        />
-        <StatTile
-          label="Unrealized PnL"
-          value={pnlSol != null ? `◎${signed(pnlSol, 3)}` : '—'}
-          sub={pnlPct != null ? `${signed(pnlPct, 1)}%` : undefined}
-          tone={pnlSol != null ? pnlTone(pnlSol) : 'default'}
-        />
+        <Link to="/wallet" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+          <StatTile
+            label="Wallet Value"
+            value={valueSol != null ? `◎${formatCompact(valueSol, 2)}` : '—'}
+            sub={valueUsd != null ? formatUsd(valueUsd) : undefined}
+          />
+        </Link>
+        <Link to="/wallet" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+          <StatTile
+            label="Unrealized PnL"
+            value={pnlSol != null ? `◎${signed(pnlSol, 3)}` : '—'}
+            sub={pnlPct != null ? `${signed(pnlPct, 1)}%` : undefined}
+            tone={pnlSol != null ? pnlTone(pnlSol) : 'default'}
+          />
+        </Link>
         <StatTile
           label="Realized Today"
           value={realizedToday != null ? `◎${signed(realizedToday, 3)}` : '—'}
           tone={realizedToday != null ? pnlTone(realizedToday) : 'default'}
         />
-        <StatTile
-          label="Open Positions"
-          value={summary?.open_position_count ?? '—'}
-          sub="real"
-        />
-        <StatTile label="Active Rules" value={summary?.active_rules ?? '—'} sub="real" />
+        <Link to="/positions" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+          <StatTile
+            label="Open Positions"
+            value={summary?.open_position_count ?? '—'}
+            sub="real"
+          />
+        </Link>
+        <Link to="/strategies/rules" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+          <StatTile label="Active Rules" value={summary?.active_rules ?? '—'} sub="real" />
+        </Link>
         <StatTile
           label="Live Mode"
           value={live == null ? '—' : live ? 'ON' : 'OFF'}
           tone={live ? 'green' : 'muted'}
+          sub="header kill-switch"
         />
       </div>
 

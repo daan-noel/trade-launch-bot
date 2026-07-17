@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { ColumnDef } from 'components/table/types';
 import type { WalletHolding } from 'types';
 import { cn } from 'lib/cn';
@@ -294,7 +295,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
     {
       key: 'actions',
       label: 'Actions',
-      width: '160px',
+      width: '210px',
       sortable: false,
       render: (r) => {
         const isSelling = actions.sellingMint === r.mint_address;
@@ -315,6 +316,12 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
             >
               {isSelling ? 'Selling…' : 'Sell All'}
             </button>
+            <Link
+              to={`/trade?mint=${encodeURIComponent(r.mint_address)}`}
+              className="rounded border border-white/15 bg-white/4 px-2 py-0.5 text-[11px] font-semibold text-accent hover:border-primary/40 hover:text-primary"
+            >
+              Trade
+            </Link>
           </div>
         );
       },

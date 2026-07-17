@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useDispatch } from 'react-redux';
+import { useSearchParams } from 'react-router-dom';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { FilterPanel } from 'components/tokens/FilterPanel';
@@ -16,6 +17,7 @@ import {
 import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
+import { SideDrawer } from 'components/ui/SideDrawer';
 import { StatusButton } from 'components/ui/StatusButton';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTokenCreatedStream, connectTradeStream } from 'services/sse';
@@ -67,6 +69,9 @@ export function TokensPage({
   renderDetailChart?: (args: TokensPageDetailChartArgs) => ReactNode;
 } = {}) {
   const dispatch = useDispatch<AppDispatch>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mintFromUrl = searchParams.get('mint');
+
   // Built once and held stable: the rate-dependent cells read the unit/USD-rate
   // from context themselves (see priceCells), so a rate tick no longer rebuilds
   // every column def and re-renders the whole grid — only the price cells update.
@@ -74,9 +79,9 @@ export function TokensPage({
 
   const [live, setLive] = useState(loadLive);
   const [trackedOnly, setTrackedOnly] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [filters, setFilters] = useState<TokenFilters>(loadStoredTokenFilters);
-  const [selectedMint, setSelectedMint] = useState<string | null>(null);
+  const [selectedMint, setSelectedMint] = useState<string | null>(mintFromUrl);
   // View-state emitted by the DataTable (page/sort/search/col-filters). The
   // backend does the filtering/sorting/paging; we just forward it + the global
   // `filters` panel as query args.
@@ -85,6 +90,29 @@ export function TokensPage({
   // Selected project timezone — sent so datetime-range filters normalize from
   // picker wall-clock to the exact UTC instant at the query boundary.
   const { timezone } = useTimezone();
+
+  // Sync `?mint=` ↔ selection (deep link from Metric panes redirect / external).
+  useEffect(() => {
+    if (mintFromUrl && mintFromUrl !== selectedMint) {
+      setSelectedMint(mintFromUrl);
+    }
+  }, [mintFromUrl]); // eslint-disable-line react-hooks/exhaustive-deps -- seed from URL only
+
+  const selectMint = useCallback(
+    (mint: string | null) => {
+      setSelectedMint(mint);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (mint) next.set('mint', mint);
+          else next.delete('mint');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   // The query args, shared by the live query and the adjacent-page prefetch
   // below so both hit identical cache keys.
@@ -273,21 +301,16 @@ export function TokensPage({
     };
   }, [live]);
 
-  useEffect(() => {
-    if (!selectedMint) return;
-    const t = setTimeout(() => {
-      document.getElementById(`detail-${selectedMint}`)?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest',
-      });
-    }, 300);
-    return () => clearTimeout(t);
-  }, [selectedMint]);
+  const drawerTitle = detail?.symbol
+    ? `${detail.symbol}`
+    : selectedMint
+      ? `${selectedMint.slice(0, 8)}…`
+      : 'Token';
 
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-extrabold text-text">Tokens</h2>
+        <h1 className="text-lg font-extrabold text-text">Tokens</h1>
         <Badge
           variant={trackedOnly ? 'neutral' : 'primary'}
           className="cursor-pointer font-mono"
@@ -317,14 +340,14 @@ export function TokensPage({
         <Button
           variant="subtle"
           size="sm"
-          active={showFilters || filterCount > 0}
-          onClick={() => setShowFilters((v) => !v)}
+          active={showAdvancedFilters || filterCount > 0}
+          onClick={() => setShowAdvancedFilters((v) => !v)}
         >
-          {filterCount > 0 ? `Global Filters (${filterCount})` : 'Global Filters'}
+          {filterCount > 0 ? `Advanced filters (${filterCount})` : 'Advanced filters'}
         </Button>
       </div>
 
-      {showFilters && (
+      {showAdvancedFilters && (
         <FilterPanel
           filters={filters}
           onApply={(next) => {
@@ -348,7 +371,7 @@ export function TokensPage({
           rowKey={tokenRowKey}
           mintSetFilter
           selectedKey={selectedMint}
-          onSelect={setSelectedMint}
+          onSelect={selectMint}
           serverSide
           serverTotal={total}
           onQueryChange={setTableQuery}
@@ -363,27 +386,28 @@ export function TokensPage({
         />
       )}
 
-      {/* Detail section lives BELOW the table, outside its horizontal scroll box,
-          so the chart sizes to the page width and never inherits the table's
-          x-scroll. Selecting a row highlights it and fills this panel. */}
-      {selectedMint && (
-        <div
-          id={`detail-${selectedMint}`}
-          className="mt-3.5 flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3"
-        >
-          <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
-          {renderDetailChart ? (
-            renderDetailChart({
-              detail: detail ?? null,
-              loading: detailLoading,
-              error: detailError,
-              mint: selectedMint,
-            })
-          ) : (
-            <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
-          )}
-        </div>
-      )}
+      <SideDrawer
+        open={!!selectedMint}
+        onClose={() => selectMint(null)}
+        title={drawerTitle}
+        widthClass="w-[min(720px,100vw)]"
+      >
+        {selectedMint && (
+          <div className="flex flex-col gap-2.5">
+            <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={detailError} />
+            {renderDetailChart ? (
+              renderDetailChart({
+                detail: detail ?? null,
+                loading: detailLoading,
+                error: detailError,
+                mint: selectedMint,
+              })
+            ) : (
+              <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
+            )}
+          </div>
+        )}
+      </SideDrawer>
     </div>
   );
 }

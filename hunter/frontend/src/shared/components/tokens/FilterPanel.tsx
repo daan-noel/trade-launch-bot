@@ -33,7 +33,7 @@ function Field({
 }) {
   return (
     <div className={cn('flex flex-col gap-1', className)}>
-      <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+      <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/80">
         {label}
         {hint && <span className="font-normal normal-case tracking-normal text-text-dim/45">{hint}</span>}
       </span>
@@ -196,7 +196,7 @@ const TriToggle = memo(function TriToggle({
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
-      <div className="mb-2 flex items-center gap-2 text-[8px] font-bold uppercase tracking-widest text-text-dim/60">
+      <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-text-dim/60">
         {title}
         <span className="h-px flex-1 bg-white/6" />
       </div>
@@ -238,7 +238,7 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
       <div className="mb-3 flex items-center justify-between gap-3 border-b border-white/6 pb-2.5">
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">
-            Global Filters
+            Advanced filters
           </span>
           {draftCount > 0 && (
             <span className="rounded border border-primary/30 bg-primary/12 px-1.5 py-0.5 font-mono text-[10px] font-bold text-primary">

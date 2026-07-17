@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { Button } from 'components/ui/Button';
@@ -28,14 +29,15 @@ interface LogEntry {
 }
 
 /**
- * Dedicated Trade page (Phase 5.1–5.3): enter a mint → live detail + chart preview,
- * then Buy (SOL + slippage) or Sell (full balance). A bot-managed interlock warns
- * before a manual action that could race a live strategy's own exit. Partial sells
- * (5.4) are deferred — Sell here still sells the full balance.
+ * Dedicated Trade page: enter a mint (or `?mint=`) → live detail + chart,
+ * then Buy (SOL + slippage) or Sell (full balance).
  */
 export function TradePage() {
-  const [mintInput, setMintInput] = useState('');
-  const [loadedMint, setLoadedMint] = useState('');
+  const [searchParams] = useSearchParams();
+  const mintParam = searchParams.get('mint') ?? '';
+
+  const [mintInput, setMintInput] = useState(mintParam);
+  const [loadedMint, setLoadedMint] = useState(() => (MINT_RE.test(mintParam) ? mintParam : ''));
   const [buySol, setBuySol] = useState('0.001');
   const [buySlip, setBuySlip] = useState('');
   const [sellSlip, setSellSlip] = useState('');
@@ -44,6 +46,13 @@ export function TradePage() {
   const [confirmSell, setConfirmSell] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const logSeq = useRef(0);
+
+  // Deep-link: Positions / Armed / Wallet → `/trade?mint=…`
+  useEffect(() => {
+    if (!mintParam || !MINT_RE.test(mintParam)) return;
+    setMintInput(mintParam);
+    setLoadedMint(mintParam);
+  }, [mintParam]);
 
   const {
     data: detail,
@@ -142,7 +151,7 @@ export function TradePage() {
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
-        <h2 className="text-lg font-extrabold text-text">Trade</h2>
+        <h1 className="text-lg font-extrabold text-text">Trade</h1>
         <span className="text-sm text-text-mid">Manual buy / sell by mint</span>
       </div>
 

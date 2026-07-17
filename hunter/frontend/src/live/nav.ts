@@ -2,8 +2,9 @@ import type { NavConfig } from 'components/layout/navTypes';
 
 /**
  * Live (LIVE box) nav. Teal primary (base theme) + the live-mode kill switch
- * (wired in the layout's header slot). Tokens stays prominent — it's the
- * live-ingest monitor. The `LIVE` badge pulses as a "this is armed" cue.
+ * (wired in the layout's header slot). Money surfaces are collapsed to
+ * Positions / Wallet / Trade; strategy ops live under Strategies.
+ * The `LIVE` badge pulses as a "this is armed" cue.
  */
 export const liveNav: NavConfig = {
   identity: { subtitle: 'Live Trading', badge: 'LIVE', glyph: '◈', pulse: true },
@@ -23,14 +24,14 @@ export const liveNav: NavConfig = {
       label: 'Strategies',
       basePath: '/strategies',
       items: [
-        { to: '/strategies/monitor', label: 'Live monitor' },
+        { to: '/strategies/armed', label: 'Armed' },
         { to: '/strategies/rules', label: 'Rules' },
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
       ],
     },
+    { kind: 'item', to: '/positions', label: 'Positions' },
+    { kind: 'item', to: '/wallet', label: 'Wallet' },
     { kind: 'item', to: '/trade', label: 'Trade' },
-    { kind: 'item', to: '/live-trading', label: 'Live Trading' },
-    { kind: 'item', to: '/wallet', label: 'My Wallet' },
     { kind: 'item', to: '/profiles', label: 'Profiles' },
     { kind: 'item', to: '/settings', label: 'Settings' },
   ],

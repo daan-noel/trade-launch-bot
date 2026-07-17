@@ -421,7 +421,7 @@ export function MyWalletPage() {
   return (
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-extrabold text-text">Wallet Holdings</h2>
+        <h1 className="text-lg font-extrabold text-text">Wallet</h1>
         <Badge variant="primary" className="font-mono">
           {total} tokens
         </Badge>

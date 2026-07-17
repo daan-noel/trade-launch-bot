@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { ColumnDef } from 'components/table/types';
 import type { OpenStrategyPosition } from 'types';
 import type { BadgeVariant } from 'components/ui/Badge';
@@ -26,13 +27,7 @@ function statusVariant(status: string): BadgeVariant {
   }
 }
 
-/** Columns for the cross-strategy open-positions monitor. Lean (the positions
- *  endpoint returns raw strategy positions with no token enrichment). The entry
- *  leg is built by the shared `legColumns` builder — the same one that emits the
- *  entry columns in the TPSL/Swing Positions and Sim tables — so the leg's
- *  Price/Size/Time cells stay identical across every position table. This record
- *  carries only an entry leg (no target/exit, no per-fill token count or tx), and
- *  `entry_sol` is a real SOL field rather than a derived price × tokens. */
+/** Columns for the cross-strategy open-positions monitor. */
 export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
   return [
     {
@@ -76,5 +71,20 @@ export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
         width: { price: '120px', size: '110px', time: '120px' },
       },
     ),
+    {
+      key: 'trade',
+      label: '',
+      width: '64px',
+      render: (r) => (
+        <Link
+          to={`/trade?mint=${encodeURIComponent(r.mint_address)}`}
+          className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Trade
+        </Link>
+      ),
+      searchValue: () => '',
+    },
   ];
 }

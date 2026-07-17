@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
@@ -29,6 +29,12 @@ function NotificationMount() {
   return null;
 }
 
+/** Preserve query string when redirecting renamed routes. */
+function RedirectPreserve({ to }: { to: string }) {
+  const { search } = useLocation();
+  return <Navigate to={`${to}${search}`} replace />;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -48,11 +54,13 @@ export default function App() {
                 <Route index element={<HomePage />} />
                 <Route path="tokens" element={<TokensPage />} />
                 <Route path="token/sync" element={<SyncTokenPage />} />
-                <Route path="strategies/monitor" element={<MonitorPage />} />
+                <Route path="strategies/armed" element={<MonitorPage />} />
+                <Route path="strategies/monitor" element={<RedirectPreserve to="/strategies/armed" />} />
                 <Route path="strategies/rules" element={<RulesPage />} />
                 <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
+                <Route path="positions" element={<LiveTradingPage />} />
+                <Route path="live-trading" element={<RedirectPreserve to="/positions" />} />
                 <Route path="trade" element={<TradePage />} />
-                <Route path="live-trading" element={<LiveTradingPage />} />
                 <Route path="wallet" element={<MyWalletPage />} />
                 <Route path="profiles" element={<ProfilesPage />} />
                 <Route path="settings" element={<SettingsPage />} />
