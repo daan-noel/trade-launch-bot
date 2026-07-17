@@ -1,26 +1,16 @@
 // Records + request shapes for the GROUPED param-sweep endpoints
-// (`/api/strategies/sweeps[...]`). Generic across strategies (the `strategy_id`
-// resolves the per-strategy tables on the backend); the drill-in combo rows
-// reuse the flat `SweepResultRecord` shape, so the existing `buildSweepColumns`
-// renders them unchanged.
+// (`/api/strategies/sweeps[...]`). One generic engine (`strategy_id="generic"`)
+// drives these now; the swept `params` per combo is a `RuleParams` blob (rendered
+// by `genericSweepColumns`), and the axes are the registry-driven `AxisSpec[]`
+// (`genericAxes.ts`) — the old per-strategy static axis grids + fingerprint-blob
+// serializers were removed with the legacy sweep pages (redesign FE5.4).
 
 import type { SweepResultRecord } from './types';
-import type { RuleParamsBlob, Strategy } from 'lib/params';
-// swing1 axis metadata + the generic `AxisDef`/`AxisSubgroup` shapes now live in
-// `@shared` so the live swing1 rule page can import them (a `@live` page can't
-// import `@lab`). Re-exported below so existing `@lab` imports keep working.
-import type { AxisDef, Swing1AxesSpec } from '@shared/lib/swing1Axes';
-export type { AxisDef, AxisSubgroup, Swing1AxesSpec } from '@shared/lib/swing1Axes';
-export { SWING1_AXES, SWING1_SUBGROUPS, groupAxesBySubgroup } from '@shared/lib/swing1Axes';
 
 // --- grouping fields --------------------------------------------------------
 
 /** The selectable fingerprint fields, matching the backend `GroupField` serde
  *  tags (snake_case). Selection order is the compound-key order. */
-// Note: `token_program_id` (effectively constant on pump.fun → one group) is a
-// poor grouping key, so it's deliberately not offered here. `creator_wallet` was
-// removed from the backend `GroupField` enum entirely — creators rotate wallets,
-// so a creator key is un-trackable and only ever yields singleton groups.
 export const GROUP_FIELDS = [
   'cu_limit',
   'cu_price',
@@ -56,9 +46,8 @@ export const SOL_BUCKET_WIDTH = 0.1;
 
 /** Fields the backend groups into `SOL_BUCKET_WIDTH`-wide **ranges** (group chips
  *  read as `"lo–hi"`, e.g. `"1.0–1.1"`) instead of exact values — they are continuous
- *  SOL amounts, so exact grouping would make every token its own group. Every other
- *  field groups on its exact value. Mirrors the binned arms of
- *  `grouping::render_field` / `creation_stats_repo::group_field_sql`. */
+ *  SOL amounts. Every other field groups on its exact value. Mirrors the binned arms
+ *  of `grouping::render_field` / `creation_stats_repo::group_field_sql`. */
 export const BUCKETED_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField>([
   'initial_buy_sol',
   'max_cost_lamports',
@@ -66,152 +55,6 @@ export const BUCKETED_GROUP_FIELDS: ReadonlySet<GroupField> = new Set<GroupField
   'first_slot_buy_sol',
   'first_slot_sell_sol',
 ]);
-
-// --- fingerprint → rule blob (copy a group into the rules page) -------------
-
-/** GroupField → the rule's fingerprint column it pins. Fields with no rule
- *  column (`is_cashback_enabled` — no fingerprint gate exists for it) are absent
- *  and skipped when serializing. Mirrors the tpsl1/tpsl2/swing1 spec fingerprint
- *  columns (`p_token_*`). */
-export const GROUP_FIELD_TO_COLUMN: Partial<Record<GroupField, string>> = {
-  cu_limit: 'p_token_cu_limit',
-  cu_price: 'p_token_cu_price',
-  max_cost_lamports: 'p_token_max_sol_cost',
-  spendable_lamports_in: 'p_token_spendable_sol_in',
-  initial_buy_sol: 'p_token_initial_buy_sol',
-  first_slot_buy_sol: 'p_token_first_slot_buy_sol',
-  first_slot_sell_sol: 'p_token_first_slot_sell_sol',
-  ix_labels: 'p_token_ix_labels',
-};
-
-/** Backend `grouping::MISSING` sentinel — the group_key value for a token that
- *  lacked the field. A rule can't express "field absent" via a fingerprint gate
- *  (blank = match any), so such fields are skipped. */
-const MISSING_SENTINEL = '∅';
-
-/**
- * Serialize a grouped-sweep group's fingerprint key into a rule-params blob —
- * the same clipboard format the rule form's "Paste params" section consumes, so
- * a group can be copied straight into a rule's Token Fingerprint. Discrete fields
- * (CU limit/price) copy their exact value; the binned SOL fields copy the bucket's
- * lower edge plus the shared `bucket_width_sol`, so the rule matches the same
- * bucket the group was formed on (`grouping::same_bucket`); `ix_labels` splits its
- * `" | "`-joined chip back into the array. `∅` / column-less fields are omitted.
- */
-export function serializeGroupFingerprint(
-  strategy: Strategy,
-  group: GroupedSweepGroupRecord,
-  // The run's bucket width — the rule must match at the SAME width the group was
-  // partitioned by, else its live matcher (`grouping::same_bucket`) buckets tokens
-  // differently than the sweep did. Legacy runs (null) fall back to the default.
-  bucketWidthSol: number = SOL_BUCKET_WIDTH,
-): RuleParamsBlob {
-  const params: Record<string, unknown> = {};
-  let hasBucketed = false;
-  for (const [field, raw] of Object.entries(group.group_key) as [GroupField, string][]) {
-    const col = GROUP_FIELD_TO_COLUMN[field];
-    if (!col || raw === MISSING_SENTINEL) continue;
-    if (field === 'ix_labels') {
-      params[col] = raw.split(' | ').map((s) => s.trim()).filter(Boolean);
-    } else if (BUCKETED_GROUP_FIELDS.has(field)) {
-      // Chip reads as a `"lo–hi"` SOL range; parseFloat stops at the dash → lo.
-      const lo = parseFloat(raw);
-      if (!Number.isNaN(lo)) {
-        params[col] = lo;
-        hasBucketed = true;
-      }
-    } else {
-      const n = Number(raw);
-      if (!Number.isNaN(n)) params[col] = n;
-    }
-  }
-  // Bucket width only matters when a binned SOL field is present.
-  if (hasBucketed) params.bucket_width_sol = bucketWidthSol;
-  return { strategy, version: 1, params };
-}
-
-/** JSON text of {@link serializeGroupFingerprint}, for the group ⎘ copy button. */
-export function serializeGroupFingerprintJson(
-  strategy: Strategy,
-  group: GroupedSweepGroupRecord,
-  bucketWidthSol: number = SOL_BUCKET_WIDTH,
-): string {
-  return JSON.stringify(serializeGroupFingerprint(strategy, group, bucketWidthSol), null, 2);
-}
-
-// --- TPSL2 editable axes ----------------------------------------------------
-
-/** The page-editable param grid for TPSL2 — one optional candidate list per
- *  swept knob. `null` inside a nullable axis is that knob's "disabled" option.
- *  Mirrors the backend `AxesSpec`. */
-export interface Tpsl2AxesSpec {
-  take_profit?: number[];
-  stop_loss?: number[];
-  trailing_stop_pct?: (number | null)[];
-  time_stop_secs?: (number | null)[];
-  stall_secs?: (number | null)[];
-  liquidity_drop_pct?: (number | null)[];
-  entry_min_age_secs?: (number | null)[];
-  entry_max_age_secs?: (number | null)[];
-  entry_min_alive_sol?: (number | null)[];
-  entry_min_net_buy_sol?: (number | null)[];
-  entry_pullback_pct?: (number | null)[];
-  entry_higher_low_secs?: (number | null)[];
-  entry_min_liquidity_sol?: (number | null)[];
-}
-
-/** The page-editable param grid for TPSL1 — the exit ladder only (no scalp
- *  entry gates). Mirrors the backend tpsl1 `AxesSpec`. */
-export interface Tpsl1AxesSpec {
-  take_profit?: number[];
-  stop_loss?: number[];
-  trailing_stop_pct?: (number | null)[];
-  time_stop_secs?: (number | null)[];
-  stall_secs?: (number | null)[];
-  liquidity_drop_pct?: (number | null)[];
-}
-
-// `AxisDef` / `AxisSubgroup` are defined in `@shared/lib/swing1Axes` and
-// re-exported at the top of this file — the TPSL axis lists below consume them.
-
-// Order + grouping mirror the TPSL2 rule modal field-by-field (Entry Gates ·
-// Scalp, then Exit Gates), so the sweep param grid reads the same as the modal.
-// The high-leverage knobs ship a real candidate grid; every other knob defaults
-// to `[null]` ("off"/unbounded) so it doesn't expand the grid until you type
-// values for it — matching the backend `Tpsl2Axes::default`. A blank box → that
-// knob stays unbounded (disabled).
-export const TPSL2_AXES: AxisDef[] = [
-  // Entry gates · scalp — when to buy (matches the modal's Entry section order).
-  { key: 'entry_min_age_secs', label: 'Entry min age (s)', group: 'entry', nullable: true, default: [10, 30] },
-  { key: 'entry_max_age_secs', label: 'Entry max age (s)', group: 'entry', nullable: true, default: [null] },
-  { key: 'entry_min_alive_sol', label: 'Entry min alive (SOL)', group: 'entry', nullable: true, default: [null] },
-  { key: 'entry_min_net_buy_sol', label: 'Entry min net buy (SOL)', group: 'entry', nullable: true, default: [null] },
-  { key: 'entry_min_liquidity_sol', label: 'Entry min liq (SOL)', group: 'entry', nullable: true, default: [null, 5] },
-  { key: 'entry_pullback_pct', label: 'Entry pullback %', group: 'entry', nullable: true, default: [null, 10] },
-  { key: 'entry_higher_low_secs', label: 'Entry higher-low (s)', group: 'entry', nullable: true, default: [null] },
-  // Exit gates — when to sell (matches the modal's Exit section order).
-  { key: 'take_profit', label: 'Take profit %', group: 'exit', nullable: false, default: [50, 100, 200] },
-  { key: 'stop_loss', label: 'Stop loss %', group: 'exit', nullable: false, default: [30, 50] },
-  { key: 'trailing_stop_pct', label: 'Trailing stop %', group: 'exit', nullable: true, default: [null, 20, 35] },
-  { key: 'time_stop_secs', label: 'Time stop (s)', group: 'exit', nullable: true, default: [null, 120, 300] },
-  { key: 'stall_secs', label: 'Stall (s)', group: 'exit', nullable: true, default: [null, 30, 60] },
-  { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', group: 'exit', nullable: true, default: [null] },
-];
-
-// --- TPSL1 editable axes ----------------------------------------------------
-
-// TPSL1 is the token-creation-filter strategy: its only per-trade swept knobs
-// are the exit ladder (TP/SL lead, then the optional trailing/time/stall/liquidity
-// exits). It has NO scalp entry gates, so this list is the TPSL2 exit block.
-// Mirrors the backend `tpsl1::Tpsl1Axes::default`.
-export const TPSL1_AXES: AxisDef[] = [
-  { key: 'take_profit', label: 'Take profit %', group: 'exit', nullable: false, default: [50, 100, 200] },
-  { key: 'stop_loss', label: 'Stop loss %', group: 'exit', nullable: false, default: [30, 50] },
-  { key: 'trailing_stop_pct', label: 'Trailing stop %', group: 'exit', nullable: true, default: [null, 20, 35] },
-  { key: 'time_stop_secs', label: 'Time stop (s)', group: 'exit', nullable: true, default: [null, 120, 300] },
-  { key: 'stall_secs', label: 'Stall (s)', group: 'exit', nullable: true, default: [null, 30, 60] },
-  { key: 'liquidity_drop_pct', label: 'Liq-drop exit %', group: 'exit', nullable: true, default: [null] },
-];
 
 // --- run / group / result records -------------------------------------------
 
@@ -225,7 +68,7 @@ export interface GroupedSweepRunRecord {
   curve_only: boolean;
   /** The grouping fields, in selection order. */
   grouping_spec: GroupField[];
-  /** The resolved param axes the run used. */
+  /** The resolved param axes the run used (`{ axes: AxisSpec[] }` for generic). */
   axes_spec: Record<string, unknown>;
   min_tokens: number;
   token_count: number;
@@ -233,33 +76,24 @@ export interface GroupedSweepRunRecord {
   combo_count: number;
   corpus_hash: string | null;
   created_at: string;
-  /** Lifecycle: `running` (in flight), `completed` (full sweep), or `cancelled`
-   *  (cancelled / crash-recovered → only `groups_done` of `group_count` groups
-   *  present). A `cancelled` run is honestly partial — render it with a banner so
-   *  it's never mistaken for a complete sweep. */
+  /** Lifecycle: `running` | `completed` | `cancelled` (honestly partial). */
   status: 'running' | 'completed' | 'cancelled';
   /** Groups persisted so far; equals `group_count` for a `completed` run. */
   groups_done: number;
-  /** The exact-set instruction-label corpus filter the run used (the JSON array
-   *  the form submitted), or `null` when unfiltered / grouped by `ix_labels`. */
+  /** The exact-set instruction-label corpus filter the run used, or `null`. */
   ix_labels_filter: string[] | null;
-  /** Per-field value filters the corpus was pinned to (`{"cu_price":[1000],…}`),
-   *  or `null` when none. Values are numbers or booleans (cashback). */
+  /** Per-field value filters the corpus was pinned to, or `null` when none. */
   field_filters: Record<string, (number | boolean)[]> | null;
-  /** The per-run token cap submitted (distinct from realized `token_count`);
-   *  `null` for legacy runs. */
+  /** The per-run token cap submitted; `null` for legacy runs. */
   token_cap: number | null;
-  /** The per-group combo-cap override submitted (distinct from realized
-   *  `combo_count`); `null` ⇒ backend default. */
+  /** The per-group combo-cap override submitted; `null` ⇒ backend default. */
   max_combos: number | null;
   /** Optional user-given name; `null` = unnamed (UI falls back to timestamp). */
   label: string | null;
-  /** Notional (SOL) each simulated round-trip was priced at; `null` on legacy
-   *  runs (backend defaulted to 1.0 SOL). */
+  /** Notional (SOL) each simulated round-trip was priced at; `null` on legacy runs. */
   buy_amount_sol: number | null;
   /** Bucket width (SOL) the continuous SOL group fields were binned at — the width
-   *  a promoted rule's matcher must use so it matches the same bucket the group was
-   *  formed on. `null` on legacy runs (backend defaulted to 0.1). */
+   *  a promoted rule's matcher must use so it matches the same bucket. `null` legacy. */
   bucket_width_sol: number | null;
 }
 
@@ -267,22 +101,16 @@ export interface GroupedSweepRunRecord {
 export interface GroupedSweepGroupRecord {
   id: string;
   group_index: number;
-  /** `{ "creator_wallet": "4f3a…", "max_cost_lamports": "12345" }`; `{}` = the ALL group. */
+  /** `{ "cu_price": "1000", "max_cost_lamports": "1.0–1.1" }`; `{}` = the ALL group. */
   group_key: Record<string, string>;
   token_count: number;
   /** The best combo's `n_fired` — sample size behind the headline pick. */
   fired_count: number;
   best_combo_id: number;
-  /** Robust realized score (`μ−Z·σ/√n` over closed trades) of the winning combo
-   *  — the headline ranking metric; `null` when it has < 2 closed trades. */
+  /** Robust realized score of the winning combo; `null` when < 2 closed trades. */
   best_score: number | null;
   best_expectancy_sol: number;
-  // The winning combo's full stat line (same numbers the drill-in "Combos for
-  // group" table shows for the crowned combo), so the group row reads as a full
-  // readout. Names mirror `SweepResultRecord` with a `best_` prefix.
-  /** Winning combo's win rate (fraction 0..1). */
   best_win_rate: number;
-  /** Winning combo's realized total PnL (SOL) — the group table's default sort. */
   best_total_pnl_sol: number;
   /** Winning combo's profit factor; `null` = no losing trades (UI shows ∞). */
   best_profit_factor: number | null;
@@ -292,7 +120,8 @@ export interface GroupedSweepGroupRecord {
   best_std_pnl_pct: number;
   best_avg_holding_secs: number;
   best_median_holding_secs: number;
-  best_params: Record<string, number | null>;
+  /** The winning combo's params — a `RuleParams` blob for the generic engine. */
+  best_params: Record<string, unknown>;
 }
 
 /** Drill-in combo rows reuse the flat sweep-result shape (same metric set). */
@@ -306,25 +135,16 @@ export interface ComboTokenResult {
   pnl_sol: number;
   pnl_pct: number;
   holding_secs: number;
-  /** `"TakeProfit"` | `"StopLoss"` | `"TrailingStop"` | `"Stall"` |
-   *  `"TimeStop"` | `"LiquidityExit"` | `"NextKill"` | `"Dead"` | `"Open"` |
-   *  `"NoEntry"` */
+  /** `"TakeProfit"` | `"StopLoss"` | `"Metrics"` | `"Dead"` | `"Open"` | `"NoEntry"`. */
   exit: string;
-  // Simulation fill details
   entry_time: string | null;
   entry_price: number | null;
-  /** Real base58 tx signature of the entry fill, resolved server-side from the
-   *  trades table by (mint, slot, buy). Null when not fired or unresolved. */
+  /** Real base58 tx signature of the entry fill. Null when not fired / unresolved. */
   entry_tx: string | null;
   exit_time: string | null;
   exit_price: number | null;
-  /** Real base58 tx signature of the exit fill (sell side). Null when open,
-   *  not fired, or unresolved. */
+  /** Real base58 tx signature of the exit fill. Null when open / not fired. */
   exit_tx: string | null;
-  // Token metadata — `created_at`/`ath_price` are row-owned; the rest arrive
-  // flattened from the shared `TokenEnrichment` SSOT (same as the Matched /
-  // Positions / Simulated tables), so the names match `TOKEN_ENRICH_FIELDS`
-  // (`creator_wallet`, `volume_sol_total`, …).
   created_at: string | null;
   ath_price: number | null;
   creator_wallet: string;
@@ -337,10 +157,8 @@ export interface ComboTokenResult {
   is_dead: boolean;
 }
 
-/** `GET …/token-results` response: the drill-in's per-token rows plus an
- *  **exact** (no-sketch) metrics summary over exactly those rows — the
- *  bounded-N counterpart to a sweep group's persisted (DDSketch-approximated)
- *  `SweepResultRecord`. See `docs/plans/sweep/sweep-sim-parity.md` (D1). */
+/** `GET …/token-results` response: the drill-in's per-token rows plus an **exact**
+ *  (no-sketch) metrics summary over exactly those rows. */
 export interface ComboTokenResultsResponse {
   rows: ComboTokenResult[];
   metrics: SweepResultRecord;
@@ -356,33 +174,22 @@ export interface GroupedSweepStartArgs {
   created_before?: string;
   curve_only?: boolean;
   group_by: GroupField[];
-  /** Exact-set instruction-label filter — restrict the corpus to tokens whose
-   *  `ix_labels` set equals these labels, then sweep. The page sends this only
-   *  when grouping by `ix_labels` is OFF (the two are mutually exclusive: group
-   *  by the label set, or pin a single set and sweep it). Omitted ⇒ no filter. */
+  /** Exact-set instruction-label corpus filter (mutually exclusive with grouping
+   *  by `ix_labels`). Omitted ⇒ no filter. */
   ix_labels_filter?: string[];
-  /** Per-field value filters: restrict the corpus to tokens whose fingerprint
-   *  value for the named field is in the allowed set. Map key = GroupField tag
-   *  (e.g. `"cu_price"`); value = allowed numbers. Empty map or omitted ⇒ no
-   *  filter. `"ix_labels"` is handled by `ix_labels_filter` above.
-   *  Applied post-fingerprint, in-memory, alongside `ix_labels_filter`. */
+  /** Per-field value filters (key = GroupField tag; value = allowed numbers/bools). */
   field_filters?: Record<string, (number | boolean)[]>;
   min_tokens?: number;
-  /** `grid` | `random:N` | `lhs:N`. */
+  /** `grid` | `random:N` | `lhs:N` | `refine:N[:K]`. */
   method?: string;
-  /** Strategy-specific axes — TPSL2's full grid, TPSL1's exit-ladder-only grid,
-   *  or swing1's kill→volume swing-phase grid. Resolved by `strategy_id` on the
-   *  backend. */
-  axes?: Tpsl2AxesSpec | Tpsl1AxesSpec | Swing1AxesSpec;
+  /** Strategy-specific axes — for `"generic"` this is `AxesRequest { axes: [...] }`.
+   *  Resolved by `strategy_id` on the backend. */
+  axes?: unknown;
   token_cap?: number;
-  /** Per-group combo cap override. Omitted ⇒ backend default (5000); the backend
-   *  clamps to its hard backstop. */
+  /** Per-group combo cap override. Omitted ⇒ backend default. */
   max_combos?: number;
-  /** Notional (SOL) to price every simulated round-trip at. Set to the live
-   *  `buy_amount_sol` so backtest PnL% matches live results. Omitted ⇒ 1.0 SOL. */
+  /** Notional (SOL) to price every simulated round-trip at. Omitted ⇒ 1.0 SOL. */
   buy_amount_sol?: number;
-  /** Bucket width (SOL) for the continuous SOL group fields — the one width the
-   *  partition, the created rule's matcher, and the creation-stats dashboard share.
-   *  Omitted ⇒ `SOL_BUCKET_WIDTH` (0.1); floored server-side. */
+  /** Bucket width (SOL) for the continuous SOL group fields. Omitted ⇒ 0.1. */
   bucket_width_sol?: number;
 }

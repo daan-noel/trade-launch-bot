@@ -21,22 +21,7 @@ export const labNav: NavConfig = {
       kind: 'group',
       label: 'Analysis',
       basePath: '/analysis',
-      items: [
-        { to: '/analysis/trader', label: 'Trader Analysis' },
-        { to: '/analysis/swing-detection', label: 'Swing detection' },
-        { to: '/analysis/swing1-detect', label: 'swing1 detect' },
-      ],
-    },
-    {
-      kind: 'group',
-      label: 'Grouped Sweep',
-      basePath: '/strategies/sweep',
-      items: [
-        { to: '/strategies/sweep', label: 'Generic engine' },
-        { to: '/strategies/grouped-sweep-tpsl1', label: 'TPSL1 (legacy)' },
-        { to: '/strategies/grouped-sweep-tpsl2', label: 'TPSL2 (legacy)' },
-        { to: '/strategies/grouped-sweep-swing1', label: 'swing1 (legacy)' },
-      ],
+      items: [{ to: '/analysis/trader', label: 'Trader Analysis' }],
     },
     {
       kind: 'group',
@@ -47,9 +32,7 @@ export const labNav: NavConfig = {
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
         { to: '/strategies/simulate', label: 'Simulate' },
         { to: '/strategies/metric-panes', label: 'Metric panes' },
-        { to: '/strategies/tpsl1', label: 'TP / SL Sniper 1 (legacy)' },
-        { to: '/strategies/tpsl2', label: 'TP / SL Sniper 2 (legacy)' },
-        { to: '/strategies/swing1', label: 'Swing 1 (legacy)' },
+        { to: '/strategies/sweep', label: 'Grouped sweep' },
       ],
     },
 

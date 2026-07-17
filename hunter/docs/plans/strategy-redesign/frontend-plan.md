@@ -326,18 +326,40 @@ pages listed in §2. **Kept:** `DataTable` + server-table plumbing, `sse.ts` mul
       persist to `localStorage`. Entry/exit *markers* deferred with the price-chart
       integration (needs sim decision points).
 
-### FE5 — Sweep UI + promote + cleanup  (needs backend Phase 5.4–5.6)
+### FE5 — Sweep UI + promote + cleanup  (needs backend Phase 5.4–5.6) ✅ 2026-07-17
 
-- [ ] 5.1 Axis-row builder (side/group/metric/op/values/window) with projected-combo
-      count; values accept list `a, b, c` and range `lo .. hi step s` (grammar reuse).
-- [ ] 5.2 `SweepPage`: config + streamed grouped results on the kept
-      `GroupedSweepView`/`useStreamedSweepResults` pattern; single generic endpoint set.
-- [ ] 5.3 `[Promote…]`: backend 5.6 call → navigate to RuleEditor pre-filled → dry-run →
-      save. Delete the blob copy path.
-- [ ] 5.4 **Cleanup sweep**: delete everything in §4 "Deleted at the end", remove dead
-      routes/nav, grep-sweep FE for `tpsl`, `swing1`, `strategy_id`, `serializeCombo`.
-- [ ] 5.5 `npm run build:live` + `build:lab` + `lint` + manual smoke of every §2 page;
-      update `docs/arch/frontend.md`.
+> **Deviation (noted):** built a self-contained `GenericSweepView` reusing the kept
+> low-level infra (`useStreamedSweepResults`, the sweep RTK endpoints,
+> `SelectedSweepHistory`, `FingerprintGroupPicker`, `TokenInspectModal`) rather than
+> adapter-izing the 930-line legacy `GroupedSweepView` — the legacy view is deleted in
+> 5.4, so the end state (one generic sweep view) is identical and the mid-flight risk to
+> three still-live legacy strategies is avoided. `[Promote…]` opens a `RuleEditor` **modal**
+> on the sweep page (matching the shared `RulesView`'s local-modal pattern) rather than a
+> cross-page route/query-string draft channel (`RulesView` has none). 5.5 runtime smoke of
+> every §2 page is **pending** (needs the live/lab stacks + a matching corpus — same gate
+> as backend 4.9/5.8).
+
+- [x] 5.1 `sweep/genericAxes.ts` (axis model + `lo..hi step s` value parse + validation +
+      combo-count; 16 unit tests) + `GenericAxisBuilder.tsx` (registry-driven rows +
+      projected-combo badge).
+- [x] 5.2 `GenericSweepConfigForm` (corpus/method/caps + `FingerprintGroupPicker` + the
+      axis builder → `{axes:[AxisSpec]}`) + `GenericSweepView`/`GenericSweepPage` on the
+      kept streaming/persistence infra with `strategy_id="generic"`; generic combo/group
+      columns (`RuleParams` → condition chips) + per-token drill-in with chart markers.
+- [x] 5.3 `[Promote…]` on any group/combo → `POST …/promote` → `PromoteRuleModal` opens the
+      shared `RuleEditor` pre-filled (id-less draft → create) with the lab dry-run panel.
+      `promoteSweepGroup` RTK mutation (invalidates `Fingerprint`). Blob copy path deleted.
+- [x] 5.4 **Cleanup**: deleted the three legacy sweep pages + `GroupedSweepView` +
+      `SweepConfigForm`/`sweepColumns`/`groupColumns`/`sweepParamColors`, the legacy strategy
+      pages (`Tpsl{1,2}Page`/`Swing1Page` lab + `TpslPage`/`Swing1Page` live), the swing
+      analysis pages + `swingDetectionSlice`/`strategyResultCache`/`useSwing1DetectOverlay`,
+      the whole `lib/params/` engine + `SpecRuleForm`/`PasteParamsSection`/`swing1Axes`/
+      `tpsl2Axes` + `{tpsl1,tpsl2}/ruleColumns`. Trimmed `groupedTypes.ts` to records +
+      group-field consts; removed the legacy result endpoints from `labEndpoints`; removed
+      all dead routes/nav in both apps. `SimSummaryCard` relocated to `strategy/` (the kept
+      `RunPositionsPanel` needs it). `lib/params` grep-clean (one comment aside).
+- [x] 5.5 `build:live` + `build:lab` + `lint` + `vitest` (34) all green; updated
+      `docs/arch/frontend.md`. Manual per-page runtime smoke pending (stack gate above).
 
 ### FE6 — Replay viewer (optional; needs backend Phase 6)
 

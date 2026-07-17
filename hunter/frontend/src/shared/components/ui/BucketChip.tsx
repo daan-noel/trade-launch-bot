@@ -1,5 +1,9 @@
 import { cn } from 'lib/cn';
-import { BUCKET_MATCH_HINT } from 'lib/params';
+
+/** Shared tooltip copy for the "bucketed input" marker on continuous SOL fields. */
+const BUCKET_MATCH_HINT =
+  'Matched by bucket, not exactly: a token matches when its value lands in the ' +
+  'same [lo, hi) range as this one. Range width = Bucket Size (SOL).';
 
 /** The one bucket marker, shared by the grouped-sweep fingerprint picker and the
  *  strategy rule form so both surfaces flag bucketed SOL inputs identically. A

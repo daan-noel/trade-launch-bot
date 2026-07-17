@@ -34,7 +34,7 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   use the same backend port.
 - **Lab SPA fallback:** the lab dev server isn't served from `index.html`, so a small `configureServer`
   middleware in `vite.lab.config.ts` rewrites top-level HTML navigations to `lab.html` — a hard refresh
-  on a deep route (e.g. `/strategies/tpsl1`) loads the lab app, not the live one. The live server uses
+  on a deep route (e.g. `/strategies/sweep`) loads the lab app, not the live one. The live server uses
   Vite's default SPA fallback (`index.html`).
 - **Per-mode `App.tsx` + `nav.ts`:** static route table + `NavConfig` (`{identity, items[]}`), no
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
@@ -117,9 +117,9 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   (full `TokenRecord` + `wallet_{last_trade_at,buy_count,sell_count}`), a PG read since the
   default 7d window includes today, which the lake lacks. The table→charts sync uses
   `DataTable`'s `onVisibleRowsChange` callback — fires the memoized on-screen page rows so a
-  sibling view can follow), Tpsl{1,2}Page
-  (authoring), Grouped Sweep ×2 (+ `analysis/`, `sweep/`, `strategy/` components;
-  `useStreamedSweepResults`; `swingDetectionSlice`, `strategyResultCache`, `BackgroundJobsContext`).
+  sibling view can follow), Rules/Fingerprints/Simulate/Metric-panes authoring, and the
+  generic Grouped Sweep (§ above; `sweep/` + `strategy/` components,
+  `useStreamedSweepResults`, `BackgroundJobsContext`).
   The shared `TokenTradeChart`/`TokenPriceChart` take an optional `highlightWallet` — its
   markers render larger with a gold glow+ring (`ProfileWalletInfo.isHighlighted` →
   `walletMarkersPlugin`), and a non-tracked input address gets a synthetic marker entry.
@@ -129,32 +129,45 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   `[]` to force none). `useProfileWallets` imports the palette/type from the chart's leaf
   files (not the barrel) to avoid an import cycle now that `TokenPriceChart` consumes it.
 
-## Rule forms + copy/paste params — `lib/params/` (one engine, one spec/strategy)
+## Rule authoring — registry-driven (`lib/strategy/`, strategy redesign)
 
-All 3 strategies (tpsl1, tpsl2, swing_1) share ONE rule-form + copy/paste path. The
-canonical key everywhere — form state, clipboard blob, create/update payloads — is
-the backend **column** (`p_exit_take_profit`, `buy_amount_sol`, `trade_mode`, …), so
-there are no camelCase/axis/prefix translators.
+The named strategies (tpsl1/tpsl2/swing_1) and the hand-written `lib/params/` spec
+engine are **gone**. One generic engine authors every rule = *fingerprint reference +
+metric conditions*, and the whole UI renders from ONE payload
+(`GET /api/meta/strategy-registry`) so a metric added in Rust appears everywhere on the
+next load (no per-metric frontend work).
 
-- `lib/params/types.ts` — `ParamField` (column · group · section · kind · required ·
-  `comboKey`? · `detectKey`? · presentation) and `StrategySpec` (fields + ordered
-  accordion `sections`).
-- `lib/params/engine.ts` — generic, spec-driven: `emptyForm` / `formFromRule` /
-  `serializeRule(Json)` / `serializeCombo(Json)` (maps a sweep combo's bare key →
-  column via `comboKey`) / `parseBlob` / `applyBlob` (live ⇒ sizing-only) /
-  `buildCreatePayload` (blank→null, or 0 via `createBlankZero`) / `buildUpdatePayload`
-  (locked section sends no keys; blank→0). No React imports — pure + unit-testable.
-- `lib/params/specs/{tpsl1,tpsl2,swing1}.ts` — standalone hand-written specs; `index.ts`
-  re-exports + `getSpec` + the swing1 **detect** adapter (`blobToDetectParams` /
-  `detectParamsToBlob`, spec-derived via `detectKey`).
-- `components/strategy/SpecRuleForm.tsx` — ONE inline (non-modal) form: Mode+Name row,
-  `PasteParamsSection`, then one collapsible `Accordion` per `spec.sections`. Same chrome
-  for every strategy; lock groups + live-freeze read off the spec. Rendered in-page by
-  Tpsl{1,2}Page / Swing1Page (live + lab) — the old `tpsl{1,2}/RuleFormModal.tsx` +
-  `Swing1RuleAccordion.tsx` + `lib/ruleParams.ts` are gone.
-- Combo ⎘ (`sweep/GroupedSweepView`) and the swing1 detect ⎘/paste all go through the
-  same engine, so a blob copied anywhere pastes anywhere (blob format unchanged: `p_*`,
-  version 1; cross-strategy paste rejected by `PasteParamsSection`).
+- `lib/strategy/registry.ts` — types mirroring the registry payload (`operators`,
+  `groups[]` → metrics w/ unit/eq-tolerance/monotonic + strict params) + the cached
+  `useStrategyRegistry()` hook (RTK Query, 1 h). `unitSuffix`/`findGroup`/`findMetric`.
+- `lib/strategy/grammar.ts` — the condition grammar (`">10, <=30"` → `{operator,value}`
+  list; `1..10` → `>=1 AND <=10`), wrapping the shared compound `numericFilter` parser.
+- `lib/strategy/ruleParams.ts` — the ONE generic `params` JSONB ⇄ form serializer
+  (registry-guided strict/metric split); `validate.ts` mirrors backend §5 validation.
+- `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
+  `ConditionSideEditor` (entry/exit column), `RuleEditor` (builder + JSON tab + a
+  `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm`, `RulesView`/`FingerprintsView`
+  (shared list+editor, mounted by both apps' `RulesPage`/`FingerprintsPage`).
+- The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
+  (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
+
+## Grouped sweep — generic engine (`strategies/sweep/`, redesign FE5)
+
+ONE page (`/strategies/sweep`, `GenericSweepPage`→`GenericSweepView`) replaced the three
+per-strategy sweep pages. Reuses the kept streaming/persistence infra
+(`useStreamedSweepResults`, the `getGroupedSweep*` / `startGroupedSweep` RTK endpoints,
+`SelectedSweepHistory`, `FingerprintGroupPicker`) with `strategy_id = "generic"`.
+
+- `sweep/genericAxes.ts` — the registry-driven axis model: `AxisSpec[]`
+  (`{side, group, metric, operator, values[, window]}`), value parse (comma list +
+  `lo..hi step s` ranges), per-row/shared-window validation, combo-count. Unit-tested.
+- `sweep/GenericAxisBuilder.tsx` — axis-row UI + projected-combo badge; `GenericSweepConfigForm`
+  wraps it with corpus/method/caps + `FingerprintGroupPicker`, emitting `{axes:[...]}`.
+- `sweep/genericSweepColumns.tsx` — combo/group columns; the swept `params` is a
+  `RuleParams` blob rendered as condition chips (not one flat column per knob).
+- `[Promote…]` on any group/combo → `POST …/promote` (fingerprint find-or-created) →
+  `PromoteRuleModal` opens the shared `RuleEditor` pre-filled (id-less draft → create)
+  with the lab dry-run panel. Replaced the copy-blob path.
 
 ## Services / hooks (shared, tree-shaken per entry)
 

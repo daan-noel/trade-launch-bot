@@ -10,49 +10,13 @@ import type {
   GroupedCreationArgs,
   GroupedCreationResponse,
 } from '@lab/components/creation-stats/groupedCreationStats';
-import type {
-  MatchedTokensResponse,
-  PaperResultResponse,
-  PositionsSummary,
-  SimulatedTokenResult,
-  TraderTokenRow,
-} from 'types';
+import type { PositionsSummary, TraderTokenRow } from 'types';
 import type {
   EngineSimRequest,
   SimStartResponse,
   MetricSeriesResponse,
   PromotedRuleDraft,
 } from 'lib/strategy/types';
-
-/** Args for the per-rule strategy result reads (matched / simulate / paper),
- *  shared by both strategy pages so tpsl1 and tpsl2 keep distinct cache keys. */
-export interface StrategyRuleArg {
-  strategy: 'tpsl1' | 'tpsl2' | 'swing1';
-  ruleId: string;
-  /**
-   * Optional transient creation-time window for `matched` / `simulate` only
-   * (ISO strings; empty = all-time). Not persisted on the rule — it scopes the
-   * backend's full-`tokens`-table scan. Part of the arg, so different ranges
-   * cache separately while a rule edit still invalidates the whole pair.
-   * Ignored by `paper-result`.
-   */
-  from?: string;
-  to?: string;
-}
-
-/** Append `?from=&to=` (only the bounds that are set) to an analysis-endpoint URL. */
-const withAnalysisRange = (url: string, { from, to }: StrategyRuleArg): string => {
-  const qs = new URLSearchParams();
-  if (from) qs.set('from', from);
-  if (to) qs.set('to', to);
-  const s = qs.toString();
-  return s ? `${url}?${s}` : url;
-};
-
-/** Cache tag for a rule's `matched` + `simulate` results — both derive from the
- *  rule's entry criteria, so editing the rule invalidates the pair. */
-const strategyResultTag = (a: StrategyRuleArg) =>
-  ({ type: 'StrategyResult', id: `${a.strategy}:${a.ruleId}` }) as const;
 
 /**
  * Lab-only RTK Query endpoints — bundled exclusively in the lab
@@ -62,39 +26,6 @@ const strategyResultTag = (a: StrategyRuleArg) =>
  */
 export const labApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
-    // Per-rule strategy result reads. Driven imperatively from the strategy
-    // pages via `endpoints.X.initiate` (the pages keep their own open/toggle
-    // state), so folding them into RTK Query buys dedupe + structural sharing +
-    // a short retention: re-opening a view or switching rules and back reuses
-    // the cache instead of re-hitting the backend. `matched`/`simulate` are
-    // tagged by rule so a rule edit can invalidate them; `paper-result` is
-    // force-refetched on the paper-finished SSE event.
-    getStrategyMatched: builder.query<MatchedTokensResponse, StrategyRuleArg>({
-      query: (a) =>
-        withAnalysisRange(
-          `/api/strategies/${a.strategy}/rules/${encodeURIComponent(a.ruleId)}/matched`,
-          a,
-        ),
-      providesTags: (_r, _e, a) => [strategyResultTag(a)],
-      keepUnusedDataFor: 60,
-    }),
-    // Collect a finished backtest's result. The simulation is started separately
-    // (`startSimulation`, a detached job) and its result stored server-side, so
-    // this endpoint just picks it up once the `simulation_finished` SSE fires —
-    // no long-held connection that a minutes-long run could fail with a
-    // `FETCH_ERROR`. Strategy-agnostic URL (keyed by `rule_id`), but the cache key
-    // / tag stays per `strategy:ruleId` so a rule edit invalidates it and tpsl1 /
-    // tpsl2 don't share an entry. A cancelled run resolves to `{ cancelled: true }`;
-    // callers type-guard on the shape. Driven imperatively from
-    // `fetchSimulateCached` — see `store/strategyResultCache.ts`.
-    getStrategySimulateResult: builder.query<
-      SimulatedTokenResult[] | { cancelled: true },
-      StrategyRuleArg
-    >({
-      query: (a) => `/api/jobs/simulations/${encodeURIComponent(a.ruleId)}/result`,
-      providesTags: (_r, _e, a) => [strategyResultTag(a)],
-      keepUnusedDataFor: 60,
-    }),
     // Generic-engine simulate (redesign 5.2). Start a run for a saved rule or an
     // inline dry-run draft; the run is detached and its result stored server-side,
     // collected once the `simulation_finished` SSE fires (same pattern as the
@@ -120,18 +51,6 @@ export const labApi = baseApi.injectEndpoints({
       },
       keepUnusedDataFor: 60,
     }),
-    getStrategyPaperResult: builder.query<PaperResultResponse, StrategyRuleArg>({
-      query: ({ strategy, ruleId }) =>
-        `/api/strategies/${strategy}/rules/${encodeURIComponent(ruleId)}/paper-result`,
-      providesTags: (_r, _e, a) => [
-        { type: 'StrategyPaper', id: `${a.strategy}:${a.ruleId}` },
-      ],
-    }),
-    // Grouped param-sweeps (generic across strategies; `strategy_id` resolves the
-    // per-strategy tables). A run partitions its corpus by a fingerprint key and
-    // ranks combos PER group. Runs/groups are bounded, so the page pulls them
-    // whole; a group's combo rows are fetched lazily on drill-in. Cached so
-    // flipping between runs/groups reuses the data.
     // Just the matched `mint_address` set for the current Tokens filter — no rows.
     // "Swing Detection All" fans out over the full filtered set, so it reads the
     // mints from here instead of pulling ~20k full token rows via `getTokensPage`

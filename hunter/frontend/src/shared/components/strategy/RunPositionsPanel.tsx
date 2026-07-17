@@ -5,7 +5,7 @@ import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
 import { InlineAlert } from 'components/ui/Modal';
-import { SimSummaryCard } from 'components/tpsl1/SimSummaryCard';
+import { SimSummaryCard } from 'components/strategy/SimSummaryCard';
 import { useRulePositions, DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
 import type { PositionScope } from 'services/api';
 import type { TableRequestBody } from 'services/tableRequest';

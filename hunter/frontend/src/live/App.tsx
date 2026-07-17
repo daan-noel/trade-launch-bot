@@ -16,9 +16,6 @@ const SyncTokenPage = lazy(() => import('@live/pages/tokens/SyncTokenPage').then
 const MyWalletPage = lazy(() => import('@live/pages/profiles/MyWalletPage').then((m) => ({ default: m.MyWalletPage })));
 const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) => ({ default: m.ProfilesPage })));
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
-const Tpsl1Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl1' }) })));
-const Tpsl2Page = lazy(() => import('@live/pages/strategies/TpslPage').then((m) => ({ default: () => m.TpslPage({ strategy: 'tpsl2' }) })));
-const Swing1Page = lazy(() => import('@live/pages/strategies/Swing1Page').then((m) => ({ default: m.Swing1Page })));
 const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
 const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const MonitorPage = lazy(() => import('@live/pages/strategies/MonitorPage').then((m) => ({ default: m.MonitorPage })));
@@ -54,9 +51,6 @@ export default function App() {
                 <Route path="strategies/monitor" element={<MonitorPage />} />
                 <Route path="strategies/rules" element={<RulesPage />} />
                 <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
-                <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
-                <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
-                <Route path="strategies/swing1" element={<Swing1Page />} />
                 <Route path="trade" element={<TradePage />} />
                 <Route path="live-trading" element={<LiveTradingPage />} />
                 <Route path="wallet" element={<MyWalletPage />} />
