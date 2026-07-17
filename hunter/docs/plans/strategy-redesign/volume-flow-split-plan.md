@@ -2,10 +2,9 @@
 
 Status: **PLANNED** (design settled 2026-07-17, not started).
 Scope: hunter only. A follow-on to the generic engine —
-[fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md) (backend) and
-[frontend-plan.md](frontend-plan.md) (FE). **Do not start before backend Phase 5 is
-merged** (needs live adapters, lake replay, generic sweep axes); the discovery job (§7)
-can trail the metrics.
+[fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md).
+**Do not start before backend Phase 5 is merged** (needs live adapters, lake
+replay, generic sweep axes); the discovery job (§7) can trail the metrics.
 Origin: creator wash-volume tracking idea + reference reading of
 `bot-panther-new-main/src/trading/volume_bot/{bot,types}.rs` (concepts borrowed:
 pattern classifier, wallet contagion, two signed accumulators; its hardcoded
@@ -234,8 +233,8 @@ ALTER TABLE fingerprints
       new fields (hash of real values in live/replay; fixtures use the SSOT fns).
 - [ ] 0.3 Lake: schema constants + export columns (`ix_labels`, `wallet` w/ LEFT JOIN
       + COALESCE) + duck load into `CorpusTrade` behind a `with_flow` projection flag.
-- [ ] 0.4 Event-log format bump + a replay-compat note in
-      [event-log.md](event-log.md) (old logs: fields default → organic).
+- [ ] 0.4 Event-log format bump (`engine/src/event_log.rs`): old logs default
+      missing flow fields → organic.
 
 ### V1 — Engine metrics
 

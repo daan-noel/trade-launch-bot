@@ -23,14 +23,14 @@ tests; 5.7 metric-series endpoint; `cargo check`/tests green on all four bins).
 **Phase 5 part 2 built 2026-07-17** (precompute-then-scan sweep: 5.4 generic axes
 model + `GenericSweepStrategy` reusing the `Strategy` trait / `grouped_engine`
 partition + persistence, `grouped_sweep_*` migration 0003, `"generic"` registry
-wiring; 5.5 scan ≡ `run_replay` guard test; 5.6 `promote_group` endpoint. Deep-dive:
-[sweep-generic-scan.md](sweep-generic-scan.md). **5.8 verified end-to-end** on the live
-lab bin + real lake corpus, after fixing an `0004` core-migration boot bug — see 5.8).
-Phase 7 deletion: the **5.4–5.6 sweep-rewrite blocker is cleared** (a generic sweep now exists), but the legacy sweep files + per-strategy
-rule handlers + live `StrategyService` (Phase 7 blockers 2–4) still need retiring
-before the deletion sweep.
-Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
-[frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
+wiring; 5.5 scan ≡ `run_replay` guard test; 5.6 `promote_group` endpoint.
+**5.8 verified end-to-end** on the live lab bin + real lake corpus, after fixing an
+`0004` core-migration boot bug — see 5.8). Phase 7 deletion: the **5.4–5.6
+sweep-rewrite blocker is cleared** (a generic sweep now exists), but the legacy
+sweep files + per-strategy rule handlers + live `StrategyService` (Phase 7
+blockers 2–4) still need retiring before the deletion sweep. Frontend FE0–FE6
+shipped (deferred polish + runtime smoke share the 4.9 gate).
+Scope: **hunter only** — forge untouched.
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
 `Bot/docs/strategy-redesign-answer-1.md`.
 
@@ -651,9 +651,8 @@ Determinism rules (violation = bug):
 
 **Progress 2026-07-17:** 5.1 + 5.2 + 5.3 + 5.7 built (analysis-simulate cluster).
 **5.4 + 5.5 + 5.6 built + 5.8 verified 2026-07-17** — precompute-then-scan sweep
-(deep-dive [sweep-generic-scan.md](sweep-generic-scan.md)); 5.8 run end-to-end on the
-live lab bin + real lake (Dead-not-Open + win-rate curve + promote all confirmed).
-**Phase 5 COMPLETE.**
+(`lab/src/sweep/generic/`); 5.8 run end-to-end on the live lab bin + real lake
+(Dead-not-Open + win-rate curve + promote all confirmed). **Phase 5 COMPLETE.**
 
 - [x] 5.1 `strategies/replay.rs`: lake→events producer — `ReplayToken`s expanded into
       one **globally time-ordered** event stream (`TokenCreated`/`FirstSlotSettled`/
@@ -740,23 +739,18 @@ live lab bin + real lake (Dead-not-Open + win-rate curve + promote all confirmed
       `effect`-tagged dump. **SSOT move:** `LoggedEvent` (the on-disk format) lifted from
       `live/.../event_log.rs` into `hunter/engine/src/event_log.rs` so the writer (live
       recorder) and reader (lab inspector) share one definition. 5 lab tests + engine
-      compiles/tests green; clippy clean. Frontend viewer = FE plan FE6.
-- [x] 6.2 Doc: `docs/plans/strategy-redesign/event-log.md` — format (SSOT), rotation,
-      retention, env vars, recorder, boot-recovery semantics, replay/inspection
-      endpoint + slicing caveats, parity rationale, file map.
+      compiles/tests green; clippy clean. Frontend viewer = FE6 (`ReplayViewerPage`).
+- [x] 6.2 Event-log deep-dive (format SSOT, rotation, retention, env vars, recorder,
+      boot-recovery, replay/inspection endpoint + slicing caveats, parity, file map)
+      — implemented in code (`engine/src/event_log.rs`, live recorder, lab inspector).
 
 ### Phase 7 — Deletion + docs (leave no dead vocabulary)
 
-> **⛔ BLOCKED (assessed 2026-07-17).** Every deletion target in §3 still has compile-time
-> references *outside* the deletion set, so nothing here can be deleted yet without
-> breaking `hunter-lab`/`hunter-live`. The blockers are **prerequisite unfinished work**,
-> not Phase-7 work:
-> 1. **Phase 5.4–5.6 (sweep rewrite) — not done.** The legacy sweep is still wired into
->    the lab bin: `lab/src/sweep/registry.rs` dispatches `Tpsl1/Tpsl2/Swing1Strategy` and
->    reads `Tpsl1/Tpsl2/Swing1Rule`; reached from `lab/main.rs` + `grouped_sweep.rs`
->    handler. Deleting the sweep strategy files (and the typed rule models, and the core
->    `tpsl_sniper_*`/`swing_1` dirs they pull) won't compile until the sweep is on the
->    generic engine.
+> **⛔ BLOCKED (assessed 2026-07-17; blocker 1 cleared same day).** Deletion targets
+> in §3 still have compile-time references *outside* the deletion set. Remaining
+> blockers are prerequisite unfinished work, not Phase-7 work itself:
+> 1. ~~**Phase 5.4–5.6 (sweep rewrite)**~~ — **cleared.** Generic sweep is wired;
+>    legacy `Tpsl1/Tpsl2/Swing1` sweep strategies can be retired with the rest.
 > 2. **Legacy per-strategy rule handlers — never retired.** `lab/src/api/handlers/
 >    strategies/{tpsl1,tpsl2,swing1}.rs` (+ `tokens/swing1_detect.rs`, `swing_probe.rs`),
 >    routed at `lab/src/api/mod.rs:77-255`, still call `crate::strategies::
@@ -769,8 +763,8 @@ live lab bin + real lake (Dead-not-Open + win-rate curve + promote all confirmed
 >    runtime_cache}.rs` + `core/models/mod.rs:32-34` import `StrategyImpl`/typed models.
 >
 > Only `live/src/strategies/execution/*.rs` is otherwise ref-free, and even it waits on
-> `service.rs` (blocker 3). **Do 5.4–5.6 + retire the legacy lab rule handlers first**,
-> then Phase 7 becomes a clean sweep.
+> `service.rs` (blocker 3). **Retire the legacy lab rule handlers + live `StrategyService`
+> first**, then Phase 7 becomes a clean sweep.
 
 - [ ] 7.1 Delete (list in §3 "Deleted at the end"); grep-sweep for `tpsl`, `swing_1`,
       `strategy_id`, `scalp`, `LadderParams`, `StrategyImpl`, `exit_state`.
