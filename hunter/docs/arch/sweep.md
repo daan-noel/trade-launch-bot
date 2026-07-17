@@ -29,9 +29,36 @@ Decision parity: a strategy's `simulate` calls the same pure fns the live path u
 | `retention.rs` | `retained_combo_ids` — keeps per-metric-extreme combos + best_combo (~660 rows/group max); used write-time AND at compaction |
 | `grouping.rs` | `TokenFingerprint`, `GroupField`, `GroupKey`; `normalize_label_vec` (shared with corpus filter). All `GroupField`s are `tokens`-creation facts **except** `FirstSlotBuySol`/`FirstSlotSellSol` — the first trade-derived fields, sourced from `tokens_info` (creation-slot buy/sell SOL). Their lake `fp_first_slot_*` cols + `creation_stats_repo::grouped()`'s `LEFT JOIN tokens_info` + `export_tokens`' join all exist to feed them. **Group-key rendering** (`render_field`) is exact-value for discrete fields but **bins** the continuous SOL amounts (`InitialBuySol`, `MaxCostLamports`, `SpendableLamportsIn`, `FirstSlot{Buy,Sell}Sol`) into `SOL_BUCKET_WIDTH` (0.1 SOL)-wide `"lo–hi"` ranges (`bucket_sol_label`); the dashboard SQL (`creation_stats_repo::sol_bucket_sql`) mirrors it byte-for-byte so both surfaces produce identical labels. Making the width runtime-configurable = [dynamic-bucket-size-plan.md](../dynamic-bucket-size-plan.md) |
 | `grouped_engine.rs` | `run_grouped_sweep`; two-phase driver (large groups serial, small groups parallel); `make_group_result`; coarse→refine (`run_grouped_with_refine`); partial persistence via `GroupSink` |
-| `registry.rs` | `tables_for(strategy_id)`, `strategy_ids()`, `run_grouped(...)`; `MAX_COMBOS`; `sweep_base_rule_tpsl{1,2}` |
+| `obs.rs` | Process RSS + host RAM reads; sweep milestone clock |
+| `registry.rs` | `tables_for(strategy_id)`, `strategy_ids()`, `run_grouped(...)`; `MAX_COMBOS`; `sweep_base_rule_tpsl{1,2}`; resource fences (`bounded_threads` = cores/2 by default, host-RAM admission) |
 | `strategies/tpsl2.rs` | TPSL2 `Strategy`/`ParamSpace` — sweeps all 14 knobs; entry-cache by 8 scalp-gate knobs; `prepare_token` is a no-op (`TokenState = ()`) |
 | `strategies/tpsl1.rs` | TPSL1 `Strategy`/`ParamSpace` — sweeps exit ladder only (6 knobs); param-free entry resolves once per token |
+
+## Workstation resource fences (lab-only)
+
+Grouped sweep runs hard **inside** a reserved slice of the analysis box so the desktop stays usable. No mid-run throttle.
+
+| Env | Default when empty | Role |
+| --- | --- | --- |
+| `SWEEP_RAYON_THREADS` | `max(1, cores / 2)` | Preferred rayon pool size; set to `cores − 1` for walk-away max speed |
+| `SWEEP_MEMORY_BUDGET_MB` | 2048 | Fold-accumulator batch sizing only |
+| `SWEEP_ADMISSION_BUDGET_MB` | 4096 | Series-precompute ceiling before host-RAM cap |
+| `SWEEP_RAM_RESERVE_MB` | 4096 | Host RAM left free for OS/UI; effective admission = `min(admission, available − reserve)` |
+| `SWEEP_PER_MINT_CAP` | uncapped (`i64::MAX`) | Last-resort corpus shrink — breaks full-history parity with simulate |
+
+At generic-sweep start the engine estimates `threads × largest_token_series`, **auto-lowers threads** to fit the effective admission budget, and rejects only if even 1 thread overflows. Start log includes cores, preferred/actual threads, RSS, and host total/available MB.
+
+**Last-resort corpus/combo shrink knobs** (manual; change *what* is computed, not the machine fence) — use only when admission still fails after thread reduction:
+
+| Knob | Where | Effect | Fidelity cost |
+| --- | --- | --- | --- |
+| `token_cap` | UI / `Selection` | Fewer tokens | Smaller sample |
+| `created_after` / `created_before` | UI / `Selection` | Smaller time slice | Misses other days |
+| `min_tokens` | UI | Drops tiny groups | Fewer groups ranked |
+| `max_combos` / narrower axes / `random:N` / `refine:N:K` | UI | Fewer combos | Less param coverage |
+| `curve_only` | UI | Drops AMM legs | No post-migration path |
+| `SWEEP_PER_MINT_CAP` | env | Caps trades/token | Breaks simulate parity |
+| `SWEEP_MEMORY_BUDGET_MB` | env | Smaller fold batches | More passes (often slower wall-clock) |
 
 ## Persistence + API
 

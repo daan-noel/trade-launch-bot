@@ -123,6 +123,55 @@ pub(crate) fn sweep_admission_budget_bytes() -> u64 {
         .saturating_mul(1024 * 1024) as u64
 }
 
+/// Default host RAM (MB) left free for the OS + desktop UI during series-precompute
+/// admission. Override with `SWEEP_RAM_RESERVE_MB`.
+const DEFAULT_SWEEP_RAM_RESERVE_MB: usize = 4096;
+
+/// Host RAM reserve in bytes (`SWEEP_RAM_RESERVE_MB` or the default).
+fn sweep_ram_reserve_bytes() -> u64 {
+    std::env::var("SWEEP_RAM_RESERVE_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&m| m >= 1)
+        .unwrap_or(DEFAULT_SWEEP_RAM_RESERVE_MB)
+        .saturating_mul(1024 * 1024) as u64
+}
+
+/// Effective series-precompute admission ceiling: the configured
+/// `SWEEP_ADMISSION_BUDGET_MB`, further capped by `available_ram − reserve` when
+/// host memory is readable. Returns `(budget_bytes, host_total_mb, host_avail_mb)`.
+fn effective_admission_budget_bytes() -> (u64, Option<u64>, Option<u64>) {
+    let configured = sweep_admission_budget_bytes();
+    match crate::sweep::obs::host_memory_bytes() {
+        Some((total, available)) => {
+            let reserve = sweep_ram_reserve_bytes();
+            let host_ceiling = available.saturating_sub(reserve);
+            let budget = configured.min(host_ceiling);
+            (
+                budget,
+                Some(total / (1024 * 1024)),
+                Some(available / (1024 * 1024)),
+            )
+        }
+        None => (configured, None, None),
+    }
+}
+
+/// Largest thread count `≤ preferred` whose estimated peak
+/// (`threads × max_series_bytes`) fits `budget`. `None` if even 1 thread overflows.
+fn threads_fitting_admission(preferred: usize, max_series_bytes: usize, budget: u64) -> Option<usize> {
+    let preferred = preferred.max(1);
+    if max_series_bytes == 0 {
+        return Some(preferred);
+    }
+    let per = max_series_bytes as u64;
+    if per > budget {
+        return None;
+    }
+    let max_by_budget = (budget / per) as usize;
+    Some(preferred.min(max_by_budget).max(1))
+}
+
 // ---------------------------------------------------------------------------
 // Per-strategy wiring (the table set + the supported-id list)
 // ---------------------------------------------------------------------------
@@ -270,12 +319,19 @@ pub async fn run_grouped(
     }
 }
 
+/// Detected logical CPU count (fallback 1).
+fn detect_cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 /// Rayon threads for the in-process sweep. `lab` is the **analysis box** — it
 /// runs no ingest/gRPC/trader, so a sweep never co-runs the live trading hot
-/// path the data-scale guardrails protect (that's `live`, on EC2). The sweep can
-/// therefore take the whole box minus one core, left for the OS + the idle actix
-/// HTTP workers so the UI stays responsive while a sweep runs. Override
-/// explicitly with `SWEEP_RAYON_THREADS`. Always ≥1.
+/// path. Default is **half the logical cores** so the desktop OS/UI stay
+/// responsive while a sweep runs (e.g. 8 on a 16-core workstation). Override
+/// explicitly with `SWEEP_RAYON_THREADS` for walk-away max throughput (e.g.
+/// `cores − 1`). Always ≥1. Host-RAM admission may still lower the count further.
 fn bounded_threads() -> usize {
     if let Some(n) = std::env::var("SWEEP_RAYON_THREADS")
         .ok()
@@ -284,10 +340,7 @@ fn bounded_threads() -> usize {
     {
         return n;
     }
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    cores.saturating_sub(1).max(1)
+    (detect_cores() / 2).max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -341,41 +394,59 @@ async fn sweep_generic(
         params.truncate(cap);
     }
 
-    let threads = bounded_threads();
+    let preferred_threads = bounded_threads();
+    let cores = detect_cores();
 
     // Admission (plan §P4): the per-token series precompute — not the fold
     // accumulators — is the sweep's real memory cost. Estimate the worst-case
-    // transient (`threads × the largest token's sparse series`) and reject up front
-    // with a clear message instead of letting a pathological rule×corpus abort
-    // mid-run. The sparse grid bounds each series ∝ trades, so this only trips on a
-    // genuinely oversized run; the budget is separate from the fold budget.
+    // transient (`threads × the largest token's sparse series`) and either lower
+    // threads to fit or reject up front. Budget = min(configured admission,
+    // available host RAM − reserve) so the desktop stays usable.
     let max_series_bytes = corpus
         .tokens
         .iter()
         .map(|t| strategy.series_bytes_estimate(t))
         .max()
         .unwrap_or(0);
-    let peak_bytes = (threads as u64).saturating_mul(max_series_bytes as u64);
-    let admission_budget = sweep_admission_budget_bytes();
+    let (admission_budget, host_total_mb, host_avail_mb) = effective_admission_budget_bytes();
     let mb = |b: u64| b / (1024 * 1024);
+    let threads = match threads_fitting_admission(preferred_threads, max_series_bytes, admission_budget)
+    {
+        Some(n) => n,
+        None => {
+            bail!(
+                "estimated series precompute for largest token ({} MB) exceeds the \
+                 {} MB admission budget even at 1 thread — narrow the corpus or axes, \
+                 or raise SWEEP_ADMISSION_BUDGET_MB / lower SWEEP_RAM_RESERVE_MB",
+                mb(max_series_bytes as u64),
+                mb(admission_budget)
+            );
+        }
+    };
+    if threads < preferred_threads {
+        tracing::warn!(
+            preferred_threads,
+            threads,
+            max_token_series_mb = mb(max_series_bytes as u64),
+            budget_mb = mb(admission_budget),
+            "generic sweep: lowered rayon threads to fit series-precompute admission budget"
+        );
+    }
+    let peak_bytes = (threads as u64).saturating_mul(max_series_bytes as u64);
     tracing::info!(
+        cores,
+        preferred_threads,
         threads,
         max_token_series_mb = mb(max_series_bytes as u64),
         peak_precompute_mb = mb(peak_bytes),
         budget_mb = mb(admission_budget),
+        configured_admission_mb = mb(sweep_admission_budget_bytes()),
+        ram_reserve_mb = mb(sweep_ram_reserve_bytes()),
+        host_total_mb,
+        host_avail_mb,
         rss_mb = crate::sweep::obs::process_rss_mb(),
         "generic sweep: series-precompute admission estimate"
     );
-    if peak_bytes > admission_budget {
-        bail!(
-            "estimated series precompute {} MB (threads {} × largest token {} MB) exceeds the \
-             {} MB admission budget — narrow the corpus or axes, or raise SWEEP_ADMISSION_BUDGET_MB",
-            mb(peak_bytes),
-            threads,
-            mb(max_series_bytes as u64),
-            mb(admission_budget)
-        );
-    }
 
     let (combo_count, groups) = tokio::task::spawn_blocking(
         move || -> Result<(usize, Vec<GroupResult>)> {
@@ -952,4 +1023,48 @@ fn sweep_base_rule_tpsl1(buy_amount_sol: f64) -> Tpsl1Rule {
         None,                  // p_exit_stall_secs        — overlaid per combo
         None,                  // p_exit_liquidity_drop_pct — overlaid per combo
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn threads_fitting_keeps_preferred_when_under_budget() {
+        // 100 MB/token × 8 threads = 800 MB < 2048 MB
+        assert_eq!(
+            threads_fitting_admission(8, 100 * 1024 * 1024, 2048 * 1024 * 1024),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn threads_fitting_lowers_to_fit_budget() {
+        // 500 MB/token × 8 = 4000 MB > 2048 MB → max threads = 2048/500 = 4
+        assert_eq!(
+            threads_fitting_admission(8, 500 * 1024 * 1024, 2048 * 1024 * 1024),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn threads_fitting_rejects_when_one_thread_overflows() {
+        assert_eq!(
+            threads_fitting_admission(8, 3000 * 1024 * 1024, 2048 * 1024 * 1024),
+            None
+        );
+    }
+
+    #[test]
+    fn threads_fitting_zero_series_keeps_preferred() {
+        assert_eq!(threads_fitting_admission(8, 0, 0), Some(8));
+    }
+
+    #[test]
+    fn default_threads_are_half_cores() {
+        // Without SWEEP_RAYON_THREADS, default is cores/2 (floor 1).
+        std::env::remove_var("SWEEP_RAYON_THREADS");
+        let cores = detect_cores();
+        assert_eq!(bounded_threads(), (cores / 2).max(1));
+    }
 }
