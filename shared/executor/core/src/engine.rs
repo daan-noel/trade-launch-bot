@@ -37,6 +37,13 @@ pub struct NonceSlot {
     pub(crate) cached_hash: Option<Hash>,
     /// True while a transaction is in-flight using this slot.
     pub(crate) in_use: bool,
+    /// Bumped on every `acquire_nonce`. Lets the post-send refresh poll detect
+    /// that the slot was already re-armed (by the push feed) and re-acquired —
+    /// finalizing then would free a slot another tx is using.
+    pub(crate) use_epoch: u64,
+    /// Highest slot seen on the push path (`on_nonce_account_update`) — gates
+    /// out replayed/out-of-order account updates on reconnect.
+    pub(crate) last_push_slot: u64,
 }
 
 /// Venue-agnostic Solana send engine. Owns the signer/rpc/http, the nonce +
@@ -293,6 +300,8 @@ impl Engine {
                         NonceSlot {
                             cached_hash: Some(hash),
                             in_use: false,
+                            use_epoch: 0,
+                            last_push_slot: 0,
                         },
                     );
                 }
@@ -305,7 +314,11 @@ impl Engine {
             info!("⏭️  Recent-blockhash mode — skipping nonce prefetch (no nonce reads)");
         }
 
-        // 6. Recent-blockhash refresher. Prime once, then refresh in background.
+        // 6. Recent-blockhash refresher. Prime once, then watchdog in background:
+        // each tick fetches ONLY if the cache wasn't refreshed within the tick —
+        // a host that bridges a `blocks_meta` push feed into the cache (see
+        // `set_cached_blockhash`) keeps it sub-second fresh and the loop makes
+        // zero RPC calls; a host with no feed gets the old poll behavior.
         match self.rpc.get_latest_blockhash().await {
             Ok(hash) => self.blockhash_cache.store(hash),
             Err(e) => warn!("Initial blockhash fetch failed: {e}"),
@@ -317,6 +330,9 @@ impl Engine {
             let handle = tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(refresh_ms)).await;
+                    if cache.is_fresher_than(Duration::from_millis(refresh_ms)) {
+                        continue; // push feed already covered this tick
+                    }
                     match rpc.get_latest_blockhash().await {
                         Ok(hash) => cache.store(hash),
                         Err(e) => warn!("Blockhash refresh failed: {e}"),
@@ -398,6 +414,15 @@ impl Engine {
     /// Expose the RPC URL for callers that need to make their own RPC requests.
     pub fn rpc_url(&self) -> &str {
         &self.config.rpc_url
+    }
+
+    /// Feed a `(blockhash, slot)` from a push source (e.g. a LaserStream
+    /// `blocks_meta` subscription) into the recent-blockhash cache. Slot-gated —
+    /// out-of-order/replayed metas are ignored. While the feed is live the
+    /// background refresher makes zero `getLatestBlockhash` calls (it only acts
+    /// as a stall watchdog); see `initialize`.
+    pub fn set_cached_blockhash(&self, hash: Hash, slot: u64) {
+        self.blockhash_cache.store_pushed(hash, slot);
     }
 
     /// Reserve `buy_lamports` of SOL for `position_id`. Called before a real buy

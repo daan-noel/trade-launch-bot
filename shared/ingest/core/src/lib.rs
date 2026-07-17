@@ -35,4 +35,5 @@ pub use config::{Auth, Commitment, IngestConfig};
 pub use error::{IngestError, Result};
 pub use event::IngestEvent;
 pub use session::{Ingest, IngestHandle};
+pub use transport::PushHooks;
 pub use venue::{DecodeOutput, IngestVenue, PoolIndex};

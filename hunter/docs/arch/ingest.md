@@ -58,6 +58,8 @@ Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `s
 
 `live` enables both. `IngestHandle` exposes `set_live`, `track_pools`, `untrack_pools`, `pool_index`, `pools_changed`. (Liveness is tracked host-side by `live`'s own `DbHeartbeat`, not an ingest health channel.)
 
+**Push hooks (`ingest_core::PushHooks`, optional):** the same subscription can carry a `blocks_meta` filter and an `accounts` filter for host-chosen pubkeys; the two callbacks run on the transport task (cheap parse + store only). Hunter's `main.rs` bridges block metas → `Engine::set_cached_blockhash` (blockhash cache, 0 steady-state `getLatestBlockhash`) and nonce-account updates → `Engine::on_nonce_account_update` (durable-nonce push re-arm). Hosts that don't opt in (forge) get a byte-identical subscription. Push updates deliberately don't feed the idle watchdog — it guards the *transaction* stream.
+
 ## `live/src/ingest/` — host adapter
 
 | File | Responsibility |
@@ -69,7 +71,9 @@ Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `s
 
 ### Consumer event handlers
 
-`on_token_created` (Token+Wallet+Metrics+cache+ping+SSE) · `on_trade` (Trade+Wallet+Metrics+reserves+AMM prewarm+ping+SSE) · `on_token_migrated` (pool gate+Migration+ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
+`on_token_created` (Token+Wallet+Metrics+cache+ping+SSE) · `on_trade` (Trade+Wallet+Metrics+reserves+inline AMM account-list harvest+ping+SSE) · `on_token_migrated` (pool gate+Migration+ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
+
+AMM `Trade` events may carry `amm_swap_accounts` (the top-level PumpSwap swap's resolved account list, harvested by `decode_amm_live_pb`, one per pool per tx). `on_trade` feeds it to `TraderHook::observe_amm_swap_accounts` inline (pure CPU — replaces the old spawned RPC `prewarm_amm_pool`); `amm_pool_prewarmed` still means "trader cache warm for this mint", and a rejected parse just retries on the next swap.
 
 ## Decoder — `decode/`
 

@@ -15,7 +15,7 @@ use sqlx::PgPool;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinHandle;
 
-use ingest_laserstream::{Ingest, IngestConfig, IngestHandle, PoolIndex, Protocol};
+use ingest_laserstream::{Ingest, IngestConfig, IngestHandle, PoolIndex, Protocol, PushHooks};
 
 use trading_core::{
     models::ingest::{SseEvent, StrategyPing},
@@ -50,6 +50,7 @@ pub async fn spawn_ingest(
     live_rx: watch::Receiver<bool>,
     trader: Arc<dyn TraderHook>,
     trade_signals: Arc<TradeSignals>,
+    push_hooks: PushHooks,
 ) -> IngestSpawnResult {
     let (strategy_tx, strategy_rx) =
         mpsc::channel::<StrategyPing>(STRATEGY_QUEUE_CAP);
@@ -64,6 +65,7 @@ pub async fn spawn_ingest(
         .api_key(api_key)
         .protocol(Protocol::pump_fun())
         .config(IngestConfig::default())
+        .push_hooks(push_hooks)
         .build()
         .expect("ingest builder failed")
         .start(live);

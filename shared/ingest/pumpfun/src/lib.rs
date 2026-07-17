@@ -38,7 +38,7 @@ pub mod protocol;
 pub mod transport;
 pub mod venue;
 
-pub use ingest_core::{Commitment, IngestConfig, IngestError, IngestEvent, Result};
+pub use ingest_core::{Commitment, IngestConfig, IngestError, IngestEvent, PushHooks, Result};
 pub use pool::PoolIndex;
 pub use protocol::Protocol;
 pub use venue::PumpFunVenue;
@@ -70,6 +70,7 @@ pub struct IngestBuilder {
     api_key: Option<String>,
     protocol: Option<Protocol>,
     config: Option<IngestConfig>,
+    push_hooks: Option<PushHooks>,
 }
 
 impl IngestBuilder {
@@ -93,6 +94,13 @@ impl IngestBuilder {
         self
     }
 
+    /// Optional push-feed hooks (`blocks_meta` + watched-account updates on the
+    /// same LaserStream subscription) — see [`PushHooks`]. Off by default.
+    pub fn push_hooks(mut self, hooks: PushHooks) -> Self {
+        self.push_hooks = Some(hooks);
+        self
+    }
+
     pub fn build(self) -> Result<Ingest> {
         let endpoint = self
             .endpoint
@@ -104,12 +112,15 @@ impl IngestBuilder {
         let protocol = self.protocol.unwrap_or_else(Protocol::pump_fun);
 
         let venue = Arc::new(PumpFunVenue::new(protocol, &config));
-        let inner = ingest_core::Ingest::new(
+        let mut inner = ingest_core::Ingest::new(
             endpoint,
             ingest_core::Auth::XToken(api_key),
             venue,
             config,
         );
+        if let Some(hooks) = self.push_hooks {
+            inner = inner.with_push_hooks(hooks);
+        }
         Ok(Ingest { inner })
     }
 }

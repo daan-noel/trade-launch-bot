@@ -44,6 +44,14 @@ pub struct Trade {
     pub venue: Venue,
     pub instruction_type: String,
     pub instruction_labels: Vec<String>,
+    /// AMM trades only: the fully resolved (ALT-included) account list of the
+    /// **top-level** venue swap instruction this trade decoded from, in
+    /// instruction order. Lets a host passively warm its swap-builder caches
+    /// (pool/vault/fee accounts) with zero RPC. `None` for curve trades,
+    /// inner-CPI-routed swaps, and every non-first leg of a multi-swap tx
+    /// (attached once per pool per transaction). `Box` keeps the common
+    /// (`None`) event size flat.
+    pub amm_swap_accounts: Option<Box<Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

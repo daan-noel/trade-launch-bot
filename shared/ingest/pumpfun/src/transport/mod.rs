@@ -25,6 +25,9 @@ pub async fn connect(
 }
 
 /// Build a pump.fun transaction `Subscribe` request (filter-map key `"pumpfun"`).
+/// Transactions only — the one-shot replay path has no use for the optional
+/// push feeds (`blocks_meta` / accounts), which belong to the long-lived
+/// `Ingest` session.
 pub fn build_subscribe_request(
     account_include: Vec<String>,
     from_slot: Option<u64>,
@@ -35,5 +38,7 @@ pub fn build_subscribe_request(
         account_include,
         from_slot,
         commitment,
+        false,
+        Vec::new(),
     )
 }

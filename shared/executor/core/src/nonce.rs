@@ -62,6 +62,9 @@ impl Engine {
                         if !slot.in_use {
                             if let Some(hash) = slot.cached_hash {
                                 slot.in_use = true;
+                                // New use — lets the pending refresh poll (if
+                                // any) detect it must not touch this slot.
+                                slot.use_epoch = slot.use_epoch.wrapping_add(1);
                                 if waited > 0 {
                                     let events =
                                         self.nonce_wait_events.fetch_add(1, Ordering::Relaxed) + 1;
@@ -116,12 +119,20 @@ impl Engine {
     }
 
     /// After a tx is sent, refresh the nonce hash in the background and clear in_use.
+    ///
+    /// With a host-bridged nonce-account push feed (`on_nonce_account_update`),
+    /// this poll is a FALLBACK only: the push normally re-arms the slot at feed
+    /// speed, and this task notices (epoch/in_use check) and exits without
+    /// spending any RPC read. `nonce.refresh_first_delay_ms` (0 by default, set
+    /// by push-fed hosts) delays the first read into the window where the push
+    /// has normally already won.
     pub fn schedule_nonce_refresh(&self, nonce_pubkey: Pubkey) {
         let rpc = Arc::clone(&self.rpc);
         let slots = Arc::clone(&self.nonce_slots);
         let available = Arc::clone(&self.nonce_available);
         let refresh_max_attempts = self.config.nonce.refresh_max_attempts;
         let refresh_retry_ms = self.config.nonce.refresh_retry_ms;
+        let first_delay_ms = self.config.nonce.refresh_first_delay_ms;
 
         tokio::spawn(async move {
             // The hash the just-sent tx spent — still cached (the slot stayed
@@ -129,10 +140,19 @@ impl Engine {
             // with this same hash: once the in-flight tx lands it consumes the
             // nonce and advances the on-chain blockhash, so a retry built on the
             // old hash is a guaranteed-fail tx (burned retry + escalated tip).
-            let used_hash: Option<Hash> = {
+            // `epoch` identifies OUR use of the slot: if it changes (push re-armed
+            // it and another tx acquired it), this task must not touch the slot.
+            let (used_hash, epoch): (Option<Hash>, u64) = {
                 let guard = slots.lock().unwrap_or_else(|p| p.into_inner());
-                guard.get(&nonce_pubkey).and_then(|s| s.cached_hash)
+                match guard.get(&nonce_pubkey) {
+                    Some(s) => (s.cached_hash, s.use_epoch),
+                    None => return,
+                }
             };
+
+            if first_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(first_delay_ms)).await;
+            }
 
             // Re-read the nonce account until its blockhash actually advances past
             // `used_hash` (i.e. the spend is visible — robust to the read commitment
@@ -142,6 +162,16 @@ impl Engine {
             let mut advanced: Option<Hash> = None;
             let mut last_ok: Option<Hash> = None;
             for attempt in 0..refresh_max_attempts {
+                // Push already re-armed this use (or a new use started) — done,
+                // and every remaining RPC read is saved.
+                {
+                    let guard = slots.lock().unwrap_or_else(|p| p.into_inner());
+                    match guard.get(&nonce_pubkey) {
+                        Some(s) if s.use_epoch == epoch && s.in_use => {}
+                        _ => return,
+                    }
+                }
+
                 let result: Result<Hash> = async {
                     let account = rpc
                         .get_account(&nonce_pubkey)
@@ -174,6 +204,12 @@ impl Engine {
 
             let mut guard = slots.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(slot) = guard.get_mut(&nonce_pubkey) {
+                // Same guard as inside the loop: if the push feed re-armed this
+                // use (and possibly a new tx acquired the slot), writing here
+                // would free a slot that's genuinely busy — leave it alone.
+                if slot.use_epoch != epoch || !slot.in_use {
+                    return;
+                }
                 // Prefer the advanced hash; else the last good read (== the old
                 // hash, valid because the tx didn't consume it). Only when every
                 // read errored do we drop the hash (re-fetched fresh on next use).
@@ -192,6 +228,62 @@ impl Engine {
             // the next free slot — no worse than the old fixed-sleep poll.
             available.notify_one();
         });
+    }
+
+    /// Push-based nonce re-arm: feed one subscribed nonce-account update
+    /// (`accounts` filter on the LaserStream subscription) into the slot cache.
+    /// `data` is the raw account data; `slot` the update's slot (gates out
+    /// replayed/out-of-order updates on reconnect).
+    ///
+    /// Semantics per state:
+    /// - blockhash unchanged → no-op (startup snapshot, or our tx hasn't landed).
+    /// - blockhash advanced while `in_use` → the in-flight tx landed: cache the
+    ///   new hash and re-arm the slot at feed speed (the fallback poll in
+    ///   [`Self::schedule_nonce_refresh`] then exits without any RPC read).
+    /// - blockhash advanced while free → external advance; just refresh the cache.
+    pub fn on_nonce_account_update(&self, pubkey: &Pubkey, data: &[u8], slot: u64) {
+        // Not one of ours / not yet initialized — ignore silently (the accounts
+        // filter should only carry our pool, but stay defensive).
+        if !self.nonce_pubkeys.contains(pubkey) {
+            return;
+        }
+        // Decode the durable-nonce state from the raw pushed bytes via the same
+        // `nonce_utils` decode the RPC path uses (wrap in a system-owned Account).
+        let account = solana_sdk::account::Account {
+            lamports: 1,
+            data: data.to_vec(),
+            owner: solana_sdk::system_program::id(),
+            executable: false,
+            rent_epoch: 0,
+        };
+        let hash = match nonce_utils::state_from_account(&account) {
+            Ok(State::Initialized(d)) => d.blockhash(),
+            _ => return,
+        };
+
+        let rearmed = {
+            let mut guard = self.nonce_slots.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(s) = guard.get_mut(pubkey) else {
+                return;
+            };
+            if slot <= s.last_push_slot {
+                return; // replay / out-of-order
+            }
+            s.last_push_slot = slot;
+            if s.cached_hash == Some(hash) {
+                return; // no advance visible yet
+            }
+            s.cached_hash = Some(hash);
+            if s.in_use {
+                s.in_use = false;
+                true
+            } else {
+                false
+            }
+        };
+        if rearmed {
+            self.nonce_available.notify_one();
+        }
     }
 
     /// Read-only audit of **every** configured nonce account: fetch each on-chain,

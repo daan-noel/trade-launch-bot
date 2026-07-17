@@ -200,6 +200,7 @@ impl Decoder {
                 venue: Venue::Curve,
                 instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
                 instruction_labels: instruction_labels.clone(),
+                amm_swap_accounts: None,
             }));
         }
 
@@ -320,11 +321,52 @@ impl Decoder {
         let signature = bs58::encode(&info.signature).into_string();
         let (labels, _, _) = build_labels_pb(message, meta, &keys, p);
 
+        // Passive account-list harvest for the executor's zero-RPC pool warmup:
+        // resolve the full (ALT-included) account list of each TOP-LEVEL
+        // pump_swap `buy`/`sell` whose pool is one of the trades we're emitting.
+        // Inner-CPI-routed swaps are skipped (their account order belongs to the
+        // router; the next direct swap of the coin provides). One list per pool
+        // per tx, materialized only for tracked pools — the strings are the only
+        // per-event alloc this adds.
+        let mut harvested: Vec<(String, Vec<String>)> = Vec::new();
+        {
+            let ps_bytes: &[u8] = p.programs.pump_swap.bytes.as_ref();
+            let buy = &p.discriminators.buy;
+            let sell = &p.discriminators.sell;
+            for ix in &message.instructions {
+                if keys.raw(ix.program_id_index as usize) != Some(ps_bytes) || ix.data.len() < 8 {
+                    continue;
+                }
+                if &ix.data[..8] != buy && &ix.data[..8] != sell {
+                    continue;
+                }
+                let Some(&pool_idx) = ix.accounts.first() else { continue };
+                let pool = keys.get(pool_idx as usize);
+                if pool.is_empty()
+                    || harvested.iter().any(|(seen, _)| seen == pool)
+                    || !resolved.iter().any(|(ev, _)| ev.pool == pool)
+                {
+                    continue;
+                }
+                let list: Vec<String> = ix
+                    .accounts
+                    .iter()
+                    .map(|&i| keys.get(i as usize).to_string())
+                    .collect();
+                harvested.push((pool.to_string(), list));
+            }
+        }
+
         let mut events = Vec::with_capacity(resolved.len());
         for (i, (ev, mint)) in resolved.iter().enumerate() {
+            // Attach the harvested list to the FIRST emitted trade of its pool.
+            let accounts = harvested
+                .iter_mut()
+                .find(|(pool, list)| pool == &ev.pool && !list.is_empty())
+                .map(|(_, list)| Box::new(std::mem::take(list)));
             events.push(IngestEvent::Trade(build_amm_trade(
                 ev, mint, &signature, slot, received_at, received_at,
-                labels.clone(), info.index as u32, i as u32,
+                labels.clone(), info.index as u32, i as u32, accounts,
             )));
         }
 
@@ -419,6 +461,7 @@ impl Decoder {
             venue: Venue::Curve,
             instruction_type: match side { Side::Buy => "Buy".to_string(), Side::Sell => "Sell".to_string() },
             instruction_labels,
+            amm_swap_accounts: None,
         }))
     }
 }

@@ -13,8 +13,6 @@
 //! - re-exports of [`StrategyPing`] and [`TradeSignals`], the two event/wakeup
 //!   types that cross the contract boundary.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -50,20 +48,19 @@ pub struct IngestHandles {
 ///
 /// - `update_live_reserves` — called on every tracked-token trade to feed the
 ///   reserve cache, avoiding an on-chain read on the hot exit path.
-/// - `prewarm_amm_pool` — called (once, in the background) on a token's first
-///   AMM trade to warm PumpSwap pool caches ahead of the eventual exit.
+/// - `observe_amm_swap_accounts` — called with an observed AMM swap's resolved
+///   account list to warm the trader's PumpSwap pool caches with zero RPC
+///   (replaces the old RPC `prewarm_amm_pool`).
 pub trait TraderHook: Send + Sync + 'static {
     /// Feed a post-trade reserve snapshot into the live cache.
     /// `token_reserves` and `sol_reserves` are in the same units the trade
     /// carries (`f64`); `is_amm` tags curve vs AMM venue.
     fn update_live_reserves(&self, mint: &str, token_reserves: f64, sol_reserves: f64, is_amm: bool);
 
-    /// Warm PumpSwap pool caches for `mint` ahead of the next AMM sell.
-    /// Called once per token on its first AMM trade; returns a boxed future
-    /// so the trait is object-safe without `async-trait`.
-    fn prewarm_amm_pool<'a>(
-        &'a self,
-        mint: &'a str,
-        token_program: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+    /// Harvest one observed AMM swap's account list (`keys`, the fully resolved
+    /// list of a top-level PumpSwap buy/sell of `mint`) into the trader's pool
+    /// caches. Pure CPU — safe to call inline from the ingest consumer. Returns
+    /// `true` when the trader cache is warm for `mint` (already warm, or this
+    /// parse succeeded); `false` = not recognized, retry on the next swap.
+    fn observe_amm_swap_accounts(&self, mint: &str, token_program: &str, keys: &[String]) -> bool;
 }

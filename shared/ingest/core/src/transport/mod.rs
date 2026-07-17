@@ -33,7 +33,8 @@ use crate::config::Auth;
 use crate::proto::geyser::geyser_client::GeyserClient;
 use crate::proto::geyser::subscribe_update::UpdateOneof;
 use crate::proto::geyser::{
-    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions,
+    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
+    SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterTransactions,
     SubscribeUpdateTransaction,
 };
 use crate::venue::IngestVenue;
@@ -42,6 +43,45 @@ use crate::venue::IngestVenue;
 //   the inner run_once which receives them as references) ──────────────────────
 
 const REQUEST_QUEUE_CAP: usize = 16;
+
+// ── Push-feed hooks ───────────────────────────────────────────────────────────
+
+/// Optional push feeds carried on the SAME LaserStream subscription as the
+/// transaction stream (gRPC messages are covered by the subscription, not
+/// per-call RPC credits). Venue-neutral: the host decides what to do with each
+/// update (e.g. bridge block metas into an executor's blockhash cache and nonce
+/// account updates into its durable-nonce slots).
+///
+/// Both callbacks run ON THE TRANSPORT TASK — they must be cheap and
+/// non-blocking (parse + store; no I/O, no `.await`).
+#[derive(Default)]
+pub struct PushHooks {
+    /// Extra account pubkeys (base58) subscribed via an `accounts` filter.
+    /// Updates arrive at `on_account`. Empty ⇒ no accounts filter.
+    pub watch_accounts: Vec<String>,
+    /// Called on every `blocks_meta` update with `(slot, blockhash)`. `Some` ⇒
+    /// a `blocks_meta` filter is added to the subscription.
+    #[allow(clippy::type_complexity)]
+    pub on_block_meta: Option<Box<dyn Fn(u64, &str) + Send + Sync>>,
+    /// Called on every watched-account update with `(slot, pubkey_base58,
+    /// account_data)`.
+    #[allow(clippy::type_complexity)]
+    pub on_account: Option<Box<dyn Fn(u64, &str, &[u8]) + Send + Sync>>,
+}
+
+impl PushHooks {
+    fn wants_blocks_meta(&self) -> bool {
+        self.on_block_meta.is_some()
+    }
+
+    fn account_filter(&self) -> Vec<String> {
+        if self.on_account.is_some() {
+            self.watch_accounts.clone()
+        } else {
+            Vec::new()
+        }
+    }
+}
 
 /// Why a single stream attempt ended.
 #[derive(Clone, Copy)]
@@ -145,13 +185,17 @@ pub async fn connect(
         .max_decoding_message_size(cfg.max_decoding_message_size))
 }
 
-/// Build a transaction `Subscribe` request. `filter_key` is the transaction
-/// filter-map key (a label the venue owns; was the hardcoded `"pumpfun"`).
+/// Build a `Subscribe` request. `filter_key` is the transaction filter-map key
+/// (a label the venue owns; was the hardcoded `"pumpfun"`). `blocks_meta` adds
+/// a block-meta filter; `watch_accounts` (non-empty) adds an `accounts` filter
+/// — both feed the optional [`PushHooks`].
 pub fn build_subscribe_request(
     filter_key: &str,
     account_include: Vec<String>,
     from_slot: Option<u64>,
     commitment: CommitmentLevel,
+    blocks_meta: bool,
+    watch_accounts: Vec<String>,
 ) -> SubscribeRequest {
     let mut transactions = HashMap::new();
     transactions.insert(
@@ -165,12 +209,27 @@ pub fn build_subscribe_request(
             account_required: Vec::new(),
         },
     );
-    SubscribeRequest {
+    let mut req = SubscribeRequest {
         transactions,
         commitment: Some(commitment as i32),
         from_slot,
         ..Default::default()
+    };
+    if blocks_meta {
+        req.blocks_meta
+            .insert(filter_key.to_string(), SubscribeRequestFilterBlocksMeta {});
     }
+    if !watch_accounts.is_empty() {
+        req.accounts.insert(
+            filter_key.to_string(),
+            SubscribeRequestFilterAccounts {
+                account: watch_accounts,
+                owner: Vec::new(),
+                filters: Vec::new(),
+            },
+        );
+    }
+    req
 }
 
 // ── Transport run parameters ──────────────────────────────────────────────────
@@ -226,6 +285,7 @@ impl Default for TransportConfig {
 /// mode (no `from_slot`). When true, a `from_slot` is sent only if the gap since
 /// last progress is within `gap_replay_max_window_secs`; larger gaps re-subscribe
 /// live to avoid replaying a huge backlog.
+#[allow(clippy::too_many_arguments)]
 pub async fn run<V: IngestVenue>(
     endpoint: String,
     auth: Auth,
@@ -234,6 +294,7 @@ pub async fn run<V: IngestVenue>(
     mut live_rx: watch::Receiver<bool>,
     cfg: Arc<TransportConfig>,
     mut gap_replay_rx: watch::Receiver<(bool, u64)>,
+    push: Arc<PushHooks>,
 ) {
     let mut from_slot: Option<u64> = None;
     let mut backoff = cfg.reconnect_base;
@@ -258,6 +319,7 @@ pub async fn run<V: IngestVenue>(
             from_slot,
             &last_slot,
             &cfg,
+            &push,
         )
         .await;
 
@@ -329,6 +391,7 @@ async fn run_once<V: IngestVenue>(
     from_slot: Option<u64>,
     last_slot: &AtomicU64,
     cfg: &TransportConfig,
+    push: &PushHooks,
 ) -> DisconnectReason {
     match from_slot {
         Some(slot) => info!("LaserStream: connecting to {endpoint} (replay from slot {slot})"),
@@ -351,6 +414,8 @@ async fn run_once<V: IngestVenue>(
         venue.subscription_accounts(),
         from_slot,
         cfg.commitment,
+        push.wants_blocks_meta(),
+        push.account_filter(),
     );
     if req_tx.send(initial).await.is_err() {
         error!("LaserStream: request channel closed before initial subscribe");
@@ -379,7 +444,23 @@ async fn run_once<V: IngestVenue>(
             msg = stream.message() => {
                 match msg {
                     Ok(Some(update)) => {
-                        if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof {
+                        match update.update_oneof {
+                        // Push feeds (cheap host callbacks; see `PushHooks`).
+                        // Deliberately do NOT touch `last_update`: the idle
+                        // watchdog guards the TRANSACTION stream, and block
+                        // metas keep flowing even when it silently dies.
+                        Some(UpdateOneof::BlockMeta(meta)) => {
+                            if let Some(hook) = &push.on_block_meta {
+                                hook(meta.slot, &meta.blockhash);
+                            }
+                        }
+                        Some(UpdateOneof::Account(acc)) => {
+                            if let (Some(hook), Some(info)) = (&push.on_account, acc.account.as_ref()) {
+                                let pubkey = bs58::encode(&info.pubkey).into_string();
+                                hook(acc.slot, &pubkey, &info.data);
+                            }
+                        }
+                        Some(UpdateOneof::Transaction(tx)) => {
                             if tx.slot > last_slot.fetch_max(tx.slot, Ordering::Relaxed) {
                                 last_update = tokio::time::Instant::now();
                             }
@@ -408,6 +489,8 @@ async fn run_once<V: IngestVenue>(
                                 }
                             }
                         }
+                        _ => {}
+                        }
                     }
                     Ok(None) => {
                         info!("LaserStream: server closed the stream");
@@ -432,6 +515,8 @@ async fn run_once<V: IngestVenue>(
                     venue.subscription_accounts(),
                     None,
                     cfg.commitment,
+                    push.wants_blocks_meta(),
+                    push.account_filter(),
                 );
                 if req_tx.send(req).await.is_err() {
                     return DisconnectReason::Graceful;
@@ -478,10 +563,58 @@ mod tests {
             vec!["acct".to_string()],
             Some(42),
             CommitmentLevel::Processed,
+            false,
+            Vec::new(),
         );
         assert!(req.transactions.contains_key("myvenue"));
         assert_eq!(req.from_slot, Some(42));
         assert_eq!(req.transactions["myvenue"].account_include, vec!["acct".to_string()]);
+        // No push hooks → no extra filters (a push-less host's subscription is
+        // byte-identical to the pre-push one).
+        assert!(req.blocks_meta.is_empty());
+        assert!(req.accounts.is_empty());
+    }
+
+    /// Push hooks ride the SAME subscription: `blocks_meta` + `accounts` filters
+    /// appear only when the corresponding hook is set.
+    #[test]
+    fn build_subscribe_request_adds_push_filters() {
+        let req = build_subscribe_request(
+            "myvenue",
+            Vec::new(),
+            None,
+            CommitmentLevel::Processed,
+            true,
+            vec!["nonce1".to_string(), "nonce2".to_string()],
+        );
+        assert!(req.blocks_meta.contains_key("myvenue"));
+        assert_eq!(
+            req.accounts["myvenue"].account,
+            vec!["nonce1".to_string(), "nonce2".to_string()]
+        );
+    }
+
+    /// `PushHooks` gating: an account list without an `on_account` hook (or a
+    /// hook without accounts) must not create an accounts filter.
+    #[test]
+    fn push_hooks_gate_their_filters() {
+        let none = PushHooks::default();
+        assert!(!none.wants_blocks_meta());
+        assert!(none.account_filter().is_empty());
+
+        let accounts_no_hook = PushHooks {
+            watch_accounts: vec!["a".into()],
+            ..Default::default()
+        };
+        assert!(accounts_no_hook.account_filter().is_empty());
+
+        let wired = PushHooks {
+            watch_accounts: vec!["a".into()],
+            on_block_meta: Some(Box::new(|_, _| {})),
+            on_account: Some(Box::new(|_, _, _| {})),
+        };
+        assert!(wired.wants_blocks_meta());
+        assert_eq!(wired.account_filter(), vec!["a".to_string()]);
     }
 
     /// Provider-as-config: the `x-token` header is inserted only when the

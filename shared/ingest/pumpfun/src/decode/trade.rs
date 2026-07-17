@@ -295,7 +295,11 @@ pub(super) fn decode_pump_swap_trades_from_inner(
 }
 
 /// Build a [`Trade`] event from a decoded PumpSwap (AMM) swap.
-#[allow(clippy::too_many_arguments)]
+/// `amm_swap_accounts` — the top-level swap ix's resolved account list, when the
+/// decode harvested one for this trade's pool (see `decode_amm_live_pb`).
+/// (`Box<Vec<..>>` is deliberate: it keeps the common `None` event size flat —
+/// see the field docs on [`Trade`].)
+#[allow(clippy::too_many_arguments, clippy::box_collection)]
 pub(super) fn build_amm_trade(
     ev: &DecodedAmmTrade,
     mint: &str,
@@ -306,6 +310,7 @@ pub(super) fn build_amm_trade(
     instruction_labels: Vec<String>,
     tx_index: u32,
     leg_index: u32,
+    amm_swap_accounts: Option<Box<Vec<String>>>,
 ) -> Trade {
     let side = if ev.is_buy { Side::Buy } else { Side::Sell };
     let price = if ev.base_amount > 0 {
@@ -338,6 +343,7 @@ pub(super) fn build_amm_trade(
         venue: Venue::Amm,
         instruction_type: if ev.is_buy { "Buy".to_string() } else { "Sell".to_string() },
         instruction_labels,
+        amm_swap_accounts,
     }
 }
 

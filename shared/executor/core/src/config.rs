@@ -116,6 +116,11 @@ pub struct NonceCfg {
     pub refresh_max_attempts: usize,
     /// Delay between nonce-refresh re-reads, in milliseconds.
     pub refresh_retry_ms: u64,
+    /// Delay before the refresh's FIRST re-read, in milliseconds. 0 = read
+    /// immediately (poll-only hosts). A host that bridges a nonce-account push
+    /// feed (`on_nonce_account_update`) sets this to ~2000 so the push normally
+    /// re-arms the slot first and the poll exits without spending any RPC read.
+    pub refresh_first_delay_ms: u64,
 }
 
 impl Default for NonceCfg {
@@ -123,8 +128,9 @@ impl Default for NonceCfg {
         Self {
             max_wait_iters: 200,
             wait_sleep_ms: 20,
-            refresh_max_attempts: 8,
+            refresh_max_attempts: 4,
             refresh_retry_ms: 150,
+            refresh_first_delay_ms: 0,
         }
     }
 }

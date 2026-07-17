@@ -97,9 +97,11 @@ pub struct GlobalAccount {
     pub stable_quote_mint: Option<Pubkey>,
 }
 
-/// Cached PumpSwap pool facts for a migrated token, read once from the on-chain
-/// `Pool` account (see offsets in `constants`).
-#[derive(Debug, Clone, Copy)]
+/// Cached PumpSwap pool facts for a migrated token. Filled from either source:
+/// the on-chain `Pool` account (RPC cold path, see offsets in `constants`) or a
+/// passively observed swap's account list (`observe_amm_swap_accounts` — the
+/// zero-RPC feed harvest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AmmPoolInfo {
     pub pool: Pubkey,
     pub base_mint: Pubkey,
@@ -107,13 +109,23 @@ pub(crate) struct AmmPoolInfo {
     pub base_token_program: Pubkey,
     pub pool_base_token_account: Pubkey,
     pub pool_quote_token_account: Pubkey,
+    /// The pool's creator, read from the on-chain `Pool` account. A swap's
+    /// account list does not carry it (only the derived vault pair below), so a
+    /// feed-harvested entry stores `Pubkey::default()` — the only consumer that
+    /// needs the raw creator is the 2006 self-heal (`refresh_amm_pool_info`),
+    /// which re-reads the pool from chain anyway.
     pub coin_creator: Pubkey,
+    /// PDA(["creator_vault", coin_creator]) + its WSOL ATA — derived once here
+    /// (RPC path) or read straight off an observed swap (harvest path), so
+    /// `amm_swap_accounts` just copies them.
+    pub coin_creator_vault_ata: Pubkey,
+    pub coin_creator_vault_authority: Pubkey,
     pub is_cashback_coin: bool,
     /// Per-coin "fee-share" marker account the deployed pump_amm requires in
     /// non-cashback swaps (between `fee_program` and the buyback pair). It's an
     /// uninitialized PDA the program derives but no published IDL documents and
-    /// we can't reproduce offline — read from a recent on-chain swap and cached.
-    /// `None` for cashback pools (they use a derivable cashback block instead).
+    /// we can't reproduce offline — read from an observed/recent on-chain swap
+    /// and cached. `None` for cashback pools (derivable cashback block instead).
     pub fee_share_marker: Option<Pubkey>,
 }
 
@@ -176,6 +188,9 @@ pub struct PumpFunTrader {
     // instant lets `amm_config` refresh past a max-age.
     pub(crate) amm_global_config:
         Arc<std::sync::Mutex<Option<(AmmGlobalConfig, std::time::Instant)>>>,
+    // De-dup flag for `amm_config`'s stale-while-revalidate background refresh
+    // (one in-flight fetch at a time; see `spawn_amm_config_refresh`).
+    pub(crate) amm_config_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
 
     // Per-token caches.
     pub(crate) user_token_accounts: Arc<DashMap<String, Pubkey>>,
@@ -290,6 +305,7 @@ impl PumpFunTrader {
             amm_user_volume_accumulator,
             amm_pool_cache: Arc::new(DashMap::new()),
             amm_global_config: Arc::new(std::sync::Mutex::new(None)),
+            amm_config_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             user_token_accounts: Arc::new(DashMap::new()),
             token_pdas: Arc::new(DashMap::new()),
             curve_routing_cache: Arc::new(DashMap::new()),

@@ -254,24 +254,26 @@ impl IngestConsumer {
         // in the same order as before (the confirm loop re-queries `trades` on the
         // next notify; waking it before the write is even queued could miss a
         // last-leg clear under backpressure).
-        let (metrics, to_warm) = match self.token_cache.get_mut(&mint) {
+        let metrics = match self.token_cache.get_mut(&mint) {
             Some(mut token_state) => {
                 token_state.add_trade(core_trade);
-                let metrics = metrics_from_state(&mint, &token_state);
-                let to_warm = if is_amm && !token_state.amm_pool_prewarmed {
-                    match token_state.token.token_program_id.clone() {
-                        Some(token_program) => {
-                            token_state.amm_pool_prewarmed = true;
-                            Some(token_program)
-                        }
-                        None => None,
+                // Zero-RPC AMM pool warmup: when the event carries the swap's
+                // resolved account list, harvest it inline (pure CPU parse — no
+                // spawn, no I/O). `amm_pool_prewarmed` keeps its meaning ("trader
+                // cache warm for this mint"); a rejected parse simply retries on
+                // the next observed swap for free.
+                if is_amm && !token_state.amm_pool_prewarmed {
+                    if let (Some(token_program), Some(keys)) = (
+                        token_state.token.token_program_id.clone(),
+                        e.amm_swap_accounts.as_deref(),
+                    ) {
+                        token_state.amm_pool_prewarmed =
+                            self.trader.observe_amm_swap_accounts(&mint, &token_program, keys);
                     }
-                } else {
-                    None
-                };
-                (Some(metrics), to_warm)
+                }
+                Some(metrics_from_state(&mint, &token_state))
             }
-            None => (None, None),
+            None => None,
         };
 
         if let Some((token_reserves, sol_reserves)) = reserve_snapshot {
@@ -291,20 +293,6 @@ impl IngestConsumer {
 
         if let Some(metrics) = metrics {
             self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
-        }
-
-        if let Some(token_program) = to_warm {
-            let trader = self.trader.clone();
-            let token_cache = self.token_cache.clone();
-            let warm_mint = mint.clone();
-            tokio::spawn(async move {
-                if let Err(err) = trader.prewarm_amm_pool(&warm_mint, &token_program).await {
-                    debug!("AMM pool prewarm failed for {warm_mint}: {err}");
-                    if let Some(mut s) = token_cache.get_mut(&warm_mint) {
-                        s.amm_pool_prewarmed = false;
-                    }
-                }
-            });
         }
 
         self.emit_sse(SseEvent::TradeExecuted {

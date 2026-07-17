@@ -92,6 +92,7 @@ async fn pump_fun_events_project_onto_the_schema() {
         venue: Venue::Curve,
         instruction_type: "Buy".to_string(),
         instruction_labels: vec!["Buy".to_string()],
+        amm_swap_accounts: None,
     };
     let wid = WalletDictRepo::intern(pool, &trade.wallet).await.unwrap();
     let row = map::trade_to_row(&adapter, wid, &trade).unwrap();

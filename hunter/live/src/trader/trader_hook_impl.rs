@@ -5,8 +5,6 @@
 //! directly in `backend`. The solution is a transparent newtype wrapper that is
 //! local to this crate and delegates every call to the inner trader.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use trading_core::ingest::TraderHook;
@@ -21,18 +19,7 @@ impl TraderHook for TraderHookBridge {
         self.0.update_live_reserves(mint, token_reserves, sol_reserves, is_amm);
     }
 
-    fn prewarm_amm_pool<'a>(
-        &'a self,
-        mint: &'a str,
-        token_program: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        // `prewarm_amm_pool` now returns `pump_trader::TradeError`; map it into the
-        // `anyhow::Result` the `TraderHook` trait expects.
-        Box::pin(async move {
-            self.0
-                .prewarm_amm_pool(mint, token_program)
-                .await
-                .map_err(anyhow::Error::from)
-        })
+    fn observe_amm_swap_accounts(&self, mint: &str, token_program: &str, keys: &[String]) -> bool {
+        self.0.observe_amm_swap_accounts(mint, token_program, keys)
     }
 }

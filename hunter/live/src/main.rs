@@ -505,12 +505,22 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.parse::<solana_sdk::pubkey::Pubkey>())
         .collect::<Result<Vec<_>, _>>()
         .context("Failed to parse NONCE_ACCOUNTS as pubkeys")?;
-    let trader_config = Arc::new(TraderConfig::new(
+    let mut trader_config = TraderConfig::new(
         settings.helius_rpc_url.clone(),
         secrets.helius_sender_urls.clone(),
         signer,
-        nonce_accounts,
-    ));
+        nonce_accounts.clone(),
+    );
+    // RPC-reduction tuning (docs/plans/rpc/helius-rpc-reduction-plan.md): the
+    // LaserStream push hooks below keep the blockhash cache ~400 ms fresh and
+    // re-arm nonce slots at feed speed, so the executor's pollers are demoted to
+    // stall fallbacks. 10 s watchdog tick (fetches only when the feed stalls);
+    // 30 s max-age stays well inside the ~60 s hash validity window; the 2 s
+    // first-delay lets the nonce push win before the fallback poll spends reads.
+    trader_config.cache.blockhash_refresh_ms = 10_000;
+    trader_config.cache.blockhash_max_age_ms = 30_000;
+    trader_config.nonce.refresh_first_delay_ms = 2_000;
+    let trader_config = Arc::new(trader_config);
 
     let mut trader = PumpFunTrader::new(trader_config);
     trader
@@ -558,8 +568,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Background SOL-balance refresh: keeps `PumpFunTrader::can_commit_buy` accurate
-    // without ever hitting the RPC on the hot buy path. Polls every 30 s; the first
-    // tick fires immediately so the cache is non-empty before the first snipe fires.
+    // without ever hitting the RPC on the hot buy path. Polls every 60 s (the cache
+    // feeds the buy affordability gate, so it stays at 60 s rather than a longer
+    // telemetry-grade interval); the first tick fires immediately so the cache is
+    // non-empty before the first snipe fires.
     {
         let trader = trader.clone();
         tokio::spawn(async move {
@@ -568,7 +580,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok(lamports) => trader.update_balance_lamports_cache(lamports),
                     Err(e) => warn!("SOL balance refresh failed (guard stays on last cached value): {e}"),
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             }
         });
     }
@@ -640,6 +652,29 @@ async fn main() -> anyhow::Result<()> {
     // Feeds the shared token cache / strategy / SSE / DB. Yields the pool→mint
     // index + migration signal (for DeployState), the strategy receiver, and the
     // long-lived task handles the supervising select watches.
+    // Push feeds riding the same LaserStream subscription (RPC-reduction Phase 2):
+    // block metas feed the recent-blockhash cache (steady state: zero
+    // `getLatestBlockhash`), nonce-account updates re-arm durable-nonce slots at
+    // feed speed (the executor's post-send poll becomes a stall fallback). Both
+    // callbacks are cheap parses running on the transport task.
+    let push_hooks = {
+        let bh_trader = trader.clone();
+        let nonce_trader = trader.clone();
+        ingest_laserstream::PushHooks {
+            watch_accounts: nonce_accounts.iter().map(|pk| pk.to_string()).collect(),
+            on_block_meta: Some(Box::new(move |slot, blockhash| {
+                if let Ok(hash) = blockhash.parse::<solana_sdk::hash::Hash>() {
+                    bh_trader.set_cached_blockhash(hash, slot);
+                }
+            })),
+            on_account: Some(Box::new(move |slot, pubkey, data| {
+                if let Ok(pk) = pubkey.parse::<solana_sdk::pubkey::Pubkey>() {
+                    nonce_trader.on_nonce_account_update(&pk, data, slot);
+                }
+            })),
+        }
+    };
+
     let ingest_result = ingest::spawn_ingest(
         settings.helius_laserstream_url.clone(),
         settings.helius_api_key.clone(),
@@ -650,6 +685,7 @@ async fn main() -> anyhow::Result<()> {
         live_rx,
         Arc::new(trader::TraderHookBridge(trader.clone())),
         trade_signals.clone(),
+        push_hooks,
     ).await;
     let pool_index = ingest_result.pool_index;
     let pools_changed = ingest_result.pools_changed;

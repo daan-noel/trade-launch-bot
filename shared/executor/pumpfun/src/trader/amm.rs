@@ -498,12 +498,10 @@ impl PumpFunTrader {
     ) -> Vec<AccountMeta> {
         let global_config = self.amm_global_config_pda;
         let event_authority = self.amm_event_authority;
-        let cc_authority = self.amm_coin_creator_vault_authority(&pool.coin_creator);
-        let cc_ata = get_associated_token_address_with_program_id(
-            &cc_authority,
-            &protocol::WSOL_MINT,
-            &quote_token_program,
-        );
+        // Derived once at AmmPoolInfo construction (both the RPC and the harvest
+        // path fill them), so the builder just reads.
+        let cc_authority = pool.coin_creator_vault_authority;
+        let cc_ata = pool.coin_creator_vault_ata;
         let fee_config = self.amm_fee_config;
         // The rotating protocol_fee_recipients[0]; accepted by the program.
         let pf_recipient = cfg.protocol_fee_recipient;
@@ -660,6 +658,15 @@ impl PumpFunTrader {
             }
         };
 
+        let coin_creator = read_pubkey(data, AMM_POOL_COIN_CREATOR_OFFSET)?;
+        let coin_creator_vault_authority = self.amm_coin_creator_vault_authority(&coin_creator);
+        // The creator vault is always a WSOL ATA under the LEGACY token program
+        // (the AMM quote side is wrapped SOL), regardless of the base program.
+        let coin_creator_vault_ata = get_associated_token_address_with_program_id(
+            &coin_creator_vault_authority,
+            &protocol::WSOL_MINT,
+            &protocol::TOKEN,
+        );
         let info = AmmPoolInfo {
             pool,
             base_mint: read_pubkey(data, 43)?,
@@ -667,7 +674,9 @@ impl PumpFunTrader {
             base_token_program: Pubkey::from_str(base_token_program_id)?,
             pool_base_token_account: read_pubkey(data, AMM_POOL_BASE_VAULT_OFFSET)?,
             pool_quote_token_account: read_pubkey(data, AMM_POOL_QUOTE_VAULT_OFFSET)?,
-            coin_creator: read_pubkey(data, AMM_POOL_COIN_CREATOR_OFFSET)?,
+            coin_creator,
+            coin_creator_vault_ata,
+            coin_creator_vault_authority,
             is_cashback_coin,
             fee_share_marker,
         };
@@ -680,20 +689,22 @@ impl PumpFunTrader {
     /// (`[marker, buyback_recipient, buyback_recipient_wsol]`); it's per-coin and
     /// constant, so any recent successful swap yields it. `None` if the pool has
     /// no swap in its recent history.
+    ///
+    /// COLD path only: the steady-state source of the marker is the passive feed
+    /// harvest (`observe_amm_swap_accounts`), so this is reached solely from
+    /// manual/exit trades of a pool with no observed swap since boot. The marker
+    /// is in every successful swap, so tx #1 almost always suffices — fetch
+    /// candidates sequentially with early exit instead of bursting
+    /// `getTransaction` calls for all of them.
     async fn fetch_fee_share_marker(&self, pool: &Pubkey) -> Result<Option<Pubkey>> {
         let pool_str = pool.to_string();
         let sigs = self
-            .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 15 }]))
+            .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 5 }]))
             .await?;
         let program_str = protocol::PUMP_SWAP.to_string();
 
-        // The marker is per-coin constant, so *any* successful swap yields it.
-        // Fetch the candidate transactions concurrently and take the first marker
-        // instead of up to 15 sequential `getTransaction` round-trips gating the
-        // (cold) first AMM swap of a coin. Failed txs don't carry the correct
-        // account list, so skip them up front.
-        let mut set = tokio::task::JoinSet::new();
         for s in sigs.as_array().into_iter().flatten() {
+            // Failed txs don't carry the correct account list — skip up front.
             let errored = s.get("err").map(|e| !e.is_null()).unwrap_or(false);
             if errored {
                 continue;
@@ -701,26 +712,17 @@ impl PumpFunTrader {
             let Some(sig) = s.get("signature").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let http = self.http.clone();
-            let rpc_url = self.config.rpc_url.clone();
-            let sig = sig.to_string();
-            set.spawn(async move {
-                rpc_json_call(
-                    &http,
-                    &rpc_url,
+            let tx = match self
+                .rpc_json(
                     "getTransaction",
                     json!([sig, { "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0 }]),
                 )
                 .await
-            });
-        }
-
-        while let Some(joined) = set.join_next().await {
-            let tx = match joined {
-                Ok(Ok(tx)) => tx,
-                // A single failed lookup (join error or RPC error) shouldn't sink
-                // the whole resolution — another candidate may still yield the marker.
-                _ => continue,
+            {
+                Ok(tx) => tx,
+                // A single failed lookup shouldn't sink the whole resolution —
+                // the next candidate may still yield the marker.
+                Err(_) => continue,
             };
             if let Some(marker) = extract_swap_marker(&tx, &program_str, &pool_str) {
                 return Ok(Some(Pubkey::from_str(&marker)?));
@@ -736,52 +738,49 @@ impl PumpFunTrader {
     }
 
     /// Fetch + cache GlobalConfig (fee bps + a protocol fee recipient). Cached
-    /// only up to [`AMM_CONFIG_MAX_AGE`]: fee bps are governance-mutable, so a
+    /// up to [`AMM_CONFIG_MAX_AGE`]: fee bps are governance-mutable, so a
     /// process-lifetime cache would silently keep slippage protection loose after
     /// a fee raise until restart.
+    ///
+    /// Stale-while-revalidate: past the max age the STALE value is served
+    /// immediately and a background refresh is spawned, so a trade never blocks
+    /// on this RPC read once the process has fetched the config once. (Fee bps
+    /// only feed the slippage floor math — one stale window is harmless; the
+    /// old RPC pool-prewarm used to keep this warm as a side effect, and that
+    /// prewarm is gone.) Only the very first call per process fetches inline.
     async fn amm_config(&self) -> Result<AmmGlobalConfig> {
         if let Some((c, fetched)) = *self.amm_global_config.lock().unwrap_or_else(|p| p.into_inner()) {
-            if fetched.elapsed() < AMM_CONFIG_MAX_AGE {
-                return Ok(c);
+            if fetched.elapsed() >= AMM_CONFIG_MAX_AGE {
+                self.spawn_amm_config_refresh();
             }
+            return Ok(c);
         }
 
-        let pda = self.amm_global_config_pda;
-        let account = self
-            .rpc
-            .get_account(&pda)
-            .await
-            .context("Failed to fetch PumpSwap global_config")?;
-        let data = &account.data;
-        if data.len() < AMM_CONFIG_MIN_LEN {
-            bail!("PumpSwap global_config too short: {} bytes", data.len());
-        }
-
-        let lp_fee_bps = read_u64(data, AMM_CONFIG_LP_FEE_BPS_OFFSET)?;
-        let protocol_fee_bps = read_u64(data, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET)?;
-        let coin_creator_fee_bps = read_u64(data, AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET)?;
-
-        // protocol_fee_recipients is [pubkey; 8]; pick the first non-default.
-        let mut protocol_fee_recipient = Pubkey::default();
-        for i in 0..8 {
-            let pk = read_pubkey(data, AMM_CONFIG_FEE_RECIPIENTS_OFFSET + i * 32)?;
-            if pk != Pubkey::default() {
-                protocol_fee_recipient = pk;
-                break;
-            }
-        }
-        if protocol_fee_recipient == Pubkey::default() {
-            bail!("No protocol fee recipient in PumpSwap global_config");
-        }
-
-        let cfg = AmmGlobalConfig {
-            lp_fee_bps,
-            protocol_fee_bps,
-            coin_creator_fee_bps,
-            protocol_fee_recipient,
-        };
+        // Cold (first call this process) — fetch inline.
+        let cfg = fetch_amm_config(&self.rpc, &self.amm_global_config_pda).await?;
         *self.amm_global_config.lock().unwrap_or_else(|p| p.into_inner()) = Some((cfg, Instant::now()));
         Ok(cfg)
+    }
+
+    /// Background revalidation for [`Self::amm_config`]. De-duplicated via the
+    /// `amm_config_refresh_inflight` flag so a burst of stale reads spawns one
+    /// task; failures are dropped (the stale value keeps serving, the next
+    /// stale read re-tries).
+    fn spawn_amm_config_refresh(&self) {
+        use std::sync::atomic::Ordering;
+        if self.amm_config_refresh_inflight.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let rpc = self.rpc.clone();
+        let pda = self.amm_global_config_pda;
+        let cache = self.amm_global_config.clone();
+        let inflight = self.amm_config_refresh_inflight.clone();
+        tokio::spawn(async move {
+            if let Ok(cfg) = fetch_amm_config(&rpc, &pda).await {
+                *cache.lock().unwrap_or_else(|p| p.into_inner()) = Some((cfg, Instant::now()));
+            }
+            inflight.store(false, Ordering::Release);
+        });
     }
 
     /// Current pool reserves = the base/quote vault token balances (raw units).
@@ -830,21 +829,119 @@ impl PumpFunTrader {
         self.amm_reserves(pool).await
     }
 
-    /// Warm the per-token AMM caches (pool facts + fee-share marker + global
-    /// config) ahead of a trade, off the hot path. Idempotent — returns fast once
-    /// cached. Best-effort: callers spawn this in the background and ignore the
-    /// error (the live swap path falls back to the same cold fetch on a miss).
-    /// Needs at least one prior on-chain AMM swap to exist for the pool, so the
-    /// fee-share marker can be read — i.e. call it on/after the first AMM trade.
-    pub async fn prewarm_amm_pool(
+    /// Harvest the per-token AMM pool facts from one observed PumpSwap buy/sell
+    /// account list — the zero-RPC replacement for the old RPC pre-warm. Every
+    /// swap instruction's accounts carry everything a future swap of the same
+    /// coin needs: pool, both vaults, the creator-vault pair, and the tail that
+    /// both discriminates cashback vs non-cashback AND carries the fee-share
+    /// marker. Pure CPU (no I/O), so it's safe to call inline from an ingest
+    /// consumer.
+    ///
+    /// `keys` is the fully resolved (ALT-included) account list of ONE top-level
+    /// pump_amm `buy`/`sell` instruction, in instruction order. Returns `true`
+    /// when the trader cache is warm for `token_mint` (already cached, or this
+    /// parse succeeded); `false` on any mismatch — no side effects, the caller
+    /// simply retries on the next observed swap, and the cold RPC path inside
+    /// [`Self::amm_pool_info`] still covers a never-observed pool.
+    ///
+    /// Head indices mirror [`Self::amm_swap_accounts`] (the builder is the SSOT
+    /// for the layout; the round-trip guard test pins the two together). The
+    /// tail is addressed FROM THE END because the middle differs by side/coin:
+    /// `[.., marker | cashback block, buyback_recipient, buyback_recipient_wsol]`.
+    pub fn observe_amm_swap_accounts(
         &self,
         token_mint: &str,
         base_token_program_id: &str,
-    ) -> Result<()> {
-        self.amm_pool_info(token_mint, None, base_token_program_id)
-            .await?;
-        self.amm_config().await?;
-        Ok(())
+        keys: &[String],
+    ) -> bool {
+        if self.amm_pool_cache.contains_key(token_mint) {
+            return true;
+        }
+        let Some(info) = self.parse_amm_swap_accounts(token_mint, base_token_program_id, keys)
+        else {
+            return false;
+        };
+        self.amm_pool_cache.insert(token_mint.to_string(), info);
+        true
+    }
+
+    /// The pure parse half of [`Self::observe_amm_swap_accounts`]. `None` ⇒ the
+    /// list is not a recognizable canonical-pool swap for `token_mint` (length
+    /// drift after a program upgrade, wrong pool, tail sanity failure, …) — fail
+    /// SAFE to the cold RPC path rather than cache a wrong layout.
+    fn parse_amm_swap_accounts(
+        &self,
+        token_mint: &str,
+        base_token_program_id: &str,
+        keys: &[String],
+    ) -> Option<AmmPoolInfo> {
+        // Smallest known swap list is the non-cashback sell (24 accounts); the
+        // largest is the cashback buy (27). Anything outside that band is a
+        // layout we don't know.
+        if keys.len() < 24 || keys.len() > 27 {
+            return None;
+        }
+        let pk = |i: usize| Pubkey::from_str(keys.get(i)?.as_str()).ok();
+
+        // Head, by fixed IDL index (mirrors `amm_swap_accounts`).
+        let pool = pk(0)?;
+        let base_mint = pk(3)?;
+        let quote_mint = pk(4)?;
+        let pool_base_token_account = pk(7)?;
+        let pool_quote_token_account = pk(8)?;
+        let base_token_program = pk(11)?;
+        let coin_creator_vault_ata = pk(17)?;
+        let coin_creator_vault_authority = pk(18)?;
+
+        // Sanity: canonical pool for this mint, WSOL quote, and the base token
+        // program the caller believes the token uses.
+        let mint = Pubkey::from_str(token_mint).ok()?;
+        if base_mint != mint
+            || quote_mint != protocol::WSOL_MINT
+            || pool != self.derive_amm_pool(&mint)
+            || base_token_program != Pubkey::from_str(base_token_program_id).ok()?
+        {
+            return None;
+        }
+        // The creator vault ATA must be derivable from the authority next to it
+        // — hardens against an index shift moving unrelated accounts into 17/18.
+        let expect_ata = get_associated_token_address_with_program_id(
+            &coin_creator_vault_authority,
+            &protocol::WSOL_MINT,
+            &protocol::TOKEN,
+        );
+        if coin_creator_vault_ata != expect_ata {
+            return None;
+        }
+
+        // Tail, by position from the end. `len-2` is the buyback fee recipient
+        // in every known layout — reject otherwise so a program upgrade that
+        // reshapes the tail fails safe to the cold path.
+        if pk(keys.len() - 2)? != protocol::PUMP_AMM_BUYBACK_FEE_RECIPIENT {
+            return None;
+        }
+        let slot3 = pk(keys.len() - 3)?;
+        let (is_cashback_coin, fee_share_marker) = if slot3 == protocol::PUMP_AMM_CASHBACK_GLOBAL {
+            (true, None)
+        } else {
+            (false, Some(slot3))
+        };
+
+        Some(AmmPoolInfo {
+            pool,
+            base_mint,
+            quote_mint,
+            base_token_program,
+            pool_base_token_account,
+            pool_quote_token_account,
+            // Not present in a swap's account list — see the field docs; the
+            // 2006 self-heal re-reads the pool from chain, never this value.
+            coin_creator: Pubkey::default(),
+            coin_creator_vault_ata,
+            coin_creator_vault_authority,
+            is_cashback_coin,
+            fee_share_marker,
+        })
     }
 
     /// Force-refresh the cached [`AmmPoolInfo`] for `token_mint` by evicting the
@@ -866,7 +963,13 @@ impl PumpFunTrader {
         token_mint: &str,
         base_token_program_id: &str,
     ) -> Result<Option<Pubkey>> {
-        let prev_creator = self.amm_pool_cache.get(token_mint).map(|r| r.coin_creator);
+        // Compare the derived vault AUTHORITY, not the raw creator: the authority
+        // is what the failing swap actually referenced, and a feed-harvested
+        // entry doesn't know its `coin_creator` (only the derived pair).
+        let prev_authority = self
+            .amm_pool_cache
+            .get(token_mint)
+            .map(|r| r.coin_creator_vault_authority);
         // Evict so `amm_pool_info` performs a fresh on-chain read (canonical pool,
         // matching the sell path's `pool_override = None`) instead of serving the
         // stale cached entry.
@@ -874,10 +977,10 @@ impl PumpFunTrader {
         let pool = self
             .amm_pool_info(token_mint, None, base_token_program_id)
             .await?;
-        if prev_creator == Some(pool.coin_creator) {
+        if prev_authority == Some(pool.coin_creator_vault_authority) {
             return Ok(None);
         }
-        Ok(Some(self.amm_coin_creator_vault_authority(&pool.coin_creator)))
+        Ok(Some(pool.coin_creator_vault_authority))
     }
 
     /// override → cache → on-chain lookup (mirrors `sell_token`).
@@ -968,9 +1071,49 @@ fn extract_swap_marker(tx: &serde_json::Value, program: &str, pool: &str) -> Opt
     None
 }
 
-/// Minimal JSON-RPC POST against a full RPC node. Free function (no `&self`
-/// borrow) so the concurrent fee-share-marker lookups can drive it from detached
-/// `JoinSet` tasks; `PumpFunTrader::rpc_json` is a thin wrapper over it.
+/// Fetch + parse the PumpSwap `GlobalConfig` account. Free function (no `&self`)
+/// so the background revalidation task in `spawn_amm_config_refresh` can run it
+/// detached; `amm_config`'s inline cold path uses the same code.
+async fn fetch_amm_config(
+    rpc: &solana_client::nonblocking::rpc_client::RpcClient,
+    pda: &Pubkey,
+) -> Result<AmmGlobalConfig> {
+    let account = rpc
+        .get_account(pda)
+        .await
+        .context("Failed to fetch PumpSwap global_config")?;
+    let data = &account.data;
+    if data.len() < AMM_CONFIG_MIN_LEN {
+        bail!("PumpSwap global_config too short: {} bytes", data.len());
+    }
+
+    let lp_fee_bps = read_u64(data, AMM_CONFIG_LP_FEE_BPS_OFFSET)?;
+    let protocol_fee_bps = read_u64(data, AMM_CONFIG_PROTOCOL_FEE_BPS_OFFSET)?;
+    let coin_creator_fee_bps = read_u64(data, AMM_CONFIG_COIN_CREATOR_FEE_BPS_OFFSET)?;
+
+    // protocol_fee_recipients is [pubkey; 8]; pick the first non-default.
+    let mut protocol_fee_recipient = Pubkey::default();
+    for i in 0..8 {
+        let pk = read_pubkey(data, AMM_CONFIG_FEE_RECIPIENTS_OFFSET + i * 32)?;
+        if pk != Pubkey::default() {
+            protocol_fee_recipient = pk;
+            break;
+        }
+    }
+    if protocol_fee_recipient == Pubkey::default() {
+        bail!("No protocol fee recipient in PumpSwap global_config");
+    }
+
+    Ok(AmmGlobalConfig {
+        lp_fee_bps,
+        protocol_fee_bps,
+        coin_creator_fee_bps,
+        protocol_fee_recipient,
+    })
+}
+
+/// Minimal JSON-RPC POST against a full RPC node.
+/// `PumpFunTrader::rpc_json` is a thin wrapper over it.
 async fn rpc_json_call(
     http: &reqwest::Client,
     rpc_url: &str,
@@ -1091,6 +1234,8 @@ mod tests {
             pool_base_token_account: Pubkey::new_unique(),
             pool_quote_token_account: Pubkey::new_unique(),
             coin_creator: Pubkey::new_unique(),
+            coin_creator_vault_ata: Pubkey::new_unique(),
+            coin_creator_vault_authority: Pubkey::new_unique(),
             is_cashback_coin: true,
             fee_share_marker: None,
         }
@@ -1160,6 +1305,125 @@ mod tests {
     fn wire_size(msg: &Message) -> usize {
         // 1-byte signature count (compact-u16, 1 sig) + 64 B per signature + message.
         1 + 64 * msg.header.num_required_signatures as usize + msg.serialize().len()
+    }
+
+    // --- Harvest parser ↔ builder round-trip guard ---------------------------
+    //
+    // `observe_amm_swap_accounts` parses a swap's account list by the SAME fixed
+    // indices `amm_swap_accounts` builds with. These tests pin the two to one
+    // layout forever: build accounts for a synthetic pool (all four side × coin
+    // variants), feed them to the parser, and require the round-tripped
+    // `AmmPoolInfo` to equal the input. No DB / no network — runs on plain
+    // `cargo test`.
+
+    /// A pool whose derived facts are internally consistent, so the parser's
+    /// sanity checks (canonical pool PDA, creator-vault ATA derivation, WSOL
+    /// quote) all pass — i.e. what a real observed swap of `mint` looks like.
+    fn harvestable_pool(
+        t: &PumpFunTrader,
+        mint: Pubkey,
+        base_token_program: Pubkey,
+        is_cashback_coin: bool,
+    ) -> AmmPoolInfo {
+        let coin_creator = Pubkey::new_unique();
+        let authority = Pubkey::find_program_address(
+            &[b"creator_vault", coin_creator.as_ref()],
+            &protocol::PUMP_SWAP,
+        )
+        .0;
+        let ata = get_associated_token_address_with_program_id(
+            &authority,
+            &protocol::WSOL_MINT,
+            &protocol::TOKEN,
+        );
+        AmmPoolInfo {
+            pool: t.derive_amm_pool(&mint),
+            base_mint: mint,
+            quote_mint: protocol::WSOL_MINT,
+            base_token_program,
+            pool_base_token_account: Pubkey::new_unique(),
+            pool_quote_token_account: Pubkey::new_unique(),
+            coin_creator,
+            coin_creator_vault_ata: ata,
+            coin_creator_vault_authority: authority,
+            is_cashback_coin,
+            fee_share_marker: if is_cashback_coin { None } else { Some(Pubkey::new_unique()) },
+        }
+    }
+
+    fn swap_keys(t: &PumpFunTrader, pool: &AmmPoolInfo, is_buy: bool) -> Vec<String> {
+        let user = Pubkey::new_unique();
+        let legacy = protocol::TOKEN;
+        let user_base = get_associated_token_address_with_program_id(
+            &user,
+            &pool.base_mint,
+            &pool.base_token_program,
+        );
+        let user_quote =
+            get_associated_token_address_with_program_id(&user, &protocol::WSOL_MINT, &legacy);
+        t.amm_swap_accounts(pool, &user, &cfg(), user_base, user_quote, legacy, is_buy)
+            .iter()
+            .map(|m| m.pubkey.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn harvest_round_trips_builder_layout() {
+        let legacy = protocol::TOKEN;
+        let t2022 = Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap();
+        // side × coin-kind × base-program variants (list lengths 24–27).
+        for (is_buy, is_cashback, base_tp) in [
+            (true, false, legacy),
+            (false, false, legacy),
+            (true, true, t2022),
+            (false, true, t2022),
+        ] {
+            let t = dummy_trader();
+            let mint = Pubkey::new_unique();
+            let pool = harvestable_pool(&t, mint, base_tp, is_cashback);
+            let keys = swap_keys(&t, &pool, is_buy);
+
+            assert!(
+                t.observe_amm_swap_accounts(&mint.to_string(), &base_tp.to_string(), &keys),
+                "harvest rejected a builder-produced list (is_buy={is_buy}, cashback={is_cashback})"
+            );
+            let got = *t.amm_pool_cache.get(&mint.to_string()).unwrap();
+            // A swap's account list doesn't carry the raw coin_creator — the
+            // harvested entry stores the default sentinel; everything else must
+            // round-trip exactly.
+            let expect = AmmPoolInfo { coin_creator: Pubkey::default(), ..pool };
+            assert_eq!(got, expect, "is_buy={is_buy}, cashback={is_cashback}");
+        }
+    }
+
+    #[test]
+    fn harvest_rejects_tampered_or_foreign_lists() {
+        let t = dummy_trader();
+        let mint = Pubkey::new_unique();
+        let tp = protocol::TOKEN;
+        let pool = harvestable_pool(&t, mint, tp, false);
+        let good = swap_keys(&t, &pool, true);
+
+        // Wrong buyback recipient at len-2 (a program upgrade reshaping the
+        // tail) must fail safe — no cache insert.
+        let mut bad_tail = good.clone();
+        let n = bad_tail.len();
+        bad_tail[n - 2] = Pubkey::new_unique().to_string();
+        assert!(!t.observe_amm_swap_accounts(&mint.to_string(), &tp.to_string(), &bad_tail));
+
+        // Another mint's swap must not warm this mint (pool PDA mismatch).
+        let other = Pubkey::new_unique();
+        assert!(!t.observe_amm_swap_accounts(&other.to_string(), &tp.to_string(), &good));
+
+        // Truncated list (layout drift) is rejected.
+        assert!(!t.observe_amm_swap_accounts(&mint.to_string(), &tp.to_string(), &good[..20]));
+
+        assert!(!t.amm_pool_cache.contains_key(&mint.to_string()));
+        assert!(!t.amm_pool_cache.contains_key(&other.to_string()));
+
+        // The untampered list parses — and once cached, observe is a fast no-op true.
+        assert!(t.observe_amm_swap_accounts(&mint.to_string(), &tp.to_string(), &good));
+        assert!(t.observe_amm_swap_accounts(&mint.to_string(), &tp.to_string(), &good));
     }
 
     #[test]

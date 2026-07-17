@@ -21,7 +21,7 @@ static DROPPED_EVENTS: AtomicU64 = AtomicU64::new(0);
 use crate::config::{Auth, Commitment, IngestConfig};
 use crate::event::IngestEvent;
 use crate::proto::geyser::{CommitmentLevel, SubscribeUpdateTransaction};
-use crate::transport::{self, TransportConfig};
+use crate::transport::{self, PushHooks, TransportConfig};
 use crate::venue::{DecodeOutput, IngestVenue, PoolIndex};
 
 /// Validated, ready-to-start ingest session, generic over the venue.
@@ -30,6 +30,7 @@ pub struct Ingest<V: IngestVenue> {
     auth: Auth,
     venue: Arc<V>,
     config: IngestConfig,
+    push: Arc<PushHooks>,
 }
 
 impl<V: IngestVenue> Ingest<V> {
@@ -41,7 +42,16 @@ impl<V: IngestVenue> Ingest<V> {
             auth,
             venue,
             config,
+            push: Arc::new(PushHooks::default()),
         }
+    }
+
+    /// Attach optional push-feed hooks (`blocks_meta` / watched-account updates
+    /// on the same subscription). See [`PushHooks`]. Default: none — the
+    /// subscription is unchanged for hosts that don't opt in.
+    pub fn with_push_hooks(mut self, push: PushHooks) -> Self {
+        self.push = Arc::new(push);
+        self
     }
 
     /// Spawn the transport + decode tasks and return the event receiver + handle.
@@ -95,6 +105,7 @@ impl<V: IngestVenue> Ingest<V> {
             live_rx,
             transport_cfg,
             gap_replay_rx,
+            self.push.clone(),
         ));
 
         // Spawn decode task.
