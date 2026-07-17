@@ -344,6 +344,7 @@ export interface ChartToolbarProps {
   metric?: ChartMetric;
   tradeCount: number;
   showTradeMarkers: boolean;
+  showWalletMarkers: boolean;
   showAthLine: boolean;
   athLineAvailable: boolean;
   showMigrationLine: boolean;
@@ -364,6 +365,7 @@ export interface ChartToolbarProps {
   onStyleChange: (style: ChartStyle) => void;
   onMetricChange?: (metric: ChartMetric) => void;
   onShowTradeMarkersChange: (show: boolean) => void;
+  onShowWalletMarkersChange: (show: boolean) => void;
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
   onTrimEmptyBarsChange: (trim: boolean) => void;

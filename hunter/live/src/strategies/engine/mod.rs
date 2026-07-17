@@ -49,6 +49,13 @@ pub enum EngineCommand {
     /// resolves it to the engine `PositionId` via the sink registry, then folds a
     /// `ManualClose` (a no-op if the position isn't a live engine-held one).
     ManualClose { pg_position_id: Uuid },
+    /// Force-close every open position of one **rule** (the per-row Stop). The loop
+    /// resolves the rule's live engine positions via the registry and folds a
+    /// `ManualClose` for each (a no-op for any not currently Holding).
+    CloseRule { rule_id: Uuid },
+    /// Force-close every open position of one **trade mode** (Stop All). Same as
+    /// [`Self::CloseRule`] applied to every position matching `real`.
+    CloseMode { real: bool },
 }
 
 /// A cheap, cloneable handle the HTTP layer holds to talk to the running engine
@@ -74,6 +81,24 @@ impl EngineHandle {
     pub async fn manual_close(&self, pg_position_id: Uuid) -> bool {
         self.cmd_tx
             .send(EngineCommand::ManualClose { pg_position_id })
+            .await
+            .is_ok()
+    }
+
+    /// Ask the loop to force-close every open position of `rule_id` (per-row Stop).
+    /// Returns `false` only if the loop channel is closed (shutting down).
+    pub async fn close_rule(&self, rule_id: Uuid) -> bool {
+        self.cmd_tx
+            .send(EngineCommand::CloseRule { rule_id })
+            .await
+            .is_ok()
+    }
+
+    /// Ask the loop to force-close every open position of one trade mode (Stop All).
+    /// Returns `false` only if the loop channel is closed (shutting down).
+    pub async fn close_mode(&self, real: bool) -> bool {
+        self.cmd_tx
+            .send(EngineCommand::CloseMode { real })
             .await
             .is_ok()
     }
@@ -136,6 +161,24 @@ impl PositionRegistry {
     /// Resolve a PG uuid to the live engine position id (manual close).
     pub fn engine_id(&self, pg_id: Uuid) -> Option<PositionId> {
         self.by_pg.get(&pg_id).map(|e| *e.value())
+    }
+
+    /// Every live engine position id currently held under `rule_id` (per-row Stop).
+    pub fn positions_for_rule(&self, rule_id: RuleId) -> Vec<PositionId> {
+        self.by_id
+            .iter()
+            .filter(|e| e.value().rule_id == rule_id)
+            .map(|e| *e.key())
+            .collect()
+    }
+
+    /// Every live engine position id currently held in `mode` (Stop All).
+    pub fn positions_for_mode(&self, mode: TradeMode) -> Vec<PositionId> {
+        self.by_id
+            .iter()
+            .filter(|e| e.value().trade_mode == mode)
+            .map(|e| *e.key())
+            .collect()
     }
 
     /// Whether any live engine position holds this mint — the token-cache eviction

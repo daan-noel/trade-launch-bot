@@ -37,9 +37,19 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/fingerprints/{id}",
                 web::delete().to(handlers::strategies::engine::delete_fingerprint),
             )
-            // Generic rules CRUD + activate/pause.
+            // Generic rules CRUD + activate/pause/stop.
             .route("/strategy-rules", web::get().to(handlers::strategies::engine::list_rules))
             .route("/strategy-rules", web::post().to(handlers::strategies::engine::create_rule))
+            // Bulk lifecycle (Pause All / Stop All), scoped by `?mode=real|paper` —
+            // literal segments, registered before `{id}/...` so they never bind `{id}`.
+            .route(
+                "/strategy-rules/pause-all",
+                web::post().to(handlers::strategies::engine::pause_all_rules),
+            )
+            .route(
+                "/strategy-rules/stop-all",
+                web::post().to(handlers::strategies::engine::stop_all_rules),
+            )
             .route(
                 "/strategy-rules/{id}/activate",
                 web::post().to(handlers::strategies::engine::activate_rule),
@@ -47,6 +57,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategy-rules/{id}/pause",
                 web::post().to(handlers::strategies::engine::pause_rule),
+            )
+            .route(
+                "/strategy-rules/{id}/stop",
+                web::post().to(handlers::strategies::engine::stop_rule),
             )
             .route("/strategy-rules/{id}", web::get().to(handlers::strategies::engine::get_rule))
             .route("/strategy-rules/{id}", web::put().to(handlers::strategies::engine::update_rule))

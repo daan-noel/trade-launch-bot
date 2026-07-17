@@ -16,20 +16,20 @@ import type { SweepResultRecord } from './types';
 
 // --- formatters -------------------------------------------------------------
 
-function fmtSecs(v: number | null | undefined): string {
+export function fmtSecs(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v) || v <= 0) return '—';
   if (v < 90) return `${Math.round(v)}s`;
   if (v < 5400) return `${(v / 60).toFixed(1)}m`;
   return `${(v / 3600).toFixed(1)}h`;
 }
-const pctText = (v: number | null | undefined) =>
+export const pctText = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 1)}%`;
-const solText = (v: number | null | undefined) =>
+export const solText = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? '—' : `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
 const tone = (text: ReactNode, cls: string): ReactNode => (
   <span className={cn('font-medium', cls)}>{text}</span>
 );
-const goodBad = (v: number | null | undefined, pivot = 0) =>
+export const goodBad = (v: number | null | undefined, pivot = 0) =>
   v != null && Number.isFinite(v) && v >= pivot ? 'text-green' : 'text-red';
 function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   return (

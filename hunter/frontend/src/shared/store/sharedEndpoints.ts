@@ -21,6 +21,7 @@ import type {
   StrategyRule,
   CreateRuleBody,
   UpdateRuleBody,
+  TradeMode,
 } from 'lib/strategy/types';
 
 /**
@@ -265,6 +266,21 @@ export const sharedApi = baseApi.injectEndpoints({
       query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
       invalidatesTags: ['StrategyRule'],
     }),
+    // Stop = deactivate AND force-close the rule's open positions now (vs Pause,
+    // which leaves them to drain via the exit ladder).
+    stopStrategyRule: builder.mutation<StrategyRule, string>({
+      query: (id) => ({ url: `/api/strategy-rules/${id}/stop`, method: 'POST' }),
+      invalidatesTags: ['StrategyRule'],
+    }),
+    // Bulk lifecycle scoped to one trade mode — mirror the per-row Pause / Stop.
+    pauseAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
+      query: (mode) => ({ url: `/api/strategy-rules/pause-all?mode=${mode}`, method: 'POST' }),
+      invalidatesTags: ['StrategyRule'],
+    }),
+    stopAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
+      query: (mode) => ({ url: `/api/strategy-rules/stop-all?mode=${mode}`, method: 'POST' }),
+      invalidatesTags: ['StrategyRule'],
+    }),
     updateSettings: builder.mutation<AppSettings, Partial<AppSettings>>({
       query: (patch) => ({
         url: '/api/system/settings',
@@ -317,4 +333,7 @@ export const {
   useDeleteStrategyRuleMutation,
   useActivateStrategyRuleMutation,
   usePauseStrategyRuleMutation,
+  useStopStrategyRuleMutation,
+  usePauseAllStrategyRulesMutation,
+  useStopAllStrategyRulesMutation,
 } = sharedApi;

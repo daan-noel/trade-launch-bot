@@ -12,6 +12,7 @@ import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { markerRowOverlay, type InspectTarget } from 'components/strategy/inspectTarget';
+import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -28,7 +29,14 @@ import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory
 import { GenericSweepConfigForm, GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigForm';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
 import { LabTokenInspectModal } from '@lab/components/strategy/LabTokenInspectModal';
-import { buildGenericComboColumns, buildGenericGroupColumns } from '@lab/components/sweep/genericSweepColumns';
+import {
+  buildGenericComboColumns,
+  buildGenericGroupColumns,
+  pctText,
+  solText,
+  fmtSecs,
+  goodBad,
+} from '@lab/components/sweep/genericSweepColumns';
 import type {
   GroupedSweepGroupRecord,
   GroupedSweepRunRecord,
@@ -68,6 +76,104 @@ function comboTarget(r: ComboTokenResult): InspectTarget {
 
 /** Per-row entry/exit markers for the token-results charts grid. */
 const comboRowOverlay = markerRowOverlay(comboTarget);
+
+/** Median of a numeric list (0 for empty). */
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/**
+ * Aggregate the combo's per-token rows into the summary tiles. Runs over whatever
+ * cohort it's handed — the FULL results, or the table's current filtered subset —
+ * so the summary tracks the table's search/column filters (recomputed client-side,
+ * mirroring how the server-side positions summary follows its filter body).
+ *
+ * The realized-PnL stats (total/win/mean/median/best/worst/profit-factor/expectancy/
+ * avg-hold) are measured over **closed** trades only — `TakeProfit`/`StopLoss`/
+ * `Metrics`/`Dead` exits, NOT still-`Open` positions (whose PnL is unrealized/marked).
+ * This matches the backend `SweepResultRecord` the combo row above renders, so the
+ * summary agrees with that row when unfiltered. `Fired` is the full fired count (the
+ * table's `FIRED` column); `Open` positions are surfaced in the Closed/Open tile.
+ */
+function buildComboSummary(rows: ComboTokenResult[]): {
+  hero: SummaryStat[];
+  detail: SummaryStat[];
+} {
+  const fired = rows.filter((r) => r.fired);
+  const closed = fired.filter((r) => r.exit !== 'Open');
+  const nClosed = closed.length;
+  const nOpen = fired.length - nClosed;
+  const wins = closed.filter((r) => r.pnl_sol > 0).length;
+  const winRate = nClosed ? wins / nClosed : null;
+  const totalPnl = closed.reduce((s, r) => s + r.pnl_sol, 0);
+  const expectancy = nClosed ? totalPnl / nClosed : null;
+  const pcts = closed.map((r) => r.pnl_pct);
+  const meanPct = nClosed ? pcts.reduce((s, v) => s + v, 0) / nClosed : null;
+  const medianPct = nClosed ? median(pcts) : null;
+  // reduce (not `Math.max(...pcts)`) — a group can hold thousands of rows, past the
+  // spread arg limit.
+  const bestPct = nClosed ? pcts.reduce((m, v) => (v > m ? v : m), pcts[0]) : null;
+  const worstPct = nClosed ? pcts.reduce((m, v) => (v < m ? v : m), pcts[0]) : null;
+  const holds = closed.map((r) => r.holding_secs).filter((v) => Number.isFinite(v) && v > 0);
+  const avgHold = holds.length ? holds.reduce((s, v) => s + v, 0) / holds.length : null;
+  const grossWin = closed.reduce((s, r) => (r.pnl_sol > 0 ? s + r.pnl_sol : s), 0);
+  const grossLoss = closed.reduce((s, r) => (r.pnl_sol < 0 ? s - r.pnl_sol : s), 0);
+  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : null; // null ⇒ no losers (∞)
+  const nExit = (tag: string) => fired.filter((r) => r.exit === tag).length;
+
+  const hero: SummaryStat[] = [
+    { label: 'Total PnL (◎)', value: solText(totalPnl), cls: goodBad(totalPnl) },
+    {
+      label: 'Win %',
+      value: winRate == null ? '—' : `${(winRate * 100).toFixed(0)}%`,
+      cls: winRate == null ? undefined : goodBad(winRate, 0.5),
+    },
+    { label: 'Median %', value: pctText(medianPct), cls: goodBad(medianPct) },
+    { label: 'Fired', value: String(fired.length), cls: 'text-info' },
+  ];
+
+  const detail: SummaryStat[] = [
+    {
+      label: 'Closed / Open',
+      node: (
+        <>
+          <span className="text-info">{nClosed}</span>
+          <span className="text-text-dim"> / </span>
+          <span className="text-text-mid">{nOpen}</span>
+        </>
+      ),
+    },
+    { label: 'Expectancy (◎)', value: solText(expectancy), cls: goodBad(expectancy) },
+    { label: 'Mean %', value: pctText(meanPct), cls: goodBad(meanPct) },
+    { label: 'Best %', value: pctText(bestPct), cls: 'text-green' },
+    { label: 'Worst %', value: pctText(worstPct), cls: 'text-red' },
+    {
+      label: 'Profit factor',
+      value: profitFactor == null ? '∞' : profitFactor.toFixed(2),
+      cls: goodBad(profitFactor ?? 10, 1),
+    },
+    { label: 'Avg hold', value: fmtSecs(avgHold), cls: 'text-accent' },
+    {
+      label: 'TP / SL / Met / Dead',
+      node: (
+        <>
+          <span className="text-green">{nExit('TakeProfit')}</span>
+          <span className="text-text-dim"> / </span>
+          <span className="text-red">{nExit('StopLoss')}</span>
+          <span className="text-text-dim"> / </span>
+          <span className="text-text-mid">{nExit('Metrics')}</span>
+          <span className="text-text-dim"> / </span>
+          <span className="text-red">{nExit('Dead')}</span>
+        </>
+      ),
+    },
+  ];
+
+  return { hero, detail };
+}
 
 /**
  * Generic-engine grouped sweep view (redesign FE5.2 + 5.3). One page replaces the
@@ -498,12 +604,29 @@ function ComboTokenResults({
   onClose: () => void;
 }) {
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
-  const rows = query.data?.rows ?? [];
+  // Stable identities: RTK keeps `query.data` referentially equal across renders, so
+  // memoizing keeps `rows`/`visible` from churning — otherwise the filtered-rows
+  // callback below (which sets state) would re-fire every render into a loop.
+  const rows = useMemo(() => query.data?.rows ?? [], [query.data]);
   const err = apiErrorMessage(query.error, 'Failed to load token results');
   const [showNotFired, setShowNotFired] = useState(true);
-  const visible = showNotFired ? rows : rows.filter((r) => r.fired);
+  const visible = useMemo(
+    () => (showNotFired ? rows : rows.filter((r) => r.fired)),
+    [showNotFired, rows],
+  );
   const [selected, setSelected] = useState<string | null>(null);
   useEffect(() => setSelected(null), [comboId]);
+
+  // Summary cohort = the table's current filtered rows (null until the table first
+  // reports them → fall back to the full set so the card shows immediately). Reset
+  // on combo change so a stale cohort can't linger while the new rows load.
+  const [filteredRows, setFilteredRows] = useState<ComboTokenResult[] | null>(null);
+  useEffect(() => setFilteredRows(null), [comboId]);
+  const onFilteredRowsChange = useCallback((r: ComboTokenResult[]) => setFilteredRows(r), []);
+  const summary = useMemo(
+    () => buildComboSummary(filteredRows ?? visible),
+    [filteredRows, visible],
+  );
   const selectedRow = selected ? rows.find((r) => r.mint_address === selected) ?? null : null;
 
   const columns = useMemo<ColumnDef<ComboTokenResult>[]>(
@@ -598,6 +721,16 @@ function ComboTokenResults({
 
       {err && <InlineAlert variant="error">{err}</InlineAlert>}
 
+      {!err && rows.length > 0 && (
+        <SummaryStatsPanel
+          title="Combo results summary"
+          subtitle="Tracks the table's filters"
+          heroStats={summary.hero}
+          detailStats={summary.detail}
+          accentClass="bg-secondary"
+        />
+      )}
+
       <TokenTable
         columns={columns}
         existingKeys={existingKeys}
@@ -610,6 +743,7 @@ function ComboTokenResults({
         selectable
         selectedKey={selected}
         onSelect={setSelected}
+        onFilteredRowsChange={onFilteredRowsChange}
         defaultSort={{ col: 'pnl_sol', dir: 'desc' }}
         tableId="generic_combo_tokens"
         resetKey={`${comboId}_${showNotFired}`}

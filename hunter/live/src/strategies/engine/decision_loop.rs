@@ -377,6 +377,17 @@ async fn handle_command(
                 EventBatch::none()
             }
         },
+        EngineCommand::CloseRule { rule_id } => {
+            let positions = registry.positions_for_rule(RuleId(rule_id));
+            info!(rule = %rule_id, positions = positions.len(), "engine: stop rule — closing open positions");
+            EventBatch::many(positions.into_iter().map(|position| Event::ManualClose { position }).collect())
+        }
+        EngineCommand::CloseMode { real } => {
+            let mode = if real { TradeMode::Real } else { TradeMode::Paper };
+            let positions = registry.positions_for_mode(mode);
+            info!(?mode, positions = positions.len(), "engine: stop-all — closing open positions");
+            EventBatch::many(positions.into_iter().map(|position| Event::ManualClose { position }).collect())
+        }
     }
 }
 

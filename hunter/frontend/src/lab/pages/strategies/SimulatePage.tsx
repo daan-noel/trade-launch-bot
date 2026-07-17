@@ -22,6 +22,7 @@ import {
   SIM_KEYS,
 } from 'components/strategy/strategyColumns';
 import { LabTokenInspectModal } from '@lab/components/strategy/LabTokenInspectModal';
+import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import {
@@ -36,6 +37,7 @@ import {
 } from 'services/tableRequest';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { ruleParamsCell, ruleParamsSearchText } from 'components/strategy/RuleParamsSummary';
+import { useRuleActions } from 'components/strategy/useRuleActions';
 import {
   fingerprintParamsCell,
   fingerprintParamsSearchText,
@@ -67,6 +69,7 @@ const simRowOverlay = markerRowOverlay(inspectFromSim);
 export function SimulatePage() {
   const { data: rules = [], isLoading } = useGetStrategyRulesQuery();
   const { data: fps = [] } = useGetFingerprintsQuery();
+  const actions = useRuleActions();
   const [start] = useStartEngineSimulationMutation();
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [runs, setRuns] = useState<Record<string, RunState>>({});
@@ -176,7 +179,29 @@ export function SimulatePage() {
     }
   };
 
-  const columns = useMemo(() => buildColumns(runs, fpById), [runs, fpById]);
+  const columns = useMemo<ColumnDef<StrategyRule>[]>(
+    () => [
+      ...buildColumns(runs, fpById),
+      {
+        key: 'execute',
+        label: 'Execute',
+        render: (r) => (
+          <Button
+            variant="primary"
+            size="xs"
+            disabled={runs[r.id]?.running}
+            onClick={() => void runRule(r)}
+          >
+            {runs[r.id]?.running ? 'Running…' : 'Simulate'}
+          </Button>
+        ),
+        searchValue: () => 'simulate',
+      },
+    ],
+    // runRule closes over stable RTK/setState refs; runs drives the disabled state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runs, fpById],
+  );
 
   // Only the selected rule's positions render below the table; every rule's summary
   // is still hydrated for the table's metric columns.
@@ -214,6 +239,7 @@ export function SimulatePage() {
           </Button>
         </div>
       </div>
+      {actions.err && <p className="text-[12px] text-red">{actions.err}</p>}
       <DataTable
         columns={columns}
         rows={rules}
@@ -225,14 +251,17 @@ export function SimulatePage() {
         selectedKey={selectedRuleId}
         onSelect={setSelectedRuleId}
         rowActions={(r) => (
-          <Button
-            variant="primary"
-            size="xs"
-            disabled={runs[r.id]?.running}
-            onClick={() => void runRule(r)}
-          >
-            {runs[r.id]?.running ? 'Running…' : 'Simulate'}
-          </Button>
+          <div className="flex gap-1">
+            <Button variant="ghost" size="xs" onClick={() => actions.edit(r)}>
+              Edit
+            </Button>
+            <Button variant="ghost" size="xs" onClick={() => actions.duplicate(r)}>
+              Duplicate
+            </Button>
+            <Button variant="ghost" size="xs" onClick={() => void actions.remove(r)}>
+              Delete
+            </Button>
+          </div>
         )}
       />
 
@@ -266,6 +295,8 @@ export function SimulatePage() {
           onClose={() => setInspect(null)}
         />
       )}
+
+      {actions.editorNode}
     </div>
   );
 }
@@ -301,6 +332,7 @@ function RuleSimPositionsPanel({
   const {
     items: simTokens,
     total: simTotal,
+    summary: simSummary,
     loading: simTableLoading,
     error: simTableError,
     reload: reloadSim,
@@ -343,6 +375,8 @@ function RuleSimPositionsPanel({
     },
     [simTokens, onInspect, rule],
   );
+
+  const simStats = useMemo(() => (simSummary ? simSummaryStats(simSummary) : null), [simSummary]);
 
   const isMatched = view === 'matched';
   // "no simulation result" just means this rule has no resident run — the parent
@@ -403,27 +437,77 @@ function RuleSimPositionsPanel({
       ) : simError ? (
         <InlineAlert variant="error">{simError}</InlineAlert>
       ) : (
-        <TokenTable
-          columns={simColumns}
-          existingKeys={SIM_KEYS}
-          mintSetFilter
-          charts
-          useRowOverlay={simRowOverlay}
-          rows={simTokens}
-          rowKey={keyByMint}
-          selectedKey={inspectKey}
-          onSelect={onSelectSim}
-          serverSide
-          serverTotal={simTotal}
-          onQueryChange={setSimQuery}
-          loading={simTableLoading}
-          resetKey={rule.id}
-          tableId={`simulate-positions-${rule.id}`}
-          emptyMessage="No positions in this simulation result."
-        />
+        <>
+          {simStats && (
+            <SummaryStatsPanel
+              title="Simulated results summary"
+              subtitle="Tracks the table's filters"
+              heroStats={simStats.hero}
+              detailStats={simStats.detail}
+              accentClass="bg-info"
+            />
+          )}
+          <TokenTable
+            columns={simColumns}
+            existingKeys={SIM_KEYS}
+            mintSetFilter
+            charts
+            useRowOverlay={simRowOverlay}
+            rows={simTokens}
+            rowKey={keyByMint}
+            selectedKey={inspectKey}
+            onSelect={onSelectSim}
+            serverSide
+            serverTotal={simTotal}
+            onQueryChange={setSimQuery}
+            loading={simTableLoading}
+            resetKey={rule.id}
+            tableId={`simulate-positions-${rule.id}`}
+            emptyMessage="No positions in this simulation result."
+          />
+        </>
       )}
     </section>
   );
+}
+
+/** SimulatedSummary → summary-panel tiles. Server-computed over the filtered
+ *  cohort (the summary endpoint takes the table's search/filters), so these
+ *  update as the user filters. `win_rate` is a 0..1 fraction. */
+function simSummaryStats(s: SimulatedSummary): { hero: SummaryStat[]; detail: SummaryStat[] } {
+  const winPct = s.win_rate != null && Number.isFinite(s.win_rate) ? s.win_rate * 100 : null;
+  const open = Math.max(0, s.total_tokens - s.closed_tokens);
+  const hero: SummaryStat[] = [
+    {
+      label: 'Total PnL (◎)',
+      value: `${dashF(s.total_pnl_sol, 3)}◎`,
+      cls: s.total_pnl_sol >= 0 ? 'text-green' : 'text-red',
+    },
+    {
+      label: 'Win Rate',
+      value: dashPercent(winPct),
+      cls: winPct == null ? undefined : winPct >= 50 ? 'text-green' : 'text-red',
+    },
+    {
+      label: 'Avg PnL %',
+      value: dashPercent(s.avg_pnl_percent),
+      cls: s.avg_pnl_percent == null ? undefined : s.avg_pnl_percent >= 0 ? 'text-green' : 'text-red',
+    },
+    { label: 'Entered', value: String(s.total_tokens), cls: 'text-info' },
+  ];
+  const detail: SummaryStat[] = [
+    {
+      label: 'Closed / Open',
+      node: (
+        <>
+          <span className="text-info">{s.closed_tokens}</span>
+          <span className="text-text-dim"> / </span>
+          <span className="text-text-mid">{open}</span>
+        </>
+      ),
+    },
+  ];
+  return { hero, detail };
 }
 
 function buildColumns(

@@ -162,6 +162,21 @@ function CandlesIcon() {
   );
 }
 
+/** Map pin with a dot — tracked-wallet buy/sell markers. */
+function WalletMarkersIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path
+        d="M10 2.5c-2.9 0-5.25 2.2-5.25 4.9 0 3.5 5.25 9.6 5.25 9.6s5.25-6.1 5.25-9.6c0-2.7-2.35-4.9-5.25-4.9Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <circle cx="10" cy="7.4" r="1.9" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** Rising zigzag — line chart style. */
 function LineIcon() {
   return (
@@ -265,6 +280,7 @@ export function ChartToolbar({
   metric,
   tradeCount,
   showTradeMarkers,
+  showWalletMarkers,
   showAthLine,
   athLineAvailable,
   showMigrationLine,
@@ -284,6 +300,7 @@ export function ChartToolbar({
   onStyleChange,
   onMetricChange,
   onShowTradeMarkersChange,
+  onShowWalletMarkersChange,
   onShowAthLineChange,
   onShowMigrationLineChange,
   onTrimEmptyBarsChange,
@@ -482,6 +499,15 @@ export function ChartToolbar({
             tooltip="Buy/sell counts per bar"
           >
             <BuySellCountsIcon />
+          </IconToggleButton>
+
+          <IconToggleButton
+            active={showWalletMarkers}
+            onClick={() => onShowWalletMarkersChange(!showWalletMarkers)}
+            label="Toggle tracked-wallet markers"
+            tooltip="Tracked-wallet buy/sell markers"
+          >
+            <WalletMarkersIcon />
           </IconToggleButton>
 
           <IconToggleButton

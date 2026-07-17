@@ -172,6 +172,7 @@ export const DEFAULT_CHART_PREFS = {
   showAthLine: true,
   showMigrationLine: true,
   trimEmptyBars: false,
+  showWalletMarkers: true,
 };
 
 export function createChartOptions(

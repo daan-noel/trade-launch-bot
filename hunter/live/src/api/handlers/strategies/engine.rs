@@ -3,7 +3,9 @@
 //!   its whole rule-authoring UI from (extensibility contract, plan §8).
 //! * `GET /api/strategies/armed` — a live snapshot of armed (token, rule) pairs.
 //! * `/api/fingerprints` — CRUD over the shared `fingerprints` rows.
-//! * `/api/strategy-rules` — CRUD + activate/pause over the generic `strategy_rules`.
+//! * `/api/strategy-rules` — CRUD + lifecycle over the generic `strategy_rules`:
+//!   per-rule activate / pause / stop (stop force-closes the rule's open positions
+//!   via the engine loop), plus `pause-all` / `stop-all` scoped by `?mode=real|paper`.
 //!
 //! Every rule/fingerprint mutation ends with `engine.reload_rules()` so the running
 //! loop picks up the change (a `RulesReloaded` event) without a restart.
@@ -224,6 +226,67 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
         }
         Err(e) => server_error("toggle rule active", e),
     }
+}
+
+/// POST /api/strategy-rules/{id}/stop — deactivate the rule **and** force-close its
+/// open positions now (the per-row Stop, vs Pause which leaves positions to drain).
+pub async fn stop_rule(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    let id = path.into_inner();
+    // Close first (positions are still armed), then flip inactive + reload.
+    app_state.engine.close_rule(id).await;
+    set_active(&app_state, id, false).await
+}
+
+// ── Bulk lifecycle (Pause All / Stop All — one `trade_mode` at a time) ─────────
+
+/// `?mode=real|paper` selector for the bulk lifecycle endpoints.
+#[derive(serde::Deserialize)]
+pub struct ModeParam {
+    pub mode: String,
+}
+
+/// Deactivate every active rule of `mode`. Returns the count of rules paused, or a
+/// `500` if the rule list / an update fails.
+async fn pause_all_of_mode(app_state: &DeployState, mode: &str) -> HttpResponse {
+    let rules = match app_state.rule_repo.list().await {
+        Ok(v) => v,
+        Err(e) => return server_error("pause-all: list rules", e),
+    };
+    let mut paused = 0usize;
+    for mut rule in rules.into_iter().filter(|r| r.is_active && r.trade_mode == mode) {
+        rule.is_active = false;
+        rule.updated_at = Utc::now();
+        if let Err(e) = app_state.rule_repo.update(&rule).await {
+            return server_error("pause-all: update rule", e);
+        }
+        paused += 1;
+    }
+    app_state.engine.reload_rules().await;
+    HttpResponse::Ok().json(json!({ "paused": paused }))
+}
+
+/// POST /api/strategy-rules/pause-all?mode=real|paper — entries off for every active
+/// rule of `mode`; open positions are left to drain (same as the per-row Pause).
+pub async fn pause_all_rules(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<ModeParam>,
+) -> impl Responder {
+    pause_all_of_mode(&app_state, &query.mode).await
+}
+
+/// POST /api/strategy-rules/stop-all?mode=real|paper — force-close every open
+/// position of `mode` (active or draining) **and** deactivate its active rules.
+pub async fn stop_all_rules(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<ModeParam>,
+) -> impl Responder {
+    // Close every open position of this mode first (covers rules already paused but
+    // still holding), then deactivate the active rules + reload.
+    app_state.engine.close_mode(query.mode == "real").await;
+    pause_all_of_mode(&app_state, &query.mode).await
 }
 
 // ── Error helpers ────────────────────────────────────────────────────────────

@@ -100,6 +100,10 @@ interface TokenTableCommon<R> {
   selectedKey?: string | null;
   onSelect?: (key: string | null) => void;
   onVisibleRowsChange?: (rows: R[]) => void;
+  /** Full filtered cohort (post search/column-filter, pre-pagination) — passed
+   *  straight through to {@link DataTable} so a sibling summary can aggregate over
+   *  every matching row. Distinct from `onVisibleRowsChange` (current page only). */
+  onFilteredRowsChange?: (rows: R[]) => void;
   groupLabels?: Record<string, string>;
   defaultSort?: { col: string; dir?: SortDir };
   selectable?: boolean;

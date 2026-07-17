@@ -137,6 +137,12 @@ interface DataTableProps<R> {
    *  Pass a stable (useCallback) handler; `pageRows` is memoized so it only fires
    *  on a real change, not every render. */
   onVisibleRowsChange?: (rows: R[]) => void;
+  /** Fires with the FULL filtered result set (client mode: after search/column
+   *  filters/sort, before pagination — every matching row, not just the page).
+   *  Lets a sibling summary recompute over the whole matching cohort the way a
+   *  server-side summary would. In server mode this equals the current page.
+   *  Pass a stable (useCallback) handler; `processed` is memoized. */
+  onFilteredRowsChange?: (rows: R[]) => void;
 }
 
 export function DataTable<R>({
@@ -167,6 +173,7 @@ export function DataTable<R>({
   rowClassName,
   cellGroupClassName,
   onVisibleRowsChange,
+  onFilteredRowsChange,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -451,6 +458,11 @@ export function DataTable<R>({
   useEffect(() => {
     onVisibleRowsChange?.(pageRows);
   }, [pageRows, onVisibleRowsChange]);
+  // Surface the full filtered cohort (not just the page) so a sibling summary
+  // can aggregate over every matching row, mirroring a server-side summary.
+  useEffect(() => {
+    onFilteredRowsChange?.(processed);
+  }, [processed, onFilteredRowsChange]);
   const colCount = visCols.length + 1 + (rowActions ? 1 : 0);
 
   const activeFilters = Object.values(colFiltersMap).filter(Boolean).length;

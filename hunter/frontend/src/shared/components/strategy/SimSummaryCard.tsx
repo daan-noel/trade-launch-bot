@@ -1,8 +1,8 @@
-import { useMemo, type ReactNode } from 'react';
+import { useMemo } from 'react';
 import type { PositionsSummary } from 'types';
 import { formatAge } from 'utils/format';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { cn } from 'lib/cn';
+import { SummaryStatsPanel, type SummaryStat } from './SummaryStatsPanel';
 
 interface SimSummaryCardProps {
   ruleName: string;
@@ -66,7 +66,7 @@ export function SimSummaryCard({
   );
 
   // Headline KPIs, shown large; the rest read as a lighter secondary strip.
-  const heroStats = [
+  const heroStats: SummaryStat[] = [
     {
       label: `Total PnL (${price.unitLabel})`,
       value: price.displayAmount(totalPnl),
@@ -90,7 +90,7 @@ export function SimSummaryCard({
     { label: 'Tokens', value: String(tokensMatched) },
   ];
 
-  const detailStats: { label: string; value?: string; node?: ReactNode; cls?: string }[] = [
+  const detailStats: SummaryStat[] = [
     {
       label: 'W / L / Open',
       node: (
@@ -130,53 +130,12 @@ export function SimSummaryCard({
   ];
 
   return (
-    <div className="mb-5">
-      <div className="mb-4 flex items-center gap-2.5">
-        <span className="h-4 w-1 rounded-full bg-primary" />
-        <h3 className="text-sm font-bold text-text">{title}</h3>
-        <span className="truncate font-mono text-[11px] text-text-dim">{ruleName}</span>
-        <span className="flex-1" />
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-text-dim transition hover:text-text"
-          >
-            ✕
-          </button>
-        )}
-      </div>
-
-      <div className="flex flex-wrap gap-x-10 gap-y-4">
-        {heroStats.map((s) => (
-          <div key={s.label} className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
-              {s.label}
-            </span>
-            <span
-              className={cn(
-                'font-mono text-3xl font-extrabold leading-none tracking-tight text-text',
-                s.cls,
-              )}
-            >
-              {s.value}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-5 flex flex-wrap gap-x-8 gap-y-3 border-t border-white/6 pt-4">
-        {detailStats.map((s) => (
-          <div key={s.label} className="flex min-w-[84px] flex-col gap-0.5">
-            <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
-              {s.label}
-            </span>
-            <span className={cn('font-mono text-sm font-bold text-text', s.cls)}>
-              {s.node ?? s.value}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
+    <SummaryStatsPanel
+      title={title}
+      subtitle={ruleName}
+      onClose={onClose}
+      heroStats={heroStats}
+      detailStats={detailStats}
+    />
   );
 }

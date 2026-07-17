@@ -104,6 +104,7 @@ function loadPrefs(): {
   showAthLine: boolean;
   showMigrationLine: boolean;
   trimEmptyBars: boolean;
+  showWalletMarkers: boolean;
 } {
   try {
     const raw = getString(LS_CHART_PREFS_KEY);
@@ -116,6 +117,7 @@ function loadPrefs(): {
         showAthLine?: boolean;
         showMigrationLine?: boolean;
         trimEmptyBars?: boolean;
+        showWalletMarkers?: boolean;
       };
       return {
         groupMode: parsed.groupMode ?? DEFAULT_CHART_PREFS.groupMode,
@@ -126,6 +128,8 @@ function loadPrefs(): {
         showMigrationLine:
           parsed.showMigrationLine ?? DEFAULT_CHART_PREFS.showMigrationLine,
         trimEmptyBars: parsed.trimEmptyBars ?? DEFAULT_CHART_PREFS.trimEmptyBars,
+        showWalletMarkers:
+          parsed.showWalletMarkers ?? DEFAULT_CHART_PREFS.showWalletMarkers,
       };
     }
   } catch {
@@ -142,6 +146,7 @@ function savePrefs(
   showAthLine: boolean,
   showMigrationLine: boolean,
   trimEmptyBars: boolean,
+  showWalletMarkers: boolean,
 ) {
   setString(
     LS_CHART_PREFS_KEY,
@@ -153,6 +158,7 @@ function savePrefs(
       showAthLine,
       showMigrationLine,
       trimEmptyBars,
+      showWalletMarkers,
     }),
   );
 }
@@ -602,6 +608,7 @@ export function TokenPriceChart({
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
   const [trimEmptyBars, setTrimEmptyBars] = useState(initialPrefs.trimEmptyBars);
+  const [showWalletMarkers, setShowWalletMarkers] = useState(initialPrefs.showWalletMarkers);
   const { timezone: chartTimezone } = useTimezone();
   const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
   const chainHighlightAvailable = highlightChain != null;
@@ -817,59 +824,67 @@ export function TokenPriceChart({
   const handleGroupModeChange = useCallback(
     (next: ChartGroupMode) => {
       setGroupMode(next);
-      savePrefs(next, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars);
+      savePrefs(next, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
       onBarClickRef.current?.(null);
     },
-    [interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
+    [interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
   );
 
   const handleIntervalChange = useCallback(
     (next: ChartInterval) => {
       setInterval(next);
-      savePrefs(groupMode, next, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars);
+      savePrefs(groupMode, next, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
       onBarClickRef.current?.(null);
     },
-    [groupMode, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
+    [groupMode, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
   );
 
   const handleStyleChange = useCallback(
     (next: ChartStyle) => {
       setStyle(next);
-      savePrefs(groupMode, interval, next, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars);
+      savePrefs(groupMode, interval, next, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
     },
-    [groupMode, interval, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
+    [groupMode, interval, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
   );
 
   const handleShowTradeMarkersChange = useCallback(
     (next: boolean) => {
       setShowTradeMarkers(next);
-      savePrefs(groupMode, interval, style, next, showAthLine, showMigrationLine, trimEmptyBars);
+      savePrefs(groupMode, interval, style, next, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
     },
-    [groupMode, interval, style, showAthLine, showMigrationLine, trimEmptyBars],
+    [groupMode, interval, style, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
   );
 
   const handleShowAthLineChange = useCallback(
     (next: boolean) => {
       setShowAthLine(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, next, showMigrationLine, trimEmptyBars);
+      savePrefs(groupMode, interval, style, showTradeMarkers, next, showMigrationLine, trimEmptyBars, showWalletMarkers);
     },
-    [groupMode, interval, style, showTradeMarkers, showMigrationLine, trimEmptyBars],
+    [groupMode, interval, style, showTradeMarkers, showMigrationLine, trimEmptyBars, showWalletMarkers],
   );
 
   const handleShowMigrationLineChange = useCallback(
     (next: boolean) => {
       setShowMigrationLine(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, next, trimEmptyBars);
+      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, next, trimEmptyBars, showWalletMarkers);
     },
-    [groupMode, interval, style, showTradeMarkers, showAthLine, trimEmptyBars],
+    [groupMode, interval, style, showTradeMarkers, showAthLine, trimEmptyBars, showWalletMarkers],
   );
 
   const handleTrimEmptyBarsChange = useCallback(
     (next: boolean) => {
       setTrimEmptyBars(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, next);
+      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, next, showWalletMarkers);
     },
-    [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine],
+    [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, showWalletMarkers],
+  );
+
+  const handleShowWalletMarkersChange = useCallback(
+    (next: boolean) => {
+      setShowWalletMarkers(next);
+      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, next);
+    },
+    [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
   );
 
   const handleSliderChange = useCallback((from: number, to: number) => {
@@ -1481,7 +1496,7 @@ export function TokenPriceChart({
       markers.push(...buildTradeMarkers(trades, groupMode, intervalSec));
     }
 
-    if (effectiveProfileWallets.length > 0) {
+    if (showWalletMarkers && effectiveProfileWallets.length > 0) {
       const walletDefs = buildWalletMarkerDefs(sortedTrades, effectiveProfileWallets, bars, groupMode, intervalSec);
       walletMarkersPrimRef.current?.setMarkers(walletDefs);
       walletActivityMapRef.current = buildWalletBarActivityMap(trades, effectiveProfileWallets, groupMode, intervalSec);
@@ -1541,6 +1556,7 @@ export function TokenPriceChart({
     sortedTrades,
     bars,
     effectiveProfileWallets,
+    showWalletMarkers,
     eventMarkers,
   ]);
 
@@ -1975,6 +1991,7 @@ export function TokenPriceChart({
         metric={metric}
         tradeCount={trades.length}
         showTradeMarkers={showTradeMarkers}
+        showWalletMarkers={showWalletMarkers}
         showAthLine={showAthLine}
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
@@ -1994,6 +2011,7 @@ export function TokenPriceChart({
         onStyleChange={handleStyleChange}
         onMetricChange={onMetricChange}
         onShowTradeMarkersChange={handleShowTradeMarkersChange}
+        onShowWalletMarkersChange={handleShowWalletMarkersChange}
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}
