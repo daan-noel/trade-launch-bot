@@ -21,6 +21,7 @@ const FingerprintsPage = lazy(() => import('@lab/pages/strategies/FingerprintsPa
 const SimulatePage = lazy(() => import('@lab/pages/strategies/SimulatePage').then((m) => ({ default: m.SimulatePage })));
 const MetricPanesPage = lazy(() => import('@lab/pages/strategies/MetricPanesPage').then((m) => ({ default: m.MetricPanesPage })));
 const GenericSweepPage = lazy(() => import('@lab/pages/strategies/sweep/GenericSweepPage').then((m) => ({ default: m.GenericSweepPage })));
+const ReplayViewerPage = lazy(() => import('@lab/pages/strategies/ReplayViewerPage').then((m) => ({ default: m.ReplayViewerPage })));
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
@@ -56,6 +57,7 @@ export default function App() {
                   <Route path="strategies/simulate" element={<SimulatePage />} />
                   <Route path="strategies/metric-panes" element={<MetricPanesPage />} />
                   <Route path="strategies/sweep" element={<GenericSweepPage />} />
+                  <Route path="strategies/replay" element={<ReplayViewerPage />} />
                   <Route path="strategies" element={<Navigate to="/strategies/rules" replace />} />
                   <Route path="settings" element={<SettingsPage />} />
                   <Route path="*" element={<NotFoundPage />} />

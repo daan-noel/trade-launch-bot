@@ -361,10 +361,19 @@ pages listed in §2. **Kept:** `DataTable` + server-table plumbing, `sse.ts` mul
 - [x] 5.5 `build:live` + `build:lab` + `lint` + `vitest` (34) all green; updated
       `docs/arch/frontend.md`. Manual per-page runtime smoke pending (stack gate above).
 
-### FE6 — Replay viewer (optional; needs backend Phase 6)
+### FE6 — Replay viewer (optional; needs backend Phase 6) ✅ 2026-07-17
 
-- [ ] 6.1 `ReplayViewerPage`: log slice loader, decision timeline, chart cursor sync,
-      step/play. Ship only after FE1–FE5 are stable.
+- [x] 6.1 `@lab/pages/strategies/ReplayViewerPage.tsx` (+ `@lab/services/replayInspect.ts`
+      wire types + `inspectReplay` RTK mutation): log-slice loader form (dir/date/mint/
+      since/until/synthetic-ticks/active-only/max-steps → `POST /api/replay/inspect`),
+      run summary strip, a scrollable **decision timeline** (event + effect chips per step)
+      with **step/play** controls (⏮ ◀ ▶/⏸ ▶ ⏭, auto-advance, selected-row auto-scroll),
+      a per-step detail (event JSON + effects), and the focused token's `TokenTradeChart`
+      with entry/exit markers derived from the run's `PositionUpdate` fills. Route + nav.
+      > **Cursor sync (pragmatic):** the selected step's timestamp is shown as the "cursor"
+      > and the chart draws the replay's real entry/exit markers; a *moving in-chart
+      > crosshair* at arbitrary tick times is **deferred** (same as FE4's shared-crosshair —
+      > needs chart-core work) since `ChartEventMarker` only models entry/exit.
 
 ## 6. Risks / notes
 

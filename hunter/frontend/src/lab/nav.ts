@@ -33,6 +33,7 @@ export const labNav: NavConfig = {
         { to: '/strategies/simulate', label: 'Simulate' },
         { to: '/strategies/metric-panes', label: 'Metric panes' },
         { to: '/strategies/sweep', label: 'Grouped sweep' },
+        { to: '/strategies/replay', label: 'Replay viewer' },
       ],
     },
 

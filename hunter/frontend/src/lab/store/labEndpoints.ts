@@ -11,6 +11,7 @@ import type {
   GroupedCreationResponse,
 } from '@lab/components/creation-stats/groupedCreationStats';
 import type { PositionsSummary, TraderTokenRow } from 'types';
+import type { InspectRequest, InspectRun } from '@lab/services/replayInspect';
 import type {
   EngineSimRequest,
   SimStartResponse,
@@ -161,6 +162,12 @@ export const labApi = baseApi.injectEndpoints({
       },
       invalidatesTags: ['Fingerprint'],
     }),
+    // Event-log replay inspector (redesign FE6 / backend Phase 6). Re-runs the pure
+    // engine over a recorded live log and dumps every event→effects decision. A
+    // one-shot POST (no cache retention — each run is a fresh inspection).
+    inspectReplay: builder.mutation<InspectRun, InspectRequest>({
+      query: (body) => ({ url: '/api/replay/inspect', method: 'POST', body }),
+    }),
     // Per-fingerprint creation activity (dashboard "Creation by token group").
     // Server-side partition by a compound fingerprint key + top-N by volume;
     // returns each group's day×hour fold + calendar trend (count only). Cached
@@ -222,6 +229,7 @@ export const {
   usePruneGroupedSweepsMutation,
   useGetTraderTokensQuery,
   usePromoteSweepGroupMutation,
+  useInspectReplayMutation,
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
   useGetMetricSeriesQuery,
