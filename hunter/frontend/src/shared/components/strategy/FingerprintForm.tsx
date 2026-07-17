@@ -10,6 +10,8 @@ import {
   type Fingerprint,
   type FingerprintDraft,
 } from 'lib/strategy/types';
+import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import { LabelTip } from './LabelTip';
 
 export interface FingerprintFormProps {
   /** Existing fingerprint to edit; omit to create. */
@@ -101,9 +103,9 @@ export function FingerprintForm({
   const nameOk = s.name.trim().length > 0;
   const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error;
 
-  const solField = (label: string, key: keyof FormState) => (
+  const solField = (label: string, key: keyof FormState, tip: (typeof FINGERPRINT_FIELD_HELP)[keyof typeof FINGERPRINT_FIELD_HELP]) => (
     <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-      {label}
+      <LabelTip tip={tip}>{label}</LabelTip>
       <Input
         fieldSize="sm"
         numeric
@@ -117,7 +119,7 @@ export function FingerprintForm({
   return (
     <div className="flex flex-col gap-3">
       <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-        Name
+        <LabelTip tip={FINGERPRINT_FIELD_HELP.name}>Name</LabelTip>
         <Input
           fieldSize="sm"
           value={s.name}
@@ -128,7 +130,7 @@ export function FingerprintForm({
 
       <div className="grid grid-cols-2 gap-2">
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          cu_limit (exact)
+          <LabelTip tip={FINGERPRINT_FIELD_HELP.cu_limit}>cu_limit (exact)</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -138,7 +140,7 @@ export function FingerprintForm({
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          cu_price (exact)
+          <LabelTip tip={FINGERPRINT_FIELD_HELP.cu_price}>cu_price (exact)</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -150,13 +152,13 @@ export function FingerprintForm({
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        {solField('init_buy', 'init_buy_sol')}
-        {solField('max_cost', 'max_cost_sol')}
-        {solField('spendable_in', 'spendable_sol')}
-        {solField('first_slot_buy', 'first_slot_buy_sol')}
-        {solField('first_slot_sell', 'first_slot_sell_sol')}
+        {solField('init_buy', 'init_buy_sol', FINGERPRINT_FIELD_HELP.init_buy)}
+        {solField('max_cost', 'max_cost_sol', FINGERPRINT_FIELD_HELP.max_cost)}
+        {solField('spendable_in', 'spendable_sol', FINGERPRINT_FIELD_HELP.spendable_in)}
+        {solField('first_slot_buy', 'first_slot_buy_sol', FINGERPRINT_FIELD_HELP.first_slot_buy)}
+        {solField('first_slot_sell', 'first_slot_sell_sol', FINGERPRINT_FIELD_HELP.first_slot_sell)}
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          bucket width (◎)
+          <LabelTip tip={FINGERPRINT_FIELD_HELP.bucket}>bucket width (◎)</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -168,7 +170,9 @@ export function FingerprintForm({
       </div>
 
       <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-        ix_labels (exact ordered sequence, JSON array)
+        <LabelTip tip={FINGERPRINT_FIELD_HELP.ix_labels}>
+          ix_labels (exact ordered sequence, JSON array)
+        </LabelTip>
         <IxLabelsInput
           value={s.ix_labels}
           onValueChange={(v) => set('ix_labels', v)}

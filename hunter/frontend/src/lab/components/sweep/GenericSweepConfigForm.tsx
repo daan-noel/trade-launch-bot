@@ -31,6 +31,7 @@ import {
   type GenericAxisRow,
   type MetricAxisSide,
 } from './genericAxes';
+import { SWEEP_FIELD_HELP } from 'lib/strategy/strategyHelp';
 
 /** Backend `MAX_COMBOS` default + `HARD_MAX_COMBOS` backstop (mirror). */
 const DEFAULT_MAX_COMBOS = 100000;
@@ -332,7 +333,12 @@ export function GenericSweepConfigForm({
   return (
     <div className="mb-4 bg-surface">
       <div className="flex flex-wrap items-end gap-3">
-        <Field label="Created range" hint="UTC" className="w-fit">
+        <Field
+          label="Created range"
+          hint="UTC"
+          desc="Only tokens created in this UTC window are swept. Leave either end empty for open-ended."
+          className="w-fit"
+        >
           <div className="flex items-center gap-1">
             <Input type="datetime-local" value={createdAfter} onChange={(e) => setField('createdAfter', e.target.value)} />
             <span className="text-[10px] text-text-dim/50">–</span>
@@ -340,7 +346,7 @@ export function GenericSweepConfigForm({
           </div>
         </Field>
 
-        <Field label="Method" className="w-[140px]">
+        <Field label="Method" desc={SWEEP_FIELD_HELP.method.body} className="w-[140px]">
           <Select value={methodKind} onChange={(e) => setField('methodKind', e.target.value as GenericSweepConfig['methodKind'])}>
             <option value="grid">Full grid</option>
             <option value="random">Random N</option>
@@ -349,23 +355,37 @@ export function GenericSweepConfigForm({
         </Field>
 
         {methodKind !== 'grid' && (
-          <Field label={methodKind === 'refine' ? 'Coarse N' : 'Samples (N)'} className="w-[110px]">
+          <Field
+            label={methodKind === 'refine' ? 'Coarse N' : 'Samples (N)'}
+            desc={SWEEP_FIELD_HELP.samples.body}
+            className="w-[110px]"
+          >
             <Input type="number" min={1} value={randomN} onChange={(e) => setField('randomN', Math.max(1, Number(e.target.value) || 1))} />
           </Field>
         )}
         {methodKind === 'refine' && (
-          <Field label="Top-K / group" hint="survivors refined" className="w-[120px]">
+          <Field
+            label="Top-K / group"
+            hint="survivors refined"
+            desc={SWEEP_FIELD_HELP.topK.body}
+            className="w-[120px]"
+          >
             <Input type="number" min={1} value={refineTopK} onChange={(e) => setField('refineTopK', Math.max(1, Number(e.target.value) || 1))} />
           </Field>
         )}
 
-        <Field label="Min tokens / group" className="w-[140px]">
+        <Field label="Min tokens / group" desc={SWEEP_FIELD_HELP.minTokens.body} className="w-[140px]">
           <Input type="number" min={1} value={minTokens} onChange={(e) => setField('minTokens', Math.max(1, Number(e.target.value) || 1))} />
         </Field>
-        <Field label="Token cap" className="w-[120px]">
+        <Field label="Token cap" desc={SWEEP_FIELD_HELP.tokenCap.body} className="w-[120px]">
           <Input type="number" min={1} value={tokenCap} onChange={(e) => setField('tokenCap', Math.max(1, Number(e.target.value) || 1))} />
         </Field>
-        <Field label="Max combos / group" hint={`≤ ${HARD_MAX_COMBOS.toLocaleString()}`} className="w-[140px]">
+        <Field
+          label="Max combos / group"
+          hint={`≤ ${HARD_MAX_COMBOS.toLocaleString()}`}
+          desc={SWEEP_FIELD_HELP.maxCombos.body}
+          className="w-[140px]"
+        >
           <Input
             type="number"
             min={1}
@@ -374,7 +394,7 @@ export function GenericSweepConfigForm({
             onChange={(e) => setField('maxCombos', Math.min(HARD_MAX_COMBOS, Math.max(1, Number(e.target.value) || 1)))}
           />
         </Field>
-        <Field label="Buy amount (SOL)" hint="per trade" className="w-[140px]">
+        <Field label="Buy amount (SOL)" hint="per trade" desc={SWEEP_FIELD_HELP.buyAmount.body} className="w-[140px]">
           <Input
             type="number"
             min={0.001}
@@ -384,7 +404,7 @@ export function GenericSweepConfigForm({
             onNumericChange={(n) => setField('buyAmountSol', n == null ? 0.001 : Math.max(0.001, n))}
           />
         </Field>
-        <Field label="Curve only" className="w-fit">
+        <Field label="Curve only" desc={SWEEP_FIELD_HELP.curveOnly.body} className="w-fit">
           <label className="flex h-[34px] items-center gap-1.5 text-sm text-text-mid">
             <Checkbox checked={curveOnly} onChange={(e) => setField('curveOnly', e.target.checked)} />
             <span>bonding curve trades</span>

@@ -17,6 +17,8 @@ import { validateRuleParams } from 'lib/strategy/validate';
 import { solToLamports, lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { ConditionSideEditor } from './ConditionSideEditor';
 import { FingerprintPicker } from './FingerprintPicker';
+import { LabelTip } from './LabelTip';
+import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
 
 /** The normalized draft the editor emits (matches the create body; the page maps
  *  it to a create or an update patch). */
@@ -135,18 +137,18 @@ function RuleEditorInner({
       {/* Header: identity + sizing */}
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          Name
+          <LabelTip tip={RULE_FIELD_HELP.name}>Name</LabelTip>
           <Input fieldSize="sm" value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          Mode
+          <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
           <Select fieldSize="sm" value={mode} onChange={(e) => setMode(e.target.value as TradeMode)}>
             <option value="paper">paper</option>
             <option value="real">real</option>
           </Select>
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          Buy (◎)
+          <LabelTip tip={RULE_FIELD_HELP.buy}>Buy (◎)</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -157,7 +159,7 @@ function RuleEditorInner({
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          Max concurrent
+          <LabelTip tip={RULE_FIELD_HELP.maxConcurrent}>Max concurrent</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -168,7 +170,7 @@ function RuleEditorInner({
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          Max total (0=∞)
+          <LabelTip tip={RULE_FIELD_HELP.maxTotal}>Max total (0=∞)</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -183,11 +185,14 @@ function RuleEditorInner({
       {/* Fingerprint + TP/SL */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1 text-[11px] text-text-dim">
-          Fingerprint {conditionsLocked && <span className="text-text-dim/60">(locked — rule live)</span>}
+          <LabelTip tip={RULE_FIELD_HELP.fingerprint}>
+            Fingerprint{' '}
+            {conditionsLocked && <span className="text-text-dim/60">(locked — rule live)</span>}
+          </LabelTip>
           <FingerprintPicker value={fingerprintId} onChange={setFingerprintId} disabled={conditionsLocked} />
         </div>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          TP (%)
+          <LabelTip tip={RULE_FIELD_HELP.takeProfit}>TP (%)</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -199,7 +204,7 @@ function RuleEditorInner({
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-          SL (%)
+          <LabelTip tip={RULE_FIELD_HELP.stopLoss}>SL (%)</LabelTip>
           <Input
             fieldSize="sm"
             numeric
@@ -246,8 +251,9 @@ function RuleEditorInner({
             disabled={conditionsLocked}
             onChange={(e) => syncFromJson(e.target.value)}
           />
-          <p className="mt-1 text-[11px] text-text-dim/70">
+          <p className="mt-1 flex items-center gap-1 text-[11px] text-text-dim/70">
             Raw <code>params</code> JSON — registry-validated. Order normalizes on save.
+            <LabelTip tip={RULE_FIELD_HELP.paramsJson} />
           </p>
         </TabsPanel>
       </Tabs>

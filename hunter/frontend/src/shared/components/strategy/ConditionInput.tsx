@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { Input } from 'components/ui/Input';
+import { InfoTooltip } from 'components/ui/InfoTooltip';
 import { cn } from 'lib/cn';
 import {
   parseConditions,
@@ -8,6 +9,7 @@ import {
   normalizeConditionExpr,
   type ConditionExpr,
 } from 'lib/strategy/grammar';
+import { CONDITION_GRAMMAR_HELP } from 'lib/strategy/strategyHelp';
 import { unitSuffix, type MetricUnit } from 'lib/strategy/registry';
 
 export interface ConditionInputProps {
@@ -49,9 +51,6 @@ export function ConditionInput({
   const [focused, setFocused] = useState(false);
   const lastCanonical = useRef(canonical);
 
-  // Resync from the external value when it changes out from under us (e.g. a
-  // Promote pre-fill) — but never while the field is focused, so typing isn't
-  // clobbered.
   useEffect(() => {
     if (!focused && canonical !== lastCanonical.current) setText(canonical);
     lastCanonical.current = canonical;
@@ -71,25 +70,32 @@ export function ConditionInput({
 
   return (
     <div className={cn('flex flex-col gap-1', className)}>
-      <Input
-        fieldSize="sm"
-        value={text}
-        disabled={disabled}
-        placeholder={placeholder ?? '>10, <=30 | >=70'}
-        unit={suffix}
-        aria-invalid={invalid}
-        onChange={(e) => handleChange(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => {
-          setFocused(false);
-          if (invalid) setText(canonical);
-          else if (parsed) setText(formatConditions(parsed)); // show normalized `|`
-        }}
-        className={cn(invalid && 'border-red/70 focus:border-red')}
-      />
+      <div className="flex items-center gap-1">
+        <Input
+          fieldSize="sm"
+          value={text}
+          disabled={disabled}
+          placeholder={placeholder ?? '10..40  or  <30 | >=70'}
+          unit={suffix}
+          aria-invalid={invalid}
+          onChange={(e) => handleChange(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            setFocused(false);
+            if (invalid) setText(canonical);
+            else if (parsed) setText(formatConditions(parsed));
+          }}
+          className={cn('min-w-0 flex-1', invalid && 'border-red/70 focus:border-red')}
+        />
+        <InfoTooltip
+          title={CONDITION_GRAMMAR_HELP.title}
+          body={CONDITION_GRAMMAR_HELP.body}
+          side="top"
+        />
+      </div>
       {invalid ? (
         <span className="text-[11px] text-red">
-          malformed — try {'>'}10, {'<='}30, {'<'}30 | {'>='}70, 1..40, !=0 (in {unit})
+          malformed — try 10..40 (≥10 AND ≤40), {'>'}10, {'<='}30, {'<'}30 | {'>='}70, !=0 (in {unit})
         </span>
       ) : parsed.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1">

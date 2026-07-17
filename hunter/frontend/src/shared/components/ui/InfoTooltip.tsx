@@ -23,7 +23,7 @@ interface InfoTooltipProps {
   className?: string;
 }
 
-const WIDTH = 256; // matches `w-64`
+const WIDTH = 320; // wide enough for detailed help paragraphs
 const GAP = 6; // distance between icon and popover
 const MARGIN = 8; // min distance from the viewport edge
 
@@ -110,14 +110,14 @@ export function InfoTooltip({ title, body, side = 'bottom', className }: InfoToo
             id={tooltipId}
             role="tooltip"
             style={{ position: 'fixed', left: coords.left, top: coords.top, width: WIDTH }}
-            className="pointer-events-none z-[300] rounded-md border border-border bg-bg-card p-2.5 text-left shadow-lg"
+            className="pointer-events-none z-[300] max-h-[min(70vh,28rem)] overflow-y-auto rounded-md border border-border bg-bg-card p-2.5 text-left shadow-lg"
           >
             {title && (
               <span className="mb-1 block text-[11px] font-bold normal-case leading-snug tracking-normal text-text">
                 {title}
               </span>
             )}
-            <span className="block text-[11px] font-normal normal-case leading-snug tracking-normal text-text-dim">
+            <span className="block whitespace-pre-line text-[11px] font-normal normal-case leading-snug tracking-normal text-text-dim">
               {body}
             </span>
           </div>,

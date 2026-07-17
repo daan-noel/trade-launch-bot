@@ -5,6 +5,14 @@ import { Select } from 'components/ui/Select';
 import { Button } from 'components/ui/Button';
 import { Badge } from 'components/ui/Badge';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
+import {
+  SWEEP_FIELD_HELP,
+  METRIC_HELP,
+  metricHelpBody,
+  GROUP_HELP,
+  SIDE_HELP,
+  RULE_FIELD_HELP,
+} from 'lib/strategy/strategyHelp';
 import { unitSuffix, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import {
@@ -112,7 +120,7 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
           Axes
           <InfoTooltip
             title="Sweep axes"
-            body="One take-profit and one stop-loss axis on top; entry metrics left, exit right. Row tint comes from the registry metric hue (+ a fixed shade per operator). Drag a metric onto the other column to flip its side."
+            body="TP/SL on top; entry metrics left, exit right. Each combo picks one value per axis. Same metric + crossed ops → OR; feasible opposing bounds → AND range. Drag a metric onto the other column to flip its side."
           />
         </span>
         <span />
@@ -123,8 +131,12 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
 
       {/* TP / SL strip — one slot each; empty slot is the add affordance. */}
       <div className="flex flex-col gap-1.5 rounded-md border border-white/10 bg-white/[0.02] p-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
           TP / SL
+          <InfoTooltip
+            title="Take profit / Stop loss"
+            body={`${RULE_FIELD_HELP.takeProfit.body} ${RULE_FIELD_HELP.stopLoss.body} Each is its own sweep axis (comma-separated % values).`}
+          />
         </span>
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
           <TpSlSlot
@@ -253,12 +265,16 @@ function TpSlSlot({
       <div className="flex items-center gap-2">
         <span
           className={cn(
-            'shrink-0 text-[10px] font-bold uppercase tracking-wider',
+            'inline-flex shrink-0 items-center gap-0.5 text-[10px] font-bold uppercase tracking-wider',
             err ? 'text-red' : style.accent,
           )}
-          title={style.label}
         >
           {style.short}
+          <InfoTooltip
+            title={kind === 'take_profit' ? RULE_FIELD_HELP.takeProfit.title : RULE_FIELD_HELP.stopLoss.title}
+            body={kind === 'take_profit' ? RULE_FIELD_HELP.takeProfit.body : RULE_FIELD_HELP.stopLoss.body}
+            side="top"
+          />
         </span>
         <div className="min-w-0 flex-1">
           <Input
@@ -335,8 +351,9 @@ function MetricSideColumn({
       }}
     >
       <div className="flex items-center justify-between gap-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-text-dim/70">
           {side}
+          <InfoTooltip title={SIDE_HELP[side].title} body={SIDE_HELP[side].body} />
         </span>
         <Button variant="subtle" size="xs" onClick={onAdd}>
           + metric
@@ -452,7 +469,10 @@ function AxisRow({
 
       {isMetric ? (
         <>
-          <Cell label="group">
+          <Cell
+            label="group"
+            tip={row.group && GROUP_HELP[row.group] ? GROUP_HELP[row.group] : undefined}
+          >
             <Select
               fieldSize="sm"
               value={row.group}
@@ -467,7 +487,20 @@ function AxisRow({
               ))}
             </Select>
           </Cell>
-          <Cell label="metric">
+          <Cell
+            label="metric"
+            tip={
+              row.metric
+                ? {
+                    title: METRIC_HELP[row.metric]?.title ?? row.metric,
+                    body: metricHelpBody(
+                      row.metric,
+                      group?.metrics.find((m) => m.name === row.metric),
+                    ),
+                  }
+                : undefined
+            }
+          >
             <Select
               fieldSize="sm"
               value={row.metric}
@@ -483,7 +516,7 @@ function AxisRow({
               ))}
             </Select>
           </Cell>
-          <Cell label="op">
+          <Cell label="op" tip={SWEEP_FIELD_HELP.axisOp}>
             <Select
               fieldSize="sm"
               value={row.operator}
@@ -498,7 +531,7 @@ function AxisRow({
             </Select>
           </Cell>
           {needsWindow && (
-            <Cell label="window s">
+            <Cell label="window s" tip={SWEEP_FIELD_HELP.axisWindow}>
               <Input
                 fieldSize="sm"
                 type="number"
@@ -514,7 +547,7 @@ function AxisRow({
         </>
       ) : null}
 
-      <Cell label="values" grow>
+      <Cell label="values" grow tip={SWEEP_FIELD_HELP.axisValues}>
         <Input
           fieldSize="sm"
           value={row.valuesText}
@@ -541,10 +574,23 @@ function AxisRow({
 }
 
 /** A labelled control cell (tiny caption above the control). */
-function Cell({ label, grow, children }: { label: string; grow?: boolean; children: ReactNode }) {
+function Cell({
+  label,
+  grow,
+  tip,
+  children,
+}: {
+  label: string;
+  grow?: boolean;
+  tip?: { title: string; body: string };
+  children: ReactNode;
+}) {
   return (
     <div className={cn('flex flex-col gap-0.5', grow && 'flex-1')}>
-      <span className="text-[8px] uppercase tracking-wider text-text-dim/50">{label}</span>
+      <span className="inline-flex items-center gap-0.5 text-[8px] uppercase tracking-wider text-text-dim/50">
+        {label}
+        {tip && <InfoTooltip title={tip.title} body={tip.body} side="top" />}
+      </span>
       {children}
     </div>
   );
