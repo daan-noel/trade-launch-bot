@@ -3,20 +3,45 @@
 // shows a fingerprint reads the same. Null / empty axes are omitted; bucket is
 // always shown (every fingerprint has a width).
 
-import type { ReactNode } from 'react';
-import { cn } from 'lib/cn';
+import type { CSSProperties, ReactNode } from 'react';
 import { formatCompact, formatDecimalTrim } from 'utils/format';
 import { formatIxLabelsText } from 'lib/ixLabels';
+import { metricColorStyle } from 'lib/strategy/metricColors';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 
-function chip(text: ReactNode, opts?: { cls?: string; title?: string }): ReactNode {
+/** Stable per-axis hue so each fingerprint param reads with its own color,
+ *  mirroring the metric-condition chips. Related axes share a hue family (small
+ *  offset within, wide gap between) so paired params read together at a glance.
+ *  Unlisted axes fall back to the hashed hue in `metricColorStyle`, so a new
+ *  axis still gets a color for free. */
+const AXIS_HUE: Record<string, number> = {
+  // compute budget — blue family
+  cu_limit: 205,
+  cu_price: 219,
+  // buy amounts — green family
+  init: 142,
+  max: 150,
+  spend: 158,
+  // first-slot volume — violet family
+  fs_buy: 268,
+  fs_sell: 284,
+  // instructions — amber family (labels + count share the tone)
+  ix: 45,
+  // bucket width — rose
+  bkt: 340,
+};
+
+/** Registry-consistent tint for a fingerprint axis (same engine as metrics). */
+function axisTint(label: string): CSSProperties {
+  return metricColorStyle({ hue: AXIS_HUE[label], group: 'fingerprint', metric: label }).style;
+}
+
+function chip(text: ReactNode, opts?: { style?: CSSProperties; title?: string }): ReactNode {
   return (
     <span
       title={opts?.title}
-      className={cn(
-        'inline-block rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[11px] leading-tight',
-        opts?.cls,
-      )}
+      className="inline-block rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[11px] leading-tight"
+      style={opts?.style}
     >
       {text}
     </span>
@@ -26,12 +51,12 @@ function chip(text: ReactNode, opts?: { cls?: string; title?: string }): ReactNo
 function solChip(label: string, lamports: number | null): ReactNode | null {
   const s = lamportsToSol(lamports);
   if (s == null) return null;
-  return chip(`${label}=${formatDecimalTrim(s, 4)}◎`);
+  return chip(`${label}=${formatDecimalTrim(s, 4)}◎`, { style: axisTint(label) });
 }
 
 function intChip(label: string, n: number | null): ReactNode | null {
   if (n == null) return null;
-  return chip(`${label}=${formatCompact(n, 1)}`);
+  return chip(`${label}=${formatCompact(n, 1)}`, { style: axisTint(label) });
 }
 
 /** Axis chips only (no name) — set criteria + always-on bucket width. */
@@ -46,9 +71,9 @@ export function fingerprintParamsCell(fp: Fingerprint): ReactNode {
     solChip('fs_buy', fp.first_slot_buy_lamports),
     solChip('fs_sell', fp.first_slot_sell_lamports),
     ix
-      ? chip(`${ix.length}ix`, { title: formatIxLabelsText(ix) })
+      ? chip(`${ix.length}ix`, { title: formatIxLabelsText(ix), style: axisTint('ix') })
       : null,
-    chip(`bkt=${formatDecimalTrim(fp.bucket_size_amount, 4)}◎`, { cls: 'text-text-dim' }),
+    chip(`bkt=${formatDecimalTrim(fp.bucket_size_amount, 4)}◎`, { style: axisTint('bkt') }),
   ].filter(Boolean);
 
   return <div className="flex flex-wrap items-center gap-1 text-left">{chips}</div>;

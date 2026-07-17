@@ -24,24 +24,7 @@ import {
 } from '@live/slices/syncTokenSlice';
 import type { SyncResultItem } from '@live/slices/syncTokenSlice';
 import { cn } from 'lib/cn';
-
-const STAGE_ORDER = [
-  'validating',
-  'fetching_signatures',
-  'fetching_transactions',
-  'processing',
-  'recomputing',
-] as const;
-
-function stagePercent(stage: string, current: number, total: number): number {
-  const idx = STAGE_ORDER.indexOf(stage as (typeof STAGE_ORDER)[number]);
-  const base = idx >= 0 ? (idx / STAGE_ORDER.length) * 100 : 0;
-  const span = 100 / STAGE_ORDER.length;
-  if (total > 0) {
-    return Math.min(99, base + (current / total) * span);
-  }
-  return Math.min(99, base + span * 0.5);
-}
+import { formatWithCommas } from 'utils/format';
 
 function stageLabel(stage: string): string {
   switch (stage) {
@@ -191,33 +174,49 @@ function syncedTokenColumns(
   ];
 }
 
-/** A labeled sync progress bar: title on the left, detail (percent/count) on the right. */
-function ProgressBar({
+/**
+ * A labeled sync progress bar, honest by construction. Determinate — a real
+ * `processed / total` fraction — only when `total` is a positive count the
+ * backend actually knows. When it doesn't (the sync emits `total = 0` for stages
+ * whose size is unknowable until they finish: signature paging, streamed decode),
+ * the bar shows an indeterminate pulse at a fixed width and no fabricated
+ * percent — the running count lives in `message` below, where its per-stage
+ * meaning (pages vs. txs) stays unambiguous.
+ */
+function SyncBar({
   label,
-  detail,
-  percent,
+  processed,
+  total,
   message,
 }: {
   label: string;
-  detail: string;
-  percent: number;
+  processed: number | null;
+  total: number | null;
   message?: string;
 }) {
+  const determinate = processed != null && total != null && total > 0;
+  const percent = determinate ? Math.min(100, Math.round((processed / total) * 100)) : null;
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-[11px] font-bold uppercase tracking-widest text-primary">
           {label}
         </span>
-        <span className="font-mono text-[11px] text-text-dim">{detail}</span>
+        <span className="font-mono text-[11px] text-text-dim">
+          {determinate
+            ? `${formatWithCommas(processed)} / ${formatWithCommas(total)} · ${percent}%`
+            : '…'}
+        </span>
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-white/6">
         <div
           className={cn(
             'h-full rounded-full bg-primary transition-[width] duration-300',
-            'animate-pulse',
+            // Pulse ONLY while indeterminate — a steady bar reads as "we know
+            // exactly where we are", a pulsing one as "size still unknown".
+            !determinate && 'animate-pulse',
           )}
-          style={{ width: `${percent}%` }}
+          style={{ width: determinate ? `${percent}%` : '15%' }}
         />
       </div>
       {message && <p className="mt-2 text-xs text-text-dim">{message}</p>}
@@ -283,18 +282,13 @@ export function SyncTokenPage() {
     [syncedTokens, selectedMint],
   );
 
-  // Per-token (inner) progress: how far the current token is through its stages.
-  const percent = progress ? stagePercent(progress.stage, progress.current, progress.total) : 0;
-  // Overall (outer) batch progress: how many tokens are done. `batch` is set at
-  // the start of each token; fall back to the parsed mint count before it lands.
+  // Overall (outer) batch progress: how many tokens have completed. `batch` is
+  // set at the start of each token, so `index` is the count finished before it —
+  // the in-flight token isn't booked done until it commits and `index` advances.
+  // No sub-token fraction is folded in: mixing the (only partly-known) stage
+  // progress into the batch bar would fabricate precision it doesn't have.
   const tokensTotal = batch?.total ?? mints.length;
   const tokensIndex = batch?.index ?? 0;
-  // Fold the in-flight token's own fraction in so the bar advances smoothly
-  // between tokens instead of stepping a whole notch at a time.
-  const tokensPercent =
-    tokensTotal > 0
-      ? Math.min(100, ((tokensIndex + percent / 100) / tokensTotal) * 100)
-      : 0;
 
   const handleCancelSync = useCallback(() => {
     syncAbortRef.current?.abort();
@@ -501,21 +495,22 @@ export function SyncTokenPage() {
 
       {syncing && (
         <div className="mb-4 space-y-4 rounded-lg border border-white/6 bg-white/2 p-4">
-          {/* Outer bar: progress across the whole batch of tokens. */}
-          <ProgressBar
-            label={`Tokens ${tokensIndex + 1} / ${tokensTotal}`}
-            detail={`${Math.round(tokensPercent)}%`}
-            percent={tokensPercent}
-          />
-          {/* Inner bar: the current token's tx-fetch / stage status. */}
-          <ProgressBar
+          {/* Outer bar: tokens completed across the batch. Shown only for real
+              batches — for a single token it's redundant with the stage bar and
+              would just sit at 0/1 the whole run. */}
+          {tokensTotal > 1 && (
+            <SyncBar
+              label={`Tokens ${Math.min(tokensIndex + 1, tokensTotal)} / ${tokensTotal}`}
+              processed={tokensIndex}
+              total={tokensTotal}
+            />
+          )}
+          {/* Inner bar: the current token's live stage. Real fraction when the
+              backend knows the stage size; indeterminate pulse when it doesn't. */}
+          <SyncBar
             label={progress ? stageLabel(progress.stage) : 'Starting…'}
-            detail={
-              progress && progress.stage === 'fetching_transactions' && progress.total > 0
-                ? `${progress.current} / ${progress.total} tx`
-                : `${Math.round(percent)}%`
-            }
-            percent={percent}
+            processed={progress ? progress.current : null}
+            total={progress && progress.total > 0 ? progress.total : null}
             message={progress?.message}
           />
         </div>

@@ -55,6 +55,11 @@ pub enum SimOutcome {
 
 struct SimEntry {
     at: Instant,
+    /// Wall-clock time the run finished and its outcome was stored — the "result
+    /// generated at" the Simulate table's Run column renders as relative time
+    /// ("20m ago"). Separate from `at` (a monotonic `Instant` used for TTL, which
+    /// has no calendar value to serialize).
+    computed_at: DateTime<Utc>,
     sim_key: String,
     from: Option<i64>,
     to: Option<i64>,
@@ -96,6 +101,7 @@ impl SimResults {
             rule_id,
             SimEntry {
                 at: Instant::now(),
+                computed_at: Utc::now(),
                 sim_key: sim_key.into(),
                 from,
                 to,
@@ -115,6 +121,14 @@ impl SimResults {
         self.map.get(rule_id).and_then(|e| {
             (e.at.elapsed() < RESULT_TTL).then(|| e.outcome.clone())
         })
+    }
+
+    /// Wall-clock time the stored result was generated, or `None` if there's no
+    /// live entry — the Simulate table's Run column renders it as "N ago".
+    pub fn computed_at(&self, rule_id: &Uuid) -> Option<DateTime<Utc>> {
+        self.map
+            .get(rule_id)
+            .and_then(|e| (e.at.elapsed() < RESULT_TTL).then_some(e.computed_at))
     }
 
     /// Borrow only when the stored entry matches the current rule config + window.

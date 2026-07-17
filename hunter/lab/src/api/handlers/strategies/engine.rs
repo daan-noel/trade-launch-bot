@@ -59,3 +59,33 @@ pub async fn engine_sim_result_summary(
 ) -> impl Responder {
     super::positions::sim_result_summary(&app_state, run_id.into_inner(), body.into_inner())
 }
+
+/// POST `/api/strategies/simulate/{run_id}/matched` — one page of the tokens whose
+/// creation axes match the rule's fingerprint (the **matched** candidate pool the
+/// run's positions are a subset of). `run_id` is the saved rule's id. The scan is
+/// shared with the backtest via the candidate cache, and the mint set is paged
+/// through the same shared token query the tpsl matched route uses.
+pub async fn engine_matched_tokens(
+    app_state: web::Data<Arc<LocalState>>,
+    run_id: web::Path<Uuid>,
+    body: web::Json<TableRequest>,
+) -> HttpResponse {
+    let rule_id = run_id.into_inner();
+    let req = body.into_inner();
+    let (from, to) = req.range.as_ref().map_or((None, None), |r| (r.from, r.to));
+
+    let fp = match engine_sim::load_rule_fingerprint(&app_state, rule_id).await {
+        Ok(fp) => fp,
+        Err(resp) => return resp,
+    };
+    let mints: Vec<String> = match engine_sim::scan_matched_candidates(&app_state, &fp, from, to).await
+    {
+        Ok(tokens) => tokens.iter().map(|t| t.mint_address.clone()).collect(),
+        Err(e) => {
+            tracing::error!("engine matched-token scan failed: {e}");
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": "Failed to build matched tokens" }));
+        }
+    };
+    super::tpsl1::matched_page_response(app_state.strategy_repo(), &mints, req).await
+}

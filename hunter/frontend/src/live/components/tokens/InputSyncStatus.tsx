@@ -305,9 +305,11 @@ export function InputSyncStatus({
               {previewDone} / {mints.length}
             </span>
           </div>
+          {/* Determinate by construction (a real previewDone / total fraction),
+              so no pulse — the moving width alone conveys progress honestly. */}
           <div className="h-1.5 overflow-hidden rounded-full bg-white/6">
             <div
-              className="h-full animate-pulse rounded-full bg-primary transition-[width] duration-300"
+              className="h-full rounded-full bg-primary transition-[width] duration-300"
               style={{ width: `${previewPercent}%` }}
             />
           </div>

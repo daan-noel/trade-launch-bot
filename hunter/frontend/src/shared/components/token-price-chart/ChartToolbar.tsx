@@ -484,6 +484,15 @@ export function ChartToolbar({
             <BuySellCountsIcon />
           </IconToggleButton>
 
+          <IconToggleButton
+            active={trimEmptyBars}
+            onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
+            label="Toggle trimming of empty candles"
+            tooltip="Hide flat candles for intervals with no trades"
+          >
+            <TrimGapsIcon />
+          </IconToggleButton>
+
           <button
             type="button"
             onClick={() => setShowMore((v) => !v)}
@@ -504,15 +513,6 @@ export function ChartToolbar({
 
         {showMore && (
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <IconToggleButton
-              active={trimEmptyBars}
-              onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
-              label="Toggle trimming of empty candles"
-              tooltip="Hide flat candles for intervals with no trades"
-            >
-              <TrimGapsIcon />
-            </IconToggleButton>
-
             <label
               className={cn(
                 'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',

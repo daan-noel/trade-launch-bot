@@ -77,6 +77,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/simulate/{run_id}/result/summary",
                 web::post().to(handlers::strategies::engine::engine_sim_result_summary),
             )
+            .route(
+                "/strategies/simulate/{run_id}/matched",
+                web::post().to(handlers::strategies::engine::engine_matched_tokens),
+            )
             // ── Generic rule-authoring CRUD + registry (lab twin of the live
             //    engine handlers) — lets the lab app author + dry-run rules ──
             .route(

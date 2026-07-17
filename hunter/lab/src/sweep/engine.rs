@@ -117,24 +117,25 @@ pub fn combo_batch_size(n_combos: usize, threads: usize) -> usize {
 }
 
 /// Resident fold-buffer bytes for **one worker** at `batch` combos: the `batch`
-/// `ComboAgg` accumulators plus the bounded in-flight `TokenOutcome` queue
-/// (`inflight × batch`, the same `per`-combo model [`combo_batch_size`] sizes the
-/// batch against, so this is ≤ the fold budget by construction).
+/// `ComboAgg` accumulators plus the single `batch`-sized `TokenOutcome` scratch
+/// buffer the serial fold reuses across the group's tokens.
 ///
 /// The cross-group grouped driver ([`crate::sweep::grouped_engine`]) runs one such
-/// fold per worker concurrently (and the large path runs one per parallel shard),
-/// so the admission guard multiplies this by `threads` — the fold buffers are
-/// resident `threads×`, not once. Strategy-specific `BoundParams` (e.g. a
-/// `CompiledRule`) are also batch-resident but opaque to this generic engine; the
-/// admission guard's alloc slack absorbs them for the generic sweep's rule sizes.
-pub fn fold_footprint_bytes(batch: usize, threads: usize) -> u64 {
-    let threads = threads.max(1) as u64;
-    let inflight = threads.saturating_mul(3).max(4);
-    let agg = (batch as u64).saturating_mul(std::mem::size_of::<ComboAgg>() as u64);
-    let outcomes = inflight
-        .saturating_mul(batch as u64)
-        .saturating_mul(std::mem::size_of::<TokenOutcome>() as u64);
-    agg.saturating_add(outcomes)
+/// serial fold per worker concurrently, so the admission guard multiplies this by
+/// `threads`. This is the **actual** residency of the small-group path (one accumulator
+/// vec + one outcome vec per worker) — deliberately NOT `combo_batch_size`'s per-combo
+/// *sizing* model, whose `inflight × TokenOutcome` term reserves the large path's
+/// producer/consumer channel depth. Folding that inflight factor in here and then
+/// multiplying by `threads` double-counts it (it made the guard estimate a fold peak
+/// ~`threads×` too large and false-reject runs that fit fine). The large path's channel
+/// is bounded separately (`channel_depth ≤ 32`, one group at a time) and RAM-admitted
+/// via `max_parallel_shards`. Strategy `BoundParams` (e.g. a `CompiledRule`) are also
+/// batch-resident but opaque to this generic engine; the guard's alloc slack absorbs
+/// them for the generic sweep's rule sizes.
+pub fn fold_footprint_bytes(batch: usize) -> u64 {
+    let per = (std::mem::size_of::<ComboAgg>() as u64)
+        .saturating_add(std::mem::size_of::<TokenOutcome>() as u64);
+    (batch as u64).saturating_mul(per)
 }
 
 /// Absolute ceiling on one fold batch's combo count — independent of the byte

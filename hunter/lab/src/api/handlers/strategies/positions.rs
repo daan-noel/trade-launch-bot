@@ -292,5 +292,7 @@ pub fn sim_result_summary(state: &LocalState, rule_id: Uuid, req: TableRequest) 
         "win_rate": r.win_rate,
         "avg_pnl_percent": r.avg_pnl_pct,
         "total_pnl_sol": r.total_pnl_sol,
+        // When the run finished — the Run column renders this as relative time.
+        "computed_at": state.sim_results.computed_at(&rule_id),
     }))
 }

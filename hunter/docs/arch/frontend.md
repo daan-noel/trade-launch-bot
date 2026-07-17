@@ -170,11 +170,18 @@ next load (no per-metric frontend work).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
   Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
-  shows the `SimulatedSummary` rollup as separate DataTable columns (Entered / Closed /
-  Win % / Avg PnL / Total PnL, plus a Run status) so sort/search/filter work per field.
-  On load it hydrates every rule's resident sim summary and lists each finished run's
-  per-token positions below (`POST /api/strategies/simulate/{run_id}/result`,
-  `simColumns` + `TokenTable`) — no row-select gate.
+  shows the `SimulatedSummary` rollup as separate DataTable columns (Mode, Entered /
+  Closed / Win % / Avg PnL / Total PnL, plus a Run status) so sort/search/filter work
+  per field. On load it hydrates *every* rule's resident sim summary (for the columns),
+  but the per-token detail below is **selection-gated** — only the selected rule's
+  `RuleSimPositionsPanel` renders, with a **Positions ⇄ Matched** toggle: Positions =
+  the run's entered outcomes (`POST /api/strategies/simulate/{run_id}/result`,
+  `simColumns`); Matched = the fingerprint's candidate pool the positions are a subset
+  of (`POST /api/strategies/simulate/{run_id}/matched`, `matchedColumns`). The matched
+  scan is the generic engine's instant-phase candidate scan (`engine_sim::
+  scan_matched_candidates`, cache-shared with the backtest) paged through the same
+  `matched_page_response` the tpsl `/matched` route uses. Each table fetches only while
+  its view is active.
 
 ## Grouped sweep — generic engine (`strategies/sweep/`, redesign FE5)
 

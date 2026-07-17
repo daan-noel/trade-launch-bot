@@ -20,6 +20,28 @@ const MODAL_WIDTH: Record<NonNullable<ModalProps['size']>, string> = {
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/**
+ * Ref-count of currently-open modals so the page body scroll stays locked while
+ * ANY modal is open and only unlocks once the last one closes (handles stacking).
+ * Compensating for the scrollbar's width avoids a layout shift when it vanishes.
+ */
+let openModalCount = 0;
+function lockBodyScroll() {
+  if (openModalCount === 0) {
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = 'hidden';
+    if (scrollbarWidth > 0) document.body.style.paddingRight = `${scrollbarWidth}px`;
+  }
+  openModalCount += 1;
+}
+function unlockBodyScroll() {
+  openModalCount = Math.max(0, openModalCount - 1);
+  if (openModalCount === 0) {
+    document.body.style.overflow = '';
+    document.body.style.paddingRight = '';
+  }
+}
+
 export function Modal({ title, open, onClose, children, size = 'md' }: ModalProps) {
   const pressedOnBackdrop = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -57,6 +79,14 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [open, onClose]);
+
+  // Lock page-body scroll while open so only the modal (backdrop) scrolls; the
+  // ref-count restores it correctly when modals stack or unmount mid-open.
+  useEffect(() => {
+    if (!open) return;
+    lockBodyScroll();
+    return unlockBodyScroll;
+  }, [open]);
 
   // Focus the first focusable element on open; restore focus on close/unmount.
   useEffect(() => {

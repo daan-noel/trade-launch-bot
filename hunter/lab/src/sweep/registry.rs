@@ -521,14 +521,15 @@ async fn sweep_generic(
     // whole group's series per worker — ~4·threads² resident — which this estimate
     // never modeled and which OOM'd 16 GB boxes.
     let series_peak = (threads as u64).saturating_mul(max_series_bytes as u64);
-    // Fold buffers (ComboAgg + in-flight TokenOutcome) are resident once PER WORKER
-    // under the cross-group `par_iter` (and per parallel shard in Phase 1), not once
-    // globally — so multiply the per-worker fold footprint at the actual batch by
-    // `threads`. `planned` (≥ the realised sample) keeps this a conservative upper
-    // bound on `batch`, hence on the footprint.
+    // Fold buffers (ComboAgg accumulators + one TokenOutcome scratch vec) are resident
+    // once PER WORKER under the cross-group `par_iter`, not once globally — so multiply
+    // the per-worker fold footprint at the actual batch by `threads`. `planned` (≥ the
+    // realised sample) keeps this a conservative upper bound on `batch`, hence on the
+    // footprint. NB: use the true residency, not `combo_batch_size`'s inflight sizing
+    // model — see `fold_footprint_bytes`.
     let admit_batch = crate::sweep::engine::combo_batch_size(planned, threads);
     let fold_peak =
-        (threads as u64).saturating_mul(crate::sweep::engine::fold_footprint_bytes(admit_batch, threads));
+        (threads as u64).saturating_mul(crate::sweep::engine::fold_footprint_bytes(admit_batch));
     let shard_peak = crate::sweep::shard::max_combos_per_shard(wave, max_series_bytes).min(planned);
     admit_generic_combo_side(shard_peak, series_peak, fold_peak)?;
 

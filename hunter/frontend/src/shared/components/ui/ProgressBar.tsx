@@ -1,4 +1,5 @@
 import { formatDurationShort, formatWithCommas } from 'utils/format';
+import { cn } from 'lib/cn';
 import { Button } from './Button';
 
 /**
@@ -91,7 +92,13 @@ export function ProgressBar({
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-white/6">
         <div
-          className="h-full animate-pulse rounded-full bg-primary transition-[width] duration-300"
+          className={cn(
+            'h-full rounded-full bg-primary transition-[width] duration-300',
+            // Pulse ONLY while indeterminate (no real total yet). A determinate
+            // bar showing an exact percent stays steady — the pulse is the
+            // honest "we're still guessing the size" signal, not decoration.
+            !determinate && 'animate-pulse',
+          )}
           style={{ width: determinate ? `${percent}%` : '15%' }}
         />
       </div>

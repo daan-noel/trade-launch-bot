@@ -221,39 +221,12 @@ async fn run_engine_backtest(
         .map_err(|_| anyhow!("backtest concurrency semaphore closed"))?;
 
     let fp = target.fp.clone();
-    let cache_key = AnalysisCacheKey::new(
-        "engine",
-        fp.id.0.to_string(),
-        since,
-        until,
-    );
+    let cache_key = candidate_cache_key(&fp, since, until);
 
-    // Candidate scan: every token whose observed creation axes match the
-    // fingerprint's **instant** axes (the two-phase matcher's first-slot axes are
-    // resolved inside the replay fold, so this is a superset — a non-matching
-    // first-slot token simply never arms). Single-flighted + TTL-cached like the
-    // tpsl path so a re-run / dry-run over the same window reuses the scan.
-    let batch_db = app_state.batch_db.clone();
-    let fp_scan = fp.clone();
-    let tokens = crate::strategies::candidate_cache::get_or_scan_candidates_state(
-        app_state,
-        cache_key.clone(),
-        Box::pin(async move {
-            let repo = TokenRepo::new(batch_db);
-            crate::strategies::analysis::collect_matching_tokens(&repo, since, until, |t| {
-                !t.is_mayhem_mode
-                    && !match_all(
-                        std::slice::from_ref(&fp_scan),
-                        &observed_axes(t, None, None),
-                        MatchPhase::Instant,
-                    )
-                    .is_empty()
-            })
-            .await
-            .map_err(|e| anyhow!("candidate token scan failed: {e}"))
-        }),
-    )
-    .await?;
+    // The matched candidate set — every token whose observed creation axes match the
+    // fingerprint's instant axes (see [`scan_matched_candidates`]). Shared, cached,
+    // and single-flighted with the matched-tokens endpoint.
+    let tokens = scan_matched_candidates(app_state, &fp, since, until).await?;
 
     let progress = Arc::new(SimProgress::new(
         app_state.sse_tx.clone(),
@@ -355,6 +328,69 @@ async fn run_engine_backtest(
     });
 
     rows_to_json(rows)
+}
+
+/// The analysis-cache key for a fingerprint's candidate scan over `[since, until)`.
+/// The backtest and the matched-tokens endpoint build it the same way so both hit
+/// the one cached scan for a given `(fingerprint, window)`.
+fn candidate_cache_key(
+    fp: &EngineFingerprint,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> AnalysisCacheKey {
+    AnalysisCacheKey::new("engine", fp.id.0.to_string(), since, until)
+}
+
+/// Scan (or reuse) the fingerprint's **matched** candidate set: every token whose
+/// observed creation axes satisfy the fingerprint's *instant* axes. This is the
+/// superset the replay fold then arms/enters from — the two-phase matcher's
+/// first-slot axes resolve inside the fold, so a token that matches here but fails
+/// first-slot simply never arms. Single-flighted + TTL-cached, so the matched-tokens
+/// endpoint and the backtest share one whole-table scan.
+pub(crate) async fn scan_matched_candidates(
+    app_state: &Arc<LocalState>,
+    fp: &EngineFingerprint,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> Result<Arc<Vec<crate::models::Token>>> {
+    let batch_db = app_state.batch_db.clone();
+    let fp_scan = fp.clone();
+    crate::strategies::candidate_cache::get_or_scan_candidates_state(
+        app_state,
+        candidate_cache_key(fp, since, until),
+        Box::pin(async move {
+            let repo = TokenRepo::new(batch_db);
+            crate::strategies::analysis::collect_matching_tokens(&repo, since, until, |t| {
+                !t.is_mayhem_mode
+                    && !match_all(
+                        std::slice::from_ref(&fp_scan),
+                        &observed_axes(t, None, None),
+                        MatchPhase::Instant,
+                    )
+                    .is_empty()
+            })
+            .await
+            .map_err(|e| anyhow!("candidate token scan failed: {e}"))
+        }),
+    )
+    .await
+}
+
+/// Resolve a saved rule's fingerprint (engine form) for the matched-tokens scan.
+/// Matched depends only on the fingerprint, so this deliberately skips exit-param
+/// validation — a rule with a valid fingerprint still has a well-defined matched set
+/// even if its params wouldn't parse into a [`LoadedRule`].
+pub(crate) async fn load_rule_fingerprint(
+    state: &LocalState,
+    rule_id: Uuid,
+) -> Result<EngineFingerprint, HttpResponse> {
+    let rule = RuleRepo::new(state.db.clone())
+        .find(rule_id)
+        .await
+        .map_err(|e| HttpResponse::InternalServerError().json(err(&format!("DB error: {e}"))))?
+        .ok_or_else(|| HttpResponse::NotFound().json(err("Rule not found")))?;
+    let fp = load_fp(&FingerprintRepo::new(state.db.clone()), rule.fingerprint_id).await?;
+    Ok(fp_to_engine(&fp))
 }
 
 /// A stable cache key for a resolved target — its config fingerprint, so a re-run

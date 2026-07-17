@@ -369,6 +369,9 @@ export interface SimulatedSummary {
   win_rate: number;
   avg_pnl_percent: number;
   total_pnl_sol: number;
+  /** ISO time the run's result was generated — rendered as relative time ("20m
+   *  ago") in the Simulate table's Run column. Null/absent for legacy payloads. */
+  computed_at?: string | null;
 }
 
 /** Metadata for one paper-test run (a single activate→finish cycle). */

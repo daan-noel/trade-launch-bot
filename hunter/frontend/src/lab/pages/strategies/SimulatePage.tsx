@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
+import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import type { ColumnDef, TableQuery } from 'components/table/types';
 import { Button } from 'components/ui/Button';
 import { Badge } from 'components/ui/Badge';
@@ -14,13 +15,21 @@ import {
   markerRowOverlay,
   type InspectTarget,
 } from 'components/strategy/inspectTarget';
-import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
+import {
+  matchedColumns,
+  MATCHED_KEYS,
+  simColumns,
+  SIM_KEYS,
+} from 'components/strategy/strategyColumns';
 import { TokenInspectModal } from 'components/tpsl2/TokenInspectModal';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
-import { fetchEngineSimPage, fetchEngineSimSummary } from 'services/api';
 import {
-  isTableQueryActive,
+  fetchEngineMatchedPage,
+  fetchEngineSimPage,
+  fetchEngineSimSummary,
+} from 'services/api';
+import {
   toSummaryBody,
   toTableRequest,
   type TableRequestBody,
@@ -34,7 +43,7 @@ import {
 import { DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
 import { useServerTable } from 'hooks/useServerTable';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
-import type { SimulatedSummary, SimulatedTokenResult } from 'types';
+import type { MatchedTokenRecord, SimulatedSummary, SimulatedTokenResult } from 'types';
 import {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
@@ -44,6 +53,7 @@ type RunState = { running: boolean; summary?: SimulatedSummary; error?: string }
 
 const DASH = <span className="text-text-dim/60">—</span>;
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
+const MATCHED_NUMERIC_COLS = tokenNumericColKeys(matchedColumns);
 const keyByMint = (r: { mint_address: string }) => r.mint_address;
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
@@ -222,7 +232,7 @@ export function SimulatePage() {
         )}
       />
 
-      {selectedRule && (selectedRun?.running || selectedRun?.summary) && <SectionDivider gap="md" />}
+      {selectedRule && <SectionDivider gap="md" />}
 
       {selectedRule && selectedRun?.running && (
         <p className="text-sm text-text-dim">
@@ -230,7 +240,7 @@ export function SimulatePage() {
         </p>
       )}
 
-      {selectedRule && selectedRun?.summary && !selectedRun.running && (
+      {selectedRule && !selectedRun?.running && (
         <RuleSimPositionsPanel
           key={selectedRule.id}
           rule={selectedRule}
@@ -247,8 +257,13 @@ export function SimulatePage() {
   );
 }
 
-/** The selected rule's finished sim positions — own server-side table, rendered only
- *  for the row the user picked in the rules table above. */
+type ResultView = 'positions' | 'matched';
+
+/** The selected rule's result detail — a Positions ⇄ Matched toggle over two
+ *  server-side tables: the entered **positions** (the sim run's outcomes) and the
+ *  fingerprint-**matched** candidate pool they're a subset of. Rendered only for the
+ *  row the user picked in the rules table above; each table fetches only while its
+ *  view is active. */
 function RuleSimPositionsPanel({
   rule,
   reloadNonce,
@@ -260,13 +275,16 @@ function RuleSimPositionsPanel({
   onInspect: (v: { key: string; target: InspectTarget } | null) => void;
   inspectKey: string | null;
 }) {
+  const [view, setView] = useState<ResultView>('positions');
+
+  // Positions (entered) — the sim run's per-token outcomes. Fetched only while the
+  // Positions view is active.
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const simBody = useMemo(() => toTableRequest(simQuery, SIM_NUMERIC_COLS), [simQuery]);
   const simSummaryBody = useMemo(
     () => toSummaryBody(simQuery, SIM_NUMERIC_COLS),
     [simQuery.search, simQuery.colFilters, simQuery.structuredFilters],
   );
-
   const {
     items: simTokens,
     total: simTotal,
@@ -274,7 +292,7 @@ function RuleSimPositionsPanel({
     error: simTableError,
     reload: reloadSim,
   } = useServerTable<SimulatedTokenResult, SimulatedSummary>(
-    true,
+    view === 'positions',
     simBody,
     (body, signal) => fetchEngineSimPage(rule.id, body as TableRequestBody, signal),
     (summaryBody, signal) =>
@@ -282,9 +300,28 @@ function RuleSimPositionsPanel({
     simSummaryBody,
   );
 
+  // Matched — every token the rule's fingerprint selects (positions are the subset
+  // that actually entered). No summary and no entry/exit overlay: these are
+  // candidates, not fills. Fetched only while the Matched view is active.
+  const [matchedQuery, setMatchedQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
+  const matchedBody = useMemo(
+    () => toTableRequest(matchedQuery, MATCHED_NUMERIC_COLS),
+    [matchedQuery],
+  );
+  const {
+    items: matchedTokens,
+    total: matchedTotal,
+    loading: matchedLoading,
+    error: matchedError,
+    reload: reloadMatched,
+  } = useServerTable<MatchedTokenRecord>(view === 'matched', matchedBody, (body, signal) =>
+    fetchEngineMatchedPage(rule.id, body as TableRequestBody, signal),
+  );
+
   useEffect(() => {
     reloadSim();
-  }, [reloadNonce, reloadSim]);
+    reloadMatched();
+  }, [reloadNonce, reloadSim, reloadMatched]);
 
   const onSelectSim = useCallback(
     (key: string | null) => {
@@ -294,43 +331,84 @@ function RuleSimPositionsPanel({
     [simTokens, onInspect],
   );
 
-  if (simTableError) {
-    if (simTableError.includes('no simulation result')) return null;
-    return <InlineAlert variant="error">{simTableError}</InlineAlert>;
-  }
-
-  if (!simTableLoading && simTotal === 0 && !isTableQueryActive(simQuery)) {
-    return null;
-  }
+  const isMatched = view === 'matched';
+  // "no simulation result" just means this rule has no resident run — the parent
+  // only mounts us once it has a summary, so show the empty table, not an error.
+  const simError = simTableError && !simTableError.includes('no simulation result')
+    ? simTableError
+    : null;
 
   return (
     <section id={`sim-positions-${rule.id}`}>
-      <div className="mb-3.5 flex items-center gap-2.5">
+      <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
         <span className="h-4 w-1 rounded-full bg-info" />
-        <h3 className="text-sm font-bold text-text">Simulated Positions</h3>
+        <h3 className="text-sm font-bold text-text">
+          {isMatched ? 'Matched Tokens' : 'Simulated Positions'}
+        </h3>
         <Badge variant="info" size="sm" className="font-mono font-normal">
-          {simTotal}
+          {isMatched ? matchedTotal : simTotal}
         </Badge>
+        <div className="flex items-center gap-1">
+          <Button
+            variant={isMatched ? 'subtle' : 'primary'}
+            size="xs"
+            onClick={() => setView('positions')}
+          >
+            Positions
+          </Button>
+          <Button
+            variant={isMatched ? 'primary' : 'subtle'}
+            size="xs"
+            onClick={() => setView('matched')}
+          >
+            Matched
+          </Button>
+        </div>
         <span className="truncate font-mono text-[11px] text-text-dim">{rule.rule_name}</span>
       </div>
-      <TokenTable
-        columns={simColumns}
-        existingKeys={SIM_KEYS}
-        mintSetFilter
-        charts
-        useRowOverlay={simRowOverlay}
-        rows={simTokens}
-        rowKey={keyByMint}
-        selectedKey={inspectKey}
-        onSelect={onSelectSim}
-        serverSide
-        serverTotal={simTotal}
-        onQueryChange={setSimQuery}
-        loading={simTableLoading}
-        resetKey={rule.id}
-        tableId={`simulate-positions-${rule.id}`}
-        emptyMessage="No positions in this simulation result."
-      />
+
+      {isMatched ? (
+        matchedError ? (
+          <InlineAlert variant="error">{matchedError}</InlineAlert>
+        ) : (
+          <TokenTable
+            columns={matchedColumns}
+            existingKeys={MATCHED_KEYS}
+            mintSetFilter
+            charts
+            rows={matchedTokens}
+            rowKey={keyByMint}
+            serverSide
+            serverTotal={matchedTotal}
+            onQueryChange={setMatchedQuery}
+            loading={matchedLoading}
+            resetKey={rule.id}
+            tableId={`simulate-matched-${rule.id}`}
+            emptyMessage="No tokens match this rule's fingerprint."
+          />
+        )
+      ) : simError ? (
+        <InlineAlert variant="error">{simError}</InlineAlert>
+      ) : (
+        <TokenTable
+          columns={simColumns}
+          existingKeys={SIM_KEYS}
+          mintSetFilter
+          charts
+          useRowOverlay={simRowOverlay}
+          rows={simTokens}
+          rowKey={keyByMint}
+          selectedKey={inspectKey}
+          onSelect={onSelectSim}
+          serverSide
+          serverTotal={simTotal}
+          onQueryChange={setSimQuery}
+          loading={simTableLoading}
+          resetKey={rule.id}
+          tableId={`simulate-positions-${rule.id}`}
+          emptyMessage="No positions in this simulation result."
+        />
+      )}
     </section>
   );
 }
@@ -443,13 +521,19 @@ function buildColumns(
       key: 'sim_run',
       label: 'Run',
       group: 'sim',
-      tooltip: 'Last simulate run status for this rule',
+      tooltip: 'When this rule’s last simulation result was generated',
       render: (r) => {
         const run = runOf(r);
         if (!run) return DASH;
         if (run.running) return <span className="text-text-dim">running…</span>;
         if (run.error) return <span className="text-red">{run.error}</span>;
-        if (run.summary) return <span className="text-text-dim">done</span>;
+        if (run.summary) {
+          return run.summary.computed_at ? (
+            <RelativeTimeCell iso={run.summary.computed_at} />
+          ) : (
+            <span className="text-text-dim">done</span>
+          );
+        }
         return <span className="text-text-dim/60">cancelled</span>;
       },
       searchValue: (r) => {

@@ -142,6 +142,22 @@ export function fetchEngineSimPage(
   );
 }
 
+/** POST one page of a generic-engine run's matched tokens (`POST /api/strategies/simulate/{run_id}/matched`).
+ *  The fingerprint-matched candidate pool the run's positions are a subset of;
+ *  `run_id` is the rule id for a saved-rule run. Response body is `{tokens}`. */
+export function fetchEngineMatchedPage(
+  runId: string,
+  body: TableRequestBody,
+  signal?: AbortSignal,
+): Promise<{ items: import('types').MatchedTokenRecord[]; total: number }> {
+  return postTablePage(
+    `/api/strategies/simulate/${encodeURIComponent(runId)}/matched`,
+    body,
+    (json) => (json as { tokens: import('types').MatchedTokenRecord[] }).tokens,
+    signal,
+  );
+}
+
 /** POST the filtered aggregate for a generic-engine simulate run. */
 export function fetchEngineSimSummary(
   runId: string,
