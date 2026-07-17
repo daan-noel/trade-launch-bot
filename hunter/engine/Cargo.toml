@@ -21,3 +21,7 @@ smallvec = { version = "1", features = ["serde"] }
 # Types only (timestamps carried on events) — default features OFF so the
 # "clock" feature (system-time access) is never compiled in.
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+# Id type only — default features OFF so the "v4"/"rng" (getrandom/entropy)
+# features are never compiled in. Pure 128-bit data; ids are generated in the DB,
+# never in the engine. Kept out of the purity guard's banned list for that reason.
+uuid = { version = "1", default-features = false, features = ["std", "serde"] }

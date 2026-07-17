@@ -19,6 +19,7 @@
 //!   [`metrics::series::MetricSeries`].
 //! * [`rule_params`] — typed, registry-checked `strategy_rules.params`.
 
+pub mod fingerprint;
 pub mod grouping;
 pub mod metrics;
 pub mod rule_params;

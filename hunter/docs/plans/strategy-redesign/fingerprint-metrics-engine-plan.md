@@ -3,8 +3,9 @@
 Status: **IN PROGRESS** (design settled 2026-07-16; architecture upgraded same day to the
 deterministic event-log engine — all five "best solution" upgrades adopted).
 **Phase 0 complete 2026-07-16** (plus 1.2 pulled forward). **Phase 1 complete
-2026-07-16** (metrics framework: 1.1 registry JSON, 1.3–1.8); next: Phase 2
-(fingerprint matcher).
+2026-07-16** (metrics framework: 1.1 registry JSON, 1.3–1.8). **Phase 2 complete
+2026-07-16** (fingerprint matcher: `engine/src/fingerprint.rs`, two-phase
+first-slot, 11 tests); next: Phase 3 (the engine fold `reduce` + golden-log spec).
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
 [frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
@@ -498,19 +499,27 @@ Determinism rules (violation = bug):
       twice ⇒ `to_bits()`-identical rows across runs AND identical to a bare-`TokenTrack`
       reference (no drift between the two compute paths).
 
-### Phase 2 — Fingerprint matcher (`hunter/engine/src/fingerprint.rs`)
+### Phase 2 — Fingerprint matcher (`hunter/engine/src/fingerprint.rs`) ✅ 2026-07-16
 
-- [ ] 2.1 `matches(fp, tf) -> bool` — port semantics from the three `entry/mod.rs`
-      `check_*` sets (source of truth for edge cases): exact `cu_limit`/`cu_price`/
-      `ix_labels` (ordered), SOL axes via `same_bucket(v, fp_val, fp.bucket_size_amount)`;
-      `NULL` field = not part of identity; require ≥1 configured criterion
-      (**never match-everything**).
-- [ ] 2.2 `match_all(fps, tf) -> SmallVec<FingerprintId>` (multi-match). First-slot
-      fields evaluate in two phases: instant axes at `TokenCreated`, first-slot axes at
-      `FirstSlotSettled` (the event replaces today's `pending_first_slot` +
-      1 s sweep backstop — the **producer** owns slot-close detection).
-- [ ] 2.3 Guard tests: multi-match, bucket edges at width boundaries, ix_labels order
-      sensitivity, first-slot two-phase resolution, ≥1-criterion guard.
+- [x] 2.1 `matches(fp, tf) -> bool` — ported semantics from the `entry/mod.rs`
+      `check_*` sets: exact `cu_limit`/`cu_price`/`ix_labels` (ordered), SOL axes via
+      `same_bucket(v, fp_val, fp.bucket_size_amount)`; `None` axis = not part of
+      identity; ≥1 configured criterion required (`has_any_criterion`, **never
+      match-everything**). *Impl:* engine-pure `Fingerprint` (criteria, lamports at
+      rest + `*_sol` accessors) + `FingerprintId(Uuid)`; reuses `grouping::TokenFingerprint`
+      as the single observed-token axes type. Added `uuid` dep (default-features off,
+      no `v4`/rng → still pure; not in the purity-guard banned list). SSOT
+      `grouping::LAMPORTS_PER_SOL_F64` added for the in-engine lamports→SOL divisor.
+- [x] 2.2 `match_all(fps, tf, phase) -> SmallVec<[FingerprintId; 4]>` (multi-match).
+      Two-phase via `MatchPhase::{Instant, Full}`: `Instant` (at `TokenCreated`) judges
+      only instant axes so a first-slot fingerprint stays *pending*; `Full` (at
+      `FirstSlotSettled`) judges every axis. `has_first_slot_criteria`/`has_instant_criterion`
+      let the Phase-4 producer classify pending vs armed. Empty `Some([])` ix_labels
+      treated as inert (mirrors legacy).
+- [x] 2.3 Guard tests (11): multi-match order, bucket edge at width boundary, ix_labels
+      order/subset/superset sensitivity, first-slot two-phase resolution, ≥1-criterion
+      guard, per-fingerprint width (coarse+fine both match same token), lamports→SOL
+      conversion for max_cost/spendable.
 
 ### Phase 3 — The engine fold (`reduce`) + golden-log spec
 

@@ -48,6 +48,11 @@ pub const SOL_BUCKET_DECIMALS: usize = 1;
 /// dashboard SQL bin so both sides place on-edge values identically.
 pub const BUCKET_EPS: f64 = 1e-9;
 
+/// Lamports per SOL as `f64` — the one in-engine lamports→SOL divisor. The engine
+/// is pure (no `config::constants`), so this is the SSOT both the grouping labels
+/// and the [`crate::fingerprint`] bucket matcher divide by.
+pub const LAMPORTS_PER_SOL_F64: f64 = 1_000_000_000.0;
+
 /// Smallest legal bucket width (SOL). Below this the `1e-9` ratio-epsilon stops
 /// being negligible and labels blow up in decimals, so rule validation rejects
 /// anything smaller. `1e-6 SOL = 1000 lamports`, far finer than any real config.
@@ -106,7 +111,7 @@ fn bucket_sol_label(v: f64, width: f64, decimals: usize) -> String {
 /// width; `decimals` must be [`decimals_for`]`(width)` so the label edge (always a
 /// multiple of `width`) renders exactly — see [`render_field`].
 fn bucket_lamports_as_sol(lamports: i64, width: f64, decimals: usize) -> String {
-    bucket_sol_label(lamports as f64 / 1_000_000_000.0, width, decimals)
+    bucket_sol_label(lamports as f64 / LAMPORTS_PER_SOL_F64, width, decimals)
 }
 
 /// Token-creation metadata used **only** for grouping — never read by any
