@@ -60,6 +60,87 @@ export function parseFilterSpec(text: string): FilterSpec | null {
   return null;
 }
 
+// ── Compound comma-AND grammar (strategy conditions + client filtering) ───────
+//
+// The rule-condition grammar (plan §2): comma = AND, so `">10, <=30"` is two
+// ANDed comparisons and `"1..10"` is `>=1 AND <=10`. This is the shared SSOT the
+// strategy `lib/strategy/grammar` wraps and DataTable client-side filtering can
+// adopt. Unlike {@link parseFilterSpec}, this is **strict**: a fragment that
+// isn't a recognized comparison/range makes the whole parse fail (`null`) — there
+// is no `contains` fallback, so a malformed rule fragment surfaces as an error
+// instead of silently matching nothing.
+
+/** The comparison operators of the condition grammar (JSON-wire form, matching
+ *  the backend `hunter_engine::metrics::evaluator::Operator` renames). */
+export type CompareOp = '>' | '>=' | '<' | '<=' | '=' | '!=';
+
+/** One atomic comparison of the compound grammar (`op value`). */
+export interface Comparison {
+  op: CompareOp;
+  value: number;
+}
+
+// Same numeric shapes as CMP_RE/RANGE_RE but keeping the operator token verbatim
+// (`==` normalized to `=` below) so the parsed list round-trips to the wire form.
+const COMPARE_RE = /^(>=|<=|==|!=|>|<|=)\s*(-?\d+(?:\.\d+)?)$/;
+
+/**
+ * Parse a compound comma-AND condition string into a list of {@link Comparison}s.
+ * `">10, <=30"` → `[{'>',10},{'<=',30}]`; `"1..10"` → `[{'>=',1},{'<=',10}]`;
+ * `""` (or whitespace) → `[]` (unconstrained). Returns `null` if ANY fragment is
+ * malformed (strict — no substring fallback), so callers can flag the input.
+ */
+export function parseConditionList(text: string): Comparison[] | null {
+  const trimmed = text.trim();
+  if (trimmed === '') return [];
+  const out: Comparison[] = [];
+  for (const rawFrag of trimmed.split(',')) {
+    const frag = rawFrag.trim();
+    if (frag === '') return null; // empty/trailing-comma fragment is malformed
+    const range = RANGE_RE.exec(frag);
+    if (range) {
+      let lo = parseFloat(range[1]);
+      let hi = parseFloat(range[2]);
+      if (lo > hi) [lo, hi] = [hi, lo];
+      out.push({ op: '>=', value: lo }, { op: '<=', value: hi });
+      continue;
+    }
+    const cmp = COMPARE_RE.exec(frag);
+    if (!cmp) return null;
+    const op = (cmp[1] === '==' ? '=' : cmp[1]) as CompareOp;
+    out.push({ op, value: parseFloat(cmp[2]) });
+  }
+  return out;
+}
+
+/** Inverse of {@link parseConditionList}: canonical `"op value, op value"` text
+ *  (single-spaced, comma-joined). Order = list order — a save may reorder vs the
+ *  raw text the user typed (documented in the input hint). */
+export function formatConditionList(list: Comparison[]): string {
+  return list.map((c) => `${c.op} ${c.value}`).join(', ');
+}
+
+/** A client-side predicate for a compound condition list (all AND). */
+export function conditionListPredicate(list: Comparison[]): (n: number) => boolean {
+  return (n) =>
+    list.every((c) => {
+      switch (c.op) {
+        case '>':
+          return n > c.value;
+        case '>=':
+          return n >= c.value;
+        case '<':
+          return n < c.value;
+        case '<=':
+          return n <= c.value;
+        case '=':
+          return n === c.value;
+        case '!=':
+          return n !== c.value;
+      }
+    });
+}
+
 /**
  * Legacy client-side numeric predicate (used by fully client-side tables that
  * still filter in-browser). Wraps {@link parseFilterSpec}; returns `null` when the

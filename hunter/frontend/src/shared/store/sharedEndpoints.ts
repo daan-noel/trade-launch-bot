@@ -14,6 +14,7 @@ import type {
   TradeRecord,
   WalletProfile,
 } from 'types';
+import type { StrategyRegistry } from 'lib/strategy/registry';
 
 /**
  * Args for the server-side paginated Tokens view: the backend filters/sorts/pages so
@@ -191,6 +192,15 @@ export const sharedApi = baseApi.injectEndpoints({
       query: () => '/api/system/settings',
       providesTags: ['Settings'],
     }),
+    // The strategy metric registry (`hunter_engine::metrics::registry_json`) — the
+    // self-describing vocabulary the whole rule-authoring UI renders from. Static
+    // for the backend process lifetime, so cache it for an hour and never refetch
+    // on remount: one request per session drives every group picker / metric row /
+    // sweep axis / chart pane / validation message.
+    getStrategyRegistry: builder.query<StrategyRegistry, void>({
+      query: () => '/api/meta/strategy-registry',
+      keepUnusedDataFor: 3600,
+    }),
     updateSettings: builder.mutation<AppSettings, Partial<AppSettings>>({
       query: (patch) => ({
         url: '/api/system/settings',
@@ -230,4 +240,5 @@ export const {
   useGetSettingsQuery,
   useGetProfilesQuery,
   useUpdateSettingsMutation,
+  useGetStrategyRegistryQuery,
 } = sharedApi;

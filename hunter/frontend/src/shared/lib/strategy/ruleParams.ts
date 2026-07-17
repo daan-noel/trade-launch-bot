@@ -1,0 +1,116 @@
+// `RuleParams` — the TS mirror of the backend `hunter_engine::rule_params::RuleParams`
+// (the typed form of `strategy_rules.params` JSONB). The wire JSON mixes a group's
+// **strict params** (e.g. `window_size_sec`) with its **metric condition lists** at
+// the same level inside each `entry`/`exit` group object, so JSON⇄form conversion
+// is registry-guided (the registry says which keys are strict params vs metrics).
+//
+// This is the one generic serializer that replaces the deleted per-strategy
+// `lib/params` spec/blob engine (FE plan §1).
+
+import type { Condition } from './grammar';
+import type { StrategyRegistry } from './registry';
+
+/** Editor-friendly form of one side's (entry/exit) groups, keyed by group name. */
+export type SideConditions = Record<string, GroupConditions>;
+
+/** One group's authored content: strict params beside per-metric condition lists. */
+export interface GroupConditions {
+  /** Strict params by name, e.g. `{ window_size_sec: 10 }`. */
+  strict: Record<string, number>;
+  /** `{operator, value}` lists per metric name. */
+  metrics: Record<string, Condition[]>;
+}
+
+/** The whole rule `params` object in form shape. */
+export interface RuleParams {
+  /** Take-profit % of entry price (`100` = +100%). `null`/absent = off. */
+  take_profit: number | null;
+  /** Stop-loss % drop from entry. `null`/absent = off. */
+  stop_loss: number | null;
+  /** Entry side. `undefined`/empty ⇒ enter on arm (fingerprint alone). */
+  entry?: SideConditions;
+  /** Exit side. `undefined`/empty ⇒ TP/SL/death only. */
+  exit?: SideConditions;
+}
+
+/** An empty rule (fingerprint-only, no TP/SL/conditions). */
+export function emptyRuleParams(): RuleParams {
+  return { take_profit: null, stop_loss: null, entry: {}, exit: {} };
+}
+
+/** Serialize form → canonical `params` JSON. Drops empty metric lists and no-op
+ *  groups (a group with no metric conditions — the backend rejects those). */
+export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
+  const root: Record<string, unknown> = {};
+  if (p.take_profit != null) root.take_profit = p.take_profit;
+  if (p.stop_loss != null) root.stop_loss = p.stop_loss;
+  const entry = sideToJson(p.entry);
+  if (entry) root.entry = entry;
+  const exit = sideToJson(p.exit);
+  if (exit) root.exit = exit;
+  return root;
+}
+
+function sideToJson(side: SideConditions | undefined): Record<string, unknown> | undefined {
+  if (!side) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [groupName, group] of Object.entries(side)) {
+    const g: Record<string, unknown> = {};
+    let hasMetric = false;
+    for (const [metric, conds] of Object.entries(group.metrics)) {
+      if (conds.length > 0) {
+        g[metric] = conds;
+        hasMetric = true;
+      }
+    }
+    // Strict params only ride along a group that actually constrains something.
+    if (!hasMetric) continue;
+    for (const [name, v] of Object.entries(group.strict)) {
+      if (v != null && Number.isFinite(v)) g[name] = v;
+    }
+    out[groupName] = g;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Parse canonical `params` JSON → form, using the registry to split each group's
+ *  strict params from its metric condition lists. Tolerant: unknown keys are
+ *  dropped (validation reports them separately). */
+export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefined): RuleParams {
+  const obj = (json && typeof json === 'object' ? json : {}) as Record<string, unknown>;
+  return {
+    take_profit: numOrNull(obj.take_profit),
+    stop_loss: numOrNull(obj.stop_loss),
+    entry: sideFromJson(obj.entry, reg) ?? {},
+    exit: sideFromJson(obj.exit, reg) ?? {},
+  };
+}
+
+function sideFromJson(
+  v: unknown,
+  reg: StrategyRegistry | undefined,
+): SideConditions | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const side: SideConditions = {};
+  for (const [groupName, groupVal] of Object.entries(v as Record<string, unknown>)) {
+    const spec = reg?.groups.find((g) => g.name === groupName);
+    const group: GroupConditions = { strict: {}, metrics: {} };
+    const gobj = (groupVal && typeof groupVal === 'object' ? groupVal : {}) as Record<
+      string,
+      unknown
+    >;
+    for (const [key, val] of Object.entries(gobj)) {
+      if (spec?.strict_params.some((sp) => sp.name === key)) {
+        if (typeof val === 'number') group.strict[key] = val;
+      } else if (Array.isArray(val)) {
+        group.metrics[key] = val as Condition[];
+      }
+    }
+    side[groupName] = group;
+  }
+  return side;
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}

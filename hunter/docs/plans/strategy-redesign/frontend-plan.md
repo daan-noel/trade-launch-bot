@@ -223,18 +223,22 @@ pages listed in §2. **Kept:** `DataTable` + server-table plumbing, `sse.ts` mul
 > (boundary gate), no extra re-render on SOL/USD tick or live-trade stream; update
 > `docs/arch/frontend.md` when structure changes.
 
-### FE0 — Registry + grammar foundation  (needs backend Phase 1 + 4.8 registry endpoint)
+### FE0 — Registry + grammar foundation  (needs backend Phase 1 + 4.8 registry endpoint) ✅ 2026-07-17
 
-- [ ] 0.1 `lib/strategy/registry.ts`: types mirroring the registry payload +
-      `useStrategyRegistry()` (RTK Query in `sharedEndpoints`, long cache, one fetch).
-- [ ] 0.2 Extend `numericFilter.ts`: compound comma-AND (`parseConditionList`), strict
-      mode (no contains fallback), `formatConditionList` round-trip; unit tests incl.
-      `">10, <=30"`, `"1..10"`, `"!=0"`, malformed fragments. DataTable client filtering
-      adopts compound; server-side `TableRequestBody.filters` stays single-spec for now
-      (wire extension = separate small follow-up, noted in code).
-- [ ] 0.3 `lib/strategy/ruleParams.ts` + `validate.ts`: generic JSONB ⇄ form model,
-      registry-driven validation mirroring backend §5 (same error vocabulary).
-- [ ] 0.4 `ConditionInput.tsx` (input + chips + red-fragment error + unit hint).
+- [x] 0.1 `lib/strategy/registry.ts`: types mirroring the registry payload +
+      `useStrategyRegistry()` (RTK Query `getStrategyRegistry` in `sharedEndpoints`,
+      1 h cache, one fetch) + `unitSuffix`/`findGroup`/`findMetric` helpers.
+- [x] 0.2 Extend `numericFilter.ts`: compound comma-AND (`parseConditionList`), strict
+      mode (no contains fallback), `formatConditionList` round-trip + `conditionListPredicate`;
+      10 unit tests (`numericFilter.conditions.test.ts`) incl. `">10, <=30"`, `"1..10"`,
+      `"!=0"`, `"=="→"="`, malformed fragments. `Comparison`/`CompareOp` are the shared SSOT
+      the strategy grammar wraps. Server-side `TableRequestBody.filters` stays single-spec
+      for now (wire extension = later follow-up).
+- [x] 0.3 `lib/strategy/ruleParams.ts` (generic JSONB ⇄ form model, registry-guided
+      strict/metric split) + `validate.ts` (registry-driven, ports backend §5
+      `check_satisfiable`; same error vocabulary).
+- [x] 0.4 `components/strategy/ConditionInput.tsx` (grammar input + parsed chips +
+      red-underline malformed hint + unit adornment; text-first with blur snap-back).
 
 ### FE1 — Fingerprints + Rules pages  (needs backend Phase 0 + 2 + 4.8 CRUD)
 
