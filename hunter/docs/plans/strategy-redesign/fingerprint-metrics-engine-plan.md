@@ -2,8 +2,9 @@
 
 Status: **IN PROGRESS** (design settled 2026-07-16; architecture upgraded same day to the
 deterministic event-log engine — all five "best solution" upgrades adopted).
-**Phase 0 complete 2026-07-16** (plus 1.2 pulled forward); next: Phase 1 (1.1 JSON
-serialization remainder, 1.3–1.8).
+**Phase 0 complete 2026-07-16** (plus 1.2 pulled forward). **Phase 1 complete
+2026-07-16** (metrics framework: 1.1 registry JSON, 1.3–1.8); next: Phase 2
+(fingerprint matcher).
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
 [frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
@@ -468,26 +469,34 @@ Determinism rules (violation = bug):
 
 ### Phase 1 — Metrics framework (`hunter/engine/src/metrics/`)
 
-- [ ] 1.1 `metrics/mod.rs`: `MetricId`/`MetricGroupId`, `Unit { Seconds, Sol, Percent }`,
+- [x] 1.1 `metrics/mod.rs`: `MetricId`/`MetricGroupId`, `Unit { Seconds, Sol, Percent }`,
       `MetricKind { Static, Dynamic }`, compile-time **registry** (groups → metrics →
       unit → eq-tolerance → monotonic flag → strict params). Registry serializes to JSON
-      for the `/api/meta/strategy-registry` endpoint (frontend contract — FE plan §1).
+      via `registry_json()` for the `/api/meta/strategy-registry` endpoint (frontend
+      contract — FE plan §1): `{operators, groups:[{name,kind,strict_params,metrics}]}`.
+      Shared input primitives `Ts`/`Side`/`TradeLite` + `secs_between` also live here.
 - [x] 1.2 `metrics/evaluator.rs`: `eval(conditions, value, tol) -> bool` — `=`/`!=` via
       `|v-x| <= tol/2`; exhaustive unit tests incl. tolerance edges and NaN guards.
       (Done in Phase 0 alongside `rule_params`.)
-- [ ] 1.3 `metrics/snapshot.rs`: `time` (monotonic ✓, s, tol 0.5), `liquidity` (SOL,
-      tol 0.1) — from creation time + current `reserve_sol` (canonical reserve pair).
-- [ ] 1.4 `metrics/price_path.rs`: incremental `{peak_price, last_price, last_move_at}` →
-      `stall` (s, tol 0.5), `trail` (% off peak, tol 1.0). Price = canonical curve-spot.
-- [ ] 1.5 `metrics/time_window.rs`: per-(token, window_size_sec) ring buffer of
-      `(ts, signed_sol)` → `gross_flow`/`net_flow`/`buy`/`sell` (SOL, tol 0.1).
-      **Dedup key = window_size_sec.** O(1) amortized; pre-sized, no per-event alloc.
-- [ ] 1.6 `metrics/track.rs`: `TokenTrack` — static state + deduped dynamic states;
-      `on_trade`/`on_tick`; `values(...)` into caller-owned buffer (no alloc).
-- [ ] 1.7 `metrics/series.rs`: `MetricSeries` emitter for the sweep scan — same compute
-      code as `track.rs` (shared internals), emits per-event value rows.
-- [ ] 1.8 Determinism test: replay a recorded trade vector twice (interleaved ticks) ⇒
-      byte-identical value sequences from both `track` and `series`.
+- [x] 1.3 `metrics/snapshot.rs`: `time` (monotonic ✓, s, tol 0.5), `liquidity` (SOL,
+      tol 0.1) — from creation time + last `reserve_sol`. `liquidity` = `NaN` before the
+      first trade (no market data ⇒ satisfies nothing).
+- [x] 1.4 `metrics/price_path.rs`: incremental `{peak_price, last_price, last_move_at}` →
+      `stall` (s, tol 0.5; clock starts at creation, any price change resets it),
+      `trail` (% off peak, tol 1.0; `NaN` pre-first-trade). Price = canonical curve-spot.
+- [x] 1.5 `metrics/time_window.rs`: per-`window_size_sec` `VecDeque` of `(ts, signed_sol)`
+      + running `buy`/`sell` sums → `gross_flow`/`net_flow`/`buy`/`sell` (SOL, tol 0.1).
+      **Dedup key = `window_key(w)` (ms-rounded).** Trailing window `(now−w, now]`; evict
+      on every trade/tick; O(1) read/fold, no per-event alloc.
+- [x] 1.6 `metrics/track.rs`: `TokenTrack` — static states + `BTreeMap` of deduped
+      windows; `new`/`ensure_window`/`on_trade`/`on_tick`; `value(id, window?, now)` routes
+      by group; `values(reqs, now, &mut out)` batch into caller buffer (no alloc).
+- [x] 1.7 `metrics/series.rs`: `MetricSeries` wraps `TokenTrack` (literal shared compute) —
+      `SeriesColumn::{Static, Window}`, `push_trade`/`push_tick` record a value row per
+      event; `column_values` extracts one series for the scan.
+- [x] 1.8 Determinism test (`series.rs`): script of trades + interleaved ticks replayed
+      twice ⇒ `to_bits()`-identical rows across runs AND identical to a bare-`TokenTrack`
+      reference (no drift between the two compute paths).
 
 ### Phase 2 — Fingerprint matcher (`hunter/engine/src/fingerprint.rs`)
 

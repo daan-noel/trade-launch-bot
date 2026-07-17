@@ -16,8 +16,48 @@
 //! makes it immediately usable everywhere, with no schema change.
 
 pub mod evaluator;
+pub mod price_path;
+pub mod series;
+pub mod snapshot;
+pub mod time_window;
+pub mod track;
 
 use std::fmt;
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// Every timestamp in the engine arrives on an event — the engine never reads a
+/// clock (purity). `Ts` is that carried instant.
+pub type Ts = DateTime<Utc>;
+
+/// Whole seconds (as `f64`, sub-second precision preserved to the millisecond)
+/// elapsed from `from` to `to`. The one place metric compute turns two instants
+/// into a duration, so every group measures time identically.
+pub fn secs_between(from: Ts, to: Ts) -> f64 {
+    to.signed_duration_since(from).num_milliseconds() as f64 / 1000.0
+}
+
+/// A trade's direction. Buys add SOL to the curve; sells remove it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Buy,
+    Sell,
+}
+
+/// The minimal per-trade fact the metrics need — the engine's `Trade` event
+/// carries one of these. `sol` is the trade's absolute SOL notional (`>= 0`);
+/// direction lives in `side`. `price` is the canonical curve-spot price and
+/// `reserve_sol` the SOL reserves after the trade (liquidity).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TradeLite {
+    pub side: Side,
+    pub sol: f64,
+    pub price: f64,
+    pub reserve_sol: f64,
+    pub at: Ts,
+}
 
 /// A metric group — one compute module, one JSON key under `entry`/`exit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,12 +123,33 @@ pub enum Unit {
     Percent,
 }
 
+impl Unit {
+    /// Stable JSON/label token (frontend registry contract).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Unit::Seconds => "seconds",
+            Unit::Sol => "sol",
+            Unit::Percent => "percent",
+        }
+    }
+}
+
 /// Whether a group's metrics are rule-independent (one value per token) or need
 /// per-rule strict params (deduped by those params across rules).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricKind {
     Static,
     Dynamic,
+}
+
+impl MetricKind {
+    /// Stable JSON/label token (frontend registry contract).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MetricKind::Static => "static",
+            MetricKind::Dynamic => "dynamic",
+        }
+    }
 }
 
 /// Registry entry for one metric: name, unit, `=`-tolerance, monotonicity.
@@ -252,6 +313,47 @@ pub fn group_of(id: MetricId) -> &'static GroupSpec {
         .expect("every MetricId belongs to a REGISTRY group")
 }
 
+/// The metric registry as a stable JSON document — the payload behind
+/// `GET /api/meta/strategy-registry`. The frontend renders its whole
+/// rule-authoring UI (group pickers, metric rows, operator lists) from this, so
+/// adding a metric to [`REGISTRY`] surfaces it in the UI with no frontend change
+/// (extensibility contract, plan §8).
+pub fn registry_json() -> serde_json::Value {
+    use serde_json::{json, Value};
+    let groups: Vec<Value> = REGISTRY
+        .iter()
+        .map(|g| {
+            let strict: Vec<Value> = g
+                .strict_params
+                .iter()
+                .map(|p| json!({ "name": p.name, "required": p.required }))
+                .collect();
+            let metrics: Vec<Value> = g
+                .metrics
+                .iter()
+                .map(|m| {
+                    json!({
+                        "name": m.name,
+                        "unit": m.unit.as_str(),
+                        "eq_tolerance": m.eq_tolerance,
+                        "monotonic": m.monotonic,
+                    })
+                })
+                .collect();
+            json!({
+                "name": g.name,
+                "kind": g.kind.as_str(),
+                "strict_params": strict,
+                "metrics": metrics,
+            })
+        })
+        .collect();
+    json!({
+        "operators": ["<", "<=", ">", ">=", "=", "!="],
+        "groups": groups,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +404,30 @@ mod tests {
                 assert_eq!(m.monotonic, m.id == MetricId::Time, "{}", m.name);
             }
         }
+    }
+
+    #[test]
+    fn registry_json_mirrors_the_registry() {
+        let j = registry_json();
+        assert_eq!(j["operators"].as_array().unwrap().len(), 6);
+        let groups = j["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), REGISTRY.len());
+        for (jg, g) in groups.iter().zip(REGISTRY) {
+            assert_eq!(jg["name"], g.name);
+            assert_eq!(jg["kind"], g.kind.as_str());
+            assert_eq!(jg["strict_params"].as_array().unwrap().len(), g.strict_params.len());
+            let jm = jg["metrics"].as_array().unwrap();
+            assert_eq!(jm.len(), g.metrics.len());
+            for (m_json, m) in jm.iter().zip(g.metrics) {
+                assert_eq!(m_json["name"], m.name);
+                assert_eq!(m_json["unit"], m.unit.as_str());
+                assert_eq!(m_json["eq_tolerance"], m.eq_tolerance);
+                assert_eq!(m_json["monotonic"], m.monotonic);
+            }
+        }
+        // m_time_window advertises its required strict param.
+        let tw = groups.iter().find(|g| g["name"] == "m_time_window").unwrap();
+        assert_eq!(tw["strict_params"][0]["name"], "window_size_sec");
+        assert_eq!(tw["strict_params"][0]["required"], true);
     }
 }

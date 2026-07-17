@@ -13,7 +13,10 @@
 //! Current contents (grows through the redesign phases):
 //! * [`grouping`] — bucket SSOT (`bucket_index`/`same_bucket`/`group_key`),
 //!   moved from `trading_core` (which re-exports it during the transition).
-//! * [`metrics`] — the self-describing metric registry + condition evaluator.
+//! * [`metrics`] — the self-describing metric registry, condition evaluator,
+//!   per-group compute (`snapshot`/`price_path`/`time_window`), the per-token
+//!   fold [`metrics::track::TokenTrack`], and the sweep-precompute
+//!   [`metrics::series::MetricSeries`].
 //! * [`rule_params`] — typed, registry-checked `strategy_rules.params`.
 
 pub mod grouping;
