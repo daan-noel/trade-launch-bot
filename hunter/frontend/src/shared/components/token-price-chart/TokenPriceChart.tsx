@@ -523,6 +523,7 @@ export function TokenPriceChart({
   selectedBar = null,
   onRangeChange,
   onCrosshairTimeChange,
+  externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
   swingOverlay = null,
   highlightChain = null,
@@ -557,6 +558,10 @@ export function TokenPriceChart({
   onCrosshairTimeChangeRef.current = onCrosshairTimeChange;
   const onVisibleTimeRangeChangeRef = useRef(onVisibleTimeRangeChange);
   onVisibleTimeRangeChangeRef.current = onVisibleTimeRangeChange;
+  /** True while applying {@link externalCrosshairTimeSec} so the resulting
+   *  subscribeCrosshairMove echo doesn't bounce back to the sibling. */
+  const applyingExternalCrosshairRef = useRef(false);
+  const prevExternalCrosshairRef = useRef<number | null>(null);
   const onSwingLegClickRef = useRef(onSwingLegClick);
   onSwingLegClickRef.current = onSwingLegClick;
   const selectedSwingLegKeyRef = useRef(selectedSwingLegKey);
@@ -927,7 +932,9 @@ export function TokenPriceChart({
       setChainTooltip(next.chainTooltip);
       setRangeTooltip(next.rangeTooltip);
       setWalletMarkersTooltip(next.walletMarkersTooltip);
-      onCrosshairTimeChangeRef.current?.(next.crosshairTimeSec);
+      if (!applyingExternalCrosshairRef.current) {
+        onCrosshairTimeChangeRef.current?.(next.crosshairTimeSec);
+      }
     };
     const scheduleCrosshair = () => {
       if (crosshairRafRef.current == null) {
@@ -1396,6 +1403,73 @@ export function TokenPriceChart({
       });
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
+
+  // Sibling panes (metric series) drive the price-chart crosshair via wall-clock time.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!chart || !series || !showChart) return;
+
+    if (externalCrosshairTimeSec == null) {
+      if (prevExternalCrosshairRef.current != null) {
+        applyingExternalCrosshairRef.current = true;
+        chart.clearCrosshairPosition();
+        applyingExternalCrosshairRef.current = false;
+      }
+      prevExternalCrosshairRef.current = null;
+      return;
+    }
+    prevExternalCrosshairRef.current = externalCrosshairTimeSec;
+
+    let barTime: number | null = null;
+    let price: number | null = null;
+
+    if (groupMode === 'time') {
+      // Nearest bar by bucket-start seconds.
+      let best: (typeof bars)[number] | null = null;
+      let bestDist = Infinity;
+      for (const b of bars) {
+        const d = Math.abs(Number(b.time) - externalCrosshairTimeSec);
+        if (d < bestDist) {
+          bestDist = d;
+          best = b;
+        }
+      }
+      if (best) {
+        barTime = Number(best.time);
+        price = best.close;
+      }
+    } else {
+      // Slot mode: map wall-clock → trade → slot bar.
+      let bestTrade: (typeof sortedTrades)[number] | null = null;
+      let bestDist = Infinity;
+      for (const t of sortedTrades) {
+        const ms = Date.parse(t.block_time);
+        if (!Number.isFinite(ms)) continue;
+        const d = Math.abs(ms / 1000 - externalCrosshairTimeSec);
+        if (d < bestDist) {
+          bestDist = d;
+          bestTrade = t;
+        }
+      }
+      if (bestTrade?.slot != null) {
+        const bar = bars.find((b) => Number(b.time) === bestTrade!.slot);
+        if (bar) {
+          barTime = Number(bar.time);
+          price = bar.close;
+        }
+      }
+    }
+
+    if (barTime == null || price == null) return;
+    applyingExternalCrosshairRef.current = true;
+    chart.setCrosshairPosition(price, barTime as UTCTimestamp, series);
+    // setCrosshairPosition fires subscribeCrosshairMove synchronously — clear
+    // the guard after the current stack so the echo is swallowed.
+    queueMicrotask(() => {
+      applyingExternalCrosshairRef.current = false;
+    });
+  }, [externalCrosshairTimeSec, showChart, bars, sortedTrades, groupMode]);
 
   useEffect(() => {
     const series = seriesRef.current;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
@@ -48,10 +48,12 @@ function loadPrefs(): Prefs {
 
 export interface MetricPanesProps {
   mint: string;
-  /** Shared wall-clock crosshair from the price chart (unix seconds). */
+  /** Shared wall-clock crosshair (unix seconds) — from price chart or pane hover. */
   crosshairTimeSec?: number | null;
   /** Shared visible window from the price chart (unix seconds). */
   visibleTimeRange?: ChartVisibleTimeRange | null;
+  /** Pane hover drives the shared crosshair (and the price chart). */
+  onCrosshairTimeChange?: (timeSec: number | null) => void;
   /** Emit first metric entry/exit fires as chart markers. */
   onEventMarkersChange?: (markers: ChartEventMarker[]) => void;
 }
@@ -66,6 +68,7 @@ export function MetricPanes({
   mint,
   crosshairTimeSec = null,
   visibleTimeRange = null,
+  onCrosshairTimeChange,
   onEventMarkersChange,
 }: MetricPanesProps) {
   const { data: registry } = useStrategyRegistry();
@@ -208,6 +211,28 @@ export function MetricPanes({
     return { from: finite[0], to: finite[finite.length - 1] };
   }, [visibleTimeRange, atSec]);
 
+  /** Map pointer X on a pane → nearest series timestamp (drives shared crosshair). */
+  const handlePanePointer = useCallback(
+    (clientX: number, svgEl: Element) => {
+      if (!onCrosshairTimeChange || !atSec.length) return;
+      const xFrom = xDomain?.from ?? atSec.find((t) => Number.isFinite(t)) ?? 0;
+      const xTo = xDomain?.to ?? atSec.filter((t) => Number.isFinite(t)).at(-1) ?? 1;
+      const xSpan = xTo - xFrom || 1;
+      const rect = svgEl.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      const t = xFrom + ratio * xSpan;
+      const idx = nearestSeriesIndex(atSec, t);
+      if (idx == null || !Number.isFinite(atSec[idx])) return;
+      onCrosshairTimeChange(atSec[idx]);
+    },
+    [onCrosshairTimeChange, atSec, xDomain],
+  );
+
+  const handlePaneLeave = useCallback(() => {
+    onCrosshairTimeChange?.(null);
+  }, [onCrosshairTimeChange]);
+
   if (!registry) return <p className="text-[12px] text-text-dim">loading registry…</p>;
 
   return (
@@ -280,7 +305,15 @@ export function MetricPanes({
           Pick a metric above, or select a rule to auto-load its conditions.
         </p>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div
+          className="flex flex-col gap-2"
+          onPointerLeave={(e) => {
+            // Only clear when leaving the whole pane stack (not when moving pane→pane).
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+              handlePaneLeave();
+            }
+          }}
+        >
           {prefs.panes.map((key) => {
             const col = seriesByKey.get(key);
             const meta = allColumns.find((c) => c.key === key);
@@ -303,6 +336,7 @@ export function MetricPanes({
                 crosshairIdx={crosshairIdx}
                 thresholds={ruleParams ? metricThresholds(ruleParams, meta.metric) : []}
                 conditionOk={conditionByMetric.get(meta.metric)?.ok ?? null}
+                onPointerTime={handlePanePointer}
               />
             );
           })}
@@ -352,6 +386,7 @@ function MetricPane({
   crosshairIdx,
   thresholds,
   conditionOk,
+  onPointerTime,
 }: {
   label: string;
   unit: MetricUnit;
@@ -362,6 +397,7 @@ function MetricPane({
   crosshairIdx: number | null;
   thresholds: Array<{ side: 'entry' | 'exit'; value: number }>;
   conditionOk: boolean | null;
+  onPointerTime?: (clientX: number, svgEl: Element) => void;
 }) {
   const xFrom = xDomain?.from ?? atSec.find((t) => Number.isFinite(t)) ?? 0;
   const xTo = xDomain?.to ?? atSec.filter((t) => Number.isFinite(t)).at(-1) ?? 1;
@@ -416,6 +452,8 @@ function MetricPane({
     crosshairTimeSec != null && crosshairTimeSec >= xFrom && crosshairTimeSec <= xTo
       ? x(crosshairTimeSec)
       : null;
+  const crossY =
+    primary != null && Number.isFinite(primary) && crosshairIdx != null ? y(primary) : null;
 
   const valueTone =
     conditionOk === true ? 'text-green' : conditionOk === false ? 'text-warning' : 'text-text';
@@ -435,7 +473,12 @@ function MetricPane({
       </div>
 
       <div className="relative min-w-0">
-        <svg viewBox={`0 0 ${W} ${PANE_H}`} preserveAspectRatio="none" className="h-16 w-full">
+        <svg
+          viewBox={`0 0 ${W} ${PANE_H}`}
+          preserveAspectRatio="none"
+          className="h-16 w-full cursor-crosshair touch-none"
+          onPointerMove={(e) => onPointerTime?.(e.clientX, e.currentTarget)}
+        >
           {thresholds.map((t, i) => (
             <g key={i}>
               <line
@@ -459,10 +502,25 @@ function MetricPane({
               x2={crossX}
               y1={0}
               y2={PANE_H}
-              stroke="var(--color-text-dim)"
+              stroke="var(--color-text)"
               strokeWidth={1}
-              opacity={0.55}
+              opacity={0.65}
             />
+          )}
+          {crossY != null && (
+            <line
+              x1={0}
+              x2={W}
+              y1={crossY}
+              y2={crossY}
+              stroke="var(--color-text)"
+              strokeWidth={1}
+              opacity={0.35}
+              strokeDasharray="3 3"
+            />
+          )}
+          {crossX != null && crossY != null && (
+            <circle cx={crossX} cy={crossY} r={3.5} fill="var(--color-green)" opacity={0.9} />
           )}
         </svg>
         {/* Threshold labels overlaid on the right of the sparkline */}

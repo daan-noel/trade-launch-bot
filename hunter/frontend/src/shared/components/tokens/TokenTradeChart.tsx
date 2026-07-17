@@ -68,6 +68,8 @@ interface TokenTradeChartProps {
   highlightWallet?: string | null;
   /** Wall-clock crosshair time for sibling panes (metric series). */
   onCrosshairTimeChange?: (timeSec: number | null) => void;
+  /** Drive the price-chart crosshair from metric-pane hover (unix seconds). */
+  externalCrosshairTimeSec?: number | null;
   /** Visible wall-clock window for sibling panes (time-grouping mode only). */
   onVisibleTimeRangeChange?: (range: { from: number; to: number } | null) => void;
 }
@@ -131,6 +133,7 @@ export function TokenTradeChart({
   tableId,
   highlightWallet = null,
   onCrosshairTimeChange,
+  externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
@@ -307,6 +310,7 @@ export function TokenTradeChart({
         onConnectSwingsChange={onConnectSwingsChange}
         profileWallets={profileWallets}
         onCrosshairTimeChange={onCrosshairTimeChange}
+        externalCrosshairTimeSec={externalCrosshairTimeSec}
         onVisibleTimeRangeChange={onVisibleTimeRangeChange}
       />
 

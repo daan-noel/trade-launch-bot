@@ -300,6 +300,9 @@ export interface TokenPriceChartProps {
   /** Wall-clock unix seconds under the crosshair (null when leaving the chart).
    *  Slot-mode charts resolve the hovered bar's last trade time. */
   onCrosshairTimeChange?: (timeSec: number | null) => void;
+  /** Drive the chart crosshair from a sibling (e.g. metric panes). Wall-clock
+   *  unix seconds; null clears a previously applied external crosshair. */
+  externalCrosshairTimeSec?: number | null;
   /** Visible wall-clock window (unix seconds) after pan/zoom. Only emitted in
    *  time-grouping mode (slot mode uses slot indices on the time scale). */
   onVisibleTimeRangeChange?: (range: ChartVisibleTimeRange | null) => void;

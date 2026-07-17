@@ -25,11 +25,23 @@ export function LabTokenInspect({
   showDetailPanel?: boolean;
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
+  /** Who last drove the shared crosshair — only pane hover is pushed into the price chart. */
+  const [crosshairSource, setCrosshairSource] = useState<'chart' | 'panes' | null>(null);
   const [visibleTimeRange, setVisibleTimeRange] = useState<ChartVisibleTimeRange | null>(null);
   const [eventMarkers, setEventMarkers] = useState<ChartEventMarker[]>([]);
 
   const onEventMarkersChange = useCallback((markers: ChartEventMarker[]) => {
     setEventMarkers(markers);
+  }, []);
+
+  const onChartCrosshair = useCallback((t: number | null) => {
+    setCrosshairSource(t == null ? null : 'chart');
+    setCrosshairTimeSec(t);
+  }, []);
+
+  const onPanesCrosshair = useCallback((t: number | null) => {
+    setCrosshairSource(t == null ? null : 'panes');
+    setCrosshairTimeSec(t);
   }, []);
 
   const mint = detail?.mint_address ?? '';
@@ -43,7 +55,8 @@ export function LabTokenInspect({
         tableId={tableId}
         detail={detail}
         eventMarkers={eventMarkers}
-        onCrosshairTimeChange={setCrosshairTimeSec}
+        onCrosshairTimeChange={onChartCrosshair}
+        externalCrosshairTimeSec={crosshairSource === 'panes' ? crosshairTimeSec : null}
         onVisibleTimeRangeChange={setVisibleTimeRange}
       />
       {mint ? (
@@ -55,6 +68,7 @@ export function LabTokenInspect({
             mint={mint}
             crosshairTimeSec={crosshairTimeSec}
             visibleTimeRange={visibleTimeRange}
+            onCrosshairTimeChange={onPanesCrosshair}
             onEventMarkersChange={onEventMarkersChange}
           />
         </div>
