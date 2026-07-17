@@ -17,6 +17,7 @@ import {
   type GroupedSweepStartArgs,
 } from './groupedTypes';
 import { parseNumbers, parseIxLabelsFilter } from './fingerprintFilters';
+import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
 import {
@@ -178,7 +179,9 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     createdBefore: isoToLocalInput(run.created_before),
     groupBy: run.grouping_spec,
     ixLabelsFilter:
-      run.ix_labels_filter && run.ix_labels_filter.length > 0 ? JSON.stringify(run.ix_labels_filter) : '',
+      run.ix_labels_filter && run.ix_labels_filter.length > 0
+        ? formatIxLabelsText(run.ix_labels_filter)
+        : '',
     cashbackFilter,
     fieldFiltersText,
     axisRows: rows.length ? rows : defaults.axisRows,

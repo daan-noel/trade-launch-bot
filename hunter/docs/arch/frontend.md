@@ -147,7 +147,9 @@ next load (no per-metric frontend work).
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
   `ConditionSideEditor` (entry/exit column), `RuleEditor` (builder + JSON tab + a
   `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm`, `RulesView`/`FingerprintsView`
-  (shared list+editor, mounted by both apps' `RulesPage`/`FingerprintsPage`).
+  (shared list+editor, mounted by both apps' `RulesPage`/`FingerprintsPage`),
+  `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips; used by Rules,
+  Simulate, and the generic sweep tables).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
 
@@ -164,7 +166,7 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 - `sweep/GenericAxisBuilder.tsx` — axis-row UI + projected-combo badge; `GenericSweepConfigForm`
   wraps it with corpus/method/caps + `FingerprintGroupPicker`, emitting `{axes:[...]}`.
 - `sweep/genericSweepColumns.tsx` — combo/group columns; the swept `params` is a
-  `RuleParams` blob rendered as condition chips (not one flat column per knob).
+  `RuleParams` blob rendered via shared `ruleParamsCell` (not one flat column per knob).
 - `[Promote…]` on any group/combo → `POST …/promote` (fingerprint find-or-created) →
   `PromoteRuleModal` opens the shared `RuleEditor` pre-filled (id-less draft → create)
   with the lab dry-run panel. Replaced the copy-blob path.

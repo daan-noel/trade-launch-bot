@@ -353,8 +353,6 @@ export function GenericSweepView() {
                 rowActions={comboRowActions}
                 groupLabels={{ params: 'Rule', counts: 'Counts', pnl: 'PnL', holding: 'Holding', exits: 'Exit reasons' }}
                 searchable={false}
-                colFilters={false}
-                colToggle
                 selectable
                 selectedKey={activeComboId !== null ? String(activeComboId) : null}
                 onSelect={(key) => setActiveComboId(key !== null ? Number(key) : null)}

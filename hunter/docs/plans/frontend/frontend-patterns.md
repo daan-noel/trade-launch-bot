@@ -59,6 +59,8 @@ Generic, reused across all pages. Two modes:
 
 **Server-side mode** (`fetchPage` prop): page state is owned by `DataTable`; each page change calls `fetchPage({ page, pageSize, sortKey, sortDir, filters })`. Used for tokens, trades (unbounded).
 
+**Toolbar defaults:** `colFilters` and `colToggle` are **on** — every table shows Filters + Columns unless a call site opts out. Pass `tableId` so column visibility persists.
+
 **Column visibility** is persisted per `tableId` to `localStorage` key `mt:table.cols` (a map of `tableId → Set<hidden_column_keys>`). All tables share one localStorage entry, keyed by `tableId` string. This is how column preferences survive refreshes.
 
 **Hidden sort-only columns:** `ColumnDef.renderHeader(SortCtx)` can return `null` (hidden from UI) while still registering a sort key. Used for sorting by `created_at_ts` (numeric) while displaying `created_at` (formatted string).

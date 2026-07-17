@@ -6,6 +6,7 @@ import { Button } from 'components/ui/Button';
 import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
 import { RuleEditor, type RuleEditorDraft } from './RuleEditor';
+import { ruleParamsCell, ruleParamsSearchText } from './RuleParamsSummary';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetStrategyRulesQuery,
@@ -17,14 +18,6 @@ import {
   usePauseStrategyRuleMutation,
 } from 'store/sharedEndpoints';
 import { lamportsToSol, type StrategyRule } from 'lib/strategy/types';
-
-function tpsl(rule: StrategyRule): string {
-  const p = rule.params as { take_profit?: number; stop_loss?: number };
-  const parts: string[] = [];
-  if (p.take_profit != null) parts.push(`TP ${p.take_profit}%`);
-  if (p.stop_loss != null) parts.push(`SL ${p.stop_loss}%`);
-  return parts.join(' · ') || '—';
-}
 
 export interface RulesViewProps {
   /** Lab-only dry-run render-prop forwarded to the editor (FE3). */
@@ -148,10 +141,10 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       searchValue: (r) => `${r.max_concurrent_tokens}/${r.max_total_tokens}`,
     },
     {
-      key: 'tpsl',
-      label: 'TP / SL',
-      render: (r) => <span className="text-text-dim">{tpsl(r)}</span>,
-      searchValue: (r) => tpsl(r),
+      key: 'params',
+      label: 'Params',
+      render: (r) => ruleParamsCell(r.params),
+      searchValue: (r) => ruleParamsSearchText(r.params),
     },
   ];
 

@@ -52,6 +52,9 @@ function loadVisibleCols(tableId: string, columns: ColumnDef<unknown>[]): Set<st
   const defaults = new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key));
   const stored = getTableCols(tableId);
   if (!stored) return defaults;
+  // Schema drift (renamed/removed column keys): stored prefs are stale — reset
+  // so newly added default-visible columns aren't stuck hidden.
+  if (stored.some((k) => !columns.some((c) => c.key === k))) return defaults;
   const set = new Set(stored.filter((k) => columns.some((c) => c.key === k)));
   return set.size ? set : defaults;
 }
@@ -81,7 +84,9 @@ interface DataTableProps<R> {
   defaultPageSize?: number;
   pageSizeOptions?: number[];
   searchable?: boolean;
+  /** Per-column filter row toggle (toolbar "Filters"). Default on. */
   colFilters?: boolean;
+  /** Column-visibility panel toggle (toolbar "Columns"). Default on. */
   colToggle?: boolean;
   hoverable?: boolean;
   /** Stable id for persisting this table's column visibility (folded into the
@@ -145,8 +150,8 @@ export function DataTable<R>({
   defaultPageSize = DEFAULT_PAGE_SIZE,
   pageSizeOptions,
   searchable = true,
-  colFilters = false,
-  colToggle = false,
+  colFilters = true,
+  colToggle = true,
   hoverable = true,
   tableId,
   emptyMessage = 'No data.',

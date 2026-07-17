@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { Input } from 'components/ui/Input';
 import { Button } from 'components/ui/Button';
+import { IxLabelsInput } from 'components/ui/IxLabelsInput';
+import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
 import {
   lamportsToSol,
   solToLamports,
@@ -28,7 +30,8 @@ interface FormState {
   first_slot_buy_sol: number | null;
   first_slot_sell_sol: number | null;
   bucket_size_amount: number | null;
-  ix_labels: string; // comma/whitespace-separated
+  /** Textarea text — pretty JSON string array (see `parseIxLabelsText`). */
+  ix_labels: string;
 }
 
 function fromFingerprint(fp?: Fingerprint): FormState {
@@ -42,15 +45,12 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     first_slot_buy_sol: lamportsToSol(fp?.first_slot_buy_lamports),
     first_slot_sell_sol: lamportsToSol(fp?.first_slot_sell_lamports),
     bucket_size_amount: fp?.bucket_size_amount ?? 0.1,
-    ix_labels: (fp?.ix_labels ?? []).join(', '),
+    ix_labels: formatIxLabelsText(fp?.ix_labels),
   };
 }
 
 function toDraft(s: FormState): FingerprintDraft {
-  const labels = s.ix_labels
-    .split(/[,\n]/)
-    .map((x) => x.trim())
-    .filter(Boolean);
+  const { labels } = parseIxLabelsText(s.ix_labels);
   return {
     name: s.name.trim(),
     cu_limit: s.cu_limit,
@@ -61,7 +61,7 @@ function toDraft(s: FormState): FingerprintDraft {
     first_slot_buy_lamports: solToLamports(s.first_slot_buy_sol),
     first_slot_sell_lamports: solToLamports(s.first_slot_sell_sol),
     bucket_size_amount: s.bucket_size_amount ?? 0.1,
-    ix_labels: labels.length ? labels : null,
+    ix_labels: labels,
   };
 }
 
@@ -96,9 +96,10 @@ export function FingerprintForm({
   const [s, setS] = useState<FormState>(() => fromFingerprint(initial));
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setS((p) => ({ ...p, [k]: v }));
 
+  const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
   const criteria = criterionCount(s);
   const nameOk = s.name.trim().length > 0;
-  const canSubmit = criteria > 0 && nameOk && !submitting;
+  const canSubmit = criteria > 0 && nameOk && !submitting && !ixParsed.error;
 
   const solField = (label: string, key: keyof FormState) => (
     <label className="flex flex-col gap-1 text-[11px] text-text-dim">
@@ -167,13 +168,11 @@ export function FingerprintForm({
       </div>
 
       <label className="flex flex-col gap-1 text-[11px] text-text-dim">
-        ix_labels (exact ordered sequence, comma-separated)
-        <Input
-          fieldSize="sm"
+        ix_labels (exact ordered sequence, JSON array)
+        <IxLabelsInput
           value={s.ix_labels}
-          onChange={(e) => set('ix_labels', e.target.value)}
-          placeholder="create, buy"
-          className="font-mono"
+          onValueChange={(v) => set('ix_labels', v)}
+          error={ixParsed.error}
         />
       </label>
 

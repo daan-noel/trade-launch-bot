@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
+import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useRenameGroupedSweepRunMutation } from '@lab/store/labEndpoints';
 import {
   GROUP_FIELD_LABELS,
@@ -169,9 +170,9 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
           Instruction-label filter
         </span>
         {run.ix_labels_filter && run.ix_labels_filter.length > 0 ? (
-          <pre className="mt-1 max-h-40 overflow-auto rounded border border-white/10 bg-bg-card p-2 font-mono text-[11px] leading-relaxed text-text-mid">
-            {JSON.stringify(run.ix_labels_filter, null, 2)}
-          </pre>
+          <div className="mt-1 max-h-40 overflow-auto">
+            <IxLabelsDisplay labels={run.ix_labels_filter} copyJson />
+          </div>
         ) : (
           <p className="mt-1 text-xs text-text-dim/60">
             {run.grouping_spec.includes('ix_labels')

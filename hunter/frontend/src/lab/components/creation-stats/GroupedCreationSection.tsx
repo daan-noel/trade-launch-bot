@@ -4,6 +4,7 @@ import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
+import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetGroupedCreationStatsQuery } from '@lab/store/labEndpoints';
 import { parseNumbers, parseIxLabelsFilter } from '@lab/components/sweep/fingerprintFilters';
@@ -47,8 +48,8 @@ interface GroupedCreationSectionProps {
 const DEFAULT_GROUP_BY: GroupField[] = ['cu_limit', 'cu_price', 'ix_labels'];
 
 /** Scalar fingerprint fields that take a comma-separated value filter (numeric).
- *  `is_cashback_enabled` (a tri-state select) and `ix_labels` (a JSON-set textarea)
- *  are handled separately. */
+ *  `is_cashback_enabled` (a tri-state select) and `ix_labels` (label-set textarea)
+ *  are special — handled separately in `FingerprintGroupPicker`. */
 const SCALAR_FILTER_FIELDS: GroupField[] = [
   'cu_limit',
   'cu_price',
@@ -348,39 +349,9 @@ function GroupKeyInline({ group }: { group: GroupedCreationGroup }) {
   );
 }
 
-/** `ix_labels` rendered verbatim (on-chain order, NOT sorted) as a multi-line
- *  JSON array. Click to copy the exact JSON. */
-function IxLabelsJson({ parts }: { parts: string[] }) {
-  const [copied, setCopied] = useState(false);
-  const json = useMemo(() => JSON.stringify(parts, null, 2), [parts]);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(json);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  return (
-    <pre
-      onClick={copy}
-      title={copied ? 'Copied!' : 'Click to copy JSON'}
-      className={cn(
-        'm-0 cursor-pointer whitespace-pre font-mono text-[11px] leading-tight',
-        copied ? 'text-primary' : 'text-secondary',
-      )}
-    >
-      {json}
-    </pre>
-  );
-}
-
-/** Full group-key block for a heatmap card (label/value grid; ix_labels shown as
- *  copyable multi-line JSON in on-chain order). Mirrors the sweep page's
- *  group-chip layout. */
+/** Full group-key block for a heatmap card (label/value grid; ix_labels shown
+ *  as pretty JSON via `IxLabelsDisplay`, click-to-copy). Mirrors the sweep
+ *  page's group-chip layout. */
 function GroupKeyBlock({ group }: { group: GroupedCreationGroup }) {
   const entries = Object.entries(group.group_key);
   if (entries.length === 0)
@@ -397,7 +368,7 @@ function GroupKeyBlock({ group }: { group: GroupedCreationGroup }) {
               {label}:
             </span>
             {parts ? (
-              <IxLabelsJson parts={parts} />
+              <IxLabelsDisplay labels={parts} copyJson className="text-secondary" empty="∅" />
             ) : (
               <span className="font-mono text-[11px] text-secondary">{v}</span>
             )}

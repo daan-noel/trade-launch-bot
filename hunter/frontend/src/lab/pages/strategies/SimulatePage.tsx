@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
@@ -6,8 +6,9 @@ import { Button } from 'components/ui/Button';
 import { Badge } from 'components/ui/Badge';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
-import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
-import type { StrategyRule } from 'lib/strategy/types';
+import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
+import { ruleParamsCell, ruleParamsSearchText } from 'components/strategy/RuleParamsSummary';
+import { lamportsToSol, type StrategyRule } from 'lib/strategy/types';
 import type { PositionsSummary } from 'types';
 import {
   useStartEngineSimulationMutation,
@@ -25,10 +26,13 @@ type RunState = { running: boolean; summary?: PositionsSummary; error?: string }
  */
 export function SimulatePage() {
   const { data: rules = [], isLoading } = useGetStrategyRulesQuery();
+  const { data: fps = [] } = useGetFingerprintsQuery();
   const [start] = useStartEngineSimulationMutation();
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [runs, setRuns] = useState<Record<string, RunState>>({});
   const handleRef = useRef<{ close: () => void } | null>(null);
+
+  const fpName = useMemo(() => new Map(fps.map((f) => [f.id, f.name || f.id.slice(0, 8)])), [fps]);
 
   // One page-level subscription routes each finished run to its rule (run_id ==
   // rule_id for saved rules).
@@ -66,10 +70,52 @@ export function SimulatePage() {
       searchValue: (r) => r.rule_name,
     },
     {
+      key: 'status',
+      label: 'Status',
+      render: (r) => (
+        <Badge variant={r.is_active ? 'success' : 'neutral'}>{r.is_active ? 'Active' : 'Idle'}</Badge>
+      ),
+      searchValue: (r) => (r.is_active ? 'active' : 'idle'),
+    },
+    {
       key: 'mode',
       label: 'Mode',
       render: (r) => <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>,
       searchValue: (r) => r.trade_mode,
+    },
+    {
+      key: 'fingerprint',
+      label: 'Fingerprint',
+      render: (r) => (
+        <span className="font-mono text-[12px] text-text-dim">
+          {fpName.get(r.fingerprint_id) ?? r.fingerprint_id.slice(0, 8)}
+        </span>
+      ),
+      searchValue: (r) => fpName.get(r.fingerprint_id) ?? r.fingerprint_id,
+    },
+    {
+      key: 'buy',
+      label: 'Buy',
+      render: (r) => <span className="tabular-nums">{lamportsToSol(r.buy_amount_lamports)}◎</span>,
+      searchValue: (r) => String(lamportsToSol(r.buy_amount_lamports)),
+      sortValue: (r) => r.buy_amount_lamports,
+      sortable: true,
+    },
+    {
+      key: 'caps',
+      label: 'Caps',
+      render: (r) => (
+        <span className="tabular-nums text-text-dim">
+          {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
+        </span>
+      ),
+      searchValue: (r) => `${r.max_concurrent_tokens}/${r.max_total_tokens}`,
+    },
+    {
+      key: 'params',
+      label: 'Params',
+      render: (r) => ruleParamsCell(r.params),
+      searchValue: (r) => ruleParamsSearchText(r.params),
     },
     {
       key: 'result',

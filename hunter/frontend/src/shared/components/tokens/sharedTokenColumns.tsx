@@ -3,6 +3,7 @@ import type { ColumnDef } from 'components/table/types';
 import { DateCell } from 'components/table/DateCell';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { AmountCell, CompactCell, CurrentPriceCell, PriceCell } from 'components/tokens/priceCells';
 import { numericColKeys } from 'services/tableRequest';
 import { formatCompact, formatDecimalTrim, formatWithCommas } from 'utils/format';
@@ -24,18 +25,13 @@ function ixLabelsArray(r: { instruction_labels?: unknown }): string[] {
 
 export function ixLabelsText(r: { instruction_labels?: unknown }): string {
   const arr = ixLabelsArray(r);
-  return arr.length ? arr.join(', ') : '-';
-}
-
-function ixLabelsJson(r: { instruction_labels?: unknown }): string {
-  return JSON.stringify(ixLabelsArray(r), null, 2);
+  return arr.length ? JSON.stringify(arr, null, 2) : '-';
 }
 
 function IxCountCell({ row }: { row: { ix_labels_count?: number; instruction_labels?: unknown } }) {
   const [copied, setCopied] = useState(false);
-  // Only re-stringify when the labels actually change, not on every poll-driven
-  // render of the row.
-  const json = useMemo(() => ixLabelsJson(row), [row]);
+  const labels = useMemo(() => ixLabelsArray(row), [row]);
+  const json = useMemo(() => JSON.stringify(labels, null, 2), [labels]);
 
   const copy = async (e: MouseEvent<HTMLSpanElement>) => {
     e.stopPropagation();
@@ -330,11 +326,15 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       label: 'IX Labels',
       group: 'ix',
       render: (r: { instruction_labels?: unknown }) => {
-        const s = ixLabelsText(r);
+        const labels = ixLabelsArray(r);
+        if (labels.length === 0) return <span className="text-text-dim">—</span>;
         return (
-          <span title={s} className="block max-w-[180px] truncate text-[11px] text-text-dim">
-            {s}
-          </span>
+          <IxLabelsDisplay
+            labels={labels}
+            copyJson
+            maxHeight="4.5rem"
+            className="text-text-dim"
+          />
         );
       },
       searchValue: (r: { instruction_labels?: unknown }) => ixLabelsText(r),

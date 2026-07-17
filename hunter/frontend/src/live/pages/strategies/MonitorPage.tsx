@@ -199,6 +199,7 @@ export function MonitorPage() {
           rowKey={(r) => r.key}
           searchable
           defaultSort={{ col: 'age', dir: 'desc' }}
+          tableId="monitor-armed"
           emptyMessage="Nothing armed right now."
         />
       </section>
@@ -211,6 +212,7 @@ export function MonitorPage() {
           columns={holdingColumns}
           rows={holdingRows}
           rowKey={(r) => r.positionId}
+          tableId="monitor-holding"
           emptyMessage="No open positions."
         />
       </section>

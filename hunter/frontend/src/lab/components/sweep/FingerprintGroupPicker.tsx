@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { BucketChip } from 'components/ui/BucketChip';
+import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { cn } from 'lib/cn';
 import {
   GROUP_FIELDS,
@@ -26,7 +27,7 @@ interface FingerprintGroupPickerProps {
    *  the partition, the promoted rule's matcher, and this dashboard all share. */
   bucketWidthSol: number;
   onSetBucketWidth: (v: number) => void;
-  /** Raw JSON-array text for the exact ix_labels set filter. */
+  /** Raw textarea text for the exact ix_labels set filter (pretty JSON array). */
   ixLabelsText: string;
   onSetIxLabels: (v: string) => void;
   /** Parsed ix filter ({ labels, error }) — caller owns the parse so both the
@@ -37,7 +38,8 @@ interface FingerprintGroupPickerProps {
 }
 
 /** Fields that take a numeric comma-list filter (rendered in the 2-col grid).
- *  `is_cashback_enabled` (a select) and `ix_labels` (a JSON set) are special. */
+ *  `is_cashback_enabled` (a select) and `ix_labels` (a label-set textarea)
+ *  are special. */
 const NUMERIC_FIELDS = GROUP_FIELDS.filter(
   (f) => f !== 'ix_labels' && f !== 'is_cashback_enabled',
 );
@@ -108,9 +110,10 @@ function RankBadge({ index }: { index: number }) {
  * sweep config form and the dashboard's "Creation by token group" section so both
  * read identically. Renders: a 2-col grid of numeric fields (rank badge · group-by
  * checkbox · label · comma-list filter), the cashback tri-state select, and the
- * ix_labels group-by + exact-set JSON textarea. Grouping and filtering are
- * independent (a filter restricts the corpus whether or not the field is grouped),
- * except `ix_labels`: grouping by it disables its set filter (mutually exclusive).
+ * ix_labels group-by + exact-set JSON textarea. Grouping and
+ * filtering are independent (a filter restricts the corpus whether or not the
+ * field is grouped), except `ix_labels`: grouping by it disables its set filter
+ * (mutually exclusive).
  *
  * Stateless — the caller owns all state; this only renders + emits changes. A
  * header row surfaces the active-filter summary + a Clear-filters action.
@@ -132,15 +135,6 @@ export function FingerprintGroupPicker({
   const ixLabelsGrouped = groupBy.includes('ix_labels');
   // Suppress the parse error while grouping by ix_labels (the filter is ignored).
   const ixFilterError = !ixLabelsGrouped ? ixFilter.error : null;
-
-  // Auto-grow the ix_labels textarea to fit its content.
-  const ixLabelsRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const el = ixLabelsRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }, [ixLabelsText]);
 
   // Active value-filter summary (independent of grouping). Shown in the header so
   // pinned constraints are visible at a glance.
@@ -314,21 +308,17 @@ export function FingerprintGroupPicker({
                 )}
               </div>
               <div className="ml-5 flex flex-col gap-0.5">
-                <textarea
-                  ref={ixLabelsRef}
-                  rows={1}
+                <IxLabelsInput
                   value={ixLabelsText}
+                  onValueChange={onSetIxLabels}
                   disabled={ixLabelsGrouped}
-                  onChange={(e) => onSetIxLabels(e.target.value)}
-                  placeholder='["Pump.Fun: Create"]'
+                  error={ixFilterError}
                   title={
                     ixLabelsGrouped
                       ? 'Disabled: grouping by instruction labels. Uncheck to pin a specific label set here.'
                       : 'Filter to tokens whose instruction-label set exactly matches this JSON array (order-independent).\nLeave empty = all label sets included.'
                   }
-                  className="w-full resize-none overflow-hidden rounded border border-white/10 bg-surface px-2 py-1 font-mono text-xs text-text-mid placeholder:text-text-dim/30 focus:border-white/25 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
                 />
-                {ixFilterError && <span className="text-[10px] text-danger">{ixFilterError}</span>}
               </div>
             </div>
           );
