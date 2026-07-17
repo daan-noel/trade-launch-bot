@@ -17,7 +17,12 @@ import type {
   SimulatedTokenResult,
   TraderTokenRow,
 } from 'types';
-import type { EngineSimRequest, SimStartResponse, MetricSeriesResponse } from 'lib/strategy/types';
+import type {
+  EngineSimRequest,
+  SimStartResponse,
+  MetricSeriesResponse,
+  PromotedRuleDraft,
+} from 'lib/strategy/types';
 
 /** Args for the per-rule strategy result reads (matched / simulate / paper),
  *  shared by both strategy pages so tpsl1 and tpsl2 keep distinct cache keys. */
@@ -220,6 +225,23 @@ export const labApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['GroupedSweep'],
     }),
+    // Promote a swept group's winning combo → find-or-created fingerprint + a
+    // pre-filled rule draft the editor opens (sweep redesign 5.6). Omit `comboId`
+    // to promote the group's crowned best combo. The fingerprint is find-or-created
+    // server-side, so refresh the Fingerprint cache the editor's picker reads from.
+    promoteSweepGroup: builder.mutation<
+      PromotedRuleDraft,
+      { runId: string; groupId: string; comboId?: number }
+    >({
+      query: ({ runId, groupId, comboId }) => {
+        const combo = comboId != null ? `&combo_id=${comboId}` : '';
+        return {
+          url: `/api/strategies/sweeps/${encodeURIComponent(runId)}/groups/${encodeURIComponent(groupId)}/promote?strategy_id=generic${combo}`,
+          method: 'POST',
+        };
+      },
+      invalidatesTags: ['Fingerprint'],
+    }),
     // Per-fingerprint creation activity (dashboard "Creation by token group").
     // Server-side partition by a compound fingerprint key + top-N by volume;
     // returns each group's day×hour fold + calendar trend (count only). Cached
@@ -280,6 +302,7 @@ export const {
   useRenameGroupedSweepRunMutation,
   usePruneGroupedSweepsMutation,
   useGetTraderTokensQuery,
+  usePromoteSweepGroupMutation,
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
   useGetMetricSeriesQuery,

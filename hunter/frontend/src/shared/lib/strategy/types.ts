@@ -84,6 +84,21 @@ export type UpdateRuleBody = Partial<
   >
 >;
 
+/** `POST /api/strategies/sweeps/{run}/groups/{group}/promote` response (sweep
+ *  redesign 5.6): a ready-to-save rule draft the editor opens (StrategyRule-shaped
+ *  but id-less — save creates it), plus the find-or-created `fingerprint` echoed so
+ *  the editor renders its criteria without a refetch. Amounts are lamports. */
+export interface PromotedRuleDraft {
+  rule_name: string;
+  fingerprint_id: string;
+  trade_mode: TradeMode;
+  buy_amount_lamports: number;
+  max_concurrent_tokens: number;
+  max_total_tokens: number;
+  params: Record<string, unknown>;
+  fingerprint: Fingerprint;
+}
+
 /** One armed (token, rule) pair from `GET /api/strategies/armed`. */
 export interface ArmedEntry {
   rule_id: string;

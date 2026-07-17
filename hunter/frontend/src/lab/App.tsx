@@ -25,6 +25,7 @@ const RulesPage = lazy(() => import('@lab/pages/strategies/RulesPage').then((m) 
 const FingerprintsPage = lazy(() => import('@lab/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const SimulatePage = lazy(() => import('@lab/pages/strategies/SimulatePage').then((m) => ({ default: m.SimulatePage })));
 const MetricPanesPage = lazy(() => import('@lab/pages/strategies/MetricPanesPage').then((m) => ({ default: m.MetricPanesPage })));
+const GenericSweepPage = lazy(() => import('@lab/pages/strategies/sweep/GenericSweepPage').then((m) => ({ default: m.GenericSweepPage })));
 const Tpsl1GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Tpsl1GroupedSweepPage').then((m) => ({ default: m.Tpsl1GroupedSweepPage })));
 const Tpsl2GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Tpsl2GroupedSweepPage').then((m) => ({ default: m.Tpsl2GroupedSweepPage })));
 const Swing1GroupedSweepPage = lazy(() => import('@lab/pages/strategies/sweep/Swing1GroupedSweepPage').then((m) => ({ default: m.Swing1GroupedSweepPage })));
@@ -67,6 +68,7 @@ export default function App() {
                   <Route path="strategies/tpsl1" element={<Tpsl1Page />} />
                   <Route path="strategies/tpsl2" element={<Tpsl2Page />} />
                   <Route path="strategies/swing1" element={<Swing1Page />} />
+                  <Route path="strategies/sweep" element={<GenericSweepPage />} />
                   <Route path="strategies/grouped-sweep-tpsl1" element={<Tpsl1GroupedSweepPage />} />
                   <Route path="strategies/grouped-sweep-tpsl2" element={<Tpsl2GroupedSweepPage />} />
                   <Route path="strategies/grouped-sweep-swing1" element={<Swing1GroupedSweepPage />} />

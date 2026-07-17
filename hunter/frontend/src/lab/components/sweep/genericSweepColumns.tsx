@@ -1,0 +1,314 @@
+import { Fragment, type ReactNode } from 'react';
+import type { ColumnDef } from 'components/table/types';
+import { cn } from 'lib/cn';
+import { formatDecimalTrim } from 'utils/format';
+import { GROUP_FIELD_LABELS, type GroupField, type GroupedSweepGroupRecord } from './groupedTypes';
+import type { SweepResultRecord } from './types';
+
+// Generic-engine sweep columns (redesign FE5.2). The stat columns mirror the
+// legacy `sweepColumns`/`groupColumns` shape, but the swept params are now a
+// nested `RuleParams` blob (TP/SL + entry/exit metric conditions), rendered as
+// compact chips instead of one flat column per knob. The legacy per-strategy
+// exit-reason columns (trailing/stall/time/liquidity/next-kill) collapse to the
+// engine's single `Metrics` exit.
+
+// --- formatters -------------------------------------------------------------
+
+function fmtSecs(v: number): string {
+  if (v <= 0) return '—';
+  if (v < 90) return `${Math.round(v)}s`;
+  if (v < 5400) return `${(v / 60).toFixed(1)}m`;
+  return `${(v / 3600).toFixed(1)}h`;
+}
+const pctText = (v: number) => `${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 1)}%`;
+const solText = (v: number) => `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
+const tone = (text: ReactNode, cls: string): ReactNode => (
+  <span className={cn('font-medium', cls)}>{text}</span>
+);
+const goodBad = (v: number, pivot = 0) => (v >= pivot ? 'text-green' : 'text-red');
+function chip(text: ReactNode, cls?: string): ReactNode {
+  return (
+    <span
+      className={cn(
+        'inline-block rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[11px] leading-tight',
+        cls,
+      )}
+    >
+      {text}
+    </span>
+  );
+}
+
+// --- RuleParams rendering ---------------------------------------------------
+
+/** One `{operator, value}` condition (the wire shape). */
+interface Cond {
+  operator: string;
+  value: number;
+}
+/** The nested `params` blob a generic combo / group carries. */
+interface RuleParamsJson {
+  take_profit?: number | null;
+  stop_loss?: number | null;
+  entry?: Record<string, Record<string, unknown>>;
+  exit?: Record<string, Record<string, unknown>>;
+}
+
+/** Terse chips for one side's metric conditions, e.g. `time>10`, `net_flow(10s)>5`. */
+function sideChips(side: Record<string, Record<string, unknown>> | undefined): string[] {
+  if (!side) return [];
+  const out: string[] = [];
+  for (const body of Object.values(side)) {
+    const window = typeof body.window_size_sec === 'number' ? body.window_size_sec : null;
+    const suffix = window != null ? `(${window}s)` : '';
+    for (const [metric, conds] of Object.entries(body)) {
+      if (metric === 'window_size_sec' || !Array.isArray(conds)) continue;
+      for (const c of conds as Cond[]) {
+        out.push(`${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`);
+      }
+    }
+  }
+  return out;
+}
+
+/** Compact chip cluster for a combo's / group's `RuleParams`. */
+export function ruleParamsCell(raw: unknown): ReactNode {
+  const p = (raw && typeof raw === 'object' ? raw : {}) as RuleParamsJson;
+  const entry = sideChips(p.entry);
+  const exit = sideChips(p.exit);
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-left">
+      {p.take_profit != null && chip(`TP ${formatDecimalTrim(p.take_profit, 1)}%`, 'text-green')}
+      {p.stop_loss != null && chip(`SL ${formatDecimalTrim(p.stop_loss, 1)}%`, 'text-red')}
+      {entry.length > 0 && (
+        <>
+          <span className="text-[9px] uppercase text-accent/70">in</span>
+          {entry.map((c, i) => (
+            <Fragment key={`e${i}`}>{chip(c, 'text-secondary')}</Fragment>
+          ))}
+        </>
+      )}
+      {exit.length > 0 && (
+        <>
+          <span className="text-[9px] uppercase text-warning/70">out</span>
+          {exit.map((c, i) => (
+            <Fragment key={`x${i}`}>{chip(c, 'text-secondary')}</Fragment>
+          ))}
+        </>
+      )}
+      {p.take_profit == null && p.stop_loss == null && entry.length === 0 && exit.length === 0 &&
+        chip('fingerprint only', 'text-text-dim')}
+    </div>
+  );
+}
+
+/** The `take_profit`/`stop_loss` numeric off `params` (for the sortable columns).
+ *  Backend sort key `p_take_profit` → `(params->>'take_profit')::numeric`. */
+function tpsl(raw: unknown, key: 'take_profit' | 'stop_loss'): number | null {
+  const v = (raw as RuleParamsJson | undefined)?.[key];
+  return typeof v === 'number' ? v : null;
+}
+
+// --- combo columns ----------------------------------------------------------
+
+/** Build the generic-engine combo-results table columns. */
+export function buildGenericComboColumns(): ColumnDef<SweepResultRecord>[] {
+  return [
+    {
+      key: 'p_take_profit',
+      label: 'TP',
+      group: 'params',
+      sortable: true,
+      render: (r) => {
+        const v = tpsl(r.params, 'take_profit');
+        return tone(v == null ? '—' : `${formatDecimalTrim(v, 1)}%`, v == null ? 'text-text-dim' : 'text-green');
+      },
+      sortValue: (r) => tpsl(r.params, 'take_profit'),
+      filterNumber: (r) => tpsl(r.params, 'take_profit'),
+      searchValue: () => '',
+    },
+    {
+      key: 'p_stop_loss',
+      label: 'SL',
+      group: 'params',
+      sortable: true,
+      render: (r) => {
+        const v = tpsl(r.params, 'stop_loss');
+        return tone(v == null ? '—' : `${formatDecimalTrim(v, 1)}%`, v == null ? 'text-text-dim' : 'text-red');
+      },
+      sortValue: (r) => tpsl(r.params, 'stop_loss'),
+      filterNumber: (r) => tpsl(r.params, 'stop_loss'),
+      searchValue: () => '',
+    },
+    {
+      key: 'conditions',
+      label: 'Conditions',
+      group: 'params',
+      sortable: false,
+      render: (r) => ruleParamsCell(r.params),
+      searchValue: () => '',
+    },
+    ...genericStatColumns(),
+  ];
+}
+
+/** The stat/count/exit columns shared by the combo table (order mirrors the
+ *  legacy sweep so the two read the same). */
+function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
+  const metric = (
+    key: string,
+    label: string,
+    group: string,
+    value: (r: SweepResultRecord) => number,
+    render: (r: SweepResultRecord) => ReactNode,
+    opts: { tooltip?: string; defaultVisible?: boolean } = {},
+  ): ColumnDef<SweepResultRecord> => ({
+    key,
+    label,
+    group,
+    tooltip: opts.tooltip,
+    defaultVisible: opts.defaultVisible,
+    sortable: true,
+    render,
+    sortValue: value,
+    filterNumber: value,
+    searchValue: () => '',
+  });
+  const count = (key: string, label: string, cls: string, value: (r: SweepResultRecord) => number, opts?: { defaultVisible?: boolean; tooltip?: string }) =>
+    metric(key, label, 'exits', value, (r) => tone(String(value(r)), cls), opts);
+
+  return [
+    metric('n_fired', 'Fired', 'counts', (r) => r.n_fired, (r) => tone(String(r.n_fired), 'text-info'), {
+      tooltip: 'Tokens this combo took a position on',
+    }),
+    metric('n_closed', 'Closed', 'counts', (r) => r.n_closed, (r) => tone(String(r.n_closed), 'text-info'), { defaultVisible: false }),
+    metric('n_open', 'Open', 'counts', (r) => r.n_open, (r) => tone(String(r.n_open), 'text-info'), { defaultVisible: false }),
+    metric(
+      'score',
+      'Score',
+      'pnl',
+      (r) => r.score ?? Number.NEGATIVE_INFINITY,
+      (r) => (r.score == null ? tone('—', 'text-text-dim') : tone(pctText(r.score), goodBad(r.score))),
+      { tooltip: 'Robust rank: mean − 1.64·σ/√n over closed trades. Blank when < 2 closed trades.' },
+    ),
+    metric('win_rate', 'Win %', 'pnl', (r) => r.win_rate, (r) => tone(`${(r.win_rate * 100).toFixed(0)}%`, goodBad(r.win_rate, 0.5)), {
+      tooltip: 'Share of fired tokens with PnL > 0',
+    }),
+    metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol))),
+    metric('expectancy_sol', 'Expectancy', 'pnl', (r) => r.expectancy_sol, (r) => tone(solText(r.expectancy_sol), goodBad(r.expectancy_sol))),
+    metric(
+      'profit_factor',
+      'Profit factor',
+      'pnl',
+      (r) => r.profit_factor ?? Number.POSITIVE_INFINITY,
+      (r) => tone(r.profit_factor == null ? '∞' : r.profit_factor.toFixed(2), goodBad(r.profit_factor ?? 10, 1)),
+      { tooltip: 'Gross wins ÷ gross losses' },
+    ),
+    metric('median_pnl_pct', 'Median %', 'pnl', (r) => r.median_pnl_pct, (r) => tone(pctText(r.median_pnl_pct), goodBad(r.median_pnl_pct))),
+    metric('mean_pnl_pct', 'Mean %', 'pnl', (r) => r.mean_pnl_pct, (r) => tone(pctText(r.mean_pnl_pct), goodBad(r.mean_pnl_pct)), { defaultVisible: false }),
+    metric('avg_holding_secs', 'Avg hold', 'holding', (r) => r.avg_holding_secs, (r) => tone(fmtSecs(r.avg_holding_secs), 'text-accent')),
+    count('n_exit_take_profit', 'TP', 'text-green', (r) => r.n_exit_take_profit, { tooltip: 'Exited on take-profit' }),
+    count('n_exit_stop_loss', 'SL', 'text-red', (r) => r.n_exit_stop_loss, { tooltip: 'Exited on stop-loss' }),
+    count('n_exit_metrics', 'Metrics', 'text-text-mid', (r) => r.n_exit_metrics ?? 0, {
+      tooltip: 'Exited because all exit metric conditions became true',
+    }),
+    count('n_exit_dead', 'Dead', 'text-red', (r) => r.n_exit_dead, {
+      tooltip: 'Analysis death-close: token died silent, booked at the last meaningful trade',
+    }),
+    count('n_exit_open', 'Still open', 'text-text-dim', (r) => r.n_exit_open, { defaultVisible: false }),
+  ];
+}
+
+// --- group columns ----------------------------------------------------------
+
+/** A human label + value string for one group-key field (chips + search). */
+function keyParts(group: GroupedSweepGroupRecord): { label: string; value: string }[] {
+  return Object.entries(group.group_key).map(([k, v]) => ({
+    label: GROUP_FIELD_LABELS[k as GroupField] ?? k,
+    value: v,
+  }));
+}
+
+/** Build the generic-engine group-summary table columns. */
+export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[] {
+  const gm = (
+    key: string,
+    label: string,
+    value: (g: GroupedSweepGroupRecord) => number | null,
+    render: (g: GroupedSweepGroupRecord) => ReactNode,
+    opts: { tooltip?: string; defaultVisible?: boolean } = {},
+  ): ColumnDef<GroupedSweepGroupRecord> => ({
+    key,
+    label,
+    group: 'metrics',
+    tooltip: opts.tooltip,
+    defaultVisible: opts.defaultVisible,
+    sortable: true,
+    render,
+    sortValue: value,
+    filterNumber: value,
+    searchValue: () => '',
+  });
+
+  return [
+    {
+      key: 'group_key',
+      label: 'Group (fingerprint)',
+      group: 'group',
+      sortable: false,
+      render: (g) => {
+        const parts = keyParts(g);
+        if (parts.length === 0) return chip('ALL tokens', 'text-text-dim');
+        return (
+          <div className="grid grid-cols-[auto_1fr] items-start gap-x-3 gap-y-1 text-left">
+            {parts.map((p) => {
+              const isIxLabels = p.label === GROUP_FIELD_LABELS.ix_labels;
+              const ixParts = isIxLabels ? p.value.split(' | ') : null;
+              return (
+                <Fragment key={p.label}>
+                  <span className="text-[11px] leading-tight text-text-dim" title={`${p.label}: ${p.value}`}>
+                    {p.label}:
+                  </span>
+                  {ixParts ? (
+                    <pre className="select-all whitespace-pre font-mono text-[11px] leading-relaxed text-secondary">
+                      {JSON.stringify(ixParts, null, 2)}
+                    </pre>
+                  ) : (
+                    <span>{chip(p.value, 'text-secondary')}</span>
+                  )}
+                </Fragment>
+              );
+            })}
+          </div>
+        );
+      },
+      searchValue: (g) => keyParts(g).map((p) => `${p.label} ${p.value}`).join(' '),
+    },
+    gm('token_count', 'Tokens', (g) => g.token_count, (g) => tone(String(g.token_count), 'text-info'), {
+      tooltip: 'Tokens in this fingerprint group',
+    }),
+    gm('fired_count', 'Fired', (g) => g.fired_count, (g) => tone(String(g.fired_count), 'text-info'), {
+      tooltip: "The best combo's fired count — the sample size behind its score",
+    }),
+    gm('best_score', 'Score', (g) => g.best_score, (g) =>
+      g.best_score == null ? tone('—', 'text-text-dim') : tone(pctText(g.best_score), goodBad(g.best_score)), {
+      tooltip: "Robust score of this group's best combo (matches the drill-in default sort).",
+    }),
+    gm('best_win_rate', 'Win %', (g) => g.best_win_rate, (g) => tone(`${(g.best_win_rate * 100).toFixed(0)}%`, goodBad(g.best_win_rate, 0.5))),
+    gm('best_total_pnl_sol', 'Total PnL', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol))),
+    gm('best_expectancy_sol', 'Expectancy', (g) => g.best_expectancy_sol, (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol))),
+    gm('best_profit_factor', 'Profit factor', (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY, (g) =>
+      tone(g.best_profit_factor == null ? '∞' : g.best_profit_factor.toFixed(2), goodBad(g.best_profit_factor ?? 10, 1)),
+    ),
+    gm('best_median_pnl_pct', 'Median %', (g) => g.best_median_pnl_pct, (g) => tone(pctText(g.best_median_pnl_pct), goodBad(g.best_median_pnl_pct))),
+    gm('best_avg_holding_secs', 'Avg hold', (g) => g.best_avg_holding_secs, (g) => tone(fmtSecs(g.best_avg_holding_secs), 'text-accent')),
+    {
+      key: 'best_params',
+      label: "Best combo's rule",
+      group: 'params',
+      sortable: false,
+      render: (g) => ruleParamsCell(g.best_params),
+      searchValue: () => '',
+    },
+  ];
+}

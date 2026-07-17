@@ -30,11 +30,12 @@ export const labNav: NavConfig = {
     {
       kind: 'group',
       label: 'Grouped Sweep',
-      basePath: '/strategies/grouped-sweep',
+      basePath: '/strategies/sweep',
       items: [
-        { to: '/strategies/grouped-sweep-tpsl1', label: 'TPSL1' },
-        { to: '/strategies/grouped-sweep-tpsl2', label: 'TPSL2' },
-        { to: '/strategies/grouped-sweep-swing1', label: 'swing1' },
+        { to: '/strategies/sweep', label: 'Generic engine' },
+        { to: '/strategies/grouped-sweep-tpsl1', label: 'TPSL1 (legacy)' },
+        { to: '/strategies/grouped-sweep-tpsl2', label: 'TPSL2 (legacy)' },
+        { to: '/strategies/grouped-sweep-swing1', label: 'swing1 (legacy)' },
       ],
     },
     {
