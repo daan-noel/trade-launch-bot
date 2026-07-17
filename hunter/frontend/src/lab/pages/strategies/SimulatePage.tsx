@@ -8,6 +8,10 @@ import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { ruleParamsCell, ruleParamsSearchText } from 'components/strategy/RuleParamsSummary';
+import {
+  fingerprintParamsCell,
+  fingerprintParamsSearchText,
+} from 'components/strategy/FingerprintParamsSummary';
 import { lamportsToSol, type StrategyRule } from 'lib/strategy/types';
 import type { PositionsSummary } from 'types';
 import {
@@ -32,7 +36,7 @@ export function SimulatePage() {
   const [runs, setRuns] = useState<Record<string, RunState>>({});
   const handleRef = useRef<{ close: () => void } | null>(null);
 
-  const fpName = useMemo(() => new Map(fps.map((f) => [f.id, f.name || f.id.slice(0, 8)])), [fps]);
+  const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
   // One page-level subscription routes each finished run to its rule (run_id ==
   // rule_id for saved rules).
@@ -86,12 +90,18 @@ export function SimulatePage() {
     {
       key: 'fingerprint',
       label: 'Fingerprint',
-      render: (r) => (
-        <span className="font-mono text-[12px] text-text-dim">
-          {fpName.get(r.fingerprint_id) ?? r.fingerprint_id.slice(0, 8)}
-        </span>
-      ),
-      searchValue: (r) => fpName.get(r.fingerprint_id) ?? r.fingerprint_id,
+      render: (r) => {
+        const fp = fpById.get(r.fingerprint_id);
+        return (
+          <div className="flex min-w-48 flex-col gap-1">
+            <span className="font-mono text-[12px] text-text-dim">
+              {fp?.name || r.fingerprint_id.slice(0, 8)}
+            </span>
+            {fp ? fingerprintParamsCell(fp) : null}
+          </div>
+        );
+      },
+      searchValue: (r) => fingerprintParamsSearchText(fpById.get(r.fingerprint_id), r.fingerprint_id),
     },
     {
       key: 'buy',

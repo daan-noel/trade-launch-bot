@@ -149,7 +149,9 @@ next load (no per-metric frontend work).
   `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm`, `RulesView`/`FingerprintsView`
   (shared list+editor, mounted by both apps' `RulesPage`/`FingerprintsPage`),
   `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips; used by Rules,
-  Simulate, and the generic sweep tables).
+  Simulate, and the generic sweep tables),
+  `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips + bucket;
+  used by Rules, Simulate, and `FingerprintPicker`).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
 

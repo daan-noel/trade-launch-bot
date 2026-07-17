@@ -7,6 +7,10 @@ import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
 import { RuleEditor, type RuleEditorDraft } from './RuleEditor';
 import { ruleParamsCell, ruleParamsSearchText } from './RuleParamsSummary';
+import {
+  fingerprintParamsCell,
+  fingerprintParamsSearchText,
+} from './FingerprintParamsSummary';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetStrategyRulesQuery,
@@ -42,7 +46,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
   const [editing, setEditing] = useState<StrategyRule | 'new' | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const fpName = useMemo(() => new Map(fps.map((f) => [f.id, f.name || f.id.slice(0, 8)])), [fps]);
+  const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
   const submit = async (draft: RuleEditorDraft) => {
     setErr(null);
@@ -115,12 +119,18 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     {
       key: 'fingerprint',
       label: 'Fingerprint',
-      render: (r) => (
-        <span className="font-mono text-[12px] text-text-dim">
-          {fpName.get(r.fingerprint_id) ?? r.fingerprint_id.slice(0, 8)}
-        </span>
-      ),
-      searchValue: (r) => fpName.get(r.fingerprint_id) ?? r.fingerprint_id,
+      render: (r) => {
+        const fp = fpById.get(r.fingerprint_id);
+        return (
+          <div className="flex min-w-48 flex-col gap-1">
+            <span className="font-mono text-[12px] text-text-dim">
+              {fp?.name || r.fingerprint_id.slice(0, 8)}
+            </span>
+            {fp ? fingerprintParamsCell(fp) : null}
+          </div>
+        );
+      },
+      searchValue: (r) => fingerprintParamsSearchText(fpById.get(r.fingerprint_id), r.fingerprint_id),
     },
     {
       key: 'buy',

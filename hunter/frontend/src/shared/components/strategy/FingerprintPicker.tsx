@@ -9,6 +9,7 @@ import {
   useCreateFingerprintMutation,
 } from 'store/sharedEndpoints';
 import { FingerprintForm } from './FingerprintForm';
+import { fingerprintParamsCell } from './FingerprintParamsSummary';
 import type { FingerprintDraft } from 'lib/strategy/types';
 
 export interface FingerprintPickerProps {
@@ -42,32 +43,30 @@ export function FingerprintPicker({ value, onChange, disabled }: FingerprintPick
   };
 
   return (
-    <div className="flex items-center gap-2">
-      <Select
-        fieldSize="sm"
-        value={value ?? ''}
-        disabled={disabled || isLoading}
-        onChange={(e) => onChange(e.target.value)}
-        className="min-w-[16rem]"
-      >
-        <option value="" disabled>
-          {isLoading ? 'loading…' : 'select a fingerprint…'}
-        </option>
-        {fps.map((f) => (
-          <option key={f.id} value={f.id}>
-            {f.name || f.id.slice(0, 8)}
-            {f.used_by != null ? ` · used by ${f.used_by}` : ''}
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <Select
+          fieldSize="sm"
+          value={value ?? ''}
+          disabled={disabled || isLoading}
+          onChange={(e) => onChange(e.target.value)}
+          className="min-w-[16rem]"
+        >
+          <option value="" disabled>
+            {isLoading ? 'loading…' : 'select a fingerprint…'}
           </option>
-        ))}
-      </Select>
-      {selected && (
-        <span className="whitespace-nowrap text-[11px] text-text-dim">
-          {selected.bucket_size_amount}◎ bucket
-        </span>
-      )}
-      <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
-        + new
-      </Button>
+          {fps.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.name || f.id.slice(0, 8)}
+              {f.used_by != null ? ` · used by ${f.used_by}` : ''}
+            </option>
+          ))}
+        </Select>
+        <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
+          + new
+        </Button>
+      </div>
+      {selected && fingerprintParamsCell(selected)}
 
       <Modal title="New fingerprint" open={open} onClose={() => setOpen(false)}>
         <FingerprintForm
