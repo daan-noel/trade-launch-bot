@@ -69,6 +69,19 @@ impl TokenTrack {
         }
     }
 
+    /// The most recently observed canonical price (`NaN` before the first trade).
+    /// The "last known price" a tick-driven TP/SL check reads (a tick carries no
+    /// trade, so the position is marked against the last print).
+    pub fn current_price(&self) -> f64 {
+        self.price_path.last_price()
+    }
+
+    /// The most recently observed SOL reserves (`NaN` before the first trade) — the
+    /// liquidity reading the dead-token verdict consumes.
+    pub fn current_reserves(&self) -> f64 {
+        self.value(MetricId::Liquidity, None, self.created_at)
+    }
+
     /// Value of one metric at `now`. `window_secs` is required for dynamic
     /// (`m_time_window`) metrics and ignored for static ones. An unregistered
     /// window (or a missing one) yields `NaN` — which satisfies no condition.

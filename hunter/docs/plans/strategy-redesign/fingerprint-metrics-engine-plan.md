@@ -5,7 +5,9 @@ deterministic event-log engine — all five "best solution" upgrades adopted).
 **Phase 0 complete 2026-07-16** (plus 1.2 pulled forward). **Phase 1 complete
 2026-07-16** (metrics framework: 1.1 registry JSON, 1.3–1.8). **Phase 2 complete
 2026-07-16** (fingerprint matcher: `engine/src/fingerprint.rs`, two-phase
-first-slot, 11 tests); next: Phase 3 (the engine fold `reduce` + golden-log spec).
+first-slot, 11 tests). **Phase 3 complete 2026-07-16** (the engine fold: `event.rs`
++ `state.rs` + `arm.rs` + `reduce.rs` + `deadness.rs` moved from core; 20 golden-log
+tests + a seeded-fuzz property test); next: Phase 4 (live adapters).
 Scope: **hunter only** — forge untouched. Backend first; frontend has its own plan:
 [frontend-plan.md](frontend-plan.md) (phases there map onto backend phases here).
 Origin: `Bot/docs/strategy-redesign-new-plan.md` + design Q&A; params shape example in
@@ -521,29 +523,49 @@ Determinism rules (violation = bug):
       guard, per-fingerprint width (coarse+fine both match same token), lamports→SOL
       conversion for max_cost/spendable.
 
-### Phase 3 — The engine fold (`reduce`) + golden-log spec
+### Phase 3 — The engine fold (`reduce`) + golden-log spec ✅ 2026-07-16
 
-- [ ] 3.1 `event.rs` + `state.rs`: types from §6; `EngineState` holds tracks, arm states
-      (per token→rules SmallVec), a positions view (id, rule, mint, entry fill, status),
-      per-rule counters (armed/holding/pending/total), intent seq.
-- [ ] 3.2 `arm.rs`: `ArmState` machine (`Armed → EntryPending → Entered → ExitPending →
-      Done | Disarmed(reason)`); derived-unsatisfiability precompute at `RulesReloaded`
-      (monotonic-metric upper bounds from entry conditions; incl. `=` once
-      value > bound + tol). Unit tests incl. non-monotonic metrics never derived-disarm.
-- [ ] 3.3 `reduce.rs`: full fold — arm on match, metrics update, disarm checks
-      (dead via `deadness.rs`, migration, derived), entry check (caps
-      `max_concurrent`/`max_total` enforced here, at entry not arm), `SubmitBuy` intent,
-      fill handling (`FillConfirmed` → Entered/closed; `FillFailed` → retry policy or
-      Done), exit priority `Dead > StopLoss > TakeProfit > Metrics`, `ManualClose`,
-      TP/SL vs `entry_price` on canonical spot (tick uses last known price).
-- [ ] 3.4 Move deadness: `is_dead_verdict` + death-point logic → `engine/src/deadness.rs`
-      (SSOT; `trading_core` re-exports for the token-cache consumer).
-- [ ] 3.5 **Golden-log tests** (the engine's spec): scripted event vectors → exact
-      effect vectors; scenarios: arm→enter→TP, SL, metrics-exit, stall-exit on quiet
-      token (tick-driven), disarm-derived, disarm-dead, migration, multi-rule concurrent
-      entry, caps, fill-failure retry, manual close.
-- [ ] 3.6 Property tests (fast — crate has no heavy deps): random event streams never
-      panic; effects only reference known intents/positions; counters never negative.
+- [x] 3.1 `event.rs` + `state.rs`: types from §6. `event.rs` = `Mint`/`RuleId`/
+      `PositionId`/`IntentId` (derived `(rule, mint, seq)`), `Event`/`Effect`,
+      `LoadedRule`, `Fill`/`FillFailReason`, `ExitReason`, `PositionDelta`/`ArmedDelta`.
+      `EngineState` (sorted `BTreeMap`s for determinism) holds compiled rules, loaded
+      fingerprints, `all_windows` union, per-rule `RuleCounters {open,total}`, tracked
+      `TokenState`s (track + `last_meaningful_at` + arms), a `positions` owner view for
+      ManualClose, and the intent/position seq generators.
+- [x] 3.2 `arm.rs`: `CompiledRule` (rule pre-chewed at reload into flat `MetricReq`
+      lists + distinct windows + `MonoBound`s) and the `ArmState` machine
+      (`PendingFirstSlot → Armed → EntryPending → Entered → ExitPending → Done |
+      Disarmed(reason)`). Derived-unsatisfiability = every monotonic-metric entry upper
+      bound (`<`⇒≥, `<=`⇒>, `=`⇒>value+tol/2); 6 unit tests incl. non-monotonic and
+      lower-bound never derive-disarm.
+- [x] 3.3 `reduce.rs`: full fold — arm on instant/full match, metrics update, disarm
+      (dead via `deadness.rs`, migration, derived), entry check with caps
+      (`max_concurrent`/`max_total` at entry not arm; over-cap ⇒ wait), `SubmitBuy`
+      intent + `BuySubmitted` position, fill handling (`FillConfirmed`→Holding/End;
+      `FillFailed`→bounded retry, entry give-up rolls counters back, exit `Unconfirmed`⇒
+      terminal never-resell), exit priority `Dead > StopLoss > TakeProfit > Metrics`,
+      `ManualClose`, TP/SL vs `entry_price` on canonical spot (tick uses last known
+      price). Two-phase decide/apply keeps borrows disjoint + decisions side-effect-free.
+      *Decisions taken:* Migration disarms **pre-entry** arms only — open positions ride
+      it out (AMM trades keep pricing them). Dead-exit is emitted uniformly (paper acts
+      on it via `Dead`; the real adapter's book-vs-noop choice is a Phase-4 concern).
+- [x] 3.4 Move deadness: `is_dead_verdict` + the `DEAD_*` constants → `engine/src/
+      deadness.rs` (SSOT); `trading_core` re-exports both (`config::constants` for the
+      constants, `state::token_cache::is_dead_verdict` for the fn). `death.rs`'s
+      `find_death_point` stays in core (needs the `TradeRow` trait) and now calls the
+      moved verdict via that re-export — the fold computes deadness incrementally from
+      folded state, so it needs the verdict, not the trades-slice death-point walk.
+- [x] 3.5 **Golden-log tests** (`tests/golden.rs`, 20): arm→enter→TP, SL, metrics-exit,
+      stall-exit on quiet token (tick-driven), disarm-derived, disarm-dead, migration,
+      multi-rule concurrent entry, concurrent + total caps, entry fill-failure retry→
+      give-up, manual close, unconfirmed-sell terminal, `Dead > SL` priority (via a dust
+      trade that crashes price without resetting the quiet clock), first-slot two-phase
+      arm/drop, untracked/non-matching ignored, determinism.
+- [x] 3.6 Property tests (`tests/property.rs`, seeded xorshift — `rand` is banned by
+      the purity guard so the PRNG is inline): 39 random 400-event streams never panic;
+      every `SubmitSell` references a live position + every `SubmitBuy` a known rule; the
+      `open` counter equals the live in-flight/held arm count and stays within caps;
+      `positions` map size tracks live arms exactly.
 
 ### Phase 4 — Live adapters (hunter-live)
 

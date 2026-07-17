@@ -46,6 +46,12 @@ impl PricePathState {
         });
     }
 
+    /// Most recently observed price (`NaN` before the first trade) — the "last
+    /// known price" a tick-driven TP/SL check reads.
+    pub fn last_price(&self) -> f64 {
+        self.last_price.unwrap_or(f64::NAN)
+    }
+
     /// `stall` — seconds since the price last moved.
     pub fn stall(&self, now: Ts) -> f64 {
         secs_between(self.last_move_at, now)

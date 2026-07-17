@@ -67,13 +67,13 @@ pub const MAX_FILL_WAIT_SLOTS: u64 = 3; // ≈ 1 s at 400 ms/slot
 // The quiet requirement means a token that temporarily dips in reserves but then
 // recovers will NOT be flagged dead (a new meaningful trade resets the clock).
 // The verdict flips to true exactly once and stays there.
-
-/// Signal 1 — liquidity is gone. The latest `real_sol_reserves` is below this SOL.
-pub const DEAD_MAX_LIQUIDITY_SOL: f64 = 30.0;
-/// Signal 2 — no meaningful trade for this many seconds.
-pub const DEAD_QUIET_SECS: i64 = 300; // 5 minutes
-/// SOL threshold below which a trade is dust and does NOT reset the quiet timer.
-pub const DEAD_MEANINGFUL_TRADE_SOL: f64 = 0.1;
+//
+// The constants + the `is_dead_verdict` predicate live in the pure engine crate
+// (`hunter_engine::deadness`, the SSOT) and are re-exported here so every
+// existing `config::constants::DEAD_*` path keeps working unchanged.
+pub use hunter_engine::deadness::{
+    DEAD_MAX_LIQUIDITY_SOL, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS,
+};
 
 // ---------------------------------------------------------------------------
 // Ingest / cache sizing (restart required to change)

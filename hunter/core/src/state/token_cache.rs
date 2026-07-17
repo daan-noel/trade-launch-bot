@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::config::constants::{
-    market_cap_sol, DEAD_MAX_LIQUIDITY_SOL, DEAD_MEANINGFUL_TRADE_SOL, DEAD_QUIET_SECS,
+    market_cap_sol, DEAD_MEANINGFUL_TRADE_SOL,
     INITIAL_VIRTUAL_TOKEN_RESERVES, TOKEN_CACHE_EVICT_IDLE_SECONDS,
     TOKEN_CACHE_EVICT_INTERVAL_SECONDS,
 };
@@ -25,26 +25,9 @@ pub const TRADES_TRIM_SLACK: usize = 1_000;
 
 /// The pure dead-token decision, single-sourced so live ([`TokenState::is_dead`])
 /// and the analysis death-close ([`crate::strategies::death`]) can never drift.
-///
-/// A token is dead at `now` when BOTH hold:
-///   1. `reserves` (newest real SOL reserves) `< DEAD_MAX_LIQUIDITY_SOL` — liquidity
-///      gone. `None` (no reserve snapshot yet) ⇒ alive.
-///   2. no meaningful trade for at least `DEAD_QUIET_SECS` — `last_meaningful` is the
-///      newest `amount_sol >= DEAD_MEANINGFUL_TRADE_SOL` trade time (callers fall back
-///      to `created_at` when none has arrived).
-pub fn is_dead_verdict(
-    reserves: Option<f64>,
-    last_meaningful: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> bool {
-    // Signal 1: liquidity depleted. None → no reserve snapshot yet → alive.
-    let reserves_depleted = matches!(reserves, Some(sol) if sol < DEAD_MAX_LIQUIDITY_SOL);
-    if !reserves_depleted {
-        return false;
-    }
-    // Signal 2: silent for DEAD_QUIET_SECS (dust ignored by the caller's clock).
-    now.signed_duration_since(last_meaningful).num_seconds() >= DEAD_QUIET_SECS
-}
+/// Now owned by the pure engine crate ([`hunter_engine::deadness`]) and re-exported
+/// here so the long-standing `state::token_cache::is_dead_verdict` path keeps working.
+pub use hunter_engine::deadness::is_dead_verdict;
 
 // ---------------------------------------------------------------------------
 // CachedTrade
@@ -607,6 +590,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::constants::DEAD_QUIET_SECS;
     use chrono::Duration as ChronoDuration;
 
     fn token_created_at(created_at: DateTime<Utc>) -> Token {

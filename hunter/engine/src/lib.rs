@@ -19,10 +19,19 @@
 //!   [`metrics::series::MetricSeries`].
 //! * [`rule_params`] — typed, registry-checked `strategy_rules.params`.
 
+pub mod arm;
+pub mod deadness;
+pub mod event;
 pub mod fingerprint;
 pub mod grouping;
 pub mod metrics;
+pub mod reduce;
 pub mod rule_params;
+pub mod state;
+
+pub use event::{Effect, Event};
+pub use reduce::reduce;
+pub use state::EngineState;
 
 #[cfg(test)]
 mod purity_guard {
