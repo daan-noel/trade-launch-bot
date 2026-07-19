@@ -161,6 +161,110 @@ This means: the sweep continues computing while previous groups persist. DB writ
 
 7. **No sweep work on server** — sweeps use the `batch` pool and are CPU-bound (rayon). The deployed EC2 box (2vCPU/4GB) cannot sustain sweep workload without crowding out the ingest pipeline. Sweeps **must** run on local only. The server's batch pool has `max_connections = 1` to make this impossible to violate accidentally.
 
+## Fold hot-path rules (engine.rs) — do not regress
+
+Three properties the wave-outer fold depends on. Each replaced a measured waste.
+
+1. **Bind once per shard, never per wave.** `bound_all` is built *outside* the
+   `corpus.tokens.chunks(wave)` loop in `run_sweep_unsharded`. Params don't vary with
+   the token wave, so binding inside it re-compiled every combo `n_waves` times
+   (`n_waves = group_tokens / threads`) — 62.5M `CompiledRule::compile` calls for 100k
+   distinct params on a 10k-token group at 16 threads, each allocating a `RuleParams`
+   with nested condition maps. The pass-outer branch always hoisted correctly; only
+   wave-outer had the loops nested the wrong way. Slice it as
+   `bound_all[offset..offset + chunk.len()]` — the chunk offsets index `params` and
+   `bound_all` identically.
+
+2. **`fold_wave_into` borrows the accumulators, never copies them.** It takes
+   `&mut [ComboAgg]` into a scoped thread and merges in place. It used to `to_vec()` in
+   and `clone_from_slice` back out: `ComboAgg` is ~640 POD bytes, so at a 65536 batch
+   that was ~42 MB in + ~42 MB out *per wave, per pass* — tens of GB of memcpy on a
+   large group, moving the same accumulators back and forth for nothing.
+
+3. **`order_for_entry_cache` uses `sort_by_cached_key`.** `entry_key` allocates a
+   `vec![0; n_axes]` per call, and `sort_by_key` calls the key fn once per
+   *comparison* (~n log n) rather than once per element. Both sorts are stable, which
+   the same-entry contiguity depends on.
+
+4. **Series-column indices resolve at bind time, not per (token, combo).** Every
+   token's series is built from `self.columns.clone()`, so the column layout is fixed
+   for the whole run and a combo's indices are the same on every token. `BoundParams`
+   is therefore `BoundCombo` (`CompiledRule` + `entry_cols`/`mono_cols`/`exit_cols`),
+   built once in `bind_param`. Previously `resolve_exit` — uncached, once per combo
+   per token — called `resolve_cols`, making it the single most-executed heap
+   allocation in a sweep.
+
+   The invariant is load-bearing: if the column set ever varied per token, cached
+   indices would silently read the wrong metric. Two guards — a `debug_assert` in each
+   scan that re-derives the indices from the series, and
+   `shared_bind_matches_per_token_bind`, which binds once and scans many tokens. The
+   `scan_matches_replay_*` tests cannot catch this (each binds against the very series
+   it scans, so a stale index agrees with itself).
+
+5. **The refine driver frees `coarse_groups` before the final pass.** The coarse pass
+   uses `NoopSink`, so `free_persisted_metrics` never trims it; without the explicit
+   `drop` it holds `n_groups × n_combos` `ComboMetrics` resident straight through the
+   memory-heaviest sweep.
+
+**Memory model.** `full_combo_aggs_fit` (and `plan_shards` through it) takes
+`bound_bytes_per_combo` — pass `size_of::<S::BoundParams>()`. Both wave-outer paths
+(the shard-wide `bound_all`, and the grouped driver's group-wide `bound` in the
+token-outer fold) hold `BoundParams` for the *whole* combo set, so it is priced next to
+the accumulators instead of being left to the alloc slack. That is the inline size
+only; `SmallVec` heap spill is still absorbed by the 256 MB slack.
+
+Equivalence is pinned by `multi_wave_fold_matches_single_batch`, which drives enough
+tokens to span many waves — `batched_fold_matches_single_batch` cannot catch a
+regression in any of the above, because its 3-token corpus is a single wave.
+
+## Observability — two instruments, different shapes (`obs.rs`)
+
+A run used to be a black box between the `corpus_loaded` and `done` milestones: four
+timing sites existed, all whole-run, so no stage's *cost* was recoverable. Worst case,
+a refine run does two complete sweeps of the corpus and nothing said which half was
+slow.
+
+- **Milestones** (`log_milestone`) are *points* on one run-long `SweepClock`:
+  `admitted`, `corpus_loaded`, `done`. They need the clock threaded from admission, so
+  only the handler emits them. (An older doc listed a `partitioned` milestone that was
+  never emitted — partitioning is a stage; its duration is the useful number.)
+- **Stages** (`Stage::start`, drop-based) are *durations*: `corpus_load`, `partition`,
+  `refine_coarse_pass`, `refine_final_pass`, `writer_drain`. Self-contained, so engine
+  internals use these. Bind the guard (`let _s = …`) — an unbound temporary drops
+  immediately and logs a zero-length stage. Drop-based means a cancelled or failed
+  stage still reports how long it ran, which is when the number matters most.
+
+`writer_drain` exists because the write channel is unbounded *on purpose* (a rayon
+worker must never stall on the DB). A writer that fell behind during the fold therefore
+drains serially **after** the engine logs "all groups folded" — previously unlabeled
+dead time at the end of every slow run.
+
+Per-group cost is reported as `slowest_group_{secs,index,tokens}` on the run's summary
+line, not one line per group: at ~1k groups, per-group logging buries the single number
+worth acting on (a group taking a large share of the run = a skewed partition, and the
+index says which one to reproduce). Timing spans fold **plus retention**, since
+retention runs in the same worker.
+
+Throughput (`evals_per_sec`) is logged at `debug` from the throttled progress tick
+(~100/run, never the fold loop). The user-facing **ETA is the client's** — one
+`estimateEtaMs` shared by sweeps, simulations and swings. Do not add a server-side ETA;
+it would be the same fact computed twice.
+
+## Retention — what is and isn't per-metric (`retention.rs`)
+
+`retained_combo_ids` runs per group *inside the fold's rayon workers*, so it competes
+with the fold for cores. Two of its three costs are **not** metric-dependent and are
+hoisted out of the 11-metric loop:
+
+- **eligibility** (`n_closed >= min_closed`) — one filter, not 11.
+- **the cap tie-break order** (`score` desc, `combo_id` asc) — one sort, not 11
+  byte-identical ones. This is a total order, which is what makes the result
+  order-independent (pinned by `retention_is_order_independent`); if ties fell back to
+  input position, two runs over the same data would persist different rows.
+
+Only the **value sort** is genuinely per-metric. Net: 22 sorts → 11, and 10 of the 11
+`n_combos`-sized allocations removed via buffers reused across metrics.
+
 ## TPSL1 `Strategy` Impl — `sweep/strategies/tpsl1.rs`
 
 Sweeps 6 exit-ladder knobs: `take_profit_pct`, `stop_loss_pct`, `trailing_stop_pct`, `time_stop_secs`, `stall_secs`, `liquidity_drop_pct`.

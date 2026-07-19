@@ -39,13 +39,23 @@ pub fn max_combos_per_shard(wave: usize, max_series_bytes: usize) -> usize {
 }
 
 /// Inclusive-exclusive combo index ranges covering `0..n_combos`.
-pub fn plan_shards(n_combos: usize, wave: usize, max_series_bytes: usize) -> Vec<Range<usize>> {
+///
+/// `bound_bytes_per_combo` is forwarded to [`full_combo_aggs_fit`] — see there; it
+/// prices the whole-combo-set `BoundParams` the wave-outer fold holds, so the
+/// single-shard decision is made against the same residency the fold will really have.
+pub fn plan_shards(
+    n_combos: usize,
+    wave: usize,
+    max_series_bytes: usize,
+    bound_bytes_per_combo: usize,
+) -> Vec<Range<usize>> {
     if n_combos == 0 {
         return Vec::new();
     }
     let per = max_combos_per_shard(wave, max_series_bytes);
     // Single shard when the whole set fits wave-outer or is under `per`.
-    if n_combos <= per || full_combo_aggs_fit(n_combos, wave, max_series_bytes) {
+    if n_combos <= per || full_combo_aggs_fit(n_combos, wave, max_series_bytes, bound_bytes_per_combo)
+    {
         return vec![0..n_combos];
     }
     let mut out = Vec::new();
@@ -83,14 +93,14 @@ mod tests {
 
     #[test]
     fn plan_shards_single_when_small() {
-        let shards = plan_shards(100, 4, 0);
+        let shards = plan_shards(100, 4, 0, 0);
         assert_eq!(shards, vec![0..100]);
     }
 
     #[test]
     fn plan_shards_covers_full_range() {
         let n = 12_345;
-        let shards = plan_shards(n, 4, 1024);
+        let shards = plan_shards(n, 4, 1024, 0);
         assert!(!shards.is_empty());
         assert_eq!(shards.first().unwrap().start, 0);
         assert_eq!(shards.last().unwrap().end, n);

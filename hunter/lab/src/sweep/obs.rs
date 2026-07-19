@@ -4,9 +4,22 @@
 //! *two* axes — peak resident MB **and** total seconds — so a memory win that
 //! silently regresses wall-clock is caught. This module is the shared, best-effort
 //! instrument: process RSS (via the cross-platform `memory-stats` crate) and a
-//! monotonic wall-clock, logged at each sweep milestone (admitted, corpus loaded,
-//! partitioned, done). It never fails the sweep — an unreadable RSS just logs
-//! `None`.
+//! monotonic wall-clock, logged at each sweep milestone. It never fails the sweep —
+//! an unreadable RSS just logs `None`.
+//!
+//! Two instruments, deliberately different shapes:
+//!
+//! - **Milestones** ([`log_milestone`]) are *points* on one run-long clock, so they
+//!   answer "how far in are we": `admitted`, `corpus_loaded`, `done`. They need the
+//!   [`SweepClock`] threaded from admission, so only the handler emits them.
+//! - **Stages** ([`Stage`]) are *durations*, so they answer "what was slow":
+//!   `corpus_load`, `partition`, `refine_coarse_pass`, `refine_final_pass`,
+//!   `writer_drain`. Self-contained (no clock to thread), which is why the engine
+//!   internals use these.
+//!
+//! An earlier version of this doc listed a `partitioned` milestone that was never
+//! emitted; partitioning is a `Stage` — its *duration* is the useful number, and a
+//! point-in-time marker would not have told you the partition was the slow part.
 //!
 //! Host physical memory (total / available) feeds the grouped-sweep admission
 //! ceiling so a run leaves headroom for the OS + desktop UI.
@@ -138,4 +151,43 @@ pub fn log_milestone(clock: &SweepClock, milestone: &str) {
         elapsed_s = clock.elapsed_secs(),
         "sweep: milestone"
     );
+}
+
+/// Times one named stage and logs its **duration** when dropped.
+///
+/// Milestones answer "how far in are we"; they cannot answer "what was slow",
+/// because a stage's cost is a difference between two of them and several stages
+/// never emitted a milestone at all. A run was therefore a black box between
+/// `corpus_loaded` and `done` — including the case that matters most, a refine run
+/// doing two full sweeps with no way to tell which half was expensive.
+///
+/// Drop-based on purpose: a stage that bails or is cancelled still reports how long
+/// it ran, which is exactly when the number is most wanted.
+pub struct Stage {
+    name: &'static str,
+    started: Instant,
+}
+
+impl Stage {
+    /// Begin timing `name`. Bind it (`let _s = Stage::start(..)`) — an unbound
+    /// temporary drops immediately and logs a zero-length stage.
+    pub fn start(name: &'static str) -> Self {
+        Self { name, started: Instant::now() }
+    }
+
+    /// Seconds since this stage began, without ending it.
+    pub fn elapsed_secs(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+}
+
+impl Drop for Stage {
+    fn drop(&mut self) {
+        tracing::info!(
+            stage = self.name,
+            secs = self.started.elapsed().as_secs_f64(),
+            rss_mb = process_rss_mb(),
+            "sweep: stage done"
+        );
+    }
 }

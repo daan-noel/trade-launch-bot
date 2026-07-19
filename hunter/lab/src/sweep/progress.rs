@@ -91,7 +91,19 @@ pub struct SweepProgress {
     /// a mid-run status read is always accurate. Pass a throwaway
     /// `Arc<ProgressCell::default()>` for phases where status recovery isn't needed.
     cell: Arc<ProgressCell>,
+    /// When this phase's first work was declared — the origin for the throughput and
+    /// ETA readouts. Set at `set_total`, not at construction, so the corpus load
+    /// (which happens before the phase's own work) doesn't drag the rate down.
+    started: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// Evaluations that must land before a throughput reading is meaningful — an early
+/// rate is dominated by pool spin-up and thread-local warmup.
+const MIN_EVALS_FOR_RATE: usize = 10_000;
+
+/// Minimum elapsed time before a throughput reading is meaningful, for the same
+/// reason: a large first chunk can clear the evaluation floor in milliseconds.
+const MIN_SECS_FOR_RATE: f64 = 2.0;
 
 impl SweepProgress {
     pub fn new(
@@ -110,7 +122,25 @@ impl SweepProgress {
             combos_per_token: AtomicUsize::new(1),
             cancel,
             cell,
+            started: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Evaluations/sec for this phase so far, or `None` before either floor above is
+    /// met (an early rate is dominated by pool spin-up and misleads by multiples).
+    ///
+    /// **Diagnostics only — never sent on the wire.** The client owns the user-facing
+    /// ETA (see [`SseEvent::SweepProgress`]); this exists so a run's throughput is
+    /// recoverable from the logs after the fact, which is what makes a "the sweep got
+    /// slower" report investigable instead of anecdotal.
+    fn eval_rate(&self, processed_evals: usize) -> Option<f64> {
+        let started = self.started.lock().ok().and_then(|g| *g)?;
+        let elapsed = started.elapsed().as_secs_f64();
+        if processed_evals < MIN_EVALS_FOR_RATE || elapsed < MIN_SECS_FOR_RATE {
+            return None;
+        }
+        let rate = processed_evals as f64 / elapsed;
+        (rate.is_finite() && rate > 0.0).then_some(rate)
     }
 
     /// Emit a frame. `processed_evals` and the stored total are **evaluations**; both
@@ -119,6 +149,17 @@ impl SweepProgress {
     fn send(&self, processed_evals: usize) {
         let cpt = self.combos_per_token.load(Ordering::Relaxed).max(1);
         let total_evals = self.total.load(Ordering::Relaxed);
+        // One throughput line per throttled frame (~100/run, never the fold loop), at
+        // debug so a normal run stays quiet but a slow one can be reconstructed.
+        if let Some(rate) = self.eval_rate(processed_evals) {
+            tracing::debug!(
+                phase = %self.phase,
+                evals_done = processed_evals,
+                evals_total = total_evals,
+                evals_per_sec = rate.round(),
+                "sweep: throughput"
+            );
+        }
         let _ = self.sse_tx.send(SseEvent::SweepProgress {
             strategy_id: self.strategy_id.clone(),
             phase: self.phase.clone(),
@@ -136,6 +177,12 @@ impl SweepObserver for SweepProgress {
         let total_evals = total_tokens.saturating_mul(cpt);
         self.total.store(total_evals, Ordering::Relaxed);
         self.cell.set_total(total_tokens as u64);
+        // Start the clock at the first declared work, not at construction: the handler
+        // builds the observers before the corpus load, and counting that load against
+        // the fold's throughput would understate the rate and overstate the ETA.
+        if let Ok(mut g) = self.started.lock() {
+            *g = Some(std::time::Instant::now());
+        }
         // Emit the initial `0 / total` frame so a subscriber can switch from
         // indeterminate to determinate before the first fold.
         self.send(0);

@@ -150,10 +150,25 @@ pub fn combo_batch_count(n_combos: usize, batch: usize) -> usize {
     n_combos.div_ceil(batch.max(1)).max(1)
 }
 
-/// Whether holding `n_combos` [`ComboAgg`]s + one series wave fits usable RAM.
-/// When true, [`run_sweep`] uses **wave-outer** (series once per token).
-pub fn full_combo_aggs_fit(n_combos: usize, wave: usize, max_series_bytes: usize) -> bool {
-    let agg = (n_combos as u64).saturating_mul(std::mem::size_of::<ComboAgg>() as u64);
+/// Whether holding `n_combos` [`ComboAgg`]s + their bound params + one series wave
+/// fits usable RAM. When true, [`run_sweep`] uses **wave-outer** (series once per
+/// token).
+///
+/// `bound_bytes_per_combo` prices the `BoundParams` (a `CompiledRule` for the generic
+/// sweep) that both wave-outer paths hold for the **whole** combo set — the shard-wide
+/// `bound_all` here, and the group-wide `bound` in the grouped driver's token-outer
+/// fold. Pass `size_of::<S::BoundParams>()`. That is the inline size only; a
+/// `SmallVec` that spills to the heap is absorbed by the 256 MB slack below, the same
+/// way this term used to be absorbed entirely when it was merely batch-resident.
+pub fn full_combo_aggs_fit(
+    n_combos: usize,
+    wave: usize,
+    max_series_bytes: usize,
+    bound_bytes_per_combo: usize,
+) -> bool {
+    let per_combo =
+        (std::mem::size_of::<ComboAgg>() as u64).saturating_add(bound_bytes_per_combo as u64);
+    let agg = (n_combos as u64).saturating_mul(per_combo);
     let series = (wave as u64).saturating_mul(max_series_bytes as u64);
     let fold = crate::sweep::registry::sweep_memory_budget_bytes();
     let need = agg.saturating_add(series).saturating_add(fold);
@@ -204,7 +219,12 @@ pub fn run_sweep<S: Strategy>(
         .max()
         .unwrap_or(0);
     let wave = crate::sweep::registry::series_wave_size(max_series, threads);
-    let shards = crate::sweep::shard::plan_shards(n_combos, wave, max_series);
+    let shards = crate::sweep::shard::plan_shards(
+        n_combos,
+        wave,
+        max_series,
+        std::mem::size_of::<S::BoundParams>(),
+    );
 
     if shards.len() == 1 {
         return run_sweep_unsharded(strategy, params, corpus, observer, batch, 0);
@@ -292,7 +312,12 @@ fn run_sweep_unsharded<S: Strategy>(
         .max()
         .unwrap_or(0);
     let wave = crate::sweep::registry::series_wave_size(max_series, threads);
-    let wave_outer = full_combo_aggs_fit(n_combos, wave, max_series);
+    let wave_outer = full_combo_aggs_fit(
+        n_combos,
+        wave,
+        max_series,
+        std::mem::size_of::<S::BoundParams>(),
+    );
     let n_batches = combo_batch_count(n_combos, batch);
     tracing::debug!(
         combos = n_combos,
@@ -310,6 +335,19 @@ fn run_sweep_unsharded<S: Strategy>(
 
     let metrics = if wave_outer {
         let mut aggs = vec![ComboAgg::default(); n_combos];
+        // Bind ONCE for the whole shard, not once per wave.
+        //
+        // This was nested inside the wave loop, so every combo was re-compiled for
+        // every wave: `n_waves × n_combos` calls, where `n_waves = group_tokens /
+        // threads`. A 10k-token group on 16 threads with 100k combos re-compiled
+        // 62.5M `CompiledRule`s for 100k distinct params — each one allocating a
+        // `RuleParams` with nested condition maps. The params don't vary with the
+        // token wave, so the work was pure repetition. (The pass-outer branch below
+        // already hoisted its bind correctly; only this branch had the loops nested
+        // the wrong way.) `wave_outer` is admitted with the bound set priced in, so
+        // holding all `n_combos` of them is part of the plan, not a surprise.
+        let bound_all: Vec<S::BoundParams> =
+            params.iter().map(|p| strategy.bind_param(p)).collect();
         for wave_tokens in corpus.tokens.chunks(wave) {
             if observer.cancelled() {
                 break;
@@ -326,12 +364,10 @@ fn run_sweep_unsharded<S: Strategy>(
                     break;
                 }
                 let offset = pass_i * batch;
-                let bound: Vec<S::BoundParams> =
-                    chunk.iter().map(|p| strategy.bind_param(p)).collect();
                 let (rows, fired) = fold_wave_into(
                     strategy,
                     chunk,
-                    &bound,
+                    &bound_all[offset..offset + chunk.len()],
                     wave_tokens,
                     &states,
                     &mut aggs[offset..offset + chunk.len()],
@@ -470,15 +506,20 @@ fn fold_wave_into<S: Strategy>(
     let (ret_tx, ret_rx) = std::sync::mpsc::channel::<Vec<TokenOutcome>>();
     let ret_rx = std::sync::Mutex::new(ret_rx);
 
-    // Folder owns a copy for the wave; we write it back when done.
-    let mut local_aggs = aggs.to_vec();
-    let (rows, fired, merged) = std::thread::scope(|scope| -> Result<(u64, u64, Vec<ComboAgg>)> {
-        let folder = scope.spawn(move || -> (u64, u64, Vec<ComboAgg>) {
+    // The folder borrows `aggs` directly rather than round-tripping a copy.
+    //
+    // This used to `aggs.to_vec()` in and `clone_from_slice` back out, i.e. two full
+    // copies of the accumulator array per call. `ComboAgg` is ~640 POD bytes (two
+    // fixed-size quantile sketches), so at a 65536 batch that is ~42 MB in and ~42 MB
+    // out — per wave, per pass. A scoped thread can hold `&mut [ComboAgg]` for exactly
+    // the scope's lifetime, so the copies bought nothing.
+    let (rows, fired) = std::thread::scope(|scope| -> Result<(u64, u64)> {
+        let folder = scope.spawn(move || -> (u64, u64) {
             let mut rows = 0u64;
             let mut fired = 0u64;
             while let Ok(outs) = rx.recv() {
                 for (combo_id, o) in outs.iter().enumerate() {
-                    local_aggs[combo_id].record(o);
+                    aggs[combo_id].record(o);
                     rows += 1;
                     if o.fired {
                         fired += 1;
@@ -490,7 +531,7 @@ fn fold_wave_into<S: Strategy>(
                 observer.token_done(params.len());
                 let _ = ret_tx.send(outs);
             }
-            (rows, fired, local_aggs)
+            (rows, fired)
         });
 
         let produce = tokens.par_iter().zip(states.par_iter()).try_for_each(
@@ -516,7 +557,6 @@ fn fold_wave_into<S: Strategy>(
         Ok(result)
     })?;
 
-    aggs.clone_from_slice(&merged);
     Ok((rows, fired))
 }
 
@@ -766,6 +806,45 @@ mod tests {
         assert_eq!(whole_stats.rows, batched_stats.rows);
         assert_eq!(whole_stats.fired, batched_stats.fired);
         assert_eq!(whole.len(), batched.len());
+        for (w, b) in whole.iter().zip(&batched) {
+            assert_eq!(w.combo_id, b.combo_id);
+            assert_eq!(w.n_fired, b.n_fired);
+            assert_eq!(w.total_pnl_sol, b.total_pnl_sol);
+        }
+    }
+
+    /// Multi-**wave** equivalence: the wave-outer fold accumulates into one `aggs`
+    /// array across many token waves, and hoisting the param bind out of that wave
+    /// loop must not change a single number.
+    ///
+    /// `batched_fold_matches_single_batch` above cannot catch a regression here: with
+    /// 3 tokens and `wave == threads`, the whole corpus is ONE wave, so the wave loop
+    /// runs once and both the hoisted bind and the in-place accumulator merge are
+    /// trivially correct. This drives enough tokens to span many waves — the shape
+    /// where a misaligned `bound_all` slice or a lost cross-wave merge would show up.
+    #[test]
+    fn multi_wave_fold_matches_single_batch() {
+        // Comfortably more tokens than any plausible thread count, so
+        // `corpus.tokens.chunks(wave)` yields many waves.
+        let tokens: Vec<_> = (0..97).map(|i| token(&format!("t{i}"), 2 + i % 5)).collect();
+        let corpus = Corpus {
+            tokens,
+            hash: "h".into(),
+            has_fingerprints: false,
+        };
+        let params = Mock.sample(SweepMethod::Grid); // 3 combos
+        let obs = crate::sweep::progress::NoopObserver;
+
+        // Single batch (one pass over the combo space) vs per-combo batches: both fold
+        // over the same multi-wave token stream and must agree exactly.
+        let (whole_stats, whole) = run_sweep(&Mock, &params, &corpus, &obs, params.len()).unwrap();
+        let (batched_stats, batched) = run_sweep(&Mock, &params, &corpus, &obs, 1).unwrap();
+
+        assert_eq!(whole_stats.rows, batched_stats.rows);
+        assert_eq!(whole_stats.fired, batched_stats.fired);
+        // Every combo must have folded every token — the cross-wave accumulation.
+        assert_eq!(whole_stats.rows, (corpus.token_count() * params.len()) as u64);
+        assert!(whole.iter().all(|m| m.n_fired == corpus.token_count() as u64));
         for (w, b) in whole.iter().zip(&batched) {
             assert_eq!(w.combo_id, b.combo_id);
             assert_eq!(w.n_fired, b.n_fired);

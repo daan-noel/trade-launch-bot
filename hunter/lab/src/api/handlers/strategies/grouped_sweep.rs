@@ -535,6 +535,7 @@ async fn run_grouped_sweep_job(
             processed: 0,
             total: 0,
         });
+        let _stage = crate::sweep::obs::Stage::start("corpus_load");
         match src.load(&sel).await {
             Ok(c) => c,
             Err(e) => {
@@ -903,9 +904,17 @@ async fn run_grouped_sweep_job(
     // The sweep is done — the sink dropped, so the writer drains and returns how
     // many groups actually persisted (the partial count on cancel/error) plus
     // the first write error, if any.
-    let (groups_done, write_error, groups_failed) = writer
-        .await
-        .unwrap_or((0, Some("sweep DB-writer task panicked".to_string()), 0));
+    //
+    // Timed: the write channel is unbounded (deliberately — a rayon worker must never
+    // stall on the DB), so a writer that fell behind during the fold drains *here*,
+    // serially, after the engine already logged "all groups folded". That gap was
+    // unlabeled dead time at the end of every slow run.
+    let (groups_done, write_error, groups_failed) = {
+        let _stage = crate::sweep::obs::Stage::start("writer_drain");
+        writer
+            .await
+            .unwrap_or((0, Some("sweep DB-writer task panicked".to_string()), 0))
+    };
 
     let output = match result {
         Ok(o) => o,

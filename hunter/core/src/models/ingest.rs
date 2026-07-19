@@ -124,6 +124,10 @@ pub enum SseEvent {
     /// pass). Persistence is NOT a phase — it reports via [`SseEvent::SweepGroupDone`].
     /// Throttled to ~100 frames per run plus a final `processed == total`
     /// (or the count where it was cancelled). Not mint-scoped — always delivered.
+    /// No rate/ETA rides this frame **by design**: the client derives both from
+    /// `processed`/`total` over wall-clock (`estimateEtaMs` in the jobs indicator),
+    /// one implementation shared by sweeps, simulations and swings. A second,
+    /// server-side ETA would be the same fact computed twice — free to drift.
     SweepProgress {
         strategy_id: String,
         phase: String,

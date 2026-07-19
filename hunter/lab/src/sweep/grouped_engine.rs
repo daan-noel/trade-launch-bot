@@ -193,15 +193,17 @@ pub fn run_grouped_sweep<S: Strategy>(
     let floor = min_tokens.max(1);
     // Decorate with the tie-break key once (JSON-serializing inside the comparator
     // re-ran it O(n log n) times); sort, then drop the decoration.
-    let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields, width)
-        .into_iter()
-        .filter(|(_, idx)| idx.len() >= floor)
-        .map(|(key, idx)| (key.to_json().to_string(), key, idx))
-        .collect();
-    // Deterministic group order: most-populated first, ties broken by key JSON.
-    surviving.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then_with(|| a.0.cmp(&b.0)));
-    let surviving: Vec<(GroupKey, Vec<usize>)> =
-        surviving.into_iter().map(|(_, key, idx)| (key, idx)).collect();
+    let surviving: Vec<(GroupKey, Vec<usize>)> = {
+        let _stage = crate::sweep::obs::Stage::start("partition");
+        let mut surviving: Vec<(String, GroupKey, Vec<usize>)> = partition(corpus, fields, width)
+            .into_iter()
+            .filter(|(_, idx)| idx.len() >= floor)
+            .map(|(key, idx)| (key.to_json().to_string(), key, idx))
+            .collect();
+        // Deterministic group order: most-populated first, ties broken by key JSON.
+        surviving.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then_with(|| a.0.cmp(&b.0)));
+        surviving.into_iter().map(|(_, key, idx)| (key, idx)).collect()
+    };
 
     let threads = rayon::current_num_threads().max(1);
     let large_min = LARGE_GROUP_TOKEN_FACTOR * threads;
@@ -249,6 +251,10 @@ pub fn run_grouped_sweep<S: Strategy>(
 
     // Phase 1 — large groups: intra-group parallel, one group at a time.
     let failed = std::sync::atomic::AtomicUsize::new(0);
+    // Slowest single group, rather than a line per group: at ~1k groups, per-group
+    // logging is noise that buries the one number worth acting on. Locked only on a
+    // new maximum, once per group — never on the fold path.
+    let slowest = SlowestGroup::default();
     for (pos, (key, idx)) in surviving.iter().enumerate() {
         if idx.len() < large_min {
             continue;
@@ -257,6 +263,7 @@ pub fn run_grouped_sweep<S: Strategy>(
             bail!("sweep cancelled");
         }
         let sub = sub_corpus(corpus, idx);
+        let group_started = std::time::Instant::now();
         // Per-group failure isolation: a group that cannot fold costs the run *that
         // group*, not the whole sweep. Aborting here used to discard every group
         // already folded (the run died at group 48 of N) — a strictly worse outcome
@@ -283,6 +290,9 @@ pub fn run_grouped_sweep<S: Strategy>(
             sink.group_done(pos, &gr, &retained);
             free_persisted_metrics(&mut gr);
         }
+        // Timed through retention + emit, not just the fold: retention runs in the
+        // same worker and is a real per-group cost (see `retained_combo_params`).
+        slowest.observe(group_started.elapsed().as_secs_f64(), pos, idx.len());
         results[pos] = Some(gr);
     }
 
@@ -299,6 +309,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     let small_results: Vec<Result<(usize, Option<GroupResult>)>> = small
         .par_iter()
         .map(|&(pos, key, idx)| {
+            let group_started = std::time::Instant::now();
             let metrics = match sweep_group_serial(strategy, params, corpus, idx, observer, batch) {
                 Ok(m) => m,
                 Err(e) => {
@@ -319,6 +330,7 @@ pub fn run_grouped_sweep<S: Strategy>(
                 sink.group_done(pos, &gr, &retained);
                 free_persisted_metrics(&mut gr);
             }
+            slowest.observe(group_started.elapsed().as_secs_f64(), pos, idx.len());
             Ok((pos, Some(gr)))
         })
         .collect();
@@ -339,9 +351,16 @@ pub fn run_grouped_sweep<S: Strategy>(
             "grouped sweep: some groups failed to fold — run is honestly partial"
         );
     }
+    let (slow_secs, slow_pos, slow_tokens) = slowest.take().unwrap_or((0.0, 0, 0));
     tracing::info!(
         groups = groups.len(),
         failed,
+        // The one per-group number worth surfacing: a single group taking a large
+        // share of the run is the signature of a skewed partition, and it points at
+        // exactly which group to reproduce.
+        slowest_group_secs = slow_secs,
+        slowest_group_index = slow_pos,
+        slowest_group_tokens = slow_tokens,
         rss_mb = crate::sweep::obs::process_rss_mb(),
         elapsed_s = sweep_started.elapsed().as_secs_f64(),
         "grouped sweep: all groups folded"
@@ -400,17 +419,23 @@ pub fn run_grouped_with_refine<S: Strategy>(
     // bar. Its groups are throwaway (the combo-id space isn't final yet), so they
     // are NOT persisted: a cancel during coarse leaves no checkpointable group → a
     // full cancel, exactly as the Phase 4 plan requires.
-    let coarse_groups = run_grouped_sweep(
-        strategy,
-        &coarse,
-        corpus,
-        fields,
-        width,
-        min_tokens,
-        coverage,
-        coarse_observer,
-        &NoopSink,
-    )?;
+    // A refine run sweeps the whole corpus TWICE. Timing the two passes separately is
+    // the only way to tell which half a slow run spent its time in — previously both
+    // were folded into one undifferentiated block between `corpus_loaded` and `done`.
+    let coarse_groups = {
+        let _stage = crate::sweep::obs::Stage::start("refine_coarse_pass");
+        run_grouped_sweep(
+            strategy,
+            &coarse,
+            corpus,
+            fields,
+            width,
+            min_tokens,
+            coverage,
+            coarse_observer,
+            &NoopSink,
+        )?
+    };
 
     // Seed the neighborhood from each group's top-K coarse combos, deduped across
     // groups by params_json (groups overlap heavily on their best combos).
@@ -425,6 +450,15 @@ pub fn run_grouped_with_refine<S: Strategy>(
             }
         }
     }
+    // Free the coarse metrics NOW, before the final pass allocates its own.
+    //
+    // The coarse pass runs with `NoopSink`, so `free_persisted_metrics` (which only
+    // fires on the emit path) never trims these — `coarse_groups` holds
+    // `n_groups × n_combos` `ComboMetrics` and would otherwise stay resident straight
+    // through the final, memory-heaviest sweep. Everything still needed from it
+    // (`survivors`) has been extracted above.
+    drop(coarse_groups);
+    drop(seen_survivors);
     let neighbors = strategy.refine(&survivors);
 
     // Union = coarse ++ neighborhood, deduped by params_json, capped (coarse kept
@@ -452,9 +486,12 @@ pub fn run_grouped_with_refine<S: Strategy>(
 
     // Final pass owns the bar and produces the persistable groups (combo-id space
     // now fixed), so it carries the real sink.
-    let groups = run_grouped_sweep(
-        strategy, &union, corpus, fields, width, min_tokens, coverage, observer, sink,
-    )?;
+    let groups = {
+        let _stage = crate::sweep::obs::Stage::start("refine_final_pass");
+        run_grouped_sweep(
+            strategy, &union, corpus, fields, width, min_tokens, coverage, observer, sink,
+        )?
+    };
     Ok((union, groups))
 }
 
@@ -539,8 +576,15 @@ fn sweep_group_serial<S: Strategy>(
             .max()
             .unwrap_or(0);
         // Scale combos by `threads` so the agg term models every worker's resident
-        // set; the `threads` wave models one live series per worker.
-        let fits = full_combo_aggs_fit(n_combos.saturating_mul(threads), threads, max_series);
+        // set; the `threads` wave models one live series per worker. The token-outer
+        // branch binds the whole combo set per worker, so its `BoundParams` are priced
+        // alongside the accumulators rather than left to the alloc slack.
+        let fits = full_combo_aggs_fit(
+            n_combos.saturating_mul(threads),
+            threads,
+            max_series,
+            std::mem::size_of::<S::BoundParams>(),
+        );
         if fits {
             tracing::debug!(
                 group_tokens = idx.len(),
@@ -641,6 +685,30 @@ fn sweep_group_serial<S: Strategy>(
         );
     }
     Ok(metrics)
+}
+
+/// Tracks the single slowest group of a run so a pathological group is identifiable
+/// without a log line per group (at ~1k groups that would bury the signal).
+#[derive(Default)]
+struct SlowestGroup {
+    /// `(secs, group_index, group_tokens)` of the worst group seen so far.
+    worst: std::sync::Mutex<Option<(f64, usize, usize)>>,
+}
+
+impl SlowestGroup {
+    /// Offer one group's fold time; keeps it only if it is the new maximum. Called
+    /// once per group (never from the fold loop), so the lock is uncontended.
+    fn observe(&self, secs: f64, pos: usize, tokens: usize) {
+        if let Ok(mut w) = self.worst.lock() {
+            if w.is_none_or(|(prev, _, _)| secs > prev) {
+                *w = Some((secs, pos, tokens));
+            }
+        }
+    }
+
+    fn take(&self) -> Option<(f64, usize, usize)> {
+        self.worst.lock().ok().and_then(|w| *w)
+    }
 }
 
 /// Record one group's fold failure and let the run continue: log it, count it, tell

@@ -99,34 +99,52 @@ pub fn retained_combo_ids(
     let mut keep = HashSet::new();
     keep.insert(best_combo_id);
 
+    // Eligibility (`n_closed >= min_closed`) does NOT depend on the metric, and
+    // neither does the cap tie-break order (`score` desc, `combo_id` asc). Both used
+    // to be recomputed inside the per-metric loop — 11 rebuilds of an `n_combos`-sized
+    // vec and 11 byte-identical sorts of it, per group, inside the fold's rayon
+    // workers. Hoisting them halves the sorts (22 → 11) and drops 10 of the 11
+    // allocations; what remains per metric is only the genuinely metric-dependent
+    // value sort. `None`/non-finite score sorts last (`NEG_INFINITY`).
+    let mut eligible: Vec<&ComboMetrics> = metrics
+        .iter()
+        .filter(|m| m.n_closed >= cfg.min_closed)
+        .collect();
+    if eligible.is_empty() {
+        return keep;
+    }
+    let score_of = |m: &ComboMetrics| m.score.filter(|s| s.is_finite()).unwrap_or(f64::NEG_INFINITY);
+    eligible.sort_by(|a, b| score_of(b).total_cmp(&score_of(a)).then(a.combo_id.cmp(&b.combo_id)));
+
+    // Buffers reused across all 11 metrics rather than reallocated per metric. `vals`
+    // inherits the shared tie-break order above (it is a filtered subsequence of
+    // `eligible`), which is exactly the order the cap walk needs.
+    let mut vals: Vec<(u32, f64)> = Vec::with_capacity(eligible.len());
+    let mut values: Vec<f64> = Vec::with_capacity(eligible.len());
+    let mut selected: HashSet<u64> = HashSet::new();
+    let mut taken: HashMap<u64, usize> = HashMap::new();
+
     for idx in 0..N_METRICS {
-        // Eligible (combo_id, value, score) triples for this metric. The score is
-        // carried for the cap tie-break so the inner sort stays O(n log n) — a
-        // per-comparison combo lookup would be O(n²) on a 331k-combo group. `None`
-        // /non-finite score sorts last (`NEG_INFINITY`).
-        let mut eligible: Vec<(u32, f64, f64)> = metrics
-            .iter()
-            .filter(|m| m.n_closed >= cfg.min_closed)
-            .filter_map(|m| {
-                metric_value(m, idx).map(|v| {
-                    let score = m.score.filter(|s| s.is_finite()).unwrap_or(f64::NEG_INFINITY);
-                    (m.combo_id, v, score)
-                })
-            })
-            .collect();
-        if eligible.is_empty() {
+        vals.clear();
+        vals.extend(
+            eligible
+                .iter()
+                .filter_map(|m| metric_value(m, idx).map(|v| (m.combo_id, v))),
+        );
+        if vals.is_empty() {
             continue;
         }
 
         // Distinct values, ascending. `total_cmp` keeps NaN out (already filtered)
         // and gives a deterministic order for ties on the float bit pattern.
-        let mut values: Vec<f64> = eligible.iter().map(|(_, v, _)| *v).collect();
+        values.clear();
+        values.extend(vals.iter().map(|(_, v)| *v));
         values.sort_by(|a, b| a.total_cmp(b));
         values.dedup();
 
         // Bottom `bottom_n` and top `top_n` distinct values; a small group whose
         // distinct-count is below top+bottom just keeps every value (union dedups).
-        let mut selected: HashSet<u64> = HashSet::new();
+        selected.clear();
         for &v in values.iter().take(cfg.bottom_n) {
             selected.insert(v.to_bits());
         }
@@ -134,13 +152,10 @@ pub fn retained_combo_ids(
             selected.insert(v.to_bits());
         }
 
-        // Keep up to `cap_per_value` combos per selected value, tie-broken by
-        // score desc then combo_id asc so the survivors are deterministic.
-        eligible.sort_by(|&(ia, _, sa), &(ib, _, sb)| {
-            sb.total_cmp(&sa).then(ia.cmp(&ib))
-        });
-        let mut taken: HashMap<u64, usize> = HashMap::new();
-        for (id, v, _) in &eligible {
+        // Keep up to `cap_per_value` combos per selected value, in the shared
+        // score-desc/id-asc order so the survivors are deterministic.
+        taken.clear();
+        for (id, v) in &vals {
             let bits = v.to_bits();
             if !selected.contains(&bits) {
                 continue;
@@ -210,6 +225,43 @@ mod tests {
         m.worst_pnl_pct = v;
         m.std_pnl_pct = v;
         m
+    }
+
+    /// The docstring promises the result is **order-independent** — the input slice
+    /// order must not change which combos are retained.
+    ///
+    /// This is the guard for hoisting the eligibility filter and the score tie-break
+    /// sort out of the per-metric loop. That refactor replaced 11 per-metric sorts of
+    /// a per-metric subset with ONE sort of the shared eligible set, so if the shared
+    /// ordering were not a total order (e.g. ties left to input position), retention
+    /// would silently start depending on how the fold happened to emit combos — and
+    /// two runs over the same data would persist different rows.
+    #[test]
+    fn retention_is_order_independent() {
+        // Mixed: distinct values, a heavily tied value, and ineligible combos. The
+        // tie sits at the MAXIMUM so it lands in the top-3 distinct values and the
+        // `cap_per_value` walk actually runs — a tie at a mid value would be selected
+        // by no metric and would leave the tie-break untested.
+        let mut metrics: Vec<ComboMetrics> = (0..40)
+            .map(|i| cm_uniform(i, 5, f64::from(i)))
+            .chain((40..70).map(|i| cm_uniform(i, 5, 100.0))) // 30 combos tied at the max
+            .chain((70..80).map(|i| cm(i, 1, None, 0.0))) // under-sampled, ineligible
+            .collect();
+        let cfg = RetentionCfg::default();
+        let baseline = retained_combo_ids(&metrics, 0, &cfg);
+
+        // Several deterministic permutations, including full reversal.
+        metrics.reverse();
+        assert_eq!(retained_combo_ids(&metrics, 0, &cfg), baseline, "reversed input");
+        metrics.rotate_left(37);
+        assert_eq!(retained_combo_ids(&metrics, 0, &cfg), baseline, "rotated input");
+        metrics.sort_by_key(|m| m.combo_id % 7); // interleaves tied and untied
+        assert_eq!(retained_combo_ids(&metrics, 0, &cfg), baseline, "interleaved input");
+
+        // Sanity: the tied value really did hit the cap, so the tie-break was
+        // exercised rather than every tied combo being trivially kept.
+        let tied_kept = (40..70).filter(|i| baseline.contains(i)).count();
+        assert_eq!(tied_kept, cfg.cap_per_value, "tie cap should bound the 30 tied combos");
     }
 
     #[test]

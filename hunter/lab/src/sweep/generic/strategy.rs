@@ -229,7 +229,13 @@ impl ParamSpace for GenericSweepStrategy {
     fn order_for_entry_cache(&self, params: &mut [Self::Params]) {
         // Stable-sort by entry-key so same-entry combos are contiguous under any
         // sampler (Random/LHS/refine shuffle the grid order).
-        params.sort_by_key(|c| self.model.entry_key(c.idx));
+        //
+        // `sort_by_cached_key`, not `sort_by_key`: the key fn is called once per
+        // *comparison* by the latter (~n log n times), and `entry_key` allocates a
+        // `vec![0; n_axes]` on every call — ~5.4M allocations at 300k combos, twice on
+        // a refine run. Caching makes it n calls. Both sorts are stable, which the
+        // contiguity above depends on.
+        params.sort_by_cached_key(|c| self.model.entry_key(c.idx));
     }
 }
 
@@ -237,14 +243,16 @@ impl Strategy for GenericSweepStrategy {
     type Entry = EntryResolution;
     type EntryKey = u64;
     type TokenState = MetricSeries;
-    type BoundParams = CompiledRule;
+    type BoundParams = BoundCombo;
 
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey {
         self.model.entry_key(params.idx)
     }
 
     fn bind_param(&self, params: &Self::Params) -> Self::BoundParams {
-        self.compile_combo(params.idx)
+        // Column indices resolve here, once per combo, against the run's fixed column
+        // set — not per (token, combo) inside the scan. See `BoundCombo`.
+        BoundCombo::new(&self.columns, self.compile_combo(params.idx))
     }
 
     fn prepare_token(&self, token: &CorpusToken) -> Self::TokenState {
@@ -605,10 +613,73 @@ fn value_at_col(series: &MetricSeries, col: usize, row: usize) -> f64 {
     }
 }
 
-/// One side's requirements paired with their resolved column indices (built once
-/// per scan, indexed in lockstep with the `CompiledRule`'s req list).
-fn resolve_cols(series: &MetricSeries, reqs: &[hunter_engine::arm::MetricReq]) -> Vec<usize> {
-    reqs.iter().map(|r| col_idx_of(series, r.metric, r.window)).collect()
+/// One side's requirements paired with their resolved column indices, indexed in
+/// lockstep with the `CompiledRule`'s req list. Resolved against the run's **fixed**
+/// column set — see [`BoundCombo`].
+fn resolve_cols_in(columns: &[SeriesColumn], reqs: &[hunter_engine::arm::MetricReq]) -> Vec<usize> {
+    reqs.iter()
+        .map(|r| col_idx_in(columns, r.metric, r.window))
+        .collect()
+}
+
+/// Column index within a fixed column set (`MISSING_COL` when not recorded).
+fn col_idx_in(columns: &[SeriesColumn], metric: MetricId, window: Option<f64>) -> usize {
+    let want = col_of(metric, window);
+    columns.iter().position(|c| *c == want).unwrap_or(MISSING_COL)
+}
+
+/// A compiled combo **plus its resolved series-column indices**.
+///
+/// Every token's series is built with `self.columns.clone()` (see `prepare_token`),
+/// so the column layout is fixed for the whole run and a combo's column indices are
+/// the same on every token. They used to be resolved inside `resolve_entry` /
+/// `resolve_exit`, i.e. **once per (token, combo)** — `resolve_exit` is uncached and
+/// runs for every combo on every token, which made that the single most-executed
+/// heap allocation in a sweep. Resolving at bind time makes it once per combo.
+///
+/// The precomputed indices are only valid while that fixed-columns invariant holds;
+/// a `debug_assert` in each scan re-derives them from the series and would fail loudly
+/// in tests if a future change made the column set vary per token.
+pub struct BoundCombo {
+    pub(crate) rule: CompiledRule,
+    entry_cols: Vec<usize>,
+    mono_cols: Vec<usize>,
+    exit_cols: Vec<usize>,
+}
+
+impl BoundCombo {
+    /// Bind `rule` against the run's fixed `columns`.
+    pub(crate) fn new(columns: &[SeriesColumn], rule: CompiledRule) -> Self {
+        let entry_cols = resolve_cols_in(columns, &rule.entry_reqs);
+        let exit_cols = resolve_cols_in(columns, &rule.exit_reqs);
+        let mono_cols = rule
+            .mono_kills
+            .iter()
+            .map(|k| col_idx_in(columns, k.metric, k.window))
+            .collect();
+        Self { rule, entry_cols, mono_cols, exit_cols }
+    }
+}
+
+/// Re-derive this combo's column indices from `series` and confirm they match the
+/// ones cached at bind time — the fixed-columns invariant [`BoundCombo`] rests on.
+/// Debug-only: in release the scan trusts the cache, which is the whole point.
+fn debug_assert_cols_match(series: &MetricSeries, c: &BoundCombo) {
+    debug_assert!(
+        c.rule
+            .entry_reqs
+            .iter()
+            .zip(&c.entry_cols)
+            .chain(c.rule.exit_reqs.iter().zip(&c.exit_cols))
+            .all(|(r, &col)| col == col_idx_of(series, r.metric, r.window))
+            && c.rule
+                .mono_kills
+                .iter()
+                .zip(&c.mono_cols)
+                .all(|(k, &col)| col == col_idx_of(series, k.metric, k.window)),
+        "BoundCombo column indices disagree with this token's series — the run's \
+         column set is no longer fixed across tokens, so bind-time resolution is unsound"
+    );
 }
 
 /// Entry combinator: AND across metrics (mirror of `arm::reqs_satisfied`).
@@ -648,21 +719,21 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usi
 /// the first row with a finite price at or after the decision (an enter-on-arm or
 /// tick-timed decision before the first print defers to that print — exactly the
 /// engine's `pending_buys` wait-for-price).
-pub(crate) fn resolve_entry(series: &MetricSeries, c: &CompiledRule) -> EntryResolution {
+pub(crate) fn resolve_entry(series: &MetricSeries, b: &BoundCombo) -> EntryResolution {
+    debug_assert_cols_match(series, b);
+    let c = &b.rule;
     let n = series.n_rows();
-    // Resolve each requirement's flat column index once, not per row.
-    let entry_cols = resolve_cols(series, &c.entry_reqs);
-    let mono_cols: Vec<usize> =
-        c.mono_kills.iter().map(|k| col_idx_of(series, k.metric, k.window)).collect();
+    // Column indices come pre-resolved from `bind_param` — see `BoundCombo`.
+    let (entry_cols, mono_cols) = (&b.entry_cols, &b.mono_cols);
     let enter_on_arm = c.enter_on_arm();
     for i in 0..n {
         if series.dead[i] {
             return EntryResolution::NoEntry;
         }
-        if entry_unsatisfiable(series, c, &mono_cols, i) {
+        if entry_unsatisfiable(series, c, mono_cols, i) {
             return EntryResolution::NoEntry;
         }
-        if enter_on_arm || reqs_satisfied(series, &c.entry_reqs, &entry_cols, i) {
+        if enter_on_arm || reqs_satisfied(series, &c.entry_reqs, entry_cols, i) {
             // Fill at the first finite, positive price at or after the decision.
             for j in i..n {
                 let p = series.price[j];
@@ -681,11 +752,13 @@ pub(crate) fn resolve_entry(series: &MetricSeries, c: &CompiledRule) -> EntryRes
 /// `Open`, marked to the last known price.
 pub(crate) fn resolve_exit(
     series: &MetricSeries,
-    c: &CompiledRule,
+    b: &BoundCombo,
     entry: &EntryResolution,
     buy_amount_sol: f64,
     cost: &CostModel,
 ) -> TokenOutcome {
+    debug_assert_cols_match(series, b);
+    let c = &b.rule;
     let (fill_row, entry_price, entry_at) = match entry {
         EntryResolution::NoEntry => return TokenOutcome::no_entry(),
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
@@ -697,7 +770,8 @@ pub(crate) fn resolve_exit(
     let entry_slot = fill_trade_slot(series, fill_row);
     let n = series.n_rows();
     let has_exit_metrics = c.has_exit_metrics();
-    let exit_cols = resolve_cols(series, &c.exit_reqs);
+    // Pre-resolved at bind time — this was the run's most-executed heap allocation.
+    let exit_cols = &b.exit_cols;
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return closed(ExitCode::Dead, entry_price, entry_at, entry_slot, series.price[j], series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
@@ -715,7 +789,7 @@ pub(crate) fn resolve_exit(
                 }
             }
         }
-        if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, &exit_cols, j) {
+        if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, exit_cols, j) {
             return closed(ExitCode::Metrics, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
         }
     }
@@ -748,14 +822,19 @@ fn fill_trade_slot(series: &MetricSeries, row: usize) -> Option<u64> {
 
 /// The scan as one call (entry then exit) — the guard test's per-token driver and
 /// the single-combo drill-in's per-token driver (`simulate_generic_one_combo`).
+/// Binds the rule against **this series'** columns, so a single-token caller needs no
+/// separate bind step. The sweep does NOT go through here — it binds once per combo
+/// (`bind_param`) and reuses that across every token, which is the whole point of
+/// [`BoundCombo`].
 pub(crate) fn scan(
     series: &MetricSeries,
     c: &CompiledRule,
     buy_amount_sol: f64,
     cost: &CostModel,
 ) -> TokenOutcome {
-    let entry = resolve_entry(series, c);
-    resolve_exit(series, c, &entry, buy_amount_sol, cost)
+    let bound = BoundCombo::new(series.columns(), c.clone());
+    let entry = resolve_entry(series, &bound);
+    resolve_exit(series, &bound, &entry, buy_amount_sol, cost)
 }
 
 #[allow(clippy::too_many_arguments)]

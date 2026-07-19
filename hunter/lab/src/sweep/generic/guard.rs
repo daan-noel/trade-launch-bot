@@ -308,6 +308,62 @@ fn scan_matches_replay_stall_eq_exit_across_gap() {
     assert_parity("stall_eq_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
+/// A combo bound **once** and reused across every token must produce exactly what
+/// binding per token produces.
+///
+/// This is the guard for resolving series-column indices at bind time
+/// (`BoundCombo`). The sweep binds a combo once per shard/group and scans every
+/// token with it, which is only sound because every token's series is built from the
+/// same fixed column set. The `scan_matches_replay_*` tests above cannot catch a
+/// break: each binds against the very series it then scans, so a stale or mismatched
+/// index would agree with itself. Here the bind is deliberately detached from the
+/// tokens — the shape the sweep actually runs.
+#[test]
+fn shared_bind_matches_per_token_bind() {
+    use super::strategy::{resolve_entry, resolve_exit, BoundCombo};
+
+    let cost = CostModel::pumpfun_default();
+    let as_of = at(100_000.0);
+    // Two rule shapes (metric-exit and TP/SL) over both corpora, so the entry, exit
+    // and mono-kill column sets are all exercised on tokens with differing series
+    // lengths and gap structure.
+    let rules = [
+        exit_metric(MetricGroupId::PricePath, MetricId::Stall, Operator::Gte, 1800.0),
+        RuleParams {
+            take_profit: Some(50.0),
+            stop_loss: Some(30.0),
+            entry: None,
+            exit: None,
+        },
+    ];
+
+    for params in rules {
+        let compiled = CompiledRule::compile(&loaded(params));
+        let cols = columns_for(&compiled);
+        let grid = sparse_grid_for(&compiled);
+        // Bound ONCE, against the run's column set — never re-derived per token.
+        let shared = BoundCombo::new(&cols, compiled.clone());
+
+        for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
+
+            let entry = resolve_entry(&series, &shared);
+            let shared_out = resolve_exit(&series, &shared, &entry, BUY_SOL, &cost);
+            // `scan` binds against this token's own series — the reference.
+            let per_token_out = scan(&series, &compiled, BUY_SOL, &cost);
+
+            let m = &corpus_tok.mint;
+            assert_eq!(shared_out.fired, per_token_out.fired, "{m}: fired");
+            assert_eq!(shared_out.exit, per_token_out.exit, "{m}: exit code");
+            assert_eq!(shared_out.entry_price, per_token_out.entry_price, "{m}: entry price");
+            assert_eq!(shared_out.exit_price, per_token_out.exit_price, "{m}: exit price");
+            assert_eq!(shared_out.pnl_sol, per_token_out.pnl_sol, "{m}: pnl_sol");
+            assert_eq!(shared_out.pnl_percent, per_token_out.pnl_percent, "{m}: pnl_pct");
+            assert_eq!(shared_out.holding_secs, per_token_out.holding_secs, "{m}: holding");
+        }
+    }
+}
+
 #[test]
 fn scan_matches_replay_window_flow_across_gap() {
     // Exit when the 60 s gross-flow window drops to 0 — flows decay to 0 partway
