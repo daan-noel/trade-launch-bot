@@ -1,6 +1,6 @@
 //! Core (mode-agnostic) token handlers: list builder + reads (detail/trades/
 //! creators), creation-stats aggregates, and the batch lookup. The `list_tokens`
-//! handler (local; computes swing stats) lives in the `backend`/local crate.
+//! handler (local) lives in the `lab` crate.
 
 mod batch;
 mod creation_stats;

@@ -278,14 +278,6 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 json!({ "rule_id": rule_id, "cancelled": cancelled }),
             )
         }
-        SseEvent::SwingDetectionFinished { run_id, cancelled } => {
-            // Not mint-scoped: terminal signal for the "Swing Detection All" run.
-            (
-                None,
-                "swing_detection_finished",
-                json!({ "run_id": run_id, "cancelled": cancelled }),
-            )
-        }
         SseEvent::StrategyPositionUpdate {
             rule_id,
             mint_address,

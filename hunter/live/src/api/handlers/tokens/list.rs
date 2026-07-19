@@ -47,7 +47,7 @@ pub async fn list_tokens(
     if tracked_only {
         let state2 = state.clone();
         let built = web::block(move || {
-            build_tokens_list(&state2, &q, limit_q, offset_q, true, None)
+            build_tokens_list(&state2, &q, limit_q, offset_q, true)
         })
         .await;
         return respond(req, built.map_err(|e| e.to_string()));

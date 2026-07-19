@@ -1,7 +1,7 @@
 //! `lab` — the analysis-box binary. Composition root for the local
 //! stack: no trader, no ingest, no live strategy runner. It connects the Postgres
 //! pools (the corpus), serves the core read routes + the local routes (rule
-//! authoring, backtests, grouped sweeps, swing detection), and runs the SOL-price
+//! authoring, backtests, grouped sweeps), and runs the SOL-price
 //! poller + token-list refresh. It boots with **no** trading keys and **no**
 //! HELIUS gRPC: it loads the shared `Settings::from_env` (same as live) and
 //! simply leaves the optional Helius endpoints empty and never loads
@@ -52,35 +52,6 @@ async fn main() -> anyhow::Result<()> {
         // plain `lake-export` keeps the lake to immutable, settled days.
         let include_today = std::env::args().any(|a| a == "--include-today");
         return run_lake_export(include_today).await;
-    }
-
-    // `lab swing-probe [N] [created_after_rfc3339]` — diagnose the swing1 entry
-    // funnel over the first N lake tokens, then exit. No DB pool, no HTTP.
-    if std::env::args().nth(1).as_deref() == Some("swing-probe") {
-        let n = std::env::args()
-            .nth(2)
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(8);
-        let after = std::env::args()
-            .nth(3)
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc));
-        return lab::swing_probe::run(n, after).await;
-    }
-
-    // `lab swing-census [N] [created_after_rfc3339]` — corpus-wide kill→volume
-    // prevalence sweep over kill-depth thresholds. Answers "is the kill phenomenon
-    // common enough to trade?" with data, not one sweep cell. No DB pool, no HTTP.
-    if std::env::args().nth(1).as_deref() == Some("swing-census") {
-        let n = std::env::args()
-            .nth(2)
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(5000);
-        let after = std::env::args()
-            .nth(3)
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Utc));
-        return lab::swing_probe::census(n, after).await;
     }
 
     let settings = config::Settings::from_env().context("Failed to load configuration")?;

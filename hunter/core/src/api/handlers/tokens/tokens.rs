@@ -9,7 +9,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{
-    analyzers::ChainStats,
     api::table_query::{FilterOp, FilterSpec, TableRequest},
     state::{core_state::CoreState, token_cache::TokenState},
     storage::token_enrichment::MARKET_CAP_SQL,
@@ -279,7 +278,7 @@ pub struct TokensListResponse {
 // [`trading_core::api::table_query::TableRequest`] — the SAME contract the strategy
 // tables use. The global `TokenFilters` panel and the DataTable per-column filters
 // both arrive as entries in its `filters: {col → FilterSpec}` map; the Tokens-only
-// `tracked_only` / `swing_run_id` / `swing_chain_latency_ms` fields ride alongside.
+// `tracked_only` field rides alongside.
 // [`TokenQuery::from_table_request`] lowers that body onto this module's internal
 // representation (`f` panel map + `col_filters`), which the two eval engines
 // (`matches` in-RAM, `sql.rs` SQL) already consume unchanged.
@@ -289,17 +288,13 @@ pub struct TokensListResponse {
 // ---------------------------------------------------------------------------
 
 /// Filter → sort → page → serialize+ETag the token list (the CPU core of
-/// `list_tokens`). The swing-sort stats map is passed in rather than computed
-/// here, so this stays free of any swing/analysis dependency: a deploy build
-/// calls it with `swing_stats = None`; a local build computes the map first.
-/// Returns the response body bytes and their content-hash ETag.
+/// `list_tokens`). Returns the response body bytes and their content-hash ETag.
 pub fn build_tokens_list(
     state: &CoreState,
     q: &TokenQuery,
     limit_q: i64,
     offset_q: i64,
     tracked_only: bool,
-    swing_stats: Option<&HashMap<String, ChainStats>>,
 ) -> (Vec<u8>, String) {
     let now = chrono::Utc::now();
 
@@ -334,9 +329,8 @@ pub fn build_tokens_list(
     };
 
     // The snapshot is already newest-first, so the default view needs no sort;
-    // only explicit sort levels re-order (sorting precedes paging). Non-matched
-    // mints absent from `swing_stats` simply sort last.
-    q.sort_refs(&mut matched, swing_stats);
+    // only explicit sort levels re-order (sorting precedes paging).
+    q.sort_refs(&mut matched);
 
     let limit = limit_q.max(1).min(50_000) as usize;
     let offset = offset_q.max(0) as usize;
@@ -363,10 +357,9 @@ pub fn build_tokens_list(
 /// Filter-only projection of the token list to just the matched `mint_address`
 /// set. Runs the SAME `q.matches` reduction as [`build_tokens_list`] but skips
 /// sort/page/serialize and clones only the mint strings — the lean backend for a
-/// "run over every filtered token" action (Swing Detection All), so fanning out
-/// over the full filtered set no longer ships ~20k full token rows over the wire.
-/// Order is unspecified and no swing-sort stats are needed: the caller wants the
-/// set, not a page.
+/// "run over every filtered token" action, so fanning out over the full filtered
+/// set no longer ships ~20k full token rows over the wire. Order is unspecified:
+/// the caller wants the set, not a page.
 pub fn collect_filtered_mints(state: &CoreState, q: &TokenQuery, tracked_only: bool) -> Vec<String> {
     let now = chrono::Utc::now();
     let snapshot = state.token_list.get(&state.token_cache, now);
@@ -378,9 +371,9 @@ pub fn collect_filtered_mints(state: &CoreState, q: &TokenQuery, tracked_only: b
     matched.into_iter().map(|t| t.mint_address.clone()).collect()
 }
 
-// `list_tokens` (the `GET /api/tokens` handler) lives in the `backend` crate
-// (`api::handlers::tokens::list`) because it takes `LocalState` and computes swing
-// stats; it calls the core `build_tokens_list` + `is_swing_sort_col` below.
+// `list_tokens` (the `POST /api/tokens` handler) lives in the `lab` crate
+// (`api::handlers::tokens::list`) because it takes `LocalState`; it calls the core
+// `build_tokens_list` below.
 
 /// `GET /api/tokens/:mint` — token detail from in-memory cache; falls back to DB.
 pub async fn get_token(state: web::Data<Arc<CoreState>>, path: web::Path<String>) -> impl Responder {
@@ -527,8 +520,6 @@ const LIFETIME_STALE_MS: i64 = 60 * 60 * 1000;
 // families held at parity only by tests). `sql_num`/`ram_num` are `Some` iff the
 // column takes the numeric per-column-filter grammar (the old `NUMERIC_COLS`);
 // `sql_sort`/`ram_sort` are `Some` iff it is sortable (the old `SORTABLE_COLS`).
-// Browser-derived swing-chain columns have no `TokenSummary` field and stay
-// outside the registry (see `is_swing_sort_col`).
 // ===========================================================================
 
 type RamText = fn(&TokenSummary) -> String;
@@ -705,18 +696,9 @@ fn registry() -> &'static std::collections::HashMap<&'static str, ColumnSpec> {
     REG.get_or_init(|| build_registry().into_iter().map(|c| (c.key, c)).collect())
 }
 
-/// Look up a column spec by frontend key (`None` for unknown / swing-chain keys).
+/// Look up a column spec by frontend key (`None` for unknown keys).
 fn column(key: &str) -> Option<&'static ColumnSpec> {
     registry().get(key)
-}
-
-/// The chain columns whose sort key comes from a swing run rather than a
-/// `TokenSummary` field. Default chain latency when the client omits it.
-const SWING_SORT_COLS: &[&str] = &["swing_pairs", "max_seq_pairs", "chain_count"];
-const DEFAULT_CHAIN_LATENCY_MS: i64 = 60_000;
-
-pub fn is_swing_sort_col(col: &str) -> bool {
-    SWING_SORT_COLS.contains(&col)
 }
 
 /// Whether a per-column filter key understands the numeric grammar (registry
@@ -725,10 +707,9 @@ pub fn is_numeric_col(key: &str) -> bool {
     column(key).is_some_and(|c| c.sql_num.is_some())
 }
 
-/// Whether a sort key is accepted (a registry column with a sort projection, or a
-/// browser-derived swing-chain column).
+/// Whether a sort key is accepted (a registry column with a sort projection).
 fn is_sortable_key(col: &str) -> bool {
-    column(col).is_some_and(|c| c.sql_sort.is_some()) || is_swing_sort_col(col)
+    column(col).is_some_and(|c| c.sql_sort.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -771,8 +752,7 @@ pub fn col_filter_text_sql(key: &str) -> Option<String> {
 
 /// SQL sort expression for a sortable column, plus whether it's a text sort (so the
 /// caller applies a case-insensitive `LOWER`). Registry `sql_sort`. Dir/null
-/// semantics are applied by the caller via `NULLS LAST`. `None` for unknown /
-/// swing-chain columns.
+/// semantics are applied by the caller via `NULLS LAST`. `None` for unknown columns.
 pub fn sort_sql_expr(col: &str) -> Option<(String, bool)> {
     column(col).and_then(|c| c.sql_sort.clone())
 }
@@ -816,16 +796,6 @@ fn sort_levels_from_specs(sorting: &[crate::api::table_query::SortSpec]) -> Vec<
         .collect()
 }
 
-/// Pick a chain stat as the numeric sort key for a swing column.
-fn swing_sort_value(col: &str, s: &crate::analyzers::ChainStats) -> f64 {
-    match col {
-        "swing_pairs" => s.swing_pairs as f64,
-        "max_seq_pairs" => s.max_seq_pairs as f64,
-        "chain_count" => s.chain_count as f64,
-        _ => 0.0,
-    }
-}
-
 /// Parsed query: global filters + search + per-column filters + sort.
 #[derive(Clone)]
 pub struct TokenQuery {
@@ -841,10 +811,6 @@ pub struct TokenQuery {
     mint_in: Vec<String>,
     /// global filter values keyed by TokenFilters field name (non-empty only)
     f: HashMap<&'static str, String>,
-    /// Swing run to read chain stats from when sorting a chain column.
-    swing_run_id: Option<String>,
-    /// Chain-latency budget (ms) used to group those stats.
-    swing_chain_latency_ms: i64,
 }
 
 /// Insert a non-empty panel-filter value into the `f` map (empty ⇒ inactive, skip).
@@ -1003,21 +969,10 @@ fn lower_filter(
 }
 
 impl TokenQuery {
-    /// Sort levels `(column, descending)`, primary first. Exposed for the local
-    /// `list_tokens` handler (in the `backend` crate) to detect a chain-sort column
-    /// before computing swing stats.
+    /// Sort levels `(column, descending)`, primary first. Exposed for the SQL
+    /// backend (`sql.rs`) to build ORDER BY from the same validated levels.
     pub fn sort_levels(&self) -> &[(String, bool)] {
         &self.sort_levels
-    }
-
-    /// Swing run id to read chain stats from when a chain column is sorted.
-    pub fn swing_run_id(&self) -> Option<&str> {
-        self.swing_run_id.as_deref()
-    }
-
-    /// Chain-latency budget (ms) used to group those chain stats.
-    pub fn swing_chain_latency_ms(&self) -> i64 {
-        self.swing_chain_latency_ms
     }
 
     /// Global-filter value by `TokenFilters` field name, `None` when inactive.
@@ -1083,8 +1038,6 @@ impl TokenQuery {
             col_filters,
             mint_in,
             f,
-            swing_run_id: req.swing_run_id.clone().filter(|s| !s.is_empty()),
-            swing_chain_latency_ms: req.swing_chain_latency_ms.unwrap_or(DEFAULT_CHAIN_LATENCY_MS),
         }
     }
 
@@ -1101,11 +1054,10 @@ impl TokenQuery {
         self.clone()
     }
 
-    /// Public wrapper around `sort_refs` (no swing stats) for the SQL-vs-in-RAM
-    /// parity test, so a test can reproduce the in-RAM ordering to diff against the
-    /// SQL page.
+    /// Public wrapper around `sort_refs` for the SQL-vs-in-RAM parity test, so a
+    /// test can reproduce the in-RAM ordering to diff against the SQL page.
     pub fn sort_refs_public<'a>(&self, rows: &mut [&'a TokenSummary]) {
-        self.sort_refs(rows, None);
+        self.sort_refs(rows);
     }
 
     fn matches(&self, t: &TokenSummary, now: DateTime<Utc>) -> bool {
@@ -1294,39 +1246,20 @@ impl TokenQuery {
     /// than on every comparison (the old comparator re-derived it — and re-allocated
     /// date strings — O(n log n) times).
     ///
-    /// `swing_stats` (when any sort level is a chain column) supplies each mint's
-    /// precomputed chain stats; a chain level reads its field via `swing_sort_value`,
-    /// and mints absent from the map sort last (matching the dash the frontend
-    /// renders for un-analysed tokens). Normal levels key off the `TokenSummary`
-    /// field via `sort_key`.
+    /// Levels key off the `TokenSummary` field via `sort_key`.
     ///
     /// Multi-level: each row's full key vector is computed ONCE (decorate-sort-
     /// undecorate), then levels compare in priority order, returning on the first
     /// non-equal level. `mint_address` is the final, stable tiebreak so equal rows
     /// keep a deterministic order across pages and refetches.
-    fn sort_refs<'a>(
-        &self,
-        rows: &mut [&'a TokenSummary],
-        swing_stats: Option<&HashMap<String, ChainStats>>,
-    ) {
+    fn sort_refs<'a>(&self, rows: &mut [&'a TokenSummary]) {
         if self.sort_levels.is_empty() {
             return;
         }
-        let level_key = |col: &str, t: &TokenSummary| -> SortKey {
-            if is_swing_sort_col(col) {
-                SortKey::Num(
-                    swing_stats
-                        .and_then(|m| m.get(&t.mint_address))
-                        .map(|s| swing_sort_value(col, s)),
-                )
-            } else {
-                sort_key(col, t)
-            }
-        };
         let mut keyed: Vec<(Vec<SortKey>, &'a TokenSummary)> = rows
             .iter()
             .map(|&t| {
-                let keys = self.sort_levels.iter().map(|(col, _)| level_key(col, t)).collect();
+                let keys = self.sort_levels.iter().map(|(col, _)| sort_key(col, t)).collect();
                 (keys, t)
             })
             .collect();
@@ -1817,12 +1750,6 @@ mod grammar_parity_tests {
         .into_iter()
         .collect();
         assert_eq!(sortable, expected, "sortable grammar changed unexpectedly");
-        // Swing-chain columns remain browser-derived: sortable-key-accepted but with
-        // no registry / SQL sort expression (they fall back to default order in SQL).
-        for k in SWING_SORT_COLS {
-            assert!(is_sortable_key(k), "swing col `{k}` must be an accepted sort key");
-            assert!(sort_sql_expr(k).is_none(), "swing col `{k}` must have no SQL sort expr");
-        }
     }
 }
 
@@ -1932,23 +1859,19 @@ mod lowering_tests {
     #[test]
     fn tokens_only_fields_deserialize_camelcase() {
         // Locks the exact camelCase wire shape the frontend POSTs (pagination.pageSize,
-        // trackedOnly, swingRunId, swingChainLatencyMs) against the `TableRequest`
-        // rename — a silent rename drift would break the live list at runtime.
+        // trackedOnly) against the `TableRequest` rename — a silent rename drift would
+        // break the live list at runtime.
         let r = req(json!({
             "pagination": {"page": 2, "pageSize": 50},
             "sorting": [{"col":"market_cap","dir":"desc"}],
             "search": "bonk",
             "filters": {"volume": {"op":"between","min":5,"max":50}},
-            "trackedOnly": true,
-            "swingRunId": "run-123",
-            "swingChainLatencyMs": 90000
+            "trackedOnly": true
         }));
         assert_eq!(r.pagination.page, 2);
         assert_eq!(r.pagination.page_size, 50);
         assert!(r.tracked_only);
         let q = TokenQuery::from_table_request(&r);
-        assert_eq!(q.swing_run_id(), Some("run-123"));
-        assert_eq!(q.swing_chain_latency_ms(), 90_000);
         assert_eq!(q.search_str(), "bonk");
         assert_eq!(q.col_filters_slice(), &[("volume".to_string(), "5..50".to_string())]);
     }

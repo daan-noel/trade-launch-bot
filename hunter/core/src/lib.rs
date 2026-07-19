@@ -3,7 +3,6 @@
 //! Shared lib consumed by the `live` and `lab` bins.
 //! See `@plans/modes/crate-split.md` for the crate-split design.
 
-pub mod analyzers;
 pub mod api;
 pub mod config;
 pub mod ingest;

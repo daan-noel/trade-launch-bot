@@ -180,14 +180,6 @@ pub enum SseEvent {
         rule_id: uuid::Uuid,
         cancelled: bool,
     },
-    /// Terminal frame for a "Swing Detection All" run: the detached scan for
-    /// `run_id` has ended. The swing analogue of [`SseEvent::SimulationFinished`],
-    /// keyed by the client run id (`String`) rather than a rule `Uuid`. Not
-    /// mint-scoped — always delivered.
-    SwingDetectionFinished {
-        run_id: String,
-        cancelled: bool,
-    },
     /// A generic-engine (fingerprint + metrics redesign) position transition — the
     /// new-engine analogue of [`SseEvent::TpslPositionsChanged`], emitted by the
     /// engine's `PositionUpdate` sink. Mint-scoped. `status` is the

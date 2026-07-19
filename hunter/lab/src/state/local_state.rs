@@ -10,8 +10,6 @@ use super::job_progress::ProgressCell;
 use super::analysis_cache::AnalysisCache;
 use super::sim_results::SimResults;
 use super::sim_summary::SimSummaryCache;
-use super::swing_results::SwingResults;
-use super::swing_run_cache::SwingRunCache;
 use crate::sweep::corpus::CorpusToken;
 
 /// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
@@ -37,8 +35,8 @@ pub struct SweepCorpusCache {
 const MAX_CONCURRENT_BACKTESTS: usize = 4;
 
 /// Analysis (local) state: the shared [`CoreState`] plus the handles only the
-/// backtest/sweep/swing process needs — sweep + sim + swing run
-/// gates/progress/results, and the warm sweep corpus cache. `Deref`s to
+/// backtest/sweep process needs — sweep + sim gates/progress/results, and the
+/// warm sweep corpus cache. `Deref`s to
 /// `CoreState` so local handlers reach core fields/accessors transparently.
 pub struct LocalState {
     pub core: Arc<CoreState>,
@@ -83,25 +81,6 @@ pub struct LocalState {
     /// for the full rationale. Written by [`crate::strategies::sim_spawn`]
     /// whenever a backtest finishes successfully.
     pub last_sim_summary: Arc<SimSummaryCache>,
-    /// Per-run cooperative cancel flags for in-flight "Swing Detection All" runs,
-    /// the swing analogue of `sim_cancels`. Keyed by the client run id (`String`)
-    /// like [`Self::swing_runs`], not a rule `Uuid`. The start handler inserts a
-    /// flag; the cancel endpoint flips it; the detached scan polls it between mints.
-    pub swing_cancels: Arc<DashMap<String, Arc<AtomicBool>>>,
-    /// Per-run `processed / total` snapshots of in-flight swing runs, the swing
-    /// analogue of `sim_progress`. The start handler inserts an entry (removed when
-    /// the run ends, keyed like `swing_cancels`); `/api/jobs/status` reads them so
-    /// a reconnecting Swing Detection page recovers its progress bar.
-    pub swing_progress: Arc<DashMap<String, Arc<ProgressCell>>>,
-    /// Finished swing-run outcomes awaiting collection, keyed by client run id. The
-    /// detached scan stores its terminal result here and the client fetches it via
-    /// `GET /api/jobs/swings/{run_id}/result` once the `swing_detection_finished`
-    /// SSE fires. Swing twin of `sim_results`.
-    pub swing_results: Arc<SwingResults>,
-    /// Raw swings from recent "Swing Detection All" runs, keyed by client run id.
-    /// Lets the server-side-paged tokens list sort by the chain columns and
-    /// re-group on chain-latency changes without re-running detection.
-    pub swing_runs: Arc<SwingRunCache>,
     /// Option A: single-entry in-memory corpus cache. Written after each sweep
     /// completes (trades + fingerprints in hand); read by `list_token_results` to
     /// skip Parquet I/O and `attach_fingerprints` on the warm path. Single entry —
@@ -125,11 +104,6 @@ impl LocalState {
             sim_progress: Arc::new(DashMap::new()),
             sim_results: Arc::new(SimResults::new()),
             last_sim_summary: Arc::new(SimSummaryCache::new()),
-            swing_cancels: Arc::new(DashMap::new()),
-            swing_progress: Arc::new(DashMap::new()),
-            swing_results: Arc::new(SwingResults::new()),
-            // Keep a few recent runs so re-runs / multiple tabs don't accumulate.
-            swing_runs: Arc::new(SwingRunCache::new(3)),
             sweep_corpus_cache: Arc::new(RwLock::new(None)),
             analysis_cache: Arc::new(AnalysisCache::new()),
         }

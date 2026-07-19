@@ -25,7 +25,7 @@ use chrono::{DateTime, Utc};
 use crate::storage::token_enrichment::MARKET_CAP_SQL;
 use super::tokens::{
     ath_fep_sql_expr, col_filter_number_sql, col_filter_text_sql, cur_fep_sql_expr,
-    is_numeric_col, is_swing_sort_col, parse_dt_public, parse_numeric_predicate_public, sort_sql_expr,
+    is_numeric_col, parse_dt_public, parse_numeric_predicate_public, sort_sql_expr,
     NumPredPublic, TokenQuery,
 };
 
@@ -438,14 +438,11 @@ fn ix_label_clause(raw: &str, a: &mut SqlArgs) -> Option<String> {
 
 /// Build the ORDER BY body. Each sort level maps to its column expression with an
 /// explicit `NULLS LAST` (so nulls sort last regardless of direction, matching
-/// `cmp_keys`). Swing-chain columns have no DB column ⇒ dropped (default order).
-/// A final `t.mint_address ASC` is the stable tiebreak. Empty ⇒ newest-first.
+/// `cmp_keys`). A final `t.mint_address ASC` is the stable tiebreak. Empty ⇒
+/// newest-first.
 fn build_order(q: &TokenQuery) -> String {
     let mut terms: Vec<String> = Vec::new();
     for (col, desc) in q.sort_levels() {
-        if is_swing_sort_col(col) {
-            continue; // no DB source on the live bin → fall through to default order
-        }
         if let Some((expr, is_text)) = sort_sql_expr(col) {
             let dir = if *desc { "DESC" } else { "ASC" };
             // String sorts are case-insensitive (matches cmp_keys LOWER compare).
@@ -545,16 +542,6 @@ mod tests {
         assert!(b.order_sql.contains("COALESCE(i.trade_count, 0) DESC NULLS LAST"));
         assert!(b.order_sql.contains("LOWER(t.symbol) ASC NULLS LAST"));
         assert!(b.order_sql.ends_with("t.mint_address ASC"));
-    }
-
-    #[test]
-    fn swing_sort_column_is_dropped_to_default_order() {
-        // No DB source for chain columns on live → falls back to default order.
-        let b = build_where_and_order(
-            &query(serde_json::json!({"sorting": [{"col":"swing_pairs","dir":"desc"}]})),
-            now(),
-        );
-        assert_eq!(b.order_sql, "t.created_at DESC, t.mint_address DESC");
     }
 
     #[test]

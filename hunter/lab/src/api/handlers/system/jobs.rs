@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 use crate::state::local_state::LocalState;
 use crate::state::sim_results::SimOutcome;
-use crate::state::swing_results::SwingOutcome;
 
 #[derive(Serialize)]
 struct SweepStatus {
@@ -34,20 +33,11 @@ struct SimulationStatus {
 }
 
 #[derive(Serialize)]
-struct SwingStatus {
-    run_id: String,
-    processed: u64,
-    total: u64,
-}
-
-#[derive(Serialize)]
 struct JobsStatus {
     /// Present iff the single-flight grouped sweep is running.
     sweep: Option<SweepStatus>,
     /// One entry per in-flight rule simulation.
     simulations: Vec<SimulationStatus>,
-    /// One entry per in-flight "Swing Detection All" run.
-    swings: Vec<SwingStatus>,
 }
 
 /// `GET /api/jobs/status` — snapshot of every running background job.
@@ -72,23 +62,9 @@ pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
         })
         .collect();
 
-    let swings = state
-        .swing_progress
-        .iter()
-        .map(|e| {
-            let (processed, total) = e.value().snapshot();
-            SwingStatus {
-                run_id: e.key().clone(),
-                processed,
-                total,
-            }
-        })
-        .collect();
-
     HttpResponse::Ok().json(JobsStatus {
         sweep,
         simulations,
-        swings,
     })
 }
 
@@ -142,62 +118,6 @@ pub async fn simulation_result(
         }
         None => HttpResponse::NotFound().json(serde_json::json!({
             "error": "no simulation result (still running, not started, or expired)"
-        })),
-    }
-}
-
-/// `POST /api/jobs/swings/{run_id}/cancel` — cooperative cancel for an in-flight
-/// "Swing Detection All" run. The swing twin of [`cancel_simulation`], keyed by
-/// the client run id (`String`). A no-op (`{"cancelling": false}`) when no run is
-/// in flight for that id.
-pub async fn cancel_swing(
-    state: web::Data<Arc<LocalState>>,
-    run_id: web::Path<String>,
-) -> impl Responder {
-    let rid = run_id.into_inner();
-    let cancelling = match state.swing_cancels.get(&rid) {
-        Some(flag) => {
-            flag.store(true, Ordering::Release);
-            true
-        }
-        None => false,
-    };
-    HttpResponse::Ok().json(serde_json::json!({ "cancelling": cancelling }))
-}
-
-/// `GET /api/jobs/swings/{run_id}/result` — collect the terminal outcome of a
-/// finished "Swing Detection All" run (started via `POST /api/tokens/swings/batch`).
-/// The detached scan stores its result in [`LocalState::swing_results`] on completion
-/// and the client fetches it here after the `swing_detection_finished` SSE, so a
-/// long run's result is never tied to the lifetime of the starting request — the
-/// structural source of the old `FETCH_ERROR`. The swing twin of
-/// [`simulation_result`]; removes the entry on read — single delivery.
-///
-/// - 200 + `SwingBatchResponse` — success
-/// - 200 + `{"cancelled": true}` — the run was cancelled
-/// - 500 + `{"error": …}` — the run failed
-/// - 404 + `{"error": …}` — no result (still running, not started, or expired)
-pub async fn swing_result(
-    state: web::Data<Arc<LocalState>>,
-    run_id: web::Path<String>,
-) -> impl Responder {
-    let rid = run_id.into_inner();
-    match state.swing_results.take(&rid) {
-        // Serialized once at completion — return the bytes verbatim (no re-encode
-        // of a potentially large payload).
-        Some(SwingOutcome::Done(json)) => HttpResponse::Ok()
-            .content_type("application/json")
-            .body(json),
-        Some(SwingOutcome::Cancelled) => {
-            HttpResponse::Ok().json(serde_json::json!({ "cancelled": true }))
-        }
-        Some(SwingOutcome::Failed { status, message }) => {
-            let code =
-                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            HttpResponse::build(code).json(serde_json::json!({ "error": message }))
-        }
-        None => HttpResponse::NotFound().json(serde_json::json!({
-            "error": "no swing result (still running, not started, or expired)"
         })),
     }
 }

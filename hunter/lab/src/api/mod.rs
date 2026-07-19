@@ -2,9 +2,8 @@ pub mod handlers;
 
 use actix_web::web;
 
-/// Register local-only (analysis box) routes: the swing-aware token list, swing
-/// detection, background-job control, the tpsl1/tpsl2 rule authoring + backtest
-/// edge, and grouped param-sweeps. Call alongside
+/// Register local-only (analysis box) routes: the token list, background-job
+/// control, rule authoring + backtest edge, and grouped param-sweeps. Call alongside
 /// `trading_core::api::configure_core_routes` to build the full local route set
 /// (`App::new().configure(configure_core_routes).configure(configure_local_routes)`).
 ///
@@ -14,24 +13,10 @@ use actix_web::web;
 pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
-            // Token list (unified TableRequest POST; swing-aware)
+            // Token list (unified TableRequest POST)
             .route("/tokens", web::post().to(handlers::tokens::list_tokens))
-            // Matched mint-address set only (same filter body) — Swing Detection All
-            // fans out over this instead of pulling every full row.
+            // Matched mint-address set only (same filter body).
             .route("/tokens/mints", web::post().to(handlers::tokens::list_token_mints))
-            // Swing detection
-            .route(
-                "/tokens/swings/batch",
-                web::post().to(handlers::tokens::detect_tokens_swings_batch),
-            )
-            .route(
-                "/tokens/{mint}/swings",
-                web::post().to(handlers::tokens::detect_token_swings),
-            )
-            .route(
-                "/tokens/{mint}/swing1-detect",
-                web::post().to(handlers::tokens::detect_token_swing1),
-            )
             // Redesign: every metric's series over a token's trades (chart panes)
             .route(
                 "/tokens/{mint}/metric-series",
@@ -48,7 +33,7 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/wallets/{wallet}/tokens",
                 web::get().to(handlers::wallets::list_wallet_tokens),
             )
-            // Background-job status + control (sweep / simulation / swing)
+            // Background-job status + control (sweep / simulation)
             .route("/jobs/status", web::get().to(handlers::system::job_status))
             .route(
                 "/jobs/simulations/{rule_id}/cancel",
@@ -58,8 +43,6 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/jobs/simulations/{rule_id}/result",
                 web::get().to(handlers::system::simulation_result),
             )
-            .route("/jobs/swings/{run_id}/cancel", web::post().to(handlers::system::cancel_swing))
-            .route("/jobs/swings/{run_id}/result", web::get().to(handlers::system::swing_result))
             // ── Generic engine simulate (redesign) — one surface for every rule ──
             .route(
                 "/strategies/simulate",

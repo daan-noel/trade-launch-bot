@@ -750,9 +750,18 @@ fn apply_quality_filter(ledger: Vec<LegAcc>, params: &SwingParams) -> Vec<SwingL
 // Chain-of-swings stats
 // ---------------------------------------------------------------------------
 
-// `ChainStats` lives in `trading_core::analyzers` (shared with the core token-list
-// sort); re-exported so `swing_analyzer::ChainStats` paths resolve.
-pub use crate::analyzers::ChainStats;
+/// The three sortable "Chain of Swings" counts for a single token. Faithful
+/// (counts-only) port of `swingChains.ts::computeChainStats` — the frontend keeps
+/// the richer `longestChain` summary for charting; sorting needs only these.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChainStats {
+    /// Number of high→low swing pairs (complete up-then-down cycles).
+    pub swing_pairs: u32,
+    /// Pair count of the largest chain (≥ 2 linked pairs); 0 if none link.
+    pub max_seq_pairs: u32,
+    /// Number of chains (runs of ≥ 2 pairs linked within the latency budget).
+    pub chain_count: u32,
+}
 
 /// Reduce a token's alternating legs to high→low pairs and group them into
 /// chains, mirroring the frontend exactly: legs are walked in `start_at` order; a
