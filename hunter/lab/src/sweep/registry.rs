@@ -172,13 +172,19 @@ pub const MAX_SWEEP_RAM_RESERVE_MB: usize = 32 * 1024;
 /// and the rayon workers can read it lock-free from any depth.
 static RAM_RESERVE_MB: AtomicUsize = AtomicUsize::new(DEFAULT_SWEEP_RAM_RESERVE_MB);
 
+/// Resolve a request's `ram_reserve_mb` to the effective reserve: `None` →
+/// default, else clamped to `MIN..=MAX_SWEEP_RAM_RESERVE_MB`. Pure (no global) so
+/// the clamp is testable without perturbing the process-global sizing state.
+fn clamp_ram_reserve_mb(mb: Option<usize>) -> usize {
+    mb.unwrap_or(DEFAULT_SWEEP_RAM_RESERVE_MB)
+        .clamp(MIN_SWEEP_RAM_RESERVE_MB, MAX_SWEEP_RAM_RESERVE_MB)
+}
+
 /// Set the desktop reserve for the run about to start, clamped to
 /// `MIN..=MAX_SWEEP_RAM_RESERVE_MB`. `None` restores the default. Call once at
-/// admission, before any sizing/admission helper runs.
+/// admission, before any sizing/admission helper runs. Returns the applied value.
 pub(crate) fn set_ram_reserve_mb(mb: Option<usize>) -> usize {
-    let mb = mb
-        .unwrap_or(DEFAULT_SWEEP_RAM_RESERVE_MB)
-        .clamp(MIN_SWEEP_RAM_RESERVE_MB, MAX_SWEEP_RAM_RESERVE_MB);
+    let mb = clamp_ram_reserve_mb(mb);
     RAM_RESERVE_MB.store(mb, Ordering::Relaxed);
     mb
 }
@@ -1625,6 +1631,33 @@ mod tests {
 
         set_fold_budget_ceiling(None);
         assert_eq!(sweep_memory_budget_bytes(), auto, "clearing restores auto sizing");
+    }
+
+    #[test]
+    fn ram_reserve_override_clamps_to_bounds() {
+        // The per-run knob the sweep form sends: a valid MB passes through, out-of-
+        // range values clamp to the floor/ceiling, and an absent value (the form
+        // omits it when it still matches the default) resolves to the default.
+        assert_eq!(clamp_ram_reserve_mb(Some(512)), 512);
+        assert_eq!(clamp_ram_reserve_mb(Some(2048)), 2048);
+        assert_eq!(clamp_ram_reserve_mb(Some(0)), MIN_SWEEP_RAM_RESERVE_MB);
+        assert_eq!(clamp_ram_reserve_mb(Some(1)), MIN_SWEEP_RAM_RESERVE_MB);
+        assert_eq!(clamp_ram_reserve_mb(Some(usize::MAX)), MAX_SWEEP_RAM_RESERVE_MB);
+        assert_eq!(clamp_ram_reserve_mb(None), DEFAULT_SWEEP_RAM_RESERVE_MB);
+    }
+
+    #[test]
+    fn larger_reserve_yields_less_usable() {
+        // The selector's whole effect: at identical host readings, a bigger reserve
+        // leaves strictly less RAM usable for the sweep peak (and every choice is
+        // subtracted 1:1). Pure `usable_from` so it can't race the global.
+        let mb = |n: u64| n * 1024 * 1024;
+        let (total, avail) = (16 * GB, 8 * GB);
+        let usable_256 = usable_from(total, avail, mb(256), 0);
+        let usable_1g = usable_from(total, avail, mb(1024), 0);
+        let usable_4g = usable_from(total, avail, mb(4096), 0);
+        assert!(usable_256 > usable_1g && usable_1g > usable_4g, "bigger reserve → less usable");
+        assert_eq!(usable_256 - usable_1g, mb(1024) - mb(256), "reserve subtracts 1:1");
     }
 
     #[test]

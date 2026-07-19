@@ -26,7 +26,6 @@ use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use trading_core::storage::repositories::trade_repo::{SigLegs, TradeRepo};
 
-use crate::strategies::execution::real::snipe_reserves_from_cache;
 use crate::trader::{PumpFunTrader, SigStatus};
 
 use super::{FillSigStore, FillSigs};
@@ -353,6 +352,25 @@ async fn confirm_sell(
             _ = tokio::time::sleep(FEED_POLL) => {}
         }
     }
+}
+
+/// Convert the token cache's in-memory reserve pair — token side in raw units,
+/// SOL side in SOL — into the `(virtual_token, virtual_quote=lamports)` pair the
+/// snipe buy's slippage `min_out` expects (the trade-math arg names mirror pump.fun's
+/// on-chain curve fields). `None` when either snapshot is missing or non-positive, so
+/// the buy proceeds unprotected (`min_out=1`) rather than blocking on an inline
+/// reserve RPC (the latency budget forbids it on this path).
+fn snipe_reserves_from_cache(
+    reserve_token: Option<f64>,
+    reserve_sol: Option<f64>,
+) -> Option<(u128, u128)> {
+    let vt = reserve_token?;
+    let vsol = reserve_sol?;
+    if vt <= 0.0 || vsol <= 0.0 {
+        return None;
+    }
+    let vq_lamports = vsol * pump_trader::constants::LAMPORTS_PER_SOL as f64;
+    Some((vt as u128, vq_lamports as u128))
 }
 
 /// Slippage `min_out` reserves for the snipe buy, read from the cache (no RPC).

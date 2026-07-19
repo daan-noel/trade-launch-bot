@@ -9,7 +9,7 @@
 //! handlers differ only by `strategy_id`; the paging/summary logic is identical.
 
 use actix_web::HttpResponse;
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use std::sync::Arc;
@@ -298,13 +298,23 @@ pub fn sim_result_summary(state: &LocalState, rule_id: Uuid, req: TableRequest) 
     };
     let filtered = crate::strategies::sim_query::filter_rows(&rows, &req);
     let metrics = crate::strategies::sim_query::summarize(&filtered);
+    // Graduated-to-AMM count over the same filtered cohort. A token attribute
+    // (`is_migrated`), not a kernel PnL figure, so it rides on the response body
+    // beside `computed_at` rather than inside `RunSummary`. Every sim row is an
+    // entered position, so this counts among `n_fired` — matching the live
+    // card's "migrated among entered".
+    let migrated = filtered
+        .iter()
+        .filter(|r| r.get("is_migrated").and_then(Value::as_bool).unwrap_or(false))
+        .count();
     // Flattened `RunMetrics` — the same field names the grouped sweep and a
     // live/paper run emit, so one frontend component renders all three (parity
-    // plan B4). `computed_at` is the only sim-specific addition.
+    // plan B4). `computed_at` / `n_migrated` are the sim-specific additions.
     let mut body = serde_json::to_value(&metrics).unwrap_or_else(|_| json!({}));
     if let Some(obj) = body.as_object_mut() {
         // When the run finished — the Run column renders this as relative time.
         obj.insert("computed_at".into(), json!(state.sim_results.computed_at(&rule_id)));
+        obj.insert("n_migrated".into(), json!(migrated));
     }
     HttpResponse::Ok().json(body)
 }

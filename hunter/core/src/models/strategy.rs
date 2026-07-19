@@ -172,6 +172,11 @@ pub struct PositionsSummary {
     pub best_pct: Option<f64>,
     /// Worst closed PnL % (`None` when nothing closed).
     pub worst_pct: Option<f64>,
+    /// Entered tokens that graduated off the bonding curve to AMM
+    /// (`tokens_info.is_migrated`). A token-quality signal independent of how the
+    /// rule exited — a token can migrate and still be closed at a stop. Counted
+    /// among `tokens` (entered positions), so `migrated <= tokens`.
+    pub migrated: i64,
     /// How the closed positions left, by `exit_reason`.
     pub exits: ExitReasonCounts,
 }

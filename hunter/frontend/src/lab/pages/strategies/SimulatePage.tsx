@@ -485,7 +485,7 @@ function RuleSimPositionsPanel({
  * backend now sends the two-band `RunSummary` and this just renders it.
  */
 function simSummaryStats(s: SimulatedSummary): { hero: SummaryStat[]; sections: SummarySection[] } {
-  return runSummarySections(s);
+  return runSummarySections(s, { migrated: s.n_migrated });
 }
 
 function buildColumns(

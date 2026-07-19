@@ -387,7 +387,17 @@ function ExitMixBar({ slices }: { slices: ExitSlice[] }) {
  * the signal**. The MTM band is omitted when nothing is open (it would repeat the
  * realized band tile-for-tile).
  */
-export function runSummarySections(s: RunSummary): {
+export function runSummarySections(
+  s: RunSummary,
+  extras: {
+    /** Count of fired tokens that graduated off the bonding curve to AMM
+     *  (`is_migrated`) — a token-quality signal orthogonal to how the rule
+     *  exited, so it lives beside the position counts rather than in the exit
+     *  mix. Omit when the surface can't source it; the tile is then hidden
+     *  rather than shown as a misleading `0`. */
+    migrated?: number;
+  } = {},
+): {
   hero: SummaryStat[];
   sections: SummarySection[];
 } {
@@ -432,6 +442,28 @@ export function runSummarySections(s: RunSummary): {
           value: nFired ? pctOf(openShare) : '—',
           cls: nFired ? tone : undefined,
         },
+        // Graduated-to-AMM count. Only when the surface supplied it — a hidden
+        // tile beats a `0` that could read as "none migrated" when the truth is
+        // "this surface doesn't measure it".
+        ...(extras.migrated != null
+          ? [
+              {
+                label: 'Migrated',
+                node: (
+                  <span className="inline-flex items-baseline gap-1.5">
+                    <span className={extras.migrated > 0 ? 'text-primary' : 'text-text-dim'}>
+                      {extras.migrated}
+                    </span>
+                    {nFired > 0 && (
+                      <span className="text-[10px] font-normal text-text-dim">
+                        {pctOf(extras.migrated / nFired)}
+                      </span>
+                    )}
+                  </span>
+                ),
+              } satisfies SummaryStat,
+            ]
+          : []),
         { label: 'Avg hold', value: fmtSecs(realized.avg_holding_secs), cls: 'text-accent' },
       ],
     },

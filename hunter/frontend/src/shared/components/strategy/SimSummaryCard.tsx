@@ -88,7 +88,10 @@ export function SimSummaryCard({
   // The server `summary` is the source of truth — correct over the filtered cohort
   // (not just the current page) and already in human SOL. Derive once and memoize
   // so these don't recompute on price-unit ticks.
-  const { hero, sections } = useMemo(() => runSummarySections(toRunSummary(summary)), [summary]);
+  const { hero, sections } = useMemo(
+    () => runSummarySections(toRunSummary(summary), { migrated: summary.migrated }),
+    [summary],
+  );
 
   // Capital deployment is live-only — a backtest has no treasury — so it stays a
   // separate strip rather than being forced into the shared bands. These are the

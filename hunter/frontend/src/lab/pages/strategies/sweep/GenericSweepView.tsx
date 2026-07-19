@@ -93,7 +93,8 @@ function buildComboSummary(rows: ComboTokenResult[]): {
   hero: SummaryStat[];
   sections: SummarySection[];
 } {
-  return runSummarySections(runSummaryFromRows(rows));
+  const migrated = rows.filter((r) => r.fired && r.is_migrated).length;
+  return runSummarySections(runSummaryFromRows(rows), { migrated });
 }
 
 /**

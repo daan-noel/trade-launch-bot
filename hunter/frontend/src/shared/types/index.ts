@@ -309,6 +309,9 @@ export interface PositionsSummary {
   avg_hold_secs: number;
   best_pct: number | null;
   worst_pct: number | null;
+  /** Entered tokens that graduated to AMM (`is_migrated`) — counted among
+   *  `tokens`, independent of exit reason. */
+  migrated: number;
   /** Closed-position counts by `exit_reason`. Deliberately not exhaustive of
    *  `closed` — an `ExitFailed` position has no reason at all — so the summary
    *  reconciles the remainder into a visible `Other` slice. */
@@ -399,6 +402,9 @@ export interface SimulatedSummary extends RunSummary {
   /** ISO time the run's result was generated — rendered as relative time ("20m
    *  ago") in the Simulate table's Run column. Null/absent for legacy payloads. */
   computed_at?: string | null;
+  /** Fired tokens that graduated to AMM (`is_migrated`), over the filtered
+   *  cohort. Absent on legacy payloads → the Migrated tile is then hidden. */
+  n_migrated?: number;
 }
 
 /** Metadata for one paper-test run (a single activate→finish cycle). */

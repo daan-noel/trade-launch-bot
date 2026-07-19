@@ -296,6 +296,7 @@ struct PositionsSummaryRow {
     sum_hold_secs: f64,
     best_pct: Option<f64>,
     worst_pct: Option<f64>,
+    migrated: i64,
     n_take_profit: i64,
     n_stop_loss: i64,
     n_metrics: i64,
@@ -1400,6 +1401,7 @@ impl StrategyRepo {
                         ELSE (sp.exit_price - sp.entry_price) / sp.entry_price * 100.0 END) \
                         FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
                                   AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct, \
+               COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND i.is_migrated) AS migrated, \
                {exit_cols}\
                COALESCE(json_agg(json_build_object( \
                           'mint_address', sp.mint_address, \
@@ -1466,6 +1468,7 @@ impl StrategyRepo {
             avg_hold_secs,
             best_pct: row.best_pct,
             worst_pct: row.worst_pct,
+            migrated: row.migrated,
             exits: ExitReasonCounts {
                 take_profit: row.n_take_profit,
                 stop_loss: row.n_stop_loss,
