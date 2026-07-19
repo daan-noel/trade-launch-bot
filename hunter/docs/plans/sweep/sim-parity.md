@@ -101,8 +101,10 @@ Both gating smoke runs were executed on 2026-07-19; full numbers in
 The low-RAM run also **passed**: the degradation ladder shrank the fold budget,
 emitted its notice, and still completed 405/405 groups. No refusal, no abort.
 
-What the runs *did* surface is a separate, larger lever — the sweep's own RSS drives
-`usable_host_bytes()` to 0 mid-run, so every group takes the slow series-rebuild
-path and the documented token-outer "primary path" never executes. Written up with
-evidence and options in [perf-measurements.md](perf-measurements.md); it needs a
-design decision because it touches RAM-admission safety.
+What the runs surfaced instead was a separate, larger lever — the sweep's own RSS
+drove `usable_host_bytes()` to 0 mid-run, so every group took the slow series-rebuild
+path and the documented token-outer "primary path" never executed. **Fixed** by
+pricing the sweep's own transient buffers as reusable headroom (the corpus stays
+priced as consumed): token-outer now fires, and the tight-reserve coarse pass is
+**7.9× faster** with the 229 s single-group pathology gone. Full before/after and the
+abort-safety argument in [perf-measurements.md](perf-measurements.md).

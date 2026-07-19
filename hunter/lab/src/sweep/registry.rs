@@ -95,6 +95,31 @@ pub(crate) fn set_fold_budget_ceiling(bytes: Option<u64>) {
     FOLD_BUDGET_CEILING.store(bytes.unwrap_or(0), Ordering::Relaxed);
 }
 
+/// The run's **permanent** resident set (bytes) — process RSS captured once the
+/// corpus is fully loaded, before any fold buffer is allocated. `0` = not yet
+/// captured (pre-load, or RSS unreadable).
+///
+/// This is the linchpin of the mid-run headroom read (see [`usable_host_bytes`]).
+/// A grouped sweep's own RSS is dominated by the resident corpus (millions of
+/// `SweepTrade`s), which stays for the whole run. A *live* `available` reading
+/// therefore collapses toward the desktop reserve as the sweep allocates — not
+/// because the box is out of RAM, but because the sweep is holding it — which
+/// starved the small-group fold onto its slow series-rebuild path (token-outer
+/// fired on 0 of 405 groups, measured 2026-07-19). Anchoring to this baseline lets
+/// the mid-run read treat the corpus as consumed (it is) but the sweep's own
+/// *transient* fold buffers as reusable headroom (they are — that budget is what
+/// they're drawn from).
+///
+/// Process-global for the same single-flight reason as [`RAM_RESERVE_MB`].
+static RESIDENT_BASELINE_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Record the run's permanent resident set. Call **once**, at the `corpus_loaded`
+/// milestone — the corpus is fully resident and no fold buffer exists yet, so this
+/// RSS is exactly the non-reclaimable floor every later mid-run read anchors to.
+pub(crate) fn set_resident_baseline_bytes(bytes: Option<u64>) {
+    RESIDENT_BASELINE_BYTES.store(bytes.unwrap_or(0), Ordering::Relaxed);
+}
+
 /// Fold-accumulator + outcome-buffer budget in bytes. `usable/4` clamped to
 /// 32..=512 MB, where usable = host free − desktop reserve, then capped by the
 /// run's planned ceiling (see [`FOLD_BUDGET_CEILING`]).
@@ -167,11 +192,50 @@ fn sweep_ram_reserve_bytes() -> u64 {
     (ram_reserve_mb() as u64).saturating_mul(1024 * 1024)
 }
 
-/// `available − reserve`, or `None` if host memory is unreadable. `Some(0)` when
-/// free RAM is already under the desktop reserve — callers must refuse or shrink.
+/// Usable RAM (bytes) for the sweep's transient peak, or `None` if host memory is
+/// unreadable.
+///
+/// Two readings, and we take the **larger**:
+/// - **Live:** `available − reserve`. What the OS says is free right now, minus the
+///   desktop reserve. Honest about *external* pressure (another app grew), but it
+///   also shrinks as the sweep's own allocations grow — which is the starvation bug.
+/// - **Structural:** `total − reserve − resident_baseline`. Physical RAM, minus the
+///   desktop reserve, minus the run's permanent resident set (the corpus, measured
+///   once when headroom was real; see [`RESIDENT_BASELINE_BYTES`]). This is the
+///   budget for *all* transient fold buffers combined, and it does not decay as the
+///   sweep fills it — the sweep's own RSS growth is no longer subtracted from its own
+///   headroom.
+///
+/// `max` of the two prices the sweep's own transient buffers as reusable (structural
+/// wins mid-run) while still yielding to genuine external pressure when the OS has
+/// even more free than the baseline predicted (live wins). It is bounded: the
+/// structural term is `total − reserve − baseline`, so `baseline + used_transient ≤
+/// total − reserve` at the peak — the desktop reserve stays free, upholding the
+/// never-OOM-the-box contract. Before the baseline is captured (admission, pre-load)
+/// it is `0`, so this is exactly the old `available − reserve` and admission sizing
+/// is unchanged.
+///
+/// `Some(0)` only when *both* readings are under the reserve — a genuinely full box.
 pub(crate) fn usable_host_bytes() -> Option<u64> {
-    let (_, available) = crate::sweep::obs::host_memory_bytes()?;
-    Some(available.saturating_sub(sweep_ram_reserve_bytes()))
+    let (total, available) = crate::sweep::obs::host_memory_bytes()?;
+    Some(usable_from(
+        total,
+        available,
+        sweep_ram_reserve_bytes(),
+        RESIDENT_BASELINE_BYTES.load(Ordering::Relaxed),
+    ))
+}
+
+/// Pure core of [`usable_host_bytes`] — `max(live, structural)` (see that fn's
+/// doc). Split out so the never-OOM bound can be tested without a live host read.
+fn usable_from(total: u64, available: u64, reserve: u64, baseline: u64) -> u64 {
+    let live = available.saturating_sub(reserve);
+    let structural = if baseline == 0 {
+        0 // baseline not captured yet → live reading only (old behaviour)
+    } else {
+        total.saturating_sub(reserve).saturating_sub(baseline)
+    };
+    live.max(structural)
 }
 
 /// How much of currently-available host RAM may be used for the sweep peak.
@@ -1400,6 +1464,59 @@ fn sweep_base_rule_tpsl1(buy_amount_sol: f64) -> Tpsl1Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn usable_without_baseline_is_live_reading() {
+        // baseline = 0 (pre-corpus-load): structural term is off, so it's exactly
+        // the old `available − reserve`. Admission sizing must be unchanged.
+        assert_eq!(usable_from(16 * GB, 5 * GB, GB, 0), 4 * GB);
+    }
+
+    #[test]
+    fn usable_with_baseline_ignores_own_transient_growth() {
+        // The starvation case: 16 GB box, 1 GB reserve, corpus baseline 5 GB. The
+        // sweep's own fold buffers have driven `available` to 500 MB (< reserve →
+        // live term is 0). Structural = 16 − 1 − 5 = 10 GB, so the fit test sees
+        // 10 GB, not 0 — token-outer becomes reachable.
+        assert_eq!(
+            usable_from(16 * GB, GB / 2, GB, 5 * GB),
+            10 * GB,
+            "own transient RSS must not be subtracted from own headroom"
+        );
+    }
+
+    #[test]
+    fn usable_never_exceeds_total_minus_reserve() {
+        // The never-OOM bound: at the peak, baseline (resident) + usable (transient)
+        // must leave the desktop reserve free. usable ≤ total − reserve − baseline,
+        // so baseline + usable ≤ total − reserve for every reading.
+        for &(total, avail, reserve, baseline) in &[
+            (16 * GB, 8 * GB, GB, 5 * GB),
+            (16 * GB, GB / 4, GB, 6 * GB),
+            (32 * GB, 20 * GB, 2 * GB, 10 * GB),
+        ] {
+            let usable = usable_from(total, avail, reserve, baseline);
+            assert!(
+                baseline + usable <= total - reserve,
+                "baseline {baseline} + usable {usable} must fit under total {total} − reserve {reserve}"
+            );
+        }
+    }
+
+    #[test]
+    fn usable_prefers_live_when_box_genuinely_freer() {
+        // Another app exited: `available` (12 GB) exceeds the structural prediction
+        // (16 − 1 − 5 = 10 GB). Take the live gain rather than cap at the baseline.
+        assert_eq!(usable_from(16 * GB, 13 * GB, GB, 5 * GB), 12 * GB);
+    }
+
+    #[test]
+    fn usable_zero_only_when_genuinely_full() {
+        // Both terms under the reserve → a genuinely full box still reports 0.
+        assert_eq!(usable_from(16 * GB, GB / 2, GB, 16 * GB), 0);
+    }
 
     #[test]
     fn threads_fitting_keeps_preferred_when_under_budget() {

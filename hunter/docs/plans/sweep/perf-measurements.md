@@ -57,50 +57,85 @@ of that run's 467 s coarse pass spent on one tiny group. See the finding below.
 | **P3** refine sweeps the corpus twice | **Keep as designed** | The coarse pass is 32% of Run A, but it is what cuts 944,784 grid combos to 28,389 for the final pass. It is the algorithm, not waste. The *corpus* is loaded once (`corpus_load` 4.58 s, single); only the series are rebuilt. |
 | **P1** `fold_wave_into` per-wave concurrency churn | **Skip — hypothesis refuted** | The fold *is* the constraint (92.5% of Run A), so the gate opens — but the cost is not where P1 said. Per-wave thread/channel/mutex setup is a few thousand spawns over 47 s (sub-1%). The measured hot spot is series-rebuild amplification (below). The plan's own gate says skip P1 if the timings don't support it; they don't. |
 
-## Finding: the sweep starves itself onto the slow path
+## Finding → fix: the sweep starved itself onto the slow path
 
-**The documented "primary path" never executes.** Across 405 groups in **both** runs,
-the small-group **token-outer** fold (series built once per token) was selected
-**0 times**; the **batch-outer fallback** (series rebuilt once per batch) fired **314
-times**, at `n_batches=3` — i.e. every token's `MetricSeries` is built three times.
+### The finding
+
+**The documented "primary path" never executed.** Across 405 groups in **both**
+original runs, the small-group **token-outer** fold (series built once per token) was
+selected **0 times**; the **batch-outer fallback** (series rebuilt once per batch)
+fired **314 times**, at `n_batches=3` — every token's `MetricSeries` built three times.
 
 The selector is `full_combo_aggs_fit(…) <= usable_host_bytes() − 256 MB`, and the
-instrumented inputs say why:
+instrumented inputs said why:
 
 ```
 group_tokens=11 combos=19807 n_batches=3 threads=14
 max_series_kb=174  agg_mb=294  series_mb=2  fold_budget_mb=32  usable_mb=0
 ```
 
-`usable_host_bytes()` is `host_available − reserve`. Mid-run, **the sweep's own RSS
-is what consumed `host_available`** (6.3 GB peak in Run A), so it measures ≈0 usable
-and concludes it has no room — while the accumulator set it is rejecting needs only
-**294 MB on a 15.7 GB box** with a 1 GB reserve. `fold_budget_mb` collapses to its
-32 MB floor for the same reason.
+`usable_host_bytes()` was `host_available − reserve`. Mid-run, **the sweep's own RSS
+is what consumed `host_available`** (6.3 GB peak in Run A), so it measured ≈0 usable
+and concluded it had no room — while the accumulator set it was rejecting needs only
+**294 MB on a 15.7 GB box**. A feedback loop: allocate → free RAM drops → `usable → 0`
+→ pick the path that rebuilds series per batch → 3× the dominant cost. It is also why
+Run B's 62-token group took 229 s: large-history tokens have ~1 s series, and the
+fallback rebuilt each `n_batches` times.
 
-It is a feedback loop: allocate → free RAM drops → `usable → 0` → pick the path that
-rebuilds series per batch → 3× the dominant cost. It also explains the 27M→20M
-`evals_per_sec` decay (the decay tracks RSS growth) and why Run B's 62-token group
-took 229 s: those tokens have large histories, so each rebuilt series is ~1 s and the
-fallback pays it `n_batches` times.
+### The fix (shipped)
 
-**Not fixed here, deliberately.** The fix means changing what RAM the admission
-logic considers reusable — the process's own already-allocated heap. That is the
-exact logic whose failure mode is a mid-run abort, and "never aborted by a
-recoverable error" is the standing requirement for this subsystem. It needs a
-decision, not a drive-by patch. Options worth weighing:
+**Price the sweep's own *transient* buffers as reusable headroom, keep the corpus
+priced as consumed.** `usable_host_bytes()` now takes the **max** of two readings:
 
-1. Price the sweep's own resident buffers as reusable headroom (`available + own
-   reclaimable RSS`) rather than treating them as consumed by a third party.
-2. Decide the fold order **once per run at admission** (when headroom is real)
-   instead of per group mid-run, so the choice is not a function of the sweep's own
-   momentary RSS.
-3. Stop double-counting in `full_combo_aggs_fit`: in the token-outer path the `aggs`
-   *are* the fold buffers, yet `need = agg + series + fold_budget` adds a full
-   separate fold budget on top.
+- *live* — `available − reserve` (honest about external pressure), and
+- *structural* — `total − reserve − resident_baseline`, where `resident_baseline` is
+  process RSS captured **once at `corpus_loaded`** (corpus fully resident, no fold
+  buffer yet — the run's permanent, non-reclaimable floor).
 
-Option 2 is the most conservative — it changes *when* the decision is made, not how
-much RAM is considered safe.
+The structural term does not decay as the sweep fills it, because the sweep's own
+fold buffers are exactly what that budget is *for* — they are no longer subtracted
+from the sweep's own headroom. It stays abort-safe by construction:
+`baseline + usable ≤ total − reserve`, so the desktop reserve is always left free
+(the never-OOM contract). Before the baseline is captured (admission, pre-load) the
+structural term is 0, so admission sizing is byte-for-byte the old behaviour.
 
-The diagnostic fields above (`agg_mb` / `series_mb` / `fold_budget_mb` / `usable_mb`
-on the fallback log line) were added to make this visible; keep them.
+`registry::usable_from` (the pure `max(live, structural)` core) is unit-tested for
+the never-exceed bound, the starvation case, external-pressure preference, and the
+genuinely-full box. `set_resident_baseline_bytes` is set at `corpus_loaded` and
+cleared at admission.
+
+### Measured effect
+
+Same config, re-run after the fix (`ram_reserve_mb: 1024` = normal;
+`ram_reserve_mb: 5000` = tight, forces "minimum footprint"):
+
+| | fold path | `refine_coarse` | slowest group | total | outcome |
+| --- | --- | --- | --- | --- | --- |
+| Normal, **before** | 0 token / 314 batch | 25.5 s | 2.8 s / 2062 tok | 78.6 s | completed |
+| Normal, **after** | **152 token / 0 batch** | 26.0 s | 1.6 s / 2062 tok | 76.4 s | completed |
+| Tight, **before** | 0 token / 314 batch | **467.7 s** | **229.5 s / 62 tok** | 513.6 s | completed |
+| Tight, **after** | **601 token / 0 batch** | **58.9 s** | 8.9 s / 2062 tok | ~115 s | completed |
+
+- **Normal run: ~flat wall-clock** (76.4 vs 78.6 s). The batch-outer waste was on
+  *tiny* groups with cheap series, so eliminating it barely moves the normal-run
+  total — but the documented path now actually runs and the provably-repeated series
+  builds are gone.
+- **Tight-reserve run: 7.9× faster coarse pass, and the 229 s pathology is gone** —
+  the slowest group is now the genuinely-largest (2062 tokens), not a 62-token group
+  paying `n_batches` series rebuilds. It still completed 405/405 at minimum footprint
+  (`budget_mb=0`, wave=1): **degrade-don't-refuse held**; the structural budget
+  (16101 − 5000 − ~1036 ≈ 10 GB) let token-outer fire while live `available − reserve`
+  was 0.
+
+The diagnostic fields (`agg_mb` / `series_mb` / `fold_budget_mb` / `usable_mb` on the
+fallback log line) that made this visible are kept.
+
+### Observed during validation (not this fix)
+
+One tight-reserve run's row briefly read `status=cancelled, groups_done=5` while the
+engine was still folding, then finalized `completed` 405/405. The engine folded to
+completion (the cancel `AtomicBool` was effectively false throughout — a genuine
+cancel would have bailed the fold), so this is a **status-write race**, not lost work,
+and it is orthogonal to the RAM fix (a live lab UI was open and polling). Worth a
+look on its own: a spurious `cancelled` write that finalize later overwrites is
+confusing even when harmless.

@@ -359,6 +359,10 @@ pub async fn start_grouped_sweep(
     // no other run is sizing against a different value.
     let reserve_mb = crate::sweep::registry::set_ram_reserve_mb(b.ram_reserve_mb);
     tracing::info!(ram_reserve_mb = reserve_mb, "grouped sweep: desktop RAM reserve for this run");
+    // Reset last run's resident baseline: it is only valid once *this* run's corpus
+    // is resident (set at `corpus_loaded` below). A run that bails between here and
+    // there must not inherit the prior run's corpus footprint as its own.
+    crate::sweep::registry::set_resident_baseline_bytes(None);
 
     // Detach the run so a client disconnect (browser refresh / SPA navigation)
     // can't drop the request future mid-sweep, AND so this POST returns as soon as
@@ -674,7 +678,12 @@ async fn run_grouped_sweep_job(
     }
 
     // Corpus is fully resident here — the Phase 0 baseline's first peak (every
-    // streaming phase is judged against this RSS/seconds reading).
+    // streaming phase is judged against this RSS/seconds reading). It is also the
+    // run's permanent resident floor: capture it so the mid-run headroom read
+    // (`usable_host_bytes`) treats the corpus as consumed but the fold buffers it is
+    // about to allocate as reusable, instead of starving onto the slow fold path as
+    // its own RSS grows. Captured once, here, because no fold buffer exists yet.
+    crate::sweep::registry::set_resident_baseline_bytes(crate::sweep::obs::process_rss_bytes());
     tracing::info!(
         tokens = corpus.token_count(),
         trades = corpus.trade_count(),
