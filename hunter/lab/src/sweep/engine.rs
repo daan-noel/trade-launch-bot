@@ -66,8 +66,10 @@ pub(crate) fn fill_outcomes_with_state<S: Strategy>(
 /// wave driver in [`run_sweep`] for heavy `TokenState` (generic `MetricSeries`) so
 /// series is not rebuilt per combo pass.
 ///
-/// Shared by the parallel [`run_sweep`] helpers and the serial per-group fold in
-/// `grouped_engine`, so both resolve entries identically.
+/// A convenience wrapper used by the engine's own unit tests; the production
+/// drivers call [`fill_outcomes_with_state`] directly so they can hoist
+/// `prepare_token` out of the combo loop.
+#[cfg(test)]
 pub(crate) fn fill_outcomes<S: Strategy>(
     strategy: &S,
     params: &[S::Params],

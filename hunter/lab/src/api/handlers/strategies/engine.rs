@@ -7,12 +7,74 @@
 use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use serde_json::json;
 use uuid::Uuid;
 
 use trading_core::api::table_query::TableRequest;
+use trading_core::storage::token_enrichment::TokenEnrichment;
 
 use crate::state::local_state::LocalState;
 use crate::strategies::engine_sim::{self, EngineSimRequest};
+
+/// A matched token sent to the page. Carries the **full** shared token enrichment
+/// (`#[serde(flatten)] token`) in the response body — no client-side merge — plus
+/// the row-owned identity/divergent fields (`mint`/`symbol`/`ath_price`/`created_at`)
+/// the shared struct excludes. Field names match the frontend's `MatchedTokenRecord`.
+#[derive(Serialize)]
+pub struct MatchedTokenResult {
+    pub mint_address: String,
+    pub symbol: String,
+    /// Token creation time (from `tokens.created_at`).
+    pub created_at: DateTime<Utc>,
+    pub ath_price: Option<f64>,
+    #[serde(flatten)]
+    pub token: TokenEnrichment,
+}
+
+#[derive(Serialize)]
+pub struct MatchedTokensResponse {
+    pub tokens: Vec<MatchedTokenResult>,
+}
+
+/// One server-side page of the tokens in a matched mint set, carrying the shared
+/// token enrichment. The mint set is produced upstream (the rule's fingerprint
+/// scan); this only pages + enriches it.
+async fn matched_page_response(
+    repo: trading_core::storage::repositories::strategy_repo::StrategyRepo,
+    mints: &[String],
+    req: TableRequest,
+) -> HttpResponse {
+    use trading_core::storage::repositories::strategy_repo::PositionQuery;
+    let (limit, offset) = req.pagination.bounds();
+    let pq = PositionQuery::from(req);
+    match (
+        repo.find_tokens_by_mints_paged(mints, limit, offset, &pq).await,
+        repo.count_tokens_by_mints(mints, &pq).await,
+    ) {
+        (Ok(rows), Ok(total)) => {
+            let tokens: Vec<MatchedTokenResult> = rows
+                .iter()
+                .map(|r| MatchedTokenResult {
+                    mint_address: r.mint_address.clone(),
+                    symbol: r.symbol.clone(),
+                    created_at: r.token_created_at,
+                    ath_price: r.ath_price,
+                    token: TokenEnrichment::from(r),
+                })
+                .collect();
+            HttpResponse::Ok()
+                .insert_header(("X-Total-Count", total.to_string()))
+                .insert_header(("Access-Control-Expose-Headers", "X-Total-Count"))
+                .json(MatchedTokensResponse { tokens })
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::error!("matched-token page query failed: {e}");
+            HttpResponse::InternalServerError().json(json!({"error": "Failed to build matched tokens"}))
+        }
+    }
+}
 
 /// POST `/api/strategies/simulate` — start a generic engine simulation for a saved
 /// rule (`{ "rule_id": ... }`) or an inline draft (`{ "draft": { ... } }`), over an
@@ -87,5 +149,5 @@ pub async fn engine_matched_tokens(
                 .json(serde_json::json!({ "error": "Failed to build matched tokens" }));
         }
     };
-    super::tpsl1::matched_page_response(app_state.strategy_repo(), &mints, req).await
+    matched_page_response(app_state.strategy_repo(), &mints, req).await
 }

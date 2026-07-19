@@ -38,7 +38,15 @@ use crate::state::local_state::LocalState;
 use crate::state::sim_results::SimOutcome;
 use crate::strategies::replay::{self, outcome_to_row, EngineBacktestResult, ReplayConfig, ReplayToken};
 use crate::strategies::sim_progress::SimProgress;
-use crate::strategies::sim_spawn::rows_to_json;
+
+/// Serialize a backtest row vector to JSON values for storage.
+fn rows_to_json<T: serde::Serialize>(rows: Vec<T>) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+    match serde_json::to_value(&rows) {
+        Ok(serde_json::Value::Array(vals)) => Ok(vals),
+        Ok(_) => anyhow::bail!("unexpected sim result shape (not an array)"),
+        Err(e) => Err(anyhow::Error::from(e)),
+    }
+}
 
 /// A generic-engine simulate request: a saved rule id **or** an inline draft, plus
 /// the optional creation-time window.
