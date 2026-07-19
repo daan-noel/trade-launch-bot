@@ -12,16 +12,19 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Serialize;
+use trading_core::strategies::kernel::RunSummary;
 use uuid::Uuid;
 
 /// Rollup of one finished backtest's per-token rows.
+///
+/// Carries the core kernel's [`RunSummary`] two-band shape verbatim rather than a hand-picked
+/// subset, so the rules table's last-simulation column reads from the *same*
+/// realized-only aggregate the grouped sweep and a live/paper run report. The
+/// old five-scalar shape had its own `total_pnl_sol` that silently included
+/// still-open marks (parity plan B4).
 #[derive(Clone)]
 pub struct SimSummary {
-    pub n_fired: usize,
-    pub closed: usize,
-    pub win_rate: f64,
-    pub avg_pnl_pct: f64,
-    pub total_pnl_sol: f64,
+    pub metrics: RunSummary,
     pub computed_at: DateTime<Utc>,
     /// The rule's `sim_key` at computation time — compared against the rule's
     /// *current* key at read time so an edited-since-last-run rule can be
@@ -30,14 +33,13 @@ pub struct SimSummary {
 }
 
 /// Wire shape for the rules table — `sim_key` stays server-side; `is_stale`
-/// is the derived comparison against the rule's current key.
+/// is the derived comparison against the rule's current key. The metrics are
+/// **flattened**, so this serializes to the shared `RunSummary` `realized`/`mtm` bands plus
+/// the two rules-table-only extras.
 #[derive(Serialize)]
 pub struct SimSummaryView {
-    pub n_fired: usize,
-    pub closed: usize,
-    pub win_rate: f64,
-    pub avg_pnl_pct: f64,
-    pub total_pnl_sol: f64,
+    #[serde(flatten)]
+    pub metrics: RunSummary,
     pub computed_at: DateTime<Utc>,
     pub is_stale: bool,
 }
@@ -45,11 +47,7 @@ pub struct SimSummaryView {
 impl SimSummary {
     pub fn view(&self, current_sim_key: &str) -> SimSummaryView {
         SimSummaryView {
-            n_fired: self.n_fired,
-            closed: self.closed,
-            win_rate: self.win_rate,
-            avg_pnl_pct: self.avg_pnl_pct,
-            total_pnl_sol: self.total_pnl_sol,
+            metrics: self.metrics.clone(),
             computed_at: self.computed_at,
             is_stale: self.sim_key != current_sim_key,
         }

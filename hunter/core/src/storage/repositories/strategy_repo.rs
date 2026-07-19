@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::api::table_query::{FilterOp, FilterSpec, MAX_FILTER_IN_VALUES, TableRequest};
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
-use crate::strategies::kernel::weighted_return_pct;
+use crate::strategies::kernel::{round_trip_with_costs, weighted_return_pct, CostModel};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
     PositionsSummary, StrategyPosition, LegacyStrategyRule, StrategyRun, StrategyRunMetrics,
@@ -272,6 +272,20 @@ struct PositionsSummaryRow {
     sum_hold_secs: f64,
     best_pct: Option<f64>,
     worst_pct: Option<f64>,
+    /// The still-open positions' `(mint_address, entry_price, entry_lamports)`,
+    /// aggregated into JSON by the same query rather than fetched separately —
+    /// open positions are bounded by the rule's concurrency cap (a handful), so
+    /// this ships a tiny array instead of costing a second round-trip. Marked to
+    /// the live cache price by [`StrategyRepo::positions_summary`]'s `price_of`.
+    open_marks: serde_json::Value,
+}
+
+/// One still-open position's basis, for marking to the current cache price.
+#[derive(serde::Deserialize)]
+struct OpenMark {
+    mint_address: String,
+    entry_price: Option<f64>,
+    entry_lamports: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,12 +1262,15 @@ impl StrategyRepo {
     }
 
     /// Run-wide position aggregates (paper rules resolve their latest run to this).
+    /// `price_of` resolves a mint's current price for the open mark — see
+    /// [`positions_summary`](Self::positions_summary).
     pub async fn positions_summary_by_run(
         &self,
         run_id: Uuid,
         query: &PositionQuery,
+        price_of: impl Fn(&str) -> Option<f64>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("sp.run_id", run_id, None, query).await
+        self.positions_summary("sp.run_id", run_id, None, query, price_of).await
     }
 
     /// Rule-wide position aggregates across all runs (real-rule lifetime history).
@@ -1261,8 +1278,9 @@ impl StrategyRepo {
         &self,
         rule_id: Uuid,
         query: &PositionQuery,
+        price_of: impl Fn(&str) -> Option<f64>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("sp.rule_id", rule_id, None, query).await
+        self.positions_summary("sp.rule_id", rule_id, None, query, price_of).await
     }
 
     /// Rule-wide aggregates across all runs except one (the run-history view) —
@@ -1272,8 +1290,9 @@ impl StrategyRepo {
         rule_id: Uuid,
         exclude_run_id: Uuid,
         query: &PositionQuery,
+        price_of: impl Fn(&str) -> Option<f64>,
     ) -> anyhow::Result<PositionsSummary> {
-        self.positions_summary("sp.rule_id", rule_id, Some(exclude_run_id), query).await
+        self.positions_summary("sp.rule_id", rule_id, Some(exclude_run_id), query, price_of).await
     }
 
     /// Shared aggregate query behind the summary views. `scope_col` is a trusted
@@ -1284,12 +1303,19 @@ impl StrategyRepo {
     /// are shipped. The win rule mirrors [`StrategyPosition::is_win`]: a clean `End`
     /// exit with positive realized SOL (`exit_lamports > entry_lamports`); every other closed
     /// position is a loss. SOL columns are lamports → divided to human SOL here.
+    ///
+    /// `price_of` resolves a mint's current price so the still-open positions can be
+    /// marked to market into `open_pnl_sol`. It is a caller-supplied closure rather
+    /// than a cache handle because the price lives in the live runtime cache, not in
+    /// Postgres — this keeps the repo layer free of a dependency on it (the `lab`
+    /// bin, which has no such cache, passes `|_| None` and gets a `0.0` mark).
     async fn positions_summary(
         &self,
         scope_col: &str,
         scope_id: Uuid,
         exclude_run: Option<Uuid>,
         query: &PositionQuery,
+        price_of: impl Fn(&str) -> Option<f64>,
     ) -> anyhow::Result<PositionsSummary> {
         // Predicates (kept in one place so the two summary views can't drift):
         //   entered  := entry_price IS NOT NULL
@@ -1331,7 +1357,13 @@ impl StrategyRepo {
                MIN(CASE WHEN sp.status = 'ExitFailed' THEN -100.0 \
                         ELSE (sp.exit_price - sp.entry_price) / sp.entry_price * 100.0 END) \
                         FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
-                                  AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct \
+                                  AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct, \
+               COALESCE(json_agg(json_build_object( \
+                          'mint_address', sp.mint_address, \
+                          'entry_price', sp.entry_price, \
+                          'entry_lamports', sp.entry_lamports)) \
+                        FILTER (WHERE sp.entry_price IS NOT NULL \
+                                  AND sp.status IN ('Holding','Arming','BuySubmitted')), '[]') AS open_marks \
              FROM strategy_positions sp \
              LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
              LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE ",
@@ -1351,6 +1383,29 @@ impl StrategyRepo {
             weighted_return_pct(row.total_pnl_lamports as f64, row.closed_entry_lamports as f64);
         let avg_hold_secs = if closed > 0 { row.sum_hold_secs / closed as f64 } else { 0.0 };
 
+        // Mark the open positions to the caller-supplied current price, pricing the
+        // hypothetical round-trip through the **same** `CostModel` the sim and the
+        // sweep use — so a live rule's unrealized figure is directly comparable to a
+        // backtest's `open_pnl_sol` instead of being a raw price delta. A position
+        // whose token has no cached price yet (just entered, no post-entry trade)
+        // contributes nothing rather than a fabricated 0-price loss.
+        let open_pnl_sol = serde_json::from_value::<Vec<OpenMark>>(row.open_marks)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|m| {
+                let entry_price = m.entry_price.filter(|p| *p > 0.0)?;
+                let current = price_of(&m.mint_address).filter(|p| p.is_finite() && *p > 0.0)?;
+                let notional = lamports_to_sol(m.entry_lamports);
+                let (pnl_sol, _) = round_trip_with_costs(
+                    entry_price,
+                    current,
+                    notional,
+                    &CostModel::pumpfun_default(),
+                );
+                Some(pnl_sol)
+            })
+            .sum();
+
         Ok(PositionsSummary {
             tokens: row.tokens,
             open: row.open,
@@ -1360,6 +1415,7 @@ impl StrategyRepo {
             win_rate,
             avg_pnl_pct,
             total_pnl_sol: lamports_to_sol(row.total_pnl_lamports),
+            open_pnl_sol,
             total_entry_sol: lamports_to_sol(row.total_entry_lamports),
             total_holding_sol: lamports_to_sol(row.total_holding_lamports),
             total_gains_sol: lamports_to_sol(row.total_gains_lamports),

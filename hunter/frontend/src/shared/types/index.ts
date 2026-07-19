@@ -1,4 +1,7 @@
 import type { ChartSwingLeg } from 'components/token-price-chart';
+import type { RunSummary } from 'lib/strategy/runSummary';
+
+export type { RunMetrics, RunSummary } from 'lib/strategy/runSummary';
 
 export type PriceUnit = 'SOL' | 'USD';
 
@@ -292,7 +295,13 @@ export interface PositionsSummary {
   closed: number;
   win_rate: number;
   avg_pnl_pct: number;
+  /** Realized only — closed positions. Never includes an open position's mark. */
   total_pnl_sol: number;
+  /** Unrealized mark-to-current-price PnL of the still-open positions, priced
+   *  through the same cost model the sim and the sweep use. Reported beside
+   *  `total_pnl_sol`, never folded into it, so a rule holding its losers open
+   *  can't read as profitable. */
+  open_pnl_sol: number;
   total_entry_sol: number;
   total_holding_sol: number;
   total_gains_sol: number;
@@ -361,14 +370,14 @@ export interface SimulatedTokenResult extends TokenEnrichmentFields {
 
 /** Filtered-population aggregate for the Simulated summary card (server-side over
  *  rows matching the table's search/filters). Mirrors the lab `sim_result_summary`
- *  handler. */
-export interface SimulatedSummary {
-  total_tokens: number;
-  closed_tokens: number;
-  /** Fraction of closed tokens with pnl_sol > 0 (0..1). */
-  win_rate: number;
-  avg_pnl_percent: number;
-  total_pnl_sol: number;
+ *  handler, which serializes the core kernel's `RunSummary` verbatim.
+ *
+ *  This **is** the shared run-summary shape — the same two-band `realized`/`mtm`
+ *  payload the grouped sweep aggregates to and the live/paper positions card maps
+ *  onto — so one renderer (`lib/strategy/runSummary`) draws all three. It replaced
+ *  a narrow five-field shape whose `total_pnl_sol` silently folded in unrealized
+ *  open marks (parity plan B4/F1). */
+export interface SimulatedSummary extends RunSummary {
   /** ISO time the run's result was generated — rendered as relative time ("20m
    *  ago") in the Simulate table's Run column. Null/absent for legacy payloads. */
   computed_at?: string | null;

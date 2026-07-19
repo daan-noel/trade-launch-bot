@@ -430,26 +430,40 @@ pub async fn get_positions_summary_by_rule(
         Err(e) => return list_error("load rule", e),
     };
 
+    // Marks the still-open positions to market for `open_pnl_sol` — an in-memory
+    // cache read per open position (bounded by the rule's concurrency cap), no DB
+    // or RPC round-trip. `None` for a token with no price yet leaves that position
+    // out of the mark rather than inventing one.
+    let token_cache = app_state.token_cache.clone();
+    let price_of = |mint: &str| -> Option<f64> {
+        token_cache
+            .get(mint)
+            .and_then(|e| e.value().current_price)
+            .filter(|p| p.is_finite() && *p > 0.0)
+    };
+
     // Mirror the scope semantics of `get_positions_by_rule` so the summary card
     // aggregates exactly the population its table pages.
     let result = match scope {
         Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
-            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq).await,
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load current run", e),
         },
         Some(PositionScope::History) => match repo.latest_run(rule_id, &rule.trade_mode).await {
             // Exclude the current run; a lone run yields an empty (tokens=0) summary.
-            Ok(Some(run)) => repo.positions_summary_by_rule_excluding_run(rule_id, run.id, &pq).await,
+            Ok(Some(run)) => {
+                repo.positions_summary_by_rule_excluding_run(rule_id, run.id, &pq, price_of).await
+            }
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load current run", e),
         },
         None if rule.trade_mode == "paper" => match repo.latest_run(rule_id, "paper").await {
-            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq).await,
+            Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load paper run", e),
         },
-        None => repo.positions_summary_by_rule(rule_id, &pq).await,
+        None => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
     };
 
     match result {

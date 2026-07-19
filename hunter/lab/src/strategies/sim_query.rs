@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use trading_core::api::table_eval::{apply_table_request, filter_table_request, resolve_token_enrichment_key, ColKind};
 use trading_core::api::table_query::TableRequest;
+use trading_core::strategies::kernel::{run_summary, ExitCode, RunSummary, TokenOutcome};
 
 /// Resolve a frontend column key to the JSON field it reads + its type. `None` =
 /// not filterable/sortable (dropped). Mirrors the frontend `simColumns` +
@@ -70,47 +71,57 @@ pub fn filter_rows(rows: &[Value], req: &TableRequest) -> Vec<Value> {
     filter_table_request(rows, req, resolve)
 }
 
-/// Aggregate rollup over a finished sim's rows — the one definition of "closed"
-/// (has an `exit_time`), "win" (`pnl_sol > 0`), and the averages, shared by the
-/// filtered Simulated-summary card ([`super::super::api::handlers::strategies::positions::sim_result_summary`])
-/// and the unfiltered rules-table last-simulation rollup ([`super::sim_spawn`]) —
-/// same source rows, same definitions, one place to keep them in sync.
-pub struct SimRollup {
-    pub n_fired: usize,
-    pub closed: usize,
-    pub win_rate: f64,
-    pub avg_pnl_pct: f64,
-    pub total_pnl_sol: f64,
+/// Narrow one sim result row (the JSON shape [`super::replay::outcome_to_row`]
+/// emits) to the kernel's [`TokenOutcome`]. Every row in a finished sim's payload
+/// is an *entered* position — the replay only emits a row once an entry filled —
+/// so `fired` is unconditionally true and `n_fired` is the row count.
+///
+/// "Closed" is decided by `exit_reason`, **not** by `exit_time != null`: the
+/// analysis-only death-close (`ExitCode::Dead`) is a genuine close that carries no
+/// exit tx/time, and reading `exit_time` would misfile it as open. `exit_reason` is
+/// the same discriminator the sweep aggregates on, which is the point.
+fn row_to_outcome(row: &Value) -> TokenOutcome {
+    let num = |k: &str| -> f64 { row.get(k).and_then(Value::as_f64).unwrap_or(0.0) };
+    let exit = row
+        .get("exit_reason")
+        .and_then(Value::as_str)
+        .map(ExitCode::from_reason)
+        .unwrap_or(ExitCode::Open);
+    TokenOutcome {
+        fired: true,
+        // Open rows carry `holding_secs: null`; the kernel excludes them from every
+        // holding statistic anyway, so 0 is never summed.
+        holding_secs: row.get("holding_secs").and_then(Value::as_i64).unwrap_or(0),
+        pnl_percent: num("pnl_percent") as f32,
+        pnl_sol: num("pnl_sol") as f32,
+        exit,
+    }
 }
 
-pub fn summarize(rows: &[Value]) -> SimRollup {
-    let num = |row: &Value, k: &str| -> Option<f64> { row.get(k).and_then(Value::as_f64) };
-    let mut closed = 0usize;
-    let mut wins = 0usize;
-    let mut pnl_pct_sum = 0.0;
-    let mut pnl_pct_n = 0usize;
-    let mut pnl_sol_sum = 0.0;
-    for row in rows {
-        let is_closed = row.get("exit_time").map(|v| !v.is_null()).unwrap_or(false);
-        if is_closed {
-            closed += 1;
-            if num(row, "pnl_sol").unwrap_or(0.0) > 0.0 {
-                wins += 1;
-            }
-        }
-        if let Some(p) = num(row, "pnl_percent") {
-            pnl_pct_sum += p;
-            pnl_pct_n += 1;
-        }
-        pnl_sol_sum += num(row, "pnl_sol").unwrap_or(0.0);
-    }
-    SimRollup {
-        n_fired: rows.len(),
-        closed,
-        win_rate: if closed > 0 { wins as f64 / closed as f64 } else { 0.0 },
-        avg_pnl_pct: if pnl_pct_n > 0 { pnl_pct_sum / pnl_pct_n as f64 } else { 0.0 },
-        total_pnl_sol: pnl_sol_sum,
-    }
+/// Aggregate rollup over a finished sim's rows, shared by the filtered
+/// Simulated-summary card
+/// ([`super::super::api::handlers::strategies::positions::sim_result_summary`])
+/// and the unfiltered rules-table last-simulation rollup ([`super::sim_spawn`]).
+///
+/// **Delegates to the core kernel** ([`run_summary`]) rather than counting here,
+/// so a single-rule simulate and a grouped-sweep combo over the same outcomes
+/// produce byte-identical numbers — same realized-only semantics in the
+/// `realized` band (a still-`Open` mark feeds `n_fired`/`n_open`/`open_pnl_sol`
+/// and nothing else), same win-rate denominator, same exit-code buckets, and the
+/// same `mtm` counterpart band. The previous hand-rolled version summed open
+/// marks into a single `total_pnl_sol` and averaged `pnl_percent` over open rows
+/// too, so a rule holding its losers open read as profitable here while the sweep
+/// reported the loss (parity plan B1-B4).
+///
+/// Exact (not sketch) quantiles: a sim's row set is bounded — one rule over one
+/// corpus, already resident in RAM — so this matches the sweep **drill-in**
+/// (`ComboMetrics::exact_from_rows`) precisely. The persisted sweep row goes
+/// through the streaming DDSketch instead and carries ~15% error on the two
+/// interior quantiles; that is a property of the unbounded combos × tokens fold,
+/// not a parity break here.
+pub fn summarize(rows: &[Value]) -> RunSummary {
+    let outcomes: Vec<TokenOutcome> = rows.iter().map(row_to_outcome).collect();
+    run_summary(outcomes.iter())
 }
 
 #[cfg(test)]
@@ -128,6 +139,114 @@ mod tests {
 
     fn req(json: serde_json::Value) -> TableRequest {
         serde_json::from_value(json).expect("TableRequest")
+    }
+
+    // ── summary parity (plan B1-B4) ─────────────────────────────────────────
+
+    /// A sim row as `outcome_to_row` emits it: `exit_reason` always present,
+    /// `exit_time`/`holding_secs` null on a still-open position.
+    fn sim_row(pnl_sol: f64, pnl_pct: f64, exit: &str, holding: Option<i64>) -> Value {
+        json!({
+            "mint_address": "m", "symbol": "S",
+            "pnl_sol": pnl_sol, "pnl_percent": pnl_pct,
+            "exit_reason": exit,
+            "holding_secs": holding,
+            "exit_time": if exit == "Open" { Value::Null } else { json!("2026-01-01T00:00:00Z") },
+        })
+    }
+
+    #[test]
+    fn open_marks_are_excluded_from_the_headline_total() {
+        // The regression this whole change exists for: a rule whose losers closed
+        // and whose big winner is still open must NOT report the open mark in
+        // `total_pnl_sol`. The old hand-rolled rollup summed every row.
+        let rows = vec![
+            sim_row(1.0, 50.0, "TakeProfit", Some(10)),
+            sim_row(-1.0, -50.0, "StopLoss", Some(10)),
+            sim_row(1_000.0, 5_000.0, "Open", None),
+        ];
+        let m = summarize(&rows).realized;
+        assert_eq!(m.n_fired, 3);
+        assert_eq!(m.n_open, 1);
+        assert_eq!(m.n_closed, 2);
+        assert!((m.total_pnl_sol - 0.0).abs() < 1e-9, "realized total excludes the open mark");
+        assert!((m.open_pnl_sol - 1_000.0).abs() < 1e-9, "open mark surfaced separately");
+        assert!((m.win_rate - 0.5).abs() < 1e-9, "win rate over closed only");
+        assert_eq!(m.best_pnl_pct, 50.0, "the open mark must not become the best");
+    }
+
+    #[test]
+    fn death_close_counts_as_closed_despite_a_null_exit_time() {
+        // `ExitCode::Dead` is a genuine close that carries no exit tx/time. The old
+        // rollup keyed "closed" off `exit_time != null` and so booked it as open.
+        let rows = vec![sim_row(-0.4, -80.0, "Dead", Some(600))];
+        let m = summarize(&rows).realized;
+        assert_eq!(m.n_closed, 1, "a death-close is closed");
+        assert_eq!(m.n_open, 0);
+        assert_eq!(m.n_exit_dead, 1);
+        assert!((m.total_pnl_sol - -0.4).abs() < 1e-6, "its loss lands in the realized total");
+    }
+
+    #[test]
+    fn simulate_summary_equals_the_sweep_drill_in_on_the_same_outcomes() {
+        // The parity lock: identical outcomes must roll up identically through the
+        // simulate path (JSON rows → `summarize`) and the grouped-sweep drill-in
+        // (`ComboTokenResult` rows → `ComboMetrics::exact_from_rows`). Both now
+        // delegate to `exact_run_metrics`, so this can only break if one of them
+        // grows a private aggregate again.
+        use crate::sweep::aggregate::ComboMetrics;
+        use trading_core::models::grouped_sweep::ComboTokenResult;
+
+        let specs: Vec<(f64, f64, &str, Option<i64>)> = vec![
+            (2.0, 100.0, "TakeProfit", Some(10)),
+            (-1.0, -50.0, "StopLoss", Some(20)),
+            (0.5, 25.0, "Metrics", Some(35)),
+            (-0.4, -80.0, "Dead", Some(600)),
+            (5.0, 999.0, "Open", None),
+        ];
+
+        let sim_rows: Vec<Value> =
+            specs.iter().map(|&(sol, pct, ex, h)| sim_row(sol, pct, ex, h)).collect();
+        let sweep_rows: Vec<ComboTokenResult> = specs
+            .iter()
+            .map(|&(sol, pct, ex, h)| ComboTokenResult {
+                mint_address: "m".into(),
+                symbol: "S".into(),
+                fired: true,
+                pnl_sol: sol as f32,
+                pnl_pct: pct as f32,
+                holding_secs: h.unwrap_or(0),
+                exit: ex.into(),
+                entry_time: None,
+                entry_price: None,
+                entry_tx: None,
+                entry_slot: None,
+                exit_time: None,
+                exit_price: None,
+                exit_tx: None,
+                exit_slot: None,
+                created_at: None,
+                ath_price: None,
+                token: Default::default(),
+            })
+            .collect();
+
+        let sim = summarize(&sim_rows).realized;
+        let sweep = ComboMetrics::exact_from_rows(0, &sweep_rows);
+
+        assert_eq!(sim.n_fired, sweep.n_fired);
+        assert_eq!(sim.n_open, sweep.n_open);
+        assert_eq!(sim.n_closed, sweep.n_closed);
+        assert!((sim.win_rate - sweep.win_rate).abs() < 1e-9);
+        assert!((sim.total_pnl_sol - sweep.total_pnl_sol).abs() < 1e-6);
+        assert!((sim.open_pnl_sol - sweep.open_pnl_sol).abs() < 1e-6);
+        assert!((sim.mean_pnl_pct - sweep.mean_pnl_pct).abs() < 1e-6);
+        assert!((sim.median_pnl_pct - sweep.median_pnl_pct).abs() < 1e-6);
+        assert!((sim.expectancy_sol - sweep.expectancy_sol).abs() < 1e-6);
+        assert!((sim.avg_holding_secs - sweep.avg_holding_secs).abs() < 1e-9);
+        assert_eq!(sim.n_exit_dead, sweep.n_exit_dead);
+        assert_eq!(sim.n_exit_metrics, sweep.n_exit_metrics);
+        assert_eq!(sim.profit_factor.is_some(), sweep.profit_factor.is_some());
     }
 
     #[test]

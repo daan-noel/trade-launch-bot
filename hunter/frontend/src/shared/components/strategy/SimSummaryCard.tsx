@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { PositionsSummary } from 'types';
-import { formatAge } from 'utils/format';
+import { runSummarySections, type RunSummary } from 'lib/strategy/runSummary';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { SummaryStatsPanel, type SummaryStat } from './SummaryStatsPanel';
 
@@ -18,6 +18,55 @@ interface SimSummaryCardProps {
   summary: PositionsSummary;
 }
 
+/**
+ * Map the live/paper SQL aggregate onto the shared two-band run summary, so a
+ * running rule reports the same metrics under the same labels as its simulate and
+ * its sweep (parity plan B11/F3).
+ *
+ * `median`/`p90`/`std`/`score` stay `null`: the live summary is a Postgres
+ * aggregate with no per-position distribution to draw a quantile from, and
+ * emitting `0` would assert a measurement that was never taken. Everything else
+ * is derivable — `win_rate` is a 0-100 percent here and 0..1 in the shared shape.
+ */
+function toRunSummary(s: PositionsSummary): RunSummary {
+  const closed = s.closed;
+  const realized = {
+    n_fired: s.tokens,
+    n_open: s.open,
+    n_closed: closed,
+    win_rate: closed > 0 ? s.win_rate / 100 : 0,
+    total_pnl_sol: s.total_pnl_sol,
+    open_pnl_sol: s.open_pnl_sol,
+    expectancy_sol: closed > 0 ? s.total_pnl_sol / closed : 0,
+    mean_pnl_pct: s.avg_pnl_pct,
+    median_pnl_pct: null,
+    p90_pnl_pct: null,
+    best_pnl_pct: s.best_pct,
+    worst_pnl_pct: s.worst_pct,
+    std_pnl_pct: null,
+    profit_factor: s.total_losses_sol > 0 ? s.total_gains_sol / s.total_losses_sol : null,
+    score: null,
+    avg_holding_secs: s.avg_hold_secs,
+    median_holding_secs: 0,
+    // A live position's exit reason isn't carried on this aggregate; the
+    // TP/SL/Met/Dead tile reads 0s rather than inventing a breakdown.
+    n_exit_take_profit: 0,
+    n_exit_stop_loss: 0,
+    n_exit_trailing: 0,
+    n_exit_stall: 0,
+    n_exit_time: 0,
+    n_exit_liquidity: 0,
+    n_exit_next_kill: 0,
+    n_exit_dead: 0,
+    n_exit_metrics: 0,
+    n_exit_open: s.open,
+  };
+  // MTM differs from realized only by folding the open mark into the total — the
+  // per-trade distribution of an unsettled position isn't known here.
+  const mtm = { ...realized, total_pnl_sol: s.total_pnl_sol + s.open_pnl_sol };
+  return { realized, mtm };
+}
+
 export function SimSummaryCard({
   ruleName,
   price,
@@ -26,116 +75,39 @@ export function SimSummaryCard({
   summary,
 }: SimSummaryCardProps) {
   // The server `summary` is the source of truth — correct over the filtered cohort
-  // (not just the current page) and already in human SOL. Derive the display
-  // aggregates once and memoize so these don't recompute on price-unit ticks.
-  const {
-    tokensMatched,
-    openCount,
-    winCount,
-    lossCount,
-    winRate,
-    totalEntry,
-    totalHolding,
-    totalGains,
-    totalLosses,
-    totalPnl,
-    avgPnl,
-    avgEntry,
-    avgHold,
-    best,
-    worst,
-  } = useMemo(
-    () => ({
-      tokensMatched: summary.tokens,
-      openCount: summary.open,
-      winCount: summary.win,
-      lossCount: summary.loss,
-      winRate: summary.win_rate,
-      totalEntry: summary.total_entry_sol,
-      totalHolding: summary.total_holding_sol,
-      totalGains: summary.total_gains_sol,
-      totalLosses: summary.total_losses_sol,
-      totalPnl: summary.total_pnl_sol,
-      avgPnl: summary.closed > 0 ? summary.avg_pnl_pct : null,
-      avgEntry: summary.tokens > 0 ? summary.total_entry_sol / summary.tokens : null,
-      avgHold: summary.closed > 0 ? summary.avg_hold_secs : null,
-      best: summary.best_pct,
-      worst: summary.worst_pct,
-    }),
-    [summary],
-  );
+  // (not just the current page) and already in human SOL. Derive once and memoize
+  // so these don't recompute on price-unit ticks.
+  const { hero, sections } = useMemo(() => runSummarySections(toRunSummary(summary)), [summary]);
 
-  // Headline KPIs, shown large; the rest read as a lighter secondary strip.
-  const heroStats: SummaryStat[] = [
-    {
-      label: `Total PnL (${price.unitLabel})`,
-      value: price.displayAmount(totalPnl),
-      cls: totalPnl >= 0 ? 'text-primary' : 'text-red',
-    },
-    {
-      label: 'Win Rate',
-      value: winRate != null && Number.isFinite(winRate) ? `${winRate.toFixed(1)}%` : '—',
-      cls:
-        winRate != null && Number.isFinite(winRate)
-          ? winRate >= 50
-            ? 'text-primary'
-            : 'text-red'
-          : undefined,
-    },
-    {
-      label: 'Return %',
-      value: avgPnl != null ? `${avgPnl >= 0 ? '+' : ''}${avgPnl.toFixed(1)}%` : '—',
-      cls: avgPnl != null ? (avgPnl >= 0 ? 'text-primary' : 'text-red') : undefined,
-    },
-    { label: 'Tokens', value: String(tokensMatched) },
-  ];
-
-  const detailStats: SummaryStat[] = [
-    {
-      label: 'W / L / Open',
-      node: (
-        <>
-          <span className="text-green">{winCount}</span>
-          <span className="text-text-dim"> / </span>
-          <span className="text-red">{lossCount}</span>
-          <span className="text-text-dim"> / </span>
-          <span className="text-text-mid">{openCount}</span>
-        </>
-      ),
-    },
-    { label: `Total Entry (${price.unitLabel})`, value: price.displayAmount(totalEntry) },
-    { label: `Total Holding (${price.unitLabel})`, value: price.displayAmount(totalHolding) },
-    { label: 'Avg Entry', value: avgEntry != null ? price.displayAmount(avgEntry) : '—' },
-    {
-      label: `Total Gains (${price.unitLabel})`,
-      value: price.displayAmount(totalGains),
-      cls: 'text-green',
-    },
-    {
-      label: `Total Losses (${price.unitLabel})`,
-      value: price.displayAmount(totalLosses),
-      cls: 'text-red',
-    },
-    { label: 'Avg Hold', value: avgHold != null ? formatAge(Math.round(avgHold)) : '—' },
-    {
-      label: 'Best',
-      value: best != null ? `${best >= 0 ? '+' : ''}${best.toFixed(1)}%` : '—',
-      cls: 'text-green',
-    },
-    {
-      label: 'Worst',
-      value: worst != null ? `${worst >= 0 ? '+' : ''}${worst.toFixed(1)}%` : '—',
-      cls: 'text-red',
-    },
-  ];
+  // Capital deployment is live-only — a backtest has no treasury — so it stays a
+  // separate strip rather than being forced into the shared bands. These are the
+  // figures the price-unit toggle applies to.
+  const capitalStats: SummaryStat[] = useMemo(() => {
+    const avgEntry = summary.tokens > 0 ? summary.total_entry_sol / summary.tokens : null;
+    return [
+      { label: `Total Entry (${price.unitLabel})`, value: price.displayAmount(summary.total_entry_sol) },
+      { label: `Total Holding (${price.unitLabel})`, value: price.displayAmount(summary.total_holding_sol) },
+      { label: 'Avg Entry', value: avgEntry != null ? price.displayAmount(avgEntry) : '—' },
+      {
+        label: `Total Gains (${price.unitLabel})`,
+        value: price.displayAmount(summary.total_gains_sol),
+        cls: 'text-green',
+      },
+      {
+        label: `Total Losses (${price.unitLabel})`,
+        value: price.displayAmount(summary.total_losses_sol),
+        cls: 'text-red',
+      },
+    ];
+  }, [summary, price]);
 
   return (
     <SummaryStatsPanel
       title={title}
       subtitle={ruleName}
       onClose={onClose}
-      heroStats={heroStats}
-      detailStats={detailStats}
+      heroStats={hero}
+      sections={[...sections, { title: 'Capital', hint: 'SOL deployed by this rule', stats: capitalStats }]}
     />
   );
 }

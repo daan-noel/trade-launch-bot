@@ -1,20 +1,22 @@
-import { dashPercent, dashF } from 'components/strategy/cellFormat';
+import { goodBad, pctText, solText } from 'lib/strategy/runSummary';
 import type { SimulatedSummary } from 'types';
 
 /** Compact funnel summary of a finished simulation run (dry-run panel).
  *  SimulatePage renders the same fields as separate DataTable columns instead.
- *  Wire shape is the lab `sim_result_summary` rollup (`SimulatedSummary`):
- *  `win_rate` is a 0..1 fraction; `avg_pnl_percent` / `total_pnl_sol` are already
- *  display units. */
+ *
+ *  Wire shape is the shared two-band `RunSummary` — `realized` is closed-only,
+ *  `mtm` values the open positions too. Both PnL figures are shown because the
+ *  realized one alone flatters a run that never closed its losers; the same
+ *  reasoning (and the same formatters) as the full summary panel. */
 export function SimSummary({ summary }: { summary: SimulatedSummary }) {
-  const winPct = summary.win_rate != null ? summary.win_rate * 100 : null;
+  const { realized, mtm } = summary;
   const cells: Array<[string, string]> = [
-    ['entered', String(summary.total_tokens ?? '—')],
-    ['closed', String(summary.closed_tokens ?? '—')],
-    ['win rate', dashPercent(winPct)],
-    ['avg pnl', dashPercent(summary.avg_pnl_percent)],
+    ['entered', String(realized.n_fired)],
+    ['closed', String(realized.n_closed)],
+    ['open', String(realized.n_open)],
+    ['win rate', realized.n_closed ? `${(realized.win_rate * 100).toFixed(0)}%` : '—'],
+    ['mean', realized.n_closed ? pctText(realized.mean_pnl_pct) : '—'],
   ];
-  const pnl = summary.total_pnl_sol;
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
       {cells.map(([k, v]) => (
@@ -24,18 +26,18 @@ export function SimSummary({ summary }: { summary: SimulatedSummary }) {
       ))}
       <span className="text-text-dim">
         PnL{' '}
-        <b
-          className={
-            pnl == null || !Number.isFinite(pnl)
-              ? 'text-text tabular-nums'
-              : pnl >= 0
-                ? 'text-green tabular-nums'
-                : 'text-red tabular-nums'
-          }
-        >
-          {dashF(pnl, 3)}◎
+        <b className={`tabular-nums ${goodBad(realized.total_pnl_sol)}`}>
+          {solText(realized.total_pnl_sol)}
         </b>
       </span>
+      {realized.n_open > 0 && (
+        <span className="text-text-dim">
+          incl. open{' '}
+          <b className={`tabular-nums ${goodBad(mtm.total_pnl_sol)}`}>
+            {solText(mtm.total_pnl_sol)}
+          </b>
+        </span>
+      )}
     </div>
   );
 }

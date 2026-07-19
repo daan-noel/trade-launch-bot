@@ -147,6 +147,17 @@ pub struct PositionsSummary {
     pub avg_pnl_pct: f64,
     /// Sum of realized SOL PnL across closed positions (human SOL).
     pub total_pnl_sol: f64,
+    /// **Unrealized** counterpart to `total_pnl_sol`: the sum of still-open
+    /// positions' mark-to-current-price PnL, priced through the same
+    /// [`CostModel`](crate::strategies::kernel::CostModel) round-trip the sim and
+    /// the sweep use, against the live token cache's `current_price`. Reported
+    /// alongside the realized total, never folded into it — so a rule holding its
+    /// losers open can't read as profitable (parity plan B11, matching
+    /// [`RunMetrics::open_pnl_sol`](crate::strategies::kernel::RunMetrics)).
+    ///
+    /// `0.0` when nothing is open, or when no open position has a cached price yet
+    /// (a just-entered token before its first post-entry trade).
+    pub open_pnl_sol: f64,
     /// Sum of entry cost across entered positions (human SOL).
     pub total_entry_sol: f64,
     /// Entry cost still deployed in open (holding) positions (human SOL).

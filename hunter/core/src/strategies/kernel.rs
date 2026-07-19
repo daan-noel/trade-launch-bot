@@ -193,7 +193,12 @@ pub fn weighted_return_pct(sum_pnl_sol: f64, sum_capital_sol: f64) -> f64 {
 /// Rolled-up metrics for one run across a token corpus. Field-for-field the
 /// `strategy_run_metrics` columns (plus the sweep's `score`, ignored when
 /// persisting a live/paper run).
-#[derive(Clone, Debug, PartialEq)]
+///
+/// **Also the wire shape.** Serialized straight to the frontend by every surface
+/// that reports a run's outcome — single-rule simulate, grouped sweep, and a
+/// live/paper run — so all three send the same field names and the UI can render
+/// them through one component instead of three ad-hoc shapes (parity plan B4).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RunMetrics {
     pub n_fired: u64,
     pub n_open: u64,
@@ -503,6 +508,71 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     }
 }
 
+/// A run reported **twice over the same outcomes** — the shape every surface that
+/// summarizes a run (single-rule simulate, grouped sweep, live/paper) sends to the
+/// frontend, so one component renders all three (parity plan B4/F1-F3).
+///
+/// Reporting both is the point. A still-`Open` position has a mark-to-last-price
+/// PnL but no realized outcome, so [`realized`](Self::realized) measures closed
+/// trades only — which, read alone, flatters a rule that simply never closed its
+/// losers: they never entered the sum. [`mtm`](Self::mtm) values every fired
+/// position, open bags included. Neither is "the" answer — realized is what
+/// actually happened, MTM is what the run is currently worth, and the **gap
+/// between them is the signal**: it says how much of the headline is still
+/// unsettled.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RunSummary {
+    /// Closed positions only. Identical to [`exact_run_metrics`]'s output.
+    pub realized: RunMetrics,
+    /// Every fired position, open ones valued at their last price.
+    ///
+    /// Only the PnL / win-rate / central-tendency fields are meaningful here; the
+    /// `n_exit_*` counts are forced to zero because an open position has no exit
+    /// reason to bucket — read them off [`realized`](Self::realized).
+    pub mtm: RunMetrics,
+}
+
+/// Build the two-band [`RunSummary`] from one pass' worth of outcomes.
+///
+/// The MTM band is produced by re-running the **same** [`exact_run_metrics`] with
+/// the open positions reclassified as closed, rather than by a second hand-rolled
+/// copy of the arithmetic — so the two bands can never drift apart and compare
+/// tile-for-tile down the column.
+pub fn run_summary<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -> RunSummary {
+    let all: Vec<TokenOutcome> = outcomes.copied().collect();
+    let realized = exact_run_metrics(all.iter());
+
+    // Reclassify Open → a closed bucket so the same aggregator counts its mark as a
+    // settled outcome. `TakeProfit` is an arbitrary stand-in purely to get past the
+    // `== Open` test; the resulting exit counts are meaningless and zeroed below.
+    let marked: Vec<TokenOutcome> = all
+        .iter()
+        .map(|o| TokenOutcome {
+            exit: if o.exit == ExitCode::Open { ExitCode::TakeProfit } else { o.exit },
+            ..*o
+        })
+        .collect();
+    let mut mtm = exact_run_metrics(marked.iter());
+
+    // An open position contributes no exit reason — don't let the stand-in above
+    // masquerade as a real take-profit.
+    mtm.n_exit_take_profit = 0;
+    mtm.n_exit_stop_loss = 0;
+    mtm.n_exit_trailing = 0;
+    mtm.n_exit_stall = 0;
+    mtm.n_exit_time = 0;
+    mtm.n_exit_liquidity = 0;
+    mtm.n_exit_next_kill = 0;
+    mtm.n_exit_dead = 0;
+    mtm.n_exit_metrics = 0;
+    mtm.n_exit_open = 0;
+    // The open cohort is what MTM folded in; keep the counts describing the run.
+    mtm.n_open = realized.n_open;
+    mtm.open_pnl_sol = realized.open_pnl_sol;
+
+    RunSummary { realized, mtm }
+}
+
 /// Nearest-rank percentile `q` (`0.0..=1.0`) over an ascending-sorted, non-empty
 /// slice. `q=0.5`/`q=0.9` are the median/p90 [`exact_run_metrics`] needs.
 fn exact_quantile_f64(sorted: &[f64], q: f64) -> f64 {
@@ -699,6 +769,54 @@ mod tests {
         assert!((m.total_pnl_sol - 0.0).abs() < 1e-9);
         assert_eq!(m.best_pnl_pct, 50.0);
         assert_eq!(m.worst_pnl_pct, -50.0);
+    }
+
+    // ── two-band run summary (parity plan B4) ───────────────────────────────
+
+    #[test]
+    fn run_summary_bands_split_realized_from_mark_to_market() {
+        let rows = vec![
+            outcome(1.0, 50.0, ExitCode::TakeProfit, 10),
+            outcome(-1.0, -50.0, ExitCode::StopLoss, 10),
+            outcome(-4.0, -80.0, ExitCode::Open, 0), // a big unrealized LOSER
+        ];
+        let s = run_summary(rows.iter());
+
+        // Realized reads flat — the loser never closed.
+        assert!((s.realized.total_pnl_sol - 0.0).abs() < 1e-9);
+        assert_eq!(s.realized.n_closed, 2);
+        // MTM tells the truth about what the run is currently worth.
+        assert!((s.mtm.total_pnl_sol - -4.0).abs() < 1e-9);
+        assert_eq!(s.mtm.n_closed, 3, "MTM settles every fired position");
+        assert!((s.mtm.worst_pnl_pct - -80.0).abs() < 1e-9, "the open loser is the MTM worst");
+        // Both bands agree on how much is unsettled.
+        assert_eq!(s.realized.n_open, 1);
+        assert_eq!(s.mtm.n_open, 1);
+        assert!((s.mtm.open_pnl_sol - -4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn run_summary_bands_are_identical_when_nothing_is_open() {
+        let rows = vec![
+            outcome(1.0, 50.0, ExitCode::TakeProfit, 10),
+            outcome(-1.0, -50.0, ExitCode::StopLoss, 10),
+        ];
+        let s = run_summary(rows.iter());
+        assert!((s.realized.total_pnl_sol - s.mtm.total_pnl_sol).abs() < 1e-9);
+        assert!((s.realized.win_rate - s.mtm.win_rate).abs() < 1e-9);
+        assert!((s.realized.median_pnl_pct - s.mtm.median_pnl_pct).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mtm_band_reports_no_exit_reasons() {
+        // The Open→TakeProfit reclassification must never surface as a real exit.
+        let rows = vec![
+            outcome(1.0, 50.0, ExitCode::TakeProfit, 10),
+            outcome(2.0, 90.0, ExitCode::Open, 0),
+        ];
+        let s = run_summary(rows.iter());
+        assert_eq!(s.realized.n_exit_take_profit, 1);
+        assert_eq!(s.mtm.n_exit_take_profit, 0, "stand-in must not read as a take-profit");
     }
 
     #[test]

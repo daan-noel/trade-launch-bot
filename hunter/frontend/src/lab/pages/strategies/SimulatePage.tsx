@@ -9,7 +9,7 @@ import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
-import { dashF, dashPercent } from 'components/strategy/cellFormat';
+import { dashPercent } from 'components/strategy/cellFormat';
 import {
   inspectFromSim,
   markerRowOverlay,
@@ -45,6 +45,8 @@ import {
 import { DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
 import { useServerTable } from 'hooks/useServerTable';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
+import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
+import type { SummarySection } from 'components/strategy/SummaryStatsPanel';
 import type { MatchedTokenRecord, SimulatedSummary, SimulatedTokenResult } from 'types';
 import {
   useStartEngineSimulationMutation,
@@ -443,7 +445,7 @@ function RuleSimPositionsPanel({
               title="Simulated results summary"
               subtitle="Tracks the table's filters"
               heroStats={simStats.hero}
-              detailStats={simStats.detail}
+              sections={simStats.sections}
               accentClass="bg-info"
             />
           )}
@@ -471,43 +473,19 @@ function RuleSimPositionsPanel({
   );
 }
 
-/** SimulatedSummary → summary-panel tiles. Server-computed over the filtered
- *  cohort (the summary endpoint takes the table's search/filters), so these
- *  update as the user filters. `win_rate` is a 0..1 fraction. */
-function simSummaryStats(s: SimulatedSummary): { hero: SummaryStat[]; detail: SummaryStat[] } {
-  const winPct = s.win_rate != null && Number.isFinite(s.win_rate) ? s.win_rate * 100 : null;
-  const open = Math.max(0, s.total_tokens - s.closed_tokens);
-  const hero: SummaryStat[] = [
-    {
-      label: 'Total PnL (◎)',
-      value: `${dashF(s.total_pnl_sol, 3)}◎`,
-      cls: s.total_pnl_sol >= 0 ? 'text-green' : 'text-red',
-    },
-    {
-      label: 'Win Rate',
-      value: dashPercent(winPct),
-      cls: winPct == null ? undefined : winPct >= 50 ? 'text-green' : 'text-red',
-    },
-    {
-      label: 'Avg PnL %',
-      value: dashPercent(s.avg_pnl_percent),
-      cls: s.avg_pnl_percent == null ? undefined : s.avg_pnl_percent >= 0 ? 'text-green' : 'text-red',
-    },
-    { label: 'Entered', value: String(s.total_tokens), cls: 'text-info' },
-  ];
-  const detail: SummaryStat[] = [
-    {
-      label: 'Closed / Open',
-      node: (
-        <>
-          <span className="text-info">{s.closed_tokens}</span>
-          <span className="text-text-dim"> / </span>
-          <span className="text-text-mid">{open}</span>
-        </>
-      ),
-    },
-  ];
-  return { hero, detail };
+/**
+ * `SimulatedSummary` → summary-panel tiles, via the **shared** run-summary
+ * renderer — the same builder the grouped sweep and the live/paper positions card
+ * use (parity plan F1-F8). Server-computed over the filtered cohort (the summary
+ * endpoint takes the table's search/filters), so these update as the user filters.
+ *
+ * This page previously hand-rolled four tiles whose headline "Total PnL" summed
+ * still-open marks into the realized figure, so a rule that simply never closed
+ * its losers read as profitable here while the sweep reported the loss. The
+ * backend now sends the two-band `RunSummary` and this just renders it.
+ */
+function simSummaryStats(s: SimulatedSummary): { hero: SummaryStat[]; sections: SummarySection[] } {
+  return runSummarySections(s);
 }
 
 function buildColumns(
@@ -642,35 +620,64 @@ function buildColumns(
         return 'cancelled';
       },
     },
-    simMetric('sim_entered', 'Entered', (s) => s.total_tokens, (s) => (
-      <span className="tabular-nums text-text">{s.total_tokens}</span>
+    // Mirrors the grouped-sweep combo table's stat columns (same metrics, same
+    // formatters) so a rule reads identically in both places — including the
+    // open cohort, which this table used to omit entirely (parity plan F1).
+    simMetric('sim_entered', 'Entered', (s) => s.realized.n_fired, (s) => (
+      <span className="tabular-nums text-text">{s.realized.n_fired}</span>
     ), { tooltip: 'Tokens that took a position' }),
-    simMetric('sim_closed', 'Closed', (s) => s.closed_tokens, (s) => (
-      <span className="tabular-nums text-text">{s.closed_tokens}</span>
+    simMetric('sim_closed', 'Closed', (s) => s.realized.n_closed, (s) => (
+      <span className="tabular-nums text-text">{s.realized.n_closed}</span>
     ), { tooltip: 'Tokens that closed a position' }),
+    simMetric('sim_open', 'Open', (s) => s.realized.n_open, (s) => (
+      <span className="tabular-nums text-text">{s.realized.n_open}</span>
+    ), { tooltip: 'Positions still open at the end of the run (unrealized)' }),
     simMetric(
       'sim_win_rate',
       'Win %',
-      (s) => s.win_rate,
-      (s) => <span className="tabular-nums text-text">{dashPercent(s.win_rate * 100)}</span>,
+      (s) => s.realized.win_rate,
+      (s) => <span className="tabular-nums text-text">{dashPercent(s.realized.win_rate * 100)}</span>,
       { tooltip: 'Share of closed tokens with PnL > 0', displayUnits: (n) => n * 100 },
     ),
     simMetric(
       'sim_avg_pnl',
-      'Avg PnL',
-      (s) => s.avg_pnl_percent,
-      (s) => <span className="tabular-nums text-text">{dashPercent(s.avg_pnl_percent)}</span>,
-      { tooltip: 'Average PnL % over closed tokens' },
+      'Mean %',
+      (s) => s.realized.mean_pnl_pct,
+      (s) => <span className="tabular-nums text-text">{pctText(s.realized.mean_pnl_pct)}</span>,
+      { tooltip: 'Mean PnL % over closed tokens' },
     ),
     simMetric(
       'sim_total_pnl',
       'Total PnL',
-      (s) => s.total_pnl_sol,
-      (s) => {
-        const cls = s.total_pnl_sol >= 0 ? 'text-green' : 'text-red';
-        return <span className={`tabular-nums ${cls}`}>{dashF(s.total_pnl_sol, 3)}◎</span>;
-      },
-      { tooltip: 'Sum of realized PnL in SOL' },
+      (s) => s.realized.total_pnl_sol,
+      (s) => (
+        <span className={`tabular-nums ${goodBad(s.realized.total_pnl_sol)}`}>
+          {solText(s.realized.total_pnl_sol)}
+        </span>
+      ),
+      { tooltip: 'Sum of REALIZED PnL in SOL (closed positions only)' },
+    ),
+    simMetric(
+      'sim_open_pnl',
+      'Open PnL',
+      (s) => s.realized.open_pnl_sol,
+      (s) => (
+        <span className={`tabular-nums ${goodBad(s.realized.open_pnl_sol)}`}>
+          {solText(s.realized.open_pnl_sol)}
+        </span>
+      ),
+      { tooltip: 'Unrealized mark-to-last-price PnL of the still-open positions' },
+    ),
+    simMetric(
+      'sim_pnl_mtm',
+      'PnL (MTM)',
+      (s) => s.mtm.total_pnl_sol,
+      (s) => (
+        <span className={`tabular-nums ${goodBad(s.mtm.total_pnl_sol)}`}>
+          {solText(s.mtm.total_pnl_sol)}
+        </span>
+      ),
+      { tooltip: 'Realized + unrealized — what the run is currently worth' },
     ),
   ];
 }

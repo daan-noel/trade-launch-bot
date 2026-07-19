@@ -16,21 +16,15 @@ import type { SweepResultRecord } from './types';
 
 // --- formatters -------------------------------------------------------------
 
-export function fmtSecs(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v) || v <= 0) return '—';
-  if (v < 90) return `${Math.round(v)}s`;
-  if (v < 5400) return `${(v / 60).toFixed(1)}m`;
-  return `${(v / 3600).toFixed(1)}h`;
-}
-export const pctText = (v: number | null | undefined) =>
-  v == null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 1)}%`;
-export const solText = (v: number | null | undefined) =>
-  v == null || !Number.isFinite(v) ? '—' : `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
+// Single-sourced with the shared run-summary renderer, so a metric reads the same
+// in a sweep table cell as it does in any summary panel (parity plan F4-F8).
+// Re-exported because this module is the established import site for them.
+export { fmtSecs, pctText, solText, goodBad } from 'lib/strategy/runSummary';
+import { fmtSecs, pctText, solText, goodBad } from 'lib/strategy/runSummary';
+
 const tone = (text: ReactNode, cls: string): ReactNode => (
   <span className={cn('font-medium', cls)}>{text}</span>
 );
-export const goodBad = (v: number | null | undefined, pivot = 0) =>
-  v != null && Number.isFinite(v) && v >= pivot ? 'text-green' : 'text-red';
 function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   return (
     <span

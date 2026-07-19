@@ -99,19 +99,15 @@ pub async fn spawn_rule_simulation(
         .await
         {
             Ok(rows) => {
-                // Roll up before the rows move into the outcome — a handful of
-                // scalars kept long-lived on `last_sim_summary`, decoupled from
-                // `sim_results`' 60-minute TTL so the rules table's column
+                // Roll up before the rows move into the outcome — one small
+                // `RunMetrics` kept long-lived on `last_sim_summary`, decoupled
+                // from `sim_results`' 60-minute TTL so the rules table's column
                 // doesn't blink out mid-session. See `state::sim_summary`.
-                let r = crate::strategies::sim_query::summarize(&rows);
+                let metrics = crate::strategies::sim_query::summarize(&rows);
                 app_state.last_sim_summary.insert(
                     rid,
                     SimSummary {
-                        n_fired: r.n_fired,
-                        closed: r.closed,
-                        win_rate: r.win_rate,
-                        avg_pnl_pct: r.avg_pnl_pct,
-                        total_pnl_sol: r.total_pnl_sol,
+                        metrics,
                         computed_at: Utc::now(),
                         sim_key: sim_key_owned.clone(),
                     },

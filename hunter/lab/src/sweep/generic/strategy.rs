@@ -94,6 +94,29 @@ impl GenericSweepStrategy {
 
     /// Compile combo `idx` into a `CompiledRule` (dummy fingerprint + unlimited
     /// caps — the sweep judges entry/exit conditions per token, never concurrency).
+    ///
+    /// **Deliberately cap-free, and this is a semantic difference from a
+    /// single-rule simulate — not an oversight** (parity plan B5). A sweep scores
+    /// each token *independently*, which is what lets the fold run as a parallel
+    /// per-token scan over a sparse precomputed series; honoring
+    /// `max_concurrent_tokens` would require one globally time-ordered fold across
+    /// the whole corpus (what `replay::run_replay` does) and would serialize the
+    /// very thing the sweep's performance design is built on.
+    ///
+    /// So the two answer different questions and the UI must not present them as
+    /// interchangeable: a sweep reports a combo's **raw per-token edge** (every
+    /// qualifying token taken), while a simulate reports **what the rule would
+    /// actually have captured** through its concurrency/total slots. A capped rule
+    /// therefore fires on strictly more tokens here, and its `n_fired` /
+    /// `total_pnl_sol` are upper bounds on the simulated figures. The sweep view
+    /// labels this; see `GenericSweepView`'s summary note.
+    ///
+    /// Same caveat for the notional: `buy_amount_sol` defaults to
+    /// [`SWEEP_DEFAULT_BUY_AMOUNT_SOL`](crate::sweep::registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL)
+    /// because a sweep explores many candidate combos rather than replaying one
+    /// saved rule — there is frequently no rule to inherit it from. Since the cost
+    /// model charges a *fixed* per-leg cost, PnL% is not notional-invariant, so
+    /// compare a sweep against a simulate only when both were sized the same.
     fn compile_combo(&self, idx: usize) -> CompiledRule {
         let params = self.model.combo_params(idx);
         let loaded = LoadedRule {
@@ -101,7 +124,8 @@ impl GenericSweepStrategy {
             fingerprint_id: FingerprintId(Uuid::nil()),
             trade_mode: TradeMode::Paper,
             buy_amount_lamports: sol_to_lamports(self.buy_amount_sol).max(0) as u64,
-            // Unlimited caps: a sweep never models cross-token concurrency.
+            // Unlimited caps — see the doc above; changing this changes the meaning
+            // of every sweep number, it does not "fix" a parity bug.
             max_concurrent_tokens: u32::MAX,
             max_total_tokens: 0,
             params,

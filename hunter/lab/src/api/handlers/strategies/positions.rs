@@ -180,18 +180,30 @@ pub async fn positions_summary_by_rule(
     let empty = || HttpResponse::Ok().json(trading_core::models::PositionsSummary::default());
     let pq = PositionQuery::from(req);
 
+    // `lab` has no live runtime price cache (no ingest), so open positions can't be
+    // marked to market here — `open_pnl_sol` stays 0. Analysis surfaces that *do*
+    // report an unrealized figure (simulate, grouped sweep) mark against the replay's
+    // last observed price instead; see `sim_query::summarize`.
+    let no_prices = |_: &str| None;
+
     let result = if matches!(scope, Some(PositionScope::History)) {
         // Exclude the latest run; a lone run yields an empty (tokens=0) summary.
         match latest_paper_run(repo, rule_id, strategy_id).await {
             Ok(Some(latest_run_id)) => {
-                repo.positions_summary_by_rule_excluding_run(rule_id, latest_run_id, &pq).await
+                repo.positions_summary_by_rule_excluding_run(
+                    rule_id,
+                    latest_run_id,
+                    &pq,
+                    no_prices,
+                )
+                .await
             }
             Ok(None) => return empty(),
             Err(resp) => return resp,
         }
     } else {
         match latest_paper_run(repo, rule_id, strategy_id).await {
-            Ok(Some(run_id)) => repo.positions_summary_by_run(run_id, &pq).await,
+            Ok(Some(run_id)) => repo.positions_summary_by_run(run_id, &pq, no_prices).await,
             Ok(None) => return empty(),
             Err(resp) => return resp,
         }
@@ -285,14 +297,14 @@ pub fn sim_result_summary(state: &LocalState, rule_id: Uuid, req: TableRequest) 
         Err(resp) => return resp,
     };
     let filtered = crate::strategies::sim_query::filter_rows(&rows, &req);
-    let r = crate::strategies::sim_query::summarize(&filtered);
-    HttpResponse::Ok().json(json!({
-        "total_tokens": r.n_fired,
-        "closed_tokens": r.closed,
-        "win_rate": r.win_rate,
-        "avg_pnl_percent": r.avg_pnl_pct,
-        "total_pnl_sol": r.total_pnl_sol,
+    let metrics = crate::strategies::sim_query::summarize(&filtered);
+    // Flattened `RunMetrics` — the same field names the grouped sweep and a
+    // live/paper run emit, so one frontend component renders all three (parity
+    // plan B4). `computed_at` is the only sim-specific addition.
+    let mut body = serde_json::to_value(&metrics).unwrap_or_else(|_| json!({}));
+    if let Some(obj) = body.as_object_mut() {
         // When the run finished — the Run column renders this as relative time.
-        "computed_at": state.sim_results.computed_at(&rule_id),
-    }))
+        obj.insert("computed_at".into(), json!(state.sim_results.computed_at(&rule_id)));
+    }
+    HttpResponse::Ok().json(body)
 }
