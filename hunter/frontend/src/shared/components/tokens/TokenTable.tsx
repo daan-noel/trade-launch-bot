@@ -97,6 +97,8 @@ interface TokenTableCommon<R> {
   rowActions?: (row: R) => ReactNode;
   rowClassName?: (row: R) => string | undefined;
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
+  /** Opt-in same-value cell tints — forwarded verbatim to {@link DataTable}. */
+  sameValueTints?: boolean;
   selectedKey?: string | null;
   onSelect?: (key: string | null) => void;
   onVisibleRowsChange?: (rows: R[]) => void;

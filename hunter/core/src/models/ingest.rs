@@ -159,6 +159,16 @@ pub enum SseEvent {
         cancelled: bool,
         error: Option<String>,
     },
+    /// Non-fatal operational notice for a running grouped sweep — today, that the
+    /// engine degraded its sizing to fit free RAM (fewer threads, smaller fold
+    /// buffers). The run still completes and its results are unaffected; it is just
+    /// slower, and saying so is what keeps a degraded run from reading as a stall.
+    /// Emitted a handful of times at sweep start, never from the fold loop. Not
+    /// mint-scoped — always delivered.
+    SweepNotice {
+        strategy_id: String,
+        message: String,
+    },
     /// Terminal frame for a rule simulation (backtest): the run for `rule_id` has
     /// ended. The per-rule analogue of [`SseEvent::SweepFinished`]. Not
     /// mint-scoped — always delivered.

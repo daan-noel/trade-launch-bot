@@ -31,6 +31,10 @@ export const STORAGE_KEYS = {
   sweepShowNotFired: `${PREFIX}sweep.showNotFired`,
   /** Map of `{ [tableId]: visibleColumnKey[] }` — all DataTable column toggles. */
   tableCols: `${PREFIX}table.cols`,
+  /** Map of `{ [tableId]: everyColumnKey[] }` — the column set that existed when
+   *  `tableCols` was last written, so newly added columns can be told apart from
+   *  user-hidden ones. See `getTableKnownCols`. */
+  tableKnownCols: `${PREFIX}table.knownCols`,
   /** Map of `{ [tableId]: { pageSize, sortKeys } }` — DataTable sort + page-size. */
   tablePrefs: `${PREFIX}table.prefs`,
   /** Notification preferences (real/paper toggles, status filter, fp-param display). */
@@ -117,6 +121,25 @@ export function setTableCols(tableId: string, cols: string[]): void {
   const map = getJSON<TableColsMap>(STORAGE_KEYS.tableCols, {});
   map[tableId] = cols;
   setJSON(STORAGE_KEYS.tableCols, map);
+}
+
+/** Every column id that existed for `tableId` the last time prefs were saved, or
+ *  `null` for a blob written before this was tracked. Because `tableCols` stores
+ *  a *visible* set, a key's absence there is ambiguous — the user hid it, or it
+ *  didn't exist yet. This list disambiguates: absent here ⇒ genuinely new ⇒ the
+ *  column's own `defaultVisible` decides, instead of it being stuck hidden. */
+export function getTableKnownCols(tableId: string): string[] | null {
+  const map = getJSON<TableColsMap>(STORAGE_KEYS.tableKnownCols, {});
+  const cols = map[tableId];
+  return Array.isArray(cols) ? cols : null;
+}
+
+/** Persist the full known-column id set for `tableId`. Written alongside every
+ *  `setTableCols` call so the two never disagree about which columns existed. */
+export function setTableKnownCols(tableId: string, cols: string[]): void {
+  const map = getJSON<TableColsMap>(STORAGE_KEYS.tableKnownCols, {});
+  map[tableId] = cols;
+  setJSON(STORAGE_KEYS.tableKnownCols, map);
 }
 
 // ── table sort + page-size preferences ─────────────────────────────────────

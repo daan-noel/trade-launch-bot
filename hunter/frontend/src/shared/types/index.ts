@@ -434,11 +434,21 @@ export interface SweepGroupDoneEvent {
   group_count: number;
 }
 
+/** Payload of the `sweep_notice` SSE event: a NON-terminal advisory for a running
+ *  grouped sweep — today, that the engine degraded its sizing to fit free RAM
+ *  (fewer threads / smaller fold buffers). The run continues and its results are
+ *  unaffected; it is only slower. Surfaced as an info toast so a degraded run
+ *  reads as "slow, and here's why" rather than as a stall. */
+export interface SweepNoticeEvent {
+  strategy_id: string;
+  message: string;
+}
+
 /** Payload of the `sweep_finished` SSE event: the single-flight grouped sweep
  *  for `strategy_id` ended (`cancelled` = user abort vs normal finish/error).
- *  `error` is set only on a post-admission refusal (e.g. not enough free RAM);
- *  that path deletes the run row, so this is the client's only signal — it is
- *  surfaced as a toast instead of leaving the page on a run that vanishes. */
+ *  `error` is set on a failure or a short write. The run row is kept in every
+ *  case (status `partial` when some groups committed, `failed` when none did),
+ *  so this toast explains a run the user can still open and inspect. */
 export interface SweepFinishedEvent {
   strategy_id: string;
   cancelled: boolean;

@@ -22,6 +22,8 @@ const STATUS_BADGE: Record<GroupedSweepRunRecord['status'], 'primary' | 'warning
   running: 'warning',
   cancelled: 'danger',
   partial: 'danger',
+  // Kept (not deleted) so the attempt stays inspectable, but it folded no groups.
+  failed: 'danger',
 };
 
 function Row({ label, children }: { label: string; children: ReactNode }) {

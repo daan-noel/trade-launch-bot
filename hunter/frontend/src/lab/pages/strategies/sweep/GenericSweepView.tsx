@@ -12,7 +12,12 @@ import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { markerRowOverlay, type InspectTarget } from 'components/strategy/inspectTarget';
-import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
+import {
+  SummaryStatsPanel,
+  type SummaryStat,
+  type SummarySection,
+} from 'components/strategy/SummaryStatsPanel';
+import { cn } from 'lib/cn';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -85,120 +90,217 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+/** The full metric set over one cohort of fired rows. Every field is `null` when
+ *  the cohort is empty, so a caller never divides by zero or reads a stale 0. */
+interface PnlBlock {
+  n: number;
+  totalPnl: number;
+  winRate: number | null;
+  expectancy: number | null;
+  meanPct: number | null;
+  medianPct: number | null;
+  bestPct: number | null;
+  worstPct: number | null;
+  /** `null` ⇒ no losing trades (rendered ∞). */
+  profitFactor: number | null;
+}
+
+/**
+ * Compute the metric set over an arbitrary cohort of fired rows. Deliberately
+ * cohort-agnostic: the summary runs it **twice** — once over closed rows only
+ * (realized) and once over every fired row (mark-to-market, open bags carrying
+ * their last-price mark) — so the two readouts can never drift apart through a
+ * second hand-rolled copy of the same arithmetic.
+ */
+function pnlBlock(rows: ComboTokenResult[]): PnlBlock {
+  const n = rows.length;
+  const totalPnl = rows.reduce((s, r) => s + r.pnl_sol, 0);
+  if (n === 0) {
+    return {
+      n: 0,
+      totalPnl: 0,
+      winRate: null,
+      expectancy: null,
+      meanPct: null,
+      medianPct: null,
+      bestPct: null,
+      worstPct: null,
+      profitFactor: null,
+    };
+  }
+  const pcts = rows.map((r) => r.pnl_pct);
+  const grossWin = rows.reduce((s, r) => (r.pnl_sol > 0 ? s + r.pnl_sol : s), 0);
+  const grossLoss = rows.reduce((s, r) => (r.pnl_sol < 0 ? s - r.pnl_sol : s), 0);
+  return {
+    n,
+    totalPnl,
+    winRate: rows.filter((r) => r.pnl_sol > 0).length / n,
+    expectancy: totalPnl / n,
+    meanPct: pcts.reduce((s, v) => s + v, 0) / n,
+    medianPct: median(pcts),
+    // reduce (not `Math.max(...pcts)`) — a group can hold thousands of rows, past
+    // the spread arg limit.
+    bestPct: pcts.reduce((m, v) => (v > m ? v : m), pcts[0]),
+    worstPct: pcts.reduce((m, v) => (v < m ? v : m), pcts[0]),
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+  };
+}
+
+/** Render one `PnlBlock` as a band of tiles. Both bands use this, so realized and
+ *  mark-to-market are formatted identically and compare tile-for-tile down the
+ *  column — the whole point of showing them stacked. */
+function blockStats(b: PnlBlock, totalLabel: string): SummaryStat[] {
+  return [
+    { label: totalLabel, value: solText(b.totalPnl), cls: goodBad(b.totalPnl) },
+    {
+      label: 'Win %',
+      value: b.winRate == null ? '—' : `${(b.winRate * 100).toFixed(0)}%`,
+      cls: b.winRate == null ? undefined : goodBad(b.winRate, 0.5),
+    },
+    { label: 'Expectancy (◎)', value: solText(b.expectancy), cls: goodBad(b.expectancy) },
+    {
+      label: 'Profit factor',
+      value: b.n === 0 ? '—' : b.profitFactor == null ? '∞' : b.profitFactor.toFixed(2),
+      cls: b.n === 0 ? undefined : goodBad(b.profitFactor ?? 10, 1),
+    },
+    { label: 'Median %', value: pctText(b.medianPct), cls: goodBad(b.medianPct) },
+    { label: 'Mean %', value: pctText(b.meanPct), cls: goodBad(b.meanPct) },
+    { label: 'Best %', value: pctText(b.bestPct), cls: b.n === 0 ? undefined : 'text-green' },
+    { label: 'Worst %', value: pctText(b.worstPct), cls: b.n === 0 ? undefined : 'text-red' },
+  ];
+}
+
 /**
  * Aggregate the combo's per-token rows into the summary tiles. Runs over whatever
  * cohort it's handed — the FULL results, or the table's current filtered subset —
  * so the summary tracks the table's search/column filters (recomputed client-side,
  * mirroring how the server-side positions summary follows its filter body).
  *
- * The realized-PnL stats (total/win/mean/median/best/worst/profit-factor/expectancy/
- * avg-hold) are measured over **closed** trades only — `TakeProfit`/`StopLoss`/
- * `Metrics`/`Dead` exits, NOT still-`Open` positions (whose PnL is unrealized/marked).
- * This matches the backend `SweepResultRecord` the combo row above renders, so the
- * summary agrees with that row when unfiltered. `Fired` is the full fired count (the
- * table's `FIRED` column); `Open` positions are surfaced in the Closed/Open tile.
+ * **The panel deliberately reports every PnL figure twice.** A still-`Open`
+ * position has a mark-to-last-price PnL but no realized outcome, so the backend
+ * (and the combo row above) measure the headline over **closed** trades only
+ * (`TakeProfit`/`StopLoss`/`Metrics`/`Dead`) — see `RunAgg`, parity plan C2. Read
+ * alone, that realized figure flatters a combo that simply never closed its
+ * losers: they never entered the sum. So the summary renders two bands over the
+ * same metric engine ([`pnlBlock`]):
  *
- * Because those stats exclude open positions, the realized `Total PnL (real.)` alone
- * overstates a combo that simply never closed its losers. The `PnL (MTM)` hero tile
- * (realized + `Open PnL (unreal.)`) is the honest counterweight — read the two
- * together, not the realized figure on its own.
+ * - **Realized** — closed rows only. Matches the backend row exactly when unfiltered.
+ * - **Incl. open (MTM)** — every fired row, open bags valued at their last price.
+ *
+ * Neither is "the" answer: realized is what actually happened, MTM is what the
+ * combo is currently worth. Divergence between the two bands IS the signal — it
+ * says how much of the headline is still unsettled. The MTM band is omitted when
+ * nothing is open (it would duplicate the realized band tile-for-tile).
  */
 function buildComboSummary(rows: ComboTokenResult[]): {
   hero: SummaryStat[];
-  detail: SummaryStat[];
+  sections: SummarySection[];
 } {
   const fired = rows.filter((r) => r.fired);
   const closed = fired.filter((r) => r.exit !== 'Open');
   const open = fired.filter((r) => r.exit === 'Open');
+  const nFired = fired.length;
   const nClosed = closed.length;
   const nOpen = open.length;
-  // Unrealized PnL of still-open positions — marked to last price, NOT realized.
-  // Kept separate from Total PnL so a combo whose winners are still holding (never
-  // reached TP) isn't misread as a pure loss (it's excluded from the closed stats).
+
+  const realized = pnlBlock(closed);
+  // Open bags carry a mark-to-last-price PnL on the row already, so folding the
+  // full fired cohort through the same engine yields the mark-to-market view.
+  const mtm = pnlBlock(fired);
   const openPnl = open.reduce((s, r) => s + r.pnl_sol, 0);
-  const wins = closed.filter((r) => r.pnl_sol > 0).length;
-  const winRate = nClosed ? wins / nClosed : null;
-  const totalPnl = closed.reduce((s, r) => s + r.pnl_sol, 0);
-  const expectancy = nClosed ? totalPnl / nClosed : null;
-  const pcts = closed.map((r) => r.pnl_pct);
-  const meanPct = nClosed ? pcts.reduce((s, v) => s + v, 0) / nClosed : null;
-  const medianPct = nClosed ? median(pcts) : null;
-  // reduce (not `Math.max(...pcts)`) — a group can hold thousands of rows, past the
-  // spread arg limit.
-  const bestPct = nClosed ? pcts.reduce((m, v) => (v > m ? v : m), pcts[0]) : null;
-  const worstPct = nClosed ? pcts.reduce((m, v) => (v < m ? v : m), pcts[0]) : null;
+  const openShare = nFired ? nOpen / nFired : 0;
+
   const holds = closed.map((r) => r.holding_secs).filter((v) => Number.isFinite(v) && v > 0);
   const avgHold = holds.length ? holds.reduce((s, v) => s + v, 0) / holds.length : null;
-  const grossWin = closed.reduce((s, r) => (r.pnl_sol > 0 ? s + r.pnl_sol : s), 0);
-  const grossLoss = closed.reduce((s, r) => (r.pnl_sol < 0 ? s - r.pnl_sol : s), 0);
-  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : null; // null ⇒ no losers (∞)
   const nExit = (tag: string) => fired.filter((r) => r.exit === tag).length;
 
-  // Mark-to-market: realized + the open bags valued at their last price. Shown
-  // beside the realized total because a realized-only headline reads as pure
-  // profit even when the combo is sitting on a pile of open losers — the losers
-  // simply never closed, so they never entered `totalPnl`.
-  const mtmPnl = totalPnl + openPnl;
+  // Open share tones the headline: past ~a quarter of the sample unsettled, the
+  // realized figures stop being a fair summary of what the combo did.
+  const openTone = openShare >= 0.5 ? 'text-red' : openShare >= 0.25 ? 'text-warning' : 'text-text-mid';
 
   const hero: SummaryStat[] = [
-    { label: 'Total PnL (real.)', value: solText(totalPnl), cls: goodBad(totalPnl) },
+    { label: 'PnL realized', value: solText(realized.totalPnl), cls: goodBad(realized.totalPnl) },
     {
-      label: 'PnL (MTM)',
-      value: nOpen ? solText(mtmPnl) : solText(totalPnl),
-      cls: goodBad(nOpen ? mtmPnl : totalPnl),
+      label: 'PnL incl. open',
+      value: solText(mtm.totalPnl),
+      cls: goodBad(mtm.totalPnl),
     },
     {
-      label: 'Win %',
-      value: winRate == null ? '—' : `${(winRate * 100).toFixed(0)}%`,
-      cls: winRate == null ? undefined : goodBad(winRate, 0.5),
+      label: 'Win % (real.)',
+      value: realized.winRate == null ? '—' : `${(realized.winRate * 100).toFixed(0)}%`,
+      cls: realized.winRate == null ? undefined : goodBad(realized.winRate, 0.5),
     },
-    { label: 'Median %', value: pctText(medianPct), cls: goodBad(medianPct) },
-    { label: 'Fired', value: String(fired.length), cls: 'text-info' },
-  ];
-
-  const detail: SummaryStat[] = [
     {
-      label: 'Closed / Open',
+      label: 'Fired',
       node: (
         <>
-          <span className="text-info">{nClosed}</span>
-          <span className="text-text-dim"> / </span>
-          <span className="text-text-mid">{nOpen}</span>
-        </>
-      ),
-    },
-    {
-      label: 'Open PnL (unreal.)',
-      value: nOpen ? solText(openPnl) : '—',
-      cls: nOpen ? goodBad(openPnl) : undefined,
-    },
-    { label: 'Expectancy (◎)', value: solText(expectancy), cls: goodBad(expectancy) },
-    { label: 'Mean %', value: pctText(meanPct), cls: goodBad(meanPct) },
-    { label: 'Best %', value: pctText(bestPct), cls: 'text-green' },
-    { label: 'Worst %', value: pctText(worstPct), cls: 'text-red' },
-    {
-      label: 'Profit factor',
-      value: profitFactor == null ? '∞' : profitFactor.toFixed(2),
-      cls: goodBad(profitFactor ?? 10, 1),
-    },
-    { label: 'Avg hold', value: fmtSecs(avgHold), cls: 'text-accent' },
-    {
-      label: 'TP / SL / Met / Dead',
-      node: (
-        <>
-          <span className="text-green">{nExit('TakeProfit')}</span>
-          <span className="text-text-dim"> / </span>
-          <span className="text-red">{nExit('StopLoss')}</span>
-          <span className="text-text-dim"> / </span>
-          <span className="text-text-mid">{nExit('Metrics')}</span>
-          <span className="text-text-dim"> / </span>
-          <span className="text-red">{nExit('Dead')}</span>
+          <span className="text-info">{nFired}</span>
+          {nOpen > 0 && (
+            <span className={cn('ml-2 text-base font-bold', openTone)}>
+              {nOpen} open
+            </span>
+          )}
         </>
       ),
     },
   ];
 
-  return { hero, detail };
+  const sections: SummarySection[] = [
+    {
+      title: 'Positions',
+      hint: 'What the combo did, before any PnL is counted',
+      stats: [
+        { label: 'Fired', value: String(nFired), cls: 'text-info' },
+        { label: 'Closed', value: String(nClosed), cls: 'text-info' },
+        { label: 'Open', value: String(nOpen), cls: nOpen > 0 ? openTone : 'text-text-dim' },
+        {
+          label: 'Open share',
+          value: nFired ? `${(openShare * 100).toFixed(0)}%` : '—',
+          cls: nFired ? openTone : undefined,
+        },
+        {
+          label: 'TP / SL / Met / Dead',
+          node: (
+            <>
+              <span className="text-green">{nExit('TakeProfit')}</span>
+              <span className="text-text-dim"> / </span>
+              <span className="text-red">{nExit('StopLoss')}</span>
+              <span className="text-text-dim"> / </span>
+              <span className="text-text-mid">{nExit('Metrics')}</span>
+              <span className="text-text-dim"> / </span>
+              <span className="text-red">{nExit('Dead')}</span>
+            </>
+          ),
+        },
+        { label: 'Avg hold', value: fmtSecs(avgHold), cls: 'text-accent' },
+      ],
+    },
+    {
+      title: 'Realized',
+      hint:
+        nOpen > 0
+          ? `Closed positions only (${nClosed} of ${nFired}) — the ${nOpen} open are excluded`
+          : `All ${nClosed} positions closed`,
+      titleCls: 'text-green',
+      stats: blockStats(realized, 'Total PnL (◎)'),
+    },
+  ];
+
+  // Only worth a second band when something is actually open — with nOpen = 0 it
+  // would repeat the realized band tile-for-tile.
+  if (nOpen > 0) {
+    sections.push({
+      title: 'Incl. open (MTM)',
+      hint: `All ${nFired} fired — the ${nOpen} open valued at their last price (unrealized)`,
+      titleCls: 'text-warning',
+      stats: [
+        ...blockStats(mtm, 'Total PnL (◎)'),
+        { label: 'of which unreal.', value: solText(openPnl), cls: goodBad(openPnl) },
+      ],
+    });
+  }
+
+  return { hero, sections };
 }
 
 /**
@@ -555,7 +657,13 @@ export function GenericSweepView() {
             rows={groups}
             rowKey={(g) => g.id}
             rowActions={groupRowActions}
-            groupLabels={{ group: 'Group', metrics: 'Metrics', params: 'Best rule' }}
+            groupLabels={{
+              group: 'Group',
+              counts: 'Counts',
+              pnl: 'PnL (best combo)',
+              holding: 'Holding',
+              params: 'Best rule',
+            }}
             defaultSort={{ col: 'best_total_pnl_sol', dir: 'desc' }}
             searchable
             colFilters
@@ -563,6 +671,7 @@ export function GenericSweepView() {
             selectable
             selectedKey={activeGroupId}
             onSelect={setActiveGroupId}
+            sameValueTints
             tableId="generic_sweep_groups"
             resetKey={activeRunId ?? ''}
             loading={groupsQuery.isFetching}
@@ -595,6 +704,7 @@ export function GenericSweepView() {
                 selectable
                 selectedKey={activeComboId !== null ? String(activeComboId) : null}
                 onSelect={(key) => setActiveComboId(key !== null ? Number(key) : null)}
+                sameValueTints
                 serverSide
                 serverTotal={resultsTotal}
                 onQueryChange={onComboQueryChange}
@@ -773,7 +883,7 @@ function ComboTokenResults({
           title="Combo results summary"
           subtitle="Tracks the table's filters"
           heroStats={summary.hero}
-          detailStats={summary.detail}
+          sections={summary.sections}
           accentClass="bg-secondary"
         />
       )}
@@ -791,6 +901,7 @@ function ComboTokenResults({
         selectedKey={selected}
         onSelect={setSelected}
         onFilteredRowsChange={onFilteredRowsChange}
+        sameValueTints
         defaultSort={{ col: 'pnl_sol', dir: 'desc' }}
         tableId="generic_combo_tokens"
         resetKey={`${comboId}_${showNotFired}`}

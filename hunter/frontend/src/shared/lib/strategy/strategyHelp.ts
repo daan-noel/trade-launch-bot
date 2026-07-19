@@ -502,9 +502,13 @@ export const SWEEP_FIELD_HELP = {
     body: [
       'Host RAM left free for the OS + desktop while the sweep runs.',
       '',
-      'Every admission ceiling is "host free RAM − this reserve", so a smaller reserve',
-      'admits bigger runs on a box you are not using, and a bigger one keeps the machine',
-      'responsive (at the cost of refusing/shrinking heavy runs).',
+      'Every sizing ceiling is "host free RAM − this reserve", so a smaller reserve lets',
+      'a run go wider on a box you are not using, and a bigger one keeps the machine more',
+      'responsive.',
+      '',
+      'This is a preference, not a limit: if a run does not fit, the sweep degrades itself',
+      'to fit (fewer threads, smaller batches) and tells you it did — it does not refuse.',
+      'A tight reserve costs wall-clock, not the run.',
     ].join('\n'),
   },
   buyAmount: {

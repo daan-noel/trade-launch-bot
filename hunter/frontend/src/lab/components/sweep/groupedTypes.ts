@@ -77,9 +77,12 @@ export interface GroupedSweepRunRecord {
   corpus_hash: string | null;
   created_at: string;
   /** Lifecycle: `running` | `completed` | `cancelled` (user abort, honestly
-   *  partial) | `partial` (engine finished but a DB write error left some
-   *  groups uncommitted — not a full sweep). */
-  status: 'running' | 'completed' | 'cancelled' | 'partial';
+   *  partial) | `partial` (the run stopped early — a DB write error, or an
+   *  engine failure after some groups had already folded — so its committed
+   *  groups are real but the sweep is incomplete) | `failed` (it stopped before
+   *  any group folded, e.g. bad axes or a corpus that cannot fit this machine).
+   *  A failed run is kept rather than deleted so the attempt stays inspectable. */
+  status: 'running' | 'completed' | 'cancelled' | 'partial' | 'failed';
   /** Groups persisted so far; equals `group_count` for a `completed` run. */
   groups_done: number;
   /** The exact-set instruction-label corpus filter the run used, or `null`. */
@@ -118,6 +121,10 @@ export interface GroupedSweepGroupRecord {
    *  from `best_total_pnl_sol` by design, surfaced so a profitable-looking
    *  realized total can't hide a pile of open losers. */
   best_open_pnl_sol: number;
+  /** Winning combo's still-open / closed split of `fired_count`. Shows how much
+   *  of the headline sample is unrealized. */
+  best_n_open: number;
+  best_n_closed: number;
   /** Winning combo's profit factor; `null` = no losing trades (UI shows ∞). */
   best_profit_factor: number | null;
   best_mean_pnl_pct: number;
@@ -198,7 +205,9 @@ export interface GroupedSweepStartArgs {
   buy_amount_sol?: number;
   /** Bucket width (SOL) for the continuous SOL group fields. Omitted ⇒ 0.1. */
   bucket_width_sol?: number;
-  /** Host RAM (MB) the run leaves free for OS + desktop; every admission ceiling
-   *  is `host free − this`. Omitted ⇒ backend default (2048). */
+  /** Host RAM (MB) the run leaves free for OS + desktop; every sizing ceiling is
+   *  `host free − this`. A preference, not a limit — a run that does not fit
+   *  degrades (fewer threads / smaller batches) rather than being refused.
+   *  Omitted ⇒ backend default (1024). */
   ram_reserve_mb?: number;
 }

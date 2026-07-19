@@ -24,7 +24,12 @@ import {
 import { apiSlice } from 'store/apiSlice';
 import { useToast } from 'components/ui/Toast';
 import type { AppDispatch } from '@lab/store';
-import type { SimulationProgressEvent, SweepGroupDoneEvent, SweepProgressEvent } from 'types';
+import type {
+  SimulationProgressEvent,
+  SweepGroupDoneEvent,
+  SweepNoticeEvent,
+  SweepProgressEvent,
+} from 'types';
 
 /**
  * App-wide registry of long-running background jobs (grouped sweep, rule
@@ -317,6 +322,18 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         /* ignore malformed frames */
       }
     });
+    // Non-terminal advisory: the engine degraded its sizing to fit free RAM. The
+    // sweep is still running (and still correct) — this only explains why it is
+    // slower, so it is an info toast, not a danger one.
+    const offSweepNotice = sseSubscribe('sweep_notice', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const n = JSON.parse(e.data) as SweepNoticeEvent;
+        addToast('Sweep running slower', n.message, 'info');
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
     const offSimProgress = sseSubscribe('simulation_progress', (e) => {
       if (typeof e.data !== 'string') return;
       try {
@@ -332,10 +349,10 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       // `GroupedSweepGroups` queries also provide 'GroupedSweep', so the final
       // groups state refetches here too.
       dispatch(apiSlice.util.invalidateTags(['GroupedSweep']));
-      // `error` reaches the client only here: a post-admission refusal (run row
-      // deleted — e.g. free RAM under the desktop reserve) or a partial finish
-      // (run kept, some groups failed to persist). Surface the reason instead
-      // of a run that silently vanishes or silently thins.
+      // `error` reaches the client only here: an engine failure or a short
+      // write. The run row is always kept (`partial` when groups committed,
+      // `failed` when none did), so this explains a run that is still open and
+      // inspectable rather than one that silently thins.
       if (ev.error) addToast('Sweep problem', ev.error, 'danger');
     });
     const simFinished = connectSimulationFinished((ev) => remove('simulation', ev.rule_id));
@@ -345,6 +362,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       alive = false;
       offSweepProgress();
       offSweepGroupDone();
+      offSweepNotice();
       offSimProgress();
       sweepFinished.close();
       simFinished.close();

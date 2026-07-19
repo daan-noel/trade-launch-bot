@@ -32,6 +32,12 @@ Each combo in `<strategy>_grouped_sweep_combos` stores its params as a JSONB dic
 - `open_pnl_sol f64` — sum of still-`Open` positions' mark-to-last-price PnL
   (unrealized; never included in `total_pnl_sol`). `total_pnl_sol + open_pnl_sol` is
   the mark-to-market total the UI shows as "PnL (MTM)"
+
+The combo-results summary panel renders this as two bands over one cohort-agnostic
+metric engine (`pnlBlock` in `GenericSweepView.tsx`): **Realized** (closed rows) and
+**Incl. open (MTM)** (all fired rows, open bags carrying their marks). Divergence
+between the bands is the signal — it measures how much of the headline is unsettled.
+The group/combo tables carry the matching `n_open` / open-share columns.
 - `avg_pnl_sol f64` — mean PnL per position
 - `median_pnl_sol f64` — p50 of per-position PnL distribution (QuantileSketch)
 - `p90_pnl_sol f64` — p90 of per-position PnL distribution (QuantileSketch, ~15% relative error)

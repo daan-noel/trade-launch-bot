@@ -101,6 +101,12 @@ pub struct GroupedSweepGroupSummary {
     /// pile of open losers — `best_total_pnl_sol + best_open_pnl_sol` is the
     /// mark-to-market readout.
     pub best_open_pnl_sol: f64,
+    /// Winning combo's still-open / closed position counts. `fired_count` above
+    /// is the total (`best_n_open + best_n_closed`); these split it so the group
+    /// table can show how much of the sample is unrealized — a headline built on
+    /// 3 closed and 40 open trades is a different claim than one on 43 closed.
+    pub best_n_open: i64,
+    pub best_n_closed: i64,
     /// Winning combo's profit factor; `None` = no losing trades (UI shows ∞).
     pub best_profit_factor: Option<f64>,
     pub best_mean_pnl_pct: f64,

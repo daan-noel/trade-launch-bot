@@ -58,6 +58,14 @@ pub trait SweepObserver: Sync {
     fn token_done(&self, combos_folded: usize);
     /// True once a cancel has been requested — polled in the hot loop.
     fn cancelled(&self) -> bool;
+
+    /// Report a non-fatal operational notice about the run — today, that the sizing
+    /// was degraded to fit free RAM (fewer threads / smaller fold buffers), which
+    /// makes the run slower but not incorrect.
+    ///
+    /// Cold path: called a handful of times at sweep start, never from the fold loop.
+    /// Defaults to a no-op so test/replay observers ignore it.
+    fn notice(&self, _message: &str) {}
 }
 
 /// SSE-emitting observer for one phase of the grouped sweep. Broadcasts a
@@ -150,6 +158,13 @@ impl SweepObserver for SweepProgress {
 
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    fn notice(&self, message: &str) {
+        let _ = self.sse_tx.send(SseEvent::SweepNotice {
+            strategy_id: self.strategy_id.clone(),
+            message: message.to_string(),
+        });
     }
 }
 

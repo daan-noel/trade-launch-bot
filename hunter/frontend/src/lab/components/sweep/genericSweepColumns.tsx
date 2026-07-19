@@ -130,8 +130,33 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
     metric('n_fired', 'Fired', 'counts', (r) => r.n_fired, (r) => tone(String(r.n_fired), 'text-info'), {
       tooltip: 'Tokens this combo took a position on',
     }),
-    metric('n_closed', 'Closed', 'counts', (r) => r.n_closed, (r) => tone(String(r.n_closed), 'text-info'), { defaultVisible: false }),
-    metric('n_open', 'Open', 'counts', (r) => r.n_open, (r) => tone(String(r.n_open), 'text-info'), { defaultVisible: false }),
+    // Closed/Open are visible by default: every realized stat in this table is
+    // measured over `n_closed` alone, so the open count is the context that says
+    // how much of `Fired` those stats actually speak for.
+    metric('n_closed', 'Closed', 'counts', (r) => r.n_closed, (r) => tone(String(r.n_closed), 'text-info'), {
+      tooltip: 'Positions that exited — the sample every realized stat is computed over',
+    }),
+    metric(
+      'n_open',
+      'Open',
+      'counts',
+      (r) => r.n_open,
+      (r) => tone(String(r.n_open), r.n_open > 0 ? 'text-warning' : 'text-text-dim'),
+      { tooltip: 'Still holding at the end of the corpus window — excluded from every realized stat' },
+    ),
+    metric(
+      'open_share',
+      'Open %',
+      'counts',
+      (r) => (r.n_fired > 0 ? r.n_open / r.n_fired : 0),
+      (r) => {
+        if (!r.n_fired) return tone('—', 'text-text-dim');
+        const share = r.n_open / r.n_fired;
+        // High open share = the realized headline rests on a thin closed sample.
+        return tone(`${(share * 100).toFixed(0)}%`, share >= 0.5 ? 'text-red' : share >= 0.25 ? 'text-warning' : 'text-text-dim');
+      },
+      { tooltip: 'Share of fired positions still open. High = realized stats cover only a small slice of the sample.' },
+    ),
     metric(
       'score',
       'Score',
@@ -212,16 +237,20 @@ function keyParts(group: GroupedSweepGroupRecord): { label: string; value: strin
 
 /** Build the generic-engine group-summary table columns. */
 export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[] {
+  // `group` mirrors the combo table's banners (counts / pnl / holding) so the
+  // two stacked tables on the sweep page read the same. Columns must stay in
+  // group order — DataTable bands *consecutive* runs of same-`group` columns.
   const gm = (
     key: string,
     label: string,
+    group: 'counts' | 'pnl' | 'holding',
     value: (g: GroupedSweepGroupRecord) => number | null,
     render: (g: GroupedSweepGroupRecord) => ReactNode,
     opts: { tooltip?: string; defaultVisible?: boolean } = {},
   ): ColumnDef<GroupedSweepGroupRecord> => ({
     key,
     label,
-    group: 'metrics',
+    group,
     tooltip: opts.tooltip,
     defaultVisible: opts.defaultVisible,
     sortable: true,
@@ -263,15 +292,44 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
       },
       searchValue: (g) => keyParts(g).map((p) => `${p.label} ${p.value}`).join(' '),
     },
-    gm('token_count', 'Tokens', (g) => g.token_count, (g) => tone(String(g.token_count), 'text-info'), {
+    gm('token_count', 'Tokens', 'counts', (g) => g.token_count, (g) => tone(String(g.token_count), 'text-info'), {
       tooltip: 'Tokens in this fingerprint group',
     }),
-    gm('fired_count', 'Fired', (g) => g.fired_count, (g) => tone(String(g.fired_count), 'text-info'), {
+    gm('fired_count', 'Fired', 'counts', (g) => g.fired_count, (g) => tone(String(g.fired_count), 'text-info'), {
       tooltip: "The best combo's fired count — the sample size behind its score",
     }),
     gm(
+      'best_n_closed',
+      'Closed',
+      'counts',
+      (g) => g.best_n_closed ?? 0,
+      (g) => tone(String(g.best_n_closed ?? 0), 'text-info'),
+      { tooltip: 'Winning combo positions that exited — the sample every realized stat on this row is computed over' },
+    ),
+    gm(
+      'best_n_open',
+      'Open',
+      'counts',
+      (g) => g.best_n_open ?? 0,
+      (g) => tone(String(g.best_n_open ?? 0), (g.best_n_open ?? 0) > 0 ? 'text-warning' : 'text-text-dim'),
+      { tooltip: 'Winning combo positions still open — excluded from every realized stat on this row' },
+    ),
+    gm(
+      'best_open_share',
+      'Open %',
+      'counts',
+      (g) => (g.fired_count > 0 ? (g.best_n_open ?? 0) / g.fired_count : 0),
+      (g) => {
+        if (!g.fired_count) return tone('—', 'text-text-dim');
+        const share = (g.best_n_open ?? 0) / g.fired_count;
+        return tone(`${(share * 100).toFixed(0)}%`, share >= 0.5 ? 'text-red' : share >= 0.25 ? 'text-warning' : 'text-text-dim');
+      },
+      { tooltip: 'Share of the winning combo’s fired positions still open. High = the realized headline rests on a thin closed sample.' },
+    ),
+    gm(
       'best_score',
       'Score',
+      'pnl',
       (g) => g.best_score,
       (g) =>
         g.best_score == null
@@ -279,17 +337,18 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
           : tone(pctText(g.best_score), goodBad(g.best_score)),
       { tooltip: "Robust score of this group's best combo (matches the drill-in default sort)." },
     ),
-    gm('best_win_rate', 'Win %', (g) => g.best_win_rate, (g) =>
+    gm('best_win_rate', 'Win %', 'pnl', (g) => g.best_win_rate, (g) =>
       g.best_win_rate == null || !Number.isFinite(g.best_win_rate)
         ? tone('—', 'text-text-dim')
         : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, goodBad(g.best_win_rate, 0.5)),
     ),
-    gm('best_total_pnl_sol', 'Total PnL', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol)), {
+    gm('best_total_pnl_sol', 'Total PnL', 'pnl', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol)), {
       tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',
     }),
     gm(
       'best_open_pnl_sol',
       'Open PnL',
+      'pnl',
       (g) => g.best_open_pnl_sol ?? 0,
       (g) => tone(solText(g.best_open_pnl_sol ?? 0), goodBad(g.best_open_pnl_sol ?? 0)),
       { tooltip: 'Unrealized: still-open positions marked to their last price. Not included in Total PnL.' },
@@ -297,6 +356,7 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
     gm(
       'best_pnl_mtm_sol',
       'PnL (MTM)',
+      'pnl',
       (g) => g.best_total_pnl_sol + (g.best_open_pnl_sol ?? 0),
       (g) => {
         const mtm = g.best_total_pnl_sol + (g.best_open_pnl_sol ?? 0);
@@ -307,12 +367,12 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
           'Mark-to-market: realized Total PnL + unrealized Open PnL. What the group is actually worth if every open bag were sold at its last price.',
       },
     ),
-    gm('best_expectancy_sol', 'Expectancy', (g) => g.best_expectancy_sol, (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol))),
-    gm('best_profit_factor', 'Profit factor', (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY, (g) =>
+    gm('best_expectancy_sol', 'Expectancy', 'pnl', (g) => g.best_expectancy_sol, (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol))),
+    gm('best_profit_factor', 'Profit factor', 'pnl', (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY, (g) =>
       tone(g.best_profit_factor == null ? '∞' : g.best_profit_factor.toFixed(2), goodBad(g.best_profit_factor ?? 10, 1)),
     ),
-    gm('best_median_pnl_pct', 'Median %', (g) => g.best_median_pnl_pct, (g) => tone(pctText(g.best_median_pnl_pct), goodBad(g.best_median_pnl_pct))),
-    gm('best_avg_holding_secs', 'Avg hold', (g) => g.best_avg_holding_secs, (g) => tone(fmtSecs(g.best_avg_holding_secs), 'text-accent')),
+    gm('best_median_pnl_pct', 'Median %', 'pnl', (g) => g.best_median_pnl_pct, (g) => tone(pctText(g.best_median_pnl_pct), goodBad(g.best_median_pnl_pct))),
+    gm('best_avg_holding_secs', 'Avg hold', 'holding', (g) => g.best_avg_holding_secs, (g) => tone(fmtSecs(g.best_avg_holding_secs), 'text-accent')),
     {
       key: 'best_params',
       label: "Best combo's rule",

@@ -8,7 +8,7 @@
 //! The CPU-heavy sweep runs in a bounded rayon pool inside `spawn_blocking` so it
 //! can never starve the live trading hot path (ingest / sell-confirm).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -80,14 +80,40 @@ const SWEEP_FOLD_BUDGET_CAP_MB: usize = 512;
 /// Floor (MB) so a nearly-full box still makes progress with tiny batches.
 const SWEEP_FOLD_BUDGET_FLOOR_MB: usize = 32;
 
+/// Per-run ceiling (bytes) on the fold budget, chosen by [`plan_sweep_sizing`]'s
+/// degradation ladder. `0` = no override (auto sizing). Applied as a **ceiling**,
+/// not a fixed value, so the live `usable/4` sizing below still shrinks further
+/// when free RAM drops mid-run — the plan bounds the peak, it doesn't pin it.
+///
+/// Process-global for the same reason as [`RAM_RESERVE_MB`]: single-flight means
+/// exactly one run's plan is live, and the rayon workers read it lock-free.
+static FOLD_BUDGET_CEILING: AtomicU64 = AtomicU64::new(0);
+
+/// Install the planned fold-budget ceiling for the run about to start (`None`
+/// clears it). Called once by [`plan_sweep_sizing`].
+pub(crate) fn set_fold_budget_ceiling(bytes: Option<u64>) {
+    FOLD_BUDGET_CEILING.store(bytes.unwrap_or(0), Ordering::Relaxed);
+}
+
 /// Fold-accumulator + outcome-buffer budget in bytes. `usable/4` clamped to
-/// 32..=512 MB, where usable = host free − desktop reserve.
+/// 32..=512 MB, where usable = host free − desktop reserve, then capped by the
+/// run's planned ceiling (see [`FOLD_BUDGET_CEILING`]).
+///
+/// Re-read on every call by `combo_batch_size` / `max_combos_per_shard` /
+/// `max_parallel_shards` / `full_combo_aggs_fit`, so a run that started on a free
+/// box automatically thins its batches when RAM tightens mid-run.
 pub(crate) fn sweep_memory_budget_bytes() -> u64 {
     let cap = (SWEEP_FOLD_BUDGET_CAP_MB as u64).saturating_mul(1024 * 1024);
     let floor = (SWEEP_FOLD_BUDGET_FLOOR_MB as u64).saturating_mul(1024 * 1024);
-    match usable_host_bytes() {
+    let live = match usable_host_bytes() {
         Some(usable) => (usable / 4).clamp(floor, cap),
         None => cap,
+    };
+    match FOLD_BUDGET_CEILING.load(Ordering::Relaxed) {
+        0 => live,
+        // The ceiling never drops below the floor — a plan that tight still has to
+        // make progress with tiny batches rather than allocate nothing.
+        ceiling => live.min(ceiling).max(floor),
     }
 }
 
@@ -98,12 +124,16 @@ fn sweep_admission_budget_bytes() -> u64 {
     (DEFAULT_SWEEP_ADMISSION_BUDGET_MB as u64).saturating_mul(1024 * 1024)
 }
 
-/// Default host RAM (MB) to leave free for OS + desktop UI. Matches the
-/// workstation contract: use almost everything, keep ~2 GB for local
-/// interactivity. The run form can override it per run (see
-/// [`set_ram_reserve_mb`]) — a headless box can give the sweep more, a box the
-/// user is working on can keep more.
-pub const DEFAULT_SWEEP_RAM_RESERVE_MB: usize = 2048;
+/// Default host RAM (MB) to leave free for OS + desktop UI.
+///
+/// **This is a preference, not a cliff.** Since sizing degrades down a ladder
+/// ([`plan_sweep_sizing`]) instead of refusing, a tight reserve costs wall-clock
+/// (fewer threads, smaller batches) rather than failing the run — so the default
+/// is 1 GB rather than the old 2 GB, which was the single biggest source of
+/// spurious refusals on a workstation with a browser open. The run form can still
+/// override it per run (see [`set_ram_reserve_mb`]): a headless box can give the
+/// sweep more, a box the user is actively working on can keep more.
+pub const DEFAULT_SWEEP_RAM_RESERVE_MB: usize = 1024;
 
 /// Bounds on the per-run override. The floor keeps *some* headroom (a 0-reserve
 /// run OOMs the box it runs on); the ceiling stops a typo from refusing every
@@ -226,36 +256,136 @@ pub(crate) fn estimate_generic_combo_side_bytes(n_combos: usize) -> u64 {
     (n_combos as u64).saturating_mul(GENERIC_PER_COMBO_RESIDENT_BYTES)
 }
 
-/// Refuse when estimated peak cannot fit in `usable = free − desktop reserve`
-/// (minus slack). Under-reserve (`usable == 0`) always refuses non-trivial runs.
-fn admit_generic_combo_side(n_combos: usize, series_peak: u64, fold: u64) -> Result<()> {
-    let combo_side = estimate_generic_combo_side_bytes(n_combos);
-    let need = combo_side
-        .saturating_add(series_peak)
-        .saturating_add(fold);
-    let Some(usable_raw) = usable_host_bytes() else {
-        return Ok(());
+/// Combos one shard is always free to fall back to. The combo side is *sharded*
+/// (`shard::plan_shards` + spill/merge), so however large the combo space is, its
+/// resident cost floors at this many index-only entries — which is why the planner
+/// prices the irreducible combo side here rather than at the planned count.
+/// Matches the degraded fold-batch cap in [`hard_max_combo_batch`].
+const MIN_SHARD_COMBOS: usize = 8_192;
+
+/// The sizing a run will execute at: how many rayon threads, how many token series
+/// may be resident together, and the fold-buffer ceiling. Produced by
+/// [`plan_sweep_sizing`], which *degrades* these to fit free RAM instead of
+/// refusing the run.
+pub(crate) struct SweepPlan {
+    pub threads: usize,
+    pub wave: usize,
+    pub fold_budget: u64,
+    /// Human-readable degradation notes (empty = ran at full preferred sizing).
+    /// Surfaced to the operator so a slow run is explained, not mysterious.
+    pub notes: Vec<String>,
+}
+
+/// Plan a run's sizing against free RAM by walking a **degradation ladder**
+/// instead of admitting-or-refusing.
+///
+/// The resident peak of a sweep is a *choice*, not a constant: threads, the series
+/// wave, the fold batch, the shard width and spill are all tunable downward, and
+/// results are streamed per group rather than accumulated. So a box with little
+/// free RAM should make the run **slower**, not impossible — refusing a 40-minute
+/// job because a browser is open trades the user's time for a resource that costs
+/// nothing to give back.
+///
+/// The ladder, in order: threads `N→1`, then fold budget `cap→floor`. The combo
+/// side is priced at its shardable floor ([`MIN_SHARD_COMBOS`]), because
+/// `plan_shards` can always cut the combo space down to that regardless of how
+/// many combos were requested.
+///
+/// The **only** refusal left is a true-floor overflow: one thread, one token's
+/// series, one minimum fold batch and one minimum shard still don't fit. That is a
+/// genuine "this machine cannot do this", not a scheduling preference.
+pub(crate) fn plan_sweep_sizing(
+    preferred_threads: usize,
+    max_series_bytes: usize,
+    planned_combos: usize,
+) -> Result<SweepPlan> {
+    let mb = |b: u64| b / (1024 * 1024);
+    let preferred_threads = preferred_threads.max(1);
+    let fold_cap = (SWEEP_FOLD_BUDGET_CAP_MB as u64).saturating_mul(1024 * 1024);
+    let fold_floor = (SWEEP_FOLD_BUDGET_FLOOR_MB as u64).saturating_mul(1024 * 1024);
+    let mut notes = Vec::new();
+
+    // Host RAM unreadable (neither Windows nor Linux): the guard is inert, so say so
+    // rather than silently sizing against the flat fallback ceiling.
+    let Some(usable) = usable_host_bytes() else {
+        notes.push(format!(
+            "host free RAM is unreadable on this platform — sizing against the flat {} MB \
+             admission cap instead of live free RAM",
+            DEFAULT_SWEEP_ADMISSION_BUDGET_MB
+        ));
+        set_fold_budget_ceiling(None);
+        let wave = series_wave_size(max_series_bytes, preferred_threads);
+        return Ok(SweepPlan { threads: preferred_threads, wave, fold_budget: fold_cap, notes });
     };
-    let usable = usable_raw.saturating_sub(SWEEP_ALLOC_SLACK_BYTES);
-    if need > usable {
-        let mb = |b: u64| b / (1024 * 1024);
+
+    let budget = usable.saturating_sub(SWEEP_ALLOC_SLACK_BYTES);
+    let combo_floor = estimate_generic_combo_side_bytes(planned_combos.min(MIN_SHARD_COMBOS));
+    let for_series_fold = budget.saturating_sub(combo_floor);
+
+    // The true floor: 1 thread × 1 token's series + the smallest fold batch.
+    let floor_need = (max_series_bytes as u64).saturating_add(fold_floor);
+    if floor_need > for_series_fold {
         let avail = crate::sweep::obs::host_memory_bytes().map(|(_, a)| a).unwrap_or(0);
         bail!(
-            "estimated resident peak ~{} MB ({} combos × ~{} B + fold {} MB + series {} MB) \
-             exceeds usable RAM {} MB (host free {} MB − {} MB desktop reserve − {} MB slack) — \
-             use random:N, narrow axes, tighten token/date filters, or free RAM before retrying",
-            mb(need),
-            n_combos,
-            GENERIC_PER_COMBO_RESIDENT_BYTES,
-            mb(fold),
-            mb(series_peak),
-            mb(usable),
+            "even the minimum plan (1 thread, 1 token series {} MB + {} MB fold + {} MB \
+             combo shard) needs {} MB, over the {} MB usable (host free {} MB − {} MB desktop \
+             reserve − {} MB slack) — this corpus cannot be swept on this machine as configured: \
+             lower the desktop reserve, tighten token_cap / the date range, or free RAM",
+            mb(max_series_bytes as u64),
+            mb(fold_floor),
+            mb(combo_floor),
+            mb(floor_need.saturating_add(combo_floor).saturating_add(SWEEP_ALLOC_SLACK_BYTES)),
+            mb(budget),
             mb(avail),
             ram_reserve_mb(),
             mb(SWEEP_ALLOC_SLACK_BYTES),
         );
     }
-    Ok(())
+
+    // Rung 1 — threads. Largest count ≤ preferred whose series wave fits what's
+    // left once the minimum fold batch is reserved. `unwrap_or(1)` is unreachable
+    // (the floor check above proves 1 thread fits) but keeps this total.
+    let threads = threads_fitting_admission(
+        preferred_threads,
+        max_series_bytes,
+        for_series_fold.saturating_sub(fold_floor),
+    )
+    .unwrap_or(1);
+
+    // Rung 2 — fold budget: whatever remains after the series wave, clamped into
+    // `floor..=cap`. Installed as a *ceiling*, so the per-call live sizing in
+    // `sweep_memory_budget_bytes` can still shrink below it mid-run.
+    let series_peak = (threads as u64).saturating_mul(max_series_bytes as u64);
+    let fold_budget = for_series_fold.saturating_sub(series_peak).clamp(fold_floor, fold_cap);
+    set_fold_budget_ceiling(Some(fold_budget));
+
+    // Wave is computed after the ceiling is installed so it sizes against the plan.
+    let wave = series_wave_size(max_series_bytes, threads);
+
+    if threads < preferred_threads {
+        notes.push(format!(
+            "low free RAM ({} MB usable) — running on {threads} of {preferred_threads} threads, \
+             so this run will take roughly {:.1}× longer than usual",
+            mb(usable),
+            preferred_threads as f64 / threads as f64,
+        ));
+    }
+    if fold_budget < fold_cap {
+        notes.push(format!(
+            "fold buffers capped at {} MB (of {} MB) — smaller combo batches, more series passes",
+            mb(fold_budget),
+            mb(fold_cap),
+        ));
+    }
+    if host_under_ram_reserve() {
+        notes.push(format!(
+            "host free RAM is already under the {} MB desktop reserve — running at minimum \
+             footprint; results are streamed per group, so progress is kept either way",
+            ram_reserve_mb(),
+        ));
+    }
+
+    Ok(SweepPlan { threads, wave, fold_budget, notes })
 }
 
 /// Planned combo count for admission (before `sample` materialises CompiledRules).
@@ -515,25 +645,20 @@ async fn sweep_generic(
         .max()
         .unwrap_or(0);
     let (admission_raw, host_total_mb, host_avail_mb) = effective_admission_budget_bytes();
-    let fold_budget = sweep_memory_budget_bytes();
-    let admission_budget = admission_raw.saturating_sub(fold_budget);
     let mb = |b: u64| b / (1024 * 1024);
-    let threads = match threads_fitting_admission(preferred_threads, max_series_bytes, admission_budget)
-    {
-        Some(n) => n,
-        None => {
-            bail!(
-                "estimated series precompute for largest token ({} MB) exceeds the \
-                 {} MB series budget (admission {} MB − fold {} MB) even at 1 thread — \
-                 narrow the corpus or axes (token_cap / date range / fewer combos)",
-                mb(max_series_bytes as u64),
-                mb(admission_budget),
-                mb(admission_raw),
-                mb(fold_budget)
-            );
-        }
-    };
-    let wave = series_wave_size(max_series_bytes, threads);
+
+    // Plan the run's sizing down to whatever free RAM allows (threads → fold budget)
+    // rather than admitting-or-refusing at the preferred sizing. Only a true-floor
+    // overflow still refuses — see `plan_sweep_sizing`.
+    let plan = plan_sweep_sizing(preferred_threads, max_series_bytes, planned)?;
+    let SweepPlan { threads, wave, fold_budget, notes } = plan;
+    // Report every degradation to the operator: a run that is 4× slower because the
+    // box was busy should say so, not look like an unexplained stall.
+    for note in &notes {
+        tracing::warn!(note = %note, "generic sweep: degraded sizing");
+        observer.notice(note);
+    }
+    let admission_budget = admission_raw.saturating_sub(fold_budget);
     // Series peak = `threads × one token's series`. The cross-group Phase-2 driver
     // runs one small group per worker, each building→folding→dropping a single
     // `MetricSeries` at a time (grouped_engine::sweep_group_serial), so `threads`
@@ -552,19 +677,11 @@ async fn sweep_generic(
     let admit_batch = crate::sweep::engine::combo_batch_size(planned, threads);
     let fold_peak =
         (threads as u64).saturating_mul(crate::sweep::engine::fold_footprint_bytes(admit_batch));
+    // Sized, not gated: `max_combos_per_shard` reads live free RAM and the plan's fold
+    // ceiling, so the combo side shrinks to fit rather than refusing. Spill+merge
+    // (`shard::plan_shards`) stitches the shards back into one ranked result set.
     let shard_peak = crate::sweep::shard::max_combos_per_shard(wave, max_series_bytes).min(planned);
-    admit_generic_combo_side(shard_peak, series_peak, fold_peak)?;
 
-    if threads < preferred_threads || wave < threads {
-        tracing::warn!(
-            preferred_threads,
-            threads,
-            wave,
-            max_token_series_mb = mb(max_series_bytes as u64),
-            budget_mb = mb(admission_budget),
-            "generic sweep: lowered concurrency to fit series+fold admission budget"
-        );
-    }
     tracing::info!(
         cores,
         preferred_threads,
@@ -595,13 +712,10 @@ async fn sweep_generic(
         tracing::warn!(combos = params.len(), cap, "grouped sweep: clamping sampled combos to cap");
         params.truncate(cap);
     }
-    // Re-check shard peak against realised sample size. `fold_peak` was estimated at
-    // `planned` (≥ the realised sample), so it stays a valid conservative bound here.
-    let realised_shard = crate::sweep::shard::max_combos_per_shard(wave, max_series_bytes)
-        .min(params.len());
-    if realised_shard != shard_peak {
-        admit_generic_combo_side(realised_shard, series_peak, fold_peak)?;
-    }
+    // No re-admission against the realised sample: `plan_shards` / `combo_batch_size`
+    // re-read live free RAM on every call during the fold, so the realised combo side
+    // is sized down continuously rather than judged once here. `params.len() ≤ planned`
+    // anyway, so the plan above is already a conservative bound.
 
     let (combo_count, groups) = tokio::task::spawn_blocking(
         move || -> Result<(usize, Vec<GroupResult>)> {
@@ -1305,6 +1419,66 @@ mod tests {
     fn default_threads_leave_two_cores() {
         let cores = detect_cores();
         assert_eq!(bounded_threads(), cores.saturating_sub(2).max(1));
+    }
+
+    /// The whole point of the ladder: a run that does not fit at preferred sizing
+    /// must come back **degraded**, never refused. Uses a series estimate large
+    /// enough that the full thread pool cannot possibly fit any real box's free RAM.
+    #[test]
+    fn plan_degrades_instead_of_refusing_when_preferred_does_not_fit() {
+        set_fold_budget_ceiling(None);
+        let preferred = 16;
+        // 2 GB per token series: 16 threads = 32 GB, which no test box has free.
+        let huge_series = 2 * 1024 * 1024 * 1024usize;
+        match plan_sweep_sizing(preferred, huge_series, 50_000) {
+            Ok(plan) => {
+                // Degraded, not refused — and it explained itself.
+                assert!(plan.threads >= 1 && plan.threads <= preferred);
+                assert!(plan.wave >= 1, "wave must keep at least one token resident");
+                assert!(plan.fold_budget >= (SWEEP_FOLD_BUDGET_FLOOR_MB as u64) * 1024 * 1024);
+                if plan.threads < preferred {
+                    assert!(!plan.notes.is_empty(), "degradation must be reported");
+                }
+            }
+            // The only legal refusal: one token's series alone overflows the box.
+            // Then the message must name the floor, not offer a retry that can't help.
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("minimum plan"), "floor refusal must say so: {msg}");
+            }
+        }
+        set_fold_budget_ceiling(None);
+    }
+
+    /// A trivial run on a readable host must plan at full preferred sizing with no
+    /// notes — the ladder must not degrade a run that fits fine.
+    #[test]
+    fn plan_keeps_preferred_sizing_when_everything_fits() {
+        set_fold_budget_ceiling(None);
+        // Zero-byte series (the legacy tpsl/swing `()` token state) can always fit.
+        let plan = plan_sweep_sizing(8, 0, 1_000).expect("a zero-series run always fits");
+        assert_eq!(plan.threads, 8);
+        assert!(plan.wave >= 1);
+        set_fold_budget_ceiling(None);
+    }
+
+    /// The planned fold budget is a **ceiling**, not a pin: live sizing may go lower
+    /// (RAM dropped mid-run) but never above the plan, and never below the floor.
+    #[test]
+    fn fold_ceiling_bounds_live_budget_without_pinning_it() {
+        let floor = (SWEEP_FOLD_BUDGET_FLOOR_MB as u64) * 1024 * 1024;
+        set_fold_budget_ceiling(None);
+        let auto = sweep_memory_budget_bytes();
+
+        let tight = 64 * 1024 * 1024;
+        set_fold_budget_ceiling(Some(tight));
+        let capped = sweep_memory_budget_bytes();
+        assert!(capped <= tight.max(floor), "ceiling must bound the live budget");
+        assert!(capped >= floor, "must never starve below the floor");
+        assert!(capped <= auto.max(floor), "a ceiling can only lower, never raise");
+
+        set_fold_budget_ceiling(None);
+        assert_eq!(sweep_memory_budget_bytes(), auto, "clearing restores auto sizing");
     }
 
     #[test]

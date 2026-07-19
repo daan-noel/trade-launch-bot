@@ -52,7 +52,10 @@ const RAM_RESERVE_CHOICES = [
   { mb: 512, label: '512M' },
   { mb: 256, label: '256M' },
 ] as const;
-const DEFAULT_RAM_RESERVE_MB = 2048;
+/** Must equal `registry::DEFAULT_SWEEP_RAM_RESERVE_MB` (hunter/lab/src/sweep/registry.rs)
+ *  — the form omits `ram_reserve_mb` from the request when it still matches, so a drift
+ *  here silently pins every run to a stale reserve instead of the backend default. */
+const DEFAULT_RAM_RESERVE_MB = 1024;
 
 /** The one strategy id the generic engine's sweep tables use. */
 export const GENERIC_STRATEGY_ID = 'generic';

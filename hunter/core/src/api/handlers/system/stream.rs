@@ -261,6 +261,15 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 json!({ "strategy_id": strategy_id, "cancelled": cancelled, "error": error }),
             )
         }
+        SseEvent::SweepNotice { strategy_id, message } => {
+            // Not mint-scoped: a mid-run advisory (degraded RAM sizing) for the
+            // single-flight sweep. Non-terminal — the run continues.
+            (
+                None,
+                "sweep_notice",
+                json!({ "strategy_id": strategy_id, "message": message }),
+            )
+        }
         SseEvent::SimulationFinished { rule_id, cancelled } => {
             // Not mint-scoped: terminal signal for the rule's backtest.
             (

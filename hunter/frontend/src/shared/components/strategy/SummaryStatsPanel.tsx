@@ -10,6 +10,20 @@ export interface SummaryStat {
   cls?: string;
 }
 
+/** A labelled band of stat tiles rendered under the hero row. Use when the
+ *  metrics split into groups that must not be read as one undifferentiated
+ *  strip — e.g. realized-only figures beside their mark-to-market counterparts,
+ *  where mistaking one band for the other changes the conclusion. */
+export interface SummarySection {
+  /** Band label, shown small-caps at the left of the row. */
+  title: string;
+  /** Optional one-line gloss under the title — say what the band measures over. */
+  hint?: string;
+  /** Tones the band's title (e.g. `text-green` / `text-warning`). */
+  titleCls?: string;
+  stats: SummaryStat[];
+}
+
 interface SummaryStatsPanelProps {
   /** Section heading. */
   title: string;
@@ -22,14 +36,20 @@ interface SummaryStatsPanelProps {
   heroStats: SummaryStat[];
   /** Secondary strip below the divider — the long-tail detail metrics. */
   detailStats?: SummaryStat[];
+  /** Labelled bands rendered after `detailStats`, each on its own row with its
+   *  own divider. Prefer over a single long `detailStats` strip when the metrics
+   *  fall into groups the reader must tell apart at a glance. */
+  sections?: SummarySection[];
   /** Left marker-bar colour class (default `bg-primary`). */
   accentClass?: string;
   className?: string;
 }
 
 /**
- * The shared "summary above a positions/results table" panel — one hero KPI row
- * plus a lighter detail strip. Purely presentational: callers pass already-formatted
+ * The shared "summary above a positions/results table" panel — one hero KPI row,
+ * a lighter detail strip, and any number of labelled `sections` bands below it
+ * (each its own row, so groups that must not be conflated stay visually apart).
+ * Purely presentational: callers pass already-formatted
  * tile strings (or nodes), so it stays decoupled from any particular summary wire
  * shape or price-unit context. `SimSummaryCard` (live/paper positions), the Simulate
  * page, and the grouped-sweep combo drill-in all render through this so the summary
@@ -41,6 +61,7 @@ export function SummaryStatsPanel({
   onClose,
   heroStats,
   detailStats = [],
+  sections = [],
   accentClass = 'bg-primary',
   className,
 }: SummaryStatsPanelProps) {
@@ -85,17 +106,53 @@ export function SummaryStatsPanel({
       {detailStats.length > 0 && (
         <div className="mt-5 flex flex-wrap gap-x-8 gap-y-3 border-t border-white/6 pt-4">
           {detailStats.map((s) => (
-            <div key={s.label} className="flex min-w-[84px] flex-col gap-0.5">
-              <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
-                {s.label}
-              </span>
-              <span className={cn('font-mono text-sm font-bold text-text', s.cls)}>
-                {s.node ?? s.value}
-              </span>
-            </div>
+            <DetailTile key={s.label} stat={s} />
           ))}
         </div>
       )}
+
+      {sections.map((sec) => (
+        <div key={sec.title} className="mt-4 border-t border-white/6 pt-4">
+          {/* Label gutter left, tiles right — on narrow viewports the gutter
+              stacks above its band so the grouping never collapses into one
+              undifferentiated strip. */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-6">
+            <div className="shrink-0 sm:w-44">
+              <div
+                className={cn(
+                  'text-[10px] font-bold uppercase tracking-wider text-text-mid',
+                  sec.titleCls,
+                )}
+              >
+                {sec.title}
+              </div>
+              {sec.hint && (
+                <div className="mt-0.5 text-[10px] leading-snug text-text-dim">{sec.hint}</div>
+              )}
+            </div>
+            <div className="flex flex-1 flex-wrap gap-x-8 gap-y-3">
+              {sec.stats.map((s) => (
+                <DetailTile key={s.label} stat={s} />
+              ))}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** One small label-over-value tile — the shared atom of the detail strip and of
+ *  every `SummarySection` band, so the two never drift apart visually. */
+function DetailTile({ stat }: { stat: SummaryStat }) {
+  return (
+    <div className="flex min-w-[84px] flex-col gap-0.5">
+      <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
+        {stat.label}
+      </span>
+      <span className={cn('font-mono text-sm font-bold text-text', stat.cls)}>
+        {stat.node ?? stat.value}
+      </span>
     </div>
   );
 }

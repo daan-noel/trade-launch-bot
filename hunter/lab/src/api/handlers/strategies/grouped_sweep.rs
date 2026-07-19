@@ -275,6 +275,14 @@ fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
             dir: dir_str,
         });
     }
+    // Share of fired positions still open. `NULLIF` guards n_fired = 0 (yields
+    // NULL, which the `NULLS LAST` in `order_fragment` parks at the end).
+    if col == "open_share" {
+        return Some(SortSpec::Expr {
+            sql: "r.n_open::numeric / NULLIF(r.n_fired, 0)",
+            dir: dir_str,
+        });
+    }
     let db_col: &'static str = match col {
         "score"               => "score",
         "n_fired"             => "n_fired",
@@ -887,18 +895,21 @@ async fn run_grouped_sweep_job(
                 // refresh on the `SweepFinished` SSE frame.
                 return;
             }
-            // Config errors (bad axes / over-cap grid) and post-admission
-            // refusals (e.g. the RAM-admission guard) fail before any group
-            // folds, leaving an empty placeholder run — drop it so it doesn't
-            // litter the picker as a 0-group cancelled run. (The client briefly
-            // navigated to this now-deleted run; the runs-list refresh on
-            // `SweepFinished` drops it back to the newest surviving run.) The
-            // reason rides the terminal frame so the client shows a toast rather
-            // than sitting on a run that silently vanishes.
-            tracing::error!("grouped sweep failed: {e}");
+            // Keep the run row on every failure. Groups are streamed to the DB as
+            // they fold, so a failure partway through leaves real, queryable
+            // results the user already spent minutes producing — deleting the run
+            // threw that away along with any diagnostic trace of the attempt.
+            //
+            // `partial` when some groups committed (same honest status a short
+            // write run gets); `failed` when none did — a config error (bad axes /
+            // over-cap grid) or a floor-overflow refusal that never folded
+            // anything. The reason rides the terminal frame either way, so the
+            // client can toast it while the run itself stays inspectable.
+            tracing::error!(groups_done, "grouped sweep failed: {e}");
             gate.error = Some(e.to_string());
-            if let Err(del) = repo.delete_run(run_id).await {
-                tracing::error!("grouped sweep: cleanup of failed run failed: {del}");
+            let status = if groups_done > 0 { "partial" } else { "failed" };
+            if let Err(mark) = repo.mark_status(run_id, status).await {
+                tracing::error!("grouped sweep: marking failed run '{status}' failed: {mark}");
             }
             return;
         }

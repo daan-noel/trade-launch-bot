@@ -41,15 +41,17 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 | Policy | Value |
 | --- | --- |
 | Rayon threads | `max(1, cores − 2)` (e.g. 14 on 16 logical CPUs) |
-| RAM reserve | keep host RAM free for OS/UI (`usable = free − reserve`; no half-of-free degradation). **Per-run knob** — the sweep form's *RAM reserve* radio (4G/2G/1G/512M/256M) sends `ram_reserve_mb`; default **2 GB**, clamped server-side to 256 MB…32 GB. Held in a process-global (`registry::set_ram_reserve_mb`, safe because the handler single-flights sweeps) so every admission/shard/fold helper reads it without threading a param through the rayon paths. Run-local: not persisted on the run row (a property of the box at run time, not of the analysis) |
-| Series admission | `min(12 GB cap, usable)`; refuse when usable is 0 |
+| RAM reserve | keep host RAM free for OS/UI (`usable = free − reserve`; no half-of-free degradation). **Per-run knob** — the sweep form's *RAM reserve* radio (4G/2G/1G/512M/256M) sends `ram_reserve_mb`; default **1 GB**, clamped server-side to 256 MB…32 GB. A *preference*, not a cliff: a tight reserve costs wall-clock, not the run (see below). Held in a process-global (`registry::set_ram_reserve_mb`, safe because the handler single-flights sweeps) so every sizing/shard/fold helper reads it without threading a param through the rayon paths. Run-local: not persisted on the run row (a property of the box at run time, not of the analysis) |
+| **Sizing under RAM pressure** | **Degrade, don't refuse.** `registry::plan_sweep_sizing` walks a ladder — threads `N→1`, then fold budget `cap→floor` — and runs at the largest plan that fits. The plan's fold budget is installed as a *ceiling* (`FOLD_BUDGET_CEILING`), so the per-call live sizing still shrinks further if free RAM drops mid-run. Every degradation is reported (`SweepObserver::notice` → `sweep_notice` SSE → info toast) so a slow run is explained, not mysterious. The only refusal left is a **true-floor overflow**: 1 thread + 1 token's series + the minimum fold batch + the minimum shard still don't fit. See [../plans/sweep/ram-sizing.md](../plans/sweep/ram-sizing.md) |
+| Series admission | `min(12 GB cap, usable)`; the flat 12 GB is the fallback when host RAM is unreadable (non-Windows/Linux) — that case is now reported as a notice rather than silently disabling the guard |
 | Fold batch budget | `usable / 4` clamped to 32..=512 MB; hard max **65 536** combos/batch (8192 when under reserve) |
 | Driver (large groups) | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
 | Driver (small groups) | `sweep_group_serial`: **token-outer** (series built once/token, combos folded in batches over it) when the full `n_combos × ComboAgg` set fits across all workers; else **batch-outer** fallback (bounded `batch × ComboAgg`, series rebuilt once/batch). Single-batch groups are token-outer either way, so the fallback only pays on over-RAM multi-batch groups — it no longer multiplies the dominant series-build cost by `n_batches` |
 | Sharding | large `N` split into RAM-sized combo ranges; up to 4 shards in parallel (RAM-capped); spill+merge |
 | Smarter search | full `grid` with ≥200k combos and no refine → auto `lhs:50000` + refine (override with explicit `refine:` / `random:`) |
 | Combo materialisation | index-only `GenericCombo { idx }`; `CompiledRule` bound per batch; combo JSON for **retained survivors only** |
-| Combo-side admission | peak priced as **one shard**, not full N |
+| Combo-side sizing | peak priced as **one shard**, not full N; the planner prices it at the *shardable floor* (`MIN_SHARD_COMBOS` = 8192) since `plan_shards` can always cut down to that |
+| Failure persistence | a failed run row is **never deleted** — `partial` when groups had already folded (they stay queryable), `failed` when none had. Groups stream to the DB as they fold, so a stop at group 380/400 keeps 380 groups |
 | Horizon clamps | sparse-grid ceilings ~7d; gap tick hard-cap; `combo_count` checked mul |
 
 Start log includes cores, threads, wave, planned/shard-peak combos, RSS, host total/available MB.

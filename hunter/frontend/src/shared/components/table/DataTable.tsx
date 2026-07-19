@@ -4,7 +4,15 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate } from './numericFilter';
-import { getTableCols, setTableCols, getTablePrefs, setTablePrefs } from 'lib/storage';
+import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import {
+  getTableCols,
+  setTableCols,
+  getTableKnownCols,
+  setTableKnownCols,
+  getTablePrefs,
+  setTablePrefs,
+} from 'lib/storage';
 import type { ColumnDef, SortDir, SortEntry, SortValue, TableQuery } from './types';
 
 /**
@@ -48,19 +56,46 @@ function cleanColFilters(map: Record<string, string>): Record<string, string> {
   return out;
 }
 
+/**
+ * Merge the saved visible-column set with the current column defs.
+ *
+ * `tableCols` persists a **visible** set, so a key's absence is ambiguous on its
+ * own — the user hid it, or the column didn't exist when they saved. The
+ * companion `tableKnownCols` set resolves that: a column absent from *both* is
+ * genuinely new, so its own `defaultVisible` applies. Without this, every column
+ * added to an existing table stays invisible forever for anyone who had ever
+ * touched that table's toggles — silently shipping a feature nobody can see.
+ */
 function loadVisibleCols(tableId: string, columns: ColumnDef<unknown>[]): Set<string> {
-  const defaults = new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key));
+  const isDefaultVisible = (c: ColumnDef<unknown>) => c.defaultVisible !== false;
+  const defaults = new Set(columns.filter(isDefaultVisible).map((c) => c.key));
   const stored = getTableCols(tableId);
   if (!stored) return defaults;
-  // Schema drift (renamed/removed column keys): stored prefs are stale — reset
-  // so newly added default-visible columns aren't stuck hidden.
+  // Schema drift (renamed/removed column keys): stored prefs are stale — reset.
   if (stored.some((k) => !columns.some((c) => c.key === k))) return defaults;
+
+  const known = getTableKnownCols(tableId);
   const set = new Set(stored.filter((k) => columns.some((c) => c.key === k)));
+  if (!known) {
+    // Legacy blob written before known-columns tracking: new columns can't be
+    // distinguished from hidden ones, so union in the defaults once. This may
+    // re-show something the user had hidden — a one-time cost, paid only on the
+    // first load after upgrading, in exchange for never losing a new column.
+    for (const k of defaults) set.add(k);
+    return set;
+  }
+  // Columns that didn't exist at save time are new — honour their own default.
+  for (const c of columns) {
+    if (!known.includes(c.key) && isDefaultVisible(c)) set.add(c.key);
+  }
   return set.size ? set : defaults;
 }
 
-function saveVisibleCols(tableId: string, cols: Set<string>) {
+function saveVisibleCols(tableId: string, cols: Set<string>, colKeys: string[]) {
   setTableCols(tableId, [...cols]);
+  // Always stamped together with the visible set, so the next load knows exactly
+  // which columns the user has actually been offered.
+  setTableKnownCols(tableId, colKeys);
 }
 
 function compareSort(a: SortValue, b: SortValue, dir: SortDir): number {
@@ -71,6 +106,27 @@ function compareSort(a: SortValue, b: SortValue, dir: SortDir): number {
   if (typeof a === 'number' && typeof b === 'number') cmp = a - b;
   else cmp = String(a).localeCompare(String(b));
   return dir === 'asc' ? cmp : -cmp;
+}
+
+/**
+ * The canonical string a cell groups by for `sameValueTints`. Prefers the
+ * column's own numeric/sort accessors over its display text so `1.5` and
+ * `1.50` group together; returns null (never tinted) for unset values and for
+ * columns that expose no comparable value at all (chip blobs, action columns).
+ */
+function cellGroupValue<R>(col: ColumnDef<R>, row: R): string | null {
+  if (col.filterNumber) {
+    const n = col.filterNumber(row);
+    return n == null || !Number.isFinite(n) ? null : String(n);
+  }
+  if (col.sortValue) {
+    const v = col.sortValue(row);
+    if (v == null) return null;
+    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : null;
+    return v === '' ? null : v;
+  }
+  const text = (col.filterValue ?? col.searchValue)(row).trim();
+  return text === '' ? null : text;
 }
 
 interface DataTableProps<R> {
@@ -131,6 +187,15 @@ interface DataTableProps<R> {
   /** Optional extra className(s) applied to each data `<td>` based on its
    *  column group key. Called once per visible cell; return undefined to skip. */
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
+  /**
+   * Opt-in same-value cell tints (the fingerprint-table look): in every visible
+   * column, a value shared by ≥2 rows on the page gets a stable background from
+   * a fixed palette, so repeated values read as bands at a glance. Values unique
+   * on the page stay untinted. Derived from each column's `sortValue` /
+   * `filterNumber` / `filterValue`, so a column with none of those is skipped.
+   * A column's own `cellClassName` still wins (it merges after this).
+   */
+  sameValueTints?: boolean;
   /** Fires with the rows currently on screen (the processed + paginated page)
    *  whenever they change — lets a sibling view (e.g. a synced charts grid)
    *  mirror the table's current sort/filter/page. Works in client + server mode.
@@ -174,6 +239,7 @@ export function DataTable<R>({
   cellGroupClassName,
   onVisibleRowsChange,
   onFilteredRowsChange,
+  sameValueTints = false,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -196,6 +262,12 @@ export function DataTable<R>({
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
     tableId ? loadVisibleCols(tableId, columns as ColumnDef<unknown>[]) : new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key)),
   );
+  // The column-key set, and a stable string signature of it. Callers don't all
+  // memoize their `columns` array, so keying the persist effect on the array
+  // identity would rewrite localStorage on every render — the signature fires it
+  // only when a column is actually added or removed.
+  const colKeys = useMemo(() => (columns as ColumnDef<unknown>[]).map((c) => c.key), [columns]);
+  const colKeysSig = useMemo(() => colKeys.join(' '), [colKeys]);
   const [internalSelected, setInternalSelected] = useState<string | null>(null);
   const [showColPanel, setShowColPanel] = useState(false);
   const [showFilterRow, setShowFilterRow] = useState(false);
@@ -214,8 +286,8 @@ export function DataTable<R>({
     externalSelected !== undefined ? externalSelected : internalSelected;
 
   useEffect(() => {
-    if (tableId) saveVisibleCols(tableId, visibleCols);
-  }, [visibleCols, tableId]);
+    if (tableId) saveVisibleCols(tableId, visibleCols, colKeys);
+  }, [visibleCols, tableId, colKeysSig]);
 
   useEffect(() => {
     if (tableId) setTablePrefs(tableId, { pageSize, sortKeys });
@@ -463,6 +535,20 @@ export function DataTable<R>({
   useEffect(() => {
     onFilteredRowsChange?.(processed);
   }, [processed, onFilteredRowsChange]);
+  // Same-value tints (opt-in): computed over the on-screen page only, so the
+  // palette stays scoped to what the eye is actually comparing. `rowKey` is
+  // deliberately excluded from the deps — callers pass it inline, so depending
+  // on it would rebuild the map on every render for no change in output.
+  const valueTints = useMemo(() => {
+    if (!sameValueTints) return null;
+    return computeSameValueCellClasses(
+      pageRows,
+      rowKey,
+      visCols.map((col) => ({ key: col.key, valueOf: (row: R) => cellGroupValue(col, row) })),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sameValueTints, pageRows, visCols]);
+
   const colCount = visCols.length + 1 + (rowActions ? 1 : 0);
 
   const activeFilters = Object.values(colFiltersMap).filter(Boolean).length;
@@ -709,6 +795,7 @@ export function DataTable<R>({
                       colCount={colCount}
                       rowClassName={rowClassName}
                       cellGroupClassName={cellGroupClassName}
+                      valueTints={valueTints}
                     />
                   );
                 })
@@ -753,6 +840,10 @@ interface TableRowProps<R> {
   colCount: number;
   rowClassName?: (row: R) => string | undefined;
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
+  /** `${rowKey}\0${colKey}` → same-value background class; null when the tints
+   *  are off. Identity is stable while the page + columns are unchanged, so it
+   *  doesn't defeat this row's `memo`. */
+  valueTints?: Map<string, string> | null;
 }
 
 /**
@@ -778,6 +869,7 @@ function TableRowInner<R>({
   colCount,
   rowClassName,
   cellGroupClassName,
+  valueTints,
 }: TableRowProps<R>) {
   return (
     <Fragment>
@@ -800,6 +892,7 @@ function TableRowInner<R>({
               'border-b border-border px-2 py-1.5 text-center text-text',
               groupClasses[ci],
               cellGroupClassName?.(col.group, row),
+              valueTints?.get(`${rowKeyValue}\0${col.key}`),
               col.cellClassName?.(row),
             )}
           >

@@ -126,6 +126,8 @@ struct GroupDbRow {
     best_win_rate: Option<f32>,
     best_total_pnl_sol: Option<f32>,
     best_open_pnl_sol: Option<f32>,
+    best_n_open: Option<i32>,
+    best_n_closed: Option<i32>,
     best_profit_factor: Option<f32>,
     best_mean_pnl_pct: Option<f32>,
     best_median_pnl_pct: Option<f32>,
@@ -150,6 +152,8 @@ impl From<GroupDbRow> for GroupedSweepGroupSummary {
             best_win_rate: r.best_win_rate.unwrap_or(0.0) as f64,
             best_total_pnl_sol: r.best_total_pnl_sol.unwrap_or(0.0) as f64,
             best_open_pnl_sol: r.best_open_pnl_sol.unwrap_or(0.0) as f64,
+            best_n_open: r.best_n_open.unwrap_or(0) as i64,
+            best_n_closed: r.best_n_closed.unwrap_or(0) as i64,
             best_profit_factor: r.best_profit_factor.map(|v| v as f64),
             best_mean_pnl_pct: r.best_mean_pnl_pct.unwrap_or(0.0) as f64,
             best_median_pnl_pct: r.best_median_pnl_pct.unwrap_or(0.0) as f64,
@@ -494,8 +498,24 @@ impl GroupedSweepRepo {
     /// groups and the running counts [`update_run_counts`]/[`append_group`] set —
     /// so the partial run reads as "`groups_done` / `group_count`", honestly partial.
     pub async fn mark_cancelled(&self, run_id: Uuid) -> anyhow::Result<()> {
-        let sql = format!("UPDATE {} SET status = 'cancelled' WHERE id = $1", self.tables.runs);
-        sqlx::query(&sql).bind(run_id).execute(&self.pool).await?;
+        self.mark_status(run_id, "cancelled").await
+    }
+
+    /// Stamp a terminal `status` on a run, leaving its already-persisted groups and
+    /// running counts intact. The general form behind [`mark_cancelled`]; the engine
+    /// error path uses it to record `partial` (some groups folded before the failure)
+    /// or `failed` (none did) rather than deleting the run.
+    ///
+    /// A grouped sweep is a multi-minute job whose groups are streamed to the DB as
+    /// they fold, so a failure at group 380/400 must leave 380 queryable groups — a
+    /// `DELETE` throws away real, correct work the user already waited for.
+    pub async fn mark_status(&self, run_id: Uuid, status: &str) -> anyhow::Result<()> {
+        let sql = format!("UPDATE {} SET status = $2 WHERE id = $1", self.tables.runs);
+        sqlx::query(&sql)
+            .bind(run_id)
+            .bind(status)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -538,6 +558,7 @@ impl GroupedSweepRepo {
                     g.best_combo_id, g.best_score, g.best_expectancy_sol, \
                     r.win_rate AS best_win_rate, r.total_pnl_sol AS best_total_pnl_sol, \
                     r.open_pnl_sol AS best_open_pnl_sol, \
+                    r.n_open AS best_n_open, r.n_closed AS best_n_closed, \
                     r.profit_factor AS best_profit_factor, r.mean_pnl_pct AS best_mean_pnl_pct, \
                     r.median_pnl_pct AS best_median_pnl_pct, r.p90_pnl_pct AS best_p90_pnl_pct, \
                     r.std_pnl_pct AS best_std_pnl_pct, r.avg_holding_secs AS best_avg_holding_secs, \
@@ -649,6 +670,7 @@ impl GroupedSweepRepo {
                     g.best_combo_id, g.best_score, g.best_expectancy_sol, \
                     r.win_rate AS best_win_rate, r.total_pnl_sol AS best_total_pnl_sol, \
                     r.open_pnl_sol AS best_open_pnl_sol, \
+                    r.n_open AS best_n_open, r.n_closed AS best_n_closed, \
                     r.profit_factor AS best_profit_factor, r.mean_pnl_pct AS best_mean_pnl_pct, \
                     r.median_pnl_pct AS best_median_pnl_pct, r.p90_pnl_pct AS best_p90_pnl_pct, \
                     r.std_pnl_pct AS best_std_pnl_pct, r.avg_holding_secs AS best_avg_holding_secs, \
