@@ -87,19 +87,22 @@ condition `eval`, `CompiledRule::compile`.
   `trades[0]`. Its doc claims parity with sweep/live: true of the values, false of the
   sampling grid and clock origin.
 
-## Performance backlog (grouped sweep)
+## Performance backlog (grouped sweep) — measured, closed
 
-Gated on measurement — capture `refine_coarse_pass` / `refine_final_pass` /
-`writer_drain` / `slowest_group_secs` / `corpus_load` / `evals_per_sec` from a normal
-grouped-sweep run before starting any of these.
+Both gating smoke runs were executed on 2026-07-19; full numbers in
+[perf-measurements.md](perf-measurements.md).
 
-| Item | What | Gate |
-| --- | --- | --- |
-| **P1** `fold_wave_into` per-wave concurrency churn | Spawns a thread + 2 channels + a mutex per wave to fold only `wave ≤ threads` tokens; structural overhead paid `n_waves × n_batches` times. The largest remaining fold cost, and a *restructure* rather than a hoist — prior fold fixes were wins by construction, this one changes the concurrency shape. `multi_wave_fold_matches_single_batch` is the safety net. | Skip if the timings show fold is no longer the constraint |
-| **P2** `insert_combos_indexed` redundant sends | Re-sends ~660 rows per group that Postgres mostly discards on conflict. Independent related risk: the fold→writer channel is **unbounded** — persistence does not gate the fold (good for speed) but a slow writer becomes RAM growth (bad for stability); bound it if a low-RAM run shows the drain lagging. | Only if `writer_drain` is non-trivial |
-| **P3** Refine sweeps the corpus twice | By design (coarse + final pass), now individually timed. | Only if `refine_coarse_pass` is a large fraction of the run |
+| Item | Verdict |
+| --- | --- |
+| **P1** `fold_wave_into` per-wave concurrency churn | **Skip** — the fold is the constraint (92.5%) but the cost is not the per-wave setup; hypothesis refuted by measurement |
+| **P2** `insert_combos_indexed` redundant sends | **Skip** — `writer_drain` is 11.7 µs; the channel never backs up |
+| **P3** Refine sweeps the corpus twice | **Keep as designed** — the coarse pass is what cuts 944,784 combos to 28,389 |
 
-Also still pending from the RAM round: a **low-RAM smoke run** exercising the
-degradation ladder that replaced the admit-or-refuse guard (see
-[ram-sizing.md](ram-sizing.md)). Expect smaller batches / fewer threads, a `SweepNotice`,
-**and completion** — a refusal or an abort there is a bug.
+The low-RAM run also **passed**: the degradation ladder shrank the fold budget,
+emitted its notice, and still completed 405/405 groups. No refusal, no abort.
+
+What the runs *did* surface is a separate, larger lever — the sweep's own RSS drives
+`usable_host_bytes()` to 0 mid-run, so every group takes the slow series-rebuild
+path and the documented token-outer "primary path" never executes. Written up with
+evidence and options in [perf-measurements.md](perf-measurements.md); it needs a
+design decision because it touches RAM-admission safety.

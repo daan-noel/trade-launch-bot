@@ -585,11 +585,16 @@ fn sweep_group_serial<S: Strategy>(
             max_series,
             std::mem::size_of::<S::BoundParams>(),
         );
+        // The fit inputs ride along on both arms: when the fallback fires, "which
+        // term blew the budget" is the only question worth asking, and recomputing
+        // it from the message alone is impossible.
         if fits {
             tracing::debug!(
                 group_tokens = idx.len(),
                 combos = n_combos,
                 n_batches,
+                threads,
+                max_series_kb = max_series / 1024,
                 "grouped sweep: small-group token-outer fold (series built once per token)"
             );
         } else {
@@ -597,6 +602,16 @@ fn sweep_group_serial<S: Strategy>(
                 group_tokens = idx.len(),
                 combos = n_combos,
                 n_batches,
+                threads,
+                max_series_kb = max_series / 1024,
+                agg_mb = (n_combos.saturating_mul(threads).saturating_mul(
+                    std::mem::size_of::<ComboAgg>() + std::mem::size_of::<S::BoundParams>(),
+                )) / (1024 * 1024),
+                series_mb = threads.saturating_mul(max_series) / (1024 * 1024),
+                fold_budget_mb = crate::sweep::registry::sweep_memory_budget_bytes() / (1024 * 1024),
+                usable_mb = crate::sweep::registry::usable_host_bytes()
+                    .map(|b| b / (1024 * 1024))
+                    .unwrap_or(0),
                 "grouped sweep: small-group batch-outer fallback (full aggs over-RAM; \
                  series rebuilt per batch)"
             );
