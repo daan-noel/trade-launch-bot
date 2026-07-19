@@ -2,7 +2,7 @@
 
 File-level map of `backend/src/sweep/`. The generic param-sweep & backtest stack.
 Related: [@arch/strategies.md](@arch/strategies.md) (pure fns the sweep reuses), [@arch/database.md](@arch/database.md) (sweep tables), [@arch/frontend.md](@arch/frontend.md) (sweep page).
-Deep-dive detail: `@plans/sweep/sweep-engine-detail.md`, `@plans/sweep/sweep-metrics-explained.md`.
+Deep-dive detail: `@plans/sweep/sweep-engine-detail.md` (engine internals + metrics reference), `@plans/sweep/ram-sizing.md` (RAM ladder + measured perf), `@plans/sweep/sim-parity.md` (sweep↔simulate divergences).
 
 ## Core idea
 
@@ -62,7 +62,7 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 | Series admission | `min(12 GB cap, usable)`; the flat 12 GB is the fallback when host RAM is unreadable (non-Windows/Linux) — that case is now reported as a notice rather than silently disabling the guard |
 | Fold batch budget | `usable / 4` clamped to 32..=512 MB; hard max **65 536** combos/batch (8192 when under reserve) |
 | Driver (large groups) | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
-| Driver (small groups) | `sweep_group_serial`: **token-outer** (series built once/token, combos folded in batches over it) when the full `n_combos × ComboAgg` set fits across all workers; else **batch-outer** fallback (bounded `batch × ComboAgg`, series rebuilt once/batch). Single-batch groups are token-outer either way. The fit test reads `usable_host_bytes()`, which prices the run's **permanent** resident set (the corpus) as consumed but its own **transient** fold buffers as reusable headroom — without that, the sweep's own RSS drove `usable → 0` mid-run and token-outer never fired (measured 0/405 groups; fixed 2026-07-19, now 152/405 normal & 601/601 under tight reserve, with a 7.9× faster coarse pass on the tight run). Before/after: [../plans/sweep/perf-measurements.md](../plans/sweep/perf-measurements.md) |
+| Driver (small groups) | `sweep_group_serial`: **token-outer** (series built once/token, combos folded in batches over it) when the full `n_combos × ComboAgg` set fits across all workers; else **batch-outer** fallback (bounded `batch × ComboAgg`, series rebuilt once/batch). Single-batch groups are token-outer either way. The fit test reads `usable_host_bytes()`, which prices the run's **permanent** resident set (the corpus) as consumed but its own **transient** fold buffers as reusable headroom — without that, the sweep's own RSS drove `usable → 0` mid-run and token-outer never fired (measured 0/405 groups; fixed 2026-07-19, now 152/405 normal & 601/601 under tight reserve, with a 7.9× faster coarse pass on the tight run). Before/after: [../plans/sweep/ram-sizing.md](../plans/sweep/ram-sizing.md#measured-performance-2026-07-19) |
 | Sharding | large `N` split into RAM-sized combo ranges; up to 4 shards in parallel (RAM-capped); spill+merge |
 | Smarter search | full `grid` with ≥200k combos and no refine → auto `lhs:50000` + refine (override with explicit `refine:` / `random:`) |
 | Combo materialisation | index-only `GenericCombo { idx }`; `CompiledRule` bound per batch; combo JSON for **retained survivors only** |

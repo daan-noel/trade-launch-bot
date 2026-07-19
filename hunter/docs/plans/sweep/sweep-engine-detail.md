@@ -9,7 +9,7 @@ Each combo in `<strategy>_grouped_sweep_combos` stores its params as a JSONB dic
 **Identity / ranking:**
 - `combo_id UUID` — FK into `combos` table
 - `group_id UUID` — FK into `groups` table
-- `score f64` — composite score (primary ranking key; see `@plans/sweep/sweep-metrics-explained.md`)
+- `score f64` — composite score (primary ranking key; formula + intuition in [Metrics reference](#metrics-reference--what-each-column-means) below)
 
 **Win-rate / count:**
 - `win_rate f64` — fraction of tokens with positive PnL
@@ -278,3 +278,55 @@ Entry is param-free: `entry_key` always returns the same key → `prepare_token`
 Sweeps all 14 knobs (8 scalp entry + 6 exit ladder). Entry varies on 8 scalp-gate params → `entry_key` hashes those 8 params → `prepare_token` is a no-op (`TokenState = ()`) and the entry resolves fresh for each unique `(token, entry_key)` combination.
 
 The 8-param hash typically produces far fewer than 2^8 distinct values in practice (most params have 3–5 sweep values → ~3^5 = 243 distinct entries per token in a typical run).
+
+## Metrics reference — what each column means
+
+Human-facing reference for the **Grouped Sweep** result-table and combo-table columns.
+The storage layout for these is [Combo Column Families](#combo-column-families) above; the
+approximation mechanism is [QuantileSketch](#quantilesketch--aggregaters).
+
+### Score — `aggregate.rs` → `robust_score()`
+
+**Formula:** `mean − 1.64 × (std / √n)` — a **lower confidence bound** on the combo's true
+average return. It answers *"what's the worst I can credibly believe this combo's real mean
+is, given the data?"*
+
+| Variable | Meaning |
+| --- | --- |
+| `mean` | Average % return across closed trades |
+| `std` | Sample standard deviation of closed returns |
+| `n` | Number of closed trades |
+| `1.64` | ~95% one-sided confidence multiplier (Z-score) |
+
+**Example:** mean = +50%, std = 80%, n = 10 → `50 − 1.64 × (80 / √10) = +8.5`.
+
+Why it matters: high mean with few trades → low score (no repeatable edge proven); high mean
+with volatile returns → low score (punishes inconsistency); high mean + many trades + tight
+returns → high score (reliable edge). Score is `None` (shown `—`) below 2 closed trades.
+
+### Combo-table columns
+
+- **Profit Factor** — `gross_wins_sol / gross_loss_sol`: SOL won per 1 SOL lost (3.48 = 3.48
+  gained per 1 lost). Higher is better; `∞` when there are zero losing trades.
+- **Mean %** — `Σ(pnl%) / n_fired`: simple average % return over **all fired tokens**,
+  including open positions marked to current price.
+- **Median %** — p50 of all trade returns, via the log-bucketed quantile sketch (~15% rel.
+  error). Robust to outliers.
+- **P90 %** — p90 of all trade returns (same sketch): the upside-tail "good day", a ceiling
+  not a floor.
+- **Std %** — sample std of **closed** returns, `√[(Σx² − n·μ²) / (n−1)]`. Feeds the Score
+  formula to penalise inconsistency; `0` below 2 closed trades.
+
+Best % / Worst % are exact running min/max — no approximation.
+
+### Closed vs. all trades (which scope each metric uses)
+
+| Metric | Scope |
+| --- | --- |
+| Mean %, Median %, P90 % | All fired (open positions mark-to-market included) |
+| Std %, Score | Closed trades only |
+| Holding time (avg/median) | Closed trades only |
+| Win rate, Total PnL, Expectancy | All fired |
+
+See the [Realized vs unrealized](#pnl-metrics) note under Combo Column Families for why
+`score`/best-combo selection ranks on realized figures alone.

@@ -89,22 +89,8 @@ condition `eval`, `CompiledRule::compile`.
 
 ## Performance backlog (grouped sweep) — measured, closed
 
-Both gating smoke runs were executed on 2026-07-19; full numbers in
-[perf-measurements.md](perf-measurements.md).
-
-| Item | Verdict |
-| --- | --- |
-| **P1** `fold_wave_into` per-wave concurrency churn | **Skip** — the fold is the constraint (92.5%) but the cost is not the per-wave setup; hypothesis refuted by measurement |
-| **P2** `insert_combos_indexed` redundant sends | **Skip** — `writer_drain` is 11.7 µs; the channel never backs up |
-| **P3** Refine sweeps the corpus twice | **Keep as designed** — the coarse pass is what cuts 944,784 combos to 28,389 |
-
-The low-RAM run also **passed**: the degradation ladder shrank the fold budget,
-emitted its notice, and still completed 405/405 groups. No refusal, no abort.
-
-What the runs surfaced instead was a separate, larger lever — the sweep's own RSS
-drove `usable_host_bytes()` to 0 mid-run, so every group took the slow series-rebuild
-path and the documented token-outer "primary path" never executed. **Fixed** by
-pricing the sweep's own transient buffers as reusable headroom (the corpus stays
-priced as consumed): token-outer now fires, and the tight-reserve coarse pass is
-**7.9× faster** with the 229 s single-group pathology gone. Full before/after and the
-abort-safety argument in [perf-measurements.md](perf-measurements.md).
+The P1–P3 perf backlog was gated by two smoke runs on 2026-07-19 and **closed** (P1/P2
+skip, P3 keep-as-designed); the low-RAM run passed the degradation ladder, and the runs
+surfaced a larger lever — the sweep's own RSS drove `usable_host_bytes()` to 0 mid-run,
+now **fixed**. Full numbers, verdicts, and the abort-safety argument live in
+[ram-sizing.md → Measured performance](ram-sizing.md#measured-performance-2026-07-19).
