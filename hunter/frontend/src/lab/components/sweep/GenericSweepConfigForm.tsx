@@ -37,6 +37,23 @@ import { SWEEP_FIELD_HELP } from 'lib/strategy/strategyHelp';
 const DEFAULT_MAX_COMBOS = 100000;
 const HARD_MAX_COMBOS = 1000000;
 
+/**
+ * Desktop RAM reserve choices (MB) — how much host RAM the run leaves free for
+ * OS + desktop. Every admission ceiling the backend computes is
+ * `host free − reserve`, so a smaller reserve admits bigger sweeps on a box
+ * you're not using; a bigger one keeps the machine responsive while it runs.
+ * Mirrors `registry::{DEFAULT,MIN,MAX}_SWEEP_RAM_RESERVE_MB` (values are clamped
+ * server-side regardless).
+ */
+const RAM_RESERVE_CHOICES = [
+  { mb: 4096, label: '4G' },
+  { mb: 2048, label: '2G' },
+  { mb: 1024, label: '1G' },
+  { mb: 512, label: '512M' },
+  { mb: 256, label: '256M' },
+] as const;
+const DEFAULT_RAM_RESERVE_MB = 2048;
+
 /** The one strategy id the generic engine's sweep tables use. */
 export const GENERIC_STRATEGY_ID = 'generic';
 
@@ -91,6 +108,8 @@ interface GenericSweepConfig {
   curveOnly: boolean;
   buyAmountSol: number;
   bucketWidthSol: number;
+  /** Host RAM (MB) left free for OS + desktop while the run sizes its peaks. */
+  ramReserveMb: number;
 }
 
 function defaultConfig(): GenericSweepConfig {
@@ -116,6 +135,7 @@ function defaultConfig(): GenericSweepConfig {
     curveOnly: false,
     buyAmountSol: 1.0,
     bucketWidthSol: 0.1,
+    ramReserveMb: DEFAULT_RAM_RESERVE_MB,
   };
 }
 
@@ -247,6 +267,7 @@ export function GenericSweepConfigForm({
     curveOnly,
     buyAmountSol,
     bucketWidthSol,
+    ramReserveMb,
   } = config;
 
   function setField<K extends keyof GenericSweepConfig>(key: K, value: GenericSweepConfig[K]) {
@@ -319,6 +340,7 @@ export function GenericSweepConfigForm({
       token_cap: tokenCap,
       max_combos: effectiveCap !== DEFAULT_MAX_COMBOS ? effectiveCap : undefined,
       buy_amount_sol: buyAmountSol,
+      ram_reserve_mb: ramReserveMb !== DEFAULT_RAM_RESERVE_MB ? ramReserveMb : undefined,
     });
   }
 
@@ -403,6 +425,32 @@ export function GenericSweepConfigForm({
             numericValue={buyAmountSol}
             onNumericChange={(n) => setField('buyAmountSol', n == null ? 0.001 : Math.max(0.001, n))}
           />
+        </Field>
+        <Field
+          label="RAM reserve"
+          hint="kept free"
+          desc={SWEEP_FIELD_HELP.ramReserve.body}
+          className="w-fit"
+        >
+          <div role="radiogroup" aria-label="RAM reserve" className="flex h-[34px] items-center gap-1">
+            {RAM_RESERVE_CHOICES.map((c) => (
+              <button
+                key={c.mb}
+                type="button"
+                role="radio"
+                aria-checked={ramReserveMb === c.mb}
+                onClick={() => setField('ramReserveMb', c.mb)}
+                className={cn(
+                  'rounded border px-2 py-1 font-mono text-[11px] transition-colors',
+                  ramReserveMb === c.mb
+                    ? 'border-accent/60 bg-accent/15 text-accent'
+                    : 'border-white/10 text-text-dim hover:border-white/25 hover:text-text-mid',
+                )}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
         </Field>
         <Field label="Curve only" desc={SWEEP_FIELD_HELP.curveOnly.body} className="w-fit">
           <label className="flex h-[34px] items-center gap-1.5 text-sm text-text-mid">

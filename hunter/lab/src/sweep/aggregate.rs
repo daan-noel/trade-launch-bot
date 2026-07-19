@@ -68,6 +68,11 @@ pub struct ComboMetrics {
     pub n_closed: u64,
     pub win_rate: f64,
     pub total_pnl_sol: f64,
+    /// Unrealized mark-to-last-price sum over the combo's still-`Open` positions.
+    /// Never folded into `total_pnl_sol` (which stays realized-only) — carried so
+    /// the group/combo summary can show the mark-to-market total beside it and a
+    /// combo that simply leaves its losers open can't read as profitable.
+    pub open_pnl_sol: f64,
     pub mean_pnl_pct: f64,
     pub median_pnl_pct: f64,
     pub p90_pnl_pct: f64,
@@ -115,6 +120,7 @@ impl ComboMetrics {
             n_closed: m.n_closed,
             win_rate: m.win_rate,
             total_pnl_sol: m.total_pnl_sol,
+            open_pnl_sol: m.open_pnl_sol,
             mean_pnl_pct: m.mean_pnl_pct,
             median_pnl_pct: m.median_pnl_pct,
             p90_pnl_pct: m.p90_pnl_pct,
@@ -204,6 +210,7 @@ mod tests {
         assert_eq!(m.n_open, 1);
         assert_eq!(m.n_closed, 2);
         assert!((m.total_pnl_sol - 1.0).abs() < 1e-9, "open PnL excluded from the total");
+        assert!((m.open_pnl_sol - 5.0).abs() < 1e-9, "open mark surfaced separately");
         assert_eq!(m.best_pnl_pct, 100.0);
         assert_eq!(m.worst_pnl_pct, -50.0);
     }
@@ -307,6 +314,10 @@ mod tests {
         assert_eq!(m.n_open, 1);
         assert_eq!(m.n_closed, 2);
         assert!((m.total_pnl_sol - 0.0).abs() < 1e-9, "open PnL excluded from total");
+        assert!(
+            (m.open_pnl_sol - 1_000.0).abs() < 1e-9,
+            "the open mark is reported separately, not silently dropped"
+        );
         assert!((m.win_rate - 0.5).abs() < 1e-9, "win rate over closed trades only");
         assert!((m.mean_pnl_pct - 0.0).abs() < 1e-9);
         assert_eq!(m.best_pnl_pct, 50.0, "open mark must not become the best");

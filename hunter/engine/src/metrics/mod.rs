@@ -224,7 +224,9 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_snapshot",
         kind: MetricKind::Static,
         strict_params: &[],
-        // Sky family (~185–200).
+        // Blue/indigo family (~212–236). Deliberately clear of the green at 170:
+        // the old sky hues (185/200) sat within ~15° of `buy` and the two groups
+        // were near-indistinguishable at chip size.
         metrics: &[
             MetricSpec {
                 id: MetricId::Time,
@@ -232,7 +234,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: true,
-                hue: 200,
+                hue: 212,
             },
             MetricSpec {
                 id: MetricId::Liquidity,
@@ -240,7 +242,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
-                hue: 185,
+                hue: 236,
             },
         ],
     },
@@ -249,8 +251,9 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_price_path",
         kind: MetricKind::Static,
         strict_params: &[],
-        // Amber family (~35–48). Both metrics anchor on the all-time high: `trail`
-        // is how far below it price sits, `stall` how long since it was set.
+        // Amber/gold family (~40–62). Both metrics anchor on the all-time high:
+        // `trail` is how far below it price sits, `stall` how long since it was
+        // set. Nudged up off 35 to widen the gap to the red at 355.
         metrics: &[
             MetricSpec {
                 id: MetricId::Stall,
@@ -258,7 +261,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Seconds,
                 eq_tolerance: 0.5,
                 monotonic: false,
-                hue: 35,
+                hue: 40,
             },
             MetricSpec {
                 id: MetricId::Trail,
@@ -266,7 +269,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
-                hue: 48,
+                hue: 62,
             },
         ],
     },
@@ -275,7 +278,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_time_window",
         kind: MetricKind::Dynamic,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
-        // Violet family (~270–285) for the aggregate flow metrics — but `buy` and
+        // Violet/magenta family (~278–300) for the aggregate flow metrics — but `buy` and
         // `sell` deliberately leave the family and take the candle up/down hues
         // instead. Trade DIRECTION outranks group identity: a `buy` chip has to
         // read the same green as an up-candle everywhere in the UI. The
@@ -287,7 +290,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
-                hue: 270,
+                hue: 278,
             },
             MetricSpec {
                 id: MetricId::NetFlow,
@@ -295,7 +298,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
-                hue: 285,
+                hue: 300,
             },
             MetricSpec {
                 id: MetricId::Buy,
@@ -497,6 +500,75 @@ mod tests {
                 g.name,
                 hi - lo,
             );
+        }
+    }
+
+    /// Shortest distance between two hues on the 360° color wheel.
+    fn hue_gap(a: u16, b: u16) -> u16 {
+        let d = a.abs_diff(b);
+        d.min(360 - d)
+    }
+
+    /// Every metric must stay this far from the two direction hues. Below roughly
+    /// this, a chip's tint stops reading as "not a buy/sell" at a glance.
+    const MIN_DIRECTION_GAP: u16 = 35;
+
+    /// Two metrics in *different* groups must be at least this far apart, so the
+    /// group a chip belongs to is legible from color alone.
+    const MIN_CROSS_GROUP_GAP: u16 = 30;
+
+    /// The whole point of pinning buy/sell to the candle colors is that they're
+    /// instantly recognizable — which fails if an unrelated metric sits at a
+    /// neighbouring hue. (It did: `liquidity` was 185, only 15° off the 170 green,
+    /// so snapshot and direction chips looked alike.) Keep the two direction hues
+    /// visually reserved.
+    #[test]
+    fn direction_hues_are_visually_isolated() {
+        for g in REGISTRY {
+            for m in g.metrics {
+                if DIRECTION_METRICS.contains(&m.name) {
+                    continue;
+                }
+                for (dir_name, dir_hue) in
+                    [("buy", CANDLE_UP_HUE), ("sell", CANDLE_DOWN_HUE)]
+                {
+                    let gap = hue_gap(m.hue, dir_hue);
+                    assert!(
+                        gap >= MIN_DIRECTION_GAP,
+                        "{}.{} (hue {}) is only {gap}° from {dir_name} (hue {dir_hue}); \
+                         needs >= {MIN_DIRECTION_GAP}° to stay distinguishable",
+                        g.name,
+                        m.name,
+                        m.hue,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Metrics from different groups must not collide either — otherwise a
+    /// `m_snapshot` chip and a `m_time_window` chip read as the same thing.
+    #[test]
+    fn distinct_groups_use_distinct_hues() {
+        for (i, ga) in REGISTRY.iter().enumerate() {
+            for gb in &REGISTRY[i + 1..] {
+                for ma in ga.metrics {
+                    for mb in gb.metrics {
+                        let gap = hue_gap(ma.hue, mb.hue);
+                        assert!(
+                            gap >= MIN_CROSS_GROUP_GAP,
+                            "{}.{} (hue {}) and {}.{} (hue {}) are only {gap}° apart; \
+                             needs >= {MIN_CROSS_GROUP_GAP}°",
+                            ga.name,
+                            ma.name,
+                            ma.hue,
+                            gb.name,
+                            mb.name,
+                            mb.hue,
+                        );
+                    }
+                }
+            }
         }
     }
 

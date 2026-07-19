@@ -17,7 +17,21 @@ Each combo in `<strategy>_grouped_sweep_combos` stores its params as a JSONB dic
 - `exit_count i64` — total exits (may be < entry_count if some positions are still open at end of data)
 
 **PnL metrics:**
-- `total_pnl_sol f64` — sum of PnL across all positions in the group
+
+> **Realized vs unrealized.** Every stat below except `open_pnl_sol` is measured over
+> **closed** positions only. A position still `Open` at the end of the corpus window
+> counts toward `n_fired`/`n_open` but its mark-to-last-price PnL is excluded from
+> `total_pnl_sol`, `win_rate`, `expectancy_sol`, and `score` (parity plan C2 — folding
+> an unrealized mark in made headline numbers depend on when the window happened to
+> end). Read `total_pnl_sol` together with `open_pnl_sol`: a combo that simply never
+> closed its losers shows a clean realized total while sitting on open losses.
+> Note `score` (and therefore best-combo selection) still ranks on realized figures
+> alone, so open exposure does not penalise a combo's ranking.
+
+- `total_pnl_sol f64` — sum of PnL across **closed** positions in the group (realized)
+- `open_pnl_sol f64` — sum of still-`Open` positions' mark-to-last-price PnL
+  (unrealized; never included in `total_pnl_sol`). `total_pnl_sol + open_pnl_sol` is
+  the mark-to-market total the UI shows as "PnL (MTM)"
 - `avg_pnl_sol f64` — mean PnL per position
 - `median_pnl_sol f64` — p50 of per-position PnL distribution (QuantileSketch)
 - `p90_pnl_sol f64` — p90 of per-position PnL distribution (QuantileSketch, ~15% relative error)

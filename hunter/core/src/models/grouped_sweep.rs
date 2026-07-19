@@ -95,6 +95,12 @@ pub struct GroupedSweepGroupSummary {
     pub best_win_rate: f64,
     /// Winning combo's realized total PnL in SOL — the group table's default sort.
     pub best_total_pnl_sol: f64,
+    /// Winning combo's **unrealized** PnL: the mark-to-last-price sum over its
+    /// still-`Open` positions, excluded from `best_total_pnl_sol` by design.
+    /// Surfaced so a group whose realized total looks profitable can't hide a
+    /// pile of open losers — `best_total_pnl_sol + best_open_pnl_sol` is the
+    /// mark-to-market readout.
+    pub best_open_pnl_sol: f64,
     /// Winning combo's profit factor; `None` = no losing trades (UI shows ∞).
     pub best_profit_factor: Option<f64>,
     pub best_mean_pnl_pct: f64,
@@ -118,6 +124,9 @@ pub struct GroupedSweepResult {
     pub n_closed: i64,
     pub win_rate: f64,
     pub total_pnl_sol: f64,
+    /// Unrealized mark-to-last-price sum over this combo's still-`Open`
+    /// positions. Never included in `total_pnl_sol` (realized-only).
+    pub open_pnl_sol: f64,
     pub mean_pnl_pct: f64,
     pub median_pnl_pct: f64,
     pub p90_pnl_pct: f64,

@@ -114,6 +114,10 @@ export interface GroupedSweepGroupRecord {
   best_expectancy_sol: number;
   best_win_rate: number;
   best_total_pnl_sol: number;
+  /** Winning combo's unrealized PnL over its still-open positions — excluded
+   *  from `best_total_pnl_sol` by design, surfaced so a profitable-looking
+   *  realized total can't hide a pile of open losers. */
+  best_open_pnl_sol: number;
   /** Winning combo's profit factor; `null` = no losing trades (UI shows ∞). */
   best_profit_factor: number | null;
   best_mean_pnl_pct: number;
@@ -194,4 +198,7 @@ export interface GroupedSweepStartArgs {
   buy_amount_sol?: number;
   /** Bucket width (SOL) for the continuous SOL group fields. Omitted ⇒ 0.1. */
   bucket_width_sol?: number;
+  /** Host RAM (MB) the run leaves free for OS + desktop; every admission ceiling
+   *  is `host free − this`. Omitted ⇒ backend default (2048). */
+  ram_reserve_mb?: number;
 }

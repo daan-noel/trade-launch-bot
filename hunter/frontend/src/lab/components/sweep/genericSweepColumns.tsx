@@ -151,7 +151,31 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
           : tone(`${(r.win_rate * 100).toFixed(0)}%`, goodBad(r.win_rate, 0.5)),
       { tooltip: 'Share of fired tokens with PnL > 0' },
     ),
-    metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol))),
+    metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol)), {
+      tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',
+    }),
+    metric(
+      'open_pnl_sol',
+      'Open PnL',
+      'pnl',
+      (r) => r.open_pnl_sol ?? 0,
+      (r) => tone(solText(r.open_pnl_sol ?? 0), goodBad(r.open_pnl_sol ?? 0)),
+      { tooltip: 'Unrealized: still-open positions marked to their last price. Not included in Total PnL.' },
+    ),
+    metric(
+      'pnl_mtm_sol',
+      'PnL (MTM)',
+      'pnl',
+      (r) => r.total_pnl_sol + (r.open_pnl_sol ?? 0),
+      (r) => {
+        const mtm = r.total_pnl_sol + (r.open_pnl_sol ?? 0);
+        return tone(solText(mtm), goodBad(mtm));
+      },
+      {
+        tooltip:
+          'Mark-to-market: realized Total PnL + unrealized Open PnL. What the combo is actually worth if every open bag were sold at its last price.',
+      },
+    ),
     metric('expectancy_sol', 'Expectancy', 'pnl', (r) => r.expectancy_sol, (r) => tone(solText(r.expectancy_sol), goodBad(r.expectancy_sol))),
     metric(
       'profit_factor',
@@ -260,7 +284,29 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
         ? tone('—', 'text-text-dim')
         : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, goodBad(g.best_win_rate, 0.5)),
     ),
-    gm('best_total_pnl_sol', 'Total PnL', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol))),
+    gm('best_total_pnl_sol', 'Total PnL', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol)), {
+      tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',
+    }),
+    gm(
+      'best_open_pnl_sol',
+      'Open PnL',
+      (g) => g.best_open_pnl_sol ?? 0,
+      (g) => tone(solText(g.best_open_pnl_sol ?? 0), goodBad(g.best_open_pnl_sol ?? 0)),
+      { tooltip: 'Unrealized: still-open positions marked to their last price. Not included in Total PnL.' },
+    ),
+    gm(
+      'best_pnl_mtm_sol',
+      'PnL (MTM)',
+      (g) => g.best_total_pnl_sol + (g.best_open_pnl_sol ?? 0),
+      (g) => {
+        const mtm = g.best_total_pnl_sol + (g.best_open_pnl_sol ?? 0);
+        return tone(solText(mtm), goodBad(mtm));
+      },
+      {
+        tooltip:
+          'Mark-to-market: realized Total PnL + unrealized Open PnL. What the group is actually worth if every open bag were sold at its last price.',
+      },
+    ),
     gm('best_expectancy_sol', 'Expectancy', (g) => g.best_expectancy_sol, (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol))),
     gm('best_profit_factor', 'Profit factor', (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY, (g) =>
       tone(g.best_profit_factor == null ? '∞' : g.best_profit_factor.toFixed(2), goodBad(g.best_profit_factor ?? 10, 1)),

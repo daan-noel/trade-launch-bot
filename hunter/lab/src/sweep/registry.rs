@@ -8,6 +8,7 @@
 //! The CPU-heavy sweep runs in a bounded rayon pool inside `spawn_blocking` so it
 //! can never starve the live trading hot path (ingest / sell-confirm).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -97,12 +98,43 @@ fn sweep_admission_budget_bytes() -> u64 {
     (DEFAULT_SWEEP_ADMISSION_BUDGET_MB as u64).saturating_mul(1024 * 1024)
 }
 
-/// Host RAM (MB) to leave free for OS + desktop UI. Matches the workstation
-/// contract: use almost everything, keep ~2 GB for local interactivity.
-const SWEEP_RAM_RESERVE_MB: usize = 2048;
+/// Default host RAM (MB) to leave free for OS + desktop UI. Matches the
+/// workstation contract: use almost everything, keep ~2 GB for local
+/// interactivity. The run form can override it per run (see
+/// [`set_ram_reserve_mb`]) — a headless box can give the sweep more, a box the
+/// user is working on can keep more.
+pub const DEFAULT_SWEEP_RAM_RESERVE_MB: usize = 2048;
+
+/// Bounds on the per-run override. The floor keeps *some* headroom (a 0-reserve
+/// run OOMs the box it runs on); the ceiling stops a typo from refusing every
+/// run outright.
+pub const MIN_SWEEP_RAM_RESERVE_MB: usize = 256;
+pub const MAX_SWEEP_RAM_RESERVE_MB: usize = 32 * 1024;
+
+/// Active desktop reserve (MB). Process-global rather than threaded through
+/// every admission/shard/fold helper: the handler refuses concurrent sweeps
+/// ("a sweep is already running"), so exactly one run's choice is live at a time
+/// and the rayon workers can read it lock-free from any depth.
+static RAM_RESERVE_MB: AtomicUsize = AtomicUsize::new(DEFAULT_SWEEP_RAM_RESERVE_MB);
+
+/// Set the desktop reserve for the run about to start, clamped to
+/// `MIN..=MAX_SWEEP_RAM_RESERVE_MB`. `None` restores the default. Call once at
+/// admission, before any sizing/admission helper runs.
+pub(crate) fn set_ram_reserve_mb(mb: Option<usize>) -> usize {
+    let mb = mb
+        .unwrap_or(DEFAULT_SWEEP_RAM_RESERVE_MB)
+        .clamp(MIN_SWEEP_RAM_RESERVE_MB, MAX_SWEEP_RAM_RESERVE_MB);
+    RAM_RESERVE_MB.store(mb, Ordering::Relaxed);
+    mb
+}
+
+/// The reserve the current run is sized against (MB).
+pub(crate) fn ram_reserve_mb() -> usize {
+    RAM_RESERVE_MB.load(Ordering::Relaxed)
+}
 
 fn sweep_ram_reserve_bytes() -> u64 {
-    (SWEEP_RAM_RESERVE_MB as u64).saturating_mul(1024 * 1024)
+    (ram_reserve_mb() as u64).saturating_mul(1024 * 1024)
 }
 
 /// `available − reserve`, or `None` if host memory is unreadable. `Some(0)` when
@@ -194,7 +226,7 @@ pub(crate) fn estimate_generic_combo_side_bytes(n_combos: usize) -> u64 {
     (n_combos as u64).saturating_mul(GENERIC_PER_COMBO_RESIDENT_BYTES)
 }
 
-/// Refuse when estimated peak cannot fit in `usable = free − 2 GB reserve`
+/// Refuse when estimated peak cannot fit in `usable = free − desktop reserve`
 /// (minus slack). Under-reserve (`usable == 0`) always refuses non-trivial runs.
 fn admit_generic_combo_side(n_combos: usize, series_peak: u64, fold: u64) -> Result<()> {
     let combo_side = estimate_generic_combo_side_bytes(n_combos);
@@ -219,7 +251,7 @@ fn admit_generic_combo_side(n_combos: usize, series_peak: u64, fold: u64) -> Res
             mb(series_peak),
             mb(usable),
             mb(avail),
-            SWEEP_RAM_RESERVE_MB,
+            ram_reserve_mb(),
             mb(SWEEP_ALLOC_SLACK_BYTES),
         );
     }

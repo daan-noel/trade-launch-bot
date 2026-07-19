@@ -41,7 +41,7 @@ Grouped sweep runs hard **inside** a reserved slice of the analysis box so the d
 | Policy | Value |
 | --- | --- |
 | Rayon threads | `max(1, cores − 2)` (e.g. 14 on 16 logical CPUs) |
-| RAM reserve | keep **2 GB** free for OS/UI (`usable = free − 2 GB`; no half-of-free degradation) |
+| RAM reserve | keep host RAM free for OS/UI (`usable = free − reserve`; no half-of-free degradation). **Per-run knob** — the sweep form's *RAM reserve* radio (4G/2G/1G/512M/256M) sends `ram_reserve_mb`; default **2 GB**, clamped server-side to 256 MB…32 GB. Held in a process-global (`registry::set_ram_reserve_mb`, safe because the handler single-flights sweeps) so every admission/shard/fold helper reads it without threading a param through the rayon paths. Run-local: not persisted on the run row (a property of the box at run time, not of the analysis) |
 | Series admission | `min(12 GB cap, usable)`; refuse when usable is 0 |
 | Fold batch budget | `usable / 4` clamped to 32..=512 MB; hard max **65 536** combos/batch (8192 when under reserve) |
 | Driver (large groups) | **wave-outer** when shard fits (series once/token); else **pass-outer** with disk **spill** of finalized metrics |
@@ -58,6 +58,7 @@ Start log includes cores, threads, wave, planned/shard-peak combos, RSS, host to
 
 | Knob | Where | Effect | Fidelity cost |
 | --- | --- | --- | --- |
+| `ram_reserve_mb` | UI (RAM reserve radio) | Raises the admission ceiling by giving the sweep more of host free RAM | None to the sim — but the box gets less headroom |
 | `token_cap` | UI / `Selection` | Fewer tokens | Smaller sample |
 | `created_after` / `created_before` | UI / `Selection` | Smaller time slice | Misses other days |
 | `min_tokens` | UI | Drops tiny groups | Fewer groups ranked |

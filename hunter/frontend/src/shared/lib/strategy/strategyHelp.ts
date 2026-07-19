@@ -497,6 +497,16 @@ export const SWEEP_FIELD_HELP = {
       'Oversized axis products are rejected before the run starts (protects the box).',
     ].join('\n'),
   },
+  ramReserve: {
+    title: 'RAM reserve',
+    body: [
+      'Host RAM left free for the OS + desktop while the sweep runs.',
+      '',
+      'Every admission ceiling is "host free RAM − this reserve", so a smaller reserve',
+      'admits bigger runs on a box you are not using, and a bigger one keeps the machine',
+      'responsive (at the cost of refusing/shrinking heavy runs).',
+    ].join('\n'),
+  },
   buyAmount: {
     title: 'Buy amount (sweep)',
     body: [

@@ -12,6 +12,9 @@ export interface SweepResultRecord {
   n_closed: number;
   win_rate: number;
   total_pnl_sol: number;
+  /** Unrealized mark-to-last-price sum over the still-`Open` positions. Excluded
+   *  from `total_pnl_sol` (realized-only) — add the two for mark-to-market. */
+  open_pnl_sol: number;
   mean_pnl_pct: number;
   median_pnl_pct: number;
   p90_pnl_pct: number;

@@ -97,6 +97,11 @@ function median(xs: number[]): number {
  * This matches the backend `SweepResultRecord` the combo row above renders, so the
  * summary agrees with that row when unfiltered. `Fired` is the full fired count (the
  * table's `FIRED` column); `Open` positions are surfaced in the Closed/Open tile.
+ *
+ * Because those stats exclude open positions, the realized `Total PnL (real.)` alone
+ * overstates a combo that simply never closed its losers. The `PnL (MTM)` hero tile
+ * (realized + `Open PnL (unreal.)`) is the honest counterweight — read the two
+ * together, not the realized figure on its own.
  */
 function buildComboSummary(rows: ComboTokenResult[]): {
   hero: SummaryStat[];
@@ -129,8 +134,19 @@ function buildComboSummary(rows: ComboTokenResult[]): {
   const profitFactor = grossLoss > 0 ? grossWin / grossLoss : null; // null ⇒ no losers (∞)
   const nExit = (tag: string) => fired.filter((r) => r.exit === tag).length;
 
+  // Mark-to-market: realized + the open bags valued at their last price. Shown
+  // beside the realized total because a realized-only headline reads as pure
+  // profit even when the combo is sitting on a pile of open losers — the losers
+  // simply never closed, so they never entered `totalPnl`.
+  const mtmPnl = totalPnl + openPnl;
+
   const hero: SummaryStat[] = [
-    { label: 'Total PnL (◎)', value: solText(totalPnl), cls: goodBad(totalPnl) },
+    { label: 'Total PnL (real.)', value: solText(totalPnl), cls: goodBad(totalPnl) },
+    {
+      label: 'PnL (MTM)',
+      value: nOpen ? solText(mtmPnl) : solText(totalPnl),
+      cls: goodBad(nOpen ? mtmPnl : totalPnl),
+    },
     {
       label: 'Win %',
       value: winRate == null ? '—' : `${(winRate * 100).toFixed(0)}%`,
@@ -205,9 +221,16 @@ export function GenericSweepView() {
     null,
   );
 
-  // Home / deep-link `?run=` wins over localStorage once runs are loaded.
+  // Home / deep-link `?run=` wins over localStorage — but ONLY on the first load
+  // of the runs list. Without the one-shot guard this effect fights the URL-sync
+  // effect below: picking a run in the dropdown sets `selectedRunId` while
+  // `?run=` still names the *previous* run, so this would immediately write the
+  // old id straight back and the page would snap to the old run's results.
+  const urlHydratedRef = useRef(false);
   useEffect(() => {
-    if (!runFromUrl || runs.length === 0) return;
+    if (urlHydratedRef.current || runs.length === 0) return;
+    urlHydratedRef.current = true;
+    if (!runFromUrl) return;
     if (!runs.some((r) => r.id === runFromUrl)) return;
     if (selectedRunId === runFromUrl) return;
     setSelectedRunId(runFromUrl);
@@ -233,7 +256,6 @@ export function GenericSweepView() {
   }, [activeRunId, setSearchParams]);
 
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
-  useEffect(() => setActiveGroupId(null), [activeRunId]);
   const [activeComboId, setActiveComboId] = useState<number | null>(null);
   useEffect(() => setActiveComboId(null), [activeGroupId]);
 
@@ -314,6 +336,18 @@ export function GenericSweepView() {
     setComboSortKeys(q.sortKeys);
   }, []);
   useEffect(() => setComboPage(0), [activeGroupId]);
+
+  // Drop the previous run's drill-down DURING render, not in an effect. An
+  // effect-based reset lands one commit too late: the results stream would
+  // already have fired once for (new run, *old* group) → 404 + error flash.
+  const [runScope, setRunScope] = useState(activeRunId);
+  if (runScope !== activeRunId) {
+    setRunScope(activeRunId);
+    setActiveGroupId(null);
+    setActiveComboId(null);
+    setComboPage(0);
+  }
+
   const { rows: results, total: resultsTotal, loading: resultsLoading, error: resultsErr } =
     useStreamedSweepResults(strategyId, activeRunId, activeGroupId, comboPage, comboPageSize, comboSortKeys);
 

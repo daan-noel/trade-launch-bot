@@ -125,6 +125,7 @@ struct GroupDbRow {
     best_expectancy_sol: f64,
     best_win_rate: Option<f32>,
     best_total_pnl_sol: Option<f32>,
+    best_open_pnl_sol: Option<f32>,
     best_profit_factor: Option<f32>,
     best_mean_pnl_pct: Option<f32>,
     best_median_pnl_pct: Option<f32>,
@@ -148,6 +149,7 @@ impl From<GroupDbRow> for GroupedSweepGroupSummary {
             best_expectancy_sol: r.best_expectancy_sol,
             best_win_rate: r.best_win_rate.unwrap_or(0.0) as f64,
             best_total_pnl_sol: r.best_total_pnl_sol.unwrap_or(0.0) as f64,
+            best_open_pnl_sol: r.best_open_pnl_sol.unwrap_or(0.0) as f64,
             best_profit_factor: r.best_profit_factor.map(|v| v as f64),
             best_mean_pnl_pct: r.best_mean_pnl_pct.unwrap_or(0.0) as f64,
             best_median_pnl_pct: r.best_median_pnl_pct.unwrap_or(0.0) as f64,
@@ -173,6 +175,7 @@ struct ResultDbRow {
     n_closed: i32,
     win_rate: f32,
     total_pnl_sol: f32,
+    open_pnl_sol: f32,
     mean_pnl_pct: f32,
     median_pnl_pct: f32,
     p90_pnl_pct: f32,
@@ -206,6 +209,7 @@ impl From<ResultDbRow> for GroupedSweepResult {
             n_closed: r.n_closed as i64,
             win_rate: r.win_rate as f64,
             total_pnl_sol: r.total_pnl_sol as f64,
+            open_pnl_sol: r.open_pnl_sol as f64,
             mean_pnl_pct: r.mean_pnl_pct as f64,
             median_pnl_pct: r.median_pnl_pct as f64,
             p90_pnl_pct: r.p90_pnl_pct as f64,
@@ -397,12 +401,14 @@ impl GroupedSweepRepo {
 
         // No `params` here (deduped into `_combos`, written once per run by
         // `insert_combos`); the narrowed columns are bound as i32/f32 to match the
-        // `0007` storage types. 27 binds/row → chunk well under the 65535 ceiling.
+        // `0007` storage types. 30 binds/row → 30 × 2000 = 60k, still under the
+        // 65535 bind ceiling — but the margin is thin now; adding more columns
+        // here means lowering the chunk size.
         for chunk in g.results.chunks(2000) {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
                 "INSERT INTO {} \
                  (run_id, group_id, combo_id, n_fired, n_open, n_closed, win_rate, \
-                  total_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
+                  total_pnl_sol, open_pnl_sol, mean_pnl_pct, median_pnl_pct, p90_pnl_pct, best_pnl_pct, \
                   worst_pnl_pct, std_pnl_pct, profit_factor, score, expectancy_sol, \
                   avg_holding_secs, median_holding_secs, n_exit_take_profit, n_exit_stop_loss, \
                   n_exit_trailing, n_exit_stall, n_exit_time, n_exit_liquidity, \
@@ -418,6 +424,7 @@ impl GroupedSweepRepo {
                     .push_bind(r.n_closed as i32)
                     .push_bind(r.win_rate as f32)
                     .push_bind(r.total_pnl_sol as f32)
+                    .push_bind(r.open_pnl_sol as f32)
                     .push_bind(r.mean_pnl_pct as f32)
                     .push_bind(r.median_pnl_pct as f32)
                     .push_bind(r.p90_pnl_pct as f32)
@@ -530,6 +537,7 @@ impl GroupedSweepRepo {
             "SELECT g.id, g.group_index, g.group_key, g.token_count, g.fired_count, \
                     g.best_combo_id, g.best_score, g.best_expectancy_sol, \
                     r.win_rate AS best_win_rate, r.total_pnl_sol AS best_total_pnl_sol, \
+                    r.open_pnl_sol AS best_open_pnl_sol, \
                     r.profit_factor AS best_profit_factor, r.mean_pnl_pct AS best_mean_pnl_pct, \
                     r.median_pnl_pct AS best_median_pnl_pct, r.p90_pnl_pct AS best_p90_pnl_pct, \
                     r.std_pnl_pct AS best_std_pnl_pct, r.avg_holding_secs AS best_avg_holding_secs, \
@@ -640,6 +648,7 @@ impl GroupedSweepRepo {
             "SELECT g.id, g.group_index, g.group_key, g.token_count, g.fired_count, \
                     g.best_combo_id, g.best_score, g.best_expectancy_sol, \
                     r.win_rate AS best_win_rate, r.total_pnl_sol AS best_total_pnl_sol, \
+                    r.open_pnl_sol AS best_open_pnl_sol, \
                     r.profit_factor AS best_profit_factor, r.mean_pnl_pct AS best_mean_pnl_pct, \
                     r.median_pnl_pct AS best_median_pnl_pct, r.p90_pnl_pct AS best_p90_pnl_pct, \
                     r.std_pnl_pct AS best_std_pnl_pct, r.avg_holding_secs AS best_avg_holding_secs, \
@@ -700,7 +709,7 @@ impl GroupedSweepRepo {
         };
         let sql = format!(
             "SELECT r.combo_id, c.params, r.n_fired, r.n_open, r.n_closed, r.win_rate, \
-                    r.total_pnl_sol, r.mean_pnl_pct, r.median_pnl_pct, r.p90_pnl_pct, \
+                    r.total_pnl_sol, r.open_pnl_sol, r.mean_pnl_pct, r.median_pnl_pct, r.p90_pnl_pct, \
                     r.best_pnl_pct, r.worst_pnl_pct, r.std_pnl_pct, r.profit_factor, r.score, \
                     r.expectancy_sol, r.avg_holding_secs, r.median_holding_secs, \
                     r.n_exit_take_profit, r.n_exit_stop_loss, r.n_exit_trailing, r.n_exit_stall, \

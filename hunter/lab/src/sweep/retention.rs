@@ -170,6 +170,7 @@ mod tests {
             n_closed,
             win_rate,
             total_pnl_sol: 0.0,
+            open_pnl_sol: 0.0,
             mean_pnl_pct: 0.0,
             median_pnl_pct: 0.0,
             p90_pnl_pct: 0.0,

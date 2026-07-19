@@ -202,6 +202,12 @@ pub struct RunMetrics {
     pub win_rate: f64,
     /// Realized-only: the sum of closed positions' PnL, never a still-`Open` mark.
     pub total_pnl_sol: f64,
+    /// **Unrealized** counterpart to `total_pnl_sol`: the sum of still-`Open`
+    /// positions' mark-to-last-price PnL. Reported alongside the realized total
+    /// (never folded into it) so a run whose losers are all still open can't read
+    /// as profitable — `total_pnl_sol + open_pnl_sol` is the mark-to-market total.
+    /// Every other field on this struct stays realized-only (parity plan C2).
+    pub open_pnl_sol: f64,
     pub expectancy_sol: f64,
     pub mean_pnl_pct: f64,
     pub median_pnl_pct: f64,
@@ -260,6 +266,9 @@ pub struct RunAgg {
     open: u64,
     wins: u64,
     pnl_sol_sum: f64,
+    /// Unrealized mark-to-last-price sum over the still-`Open` positions. Kept
+    /// strictly apart from `pnl_sol_sum` so no realized figure can absorb it.
+    open_pnl_sol_sum: f64,
     gross_win_sol: f64,
     gross_loss_sol: f64,
     pnl_min: f32,
@@ -279,6 +288,7 @@ impl Default for RunAgg {
             open: 0,
             wins: 0,
             pnl_sol_sum: 0.0,
+            open_pnl_sol_sum: 0.0,
             gross_win_sol: 0.0,
             gross_loss_sol: 0.0,
             pnl_min: f32::INFINITY,
@@ -296,9 +306,10 @@ impl Default for RunAgg {
 impl RunAgg {
     /// Fold one token's outcome into the accumulator. No-entry rows are ignored.
     /// A still-`Open` outcome counts toward `n_fired`/`n_open`/its exit-count
-    /// slot only — its mark-to-last-price PnL is unrealized, so it never touches
-    /// the PnL sums, win/loss counters, quantile sketch, or holding-time stats
-    /// (parity plan C2).
+    /// slot, and its mark-to-last-price PnL accumulates into the separate
+    /// `open_pnl_sol_sum` — because it is unrealized it never touches the
+    /// realized PnL sum, win/loss counters, quantile sketch, or holding-time
+    /// stats (parity plan C2).
     pub fn record(&mut self, o: &TokenOutcome) {
         if !o.fired {
             return;
@@ -306,6 +317,7 @@ impl RunAgg {
         self.fired += 1;
         if o.exit == ExitCode::Open {
             self.open += 1;
+            self.open_pnl_sol_sum += o.pnl_sol as f64;
         } else {
             self.pnl_sol_sum += o.pnl_sol as f64;
             self.pnl_min = self.pnl_min.min(o.pnl_percent);
@@ -361,6 +373,7 @@ impl RunAgg {
             n_closed,
             win_rate: if n_closed == 0 { 0.0 } else { self.wins as f64 / n },
             total_pnl_sol: self.pnl_sol_sum,
+            open_pnl_sol: self.open_pnl_sol_sum,
             expectancy_sol: if n_closed == 0 { 0.0 } else { self.pnl_sol_sum / n },
             mean_pnl_pct,
             median_pnl_pct,
@@ -402,6 +415,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     let mut open = 0u64;
     let mut wins = 0u64;
     let mut pnl_sol_sum = 0.0f64;
+    let mut open_pnl_sol_sum = 0.0f64;
     let mut gross_win_sol = 0.0f64;
     let mut gross_loss_sol = 0.0f64;
     let mut closed_pct: Vec<f64> = Vec::new();
@@ -415,6 +429,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
         fired += 1;
         if o.exit == ExitCode::Open {
             open += 1;
+            open_pnl_sol_sum += o.pnl_sol as f64;
         } else {
             let pnl_sol = o.pnl_sol as f64;
             let pnl_pct = o.pnl_percent as f64;
@@ -463,6 +478,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
         n_closed,
         win_rate: if n_closed == 0 { 0.0 } else { wins as f64 / n },
         total_pnl_sol: pnl_sol_sum,
+        open_pnl_sol: open_pnl_sol_sum,
         expectancy_sol: if n_closed == 0 { 0.0 } else { pnl_sol_sum / n },
         mean_pnl_pct,
         median_pnl_pct,

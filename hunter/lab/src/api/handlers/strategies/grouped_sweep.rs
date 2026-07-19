@@ -112,6 +112,15 @@ pub struct StartGroupedSweepBody {
     /// in-memory, so the unfiltered Parquet corpus cache is reused.
     #[serde(default)]
     pub field_filters: Option<std::collections::HashMap<String, Vec<serde_json::Value>>>,
+    /// Host RAM (MB) to leave free for the OS + desktop while this run sizes its
+    /// series/fold/combo peaks. Every admission ceiling is `host free − this`, so
+    /// a smaller reserve admits bigger runs on a box you're not using and a bigger
+    /// one keeps the machine responsive. Omitted ⇒
+    /// `DEFAULT_SWEEP_RAM_RESERVE_MB` (2 GB); clamped server-side to
+    /// `MIN..=MAX_SWEEP_RAM_RESERVE_MB`. Run-local (not persisted): it's a
+    /// property of the machine at run time, not of the sweep's analysis.
+    #[serde(default)]
+    pub ram_reserve_mb: Option<usize>,
 }
 
 fn default_min_tokens() -> usize {
@@ -185,6 +194,12 @@ pub struct ResultsQuery {
 /// Validated sort spec derived from `ResultsQuery`.
 enum SortSpec {
     DirectCol { col: &'static str, dir: &'static str },
+    /// A derived, table-qualified SQL expression over result columns (e.g. the
+    /// mark-to-market total `r.total_pnl_sol + r.open_pnl_sol`, which has no
+    /// column of its own). Always a `&'static str` written here — never built
+    /// from request input — so it carries the same injection-safety as the
+    /// `DirectCol` allowlist.
+    Expr { sql: &'static str, dir: &'static str },
     ParamKey { key: String, dir: &'static str },
 }
 
@@ -195,6 +210,7 @@ impl SortSpec {
     fn order_fragment(&self) -> String {
         match self {
             SortSpec::DirectCol { col, dir } => format!("r.{} {} NULLS LAST", col, dir),
+            SortSpec::Expr { sql, dir } => format!("({}) {} NULLS LAST", sql, dir),
             SortSpec::ParamKey { key, dir } => {
                 format!("(c.params->>'{}')::numeric {} NULLS LAST", key, dir)
             }
@@ -251,6 +267,14 @@ fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
         }
         return None;
     }
+    // Derived column: mark-to-market total (realized + unrealized). No stored
+    // column, so it sorts as an expression.
+    if col == "pnl_mtm_sol" {
+        return Some(SortSpec::Expr {
+            sql: "r.total_pnl_sol + r.open_pnl_sol",
+            dir: dir_str,
+        });
+    }
     let db_col: &'static str = match col {
         "score"               => "score",
         "n_fired"             => "n_fired",
@@ -258,6 +282,7 @@ fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
         "n_open"              => "n_open",
         "win_rate"            => "win_rate",
         "total_pnl_sol"       => "total_pnl_sol",
+        "open_pnl_sol"        => "open_pnl_sol",
         "mean_pnl_pct"        => "mean_pnl_pct",
         "median_pnl_pct"      => "median_pnl_pct",
         "p90_pnl_pct"         => "p90_pnl_pct",
@@ -276,6 +301,9 @@ fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
         "n_exit_liquidity"    => "n_exit_liquidity",
         "n_exit_next_kill"    => "n_exit_next_kill",
         "n_exit_dead"         => "n_exit_dead",
+        // Was missing while the column was rendered as sortable, so sorting by it
+        // silently no-op'd (an unlisted key returns None and the sort is dropped).
+        "n_exit_metrics"      => "n_exit_metrics",
         "n_exit_open"         => "n_exit_open",
         _                     => return None,
     };
@@ -317,6 +345,12 @@ pub async fn start_grouped_sweep(
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "a sweep is already running"}));
     }
+
+    // Apply this run's desktop RAM reserve now that the gate is ours — every
+    // admission/shard/fold ceiling below reads it, and single-flight guarantees
+    // no other run is sizing against a different value.
+    let reserve_mb = crate::sweep::registry::set_ram_reserve_mb(b.ram_reserve_mb);
+    tracing::info!(ram_reserve_mb = reserve_mb, "grouped sweep: desktop RAM reserve for this run");
 
     // Detach the run so a client disconnect (browser refresh / SPA navigation)
     // can't drop the request future mid-sweep, AND so this POST returns as soon as
@@ -1027,6 +1061,7 @@ fn metrics_to_result(m: &ComboMetrics) -> GroupedSweepResult {
         n_closed: m.n_closed as i64,
         win_rate: m.win_rate,
         total_pnl_sol: m.total_pnl_sol,
+        open_pnl_sol: m.open_pnl_sol,
         mean_pnl_pct: m.mean_pnl_pct,
         median_pnl_pct: m.median_pnl_pct,
         p90_pnl_pct: m.p90_pnl_pct,
