@@ -52,80 +52,81 @@ pass pre-formatted strings, so nothing enforces consistency.
 
 ## Status — 2026-07-19
 
-**Done.** One aggregate (`kernel::run_summary`), one wire shape (`RunSummary`),
-one renderer (`lib/strategy/runSummary`), across simulate + grouped sweep +
-live/paper.
+One aggregate (`kernel::run_summary`), one wire shape (`RunSummary`), one
+renderer (`lib/strategy/runSummary`), across all three surfaces.
 
-| Item | Outcome |
+| # | Outcome |
 | --- | --- |
-| B1-B4 | `sim_query::summarize` delegates to the kernel; `SimRollup`/five-scalar `SimSummary` deleted |
-| B3+ | **Extra bug found:** "closed" keyed off `exit_time != null` misfiled every death-close (`ExitCode::Dead` carries no exit time) as *open*. Now keyed off `exit_reason`, matching the sweep |
-| B4 | `RunSummary { realized, mtm }` added to the kernel — the MTM band is the same aggregator re-run with opens reclassified, not a second copy of the math |
-| B5/B6 | **Resolved as "label, don't change"** — see below |
-| B11 | `PositionsSummary.open_pnl_sol`, marked in-handler from the live token cache through the *same* `CostModel` the sim/sweep use; repo takes a `price_of` closure so it keeps no cache dependency (`lab` passes `|_| None`) |
-| F1-F8 | `runSummarySections()` is the sole builder; formatters single-sourced (sweep columns re-export them); zero-as-dash bug gone; one dash glyph; `goodBad()` everywhere |
+| B1-B4 | **Done.** `sim_query::summarize` delegates to the kernel; `SimRollup` + five-scalar `SimSummary` deleted. `RunSummary { realized, mtm }` added — the MTM band re-runs the same aggregator with opens reclassified, not a second copy of the math. |
+| B3+ | **Extra bug found:** "closed" keyed off `exit_time != null` misfiled every death-close (`ExitCode::Dead` carries no exit time) as *open*. Now keyed off `exit_reason`. |
+| B5/B6 | **Resolved as "label, don't change"** — see below. |
+| B7 | **Done.** `simulate_one_combo` takes the run's `as_of` (its `created_at`); the drill-in no longer calls `Utc::now()`, so stored `Open` positions can't become `Dead` just because the user clicked hours later. |
+| B8 | **Not fixed — documented as a deliberate approximation.** See below. |
+| B9 | **False positive.** The sweep corpus already filters mayhem at `lake/duck.rs:273` (`WHERE is_mayhem_mode = false`); the audit read only `grouped_sweep.rs` and missed the lake loader. No change needed. |
+| B10 | **Done.** Landing on `token_cap` emits a `SweepNotice` + `tracing::warn!`, so a corpus trimmed to its newest slice no longer passes for a full one. |
+| B11 | **Done.** `PositionsSummary.open_pnl_sol`, marked in-handler from the live token cache through the *same* `CostModel`; repo takes a `price_of` closure so it keeps no cache dependency (`lab` passes `\|_\| None`). |
+| F1-F8 | **Done.** `runSummarySections()` is the sole builder; formatters single-sourced (sweep columns re-export them); zero-as-dash bug gone; one dash glyph; `goodBad()` everywhere. |
 
-Verified: `cargo check -p hunter-live -p hunter-lab` clean · 278 backend tests
-pass · `tsc` + `npm run build:live` + `npm run lint` clean. The parity lock is
+Verified: `cargo check -p hunter-live -p hunter-lab` clean · 156 lab + 278 core
+tests pass · `tsc` + `npm run build:live` + `npm run lint` clean. Parity lock:
 `sim_query::tests::simulate_summary_equals_the_sweep_drill_in_on_the_same_outcomes`.
 
-Pre-existing unrelated failure (fails on clean HEAD too, not touched here):
+Pre-existing unrelated failure (fails on clean HEAD too, untouched here):
 `core::strategies::rules::generic_tests::generic_params_registry_checked`.
 
-### B5/B6 resolution: label, don't "fix"
+### B5/B6: label, don't "fix"
 
 Making the sweep honor `max_concurrent_tokens` is **not** a bug fix — it would
-require replacing the per-token independent scan with one globally time-ordered
-fold across the corpus (what `replay::run_replay` does), serializing the exact
-property the sweep's performance design rests on. The two answer different
-questions and are now documented as such at `generic/strategy.rs::compile_combo`:
+replace the per-token independent scan with one globally time-ordered fold
+(what `replay::run_replay` does), serializing the exact property the sweep's
+performance design rests on. Documented at `generic/strategy.rs::compile_combo`:
 
 - **sweep** — a combo's raw per-token edge, every qualifying token taken.
 - **simulate** — what the rule would actually have captured through its slots.
 
-A capped rule therefore fires on strictly more tokens in the sweep, and its
-`n_fired`/`total_pnl_sol` are **upper bounds** on the simulated figures. Same for
-`buy_amount_sol`: a sweep explores many combos, so there is frequently no rule to
-inherit a notional from, and PnL% is not notional-invariant (fixed per-leg cost).
-Compare a sweep to a simulate only when both were sized the same.
+A capped rule fires on strictly more tokens in the sweep, so its `n_fired` /
+`total_pnl_sol` are **upper bounds** on the simulated figures. Same for
+`buy_amount_sol`: a sweep explores many combos, so there is often no rule to
+inherit a notional from, and PnL% is not notional-invariant (fixed per-leg
+cost). Compare a sweep to a simulate only when both were sized the same.
+
+### B8: why the tail cap stays
+
+The sweep caps each token's tail at `its last trade + DEAD_QUIET_SECS +
+TAIL_MARGIN_SECS`. The justification ("past this the token is provably dead")
+holds only for a token that lost liquidity — a **quiet but still liquid** token
+never books `Dead`, and its monotone `time`/`stall` clocks keep running.
+
+Ground truth is live, which ticks such a token indefinitely and fires e.g.
+`exit on time > 2h`. Ranking the three:
+
+- **live** — ticks forever, exit fires.
+- **simulate** — tail bounded by the *corpus-wide* last trade, so it usually
+  ticks long enough to fire. Closest to live.
+- **sweep** — per-token cap, reports `Open`.
+
+Two approaches tried and reverted, recorded so they aren't retried:
+
+1. *Extend the sweep's tail to `dead_cap.max(horizon)`.* Makes the scan fire
+   exits a single-token replay never does →
+   `guard::scan_matches_replay_stall_eq_exit_across_gap` fails immediately.
+2. *Truncate simulate to a per-token tail.* Wrong direction — moves simulate
+   **away** from live. Also doesn't work as written: dropping a mint from
+   `EngineState::tokens` doesn't stop exit evaluation for its open position, so
+   the exit still fires. A correct version needs an engine-level change to the
+   pure `reduce` that live shares.
+
+Closing this means either paying the sweep's memory cost to tick a
+liquid-quiet token to `as_of`, or accepting that the sweep under-reports exits
+for that shape. A perf-vs-fidelity call, not a bug fix — same character as B5.
 
 ### Still open
 
-- B7 (`as_of` captured 3×), B8 (tail-cap scope), B9 (mayhem filter), B10
-  (`token_cap` truncation warning). None change the summary shape — they shift
-  *which tokens* enter the corpus and *when* a position counts as dead.
-- Runtime smoke: no live/paper run exercised `open_pnl_sol` against a real cache
-  yet, and no sweep/simulate was run against the live server (`:8140` may still
-  hold an older binary).
-
-## Plan
-
-**Phase 1 — backend aggregate SSOT (B1-B4).** Rewrite `sim_query::summarize` to
-build `TokenOutcome`s from the sim rows and delegate to `exact_run_metrics`;
-replace `SimRollup` and `SimSummary` with `RunMetrics`. Widen the wire DTO.
-Guard test: same rows → simulate summary == sweep `exact_from_rows`.
-
-**Phase 2 — backend run inputs (B5-B7).** Thread the rule's caps and
-`buy_amount_sol` into the sweep; capture `as_of` once and persist it.
-
-**Phase 3 — backend corpus + tails (B8-B10).** Align the tail cap, add the
-mayhem filter, surface `token_cap` truncation.
-
-**Phase 4 — live parity (B11).** Mark open positions to the runtime-cache price
-and emit the `RunMetrics` shape.
-
-**Phase 5 — frontend one renderer (F1-F8).** Promote `pnlBlock`/`blockStats` out
-of `GenericSweepView` into a shared `runSummarySections()` builder over the
-unified DTO; all three surfaces render it. One formatter pair for SOL/%; fix the
-zero-as-dash bug; one dash glyph; `goodBad()` everywhere.
-
-## Open decisions
-
-- **Sweep caps (B5).** Assumed: the sweep should honor the rule's real caps.
-  The alternative reading is that a sweep is deliberately cap-free (explore the
-  raw edge, apply throttling later) — that would make B5 a UI label, not a fix.
-- **Live open marking (B11).** The live summary is a SQL aggregate; open PnL
-  needs a current price per position, which lives in the runtime cache, not
-  Postgres. Options: (a) enrich in the handler after the SQL aggregate,
-  (b) persist a periodically-marked `open_pnl_lamports`. (a) is cheaper and
-  matches "notify over poll".
+- B8, per above.
+- The sweep still takes its own `Utc::now()` at `registry.rs:640` instead of the
+  run row's `created_at`. Skew is seconds (immaterial against `DEAD_QUIET_SECS`),
+  but sourcing both from the run row would close it exactly.
+- **Runtime smoke — nothing here has been exercised against a running system.**
+  No live/paper run has marked `open_pnl_sol` against a real cache; no
+  sweep/simulate has been run against the server (`:8140` may hold an older
+  binary).

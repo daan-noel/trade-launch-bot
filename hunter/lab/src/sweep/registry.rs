@@ -234,9 +234,21 @@ pub(crate) fn host_under_ram_reserve() -> bool {
     }
 }
 
-/// Fold batch hard cap: full [`crate::sweep::engine::HARD_MAX_COMBO_BATCH`] when
-/// usable RAM remains; **8192** when already under the desktop reserve.
-pub(crate) fn hard_max_combo_batch() -> usize {
+/// Fold batch **sizing preference**: full [`crate::sweep::engine::HARD_MAX_COMBO_BATCH`]
+/// when usable RAM remains; **8192** when already under the desktop reserve.
+///
+/// This is a *live* reading of free RAM, so it changes **during** a run — that is the
+/// point: a run that started on a free box thins its later batches when the desktop
+/// tightens. It therefore may only size *upcoming* allocations.
+///
+/// It must **never** be used as a validation invariant on an already-sized batch.
+/// Doing so is a TOCTOU: a batch legally sized at 65536 while RAM was free gets
+/// retroactively declared illegal the moment free RAM dips under the reserve, and the
+/// fold bails — throwing away every group folded so far to "save" memory that is
+/// already allocated and about to be freed anyway. That is exactly the mid-run
+/// `fold_wave_into: n_combos 65536 > hard_max_combo_batch 8192` abort this split fixes.
+/// Assertions belong against the static [`crate::sweep::engine::HARD_MAX_COMBO_BATCH`].
+pub(crate) fn preferred_max_combo_batch() -> usize {
     if host_under_ram_reserve() {
         8_192
     } else {
@@ -260,7 +272,7 @@ pub(crate) fn estimate_generic_combo_side_bytes(n_combos: usize) -> u64 {
 /// (`shard::plan_shards` + spill/merge), so however large the combo space is, its
 /// resident cost floors at this many index-only entries — which is why the planner
 /// prices the irreducible combo side here rather than at the planned count.
-/// Matches the degraded fold-batch cap in [`hard_max_combo_batch`].
+/// Matches the degraded fold-batch preference in [`preferred_max_combo_batch`].
 const MIN_SHARD_COMBOS: usize = 8_192;
 
 /// The sizing a run will execute at: how many rayon threads, how many token series
@@ -1099,14 +1111,19 @@ async fn sweep_tpsl1(
 /// Runs sequentially (no rayon): one combo per token is O(tokens) trivially cheap,
 /// far less than the DB round-trips that preceded it. Returns one result per token,
 /// always including non-fired tokens so the caller can display the full group slice.
+///
+/// `as_of` is the run's **own** "now" (its `created_at`), not wall-clock — see
+/// [`simulate_generic_one_combo`] for why re-deriving it here corrupts the drill-in
+/// (parity plan B7).
 pub fn simulate_one_combo(
     strategy_id: &str,
     tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
+    as_of: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
-        "generic" => simulate_generic_one_combo(tokens, params_json, buy_amount_sol),
+        "generic" => simulate_generic_one_combo(tokens, params_json, buy_amount_sol, as_of),
         "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json, buy_amount_sol),
         "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json, buy_amount_sol),
         "swing_1" => simulate_swing1_one_combo(tokens, params_json, buy_amount_sol),
@@ -1137,8 +1154,15 @@ fn exit_label(code: ExitCode) -> &'static str {
 /// the drill-in counterpart of [`sweep_generic`]. The stored `params_json` is a
 /// canonical [`RuleParams`] object (what [`GenericSweepStrategy::params_json`]
 /// emits), so we compile it straight to a [`CompiledRule`] and run the same
-/// precompute-then-scan the grouped sweep used — no axes model needed. Deadness is
-/// judged against wall-clock `now`, matching the sweep / live.
+/// precompute-then-scan the grouped sweep used — no axes model needed.
+///
+/// Deadness is judged against the **run's** `as_of` (its `created_at`), not against
+/// wall-clock now. Re-deriving "now" here made a drill-in disagree with the very row
+/// it drills into: a position the sweep recorded as `Open` becomes `Dead` once
+/// enough real time has passed for the token to cross the quiet window, so the same
+/// combo showed different exits and a different `total_pnl_sol` depending on *when
+/// the user clicked it* (parity plan B7). Passing the run's own instant makes the
+/// drill-in a faithful re-run of the stored result.
 ///
 /// The scan carries each fill row's `entry_slot`/`exit_slot` (the slot of the real
 /// trade the fill executes against — the fill row's own trade, or the next print when
@@ -1148,6 +1172,7 @@ fn simulate_generic_one_combo(
     tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
+    as_of: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<ComboTokenResult>> {
     use hunter_engine::arm::CompiledRule;
     use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
@@ -1174,7 +1199,6 @@ fn simulate_generic_one_combo(
     let compiled = CompiledRule::compile(&loaded);
     let columns = columns_for(&compiled);
     let grid = sparse_grid_for(&compiled);
-    let as_of = chrono::Utc::now();
     let cost = CostModel::pumpfun_default();
 
     let mut results = Vec::with_capacity(tokens.len());

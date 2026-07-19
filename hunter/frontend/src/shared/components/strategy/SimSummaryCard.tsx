@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { PositionsSummary } from 'types';
-import { runSummarySections, type RunSummary } from 'lib/strategy/runSummary';
+import { runSummarySections, zeroExitCounts, type RunSummary } from 'lib/strategy/runSummary';
 import type { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { SummaryStatsPanel, type SummaryStat } from './SummaryStatsPanel';
 
@@ -48,22 +48,33 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     score: null,
     avg_holding_secs: s.avg_hold_secs,
     median_holding_secs: 0,
-    // A live position's exit reason isn't carried on this aggregate; the
-    // TP/SL/Met/Dead tile reads 0s rather than inventing a breakdown.
-    n_exit_take_profit: 0,
-    n_exit_stop_loss: 0,
-    n_exit_trailing: 0,
-    n_exit_stall: 0,
-    n_exit_time: 0,
-    n_exit_liquidity: 0,
-    n_exit_next_kill: 0,
-    n_exit_dead: 0,
-    n_exit_metrics: 0,
+    // Exit reasons now come off the same SQL aggregate (counted per reason in
+    // the one pass), so a live rule's breakdown is real rather than the zeros
+    // this used to emit. Anything the backend doesn't model — an `ExitFailed`
+    // position has no reason at all — is reconciled into `Other` by
+    // `exitBreakdown` against `n_closed`, never silently dropped.
+    n_exit_take_profit: s.exits.take_profit,
+    n_exit_stop_loss: s.exits.stop_loss,
+    n_exit_trailing: s.exits.trailing,
+    n_exit_stall: s.exits.stall,
+    n_exit_time: s.exits.time,
+    n_exit_liquidity: s.exits.liquidity,
+    n_exit_next_kill: s.exits.next_kill,
+    n_exit_dead: s.exits.dead,
+    n_exit_metrics: s.exits.metrics,
+    n_exit_manual: s.exits.manual,
     n_exit_open: s.open,
   };
   // MTM differs from realized only by folding the open mark into the total — the
-  // per-trade distribution of an unsettled position isn't known here.
-  const mtm = { ...realized, total_pnl_sol: s.total_pnl_sol + s.open_pnl_sol };
+  // per-trade distribution of an unsettled position isn't known here. Exit
+  // counters are zeroed on this band to match the Rust `kernel::run_summary`
+  // (see its `mtm_band_reports_no_exit_reasons` test): the band reclassifies the
+  // open positions as settled, and they have no exit reason to attribute.
+  const mtm = {
+    ...realized,
+    ...zeroExitCounts(),
+    total_pnl_sol: s.total_pnl_sol + s.open_pnl_sol,
+  };
   return { realized, mtm };
 }
 

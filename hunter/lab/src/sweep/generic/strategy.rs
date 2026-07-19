@@ -415,6 +415,26 @@ pub(crate) fn build_series(
     }
     // Tail: keep ticking so a quiet token books its dead verdict, but no further
     // than the window past which every token is provably dead + pruned.
+    //
+    // **Known bounded-tail approximation (parity plan B8).** The justification —
+    // "past this the token is provably dead" — holds only for a token that lost its
+    // liquidity. A token that goes quiet while still liquid never books `Dead`, yet
+    // its monotone `time`/`stall` clocks keep running in reality: live would tick it
+    // indefinitely and fire, say, an `exit on time > 2h` long after this cap. So for
+    // that shape the sweep can report `Open` where live/simulate exit.
+    //
+    // Left as-is deliberately. `replay::run_replay` bounds its tail by the
+    // **corpus-wide** last trade, so a single-token replay truncates at exactly this
+    // same point (which is why `guard::scan_matches_replay_*` passes) — but a
+    // multi-token simulate ticks longer and lands closer to live. Fixing the
+    // asymmetry by truncating simulate per-token would move simulate *away* from
+    // live, which is the wrong direction; fixing it by extending this tail costs the
+    // memory the sparse-grid design exists to bound. Don't "align" the two without
+    // deciding which one should move — and it isn't this one.
+    //
+    // Prior attempt, for the record: extending `tail_end` to `dead_cap.max(horizon)`
+    // here makes the scan fire exits a single-token replay never does, and
+    // `guard::scan_matches_replay_stall_eq_exit_across_gap` fails immediately.
     let cap = last_trade_at + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS);
     let tail_end = as_of.min(cap);
     let horizon = grid.gap_horizon(created, last_trade_at, series.last_meaningful_at());

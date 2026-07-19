@@ -551,6 +551,25 @@ async fn run_grouped_sweep_job(
         return;
     }
 
+    // `token_cap` is a `LIMIT` on a `created_at DESC` scan (see `lake::duck`), so a
+    // window holding more tokens than the cap is silently trimmed to its **newest**
+    // slice — and the run then reads as if it covered the whole range. Landing
+    // exactly on the cap is the only signal we get without paying for a second
+    // COUNT(*), so say so rather than let a partial corpus pass for a full one
+    // (parity plan B10). A single-rule simulate has no such cap, which is exactly
+    // the kind of asymmetry that makes the two disagree on `n_fired`.
+    if corpus.tokens.len() >= token_cap {
+        let msg = format!(
+            "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens in \
+             this date range were swept. Narrow the range or raise token_cap to cover it all."
+        );
+        tracing::warn!(token_cap, "grouped sweep: corpus truncated by token_cap");
+        let _ = state.sse_tx.send(crate::models::ingest::SseEvent::SweepNotice {
+            strategy_id: b.strategy_id.clone(),
+            message: msg,
+        });
+    }
+
     // A cancel requested during the corpus load lands here. The lake read is a
     // synchronous DuckDB query (not itself mid-flight abortable), but this is the
     // longest pre-fold phase — and for swing1 by far: it has no token-creation gate,
@@ -761,6 +780,7 @@ async fn run_grouped_sweep_job(
             let mut groups_done = 0u64;
             let mut total_groups = 0u64;
             let mut first_error: Option<String> = None;
+            let mut groups_failed = 0u64;
             while let Some(msg) = rx.recv().await {
                 match msg {
                     SweepWrite::Begin {
@@ -808,9 +828,17 @@ async fn run_grouped_sweep_job(
                             first_error.get_or_insert_with(|| format!("append_group: {e}"));
                         }
                     },
+                    // Nothing to persist — just make the shortfall visible so the run
+                    // finalizes `partial` with a reason. The engine already logged and
+                    // pushed an operator notice.
+                    SweepWrite::GroupFailed { group_index, err } => {
+                        groups_failed += 1;
+                        first_error
+                            .get_or_insert_with(|| format!("group {group_index} failed: {err}"));
+                    }
                 }
             }
-            (groups_done, first_error)
+            (groups_done, first_error, groups_failed)
         })
     };
 
@@ -875,9 +903,9 @@ async fn run_grouped_sweep_job(
     // The sweep is done — the sink dropped, so the writer drains and returns how
     // many groups actually persisted (the partial count on cancel/error) plus
     // the first write error, if any.
-    let (groups_done, write_error) = writer
+    let (groups_done, write_error, groups_failed) = writer
         .await
-        .unwrap_or((0, Some("sweep DB-writer task panicked".to_string())));
+        .unwrap_or((0, Some("sweep DB-writer task panicked".to_string()), 0));
 
     let output = match result {
         Ok(o) => o,
@@ -920,16 +948,34 @@ async fn run_grouped_sweep_job(
     // actually committed; a write error (or a writer shortfall) stamps `partial`
     // instead, and the reason rides the terminal `SweepFinished` frame so the
     // client surfaces it rather than trusting a silently-thinner run.
+    // `folded` counts groups the engine actually produced — groups it skipped after a
+    // fold failure are *not* in there, so `groups_failed` is what keeps a run that
+    // dropped groups from reporting `completed` over the thinner set.
     let folded = output.groups.len() as u64;
-    let status = if write_error.is_none() && groups_done == folded {
+    let status = if write_error.is_none() && groups_done == folded && groups_failed == 0 {
         "completed"
     } else {
         "partial"
     };
+    if groups_failed > 0 {
+        tracing::warn!(
+            groups_failed,
+            groups_done,
+            "grouped sweep: finished with skipped groups — marking partial"
+        );
+    }
+    // `write_error` now carries the first problem of *either* kind (a failed DB write or
+    // a skipped group), so the reason is phrased from whichever actually happened —
+    // labelling a fold failure "write error" would send the user to the wrong subsystem.
     if let Some(err) = write_error {
-        gate.error = Some(format!(
-            "sweep persisted {groups_done}/{folded} groups — first write error: {err}"
-        ));
+        gate.error = Some(if groups_failed > 0 {
+            format!(
+                "sweep skipped {groups_failed} group(s) that failed to fold, and persisted \
+                 {groups_done}/{folded} of the rest — first problem: {err}"
+            )
+        } else {
+            format!("sweep persisted {groups_done}/{folded} groups — first write error: {err}")
+        });
     } else if groups_done != folded {
         gate.error = Some(format!("sweep persisted only {groups_done}/{folded} groups"));
     }
@@ -974,6 +1020,11 @@ enum SweepWrite {
     /// the results JOIN finds them. Never the full N-combo dictionary.
     Combos(Vec<(i32, serde_json::Value)>),
     Group(Box<GroupedSweepGroupWrite>),
+    /// One group was skipped after failing to fold (the engine isolates per-group
+    /// errors rather than aborting the run). Carries no rows — it exists so the
+    /// terminal status is `partial` with a reason instead of a silent `completed`
+    /// over a thinner group set.
+    GroupFailed { group_index: usize, err: String },
 }
 
 /// The [`GroupSink`] bridge from the (sync, rayon-worker) engine to the (async)
@@ -1014,6 +1065,13 @@ impl GroupSink for HandlerSink {
             let _ = self.tx.send(SweepWrite::Combos(combo_rows));
         }
         let _ = self.tx.send(SweepWrite::Group(Box::new(write)));
+    }
+
+    fn group_failed(&self, group_index: usize, err: &str) {
+        let _ = self.tx.send(SweepWrite::GroupFailed {
+            group_index,
+            err: err.to_string(),
+        });
     }
 }
 
@@ -1648,8 +1706,11 @@ pub async fn list_token_results(
     // Re-simulate on a blocking thread (CPU-bound but short: one combo × N tokens).
     let strategy_id = query.strategy_id.clone();
     let buy_amount_sol = run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL);
+    // The run's own instant, NOT wall-clock now — a drill-in must reproduce the row
+    // it drills into, and deadness is judged against this (parity plan B7).
+    let run_as_of = run.created_at;
     let result = tokio::task::spawn_blocking(move || {
-        registry::simulate_one_combo(&strategy_id, &tokens, &params_json, buy_amount_sol)
+        registry::simulate_one_combo(&strategy_id, &tokens, &params_json, buy_amount_sol, run_as_of)
     })
     .await;
 

@@ -131,6 +131,15 @@ pub trait GroupSink: Sync {
         group: &GroupResult,
         retained_params: &[(u32, Value)],
     );
+
+    /// One group could **not** be folded, and the run carried on without it.
+    ///
+    /// The driver isolates non-cancel per-group errors instead of aborting the whole
+    /// sweep (see [`run_grouped_sweep`]), so this is how a sink learns the run is
+    /// honestly incomplete — a run that silently dropped a group and still reported
+    /// `completed` would be worse than the abort it replaced. Cancellation is not a
+    /// group failure and never reaches here.
+    fn group_failed(&self, _group_index: usize, _err: &str) {}
 }
 
 /// A sink that discards every group — the silent coarse refine pass and any
@@ -239,6 +248,7 @@ pub fn run_grouped_sweep<S: Strategy>(
     }
 
     // Phase 1 — large groups: intra-group parallel, one group at a time.
+    let failed = std::sync::atomic::AtomicUsize::new(0);
     for (pos, (key, idx)) in surviving.iter().enumerate() {
         if idx.len() < large_min {
             continue;
@@ -247,7 +257,21 @@ pub fn run_grouped_sweep<S: Strategy>(
             bail!("sweep cancelled");
         }
         let sub = sub_corpus(corpus, idx);
-        let (_stats, metrics) = run_sweep(strategy, params, &sub, observer, batch)?;
+        // Per-group failure isolation: a group that cannot fold costs the run *that
+        // group*, not the whole sweep. Aborting here used to discard every group
+        // already folded (the run died at group 48 of N) — a strictly worse outcome
+        // than finishing the other groups and reporting the run honestly partial.
+        let metrics = match run_sweep(strategy, params, &sub, observer, batch) {
+            Ok((_stats, metrics)) => metrics,
+            Err(e) => {
+                // Cancel is not a group failure — it must still abort the run.
+                if observer.cancelled() {
+                    bail!("sweep cancelled");
+                }
+                note_group_failure(pos, idx.len(), &e, observer, sink, emit, &failed);
+                continue;
+            }
+        };
         // A cancel mid-group leaves the just-swept metrics partial — discard.
         if observer.cancelled() {
             bail!("sweep cancelled");
@@ -270,10 +294,21 @@ pub fn run_grouped_sweep<S: Strategy>(
         .filter(|(_, (_, idx))| idx.len() < large_min)
         .map(|(pos, (key, idx))| (pos, key, idx))
         .collect();
-    let small_results: Vec<Result<(usize, GroupResult)>> = small
+    // Same isolation as the large phase: `Ok(None)` = this group failed and was
+    // skipped; `Err` is reserved for cancellation, which still aborts the run.
+    let small_results: Vec<Result<(usize, Option<GroupResult>)>> = small
         .par_iter()
         .map(|&(pos, key, idx)| {
-            let metrics = sweep_group_serial(strategy, params, corpus, idx, observer, batch)?;
+            let metrics = match sweep_group_serial(strategy, params, corpus, idx, observer, batch) {
+                Ok(m) => m,
+                Err(e) => {
+                    if observer.cancelled() {
+                        return Err(e);
+                    }
+                    note_group_failure(pos, idx.len(), &e, observer, sink, emit, &failed);
+                    return Ok((pos, None));
+                }
+            };
             let mut gr = make_group_result(key.clone(), idx.len(), metrics, coverage);
             // `sweep_group_serial` bails on cancel, so reaching here means a
             // fully-folded group — safe to emit for incremental persistence.
@@ -284,20 +319,29 @@ pub fn run_grouped_sweep<S: Strategy>(
                 sink.group_done(pos, &gr, &retained);
                 free_persisted_metrics(&mut gr);
             }
-            Ok((pos, gr))
+            Ok((pos, Some(gr)))
         })
         .collect();
     for r in small_results {
         let (pos, gr) = r?;
-        results[pos] = Some(gr);
+        results[pos] = gr;
     }
 
-    let groups: Vec<GroupResult> = results
-        .into_iter()
-        .map(|g| g.expect("every survivor slot filled by one phase"))
-        .collect();
+    // Failed groups leave their slot empty, so the survivor vec is filtered, not
+    // indexed — `expect`ing a full vec here would turn an isolated group failure back
+    // into the run-wide panic this isolation exists to prevent.
+    let groups: Vec<GroupResult> = results.into_iter().flatten().collect();
+    let failed = failed.load(std::sync::atomic::Ordering::Relaxed);
+    if failed > 0 {
+        tracing::warn!(
+            groups = groups.len(),
+            failed,
+            "grouped sweep: some groups failed to fold — run is honestly partial"
+        );
+    }
     tracing::info!(
         groups = groups.len(),
+        failed,
         rss_mb = crate::sweep::obs::process_rss_mb(),
         elapsed_s = sweep_started.elapsed().as_secs_f64(),
         "grouped sweep: all groups folded"
@@ -477,7 +521,10 @@ fn sweep_group_serial<S: Strategy>(
     use crate::sweep::engine::{fill_outcomes_with_state, full_combo_aggs_fit};
 
     let n_combos = params.len();
-    let batch = batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::hard_max_combo_batch()));
+    // Sizing, pinned for this group (see `run_sweep_unsharded`): the `aggs` vec and every
+    // combo chunk below are sized from it, so it is read once, not per pass.
+    let batch =
+        batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::preferred_max_combo_batch()));
     let n_batches = n_combos.div_ceil(batch.max(1)).max(1);
 
     // Token-outer (series once per token) whenever the whole accumulator set fits
@@ -594,6 +641,42 @@ fn sweep_group_serial<S: Strategy>(
         );
     }
     Ok(metrics)
+}
+
+/// Record one group's fold failure and let the run continue: log it, count it, tell
+/// the sink (so the run is finalized honestly partial) and push a notice to the
+/// operator's stream (so a thinner result set is explained, not mysterious).
+///
+/// One SSOT for both driver phases, so a large group and a small group that fail are
+/// reported identically. Callers must have already ruled out cancellation.
+#[allow(clippy::too_many_arguments)]
+fn note_group_failure(
+    pos: usize,
+    group_tokens: usize,
+    err: &anyhow::Error,
+    observer: &dyn SweepObserver,
+    sink: &dyn GroupSink,
+    emit: bool,
+    failed: &std::sync::atomic::AtomicUsize,
+) {
+    let n = failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    tracing::error!(
+        group_index = pos,
+        group_tokens,
+        failed_so_far = n,
+        "grouped sweep: group failed to fold — skipping it and continuing: {err}"
+    );
+    if emit {
+        sink.group_failed(pos, &err.to_string());
+    }
+    // Only the first few reach the operator; a systemic failure would otherwise
+    // spam the SSE stream with one toast per group.
+    if n <= 3 {
+        observer.notice(&format!(
+            "group {pos} ({group_tokens} tokens) failed and was skipped — the run continues \
+             without it: {err}"
+        ));
+    }
 }
 
 /// Build `(combo_id, params_json)` only for retention survivors (+ best).

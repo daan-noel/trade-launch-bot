@@ -172,6 +172,39 @@ pub struct PositionsSummary {
     pub best_pct: Option<f64>,
     /// Worst closed PnL % (`None` when nothing closed).
     pub worst_pct: Option<f64>,
+    /// How the closed positions left, by `exit_reason`.
+    pub exits: ExitReasonCounts,
+}
+
+/// Closed-position counts keyed by [`StrategyPosition::exit_reason`].
+///
+/// Deliberately **not** exhaustive of `closed`: a position can close with no
+/// reason at all (`ExitFailed`, where no exit fill ever landed) or with a reason
+/// minted after this list. The frontend reconciles the difference against
+/// `closed` into a visible `Other` slice rather than having the parts silently
+/// fail to sum to the whole — so an unmodelled reason shows up as a number to
+/// investigate instead of quietly skewing the mix.
+///
+/// Counted in the same single SQL pass as the rest of [`PositionsSummary`], so
+/// this costs no extra round-trip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExitReasonCounts {
+    pub take_profit: i64,
+    pub stop_loss: i64,
+    /// The generic engine's single metric-condition exit.
+    pub metrics: i64,
+    /// Death-close: liquidity gone and the token went silent.
+    pub dead: i64,
+    /// Operator-initiated close (a "Sell ALL" / rule stop) — live-only; the
+    /// analysis kernel has no manual close, so this has no `RunMetrics` peer.
+    pub manual: i64,
+    /// The legacy tpsl/swing ladder reasons, retained so a legacy live rule's
+    /// breakdown is still complete until those strategies are deleted.
+    pub trailing: i64,
+    pub stall: i64,
+    pub time: i64,
+    pub liquidity: i64,
+    pub next_kill: i64,
 }
 
 /// A single position lifecycle within a run. Backs the `strategy_positions`

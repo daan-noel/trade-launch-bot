@@ -82,6 +82,10 @@ export interface RunMetrics {
   n_exit_dead: number;
   n_exit_metrics: number;
   n_exit_open: number;
+  /** Operator-initiated close. Optional because it has **no Rust `RunMetrics`
+   *  peer**: the analysis kernel can't produce a manual close, so only the
+   *  live/paper card and row-level aggregation ever populate it. */
+  n_exit_manual?: number;
 }
 
 /** A run reported twice over the same positions — mirrors the Rust `RunSummary`. */
@@ -99,6 +103,132 @@ export interface RunOutcomeRow {
   holding_secs: number;
 }
 
+// --- exit-reason vocabulary (SSOT) -------------------------------------------
+
+/** The `RunMetrics` fields that are exit-reason counts. */
+export type ExitCountKey =
+  | 'n_exit_take_profit'
+  | 'n_exit_stop_loss'
+  | 'n_exit_metrics'
+  | 'n_exit_dead'
+  | 'n_exit_manual'
+  | 'n_exit_trailing'
+  | 'n_exit_stall'
+  | 'n_exit_time'
+  | 'n_exit_liquidity'
+  | 'n_exit_next_kill';
+
+/**
+ * **Every** way a position can leave, in ladder order — the one list the
+ * breakdown renders from, so a reason can't be silently dropped from the display.
+ *
+ * The old tile hard-coded four (`TP / SL / Met / Dead`) and omitted the five the
+ * legacy tpsl/swing ladders actually emit, so on those runs the numbers shown
+ * didn't add up to `n_closed` while *looking* like a complete breakdown.
+ *
+ * Colors are **status** semantics, not categorical: good (TP) / bad (SL) /
+ * terminal (Dead) / neutral-rule-driven (Metrics). Note `Dead` is deliberately
+ * `accent`, not `red` — it shared red with `StopLoss` before, which made the two
+ * indistinguishable in a color-only tile even though they mean opposite things
+ * about the rule (your stop worked vs. the token died under you). Every swatch
+ * ships beside a text label, so color is never the sole identity cue.
+ */
+export const EXIT_KINDS: ReadonlyArray<{
+  key: ExitCountKey;
+  /** Tile label — also the React key, so these must stay unique. */
+  label: string;
+  /** Long form for the bar segment's tooltip. */
+  full: string;
+  cls: string;
+  bar: string;
+  /** Always shown even at zero: the two outcomes that define whether a rule
+   *  works. A zero there is information ("nothing ever hit the stop"); a zero on
+   *  a legacy reason the engine can't emit is just noise. */
+  core?: boolean;
+}> = [
+  { key: 'n_exit_take_profit', label: 'Take profit', full: 'Take profit', cls: 'text-green', bar: 'bg-green', core: true },
+  { key: 'n_exit_stop_loss', label: 'Stop loss', full: 'Stop loss', cls: 'text-red', bar: 'bg-red', core: true },
+  { key: 'n_exit_metrics', label: 'Metric', full: 'Metric exit condition', cls: 'text-info', bar: 'bg-info' },
+  { key: 'n_exit_dead', label: 'Dead', full: 'Died (liquidity gone)', cls: 'text-accent', bar: 'bg-accent' },
+  { key: 'n_exit_manual', label: 'Manual', full: 'Closed by operator', cls: 'text-secondary', bar: 'bg-secondary' },
+  { key: 'n_exit_trailing', label: 'Trailing', full: 'Trailing stop', cls: 'text-primary', bar: 'bg-primary' },
+  { key: 'n_exit_stall', label: 'Stall', full: 'Stalled', cls: 'text-secondary', bar: 'bg-secondary' },
+  { key: 'n_exit_time', label: 'Time', full: 'Time stop', cls: 'text-warning', bar: 'bg-warning' },
+  { key: 'n_exit_liquidity', label: 'Liquidity', full: 'Liquidity exit', cls: 'text-text-mid', bar: 'bg-text-mid' },
+  { key: 'n_exit_next_kill', label: 'Next kill', full: 'Next kill (swing)', cls: 'text-secondary', bar: 'bg-secondary' },
+];
+
+/** Persisted `ExitReason` string → the `RunMetrics` counter it feeds. Mirrors the
+ *  Rust `ExitCode::from_reason`; `Open`/`NoEntry` are not exits and are absent. */
+const EXIT_KEY_BY_REASON: Readonly<Record<string, ExitCountKey>> = {
+  TakeProfit: 'n_exit_take_profit',
+  StopLoss: 'n_exit_stop_loss',
+  Metrics: 'n_exit_metrics',
+  Dead: 'n_exit_dead',
+  Manual: 'n_exit_manual',
+  TrailingStop: 'n_exit_trailing',
+  Stall: 'n_exit_stall',
+  TimeStop: 'n_exit_time',
+  LiquidityExit: 'n_exit_liquidity',
+  NextKill: 'n_exit_next_kill',
+};
+
+/** All exit counters at zero — the base every builder starts from. */
+export function zeroExitCounts(): Record<ExitCountKey, number> {
+  return {
+    n_exit_take_profit: 0, n_exit_stop_loss: 0, n_exit_metrics: 0, n_exit_dead: 0,
+    n_exit_manual: 0, n_exit_trailing: 0, n_exit_stall: 0, n_exit_liquidity: 0,
+    n_exit_time: 0, n_exit_next_kill: 0,
+  };
+}
+
+/** One row of the rendered breakdown. */
+export interface ExitSlice {
+  label: string;
+  full: string;
+  n: number;
+  /** Share of closed positions, 0..1. */
+  share: number;
+  cls: string;
+  bar: string;
+}
+
+/**
+ * Split a band's closed positions by exit reason, **reconciling to `n_closed`**.
+ *
+ * Any closed position whose reason isn't one of the known counters lands in a
+ * trailing `Other` slice rather than vanishing, so the parts always sum to the
+ * whole. That makes a miscount *visible* instead of silent — which is how the
+ * `"Manual"`/`"Migrated"` reasons (mapped to `Open` by the Rust
+ * `ExitCode::from_reason`, so they never reach a counter) show up as a
+ * discrepancy the reader can act on, rather than quietly skewing the mix.
+ */
+export function exitBreakdown(m: RunMetrics): ExitSlice[] {
+  const closed = m.n_closed;
+  const denom = closed > 0 ? closed : 1;
+  const slices: ExitSlice[] = [];
+  let accounted = 0;
+  for (const k of EXIT_KINDS) {
+    const n = m[k.key] ?? 0;
+    accounted += n;
+    if (n > 0 || k.core) {
+      slices.push({ label: k.label, full: k.full, n, share: n / denom, cls: k.cls, bar: k.bar });
+    }
+  }
+  const other = closed - accounted;
+  if (other > 0) {
+    slices.push({
+      label: 'Other',
+      full: 'Closed with an unrecognised exit reason',
+      n: other,
+      share: other / denom,
+      cls: 'text-text-mid',
+      bar: 'bg-text-mid',
+    });
+  }
+  return slices;
+}
+
 // --- client-side aggregation (sweep drill-in) --------------------------------
 
 function median(vals: number[]): number {
@@ -107,17 +237,40 @@ function median(vals: number[]): number {
   return s[Math.round((s.length - 1) * 0.5)];
 }
 
-/** Aggregate one cohort of settled rows into a `RunMetrics`. */
-function metricsOf(closed: RunOutcomeRow[], nFired: number, nOpen: number, openPnl: number): RunMetrics {
+/** Tally the exit reasons of a cohort of closed rows. A reason with no counter
+ *  (`Manual`, `Migrated`, a typo) is intentionally *not* forced into a bucket —
+ *  it goes unaccounted so [`exitBreakdown`] surfaces it as `Other`. */
+function countExits(closed: RunOutcomeRow[]): Record<ExitCountKey, number> {
+  const counts = zeroExitCounts();
+  for (const r of closed) {
+    const key = EXIT_KEY_BY_REASON[r.exit];
+    if (key) counts[key] += 1;
+  }
+  return counts;
+}
+
+/**
+ * Aggregate one cohort of settled rows into a `RunMetrics`.
+ *
+ * `exits` is passed in rather than derived from `closed` because the two bands
+ * disagree on purpose: the MTM band reclassifies still-open positions as settled
+ * to value them, but they have no exit reason, so mirroring the Rust
+ * `kernel::run_summary` it reports zeroed exit counters instead of a mix that
+ * would double-count the open cohort. Only `realized` carries the breakdown.
+ */
+function metricsOf(
+  closed: RunOutcomeRow[],
+  nFired: number,
+  nOpen: number,
+  openPnl: number,
+  exits: Record<ExitCountKey, number>,
+): RunMetrics {
   const n = closed.length;
   const pcts = closed.map((r) => r.pnl_pct);
   const total = closed.reduce((s, r) => s + r.pnl_sol, 0);
   const grossWin = closed.reduce((s, r) => (r.pnl_sol > 0 ? s + r.pnl_sol : s), 0);
   const grossLoss = closed.reduce((s, r) => (r.pnl_sol < 0 ? s - r.pnl_sol : s), 0);
   const holds = closed.map((r) => r.holding_secs).filter((v) => Number.isFinite(v) && v > 0);
-  const zero = { n_exit_take_profit: 0, n_exit_stop_loss: 0, n_exit_trailing: 0, n_exit_stall: 0,
-    n_exit_time: 0, n_exit_liquidity: 0, n_exit_next_kill: 0, n_exit_dead: 0,
-    n_exit_metrics: 0, n_exit_open: 0 };
   return {
     n_fired: nFired,
     n_open: nOpen,
@@ -138,7 +291,8 @@ function metricsOf(closed: RunOutcomeRow[], nFired: number, nOpen: number, openP
     score: null,
     avg_holding_secs: holds.length ? holds.reduce((s, v) => s + v, 0) / holds.length : 0,
     median_holding_secs: median(holds),
-    ...zero,
+    ...exits,
+    n_exit_open: nOpen,
   };
 }
 
@@ -154,9 +308,10 @@ export function runSummaryFromRows(rows: RunOutcomeRow[]): RunSummary {
   const closed = fired.filter((r) => r.exit !== 'Open');
   const open = fired.filter((r) => r.exit === 'Open');
   const openPnl = open.reduce((s, r) => s + r.pnl_sol, 0);
+  const exits = countExits(closed);
   return {
-    realized: metricsOf(closed, fired.length, open.length, openPnl),
-    mtm: metricsOf(fired, fired.length, open.length, openPnl),
+    realized: metricsOf(closed, fired.length, open.length, openPnl, exits),
+    mtm: metricsOf(fired, fired.length, open.length, openPnl, zeroExitCounts()),
   };
 }
 
@@ -191,6 +346,33 @@ function bandStats(m: RunMetrics): SummaryStat[] {
     { label: 'Best %', value: empty ? '—' : pctText(m.best_pnl_pct), cls: empty ? undefined : 'text-green' },
     { label: 'Worst %', value: empty ? '—' : pctText(m.worst_pnl_pct), cls: empty ? undefined : 'text-red' },
   ];
+}
+
+/**
+ * The exit mix as one horizontal proportion bar — the at-a-glance read the old
+ * slash-joined tile couldn't give, because four bare numbers make you do the
+ * division yourself to see which exit dominates.
+ *
+ * Segments are flex-grown by count, so widths are the mix. Zero-count slices are
+ * dropped here (they'd be invisible anyway) while their tile below still shows
+ * the `0`. The 2px gaps are surface-colored separators, not padding: they keep
+ * adjacent fills from reading as one blended block.
+ */
+function ExitMixBar({ slices }: { slices: ExitSlice[] }) {
+  const shown = slices.filter((s) => s.n > 0);
+  if (shown.length === 0) return null;
+  return (
+    <div className="flex h-1.5 w-full max-w-lg gap-0.5" role="img" aria-label="Exit reason mix">
+      {shown.map((s) => (
+        <div
+          key={s.label}
+          className={cn('h-full rounded-xs', s.bar)}
+          style={{ flexGrow: s.n, flexBasis: 0 }}
+          title={`${s.full}: ${s.n} (${pctOf(s.share)})`}
+        />
+      ))}
+    </div>
+  );
 }
 
 /**
@@ -235,12 +417,7 @@ export function runSummarySections(s: RunSummary): {
     },
   ];
 
-  const exits: Array<[string, number, string]> = [
-    ['TakeProfit', realized.n_exit_take_profit, 'text-green'],
-    ['StopLoss', realized.n_exit_stop_loss, 'text-red'],
-    ['Metrics', realized.n_exit_metrics, 'text-text-mid'],
-    ['Dead', realized.n_exit_dead, 'text-red'],
-  ];
+  const slices = exitBreakdown(realized);
 
   const sections: SummarySection[] = [
     {
@@ -255,21 +432,31 @@ export function runSummarySections(s: RunSummary): {
           value: nFired ? pctOf(openShare) : '—',
           cls: nFired ? tone : undefined,
         },
-        {
-          label: 'TP / SL / Met / Dead',
-          node: (
-            <>
-              {exits.map(([tag, n, cls], i) => (
-                <span key={tag}>
-                  {i > 0 && <span className="text-text-dim"> / </span>}
-                  <span className={cls}>{n}</span>
-                </span>
-              ))}
-            </>
-          ),
-        },
         { label: 'Avg hold', value: fmtSecs(realized.avg_holding_secs), cls: 'text-accent' },
       ],
+    },
+    {
+      title: 'Exits',
+      hint:
+        nClosed > 0
+          ? `How the ${nClosed} closed position${nClosed === 1 ? '' : 's'} left`
+          : 'Nothing has closed yet',
+      stats: slices.map((s) => ({
+        label: s.label,
+        node: (
+          <span className="inline-flex items-baseline gap-1.5">
+            <span
+              className={cn('inline-block size-2 shrink-0 self-center rounded-sm', s.bar)}
+              aria-hidden
+            />
+            <span className={s.n > 0 ? s.cls : 'text-text-dim'}>{s.n}</span>
+            {nClosed > 0 && (
+              <span className="text-[10px] font-normal text-text-dim">{pctOf(s.share)}</span>
+            )}
+          </span>
+        ),
+      })),
+      lead: nClosed > 0 ? <ExitMixBar slices={slices} /> : undefined,
     },
     {
       title: 'Realized',

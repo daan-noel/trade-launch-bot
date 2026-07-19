@@ -309,6 +309,24 @@ export interface PositionsSummary {
   avg_hold_secs: number;
   best_pct: number | null;
   worst_pct: number | null;
+  /** Closed-position counts by `exit_reason`. Deliberately not exhaustive of
+   *  `closed` — an `ExitFailed` position has no reason at all — so the summary
+   *  reconciles the remainder into a visible `Other` slice. */
+  exits: ExitReasonCounts;
+}
+
+/** Mirrors the Rust `ExitReasonCounts`. */
+export interface ExitReasonCounts {
+  take_profit: number;
+  stop_loss: number;
+  metrics: number;
+  dead: number;
+  manual: number;
+  trailing: number;
+  stall: number;
+  time: number;
+  liquidity: number;
+  next_kill: number;
 }
 
 export interface MatchedTokenRecord extends TokenEnrichmentFields {

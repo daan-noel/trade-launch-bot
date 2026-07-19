@@ -78,6 +78,49 @@ mean tearing down in-flight work, which costs more than the RAM it reclaims. A r
 that started wide stays wide on threads and narrows on batches/shards/waves
 instead. This is a deliberate limit, not an oversight.
 
+## Sizing preference vs allocation invariant (do not conflate)
+
+Two different things bound a fold batch, and mixing them up aborted runs mid-flight:
+
+| | Value | Time-varying? | May be used for |
+| --- | --- | --- | --- |
+| `registry::preferred_max_combo_batch()` | 65536, or **8192** under the desktop reserve | **yes** — live free-RAM read | sizing the *next* allocation |
+| `engine::HARD_MAX_COMBO_BATCH` | 65536 | no — a `const` | asserting an *existing* allocation |
+
+The rule: **a live reading may size an allocation, never validate one.**
+
+`fold_wave_into` and the pass-outer loop assert against the constant. They used to
+assert against the live function, which is a TOCTOU: a batch legally sized at 65536
+while RAM was free got retroactively declared illegal the instant free RAM dipped
+under the reserve, and the fold bailed —
+
+```
+fold_wave_into: n_combos 65536 > hard_max_combo_batch 8192   groups_done=48
+```
+
+— throwing away 48 folded groups to "save" memory that was already allocated and
+about to be freed. `preferred_batch_never_exceeds_static_invariant` (engine tests)
+pins the relation that makes a pinned batch safe: any batch is
+`≤ preferred_max_combo_batch() ≤ HARD_MAX_COMBO_BATCH` at the moment it is sized,
+so it still clears the guard later however far RAM has since moved.
+
+Batches are also **pinned per shard/group**, read once rather than per pass, so the
+`aggs` vec and every combo chunk derived from it agree on one width. Degradation
+lands on the next group — which is exactly where it can still be acted on.
+
+## Per-group failure isolation
+
+A group that cannot fold costs the run *that group*, not the sweep. `run_grouped_sweep`
+catches non-cancel errors per group in both driver phases, reports them through one
+`note_group_failure` SSOT (log + `GroupSink::group_failed` + an operator notice, capped
+at 3 toasts), and carries on; the survivor vec is filtered rather than indexed.
+Cancellation still aborts — it is not a group failure.
+
+The run then finalizes **`partial` with a reason**, never `completed` over a thinner
+group set: `HandlerSink::group_failed` → `SweepWrite::GroupFailed` → the writer task's
+`groups_failed` count → the handler's terminal status. A silent drop would be worse
+than the abort this replaced.
+
 ## Reporting
 
 Degradation is never silent — an unexplained 4× slowdown reads as a hang.

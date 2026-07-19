@@ -21,6 +21,11 @@ export interface SummarySection {
   hint?: string;
   /** Tones the band's title (e.g. `text-green` / `text-warning`). */
   titleCls?: string;
+  /** Optional full-width element rendered above the band's tiles — for a figure
+   *  the tiles annotate rather than a tile itself (e.g. the exit-mix proportion
+   *  bar, whose whole point is spanning the row so segment widths are
+   *  comparable). Tiles can't express this: they're fixed-width and wrap. */
+  lead?: ReactNode;
   stats: SummaryStat[];
 }
 
@@ -130,10 +135,13 @@ export function SummaryStatsPanel({
                 <div className="mt-0.5 text-[10px] leading-snug text-text-dim">{sec.hint}</div>
               )}
             </div>
-            <div className="flex flex-1 flex-wrap gap-x-8 gap-y-3">
-              {sec.stats.map((s) => (
-                <DetailTile key={s.label} stat={s} />
-              ))}
+            <div className="flex flex-1 flex-col gap-2.5">
+              {sec.lead}
+              <div className="flex flex-wrap gap-x-8 gap-y-3">
+                {sec.stats.map((s) => (
+                  <DetailTile key={s.label} stat={s} />
+                ))}
+              </div>
             </div>
           </div>
         </div>

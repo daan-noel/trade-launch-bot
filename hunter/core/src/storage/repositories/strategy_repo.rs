@@ -9,7 +9,8 @@ use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::strategies::kernel::{round_trip_with_costs, weighted_return_pct, CostModel};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    PositionsSummary, StrategyPosition, LegacyStrategyRule, StrategyRun, StrategyRunMetrics,
+    ExitReasonCounts, PositionsSummary, StrategyPosition, LegacyStrategyRule, StrategyRun,
+    StrategyRunMetrics,
 };
 use crate::storage::token_enrichment::{
     enrich_filter_sql, enrich_sort_sql, FilterKind, TokenEnrichmentRow, ENRICH_SELECT,
@@ -251,6 +252,29 @@ fn map_rule_counters(rows: Vec<RuleCountersRow>) -> HashMap<Uuid, RuleCounters> 
         .collect()
 }
 
+/// The one "this position is closed" predicate. Every closed-scoped aggregate in
+/// [`StrategyRepo::positions_summary`] refers to it, so the exit-reason counts
+/// can't drift from the `closed` they're reconciled against (a count scoped even
+/// slightly wider would exceed `closed` and drive the frontend's `Other` slice
+/// negative).
+const CLOSED_PRED: &str = "sp.entry_price IS NOT NULL AND sp.status IN ('End','ExitFailed')";
+
+/// (`exit_reason` value → result column) for the summary's per-reason counts.
+/// One list so the SQL, the row struct, and `ExitReasonCounts` stay in step.
+/// Values are compile-time constants, never user input.
+const EXIT_REASON_COUNTS: &[(&str, &str)] = &[
+    ("TakeProfit", "n_take_profit"),
+    ("StopLoss", "n_stop_loss"),
+    ("Metrics", "n_metrics"),
+    ("Dead", "n_dead"),
+    ("Manual", "n_manual"),
+    ("TrailingStop", "n_trailing"),
+    ("Stall", "n_stall"),
+    ("TimeStop", "n_time"),
+    ("LiquidityExit", "n_liquidity"),
+    ("NextKill", "n_next_kill"),
+];
+
 /// Raw aggregate row behind [`StrategyRepo::positions_summary`]. Lamport sums are
 /// `BIGINT` (cast in SQL), pct/secs sums `DOUBLE PRECISION`; the repo folds these
 /// into the human-facing [`PositionsSummary`] (SOL division, win-rate/avg derive).
@@ -272,6 +296,16 @@ struct PositionsSummaryRow {
     sum_hold_secs: f64,
     best_pct: Option<f64>,
     worst_pct: Option<f64>,
+    n_take_profit: i64,
+    n_stop_loss: i64,
+    n_metrics: i64,
+    n_dead: i64,
+    n_manual: i64,
+    n_trailing: i64,
+    n_stall: i64,
+    n_time: i64,
+    n_liquidity: i64,
+    n_next_kill: i64,
     /// The still-open positions' `(mint_address, entry_price, entry_lamports)`,
     /// aggregated into JSON by the same query rather than fetched separately —
     /// open positions are bounded by the rule's concurrency cap (a handful), so
@@ -1329,7 +1363,15 @@ impl StrategyRepo {
         // `worst_pct` are per-trade price extremes for the distribution tails, and a
         // failed exit contributes −100% (its capital was lost) so the tails agree with
         // the PnL sums instead of using the never-realized hypothetical exit price.
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+        // One `COUNT(*) FILTER` per known exit reason, generated from the single
+        // `EXIT_REASON_COUNTS` list so a new reason is added in exactly one place.
+        let exit_cols: String = EXIT_REASON_COUNTS
+            .iter()
+            .map(|(reason, col)| {
+                format!("COUNT(*) FILTER (WHERE {CLOSED_PRED} AND sp.exit_reason = '{reason}') AS {col}, ")
+            })
+            .collect();
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
             "SELECT \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL) AS tokens, \
                COUNT(*) FILTER (WHERE sp.status IN ('Holding','Arming','BuySubmitted')) AS open, \
@@ -1358,6 +1400,7 @@ impl StrategyRepo {
                         ELSE (sp.exit_price - sp.entry_price) / sp.entry_price * 100.0 END) \
                         FILTER (WHERE sp.entry_price IS NOT NULL AND sp.entry_price > 0 \
                                   AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct, \
+               {exit_cols}\
                COALESCE(json_agg(json_build_object( \
                           'mint_address', sp.mint_address, \
                           'entry_price', sp.entry_price, \
@@ -1366,8 +1409,8 @@ impl StrategyRepo {
                                   AND sp.status IN ('Holding','Arming','BuySubmitted')), '[]') AS open_marks \
              FROM strategy_positions sp \
              LEFT JOIN tokens t ON t.mint_address = sp.mint_address \
-             LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE ",
-        );
+             LEFT JOIN tokens_info i ON i.mint_address = sp.mint_address WHERE "
+        ));
         qb.push(scope_col).push(" = ").push_bind(scope_id);
         if let Some(exclude) = exclude_run {
             qb.push(" AND sp.run_id <> ").push_bind(exclude);
@@ -1423,6 +1466,18 @@ impl StrategyRepo {
             avg_hold_secs,
             best_pct: row.best_pct,
             worst_pct: row.worst_pct,
+            exits: ExitReasonCounts {
+                take_profit: row.n_take_profit,
+                stop_loss: row.n_stop_loss,
+                metrics: row.n_metrics,
+                dead: row.n_dead,
+                manual: row.n_manual,
+                trailing: row.n_trailing,
+                stall: row.n_stall,
+                time: row.n_time,
+                liquidity: row.n_liquidity,
+                next_kill: row.n_next_kill,
+            },
         })
     }
 

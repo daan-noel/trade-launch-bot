@@ -112,8 +112,8 @@ pub fn combo_batch_size(n_combos: usize, threads: usize) -> usize {
         .max(1);
     let budget = crate::sweep::registry::sweep_memory_budget_bytes();
     let max_batch = (budget / per).max(1) as usize;
-    let hard = crate::sweep::registry::hard_max_combo_batch();
-    max_batch.min(n_combos).min(hard).max(1)
+    let preferred = crate::sweep::registry::preferred_max_combo_batch();
+    max_batch.min(n_combos).min(preferred).max(1)
 }
 
 /// Resident fold-buffer bytes for **one worker** at `batch` combos: the `batch`
@@ -279,7 +279,11 @@ fn run_sweep_unsharded<S: Strategy>(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let n_combos = params.len();
-    let batch = batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::hard_max_combo_batch()));
+    // Sizing, read once and **pinned for this shard**: every `params.chunks(batch)`
+    // pass below — and the `aggs` vec sized from it — must agree on one width. Live RAM
+    // pressure re-reads on the *next* shard/group, which is where degradation belongs.
+    let batch =
+        batch.clamp(1, n_combos.max(1).min(crate::sweep::registry::preferred_max_combo_batch()));
     let threads = rayon::current_num_threads().max(1);
     let max_series = corpus
         .tokens
@@ -354,12 +358,14 @@ fn run_sweep_unsharded<S: Strategy>(
                 written = n_combos;
                 break;
             }
-            let hard = crate::sweep::registry::hard_max_combo_batch();
-            if chunk.len() > hard {
+            // Static invariant (see `fold_wave_into`): `chunk` comes from the batch this
+            // shard already pinned, so it must be judged against the constant, never
+            // against a live RAM reading that may have moved since the pin.
+            if chunk.len() > HARD_MAX_COMBO_BATCH {
                 anyhow::bail!(
-                    "combo pass length {} exceeds hard_max_combo_batch {}",
+                    "combo pass length {} exceeds HARD_MAX_COMBO_BATCH {}",
                     chunk.len(),
-                    hard
+                    HARD_MAX_COMBO_BATCH
                 );
             }
             let mut aggs = vec![ComboAgg::default(); chunk.len()];
@@ -447,9 +453,16 @@ fn fold_wave_into<S: Strategy>(
     assert_eq!(aggs.len(), params.len());
     assert_eq!(bound.len(), params.len());
     let n_combos = params.len();
-    let hard_cap = crate::sweep::registry::hard_max_combo_batch();
-    if n_combos > hard_cap {
-        anyhow::bail!("fold_wave_into: n_combos {n_combos} > hard_max_combo_batch {hard_cap}");
+    // Static invariant, NOT the live `preferred_max_combo_batch()` sizing preference:
+    // `aggs` is already allocated by the caller at this width, so re-judging it against
+    // a *live* RAM reading can only abort a fold whose memory is already committed —
+    // the mid-run `n_combos 65536 > 8192` failure that killed runs at group 48. Live
+    // pressure legitimately shrinks the *next* batch (see `combo_batch_size`); it must
+    // not invalidate this one.
+    if n_combos > HARD_MAX_COMBO_BATCH {
+        anyhow::bail!(
+            "fold_wave_into: n_combos {n_combos} > HARD_MAX_COMBO_BATCH {HARD_MAX_COMBO_BATCH}"
+        );
     }
 
     let channel_depth = rayon::current_num_threads().saturating_mul(2).clamp(4, 32);
@@ -769,5 +782,28 @@ mod tests {
         assert_eq!(combo_batch_count(7, 3), 3);
         assert_eq!(combo_batch_count(6, 3), 2);
         assert_eq!(combo_batch_count(0, 3), 1);
+    }
+
+    /// The live RAM sizing preference must never exceed the static allocation
+    /// invariant the fold guards assert against.
+    ///
+    /// This is what makes a *pinned* batch safe against mid-run RAM movement: a batch
+    /// sized at any moment is `≤ preferred_max_combo_batch() ≤ HARD_MAX_COMBO_BATCH`,
+    /// so `fold_wave_into`'s guard still holds later even if free RAM has since dipped
+    /// under the desktop reserve and the preference dropped to 8192. Regression for the
+    /// mid-run `n_combos 65536 > hard_max_combo_batch 8192` abort, which came from
+    /// asserting an already-allocated batch against the *live* value.
+    #[test]
+    fn preferred_batch_never_exceeds_static_invariant() {
+        let preferred = crate::sweep::registry::preferred_max_combo_batch();
+        assert!(
+            preferred <= HARD_MAX_COMBO_BATCH,
+            "sizing preference {preferred} exceeds the invariant {HARD_MAX_COMBO_BATCH} — \
+             a pinned batch could then fail the fold guard mid-run"
+        );
+        // Whatever the host's current RAM state, a sized batch clears the static guard.
+        for threads in [1usize, 4, 16] {
+            assert!(combo_batch_size(1_000_000, threads) <= HARD_MAX_COMBO_BATCH);
+        }
     }
 }
