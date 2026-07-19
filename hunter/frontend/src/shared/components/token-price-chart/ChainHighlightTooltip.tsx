@@ -78,9 +78,9 @@ export function ChainHighlightTooltip({
         <span style={{ color: CHART_COLORS.panelTextDim }}>Trades</span>
         <span>
           {tradeCounts.total}{' '}
-          <span className="text-primary">↑{tradeCounts.buy}</span>
+          <span className="text-buy">↑{tradeCounts.buy}</span>
           <span style={{ color: CHART_COLORS.panelTextDim }}> / </span>
-          <span className="text-red">↓{tradeCounts.sell}</span>
+          <span className="text-sell">↓{tradeCounts.sell}</span>
         </span>
       </div>
     </div>

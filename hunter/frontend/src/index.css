@@ -13,6 +13,13 @@
   --color-accent: #f69768;
   --color-green: #089981;
   --color-red: #f23645;
+  /* Trade DIRECTION (buy/sell) — ALIASES of the candle up/down pair, on purpose.
+     Buy must always render the same green as an up-candle and sell the same red
+     as a down-candle, so these point at the candle colors rather than restating
+     them (an alias can't drift; a copied hex can). Mirrored by `CHART_COLORS.buy`
+     / `.sell` for the canvas chart. */
+  --color-buy: var(--color-green);
+  --color-sell: var(--color-red);
   --color-text: #e8e8e8;
   --color-text-dim: #999999;
   --color-text-mid: #b3b3b3;

@@ -195,7 +195,7 @@ function buildTradeMarkers(
     markers.push({
       time,
       position: onlyBuy ? 'belowBar' : onlySell ? 'aboveBar' : 'inBar',
-      color: onlyBuy ? CHART_COLORS.up : onlySell ? CHART_COLORS.down : CHART_COLORS.text,
+      color: onlyBuy ? CHART_COLORS.buy : onlySell ? CHART_COLORS.sell : CHART_COLORS.text,
       shape: onlyBuy ? 'arrowUp' : onlySell ? 'arrowDown' : 'circle',
       text: textParts.join(' '),
     });
@@ -395,7 +395,7 @@ function buildWalletMarkerDefs(
         barEdgePrice: bar.low,
         letter: walletGlyph(w),
         color: w.color,
-        borderColor: CHART_COLORS.up,
+        borderColor: CHART_COLORS.buy,
         type: 'buy',
         stackIndex: buyStack++,
         shape: walletShape(w),
@@ -411,7 +411,7 @@ function buildWalletMarkerDefs(
         barEdgePrice: bar.high,
         letter: walletGlyph(w),
         color: w.color,
-        borderColor: CHART_COLORS.down,
+        borderColor: CHART_COLORS.sell,
         type: 'sell',
         stackIndex: sellStack++,
         shape: walletShape(w),

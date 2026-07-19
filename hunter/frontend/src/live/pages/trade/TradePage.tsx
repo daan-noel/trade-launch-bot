@@ -199,8 +199,8 @@ export function TradePage() {
 
             <div className="flex flex-col gap-3">
               {/* Buy */}
-              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-                <h3 className="mb-2 text-sm font-bold text-primary">Buy</h3>
+              <div className="rounded-lg border border-buy/20 bg-buy/5 p-3">
+                <h3 className="mb-2 text-sm font-bold text-buy">Buy</h3>
                 <div className="flex flex-wrap items-end gap-2">
                   <label className="flex flex-col gap-1">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
@@ -239,8 +239,8 @@ export function TradePage() {
               </div>
 
               {/* Sell (full balance; partial deferred to 5.4) */}
-              <div className="rounded-lg border border-red/20 bg-red/5 p-3">
-                <h3 className="mb-2 text-sm font-bold text-red">Sell (full balance)</h3>
+              <div className="rounded-lg border border-sell/20 bg-sell/5 p-3">
+                <h3 className="mb-2 text-sm font-bold text-sell">Sell (full balance)</h3>
                 <div className="flex flex-wrap items-end gap-2">
                   <label className="flex flex-col gap-1">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
@@ -281,7 +281,7 @@ export function TradePage() {
           <ul className="flex flex-col gap-1">
             {log.map((e) => (
               <li key={e.key} className="flex items-center gap-2 text-xs">
-                <Badge variant={e.action === 'Buy' ? 'primary' : 'danger'}>{e.action}</Badge>
+                <Badge variant={e.action === 'Buy' ? 'buy' : 'sell'}>{e.action}</Badge>
                 <span className="font-mono text-text-mid">{e.mint_address.slice(0, 10)}…</span>
                 <span className={e.ok ? 'text-green' : 'text-red'}>{e.note}</span>
               </li>

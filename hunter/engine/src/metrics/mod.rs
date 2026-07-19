@@ -203,6 +203,19 @@ impl GroupSpec {
     }
 }
 
+/// Hue of the frontend's candle **up** color (`#089981` ⇒ HSL hue 170).
+///
+/// Duplicated across the language boundary — the hex itself lives in
+/// `hunter/frontend/src/shared/components/token-price-chart/constants.ts`
+/// (`CHART_COLORS.up`) and `--color-green` in `index.css`. Kept in sync by the
+/// `direction_metrics_match_candle_hues` guard test below; if you change the hex
+/// there, change the hue here.
+pub const CANDLE_UP_HUE: u16 = 170;
+
+/// Hue of the frontend's candle **down** color (`#f23645` ⇒ HSL hue 355).
+/// See [`CANDLE_UP_HUE`] for the sync contract.
+pub const CANDLE_DOWN_HUE: u16 = 355;
+
 /// **The metric registry** — every group and metric the engine knows.
 /// Compile-time data; every other layer derives its vocabulary from here.
 pub const REGISTRY: &[GroupSpec] = &[
@@ -236,7 +249,8 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_price_path",
         kind: MetricKind::Static,
         strict_params: &[],
-        // Amber family (~35–48).
+        // Amber family (~35–48). Both metrics anchor on the all-time high: `trail`
+        // is how far below it price sits, `stall` how long since it was set.
         metrics: &[
             MetricSpec {
                 id: MetricId::Stall,
@@ -261,7 +275,11 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_time_window",
         kind: MetricKind::Dynamic,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
-        // Violet family (~255–300).
+        // Violet family (~270–285) for the aggregate flow metrics — but `buy` and
+        // `sell` deliberately leave the family and take the candle up/down hues
+        // instead. Trade DIRECTION outranks group identity: a `buy` chip has to
+        // read the same green as an up-candle everywhere in the UI. The
+        // family-width guard test below exempts them for exactly this reason.
         metrics: &[
             MetricSpec {
                 id: MetricId::GrossFlow,
@@ -285,7 +303,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
-                hue: 255,
+                hue: CANDLE_UP_HUE,
             },
             MetricSpec {
                 id: MetricId::Sell,
@@ -293,7 +311,7 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Sol,
                 eq_tolerance: 0.1,
                 monotonic: false,
-                hue: 300,
+                hue: CANDLE_DOWN_HUE,
             },
         ],
     },
@@ -449,12 +467,27 @@ mod tests {
         assert_eq!(tw["strict_params"][0]["required"], true);
     }
 
+    /// Metrics that intentionally sit outside their group's hue family because
+    /// they encode trade DIRECTION, which is colored globally (candle up/down)
+    /// rather than per-group. See the `m_time_window` comment in `REGISTRY`.
+    const DIRECTION_METRICS: &[&str] = &["buy", "sell"];
+
     #[test]
     fn hues_in_range_and_grouped_nearby() {
         for g in REGISTRY {
-            let hues: Vec<u16> = g.metrics.iter().map(|m| m.hue).collect();
-            for &h in &hues {
-                assert!(h < 360, "{} hue {h} out of range", g.name);
+            for m in g.metrics {
+                assert!(m.hue < 360, "{}.{} hue {} out of range", g.name, m.name, m.hue);
+            }
+            // Direction metrics are exempt from the family-width rule — they take
+            // the candle hues on purpose (asserted by the test below).
+            let hues: Vec<u16> = g
+                .metrics
+                .iter()
+                .filter(|m| !DIRECTION_METRICS.contains(&m.name))
+                .map(|m| m.hue)
+                .collect();
+            if hues.is_empty() {
+                continue;
             }
             let lo = *hues.iter().min().unwrap();
             let hi = *hues.iter().max().unwrap();
@@ -463,6 +496,38 @@ mod tests {
                 "{} hue family too wide (span={}): {hues:?}",
                 g.name,
                 hi - lo,
+            );
+        }
+    }
+
+    /// Guards the cross-language duplicate: the `buy`/`sell` chip hues must stay
+    /// equal to the frontend's candle up/down colors, so a buy chip never drifts
+    /// away from the green of an up-candle. If this fails, either the registry
+    /// hue or the frontend hex moved — reconcile them, don't just update one.
+    #[test]
+    fn direction_metrics_match_candle_hues() {
+        let tw = REGISTRY
+            .iter()
+            .find(|g| g.name == "m_time_window")
+            .expect("m_time_window group");
+
+        assert_eq!(
+            tw.metric_by_name("buy").expect("buy metric").hue,
+            CANDLE_UP_HUE,
+            "buy must render the candle up (#089981) hue",
+        );
+        assert_eq!(
+            tw.metric_by_name("sell").expect("sell metric").hue,
+            CANDLE_DOWN_HUE,
+            "sell must render the candle down (#f23645) hue",
+        );
+
+        // Every direction metric named above must actually exist somewhere in the
+        // registry, so the exemption list can't silently rot into a no-op.
+        for name in DIRECTION_METRICS {
+            assert!(
+                REGISTRY.iter().any(|g| g.metric_by_name(name).is_some()),
+                "DIRECTION_METRICS lists unknown metric {name}",
             );
         }
     }

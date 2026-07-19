@@ -304,7 +304,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
             <button
               type="button"
               onClick={() => actions.onBuy(r.mint_address, r.token_program_id)}
-              className="rounded border border-primary/50 bg-primary/12 px-2 py-0.5 text-[11px] font-semibold text-primary hover:bg-primary/22"
+              className="rounded border border-buy/50 bg-buy/12 px-2 py-0.5 text-[11px] font-semibold text-buy hover:bg-buy/22"
             >
               Buy
             </button>
@@ -312,7 +312,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
               type="button"
               disabled={isSelling}
               onClick={() => actions.onSell(r.mint_address)}
-              className="rounded border border-red/50 bg-red/12 px-2 py-0.5 text-[11px] font-semibold text-red hover:bg-red/22 disabled:opacity-45"
+              className="rounded border border-sell/50 bg-sell/12 px-2 py-0.5 text-[11px] font-semibold text-sell hover:bg-sell/22 disabled:opacity-45"
             >
               {isSelling ? 'Selling…' : 'Sell All'}
             </button>

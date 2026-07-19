@@ -27,6 +27,8 @@ export const STORAGE_KEYS = {
   sweepConfig: `${PREFIX}sweep.config`,
   /** Base key for persisted sweep run selection; append `.${strategyId}` for per-strategy key. */
   sweepSel: `${PREFIX}sweep.sel`,
+  /** Sweep results "show not-fired tokens" toggle. */
+  sweepShowNotFired: `${PREFIX}sweep.showNotFired`,
   /** Map of `{ [tableId]: visibleColumnKey[] }` — all DataTable column toggles. */
   tableCols: `${PREFIX}table.cols`,
   /** Map of `{ [tableId]: { pageSize, sortKeys } }` — DataTable sort + page-size. */

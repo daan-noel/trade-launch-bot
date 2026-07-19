@@ -26,8 +26,8 @@ export function tokenTradeColumns(unit: string): ColumnDef<TradeRecord>[] {
             className={cn(
               'inline-block rounded px-2 py-0.5 text-[11px] font-bold tracking-wide',
               isBuy
-                ? 'border border-primary bg-primary/15 text-primary'
-                : 'border border-red bg-red/15 text-red',
+                ? 'border border-buy bg-buy/15 text-buy'
+                : 'border border-sell bg-sell/15 text-sell',
             )}
           >
             {isBuy ? 'BUY' : 'SELL'}
@@ -52,7 +52,7 @@ export function tokenTradeColumns(unit: string): ColumnDef<TradeRecord>[] {
       render: (t) => {
         const isBuy = t.trade_type === 'buy';
         return (
-          <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
+          <span className={cn('font-semibold', isBuy ? 'text-buy' : 'text-sell')}>
             <AmountCell sol={t.amount_sol} />
           </span>
         );
@@ -66,7 +66,7 @@ export function tokenTradeColumns(unit: string): ColumnDef<TradeRecord>[] {
       render: (t) => {
         const isBuy = t.trade_type === 'buy';
         return (
-          <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
+          <span className={cn('font-semibold', isBuy ? 'text-buy' : 'text-sell')}>
             {formatDecimal(t.token_amount, 0)}
           </span>
         );
@@ -80,7 +80,7 @@ export function tokenTradeColumns(unit: string): ColumnDef<TradeRecord>[] {
       render: (t) => {
         const isBuy = t.trade_type === 'buy';
         return (
-          <span className={cn('font-semibold', isBuy ? 'text-primary' : 'text-red')}>
+          <span className={cn('font-semibold', isBuy ? 'text-buy' : 'text-sell')}>
             <PriceCell sol={t.price_per_token} />
           </span>
         );

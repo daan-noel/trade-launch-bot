@@ -12,7 +12,9 @@ export type BadgeVariant =
   | 'success'
   | 'danger'
   | 'warning'
-  | 'accent';
+  | 'accent'
+  | 'buy'
+  | 'sell';
 export type BadgeSize = 'sm' | 'md';
 
 interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
@@ -35,6 +37,10 @@ const variants: Record<BadgeVariant, string> = {
   danger: 'border border-red/40 bg-red/12 text-red',
   warning: 'border border-warning/40 bg-warning/12 text-warning',
   accent: 'border border-accent/40 bg-accent/12 text-accent',
+  // Trade direction — blue/red, NOT the green/red `success`/`danger` pair, which
+  // means outcome. See the `--color-buy` / `--color-sell` tokens in index.css.
+  buy: 'border border-buy/40 bg-buy/12 text-buy',
+  sell: 'border border-sell/40 bg-sell/12 text-sell',
 };
 
 export function Badge({

@@ -91,23 +91,23 @@ export function RangeSelectTooltip({
         <span style={{ color: CHART_COLORS.panelTextDim }}>Trades</span>
         <span>
           {tradeCount}{' '}
-          <span className="text-primary">↑{buyCount}</span>
+          <span className="text-buy">↑{buyCount}</span>
           <span style={{ color: CHART_COLORS.panelTextDim }}> / </span>
-          <span className="text-red">↓{sellCount}</span>
+          <span className="text-sell">↓{sellCount}</span>
         </span>
         <span style={{ color: CHART_COLORS.panelTextDim }}>Wallets</span>
         <span>
           {uniqueWallets}{' '}
           <span style={{ color: CHART_COLORS.panelTextDim }}>
-            (<span className="text-primary">{uniqueBuyers}b</span>
+            (<span className="text-buy">{uniqueBuyers}b</span>
             {' / '}
-            <span className="text-red">{uniqueSellers}s</span>)
+            <span className="text-sell">{uniqueSellers}s</span>)
           </span>
         </span>
         <span style={{ color: CHART_COLORS.panelTextDim }}>Max buy</span>
-        <span className="text-primary">{formatAmount(maxBuySol)}</span>
+        <span className="text-buy">{formatAmount(maxBuySol)}</span>
         <span style={{ color: CHART_COLORS.panelTextDim }}>Max sell</span>
-        <span className="text-red">{formatAmount(maxSellSol)}</span>
+        <span className="text-sell">{formatAmount(maxSellSol)}</span>
       </div>
     </div>
   );

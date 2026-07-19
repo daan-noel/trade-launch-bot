@@ -56,9 +56,22 @@ export const CHART_STYLE_LABELS: Record<ChartStyle, string> = {
   line: 'Line',
 };
 
+/** The candle up/down pair — the one definition of "green" and "red" on the chart.
+ *  Buy/sell direction aliases these (see `CHART_COLORS.buy`/`.sell`). */
+const CANDLE_UP = '#089981';
+const CANDLE_DOWN = '#f23645';
+
 export const CHART_COLORS = {
-  up: '#089981',
-  down: '#f23645',
+  up: CANDLE_UP,
+  down: CANDLE_DOWN,
+  /** Trade DIRECTION (buy/sell) — ALIASES of the candle `up`/`down` pair, on
+   *  purpose: a buy must always render the same green as an up-candle and a sell
+   *  the same red as a down-candle. Referencing the consts (not re-typing the
+   *  hexes) is what keeps them from drifting. Mirrors the `--color-buy` /
+   *  `--color-sell` theme tokens in `index.css`, which alias `--color-green` /
+   *  `--color-red` the same way. */
+  buy: CANDLE_UP,
+  sell: CANDLE_DOWN,
   line: '#13ceaf',
   background: '#1a1a1a',
   grid: '#2a2a2a',

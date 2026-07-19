@@ -253,8 +253,8 @@ export function TraderAnalysisPage() {
           renderChartCardExtra={(row) => (
             <span className="ml-auto inline-flex items-center gap-2 rounded-md border border-white/8 bg-white/3 px-2 py-0.5 text-[11px]">
               <span className="font-bold uppercase tracking-wide text-text-dim">This wallet</span>
-              <span className="text-green">{row.wallet_buy_count} buys</span>
-              <span className="text-red">{row.wallet_sell_count} sells</span>
+              <span className="text-buy">{row.wallet_buy_count} buys</span>
+              <span className="text-sell">{row.wallet_sell_count} sells</span>
               <span className="text-text-dim">
                 last {formatTimestampMs(Date.parse(row.wallet_last_trade_at), timezone)}
               </span>

@@ -339,7 +339,7 @@ impl SparseGrid {
         h = h.max(last_trade_at + secs(self.max_window_secs));
         // `time` is measured from creation.
         h = h.max(created + secs(self.time_horizon_secs));
-        // `stall` is measured from the last price move (≤ last_trade_at); using
+        // `stall` is measured from the last all-time high (≤ last_trade_at); using
         // last_trade_at is a safe upper bound (it only over-emits, never drops).
         h = h.max(last_trade_at + secs(self.stall_horizon_secs));
         // Dead flips once, at the first tick past the quiet window.

@@ -73,7 +73,7 @@ export function LiveTradeFeed() {
                   <span
                     className={cn(
                       'w-9 rounded px-1 text-center text-[10px] font-bold',
-                      buy ? 'bg-green/12 text-green' : 'bg-red/12 text-red',
+                      buy ? 'bg-buy/12 text-buy' : 'bg-sell/12 text-sell',
                     )}
                   >
                     {buy ? 'BUY' : 'SELL'}

@@ -44,7 +44,9 @@ export function BarFlowFields({ crosshair, formatVol, layout }: BarFlowFieldsPro
   const net = inflow - outflow;
   const deltaPct = open !== 0 ? ((close - open) / open) * 100 : null;
 
-  const netColor = net >= 0 ? CHART_COLORS.up : CHART_COLORS.down;
+  // Net/In/Out are order-flow DIRECTION → buy/sell blue-red. Δ is a price move
+  // → stays on the candle up/down green-red.
+  const netColor = net >= 0 ? CHART_COLORS.buy : CHART_COLORS.sell;
   const deltaColor =
     deltaPct == null ? CHART_COLORS.text : deltaPct >= 0 ? CHART_COLORS.up : CHART_COLORS.down;
   const deltaValue =
@@ -56,8 +58,8 @@ export function BarFlowFields({ crosshair, formatVol, layout }: BarFlowFieldsPro
     return (
       <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
         <FlowField label="Net" value={formatVol(net)} color={netColor} layout="grid" />
-        <FlowField label="In" value={formatVol(inflow)} color={CHART_COLORS.up} layout="grid" />
-        <FlowField label="Out" value={formatVol(outflow)} color={CHART_COLORS.down} layout="grid" />
+        <FlowField label="In" value={formatVol(inflow)} color={CHART_COLORS.buy} layout="grid" />
+        <FlowField label="Out" value={formatVol(outflow)} color={CHART_COLORS.sell} layout="grid" />
         <FlowField label="Δ" value={deltaValue} color={deltaColor} layout="grid" />
       </div>
     );
@@ -66,8 +68,8 @@ export function BarFlowFields({ crosshair, formatVol, layout }: BarFlowFieldsPro
   return (
     <>
       <FlowField label="Net" value={formatVol(net)} color={netColor} layout="inline" />{' '}
-      <FlowField label="In" value={formatVol(inflow)} color={CHART_COLORS.up} layout="inline" />{' '}
-      <FlowField label="Out" value={formatVol(outflow)} color={CHART_COLORS.down} layout="inline" />{' '}
+      <FlowField label="In" value={formatVol(inflow)} color={CHART_COLORS.buy} layout="inline" />{' '}
+      <FlowField label="Out" value={formatVol(outflow)} color={CHART_COLORS.sell} layout="inline" />{' '}
       <FlowField label="Δ" value={deltaValue} color={deltaColor} layout="inline" />
     </>
   );

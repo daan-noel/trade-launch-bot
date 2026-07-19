@@ -23,8 +23,8 @@ import {
 
 /** Effect chip color by kind. */
 const EFFECT_TONE: Record<InspectEffect['effect'], string> = {
-  SubmitBuy: 'text-green border-green/30 bg-green/10',
-  SubmitSell: 'text-warning border-warning/30 bg-warning/10',
+  SubmitBuy: 'text-buy border-buy/30 bg-buy/10',
+  SubmitSell: 'text-sell border-sell/30 bg-sell/10',
   PositionUpdate: 'text-info border-info/30 bg-info/10',
   ArmedChanged: 'text-accent border-accent/30 bg-accent/10',
 };

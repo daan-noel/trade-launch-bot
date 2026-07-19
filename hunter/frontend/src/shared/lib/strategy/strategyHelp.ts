@@ -101,7 +101,7 @@ export const GROUP_HELP: Record<string, HelpTip> = {
     body: [
       'How price has been moving since the token (and your hold) has been alive.',
       '',
-      '• stall — seconds since the last trade that changed price (quiet tape).',
+      '• stall — seconds since the price last set a new all-time high (how long since progress).',
       '• trail — % drop from the peak price seen so far (give-back from the high).',
       '',
       'No window_size_sec. Kind: static.',
@@ -153,15 +153,17 @@ export const METRIC_HELP: Record<string, HelpTip> = {
     ].join('\n'),
   },
   stall: {
-    title: 'stall — quiet time (seconds)',
+    title: 'stall — time since the all-time high (seconds)',
     body: [
-      'Seconds since the last trade that moved the price. Resets to ~0 when a price-changing trade lands.',
+      'Seconds since the price last set a NEW all-time high. Resets to ~0 only when a trade prints above the running peak; trades at or below it let the clock keep running.',
+      '',
+      'Pairs with trail off the same anchor: trail is HOW FAR below the high, stall is HOW LONG since it.',
       '',
       'Examples:',
-      '  >15     no price move for 15s → quiet / stalled',
-      '  <2      still actively ticking',
+      '  >15     no new high for 15s → the run has stalled out',
+      '  <2      still making fresh highs',
       '',
-      'Often used as an exit: sell if the tape goes dead.',
+      'Often used as an exit: sell once the token stops making progress.',
     ].join('\n'),
   },
   trail: {

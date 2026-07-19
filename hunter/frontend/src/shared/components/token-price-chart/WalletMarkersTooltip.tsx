@@ -72,7 +72,7 @@ export function WalletMarkersTooltip({
             <div className="ml-3.5 flex flex-col gap-0.5">
               {buyCount > 0 && (
                 <div className="flex items-center gap-1">
-                  <span style={{ color: CHART_COLORS.up }}>▲ Buy</span>
+                  <span style={{ color: CHART_COLORS.buy }}>▲ Buy</span>
                   <span className="text-text-dim ml-1">
                     {formatSol(buySol)}
                     {buyCount > 1 && (
@@ -83,7 +83,7 @@ export function WalletMarkersTooltip({
               )}
               {sellCount > 0 && (
                 <div className="flex items-center gap-1">
-                  <span style={{ color: CHART_COLORS.down }}>▼ Sell</span>
+                  <span style={{ color: CHART_COLORS.sell }}>▼ Sell</span>
                   <span className="text-text-dim ml-1">
                     {formatSol(sellSol)}
                     {sellCount > 1 && (

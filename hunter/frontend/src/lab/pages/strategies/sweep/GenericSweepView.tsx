@@ -104,8 +104,13 @@ function buildComboSummary(rows: ComboTokenResult[]): {
 } {
   const fired = rows.filter((r) => r.fired);
   const closed = fired.filter((r) => r.exit !== 'Open');
+  const open = fired.filter((r) => r.exit === 'Open');
   const nClosed = closed.length;
-  const nOpen = fired.length - nClosed;
+  const nOpen = open.length;
+  // Unrealized PnL of still-open positions — marked to last price, NOT realized.
+  // Kept separate from Total PnL so a combo whose winners are still holding (never
+  // reached TP) isn't misread as a pure loss (it's excluded from the closed stats).
+  const openPnl = open.reduce((s, r) => s + r.pnl_sol, 0);
   const wins = closed.filter((r) => r.pnl_sol > 0).length;
   const winRate = nClosed ? wins / nClosed : null;
   const totalPnl = closed.reduce((s, r) => s + r.pnl_sol, 0);
@@ -145,6 +150,11 @@ function buildComboSummary(rows: ComboTokenResult[]): {
           <span className="text-text-mid">{nOpen}</span>
         </>
       ),
+    },
+    {
+      label: 'Open PnL (unreal.)',
+      value: nOpen ? solText(openPnl) : '—',
+      cls: nOpen ? goodBad(openPnl) : undefined,
     },
     { label: 'Expectancy (◎)', value: solText(expectancy), cls: goodBad(expectancy) },
     { label: 'Mean %', value: pctText(meanPct), cls: goodBad(meanPct) },
@@ -609,7 +619,10 @@ function ComboTokenResults({
   // callback below (which sets state) would re-fire every render into a loop.
   const rows = useMemo(() => query.data?.rows ?? [], [query.data]);
   const err = apiErrorMessage(query.error, 'Failed to load token results');
-  const [showNotFired, setShowNotFired] = useState(true);
+  const [showNotFired, setShowNotFired] = useLocalStorage(
+    STORAGE_KEYS.sweepShowNotFired,
+    true,
+  );
   const visible = useMemo(
     () => (showNotFired ? rows : rows.filter((r) => r.fired)),
     [showNotFired, rows],
