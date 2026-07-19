@@ -23,9 +23,6 @@ export interface TableRequestBody {
   range?: { from?: string; to?: string };
   /** Tokens list only — restrict to the live cache-tracked subset. */
   trackedOnly?: boolean;
-  /** Tokens list only (Swing Detection page) — chain-sort inputs. */
-  swingRunId?: string;
-  swingChainLatencyMs?: number;
 }
 
 /** Extras merged into the body (e.g. the matched/simulated analysis `range`). */

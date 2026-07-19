@@ -12,13 +12,11 @@ import { useDispatch } from 'react-redux';
 import {
   connectSimulationFinished,
   connectSweepFinished,
-  connectSwingDetectionFinished,
   sseSubscribe,
 } from 'services/sse';
 import {
   cancelGroupedSweep,
   cancelSimulation,
-  cancelSwingRun,
   getJobsStatus,
 } from 'services/api';
 import { apiSlice } from 'store/apiSlice';
@@ -61,7 +59,7 @@ import type {
  * `jobs`/`isRunning` and is consumed by the global indicator (and the sweep
  * page's run-state check) alone.
  */
-export type JobKind = 'sweep' | 'simulation' | 'swing';
+export type JobKind = 'sweep' | 'simulation';
 
 /** Progress state for one named phase of a sweep (corpus / coarse / sweep). */
 export interface PhaseProgress {
@@ -279,9 +277,6 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         for (const s of status.simulations) {
           upsert('simulation', s.rule_id, { processed: s.processed, total: s.total });
         }
-        for (const s of status.swings) {
-          upsert('swing', s.run_id, { processed: s.processed, total: s.total });
-        }
       })
       .catch(() => {
         /* no jobs / backend down — nothing to recover */
@@ -356,7 +351,6 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       if (ev.error) addToast('Sweep problem', ev.error, 'danger');
     });
     const simFinished = connectSimulationFinished((ev) => remove('simulation', ev.rule_id));
-    const swingFinished = connectSwingDetectionFinished((ev) => remove('swing', ev.run_id));
 
     return () => {
       alive = false;
@@ -366,7 +360,6 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       offSimProgress();
       sweepFinished.close();
       simFinished.close();
-      swingFinished.close();
       if (groupsInvalidateTimer.current) {
         clearTimeout(groupsInvalidateTimer.current);
         groupsInvalidateTimer.current = null;
@@ -408,11 +401,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     (job: BackgroundJob) => {
       upsert(job.kind, job.id, { cancelling: true });
       const req =
-        job.kind === 'sweep'
-          ? cancelGroupedSweep()
-          : job.kind === 'swing'
-            ? cancelSwingRun(job.id)
-            : cancelSimulation(job.id);
+        job.kind === 'sweep' ? cancelGroupedSweep() : cancelSimulation(job.id);
       req.catch(() => upsert(job.kind, job.id, { cancelling: false }));
     },
     [upsert],

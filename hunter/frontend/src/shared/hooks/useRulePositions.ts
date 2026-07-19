@@ -92,7 +92,7 @@ export function useRulePositions(
     body: TableRequestBody,
     signal?: AbortSignal,
   ) => Promise<PositionsSummary>,
-  strategy: 'tpsl1' | 'tpsl2' | 'swing_1',
+  strategy: 'tpsl1' | 'tpsl2',
   query: TableQuery,
   /** Column keys that filter numerically (so `>5`/`1..10` become structured ops).
    *  Derive with `numericColKeys(columns)`; empty = every filter is substring. */

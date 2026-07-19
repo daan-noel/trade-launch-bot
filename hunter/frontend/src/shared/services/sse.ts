@@ -241,39 +241,9 @@ export function connectPaperTestStream(
   return { close: unsub };
 }
 
-// The client filters `tpsl_rules_changed` / `tpsl_positions_changed` frames by the
-// payload's `strategy` string; the server already emits `swing_1` for swing1 rules
-// (canonical `StrategyImpl::id`), so widening this type is all that's needed.
-type TpslStrategy = 'tpsl1' | 'tpsl2' | 'swing_1';
-
-/**
- * Rule-list change signal for `strategy` — fires when a rule is created /
- * updated / deleted or moves through a lifecycle transition
- * (`tpsl_rules_changed`). The payload is a bare signal; the caller refetches the
- * list. Position changes are NOT included here: they arrive via
- * {@link connectTpslPositionsChanged} as deltas the caller patches in place
- * (open-count badge + lifecycle), so a busy run no longer refetches the whole
- * rule list per position transition. Filtered to `strategy` client-side.
- */
-export function connectTpslRulesChanged(
-  strategy: TpslStrategy,
-  onChanged: () => void,
-): StreamHandle {
-  const unsub = combine(
-    subscribe('tpsl_rules_changed', (e) => {
-      if (typeof e.data !== 'string') return;
-      try {
-        const p = JSON.parse(e.data) as { strategy?: string };
-        if (p.strategy === strategy) onChanged();
-      } catch {
-        /* ignore malformed frames */
-      }
-    }),
-    // Rule-list deltas missed during an outage → refetch on reconnect.
-    onSseReopen(onChanged),
-  );
-  return { close: unsub };
-}
+// The client filters `tpsl_positions_changed` frames by the payload's `strategy`
+// string.
+type TpslStrategy = 'tpsl1' | 'tpsl2';
 
 /**
  * Terminal signal for the in-flight grouped param-sweep — the single-flight run
@@ -307,25 +277,6 @@ export function connectSimulationFinished(
     if (typeof e.data !== 'string') return;
     try {
       onFinished(JSON.parse(e.data) as import('types').SimulationFinishedEvent);
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
-  return { close: unsub };
-}
-
-/**
- * Terminal signal for an in-flight "Swing Detection All" run — the run for some
- * `run_id` ended. The swing analogue of {@link connectSimulationFinished}; the
- * consumer keys off `run_id`.
- */
-export function connectSwingDetectionFinished(
-  onFinished: (ev: import('types').SwingDetectionFinishedEvent) => void,
-): StreamHandle {
-  const unsub = subscribe('swing_detection_finished', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      onFinished(JSON.parse(e.data) as import('types').SwingDetectionFinishedEvent);
     } catch {
       /* ignore malformed frames */
     }

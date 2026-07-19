@@ -112,59 +112,6 @@ export interface ChartBarSelection {
   slot?: number;
 }
 
-/** Swing leg overlay — matches backend `SwingLegRecord` shape. */
-export interface ChartSwingLeg {
-  type: 'swing_high' | 'swing_low';
-  start_at: number;
-  end_at: number;
-  start_price: number;
-  end_price: number;
-  /** Terminal pivot drawn as the leg's end point (last big tx / price extreme).
-   *  Falls back to `end_at`/`end_price` when absent. */
-  pivot_end_at?: number;
-  pivot_end_price?: number;
-  duration_ms?: number;
-  inflow?: number;
-  outflow?: number;
-  net_flow?: number;
-  trade_count?: number;
-}
-
-export interface ChartSwingTooltipState {
-  leg: ChartSwingLeg;
-  point: { x: number; y: number };
-}
-
-/** Longest swing chain to highlight as a translucent full-height band. */
-export interface ChartChainHighlight {
-  /** Chain start (ms epoch) — first pair's high start. */
-  startAt: number;
-  /** Chain end (ms epoch) — last pair's low end. */
-  endAt: number;
-  /** Pairs linked in the chain (for the label). */
-  pairCount: number;
-  /** Total SOL inflow across every leg in the chain. */
-  inflow: number;
-  /** Total SOL outflow across every leg in the chain. */
-  outflow: number;
-  /** Net SOL flow (inflow − outflow) across the chain. */
-  netFlow: number;
-  /** Chain wall-clock span (ms). */
-  durationMs: number;
-  /** Price change across the chain (last end price − first start price). */
-  priceDelta: number;
-  /** `priceDelta` as a percentage of the first start price; null if unknown. */
-  priceDeltaPct: number | null;
-  /** Total trades across every leg in the chain. */
-  tradeCount: number;
-}
-
-/** Tooltip shown when the crosshair hovers the chain label chip. */
-export interface ChartChainTooltipState {
-  highlight: ChartChainHighlight;
-  point: { x: number; y: number };
-}
-
 /** Aggregate stats for a user-drawn time range (snapped to bar bounds). */
 export interface ChartRangeStats {
   /** Buy-side SOL flow over the range. */
@@ -248,31 +195,6 @@ export interface ChartBarTooltipState {
   point: { x: number; y: number };
 }
 
-export interface ChartSwingOverlay {
-  legs: ChartSwingLeg[];
-  /**
-   * `connected` — full path through legs.
-   * `perLeg` — isolated start→end per leg.
-   * `connectedSequential` — connected within consecutive legs in `allLegs` (filtered subset).
-   */
-  segmentMode?: 'connected' | 'perLeg' | 'connectedSequential';
-  /** Full detection order; required for `connectedSequential`. */
-  allLegs?: ChartSwingLeg[];
-  /**
-   * Breakage gap (ms). When > 0, a `connected` path is split wherever a leg starts
-   * more than this many ms after the previous leg ended, so the overlay shows a
-   * visible break across a dust/idle breakage instead of a misleading diagonal.
-   * `undefined`/`0` = legacy bridging. Only applies to `connected`/`connectedSequential`.
-   */
-  gapBreakMs?: number;
-  /**
-   * `perLeg` only: end each leg's segment at its full-span `end_at`/`end_price`
-   * instead of its terminal pivot, so the line aligns with the full-span candle
-   * highlight. Default `false` (segments end at the pivot).
-   */
-  perLegFullSpanEnd?: boolean;
-}
-
 export interface TokenPriceChartProps {
   symbol: string;
   /** Token id (mint, address, etc.) — empty shows placeholder. */
@@ -306,22 +228,11 @@ export interface TokenPriceChartProps {
   /** Visible wall-clock window (unix seconds) after pan/zoom. Only emitted in
    *  time-grouping mode (slot mode uses slot indices on the time scale). */
   onVisibleTimeRangeChange?: (range: ChartVisibleTimeRange | null) => void;
-  /** Swing detection legs to draw as an overlay line. */
-  swingOverlay?: ChartSwingOverlay | null;
-  /** Longest swing chain to highlight as a translucent band (after batch detection). */
-  highlightChain?: ChartChainHighlight | null;
-  /** `${type}-${start_at}-${end_at}` — highlights that leg on the overlay. */
-  selectedSwingLegKey?: string | null;
-  /** Fired when a swing path segment is clicked; null clears selection. */
-  onSwingLegClick?: (leg: ChartSwingLeg | null) => void;
   /** Token ATH spot price in SOL (from tokens_info). */
   athPriceInSol?: number | null;
   isMigrated?: boolean;
   isMayhemMode?: boolean;
   isCashbackEnabled?: boolean;
-  /** Chain swing reversal points (default true). */
-  connectSwings?: boolean;
-  onConnectSwingsChange?: (connected: boolean) => void;
   /** Tracked profile wallets to render as colored buy/sell markers. OMIT to get
    *  the tracked wallets automatically (the chart falls back to `useProfileWallets`
    *  internally) — every token trade chart shows tracked-wallet markers by
@@ -349,11 +260,6 @@ export interface ChartToolbarProps {
   athLineAvailable: boolean;
   showMigrationLine: boolean;
   trimEmptyBars: boolean;
-  swingOverlayAvailable: boolean;
-  showSwingOverlay: boolean;
-  connectSwings: boolean;
-  chainHighlightAvailable: boolean;
-  showChainHighlight: boolean;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;
@@ -369,8 +275,5 @@ export interface ChartToolbarProps {
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
   onTrimEmptyBarsChange: (trim: boolean) => void;
-  onShowSwingOverlayChange: (show: boolean) => void;
-  onConnectSwingsChange: (connected: boolean) => void;
-  onShowChainHighlightChange: (show: boolean) => void;
   onRangeSelectModeChange: (active: boolean) => void;
 }

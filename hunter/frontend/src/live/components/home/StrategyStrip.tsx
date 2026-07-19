@@ -7,7 +7,6 @@ import { useGetPortfolioPositionsQuery } from '@live/store/liveEndpoints';
 const STRATEGY_LABEL: Record<string, string> = {
   tpsl_sniper_1: 'TPSL1',
   tpsl_sniper_2: 'TPSL2',
-  swing1: 'Swing1',
 };
 
 interface StrategyRow {

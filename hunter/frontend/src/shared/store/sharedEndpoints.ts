@@ -28,8 +28,7 @@ import type {
  * Args for the server-side paginated Tokens view: the backend filters/sorts/pages so
  * only one page crosses the wire. Mirrors the DataTable view-state plus the global
  * `TokenFilters` panel; the endpoint serializes both into the unified `TableRequest`
- * POST body (`toTableRequest` + `tokenFiltersToSpecs`). The Swing Detection page reuses
- * it (with `swingRunId`), pulling the full filtered set via a large `pageSize`.
+ * POST body (`toTableRequest` + `tokenFiltersToSpecs`).
  */
 export interface TokensPageArgs {
   page: number; // 1-based
@@ -48,14 +47,6 @@ export interface TokensPageArgs {
    * makes the RTK cache key tz-aware so switching timezone correctly refetches.
    */
   timezone: string;
-  /**
-   * Swing Detection page only: the last "Swing Detection All" run id and its
-   * chain-latency budget. Sent so the backend can sort the chain columns
-   * (`swing_pairs` / `max_seq_pairs` / `chain_count`) from that run's raw legs,
-   * re-grouping at the latency without re-running detection. Omitted elsewhere.
-   */
-  swingRunId?: string | null;
-  swingChainLatencyMs?: number;
   /** When true, restrict results to the live cache-tracked subset only. */
   trackedOnly?: boolean;
 }
@@ -73,8 +64,8 @@ export const TOKENS_LIST_LIMIT = 20_000;
  * Serialize `TokensPageArgs` into the unified `TableRequest` POST body — the ONE
  * place the DataTable view-state (`toTableRequest`) and the global `TokenFilters`
  * panel (`tokenFiltersToSpecs`, panel-wins on key collision) fold together, plus
- * the Tokens-only `trackedOnly` / `swingRunId` riders. Shared so `getTokensPage`
- * and the mints-only `getTokenMints` (lab) build a byte-identical filter body and
+ * the Tokens-only `trackedOnly` rider. Shared so `getTokensPage` and the
+ * mints-only `getTokenMints` (lab) build a byte-identical filter body and
  * can't drift.
  */
 export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toTableRequest> {
@@ -95,10 +86,6 @@ export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toT
   // Fold the global panel into the same filters map (panel-wins on collision).
   Object.assign(body.filters, tokenFiltersToSpecs(a.filters, a.timezone));
   if (a.trackedOnly) body.trackedOnly = true;
-  if (a.swingRunId) {
-    body.swingRunId = a.swingRunId;
-    if (a.swingChainLatencyMs != null) body.swingChainLatencyMs = a.swingChainLatencyMs;
-  }
   return body;
 }
 
@@ -138,8 +125,8 @@ export const sharedApi = baseApi.injectEndpoints({
     // `POST /api/tokens` [`TableRequest`] body — the SAME contract the strategy
     // tables use. The DataTable view-state (`toTableRequest`) and the global
     // `TokenFilters` panel (`tokenFiltersToSpecs`) fold into ONE `filters` map
-    // (panel-wins on any key collision); the Tokens-only `trackedOnly` /
-    // `swingRunId` / `swingChainLatencyMs` ride alongside. Backend execution differs
+    // (panel-wins on any key collision); the Tokens-only `trackedOnly` rides
+    // alongside. Backend execution differs
     // by build (same wire contract): the LIVE bin pages this straight from Postgres
     // over the whole token universe (no cap) — its in-RAM cache holds only tracking
     // tokens; the LAB bin runs it over a full in-RAM snapshot. A short retention

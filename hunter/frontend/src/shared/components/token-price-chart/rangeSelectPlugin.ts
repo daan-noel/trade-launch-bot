@@ -17,8 +17,7 @@ import { measureLabelWidth } from './labelMetrics';
 /**
  * A user-drawn time range to highlight as a full-height band.
  *
- * Mirrors {@link ./chainHighlightPlugin} but is driven by mouse-drag rather
- * than backend data: `dashed` renders the live preview while dragging, and
+ * Driven by mouse-drag: `dashed` renders the live preview while dragging, and
  * `label` (when set) draws a hoverable chip the host can hit-test.
  */
 export interface RangeBandDef {

@@ -5,12 +5,9 @@ import {
   tradeBarSlot,
   tradeBarTime,
   type ChartBarSelection,
-  type ChartChainHighlight,
   type ChartEventMarker,
   type ChartMetric,
   type ChartRangeSelectionDetail,
-  type ChartSwingLeg,
-  type ChartSwingOverlay,
 } from 'components/token-price-chart';
 import { DataTable } from 'components/table/DataTable';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
@@ -47,17 +44,6 @@ interface TokenTradeChartProps {
   detail: TokenDetailRecord | null;
   /** Strategy entry/exit points to overlay (TPSL result inspection). */
   eventMarkers?: ChartEventMarker[] | null;
-  /** Swing-detection legs to draw as an overlay line (swing1/swing-detection inspection). */
-  swingOverlay?: ChartSwingOverlay | null;
-  /** Longest swing chain to highlight as a translucent band (batch swing detection). */
-  highlightChain?: ChartChainHighlight | null;
-  /** Selected swing leg key to highlight on the overlay (swing-detection page). */
-  selectedSwingLegKey?: string | null;
-  /** Fired when a swing path segment is clicked on the chart. */
-  onSwingLegClick?: (leg: ChartSwingLeg | null) => void;
-  /** Chain swing reversal points (swing-detection page toggle). */
-  connectSwings?: boolean;
-  onConnectSwingsChange?: (connected: boolean) => void;
   /** See {@link TokenTradeChartExternalSelection}. */
   externalSelection?: TokenTradeChartExternalSelection | null;
   /** Passed to DataTable so column visibility is persisted per call-site. */
@@ -123,12 +109,6 @@ function tradesInRange(
 export function TokenTradeChart({
   detail,
   eventMarkers = null,
-  swingOverlay = null,
-  highlightChain = null,
-  selectedSwingLegKey = null,
-  onSwingLegClick,
-  connectSwings,
-  onConnectSwingsChange,
   externalSelection = null,
   tableId,
   highlightWallet = null,
@@ -302,12 +282,6 @@ export function TokenTradeChart({
         isCashbackEnabled={detail.is_cashback_enabled}
         tokenCreatedAt={detail.created_at}
         eventMarkers={eventMarkers}
-        swingOverlay={swingOverlay}
-        highlightChain={highlightChain}
-        selectedSwingLegKey={selectedSwingLegKey}
-        onSwingLegClick={onSwingLegClick}
-        connectSwings={connectSwings}
-        onConnectSwingsChange={onConnectSwingsChange}
         profileWallets={profileWallets}
         onCrosshairTimeChange={onCrosshairTimeChange}
         externalCrosshairTimeSec={externalCrosshairTimeSec}

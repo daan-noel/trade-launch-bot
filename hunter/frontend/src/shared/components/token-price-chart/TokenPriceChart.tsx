@@ -2,14 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createChart,
   createSeriesMarkers,
-  LineSeries,
   LineStyle,
   type Coordinate,
-  type DeepPartial,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
-  type LineSeriesOptions,
   type LogicalRangeChangeEventHandler,
   type SeriesMarker,
   type Time,
@@ -52,39 +49,21 @@ import {
   LINE_SERIES_OPTIONS,
   LS_CHART_PREFS_KEY,
   SERIES_BY_STYLE,
-  SWING_HIGH_OVERLAY_SERIES_OPTIONS,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
 import { getString, setString } from 'lib/storage';
 import { BarCrosshairTooltip } from './BarCrosshairTooltip';
-import { SwingCrosshairTooltip } from './SwingCrosshairTooltip';
-import { ChainHighlightTooltip, type ChainTradeCounts } from './ChainHighlightTooltip';
 import { WalletMarkersTooltip } from './WalletMarkersTooltip';
 import { RangeSelectTooltip, formatRangeDuration } from './RangeSelectTooltip';
 import { WalletMarkersPlugin, asSeriesPrimitive, type WalletMarkerDef, type MarkerShape } from './walletMarkersPlugin';
-import { ChainHighlightPlugin, asChainPrimitive } from './chainHighlightPlugin';
 import { RangeSelectPlugin, asRangePrimitive } from './rangeSelectPlugin';
-import {
-  buildLegSegment,
-  chartTimeRangeForSpan,
-  groupSequentialLegChains,
-  resolveSwingLegAtChartInteraction,
-  swingLegKey,
-  swingLegBarTimes,
-  swingLegSelectionMarkers,
-  swingsToColoredLineData,
-} from './swingOverlay';
 import type {
   ChartBarSelection,
   ChartCrosshairInfo,
   ChartGroupMode,
   ChartInterval,
   ChartStyle,
-  ChartSwingLeg,
   ChartBarTooltipState,
-  ChartSwingTooltipState,
-  ChartChainTooltipState,
-  ChartChainHighlight,
   ChartEventMarker,
   ChartRangeSelection,
   ChartRangeTooltipState,
@@ -467,23 +446,6 @@ function buildWalletBarActivityMap(
   return result;
 }
 
-/** Total/buy/sell trade counts inside the chain window [startAt, endAt] (ms epoch). */
-function computeChainTradeCounts(
-  trades: ChartTrade[],
-  highlight: ChartChainHighlight | null,
-): ChainTradeCounts {
-  if (!highlight) return { total: 0, buy: 0, sell: 0 };
-  let buy = 0;
-  let sell = 0;
-  for (const t of trades) {
-    const ms = new Date(t.block_time).getTime();
-    if (Number.isNaN(ms) || ms < highlight.startAt || ms > highlight.endAt) continue;
-    if (t.trade_type === 'buy') buy += 1;
-    else sell += 1;
-  }
-  return { total: buy + sell, buy, sell };
-}
-
 function panelClass(className?: string) {
   return cn('rounded-lg border', className);
 }
@@ -531,12 +493,6 @@ export function TokenPriceChart({
   onCrosshairTimeChange,
   externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
-  swingOverlay = null,
-  highlightChain = null,
-  selectedSwingLegKey = null,
-  onSwingLegClick,
-  connectSwings: connectSwingsProp,
-  onConnectSwingsChange,
   athPriceInSol = null,
   isMigrated,
   isMayhemMode,
@@ -568,36 +524,11 @@ export function TokenPriceChart({
    *  subscribeCrosshairMove echo doesn't bounce back to the sibling. */
   const applyingExternalCrosshairRef = useRef(false);
   const prevExternalCrosshairRef = useRef<number | null>(null);
-  const onSwingLegClickRef = useRef(onSwingLegClick);
-  onSwingLegClickRef.current = onSwingLegClick;
-  const selectedSwingLegKeyRef = useRef(selectedSwingLegKey);
-  selectedSwingLegKeyRef.current = selectedSwingLegKey;
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
-  const swingSeriesRefs = useRef<ISeriesApi<'Line'>[]>([]);
-  const swingSeriesLegRef = useRef(new Map<ISeriesApi<'Line'>, ChartSwingLeg>());
-  /** Last-applied {options, data, leg} per swing series so the candle-recreate
-   *  effect can re-add them on top without recomputing the overlay. */
-  const swingSeriesSnapshotsRef = useRef<
-    Array<{
-      options: DeepPartial<LineSeriesOptions>;
-      data: ReturnType<typeof swingsToColoredLineData>;
-      leg?: ChartSwingLeg;
-    }>
-  >([]);
-  const swingOverlayMetaRef = useRef<{
-    segmentMode: 'connected' | 'perLeg' | 'connectedSequential';
-    groupMode: ChartGroupMode;
-    legs: ChartSwingLeg[];
-    allLegs?: ChartSwingLeg[];
-  } | null>(null);
-  const showSwingOverlayRef = useRef(true);
   const sortedTradesRef = useRef<ChartTrade[]>([]);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
-  const chainHighlightPrimRef = useRef<ChainHighlightPlugin | null>(null);
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
-  const highlightChainRef = useRef(highlightChain);
-  highlightChainRef.current = highlightChain;
   const barsRef = useRef<OhlcBar[]>([]);
 
   const initialPrefs = loadPrefs();
@@ -610,19 +541,10 @@ export function TokenPriceChart({
   const [trimEmptyBars, setTrimEmptyBars] = useState(initialPrefs.trimEmptyBars);
   const [showWalletMarkers, setShowWalletMarkers] = useState(initialPrefs.showWalletMarkers);
   const { timezone: chartTimezone } = useTimezone();
-  const swingOverlayAvailable = (swingOverlay?.legs.length ?? 0) > 0;
-  const chainHighlightAvailable = highlightChain != null;
-  const [showSwingOverlay, setShowSwingOverlay] = useState(true);
-  const [showChainHighlight, setShowChainHighlight] = useState(true);
-  const [connectSwingsInternal, setConnectSwingsInternal] = useState(true);
-  const connectSwings = connectSwingsProp ?? connectSwingsInternal;
-  const setConnectSwings = onConnectSwingsChange ?? setConnectSwingsInternal;
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
   const [crosshair, setCrosshair] = useState<ChartCrosshairInfo | null>(null);
   const [barTooltip, setBarTooltip] = useState<ChartBarTooltipState | null>(null);
-  const [swingTooltip, setSwingTooltip] = useState<ChartSwingTooltipState | null>(null);
-  const [chainTooltip, setChainTooltip] = useState<ChartChainTooltipState | null>(null);
   const [rangeTooltip, setRangeTooltip] = useState<ChartRangeTooltipState | null>(null);
   const [walletMarkersTooltip, setWalletMarkersTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
   /** Visible window mirrored from the chart's time scale, drives the range slider. */
@@ -679,7 +601,6 @@ export function TokenPriceChart({
   }, [sortedTrades, groupMode, intervalSec, toValue, metric, trimEmptyBars]);
   barsRef.current = bars;
   sortedTradesRef.current = sortedTrades;
-  showSwingOverlayRef.current = showSwingOverlay;
 
   // Token creation time (epoch seconds) for per-bar tx age in the crosshair tooltip.
   const tokenCreatedAtSec = useMemo(() => {
@@ -721,32 +642,8 @@ export function TokenPriceChart({
   const highlightBarTimes = useMemo(() => {
     const times = new Set<number>();
     if (selectedBarTime != null) times.add(selectedBarTime as number);
-    if (selectedSwingLegKey && swingOverlay?.legs.length) {
-      const leg = swingOverlay.legs.find(
-        (l) => swingLegKey(l) === selectedSwingLegKey,
-      );
-      if (leg) {
-        for (const t of swingLegBarTimes(
-          leg,
-          bars,
-          groupMode,
-          sortedTrades,
-          intervalSec,
-        )) {
-          times.add(t as number);
-        }
-      }
-    }
     return times;
-  }, [
-    selectedBarTime,
-    selectedSwingLegKey,
-    swingOverlay,
-    bars,
-    groupMode,
-    sortedTrades,
-    intervalSec,
-  ]);
+  }, [selectedBarTime]);
 
   const highlightBarKey = useMemo(
     () => [...highlightBarTimes].sort((a, b) => a - b).join(','),
@@ -757,7 +654,9 @@ export function TokenPriceChart({
     () => createChartPriceFormatter(priceUnit),
     [priceUnit],
   );
-  const formatSwingPrice = useCallback(
+  /** Format a chart-Y price magnitude (priceInSol) in the display unit, honoring
+   *  the price/MC metric — used by the range-selection tooltip. */
+  const formatChartValuePrice = useCallback(
     (priceInSol: number) => {
       const chartY = metric === 'price' ? priceInSol : TOKEN_TOTAL_SUPPLY * priceInSol;
       return formatChartPrice(toValue(chartY));
@@ -772,11 +671,6 @@ export function TokenPriceChart({
     [groupMode, chartTimezone],
   );
   const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
-
-  const chainTradeCounts = useMemo(
-    () => computeChainTradeCounts(sortedTrades, highlightChain),
-    [sortedTrades, highlightChain],
-  );
 
   const rangeStats = useMemo(
     () =>
@@ -802,8 +696,6 @@ export function TokenPriceChart({
   const pendingCrosshairRef = useRef<{
     crosshair: ChartCrosshairInfo | null;
     barTooltip: ChartBarTooltipState | null;
-    swingTooltip: ChartSwingTooltipState | null;
-    chainTooltip: ChartChainTooltipState | null;
     rangeTooltip: ChartRangeTooltipState | null;
     walletMarkersTooltip: ChartWalletMarkersTooltipState | null;
     crosshairTimeSec: number | null;
@@ -812,14 +704,6 @@ export function TokenPriceChart({
   groupModeRef.current = groupMode;
 
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
-
-  useEffect(() => {
-    if (swingOverlayAvailable) setShowSwingOverlay(true);
-  }, [swingOverlayAvailable, swingOverlay?.legs]);
-
-  useEffect(() => {
-    if (chainHighlightAvailable) setShowChainHighlight(true);
-  }, [chainHighlightAvailable, highlightChain]);
 
   const handleGroupModeChange = useCallback(
     (next: ChartGroupMode) => {
@@ -943,8 +827,6 @@ export function TokenPriceChart({
       if (!next) return;
       setCrosshair(next.crosshair);
       setBarTooltip(next.barTooltip);
-      setSwingTooltip(next.swingTooltip);
-      setChainTooltip(next.chainTooltip);
       setRangeTooltip(next.rangeTooltip);
       setWalletMarkersTooltip(next.walletMarkersTooltip);
       if (!applyingExternalCrosshairRef.current) {
@@ -964,8 +846,6 @@ export function TokenPriceChart({
       const next = {
         crosshair: null as ChartCrosshairInfo | null,
         barTooltip: null as ChartBarTooltipState | null,
-        swingTooltip: null as ChartSwingTooltipState | null,
-        chainTooltip: null as ChartChainTooltipState | null,
         rangeTooltip: null as ChartRangeTooltipState | null,
         walletMarkersTooltip: null as ChartWalletMarkersTooltipState | null,
         crosshairTimeSec: null as number | null,
@@ -976,12 +856,6 @@ export function TokenPriceChart({
       };
       const setBarTooltip = (v: ChartBarTooltipState | null) => {
         next.barTooltip = v;
-      };
-      const setSwingTooltip = (v: ChartSwingTooltipState | null) => {
-        next.swingTooltip = v;
-      };
-      const setChainTooltip = (v: ChartChainTooltipState | null) => {
-        next.chainTooltip = v;
       };
       const setRangeTooltip = (v: ChartRangeTooltipState | null) => {
         next.rangeTooltip = v;
@@ -996,77 +870,20 @@ export function TokenPriceChart({
       // recorded its intent into `next` via the shadowed setters above.
       scheduleCrosshair();
 
-      // Hovering the chain label chip (not the band body) shows the chain totals
-      // tooltip and suppresses every other tooltip.
-      const onChainLabel =
-        param.point != null &&
-        (chainHighlightPrimRef.current?.containsLabelPoint(param.point.x, param.point.y) ??
-          false);
-      if (onChainLabel && highlightChainRef.current && param.point) {
-        setChainTooltip({ highlight: highlightChainRef.current, point: param.point });
-        setSwingTooltip(null);
-        setBarTooltip(null);
-        setWalletMarkersTooltip(null);
-        setRangeTooltip(null);
-        setCrosshairTimeSec(null);
-        return;
-      }
-      setChainTooltip(null);
-
       // Hovering the range-selection label chip shows the range totals tooltip
-      // and suppresses every other tooltip (same pattern as the chain label).
+      // and suppresses every other tooltip.
       const onRangeLabel =
         param.point != null &&
         (rangeSelectPrimRef.current?.containsLabelPoint(param.point.x, param.point.y) ??
           false);
       if (onRangeLabel && selectedRangeRef.current && rangeStatsRef.current && param.point) {
         setRangeTooltip({ stats: rangeStatsRef.current, point: param.point });
-        setSwingTooltip(null);
         setBarTooltip(null);
         setWalletMarkersTooltip(null);
         setCrosshairTimeSec(null);
         return;
       }
       setRangeTooltip(null);
-
-      const hovered =
-        param.hoveredSeries ?? param.hoveredInfo?.series;
-      const onSwingSeries =
-        hovered != null &&
-        swingSeriesRefs.current.includes(hovered as ISeriesApi<'Line'>);
-      const chartTime = onSwingSeries
-        ? typeof param.time === 'number'
-          ? param.time
-          : hovered != null
-            ? (() => {
-                const seriesData = param.seriesData.get(hovered);
-                return seriesData && 'time' in seriesData
-                  ? (seriesData.time as number)
-                  : undefined;
-              })()
-            : undefined
-        : undefined;
-
-      let activeSwingLeg: ChartSwingLeg | undefined;
-      if (!param.point || !showSwingOverlayRef.current || !onSwingSeries) {
-        setSwingTooltip(null);
-      } else {
-        const leg = resolveSwingLegAtChartInteraction(
-          hovered as ISeriesApi<'Line'> | undefined,
-          param.seriesData,
-          chartTime,
-          swingSeriesRefs.current,
-          swingSeriesLegRef.current,
-          swingOverlayMetaRef.current,
-          sortedTradesRef.current,
-        );
-        if (leg) {
-          activeSwingLeg = leg;
-          setSwingTooltip({ leg, point: param.point });
-        } else {
-          setSwingTooltip(null);
-        }
-      }
 
       if (!param.time) {
         setCrosshair(null);
@@ -1125,11 +942,7 @@ export function TokenPriceChart({
         setBarTooltip(null);
       } else {
         setWalletMarkersTooltip(null);
-        const onMainSeries =
-          hovered != null &&
-          seriesRef.current != null &&
-          hovered === seriesRef.current;
-        if (param.point && (!activeSwingLeg || onMainSeries)) {
+        if (param.point) {
           setBarTooltip({
             ...info,
             barTime: bar.time,
@@ -1149,43 +962,6 @@ export function TokenPriceChart({
       // In range-select mode the pointer-drag handler owns clicks; don't also
       // toggle a bar selection.
       if (rangeSelectModeRef.current) return;
-      const hovered =
-        param.hoveredSeries ?? param.hoveredInfo?.series;
-      const onSwingSeries =
-        hovered != null &&
-        swingSeriesRefs.current.includes(hovered as ISeriesApi<'Line'>);
-      const chartTime = onSwingSeries
-        ? typeof param.time === 'number'
-          ? param.time
-          : hovered != null
-            ? (() => {
-                const seriesData = param.seriesData.get(hovered);
-                return seriesData && 'time' in seriesData
-                  ? (seriesData.time as number)
-                  : undefined;
-              })()
-            : undefined
-        : undefined;
-      const swingLeg =
-        showSwingOverlayRef.current && onSwingSeries
-          ? resolveSwingLegAtChartInteraction(
-              hovered as ISeriesApi<'Line'> | undefined,
-              param.seriesData,
-              chartTime,
-              swingSeriesRefs.current,
-              swingSeriesLegRef.current,
-              swingOverlayMetaRef.current,
-              sortedTradesRef.current,
-              { requireSwingSeries: true },
-            )
-          : undefined;
-      if (swingLeg && onSwingLegClickRef.current) {
-        const key = swingLegKey(swingLeg);
-        const next =
-          selectedSwingLegKeyRef.current === key ? null : swingLeg;
-        onSwingLegClickRef.current(next);
-        return;
-      }
 
       if (!param.time) {
         onBarClickRef.current?.(null);
@@ -1255,18 +1031,14 @@ export function TokenPriceChart({
       markersPluginRef.current?.detach();
       markersPluginRef.current = null;
       walletMarkersPrimRef.current = null;
-      chainHighlightPrimRef.current = null;
       rangeSelectPrimRef.current = null;
       seriesRef.current = null;
-      swingSeriesRefs.current = [];
       chart.remove();
       chartRef.current = null;
       setCrosshair(null);
       setBarTooltip(null);
       onCrosshairTimeChangeRef.current?.(null);
       onVisibleTimeRangeChangeRef.current?.(null);
-      setSwingTooltip(null);
-      setChainTooltip(null);
       setRangeTooltip(null);
       setWalletMarkersTooltip(null);
     };
@@ -1350,10 +1122,6 @@ export function TokenPriceChart({
         existing.detachPrimitive(asSeriesPrimitive(walletMarkersPrimRef.current));
         walletMarkersPrimRef.current = null;
       }
-      if (chainHighlightPrimRef.current) {
-        existing.detachPrimitive(asChainPrimitive(chainHighlightPrimRef.current));
-        chainHighlightPrimRef.current = null;
-      }
       if (rangeSelectPrimRef.current) {
         existing.detachPrimitive(asRangePrimitive(rangeSelectPrimRef.current));
         rangeSelectPrimRef.current = null;
@@ -1375,10 +1143,6 @@ export function TokenPriceChart({
     series.attachPrimitive(asSeriesPrimitive(walletPrim));
     walletMarkersPrimRef.current = walletPrim;
 
-    const chainPrim = new ChainHighlightPlugin();
-    series.attachPrimitive(asChainPrimitive(chainPrim));
-    chainHighlightPrimRef.current = chainPrim;
-
     const rangePrim = new RangeSelectPlugin();
     series.attachPrimitive(asRangePrimitive(rangePrim));
     rangeSelectPrimRef.current = rangePrim;
@@ -1387,23 +1151,6 @@ export function TokenPriceChart({
       series.setData(barsToLineData(bars));
     } else {
       series.setData(barsToCandleData(bars, highlightBarTimes));
-    }
-
-    // Recreating the main series appends it last, which would otherwise bury
-    // the swing overlay lines under the fresh candles/line — re-add the
-    // existing overlay series so they stay on top and stay hoverable.
-    if (swingSeriesSnapshotsRef.current.length > 0) {
-      for (const stale of swingSeriesRefs.current) {
-        chart.removeSeries(stale);
-      }
-      swingSeriesRefs.current = [];
-      swingSeriesLegRef.current.clear();
-      for (const snapshot of swingSeriesSnapshotsRef.current) {
-        const swingSeries = chart.addSeries(LineSeries, snapshot.options);
-        swingSeries.setData(snapshot.data);
-        swingSeriesRefs.current.push(swingSeries);
-        if (snapshot.leg) swingSeriesLegRef.current.set(swingSeries, snapshot.leg);
-      }
     }
 
     if (shouldFitContentRef.current) {
@@ -1505,23 +1252,6 @@ export function TokenPriceChart({
       walletActivityMapRef.current = new Map();
     }
 
-    if (selectedSwingLegKey && swingOverlay?.legs.length) {
-      const leg = swingOverlay.legs.find(
-        (l) => swingLegKey(l) === selectedSwingLegKey,
-      );
-      if (leg) {
-        markers.push(
-          ...swingLegSelectionMarkers(
-            leg,
-            bars,
-            groupMode,
-            sortedTrades,
-            intervalSec,
-          ),
-        );
-      }
-    }
-
     if (selectedBarTime != null) {
       const bar = barsRef.current.find((b) => b.time === selectedBarTime);
       if (bar) {
@@ -1550,50 +1280,13 @@ export function TokenPriceChart({
     intervalSec,
     showChart,
     style,
-    selectedSwingLegKey,
     selectedBarTime,
-    swingOverlay,
     sortedTrades,
     bars,
     effectiveProfileWallets,
     showWalletMarkers,
     eventMarkers,
   ]);
-
-  // Highlight the longest swing chain as a full-height band. Resolving the
-  // span to bar-aligned chart times here keeps the plugin in sync with the
-  // current grouping/interval; the plugin recomputes pixel positions per frame.
-  useEffect(() => {
-    const prim = chainHighlightPrimRef.current;
-    if (!prim || !showChart) return;
-
-    if (!highlightChain || !showChainHighlight) {
-      prim.setHighlight(null);
-      setChainTooltip(null);
-      return;
-    }
-
-    const range = chartTimeRangeForSpan(
-      highlightChain.startAt,
-      highlightChain.endAt,
-      groupMode,
-      sortedTrades,
-      intervalSec,
-    );
-    if (!range) {
-      prim.setHighlight(null);
-      return;
-    }
-
-    prim.setHighlight({
-      loTime: range.lo as UTCTimestamp,
-      hiTime: range.hi as UTCTimestamp,
-      pairCount: highlightChain.pairCount,
-    });
-    // `style` re-applies the highlight after a style switch recreates the series
-    // (and its plugin). `bars` is intentionally NOT a dep: a bars change on a tick
-    // reuses the existing series/plugin, so re-running per tick would only repaint.
-  }, [highlightChain, showChainHighlight, groupMode, intervalSec, sortedTrades, showChart, style]);
 
   // Render the committed range selection as a band with a duration chip. Keyed
   // on style/grouping so it re-applies after the series (and its plugin) is
@@ -1804,130 +1497,6 @@ export function TokenPriceChart({
     }
   }, [eventMarkers, metric, toValue, showChart, style, bars]);
 
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart || !showChart) return;
-
-    const mainSeries = seriesRef.current;
-    const savedViewport =
-      mainSeries != null ? snapshotVisibleViewport(chart, mainSeries) : null;
-    if (savedViewport) visibleViewportRef.current = savedViewport;
-
-    for (const series of swingSeriesRefs.current) {
-      chart.removeSeries(series);
-    }
-    swingSeriesRefs.current = [];
-    swingSeriesLegRef.current.clear();
-    swingSeriesSnapshotsRef.current = [];
-    swingOverlayMetaRef.current = null;
-    setSwingTooltip(null);
-
-    if (!showSwingOverlay || !swingOverlay?.legs.length) {
-      if (savedViewport) {
-        isRestoringViewportRef.current = true;
-        reapplyChartViewport(chart.timeScale(), savedViewport, 'logical');
-        requestAnimationFrame(() => {
-          isRestoringViewportRef.current = false;
-        });
-      }
-      return;
-    }
-
-    const segmentMode = swingOverlay.segmentMode ?? 'connected';
-    swingOverlayMetaRef.current = {
-      segmentMode,
-      groupMode,
-      legs: swingOverlay.legs,
-      allLegs: swingOverlay.allLegs,
-    };
-
-    const addConnectedPath = (legs: ChartSwingLeg[]) => {
-      const data = swingsToColoredLineData(
-        legs,
-        metric,
-        toValue,
-        groupMode,
-        sortedTrades,
-        swingOverlay.gapBreakMs,
-      );
-      const pointCount = data.filter((p) => 'value' in p).length;
-      if (pointCount < 2) return;
-      const options: DeepPartial<LineSeriesOptions> = {
-        ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
-        priceFormat: createChartPriceFormat(priceUnit),
-      };
-      const series = chart.addSeries(LineSeries, options);
-      series.setData(data);
-      swingSeriesRefs.current.push(series);
-      swingSeriesSnapshotsRef.current.push({ options, data });
-    };
-
-    if (segmentMode === 'perLeg') {
-      for (const leg of swingOverlay.legs) {
-        const segment = buildLegSegment(
-          leg,
-          metric,
-          toValue,
-          groupMode,
-          sortedTrades,
-          swingOverlay.perLegFullSpanEnd ?? false,
-        );
-        if (!segment) continue;
-        const options: DeepPartial<LineSeriesOptions> = {
-          ...SWING_HIGH_OVERLAY_SERIES_OPTIONS,
-          color: segment.color,
-          priceFormat: createChartPriceFormat(priceUnit),
-        };
-        const series = chart.addSeries(LineSeries, options);
-        series.setData(segment.data);
-        swingSeriesRefs.current.push(series);
-        swingSeriesLegRef.current.set(series, leg);
-        swingSeriesSnapshotsRef.current.push({ options, data: segment.data, leg });
-      }
-    } else if (segmentMode === 'connectedSequential') {
-      const chains = groupSequentialLegChains(
-        swingOverlay.legs,
-        swingOverlay.allLegs ?? swingOverlay.legs,
-      );
-      for (const chain of chains) {
-        addConnectedPath(chain);
-      }
-    } else {
-      addConnectedPath(swingOverlay.legs);
-    }
-
-    if (savedViewport) {
-      isRestoringViewportRef.current = true;
-      reapplyChartViewport(chart.timeScale(), savedViewport, 'logical');
-      requestAnimationFrame(() => {
-        isRestoringViewportRef.current = false;
-      });
-    }
-
-    return () => {
-      if (!chartRef.current) return;
-      for (const series of swingSeriesRefs.current) {
-        try {
-          chartRef.current.removeSeries(series);
-        } catch {
-          /* chart may already be removed */
-        }
-      }
-      swingSeriesRefs.current = [];
-    };
-  }, [
-    showSwingOverlay,
-    swingOverlay,
-    metric,
-    toValue,
-    groupMode,
-    sortedTrades,
-    showChart,
-    style,
-    priceUnit,
-    snapshotVisibleViewport,
-  ]);
-
   if (!id) {
     return (
       <Placeholder
@@ -1996,11 +1565,6 @@ export function TokenPriceChart({
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
         trimEmptyBars={trimEmptyBars}
-        swingOverlayAvailable={swingOverlayAvailable}
-        showSwingOverlay={showSwingOverlay}
-        connectSwings={connectSwings}
-        chainHighlightAvailable={chainHighlightAvailable}
-        showChainHighlight={showChainHighlight}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         isMigrated={isMigrated}
@@ -2015,33 +1579,15 @@ export function TokenPriceChart({
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}
-        onShowSwingOverlayChange={setShowSwingOverlay}
-        onConnectSwingsChange={setConnectSwings}
-        onShowChainHighlightChange={setShowChainHighlight}
         onRangeSelectModeChange={setRangeSelectMode}
       />
       <div className="relative" style={{ height, width: '100%' }}>
         <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
-        {barTooltip && !swingTooltip && (
+        {barTooltip && (
           <BarCrosshairTooltip
             tooltip={barTooltip}
             formatVol={formatVol}
             formatTime={formatBarTime}
-          />
-        )}
-        {swingTooltip && showSwingOverlay && (
-          <SwingCrosshairTooltip
-            tooltip={swingTooltip}
-            formatPrice={formatSwingPrice}
-            formatAmount={formatVol}
-          />
-        )}
-        {chainTooltip && (
-          <ChainHighlightTooltip
-            tooltip={chainTooltip}
-            tradeCounts={chainTradeCounts}
-            formatAmount={formatVol}
-            formatPrice={formatSwingPrice}
           />
         )}
         {walletMarkersTooltip && (
@@ -2051,7 +1597,7 @@ export function TokenPriceChart({
           <RangeSelectTooltip
             tooltip={rangeTooltip}
             formatAmount={formatVol}
-            formatPrice={formatSwingPrice}
+            formatPrice={formatChartValuePrice}
           />
         )}
       </div>

@@ -9,7 +9,6 @@ import {
   createChartPriceFormatter,
 } from './constants';
 import { BarCrosshairFields } from './BarCrosshairFields';
-import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { cn } from 'lib/cn';
 import type { ChartMetric, ChartStyle, ChartToolbarProps } from './types';
@@ -48,31 +47,6 @@ function StatusBadge({ label, color }: { label: string; color: string }) {
   );
 }
 
-/** Zigzag path through swing pivots; line omitted when legs are not connected. */
-function ConnectSwingsIcon({ connected }: { connected: boolean }) {
-  const nodes = [
-    { cx: 4, cy: 14 },
-    { cx: 10, cy: 5 },
-    { cx: 16, cy: 11 },
-  ];
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
-      {connected ? (
-        <path
-          d="M4 14 10 5 16 11"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      ) : null}
-      {nodes.map(({ cx, cy }) => (
-        <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="2" fill="currentColor" />
-      ))}
-    </svg>
-  );
-}
-
 /** Brackets around a dashed span — drag-to-select a time range. */
 function RangeSelectIcon() {
   return (
@@ -91,16 +65,6 @@ function RangeSelectIcon() {
         strokeLinecap="round"
         strokeDasharray="1.5 2"
       />
-    </svg>
-  );
-}
-
-/** Two interlocking links — the longest-chain highlight band. */
-function ChainLinkIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
-      <rect x="2.25" y="7" width="9" height="6" rx="3" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="8.75" y="7" width="9" height="6" rx="3" stroke="currentColor" strokeWidth="1.5" />
     </svg>
   );
 }
@@ -285,11 +249,6 @@ export function ChartToolbar({
   athLineAvailable,
   showMigrationLine,
   trimEmptyBars,
-  swingOverlayAvailable,
-  showSwingOverlay,
-  connectSwings,
-  chainHighlightAvailable,
-  showChainHighlight,
   rangeSelectMode,
   crosshair,
   isMigrated,
@@ -304,9 +263,6 @@ export function ChartToolbar({
   onShowAthLineChange,
   onShowMigrationLineChange,
   onTrimEmptyBarsChange,
-  onShowSwingOverlayChange,
-  onConnectSwingsChange,
-  onShowChainHighlightChange,
   onRangeSelectModeChange,
 }: ChartToolbarProps) {
   const [showMore, setShowMore] = useState(false);
@@ -333,8 +289,6 @@ export function ChartToolbar({
     trimEmptyBars ||
     showAthLine ||
     showMigrationLine ||
-    showSwingOverlay ||
-    showChainHighlight ||
     rangeSelectMode;
 
   return (
@@ -578,82 +532,6 @@ export function ChartToolbar({
                 Migration
               </span>
             </label>
-
-            <div
-              className={cn(
-                'flex items-center gap-0.5 rounded-md py-1 pl-2 pr-1 text-[11px] font-semibold',
-                !swingOverlayAvailable && 'cursor-not-allowed opacity-40',
-              )}
-              style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
-            >
-              <label
-                className={cn(
-                  'flex cursor-pointer items-center gap-1.5',
-                  !swingOverlayAvailable && 'cursor-not-allowed',
-                )}
-                title={
-                  swingOverlayAvailable
-                    ? 'Show swing detection path on chart'
-                    : 'Run swing detection to overlay results'
-                }
-              >
-                <Checkbox
-                  boxSize="sm"
-                  checked={showSwingOverlay}
-                  disabled={!swingOverlayAvailable}
-                  onChange={(e) => onShowSwingOverlayChange(e.target.checked)}
-                  className="accent-[#e879f9]"
-                />
-                <span
-                  style={
-                    showSwingOverlay && swingOverlayAvailable
-                      ? { color: CHART_COLORS.swingOverlay }
-                      : undefined
-                  }
-                >
-                  Swings
-                </span>
-              </label>
-              <Button
-                variant="subtle"
-                size="xs"
-                active={connectSwings}
-                disabled={!swingOverlayAvailable || !showSwingOverlay}
-                className="!min-h-0 shrink-0 border-0 bg-transparent px-1.5 py-0.5 normal-case tracking-normal hover:bg-white/6"
-                title={
-                  swingOverlayAvailable
-                    ? connectSwings
-                      ? 'Disconnect swing legs on chart'
-                      : 'Connect sequential swing legs on chart'
-                    : 'Run swing detection to connect swings'
-                }
-                aria-label={
-                  swingOverlayAvailable
-                    ? connectSwings
-                      ? 'Disconnect swing legs on chart'
-                      : 'Connect sequential swing legs on chart'
-                    : 'Run swing detection to connect swings'
-                }
-                onClick={() => onConnectSwingsChange(!connectSwings)}
-              >
-                <ConnectSwingsIcon connected={connectSwings} />
-              </Button>
-            </div>
-
-            <IconToggleButton
-              active={showChainHighlight}
-              disabled={!chainHighlightAvailable}
-              activeColor={CHART_COLORS.chainBandLabelBg}
-              onClick={() => onShowChainHighlightChange(!showChainHighlight)}
-              label="Toggle longest chain highlight"
-              tooltip={
-                chainHighlightAvailable
-                  ? 'Longest chain highlight'
-                  : 'Run swing detection to highlight the longest chain'
-              }
-            >
-              <ChainLinkIcon />
-            </IconToggleButton>
 
             <IconToggleButton
               active={rangeSelectMode}

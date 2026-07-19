@@ -1,4 +1,3 @@
-import type { ChartSwingLeg } from 'components/token-price-chart';
 import type { RunSummary } from 'lib/strategy/runSummary';
 
 export type { RunMetrics, RunSummary } from 'lib/strategy/runSummary';
@@ -238,9 +237,6 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   updated_at: string;
   // Token enrichment fields (populated by the batch endpoint) come from
   // `TokenEnrichmentFields`; only the record-specific extras stay here.
-  /** Swing1-only: legs harvested from the live exit memo at close. `null`/absent
-   *  for tpsl1/tpsl2 positions and for still-open swing1 positions. */
-  swing_legs?: ChartSwingLeg[] | null;
 }
 
 /** Rule context snapshot bundled with every `tpsl_positions_changed` SSE event
@@ -378,11 +374,6 @@ export interface SimulatedTokenResult extends TokenEnrichmentFields {
   pnl_percent: number | null;
   pnl_sol: number | null;
   exit_reason: string;
-  /** swing1-only: the exact leg ledger the sim resolved this row's entry/exit
-   *  against, carried by the single-rule backtest so the inspect chart draws them
-   *  with no separate `swing1-detect` round-trip. Absent for tpsl1/tpsl2 and for
-   *  live-position rows (whose legs, if any, come from the exit memo). */
-  swing_legs?: ChartSwingLeg[] | null;
   // Token enrichment fields come from `TokenEnrichmentFields` (the backend bakes
   // them in once per backtest run via `lab::strategies::token_enrich`); only
   // `created_at`, which the base leaves to row-owners, stays here.
@@ -495,20 +486,12 @@ export interface SimulationFinishedEvent {
   cancelled: boolean;
 }
 
-/** Payload of the `swing_detection_finished` SSE event: the "Swing Detection All"
- *  run for `run_id` ended (`cancelled` = user abort vs normal finish/error). */
-export interface SwingDetectionFinishedEvent {
-  run_id: string;
-  cancelled: boolean;
-}
-
 /** Response of `GET /api/jobs/status` — a snapshot of every running background
  *  job, used to recover the progress UI after a page load/refresh (SSE only
  *  delivers future frames). `sweep` is present iff the single-flight sweep runs. */
 export interface JobsStatus {
   sweep: { processed: number; total: number } | null;
   simulations: { rule_id: string; processed: number; total: number }[];
-  swings: { run_id: string; processed: number; total: number }[];
 }
 
 /** The live (real) strategy managing a held mint — the Holdings bot badge and the
@@ -746,71 +729,6 @@ export interface TradeRecord {
   real_token_reserves?: number | null;
   /** Trading venue: 'curve' (bonding curve) or 'amm' (post-migration PumpSwap). */
   venue?: 'curve' | 'amm';
-}
-
-export interface SwingParams {
-  high_to_low_threshold_sol: number;
-  high_to_low_threshold_pct: number;
-  low_to_high_threshold_sol: number;
-  low_to_high_threshold_pct: number;
-  min_leg_trades: number;
-  min_leg_duration_ms: number;
-  min_leg_volume: number;
-  min_leg_net_flow: number;
-  max_leg_trades: number;
-  max_leg_duration_ms: number;
-  max_leg_volume: number;
-  max_leg_net_flow: number;
-  // Per-leg-type delta % and net-flow-per-second bounds (0 = no bound).
-  swing_high_min_delta_pct: number;
-  swing_high_max_delta_pct: number;
-  swing_high_min_net_flow_per_sec: number;
-  swing_high_max_net_flow_per_sec: number;
-  swing_low_min_delta_pct: number;
-  swing_low_max_delta_pct: number;
-  swing_low_min_net_flow_per_sec: number;
-  swing_low_max_net_flow_per_sec: number;
-  /** "Big tx" threshold (SOL); 0 = disabled. A single tx >= this confirms a
-   *  reversal on its own and anchors a leg's terminal pivot to the last such tx. */
-  big_tx_sol: number;
-}
-
-export type SwingLegType = 'swing_high' | 'swing_low';
-
-export interface SwingLegRecord {
-  type: SwingLegType;
-  start_at: number;
-  end_at: number;
-  duration_ms: number;
-  start_price: number;
-  end_price: number;
-  /** Terminal pivot for charting: last big same-side tx (or price extreme fallback).
-   *  Optional for backward compatibility with cached/old responses. */
-  pivot_end_at?: number;
-  pivot_end_price?: number;
-  inflow: number;
-  outflow: number;
-  net_flow: number;
-  trade_count: number;
-}
-
-export interface SwingDetectionResult {
-  mint_address: string;
-  params: SwingParams;
-  count: number;
-  swings: SwingLegRecord[];
-}
-
-/** One token's swing ledger inside a batch (multi-token) detection response. */
-export interface SwingBatchEntry {
-  mint_address: string;
-  count: number;
-  swings: SwingLegRecord[];
-}
-
-export interface SwingBatchResponse {
-  params: SwingParams;
-  results: SwingBatchEntry[];
 }
 
 export type ProfileType = 'mine' | 'trader' | 'whale' | 'dev';

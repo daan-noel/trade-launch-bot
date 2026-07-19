@@ -87,10 +87,6 @@ export const CHART_COLORS = {
    *  distinct from the candle up/down greens & reds so they pop at a glance. */
   entry: '#02c076',
   exit: '#f6465d',
-  swingOverlay: '#e879f9',
-  /** Swing path segments — distinct from candle up/down greens and reds */
-  swingHigh: '#0eb5ff',
-  swingLow: '#e879f9',
   /** Selected OHLC bar / line point */
   barSelected: '#fddc3b',
   /** Fixed marker color for the user's own ("mine") tracked wallet — bypasses the
@@ -101,11 +97,6 @@ export const CHART_COLORS = {
    *  Analysis input wallet). Gold, distinct from `mine` so a wallet can be both
    *  the focus AND one of yours without the two signals colliding. */
   highlightRing: '#fde047',
-  /** Longest swing-chain highlight band (amber wash + solid label chip) */
-  chainBandFill: 'rgba(250, 204, 21, 0.12)',
-  chainBandBorder: 'rgba(250, 204, 21, 0.6)',
-  chainBandLabelBg: 'rgba(250, 204, 21, 0.92)',
-  chainBandLabelText: '#1a1a1a',
   /** User-drawn range selection band (teal wash + solid label chip) */
   rangeBandFill: 'rgba(19, 206, 175, 0.12)',
   rangeBandBorder: 'rgba(19, 206, 175, 0.7)',
@@ -123,23 +114,6 @@ export const CHART_OHLC_COLORS = {
   volume: '#fb923c',
   liquidity: '#5dade2',
 } as const;
-
-const SWING_OVERLAY_SERIES_BASE: DeepPartial<LineSeriesOptions> = {
-  lineWidth: 3,
-  crosshairMarkerVisible: false,
-  priceLineVisible: false,
-  lastValueVisible: false,
-};
-
-export const SWING_HIGH_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
-  ...SWING_OVERLAY_SERIES_BASE,
-  color: CHART_COLORS.swingHigh,
-};
-
-export const SWING_LOW_OVERLAY_SERIES_OPTIONS: DeepPartial<LineSeriesOptions> = {
-  ...SWING_OVERLAY_SERIES_BASE,
-  color: CHART_COLORS.swingLow,
-};
 
 /** Pump.fun bonding-curve initial reserves (SOL and raw token units). */
 export const PUMP_INITIAL_VIRTUAL_SOL = 30;

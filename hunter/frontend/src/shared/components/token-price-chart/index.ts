@@ -5,9 +5,6 @@ export type {
   ChartMetric,
   ChartBarSelection,
   ChartEventMarker,
-  ChartSwingLeg,
-  ChartSwingOverlay,
-  ChartChainHighlight,
   ChartRangeSelectionDetail,
   ChartVisibleTimeRange,
 } from './types';

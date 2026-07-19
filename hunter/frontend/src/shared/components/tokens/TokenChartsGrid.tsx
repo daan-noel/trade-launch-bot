@@ -1,15 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useGetTokenDetailQuery } from 'store/sharedEndpoints';
 import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
-import type { ChartEventMarker, ChartSwingOverlay } from 'components/token-price-chart';
+import type { ChartEventMarker } from 'components/token-price-chart';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 
-/** Per-row chart overlay — the entry/exit markers and/or swing-detection legs a
- *  caller wants drawn on that row's inline chart, matching what its inspect modal
- *  shows. */
+/** Per-row chart overlay — the entry/exit markers a caller wants drawn on that
+ *  row's inline chart, matching what its inspect modal shows. */
 export interface RowChartOverlay {
   eventMarkers?: ChartEventMarker[] | null;
-  swingOverlay?: ChartSwingOverlay | null;
 }
 
 /**
@@ -98,7 +96,7 @@ function TokenChartCard<R>({
 }: TokenChartCardProps<R>) {
   const { data: detail } = useGetTokenDetailQuery(mint, { skip: !mint });
   const heading = title ?? detail?.symbol ?? detail?.name ?? mint.slice(0, 6);
-  const { eventMarkers, swingOverlay } = useOverlay(row, mint);
+  const { eventMarkers } = useOverlay(row, mint);
 
   return (
     <div className="rounded-lg border border-white/8 bg-bg-card/40 p-4">
@@ -117,7 +115,6 @@ function TokenChartCard<R>({
         key={mint}
         detail={detail ?? null}
         eventMarkers={eventMarkers ?? null}
-        swingOverlay={swingOverlay ?? null}
         highlightWallet={highlightWallet ?? null}
         tableId={chartTableId}
       />
