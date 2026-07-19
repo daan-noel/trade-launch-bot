@@ -496,7 +496,7 @@ pub fn run_grouped_with_refine<S: Strategy>(
 }
 
 /// The `k` best combo ids in a group's ranked metrics — ranked exactly as
-/// [`best_combo`] ranks (robust `score`, then fired count, then total PnL), among
+/// [`best_combo`] ranks (robust `score`, then fired count, then marked PnL), among
 /// combos that fired at least once. The coarse→refine driver seeds each group's
 /// neighborhood from these. Fewer than `k` are returned if fewer combos fired.
 pub fn top_combo_ids(metrics: &[ComboMetrics], k: usize) -> Vec<u32> {
@@ -804,7 +804,8 @@ fn make_group_result(
 /// Best combo = max robust **realized** `score` (`μ−Z·σ/√n` over closed trades)
 /// among combos clearing the [`CoverageFloor`] — the same metric the drill-in
 /// table sorts by, so the crowned combo *is* row 1 of its own table. Ties break
-/// by fired count, then total PnL. Returns `(combo_id, score, expectancy_sol)`.
+/// by fired count, then [`marked_pnl_sol`] (realized + open — see there for why
+/// `score` itself stays realized-only). Returns `(combo_id, score, expectancy_sol)`.
 ///
 /// If no combo clears the floor, fall back to the most-fired combo (a low-
 /// confidence pick — logged) so the group still surfaces something. `(0, None,
@@ -832,7 +833,7 @@ fn best_combo(
             a.n_fired
                 .cmp(&b.n_fired)
                 .then_with(|| score_cmp(a.score, b.score))
-                .then_with(|| a.total_pnl_sol.partial_cmp(&b.total_pnl_sol).unwrap_or(Equal))
+                .then_with(|| pnl_cmp(a, b))
         });
     match fallback {
         Some(m) => {
@@ -852,11 +853,32 @@ fn best_combo(
 
 /// Rank two floor-clearing combos: higher robust `score` first (an absent score
 /// — fewer than 2 closed trades — sorts as worst), then more fired tokens, then
-/// higher total PnL.
+/// higher [`marked_pnl_sol`].
 fn rank_combo(a: &ComboMetrics, b: &ComboMetrics) -> Ordering {
     score_cmp(a.score, b.score)
         .then_with(|| a.n_fired.cmp(&b.n_fired))
-        .then_with(|| a.total_pnl_sol.partial_cmp(&b.total_pnl_sol).unwrap_or(Equal))
+        .then_with(|| pnl_cmp(a, b))
+}
+
+/// A combo's PnL **including** the mark on positions still open at the run's
+/// `as_of` — realized `total_pnl_sol` plus unrealized `open_pnl_sol`.
+///
+/// Ranking on realized-only let a combo bank a small closed profit while sitting
+/// on a large unrealized loss and outrank one that had already taken the same
+/// loss, which is a bookkeeping artifact rather than a real edge.
+///
+/// **`score` deliberately stays realized-only.** It is `μ−Z·σ/√n` over *closed*
+/// trades — a confidence-discounted per-trade statistic — and an open mark is a
+/// single point-in-time valuation with no trade distribution to contribute to it.
+/// Folding it in would inflate `n` with a non-observation. So this only moves the
+/// PnL tie-break (and the sub-floor fallback), not the primary key.
+fn marked_pnl_sol(m: &ComboMetrics) -> f64 {
+    m.total_pnl_sol + m.open_pnl_sol
+}
+
+/// Compare two combos by [`marked_pnl_sol`], higher = better.
+fn pnl_cmp(a: &ComboMetrics, b: &ComboMetrics) -> Ordering {
+    marked_pnl_sol(a).partial_cmp(&marked_pnl_sol(b)).unwrap_or(Equal)
 }
 
 /// Order two optional scores, higher = better, with `None` (no realized
@@ -1128,6 +1150,36 @@ mod tests {
         let floor = CoverageFloor { min_fired_abs: 10, fire_frac: 0.0 };
         let (id, _, _) = best_combo(&metrics, 100, floor);
         assert_eq!(id, 1, "most-fired fallback");
+    }
+
+    #[test]
+    fn pnl_tiebreak_counts_open_positions() {
+        // Same score and fire count, so the PnL tie-break decides. Combo 0 banked
+        // more realized PnL but is sitting on a big unrealized loss; combo 1's
+        // marked PnL is higher. Ranking realized-only would crown 0.
+        let metrics = vec![
+            ComboMetrics { combo_id: 0, n_fired: 50, score: Some(1.0),
+                total_pnl_sol: 5.0, open_pnl_sol: -20.0, ..base_metrics() },
+            ComboMetrics { combo_id: 1, n_fired: 50, score: Some(1.0),
+                total_pnl_sol: 2.0, open_pnl_sol: 0.0, ..base_metrics() },
+        ];
+        assert!(marked_pnl_sol(&metrics[0]) < marked_pnl_sol(&metrics[1]));
+        let (id, _, _) = best_combo(&metrics, 100, CoverageFloor::default());
+        assert_eq!(id, 1, "open loss must drag the marked PnL below the smaller realized win");
+    }
+
+    #[test]
+    fn score_still_outranks_marked_pnl() {
+        // The open mark only moves the tie-break: a better robust score wins even
+        // when the loser's marked PnL is far larger.
+        let metrics = vec![
+            ComboMetrics { combo_id: 0, n_fired: 50, score: Some(1.0),
+                total_pnl_sol: 0.0, open_pnl_sol: 999.0, ..base_metrics() },
+            ComboMetrics { combo_id: 1, n_fired: 50, score: Some(4.0),
+                total_pnl_sol: 1.0, open_pnl_sol: 0.0, ..base_metrics() },
+        ];
+        let (id, _, _) = best_combo(&metrics, 100, CoverageFloor::default());
+        assert_eq!(id, 1, "score stays the primary key");
     }
 
     #[test]

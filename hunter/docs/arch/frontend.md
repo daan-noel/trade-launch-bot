@@ -1,7 +1,7 @@
 # Frontend — `frontend-react/` (React SPA, **two apps over a shared core**)
 
 Stack: React 19 + TS + Vite, RTK Query + Redux Toolkit, React Router 7, Tailwind 4, lightweight-charts.
-Deep-dive detail: `@plans/frontend/frontend-patterns.md`, `@plans/modes/frontend-split-plan.md` (the split itself), `@plans/token-analysis/*`.
+Deep-dive detail: `@plans/frontend/frontend-patterns.md`, `@plans/token-analysis/*`.
 
 ## Split model (mirrors the backend two-bin split)
 

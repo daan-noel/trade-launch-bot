@@ -8,7 +8,7 @@ Backtesting is strategy-agnostic — the sweep engine only sees `Strategy`/`Para
 ## Unified core domain — `trading_core::strategies` (Phase 2)
 
 The strategy domain is unified behind one enum-dispatched registry in
-`trading_core` (live-lab remake — see [live-lab-remake-plan.md](../live-lab-remake-plan.md)).
+`trading_core` (live-lab remake).
 The decision logic in `tpsl_sniper_1`/`tpsl_sniper_2` is **unchanged** (still intentional clones); the
 new modules only route by `strategy_id` and parse params once, so they run the identical code path
 (exact parity). **Phase 3 rewired the live edge onto these** — the `live` bin now drives one

@@ -1124,9 +1124,9 @@ pub fn simulate_one_combo(
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
         "generic" => simulate_generic_one_combo(tokens, params_json, buy_amount_sol, as_of),
-        "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json, buy_amount_sol),
-        "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json, buy_amount_sol),
-        "swing_1" => simulate_swing1_one_combo(tokens, params_json, buy_amount_sol),
+        "tpsl2" => simulate_tpsl2_one_combo(tokens, params_json, buy_amount_sol, as_of),
+        "tpsl1" => simulate_tpsl1_one_combo(tokens, params_json, buy_amount_sol, as_of),
+        "swing_1" => simulate_swing1_one_combo(tokens, params_json, buy_amount_sol, as_of),
         other => bail!(
             "strategy '{other}' has no single-combo simulation (supported: {:?})",
             strategy_ids()
@@ -1234,12 +1234,13 @@ fn simulate_tpsl2_one_combo(
     tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
+    as_of: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<ComboTokenResult>> {
-    // Same death-close "present" contract as the grouped sweep: judge against run
-    // time (matching live). For the sealed lake this resolves the same Dead/Open
-    // verdict a sweep did, so the drill-in stays PnL-consistent with the stored row.
-    let strategy = Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(buy_amount_sol))
-        .with_as_of(chrono::Utc::now());
+    // Same death-close "present" contract as the grouped sweep: judge against the
+    // **run's** time, not wall-clock, so the drill-in stays PnL-consistent with the
+    // stored row however long after the run it is opened (parity plan B7).
+    let strategy =
+        Tpsl2Strategy::for_replay(sweep_base_rule_tpsl2(buy_amount_sol)).with_as_of(as_of);
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;
@@ -1281,9 +1282,11 @@ fn simulate_tpsl1_one_combo(
     tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
+    as_of: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<ComboTokenResult>> {
-    let strategy = Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1(buy_amount_sol))
-        .with_as_of(chrono::Utc::now());
+    // Run-time `as_of`, not wall-clock — see `simulate_tpsl2_one_combo`.
+    let strategy =
+        Tpsl1Strategy::for_replay(sweep_base_rule_tpsl1(buy_amount_sol)).with_as_of(as_of);
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;
@@ -1325,9 +1328,11 @@ fn simulate_swing1_one_combo(
     tokens: &[CorpusToken],
     params_json: &Value,
     buy_amount_sol: f64,
+    as_of: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<ComboTokenResult>> {
-    let strategy = Swing1Strategy::for_replay(sweep_base_rule_swing1(buy_amount_sol))
-        .with_as_of(chrono::Utc::now());
+    // Run-time `as_of`, not wall-clock — see `simulate_tpsl2_one_combo`.
+    let strategy =
+        Swing1Strategy::for_replay(sweep_base_rule_swing1(buy_amount_sol)).with_as_of(as_of);
     let combo = strategy.combo_from_params_json(params_json)?;
     let params = std::slice::from_ref(&combo);
     let noop = Noop;
