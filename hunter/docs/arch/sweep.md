@@ -15,6 +15,22 @@ Two sweep shapes:
 
 Decision parity: a strategy's `simulate` calls the same pure fns the live path uses.
 
+## The sweep is an approximate ranking tool (deliberate)
+
+**The sweep ranks candidates; `simulate` is the authority on any single combo's PnL.**
+Several divergences from `simulate`/live are intentional trades of fidelity for speed —
+they are listed here so a future session does not "fix" them:
+
+| Divergence | Why it exists |
+| --- | --- |
+| **Tail-cap asymmetry.** Sweep caps a token's series at `last_trade + DEAD_QUIET + TAIL_MARGIN`; replay caps at the corpus-wide last trade. A quiet-but-liquid token therefore reads `Open` in sweep and closed `Metrics` in simulate. | Per-token tails keep the series short; a corpus-wide horizon would extend every token to the newest trade in the run |
+| **Concurrency caps stripped.** Sweep runs `max_concurrent_tokens: u32::MAX`, so `n_fired` / `total_pnl_sol` are **upper bounds** vs. what a live rule under its own caps would achieve. | Caps make token outcomes order-dependent, which would serialize the rayon token fan-out |
+| **Sketched quantiles.** Persisted quantiles come from a 64-bucket DDSketch (~15% rel. error); `simulate` and the sweep drill-in compute exact ones. **Ranking is unaffected** — `score` is exact. | O(1) memory per combo; exact quantiles would need every per-token value retained |
+| **`pnl_percent` is not notional-invariant.** `fixed_cost_sol_per_leg` does not scale with trade size, so PnL% is only comparable across runs at the *same* `buy_amount_sol`. | The notional *chain* itself is consistent; this is the residual of a fixed per-leg cost, not a bug |
+
+Ranked full list of sweep↔simulate divergences, including the not-yet-accepted ones:
+[../plans/sweep/sim-parity.md](../plans/sweep/sim-parity.md).
+
 ## `backend/src/sweep/` (generic)
 
 | File | Owns |

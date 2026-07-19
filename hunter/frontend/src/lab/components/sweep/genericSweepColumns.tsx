@@ -39,6 +39,15 @@ function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   );
 }
 
+/** Persisted sweep quantiles come from a 64-bucket DDSketch (~15% rel. error) — the
+ *  sweep is an approximate *ranking* tool. Ranking itself is unaffected (`score` is
+ *  exact); only the displayed value is sketched. Single-sourced so every sketched
+ *  column says the same thing, and prefixed `≈` so the gap is visible without hover.
+ *  See docs/plans/sweep/sim-parity.md (D3). */
+const SKETCHED_QUANTILE_TOOLTIP =
+  'Approximate (~15%): sketched from a 64-bucket DDSketch, not computed exactly. ' +
+  'Ranking is unaffected — open the combo drill-in or Simulate for an exact median.';
+
 /** The nested `params` blob a generic combo / group carries. */
 interface RuleParamsJson {
   take_profit?: number | null;
@@ -204,7 +213,14 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
       (r) => tone(r.profit_factor == null ? '∞' : r.profit_factor.toFixed(2), goodBad(r.profit_factor ?? 10, 1)),
       { tooltip: 'Gross wins ÷ gross losses' },
     ),
-    metric('median_pnl_pct', 'Median %', 'pnl', (r) => r.median_pnl_pct, (r) => tone(pctText(r.median_pnl_pct), goodBad(r.median_pnl_pct))),
+    metric(
+      'median_pnl_pct',
+      '≈ Median %',
+      'pnl',
+      (r) => r.median_pnl_pct,
+      (r) => tone(pctText(r.median_pnl_pct), goodBad(r.median_pnl_pct)),
+      { tooltip: SKETCHED_QUANTILE_TOOLTIP },
+    ),
     metric('mean_pnl_pct', 'Mean %', 'pnl', (r) => r.mean_pnl_pct, (r) => tone(pctText(r.mean_pnl_pct), goodBad(r.mean_pnl_pct)), { defaultVisible: false }),
     metric('avg_holding_secs', 'Avg hold', 'holding', (r) => r.avg_holding_secs, (r) => tone(fmtSecs(r.avg_holding_secs), 'text-accent')),
     count('n_exit_take_profit', 'TP', 'text-green', (r) => r.n_exit_take_profit, { tooltip: 'Exited on take-profit' }),
@@ -365,7 +381,14 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
     gm('best_profit_factor', 'Profit factor', 'pnl', (g) => g.best_profit_factor ?? Number.POSITIVE_INFINITY, (g) =>
       tone(g.best_profit_factor == null ? '∞' : g.best_profit_factor.toFixed(2), goodBad(g.best_profit_factor ?? 10, 1)),
     ),
-    gm('best_median_pnl_pct', 'Median %', 'pnl', (g) => g.best_median_pnl_pct, (g) => tone(pctText(g.best_median_pnl_pct), goodBad(g.best_median_pnl_pct))),
+    gm(
+      'best_median_pnl_pct',
+      '≈ Median %',
+      'pnl',
+      (g) => g.best_median_pnl_pct,
+      (g) => tone(pctText(g.best_median_pnl_pct), goodBad(g.best_median_pnl_pct)),
+      { tooltip: SKETCHED_QUANTILE_TOOLTIP },
+    ),
     gm('best_avg_holding_secs', 'Avg hold', 'holding', (g) => g.best_avg_holding_secs, (g) => tone(fmtSecs(g.best_avg_holding_secs), 'text-accent')),
     {
       key: 'best_params',
