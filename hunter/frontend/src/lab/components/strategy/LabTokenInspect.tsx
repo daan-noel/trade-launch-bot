@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
-import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import type { TokenDetailRecord } from 'types';
 import { MetricPanes, type MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
@@ -62,7 +62,7 @@ export function LabTokenInspect({
       {showDetailPanel && (
         <TokenDetailPanel detail={detail} loading={loading} error={error} />
       )}
-      <TokenTradeChart
+      <LazyTokenTradeChart
         tableId={tableId}
         detail={detail}
         eventMarkers={eventMarkers}

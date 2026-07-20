@@ -79,6 +79,15 @@ Provides SOL/USD toggle + current SOL price. Listens to `sol_price` SSE events.
 
 Cells that only need `unit` (to format labels) import `PriceUnitActionsContext`. Cells that display live USD values import `PriceUnitStateContext`. This prevents label-only cells from re-rendering on every 60s price tick.
 
+## Route Suspense + chart code-split
+
+- **Suspense boundary:** `AppLayout` wraps only `<Outlet />` (not the whole `Routes` tree).
+  Lazy route chunks show `SuspenseFallback` (`Loading…`) in the main pane; header/nav stay mounted.
+- **`lightweight-charts` deferral:** never static-import `TokenTradeChart` / inspect modals from a
+  route or from `TokenTable`. Use `LazyTokenTradeChart`, `LazyLabTokenInspect(Modal)`, and
+  `TokenTable`'s dynamic `TokenChartsGrid` import (Charts toggle). Creation-stats trend charts
+  are lazy inside the page/section so the control shell paints first.
+
 ## BackgroundJobsContext — `context/BackgroundJobsContext.tsx`
 
 App-wide registry for long-running jobs (sweep runs, simulation, swing-detection-all). Two split contexts (same pattern as PriceUnitContext):

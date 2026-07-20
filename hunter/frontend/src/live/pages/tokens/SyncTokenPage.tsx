@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { DataTable } from 'components/table/DataTable';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import type { ColumnDef } from 'components/table/types';
-import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { InputSyncStatus } from '@live/components/tokens/InputSyncStatus';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
@@ -586,7 +586,7 @@ export function SyncTokenPage() {
             <TokenDetailPanel detail={selected.token} loading={false} error={null} />
           </div>
 
-          <TokenTradeChart key={selected.token.mint_address} tableId="sync_trades" detail={selected.token} />
+          <LazyTokenTradeChart key={selected.token.mint_address} tableId="sync_trades" detail={selected.token} />
         </>
       )}
     </div>

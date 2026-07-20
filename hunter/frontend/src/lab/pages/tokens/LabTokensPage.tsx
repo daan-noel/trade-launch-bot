@@ -1,5 +1,5 @@
 import { TokensPage } from 'pages/tokens/TokensPage';
-import { LabTokenInspect } from '@lab/components/strategy/LabTokenInspect';
+import { LazyLabTokenInspect } from '@lab/components/strategy/LazyLabTokenInspect';
 
 /**
  * Lab Tokens page — same table as live, but the detail panel mounts chart +
@@ -9,7 +9,7 @@ export function LabTokensPage() {
   return (
     <TokensPage
       renderDetailChart={({ detail }) => (
-        <LabTokenInspect
+        <LazyLabTokenInspect
           detail={detail}
           showDetailPanel={false}
           tableId="token_detail_trades"

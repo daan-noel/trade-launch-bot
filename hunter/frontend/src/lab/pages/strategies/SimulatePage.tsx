@@ -32,7 +32,7 @@ import {
   simColumns,
   SIM_KEYS,
 } from 'components/strategy/strategyColumns';
-import { LabTokenInspectModal } from '@lab/components/strategy/LabTokenInspectModal';
+import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
 import {
   TemporalSummary,
@@ -359,7 +359,7 @@ export function SimulatePage() {
       )}
 
       {inspect && (
-        <LabTokenInspectModal
+        <LazyLabTokenInspectModal
           target={inspect.target}
           titleSuffix="Sim inspect"
           ruleOverride={{

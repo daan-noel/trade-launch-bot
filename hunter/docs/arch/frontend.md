@@ -98,8 +98,12 @@ is **STREAM ON/OFF** (not the header trading kill switch).
   `beforeMain=<NotificationMount/>` (mounts `usePositionNotifications`); lab passes
   `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral (Timezone+PriceUnit+Toast);
   **lab `App` nests `BackgroundJobsProvider` itself** (keeps its SSE out of the live build).
-- **Dashboard split:** shared `DashboardPage` takes `extraSections?(ctx)` render-prop; lab
-  injects `GroupedCreationSection`, so the live build never pulls `getGroupedCreationStats`.
+  **Route Suspense lives inside `AppLayout` around `<Outlet />`** (not around `Routes`) so a
+  lazy page chunk keeps the header/nav mounted; fallback is `SuspenseFallback` (`Loading…`).
+- **Chart code-split:** `lightweight-charts` is not pulled into route/table chunks up front.
+  Call sites use `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)`; `TokenTable`'s Charts
+  toggle dynamically imports `TokenChartsGrid`. Lab Creation Stats owns `GroupedCreationSection`
+  (lab-only page — no live `extraSections` inject).
 
 ## Pages by mode
 
@@ -359,11 +363,6 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 
 ## Known follow-ups (NOT yet done)
 
-- **No enforced boundary:** a few `src/shared/*` files do real value imports from `@lab` (e.g.
-  `dashboard/GroupedCreationSection.tsx` → `labEndpoints`); they stay out of the live bundle only
-  because no live route reaches them (tree-shaking),
-  not because anything forbids it. An ESLint `no-restricted-imports` guard banning `shared/`+`live/`
-  from importing `@lab` would make the seam enforced rather than incidental.
 - **Cosmetic deviation:** shared store core lives in `src/shared/store` but the legacy `store/*`
   alias still resolves there; the `live/services/strategyApi.ts` / `lab/services/labApi.ts`
   file-level split was skipped (tree-shaking over one shared `services/api.ts` achieves the same

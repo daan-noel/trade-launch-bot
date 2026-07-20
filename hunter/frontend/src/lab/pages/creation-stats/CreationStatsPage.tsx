@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { lazy, Suspense, useMemo } from 'react';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
@@ -9,7 +9,7 @@ import { apiErrorMessage } from 'store/apiSlice';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
-import { CreationTrendChart } from 'components/creation-stats/CreationTrendChart';
+import { GroupedCreationSection } from '@lab/components/creation-stats/GroupedCreationSection';
 import {
   METRIC_OPTIONS,
   RANGE_OPTIONS,
@@ -24,12 +24,15 @@ import {
 } from 'components/creation-stats/creationStats';
 import { formatWithCommas } from 'utils/format';
 
-/** Token creation analysis: heatmap + trend. */
-export function CreationStatsPage({
-  extraSections,
-}: {
-  extraSections?: (ctx: { tz: string; segment: CreationSegment }) => ReactNode;
-}) {
+/** Trend chart pulls `lightweight-charts` — keep it out of the route shell. */
+const CreationTrendChart = lazy(() =>
+  import('components/creation-stats/CreationTrendChart').then((m) => ({
+    default: m.CreationTrendChart,
+  })),
+);
+
+/** Token creation analysis: heatmap + trend + grouped (lab) section. */
+export function CreationStatsPage() {
   const { timezone } = useTimezone();
   const [metric, setMetric] = useLocalStorage<CreationMetric>(STORAGE_KEYS.dashboardMetric, 'count');
   const [segment, setSegment] = useLocalStorage<CreationSegment>(STORAGE_KEYS.dashboardSegment, 'all');
@@ -193,16 +196,16 @@ export function CreationStatsPage({
         {trend.isLoading ? (
           <p className="text-text-dim">Loading…</p>
         ) : trend.data && trend.data.points.length > 0 ? (
-          <CreationTrendChart points={trend.data.points} />
+          <Suspense fallback={<p className="text-text-dim">Loading chart…</p>}>
+            <CreationTrendChart points={trend.data.points} />
+          </Suspense>
         ) : (
           <p className="text-text-dim">No tokens created in this window.</p>
         )}
       </section>
 
-      {/* Panel C — per-fingerprint creation activity (lab build only),
-          injected via render-prop so it shares the control bar's
-          window / timezone / segment while staying out of the live bundle. */}
-      {extraSections?.({ tz: timezone, segment })}
+      {/* Panel C — per-fingerprint creation activity (lab-only page). */}
+      <GroupedCreationSection tz={timezone} segment={segment} />
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { FilterPanel } from 'components/tokens/FilterPanel';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
-import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import {
   activeFilterCount,
@@ -419,7 +419,7 @@ export function TokensPage({
               mint: selectedMint,
             })
           ) : (
-            <TokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
+            <LazyTokenTradeChart tableId="token_detail_trades" detail={detail ?? null} />
           )}
         </div>
       )}

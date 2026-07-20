@@ -1,7 +1,8 @@
+import { Suspense, type ReactNode } from 'react';
 import { Outlet } from 'react-router-dom';
-import type { ReactNode } from 'react';
 import { Header } from './Header';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
+import { SuspenseFallback } from 'components/ui/SuspenseFallback';
 import type { NavConfig } from './navTypes';
 
 /**
@@ -13,6 +14,9 @@ import type { NavConfig } from './navTypes';
  *
  * Keeping these as slots (instead of conditionals) means the live build never
  * imports the lab-only footer and vice-versa.
+ *
+ * Suspense wraps only `<Outlet />` so a lazy route chunk keeps the header/nav
+ * mounted (an outer Suspense around `Routes` would blank the whole shell).
  */
 export function AppLayout({
   nav,
@@ -30,9 +34,11 @@ export function AppLayout({
       {beforeMain}
       <Header nav={nav} rightSlot={rightSlot} />
       <main className="flex-1 px-6 py-5 animate-[fade-in-up_0.25s_ease_both]">
-        {/* A page-level throw degrades to a fallback card; the nav above stays live. */}
+        {/* Page throw → fallback card; lazy chunk → Loading…; nav stays live. */}
         <RouteErrorBoundary variant="page">
-          <Outlet />
+          <Suspense fallback={<SuspenseFallback />}>
+            <Outlet />
+          </Suspense>
         </RouteErrorBoundary>
       </main>
       {footer}

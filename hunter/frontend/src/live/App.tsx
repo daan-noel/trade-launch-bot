@@ -1,9 +1,8 @@
-import { lazy, Suspense } from 'react';
+import { lazy } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
-import { SuspenseFallback } from 'components/ui/SuspenseFallback';
 import { LiveModeControl } from '@live/components/LiveModeControl';
 import { RunningTasksIndicator } from '@live/components/RunningTasksIndicator';
 import { usePositionNotifications } from '@live/hooks/usePositionNotifications';
@@ -41,36 +40,34 @@ export default function App() {
     <BrowserRouter>
       <AppProviders>
         <RouteErrorBoundary variant="root">
-          <Suspense fallback={<SuspenseFallback />}>
-            <Routes>
-              <Route
-                element={
-                  <AppLayout
-                    nav={liveNav}
-                    rightSlot={<LiveModeControl />}
-                    beforeMain={<NotificationMount />}
-                    footer={<RunningTasksIndicator />}
-                  />
-                }
-              >
-                <Route index element={<HomePage />} />
-                <Route path="tokens" element={<TokensPage />} />
-                <Route path="tokens/sync" element={<SyncTokenPage />} />
-                <Route path="token/sync" element={<RedirectPreserve to="/tokens/sync" />} />
-                <Route path="strategies/armed" element={<MonitorPage />} />
-                <Route path="strategies/monitor" element={<RedirectPreserve to="/strategies/armed" />} />
-                <Route path="strategies/rules" element={<RulesPage />} />
-                <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
-                <Route path="positions" element={<LiveTradingPage />} />
-                <Route path="live-trading" element={<RedirectPreserve to="/positions" />} />
-                <Route path="trade" element={<TradePage />} />
-                <Route path="wallet" element={<MyWalletPage />} />
-                <Route path="profiles" element={<ProfilesPage />} />
-                <Route path="settings" element={<SettingsPage />} />
-                <Route path="*" element={<NotFoundPage />} />
-              </Route>
-            </Routes>
-          </Suspense>
+          <Routes>
+            <Route
+              element={
+                <AppLayout
+                  nav={liveNav}
+                  rightSlot={<LiveModeControl />}
+                  beforeMain={<NotificationMount />}
+                  footer={<RunningTasksIndicator />}
+                />
+              }
+            >
+              <Route index element={<HomePage />} />
+              <Route path="tokens" element={<TokensPage />} />
+              <Route path="tokens/sync" element={<SyncTokenPage />} />
+              <Route path="token/sync" element={<RedirectPreserve to="/tokens/sync" />} />
+              <Route path="strategies/armed" element={<MonitorPage />} />
+              <Route path="strategies/monitor" element={<RedirectPreserve to="/strategies/armed" />} />
+              <Route path="strategies/rules" element={<RulesPage />} />
+              <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
+              <Route path="positions" element={<LiveTradingPage />} />
+              <Route path="live-trading" element={<RedirectPreserve to="/positions" />} />
+              <Route path="trade" element={<TradePage />} />
+              <Route path="wallet" element={<MyWalletPage />} />
+              <Route path="profiles" element={<ProfilesPage />} />
+              <Route path="settings" element={<SettingsPage />} />
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Routes>
         </RouteErrorBoundary>
       </AppProviders>
     </BrowserRouter>

@@ -1,4 +1,4 @@
-﻿import { Fragment, useEffect, useMemo, useState } from 'react';
+﻿import { Fragment, lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
@@ -15,7 +15,10 @@ import {
 import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
-import { GroupedCreationTrendChart } from './GroupedCreationTrendChart';
+
+const GroupedCreationTrendChart = lazy(() =>
+  import('./GroupedCreationTrendChart').then((m) => ({ default: m.GroupedCreationTrendChart })),
+);
 import {
   RANGE_OPTIONS,
   bucketOptionsForRange,
@@ -289,11 +292,13 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           </div>
 
           {/* Multi-series calendar trend (when each group is active). */}
-          <GroupedCreationTrendChart
-            points={data?.points ?? []}
-            groups={groups}
-            isolatedGroup={isolatedGroup}
-          />
+          <Suspense fallback={<p className="text-text-dim">Loading chart…</p>}>
+            <GroupedCreationTrendChart
+              points={data?.points ?? []}
+              groups={groups}
+              isolatedGroup={isolatedGroup}
+            />
+          </Suspense>
 
           {/* Small-multiple day×hour heatmaps (recurring active hours per group). */}
           <div className="mt-4 grid gap-3 xl:grid-cols-2">

@@ -9,7 +9,7 @@ import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
-import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { parseSlippageBps } from '@live/lib/slippage';
 import {
@@ -289,7 +289,7 @@ export function TradePage() {
 
           {detail && (
             <div className="mt-3">
-              <TokenTradeChart key={detail.mint_address} tableId="trade_chart" detail={detail} />
+              <LazyTokenTradeChart key={detail.mint_address} tableId="trade_chart" detail={detail} />
             </div>
           )}
         </>

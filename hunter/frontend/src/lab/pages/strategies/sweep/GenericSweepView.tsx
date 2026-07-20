@@ -42,7 +42,7 @@ import { useStreamedSweepResults, COMBO_PAGE_SIZE } from '@lab/hooks/useStreamed
 import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory';
 import { GenericSweepConfigForm, GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigForm';
 import { PromoteRuleModal } from '@lab/components/sweep/PromoteRuleModal';
-import { LabTokenInspectModal } from '@lab/components/strategy/LabTokenInspectModal';
+import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import {
   buildGenericComboColumns,
   buildGenericGroupColumns,
@@ -818,7 +818,7 @@ function ComboTokenResults({
       />
 
       {selectedRow && (
-        <LabTokenInspectModal
+        <LazyLabTokenInspectModal
           target={comboTarget(selectedRow)}
           titleSuffix="Sweep inspect"
           ruleOverride={

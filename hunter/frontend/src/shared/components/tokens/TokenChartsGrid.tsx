@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useGetTokenDetailQuery } from 'store/sharedEndpoints';
-import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import type { ChartEventMarker } from 'components/token-price-chart';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 
@@ -111,7 +111,7 @@ function TokenChartCard<R>({
         />
         {extra}
       </div>
-      <TokenTradeChart
+      <LazyTokenTradeChart
         key={mint}
         detail={detail ?? null}
         eventMarkers={eventMarkers ?? null}

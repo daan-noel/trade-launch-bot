@@ -4,7 +4,8 @@ import type { ColumnDef, SortDir, TableQuery } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { appendedTokenColumns } from './sharedTokenColumns';
 import { MintSetInput } from './MintSetInput';
-import { TokenChartsGrid, type ChartOverlayHook } from './TokenChartsGrid';
+import { LazyTokenChartsGrid } from './LazyTokenChartsGrid';
+import type { ChartOverlayHook } from './TokenChartsGrid';
 import { cn } from 'lib/cn';
 
 /** Persist the charts-grid toggle per `tableId` (localStorage; SSR/test safe). */
@@ -188,7 +189,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
         <ClientTokenTable {...props} mintOf={mintOf} onVisibleRowsChange={childOnVisible} />
       )}
       {showGrid && (
-        <TokenChartsGrid
+        <LazyTokenChartsGrid
           rows={visibleRows}
           titleOf={titleOf}
           highlightWallet={highlightWallet}

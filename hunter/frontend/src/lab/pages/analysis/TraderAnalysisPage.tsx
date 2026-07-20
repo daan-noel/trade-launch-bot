@@ -3,7 +3,7 @@ import type { ColumnDef } from 'components/table/types';
 import { tokenColumns } from 'components/tokens/tokenColumns';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
-import { TokenChartsGrid } from 'components/tokens/TokenChartsGrid';
+import { LazyTokenChartsGrid } from 'components/tokens/LazyTokenChartsGrid';
 import { IconButton } from 'components/ui/IconButton';
 import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
@@ -253,7 +253,7 @@ export function TraderAnalysisPage() {
           page. The per-wallet buys/sells/last stats ride the card-header slot so the
           trader dimension never duplicates the token columns. */}
       {visibleRows.length > 0 && query && (
-        <TokenChartsGrid
+        <LazyTokenChartsGrid
           rows={visibleRows}
           titleOf={(r) => r.symbol || r.name || shortAddr(r.mint_address)}
           highlightWallet={query.wallet}

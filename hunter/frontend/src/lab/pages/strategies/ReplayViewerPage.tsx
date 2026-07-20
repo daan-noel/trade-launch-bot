@@ -9,7 +9,7 @@ import { Badge } from 'components/ui/Badge';
 import { Accordion } from 'components/ui/Accordion';
 import { InlineAlert } from 'components/ui/Modal';
 import { StatTile } from 'components/ui/StatTile';
-import { TokenTradeChart } from 'components/tokens/TokenTradeChart';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import type { ChartEventMarker } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
@@ -432,7 +432,7 @@ export function ReplayViewerPage() {
                 {focusMint ? (
                   <div className="flex flex-col gap-2">
                     <TokenDetailPanel detail={detail ?? null} loading={detailLoading} error={null} />
-                    <TokenTradeChart tableId="replay_inspect_trades" detail={detail ?? null} eventMarkers={markers} />
+                    <LazyTokenTradeChart tableId="replay_inspect_trades" detail={detail ?? null} eventMarkers={markers} />
                   </div>
                 ) : (
                   <div className="rounded-md border border-white/10 bg-surface p-3 text-sm text-text-dim">

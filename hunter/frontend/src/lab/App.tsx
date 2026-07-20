@@ -1,12 +1,10 @@
-import { lazy, Suspense } from 'react';
+import { lazy } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppProviders } from 'context/AppProviders';
 import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
-import { SuspenseFallback } from 'components/ui/SuspenseFallback';
 import { BackgroundJobsProvider } from '@lab/context/BackgroundJobsContext';
 import { BackgroundJobsIndicator } from '@lab/components/layout/BackgroundJobsIndicator';
-import { GroupedCreationSection } from '@lab/components/creation-stats/GroupedCreationSection';
 import { labNav } from './nav';
 
 // Code-split each route into its own chunk. Pages export named (not default)
@@ -41,39 +39,28 @@ export default function App() {
         {/* Lab-only: background-jobs SSE + status seed stays out of the live build. */}
         <BackgroundJobsProvider>
           <RouteErrorBoundary variant="root">
-            <Suspense fallback={<SuspenseFallback />}>
-              <Routes>
-                <Route
-                  element={<AppLayout nav={labNav} footer={<BackgroundJobsIndicator />} />}
-                >
-                  <Route index element={<HomePage />} />
-                  <Route
-                    path="creation-stats"
-                    element={
-                      <CreationStatsPage
-                        extraSections={({ tz, segment }) => (
-                          <GroupedCreationSection tz={tz} segment={segment} />
-                        )}
-                      />
-                    }
-                  />
-                  <Route path="tokens" element={<TokensPage />} />
-                  <Route path="analysis" element={<Navigate to="/analysis/trader" replace />} />
-                  <Route path="analysis/trader" element={<TraderAnalysisPage />} />
-                  <Route path="profiles" element={<ProfilesPage />} />
-                  <Route path="strategies/rules" element={<RulesPage />} />
-                  <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
-                  <Route path="strategies/flow-discovery" element={<FlowDiscoveryPage />} />
-                  <Route path="strategies/simulate" element={<SimulatePage />} />
-                  <Route path="strategies/metric-panes" element={<MetricPanesRedirect />} />
-                  <Route path="strategies/sweep" element={<GenericSweepPage />} />
-                  <Route path="strategies/replay" element={<ReplayViewerPage />} />
-                  <Route path="strategies" element={<Navigate to="/strategies/rules" replace />} />
-                  <Route path="settings" element={<SettingsPage />} />
-                  <Route path="*" element={<NotFoundPage />} />
-                </Route>
-              </Routes>
-            </Suspense>
+            <Routes>
+              <Route
+                element={<AppLayout nav={labNav} footer={<BackgroundJobsIndicator />} />}
+              >
+                <Route index element={<HomePage />} />
+                <Route path="creation-stats" element={<CreationStatsPage />} />
+                <Route path="tokens" element={<TokensPage />} />
+                <Route path="analysis" element={<Navigate to="/analysis/trader" replace />} />
+                <Route path="analysis/trader" element={<TraderAnalysisPage />} />
+                <Route path="profiles" element={<ProfilesPage />} />
+                <Route path="strategies/rules" element={<RulesPage />} />
+                <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
+                <Route path="strategies/flow-discovery" element={<FlowDiscoveryPage />} />
+                <Route path="strategies/simulate" element={<SimulatePage />} />
+                <Route path="strategies/metric-panes" element={<MetricPanesRedirect />} />
+                <Route path="strategies/sweep" element={<GenericSweepPage />} />
+                <Route path="strategies/replay" element={<ReplayViewerPage />} />
+                <Route path="strategies" element={<Navigate to="/strategies/rules" replace />} />
+                <Route path="settings" element={<SettingsPage />} />
+                <Route path="*" element={<NotFoundPage />} />
+              </Route>
+            </Routes>
           </RouteErrorBoundary>
         </BackgroundJobsProvider>
       </AppProviders>
