@@ -17,11 +17,10 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
-    "baseUrl": "src",
     "paths": {
-      "@shared/*": ["shared/*"],
-      "@features/*": ["features/*"],
-      "@app/*": ["app/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@features/*": ["./src/features/*"],
+      "@app/*": ["./src/app/*"]
     }
   },
   "include": ["src"]

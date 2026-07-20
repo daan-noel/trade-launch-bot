@@ -206,6 +206,34 @@ Three properties the wave-outer fold depends on. Each replaced a measured waste.
    `drop` it holds `n_groups × n_combos` `ComboMetrics` resident straight through the
    memory-heaviest sweep.
 
+6. **Prefix-extrema exit index (default pure-TP/SL path).** Combos sharing an
+   `entry_key` share `fill_row` + `entry_price`, so walking the series once per combo
+   repeats work. When the engine entry cache goes stale, `Strategy::build_exit_ctx`
+   rebuilds an [`ExitIndex`](../../../lab/src/sweep/generic/exit_index.rs) into a
+   recycled scratch (`ExitCtx`):
+
+   | Field | Definition |
+   | --- | --- |
+   | `hull_max` | running max of **finite** prices over `fill_row+1..n` (carry through NaN) |
+   | `hull_min` | running min of finite prices (same carry) |
+   | `dead_row` | first `j > fill_row` with `series.dead[j]` |
+   | `last_finite_row` | last finite price in the whole series (Open mark-to-market) |
+
+   Both hulls are monotone ⇒ `first_tp_row` / `first_sl_row` are `partition_point`
+   (`hull_max < tp` / `hull_min > sl`), matching scalar `≥` / `≤` inclusivity.
+   Per combo: `exit_row = min(dead, sl, tp)` with tie-break **Dead > StopLoss >
+   TakeProfit**, then `closed` → `round_trip_with_costs` (money math unchanged).
+
+   **Fallback matrix** (same rules as the AVX-512 path): `has_exit_metrics()` and
+   `NoEntry` use linear scalar `resolve_exit`. Scalar remains the parity reference
+   and is never deleted. Guards:
+   `index_exit_scan_matches_scalar_across_paths` +
+   `index_exit_scan_matches_scalar_on_randomized_walks`.
+
+   **RAM:** 2 × `n_rows` × 8 B transient per worker, rebuilt in place — never cached
+   across tokens; `plan_sweep_sizing` untouched. AVX-512 stays an optional toggle
+   for A/B; the index is the default non-SIMD path (works in debug too).
+
 **Memory model.** `full_combo_aggs_fit` (and `plan_shards` through it) takes
 `bound_bytes_per_combo` — pass `size_of::<S::BoundParams>()`. Both wave-outer paths
 (the shard-wide `bound_all`, and the grouped driver's group-wide `bound` in the

@@ -406,6 +406,28 @@ fn outcome_tuple(
     )
 }
 
+/// `assert_eq` on `outcome_tuple` fails when both sides carry `NaN` (NaN ≠ NaN).
+/// Dead exits on a NaN-priced row produce that shape — compare bit-patterns instead.
+fn assert_outcomes_eq(a: &TokenOutcome, b: &TokenOutcome, msg: &str) {
+    let ta = outcome_tuple(a);
+    let tb = outcome_tuple(b);
+    let eq_opt = |x: Option<f64>, y: Option<f64>| match (x, y) {
+        (Some(x), Some(y)) => x.to_bits() == y.to_bits(),
+        (None, None) => true,
+        _ => false,
+    };
+    let ok = ta.0 == tb.0
+        && ta.1 == tb.1
+        && eq_opt(ta.2, tb.2)
+        && eq_opt(ta.3, tb.3)
+        && ta.4 == tb.4
+        && ta.5 == tb.5
+        && ta.6 == tb.6
+        && ta.7.to_bits() == tb.7.to_bits()
+        && ta.8.to_bits() == tb.8.to_bits();
+    assert!(ok, "{msg}:\n  left:  {ta:?}\n  right: {tb:?}");
+}
+
 #[test]
 fn simd_exit_scan_matches_scalar_across_paths() {
     use super::strategy::{resolve_entry, resolve_exit, resolve_exit_simd, BoundCombo};
@@ -454,6 +476,150 @@ fn simd_exit_scan_matches_scalar_across_paths() {
                 outcome_tuple(&scalar),
                 "rule[{i}] token '{}': AVX-512 exit scan diverged from scalar",
                 corpus_tok.mint,
+            );
+        }
+    }
+}
+
+#[test]
+fn index_exit_scan_matches_scalar_across_paths() {
+    use super::exit_index::ExitIndex;
+    use super::strategy::{resolve_entry, resolve_exit, resolve_exit_indexed, BoundCombo};
+
+    let cost = CostModel::pumpfun_default();
+    let as_of = at(100_000.0);
+
+    let entry_gate = {
+        let mut gc = GroupConditions::default();
+        gc.metrics.insert(
+            MetricId::Time,
+            vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
+        );
+        let mut entry = SideConditions::default();
+        entry.0.insert(MetricGroupId::Snapshot, gc);
+        RuleParams {
+            take_profit: Some(20.0),
+            stop_loss: Some(60.0),
+            entry: Some(entry),
+            exit: None,
+        }
+    };
+
+    let rules = vec![
+        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None },
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None },
+        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None },
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None },
+        entry_gate,
+        // Metrics → index falls back to scalar; still must match.
+        exit_metric(MetricGroupId::PricePath, MetricId::Trail, Operator::Gt, 50.0),
+    ];
+
+    for (i, params) in rules.into_iter().enumerate() {
+        let compiled = CompiledRule::compile(&loaded(params));
+        let cols = columns_for(&compiled);
+        let grid = sparse_grid_for(&compiled);
+        let bound = BoundCombo::new(&cols, compiled.clone());
+
+        for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
+            let entry = resolve_entry(&series, &bound);
+            let mut idx = ExitIndex::default();
+            match &entry {
+                super::strategy::EntryResolution::Entered { fill_row, .. }
+                    if !bound.rule.has_exit_metrics() =>
+                {
+                    idx.rebuild(&series, *fill_row);
+                }
+                _ => idx.clear(),
+            }
+            let scalar = resolve_exit(&series, &bound, &entry, BUY_SOL, &cost);
+            let indexed = resolve_exit_indexed(&series, &bound, &entry, BUY_SOL, &cost, &idx);
+            assert_outcomes_eq(
+                &indexed,
+                &scalar,
+                &format!("rule[{i}] token '{}': exit-index diverged from scalar", corpus_tok.mint),
+            );
+        }
+    }
+}
+
+#[test]
+fn index_exit_scan_matches_scalar_on_randomized_walks() {
+    use super::exit_index::ExitIndex;
+    use super::strategy::{resolve_entry, resolve_exit, resolve_exit_indexed, BoundCombo};
+    use hunter_engine::metrics::series::MetricSeries;
+    use hunter_engine::metrics::{Side, TradeLite};
+
+    let cost = CostModel::pumpfun_default();
+    // Deterministic LCG — no rand dep needed in this module.
+    let mut seed: u64 = 0xC0FFEE_u64;
+    let mut next = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        seed
+    };
+
+    let tp_sl_grid: &[(Option<f64>, Option<f64>)] = &[
+        (Some(20.0), Some(30.0)),
+        (Some(50.0), None),
+        (None, Some(40.0)),
+        (Some(10.0), Some(10.0)),
+        (None, None),
+    ];
+
+    for case in 0..32 {
+        let n = 8 + (next() % 40) as usize;
+        let t0 = base();
+        let mut series = MetricSeries::new(t0, vec![]);
+        let mut price = 1.0_f64;
+        for i in 0..n {
+            let r = next();
+            // ~12% NaN-like hole via a tick with no price change from a prior NaN overwrite.
+            let is_hole = r % 8 == 0;
+            let shock = ((r >> 8) % 21) as i64 - 10; // -10..+10
+            if !is_hole {
+                price = (price * (1.0 + shock as f64 * 0.03)).max(0.01);
+            }
+            let at = t0 + Duration::milliseconds((i as i64) * 500);
+            series.push_trade(TradeLite {
+                side: if r % 2 == 0 { Side::Buy } else { Side::Sell },
+                sol: 1.0 + (r % 5) as f64,
+                price,
+                reserve_sol: 50.0,
+                at,
+            });
+            if is_hole {
+                // Overwrite to NaN after push so the hull carry path is exercised.
+                let last = series.n_rows() - 1;
+                series.price[last] = f64::NAN;
+            }
+            // Sparse dead flags near the tail.
+            if i + 3 >= n && (r % 5 == 0) {
+                let last = series.n_rows() - 1;
+                series.dead[last] = true;
+            }
+        }
+
+        for (ti, (tp, sl)) in tp_sl_grid.iter().enumerate() {
+            let params = RuleParams {
+                take_profit: *tp,
+                stop_loss: *sl,
+                entry: None,
+                exit: None,
+            };
+            let compiled = CompiledRule::compile(&loaded(params));
+            let bound = BoundCombo::new(series.columns(), compiled);
+            let entry = resolve_entry(&series, &bound);
+            let mut idx = ExitIndex::default();
+            if let super::strategy::EntryResolution::Entered { fill_row, .. } = &entry {
+                idx.rebuild(&series, *fill_row);
+            }
+            let scalar = resolve_exit(&series, &bound, &entry, BUY_SOL, &cost);
+            let indexed = resolve_exit_indexed(&series, &bound, &entry, BUY_SOL, &cost, &idx);
+            assert_outcomes_eq(
+                &indexed,
+                &scalar,
+                &format!("rand case={case} grid[{ti}]: exit-index diverged from scalar"),
             );
         }
     }

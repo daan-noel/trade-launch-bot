@@ -244,6 +244,7 @@ impl Strategy for GenericSweepStrategy {
     type EntryKey = u64;
     type TokenState = MetricSeries;
     type BoundParams = BoundCombo;
+    type ExitCtx = super::exit_index::ExitIndex;
 
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey {
         self.model.entry_key(params.idx)
@@ -257,6 +258,24 @@ impl Strategy for GenericSweepStrategy {
 
     fn prepare_token(&self, token: &CorpusToken) -> Self::TokenState {
         build_series(token, self.columns.clone(), &self.grid, self.as_of)
+    }
+
+    fn build_exit_ctx(
+        &self,
+        _trades: &[CorpusTrade],
+        series: &Self::TokenState,
+        bound: &Self::BoundParams,
+        entry: &Self::Entry,
+        _params: &Self::Params,
+        ctx: &mut Self::ExitCtx,
+    ) {
+        // Index only helps pure-TP/SL Entered paths. Metrics / NoEntry keep scalar.
+        match entry {
+            EntryResolution::Entered { fill_row, .. } if !bound.rule.has_exit_metrics() => {
+                ctx.rebuild(series, *fill_row);
+            }
+            _ => ctx.clear(),
+        }
     }
 
     fn resolve_entry(
@@ -276,16 +295,14 @@ impl Strategy for GenericSweepStrategy {
         bound: &Self::BoundParams,
         entry: &Self::Entry,
         _params: &Self::Params,
+        ctx: &Self::ExitCtx,
     ) -> TokenOutcome {
-        // Dispatch stays here (not in the engine or the `Strategy` trait): branch on
-        // the run's process-global toggle. Both paths return byte-identical outcomes
-        // (guard test `super::guard::scan_matches_simd_*`); the toggle only changes
-        // *how* the first exit row is found. The gate that sets `use_simd()` already
-        // confirmed AVX-512 is present, and `resolve_exit_simd` re-checks defensively.
+        // AVX-512 toggle still selectable (exit-index plan Phase 5). Default path
+        // is the O(log n) index; SIMD remains for A/B. Both must match scalar.
         if crate::sweep::registry::use_simd() {
             resolve_exit_simd(series, bound, entry, self.buy_amount_sol, &self.cost)
         } else {
-            resolve_exit(series, bound, entry, self.buy_amount_sol, &self.cost)
+            resolve_exit_indexed(series, bound, entry, self.buy_amount_sol, &self.cost, ctx)
         }
     }
 
@@ -754,6 +771,76 @@ pub(crate) fn resolve_entry(series: &MetricSeries, b: &BoundCombo) -> EntryResol
         }
     }
     EntryResolution::NoEntry
+}
+
+/// O(log n) pure-TP/SL exit via a prebuilt [`super::exit_index::ExitIndex`].
+/// Falls back to scalar [`resolve_exit`] for `NoEntry`, metrics exits, or an
+/// unready index (parity reference never deleted).
+pub(crate) fn resolve_exit_indexed(
+    series: &MetricSeries,
+    b: &BoundCombo,
+    entry: &EntryResolution,
+    buy_amount_sol: f64,
+    cost: &CostModel,
+    index: &super::exit_index::ExitIndex,
+) -> TokenOutcome {
+    debug_assert_cols_match(series, b);
+    let c = &b.rule;
+    let (fill_row, entry_price, entry_at) = match entry {
+        EntryResolution::NoEntry => return TokenOutcome::no_entry(),
+        EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
+    };
+    if c.has_exit_metrics() || !index.is_ready() {
+        return resolve_exit(series, b, entry, buy_amount_sol, cost);
+    }
+
+    let entry_slot = fill_trade_slot(series, fill_row);
+    let sl_thresh = c.stop_loss.map(|sl| entry_price * (1.0 - sl / 100.0));
+    let tp_thresh = c.take_profit.map(|tp| entry_price * (1.0 + tp / 100.0));
+    let sl_row = sl_thresh.and_then(|t| index.first_sl_row(t));
+    let tp_row = tp_thresh.and_then(|t| index.first_tp_row(t));
+
+    use super::exit_index::{pick_exit_row, ExitKind};
+    if let Some((j, kind)) = pick_exit_row(index.dead_row(), sl_row, tp_row) {
+        let p = series.price[j];
+        let exit = match kind {
+            ExitKind::Dead => ExitCode::Dead,
+            ExitKind::StopLoss => ExitCode::StopLoss,
+            ExitKind::TakeProfit => ExitCode::TakeProfit,
+        };
+        return closed(
+            exit,
+            entry_price,
+            entry_at,
+            entry_slot,
+            p,
+            series.at[j],
+            fill_trade_slot(series, j),
+            buy_amount_sol,
+            cost,
+        );
+    }
+
+    // Open: mark to last finite (precomputed on the index for the whole series).
+    let last_price = index
+        .last_finite_row()
+        .map(|k| series.price[k])
+        .filter(|p| p.is_finite())
+        .unwrap_or(entry_price);
+    let (pnl_sol, pnl_pct) = round_trip_with_costs(entry_price, last_price, buy_amount_sol, cost);
+    TokenOutcome {
+        fired: true,
+        holding_secs: 0,
+        pnl_percent: pnl_pct as f32,
+        pnl_sol: pnl_sol as f32,
+        exit: ExitCode::Open,
+        entry_time: Some(entry_at),
+        entry_price: Some(entry_price),
+        entry_slot,
+        exit_time: None,
+        exit_price: None,
+        exit_slot: None,
+    }
 }
 
 /// Walk from the entry fill to the exit decision, mirroring the open-side

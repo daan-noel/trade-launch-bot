@@ -34,6 +34,9 @@ pub(crate) fn fill_outcomes_with_state<S: Strategy>(
     out.clear();
     let trades: &[CorpusTrade] = &token.trades;
     let mut entry_cache: Option<(S::EntryKey, S::Entry)> = None;
+    // Recycled per-token exit context (generic: prefix-extrema hulls). Rebuilt
+    // in place when the entry cache goes stale — same cadence as entry resolve.
+    let mut exit_ctx = S::ExitCtx::default();
     for (chunk_i, chunk) in params.chunks(CANCEL_CHECK_STRIDE).enumerate() {
         if observer.cancelled() {
             return Err(());
@@ -51,10 +54,11 @@ pub(crate) fn fill_outcomes_with_state<S: Strategy>(
                     return Err(());
                 }
                 let entry = strategy.resolve_entry(trades, token_state, &bound[i], p);
+                strategy.build_exit_ctx(trades, token_state, &bound[i], &entry, p, &mut exit_ctx);
                 entry_cache = Some((key, entry));
             }
             let entry = &entry_cache.as_ref().unwrap().1;
-            out.push(strategy.resolve_exit(trades, token_state, &bound[i], entry, p));
+            out.push(strategy.resolve_exit(trades, token_state, &bound[i], entry, p, &exit_ctx));
         }
     }
     Ok(())
@@ -587,13 +591,22 @@ mod tests {
         type EntryKey = ();
         type TokenState = ();
         type BoundParams = ();
+        type ExitCtx = ();
         fn entry_key(&self, _p: &f64) {}
         fn bind_param(&self, _p: &f64) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(
+            &self,
+            _trades: &[CorpusTrade],
+            _state: &(),
+            _bound: &(),
+            entry: &bool,
+            p: &f64,
+            _ctx: &(),
+        ) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,
@@ -714,6 +727,7 @@ mod tests {
         type EntryKey = i64;
         type TokenState = ();
         type BoundParams = ();
+        type ExitCtx = ();
         fn entry_key(&self, p: &(i64, f64)) -> i64 {
             p.0
         }
@@ -722,7 +736,15 @@ mod tests {
         fn resolve_entry(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), p: &(i64, f64)) -> i64 {
             p.0
         }
-        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), entry: &i64, _p: &(i64, f64)) -> TokenOutcome {
+        fn resolve_exit(
+            &self,
+            _trades: &[CorpusTrade],
+            _state: &(),
+            _bound: &(),
+            entry: &i64,
+            _p: &(i64, f64),
+            _ctx: &(),
+        ) -> TokenOutcome {
             TokenOutcome {
                 fired: true,
                 holding_secs: 0,

@@ -943,13 +943,22 @@ mod tests {
         type EntryKey = ();
         type TokenState = ();
         type BoundParams = ();
+        type ExitCtx = ();
         fn entry_key(&self, _p: &f64) {}
         fn bind_param(&self, _p: &f64) {}
         fn prepare_token(&self, _token: &crate::sweep::corpus::CorpusToken) {}
         fn resolve_entry(&self, trades: &[CorpusTrade], _state: &(), _bound: &(), _p: &f64) -> bool {
             !trades.is_empty()
         }
-        fn resolve_exit(&self, _trades: &[CorpusTrade], _state: &(), _bound: &(), entry: &bool, p: &f64) -> TokenOutcome {
+        fn resolve_exit(
+            &self,
+            _trades: &[CorpusTrade],
+            _state: &(),
+            _bound: &(),
+            entry: &bool,
+            p: &f64,
+            _ctx: &(),
+        ) -> TokenOutcome {
             TokenOutcome {
                 fired: *entry,
                 holding_secs: 1,

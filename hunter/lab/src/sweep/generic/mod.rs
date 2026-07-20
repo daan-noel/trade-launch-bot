@@ -8,6 +8,7 @@
 //! * `guard` (test-only) — the scan ≡ `run_replay` drift lock (step 5.5).
 
 pub mod axes;
+pub mod exit_index;
 pub mod strategy;
 
 #[cfg(test)]

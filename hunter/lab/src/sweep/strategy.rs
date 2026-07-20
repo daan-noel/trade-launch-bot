@@ -282,6 +282,12 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// already the scan input.
     type BoundParams: Send + Sync;
 
+    /// Per-`(token, entry)` exit context rebuilt when the entry cache goes stale
+    /// (e.g. the generic engine's prefix-extrema [`ExitIndex`](crate::sweep::generic::exit_index::ExitIndex)).
+    /// Unit `()` for strategies that resolve exits without shared entry-local state.
+    /// Must be `Default` so the engine can recycle one instance per token scan.
+    type ExitCtx: Default + Send;
+
     /// The entry-param signature of a combo. Combos sharing it share an entry.
     fn entry_key(&self, params: &Self::Params) -> Self::EntryKey;
 
@@ -295,6 +301,20 @@ pub trait Strategy: ParamSpace + Send + Sync {
     /// `created_at`; a strategy that resolves purely from trades reads `token.trades`.
     fn prepare_token(&self, token: &crate::sweep::corpus::CorpusToken) -> Self::TokenState;
 
+    /// Rebuild [`Strategy::ExitCtx`] for a freshly resolved entry. Called by the
+    /// engine exactly when the entry cache goes stale (same cadence as
+    /// [`Strategy::resolve_entry`]). Default is a no-op for unit `ExitCtx`.
+    fn build_exit_ctx(
+        &self,
+        _trades: &[CorpusTrade],
+        _state: &Self::TokenState,
+        _bound: &Self::BoundParams,
+        _entry: &Self::Entry,
+        _params: &Self::Params,
+        _ctx: &mut Self::ExitCtx,
+    ) {
+    }
+
     /// Resolve the entry on one token's full trade history under a combo's **entry**
     /// params, given the pre-computed [`Strategy::TokenState`] and batch-bound
     /// [`Strategy::BoundParams`]. Pure — safe from many `rayon` threads.
@@ -306,8 +326,9 @@ pub trait Strategy: ParamSpace + Send + Sync {
         params: &Self::Params,
     ) -> Self::Entry;
 
-    /// Resolve the exit + economics given a pre-resolved `entry`, under a combo's
-    /// **exit** params / bound form. Returns a `Copy` [`TokenOutcome`].
+    /// Resolve the exit + economics given a pre-resolved `entry` and its
+    /// [`Strategy::ExitCtx`], under a combo's **exit** params / bound form.
+    /// Returns a `Copy` [`TokenOutcome`].
     fn resolve_exit(
         &self,
         trades: &[CorpusTrade],
@@ -315,6 +336,7 @@ pub trait Strategy: ParamSpace + Send + Sync {
         bound: &Self::BoundParams,
         entry: &Self::Entry,
         params: &Self::Params,
+        ctx: &Self::ExitCtx,
     ) -> TokenOutcome;
 
     /// Flatten one param set to a JSON object stored with the combo's result row,
