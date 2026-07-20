@@ -82,20 +82,26 @@ impl JitoTipCache {
         })
     }
 
-    /// Tip for retry `level` (0 = first attempt), in lamports. Successive sell
-    /// attempts climb the auction so a tx that lost the last block bids up to win
-    /// the next: level 0 = the configured percentile, 1 = p95, 2 = p99, and
-    /// beyond p99 the tip scales by `JITO_TIP_ESCALATION_TAIL_MULT` per extra
-    /// level. When the feed is cold/stale every percentile is unknown, so the
-    /// climb starts from the floor and scales by the same factor. Always clamped
-    /// to [MIN_JITO_TIP_SOL, MAX_JITO_TIP_SOL] — the ceiling is the hard
-    /// per-trade cost guardrail, so escalation can never overspend. (A tx that
-    /// never lands costs nothing, so bidding up only costs more once it wins.)
+    /// Tip for retry `level` (0 = first attempt), in lamports. Successive
+    /// attempts climb so a tx that lost the last block bids up to win the next.
+    ///
+    /// Two ladders run in parallel; each level takes the **max**:
+    /// 1. **Live percentile ladder** — level 0 = configured percentile, 1 = p95,
+    ///    2 = p99, then `p99 × escalation_tail_mult^(n-2)` (or floor-scaled when
+    ///    the feed is cold/stale).
+    /// 2. **Floor escalation** — `min_sol × escalation_tail_mult^level`.
+    ///
+    /// (2) matters when live percentiles sit *below* `min_sol` (common: Helius
+    /// Sender Max wants ≥ 0.001 SOL while Jito p75 is often ≪ that). Without it,
+    /// every retry clamps to the same floor and the auction never climbs. Always
+    /// clamped to `[min_sol, max_sol]` — the ceiling is the hard per-trade cost
+    /// guardrail. A tx that never lands costs nothing, so bidding up only costs
+    /// more once it wins.
     pub fn tip_lamports_for_level(&self, level: u8) -> u64 {
         let floor = sol_to_lamports(self.cfg.min_sol);
         let ceil = sol_to_lamports(self.cfg.max_sol).max(floor);
         let mult = self.cfg.escalation_tail_mult;
-        let raw = match self.fresh() {
+        let from_feed = match self.fresh() {
             Some(tf) => match level {
                 0 => tf.base(&self.cfg),
                 1 => tf.p95.max(tf.base(&self.cfg)),
@@ -104,7 +110,10 @@ impl JitoTipCache {
             },
             None => scale(floor, level as i32, mult),
         };
-        raw.clamp(floor, ceil)
+        // When the feed bid is below the Sender/cost floor, still escalate off
+        // that floor so retries aren't identical no-ops.
+        let from_floor = scale(floor, level as i32, mult);
+        from_feed.max(from_floor).clamp(floor, ceil)
     }
 }
 
@@ -190,7 +199,7 @@ mod tests {
     fn cache() -> JitoTipCache {
         JitoTipCache::new(cfg())
     }
-    const MIN_JITO_TIP_SOL: f64 = 0.0002;
+    const MIN_JITO_TIP_SOL: f64 = 0.001;
     const MAX_JITO_TIP_SOL: f64 = 0.005;
 
     fn lamports(sol: f64) -> u64 {
@@ -198,14 +207,25 @@ mod tests {
     }
 
     fn sample_floor() -> TipFloor {
-        // Percentiles between the floor (0.0002) and ceiling (0.005) so the
+        // Percentiles between the floor (0.001) and ceiling (0.005) so the
         // ladder rungs themselves aren't clamped.
         TipFloor {
-            p25: lamports(0.0003),
-            p50: lamports(0.0005),
-            p75: lamports(0.0008),
-            p95: lamports(0.0015),
-            p99: lamports(0.0025),
+            p25: lamports(0.0012),
+            p50: lamports(0.0015),
+            p75: lamports(0.0020),
+            p95: lamports(0.0030),
+            p99: lamports(0.0040),
+        }
+    }
+
+    /// Live percentiles all below `min_sol` — the common Sender-Max case.
+    fn quiet_floor() -> TipFloor {
+        TipFloor {
+            p25: lamports(0.000001),
+            p50: lamports(0.000002),
+            p75: lamports(0.000004),
+            p95: lamports(0.000011),
+            p99: lamports(0.000043),
         }
     }
 
@@ -239,6 +259,19 @@ mod tests {
             c.tip_lamports_for_level(3) > tf.p99,
             "beyond p99 the tip keeps climbing"
         );
+    }
+
+    #[test]
+    fn quiet_market_escalates_off_the_floor() {
+        let c = cache();
+        c.store(quiet_floor());
+        let l0 = c.tip_lamports_for_level(0);
+        let l1 = c.tip_lamports_for_level(1);
+        let l2 = c.tip_lamports_for_level(2);
+        assert_eq!(l0, lamports(MIN_JITO_TIP_SOL), "level 0 = Sender floor");
+        assert!(l1 > l0, "retry must climb even when feed << floor");
+        assert!(l2 > l1, "further retries keep climbing");
+        assert_eq!(l1, scale(lamports(MIN_JITO_TIP_SOL), 1, cfg().escalation_tail_mult));
     }
 
     #[test]

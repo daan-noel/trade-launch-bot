@@ -82,16 +82,12 @@ enum NonceState {
 
 ## `jito_tip.rs` — tip escalation
 
-`JitoTipCache` fetches the percentile tip floors from the Jito tip API on a background interval (default 5s). `level(attempt: usize) -> u64` returns:
+`JitoTipCache` fetches the percentile tip floors from the Jito tip API on a background interval (default 3s). `tip_lamports_for_level(level)` returns the **max** of:
 
-| attempt | tip |
-|---|---|
-| 0 | p95 |
-| 1 | p99 |
-| 2 | p99 × `ESCALATION_MULT` |
-| 3+ | `MAX_TIP_LAMPORTS` (clamped) |
+1. **Live percentile ladder** — level 0 = configured percentile (default p75), 1 = p95, 2 = p99, then `p99 × escalation_tail_mult^(n-2)` (cold feed: floor-scaled).
+2. **Floor escalation** — `min_sol × escalation_tail_mult^level` so retries still climb when live percentiles sit below the Sender floor.
 
-All values are clamped to `[MIN_TIP_LAMPORTS, MAX_TIP_LAMPORTS]`. If the cache is stale (fetch failed), returns last known value.
+Result is clamped to `[min_sol, max_sol]` (hunter defaults `0.001` / `0.005` — Sender Max priority-tip-buffer). Stale/cold feed falls back to the floor ladder.
 
 ## `sim.rs` — simulation engine
 

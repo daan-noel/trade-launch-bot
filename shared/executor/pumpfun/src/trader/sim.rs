@@ -91,6 +91,7 @@ impl PumpFunTrader {
             account_creation_ixs,
             buy_lamports,
             min_tokens_out,
+            0,
         )?;
         self.simulate_ixs(ixs, &wallet, &[wallet, ata]).await
     }

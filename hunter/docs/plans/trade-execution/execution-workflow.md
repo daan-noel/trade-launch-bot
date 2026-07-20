@@ -99,7 +99,7 @@ ExitGuard claimed                          ← recovery reaper skips guarded pg 
 release_sol_for_position()                 ← idempotent; done FIRST, before any tx
 if entry_token_amount == 0: FillConfirmed at zero (no tx)
 
-per-attempt loop (max 6, Jito tip escalates per level):
+per-attempt loop (max 6, tip escalates per level — max(percentile ladder, min×1.5^level)):
   re-read is_migrated from TokenCache      ← route can flip mid-exit (curve → AMM)
   send sell (15 s hard cap for RPC ops)    ← Ok(Some(sig)) | Ok(None) | Err
   register wakeup BEFORE each balance query (prevent miss-in-gap)

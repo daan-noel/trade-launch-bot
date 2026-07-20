@@ -67,7 +67,10 @@ pub struct JitoTipCfg {
 impl Default for JitoTipCfg {
     fn default() -> Self {
         Self {
-            min_sol: 0.0002,
+            // Helius Sender Max priority-tip-buffer floor (0.001 SOL). Tips in
+            // [0.000005, 0.001) are accepted but best-effort / fewer pathways;
+            // the hard reject floor is 0.0002. Contested snipes want the buffer.
+            min_sol: 0.001,
             max_sol: 0.005,
             percentile: 75,
             escalation_tail_mult: 1.5,

@@ -53,8 +53,21 @@ impl PumpFunTrader {
     ) -> Result<String> {
         // Manual buy: no triggering-event reserves in hand, so `buy_token_inner`
         // reads the curve on-chain for the slippage floor (snipe_reserves = None).
-        self.buy_token_inner(mint, creator, token_program, sol_amount, slippage_bps, None, false, false, None, cashback_enabled, None)
-            .await
+        self.buy_token_inner(
+            mint,
+            creator,
+            token_program,
+            sol_amount,
+            slippage_bps,
+            None,
+            false,
+            false,
+            None,
+            cashback_enabled,
+            None,
+            0,
+        )
+        .await
     }
 
     /// Latency-optimized write-ahead buy for fresh-token snipes. Identical to
@@ -91,12 +104,28 @@ impl PumpFunTrader {
         // fill), so both buys land in ONE account. `None` = first buy: the template
         // mints (and caches) a fresh account as before.
         user_token_account_override: Option<Pubkey>,
+        // Tip ladder level (0 = first attempt). Live retries after a confirmed
+        // safe revert pass the journal length so the next send bids up.
+        tip_level: u8,
     ) -> Result<String> {
         let mint = Pubkey::from_str(token_mint)?;
         let creator_pubkey = Pubkey::from_str(creator)?;
         let token_program = TokenProgram::from_id(token_program_id);
-        self.buy_token_inner(&mint, &creator_pubkey, token_program, sol_amount, slippage_bps, reserves, true, true, Some(on_signed), cashback_enabled, user_token_account_override)
-            .await
+        self.buy_token_inner(
+            &mint,
+            &creator_pubkey,
+            token_program,
+            sol_amount,
+            slippage_bps,
+            reserves,
+            true,
+            true,
+            Some(on_signed),
+            cashback_enabled,
+            user_token_account_override,
+            tip_level,
+        )
+        .await
     }
 
     // Trade-path fn — the buy needs every routing/slippage/skip input threaded in;
@@ -130,6 +159,7 @@ impl PumpFunTrader {
         // buys land in ONE account. `None` = first buy / manual path: resolve the
         // account via template (snipe) or the real ATA (manual) as below.
         user_token_account_override: Option<Pubkey>,
+        tip_level: u8,
     ) -> Result<String> {
         let t0 = Instant::now();
         // Guard the real spend before any work: both curve public entries
@@ -283,6 +313,10 @@ impl PumpFunTrader {
             // prefix against the freshly-refreshed PDAs.
             let account_creation_ixs_retry = account_creation_ixs.clone();
 
+            // Stale-creator heal bumps the tip one rung on the resend — a 2006
+            // itself isn't tip-related, but the second send still competes in
+            // the same auction and a free re-bid is cheap insurance.
+            let mut tip_level = tip_level;
             loop {
                 let ixs = self.build_curve_buy_ixs(
                     mint,
@@ -295,6 +329,7 @@ impl PumpFunTrader {
                     },
                     buy_lamports,
                     min_tokens_out,
+                    tip_level,
                 )?;
 
                 // Build the tx only now — after PDA derivation, the ATA-exists RPC,
@@ -359,6 +394,7 @@ impl PumpFunTrader {
                                      refreshed to {vault}, resending once"
                                 );
                                 healed = true;
+                                tip_level = tip_level.saturating_add(1);
                                 continue;
                             }
                             // Unchanged creator or the refresh itself failed — stop
@@ -374,14 +410,14 @@ impl PumpFunTrader {
     }
 
     /// Assemble the curve-buy instruction set (compute budget + optional
-    /// account-creation prefix + `buy_exact_sol_in` + Jito tip) for a known
+    /// account-creation prefix + `buy_exact_sol_in` + tip) for a known
     /// mint/account. Pure tx construction — no RPC, no signing — extracted from
     /// `buy_token_inner` so the simulate path builds the *identical* buy
     /// instruction the live path sends (mirrors [`Self::build_curve_sell_ixs`]).
     /// `account_creation_ixs` is the create-with-seed + initialize prefix on a
     /// first buy (empty on a re-buy); `min_tokens_out` is the slippage floor
-    /// (1 = no protection). The buy is always a single shot, so the tip is fixed
-    /// at level 0.
+    /// (1 = no protection). `tip_level` escalates the Sender tip on retries
+    /// (see `jito_tip`).
     pub(super) fn build_curve_buy_ixs(
         &self,
         mint: &Pubkey,
@@ -390,15 +426,13 @@ impl PumpFunTrader {
         account_creation_ixs: Vec<Instruction>,
         buy_lamports: u64,
         min_tokens_out: u64,
+        tip_level: u8,
     ) -> Result<Vec<Instruction>> {
         let mut ixs = Vec::with_capacity(6);
         ixs.extend_from_slice(&self.engine.cu_ixs_curve_buy);
         ixs.extend(account_creation_ixs);
         ixs.push(self.curve_buy_ix(mint, pdas, user_token_account, buy_lamports, min_tokens_out)?);
-
-        // Buys are a single shot (the snipe re-send only fires on a revert,
-        // which a bigger tip can't fix), so always the level-0 tip.
-        ixs.push(self.jito_tip_ix(0));
+        ixs.push(self.jito_tip_ix(tip_level));
 
         Ok(ixs)
     }

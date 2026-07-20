@@ -244,6 +244,11 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
         })
     };
 
+    // Prior submitted sigs (engine Retry after a confirmed safe revert) climb
+    // the tip ladder. Pending/ambiguous outcomes never resend here — that would
+    // risk a double-buy if the first tx is still in flight.
+    let tip_level = deps.buy_journal.sigs(order.pg_id).len().min(u8::MAX as usize) as u8;
+
     let submit = deps
         .trader
         .buy_token_snipe_write_ahead(
@@ -256,6 +261,7 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
             on_signed,
             order.cashback_enabled,
             None,
+            tip_level,
         )
         .await;
 

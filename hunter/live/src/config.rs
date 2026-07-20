@@ -1,4 +1,4 @@
-//! Live-only trading credentials.
+//! Live-only trading credentials + fee/tip tuning.
 //!
 //! The trader wallet key, nonce accounts, and Helius **Sender** endpoints are
 //! required to move real SOL, so **only** the live bin loads them — lab has no
@@ -33,6 +33,54 @@ impl TradingSecrets {
             wallet_private_key: required("WALLET_PRIVATE_KEY")?,
             nonce_accounts: parse_required_list("NONCE_ACCOUNTS")?,
             helius_sender_urls: sender_urls()?,
+        })
+    }
+}
+
+/// Optional live fee/tip knobs applied onto `TraderConfig` at boot. Defaults match
+/// `executor_core::config::{ComputeBudgetCfg,JitoTipCfg}` — raise tip for
+/// contested slots, lower only when deliberately trading the SWQoS-only path.
+#[derive(Debug, Clone)]
+pub struct TraderFeeTuning {
+    /// Helius Sender tip floor (SOL). Default `0.001` = Sender Max priority buffer.
+    pub jito_min_tip_sol: f64,
+    /// Hard per-trade tip ceiling (SOL).
+    pub jito_max_tip_sol: f64,
+    /// Landed-tip percentile for level-0 (25|50|75|95|99).
+    pub jito_tip_percentile: u8,
+    /// Compute-unit price (micro-lamports) — the priority-fee rate.
+    pub cu_price_micro_lamports: u64,
+}
+
+impl TraderFeeTuning {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let jito_min_tip_sol = env_f64("JITO_MIN_TIP_SOL", 0.001)?;
+        let jito_max_tip_sol = env_f64("JITO_MAX_TIP_SOL", 0.005)?;
+        if jito_min_tip_sol < 0.0 || jito_max_tip_sol < 0.0 {
+            anyhow::bail!("JITO_MIN_TIP_SOL / JITO_MAX_TIP_SOL must be >= 0");
+        }
+        if jito_max_tip_sol < jito_min_tip_sol {
+            anyhow::bail!(
+                "JITO_MAX_TIP_SOL ({jito_max_tip_sol}) must be >= JITO_MIN_TIP_SOL ({jito_min_tip_sol})"
+            );
+        }
+        let jito_tip_percentile = env_u64("JITO_TIP_PERCENTILE", 75)? as u8;
+        if !matches!(jito_tip_percentile, 25 | 50 | 75 | 95 | 99) {
+            anyhow::bail!(
+                "JITO_TIP_PERCENTILE must be one of 25|50|75|95|99, got {jito_tip_percentile}"
+            );
+        }
+        let cu_price_micro_lamports = env_u64("CU_PRICE_MICRO_LAMPORTS", 200_000)?;
+        if cu_price_micro_lamports == 0 {
+            anyhow::bail!(
+                "CU_PRICE_MICRO_LAMPORTS must be > 0 (Helius Sender requires a priority fee)"
+            );
+        }
+        Ok(Self {
+            jito_min_tip_sol,
+            jito_max_tip_sol,
+            jito_tip_percentile,
+            cu_price_micro_lamports,
         })
     }
 }
@@ -74,4 +122,22 @@ fn parse_required_list(key: &str) -> anyhow::Result<Vec<String>> {
 
 fn required(key: &str) -> anyhow::Result<String> {
     std::env::var(key).map_err(|_| anyhow::anyhow!("Missing required env var: {key}"))
+}
+
+fn env_f64(key: &str, default: f64) -> anyhow::Result<f64> {
+    match std::env::var(key) {
+        Ok(val) => val
+            .parse::<f64>()
+            .map_err(|e| anyhow::anyhow!("Invalid value for {key}={val:?}: {e}")),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_u64(key: &str, default: u64) -> anyhow::Result<u64> {
+    match std::env::var(key) {
+        Ok(val) => val
+            .parse::<u64>()
+            .map_err(|e| anyhow::anyhow!("Invalid value for {key}={val:?}: {e}")),
+        Err(_) => Ok(default),
+    }
 }

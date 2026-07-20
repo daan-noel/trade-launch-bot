@@ -925,14 +925,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Config. Shared settings load for both bins; the live bin additionally
     // requires the Helius endpoints (fail fast at boot) and loads its own trading
-    // credentials (`TradingSecrets` — wallet key, nonce accounts, Sender URLs),
-    // which lab never touches.
+    // credentials (`TradingSecrets` — wallet key, nonce accounts, Sender URLs) plus
+    // fee/tip tuning (`TraderFeeTuning`), which lab never touches.
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
     settings
         .require_live_endpoints()
         .context("live bin is missing a required Helius endpoint")?;
     let secrets = live::config::TradingSecrets::from_env()
         .context("Failed to load live trading credentials")?;
+    let fee_tuning = live::config::TraderFeeTuning::from_env()
+        .context("Failed to load trader fee/tip tuning")?;
 
     // HTTP bind — live reads its own LIVE_HOST/LIVE_PORT (docker's HOST/PORT wins).
     // Default matches the deploy LIVE_API_PORT so local + docker use the same port.
@@ -943,11 +945,15 @@ async fn main() -> anyhow::Result<()> {
         host = %http_host,
         port = http_port,
         pump_program = constants::PUMP_FUN_PROGRAM_ID,
+        jito_min_tip_sol = fee_tuning.jito_min_tip_sol,
+        jito_max_tip_sol = fee_tuning.jito_max_tip_sol,
+        jito_tip_percentile = fee_tuning.jito_tip_percentile,
+        cu_price_micro_lamports = fee_tuning.cu_price_micro_lamports,
         "Configuration loaded"
     );
 
     // The trader takes an `Arc<dyn Signer>` (HSM/remote-signer-ready) and parsed
-    // nonce pubkeys, with all tuning at the crate's `Default`s (see `TraderConfig`).
+    // nonce pubkeys; fee/tip knobs come from env (see `TraderFeeTuning`).
     let signer: Arc<dyn solana_sdk::signature::Signer + Send + Sync> = Arc::new(
         parse_wallet_keypair(&secrets.wallet_private_key)
             .context("Failed to parse trader wallet private key")?,
@@ -964,6 +970,10 @@ async fn main() -> anyhow::Result<()> {
         signer,
         nonce_accounts.clone(),
     );
+    trader_config.jito.min_sol = fee_tuning.jito_min_tip_sol;
+    trader_config.jito.max_sol = fee_tuning.jito_max_tip_sol;
+    trader_config.jito.percentile = fee_tuning.jito_tip_percentile;
+    trader_config.compute.price_micro_lamports = fee_tuning.cu_price_micro_lamports;
     // RPC-reduction tuning: the LaserStream push hooks below keep the blockhash
     // cache ~400 ms fresh and re-arm nonce slots at feed speed, so the executor's
     // pollers are demoted to stall fallbacks. 10 s watchdog tick (fetches only
