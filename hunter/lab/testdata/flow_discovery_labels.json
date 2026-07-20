@@ -1,0 +1,14 @@
+[
+  {
+    "group_key": { "cu_limit": "200000" },
+    "volume_structures": [["create", "buy"]],
+    "expected_ambiguous": false,
+    "notes": "Synthetic wash batch — mirrored in flow_discovery::tests::hand_label_kit_synthetic. Replace with real lake-curated groups once labeled."
+  },
+  {
+    "group_key": { "cu_limit": "300000" },
+    "volume_structures": [["buy"]],
+    "expected_ambiguous": true,
+    "notes": "Ambient buy-only group — lift≈1, ambiguity expected."
+  }
+]

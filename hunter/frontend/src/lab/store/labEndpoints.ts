@@ -10,14 +10,33 @@ import type {
   GroupedCreationArgs,
   GroupedCreationResponse,
 } from '@lab/components/creation-stats/groupedCreationStats';
-import type { SimulatedSummary, TraderTokenRow } from 'types';
+import type {
+  SimulatedSummary,
+  TraderTokenRow,
+  FlowDiscoveryResult,
+} from 'types';
 import type { InspectRequest, InspectRun } from '@lab/services/replayInspect';
 import type {
   EngineSimRequest,
   SimStartResponse,
   MetricSeriesResponse,
   PromotedRuleDraft,
+  Fingerprint,
 } from 'lib/strategy/types';
+import type { GroupField } from '@lab/components/sweep/groupedTypes';
+
+/** Body for `POST /api/strategies/flow-discovery`. */
+export interface FlowDiscoveryStartArgs {
+  created_after?: string;
+  created_before?: string;
+  curve_only?: boolean;
+  group_by: GroupField[];
+  bucket_width_sol?: number;
+  ix_labels_filter?: string[];
+  min_tokens?: number;
+  token_cap?: number;
+  field_filters?: Record<string, (number | boolean)[]>;
+}
 
 /**
  * Lab-only RTK Query endpoints — bundled exclusively in the lab
@@ -230,6 +249,39 @@ export const labApi = baseApi.injectEndpoints({
         rows.map((r) => ({ ...r, created_at_ms: Date.parse(r.created_at) })),
       keepUnusedDataFor: 60,
     }),
+    // Flow discovery — score trade ix-structures per fingerprint group (V4).
+    // Returns immediately with `202 { run_id }`; collect via getFlowDiscovery
+    // after `flow_discovery_finished` SSE.
+    startFlowDiscovery: builder.mutation<
+      { run_id: string; status: string },
+      FlowDiscoveryStartArgs
+    >({
+      query: (body) => ({
+        url: '/api/strategies/flow-discovery',
+        method: 'POST',
+        body,
+      }),
+    }),
+    getFlowDiscovery: builder.query<FlowDiscoveryResult, string>({
+      query: (runId) => `/api/strategies/flow-discovery/${encodeURIComponent(runId)}`,
+    }),
+    // Promote-style bind: find-or-create fingerprint from group_key + patch patterns.
+    bindFlowDiscovery: builder.mutation<
+      Fingerprint,
+      {
+        group_key: Record<string, string>;
+        bucket_width_sol: number;
+        volume_ix_patterns: string[][];
+        name?: string;
+      }
+    >({
+      query: (body) => ({
+        url: '/api/strategies/flow-discovery/bind',
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['Fingerprint'],
+    }),
   }),
 });
 
@@ -248,4 +300,8 @@ export const {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
   useGetMetricSeriesQuery,
+  useStartFlowDiscoveryMutation,
+  useGetFlowDiscoveryQuery,
+  useLazyGetFlowDiscoveryQuery,
+  useBindFlowDiscoveryMutation,
 } = labApi;

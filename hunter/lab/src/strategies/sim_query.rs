@@ -279,12 +279,70 @@ fn parse_rfc3339_ms(s: &str) -> Option<i64> {
         })
 }
 
-fn floor_to_grain(ms: i64, grain_hour: bool) -> i64 {
-    if grain_hour {
-        ms - ms.rem_euclid(3_600_000)
-    } else {
-        ms - ms.rem_euclid(86_400_000)
+/// Adaptive wall-clock bucket — twin of FE `WallGrain` / `pickWallGrain`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WallGrain {
+    M30,
+    H1,
+    H2,
+    H4,
+    Day,
+}
+
+impl WallGrain {
+    fn as_str(self) -> &'static str {
+        match self {
+            WallGrain::M30 => "30m",
+            WallGrain::H1 => "1h",
+            WallGrain::H2 => "2h",
+            WallGrain::H4 => "4h",
+            WallGrain::Day => "day",
+        }
     }
+
+    fn step_ms(self) -> i64 {
+        match self {
+            WallGrain::M30 => 30 * 60_000,
+            WallGrain::H1 => 3_600_000,
+            WallGrain::H2 => 2 * 3_600_000,
+            WallGrain::H4 => 4 * 3_600_000,
+            WallGrain::Day => 86_400_000,
+        }
+    }
+
+    /// `None` = auto (adaptive pick). Unknown strings also mean auto.
+    fn parse_override(s: &str) -> Option<Self> {
+        match s {
+            "30m" => Some(WallGrain::M30),
+            "1h" => Some(WallGrain::H1),
+            "2h" => Some(WallGrain::H2),
+            "4h" => Some(WallGrain::H4),
+            "day" => Some(WallGrain::Day),
+            _ => None,
+        }
+    }
+}
+
+fn pick_wall_grain(span_ms: i64) -> WallGrain {
+    const H: i64 = 3_600_000;
+    const D: i64 = 86_400_000;
+    let span = span_ms.max(0);
+    if span <= 6 * H {
+        WallGrain::M30
+    } else if span <= 24 * H {
+        WallGrain::H1
+    } else if span <= 3 * D {
+        WallGrain::H2
+    } else if span <= 7 * D {
+        WallGrain::H4
+    } else {
+        WallGrain::Day
+    }
+}
+
+fn floor_to_grain(ms: i64, grain: WallGrain) -> i64 {
+    let step = grain.step_ms();
+    ms - ms.rem_euclid(step)
 }
 
 fn dominant_exit(exits: &serde_json::Map<String, Value>) -> Option<&'static str> {
@@ -314,8 +372,13 @@ fn dominant_exit(exits: &serde_json::Map<String, Value>) -> Option<&'static str>
     best
 }
 
-/// Fold filtered sim rows into the temporal summary payload the FE heatmap renders.
-pub fn time_summary(rows: &[Value], wall_field: WallTimeField) -> Value {
+/// Fold filtered sim rows into the temporal summary payload the FE timeline renders.
+/// `grain_override`: `None` / auto → adaptive pick; `Some` forces that bucket size.
+pub fn time_summary(
+    rows: &[Value],
+    wall_field: WallTimeField,
+    grain_override: Option<&str>,
+) -> Value {
     let mut hold: Vec<Value> = HOLD_BINS
         .iter()
         .map(|b| {
@@ -379,15 +442,19 @@ pub fn time_summary(rows: &[Value], wall_field: WallTimeField) -> Value {
         }
     }
 
-    let (wall_grain, wall_cells) = if times.is_empty() {
-        ("day", Vec::new())
+    let forced = grain_override.and_then(WallGrain::parse_override);
+
+    let (wall_grain, wall_grain_auto, wall_span_ms, wall_cells) = if times.is_empty() {
+        (WallGrain::Day, WallGrain::Day, 0i64, Vec::new())
     } else {
         let min_t = *times.iter().min().unwrap();
         let max_t = *times.iter().max().unwrap();
-        let grain_hour = max_t - min_t <= 72 * 3_600_000;
-        let step = if grain_hour { 3_600_000 } else { 86_400_000 };
-        let start0 = floor_to_grain(min_t, grain_hour);
-        let end0 = floor_to_grain(max_t, grain_hour) + step;
+        let span = (max_t - min_t).max(0);
+        let auto = pick_wall_grain(span);
+        let grain = forced.unwrap_or(auto);
+        let step = grain.step_ms();
+        let start0 = floor_to_grain(min_t, grain);
+        let end0 = floor_to_grain(max_t, grain) + step;
         let mut cells: std::collections::BTreeMap<
             i64,
             (i64, f64, serde_json::Map<String, Value>, i64, Vec<String>),
@@ -415,7 +482,7 @@ pub fn time_summary(rows: &[Value], wall_field: WallTimeField) -> Value {
             else {
                 continue;
             };
-            let key = floor_to_grain(ts, grain_hour);
+            let key = floor_to_grain(ts, grain);
             if let Some(cell) = cells.get_mut(&key) {
                 cell.0 += 1;
                 cell.1 += pnl;
@@ -428,7 +495,6 @@ pub fn time_summary(rows: &[Value], wall_field: WallTimeField) -> Value {
                 }
             }
         }
-        let grain = if grain_hour { "hour" } else { "day" };
         let wall: Vec<Value> = cells
             .into_iter()
             .map(|(key, (n, pnl, exits, wins, mints))| {
@@ -464,13 +530,15 @@ pub fn time_summary(rows: &[Value], wall_field: WallTimeField) -> Value {
                 })
             })
             .collect();
-        (grain, wall)
+        (grain, auto, span, wall)
     };
 
     json!({
         "hold": hold,
         "wall": wall_cells,
-        "wallGrain": wall_grain,
+        "wallGrain": wall_grain.as_str(),
+        "wallGrainAuto": wall_grain_auto.as_str(),
+        "wallSpanMs": wall_span_ms,
         "wallField": wall_field.as_str(),
         "nFired": n_fired,
     })
@@ -617,7 +685,7 @@ mod tests {
                 "pnl_sol":0.1,"entry_time":"2026-07-15T15:00:00Z"
             }),
         ];
-        let body = time_summary(&rows, WallTimeField::EntryTime);
+        let body = time_summary(&rows, WallTimeField::EntryTime, None);
         assert_eq!(body["nFired"], 3);
         let hold = body["hold"].as_array().unwrap();
         let lt15 = hold.iter().find(|b| b["id"] == "lt15s").unwrap();
@@ -627,7 +695,9 @@ mod tests {
         assert_eq!(s15["n"], 1);
         let open = hold.iter().find(|b| b["id"] == "open").unwrap();
         assert_eq!(open["n"], 1);
-        assert_eq!(body["wallGrain"], "hour");
+        assert_eq!(body["wallGrain"], "30m");
+        assert_eq!(body["wallGrainAuto"], "30m");
+        assert!(body["wallSpanMs"].as_i64().unwrap() > 0);
         let wall_n: i64 = body["wall"]
             .as_array()
             .unwrap()
@@ -635,6 +705,21 @@ mod tests {
             .map(|c| c["n"].as_i64().unwrap_or(0))
             .sum();
         assert_eq!(wall_n, 3);
+
+        let forced = time_summary(&rows, WallTimeField::EntryTime, Some("1h"));
+        assert_eq!(forced["wallGrain"], "1h");
+        assert_eq!(forced["wallGrainAuto"], "30m");
+    }
+
+    #[test]
+    fn pick_wall_grain_matches_fe_thresholds() {
+        const H: i64 = 3_600_000;
+        const D: i64 = 86_400_000;
+        assert_eq!(pick_wall_grain(2 * H), WallGrain::M30);
+        assert_eq!(pick_wall_grain(12 * H), WallGrain::H1);
+        assert_eq!(pick_wall_grain(2 * D), WallGrain::H2);
+        assert_eq!(pick_wall_grain(5 * D), WallGrain::H4);
+        assert_eq!(pick_wall_grain(14 * D), WallGrain::Day);
     }
 
     #[test]

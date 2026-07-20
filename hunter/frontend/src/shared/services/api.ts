@@ -156,9 +156,10 @@ export function fetchEngineSimTimeSummary(
   runId: string,
   body: TableRequestBody,
   wallField: 'entry_time' | 'created_at' = 'entry_time',
+  wallGrain: import('lib/strategy/temporalSummary').WallGrainChoice = 'auto',
   signal?: AbortSignal,
 ): Promise<import('types').TemporalSummaryPayload> {
-  const q = new URLSearchParams({ wall_field: wallField });
+  const q = new URLSearchParams({ wall_field: wallField, wall_grain: wallGrain });
   return request(
     `${API_BASE}/api/strategies/simulate/${encodeURIComponent(runId)}/result/time-summary?${q}`,
     {
@@ -348,6 +349,11 @@ export async function updateProfileTags(profileId: string, tagIds: string[]): Pr
  *  polls the flag between groups and bails). No-op if none is running. */
 export async function cancelGroupedSweep(): Promise<void> {
   await request(`${API_BASE}/api/strategies/sweeps/cancel`, { method: 'POST' });
+}
+
+/** Cooperative cancel for the in-flight flow-discovery job. */
+export async function cancelFlowDiscovery(): Promise<void> {
+  await request(`${API_BASE}/api/strategies/flow-discovery/cancel`, { method: 'POST' });
 }
 
 /** Start a rule's backtest as a detached background job (returns immediately).

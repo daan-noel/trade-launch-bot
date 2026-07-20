@@ -38,12 +38,21 @@ struct JobsStatus {
     sweep: Option<SweepStatus>,
     /// One entry per in-flight rule simulation.
     simulations: Vec<SimulationStatus>,
+    /// Present iff the single-flight flow-discovery job is running.
+    discovery: Option<SweepStatus>,
 }
 
 /// `GET /api/jobs/status` — snapshot of every running background job.
 pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
     let sweep = if state.sweep_running.load(Ordering::Acquire) {
         let (processed, total) = state.sweep_progress.snapshot();
+        Some(SweepStatus { processed, total })
+    } else {
+        None
+    };
+
+    let discovery = if state.discovery_running.load(Ordering::Acquire) {
+        let (processed, total) = state.discovery_progress.snapshot();
         Some(SweepStatus { processed, total })
     } else {
         None
@@ -65,6 +74,7 @@ pub async fn job_status(state: web::Data<Arc<LocalState>>) -> impl Responder {
     HttpResponse::Ok().json(JobsStatus {
         sweep,
         simulations,
+        discovery,
     })
 }
 

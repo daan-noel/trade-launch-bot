@@ -50,7 +50,7 @@ import {
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
-import type { WallTimeField } from 'lib/strategy/temporalSummary';
+import type { WallGrainChoice, WallTimeField } from 'lib/strategy/temporalSummary';
 import type { SummarySection } from 'components/strategy/SummaryStatsPanel';
 import type {
   MatchedTokenRecord,
@@ -337,7 +337,8 @@ function RuleSimPositionsPanel({
   // Positions view is active.
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
-  const [wallField, setWallField] = useState<WallTimeField>('entry_time');
+  const [wallField, setWallField] = useState<WallTimeField>('created_at');
+  const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
   const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
 
   // Temporal mint-set is applied to the page fetch only — summary + time-summary
@@ -403,6 +404,7 @@ function RuleSimPositionsPanel({
       rule.id,
       timeSummaryBody as TableRequestBody,
       wallField,
+      wallGrain,
       ctrl.signal,
     )
       .then((t) => {
@@ -413,7 +415,7 @@ function RuleSimPositionsPanel({
         if (!ctrl.signal.aborted) setTimeSummary(null);
       });
     return () => ctrl.abort();
-  }, [view, rule.id, timeSummaryBody, wallField, reloadNonce]);
+  }, [view, rule.id, timeSummaryBody, wallField, wallGrain, reloadNonce]);
 
   // Matched — every token the rule's fingerprint selects (positions are the subset
   // that actually entered). No summary and no entry/exit overlay: these are
@@ -519,11 +521,17 @@ function RuleSimPositionsPanel({
           )}
           {timeSummary && timeSummary.nFired > 0 && (
             <TemporalSummary
-              data={timeSummary}
+              data={{
+                ...timeSummary,
+                wallGrainAuto: timeSummary.wallGrainAuto ?? timeSummary.wallGrain,
+                wallSpanMs: timeSummary.wallSpanMs ?? 0,
+              }}
               selection={temporalSel}
               onSelect={setTemporalSel}
               wallField={wallField}
               onWallFieldChange={setWallField}
+              wallGrain={wallGrain}
+              onWallGrainChange={setWallGrain}
             />
           )}
           <TokenTable

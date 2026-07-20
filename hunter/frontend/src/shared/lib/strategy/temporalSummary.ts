@@ -1,10 +1,11 @@
 /**
  * Temporal summary fold — hold-duration × exit mix + wall-clock entry/create
- * heatmap. Shared by Simulate (server bins mirror this shape) and the
+ * volume timeline. Shared by Simulate (server bins mirror this shape) and the
  * grouped-sweep combo drill-in (client fold over ComboTokenResult rows).
  *
  * Keep hold-bin edges in sync with `lab::strategies::sim_query::time_summary`
  * (Rust). Integer-second bins so `holding` col-filters (`15..59`) round-trip.
+ * Wall grain picker is also twin'd there (`pick_wall_grain`).
  */
 
 import { EXIT_KINDS, type ExitCountKey } from './runSummary';
@@ -25,6 +26,14 @@ export interface TemporalRow {
 export type WallTimeField = 'entry_time' | 'created_at';
 
 export type TemporalMetric = 'exit_mix' | 'pnl';
+
+/** Adaptive wall-clock bucket size — pick by cohort span (see `pickWallGrain`). */
+export type WallGrain = '30m' | '1h' | '2h' | '4h' | 'day';
+
+/** Manual override; `auto` uses `pickWallGrain` on the cohort span. */
+export type WallGrainChoice = 'auto' | WallGrain;
+
+export const WALL_GRAINS: readonly WallGrain[] = ['30m', '1h', '2h', '4h', 'day'];
 
 /** Hold-bin edges in seconds — inclusive lo, inclusive hi (`null` hi = open-ended). */
 export const HOLD_BINS: ReadonlyArray<{
@@ -91,8 +100,12 @@ export interface WallCellStats {
 export interface TemporalSummaryData {
   hold: HoldBinStats[];
   wall: WallCellStats[];
-  /** `hour` when span ≤ 72h, else `day`. */
-  wallGrain: 'hour' | 'day';
+  /** Grain actually used for `wall` (auto pick or override). */
+  wallGrain: WallGrain;
+  /** What `pickWallGrain` would choose for this cohort (even when overridden). */
+  wallGrainAuto: WallGrain;
+  /** max(ts) − min(ts) over timed rows; 0 when empty / single stamp. */
+  wallSpanMs: number;
   wallField: WallTimeField;
   /** Fired rows that contributed (excludes NoEntry). */
   nFired: number;
@@ -143,18 +156,42 @@ export function parseTsMs(iso: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-function floorToGrain(ms: number, grain: 'hour' | 'day'): number {
-  const d = new Date(ms);
-  if (grain === 'day') {
-    d.setUTCHours(0, 0, 0, 0);
-  } else {
-    d.setUTCMinutes(0, 0, 0);
+const H = 3_600_000;
+const D = 86_400_000;
+
+/** Step size for a wall grain (ms). */
+export function wallGrainStepMs(grain: WallGrain): number {
+  switch (grain) {
+    case '30m':
+      return 30 * 60_000;
+    case '1h':
+      return H;
+    case '2h':
+      return 2 * H;
+    case '4h':
+      return 4 * H;
+    case 'day':
+      return D;
   }
-  return d.getTime();
 }
 
-function stepMs(grain: 'hour' | 'day'): number {
-  return grain === 'hour' ? 3_600_000 : 86_400_000;
+/**
+ * Choose a wall bucket so short cohorts stay readable (~dozen bars) and long
+ * ones don't explode into hundreds of hour cells. Twin of Rust `pick_wall_grain`.
+ */
+export function pickWallGrain(spanMs: number): WallGrain {
+  const span = Math.max(0, spanMs);
+  if (span <= 6 * H) return '30m';
+  if (span <= 24 * H) return '1h';
+  if (span <= 3 * D) return '2h';
+  if (span <= 7 * D) return '4h';
+  return 'day';
+}
+
+export function floorToWallGrain(ms: number, grain: WallGrain): number {
+  const step = wallGrainStepMs(grain);
+  // UTC epoch alignment — same as Rust `floor_to_grain` (rem_euclid on millis).
+  return ms - ((((ms % step) + step) % step));
 }
 
 function dominantExit(exits: Record<string, number>): string | null {
@@ -173,12 +210,14 @@ function dominantExit(exits: Record<string, number>): string | null {
 }
 
 /**
- * Fold fired rows into hold bins + a wall-clock heatmap over `wallField`.
+ * Fold fired rows into hold bins + a wall-clock volume timeline over `wallField`.
  * Not-fired (`NoEntry`) rows are skipped.
+ * `grainChoice` overrides the adaptive picker when not `'auto'`.
  */
 export function buildTemporalSummary(
   rows: TemporalRow[],
   wallField: WallTimeField = 'entry_time',
+  grainChoice: WallGrainChoice = 'auto',
 ): TemporalSummaryData {
   const fired = rows.filter((r) => r.fired);
   const holdMap = new Map<string, HoldBinStats>();
@@ -208,15 +247,19 @@ export function buildTemporalSummary(
     if (ts != null) times.push(ts);
   }
 
-  let wallGrain: 'hour' | 'day' = 'day';
+  let wallGrain: WallGrain = 'day';
+  let wallGrainAuto: WallGrain = 'day';
+  let wallSpanMs = 0;
   const wall: WallCellStats[] = [];
   if (times.length > 0) {
     const minT = Math.min(...times);
     const maxT = Math.max(...times);
-    wallGrain = maxT - minT <= 72 * 3_600_000 ? 'hour' : 'day';
-    const step = stepMs(wallGrain);
-    const start0 = floorToGrain(minT, wallGrain);
-    const end0 = floorToGrain(maxT, wallGrain) + step;
+    wallSpanMs = Math.max(0, maxT - minT);
+    wallGrainAuto = pickWallGrain(wallSpanMs);
+    wallGrain = grainChoice === 'auto' ? wallGrainAuto : grainChoice;
+    const step = wallGrainStepMs(wallGrain);
+    const start0 = floorToWallGrain(minT, wallGrain);
+    const end0 = floorToWallGrain(maxT, wallGrain) + step;
     const cellMap = new Map<number, WallCellStats>();
     for (let t = start0; t < end0; t += step) {
       cellMap.set(t, {
@@ -235,7 +278,7 @@ export function buildTemporalSummary(
     for (const r of fired) {
       const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
       if (ts == null) continue;
-      const key = floorToGrain(ts, wallGrain);
+      const key = floorToWallGrain(ts, wallGrain);
       const cell = cellMap.get(key);
       if (!cell) continue;
       cell.n += 1;
@@ -259,9 +302,34 @@ export function buildTemporalSummary(
     hold: HOLD_BINS.map((b) => holdMap.get(b.id)!),
     wall,
     wallGrain,
+    wallGrainAuto,
+    wallSpanMs,
     wallField,
     nFired: fired.length,
   };
+}
+
+/** Short human span for glance chips (`45m`, `6h`, `2.5d`). */
+export function formatWallSpan(spanMs: number): string {
+  const ms = Math.max(0, spanMs);
+  if (ms < 60_000) return '<1m';
+  if (ms < H) return `${Math.max(1, Math.round(ms / 60_000))}m`;
+  if (ms < D) {
+    const h = ms / H;
+    return h >= 10 ? `${Math.round(h)}h` : `${Number(h.toFixed(1))}h`;
+  }
+  const d = ms / D;
+  return d >= 10 ? `${Math.round(d)}d` : `${Number(d.toFixed(1))}d`;
+}
+
+/** Busiest wall cell (first max on ties). */
+export function peakWallCell(cells: WallCellStats[]): WallCellStats | null {
+  let best: WallCellStats | null = null;
+  for (const c of cells) {
+    if (c.n <= 0) continue;
+    if (!best || c.n > best.n) best = c;
+  }
+  return best;
 }
 
 /** Whether a row falls in a hold bin (for client-side cohort filter). */
@@ -284,13 +352,21 @@ export function rowMatchesWallCell(
   return ts >= a && ts < b;
 }
 
-/** Diverging red←0→green wash for heatmap cells. `maxAbs` is the cohort peak |pnl|. */
+/** Diverging red←0→green wash for pnl-colored bars. `maxAbs` is the cohort peak |pnl|. */
 export function pnlHeatBackground(pnl: number, maxAbs: number, n: number): string {
-  if (n <= 0) return 'rgba(255,255,255,0.02)';
-  if (!(maxAbs > 0)) return 'rgba(255,255,255,0.06)';
+  if (n <= 0) return 'rgba(255,255,255,0.04)';
+  if (!(maxAbs > 0)) return 'rgba(255,255,255,0.1)';
   const t = Math.min(1, Math.abs(pnl) / maxAbs);
-  const a = (0.1 + 0.75 * t).toFixed(3);
+  const a = (0.22 + 0.78 * t).toFixed(3);
   return pnl >= 0 ? `rgba(34,197,94,${a})` : `rgba(239,68,68,${a})`;
+}
+
+/** Count intensity (cyan) for volume-first wall bars when not coloring by PnL. */
+export function countHeatBackground(n: number, maxN: number): string {
+  if (n <= 0) return 'rgba(255,255,255,0.04)';
+  const t = Math.min(1, n / Math.max(1, maxN));
+  const a = (0.28 + 0.72 * t).toFixed(3);
+  return `rgba(56,189,248,${a})`;
 }
 
 /** Stack segments for a hold bar — EXIT_KINDS order, drop zeros. */
@@ -312,15 +388,37 @@ export function holdBarSegments(exits: Record<string, number>): Array<{
   return out;
 }
 
-export function formatWallTick(iso: string, grain: 'hour' | 'day'): string {
-  const d = new Date(iso);
-  if (grain === 'hour') {
-    return d.toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      hour12: false,
-    });
+export function wallGrainLabel(grain: WallGrain): string {
+  switch (grain) {
+    case '30m':
+      return '30m';
+    case '1h':
+      return '1h';
+    case '2h':
+      return '2h';
+    case '4h':
+      return '4h';
+    case 'day':
+      return 'day';
   }
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+export function parseWallGrainChoice(s: string | null | undefined): WallGrainChoice {
+  if (!s || s === 'auto') return 'auto';
+  if ((WALL_GRAINS as readonly string[]).includes(s)) return s as WallGrain;
+  return 'auto';
+}
+
+export function formatWallTick(iso: string, grain: WallGrain): string {
+  const d = new Date(iso);
+  if (grain === 'day') {
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: grain === '30m' ? '2-digit' : undefined,
+    hour12: false,
+  });
 }

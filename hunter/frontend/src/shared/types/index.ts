@@ -371,7 +371,11 @@ export interface SimulatedSummary extends RunSummary {
 export interface TemporalSummaryPayload {
   hold: import('lib/strategy/temporalSummary').HoldBinStats[];
   wall: import('lib/strategy/temporalSummary').WallCellStats[];
-  wallGrain: 'hour' | 'day';
+  wallGrain: import('lib/strategy/temporalSummary').WallGrain;
+  /** Auto pick for this cohort (present even when `wallGrain` was overridden). */
+  wallGrainAuto?: import('lib/strategy/temporalSummary').WallGrain;
+  /** max−min wall timestamps in ms. */
+  wallSpanMs?: number;
   wallField: 'entry_time' | 'created_at';
   nFired: number;
 }
@@ -470,6 +474,58 @@ export interface SimulationFinishedEvent {
 export interface JobsStatus {
   sweep: { processed: number; total: number } | null;
   simulations: { rule_id: string; processed: number; total: number }[];
+  /** Present iff the single-flight flow-discovery job is running. */
+  discovery: { processed: number; total: number } | null;
+}
+
+/** Payload of the `flow_discovery_progress` SSE event. */
+export interface FlowDiscoveryProgressEvent {
+  run_id: string;
+  phase: string;
+  processed: number;
+  total: number;
+}
+
+/** Payload of the `flow_discovery_finished` SSE event. */
+export interface FlowDiscoveryFinishedEvent {
+  run_id: string;
+  cancelled: boolean;
+  error?: string | null;
+}
+
+/** Payload of the `flow_discovery_notice` SSE event. */
+export interface FlowDiscoveryNoticeEvent {
+  run_id: string;
+  message: string;
+}
+
+/** One ranked ix-structure from a flow-discovery group. */
+export interface FlowDiscoveryStructure {
+  ix_labels: string[];
+  volume_share: number;
+  wash_symmetry: number;
+  cross_token_recurrence: number;
+  group_lift: number;
+  slot_burst: number;
+  wallet_reuse: number;
+  wallet_overlap: number;
+  n_trades: number;
+  gross_sol: number;
+}
+
+/** One fingerprint group in a flow-discovery result. */
+export interface FlowDiscoveryGroup {
+  group_key: Record<string, string>;
+  n_tokens: number;
+  n_trades_scored: number;
+  ambiguity: boolean;
+  structures: FlowDiscoveryStructure[];
+}
+
+/** `GET /api/strategies/flow-discovery/{run_id}` response. */
+export interface FlowDiscoveryResult {
+  run_id: string;
+  groups: FlowDiscoveryGroup[];
 }
 
 /** The live (real) strategy managing a held mint — the Holdings bot badge and the

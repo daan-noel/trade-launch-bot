@@ -19,6 +19,7 @@ export const labNav: NavConfig = {
       items: [
         { to: '/strategies/rules', label: 'Rules' },
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
+        { to: '/strategies/flow-discovery', label: 'Flow discovery' },
         { to: '/strategies/simulate', label: 'Simulate' },
         { to: '/strategies/sweep', label: 'Grouped sweep' },
         { to: '/strategies/replay', label: 'Replay viewer' },

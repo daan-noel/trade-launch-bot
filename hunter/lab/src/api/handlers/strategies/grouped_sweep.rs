@@ -355,6 +355,13 @@ pub async fn start_grouped_sweep(
         }
     };
 
+    // Mutual exclusion with flow-discovery (shared Duck/RAM).
+    if state.discovery_running.load(Ordering::Acquire) {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "a flow-discovery job is already running — wait or cancel it before sweeping"
+        }));
+    }
+
     // Single-flight: claim the shared sweep gate or reject. Claimed synchronously
     // here so a concurrent request gets its 409 immediately; the spawned job owns
     // the matching release (`run_grouped_sweep_job`'s `Gate`).
@@ -1584,7 +1591,11 @@ fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
 /// match reproduces the group's membership exactly. Grouping-only fields
 /// (`token_program_id`, `is_cashback_enabled`) have no fingerprint axis and the
 /// `∅` "missing" label is skipped.
-fn fingerprint_from_group_key(gk: &serde_json::Value, width: f64, name: String) -> Fingerprint {
+pub(crate) fn fingerprint_from_group_key(
+    gk: &serde_json::Value,
+    width: f64,
+    name: String,
+) -> Fingerprint {
     let now = Utc::now();
     let mut fp = Fingerprint {
         id: Uuid::new_v4(),
@@ -1922,7 +1933,7 @@ fn bad_strategy(strategy_id: &str) -> HttpResponse {
 /// Return `true` if the token's fingerprint value for `field` is in `allowed`.
 /// `IxLabels` is handled by the `ix_labels_filter` path and never reaches here.
 /// `TokenProgramId` isn't offered in the frontend filter UI.
-fn matches_field_filter(
+pub(crate) fn matches_field_filter(
     fp: &crate::sweep::grouping::TokenFingerprint,
     field: crate::sweep::grouping::GroupField,
     allowed: &[serde_json::Value],

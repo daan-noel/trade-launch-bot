@@ -10,11 +10,13 @@
 } from 'react';
 import { useDispatch } from 'react-redux';
 import {
+  connectFlowDiscoveryFinished,
   connectSimulationFinished,
   connectSweepFinished,
   sseSubscribe,
 } from 'services/sse';
 import {
+  cancelFlowDiscovery,
   cancelGroupedSweep,
   cancelSimulation,
   getJobsStatus,
@@ -23,6 +25,8 @@ import { apiSlice } from 'store/apiSlice';
 import { useToast } from 'components/ui/Toast';
 import type { AppDispatch } from '@lab/store';
 import type {
+  FlowDiscoveryNoticeEvent,
+  FlowDiscoveryProgressEvent,
   SimulationProgressEvent,
   SweepGroupDoneEvent,
   SweepNoticeEvent,
@@ -59,7 +63,7 @@ import type {
  * `jobs`/`isRunning` and is consumed by the global indicator (and the sweep
  * page's run-state check) alone.
  */
-export type JobKind = 'sweep' | 'simulation';
+export type JobKind = 'sweep' | 'simulation' | 'discovery';
 
 /** Progress state for one named phase of a sweep (corpus / coarse / sweep). */
 export interface PhaseProgress {
@@ -80,7 +84,11 @@ const PHASE_LABELS: Record<string, string> = {
   corpus: 'Loading corpus',
   coarse: 'Coarse sweep',
   sweep: 'Sweep',
+  score: 'Scoring structures',
 };
+
+/** Singleton key for the single-flight flow-discovery job. */
+const DISCOVERY_KEY = 'discovery';
 
 export interface BackgroundJob {
   kind: JobKind;
@@ -274,6 +282,13 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
             total: status.sweep.total,
           });
         }
+        if (status.discovery) {
+          upsert('discovery', DISCOVERY_KEY, {
+            label: 'Flow discovery',
+            processed: status.discovery.processed,
+            total: status.discovery.total,
+          });
+        }
         for (const s of status.simulations) {
           upsert('simulation', s.rule_id, { processed: s.processed, total: s.total });
         }
@@ -338,6 +353,35 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
         /* ignore malformed frames */
       }
     });
+    const offDiscoveryProgress = sseSubscribe('flow_discovery_progress', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const p = JSON.parse(e.data) as FlowDiscoveryProgressEvent;
+        const sized = p.total > 0;
+        upsert(
+          'discovery',
+          DISCOVERY_KEY,
+          {
+            label: 'Flow discovery',
+            processed: sized ? p.processed : null,
+            total: sized ? p.total : null,
+            runId: p.run_id,
+          },
+          p.phase,
+        );
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+    const offDiscoveryNotice = sseSubscribe('flow_discovery_notice', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const n = JSON.parse(e.data) as FlowDiscoveryNoticeEvent;
+        addToast('Flow discovery', n.message, 'info');
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
     const sweepFinished = connectSweepFinished((ev) => {
       remove('sweep', SWEEP_KEY);
       // A finished sweep persisted a new run — refresh the runs list app-wide.
@@ -351,6 +395,10 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       if (ev.error) addToast('Sweep problem', ev.error, 'danger');
     });
     const simFinished = connectSimulationFinished((ev) => remove('simulation', ev.rule_id));
+    const discoveryFinished = connectFlowDiscoveryFinished((ev) => {
+      remove('discovery', DISCOVERY_KEY);
+      if (ev.error) addToast('Flow discovery problem', ev.error, 'danger');
+    });
 
     return () => {
       alive = false;
@@ -358,8 +406,11 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
       offSweepGroupDone();
       offSweepNotice();
       offSimProgress();
+      offDiscoveryProgress();
+      offDiscoveryNotice();
       sweepFinished.close();
       simFinished.close();
+      discoveryFinished.close();
       if (groupsInvalidateTimer.current) {
         clearTimeout(groupsInvalidateTimer.current);
         groupsInvalidateTimer.current = null;
@@ -401,7 +452,11 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
     (job: BackgroundJob) => {
       upsert(job.kind, job.id, { cancelling: true });
       const req =
-        job.kind === 'sweep' ? cancelGroupedSweep() : cancelSimulation(job.id);
+        job.kind === 'sweep'
+          ? cancelGroupedSweep()
+          : job.kind === 'discovery'
+            ? cancelFlowDiscovery()
+            : cancelSimulation(job.id);
       req.catch(() => upsert(job.kind, job.id, { cancelling: false }));
     },
     [upsert],

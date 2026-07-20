@@ -162,6 +162,23 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/sweeps/{run_id}/groups/{group_id}/promote",
                 web::post().to(handlers::strategies::grouped_sweep::promote_group),
+            )
+            // ── Flow discovery (volume ix-structure scoring) ──
+            .route(
+                "/strategies/flow-discovery",
+                web::post().to(handlers::strategies::flow_discovery::start_flow_discovery),
+            )
+            .route(
+                "/strategies/flow-discovery/cancel",
+                web::post().to(handlers::strategies::flow_discovery::cancel_flow_discovery),
+            )
+            .route(
+                "/strategies/flow-discovery/bind",
+                web::post().to(handlers::strategies::flow_discovery::bind_flow_discovery),
+            )
+            .route(
+                "/strategies/flow-discovery/{run_id}",
+                web::get().to(handlers::strategies::flow_discovery::get_flow_discovery),
             ),
     );
 }

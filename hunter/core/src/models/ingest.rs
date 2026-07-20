@@ -145,6 +145,26 @@ pub enum SseEvent {
         rule_id: uuid::Uuid,
         cancelled: bool,
     },
+    /// Progress of an in-flight flow-discovery job. `phase` is `"corpus"` (lake
+    /// load; `total: 0` ⇒ indeterminate) or `"score"` (per-token fold). Not
+    /// mint-scoped — always delivered.
+    FlowDiscoveryProgress {
+        run_id: uuid::Uuid,
+        phase: String,
+        processed: u64,
+        total: u64,
+    },
+    /// Terminal frame for flow discovery (`cancelled` / optional `error`).
+    FlowDiscoveryFinished {
+        run_id: uuid::Uuid,
+        cancelled: bool,
+        error: Option<String>,
+    },
+    /// Non-fatal notice during discovery (e.g. token_cap truncation).
+    FlowDiscoveryNotice {
+        run_id: uuid::Uuid,
+        message: String,
+    },
     /// A generic-engine position transition, emitted by the engine's
     /// `PositionUpdate` sink. Mint-scoped. `status` is the `strategy_positions`
     /// lifecycle string (`BuySubmitted` | `Holding` | `ExitPending` | `End` |

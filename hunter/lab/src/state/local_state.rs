@@ -10,6 +10,7 @@ use super::job_progress::ProgressCell;
 use super::analysis_cache::AnalysisCache;
 use super::sim_results::SimResults;
 use super::sim_summary::SimSummaryCache;
+use crate::strategies::flow_discovery::DiscoveryResult;
 use crate::sweep::corpus::CorpusToken;
 
 /// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
@@ -90,6 +91,16 @@ pub struct LocalState {
     /// loads shared across rules with the same token filter and analysis window.
     /// Matched paging reads the mint set derived from the candidate cache.
     pub analysis_cache: Arc<AnalysisCache>,
+    /// Single-flight gate for flow-discovery (mutual exclusion with
+    /// [`Self::sweep_running`] — both are Duck/RAM hungry).
+    pub discovery_running: Arc<AtomicBool>,
+    /// Cooperative cancel for the in-flight discovery job.
+    pub discovery_cancel: Arc<AtomicBool>,
+    /// Progress cell for `/api/jobs/status` recovery (discovery phase).
+    pub discovery_progress: Arc<ProgressCell>,
+    /// Ephemeral last discovery result (keyed by `run_id`). Overwritten on the
+    /// next successful run; cleared on process restart — authoring aid only.
+    pub discovery_result: Arc<RwLock<Option<(Uuid, DiscoveryResult)>>>,
 }
 
 impl LocalState {
@@ -106,6 +117,10 @@ impl LocalState {
             last_sim_summary: Arc::new(SimSummaryCache::new()),
             sweep_corpus_cache: Arc::new(RwLock::new(None)),
             analysis_cache: Arc::new(AnalysisCache::new()),
+            discovery_running: Arc::new(AtomicBool::new(false)),
+            discovery_cancel: Arc::new(AtomicBool::new(false)),
+            discovery_progress: Arc::new(ProgressCell::default()),
+            discovery_result: Arc::new(RwLock::new(None)),
         }
     }
 }

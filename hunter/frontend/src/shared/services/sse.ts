@@ -240,6 +240,21 @@ export function connectSimulationFinished(
   return { close: unsub };
 }
 
+/** Terminal signal for the in-flight flow-discovery job. */
+export function connectFlowDiscoveryFinished(
+  onFinished: (ev: import('types').FlowDiscoveryFinishedEvent) => void,
+): StreamHandle {
+  const unsub = subscribe('flow_discovery_finished', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onFinished(JSON.parse(e.data) as import('types').FlowDiscoveryFinishedEvent);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
 /**
  * Generic-engine armed-state stream (`strategy_armed_changed`) — a (token, rule)
  * pair armed or disarmed. The live monitor keeps its own armed map from these

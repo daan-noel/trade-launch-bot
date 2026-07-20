@@ -6,7 +6,7 @@ import { GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigFor
 
 const SHORTCUTS: { to: string; label: string; blurb: string }[] = [
   { to: '/tokens', label: 'Tokens', blurb: 'Universe + metric panes' },
-  { to: '/strategies/simulate', label: 'Simulate', blurb: 'Run saved rules on the lake' },
+  { to: '/strategies/flow-discovery', label: 'Flow discovery', blurb: 'Ix structures → volume patterns' },
   { to: '/strategies/sweep', label: 'Grouped sweep', blurb: 'Param search → promote' },
   { to: '/analysis/trader', label: 'Trader', blurb: 'Wallet → tokens + charts' },
 ];

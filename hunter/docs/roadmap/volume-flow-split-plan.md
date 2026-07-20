@@ -1,9 +1,10 @@
 # Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_window`)
 
-Status: **IN PROGRESS** (design settled 2026-07-17; **V0–V3 shipped 2026-07-20**; V4 discovery next).
+Status: **IN PROGRESS** (design settled 2026-07-17; **V0–V3 shipped 2026-07-20**;
+**V4 discovery implemented 2026-07-20**; V5 docs trails).
 Scope: hunter only. A follow-on to the generic engine —
 [fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md).
-Phase 5 prerequisites are met; the discovery job (§7) can trail the metrics.
+Phase 5 prerequisites are met; the discovery job (§7) is the remaining product work.
 Origin: creator wash-volume tracking idea + reference reading of
 `bot-panther-new-main/src/trading/volume_bot/{bot,types}.rs` (concepts borrowed:
 pattern classifier, wallet contagion, two signed accumulators; its hardcoded
@@ -286,38 +287,197 @@ ALTER TABLE fingerprints
       contract's first real exercise). Sweep start form also sends
       `volume_ix_patterns` when flow axes are selected.
 
-### V4 — Discovery job (§7)
+### V4 — Discovery job (§7) — design settled 2026-07-20; implement next
 
-- [ ] 4.1 Lab endpoint: per-fingerprint-group structure stats + scores over a corpus
-      window (streamed like sweeps if slow; bounded queries — data-scale rule).
-- [ ] 4.2 Lab page: ranked structure table (scores + ambiguity warning), toggle →
-      writes `metric_config` via fingerprint update; show current config diff.
-- [ ] 4.3 Validate scores against a handful of hand-labeled creator groups before
-      enabling any auto-promote mode (which stays future work).
+> No stubs yet. Reuse sweep admission/SSE + `Selection`/`GroupKey` + fingerprint
+> `PUT`/`VolumeIxPatternsEditor`. New work = scorer + lake aggregation + lab page.
+> Settled decisions for discovery are in §7.0 (do not re-litigate).
+
+- [x] 4.1 Scorer module (`lab/src/strategies/flow_discovery.rs`): per-group fold over
+      `with_flow` corpus → ranked `StructureScore` rows (§7.1–7.2). Unit tests on a
+      synthetic mini-corpus covering wash / organic / ambiguous-lift cases.
+- [x] 4.2 Lab API (`lab/src/api/handlers/strategies/flow_discovery.rs` + route in
+      `api/mod.rs`):
+      - `POST /api/strategies/flow-discovery` → `202 { run_id, status }` (single-flight
+        **separate** from `sweep_running` — own `discovery_running` AtomicBool +
+        `discovery_progress: ProgressCell`; both contend for Duck/CPU so refuse with
+        `409` if the *other* job is active too).
+      - Body mirrors the corpus half of `StartGroupedSweepBody` (date window,
+        `group_by`, `bucket_width_sol`, `token_cap`, `field_filters`,
+        `ix_labels_filter`, `min_tokens`) — **no** combo axes.
+      - Progress: new `SseEvent::{FlowDiscoveryProgress, FlowDiscoveryFinished,
+        FlowDiscoveryNotice}` + `JobsStatus.discovery` seed (same shape as sweep's
+        `{processed,total,phase}`).
+      - `GET /api/strategies/flow-discovery/{run_id}` → full result JSON (ephemeral
+        in-RAM; no PG persistence — discovery runs are authoring aids, not audit
+        trails). Cap response: top `MAX_STRUCTURES_PER_GROUP` (64) per group, groups
+        sorted by `n_tokens` desc, drop groups with `n_tokens < min_tokens` (default 3).
+      - `POST /api/strategies/flow-discovery/cancel`.
+      - Apply path = existing `PUT /api/fingerprints/{id}` + promote-style
+        `POST .../bind` (`find_or_create` + `update` for unbound `GroupKey` — §7.0.4).
+- [x] 4.3 Lab page `/strategies/flow-discovery` (`lab/pages/strategies/FlowDiscoveryPage.tsx`
+      + nav + `LabHomePage` shortcut + `labEndpoints`):
+      - Config: reuse `FingerprintGroupPicker` + corpus window knobs.
+      - Results: per-group list → ranked structure table (six scores + ambiguity
+        chip). Toggle rows → draft `volume_ix_patterns`; diff vs bound fingerprint.
+      - Apply: `VolumeIxPatternsEditor` + `updateFingerprint` / bind.
+      - `BackgroundJobsContext` job kind `discovery` (progress + cancel + status seed).
+- [x] 4.4 Hand-label validation kit (blocks auto-promote, which stays §8):
+      - `lab/testdata/flow_discovery_labels.json` + synthetic guard test
+        `hand_label_kit_synthetic` (top-5 / `expected_ambiguous`).
 
 ### V5 — Docs
 
-- [ ] 5.1 `metrics-reference.md`: the 18 metrics (formula/unit/tolerance/monotonic +
-      classifier definition). `arch/strategies.md` + `arch/sweep.md` +
-      `arch/database.md` (metric_config column, lake columns).
-      hunter/CLAUDE.md only if a new hard rule emerges (hash SSOT likely qualifies).
+- [ ] 5.1 `docs/plans/strategies/metrics-reference.md` (or extend the existing metrics
+      deep-dive if one already exists): the 18 flow metrics
+      (formula / unit / eq-tol / monotonic) + classifier definition (§1.1) + NaN
+      rules (unconfigured FP, missing `ix_hash`).
+- [ ] 5.2 Arch tier: `arch/strategies.md` (flow groups + fingerprint-scoped state +
+      hash SSOT); `arch/sweep.md` (run-config `volume_ix_patterns` + promote write);
+      `arch/database.md` (`fingerprints.metric_config`, lake `ix_labels`/`wallet`);
+      `arch/frontend.md` (Fingerprints `metric_config` editor + Flow Discovery page).
+- [ ] 5.3 hunter/CLAUDE.md gotcha: **flow hash SSOT** —
+      `hunter_engine::metrics::flow_split::{ix_hash,wallet_hash}` is the only hasher;
+      adapters never roll their own. (Qualifies as a hard rule — add one bullet under
+      Gotchas, keep CLAUDE thin.)
+- [ ] 5.4 Fold or delete this roadmap once V4+V5 land (per CLAUDE roadmap hygiene);
+      durable bits already live in the arch/plans tiers above.
 
 ## 7. Discovery scoring (the automated version of the manual hunt)
 
-Per fingerprint group, aggregate the corpus per distinct ix structure and score:
+### 7.0 Settled discovery decisions (contract — do not re-litigate)
 
-| signal | definition | catches |
-| --- | --- | --- |
-| volume share | % of group's total gross SOL from this structure | "the biggest trader" heuristic |
-| wash symmetry | `|net| / gross` per token, averaged (→0 = wash) | wash loops net to ~0 while gross balloons |
-| cross-token recurrence | % of the group's tokens where the structure has meaningful volume | creator tooling appears on every token in the batch |
-| **group lift** | share within group ÷ share across all tokens (TF-IDF-style) | the discriminator; lift≈1 on `["buy"]` honestly flags "indistinguishable by structure" |
-| slot-burst clustering | % of the structure's trades in 1–2-slot same-structure clusters | bundlers |
-| wallet reuse | distinct wallets per structure + overlap across the group's tokens | rotation isn't free within a batch |
+1. **Partition key = sweep/creation-stats `GroupKey`, not `fingerprint_id`.**
+   Discovery answers "which ix structures look like volume tooling inside this
+   creator-tooling cluster?" — the same axes the user already groups by
+   (`GroupField` + `bucket_width_sol`). Binding a result to a saved fingerprint is
+   a separate Apply step (§7.0.4). Empty `group_by` ⇒ one `"ALL"` group (same as
+   sweeps) — useful for a first pass, noisy for lift.
+2. **Aggregation engine = Rust fold over a `with_flow` corpus load**, not a new Duck
+   SQL surface. Rationale: scores need per-trade `(ix_labels, wallet, sol, side,
+   slot)` plus per-token membership; the lake already projects those behind
+   `Selection.with_flow`; a fold reuses `Corpus`/`GroupKey` and stays testable
+   offline. Duck stays the loader. Bound the run with the same `token_cap` /
+   date-window knobs as sweeps (data-scale rule).
+3. **Ephemeral results.** No `flow_discovery_*` tables. Result lives in
+   `LocalState` keyed by `run_id` until the next run or process restart. Authoring
+   output is the fingerprint's `metric_config`, which is already persisted.
+4. **Apply = existing fingerprint write paths.**
+   - Bound to an existing FP → `PUT /api/fingerprints/{id}` with merged
+     `metric_config` (FE already has `metricConfigWithVolumePatterns`).
+   - Unbound group → promote-style: `FingerprintRepo::find_or_create` from the
+     group's axes (identity only), then `update` with the toggled patterns —
+     same shape as `promote_group`'s metric_config patch. UI labels this
+     "Create / bind fingerprint".
+5. **Structure identity = ordered label sequence**, hashed with SSOT `ix_hash`
+   for map keys; wire/API still expose `ix_labels: string[]` (never raw hashes).
+   Parse lake `ix_labels` via the same normalize path export uses
+   (`normalize_labels` / ordered JSON array). Missing/NULL labels (pre-V0 sealed
+   days) are **excluded from scoring** (not counted as a structure, not in
+   denominators) — honest "no signal", not fake-organic.
+6. **Job isolation.** Own single-flight flag + progress cell; `409` if sweep **or**
+   discovery is already running (shared Duck + RAM). Cancel via AtomicBool polled
+   in the fold (same observer shape as `SweepObserver`, thinner — no group-done
+   stream needed; one Finished frame carries the run_id).
+7. **No auto-promote in V4.** Scores + toggles only. Auto-promote above a threshold
+   is §8, gated on the hand-label kit (V4.4).
 
-UI shows all six + an **ambiguity warning** when the top structure's lift ≈ 1 (the
-flow split will be noisy for that group — surface it next to the metric rather than
-letting the user discover it from bad fills).
+### 7.1 Signals (formulas + defaults)
+
+Per fingerprint **group** G, for each distinct structure S observed on ≥1 trade in G
+with non-NULL `ix_labels`:
+
+| signal | formula | range | default knobs |
+| --- | --- | --- | --- |
+| `volume_share` | `gross_SOL(S,G) / gross_SOL(*,G) × 100` | 0–100 | — |
+| `wash_symmetry` | mean over tokens t∈G with `gross(S,t)>0` of `\|net(S,t)\| / gross(S,t)` | 0–1 (→0 = wash) | — |
+| `cross_token_recurrence` | `%` of tokens in G where `gross(S,t) ≥ min_structure_sol` | 0–100 | `min_structure_sol = 0.05` |
+| **`group_lift`** | `share(S\|G) / share(S\|W)` where W = all tokens in the loaded corpus window (after the same filters, before group split) | ≥0; 1 = indistinguishable | — |
+| `slot_burst` | `%` of S-trades in G whose slot is shared with ≥1 other S-trade in a ±1-slot window | 0–100 | window = 1 slot |
+| `wallet_reuse` | `1 − distinct_wallets(S,G) / max(trades(S,G),1)`, plus a secondary `wallet_overlap` = mean Jaccard of S-wallets across token pairs in G (UI shows both; rank key uses the first) | 0–1 | — |
+
+**Gross / net** use absolute trade SOL notional; buy and sell both add to gross;
+net = buy − sell (same sign convention as the flow metrics). Creator-wallet trades
+are **included** in discovery aggregates (discovery is hunting tooling shape, not
+applying the runtime classifier).
+
+**Ambiguity warning** (per group, boolean on the top-ranked structure and any
+toggled row): `group_lift < LIFT_AMBIGUOUS` with default `LIFT_AMBIGUOUS = 1.25`.
+Surface as a chip next to the score — do not block Apply (the user may still want
+contagion+creator-only patterns).
+
+**Ranking key** (desc): `group_lift` primary, `volume_share` secondary,
+`wash_symmetry` ascending (more wash-like first) tertiary. Expose all six in the
+table so the user can re-sort in the UI.
+
+### 7.2 Result wire shape
+
+```jsonc
+// GET /api/strategies/flow-discovery/{run_id}
+{
+  "run_id": "…",
+  "selection": { "created_after": "…", "created_before": "…", "token_cap": 5000 },
+  "group_by": ["cu_limit", "ix_labels"],
+  "groups": [
+    {
+      "group_key": { "cu_limit": "200000", "ix_labels": "create | buy" },
+      "n_tokens": 42,
+      "n_trades_scored": 12004,          // excl. NULL ix_labels
+      "ambiguity": true,                 // top structure lift < LIFT_AMBIGUOUS
+      "structures": [
+        {
+          "ix_labels": ["create", "buy"],
+          "volume_share": 61.2,
+          "wash_symmetry": 0.08,
+          "cross_token_recurrence": 95.0,
+          "group_lift": 4.7,
+          "slot_burst": 72.0,
+          "wallet_reuse": 0.55,
+          "wallet_overlap": 0.31,
+          "n_trades": 800,
+          "gross_sol": 120.5
+        }
+      ]
+    }
+  ]
+}
+```
+
+`POST` body fields (all optional except that an empty body is a valid "ALL / uncapped
+window" run — still clamped by server-side max `token_cap` like sweeps):
+
+```jsonc
+{
+  "created_after": "…", "created_before": "…",
+  "group_by": ["cu_limit", "ix_labels"],
+  "bucket_width_sol": 0.1,
+  "token_cap": 5000,
+  "min_tokens": 3,
+  "field_filters": { "cu_limit": ["200000"] },
+  "ix_labels_filter": ["create", "buy"]
+}
+```
+
+### 7.3 Hand-label kit (V4.4) — what "validated" means
+
+Before any auto-promote mode ships, each fixture group must satisfy:
+
+- every labeled volume structure appears in that group's top-5 by the ranking key, **or**
+- the fixture sets `expected_ambiguous: true` and the scorer flags `ambiguity`.
+
+Kit failures ⇒ retune knobs (`min_structure_sol`, `LIFT_AMBIGUOUS`, ranking weights),
+not silent UI workarounds. Keep the kit small (≤10 groups); quality over coverage.
+
+### 7.4 Signal intuition (unchanged)
+
+| signal | catches |
+| --- | --- |
+| volume share | "the biggest trader" heuristic |
+| wash symmetry | wash loops net to ~0 while gross balloons |
+| cross-token recurrence | creator tooling appears on every token in the batch |
+| **group lift** | the discriminator; lift≈1 on `["buy"]` honestly flags "indistinguishable by structure" |
+| slot-burst clustering | bundlers |
+| wallet reuse | rotation isn't free within a batch |
 
 ## 8. Future toggles — designed now, built later
 
@@ -329,6 +489,10 @@ letting the user discover it from bad fills).
   first sell, entry fill). New metrics inside `flow_split.rs`, no structural change.
 - **Transfer ingestion**: direct wallet-linking via SOL/token transfers — a separate,
   expensive ingest feature; only if the proxy demonstrably fails.
+- **Discovery auto-promote**: above a score threshold (likely `group_lift` +
+  `cross_token_recurrence` gates), write `volume_ix_patterns` without a toggle pass.
+  **Blocked on V4.4 hand-label kit.** Even then, default remains review-then-apply;
+  auto-promote is an opt-in mode on the discovery page, never a silent background job.
 
 ## 9. Risks / open edges
 
@@ -337,7 +501,8 @@ letting the user discover it from bad fills).
   you which groups to trust. This ceiling is inherent to the approach, not a bug.
 - **`ix_hash=None` history**: pre-0002 PG rows and pre-V0 sealed lake days classify
   everything organic — backtests over that range under-count `vol_*`. Forward-only,
-  accepted (decision 7).
+  accepted (decision 7). Discovery **excludes** those rows from score denominators
+  (§7.0.5) so pre-V0 days don't dilute lift.
 - **Wallet-dict gaps at export** hash as `unknown:{id}` ⇒ organic; consistent with the
   LEFT-JOIN gotcha, negligible volume, noted here so it isn't rediscovered as a bug.
 - **State growth**: `FlowState` per (armed token × matched fingerprint) — bounded by
@@ -345,3 +510,9 @@ letting the user discover it from bad fills).
   derived disarm); tagged-wallet sets are per token and die with the track.
 - **CorpusTrade width**: two optional columns behind a projection flag keep
   non-flow sweeps at today's memory footprint (§4).
+- **Discovery vs sweep contention**: both are lab-only and Duck/RAM hungry — the
+  mutual `409` (§7.0.6) is deliberate; don't "fix" it into parallel runs on a
+  4 GB analysis box.
+- **Lift denominator = loaded window W, not the whole lake.** A narrow date filter
+  can inflate lift for structures that are common outside the window; the UI should
+  show the selection summary on the results header so the user sees the frame.
