@@ -31,7 +31,7 @@ use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::eval;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
-use hunter_engine::metrics::{MetricId, Side, TradeLite, Ts};
+use hunter_engine::metrics::{MetricId, TradeLite, Ts};
 use hunter_engine::TICK_MS;
 
 use trading_core::config::constants::sol_to_lamports;
@@ -549,15 +549,7 @@ pub(crate) fn estimate_sparse_rows(token: &CorpusToken, grid: &SparseGrid, as_of
 }
 
 fn trade_lite(ct: &CorpusTrade) -> TradeLite {
-    TradeLite {
-        side: if ct.is_buy { Side::Buy } else { Side::Sell },
-        sol: ct.amount_sol,
-        price: ct.price_per_token,
-        // Deadness/liquidity read REAL reserves (SSOT parity with live); absent ⇒
-        // NaN (no snapshot ⇒ alive) — identical to `replay::load_tokens`.
-        reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
-        at: ct.block_time,
-    }
+    crate::sweep::projection::to_trade_lite(ct)
 }
 
 /// The union of precompute columns a compiled rule reads (both sides). Used by the

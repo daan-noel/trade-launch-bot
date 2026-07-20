@@ -1,10 +1,9 @@
 # Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_window`)
 
-Status: **PLANNED** (design settled 2026-07-17, not started).
+Status: **IN PROGRESS** (design settled 2026-07-17; **V0 shipped 2026-07-20**).
 Scope: hunter only. A follow-on to the generic engine —
 [fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md).
-**Do not start before backend Phase 5 is merged** (needs live adapters, lake
-replay, generic sweep axes); the discovery job (§7) can trail the metrics.
+Phase 5 prerequisites are met; the discovery job (§7) can trail the metrics.
 Origin: creator wash-volume tracking idea + reference reading of
 `bot-panther-new-main/src/trading/volume_bot/{bot,types}.rs` (concepts borrowed:
 pattern classifier, wallet contagion, two signed accumulators; its hardcoded
@@ -186,7 +185,8 @@ metrics/flow_split.rs                 ONE new file (both groups + classifier)
 ## 4. DB + lake schema
 
 ```sql
--- hunter/core/migrations/0005_fingerprint_metric_config.sql
+-- hunter/core/migrations/0006_fingerprint_metric_config.sql
+-- (0005 was already taken by retire_legacy_strategies)
 ALTER TABLE fingerprints
     ADD COLUMN metric_config JSONB NOT NULL DEFAULT '{}';
 ```
@@ -224,17 +224,22 @@ ALTER TABLE fingerprints
 > clippy on touched code, listed tests green, no new warnings
 > (`--target-dir "C:/Users/User/Documents/Bot/target-check"` if a bin is running).
 
-### V0 — Data plumbing (no behavior change)
+### V0 — Data plumbing (no behavior change) ✅ 2026-07-20
 
-- [ ] 0.1 Migration 0005 (§4) + `models/fingerprint.rs` + `FingerprintRepo`
-      (`metric_config` round-trip; identity predicate untouched — guard test).
-- [ ] 0.2 Engine: `flow_split::{ix_hash, wallet_hash}` SSOT + `TradeLite`/
-      `TokenCreated` field additions; all existing adapters/tests updated to pass the
-      new fields (hash of real values in live/replay; fixtures use the SSOT fns).
-- [ ] 0.3 Lake: schema constants + export columns (`ix_labels`, `wallet` w/ LEFT JOIN
-      + COALESCE) + duck load into `CorpusTrade` behind a `with_flow` projection flag.
-- [ ] 0.4 Event-log format bump (`engine/src/event_log.rs`): old logs default
-      missing flow fields → organic.
+> Plan §4 said migration `0005_…`; repo already had `0005_retire_legacy_strategies.sql`,
+> so this landed as **`0006_fingerprint_metric_config.sql`**.
+
+- [x] 0.1 Migration 0006 + `models/fingerprint.rs` + `FingerprintRepo`
+      (`metric_config` round-trip; `IDENTITY_WHERE` untouched — patterns are config).
+- [x] 0.2 Engine: `metrics/flow_split::{ix_hash,wallet_hash,ix_hash_opt}` +
+      `TradeLite::{ix_hash,wallet_hash}` + `TokenCreated::creator_wallet_hash`. Live
+      hashes at `CachedTrade::from_trade`; producer/replay/sweep use SSOT. Fixtures
+      default via `TradeLite::Default` / `creator_wallet_hash: None`.
+- [x] 0.3 Lake: `T_IX_LABELS`/`T_WALLET` + export (LEFT JOIN `wallet_dict` +
+      `unknown:{id}` COALESCE) + `CorpusTrade` fields + `Selection::with_flow`
+      (default false; DuckDB conditional SELECT + `lake_hash`).
+- [x] 0.4 Event-log: `LoggedEvent::TokenCreated.creator_wallet_hash` +
+      `TradeLite` serde `default` — old JSONL → organic.
 
 ### V1 — Engine metrics
 

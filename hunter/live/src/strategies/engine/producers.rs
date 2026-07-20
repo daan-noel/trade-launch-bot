@@ -19,6 +19,7 @@ use smallvec::SmallVec;
 
 use hunter_engine::event::{Event, Mint};
 use hunter_engine::grouping::LAMPORTS_PER_SOL_F64;
+use hunter_engine::metrics::flow_split::wallet_hash;
 use hunter_engine::metrics::{Side, TradeLite};
 
 use trading_core::config::constants::MAX_SNIPE_AGE_SECS;
@@ -80,7 +81,14 @@ impl Producer {
 
         let at = token.created_at;
         let tf = observed_axes(&token, None, None);
-        out.push(Event::TokenCreated { mint: Mint::from(mint), fp: Box::new(tf), at });
+        let creator_wallet_hash = (!token.creator_wallet.is_empty())
+            .then(|| wallet_hash(&token.creator_wallet));
+        out.push(Event::TokenCreated {
+            mint: Mint::from(mint),
+            fp: Box::new(tf),
+            at,
+            creator_wallet_hash,
+        });
         out
     }
 
@@ -113,6 +121,9 @@ impl Producer {
                     // live `is_dead` signal); absent ⇒ NaN (no snapshot ⇒ alive).
                     reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
                     at: ct.block_time,
+                    // Hashed once at cache ingest (`CachedTrade::from_trade`).
+                    ix_hash: ct.ix_hash,
+                    wallet_hash: ct.wallet_hash,
                 },
             });
         }

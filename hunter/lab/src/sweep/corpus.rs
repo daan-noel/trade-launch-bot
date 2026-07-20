@@ -130,6 +130,10 @@ pub struct Selection {
     /// affects the projected `CorpusTrade::tx_signature`; never changes which rows load
     /// or how they price.
     pub with_signatures: bool,
+    /// Populate each row's `ix_labels` + `wallet` for volume-flow metrics. Default
+    /// `false` so non-flow sweeps pay zero extra RAM; set when a run's rules/axes
+    /// reference `m_flow_*` (V2 wires this).
+    pub with_flow: bool,
 }
 
 impl Default for Selection {
@@ -143,6 +147,7 @@ impl Default for Selection {
             window: TradeWindow::LaunchWindow,
             curve_only: false,
             with_signatures: false,
+            with_flow: false,
         }
     }
 }

@@ -156,7 +156,14 @@ impl LoadedRule {
 pub enum Event {
     /// A new token appeared. `fp` carries its instant creation axes (the
     /// first-slot axes are still unknown — resolved by [`Event::FirstSlotSettled`]).
-    TokenCreated { mint: Mint, fp: Box<TokenFingerprint>, at: Ts },
+    /// `creator_wallet_hash` feeds the volume-flow classifier (V1+); `None` when
+    /// the creator address is unknown (old logs / lake rows without a creator).
+    TokenCreated {
+        mint: Mint,
+        fp: Box<TokenFingerprint>,
+        at: Ts,
+        creator_wallet_hash: Option<u64>,
+    },
     /// The token's creation slot closed; the two first-slot SOL sums are now known.
     /// Resolves any fingerprint whose identity includes a first-slot axis (plan §2.2).
     FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },

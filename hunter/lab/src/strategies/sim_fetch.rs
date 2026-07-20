@@ -71,6 +71,7 @@ pub async fn fetch_sim_histories(
         // Populate `tx_signature` (Solscan links) — the ONLY difference from a sweep
         // load; every other row/field is identical, so a rule prices the same either way.
         with_signatures: true,
+        with_flow: false,
     };
 
     let corpus = LakeSource::new(root).load(&sel).await?;
@@ -216,6 +217,8 @@ mod tests {
             leg_index: 0,
             is_buy: true,
             tx_signature: None,
+            ix_labels: None,
+            wallet: None,
         }
     }
 

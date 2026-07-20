@@ -181,6 +181,7 @@ mod tests {
                 price,
                 reserve_sol: 100.0,
                 at: t0 + Duration::seconds(i as i64),
+                ..Default::default()
             });
         }
         s.price = prices.to_vec();

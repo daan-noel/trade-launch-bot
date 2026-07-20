@@ -184,6 +184,7 @@ fn random_streams_preserve_invariants_and_never_panic() {
                         ..Default::default()
                     }),
                     at: ts(now),
+                    creator_wallet_hash: None,
                 },
                 1 => Event::FirstSlotSettled {
                     mint,
@@ -200,6 +201,7 @@ fn random_streams_preserve_invariants_and_never_panic() {
                         price: 0.5 + rng.frac() * 3.0,
                         reserve_sol: rng.frac() * 60.0,
                         at: ts(now),
+                        ..Default::default()
                     },
                 },
                 4 => Event::Tick { now: ts(now) },

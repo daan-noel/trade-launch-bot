@@ -57,6 +57,8 @@ fn ct(secs: f64, is_buy: bool, sol: f64, price: f64, reserve: f64) -> CorpusTrad
         leg_index: 0,
         is_buy,
         tx_signature: None,
+        ix_labels: None,
+        wallet: None,
     }
 }
 
@@ -587,6 +589,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
                 price,
                 reserve_sol: 50.0,
                 at,
+                ..Default::default()
             });
             if is_hole {
                 // Overwrite to NaN after push so the hull carry path is exercised.

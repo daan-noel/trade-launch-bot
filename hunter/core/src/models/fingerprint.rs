@@ -49,8 +49,16 @@ pub struct Fingerprint {
     pub bucket_size_amount: f64,
     /// Exact ordered instruction-label sequence of the creation tx.
     pub ix_labels: Option<Vec<String>>,
+    /// Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
+    /// **Not** part of match identity — `find_or_create` ignores it.
+    #[serde(default = "default_metric_config")]
+    pub metric_config: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_metric_config() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 impl Fingerprint {
@@ -96,6 +104,11 @@ impl Fingerprint {
             ix_labels: body.get("ix_labels").and_then(|v| v.as_array()).map(|a| {
                 a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
             }),
+            metric_config: body
+                .get("metric_config")
+                .filter(|v| v.is_object())
+                .cloned()
+                .unwrap_or_else(default_metric_config),
             created_at: now,
             updated_at: now,
         }

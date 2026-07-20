@@ -136,6 +136,7 @@ fn build_series(mint: &str, trades: &[crate::sweep::projection::CorpusTrade], wi
             price: t.price_per_token,
             reserve_sol: t.real_reserve_sol.unwrap_or(f64::NAN),
             at: t.block_time,
+            ..Default::default()
         });
     }
 

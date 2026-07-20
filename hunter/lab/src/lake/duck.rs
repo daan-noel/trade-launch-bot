@@ -167,6 +167,7 @@ fn lake_hash(root: &Path, sel: &Selection) -> String {
     // Distinguishes a signature-populated simulate load from a slim sweep load over
     // the same mints, so a hash-keyed corpus cache can't serve sig-less rows to sim.
     sel.with_signatures.hash(&mut h);
+    sel.with_flow.hash(&mut h);
     sel.created_after.map(|t| t.timestamp_millis()).hash(&mut h);
     sel.created_before.map(|t| t.timestamp_millis()).hash(&mut h);
     if let Some(mints) = &sel.mints {
@@ -314,26 +315,24 @@ fn load_corpus_tokens(
         candidates.iter().map(|(m, _, c)| (m.as_str(), *c)).collect();
     let order = partition_order(sel.window);
     let curve_filter = if sel.curve_only { "AND t.venue = 'curve'" } else { "" };
-    // Simulate needs `tx_signature` (Solscan links); the sweep leaves it out so its
-    // rows stay slim (the trigger is resolved by index, not signature). Selecting the
-    // column only when asked keeps the sweep read from touching the ~88 B/row string.
+    // Simulate needs `tx_signature` (Solscan links); flow metrics need
+    // `ix_labels`/`wallet`. The sweep leaves both out so rows stay slim.
+    // Selecting columns only when asked keeps non-flow / non-sim reads from
+    // touching the extra strings. `union_by_name=true` null-fills pre-column days.
     let sig_col = if sel.with_signatures { ", tx_signature" } else { "" };
+    let flow_cols = if sel.with_flow { ", ix_labels, wallet" } else { "" };
 
     // ROW_NUMBER window caps each mint's slice; outer ORDER BY restores execution
     // order so a token's legs arrive contiguous + chronological (single-pass group).
-    // `union_by_name=true`: `tx_signature` exists only on files exported after the
-    // Stage-1 schema change. Without name-union, DuckDB's positional glob-read errors
-    // on the mixed old/new schema until the full re-export makes every day uniform;
-    // name-union tolerates the gap (a pre-column day null-fills → empty signature).
     let sql = format!(
         "WITH ranked AS ( \
             SELECT t.mint, t.is_buy, t.sol_amount, t.token_amount, t.price, \
-                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue{sig_col}, \
+                   t.slot, t.tx_index, t.block_time, t.leg_index, t.vsol, t.vtok, t.venue{sig_col}{flow_cols}, \
                    ROW_NUMBER() OVER (PARTITION BY t.mint ORDER BY {order}) AS rn \
             FROM read_parquet({trades_lit}, hive_partitioning=true, union_by_name=true) t \
             WHERE t.mint IN (SELECT mint FROM sel_mints) {curve_filter} \
          ) \
-         SELECT mint, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok, venue{sig_col} \
+         SELECT mint, is_buy, sol_amount, token_amount, price, slot, block_time, leg_index, vsol, vtok, venue{sig_col}{flow_cols} \
          FROM ranked WHERE rn <= ? \
          ORDER BY mint ASC, slot ASC, tx_index ASC, leg_index ASC, block_time ASC"
     );
@@ -357,12 +356,23 @@ fn load_corpus_tokens(
         let vsol: Option<f64> = row.get(8)?;
         let vtok: Option<f64> = row.get(9)?;
         let venue: String = row.get(10)?;
-        // Column 11 only exists in the SELECT when `with_signatures`; a NULL from a
-        // pre-migration (union_by_name) day → `None` → empty display link.
+        // Optional trailing columns: signature then flow — ordinal advances only
+        // when the matching Selection flag requested them.
+        let mut col = 11usize;
         let tx_signature: Option<Box<str>> = if sel.with_signatures {
-            row.get::<_, Option<String>>(11)?.map(String::into_boxed_str)
+            let v = row.get::<_, Option<String>>(col)?.map(String::into_boxed_str);
+            col += 1;
+            v
         } else {
             None
+        };
+        let (ix_labels, wallet) = if sel.with_flow {
+            let ix = row.get::<_, Option<String>>(col)?.map(String::into_boxed_str);
+            col += 1;
+            let w = row.get::<_, Option<String>>(col)?.map(String::into_boxed_str);
+            (ix, w)
+        } else {
+            (None, None)
         };
 
         if cur_mint.as_deref() != Some(mint.as_str()) {
@@ -392,6 +402,8 @@ fn load_corpus_tokens(
             leg_index: leg_index as u32,
             is_buy,
             tx_signature,
+            ix_labels,
+            wallet,
         });
     }
     if let Some(prev) = cur_mint.take() {
@@ -581,6 +593,7 @@ mod parity_tests {
             window: TradeWindow::LaunchWindow,
             curve_only: false,
             with_signatures: false,
+            with_flow: false,
         };
         let with_sigs = Selection { with_signatures: true, ..base.clone() };
 

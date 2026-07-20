@@ -16,6 +16,7 @@
 //! makes it immediately usable everywhere, with no schema change.
 
 pub mod evaluator;
+pub mod flow_split;
 pub mod price_path;
 pub mod series;
 pub mod snapshot;
@@ -50,6 +51,10 @@ pub enum Side {
 /// carries one of these. `sol` is the trade's absolute SOL notional (`>= 0`);
 /// direction lives in `side`. `price` is the canonical curve-spot price and
 /// `reserve_sol` the SOL reserves after the trade (liquidity).
+///
+/// `ix_hash` / `wallet_hash` feed the volume-flow classifier (V1+); adapters hash
+/// via [`flow_split`]. Missing fields on old event-log lines default via serde
+/// (`ix_hash: None`, `wallet_hash: 0`) ⇒ organic unless tagged/creator.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TradeLite {
     pub side: Side,
@@ -57,6 +62,26 @@ pub struct TradeLite {
     pub price: f64,
     pub reserve_sol: f64,
     pub at: Ts,
+    /// FNV-1a of the trade's ordered `ix_labels`; `None` when labels are absent.
+    #[serde(default)]
+    pub ix_hash: Option<u64>,
+    /// FNV-1a of the trade's wallet address.
+    #[serde(default)]
+    pub wallet_hash: u64,
+}
+
+impl Default for TradeLite {
+    fn default() -> Self {
+        Self {
+            side: Side::Buy,
+            sol: 0.0,
+            price: 0.0,
+            reserve_sol: 0.0,
+            at: DateTime::from_timestamp(0, 0).expect("unix epoch"),
+            ix_hash: None,
+            wallet_hash: 0,
+        }
+    }
 }
 
 /// A metric group — one compute module, one JSON key under `entry`/`exit`.

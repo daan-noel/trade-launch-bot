@@ -121,7 +121,7 @@ mod tests {
     }
 
     fn buy(sol: f64, price: f64, reserve: f64, secs: f64) -> TradeLite {
-        TradeLite { side: Side::Buy, sol, price, reserve_sol: reserve, at: ts(secs) }
+        TradeLite { side: Side::Buy, sol, price, reserve_sol: reserve, at: ts(secs), ..Default::default() }
     }
 
     #[test]

@@ -39,7 +39,7 @@ use hunter_engine::event::{
 };
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
-use hunter_engine::metrics::{Side, TradeLite, Ts};
+use hunter_engine::metrics::Ts;
 use hunter_engine::{reduce, EngineState};
 
 use crate::sweep::projection::CorpusTrade;
@@ -204,6 +204,8 @@ impl Replay {
                     mint: mint.clone(),
                     fp: Box::new(t.tf.clone()),
                     at: t.created_at,
+                    // Lake tokens dim has no creator address yet (V0); V2 may add it.
+                    creator_wallet_hash: None,
                 },
                 sig: None,
             });
@@ -234,15 +236,7 @@ impl Replay {
                         mint: mint.clone(),
                         event: Event::Trade {
                             mint: mint.clone(),
-                            trade: TradeLite {
-                                side: if ct.is_buy { Side::Buy } else { Side::Sell },
-                                sol: ct.amount_sol,
-                                price: ct.price_per_token,
-                                // Deadness/liquidity read REAL reserves (SSOT parity
-                                // with live); absent ⇒ NaN (no snapshot ⇒ alive).
-                                reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
-                                at: ct.block_time,
-                            },
+                            trade: crate::sweep::projection::to_trade_lite(ct),
                         },
                         sig: ct.tx_signature.clone(),
                     });
@@ -633,6 +627,8 @@ mod tests {
             leg_index: 0,
             is_buy,
             tx_signature: Some(format!("sig{secs}").into_boxed_str()),
+            ix_labels: None,
+            wallet: None,
         }
     }
 

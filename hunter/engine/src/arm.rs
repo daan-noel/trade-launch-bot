@@ -420,13 +420,13 @@ mod tests {
         let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
         let now = created + Duration::seconds(10);
         let mut track = TokenTrack::new(created);
-        track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 2000.0, at: now });
+        track.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 2000.0, at: now , ..Default::default() });
 
         assert!(compiled.exit_metrics_satisfied(&track, now));
         assert!(!compiled.entry_satisfied(&track, now));
 
         let mut cold = TokenTrack::new(created);
-        cold.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 5.0, at: now });
+        cold.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 5.0, at: now , ..Default::default() });
         assert!(!compiled.exit_metrics_satisfied(&cold, now));
     }
 

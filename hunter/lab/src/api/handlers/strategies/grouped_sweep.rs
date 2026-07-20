@@ -521,6 +521,7 @@ async fn run_grouped_sweep_job(
         curve_only: b.curve_only,
         // Sweep resolves the trigger by index, not signature — no `tx_signature` needed.
         with_signatures: false,
+        with_flow: false,
     };
 
     // Load the corpus from the immutable Parquet lake via DuckDB (the sole sweep
@@ -1537,6 +1538,7 @@ fn fingerprint_from_group_key(gk: &serde_json::Value, width: f64, name: String) 
         first_slot_sell_lamports: None,
         bucket_size_amount: width,
         ix_labels: None,
+        metric_config: serde_json::json!({}),
         created_at: now,
         updated_at: now,
     };
@@ -1729,6 +1731,7 @@ pub async fn list_token_results(
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
             with_signatures: false,
+            with_flow: false,
         };
         let root = crate::lake::lake_root();
         match LakeSource::new(root).load(&sel).await {

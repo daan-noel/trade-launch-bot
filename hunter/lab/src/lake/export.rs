@@ -57,10 +57,10 @@ struct DayMeta {
 
 /// Day-partitioned trade file schema — the f64 *decimal* fields the sweep +
 /// simulate read. Carries `vsol`+`vtok` so the price is the GMGN curve-spot
-/// (`vsol / vtok`) the same as live + chart, and `tx_signature` for simulate's
-/// Solscan links. No per-trade `wallet` (cohort logic was removed — nothing on the
-/// analysis path reads wallet identity), and no `real_*_reserves`/fingerprint (those
-/// live in the `tokens` dimension or are re-derived on read).
+/// (`vsol / vtok`) the same as live + chart, `tx_signature` for simulate's
+/// Solscan links, and `ix_labels`/`wallet` for volume-flow metrics (loaded only
+/// when `Selection::with_flow`). No `real_*_reserves`/fingerprint (those live in
+/// the `tokens` dimension or are re-derived on read).
 fn trades_schema() -> Schema {
     use super::schema as col;
     Schema::new(vec![
@@ -90,6 +90,10 @@ fn trades_schema() -> Schema {
         // (`entry_tx`/`exit_tx`/`target_tx`) without a PG round-trip. ~88 B/row; lands
         // on every lake file (the sweep reads them too but never projects this column).
         Field::new(col::T_TX_SIGNATURE, DataType::Utf8, false),
+        // Volume-flow V0: normalized ix-label JSON + wallet address (nullable on
+        // pre-V0 sealed days via DuckDB `union_by_name`).
+        Field::new(col::T_IX_LABELS, DataType::Utf8, true),
+        Field::new(col::T_WALLET, DataType::Utf8, true),
     ])
 }
 
@@ -261,10 +265,10 @@ async fn sealed_days(pool: &PgPool, include_today: bool) -> Result<Vec<NaiveDate
 // Trades day export
 // ---------------------------------------------------------------------------
 
-/// One streamed trade row out of the new-schema `trades`. The lake does NOT carry
-/// the wallet address, so this reads `trades` directly — no `wallet_dict` join (and
-/// so, unlike the PG trade-history reads, it is immune to wallet_dict gaps).
-/// Integer columns; converted to the model's f64 decimal units on write.
+/// One streamed trade row out of the new-schema `trades`. Wallet comes from a
+/// LEFT JOIN on `wallet_dict` with the `unknown:{id}` COALESCE fallback (same
+/// gotcha as PG trade-history reads). Integer columns; converted to the model's
+/// f64 decimal units on write.
 #[derive(sqlx::FromRow)]
 struct LakeTradeRow {
     mint_address: String,
@@ -280,6 +284,8 @@ struct LakeTradeRow {
     block_time: DateTime<Utc>,
     /// Raw 64-byte signature (BYTEA in `trades`); converted to base58 on write.
     tx_signature: Vec<u8>,
+    ix_labels: serde_json::Value,
+    wallet_address: String,
 }
 
 /// Stream one sealed day's trades and write them to the immutable day file. Returns
@@ -310,8 +316,11 @@ async fn export_day(pool: &PgPool, root: &Path, day: NaiveDate) -> Result<usize>
         r#"
         SELECT t.mint_address, t.trade_type, t.venue,
                t.amount_lamports, t.token_amount, t.reserve_lamports, t.reserve_token,
-               t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature
+               t.slot, t.tx_index, t.leg_index, t.block_time, t.tx_signature,
+               t.ix_labels,
+               COALESCE(w.address, 'unknown:' || t.wallet_id::text) AS wallet_address
         FROM trades t
+        LEFT JOIN wallet_dict w ON w.id = t.wallet_id
         WHERE t.block_time >= $1 AND t.block_time < $2
         ORDER BY t.mint_address ASC, t.slot ASC, t.tx_index ASC, t.leg_index ASC, t.block_time ASC
         "#,
@@ -356,6 +365,8 @@ struct TradeBuilders {
     venue: StringBuilder,
     tx_index: Int32Builder,
     tx_signature: StringBuilder,
+    ix_labels: StringBuilder,
+    wallet: StringBuilder,
 }
 
 impl TradeBuilders {
@@ -388,6 +399,14 @@ impl TradeBuilders {
         // BYTEA → base58, the exact encoding `trade_repo` uses on the PG read path,
         // so a lake signature is byte-identical to what simulate showed pre-migration.
         self.tx_signature.append_value(sig_bytes_to_base58(&r.tx_signature));
+        let labels = normalize_labels(&r.ix_labels);
+        if labels.is_empty() {
+            self.ix_labels.append_null();
+        } else {
+            self.ix_labels
+                .append_option(serde_json::to_string(&labels).ok().as_deref());
+        }
+        self.wallet.append_value(&r.wallet_address);
     }
 
     fn finish(&mut self, schema: &Arc<Schema>) -> Result<RecordBatch> {
@@ -407,6 +426,8 @@ impl TradeBuilders {
                 Arc::new(self.venue.finish()),
                 Arc::new(self.tx_index.finish()),
                 Arc::new(self.tx_signature.finish()),
+                Arc::new(self.ix_labels.finish()),
+                Arc::new(self.wallet.finish()),
             ],
         )?)
     }
@@ -590,6 +611,8 @@ mod tests {
             leg_index: 0,
             block_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
             tx_signature: vec![7u8; 64], // valid 64-byte sig → non-empty base58
+            ix_labels: serde_json::json!(["buy"]),
+            wallet_address: "Wallet111".into(),
         }
     }
 

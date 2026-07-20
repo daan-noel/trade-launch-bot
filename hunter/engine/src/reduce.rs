@@ -47,7 +47,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             state.reload(&rules, &fps);
         }
 
-        Event::TokenCreated { mint, fp, at } => {
+        Event::TokenCreated { mint, fp, at, creator_wallet_hash: _ } => {
             if state.tokens.contains_key(&mint) {
                 return fx; // duplicate creation — idempotent
             }

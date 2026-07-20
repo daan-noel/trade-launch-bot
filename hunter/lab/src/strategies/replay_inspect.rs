@@ -470,6 +470,7 @@ mod tests {
                 price,
                 reserve_sol: reserve,
                 at: at(secs),
+                ..Default::default()
             },
         }
     }
@@ -482,7 +483,7 @@ mod tests {
         let fps = [fp(1)];
         let mint = "aaa";
         let events = vec![
-            LoggedEvent::TokenCreated { mint: Mint::from(mint), fp: Box::new(tf()), at: at(0.0) },
+            LoggedEvent::TokenCreated { mint: Mint::from(mint), fp: Box::new(tf()), at: at(0.0) , creator_wallet_hash: None},
             LoggedEvent::FirstSlotSettled {
                 mint: Mint::from(mint),
                 buy_lamports: 0,
@@ -517,8 +518,8 @@ mod tests {
         let rules = [rule(serde_json::json!({ "take_profit": 1000 }))];
         let fps = [fp(1)];
         let events = vec![
-            LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(tf()), at: at(0.0) },
-            LoggedEvent::TokenCreated { mint: Mint::from("bbb"), fp: Box::new(tf()), at: at(0.1) },
+            LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(tf()), at: at(0.0) , creator_wallet_hash: None},
+            LoggedEvent::TokenCreated { mint: Mint::from("bbb"), fp: Box::new(tf()), at: at(0.1) , creator_wallet_hash: None},
             trade_ev("aaa", 0.2, true, 1.0, 1.0, 100.0),
             trade_ev("bbb", 0.3, true, 1.0, 1.0, 100.0),
         ];
@@ -541,7 +542,7 @@ mod tests {
         let fps = [fp(1)];
         let mk = || {
             vec![
-                LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(tf()), at: at(0.0) },
+                LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(tf()), at: at(0.0) , creator_wallet_hash: None},
                 trade_ev("aaa", 0.2, true, 1.0, 1.0, 100.0),
                 trade_ev("aaa", 2.0, true, 1.0, 2.5, 100.0),
             ]
@@ -562,8 +563,8 @@ mod tests {
         // never tracked. The 2-hour span must not emit a tick per 500 ms.
         let no_match = || TokenFingerprint { cu_limit: Some(999), ..Default::default() };
         let events = vec![
-            LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(no_match()), at: at(0.0) },
-            LoggedEvent::TokenCreated { mint: Mint::from("bbb"), fp: Box::new(no_match()), at: at(7200.0) },
+            LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(no_match()), at: at(0.0) , creator_wallet_hash: None},
+            LoggedEvent::TokenCreated { mint: Mint::from("bbb"), fp: Box::new(no_match()), at: at(7200.0) , creator_wallet_hash: None},
         ];
         let run = inspect(&rules, &fps, events, &cfg());
         assert_eq!(run.synthetic_ticks, 0, "no tracked token ⇒ no ticks folded");
@@ -580,7 +581,7 @@ mod tests {
         // (non-terminal) and the token is never pruned; without the cap the tick loop
         // would run to the far-future event.
         let events = vec![
-            LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(tf()), at: at(0.0) },
+            LoggedEvent::TokenCreated { mint: Mint::from("aaa"), fp: Box::new(tf()), at: at(0.0) , creator_wallet_hash: None},
             trade_ev("aaa", 0.2, true, 1.0, 1.0, 100.0),
             // A far-future event the tick grid would otherwise march to one 500 ms step
             // at a time (2 h ⇒ ~14k ticks) if the cap didn't stop it first.

@@ -190,7 +190,7 @@ mod tests {
     }
 
     fn trade(side: Side, sol: f64, price: f64, reserve: f64, secs: f64) -> TradeLite {
-        TradeLite { side, sol, price, reserve_sol: reserve, at: ts(secs) }
+        TradeLite { side, sol, price, reserve_sol: reserve, at: ts(secs), ..Default::default() }
     }
 
     /// An event script: trades interleaved with bare ticks.

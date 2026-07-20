@@ -30,6 +30,7 @@ struct FingerprintDbRow {
     first_slot_sell_lamports: Option<i64>,
     bucket_size_amount: f64,
     ix_labels: Option<Vec<String>>,
+    metric_config: sqlx::types::Json<serde_json::Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -48,6 +49,7 @@ impl From<FingerprintDbRow> for Fingerprint {
             first_slot_sell_lamports: r.first_slot_sell_lamports,
             bucket_size_amount: r.bucket_size_amount,
             ix_labels: r.ix_labels,
+            metric_config: r.metric_config.0,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -57,7 +59,8 @@ impl From<FingerprintDbRow> for Fingerprint {
 // Explicit column list (struct order) — not `SELECT *`.
 const FINGERPRINT_COLS: &str = "id, name, cu_limit, cu_price, init_buy_lamports, \
     max_cost_lamports, spendable_lamports_in, first_slot_buy_lamports, \
-    first_slot_sell_lamports, bucket_size_amount, ix_labels, created_at, updated_at";
+    first_slot_sell_lamports, bucket_size_amount, ix_labels, metric_config, \
+    created_at, updated_at";
 
 /// The identity predicate for [`FingerprintRepo::find_or_create`]: every match
 /// axis equal, with `NULL` (= "not part of identity") treated as a value
@@ -83,8 +86,8 @@ impl FingerprintRepo {
             INSERT INTO fingerprints
                 (id, name, cu_limit, cu_price, init_buy_lamports, max_cost_lamports,
                  spendable_lamports_in, first_slot_buy_lamports, first_slot_sell_lamports,
-                 bucket_size_amount, ix_labels, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 bucket_size_amount, ix_labels, metric_config, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             "#,
         )
         .bind(fp.id)
@@ -98,6 +101,7 @@ impl FingerprintRepo {
         .bind(fp.first_slot_sell_lamports)
         .bind(fp.bucket_size_amount)
         .bind(fp.ix_labels.as_ref())
+        .bind(sqlx::types::Json(&fp.metric_config))
         .bind(fp.created_at)
         .bind(fp.updated_at)
         .execute(&self.pool)
@@ -119,6 +123,7 @@ impl FingerprintRepo {
                 first_slot_sell_lamports = $9,
                 bucket_size_amount = $10,
                 ix_labels = $11,
+                metric_config = $12,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -134,6 +139,7 @@ impl FingerprintRepo {
         .bind(fp.first_slot_sell_lamports)
         .bind(fp.bucket_size_amount)
         .bind(fp.ix_labels.as_ref())
+        .bind(sqlx::types::Json(&fp.metric_config))
         .execute(&self.pool)
         .await?;
         Ok(())

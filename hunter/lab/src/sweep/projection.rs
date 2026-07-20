@@ -14,6 +14,9 @@
 
 use chrono::{DateTime, Utc};
 
+use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash};
+use hunter_engine::metrics::{Side, TradeLite};
+
 use crate::models::trade::TradeRow;
 
 /// One trade, projected to the scalar fields the entry/exit fns read — the single
@@ -54,6 +57,11 @@ pub struct CorpusTrade {
     /// (Solscan links). See the struct doc. `Box<str>` (16 B) not `String` (24 B) since
     /// it's write-once.
     pub tx_signature: Option<Box<str>>,
+    /// Normalized ix-label JSON string — loaded only when [`Selection::with_flow`].
+    /// `None` on slim loads / pre-V0 sealed days.
+    pub ix_labels: Option<Box<str>>,
+    /// Wallet address — loaded only when [`Selection::with_flow`].
+    pub wallet: Option<Box<str>>,
 }
 
 impl TradeRow for CorpusTrade {
@@ -107,6 +115,25 @@ impl TradeRow for CorpusTrade {
     }
 }
 
+/// Build an engine [`TradeLite`] from a corpus row — hashes `ix_labels`/`wallet`
+/// via the flow-split SSOT when those columns were loaded (`with_flow`).
+pub fn to_trade_lite(ct: &CorpusTrade) -> TradeLite {
+    let labels: Vec<String> = ct
+        .ix_labels
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    TradeLite {
+        side: if ct.is_buy { Side::Buy } else { Side::Sell },
+        sol: ct.amount_sol,
+        price: ct.price_per_token,
+        reserve_sol: ct.real_reserve_sol.unwrap_or(f64::NAN),
+        at: ct.block_time,
+        ix_hash: ix_hash_opt(&labels),
+        wallet_hash: ct.wallet.as_deref().map(wallet_hash).unwrap_or(0),
+    }
+}
+
 /// Project a token's chronological trade slice into the slim rows. Generic over any
 /// [`TradeRow`] whose `Wallet` is a `String`, so it projects the full [`Trade`]
 /// field-for-field; no decision data is lost. Signature-free (the sweep resolves the
@@ -128,6 +155,8 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(trades: &[T]) -> Vec<CorpusT
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             tx_signature: None,
+            ix_labels: None,
+            wallet: None,
         })
         .collect()
 }

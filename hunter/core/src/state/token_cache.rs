@@ -68,6 +68,12 @@ pub struct CachedTrade {
     pub reserve_sol: Option<f64>,
     pub reserve_token: Option<f64>,
     pub real_reserve_sol: Option<f64>,
+    /// FNV-1a of ordered `instruction_labels` (engine `flow_split::ix_hash`); `None`
+    /// when labels are empty/missing. Hashed once at ingest — no string work on
+    /// the strategy hot path.
+    pub ix_hash: Option<u64>,
+    /// FNV-1a of the wallet address (engine `flow_split::wallet_hash`).
+    pub wallet_hash: u64,
 }
 
 impl CachedTrade {
@@ -76,6 +82,9 @@ impl CachedTrade {
     /// stays a plain field copy — no `From` impl, since the wallet can't be resolved
     /// without the token-local interner).
     pub fn from_trade(t: &Trade, wallet: u32) -> Self {
+        use hunter_engine::grouping::normalize_labels;
+        use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash};
+        let labels = normalize_labels(&t.instruction_labels);
         Self {
             wallet,
             is_buy: matches!(t.trade_type, TradeType::Buy),
@@ -92,6 +101,8 @@ impl CachedTrade {
             reserve_sol: t.reserve_sol,
             reserve_token: t.reserve_token.map(|v| v as f64),
             real_reserve_sol: t.real_reserve_sol,
+            ix_hash: ix_hash_opt(&labels),
+            wallet_hash: wallet_hash(&t.wallet_address),
         }
     }
 }
