@@ -135,7 +135,22 @@ pub async fn execute_transfer(
     confirm: bool,
 ) -> Result<Option<(Signature, u64)>> {
     let blockhash = rpc.get_latest_blockhash().await.context("fetch blockhash")?;
+    execute_transfer_with_blockhash(rpc, signer, from, to, mode, confirm, blockhash).await
+}
 
+/// [`execute_transfer`] over a **caller-supplied** blockhash — lets a batch pass
+/// (e.g. the funding loop) fetch one recent blockhash and reuse it across many
+/// transfers instead of a `getLatestBlockhash` per send. The blockhash must be
+/// recent enough to land; the caller refreshes it periodically.
+pub async fn execute_transfer_with_blockhash(
+    rpc: &RpcClient,
+    signer: &(dyn Signer + Send + Sync),
+    from: Pubkey,
+    to: Pubkey,
+    mode: TransferMode,
+    confirm: bool,
+    blockhash: Hash,
+) -> Result<Option<(Signature, u64)>> {
     let lamports = match mode {
         TransferMode::Exact(n) => n,
         TransferMode::SweepAll { min_lamports } => {

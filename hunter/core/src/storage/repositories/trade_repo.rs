@@ -410,6 +410,26 @@ impl TradeRepo {
         Ok(rows.into_iter().map(|(b,)| sig_bytes_to_base58(&b)).collect())
     }
 
+    /// Count of distinct transaction signatures already saved for a token on a
+    /// venue (`"curve"` / `"amm"`). The sync **preview** derives its "Fetch All"
+    /// total from this DB count plus the cheap "new" count, instead of re-paging
+    /// full history over `getSignaturesForAddress` (an advisory UI figure — an
+    /// estimate is fine, it isn't the real sync).
+    pub async fn distinct_signature_count(&self, mint: &str, venue: &str) -> anyhow::Result<u64> {
+        let n: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(DISTINCT tx_signature)
+            FROM trades
+            WHERE mint_address = $1 AND venue = $2
+            "#,
+        )
+        .bind(mint)
+        .bind(venue)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n.max(0) as u64)
+    }
+
     /// Most-recent trade by `wallet` on `mint` of a given side, or `None`.
     /// Filters in SQL and fetches a single row instead of pulling N rows and
     /// scanning them in Rust. The wallet is first translated to its interned id; if

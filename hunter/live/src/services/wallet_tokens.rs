@@ -2,6 +2,7 @@ use serde::Serialize;
 use tracing::warn;
 
 use crate::services::clients::jupiter;
+use crate::services::portfolio::{self, PortfolioHolding};
 use crate::state::deploy_state::DeployState;
 use crate::trader::WalletHolding;
 
@@ -25,9 +26,38 @@ pub struct EnrichedWalletHolding {
     pub is_cashback_enabled: bool,
 }
 
+impl From<&PortfolioHolding> for EnrichedWalletHolding {
+    /// `PortfolioHolding` is a strict superset of this endpoint's shape — the
+    /// migration/cashback flags live in its flattened `token` enrichment.
+    fn from(h: &PortfolioHolding) -> Self {
+        EnrichedWalletHolding {
+            mint_address: h.mint_address.clone(),
+            amount: h.amount,
+            ui_amount: h.ui_amount,
+            decimals: h.decimals,
+            token_account: h.token_account.clone(),
+            token_program_id: h.token_program_id.clone(),
+            symbol: h.symbol.clone(),
+            price_usd: h.price_usd,
+            value_usd: h.value_usd,
+            liquidity: h.liquidity,
+            price_change_24h: h.price_change_24h,
+            token_created_at: h.token_created_at.clone(),
+            is_migrated: h.token.is_migrated,
+            is_cashback_enabled: h.token.is_cashback_enabled,
+        }
+    }
+}
+
+/// Wallet-token list for the dashboard. Serves the portfolio SSOT's short-TTL
+/// (≤8s) cached wallet scan instead of its own uncached two-program
+/// `getTokenAccountsByOwner` sweep — folding this frequently-polled endpoint onto
+/// the same warm scan the portfolio surfaces already run, so N dashboard polls
+/// cost at most one scan per TTL window. (The single-mint `enrich_one` below stays
+/// an uncached targeted read: it's the post-trade balance confirm and must be fresh.)
 pub async fn list_enriched(state: &DeployState) -> anyhow::Result<Vec<EnrichedWalletHolding>> {
-    let holdings = state.trader.get_all_token_accounts().await?;
-    Ok(enrich_holdings(state, holdings).await)
+    let holdings = portfolio::list_holdings_cached(state, false).await?;
+    Ok(holdings.iter().map(EnrichedWalletHolding::from).collect())
 }
 
 /// Enrich a single mint's holding for the trader's wallet, or `None` if the

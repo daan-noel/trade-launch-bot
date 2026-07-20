@@ -211,6 +211,64 @@ pub async fn get_transactions_batch(
     Ok(out)
 }
 
+/// Fetch ONE archival `getTransactionsForAddress` (gTFA) page for `address`,
+/// cursor-paginated. Each returned item is already shaped like a `getTransaction`
+/// result (`slot` / `blockTime` / `transaction` / `meta`), so it lowers straight
+/// to a decoder frame via [`wrap_transaction_result`] + [`super::rpc_to_protobuf`]
+/// — no second `getTransaction` round-trip per signature.
+///
+/// This is the **archival** path: ~0.1 credit/tx at `limit=1000` (10 credits per
+/// 100 returned) vs 1 credit/tx for the [`get_signatures_for_address`] +
+/// [`get_transactions_batch`] loop, AND it collapses the two calls into one
+/// cursor-paginated call. `filters.status = "succeeded"` drops failed txs
+/// server-side (nothing to decode). `encoding="base64"` keeps the raw instruction
+/// `data` (jsonParsed pre-parses it away); pass `""` as the signature to
+/// [`wrap_transaction_result`] and let `rpc_to_protobuf` recover it from the
+/// bincode tx. Returns the page plus the next `paginationToken` (`None` ⇒ end of
+/// history). `sort_order` is `"asc"` (oldest-first) or `"desc"` (newest-first).
+pub async fn get_transactions_for_address_page(
+    rpc_url: &str,
+    address: &str,
+    sort_order: &str,
+    limit: usize,
+    pagination_token: Option<&str>,
+    encoding: &str,
+) -> anyhow::Result<(Vec<Value>, Option<String>)> {
+    let mut options = json!({
+        "transactionDetails": "full",
+        "encoding": encoding,
+        "commitment": "confirmed",
+        "maxSupportedTransactionVersion": 0,
+        "sortOrder": sort_order,
+        "limit": limit.clamp(1, SIG_PAGE_LIMIT),
+        "filters": { "status": "succeeded" }
+    });
+    if let Some(token) = pagination_token {
+        options["paginationToken"] = json!(token);
+    }
+
+    let client = rpc_client();
+    let result = rpc_call(
+        &client,
+        rpc_url,
+        "getTransactionsForAddress",
+        json!([address, options]),
+    )
+    .await?;
+
+    let data = result
+        .get("data")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let next = result
+        .get("paginationToken")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    Ok((data, next))
+}
+
 /// Wrap a raw `getTransaction` result into the shape [`super::rpc_to_protobuf`]
 /// expects: `{ signature, slot, blockTime, transaction: { transaction, meta } }`.
 /// Pass `""` for `signature` on a base64 result (the adapter recovers it from the

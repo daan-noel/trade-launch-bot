@@ -127,19 +127,22 @@ pub async fn transfer_between_wallets(
     // succeeded, so a balance re-read failure only leaves a stale number until the
     // next poll — never fail the request over it.
     if signature.is_some() {
-        for (id, addr) in [(from.id, &from_addr), (to.id, &to_addr)] {
-            match rpc.get_balance(addr).await {
-                Ok(bal) => {
+        // One `getMultipleAccounts` for both wallets instead of two `getBalance`.
+        let addrs = [from_addr, to_addr];
+        match rpc.get_multiple_accounts(&addrs).await {
+            Ok(accounts) => {
+                for (id, acct) in [from.id, to.id].into_iter().zip(accounts) {
+                    // A missing (e.g. fully-swept) account reads as 0 lamports.
+                    let bal = acct.map(|a| a.lamports).unwrap_or(0) as i64;
                     if let Err(e) =
-                        ManagedWalletRepo::record_balance(pool, id, bal as i64, MIN_FUNDED_LAMPORTS)
-                            .await
+                        ManagedWalletRepo::record_balance(pool, id, bal, MIN_FUNDED_LAMPORTS).await
                     {
                         warn!(?e, managed_wallet_id = %id, "wallet transfer: cached-balance refresh failed");
                     }
                 }
-                Err(e) => {
-                    warn!(?e, managed_wallet_id = %id, "wallet transfer: post-send balance read failed");
-                }
+            }
+            Err(e) => {
+                warn!(?e, "wallet transfer: post-send balance read failed");
             }
         }
     }

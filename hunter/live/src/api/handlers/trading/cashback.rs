@@ -34,7 +34,7 @@ struct CashbackStatusJson {
 /// transaction). Off the trade hot path. The frontend caches this generously —
 /// cashback accrues slowly and never needs the live price poll.
 pub async fn get_cashback_status(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match app_state.trader.cashback_status().await {
+    match crate::services::cashback::status_cached(app_state.get_ref()).await {
         Ok(pots) => {
             let total_claimable_lamports = pots.iter().map(|p| p.claimable()).sum();
             let body = CashbackStatusJson {
@@ -118,6 +118,9 @@ pub async fn claim_cashback(app_state: web::Data<Arc<DeployState>>) -> impl Resp
 
     match result {
         Ok(outcomes) => {
+            // A claim just moved the pot balances — drop the cached status so the
+            // next `/status` poll re-reads on-chain instead of showing pre-claim figures.
+            app_state.cashback_cache.invalidate().await;
             // SOL pots sum into lamports; the stable pot is a separate token
             // amount (raw units), so it's totalled on its own.
             let claimed_lamports: u64 = outcomes

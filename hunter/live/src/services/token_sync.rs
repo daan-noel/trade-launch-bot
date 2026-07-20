@@ -125,6 +125,12 @@ pub struct TokenSyncRequest {
     pub include_post_migrate: bool,
     /// When true, only fetch transactions newer than the last saved trade.
     pub incremental: bool,
+    /// Bonding curve already derived **and on-chain-verified** by the caller's
+    /// [`preflight`]. When set, [`run_token_sync`] reuses it and skips its own
+    /// preflight RPCs (1 `getAccountInfo` + ≥1 `getSignaturesForAddress`) — the
+    /// handler always guards first. `None` ⇒ `run_token_sync` runs the full
+    /// preflight itself.
+    pub verified_bonding_curve: Option<String>,
 }
 
 /// Page cap for the sync preview. Bounds RPC cost when enumerating full history
@@ -232,7 +238,12 @@ pub async fn run_token_sync(
     validate_mint_address(&mint)?;
 
     let rpc = HeliusRpc::new(ctx.helius_rpc_url.clone());
-    let bonding_curve = preflight(&rpc, &mint, &ctx.pump_program_id).await?;
+    // Reuse the handler's preflight when it already verified the curve on-chain;
+    // only re-run the RPC preflight for callers that didn't (`None`).
+    let bonding_curve = match &req.verified_bonding_curve {
+        Some(bc) => bc.clone(),
+        None => preflight(&rpc, &mint, &ctx.pump_program_id).await?,
+    };
 
     send_progress(
         &progress_tx,
@@ -668,14 +679,19 @@ pub async fn preview_sync(
         .count_signatures(&bonding_curve, curve_until.as_deref(), PREVIEW_MAX_PAGES)
         .await
         .map_err(|e| SyncError::Internal(e.to_string()))?;
-    // With no watermark, "new" already enumerated full history, so "total" is
-    // identical — reuse it instead of paging getSignaturesForAddress again.
+    // "Total" (Fetch All) estimate. With no watermark, "new" already enumerated
+    // full history, so total == new — reuse it. With a watermark, derive total from
+    // what's already saved in the DB + the cheap "new" count, instead of re-paging
+    // full history over getSignaturesForAddress (the dominant preview RPC cost).
     let (mut total_count, mut total_capped) = match curve_until.as_deref() {
         None => (new_count, new_capped),
-        Some(_) => rpc
-            .count_signatures(&bonding_curve, None, PREVIEW_MAX_PAGES)
-            .await
-            .map_err(|e| SyncError::Internal(e.to_string()))?,
+        Some(_) => {
+            let saved = trade_repo
+                .distinct_signature_count(&mint, "curve")
+                .await
+                .map_err(|e| SyncError::Internal(e.to_string()))? as usize;
+            (saved + new_count, new_capped)
+        }
     };
 
     let is_migrated = info_repo
@@ -707,13 +723,17 @@ pub async fn preview_sync(
                 .count_signatures(&pool, amm_until.as_deref(), PREVIEW_MAX_PAGES)
                 .await
                 .map_err(|e| SyncError::Internal(e.to_string()))?;
-            // Same reuse as the curve path: no watermark ⇒ total == new.
+            // Same DB-derived estimate as the curve path: no watermark ⇒ total == new;
+            // otherwise saved-in-DB + new, avoiding a second full-history page walk.
             let (amm_total, amm_total_capped) = match amm_until.as_deref() {
                 None => (amm_new, amm_new_capped),
-                Some(_) => rpc
-                    .count_signatures(&pool, None, PREVIEW_MAX_PAGES)
-                    .await
-                    .map_err(|e| SyncError::Internal(e.to_string()))?,
+                Some(_) => {
+                    let saved = trade_repo
+                        .distinct_signature_count(&mint, "amm")
+                        .await
+                        .map_err(|e| SyncError::Internal(e.to_string()))? as usize;
+                    (saved + amm_new, amm_new_capped)
+                }
             };
             new_count += amm_new;
             new_capped = new_capped || amm_new_capped;

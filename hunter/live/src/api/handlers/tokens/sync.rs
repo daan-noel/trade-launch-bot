@@ -50,11 +50,16 @@ pub async fn sync_token(
     }
 
     let rpc = HeliusRpc::new(state.helius_rpc_url.clone());
-    if let Err(e) = token_sync::preflight(&rpc, &mint, &state.pump_program_id).await {
-        return HttpResponse::BadRequest().json(ErrorBody {
-            message: e.message().to_string(),
-        });
-    }
+    // Preflight once here (synchronous 400 on a bad mint) and hand the verified
+    // bonding curve to the spawned sync so it doesn't re-run the same RPCs.
+    let bonding_curve = match token_sync::preflight(&rpc, &mint, &state.pump_program_id).await {
+        Ok(bc) => bc,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(ErrorBody {
+                message: e.message().to_string(),
+            });
+        }
+    };
 
     let (line_tx, line_rx) = mpsc::channel::<String>(128);
 
@@ -80,6 +85,7 @@ pub async fn sync_token(
         mint_address: mint,
         include_post_migrate: body.include_post_migrate,
         incremental: body.incremental,
+        verified_bonding_curve: Some(bonding_curve),
     };
 
     // Dedup: reject a second sync of the same mint while one is in flight (two
@@ -167,6 +173,8 @@ pub async fn preview_sync(
         mint_address: mint,
         include_post_migrate: body.include_post_migrate,
         incremental: body.incremental,
+        // Preview derives + verifies the curve itself; no pre-verified value.
+        verified_bonding_curve: None,
     };
 
     match token_sync::preview_sync(ctx, req).await {

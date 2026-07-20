@@ -567,20 +567,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Background SOL-balance refresh: keeps `PumpFunTrader::can_commit_buy` accurate
-    // without ever hitting the RPC on the hot buy path. Polls every 60 s (the cache
-    // feeds the buy affordability gate, so it stays at 60 s rather than a longer
-    // telemetry-grade interval); the first tick fires immediately so the cache is
-    // non-empty before the first snipe fires.
+    // Background SOL-balance safety poll. The wallet balance is now push-fed at feed
+    // speed (see the `on_account` hook above, RPC-reduction Phase 2), so this is a slow
+    // FALLBACK for plans/reconnects that don't deliver account pushes — not the primary
+    // source. The first tick fires immediately so the affordability cache is non-empty
+    // before the first snipe (the feed may not have pushed a wallet update yet); then
+    // every 10 min. Consumer: `PumpFunTrader::can_commit_buy` (reads the cache, no hot-path RPC).
     {
         let trader = trader.clone();
         tokio::spawn(async move {
             loop {
                 match trader.get_sol_balance().await {
                     Ok(lamports) => trader.update_balance_lamports_cache(lamports),
-                    Err(e) => warn!("SOL balance refresh failed (guard stays on last cached value): {e}"),
+                    Err(e) => warn!("SOL balance safety poll failed (guard stays on last cached value): {e}"),
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
             }
         });
     }
@@ -647,14 +648,29 @@ async fn main() -> anyhow::Result<()> {
     let push_hooks = {
         let bh_trader = trader.clone();
         let nonce_trader = trader.clone();
+        let balance_trader = trader.clone();
+        // The bot wallet's own account is watched alongside the nonce accounts so its
+        // SOL balance tracks at feed speed (RPC-reduction Phase 2): a pushed `lamports`
+        // refreshes the affordability cache, so the steady-state `getBalance` poll below
+        // becomes a slow safety fallback instead of the primary source.
+        let watched_wallet = trader.wallet_pubkey();
+        let mut watch_accounts: Vec<String> =
+            nonce_accounts.iter().map(|pk| pk.to_string()).collect();
+        watch_accounts.push(watched_wallet.clone());
         ingest_laserstream::PushHooks {
-            watch_accounts: nonce_accounts.iter().map(|pk| pk.to_string()).collect(),
+            watch_accounts,
             on_block_meta: Some(Box::new(move |slot, blockhash| {
                 if let Ok(hash) = blockhash.parse::<solana_sdk::hash::Hash>() {
                     bh_trader.set_cached_blockhash(hash, slot);
                 }
             })),
-            on_account: Some(Box::new(move |slot, pubkey, data| {
+            on_account: Some(Box::new(move |slot, pubkey, lamports, data| {
+                // The wallet is a System account — its balance rides in `lamports`,
+                // not `data`; refresh the affordability cache and stop (no nonce parse).
+                if watched_wallet == pubkey {
+                    balance_trader.update_balance_lamports_cache(lamports);
+                    return;
+                }
                 if let Ok(pk) = pubkey.parse::<solana_sdk::pubkey::Pubkey>() {
                     nonce_trader.on_nonce_account_update(&pk, data, slot);
                 }

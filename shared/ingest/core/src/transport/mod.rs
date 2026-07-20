@@ -64,9 +64,11 @@ pub struct PushHooks {
     #[allow(clippy::type_complexity)]
     pub on_block_meta: Option<Box<dyn Fn(u64, &str) + Send + Sync>>,
     /// Called on every watched-account update with `(slot, pubkey_base58,
-    /// account_data)`.
+    /// lamports, account_data)`. `lamports` is the account's balance from the
+    /// Yellowstone update — the value carrier for System accounts (e.g. a watched
+    /// wallet), whose SOL balance isn't in `data`.
     #[allow(clippy::type_complexity)]
-    pub on_account: Option<Box<dyn Fn(u64, &str, &[u8]) + Send + Sync>>,
+    pub on_account: Option<Box<dyn Fn(u64, &str, u64, &[u8]) + Send + Sync>>,
 }
 
 impl PushHooks {
@@ -457,7 +459,7 @@ async fn run_once<V: IngestVenue>(
                         Some(UpdateOneof::Account(acc)) => {
                             if let (Some(hook), Some(info)) = (&push.on_account, acc.account.as_ref()) {
                                 let pubkey = bs58::encode(&info.pubkey).into_string();
-                                hook(acc.slot, &pubkey, &info.data);
+                                hook(acc.slot, &pubkey, info.lamports, &info.data);
                             }
                         }
                         Some(UpdateOneof::Transaction(tx)) => {
@@ -611,7 +613,7 @@ mod tests {
         let wired = PushHooks {
             watch_accounts: vec!["a".into()],
             on_block_meta: Some(Box::new(|_, _| {})),
-            on_account: Some(Box::new(|_, _, _| {})),
+            on_account: Some(Box::new(|_, _, _, _| {})),
         };
         assert!(wired.wants_blocks_meta());
         assert_eq!(wired.account_filter(), vec!["a".to_string()]);

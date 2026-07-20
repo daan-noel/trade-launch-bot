@@ -519,6 +519,25 @@ impl PumpFunTrader {
             cashback_enabled: account.data.len() > CASHBACK_OFFSET
                 && account.data[CASHBACK_OFFSET] != 0,
         };
+
+        // Seed the reserve cache from the SAME bonding-curve account we just read
+        // (`virtual_token`@8, `virtual_quote`@16, lamports), so a following curve
+        // slippage quote (`curve_reserves`) hits the cache instead of a second
+        // `getAccount` on the same account — the manual-buy double-read. Live curve
+        // only: a migrated (complete) curve isn't quoted on the curve path, and
+        // `update` ignores zero/non-finite reserves either way. `data.len() >= 81`
+        // was asserted above, so offsets 8..24 are in bounds.
+        if !routing.is_migrated {
+            let vt = u64::from_le_bytes(account.data[8..16].try_into().unwrap());
+            let vq_lamports = u64::from_le_bytes(account.data[16..24].try_into().unwrap());
+            self.reserve_cache.update(
+                &key,
+                vt as f64,
+                vq_lamports as f64 / protocol::LAMPORTS_PER_SOL as f64,
+                false,
+            );
+        }
+
         // Cache the fresh read. A migrated entry is terminal and will be served
         // directly next time; a not-yet-migrated entry is overwritten on the next
         // re-read until it flips.

@@ -24,6 +24,7 @@
 
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use platform_core::models::{ManagedWallet, WalletRole};
@@ -32,6 +33,7 @@ use rand::Rng;
 use serde::Serialize;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Signature, Signer};
 use sqlx::PgPool;
@@ -46,6 +48,17 @@ use crate::wallet_pool::MIN_FUNDED_LAMPORTS;
 /// Solana JSON-RPC `getMultipleAccounts` caps at 100 pubkeys per call — the
 /// post-fund balance read-back chunks the sent wallets to this.
 const RPC_BATCH_SIZE: usize = 100;
+
+/// Refresh the reused funding blockhash after this many sends so a long pass can't
+/// outlive it (a recent blockhash is valid ~150 slots / ~60 s; 20 fire-and-forget
+/// sends complete well inside that).
+const BLOCKHASH_REFRESH_EVERY: usize = 20;
+
+/// Post-fund promotion read-back: fire-and-forget sends may not have landed at the
+/// first `getMultipleAccounts`, so re-read the not-yet-funded wallets a few times
+/// with a short pause before leaving them `funding` for the operator's Refresh.
+const PROMOTE_MAX_ATTEMPTS: usize = 4;
+const PROMOTE_RETRY_MS: u64 = 750;
 
 /// Serializes every funding pass in this process. The reserve floor + per-interval
 /// spend cap are enforced against a pass-local treasury snapshot (`TreasuryPool`
@@ -274,6 +287,11 @@ pub async fn fund_once(
     let mut report = FundReport::default();
     // (id, pubkey) of every wallet a send confirmed for — promoted after the pass.
     let mut sent: Vec<(Uuid, Pubkey)> = Vec::new();
+    // One recent blockhash reused across the whole pass (funding is not landing-
+    // urgent), fetched lazily on the first send and refreshed every
+    // `BLOCKHASH_REFRESH_EVERY` sends — saves N−1 `getLatestBlockhash` per pass.
+    let mut blockhash: Option<Hash> = None;
+    let mut sends_since_refresh = 0usize;
 
     // Cheap indexed shortfall gate BEFORE paying for the treasury RPC snapshot
     // (audit §5): a top-up over a fully warm pool otherwise builds the treasury
@@ -419,12 +437,47 @@ pub async fn fund_once(
                 let src = &sources.sources[source_idx];
                 (src.signer.clone(), src.pubkey)
             };
-            // Confirm each send so a failed send reverts the claim and only landed
-            // wallets are promoted below.
-            match send_transfer(&rpc, &src_signer, src_pubkey, t.target, t.lamports).await {
+
+            // Reuse one recent blockhash across the pass; refresh it lazily/periodically.
+            // A blockhash fetch failure can't fund this wallet — revert its claim and
+            // continue (same posture as a failed send).
+            if blockhash.is_none() || sends_since_refresh >= BLOCKHASH_REFRESH_EVERY {
+                match rpc.get_latest_blockhash().await {
+                    Ok(bh) => {
+                        blockhash = Some(bh);
+                        sends_since_refresh = 0;
+                    }
+                    // A stale prior blockhash may still be within its validity window, so
+                    // reuse it rather than reverting; only revert if we have none at all.
+                    Err(e) if blockhash.is_some() => {
+                        warn!(%e, "wallet funding: blockhash refresh failed — reusing prior");
+                    }
+                    Err(e) => {
+                        let _ = ManagedWalletRepo::revert_funding(pool, &[t.managed_wallet_id]).await;
+                        warn!(managed_wallet_id = %t.managed_wallet_id, %e, "wallet funding: blockhash fetch failed — reverted");
+                        report.outcomes.push(WalletFundOutcome {
+                            managed_wallet_id: t.managed_wallet_id,
+                            address: t.target.to_string(),
+                            role: role.as_str().to_string(),
+                            amount_lamports: t.lamports,
+                            result: "failed",
+                            signature: None,
+                            error: Some(format!("blockhash fetch failed: {e}")),
+                        });
+                        continue;
+                    }
+                }
+            }
+            let bh = blockhash.expect("blockhash set above");
+
+            // Fire-and-forget: a failed *submit* reverts the claim; landing is confirmed
+            // by the batched `promote_funded` read-back after the pass (no per-wallet
+            // `getSignatureStatuses` confirm loop). Funding has no landing urgency.
+            match send_transfer(&rpc, &src_signer, src_pubkey, t.target, t.lamports, bh).await {
                 Ok(sig) => {
                     sources.sources[source_idx].spent += t.lamports;
                     report.spent_lamports += t.lamports;
+                    sends_since_refresh += 1;
                     sent.push((t.managed_wallet_id, t.target));
                     info!(
                         managed_wallet_id = %t.managed_wallet_id,
@@ -474,29 +527,53 @@ pub async fn fund_once(
     Ok(report)
 }
 
-/// Read the on-chain balance of every wallet a send confirmed for and stamp it via
+/// Read the on-chain balance of every wallet a send submitted for and stamp it via
 /// `record_balance`, which promotes `funding` -> `funded` once the balance clears
-/// `MIN_FUNDED_LAMPORTS`. A failed read leaves the wallet in `funding` — the
-/// operator's next "Refresh balances" click reconciles it (the SOL has landed;
-/// only the DB status lags).
+/// `MIN_FUNDED_LAMPORTS`. Because sends are now fire-and-forget, a wallet may not
+/// have landed at the first read — so re-read the still-below-threshold wallets a
+/// few times ([`PROMOTE_MAX_ATTEMPTS`], [`PROMOTE_RETRY_MS`]) before giving up. Any
+/// wallet still short after the retries stays `funding` — the operator's next
+/// "Refresh balances" click reconciles it (the SOL likely landed; only the DB lags).
 async fn promote_funded(pool: &PgPool, rpc: &RpcClient, sent: &[(Uuid, Pubkey)]) {
-    for chunk in sent.chunks(RPC_BATCH_SIZE) {
-        let pubkeys: Vec<Pubkey> = chunk.iter().map(|(_, pk)| *pk).collect();
-        let accounts = match rpc.get_multiple_accounts(&pubkeys).await {
-            Ok(a) => a,
-            Err(e) => {
-                warn!(?e, "wallet funding: post-fund balance read failed — wallets stay `funding` until Refresh");
-                continue;
-            }
-        };
-        for ((id, _), acct) in chunk.iter().zip(accounts) {
-            let lamports = acct.map(|a| a.lamports).unwrap_or(0) as i64;
-            if let Err(e) =
-                ManagedWalletRepo::record_balance(pool, *id, lamports, MIN_FUNDED_LAMPORTS).await
-            {
-                warn!(?e, managed_wallet_id = %id, "wallet funding: promote after fund failed");
+    let mut pending: Vec<(Uuid, Pubkey)> = sent.to_vec();
+    for attempt in 0..PROMOTE_MAX_ATTEMPTS {
+        if pending.is_empty() {
+            break;
+        }
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(PROMOTE_RETRY_MS)).await;
+        }
+        let mut still_pending: Vec<(Uuid, Pubkey)> = Vec::new();
+        for chunk in pending.chunks(RPC_BATCH_SIZE) {
+            let pubkeys: Vec<Pubkey> = chunk.iter().map(|(_, pk)| *pk).collect();
+            let accounts = match rpc.get_multiple_accounts(&pubkeys).await {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(?e, "wallet funding: post-fund balance read failed — will retry");
+                    still_pending.extend_from_slice(chunk);
+                    continue;
+                }
+            };
+            for ((id, pk), acct) in chunk.iter().zip(accounts) {
+                let lamports = acct.map(|a| a.lamports).unwrap_or(0) as i64;
+                // Stamp every read; `record_balance` promotes once it clears the floor.
+                if let Err(e) =
+                    ManagedWalletRepo::record_balance(pool, *id, lamports, MIN_FUNDED_LAMPORTS).await
+                {
+                    warn!(?e, managed_wallet_id = %id, "wallet funding: promote after fund failed");
+                }
+                if lamports < MIN_FUNDED_LAMPORTS {
+                    still_pending.push((*id, *pk));
+                }
             }
         }
+        pending = still_pending;
+    }
+    if !pending.is_empty() {
+        warn!(
+            count = pending.len(),
+            "wallet funding: some wallets not confirmed funded after retries — left `funding` for Refresh"
+        );
     }
 }
 
@@ -523,24 +600,28 @@ fn bad_address_outcome(w: &ManagedWallet) -> WalletFundOutcome {
     }
 }
 
-/// Send + confirm a funding transfer. No retry — the caller reverts the claim on
-/// error and the operator re-clicks "Fund pool" to re-attempt. Phase 2.F: the
-/// treasury->pool move is a typed `TransferSol` executed through the SSOT
-/// [`crate::plan_exec::execute_transfer`] (exact lamports, treasury pays the fee).
+/// Submit a funding transfer over a **caller-supplied** blockhash, fire-and-forget.
+/// No retry and no per-send confirmation — the caller reverts the claim on a submit
+/// error, the batched [`promote_funded`] read-back confirms landing, and the operator
+/// re-clicks "Fund pool" to re-attempt a miss. Phase 2.F: the treasury->pool move is
+/// a typed `TransferSol` executed through the SSOT
+/// [`crate::plan_exec::execute_transfer_with_blockhash`] (exact lamports, treasury pays the fee).
 async fn send_transfer(
     rpc: &RpcClient,
     treasury_signer: &Arc<dyn Signer + Send + Sync>,
     from: Pubkey,
     to: Pubkey,
     lamports: u64,
+    blockhash: Hash,
 ) -> Result<Signature> {
-    let (sig, _) = crate::plan_exec::execute_transfer(
+    let (sig, _) = crate::plan_exec::execute_transfer_with_blockhash(
         rpc,
         treasury_signer.as_ref(),
         from,
         to,
         crate::plan_exec::TransferMode::Exact(lamports),
-        true, // confirm
+        false, // fire-and-forget; promote_funded confirms landing
+        blockhash,
     )
     .await?
     .context("funding transfer produced no signature")?;

@@ -3,6 +3,7 @@
 
 pub use trading_core::services::{clients, helius_rpc, sol_price};
 
+pub mod cashback;
 pub mod laserstream_replay;
 pub mod portfolio;
 pub mod token_sync;

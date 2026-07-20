@@ -288,11 +288,9 @@ impl Engine {
             // inserts — a `std::sync::Mutex` guard must not be held across `.await`.
             info!("🔧 Pre-fetching nonce hashes...");
             {
-                let mut fetched = Vec::with_capacity(self.nonce_pubkeys.len());
-                for &pubkey in &self.nonce_pubkeys {
-                    let hash = self.fetch_nonce_hash_async(&pubkey).await?;
-                    fetched.push((pubkey, hash));
-                }
+                // One `getMultipleAccounts` (chunked) for the whole pool instead of a
+                // sequential `getAccount` per nonce account.
+                let fetched = self.prefetch_nonce_hashes(&self.nonce_pubkeys).await?;
                 let mut slots = self.nonce_slots.lock().unwrap_or_else(|p| p.into_inner());
                 for (pubkey, hash) in fetched {
                     slots.insert(

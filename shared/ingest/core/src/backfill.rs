@@ -15,7 +15,8 @@ use crate::proto::solana::storage::confirmed_block as scb;
 
 mod pager;
 pub use pager::{
-    get_signatures_for_address, get_transactions_batch, wrap_transaction_result, SignatureInfo,
+    get_signatures_for_address, get_transactions_batch, get_transactions_for_address_page,
+    wrap_transaction_result, SignatureInfo,
 };
 
 /// Convert one RPC transaction result (`encoding="base64"`) into a

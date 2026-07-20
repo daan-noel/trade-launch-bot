@@ -23,8 +23,10 @@
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use crate::config::LeaderGateConfig;
@@ -46,6 +48,28 @@ const LOOKAHEAD_SLOTS: u64 = 64;
 /// hunt is still bounded so a launch can't wait unboundedly across many re-bids.
 const MAX_WAIT_LEVEL_MULT: u64 = 4;
 
+/// TTL for the cached Jito validator identity set (StakeNet membership changes
+/// slowly — epoch-scale). Refreshing at most this often keeps the launch path off a
+/// per-submit StakeNet HTTP GET without ever going stale for long.
+const JITO_IDENTITIES_TTL: Duration = Duration::from_secs(600);
+
+/// Cached Jito validator identity set (base58 identities), refreshed on [`JITO_IDENTITIES_TTL`].
+type JitoIdentityCache = OnceLock<Mutex<Option<(Instant, Arc<HashSet<String>>)>>>;
+static JITO_IDENTITIES: JitoIdentityCache = OnceLock::new();
+
+/// The per-epoch leader schedule reduced to just the Jito-led slot indices. Built
+/// once per epoch from `getLeaderSchedule` ∩ the Jito identity set, then every poll
+/// is a local lookup instead of a `getSlotLeaders` RPC. `jito_indices` holds only
+/// Jito-led indices (a fraction of the ~432k-slot epoch), so it stays a few MB — a
+/// bounded per-epoch cache, not a raised cap.
+struct EpochLeaders {
+    epoch: u64,
+    /// Slot indices (relative to the epoch's first slot) led by a Jito validator.
+    jito_indices: Arc<HashSet<u64>>,
+}
+
+static EPOCH_LEADERS: OnceLock<Mutex<Option<EpochLeaders>>> = OnceLock::new();
+
 /// Block until a Jito-participating validator leads within `send_within_slots` of the
 /// current slot (so a `sendBundle` now lands in a slot that can build the bundle), or
 /// until the wait budget is spent — whichever comes first. See the module docs for
@@ -63,42 +87,46 @@ pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, rpc_url: &str, level: 
     }
     let http = reqwest::Client::new();
 
-    // Jito validator identity set (fetched once per submit). On any failure the set is
-    // empty → we can't classify a leader → fail open and submit immediately.
-    let jito = match fetch_jito_identities(&http, &cfg.validators_url).await {
-        Ok(set) if !set.is_empty() => set,
-        Ok(_) => {
-            warn!("Jito validator set empty — submitting ungated");
-            return;
-        }
-        Err(e) => {
-            warn!(%e, "Jito validator-set fetch failed — submitting ungated");
-            return;
-        }
-    };
+    // Jito validator identity set (cached with a TTL). Empty ⇒ we can't classify a
+    // leader → fail open and submit immediately.
+    let jito = jito_identities_cached(&http, &cfg.validators_url).await;
+    if jito.is_empty() {
+        warn!("Jito validator set empty/unavailable — submitting ungated");
+        return;
+    }
 
     let start = Instant::now();
     let mult = (level as u64 + 1).min(MAX_WAIT_LEVEL_MULT);
     let budget = Duration::from_millis(cfg.max_wait_ms.saturating_mul(mult));
 
     loop {
-        let current = match rpc_u64(&http, rpc_url, "getSlot", serde_json::json!([])).await {
-            Ok(s) => s,
+        // One `getEpochInfo` gives the current slot, epoch, and in-epoch index — the
+        // epoch drives the per-epoch leader-schedule cache; the index drives the lookup.
+        let (epoch, current, slot_index) = match fetch_epoch_info(&http, rpc_url).await {
+            Ok(t) => t,
             Err(e) => {
-                warn!(%e, "getSlot failed — submitting ungated");
+                warn!(%e, "getEpochInfo failed — submitting ungated");
                 return;
             }
         };
-        let leaders = match fetch_slot_leaders(&http, rpc_url, current, LOOKAHEAD_SLOTS).await {
-            Ok(l) => l,
-            Err(e) => {
-                warn!(%e, "getSlotLeaders failed — submitting ungated");
-                return;
-            }
-        };
+        let epoch_first_slot = current.saturating_sub(slot_index);
 
-        // Offset (in slots from `current`) of the nearest Jito-led slot, if any.
-        let nearest = leaders.iter().position(|id| jito.contains(id)).map(|p| p as u64);
+        // Offset (in slots from `current`) of the nearest Jito-led slot, if any. Prefer
+        // the cached per-epoch schedule (local lookup, no RPC); fall back to a fresh
+        // `getSlotLeaders` when the schedule is unavailable (fail-open).
+        let nearest = match epoch_leaders_cached(&http, rpc_url, epoch, epoch_first_slot, &jito)
+            .await
+        {
+            Some(jito_indices) => (0..LOOKAHEAD_SLOTS)
+                .find(|off| jito_indices.contains(&(slot_index + off))),
+            None => match fetch_slot_leaders(&http, rpc_url, current, LOOKAHEAD_SLOTS).await {
+                Ok(leaders) => leaders.iter().position(|id| jito.contains(id)).map(|p| p as u64),
+                Err(e) => {
+                    warn!(%e, "getSlotLeaders failed — submitting ungated");
+                    return;
+                }
+            },
+        };
         match nearest {
             Some(offset) if offset <= cfg.send_within_slots => {
                 debug!(
@@ -129,6 +157,73 @@ pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, rpc_url: &str, level: 
             return;
         }
         tokio::time::sleep(sleep_for).await;
+    }
+}
+
+/// Jito validator identity set, TTL-cached ([`JITO_IDENTITIES_TTL`]). Returns the
+/// warm set when fresh; otherwise refetches. On a fetch failure it returns the last
+/// cached set (even if stale) so a transient StakeNet blip doesn't drop the gate to
+/// ungated — only a cold cache with a failing fetch yields an empty set. Launch path
+/// only (infrequent), so briefly holding the async lock across the fetch is fine.
+async fn jito_identities_cached(http: &reqwest::Client, url: &str) -> Arc<HashSet<String>> {
+    let cell = JITO_IDENTITIES.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().await;
+    if let Some((at, set)) = guard.as_ref() {
+        if at.elapsed() < JITO_IDENTITIES_TTL {
+            return set.clone();
+        }
+    }
+    match fetch_jito_identities(http, url).await {
+        Ok(set) if !set.is_empty() => {
+            let arc = Arc::new(set);
+            *guard = Some((Instant::now(), arc.clone()));
+            arc
+        }
+        // Empty or failed fetch: keep serving the last good set if we have one.
+        Ok(_) => guard.as_ref().map(|(_, s)| s.clone()).unwrap_or_default(),
+        Err(e) => {
+            warn!(%e, "Jito validator-set refresh failed — reusing cached set if any");
+            guard.as_ref().map(|(_, s)| s.clone()).unwrap_or_default()
+        }
+    }
+}
+
+/// The current epoch's Jito-led slot-index set, cached and rebuilt only on epoch
+/// rollover. Returns `None` on a `getLeaderSchedule` failure so the caller falls back
+/// to `getSlotLeaders` (fail-open). The intersection is computed against `jito` at
+/// build time, so a mid-epoch identity refresh isn't reflected until the next epoch —
+/// acceptable for a fail-open gate (worst case: an occasional non-Jito-slot submit).
+async fn epoch_leaders_cached(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    epoch: u64,
+    epoch_first_slot: u64,
+    jito: &HashSet<String>,
+) -> Option<Arc<HashSet<u64>>> {
+    let cell = EPOCH_LEADERS.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().await;
+    if let Some(cached) = guard.as_ref() {
+        if cached.epoch == epoch {
+            return Some(cached.jito_indices.clone());
+        }
+    }
+    match fetch_leader_schedule(http, rpc_url, epoch_first_slot).await {
+        Ok(schedule) => {
+            // Keep only the slot indices led by a Jito validator (a fraction of the epoch).
+            let mut jito_indices: HashSet<u64> = HashSet::new();
+            for (identity, indices) in &schedule {
+                if jito.contains(identity) {
+                    jito_indices.extend(indices.iter().copied());
+                }
+            }
+            let arc = Arc::new(jito_indices);
+            *guard = Some(EpochLeaders { epoch, jito_indices: arc.clone() });
+            Some(arc)
+        }
+        Err(e) => {
+            warn!(%e, "getLeaderSchedule failed — falling back to getSlotLeaders this poll");
+            None
+        }
     }
 }
 
@@ -182,18 +277,54 @@ async fn fetch_slot_leaders(
         .collect())
 }
 
-/// A Solana JSON-RPC call whose `result` is a bare `u64` (e.g. `getSlot`).
-async fn rpc_u64(
+/// `getEpochInfo` → `(epoch, absolute_slot, slot_index)`. One call gives the current
+/// slot (for the wait/leader window), the epoch (schedule-cache key), and the in-epoch
+/// slot index (schedule lookup) — replacing a separate `getSlot`.
+async fn fetch_epoch_info(http: &reqwest::Client, rpc_url: &str) -> Result<(u64, u64, u64)> {
+    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "getEpochInfo", "params": [] });
+    let v = rpc_call(http, rpc_url, &body).await?;
+    let r = v.get("result").context("getEpochInfo result missing")?;
+    let epoch = r.get("epoch").and_then(|x| x.as_u64()).context("getEpochInfo epoch")?;
+    let absolute_slot = r
+        .get("absoluteSlot")
+        .and_then(|x| x.as_u64())
+        .context("getEpochInfo absoluteSlot")?;
+    let slot_index = r
+        .get("slotIndex")
+        .and_then(|x| x.as_u64())
+        .context("getEpochInfo slotIndex")?;
+    Ok((epoch, absolute_slot, slot_index))
+}
+
+/// `getLeaderSchedule(slot)` → `identity → [slot indices in the epoch]` for the epoch
+/// containing `slot`. Fetched once per epoch; the caller reduces it to the Jito-led
+/// index set. A `null` result (slot not in a schedulable epoch) is an error so the
+/// caller fails open to `getSlotLeaders`.
+async fn fetch_leader_schedule(
     http: &reqwest::Client,
     rpc_url: &str,
-    method: &str,
-    params: serde_json::Value,
-) -> Result<u64> {
-    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    slot: u64,
+) -> Result<HashMap<String, Vec<u64>>> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getLeaderSchedule",
+        "params": [slot]
+    });
     let v = rpc_call(http, rpc_url, &body).await?;
-    v.get("result")
-        .and_then(|r| r.as_u64())
-        .with_context(|| format!("{method} result not a u64"))
+    let result = v.get("result").context("getLeaderSchedule result missing")?;
+    let map = result
+        .as_object()
+        .context("getLeaderSchedule result not an object (null/slot out of range)")?;
+    let mut out: HashMap<String, Vec<u64>> = HashMap::with_capacity(map.len());
+    for (identity, indices) in map {
+        let idxs: Vec<u64> = indices
+            .as_array()
+            .map(|a| a.iter().filter_map(serde_json::Value::as_u64).collect())
+            .unwrap_or_default();
+        out.insert(identity.clone(), idxs);
+    }
+    Ok(out)
 }
 
 /// POST a JSON-RPC body to the Solana RPC and return the parsed response, bailing on

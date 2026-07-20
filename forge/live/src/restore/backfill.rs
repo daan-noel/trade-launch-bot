@@ -1,11 +1,19 @@
 //! Restore step 2 — backfill trades, tokens & launches from on-chain history.
 //!
 //! Mirrors [`DbWriter::flush`](crate::ingest::db_writer) but is driven by the RPC
-//! backfill pager instead of the gRPC feed: page every restored wallet's
-//! signatures, union them, then re-decode each transaction through the SAME
-//! decode+map path the live feed uses (`rpc_to_protobuf` → `Decoder::decode_protobuf`
-//! → `map::*`). The decoder can't tell the source apart, so the rows are identical
-//! to what live ingest would have written.
+//! backfill pager instead of the gRPC feed: stream every restored wallet's history
+//! through the **archival** `getTransactionsForAddress` (gTFA) pager and re-decode
+//! each transaction through the SAME decode+map path the live feed uses
+//! (`rpc_to_protobuf` → `Decoder::decode_protobuf` → `map::*`). The decoder can't
+//! tell the source apart, so the rows are identical to what live ingest would have
+//! written.
+//!
+//! gTFA returns each transaction already `getTransaction`-shaped, so it collapses
+//! the old `getSignaturesForAddress` + N×`getTransaction` loop into one
+//! cursor-paginated call at ~1/10th the credit cost (0.1 vs 1 credit/tx). A bundle
+//! tx shows up under every participating wallet, so gTFA hands it back once per
+//! wallet — a run-level signature set decodes+persists it only once (writes are
+//! idempotent regardless).
 //!
 //! Every write is idempotent (trades dedup on `(block_time, tx_signature,
 //! leg_index)`, tokens on mint, launches gated on `find_by_mint`), so a re-run adds
@@ -15,7 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgPool;
@@ -23,7 +31,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use ingest_laserstream::backfill::{
-    get_signatures_for_address, get_transactions_batch, rpc_to_protobuf, wrap_transaction_result,
+    get_transactions_for_address_page, rpc_to_protobuf, wrap_transaction_result,
 };
 use ingest_laserstream::decode::{DecodeOutput, Decoder};
 use ingest_laserstream::event::{TokenCreated as IlTokenCreated, Trade as IlTrade};
@@ -42,8 +50,9 @@ use crate::sse::SseHub;
 /// Flush the buffered trade rows once they reach this many (bounds memory across a
 /// large history); matches the live writer's batch shape (one `UNNEST` per flush).
 const TRADE_FLUSH_EVERY: usize = 500;
-/// How many signatures to fetch per `getTransaction` JSON-RPC batch (one HTTP POST).
-const TX_FETCH_BATCH: usize = 100;
+/// Transactions per archival `getTransactionsForAddress` (gTFA) page — the RPC max,
+/// where the archival method is cheapest (~0.1 credit/tx = 10 credits / 100 txs).
+const GTFA_PAGE_LIMIT: usize = 1000;
 
 /// What the backfill wrote.
 #[derive(Debug, Clone, Default)]
@@ -74,59 +83,99 @@ pub async fn backfill(
         .map(|(addr, (id, _))| (addr.as_str(), *id))
         .collect();
 
-    // Phase 2a — union every wallet's signatures (a bundle tx appears under each
-    // participating wallet; dedup so we decode it once).
-    let signatures = gather_signatures(settings, wallets).await?;
-    info!(wallets = wallets.by_address.len(), signatures = signatures.len(), "restore backfill: gathered signatures");
-
-    // Phase 2b — decode each tx and persist, mirroring DbWriter::flush.
+    // Decode each tx and persist, mirroring DbWriter::flush. gTFA hands a shared
+    // bundle tx back once per participating wallet, so `seen_sigs` decodes+persists
+    // it once (idempotent writes make this an optimization, not a correctness need).
     let decoder = Decoder::new(std::sync::Arc::new(Protocol::pump_fun()));
     let mut wallet_cache: HashMap<String, i32> = HashMap::new();
     let mut trade_buf: Vec<platform_core::models::NewTrade> = Vec::with_capacity(TRADE_FLUSH_EVERY);
+    let mut seen_sigs: HashSet<String> = HashSet::new();
     let mut outcome = BackfillOutcome::default();
 
-    let total = signatures.len();
-    let mut done = 0usize;
-    sse.restore_progress("backfill", 0, total);
-    for chunk in signatures.chunks(TX_FETCH_BATCH) {
-        let results = get_transactions_batch(&settings.rpc_url, chunk)
+    // Streamed total is unknown up front (no signature pre-pass to bill), so report
+    // a growing processed count rather than a precise ratio.
+    let mut processed = 0usize;
+    sse.restore_progress("backfill", 0, 0);
+    for address in wallets.by_address.keys() {
+        let mut cursor: Option<String> = None;
+        loop {
+            let (page, next) = match get_transactions_for_address_page(
+                &settings.rpc_url,
+                address,
+                "asc",
+                GTFA_PAGE_LIMIT,
+                cursor.as_deref(),
+                "base64",
+            )
             .await
-            .context("getTransaction batch")?;
-        for (sig, maybe) in chunk.iter().zip(results) {
-            let Some(raw) = maybe else { continue };
-            let Some(block_time) = block_time_of(&raw) else {
-                warn!(%sig, "restore backfill: tx has no blockTime — skipping (can't set trades PK)");
-                continue;
+            {
+                Ok(page) => page,
+                // One dead/rate-limited wallet must never abort the whole restore.
+                Err(e) => {
+                    warn!(%address, ?e, "restore backfill: gTFA page failed — skipping rest of wallet");
+                    break;
+                }
             };
-            let wrapped = wrap_transaction_result(sig, &raw);
-            let Some(update) = rpc_to_protobuf(&wrapped) else { continue };
-            let DecodeOutput::Events(events) = decoder.decode_protobuf(&update, block_time) else {
-                continue;
-            };
-            for ev in events {
-                match ev {
-                    IngestEvent::Trade(t) => {
-                        persist_trade(pool, adapter, &mut wallet_cache, &mut trade_buf, &t).await;
-                        outcome.mints.insert(t.mint.clone());
+            if page.is_empty() {
+                break;
+            }
+
+            for raw in &page {
+                let Some(block_time) = block_time_of(raw) else {
+                    // No blockTime ⇒ can't set the trades PK; skip (matches the old path).
+                    continue;
+                };
+                // base64 gTFA items expose no signature field; pass "" and let the
+                // adapter recover it from the bincode tx.
+                let wrapped = wrap_transaction_result("", raw);
+                let Some(update) = rpc_to_protobuf(&wrapped) else { continue };
+                let DecodeOutput::Events(events) = decoder.decode_protobuf(&update, block_time)
+                else {
+                    continue;
+                };
+
+                // Dedup at the tx level: a tx's projected events share one signature,
+                // so skip the whole tx if another wallet's page already handled it.
+                if let Some(sig) = events.iter().find_map(event_signature) {
+                    if !seen_sigs.insert(sig) {
+                        continue;
                     }
-                    IngestEvent::TokenCreated(tc) => {
-                        persist_token(pool, adapter, &dev_by_address, &tc, &mut outcome).await;
-                        outcome.mints.insert(tc.mint.clone());
+                }
+
+                for ev in events {
+                    match ev {
+                        IngestEvent::Trade(t) => {
+                            persist_trade(pool, adapter, &mut wallet_cache, &mut trade_buf, &t).await;
+                            outcome.mints.insert(t.mint.clone());
+                        }
+                        IngestEvent::TokenCreated(tc) => {
+                            persist_token(pool, adapter, &dev_by_address, &tc, &mut outcome).await;
+                            outcome.mints.insert(tc.mint.clone());
+                        }
+                        // TokenMigrated / Liquidity / CreatorActivity / RawTx — not projected.
+                        _ => {}
                     }
-                    // TokenMigrated / Liquidity / CreatorActivity / RawTx — not projected.
-                    _ => {}
+                }
+                if trade_buf.len() >= TRADE_FLUSH_EVERY {
+                    flush_trades(pool, &mut trade_buf, &mut outcome).await;
                 }
             }
-            if trade_buf.len() >= TRADE_FLUSH_EVERY {
-                flush_trades(pool, &mut trade_buf, &mut outcome).await;
+
+            processed += page.len();
+            sse.restore_progress("backfill", processed, processed);
+
+            match next {
+                Some(token) => cursor = Some(token),
+                None => break,
             }
         }
-        done += chunk.len();
-        sse.restore_progress("backfill", done, total);
     }
     flush_trades(pool, &mut trade_buf, &mut outcome).await;
 
     info!(
+        wallets = wallets.by_address.len(),
+        processed,
+        unique_txs = seen_sigs.len(),
         trades = outcome.trades,
         launches = outcome.launches,
         mints = outcome.mints.len(),
@@ -135,26 +184,16 @@ pub async fn backfill(
     Ok(outcome)
 }
 
-/// Page + union every restored wallet's successful signatures (oldest-first per
-/// wallet; the union is deduped, order irrelevant since each tx carries its own
-/// slot/block_time). A per-wallet page failure is logged and skipped so one dead
-/// address never aborts the whole restore.
-async fn gather_signatures(
-    settings: &LauncherSettings,
-    wallets: &WalletRestore,
-) -> Result<Vec<String>> {
-    let mut seen: HashSet<String> = HashSet::new();
-    for address in wallets.by_address.keys() {
-        match get_signatures_for_address(&settings.rpc_url, address, None, None, 1000).await {
-            Ok(infos) => {
-                for info in infos {
-                    seen.insert(info.signature);
-                }
-            }
-            Err(e) => warn!(%address, ?e, "restore backfill: signature page failed — skipping wallet"),
-        }
+/// A tx's base58 signature from its first projected (trade/create) event — every
+/// event decoded from one tx carries the same signature, so any one identifies the
+/// tx for the run-level dedup. `None` for a tx with no projected event (nothing to
+/// persist, so its dedup is moot anyway).
+fn event_signature(ev: &IngestEvent) -> Option<String> {
+    match ev {
+        IngestEvent::Trade(t) => Some(t.signature.clone()),
+        IngestEvent::TokenCreated(tc) => Some(tc.signature.clone()),
+        _ => None,
     }
-    Ok(seen.into_iter().collect())
 }
 
 /// Map a decoded trade to a row and buffer it (interning its wallet, memoized like

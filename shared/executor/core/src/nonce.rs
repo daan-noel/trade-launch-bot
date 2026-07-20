@@ -345,4 +345,29 @@ impl Engine {
             _ => bail!("Nonce account {} not initialized", pubkey),
         }
     }
+
+    /// Pre-fetch nonce blockhashes for many accounts in one `getMultipleAccounts`
+    /// (chunked at the 100-key RPC cap) rather than one `getAccount` each — the
+    /// durable-nonce startup prefetch. Bails if any account is missing or is not an
+    /// initialized nonce (same contract as [`fetch_nonce_hash_async`]).
+    pub async fn prefetch_nonce_hashes(&self, pubkeys: &[Pubkey]) -> Result<Vec<(Pubkey, Hash)>> {
+        let mut out = Vec::with_capacity(pubkeys.len());
+        for chunk in pubkeys.chunks(100) {
+            let accounts = self
+                .rpc
+                .get_multiple_accounts(chunk)
+                .await
+                .context("Failed to batch-fetch nonce accounts")?;
+            for (pk, acct) in chunk.iter().zip(accounts) {
+                let Some(account) = acct else {
+                    bail!("Nonce account {} not found", pk);
+                };
+                match nonce_utils::state_from_account(&account)? {
+                    State::Initialized(data) => out.push((*pk, data.blockhash())),
+                    _ => bail!("Nonce account {} not initialized", pk),
+                }
+            }
+        }
+        Ok(out)
+    }
 }

@@ -60,6 +60,9 @@ pub struct DeployState {
     /// table pages/sorts/filters over one scan per window (see
     /// [`crate::services::portfolio::HoldingsCache`]).
     pub holdings_cache: crate::services::portfolio::HoldingsCache,
+    /// Short-TTL cache of the two cashback pots so the dashboard's `/api/cashback/status`
+    /// poll doesn't re-read on-chain each time (see [`crate::services::cashback::CashbackCache`]).
+    pub cashback_cache: crate::services::cashback::CashbackCache,
 }
 
 impl DeployState {
@@ -92,6 +95,7 @@ impl DeployState {
             live_mode,
             slot_anchor: Arc::new(RwLock::new(None)),
             holdings_cache: Default::default(),
+            cashback_cache: Default::default(),
         }
     }
 
