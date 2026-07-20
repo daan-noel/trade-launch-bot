@@ -320,6 +320,33 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             }
         }
 
+        Event::ExternallyCleared { position, fill } => {
+            let Some(pref) = state.positions.get(&position).cloned() else { return fx };
+            let PositionRef { mint, rule } = pref;
+            let Some(mut token) = state.tokens.remove(&mint) else { return fx };
+            if let Some(ArmState::Entered { position: pos, .. }) = token.arms.get(&rule).cloned() {
+                if pos == position {
+                    // The bag is already gone → close terminally at the resolved fill.
+                    // No `SubmitSell` (the twin of `ManualClose`, minus the sell).
+                    decrement_open(state, rule);
+                    state.positions.remove(&position);
+                    token.arms.insert(rule, ArmState::Done);
+                    fx.push(Effect::PositionUpdate(PositionDelta {
+                        position,
+                        rule,
+                        mint: mint.clone(),
+                        status: PositionStatus::End,
+                        fill: Some(fill),
+                        reason: Some(ExitReason::Manual),
+                        intent: None,
+                    }));
+                }
+            }
+            if token.is_active() {
+                state.tokens.insert(mint, token);
+            }
+        }
+
         Event::Migrated { mint, at: _ } => {
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             let rule_ids: SmallVec<[RuleId; 4]> = token.arms.keys().copied().collect();

@@ -629,19 +629,6 @@ async fn main() -> anyhow::Result<()> {
 
     let (sol_price_tx, _sol_price_rx) = tokio::sync::watch::channel::<Option<f64>>(None);
     let sol_price = Arc::new(sol_price_tx);
-    // One unified, strategy-agnostic runtime cache (replaces the tpsl1/tpsl2 caches);
-    // rules are dispatched by `strategy_id` through the registry inside it.
-    let strategy_cache =
-        Arc::new(trading_core::strategies::runtime_cache::StrategyRuntimeCache::new());
-    // Install the cold-lane sender so position transitions broadcast
-    // `tpsl_positions_changed` deltas straight from the cache funnel.
-    strategy_cache.set_sse_sender(sse_tx.clone());
-    strategy_cache
-        .load_from_db(&trading_core::storage::repositories::strategy_repo::StrategyRepo::new(
-            db.clone(),
-        ))
-        .await
-        .context("Failed to load strategy runtime cache")?;
 
     // Shared (wallet, mint) wakeup hub: the DbWriter signals it once a trade is
     // persisted; the live buy/sell confirm loops await it instead of polling the
@@ -731,20 +718,6 @@ async fn main() -> anyhow::Result<()> {
         settings_tx.clone(),
         sol_price.clone(),
     ));
-    // The legacy unified service is still constructed so `DeployState` + the legacy
-    // rule/position handlers compile (deleted in Phase 7); its background reapers are
-    // **not** spawned — the generic engine now owns `strategy_positions`, and running
-    // the old reapers alongside it would race over the same rows.
-    let strategy_service = strategies::StrategyService::new(
-        db.clone(),
-        trader.clone(),
-        strategy_cache.clone(),
-        token_cache.clone(),
-        sse_tx.clone(),
-        trade_signals.clone(),
-        settings_tx.subscribe(),
-    );
-
     // ── The generic fingerprint + metrics engine (strategy redesign, Phase 4) ──
     // THE serialized decision loop, driven by the same ingest ping channel the old
     // `StrategyRunner` drained (`strategy_rx`), a 500 ms tick, and confirmed fills.
@@ -782,7 +755,7 @@ async fn main() -> anyhow::Result<()> {
     let deploy_state = Arc::new(state::deploy_state::DeployState::new(
         core_state.clone(),
         trader.clone(),
-        strategy_service.clone(),
+        trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone()),
         engine_handle,
         engine_armed,
         rule_repo,
@@ -829,18 +802,17 @@ async fn main() -> anyhow::Result<()> {
     // build a full in-RAM snapshot (it has the RAM and wants the speed).
 
     // Bound the in-memory token cache: evict mints that have gone quiet beyond the
-    // activity window and hold no open position. The held-mint exemption now consults
-    // BOTH the legacy runtime cache (historical rows) and the generic engine's live
-    // position registry, so an engine-held token's price feed is never evicted mid-hold.
+    // activity window and hold no open position. The held-mint exemption consults the
+    // generic engine's live position registry, so an engine-held token's price feed is
+    // never evicted mid-hold.
     {
         let token_cache = token_cache.clone();
-        let sc = strategy_cache.clone();
         let positions = engine_positions.clone();
         let evict_repo =
             trading_core::storage::repositories::token_info_repo::TokenInfoRepo::new(db.clone());
         tokio::spawn(state::token_cache::run_token_cache_eviction(
             token_cache,
-            move |mint: &str| sc.is_mint_held(mint) || positions.is_mint_held(mint),
+            move |mint: &str| positions.is_mint_held(mint),
             evict_repo,
         ));
     }

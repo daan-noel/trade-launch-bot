@@ -1,10 +1,9 @@
 //! Unified strategy position-read handlers.
 //!
 //! One set of handlers over [`StrategyRepo`] (the unified `strategy_positions`
-//! table), keyed by a `{strategy}` path segment. The legacy per-strategy URLs
-//! (`/strategies/tpsl1/...`, `/strategies/tpsl2/...`) stay valid — the segment
-//! maps to a canonical `strategy_id` via [`StrategyImpl::from_id`], which accepts
-//! both the short alias (`tpsl1`) and the canonical id (`tpsl_sniper_1`).
+//! table). The generic engine stamps every position with the `"generic"`
+//! `strategy_id`, so the `{strategy}` path segment is retained only for URL
+//! back-compat — it is ignored, and every query resolves to `"generic"`.
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
@@ -16,8 +15,6 @@ use crate::state::deploy_state::DeployState;
 use trading_core::api::table_query::TableRequest;
 use trading_core::models::{PositionsSummary, StrategyPosition};
 use trading_core::storage::repositories::strategy_repo::{PositionQuery, StrategyRepo};
-use trading_core::strategies::registry::StrategyImpl;
-use trading_core::strategies::swing_1::swing::SwingLeg;
 
 // ---------------------------------------------------------------------------
 // Response type
@@ -79,11 +76,6 @@ pub struct PositionResponse {
     pub run_seq: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    /// Swing1-only: legs harvested from the live exit memo at close (see
-    /// `runtime_cache::merge_swing_legs_into_extra`). `None` for tpsl1/tpsl2
-    /// positions (no such key in `extra`) and for still-open swing1 positions
-    /// (not harvested until the position leaves the holding index).
-    pub swing_legs: Option<Vec<SwingLeg>>,
     /// Token symbol (row-owned identity; excluded from the shared `token` flatten).
     /// Empty until enriched.
     pub symbol: String,
@@ -105,12 +97,6 @@ impl From<StrategyPosition> for PositionResponse {
         let pnl_sol = p.realized_pnl_sol();
         let entry_sigs = p.entry_tx_sigs();
         let exit_sigs = p.exit_tx_sigs();
-        // Missing key or malformed JSON just means "no legs" (tpsl1/tpsl2 rows, or
-        // a swing1 row that hasn't closed yet) — never an error.
-        let swing_legs = p
-            .extra
-            .get("swing_legs")
-            .and_then(|v| serde_json::from_value::<Vec<SwingLeg>>(v.clone()).ok());
         Self {
             id: p.id,
             run_id: p.run_id,
@@ -141,7 +127,6 @@ impl From<StrategyPosition> for PositionResponse {
             run_seq: None,
             created_at: p.created_at,
             updated_at: p.updated_at,
-            swing_legs,
             // Enrichment is attached by the paged handler (`enrich_position_responses`);
             // default here so the SSE-delta / single-position paths stay unchanged.
             symbol: String::new(),
@@ -230,16 +215,13 @@ pub struct ScopeParam {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve the `{strategy}` path segment to its canonical `strategy_id`, or a
-/// `400` if it names no known strategy.
-fn strategy_id(seg: &str) -> Result<&'static str, HttpResponse> {
-    StrategyImpl::from_id(seg).map(|s| s.id()).ok_or_else(|| {
-        HttpResponse::BadRequest().json(serde_json::json!({"error": "Unknown strategy"}))
-    })
-}
+/// The one `strategy_id` every generic-engine position carries. The `{strategy}`
+/// path segment is ignored (kept only for URL back-compat); all queries resolve to
+/// this. Mirrors `GENERIC_STRATEGY_ID` in `strategies/engine/sinks.rs`.
+const GENERIC_STRATEGY_ID: &str = "generic";
 
 fn repo(app_state: &DeployState) -> &StrategyRepo {
-    app_state.strategy.repo()
+    &app_state.strategy_repo
 }
 
 fn json_positions(positions: Vec<StrategyPosition>) -> HttpResponse {
@@ -329,10 +311,7 @@ pub async fn get_positions_by_rule(
     scope: web::Query<ScopeParam>,
     body: web::Json<TableRequest>,
 ) -> impl Responder {
-    let (strategy, rule_id) = path.into_inner();
-    if let Err(resp) = strategy_id(&strategy) {
-        return resp;
-    }
+    let (_strategy, rule_id) = path.into_inner();
     let scope = scope.into_inner().scope;
     let req = body.into_inner();
     let (limit, offset) = req.pagination.bounds();
@@ -416,10 +395,7 @@ pub async fn get_positions_summary_by_rule(
     scope: web::Query<ScopeParam>,
     body: web::Json<TableRequest>,
 ) -> impl Responder {
-    let (strategy, rule_id) = path.into_inner();
-    if let Err(resp) = strategy_id(&strategy) {
-        return resp;
-    }
+    let (_strategy, rule_id) = path.into_inner();
     let scope = scope.into_inner().scope;
     let repo = repo(&app_state);
     let pq = PositionQuery::from(body.into_inner());
@@ -478,11 +454,8 @@ pub async fn list_positions(
     path: web::Path<String>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
-    let strategy = path.into_inner();
-    let sid = match strategy_id(&strategy) {
-        Ok(sid) => sid,
-        Err(resp) => return resp,
-    };
+    let _strategy = path.into_inner();
+    let sid = GENERIC_STRATEGY_ID;
     let (limit, offset) = query.bounds();
     match repo(&app_state).find_positions_by_strategy(sid, limit, offset).await {
         Ok(positions) => json_positions(positions),
@@ -496,11 +469,8 @@ pub async fn get_positions_by_mint(
     path: web::Path<(String, String)>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
-    let (strategy, mint) = path.into_inner();
-    let sid = match strategy_id(&strategy) {
-        Ok(sid) => sid,
-        Err(resp) => return resp,
-    };
+    let (_strategy, mint) = path.into_inner();
+    let sid = GENERIC_STRATEGY_ID;
     let (limit, offset) = query.bounds();
     match repo(&app_state).find_holding_by_mint(sid, &mint, limit, offset).await {
         Ok(positions) => json_positions(positions),
@@ -514,11 +484,8 @@ pub async fn get_positions_by_wallet(
     path: web::Path<(String, String)>,
     query: web::Query<PositionListParams>,
 ) -> impl Responder {
-    let (strategy, wallet) = path.into_inner();
-    let sid = match strategy_id(&strategy) {
-        Ok(sid) => sid,
-        Err(resp) => return resp,
-    };
+    let (_strategy, wallet) = path.into_inner();
+    let sid = GENERIC_STRATEGY_ID;
     let (limit, offset) = query.bounds();
     match repo(&app_state).find_holding_by_wallet(sid, &wallet, limit, offset).await {
         Ok(positions) => json_positions(positions),
@@ -526,35 +493,12 @@ pub async fn get_positions_by_wallet(
     }
 }
 
-/// GET /api/strategies/{strategy}/rules/{rule_id}/armed-history
-///
-/// The current run's candidates that **armed but never fired** for a rule —
-/// positions that reached `Arming` (matched, watching the feed for the entry
-/// trigger) and left un-entered because the trigger never fired, the arming window
-/// closed, the armer cap evicted them, or the rule was stopped. Read straight from
-/// the in-memory runtime cache (not the DB — these rows are deleted on drop); the
-/// list resets when a fresh run starts. Oldest first.
-pub async fn get_armed_history_by_rule(
-    app_state: web::Data<Arc<DeployState>>,
-    path: web::Path<(String, Uuid)>,
-) -> impl Responder {
-    let (strategy, rule_id) = path.into_inner();
-    if let Err(resp) = strategy_id(&strategy) {
-        return resp;
-    }
-    let records = app_state.strategy.runtime().armed_history_by_rule(rule_id);
-    HttpResponse::Ok().json(records)
-}
-
 /// GET /api/strategies/{strategy}/positions/{position_id}
 pub async fn get_position(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
 ) -> impl Responder {
-    let (strategy, position_id) = path.into_inner();
-    if let Err(resp) = strategy_id(&strategy) {
-        return resp;
-    }
+    let (_strategy, position_id) = path.into_inner();
     match repo(&app_state).find_position(position_id).await {
         Ok(Some(position)) => HttpResponse::Ok().json(PositionResponse::from(position)),
         Ok(None) => HttpResponse::NotFound().json(serde_json::json!({"error": "Position not found"})),
@@ -580,18 +524,16 @@ pub async fn close_position(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
 ) -> impl Responder {
-    let (strategy, position_id) = path.into_inner();
-    if let Err(resp) = strategy_id(&strategy) {
-        return resp;
-    }
-    match app_state.strategy.close_position(position_id).await {
-        Ok(true) => HttpResponse::Accepted().json(serde_json::json!({ "closing": true })),
-        Ok(false) => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "No open position to close"})),
-        Err(e) => {
-            tracing::error!("Failed to close position {position_id}: {e}");
-            HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to close position"}))
-        }
+    let (_strategy, position_id) = path.into_inner();
+    // Route through the generic engine's own close path: it resolves the PG id to
+    // the live engine position and folds a `ManualClose` (a no-op if it isn't a
+    // live engine-held one). The row transitions `Holding → ExitPending → closed`
+    // over the `tpsl_positions_changed` SSE. `manual_close` returns `false` only if
+    // the engine loop is shutting down.
+    if app_state.engine.manual_close(position_id).await {
+        HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))
+    } else {
+        HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "Failed to close position"}))
     }
 }

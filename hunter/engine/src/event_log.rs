@@ -30,6 +30,7 @@ pub enum LoggedEvent {
     FillFailed { intent: IntentId, reason: FillFailReason },
     Migrated { mint: Mint, at: Ts },
     ManualClose { position: PositionId },
+    ExternallyCleared { position: PositionId, fill: Fill },
 }
 
 impl LoggedEvent {
@@ -59,6 +60,9 @@ impl LoggedEvent {
             }
             Event::Migrated { mint, at } => LoggedEvent::Migrated { mint: mint.clone(), at: *at },
             Event::ManualClose { position } => LoggedEvent::ManualClose { position: *position },
+            Event::ExternallyCleared { position, fill } => {
+                LoggedEvent::ExternallyCleared { position: *position, fill: *fill }
+            }
             Event::Tick { .. } | Event::RulesReloaded { .. } => return None,
         })
     }
@@ -82,7 +86,8 @@ impl LoggedEvent {
             | LoggedEvent::FirstSlotSettled { at, .. }
             | LoggedEvent::Migrated { at, .. } => Some(*at),
             LoggedEvent::Trade { trade, .. } => Some(trade.at),
-            LoggedEvent::FillConfirmed { fill, .. } => Some(fill.at),
+            LoggedEvent::FillConfirmed { fill, .. }
+            | LoggedEvent::ExternallyCleared { fill, .. } => Some(fill.at),
             _ => None,
         }
     }
@@ -109,6 +114,9 @@ impl LoggedEvent {
             LoggedEvent::FillFailed { intent, reason } => Event::FillFailed { intent, reason },
             LoggedEvent::Migrated { mint, at } => Event::Migrated { mint, at },
             LoggedEvent::ManualClose { position } => Event::ManualClose { position },
+            LoggedEvent::ExternallyCleared { position, fill } => {
+                Event::ExternallyCleared { position, fill }
+            }
         }
     }
 }

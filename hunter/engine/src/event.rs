@@ -173,6 +173,12 @@ pub enum Event {
     RulesReloaded { rules: Arc<[LoadedRule]>, fps: Arc<[Fingerprint]> },
     /// A manual sell / stop-all targeting one open position.
     ManualClose { position: PositionId },
+    /// One open position whose token bag was already cleared **off-chain** (an
+    /// external / manual wallet sell) — book it closed at `fill` WITHOUT emitting a
+    /// `SubmitSell` (the bag is gone; a sell would only revert into an empty wallet).
+    /// The live adapter resolves `fill` from the wallet's last sell (or the entry as
+    /// a fallback). Mirrors the retired `reconcile_externally_cleared_mint`.
+    ExternallyCleared { position: PositionId, fill: Fill },
 }
 
 /// The ordered output stream. `SubmitBuy`/`SubmitSell` are the trade *decisions*

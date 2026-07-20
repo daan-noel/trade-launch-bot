@@ -6,9 +6,8 @@ use tokio::sync::{watch, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::settings_repo::AppSettings;
-use trading_core::strategies::runtime_cache::StrategyRuntimeCache;
+use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use crate::strategies::engine::{ArmedRegistry, EngineHandle};
-use crate::strategies::StrategyService;
 use crate::trader::PumpFunTrader;
 
 use ingest_laserstream::slot_anchor::SlotAnchor;
@@ -27,11 +26,11 @@ const MAX_CONCURRENT_SYNCS: usize = 4;
 pub struct DeployState {
     pub core: Arc<CoreState>,
     pub trader: Arc<PumpFunTrader>,
-    /// The unified, strategy-agnostic live service — holds the one
-    /// [`StrategyRuntimeCache`] + [`StrategyRepo`](trading_core::storage::repositories::strategy_repo::StrategyRepo)
-    /// and owns the rule-CRUD lifecycle (activate / pause / stop-and-close) the
-    /// handlers call. Cheaply `Clone` (Arc-backed); the runner holds a sibling clone.
-    pub strategy: StrategyService,
+    /// The unified `strategy_positions`/`strategy_runs`/`strategy_rules` repo the
+    /// position-read handlers page over. The generic engine owns the *lifecycle*
+    /// (rule CRUD, arming, closes); this is just the durable read/write surface the
+    /// HTTP layer shares with it. Cheaply `Clone` (Arc-backed pool).
+    pub strategy_repo: StrategyRepo,
     /// Handle to the generic fingerprint+metrics engine loop — rule/fingerprint
     /// CRUD handlers ping it to reload, and manual position closes route through it.
     pub engine: EngineHandle,
@@ -68,7 +67,7 @@ impl DeployState {
     pub fn new(
         core: Arc<CoreState>,
         trader: Arc<PumpFunTrader>,
-        strategy: StrategyService,
+        strategy_repo: StrategyRepo,
         engine: EngineHandle,
         armed: ArmedRegistry,
         rule_repo: RuleRepo,
@@ -81,7 +80,7 @@ impl DeployState {
         Self {
             core,
             trader,
-            strategy,
+            strategy_repo,
             engine,
             armed,
             rule_repo,
@@ -94,12 +93,6 @@ impl DeployState {
             slot_anchor: Arc::new(RwLock::new(None)),
             holdings_cache: Default::default(),
         }
-    }
-
-    /// The shared strategy runtime cache (held by the service) — for handlers that
-    /// only read the in-memory holding index / cap counters.
-    pub fn strategy_cache(&self) -> &Arc<StrategyRuntimeCache> {
-        self.strategy.runtime()
     }
 
     pub fn is_live(&self) -> bool {

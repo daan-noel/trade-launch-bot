@@ -377,6 +377,16 @@ async fn handle_command(
                 EventBatch::none()
             }
         },
+        EngineCommand::ReconcileCleared { pg_position_id, fill } => {
+            match registry.engine_id(pg_position_id) {
+                Some(position) => EventBatch::one(Event::ExternallyCleared { position, fill }),
+                None => {
+                    warn!(pg = %pg_position_id,
+                        "reconcile cleared: no live engine position — ignoring");
+                    EventBatch::none()
+                }
+            }
+        }
         EngineCommand::CloseRule { rule_id } => {
             let positions = registry.positions_for_rule(RuleId(rule_id));
             info!(rule = %rule_id, positions = positions.len(), "engine: stop rule — closing open positions");

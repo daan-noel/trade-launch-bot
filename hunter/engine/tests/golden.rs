@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use hunter_engine::arm::CompiledRule;
 use hunter_engine::event::{
     ArmedStateTag, DisarmReason, Effect, Event, ExitReason, Fill, FillFailReason, LoadedRule, Mint,
@@ -376,6 +376,26 @@ fn manual_close_sells_held_position() {
     let exit = sell_intent(&fx);
     let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(1.5, 1.0) });
     assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+}
+
+#[test]
+fn externally_cleared_closes_without_sell() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+
+    let position = *s.positions.keys().next().expect("one open position");
+    // The bag was already cleared off-chain (manual wallet sell) → book the position
+    // closed at the resolved fill in ONE step, with NO sell (the twin of ManualClose,
+    // minus the on-chain sell that would only revert into an empty wallet).
+    let fx = reduce(&mut s, Event::ExternallyCleared { position, fill: fill(1.5, 1.0) });
+    assert!(sells(&fx).is_empty(), "externally-cleared close must NOT submit a sell");
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+    // Position pruned + open counter decremented → the token is done.
+    assert!(!s.positions.contains_key(&position), "closed position is removed from state");
 }
 
 #[test]

@@ -33,7 +33,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use hunter_engine::event::{IntentId, PositionId, RuleId, TradeMode};
+use hunter_engine::event::{Fill, IntentId, PositionId, RuleId, TradeMode};
 
 pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 
@@ -56,6 +56,11 @@ pub enum EngineCommand {
     /// Force-close every open position of one **trade mode** (Stop All). Same as
     /// [`Self::CloseRule`] applied to every position matching `real`.
     CloseMode { real: bool },
+    /// Book one **PG** position closed after its bag was cleared off-chain (an
+    /// external / manual wallet sell) — the loop resolves it via the sink registry
+    /// and folds an [`Event::ExternallyCleared`], which closes the position at `fill`
+    /// WITHOUT emitting a sell (a no-op if the position isn't a live engine-held one).
+    ReconcileCleared { pg_position_id: Uuid, fill: Fill },
 }
 
 /// A cheap, cloneable handle the HTTP layer holds to talk to the running engine
@@ -99,6 +104,16 @@ impl EngineHandle {
     pub async fn close_mode(&self, real: bool) -> bool {
         self.cmd_tx
             .send(EngineCommand::CloseMode { real })
+            .await
+            .is_ok()
+    }
+
+    /// Ask the loop to book a PG position closed at `fill` after its bag was cleared
+    /// off-chain (manual wallet sell) — no on-chain sell is fired. Returns `false`
+    /// only if the loop channel is closed (shutting down).
+    pub async fn reconcile_cleared(&self, pg_position_id: Uuid, fill: Fill) -> bool {
+        self.cmd_tx
+            .send(EngineCommand::ReconcileCleared { pg_position_id, fill })
             .await
             .is_ok()
     }

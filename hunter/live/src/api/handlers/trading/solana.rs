@@ -453,33 +453,61 @@ pub async fn manual_sell(
     }
 
     // Position reconcile (off the response path): the bag is cleared on-chain, so
-    // drive any owning tpsl `Holding` position to `End` (reason ManualSell) — else
-    // it shows "Holding" forever and survives restarts (boot seeding reloads the
-    // stale row). A no-op for a plain wallet sell with no strategy position.
-    // Retries briefly so the recorded exit price is the real sell once it indexes;
-    // each strategy's boot/maintenance reaper is the ultimate backstop.
+    // book any owning `Holding` real position closed (reason Manual) via the generic
+    // engine's externally-cleared path — WITHOUT a fresh sell (the bag is gone; a
+    // sell would only revert into an empty wallet). Else the position shows "Holding"
+    // forever. A no-op for a plain wallet sell with no strategy position.
+    //
+    // Retries briefly so the reconcile fires only once the feed confirms the bag is
+    // actually cleared (index lag) and records the real sell's exit price; the
+    // engine's reaper is the ultimate backstop for anything still unresolved.
     {
-        use crate::strategies::execution::real::reconcile_externally_cleared_mint;
+        use hunter_engine::event::Fill;
+        use trading_core::models::trade::TradeType;
         let state = app_state.get_ref().clone();
         let mint = body.mint_address.clone();
         tokio::spawn(async move {
+            let wallet = state.trader.wallet_pubkey();
             for _ in 0..RECONCILE_MAX_ATTEMPTS {
-                // One unified reconcile (real positions, both strategies — the repo
-                // filters `mode='real'` internally).
-                let r = reconcile_externally_cleared_mint(
-                    &mint,
-                    state.strategy.repo(),
-                    &state.trade_repo(),
-                    state.strategy.runtime(),
-                    &state.trader,
-                )
-                .await;
-                // Stop once a position closed, or once there's no open position for
-                // the mint (`None` = nothing to reconcile).
-                if r.unwrap_or(0) > 0 || r.is_none() {
-                    break;
+                // Open real `Holding` positions for this mint (repo filters mode='real').
+                let positions = match state.strategy_repo.find_open_by_mint(&mint, "real").await {
+                    Ok(p) if p.is_empty() => break, // nothing to reconcile
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(mint = %mint, "manual-sell reconcile: open-position query failed: {e}");
+                        break;
+                    }
+                };
+                // Confirm via the trades feed that the bag is really cleared before
+                // closing — the on-chain sell may not have indexed yet (index lag).
+                let cleared = matches!(
+                    state.trade_repo().net_token_amount_by_wallet_and_mint(&wallet, &mint).await,
+                    Ok(balance) if balance <= 0
+                );
+                if !cleared {
+                    tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
+                    continue;
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(RECONCILE_RETRY_SECS)).await;
+                // Exit price/time from the most recent sell; fall back to entry if the
+                // sell isn't indexed. `close_externally_cleared_position` used the same
+                // `exit_price × entry_token_amount` approximation for `exit_sol`.
+                let last_sell = state
+                    .trade_repo()
+                    .find_latest_by_wallet_mint_type(&wallet, &mint, TradeType::Sell)
+                    .await
+                    .ok()
+                    .flatten();
+                for pos in positions {
+                    let (price, at) = match &last_sell {
+                        Some(s) => (s.price_per_token, s.block_time),
+                        None => (pos.entry_price.unwrap_or(0.0), chrono::Utc::now()),
+                    };
+                    let token_amount = pos.entry_token_amount.unwrap_or(0);
+                    let fill = Fill { price, sol: price * token_amount as f64, token_amount, at };
+                    state.engine.reconcile_cleared(pos.id, fill).await;
+                }
+                // Commands are enqueued; the engine closes the rows over SSE.
+                break;
             }
         });
     }
