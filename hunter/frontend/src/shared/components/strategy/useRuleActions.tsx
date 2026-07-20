@@ -7,7 +7,13 @@ import {
   useCreateStrategyRuleMutation,
   useUpdateStrategyRuleMutation,
   useDeleteStrategyRuleMutation,
+  useGetStrategyRulesQuery,
 } from 'store/sharedEndpoints';
+import {
+  duplicateRuleMessage,
+  findIdenticalRule,
+  ruleIdentityOf,
+} from 'lib/strategy/matchRuleIdentity';
 import type { StrategyRule } from 'lib/strategy/types';
 
 export interface UseRuleActionsOptions {
@@ -43,16 +49,25 @@ export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): Ru
   const [createRule, { isLoading: creating }] = useCreateStrategyRuleMutation();
   const [updateRule, { isLoading: updating }] = useUpdateStrategyRuleMutation();
   const [deleteRule] = useDeleteStrategyRuleMutation();
+  // Cache for early duplicate detect — backend Duplicate gate remains authoritative.
+  const { data: existingRules = [] } = useGetStrategyRulesQuery();
 
   const [editing, setEditing] = useState<StrategyRule | 'new' | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const submit = async (draft: RuleEditorDraft) => {
     setErr(null);
+    const editingId =
+      editing && editing !== 'new' && editing.id ? editing.id : undefined;
+    const dup = findIdenticalRule(existingRules, ruleIdentityOf(draft), editingId);
+    if (dup) {
+      setErr(duplicateRuleMessage(dup));
+      return;
+    }
     try {
-      if (editing && editing !== 'new' && editing.id) {
+      if (editingId) {
         await updateRule({
-          id: editing.id,
+          id: editingId,
           body: {
             rule_name: draft.rule_name,
             trade_mode: draft.trade_mode,

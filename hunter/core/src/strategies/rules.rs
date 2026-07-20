@@ -27,6 +27,9 @@ pub use hunter_engine::metrics::flow_split::flow_unconfigured_warning;
 pub enum RuleError {
     /// 400 — a validation check rejected the proposed rule.
     Invalid(String),
+    /// 409 — an identity-identical rule already exists (`rule_name` is a label,
+    /// not identity). Carries the existing row for the error message.
+    Duplicate { existing_id: Uuid, rule_name: String },
     /// 500 — a repository call failed.
     Repo(anyhow::Error),
 }
@@ -156,9 +159,54 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
     })
 }
 
-/// Validate, build, and persist a new generic rule.
+/// Reject when another rule already shares trading identity (fingerprint +
+/// sizing/caps + canonical params). `rule_name` / `is_active` are not identity.
+async fn reject_duplicate(
+    repo: &RuleRepo,
+    fingerprint_id: Uuid,
+    trade_mode: &str,
+    buy_amount_lamports: i64,
+    max_concurrent_tokens: i64,
+    max_total_tokens: i64,
+    params: &Value,
+    exclude_id: Option<Uuid>,
+) -> Result<(), RuleError> {
+    match repo
+        .find_identical(
+            fingerprint_id,
+            trade_mode,
+            buy_amount_lamports,
+            max_concurrent_tokens,
+            max_total_tokens,
+            params,
+            exclude_id,
+        )
+        .await
+    {
+        Ok(Some(existing)) => Err(RuleError::Duplicate {
+            existing_id: existing.id,
+            rule_name: existing.rule_name,
+        }),
+        Ok(None) => Ok(()),
+        Err(e) => Err(RuleError::Repo(e)),
+    }
+}
+
+/// Validate, build, and persist a new generic rule. Refuses an identity-identical
+/// duplicate (promote / New / Duplicate all share this gate).
 pub async fn create(repo: &RuleRepo, draft: &RuleDraft) -> Result<StrategyRule, RuleError> {
     let rule = build_rule(draft).map_err(RuleError::Invalid)?;
+    reject_duplicate(
+        repo,
+        rule.fingerprint_id,
+        &rule.trade_mode,
+        rule.buy_amount_lamports,
+        rule.max_concurrent_tokens,
+        rule.max_total_tokens,
+        &rule.params,
+        None,
+    )
+    .await?;
     repo.insert(&rule).await.map_err(RuleError::Repo)?;
     Ok(rule)
 }
@@ -177,8 +225,11 @@ pub async fn create_with_fp_check(
 
 /// Re-validate a fully-formed generic rule and persist the edit. The caller
 /// merges its request patch into the loaded rule first (request-shaped,
-/// edge-side) and enforces any live-edit frozen-field guard.
-pub async fn save(repo: &RuleRepo, rule: &StrategyRule) -> Result<(), RuleError> {
+/// edge-side) and enforces any live-edit frozen-field guard. Params are stored
+/// in canonical form (same fixed point as [`build_rule`]) so identity compares
+/// cannot drift by author JSON shape. Refuses colliding with another rule's
+/// identity.
+pub async fn save(repo: &RuleRepo, rule: &mut StrategyRule) -> Result<(), RuleError> {
     validate_rule_fields(
         &rule.rule_name,
         &rule.trade_mode,
@@ -187,8 +238,20 @@ pub async fn save(repo: &RuleRepo, rule: &StrategyRule) -> Result<(), RuleError>
         rule.max_total_tokens,
     )
     .map_err(RuleError::Invalid)?;
-    RuleParams::parse(&rule.params)
+    let params = RuleParams::parse(&rule.params)
         .map_err(|e| RuleError::Invalid(format!("invalid params: {e}")))?;
+    rule.params = params.to_value();
+    reject_duplicate(
+        repo,
+        rule.fingerprint_id,
+        &rule.trade_mode,
+        rule.buy_amount_lamports,
+        rule.max_concurrent_tokens,
+        rule.max_total_tokens,
+        &rule.params,
+        Some(rule.id),
+    )
+    .await?;
     repo.update(rule).await.map_err(RuleError::Repo)?;
     Ok(())
 }
@@ -197,7 +260,7 @@ pub async fn save(repo: &RuleRepo, rule: &StrategyRule) -> Result<(), RuleError>
 pub async fn save_with_fp_check(
     repo: &RuleRepo,
     fp_repo: &FingerprintRepo,
-    rule: &StrategyRule,
+    rule: &mut StrategyRule,
 ) -> Result<Option<String>, RuleError> {
     save(repo, rule).await?;
     Ok(flow_warning_for(fp_repo, rule.fingerprint_id, &rule.params).await)
@@ -313,5 +376,25 @@ mod generic_tests {
 
         // Fingerprint-only rule (empty params) is legal: enter on arm, TP/SL off.
         assert!(build_rule(&generic_draft(json!({}))).is_ok());
+    }
+
+    #[test]
+    fn rule_identity_excludes_name_and_active() {
+        // Two drafts that trade the same way must canonicalize to equal identity
+        // axes (what `find_identical` / Duplicate gate on) even when names differ.
+        let mut a = generic_draft(valid_params());
+        a.rule_name = "promoted g1 c2".into();
+        let mut b = generic_draft(valid_params());
+        b.rule_name = "other label".into();
+        b.fingerprint_id = a.fingerprint_id;
+        let ra = build_rule(&a).expect("a");
+        let rb = build_rule(&b).expect("b");
+        assert_eq!(ra.fingerprint_id, rb.fingerprint_id);
+        assert_eq!(ra.trade_mode, rb.trade_mode);
+        assert_eq!(ra.buy_amount_lamports, rb.buy_amount_lamports);
+        assert_eq!(ra.max_concurrent_tokens, rb.max_concurrent_tokens);
+        assert_eq!(ra.max_total_tokens, rb.max_total_tokens);
+        assert_eq!(ra.params, rb.params, "canonical params must match for identity");
+        assert_ne!(ra.rule_name, rb.rule_name);
     }
 }

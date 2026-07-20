@@ -1,8 +1,12 @@
 import { Fragment, type CSSProperties, type ReactNode } from 'react';
 import type { ColumnDef } from 'components/table/types';
+import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { ruleParamsCell } from 'components/strategy/RuleParamsSummary';
+import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { cn } from 'lib/cn';
+import { ruleParamsJsonEqual } from 'lib/strategy/ruleParams';
+import type { Fingerprint, StrategyRule } from 'lib/strategy/types';
 import { formatDecimalTrim } from 'utils/format';
 import { GROUP_FIELD_LABELS, type GroupField, type GroupedSweepGroupRecord } from './groupedTypes';
 import type { SweepResultRecord } from './types';
@@ -276,8 +280,83 @@ function keyParts(group: GroupedSweepGroupRecord): { label: string; value: strin
   }));
 }
 
+/** Optional lookups for the Used-by column (promote identity → fingerprint → rules). */
+export type GroupFingerprintLookup = ReadonlyMap<string, Fingerprint>;
+export type RulesByFingerprintId = ReadonlyMap<string, StrategyRule[]>;
+
+export interface GroupColumnLookups {
+  fingerprintByGroupId?: GroupFingerprintLookup;
+  rulesByFingerprintId?: RulesByFingerprintId;
+}
+
+/** Compact rule chips: name + paper/real + Active/Idle (Fingerprints used-by language).
+ *  Rules whose `params` exactly match the group's best combo are pinned first and
+ *  highlighted so the promoted twin is obvious among siblings. */
+function usedByRulesCell(
+  rules: StrategyRule[],
+  fingerprint?: Fingerprint | null,
+  bestParams?: Record<string, unknown> | null,
+): ReactNode {
+  const ranked = bestParams
+    ? [...rules].sort((a, b) => {
+        const am = ruleParamsJsonEqual(a.params, bestParams) ? 0 : 1;
+        const bm = ruleParamsJsonEqual(b.params, bestParams) ? 0 : 1;
+        return am - bm;
+      })
+    : rules;
+
+  return (
+    <ul className="flex min-w-40 flex-col gap-1.5 text-left">
+      {ranked.map((r) => {
+        const isBest = !!bestParams && ruleParamsJsonEqual(r.params, bestParams);
+        return (
+          <li
+            key={r.id}
+            className={cn(
+              'flex flex-wrap items-center gap-x-1.5 gap-y-0.5',
+              isBest && 'rounded-md border border-primary/45 bg-primary/14 px-1.5 py-0.5 shadow-[0_0_0_1px_rgba(2,192,118,0.12)]',
+            )}
+          >
+            <RuleHoverTip rule={r} fingerprint={fingerprint}>
+              <span
+                className={cn(
+                  'max-w-48 cursor-default truncate text-[12px] font-medium',
+                  isBest ? 'text-primary' : 'text-text',
+                )}
+              >
+                {r.rule_name}
+              </span>
+            </RuleHoverTip>
+            {isBest && (
+              <Badge variant="primary" size="sm" title="Params match this group's best combo">
+                best
+              </Badge>
+            )}
+            <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
+              {r.trade_mode}
+            </Badge>
+            <Badge variant={r.is_active ? 'success' : 'neutral'} size="sm">
+              {r.is_active ? 'Active' : 'Idle'}
+            </Badge>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /** Build the generic-engine group-summary table columns. */
-export function buildGenericGroupColumns(buyAmountSol = 1): ColumnDef<GroupedSweepGroupRecord>[] {
+export function buildGenericGroupColumns(
+  buyAmountSol = 1,
+  lookups: GroupColumnLookups = {},
+): ColumnDef<GroupedSweepGroupRecord>[] {
+  const { fingerprintByGroupId, rulesByFingerprintId } = lookups;
+  const rulesForGroup = (g: GroupedSweepGroupRecord): StrategyRule[] | null => {
+    const fp = fingerprintByGroupId?.get(g.id);
+    if (!fp) return null;
+    return rulesByFingerprintId?.get(fp.id) ?? [];
+  };
+
   // `group` mirrors the combo table's banners (counts / pnl / holding) so the
   // two stacked tables on the sweep page read the same. Columns must stay in
   // group order — DataTable bands *consecutive* runs of same-`group` columns.
@@ -332,6 +411,28 @@ export function buildGenericGroupColumns(buyAmountSol = 1): ColumnDef<GroupedSwe
         );
       },
       searchValue: (g) => keyParts(g).map((p) => `${p.label} ${p.value}`).join(' '),
+    },
+    {
+      key: 'used_by',
+      label: 'Used by',
+      group: 'group',
+      tooltip:
+        'Saved rules whose fingerprint matches this group (same identity as promote). A "best" badge marks params that exactly match this group\'s winning combo. — = no saved fingerprint; none = fingerprint exists but no rules yet.',
+      sortable: true,
+      sortValue: (g) => rulesForGroup(g)?.length ?? -1,
+      filterNumber: (g) => rulesForGroup(g)?.length ?? -1,
+      render: (g) => {
+        const rules = rulesForGroup(g);
+        if (rules == null) return tone('—', 'text-text-dim');
+        if (rules.length === 0) return tone('none', 'text-text-dim');
+        return usedByRulesCell(rules, fingerprintByGroupId?.get(g.id), g.best_params);
+      },
+      searchValue: (g) => {
+        const rules = rulesForGroup(g);
+        if (rules == null) return '';
+        if (rules.length === 0) return 'none';
+        return rules.map((r) => `${r.rule_name} ${r.trade_mode} ${r.is_active ? 'active' : 'idle'}`).join(' ');
+      },
     },
     gm('token_count', 'Tokens', 'counts', (g) => g.token_count, (g) => tone(String(g.token_count), 'text-info'), {
       tooltip: 'Tokens in this fingerprint group',

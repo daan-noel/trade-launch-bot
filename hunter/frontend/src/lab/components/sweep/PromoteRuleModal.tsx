@@ -2,7 +2,15 @@ import { useMemo, useState } from 'react';
 import { Modal } from 'components/ui/Modal';
 import { RuleEditor, type RuleEditorDraft } from 'components/strategy/RuleEditor';
 import { apiErrorMessage } from 'store/baseApi';
-import { useCreateStrategyRuleMutation } from 'store/sharedEndpoints';
+import {
+  useCreateStrategyRuleMutation,
+  useGetStrategyRulesQuery,
+} from 'store/sharedEndpoints';
+import {
+  duplicateRuleMessage,
+  findIdenticalRule,
+  ruleIdentityOf,
+} from 'lib/strategy/matchRuleIdentity';
 import type { PromotedRuleDraft, StrategyRule } from 'lib/strategy/types';
 import { DryRunPanel } from '@lab/components/strategy/DryRunPanel';
 
@@ -11,9 +19,10 @@ import { DryRunPanel } from '@lab/components/strategy/DryRunPanel';
  * editor pre-filled from the backend promote response (`POST …/promote` →
  * fingerprint find-or-created + a ready-to-save draft), with the lab dry-run
  * panel injected so the promoted combo can be replayed before saving. Save
- * creates a new rule (id-less draft). Rendered on the sweep page as a modal —
- * the shared `RulesView` uses a local-state modal too, so this matches the
- * existing pattern (no route/query-string draft channel needed).
+ * creates a new rule (id-less draft) — refused when an identity-identical rule
+ * already exists (same gate as Rules / Simulate create). Rendered on the sweep
+ * page as a modal — the shared `RulesView` uses a local-state modal too, so this
+ * matches the existing pattern (no route/query-string draft channel needed).
  */
 export function PromoteRuleModal({
   draft,
@@ -23,6 +32,7 @@ export function PromoteRuleModal({
   onClose: () => void;
 }) {
   const [createRule, { isLoading: creating }] = useCreateStrategyRuleMutation();
+  const { data: existingRules = [] } = useGetStrategyRulesQuery();
   const [err, setErr] = useState<string | null>(null);
 
   // Synthesize an id-less `StrategyRule` for `RuleEditor.initial` — the same
@@ -49,6 +59,11 @@ export function PromoteRuleModal({
 
   const submit = async (d: RuleEditorDraft) => {
     setErr(null);
+    const dup = findIdenticalRule(existingRules, ruleIdentityOf(d));
+    if (dup) {
+      setErr(duplicateRuleMessage(dup));
+      return;
+    }
     try {
       await createRule(d).unwrap();
       onClose();

@@ -41,6 +41,7 @@ import {
   type FlowDiscoveryStartArgs,
 } from '@lab/store/labEndpoints';
 import type { FlowDiscoveryGroup, FlowDiscoveryResult } from 'types';
+import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
 
@@ -124,22 +125,6 @@ function groupKeyLabel(gk: Record<string, string>): string {
   return parts.length ? parts.join(' · ') : 'ALL';
 }
 
-/** Match a discovery group_key to a saved fingerprint (best-effort on identity axes). */
-function matchFingerprint(
-  gk: Record<string, string>,
-  fps: Fingerprint[],
-  bucketWidth: number,
-): Fingerprint | null {
-  const cu = gk.cu_limit != null ? Number(gk.cu_limit) : null;
-  const ix = gk.ix_labels?.split(' | ').filter(Boolean) ?? null;
-  const hits = fps.filter((fp) => {
-    if (cu != null && !Number.isNaN(cu) && fp.cu_limit !== cu) return false;
-    if (ix && JSON.stringify(fp.ix_labels ?? []) !== JSON.stringify(ix)) return false;
-    if (Math.abs((fp.bucket_size_amount ?? 0.1) - bucketWidth) > 1e-9) return false;
-    return cu != null || (ix != null && ix.length > 0);
-  });
-  return hits[0] ?? null;
-}
 
 /**
  * Lab page: score trade ix-structures per fingerprint group, toggle volume
@@ -206,7 +191,7 @@ export function FlowDiscoveryPage() {
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
   const autoMatchedFp = selectedGroup
-    ? matchFingerprint(selectedGroup.group_key, fingerprints, bucketWidthSol)
+    ? findFingerprintForGroupKey(selectedGroup.group_key, fingerprints, bucketWidthSol)
     : null;
   const targetFp: Fingerprint | null =
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;

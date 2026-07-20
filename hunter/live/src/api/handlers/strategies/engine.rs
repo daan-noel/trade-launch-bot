@@ -210,7 +210,7 @@ pub async fn update_rule(
     match rules::save_with_fp_check(
         &app_state.rule_repo,
         &app_state.fingerprint_repo,
-        &rule,
+        &mut rule,
     )
     .await
     {
@@ -399,6 +399,16 @@ pub async fn stop_all_rules(
 fn rule_error(e: RuleError, ctx: &str) -> HttpResponse {
     match e {
         RuleError::Invalid(msg) => HttpResponse::BadRequest().json(json!({"error": msg})),
+        RuleError::Duplicate {
+            existing_id,
+            rule_name,
+        } => HttpResponse::Conflict().json(json!({
+            "error": format!(
+                "identical rule already exists: \"{rule_name}\" ({existing_id})"
+            ),
+            "existing_id": existing_id,
+            "rule_name": rule_name,
+        })),
         RuleError::Repo(err) => server_error(ctx, err),
     }
 }

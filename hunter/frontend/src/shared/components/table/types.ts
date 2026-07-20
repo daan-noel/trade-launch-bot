@@ -80,6 +80,12 @@ export interface ColumnDef<R> {
    * with no value (they are excluded by any numeric expression).
    */
   filterNumber?: (row: R) => number | null;
+  /**
+   * Whether the column may join the multi-key sort. Defaults off unless the
+   * column also provides `sortValue` (which implies client-side sortability).
+   * Set `true` explicitly for server-side-only sorts that have no client
+   * comparator; set `false` to keep a `sortValue` column unsortable.
+   */
   sortable?: boolean;
   defaultVisible?: boolean;
   width?: string;

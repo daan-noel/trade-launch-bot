@@ -20,6 +20,7 @@ import {
   fingerprintParamsCell,
   fingerprintParamsSearchText,
 } from './FingerprintParamsSummary';
+import { RuleHoverTip } from './RuleHoverTip';
 import { useRuleActions } from './useRuleActions';
 import type { RuleEditorDraft } from './RuleEditor';
 import { apiErrorMessage } from 'store/baseApi';
@@ -37,6 +38,7 @@ import {
   connectTpslRulesChanged,
   type ActionProgress,
 } from 'services/sse';
+import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 
 export interface RulesViewProps {
@@ -75,6 +77,15 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
   const bulkBusy = pauseAllState.isLoading || stopAllState.isLoading;
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
+
+  // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
+  const fpTints = useMemo(
+    () =>
+      computeSameValueCellClasses(rules, (r) => r.id, [
+        { key: 'fingerprint', valueOf: (r) => r.fingerprint_id || null },
+      ]),
+    [rules],
+  );
 
   // Active-rule counts per mode drive whether each mode's bulk actions show.
   const activeByMode = useMemo(() => {
@@ -231,7 +242,11 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       key: 'rule_name',
       label: 'Name',
       group: 'name',
-      render: (r) => <span className="font-medium text-text">{r.rule_name}</span>,
+      render: (r) => (
+        <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
+          <span className="cursor-default font-medium text-text">{r.rule_name}</span>
+        </RuleHoverTip>
+      ),
       searchValue: (r) => r.rule_name,
     },
     {
@@ -264,6 +279,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
       ),
       searchValue: (r) => r.trade_mode,
+      sortValue: (r) => r.trade_mode,
     },
     {
       key: 'fingerprint',
@@ -281,6 +297,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         );
       },
       searchValue: (r) => fingerprintParamsSearchText(fpById.get(r.fingerprint_id), r.fingerprint_id),
+      cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
     },
     {
       key: 'buy',

@@ -123,3 +123,35 @@ function sideFromJson(
 function numOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
+
+/**
+ * Canonicalize wire `params` JSON for equality: drop null/undefined, drop empty
+ * objects, sort object keys. So `{take_profit:50,stop_loss:null}` equals
+ * `{take_profit:50}` — the same semantic rule the engine treats as identical.
+ */
+export function canonicalizeRuleParamsJson(raw: unknown): unknown {
+  return canonicalizeJson(raw) ?? {};
+}
+
+function canonicalizeJson(v: unknown): unknown {
+  if (v == null) return undefined;
+  if (typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((x) => canonicalizeJson(x) ?? null);
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(v as object).sort()) {
+    const c = canonicalizeJson((v as Record<string, unknown>)[k]);
+    if (c === undefined) continue;
+    if (typeof c === 'object' && c !== null && !Array.isArray(c) && Object.keys(c).length === 0) {
+      continue;
+    }
+    out[k] = c;
+  }
+  return out;
+}
+
+/** True when two `params` blobs are semantically the same rule logic. */
+export function ruleParamsJsonEqual(a: unknown, b: unknown): boolean {
+  return (
+    JSON.stringify(canonicalizeRuleParamsJson(a)) === JSON.stringify(canonicalizeRuleParamsJson(b))
+  );
+}

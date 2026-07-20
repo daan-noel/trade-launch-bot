@@ -160,6 +160,43 @@ impl RuleRepo {
         Ok(rows.into_iter().map(StrategyRule::from).collect())
     }
 
+    /// Identity-identical rule (same fingerprint + trade knobs + canonical
+    /// `params`). `rule_name` / `is_active` are labels/lifecycle, not identity —
+    /// mirrors fingerprint `find_or_create` (name excluded). Optional
+    /// `exclude_id` skips that row (edit-self).
+    pub async fn find_identical(
+        &self,
+        fingerprint_id: Uuid,
+        trade_mode: &str,
+        buy_amount_lamports: i64,
+        max_concurrent_tokens: i64,
+        max_total_tokens: i64,
+        params: &Value,
+        exclude_id: Option<Uuid>,
+    ) -> anyhow::Result<Option<StrategyRule>> {
+        let row = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
+            "SELECT {RULE_COLS} FROM strategy_rules \
+             WHERE fingerprint_id = $1 \
+               AND trade_mode = $2 \
+               AND buy_amount_lamports = $3 \
+               AND max_concurrent_tokens = $4 \
+               AND max_total_tokens = $5 \
+               AND params = $6::jsonb \
+               AND ($7::uuid IS NULL OR id <> $7) \
+             LIMIT 1"
+        ))
+        .bind(fingerprint_id)
+        .bind(trade_mode)
+        .bind(buy_amount_lamports)
+        .bind(max_concurrent_tokens)
+        .bind(max_total_tokens)
+        .bind(Json(params))
+        .bind(exclude_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(StrategyRule::from))
+    }
+
     pub async fn delete(&self, id: Uuid) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM strategy_rules WHERE id = $1")
             .bind(id)

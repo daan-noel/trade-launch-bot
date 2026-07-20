@@ -212,7 +212,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 - `[Promote…]` on any group/combo → `POST …/promote` (fingerprint find-or-created;
   copies run `volume_ix_patterns` into `metric_config`) →
   `PromoteRuleModal` opens the shared `RuleEditor` pre-filled (id-less draft → create)
-  with the lab dry-run panel. Replaced the copy-blob path.
+  with the lab dry-run panel. Save is refused when an identity-identical rule already
+  exists (`matchRuleIdentity` FE pre-check + backend `RuleError::Duplicate` 409 — same
+  gate as Rules / Simulate create). Replaced the copy-blob path.
 
 ## Services / hooks (shared, tree-shaken per entry)
 

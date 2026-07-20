@@ -34,6 +34,16 @@ fn srv_err(ctx: &str, e: impl std::fmt::Display) -> HttpResponse {
 fn rule_err(e: RuleError, ctx: &str) -> HttpResponse {
     match e {
         RuleError::Invalid(m) => HttpResponse::BadRequest().json(serde_json::json!({ "error": m })),
+        RuleError::Duplicate {
+            existing_id,
+            rule_name,
+        } => HttpResponse::Conflict().json(serde_json::json!({
+            "error": format!(
+                "identical rule already exists: \"{rule_name}\" ({existing_id})"
+            ),
+            "existing_id": existing_id,
+            "rule_name": rule_name,
+        })),
         RuleError::Repo(err) => srv_err(ctx, err),
     }
 }
@@ -194,7 +204,7 @@ pub async fn update_rule(
         return HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" }));
     };
     apply_rule_update(&mut rule, &body);
-    match rules::save_with_fp_check(&repo, &fp_repo(&app_state), &rule).await {
+    match rules::save_with_fp_check(&repo, &fp_repo(&app_state), &mut rule).await {
         Ok(warning) => {
             let mut body = serde_json::to_value(&rule).unwrap_or_default();
             if let Some(w) = warning {

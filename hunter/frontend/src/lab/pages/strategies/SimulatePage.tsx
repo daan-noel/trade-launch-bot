@@ -51,12 +51,14 @@ import {
 } from 'services/tableRequest';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { ruleParamsCell, ruleParamsSearchText } from 'components/strategy/RuleParamsSummary';
+import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
 import {
   fingerprintParamsCell,
   fingerprintParamsSearchText,
 } from 'components/strategy/FingerprintParamsSummary';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
+import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
 import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
@@ -112,6 +114,15 @@ export function SimulatePage() {
   const hydratedIds = useRef<Set<string>>(new Set());
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
+
+  // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
+  const fpTints = useMemo(
+    () =>
+      computeSameValueCellClasses(rules, (r) => r.id, [
+        { key: 'fingerprint', valueOf: (r) => r.fingerprint_id || null },
+      ]),
+    [rules],
+  );
 
   const paperCount = useMemo(() => rules.filter((r) => r.trade_mode === 'paper').length, [rules]);
   const realCount = useMemo(() => rules.filter((r) => r.trade_mode === 'real').length, [rules]);
@@ -208,7 +219,7 @@ export function SimulatePage() {
 
   const columns = useMemo<ColumnDef<StrategyRule>[]>(
     () => [
-      ...buildColumns(runs, fpById),
+      ...buildColumns(runs, fpById, fpTints),
       {
         key: 'execute',
         label: 'Execute',
@@ -229,7 +240,7 @@ export function SimulatePage() {
     ],
     // runRule closes over stable RTK/setState refs; runs drives the disabled state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runs, fpById],
+    [runs, fpById, fpTints],
   );
 
   // Only the selected rule's positions render below the table; every rule's summary
@@ -693,6 +704,7 @@ function simSummaryStats(s: SimulatedSummary): { hero: SummaryStat[]; sections: 
 function buildColumns(
   runs: Record<string, RunState>,
   fpById: Map<string, Fingerprint>,
+  fpTints: Map<string, string>,
 ): ColumnDef<StrategyRule>[] {
   const runOf = (r: StrategyRule) => runs[r.id];
   const summaryOf = (r: StrategyRule) => runOf(r)?.summary;
@@ -744,12 +756,14 @@ function buildColumns(
       label: 'Rule',
       group: 'name',
       render: (r) => (
-        <div className="flex min-w-40 flex-col gap-0.5">
-          <span className="font-medium text-text">{r.rule_name}</span>
-          <span className="text-[10px] text-text-dim">
-            {r.is_active ? 'armed on live' : 'idle on live'}
-          </span>
-        </div>
+        <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
+          <div className="flex min-w-40 cursor-default flex-col gap-0.5">
+            <span className="font-medium text-text">{r.rule_name}</span>
+            <span className="text-[10px] text-text-dim">
+              {r.is_active ? 'armed on live' : 'idle on live'}
+            </span>
+          </div>
+        </RuleHoverTip>
       ),
       searchValue: (r) => `${r.rule_name} ${r.is_active ? 'active' : 'idle'}`,
     },
@@ -778,6 +792,7 @@ function buildColumns(
         );
       },
       searchValue: (r) => fingerprintParamsSearchText(fpById.get(r.fingerprint_id), r.fingerprint_id),
+      cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
     },
     {
       key: 'buy',

@@ -129,6 +129,21 @@ function cellGroupValue<R>(col: ColumnDef<R>, row: R): string | null {
   return text === '' ? null : text;
 }
 
+/**
+ * Can this column join `sortKeys`? Bare columns (no `sortable: true`, no
+ * `sortValue`) must not — a header click used to append a ghost level that
+ * showed no real reorder, so the *next* click looked like sort priority "2".
+ */
+function columnAcceptsSort<R>(col: ColumnDef<R>): boolean {
+  if (col.sortable === false) return false;
+  return col.sortable === true || col.sortValue != null;
+}
+
+function pruneSortKeys<R>(keys: SortEntry[], columns: ColumnDef<R>[]): SortEntry[] {
+  const allowed = new Set(columns.filter(columnAcceptsSort).map((c) => c.key));
+  return keys.filter((s) => allowed.has(s.col));
+}
+
 interface DataTableProps<R> {
   columns: ColumnDef<R>[];
   rows: R[];
@@ -250,12 +265,15 @@ export function DataTable<R>({
     return defaultPageSize;
   });
   const [sortKeys, setSortKeys] = useState<SortEntry[]>(() => {
+    let initial: SortEntry[] = [];
     if (tableId) {
       const prefs = getTablePrefs(tableId);
-      if (prefs.sortKeys) return prefs.sortKeys;
+      if (prefs.sortKeys) initial = prefs.sortKeys;
     }
-    if (defaultSort?.col) return [{ col: defaultSort.col, dir: defaultSort.dir ?? 'desc' }];
-    return [];
+    if (initial.length === 0 && defaultSort?.col) {
+      initial = [{ col: defaultSort.col, dir: defaultSort.dir ?? 'desc' }];
+    }
+    return pruneSortKeys(initial, columns);
   });
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
@@ -292,6 +310,18 @@ export function DataTable<R>({
   useEffect(() => {
     if (tableId) setTablePrefs(tableId, { pageSize, sortKeys });
   }, [tableId, pageSize, sortKeys]);
+
+  // Drop sort levels for columns that disappeared or never accepted sort
+  // (stale localStorage / renamed keys), so the next click is primary again.
+  useEffect(() => {
+    setSortKeys((prev) => {
+      const next = pruneSortKeys(prev, columns);
+      return next.length === prev.length && next.every((s, i) => s.col === prev[i].col && s.dir === prev[i].dir)
+        ? prev
+        : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colKeysSig]);
 
   const visCols = useMemo(
     () => columns.filter((c) => visibleCols.has(c.key)),
@@ -554,6 +584,8 @@ export function DataTable<R>({
   const activeFilters = Object.values(colFiltersMap).filter(Boolean).length;
 
   const toggleSort = (key: string) => {
+    const col = columns.find((c) => c.key === key);
+    if (!col || !columnAcceptsSort(col)) return;
     setSortKeys((prev) => {
       const idx = prev.findIndex((s) => s.col === key);
       if (idx === -1) {
@@ -709,12 +741,12 @@ export function DataTable<R>({
                     title={col.tooltip}
                     className={cn(
                       'sticky top-0 bg-bg-panel px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-primary',
-                      col.sortable !== false && !col.renderHeader && 'cursor-pointer hover:text-accent',
+                      columnAcceptsSort(col) && !col.renderHeader && 'cursor-pointer hover:text-accent',
                       col.tooltip && 'decoration-dotted underline-offset-4 hover:underline',
                       groupClasses[ci],
                     )}
                     onClick={
-                      col.sortable !== false && !col.renderHeader
+                      columnAcceptsSort(col) && !col.renderHeader
                         ? () => toggleSort(col.key)
                         : undefined
                     }

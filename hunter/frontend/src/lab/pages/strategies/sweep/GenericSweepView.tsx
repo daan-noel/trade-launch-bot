@@ -37,6 +37,7 @@ import {
   usePruneGroupedSweepsMutation,
   usePromoteSweepGroupMutation,
 } from '@lab/store/labEndpoints';
+import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useStreamedSweepResults, COMBO_PAGE_SIZE } from '@lab/hooks/useStreamedSweepResults';
 import { SelectedSweepHistory } from '@lab/components/sweep/SelectedSweepHistory';
 import { GenericSweepConfigForm, GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigForm';
@@ -51,9 +52,12 @@ import type {
   GroupedSweepRunRecord,
   GroupedSweepResultRecord,
   ComboTokenResult,
+  GroupedSweepStartArgs,
 } from '@lab/components/sweep/groupedTypes';
-import type { GroupedSweepStartArgs } from '@lab/components/sweep/groupedTypes';
-import type { PromotedRuleDraft } from 'lib/strategy/types';
+import { SOL_BUCKET_WIDTH } from '@lab/components/sweep/groupedTypes';
+import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
+import type { Fingerprint, PromotedRuleDraft, StrategyRule } from 'lib/strategy/types';
+import { tidySolDecimal } from 'utils/format';
 
 /** Compact run-picker line (date · method · tokens · groups · combos). */
 function runPickerLine(r: GroupedSweepRunRecord): string {
@@ -276,7 +280,31 @@ export function GenericSweepView() {
   );
 
   const buyAmountSol = activeRun?.buy_amount_sol ?? 1;
-  const groupColumns = useMemo(() => buildGenericGroupColumns(buyAmountSol), [buyAmountSol]);
+  const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const { data: strategyRules = [] } = useGetStrategyRulesQuery();
+  // group_key → saved fingerprint (promote identity) → rules for the Used-by column.
+  const fingerprintByGroupId = useMemo(() => {
+    const width = tidySolDecimal(activeRun?.bucket_width_sol ?? SOL_BUCKET_WIDTH);
+    const map = new Map<string, Fingerprint>();
+    for (const g of groups) {
+      const fp = findFingerprintForGroupKey(g.group_key, fingerprints, width);
+      if (fp) map.set(g.id, fp);
+    }
+    return map;
+  }, [groups, fingerprints, activeRun?.bucket_width_sol]);
+  const rulesByFingerprintId = useMemo(() => {
+    const map = new Map<string, StrategyRule[]>();
+    for (const r of strategyRules) {
+      const list = map.get(r.fingerprint_id);
+      if (list) list.push(r);
+      else map.set(r.fingerprint_id, [r]);
+    }
+    return map;
+  }, [strategyRules]);
+  const groupColumns = useMemo(
+    () => buildGenericGroupColumns(buyAmountSol, { fingerprintByGroupId, rulesByFingerprintId }),
+    [buyAmountSol, fingerprintByGroupId, rulesByFingerprintId],
+  );
   const comboColumns = useMemo(() => buildGenericComboColumns(buyAmountSol), [buyAmountSol]);
 
   const groupRowActions = useCallback(
