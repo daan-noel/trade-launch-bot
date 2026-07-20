@@ -95,8 +95,10 @@ is **STREAM ON/OFF** (not the header trading kill switch).
   **series** colors (`token-price-chart/constants.ts` price line, range band) stay teal by design —
   semantic data-viz, not chrome.
 - `AppLayout.tsx` — slots `{nav, rightSlot, beforeMain, footer}`: live passes
-  `beforeMain=<NotificationMount/>` (mounts `usePositionNotifications`); lab passes
-  `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral (Timezone+PriceUnit+Toast);
+  `beforeMain=<NotificationMount/>` (mounts `usePositionNotifications`, which toasts
+  on `strategy_position_update` **and** `strategy_armed_changed` per Settings prefs);
+  lab passes `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral
+  (Timezone+PriceUnit+Toast);
   **lab `App` nests `BackgroundJobsProvider` itself** (keeps its SSE out of the live build).
   **Route Suspense lives inside `AppLayout` around `<Outlet />`** (not around `Routes`) so a
   lazy page chunk keeps the header/nav mounted; fallback is `SuspenseFallback` → `LoadingState`.

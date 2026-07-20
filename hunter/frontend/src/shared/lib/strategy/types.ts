@@ -177,6 +177,9 @@ export interface ArmedChangedEvent {
   state: string;
   /** Disarm reason (`dead` | `migrated` | `unsatisfiable`) when disarmed. */
   reason?: string | null;
+  /** `"real"` | `"paper"` when the engine still has the rule loaded. */
+  trade_mode?: string | null;
+  rule_name?: string | null;
 }
 
 /** `strategy_position_update` SSE payload — one generic-engine position delta. */

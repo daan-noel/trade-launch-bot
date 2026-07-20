@@ -302,6 +302,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             mint_address,
             state: armed_state,
             reason,
+            trade_mode,
+            rule_name,
         } => {
             // Mint-scoped: the generic engine's (token, rule) arming transition.
             (
@@ -312,6 +314,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                     "mint_address": mint_address,
                     "state": armed_state,
                     "reason": reason,
+                    "trade_mode": trade_mode,
+                    "rule_name": rule_name,
                 }),
             )
         }

@@ -173,11 +173,16 @@ impl Sink {
                 ("disarmed", Some(disarm_reason_str(r)))
             }
         };
+        let info = self.rules.get(&delta.rule);
         let _ = self.sse_tx.send(SseEvent::StrategyArmedChanged {
             rule_id: delta.rule.0,
             mint_address: delta.mint.to_string(),
             state: state.to_string(),
             reason: reason.map(str::to_string),
+            trade_mode: info.map(|i| mode_str(i.mode).to_string()),
+            rule_name: info
+                .map(|i| i.name.clone())
+                .filter(|n| !n.is_empty()),
         });
     }
 

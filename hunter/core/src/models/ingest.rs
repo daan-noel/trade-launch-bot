@@ -187,12 +187,17 @@ pub enum SseEvent {
     /// emitted by the engine's `ArmedChanged` sink. There is no legacy analogue
     /// (armed state was pull-only before the redesign). Mint-scoped. `state` is
     /// `"armed"` | `"disarmed"`; `reason` is the disarm reason (`dead` | `migrated`
-    /// | `unsatisfiable`) when disarmed.
+    /// | `unsatisfiable`) when disarmed. `trade_mode` / `rule_name` mirror
+    /// [`StrategyPositionUpdate`] so notification toasts can filter real vs paper
+    /// without a round-trip.
     StrategyArmedChanged {
         rule_id: uuid::Uuid,
         mint_address: String,
         state: String,
         reason: Option<String>,
+        /// `"real"` | `"paper"` when the sink still has the rule loaded.
+        trade_mode: Option<String>,
+        rule_name: Option<String>,
     },
     /// Progress of a long-running operator action (Stop & close / Stop All).
     /// Emitted at start (`running`, `done = 0`), as each position reaches a

@@ -6,8 +6,8 @@ import { Input } from 'components/ui/Input';
 import { cn } from 'lib/cn';
 import {
   useNotificationPrefs,
-  ALL_POSITION_STATUSES,
-  type PositionStatus,
+  ALL_NOTIFY_STATUSES,
+  type NotifyStatus,
 } from 'hooks/useNotificationPrefs';
 
 interface ToggleRowProps {
@@ -33,9 +33,19 @@ function ToggleRow({ title, description, checked, disabled, onChange }: ToggleRo
 }
 
 const STATUS_PILL: Record<
-  PositionStatus,
+  NotifyStatus,
   { active: string; inactive: string; label: string }
 > = {
+  Armed: {
+    active: 'border-white/20 bg-white/8 text-text',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Armed',
+  },
+  Disarmed: {
+    active: 'border-white/20 bg-white/8 text-text',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Disarmed',
+  },
   BuySubmitted: {
     active: 'border-info/40 bg-info/12 text-info',
     inactive: 'border-white/6 bg-transparent text-text-dim',
@@ -105,18 +115,18 @@ function NotificationSection() {
   function setAllStatuses(all: boolean) {
     setPrefs((prev) => ({
       ...prev,
-      statuses: all ? [...ALL_POSITION_STATUSES] : [],
+      statuses: all ? [...ALL_NOTIFY_STATUSES] : [],
     }));
   }
 
-  const allSelected = ALL_POSITION_STATUSES.every((s) => prefs.statuses.includes(s));
+  const allSelected = ALL_NOTIFY_STATUSES.every((s) => prefs.statuses.includes(s));
 
   return (
     <section className="mt-4 max-w-2xl rounded-xl border border-white/8 bg-bg-panel p-4">
       <h3 className="text-sm font-semibold text-text">Position notifications</h3>
       <p className="mt-0.5 mb-3.5 text-xs text-text-dim">
-        Toast alerts on position status changes. Shown on any page, regardless of which
-        strategy tab is open. All preferences are stored locally.
+        Toast alerts on arm/disarm and position status changes. Shown on any page,
+        regardless of which strategy tab is open. All preferences are stored locally.
       </p>
 
       <div className="flex flex-col gap-2.5">
@@ -161,7 +171,7 @@ function NotificationSection() {
           </button>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {ALL_POSITION_STATUSES.map((s) => {
+          {ALL_NOTIFY_STATUSES.map((s) => {
             const on = prefs.statuses.includes(s);
             const cls = STATUS_PILL[s];
             return (

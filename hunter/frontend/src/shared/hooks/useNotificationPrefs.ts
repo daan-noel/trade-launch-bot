@@ -1,7 +1,12 @@
+import { useEffect } from 'react';
 import { useLocalStorage } from './useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 
-export const ALL_POSITION_STATUSES = [
+/** Statuses the Settings "Notify on status" pills cover — position lifecycle
+ *  plus arm/disarm (from `strategy_armed_changed`, not a position status). */
+export const ALL_NOTIFY_STATUSES = [
+  'Armed',
+  'Disarmed',
   'BuySubmitted',
   'Holding',
   'ExitPending',
@@ -10,7 +15,12 @@ export const ALL_POSITION_STATUSES = [
   'ExitUnconfirmed',
 ] as const;
 
-export type PositionStatus = (typeof ALL_POSITION_STATUSES)[number];
+export type NotifyStatus = (typeof ALL_NOTIFY_STATUSES)[number];
+
+/** @deprecated Prefer {@link ALL_NOTIFY_STATUSES}. */
+export const ALL_POSITION_STATUSES = ALL_NOTIFY_STATUSES;
+/** @deprecated Prefer {@link NotifyStatus}. */
+export type PositionStatus = NotifyStatus;
 
 export interface NotificationPrefs {
   realEnabled: boolean;
@@ -23,9 +33,35 @@ const DEFAULT_PREFS: NotificationPrefs = {
   realEnabled: true,
   paperEnabled: false,
   desktopEnabled: false,
-  statuses: [...ALL_POSITION_STATUSES],
+  statuses: [...ALL_NOTIFY_STATUSES],
 };
 
+const KNOWN = new Set<string>(ALL_NOTIFY_STATUSES);
+
+/** Map legacy `Arming` (pre-redesign position status) → `Armed`. */
+function migrateStatuses(statuses: string[]): string[] {
+  return [...new Set(statuses.map((s) => (s === 'Arming' ? 'Armed' : s)))].filter((s) =>
+    KNOWN.has(s),
+  );
+}
+
+function statusesEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((s, i) => s === b[i]);
+}
+
 export function useNotificationPrefs() {
-  return useLocalStorage<NotificationPrefs>(STORAGE_KEYS.notificationPrefs, DEFAULT_PREFS);
+  const [prefs, setPrefs] = useLocalStorage<NotificationPrefs>(
+    STORAGE_KEYS.notificationPrefs,
+    DEFAULT_PREFS,
+  );
+
+  // Persist one-shot cleanup of legacy `Arming` / unknown keys.
+  useEffect(() => {
+    const migrated = migrateStatuses(prefs.statuses);
+    if (!statusesEqual(migrated, prefs.statuses)) {
+      setPrefs((p) => ({ ...p, statuses: migrateStatuses(p.statuses) }));
+    }
+  }, [prefs.statuses, setPrefs]);
+
+  return [prefs, setPrefs] as const;
 }
