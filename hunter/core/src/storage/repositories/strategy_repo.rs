@@ -401,7 +401,9 @@ fn position_filter_sql(key: &str) -> Option<(&'static str, FilterKind)> {
     Some(match key {
         "mint_address" => ("sp.mint_address", Text),
         "status" => ("sp.status", Text),
-        "exit_reason" => ("sp.exit_reason", Text),
+        // Null while still open — UI badges that as "Open", so filter must
+        // COALESCE or typing "Open" never matches live holding rows.
+        "exit_reason" => ("COALESCE(sp.exit_reason, 'Open')", Text),
         "entry_price" => ("sp.entry_price", Numeric),
         "exit_price" => ("sp.exit_price", Numeric),
         "pnl_pct" => (PNL_PCT_SQL, Numeric),

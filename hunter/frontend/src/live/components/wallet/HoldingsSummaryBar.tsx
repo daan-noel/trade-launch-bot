@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import type { HoldingsTableSummary } from 'services/api';
 import { cn } from 'lib/cn';
-import { formatSigned, formatSignedPct, signedToneClass } from 'lib/signedTone';
+import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { formatCompact, formatUsd } from 'utils/format';
 
 /**
@@ -58,7 +58,11 @@ export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
         {unrealizedSol != null ? (
           <span className={cn('font-semibold', signedToneClass(unrealizedSol))}>
             ◎{formatSigned(unrealizedSol, 3)}
-            {pnlPct != null && <span className="ml-1 text-xs">({formatSignedPct(pnlPct, 1)})</span>}
+            {pnlPct != null && (
+              <span className={cn('ml-1 text-xs', pctGradeClass(pnlPct))}>
+                ({formatSignedPct(pnlPct, 1)})
+              </span>
+            )}
           </span>
         ) : (
           <span className="text-text-dim">—</span>
@@ -66,7 +70,7 @@ export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
       </Tile>
       <Tile label="24h Change">
         {summary.change_24h_pct != null ? (
-          <span className={cn('font-semibold', signedToneClass(summary.change_24h_pct))}>
+          <span className={pctGradeClass(summary.change_24h_pct)}>
             {formatSignedPct(summary.change_24h_pct, 2)}
           </span>
         ) : (

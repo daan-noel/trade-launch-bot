@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatSigned,
   formatSignedPct,
+  pctGradeClass,
   signedStatTone,
   signedToneClass,
 } from './signedTone';
@@ -14,6 +15,22 @@ describe('signedToneClass', () => {
     expect(signedToneClass(null)).toBe('text-text-dim');
     expect(signedToneClass(undefined)).toBe('text-text-dim');
     expect(signedToneClass(Number.NaN)).toBe('text-text-dim');
+  });
+});
+
+describe('pctGradeClass', () => {
+  it('grades by magnitude; null/NaN dim; zero mid', () => {
+    expect(pctGradeClass(null)).toBe('text-text-dim');
+    expect(pctGradeClass(Number.NaN)).toBe('text-text-dim');
+    expect(pctGradeClass(0)).toBe('text-text-mid');
+    expect(pctGradeClass(-10)).toBe('text-red');
+    expect(pctGradeClass(-50)).toBe('text-red font-bold');
+    expect(pctGradeClass(25)).toBe('text-info');
+    expect(pctGradeClass(50)).toBe('text-green');
+    expect(pctGradeClass(99.9)).toBe('text-green');
+    expect(pctGradeClass(100)).toBe('text-warning font-semibold');
+    expect(pctGradeClass(200)).toBe('text-accent font-bold');
+    expect(pctGradeClass(500)).toBe('text-primary font-extrabold');
   });
 });
 

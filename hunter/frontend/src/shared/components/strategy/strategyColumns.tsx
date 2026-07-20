@@ -7,6 +7,9 @@ import { cn } from 'lib/cn';
 import { formatSignedPct, signedToneClass } from 'lib/signedTone';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
+import { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
+
+export { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
 
 // ---------------------------------------------------------------------------
 // SINGLE SOURCE OF TRUTH for the strategy Positions / Matched / Sim tables.
@@ -20,30 +23,40 @@ import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 // ---------------------------------------------------------------------------
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
- * and simulation-result tables. Falsy/unknown reasons (e.g. a still-open
- * position) render as a dim "Open". */
+ * and simulation-result tables. */
 export function exitReasonBadge(reason: string | null | undefined) {
+  const label = exitReasonLabel(reason);
   switch (reason) {
     case 'LiquidityExit':
-      return <span className="font-bold text-primary">LIQ</span>;
+      return <span className="font-bold text-primary">{label}</span>;
     case 'TakeProfit':
-      return <span className="font-bold text-green">TP</span>;
+      return <span className="font-bold text-green">{label}</span>;
     case 'StopLoss':
-      return <span className="font-bold text-red">SL</span>;
+      return <span className="font-bold text-red">{label}</span>;
     case 'TrailingStop':
-      return <span className="font-bold text-warning">TRAIL</span>;
+      return <span className="font-bold text-warning">{label}</span>;
     case 'Stall':
-      return <span className="font-bold text-accent">STALL</span>;
+      return <span className="font-bold text-accent">{label}</span>;
     case 'TimeStop':
-      return <span className="font-bold text-info">TIME</span>;
+      return <span className="font-bold text-info">{label}</span>;
     case 'ExitFailed':
-      return <span className="font-bold text-red">FAIL</span>;
+      return <span className="font-bold text-red">{label}</span>;
+    case 'Manual':
     case 'ManualClose':
-      return <span className="font-bold text-text-dim">MANUAL</span>;
+      return <span className="font-bold text-text-dim">{label}</span>;
     case 'Dead':
-      return <span className="font-bold text-red">DEAD</span>;
+      return <span className="font-bold text-red">{label}</span>;
+    case 'Metrics':
+      return <span className="font-bold text-info">{label}</span>;
+    case 'Migrated':
+      return <span className="font-bold text-text-dim">{label}</span>;
+    case 'Open':
+    case null:
+    case undefined:
+    case '':
+      return <span className="text-text-dim">{label}</span>;
     default:
-      return <span className="text-text-dim">Open</span>;
+      return <span className="text-text-dim">{label}</span>;
   }
 }
 
@@ -270,7 +283,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     render: (r) => {
       if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
       return (
-        <span className={cn('font-bold', signedToneClass(r.pnl_percent))}>
+        <span className={cn('tabular-nums', signedToneClass(r.pnl_percent))}>
           {formatSignedPct(r.pnl_percent, 1)}
         </span>
       );
@@ -326,8 +339,9 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     group: 'state',
     sortable: true,
     render: (r) => exitReasonBadge(r.exit_reason),
-    sortValue: (r) => r.exit_reason ?? '',
-    searchValue: (r) => r.exit_reason ?? '',
+    sortValue: (r) => r.exit_reason ?? 'Open',
+    searchValue: (r) => exitReasonSearchText(r.exit_reason),
+    filterValue: (r) => exitReasonSearchText(r.exit_reason),
   },
 ];
 
@@ -440,7 +454,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     render: (r) => {
       if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
       return (
-        <span className={cn('font-bold', signedToneClass(r.pnl_percent))}>
+        <span className={cn('tabular-nums', signedToneClass(r.pnl_percent))}>
           {formatSignedPct(r.pnl_percent, 1)}
         </span>
       );
@@ -472,8 +486,9 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     group: 'result',
     sortable: true,
     render: (r) => exitReasonBadge(r.exit_reason),
-    sortValue: (r) => r.exit_reason,
-    searchValue: (r) => r.exit_reason,
+    sortValue: (r) => r.exit_reason || 'Open',
+    searchValue: (r) => exitReasonSearchText(r.exit_reason),
+    filterValue: (r) => exitReasonSearchText(r.exit_reason),
   },
   // Trade count comes from the shared "Token Trades" enrichment column
   // (`trade_count`), appended by `TokenTable` — the sim no longer carries its own.

@@ -12,6 +12,10 @@
 import type { ColumnDef } from 'components/table/types';
 import type { TableQuery } from 'components/table/types';
 import { parseFilterSpec, type FilterSpec } from 'components/table/numericFilter';
+import {
+  isExitReasonFilterKey,
+  normalizeExitReasonFilter,
+} from 'lib/strategy/exitReason';
 
 /** The unified request body (mirrors `trading_core::api::table_query::TableRequest`). */
 export interface TableRequestBody {
@@ -38,6 +42,9 @@ export interface TableRequestExtras {
  * expression becomes a structured `{op,val}` / `between` spec; anything else (and
  * every non-numeric column) becomes `{op:'contains', val}`. Use
  * {@link numericColKeys} to derive the set from a column list.
+ *
+ * Reason / Exit Reason columns also expand badge aliases (`TP` → `TakeProfit`,
+ * `Open` → `Open`) so the server matches the persisted `exit_reason` string.
  */
 export function toTableRequest(
   query: TableQuery,
@@ -50,7 +57,13 @@ export function toTableRequest(
     if (!text) continue;
     // Numeric column + a recognized numeric expression → structured spec.
     const spec = numericCols.has(key) ? parseFilterSpec(text) : null;
-    filters[key] = spec ?? { op: 'contains', val: text };
+    if (spec) {
+      filters[key] = spec;
+    } else if (isExitReasonFilterKey(key)) {
+      filters[key] = { op: 'contains', val: normalizeExitReasonFilter(text) };
+    } else {
+      filters[key] = { op: 'contains', val: text };
+    }
   }
   // Wrapper-injected structured filters (e.g. a mint-set `in` op) AND with the
   // per-column filters; on a key collision the structured spec wins.

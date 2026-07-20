@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import type { ColumnDef } from 'components/table/types';
 import type { WalletHolding } from 'types';
 import { cn } from 'lib/cn';
-import { formatSigned, formatSignedPct, signedToneClass } from 'lib/signedTone';
+import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { formatCompact } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
@@ -113,7 +113,9 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
           <span className={cn('font-semibold tabular-nums', signedToneClass(sol))}>
             ◎{formatSigned(sol, 3)}
             {pct != null && (
-              <span className="ml-1 text-[11px]">({formatSignedPct(pct, 1)})</span>
+              <span className={cn('ml-1 text-[11px]', pctGradeClass(pct))}>
+                ({formatSignedPct(pct, 1)})
+              </span>
             )}
           </span>
         );
@@ -143,7 +145,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
         if (r.price_change_24h == null) return <span className="text-text-dim">—</span>;
         const c = r.price_change_24h;
         return (
-          <span className={cn('font-semibold tabular-nums', signedToneClass(c))}>
+          <span className={cn('tabular-nums', pctGradeClass(c))}>
             {formatSignedPct(c, 2)}
           </span>
         );
