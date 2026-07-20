@@ -249,23 +249,84 @@ export const sharedApi = baseApi.injectEndpoints({
       query: (id) => ({ url: `/api/strategy-rules/${id}/activate`, method: 'POST' }),
       invalidatesTags: ['StrategyRule'],
     }),
+    // Instant flag flip — optimistic Idle patch; `tpsl_rules_changed` SSE confirms.
     pauseStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
+      async onQueryStarted(id, { dispatch, queryFulfilled }) {
+        const undo = dispatch(
+          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
+            const row = draft.find((r) => r.id === id);
+            if (row) row.is_active = false;
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          undo.undo();
+        }
+      },
       invalidatesTags: ['StrategyRule'],
     }),
-    // Stop = deactivate AND force-close the rule's open positions now (vs Pause,
-    // which leaves them to drain via the exit ladder).
-    stopStrategyRule: builder.mutation<StrategyRule, string>({
+    // Stop = deactivate AND force-close open positions. Returns 202 + action_id;
+    // position closes stream over `action_progress` / `strategy_position_update`.
+    stopStrategyRule: builder.mutation<
+      { action_id: string; total: number; closing: boolean; rule_id: string },
+      string
+    >({
       query: (id) => ({ url: `/api/strategy-rules/${id}/stop`, method: 'POST' }),
+      async onQueryStarted(id, { dispatch, queryFulfilled }) {
+        const undo = dispatch(
+          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
+            const row = draft.find((r) => r.id === id);
+            if (row) row.is_active = false;
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          undo.undo();
+        }
+      },
       invalidatesTags: ['StrategyRule'],
     }),
     // Bulk lifecycle scoped to one trade mode — mirror the per-row Pause / Stop.
     pauseAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
       query: (mode) => ({ url: `/api/strategy-rules/pause-all?mode=${mode}`, method: 'POST' }),
+      async onQueryStarted(mode, { dispatch, queryFulfilled }) {
+        const undo = dispatch(
+          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
+            for (const r of draft) {
+              if (r.is_active && r.trade_mode === mode) r.is_active = false;
+            }
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          undo.undo();
+        }
+      },
       invalidatesTags: ['StrategyRule'],
     }),
-    stopAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
+    stopAllStrategyRules: builder.mutation<
+      { action_id: string; total: number; closing: boolean; mode: string },
+      TradeMode
+    >({
       query: (mode) => ({ url: `/api/strategy-rules/stop-all?mode=${mode}`, method: 'POST' }),
+      async onQueryStarted(mode, { dispatch, queryFulfilled }) {
+        const undo = dispatch(
+          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
+            for (const r of draft) {
+              if (r.is_active && r.trade_mode === mode) r.is_active = false;
+            }
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          undo.undo();
+        }
+      },
       invalidatesTags: ['StrategyRule'],
     }),
     updateSettings: builder.mutation<AppSettings, Partial<AppSettings>>({

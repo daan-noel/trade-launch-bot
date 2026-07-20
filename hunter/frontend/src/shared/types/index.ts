@@ -557,6 +557,8 @@ export interface PortfolioSummary {
  *  Home per-strategy strip and the Live-Trading roll-up read (a subset of the
  *  backend `StrategyPosition`). */
 export interface OpenStrategyPosition {
+  /** `strategy_positions.id` — required for the per-row Sell ALL close path. */
+  id: string;
   strategy_id: string;
   rule_id: string | null;
   mint_address: string;

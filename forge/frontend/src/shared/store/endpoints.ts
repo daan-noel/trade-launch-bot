@@ -26,7 +26,6 @@ import type {
   NewMetadataTemplate,
   UpdateMetadataTemplate,
   QuoteAsset,
-  SweepReport,
   TokenOverview,
   TokenPosition,
   TradePriced,
@@ -143,17 +142,13 @@ export const api = baseApi.injectEndpoints({
       query: (body) => ({ url: '/api/wallet_pool/transfer', method: 'POST', body }),
       invalidatesTags: ['Wallets'],
     }),
-    // "Sweep & retire": dust-sweep `used` wallets + reclaim `retired` ones (residual
-    // SOL + close empty token accounts) into the oldest treasury. Body-less POST.
-    sweepWallets: build.mutation<SweepReport, void>({
+    // "Sweep & retire": fire-and-forget 202; progress over `action_progress` SSE.
+    sweepWallets: build.mutation<{ status: string }, void>({
       query: () => ({ url: '/api/wallet_pool/sweep', method: 'POST' }),
-      invalidatesTags: ['Wallets'],
     }),
-    // "Consolidate → treasury": drain SOL + close empty token accounts on every
-    // wallet into the chosen treasury (skips mid-launch wallets).
-    consolidateWallets: build.mutation<SweepReport, { dest_treasury_id: string }>({
+    // "Consolidate → treasury": fire-and-forget 202; progress over `action_progress`.
+    consolidateWallets: build.mutation<{ status: string }, { dest_treasury_id: string }>({
       query: (body) => ({ url: '/api/wallet_pool/consolidate', method: 'POST', body }),
-      invalidatesTags: ['Wallets'],
     }),
     // Keystore restore: rebuild the whole DB (wallets/launches/tokens/trades/
     // positions) from the copied keystore + on-chain history on a fresh box. The
@@ -246,14 +241,14 @@ export const api = baseApi.injectEndpoints({
         body,
       }),
     }),
-    // DANGER: places real sells. Refreshes holdings + action history on success.
-    manageExecute: build.mutation<ManageAction, { mint: string; body: ManageRequest }>({
+    // DANGER: places real sells. Fire-and-forget 202 — progress + terminal outcome
+    // arrive over `action_progress` SSE; the ManagePanel invalidates tags on terminal.
+    manageExecute: build.mutation<{ status: string }, { mint: string; body: ManageRequest }>({
       query: ({ mint, body }) => ({
         url: `/api/tokens/${mint}/manage/execute`,
         method: 'POST',
         body,
       }),
-      invalidatesTags: ['Positions', 'ManageActions'],
     }),
     manageActions: build.query<ManageAction[], { mint: string; limit?: number }>({
       query: ({ mint, limit }) => `/api/tokens/${mint}/manage/actions${q({ limit })}`,

@@ -4,6 +4,7 @@ import type { OpenStrategyPosition } from 'types';
 import type { BadgeVariant } from 'components/ui/Badge';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
+import { Button } from 'components/ui/Button';
 import { legColumns } from 'components/strategy/strategyColumns';
 
 /** Friendly labels for the canonical strategy ids. */
@@ -26,8 +27,16 @@ function statusVariant(status: string): BadgeVariant {
   }
 }
 
+export interface PositionColumnsOpts {
+  /** Position id currently mid close-request (optimistic until ExitPending lands). */
+  sellingPositionId?: string | null;
+  /** Per-row Sell ALL — routes through the position-aware close path. */
+  onSellPosition?: (row: OpenStrategyPosition) => void;
+}
+
 /** Columns for the cross-strategy open-positions monitor. */
-export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
+export function positionColumns(opts: PositionColumnsOpts = {}): ColumnDef<OpenStrategyPosition>[] {
+  const { sellingPositionId, onSellPosition } = opts;
   return [
     {
       key: 'strategy_id',
@@ -54,7 +63,14 @@ export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
       label: 'Status',
       width: '110px',
       sortable: true,
-      render: (r) => <Badge variant={statusVariant(r.status)}>{r.status}</Badge>,
+      render: (r) => {
+        const selling = sellingPositionId === r.id || r.status === 'ExitPending';
+        return (
+          <Badge variant={selling ? 'warning' : statusVariant(r.status)}>
+            {selling && r.status !== 'ExitPending' ? 'Selling…' : r.status === 'ExitPending' ? 'Selling…' : r.status}
+          </Badge>
+        );
+      },
       sortValue: (r) => r.status,
       searchValue: (r) => r.status,
     },
@@ -71,18 +87,33 @@ export function positionColumns(): ColumnDef<OpenStrategyPosition>[] {
       },
     ),
     {
-      key: 'trade',
+      key: 'actions',
       label: '',
-      width: '64px',
-      render: (r) => (
-        <Link
-          to={`/trade?mint=${encodeURIComponent(r.mint_address)}`}
-          className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Trade
-        </Link>
-      ),
+      width: onSellPosition ? '140px' : '64px',
+      render: (r) => {
+        const busy = sellingPositionId === r.id || r.status === 'ExitPending';
+        return (
+          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            {onSellPosition && (
+              <Button
+                variant="danger"
+                size="xs"
+                disabled={busy || r.status === 'BuySubmitted'}
+                onClick={() => onSellPosition(r)}
+                title="Sell ALL — force-close this strategy position on-chain"
+              >
+                {busy ? 'Selling…' : 'Sell ALL'}
+              </Button>
+            )}
+            <Link
+              to={`/trade?mint=${encodeURIComponent(r.mint_address)}`}
+              className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"
+            >
+              Trade
+            </Link>
+          </div>
+        );
+      },
       searchValue: () => '',
     },
   ];

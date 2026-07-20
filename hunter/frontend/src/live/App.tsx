@@ -5,6 +5,7 @@ import { AppLayout } from 'components/layout/AppLayout';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
 import { SuspenseFallback } from 'components/ui/SuspenseFallback';
 import { LiveModeControl } from '@live/components/LiveModeControl';
+import { RunningTasksIndicator } from '@live/components/RunningTasksIndicator';
 import { usePositionNotifications } from '@live/hooks/usePositionNotifications';
 import { liveNav } from './nav';
 
@@ -48,6 +49,7 @@ export default function App() {
                     nav={liveNav}
                     rightSlot={<LiveModeControl />}
                     beforeMain={<NotificationMount />}
+                    footer={<RunningTasksIndicator />}
                   />
                 }
               >

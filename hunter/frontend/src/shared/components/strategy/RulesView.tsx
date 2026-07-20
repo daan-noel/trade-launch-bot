@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
@@ -21,6 +21,11 @@ import {
   usePauseAllStrategyRulesMutation,
   useStopAllStrategyRulesMutation,
 } from 'store/sharedEndpoints';
+import {
+  connectActionProgressStream,
+  connectTpslRulesChanged,
+  type ActionProgress,
+} from 'services/sse';
 import { lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 
 export interface RulesViewProps {
@@ -37,7 +42,7 @@ export interface RulesViewProps {
  * `renderDryRun`.
  */
 export function RulesView({ renderDryRun }: RulesViewProps) {
-  const { data: rules = [], isLoading } = useGetStrategyRulesQuery();
+  const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery();
   const { data: fps = [] } = useGetFingerprintsQuery();
 
   const actions = useRuleActions({ renderDryRun });
@@ -49,6 +54,13 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
   const [stopAll, stopAllState] = useStopAllStrategyRulesMutation();
 
   const [opErr, setOpErr] = useState<string | null>(null);
+  /** Rule ids mid optimistic pause (label "Pausing…" until SSE/refetch confirms). */
+  const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
+  /** Per-rule stop progress keyed by rule_id (from action_progress SSE). */
+  const [stopByRule, setStopByRule] = useState<Record<string, ActionProgress>>({});
+  /** Bulk stop progress keyed by mode (action frames with no rule_id). */
+  const [stopByMode, setStopByMode] = useState<Partial<Record<TradeMode, ActionProgress>>>({});
+
   const bulkBusy = pauseAllState.isLoading || stopAllState.isLoading;
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
@@ -60,6 +72,46 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     return acc;
   }, [rules]);
 
+  // SSE: confirm pause flips + track stop rollups.
+  useEffect(() => {
+    const rulesH = connectTpslRulesChanged(() => {
+      setPausingIds(new Set());
+      void refetch();
+    });
+    const progressH = connectActionProgressStream((p) => {
+      if (p.kind !== 'stop') return;
+      if (p.rule_id) {
+        setStopByRule((prev) => {
+          const next = { ...prev };
+          if (p.status === 'done' || p.status === 'partial' || p.status === 'failed') {
+            delete next[p.rule_id!];
+          } else {
+            next[p.rule_id!] = p;
+          }
+          return next;
+        });
+      } else {
+        // Bulk Stop All — match the action_id seeded by doStopAll.
+        setStopByMode((prev) => {
+          const next = { ...prev };
+          for (const mode of ['paper', 'real'] as TradeMode[]) {
+            if (prev[mode]?.action_id !== p.action_id) continue;
+            if (p.status === 'done' || p.status === 'partial' || p.status === 'failed') {
+              delete next[mode];
+            } else {
+              next[mode] = p;
+            }
+          }
+          return next;
+        });
+      }
+    });
+    return () => {
+      rulesH.close();
+      progressH.close();
+    };
+  }, [refetch]);
+
   const run = async (fn: () => Promise<unknown>, fail: string) => {
     setOpErr(null);
     try {
@@ -69,17 +121,55 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     }
   };
 
+  const pauseRule = (r: StrategyRule) => {
+    setPausingIds((prev) => new Set(prev).add(r.id));
+    void run(async () => {
+      try {
+        await pause(r.id).unwrap();
+      } catch (e) {
+        setPausingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(r.id);
+          return next;
+        });
+        throw e;
+      }
+    }, 'Pause failed');
+  };
+
   const stopRule = (r: StrategyRule) => {
     if (
       r.trade_mode === 'real' &&
       !window.confirm(`Stop "${r.rule_name}" and close its open positions? REAL mode sends on-chain sells.`)
     )
       return;
-    void run(() => stop(r.id).unwrap(), 'Stop failed');
+    void run(async () => {
+      const res = await stop(r.id).unwrap();
+      if (res.action_id) {
+        setStopByRule((prev) => ({
+          ...prev,
+          [r.id]: {
+            action_id: res.action_id,
+            mint_address: null,
+            rule_id: r.id,
+            kind: 'stop',
+            status: 'running',
+            done: 0,
+            total: res.total ?? 0,
+          },
+        }));
+      }
+    }, 'Stop failed');
   };
 
-  const doPauseAll = (mode: TradeMode) =>
+  const doPauseAll = (mode: TradeMode) => {
+    for (const r of rules) {
+      if (r.is_active && r.trade_mode === mode) {
+        setPausingIds((prev) => new Set(prev).add(r.id));
+      }
+    }
     void run(() => pauseAll(mode).unwrap(), 'Pause all failed');
+  };
 
   const doStopAll = (mode: TradeMode) => {
     const warn =
@@ -87,7 +177,22 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         ? `Stop ALL active real rules and close every open position? This sends on-chain sells.`
         : `Stop ALL active paper rules and close every open position?`;
     if (!window.confirm(warn)) return;
-    void run(() => stopAll(mode).unwrap(), 'Stop all failed');
+    void run(async () => {
+      const res = await stopAll(mode).unwrap();
+      if (res.action_id) {
+        setStopByMode((prev) => ({
+          ...prev,
+          [mode]: {
+            action_id: res.action_id,
+            mint_address: null,
+            kind: 'stop',
+            status: 'running',
+            done: 0,
+            total: res.total ?? 0,
+          },
+        }));
+      }
+    }, 'Stop all failed');
   };
 
   const columns: ColumnDef<StrategyRule>[] = [
@@ -102,9 +207,22 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       key: 'status',
       label: 'Status',
       group: 'status',
-      render: (r) => (
-        <Badge variant={r.is_active ? 'success' : 'neutral'}>{r.is_active ? 'Active' : 'Idle'}</Badge>
-      ),
+      render: (r) => {
+        if (pausingIds.has(r.id) && r.is_active) {
+          return <Badge variant="warning">Pausing…</Badge>;
+        }
+        const stopProg = stopByRule[r.id];
+        if (stopProg && stopProg.status === 'running') {
+          return (
+            <Badge variant="warning">
+              Stopping {stopProg.done}/{stopProg.total}
+            </Badge>
+          );
+        }
+        return (
+          <Badge variant={r.is_active ? 'success' : 'neutral'}>{r.is_active ? 'Active' : 'Idle'}</Badge>
+        );
+      },
       searchValue: (r) => (r.is_active ? 'active' : 'idle'),
     },
     {
@@ -161,27 +279,35 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     {
       key: 'execute',
       label: 'Execute',
-      render: (r) =>
-        r.is_active ? (
-          <div className="flex gap-1">
-            <Button
-              variant="subtle"
-              size="xs"
-              onClick={() => void run(() => pause(r.id).unwrap(), 'Pause failed')}
-              title="Pause — stop new entries, let open positions drain"
-            >
-              Pause
-            </Button>
-            <Button
-              variant="danger"
-              size="xs"
-              onClick={() => stopRule(r)}
-              title="Stop — deactivate and force-close open positions now"
-            >
-              Stop
-            </Button>
-          </div>
-        ) : (
+      render: (r) => {
+        const stopProg = stopByRule[r.id];
+        const stopping = !!stopProg && stopProg.status === 'running';
+        const pausing = pausingIds.has(r.id);
+        if (r.is_active || stopping || pausing) {
+          return (
+            <div className="flex gap-1">
+              <Button
+                variant="subtle"
+                size="xs"
+                disabled={pausing || stopping}
+                onClick={() => pauseRule(r)}
+                title="Pause — stop new entries, let open positions drain"
+              >
+                {pausing ? 'Pausing…' : 'Pause'}
+              </Button>
+              <Button
+                variant="danger"
+                size="xs"
+                disabled={stopping}
+                onClick={() => stopRule(r)}
+                title="Stop — deactivate and force-close open positions now"
+              >
+                {stopping ? `Stopping ${stopProg!.done}/${stopProg!.total}` : 'Stop'}
+              </Button>
+            </div>
+          );
+        }
+        return (
           <Button
             variant="primary"
             size="xs"
@@ -190,7 +316,8 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
           >
             Activate
           </Button>
-        ),
+        );
+      },
       searchValue: (r) => (r.is_active ? 'pause stop' : 'activate'),
     },
   ];
@@ -202,19 +329,35 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-semibold text-text">Rules</h1>
         <div className="flex flex-wrap items-center gap-1.5">
-          {(['paper', 'real'] as TradeMode[]).map((mode) =>
-            activeByMode[mode] > 0 ? (
+          {(['paper', 'real'] as TradeMode[]).map((mode) => {
+            const bulkStop = stopByMode[mode];
+            const stopping = !!bulkStop && bulkStop.status === 'running';
+            const show = activeByMode[mode] > 0 || stopping;
+            if (!show) return null;
+            return (
               <div key={mode} className="flex items-center gap-1 rounded-md border border-white/8 px-1.5 py-1">
                 <span className="text-[11px] uppercase tracking-wide text-text-dim">{mode}</span>
-                <Button variant="ghost" size="xs" disabled={bulkBusy} onClick={() => doPauseAll(mode)}>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={bulkBusy || stopping}
+                  onClick={() => doPauseAll(mode)}
+                >
                   ⏸ Pause All ({activeByMode[mode]})
                 </Button>
-                <Button variant="danger" size="xs" disabled={bulkBusy} onClick={() => doStopAll(mode)}>
-                  ■ Stop All ({activeByMode[mode]})
+                <Button
+                  variant="danger"
+                  size="xs"
+                  disabled={bulkBusy || stopping}
+                  onClick={() => doStopAll(mode)}
+                >
+                  {stopping
+                    ? `■ Stopping ${bulkStop!.done}/${bulkStop!.total}`
+                    : `■ Stop All (${activeByMode[mode]})`}
                 </Button>
               </div>
-            ) : null,
-          )}
+            );
+          })}
           <Button variant="primary" size="sm" onClick={actions.openNew}>
             + New rule
           </Button>

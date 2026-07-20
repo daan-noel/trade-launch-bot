@@ -1,11 +1,16 @@
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from 'components/table/DataTable';
 import { StatTile } from 'components/ui/StatTile';
 import { InlineAlert } from 'components/ui/Modal';
 import { apiErrorMessage } from 'store/apiSlice';
 import { formatCompact } from 'utils/format';
 import { positionColumns } from '@live/components/live-trading/positionColumns';
-import { useGetPortfolioPositionsQuery } from '@live/store/liveEndpoints';
+import {
+  useCloseRulePositionMutation,
+  useGetPortfolioPositionsQuery,
+} from '@live/store/liveEndpoints';
+import { connectStrategyPositionUpdate } from 'services/sse';
+import type { OpenStrategyPosition } from 'types';
 
 const STRATEGY_LABEL: Record<string, string> = {
   tpsl_sniper_1: 'TPSL1',
@@ -14,12 +19,61 @@ const STRATEGY_LABEL: Record<string, string> = {
 
 /**
  * Positions roll-up — cross-strategy REAL-money open positions.
- * Reads `GET /api/portfolio/positions` (real-only).
+ * Reads `GET /api/portfolio/positions` (real-only). Per-row Sell ALL routes through
+ * the position-aware close path so the row goes Holding → ExitPending (amber) live.
  */
 export function LiveTradingPage() {
-  const { data: positions = [], isLoading, isFetching, error } = useGetPortfolioPositionsQuery(true);
-  const columns = useMemo(() => positionColumns(), []);
-  const errMsg = apiErrorMessage(error);
+  const { data: positions = [], isLoading, isFetching, error, refetch } =
+    useGetPortfolioPositionsQuery(true);
+  const [closePosition] = useCloseRulePositionMutation();
+  const [sellingPositionId, setSellingPositionId] = useState<string | null>(null);
+  const [sellErr, setSellErr] = useState<string | null>(null);
+
+  // Live status: ExitPending / End patches arrive over SSE — refetch so the row
+  // drops when closed (portfolio query isn't patched in place today).
+  useEffect(() => {
+    const h = connectStrategyPositionUpdate((delta) => {
+      if (delta.position_id === sellingPositionId && delta.status === 'ExitPending') {
+        // Server confirmed — keep amber via row status; clear optimistic id.
+        setSellingPositionId(null);
+      }
+      if (
+        delta.status === 'End' ||
+        delta.status === 'ExitFailed' ||
+        delta.status === 'ExitPending' ||
+        delta.status === 'ExitUnconfirmed'
+      ) {
+        void refetch();
+      }
+    });
+    return () => h.close();
+  }, [refetch, sellingPositionId]);
+
+  const onSellPosition = useCallback(
+    async (row: OpenStrategyPosition) => {
+      if (
+        !window.confirm(
+          `Sell ALL of this position (${row.mint_address.slice(0, 8)}…)? REAL mode sends an on-chain sell.`,
+        )
+      )
+        return;
+      setSellErr(null);
+      setSellingPositionId(row.id);
+      try {
+        await closePosition({ strategy: row.strategy_id, positionId: row.id }).unwrap();
+      } catch (e) {
+        setSellingPositionId(null);
+        setSellErr(apiErrorMessage(e as never) ?? 'Sell failed');
+      }
+    },
+    [closePosition],
+  );
+
+  const columns = useMemo(
+    () => positionColumns({ sellingPositionId, onSellPosition }),
+    [sellingPositionId, onSellPosition],
+  );
+  const errMsg = apiErrorMessage(error) ?? sellErr;
 
   const perStrategy = useMemo(() => {
     const map = new Map<string, { open: number; deployedSol: number; rules: Set<string> }>();
@@ -45,7 +99,7 @@ export function LiveTradingPage() {
       <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
         <h1 className="text-lg font-extrabold text-text">Positions</h1>
         <span className="text-sm text-text-mid">
-          Bot inventory · open strategy positions (Trade = execute · Wallet = bag)
+          Bot inventory · open strategy positions (Sell ALL = close · Trade = execute · Wallet = bag)
         </span>
       </div>
 
@@ -71,7 +125,7 @@ export function LiveTradingPage() {
         <DataTable
           columns={columns}
           rows={positions}
-          rowKey={(r) => `${r.strategy_id}:${r.mint_address}:${r.entry_time ?? ''}`}
+          rowKey={(r) => r.id}
           loading={isFetching}
           searchable
           colFilters

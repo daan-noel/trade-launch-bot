@@ -42,6 +42,9 @@ pub(crate) async fn sweep_used_wallets(
     kek: &EnvKek,
     treasury_id: Uuid,
     treasury_address: Pubkey,
+    // Optional per-wallet tick for live `action_progress` (operator Sweep button).
+    // `Send` so the enclosing sweep can run inside `tokio::spawn`.
+    mut on_wallet: Option<&mut (dyn FnMut() + Send)>,
 ) -> Result<Vec<WalletSweepOutcome>> {
     let used = ManagedWalletRepo::find_by_status(pool, WalletStatus::Used.as_str(), None).await?;
     if used.is_empty() {
@@ -72,6 +75,9 @@ pub(crate) async fn sweep_used_wallets(
             wallet,
             "holds an open token position — keeping gas to sell it",
         ));
+        if let Some(cb) = on_wallet.as_mut() {
+            cb();
+        }
     }
 
     for wallet in sweepable {
@@ -86,6 +92,9 @@ pub(crate) async fn sweep_used_wallets(
                 }
             };
         outcomes.push(outcome);
+        if let Some(cb) = on_wallet.as_mut() {
+            cb();
+        }
     }
     Ok(outcomes)
 }

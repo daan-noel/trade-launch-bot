@@ -321,6 +321,33 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 }),
             )
         }
+        SseEvent::ActionProgress {
+            action_id,
+            mint_address,
+            rule_id,
+            kind,
+            status,
+            done,
+            total,
+            error,
+        } => {
+            // Not mint-scoped: action-scoped rollup (Stop / Stop All). Mint filter
+            // subscribers still receive it when `mint_address` is None (broadcast).
+            (
+                mint_address.clone(),
+                "action_progress",
+                json!({
+                    "action_id": action_id,
+                    "mint_address": mint_address,
+                    "rule_id": rule_id,
+                    "kind": kind,
+                    "status": status,
+                    "done": done,
+                    "total": total,
+                    "error": error,
+                }),
+            )
+        }
     };
 
     let frame = format!(

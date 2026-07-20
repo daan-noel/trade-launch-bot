@@ -493,17 +493,30 @@ async fn wallet_pool_transfer(
 /// `POST /api/wallet_pool/sweep` — operator "Sweep & retire" pass: run the
 /// `used`-wallet dust sweep (skipping open-position holders) AND reclaim already-
 /// `retired` wallets (residual SOL + close empty token accounts). All lands in the
-/// oldest treasury. Bearer-gated; 503 if the launcher isn't configured. Returns the
-/// per-wallet `SweepReport`.
+/// oldest treasury. Fire-and-forget **202**; live `action_progress` (kind `sweep`)
+/// streams over `/api/stream`. Bearer-gated; 503 if the launcher isn't configured.
 async fn wallet_pool_sweep(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
+    sse: web::Data<crate::sse::SseHub>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = launcher_settings(&settings)?;
-    let report = sweep_used_and_retired(pool.get_ref(), settings)
-        .await
-        .map_err(e400)?;
-    Ok(HttpResponse::Ok().json(report))
+    let settings = launcher_settings(&settings)?.clone();
+    let pool = pool.get_ref().clone();
+    let sse = sse.get_ref().clone();
+    tokio::spawn(async move {
+        match sweep_used_and_retired(&pool, &settings, Some(&sse)).await {
+            Ok(report) => tracing::info!(
+                wallets = report.outcomes.len(),
+                sol = report.total_sol_swept_lamports,
+                "wallet sweep finished"
+            ),
+            Err(e) => tracing::error!(error = ?e, "wallet sweep failed"),
+        }
+    });
+    Ok(HttpResponse::Accepted().json(serde_json::json!({
+        "status": "started",
+        "message": "progress streams over /api/stream as action_progress"
+    })))
 }
 
 #[derive(serde::Deserialize)]
@@ -515,17 +528,32 @@ struct ConsolidateBody {
 /// `POST /api/wallet_pool/consolidate` — operator "Consolidate → treasury" pass:
 /// drain SOL + close empty token accounts on EVERY managed wallet (incl. other
 /// treasuries) into `dest_treasury_id`. Skips mid-launch (`funding`/`reserved`)
-/// wallets. Bearer-gated; 503 if the launcher isn't configured.
+/// wallets. Fire-and-forget **202**; live `action_progress` (kind `consolidate`)
+/// streams over `/api/stream`. Bearer-gated; 503 if the launcher isn't configured.
 async fn wallet_pool_consolidate(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
+    sse: web::Data<crate::sse::SseHub>,
     body: web::Json<ConsolidateBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = launcher_settings(&settings)?;
-    let report = consolidate_all(pool.get_ref(), settings, body.into_inner().dest_treasury_id)
-        .await
-        .map_err(e400)?;
-    Ok(HttpResponse::Ok().json(report))
+    let settings = launcher_settings(&settings)?.clone();
+    let pool = pool.get_ref().clone();
+    let sse = sse.get_ref().clone();
+    let dest = body.into_inner().dest_treasury_id;
+    tokio::spawn(async move {
+        match consolidate_all(&pool, &settings, dest, Some(&sse)).await {
+            Ok(report) => tracing::info!(
+                wallets = report.outcomes.len(),
+                sol = report.total_sol_swept_lamports,
+                "wallet consolidate finished"
+            ),
+            Err(e) => tracing::error!(error = ?e, "wallet consolidate failed"),
+        }
+    });
+    Ok(HttpResponse::Accepted().json(serde_json::json!({
+        "status": "started",
+        "message": "progress streams over /api/stream as action_progress"
+    })))
 }
 
 /// Constant-time byte comparison — avoids leaking the secret length/prefix via
@@ -1056,7 +1084,10 @@ async fn manage_preview(
 
 /// Execute a management action (DANGER: places real sells). Requires the launcher
 /// to be configured AND `MANAGE_ENABLED=true` (503 otherwise) — the kill switch,
-/// mirroring `FUND_ENABLED`. Returns the finalized audit row (per-leg outcomes).
+/// mirroring `FUND_ENABLED`. Fire-and-forget: returns **202** immediately; the leg
+/// loop runs in a spawned task and pushes `action_progress` over `/api/stream`
+/// (start → N of M → done/partial/failed). The audit row is written as the work
+/// proceeds (`executing` → terminal) — reload / second-tab safe via SSE + history.
 async fn manage_execute(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
@@ -1064,21 +1095,45 @@ async fn manage_execute(
     mint: web::Path<String>,
     body: web::Json<ManageRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let settings = launcher_settings(&settings)?;
+    let settings = launcher_settings(&settings)?.clone();
     if settings.manage.is_none() {
         return Ok(HttpResponse::ServiceUnavailable().json(serde_json::json!({
             "error": "token management disabled — set MANAGE_ENABLED=true to enable"
         })));
     }
+    let pool = pool.get_ref().clone();
+    let sse = sse.get_ref().clone();
     let mint = mint.into_inner();
-    // Pass the SSE hub as the progress sink: the request still blocks until every
-    // leg is chain-confirmed (the caller gets the authoritative audit row), but
-    // per-leg `action_progress` frames fan out over the separate `/api/stream`
-    // connection so the operator watches "N of M" live instead of a frozen spinner.
-    let action = execute_action(pool.get_ref(), settings, &mint, &body, Some(sse.get_ref()))
-        .await
-        .map_err(e500)?;
-    Ok(HttpResponse::Ok().json(action))
+    let body = body.into_inner();
+
+    tokio::spawn(async move {
+        match execute_action(&pool, &settings, &mint, &body, Some(&sse)).await {
+            Ok(action) => tracing::info!(
+                action_id = %action.id,
+                status = %action.status,
+                "manage action finished"
+            ),
+            Err(e) => {
+                // Planning/insert failed before any progress frame — push a terminal
+                // so the ManagePanel clears its "Executing…" state.
+                tracing::error!(%mint, error = ?e, "manage action failed");
+                sse.action_progress(&launcher::ActionProgressEvent {
+                    action_id: Uuid::new_v4(),
+                    mint_address: Some(mint.clone()),
+                    kind: body.kind.clone(),
+                    status: "failed".into(),
+                    done: 0,
+                    total: 0,
+                    error: Some(format!("{e:#}")),
+                });
+            }
+        }
+    });
+
+    Ok(HttpResponse::Accepted().json(serde_json::json!({
+        "status": "started",
+        "message": "progress streams over /api/stream as action_progress"
+    })))
 }
 
 #[derive(serde::Deserialize)]

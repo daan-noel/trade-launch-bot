@@ -36,9 +36,13 @@ import {
   connectWalletPoolStream,
   connectRestoreProgressStream,
   connectRestoreCompleteStream,
+  connectActionProgressStream,
+  type ActionProgress,
   type RestoreProgress,
   type RestoreSummary,
 } from '@shared/services/sse';
+import { api } from '@shared/store/endpoints';
+import { useDispatch } from 'react-redux';
 import { formatSol } from '@shared/lib/format';
 import type {
   ManagedWalletPool,
@@ -299,12 +303,32 @@ export function WalletPoolPage() {
     }
   };
 
-  // Operator sweep passes. Both return a `SweepReport`, shown in a result card.
+  // Operator sweep passes — fire-and-forget 202; live N/M over action_progress.
   const [sweep, sweeping] = useSweepWalletsMutation();
   const [consolidate, consolidating] = useConsolidateWalletsMutation();
   const [sweepResult, setSweepResult] = useState<{ title: string; report: SweepReport } | null>(
     null,
   );
+  const [poolAction, setPoolAction] = useState<ActionProgress | null>(null);
+  const dispatch = useDispatch();
+
+  useEffect(() => {
+    const h = connectActionProgressStream((p) => {
+      if (p.kind !== 'sweep' && p.kind !== 'consolidate') return;
+      // Wallet-wide frames carry null mint.
+      if (p.mint_address) return;
+      setPoolAction(p.status === 'running' ? p : null);
+      if (p.status === 'done' || p.status === 'partial' || p.status === 'failed') {
+        dispatch(api.util.invalidateTags(['Wallets']));
+        setMsg(
+          p.status === 'done'
+            ? `${p.kind} finished — ${p.done}/${p.total} wallet(s).`
+            : `${p.kind} ${p.status} — ${p.done}/${p.total}${p.error ? `: ${p.error}` : ''}`,
+        );
+      }
+    });
+    return () => h.close();
+  }, [dispatch]);
 
   // "Consolidate → treasury" dialog: pick the destination treasury, then confirm.
   const [consolidateOpen, setConsolidateOpen] = useState(false);
@@ -561,34 +585,14 @@ export function WalletPoolPage() {
     }
   };
 
-  // One-line roll-up of a sweep/consolidate pass for the info banner. Genuine drain
-  // failures (`failed`) are counted apart from benign mid-launch skips so a partial
-  // failure is never hidden inside a lumped "skipped/failed" figure.
-  const summarizeSweep = (r: SweepReport): string => {
-    const touched = r.outcomes.filter(
-      (o) => o.sol_swept_lamports > 0 || o.accounts_closed > 0,
-    ).length;
-    const failed = r.outcomes.filter((o) => o.failed).length;
-    const skipped = r.outcomes.filter((o) => o.note && !o.failed).length;
-    const parts = [
-      `${formatSol(r.total_sol_swept_lamports)} swept from ${touched} wallet${touched === 1 ? '' : 's'}`,
-      r.accounts_closed > 0 &&
-      `${r.accounts_closed} token account${r.accounts_closed === 1 ? '' : 's'} closed (+${formatSol(r.total_rent_reclaimed_lamports)} rent)`,
-      r.wallets_retired > 0 && `${r.wallets_retired} retired`,
-      skipped > 0 && `${skipped} skipped`,
-      failed > 0 && `${failed} FAILED — re-run to retry`,
-    ].filter(Boolean);
-    return `Into treasury ${r.treasury_address.slice(0, 6)}…${r.treasury_address.slice(-6)}: ${parts.join(', ')}.`;
-  };
-
   // "Sweep & retire": dust-sweep `used` wallets + reclaim `retired` ones. Direct
   // action (like Fund) — used wallets are terminal and retired ones are shredded.
   const onSweep = async () => {
     setMsg(null);
+    setSweepResult(null);
     try {
-      const report = await sweep().unwrap();
-      setSweepResult({ title: 'Sweep & retire', report });
-      setMsg(summarizeSweep(report));
+      await sweep().unwrap();
+      setMsg('Sweep started — progress streams live…');
     } catch {
       /* surfaced via mutation error below */
     }
@@ -597,10 +601,10 @@ export function WalletPoolPage() {
   const onConsolidate = async () => {
     if (!consolidateDest) return;
     setConsolidateErr(null);
+    setSweepResult(null);
     try {
-      const report = await consolidate({ dest_treasury_id: consolidateDest }).unwrap();
-      setSweepResult({ title: 'Consolidate → treasury', report });
-      setMsg(summarizeSweep(report));
+      await consolidate({ dest_treasury_id: consolidateDest }).unwrap();
+      setMsg('Consolidate started — progress streams live…');
       setConsolidateOpen(false);
     } catch (e) {
       setConsolidateErr(
@@ -608,6 +612,8 @@ export function WalletPoolPage() {
       );
     }
   };
+
+  const poolActionBusy = poolAction?.status === 'running';
 
   const columns: Column<ManagedWalletPool>[] = [
     { header: 'Address', render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} /> },
@@ -691,7 +697,8 @@ export function WalletPoolPage() {
           <Button
             variant="ghost"
             icon="broom"
-            loading={sweeping.isLoading}
+            loading={sweeping.isLoading || (poolActionBusy && poolAction?.kind === 'sweep')}
+            disabled={poolActionBusy}
             title={
               'Clean-up pass — gathers leftover SOL back into the treasury. Two things:\n\n' +
               '1) USED wallets (ones that already finished a launch): sends their leftover SOL home to the treasury and marks them retired. A wallet that still holds tokens is skipped — it keeps its SOL to pay the fee to sell those tokens later.\n\n' +
@@ -700,13 +707,17 @@ export function WalletPoolPage() {
             }
             onClick={onSweep}
           >
-            Sweep &amp; retire
+            {poolActionBusy && poolAction?.kind === 'sweep'
+              ? `Sweeping ${poolAction.done}/${poolAction.total}`
+              : 'Sweep & retire'}
           </Button>
           <Button
             variant="ghost"
             icon="merge"
-            loading={consolidating.isLoading}
-            disabled={treasuryDestinations.length === 0}
+            loading={
+              consolidating.isLoading || (poolActionBusy && poolAction?.kind === 'consolidate')
+            }
+            disabled={treasuryDestinations.length === 0 || poolActionBusy}
             title={
               treasuryDestinations.length === 0
                 ? 'No treasury wallet exists to gather funds into. Create one first — use "Generate wallets" below with the role set to "treasury".'
@@ -743,6 +754,16 @@ export function WalletPoolPage() {
           </Button>
         </div>
       </div>
+
+      {poolActionBusy && poolAction && (
+        <Banner tone="warn">
+          <strong>
+            {poolAction.kind === 'sweep' ? 'Sweeping' : 'Consolidating'}…{' '}
+            {poolAction.done}/{poolAction.total}
+          </strong>{' '}
+          wallet(s) processed.
+        </Banner>
+      )}
 
       {(restoreRunning || restoreProgress || restoreSummary) && (
         <Banner tone={restoreSummary ? 'good' : 'info'}>

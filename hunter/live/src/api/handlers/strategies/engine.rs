@@ -10,17 +10,28 @@
 //! Every rule/fingerprint mutation ends with `engine.reload_rules()` so the running
 //! loop picks up the change (a `RulesReloaded` event) without a restart.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::Utc;
 use serde_json::{json, Value};
-use uuid::Uuid;
-
+use trading_core::models::ingest::SseEvent;
 use trading_core::models::Fingerprint;
 use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
+use uuid::Uuid;
 
+use super::action_progress;
 use crate::state::deploy_state::DeployState;
+
+/// Signal that the strategy-rules list changed so clients confirm optimistic
+/// pause/activate without waiting on a refetch race. Legacy event name
+/// (`tpsl_rules_changed`); payload `strategy` is `"generic"` for the unified engine.
+fn emit_rules_changed(app_state: &DeployState) {
+    let _ = app_state.sse_tx.send(SseEvent::TpslRulesChanged {
+        strategy: "generic".into(),
+    });
+}
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
@@ -222,6 +233,7 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
     match app_state.rule_repo.update(&rule).await {
         Ok(()) => {
             app_state.engine.reload_rules().await;
+            emit_rules_changed(app_state);
             HttpResponse::Ok().json(rule)
         }
         Err(e) => server_error("toggle rule active", e),
@@ -230,14 +242,46 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
 
 /// POST /api/strategy-rules/{id}/stop — deactivate the rule **and** force-close its
 /// open positions now (the per-row Stop, vs Pause which leaves positions to drain).
+/// Returns 202 + `action_id` immediately; position closes stream over
+/// `action_progress` / `strategy_position_update`.
 pub async fn stop_rule(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let id = path.into_inner();
-    // Close first (positions are still armed), then flip inactive + reload.
+    let open = match app_state.strategy_repo.find_open_positions().await {
+        Ok(all) => all
+            .into_iter()
+            .filter(|p| p.rule_id == Some(id))
+            .collect::<Vec<_>>(),
+        Err(e) => return server_error("stop: list open positions", e),
+    };
+    let total = open.len() as u64;
+    let position_ids: HashSet<Uuid> = open.into_iter().map(|p| p.id).collect();
+    let action_id = Uuid::new_v4();
+
+    // Subscribe + start frame before close so we don't miss terminal updates.
+    action_progress::spawn_stop_watcher(
+        app_state.sse_tx.clone(),
+        action_id,
+        Some(id),
+        position_ids,
+    );
     app_state.engine.close_rule(id).await;
-    set_active(&app_state, id, false).await
+
+    // Deactivate after close is queued (positions already ExitPending-bound).
+    let rule_resp = set_active(&app_state, id, false).await;
+    if !rule_resp.status().is_success() {
+        return rule_resp;
+    }
+
+    HttpResponse::Accepted().json(json!({
+        "action_id": action_id,
+        "kind": "stop",
+        "rule_id": id,
+        "total": total,
+        "closing": true,
+    }))
 }
 
 // ── Bulk lifecycle (Pause All / Stop All — one `trade_mode` at a time) ─────────
@@ -265,6 +309,9 @@ async fn pause_all_of_mode(app_state: &DeployState, mode: &str) -> HttpResponse 
         paused += 1;
     }
     app_state.engine.reload_rules().await;
+    if paused > 0 {
+        emit_rules_changed(app_state);
+    }
     HttpResponse::Ok().json(json!({ "paused": paused }))
 }
 
@@ -279,14 +326,38 @@ pub async fn pause_all_rules(
 
 /// POST /api/strategy-rules/stop-all?mode=real|paper — force-close every open
 /// position of `mode` (active or draining) **and** deactivate its active rules.
+/// Returns 202 + `action_id`; closes stream over `action_progress`.
 pub async fn stop_all_rules(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<ModeParam>,
 ) -> impl Responder {
-    // Close every open position of this mode first (covers rules already paused but
-    // still holding), then deactivate the active rules + reload.
-    app_state.engine.close_mode(query.mode == "real").await;
-    pause_all_of_mode(&app_state, &query.mode).await
+    let mode = query.mode.as_str();
+    let open = match app_state.strategy_repo.find_open_positions().await {
+        Ok(all) => all
+            .into_iter()
+            .filter(|p| p.mode == mode)
+            .collect::<Vec<_>>(),
+        Err(e) => return server_error("stop-all: list open positions", e),
+    };
+    let total = open.len() as u64;
+    let position_ids: HashSet<Uuid> = open.into_iter().map(|p| p.id).collect();
+    let action_id = Uuid::new_v4();
+
+    action_progress::spawn_stop_watcher(app_state.sse_tx.clone(), action_id, None, position_ids);
+    app_state.engine.close_mode(mode == "real").await;
+
+    let pause_resp = pause_all_of_mode(&app_state, mode).await;
+    if !pause_resp.status().is_success() {
+        return pause_resp;
+    }
+
+    HttpResponse::Accepted().json(json!({
+        "action_id": action_id,
+        "kind": "stop",
+        "mode": mode,
+        "total": total,
+        "closing": true,
+    }))
 }
 
 // ── Error helpers ────────────────────────────────────────────────────────────

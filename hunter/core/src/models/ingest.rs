@@ -206,4 +206,22 @@ pub enum SseEvent {
         state: String,
         reason: Option<String>,
     },
+    /// Progress of a long-running operator action (Stop & close / Stop All).
+    /// Emitted at start (`running`, `done = 0`), as each position reaches a
+    /// terminal exit status, and once at the terminal outcome (`done` |
+    /// `partial` | `failed`). Same field vocabulary as forge's `action_progress`
+    /// so the frontend hooks stay near-identical. Not mint-scoped — always
+    /// delivered (`mint_address` is `None` for rule-scoped stops).
+    ActionProgress {
+        action_id: uuid::Uuid,
+        mint_address: Option<String>,
+        rule_id: Option<uuid::Uuid>,
+        /// `"stop"` | `"sell"` — drives the label tone.
+        kind: String,
+        /// `running` | `partial` | `done` | `failed`.
+        status: String,
+        done: u64,
+        total: u64,
+        error: Option<String>,
+    },
 }

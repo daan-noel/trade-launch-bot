@@ -189,7 +189,7 @@ impl SseHub {
     /// so the triggering surface shows live "N of M" status instead of a frozen
     /// spinner. Mint-scoped when the action targets a token (sell); wallet-wide
     /// actions pass `mint_address = None` and reach every subscriber.
-    fn action_progress(&self, ev: &launcher::ActionProgressEvent) {
+    pub fn action_progress(&self, ev: &launcher::ActionProgressEvent) {
         if !self.has_subscribers() {
             return;
         }

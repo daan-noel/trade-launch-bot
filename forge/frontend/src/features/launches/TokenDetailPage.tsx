@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   useTokenOverviewQuery,
@@ -6,7 +6,7 @@ import {
   useRefreshPositionsMutation,
   useTokenTradesQuery,
 } from '@shared/store/endpoints';
-import { connectTradeStream } from '@shared/services/sse';
+import { connectActionProgressStream, connectTradeStream } from '@shared/services/sse';
 import { apiErrorMessage } from '@shared/store/baseApi';
 import {
   AddressDisplay,
@@ -162,7 +162,12 @@ export function TokenDetailPage() {
             {refreshError}
           </Banner>
         )}
-        <HoldingsTable positions={positions} loading={positionsLoading} overview={overview} />
+        <HoldingsTable
+          mint={mint}
+          positions={positions}
+          loading={positionsLoading}
+          overview={overview}
+        />
       </Card>
 
       {positions.length > 0 && <ManagePanel mint={mint} overview={overview} />}
@@ -182,14 +187,28 @@ export function TokenDetailPage() {
  *  raw price + decimals (never stored server-side): all quote amounts are quote
  *  base units, `current_price_quote` is quote base units per token base unit. */
 function HoldingsTable({
+  mint,
   positions,
   loading,
   overview,
 }: {
+  mint: string;
   positions: TokenPosition[];
   loading: boolean;
   overview: TokenOverview | undefined;
 }) {
+  // While a mint-scoped sell action is running, open rows show amber "selling…"
+  // (per-leg wallet ids aren't on the progress frame — tone the open set).
+  const [selling, setSelling] = useState(false);
+  useEffect(() => {
+    const h = connectActionProgressStream((p) => {
+      if (p.mint_address !== mint) return;
+      if (p.kind !== 'sell' && p.kind !== 'consolidate') return;
+      setSelling(p.status === 'running');
+    });
+    return () => h.close();
+  }, [mint]);
+
   const qd = overview?.quote_decimals ?? 9;
   const td = overview?.decimals ?? 6;
   const price = overview?.current_price_quote ?? null; // quote base units / token base unit
@@ -258,9 +277,17 @@ function HoldingsTable({
           );
         },
       },
-      { header: 'Status', render: (p) => <StatusPill status={p.status} /> },
+      {
+        header: 'Status',
+        render: (p) =>
+          selling && p.status === 'open' ? (
+            <span className="text-[var(--color-warn)]">selling…</span>
+          ) : (
+            <StatusPill status={p.status} />
+          ),
+      },
     ];
-  }, [qd, td, price, usdRate, quoteSymbol]);
+  }, [qd, td, price, usdRate, quoteSymbol, selling]);
 
   return (
     <div className="space-y-3">

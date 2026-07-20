@@ -38,6 +38,7 @@ use uuid::Uuid;
 
 use crate::config::LauncherSettings;
 use crate::dust_sweep::{sweep_used_wallets, SWEEP_MIN_LAMPORTS};
+use crate::events::{ActionProgressEvent, EventSink};
 use crate::keystore::{self, EnvKek};
 use crate::plan_exec::{execute_transfer, TransferMode};
 use crate::wallet_pool::MIN_FUNDED_LAMPORTS;
@@ -194,9 +195,13 @@ impl SweepReport {
 /// token accounts), AND reclaim stranded `generated` dust (below the funded
 /// floor, so it was never going to auto-promote — see the `generated` path
 /// below). Everything lands in the first (oldest) non-retired treasury.
+///
+/// `sink` — optional live progress (`action_progress`, kind `"sweep"`). `None` on
+/// CLI / tests.
 pub async fn sweep_used_and_retired(
     pool: &PgPool,
     settings: &LauncherSettings,
+    sink: Option<&dyn EventSink>,
 ) -> Result<SweepReport> {
     let treasury = ManagedWalletRepo::by_role(pool, WalletRole::Treasury.as_str())
         .await?
@@ -231,9 +236,41 @@ pub async fn sweep_used_and_retired(
         .filter(|w| w.balance_lamports.unwrap_or(0) < MIN_FUNDED_LAMPORTS)
         .collect::<Vec<_>>();
 
+    let used = ManagedWalletRepo::find_by_status(pool, WalletStatus::Used.as_str(), None).await?;
+    let total = used.len() + retired.len() + generated_dust.len();
+    let action_id = Uuid::new_v4();
+    let mut done = 0usize;
+    let emit = |status: &str, done: usize, error: Option<&str>| {
+        if let Some(sink) = sink {
+            sink.action_progress(&ActionProgressEvent {
+                action_id,
+                mint_address: None,
+                kind: "sweep".into(),
+                status: status.into(),
+                done,
+                total,
+                error: error.map(str::to_string),
+            });
+        }
+    };
+    emit("running", 0, None);
+
+    let mut tick = || {
+        done += 1;
+        emit("running", done, None);
+    };
+
     // `used` path — the exact hourly dust sweep (open-position holders held back).
-    let mut outcomes =
-        sweep_used_wallets(&rpc, pool, settings, &kek, treasury.id, treasury_addr).await?;
+    let mut outcomes = sweep_used_wallets(
+        &rpc,
+        pool,
+        settings,
+        &kek,
+        treasury.id,
+        treasury_addr,
+        Some(&mut tick),
+    )
+    .await?;
 
     // `retired` + `generated`-dust paths — reclaim residual SOL + close empty ATAs
     // on wallets that were never re-promoted by this sweep. (Neither set is ever
@@ -259,7 +296,18 @@ pub async fn sweep_used_and_retired(
             }
         };
         outcomes.push(outcome);
+        tick();
     }
+
+    let failed = outcomes.iter().filter(|o| o.failed).count();
+    let (status, err) = if failed == 0 {
+        ("done", None)
+    } else if failed == outcomes.len() {
+        ("failed", Some("all wallet sweeps failed"))
+    } else {
+        ("partial", Some("some wallet sweeps failed"))
+    };
+    emit(status, done, err);
 
     Ok(SweepReport::new(&treasury, outcomes))
 }
@@ -268,10 +316,13 @@ pub async fn sweep_used_and_retired(
 /// `dest_treasury_id` (which must be a `treasury`-role wallet). Skips the
 /// destination itself and any `funding`/`reserved` wallet (mid-launch — draining
 /// it would break the in-flight launch). Does not retire — a pure fund reclaim.
+///
+/// `sink` — optional live progress (`action_progress`, kind `"consolidate"`).
 pub async fn consolidate_all(
     pool: &PgPool,
     settings: &LauncherSettings,
     dest_treasury_id: Uuid,
+    sink: Option<&dyn EventSink>,
 ) -> Result<SweepReport> {
     let dest = ManagedWalletRepo::get(pool, dest_treasury_id)
         .await?
@@ -287,6 +338,25 @@ pub async fn consolidate_all(
     let dest_signer = keystore::resolve_signer(&settings.keystore_dir, &dest.key_ref, &kek)?;
 
     let all = ManagedWalletRepo::list_all(pool, None).await?;
+    // Progress total = wallets we'll consider (everything except the dest itself).
+    let total = all.iter().filter(|w| w.id != dest.id).count();
+    let action_id = Uuid::new_v4();
+    let mut done = 0usize;
+    let emit = |status: &str, done: usize, error: Option<&str>| {
+        if let Some(sink) = sink {
+            sink.action_progress(&ActionProgressEvent {
+                action_id,
+                mint_address: None,
+                kind: "consolidate".into(),
+                status: status.into(),
+                done,
+                total,
+                error: error.map(str::to_string),
+            });
+        }
+    };
+    emit("running", 0, None);
+
     let mut outcomes = Vec::with_capacity(all.len());
     for wallet in all {
         if wallet.id == dest.id {
@@ -302,6 +372,8 @@ pub async fn consolidate_all(
                 &wallet,
                 "mid-launch (funding/reserved) — skipped to avoid breaking an in-flight launch",
             ));
+            done += 1;
+            emit("running", done, None);
             continue;
         }
 
@@ -325,7 +397,21 @@ pub async fn consolidate_all(
             }
         };
         outcomes.push(outcome);
+        done += 1;
+        emit("running", done, None);
     }
+
+    let failed = outcomes.iter().filter(|o| o.failed).count();
+    let (status, err) = if failed == 0 {
+        ("done", None)
+    } else if !outcomes.is_empty() && failed == outcomes.len() {
+        ("failed", Some("all wallet consolidations failed"))
+    } else if failed > 0 {
+        ("partial", Some("some wallet consolidations failed"))
+    } else {
+        ("done", None)
+    };
+    emit(status, done, err);
 
     Ok(SweepReport::new(&dest, outcomes))
 }

@@ -367,3 +367,42 @@ export function connectStrategyPositionUpdate(
   });
   return { close: unsub };
 }
+
+/** Live progress of a long-running stop/sell action (Stop & close / Stop All). */
+export interface ActionProgress {
+  action_id: string;
+  mint_address: string | null;
+  rule_id?: string | null;
+  kind: string;
+  status: 'running' | 'partial' | 'done' | 'failed';
+  done: number;
+  total: number;
+  error?: string | null;
+}
+
+/** Listen for `action_progress` — a stop/sell action advanced (start / N of M / terminal). */
+export function connectActionProgressStream(
+  onProgress: (p: ActionProgress) => void,
+): StreamHandle {
+  const unsub = subscribe('action_progress', (e) => {
+    if (typeof e.data !== 'string') return;
+    try {
+      onProgress(JSON.parse(e.data) as ActionProgress);
+    } catch {
+      /* ignore malformed frames */
+    }
+  });
+  return { close: unsub };
+}
+
+/**
+ * Listen for `tpsl_rules_changed` — a rule was paused/activated/updated. Bare
+ * signal; consumers refetch the rules list (and clear optimistic "Pausing…" state).
+ */
+export function connectTpslRulesChanged(onChanged: () => void): StreamHandle {
+  const unsub = combine(
+    subscribe('tpsl_rules_changed', () => onChanged()),
+    onSseReopen(onChanged),
+  );
+  return { close: unsub };
+}
