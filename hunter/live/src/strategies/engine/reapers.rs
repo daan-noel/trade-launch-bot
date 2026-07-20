@@ -283,6 +283,7 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
             fill_tx,
             // Nested run_exit claims on a fresh set so it doesn't deadlock on `guard`.
             inflight: InFlightGuards::new(),
+            buy_journal: super::SubmittedBuyJournal::new(),
         };
         let slippage = {
             let s = deps.settings.borrow();

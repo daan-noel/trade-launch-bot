@@ -7,7 +7,8 @@
 //! 1. **fills** — `FillConfirmed`/`FillFailed` from the executor adapters,
 //! 2. **commands** — rule reloads + manual closes from HTTP ([`EngineCommand`]),
 //! 3. **ingest pings** — mapped to events by the [`Producer`],
-//! 4. **500 ms tick** — a synthetic `Tick(now)` so quiet-token metrics fire.
+//! 4. **Clock tick** (`TICK_MS`, currently 200 ms) — a synthetic `Tick(now)` so
+//!    quiet-token metrics fire.
 //!
 //! Effects are dispatched in two passes per event: state effects
 //! (`PositionUpdate`/`ArmedChanged` → PG + SSE via the [`Sink`]) **first**, so a
@@ -53,12 +54,12 @@ use super::{
     exec_paper, ArmedRegistry, EngineCommand, EngineHandle, InFlightGuards, PositionRegistry,
 };
 
-/// The clock tick — 500 ms, sized to ~400 ms slot latency (plan decision 5).
-/// Derived from the engine's [`hunter_engine::TICK_MS`] SSOT so live + lab replay
-/// tick at the one cadence (plan 5.3).
+/// The clock tick — derived from the engine's [`hunter_engine::TICK_MS`] SSOT so
+/// live + lab replay tick at the one cadence (plan 5.3).
 const TICK: Duration = Duration::from_millis(hunter_engine::TICK_MS as u64);
 /// How often (in ticks) to prune the producer's per-mint maps to the live set.
-const PRUNE_EVERY_TICKS: u64 = 240; // ≈ every 2 min
+/// ≈ 2 min at `TICK_MS = 200`.
+const PRUNE_EVERY_TICKS: u64 = 600;
 
 /// Everything the engine loop needs to run. Built once in `main.rs` and moved into
 /// [`spawn_engine`].
@@ -131,6 +132,7 @@ async fn run_loop(
 
     let wallet = trader.wallet_pubkey();
     let fill_sigs = super::FillSigStore::new();
+    let buy_journal = super::SubmittedBuyJournal::new();
     let inflight = InFlightGuards::new();
 
     let mut state = EngineState::new();
@@ -156,6 +158,7 @@ async fn run_loop(
         fill_sigs: fill_sigs.clone(),
         fill_tx: fill_tx.clone(),
         inflight: inflight.clone(),
+        buy_journal,
     };
 
     // Initial rule load.
@@ -184,7 +187,10 @@ async fn run_loop(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ticks: u64 = 0;
 
-    info!("strategy engine loop running (serialized, 500 ms tick)");
+    info!(
+        tick_ms = hunter_engine::TICK_MS,
+        "strategy engine loop running (serialized clock tick)"
+    );
 
     loop {
         // A batch of events to fold this iteration (usually one).
@@ -237,8 +243,9 @@ impl EventBatch {
     }
 }
 
-/// Dispatch a `reduce` call's effects. State effects (PG + SSE) first so a durable
-/// row exists before we act; then submit effects (spawn executor tasks).
+/// Dispatch a `reduce` call's effects. State effects first (registry + SSE;
+/// BuySubmitted/ExitPending PG is async — see [`Sink`]), then submit effects
+/// so buy/sell spawn is not gated on durable writes.
 async fn dispatch(
     effects: hunter_engine::reduce::Effects,
     state: &EngineState,
@@ -248,7 +255,7 @@ async fn dispatch(
     token_cache: &Arc<TokenCache>,
     settings: &watch::Receiver<AppSettings>,
 ) {
-    // Pass 1 — persist transitions + push SSE.
+    // Pass 1 — registry/SSE (+ background PG for BuySubmitted / ExitPending).
     for fx in &effects {
         match fx {
             Effect::PositionUpdate(delta) => sink.on_position_update(delta.clone()).await,
@@ -256,7 +263,7 @@ async fn dispatch(
             _ => {}
         }
     }
-    // Pass 2 — act on submit effects.
+    // Pass 2 — act on submit effects (spawn is ready once registry is upserted).
     for fx in effects {
         match fx {
             Effect::SubmitBuy { intent, rule, mint, lamports } => {
@@ -519,6 +526,9 @@ async fn reload_rules(
     let engine_fps: Vec<EngineFingerprint> = fps.iter().map(convert::fp_to_engine).collect();
 
     sink.set_rules(&loaded, &names);
+    // Pre-create/cache run rows so the first BuySubmitted of each rule does not
+    // await insert_run on the decision→send critical path.
+    sink.warm_runs().await;
     info!(rules = loaded.len(), fingerprints = engine_fps.len(), "engine: rules reloaded");
     let _ = reduce(
         state,

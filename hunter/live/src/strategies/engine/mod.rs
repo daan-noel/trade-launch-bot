@@ -2,10 +2,10 @@
 //!
 //! The engine (`hunter_engine::reduce`) is a pure `reduce(&mut EngineState, Event)
 //! -> effects` fold — no clock, no I/O, no randomness. This module is the *live*
-//! composition root that wraps it: it **produces** events (ingest pings + a 500 ms
-//! tick + confirmed fills) and **consumes** effects (submit buy/sell on-chain or in
-//! paper, persist positions to PG, push SSE). All decision logic lives in the
-//! engine; these files are adapters and side-effects only.
+//! composition root that wraps it: it **produces** events (ingest pings + a
+//! `TICK_MS` clock tick + confirmed fills) and **consumes** effects (submit
+//! buy/sell on-chain or in paper, persist positions to PG, push SSE). All
+//! decision logic lives in the engine; these files are adapters and side-effects only.
 //!
 //! Module map (plan §3, `hunter/live/src/strategies/`):
 //! * [`decision_loop`] — THE one serialized decision loop (`select!`); every
@@ -356,5 +356,45 @@ impl FillSigStore {
     /// Take (and remove) the fill identity for `intent`, if the executor stashed it.
     pub fn take(&self, intent: &IntentId) -> Option<FillSigs> {
         self.0.remove(intent).map(|(_, v)| v)
+    }
+}
+
+/// Process-local write-ahead journal of submitted buy signatures, keyed by PG
+/// position id. Set **synchronously** in the `on_signed` hook (before network
+/// submit / before the bounded PG persist) so:
+/// - a slow `mark_buy_submitted` never blocks the nonce slot on the hot path
+/// - `adopt_existing_fill` can skip a PG round-trip on the first attempt (empty)
+///   and still see prior sigs on same-process entry retries
+///
+/// Crash recovery still reads `strategy_positions.submitted_buy_signatures` via
+/// the reaper — this journal is live-process only.
+#[derive(Debug, Clone, Default)]
+pub struct SubmittedBuyJournal(Arc<dashmap::DashMap<Uuid, Vec<String>>>);
+
+impl SubmittedBuyJournal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append `sig` for `pg_id` (idempotent if the same sig is recorded twice).
+    pub fn append(&self, pg_id: Uuid, sig: String) {
+        self.0
+            .entry(pg_id)
+            .and_modify(|v| {
+                if !v.iter().any(|s| s == &sig) {
+                    v.push(sig.clone());
+                }
+            })
+            .or_insert_with(|| vec![sig]);
+    }
+
+    /// Snapshot of sigs known for `pg_id` in this process (empty ⇒ first attempt).
+    pub fn sigs(&self, pg_id: Uuid) -> Vec<String> {
+        self.0.get(&pg_id).map(|e| e.value().clone()).unwrap_or_default()
+    }
+
+    /// Drop the journal entry once the position is terminal / no longer needed.
+    pub fn clear(&self, pg_id: Uuid) {
+        self.0.remove(&pg_id);
     }
 }

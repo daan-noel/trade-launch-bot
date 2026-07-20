@@ -38,7 +38,12 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 ///                                                (read-only, zero SOL)
 ///   probe fanout [lamports] [--tip] [--confirm] — fan-out self-transfer to all
 ///                                                sender endpoints (base fee only;
-///                                                senders require --tip to accept)
+///                                                senders require --tip to accept);
+///                                                prints a pin recommendation
+///   probe pin-senders [lamports] [--keep N] [--write-env [path]]
+///                                              — fanout with tip, rank by accept
+///                                                latency, print (and optionally
+///                                                write) HELIUS_FAST_SENDER_URLS
 ///   probe check-nonces                         — read-only audit that every
 ///                                                configured nonce account's
 ///                                                authority is the wallet (zero SOL)
@@ -83,16 +88,52 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             let report = trader
                 .probe_fanout_self_transfer(lamports, include_tip, do_confirm)
                 .await?;
-            for r in &report.results {
-                match &r.outcome {
-                    Ok(sig) => println!("  ✅ {:>5}ms  {}  -> {sig}", r.elapsed_ms, r.url),
-                    Err(e) => println!("  ❌ {:>5}ms  {}  -> {e}", r.elapsed_ms, r.url),
-                }
-            }
-            match (report.confirm_ms, &report.confirmed) {
-                (Some(ms), Some(Ok(()))) => println!("  confirmed in {ms}ms"),
-                (Some(ms), Some(Err(e))) => println!("  confirm failed in {ms}ms: {e}"),
-                _ => {}
+            print_fanout_results(&report);
+            print_pin_recommendation(&report, 2);
+        }
+        "pin-senders" => {
+            // Always tip — Helius Sender rejects untipped submits.
+            let lamports: u64 = args
+                .iter()
+                .skip(1)
+                .find(|s| !s.starts_with("--"))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1);
+            let keep: usize = args
+                .iter()
+                .position(|a| a == "--keep")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2);
+            let write_env = args.iter().any(|a| a == "--write-env");
+            let env_path = args
+                .iter()
+                .position(|a| a == "--write-env")
+                .and_then(|i| args.get(i + 1))
+                .filter(|s| !s.starts_with("--"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(default_hunter_env_path);
+            println!(
+                "Pin-senders: fan-out self-transfer {lamports} lamports (tip=true), keep={keep}"
+            );
+            let report = trader
+                .probe_fanout_self_transfer(lamports, true, false)
+                .await?;
+            print_fanout_results(&report);
+            let Some(pin) = print_pin_recommendation(&report, keep) else {
+                anyhow::bail!(
+                    "no sender endpoint accepted the probe — check HELIUS_FAST_SENDER_URLS \
+                     and that tip floor is warm"
+                );
+            };
+            if write_env {
+                write_sender_urls_to_env(&env_path, &pin)?;
+                println!("  wrote pin into {}", env_path.display());
+            } else {
+                println!(
+                    "  (dry-run — re-run with --write-env to update {})",
+                    env_path.display()
+                );
             }
         }
         "check-nonces" => {
@@ -466,12 +507,116 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             }
         }
         other => anyhow::bail!(
-            "unknown probe '{other}'. Use: ladder | fanout | check-nonces | simulate-buy | \
-             simulate-sell | simulate-amm-buy | simulate-amm-sell | sim-matrix | \
+            "unknown probe '{other}'. Use: ladder | fanout | pin-senders | check-nonces | \
+             simulate-buy | simulate-sell | simulate-amm-buy | simulate-amm-sell | sim-matrix | \
              consolidate-dryrun | sweep-sell-dryrun | holdings | cashback-status | \
              claim-cashback [--execute]"
         ),
     }
+    Ok(())
+}
+
+fn print_fanout_results(report: &pump_trader::FanoutReport) {
+    for r in &report.results {
+        match &r.outcome {
+            Ok(sig) => println!("  ✅ {:>5}ms  {}  -> {sig}", r.elapsed_ms, r.url),
+            Err(e) => println!("  ❌ {:>5}ms  {}  -> {e}", r.elapsed_ms, r.url),
+        }
+    }
+    match (report.confirm_ms, &report.confirmed) {
+        (Some(ms), Some(Ok(()))) => println!("  confirmed in {ms}ms"),
+        (Some(ms), Some(Err(e))) => println!("  confirm failed in {ms}ms: {e}"),
+        _ => {}
+    }
+}
+
+/// Print ranked pin lines; returns the recommendation when at least one endpoint accepted.
+fn print_pin_recommendation(
+    report: &pump_trader::FanoutReport,
+    keep: usize,
+) -> Option<pump_trader::SenderPinRecommendation> {
+    let pin = report.pin_recommendation(keep)?;
+    println!("  pin (fastest-first, keep={keep}):");
+    for (url, ms) in pin.urls.iter().zip(pin.elapsed_ms.iter()) {
+        println!("    {ms:>5}ms  {url}");
+    }
+    if let Some(primary) = pin.primary_url() {
+        println!("  HELIUS_FAST_SENDER_URL={primary}");
+    }
+    println!("  HELIUS_FAST_SENDER_URLS={}", pin.urls_csv());
+    if pin.urls.len() == 1 {
+        println!(
+            "  note: single endpoint uses the direct-await send path (no fan-out spawn)"
+        );
+    }
+    Some(pin)
+}
+
+/// Resolve `hunter/.env`: prefer the product `.env` beside `live/` (manifest
+/// parent), then CWD `.env` / `hunter/.env` for runs from the monorepo root.
+fn default_hunter_env_path() -> std::path::PathBuf {
+    let product = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.env");
+    if product.is_file() {
+        return product;
+    }
+    let cwd = std::path::PathBuf::from(".env");
+    if cwd.is_file() {
+        return cwd;
+    }
+    std::path::PathBuf::from("hunter/.env")
+}
+
+/// Rewrite `HELIUS_FAST_SENDER_URL` / `HELIUS_FAST_SENDER_URLS` in an env file in place.
+/// Other keys/comments are preserved; missing keys are appended under a short banner.
+fn write_sender_urls_to_env(
+    path: &std::path::Path,
+    pin: &pump_trader::SenderPinRecommendation,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let primary = pin
+        .primary_url()
+        .context("pin recommendation has no primary URL")?;
+    let csv = pin.urls_csv();
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read env file {}", path.display()))?;
+    let mut saw_singular = false;
+    let mut saw_plural = false;
+    let mut out = String::with_capacity(raw.len() + 128);
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("HELIUS_FAST_SENDER_URLS=") {
+            let _ = rest;
+            out.push_str("HELIUS_FAST_SENDER_URLS=");
+            out.push_str(&csv);
+            out.push('\n');
+            saw_plural = true;
+        } else if let Some(rest) = trimmed.strip_prefix("HELIUS_FAST_SENDER_URL=") {
+            // Avoid matching HELIUS_FAST_SENDER_URLS (longer prefix checked first).
+            let _ = rest;
+            out.push_str("HELIUS_FAST_SENDER_URL=");
+            out.push_str(primary);
+            out.push('\n');
+            saw_singular = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !saw_singular || !saw_plural {
+        out.push_str("\n# ===== Sender pin (from `probe pin-senders --write-env`) =====\n");
+        if !saw_singular {
+            out.push_str("HELIUS_FAST_SENDER_URL=");
+            out.push_str(primary);
+            out.push('\n');
+        }
+        if !saw_plural {
+            out.push_str("HELIUS_FAST_SENDER_URLS=");
+            out.push_str(&csv);
+            out.push('\n');
+        }
+    }
+    // Preserve final newline style: always end with \n.
+    std::fs::write(path, out).with_context(|| format!("write env file {}", path.display()))?;
     Ok(())
 }
 

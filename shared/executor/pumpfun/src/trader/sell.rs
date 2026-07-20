@@ -60,6 +60,7 @@ impl PumpFunTrader {
                     // Manual/standalone path: RPC-confirm each attempt so the
                     // `OnChainRevert` budget guard below can stop re-paying fees.
                     true,
+                    None, // no cache reserves — cold path reads curve on-chain
                 )
                 .await
             {
@@ -124,6 +125,11 @@ impl PumpFunTrader {
     /// poll window — a landed-and-reverted sell (min_out=1 ⇒ structural) never
     /// clears and re-pays fees on every blind retry, so the caller needs the sig
     /// to detect it. `None` is the (currently unreachable) not-submitted case.
+    /// `reserves_override`: when `Some` and `slippage_bps` is set, use these
+    /// `(virtual_token, virtual_quote_lamports)` for `min_sol_output` instead of
+    /// an on-path `curve_reserves` RPC (bot hot path passes the live token-cache
+    /// snapshot — same pattern as snipe buys). `None` keeps the cold/manual
+    /// reserve-read behaviour.
     #[allow(clippy::too_many_arguments)]
     pub async fn sell_token_once(
         &self,
@@ -135,6 +141,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
+        reserves_override: Option<(u128, u128)>,
     ) -> Result<Option<String>> {
         self.sell_token_once_inner(
             token_mint,
@@ -145,6 +152,7 @@ impl PumpFunTrader {
             slippage_bps,
             tip_level,
             confirm,
+            reserves_override,
         )
         .await
     }
@@ -160,6 +168,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
+        reserves_override: Option<(u128, u128)>,
     ) -> Result<Option<String>> {
         // Ensure PDAs are cached (reads the bonding-curve PDA on a miss). Use the
         // String-free warm helper — this call only populates `token_pdas` and
@@ -190,6 +199,7 @@ impl PumpFunTrader {
             slippage_bps,
             tip_level,
             confirm,
+            reserves_override,
         )
         .await
     }
@@ -287,6 +297,7 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         tip_level: u8,
         confirm: bool,
+        reserves_override: Option<(u128, u128)>,
     ) -> Result<Option<String>> {
         let mint = Pubkey::from_str(token_mint)?;
         let signer = self.config.signer.as_ref();
@@ -347,18 +358,20 @@ impl PumpFunTrader {
             );
 
             // `sell(amount, min_sol_output)`: slippage floor on SOL received. `None`
-            // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` reads the
-            // curve's virtual reserves for a conservative lower bound, falling back to
-            // 1 if the read fails so slippage never blocks a sell.
-            let reserves: Option<(u128, u128)> = match slippage_bps {
-                Some(_) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
+            // keeps the legacy min_out=1 (snipe path, no extra RPC); `Some` uses
+            // caller-supplied cache reserves when present (bot hot path — no RPC),
+            // otherwise reads the curve on-chain, falling back to min_out=1 so a
+            // flaky reserve read never blocks a sell.
+            let reserves: Option<(u128, u128)> = match (slippage_bps, reserves_override) {
+                (None, _) => None,
+                (Some(_), Some(r)) => Some(r),
+                (Some(_), None) => match self.curve_reserves(token_mint, &pdas.bonding_curve).await {
                     Ok(r) => Some(r),
                     Err(e) => {
                         warn!("curve sell slippage: reserve read failed ({e}); using min_out=1");
                         None
                     }
                 },
-                None => None,
             };
             let min_sol_output = compute_curve_sell_min_out(
                 token_amount,

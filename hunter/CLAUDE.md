@@ -79,7 +79,7 @@ cargo test  -p executor-pumpfun        # trader crate tests
 cargo run   -p hunter-live             # live box: loads .env; needs Postgres + Helius gRPC (binds LIVE_PORT :8130)
 cargo run   -p hunter-lab              # analysis box: needs Postgres; NO keys / NO gRPC (binds LAB_PORT :8140)
 cargo run   -p hunter-lab -- lake-export # batch: export sealed days local-PG -> Parquet lake ($SWEEP_LAKE_DIR)
-cargo run   -p hunter-live -- probe <ladder|fanout|simulate-*|sim-matrix|holdings> [args]
+cargo run   -p hunter-live -- probe <ladder|fanout|pin-senders|simulate-*|sim-matrix|holdings> [args]
 cd frontend; npm run dev               # both apps concurrently: live :5173, lab :5174 (separate dev servers)
 npm run lint                           # ESLint boundary gate ONLY (shared⊬@live/@lab, live⊬@lab, lab⊬@live); not a general lint
 npm run dev:live                       # live app only (:5173, proxies /api -> live bin :8130)

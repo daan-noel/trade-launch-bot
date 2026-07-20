@@ -6,12 +6,19 @@
 //! The engine speaks in opaque [`PositionId`]s; the sink owns the mapping to the
 //! durable `strategy_positions.id` (via [`PositionRegistry`]) and lazily creates
 //! one `strategy_runs` row per rule (the run is the parent FK positions need).
+//!
+//! **Latency:** `BuySubmitted` upserts the in-memory registry **before** the PG
+//! insert (insert is spawned; later transitions await that handle so fill writes
+//! never race a missing row). `ExitPending` status flips are fire-and-forget so
+//! `SubmitSell` is not gated on PG. Runs are warmed on rule reload so the first
+//! buy of a rule rarely blocks on `ensure_run`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tracing::warn;
 
 use hunter_engine::event::{
@@ -61,6 +68,9 @@ pub struct Sink {
     rules: HashMap<RuleId, RuleInfo>,
     /// One live run per rule (lazily created on the first position).
     run_cache: HashMap<RuleId, uuid::Uuid>,
+    /// In-flight `insert_position` tasks keyed by PG id — later sink transitions
+    /// await these so a fast fill cannot `record_entry_fill` before the row exists.
+    pending_inserts: HashMap<uuid::Uuid, JoinHandle<()>>,
 }
 
 impl Sink {
@@ -86,6 +96,7 @@ impl Sink {
             wallet,
             rules: HashMap::new(),
             run_cache: HashMap::new(),
+            pending_inserts: HashMap::new(),
         }
     }
 
@@ -114,6 +125,18 @@ impl Sink {
                 )
             })
             .collect();
+    }
+
+    /// Ensure every loaded rule has a cached `strategy_runs` id so the first
+    /// `BuySubmitted` of a rule does not await `insert_run` on the hot path.
+    pub async fn warm_runs(&mut self) {
+        let rules: Vec<(RuleId, RuleInfo)> =
+            self.rules.iter().map(|(id, info)| (*id, info.clone())).collect();
+        for (rule, info) in rules {
+            if let Err(e) = self.ensure_run(rule, &info).await {
+                warn!(rule = %rule.0, "engine sink: warm_runs failed: {e}");
+            }
+        }
     }
 
     /// Consume one `PositionUpdate`: persist the transition to PG, keep the
@@ -160,6 +183,7 @@ impl Sink {
             warn!(rule = %delta.rule.0, "engine sink: BuySubmitted for unknown rule — skipping");
             return;
         };
+        // Usually a run_cache hit after `warm_runs`; cold miss still awaits once.
         let run_id = match self.ensure_run(delta.rule, &info).await {
             Ok(id) => id,
             Err(e) => {
@@ -192,17 +216,16 @@ impl Sink {
         );
         pos.token_program_id = token_program_id.clone();
         pos.status = "BuySubmitted".to_string();
-        if let Err(e) = self.repo.insert_position(&pos).await {
-            warn!(mint = %mint, "engine sink: insert_position failed: {e}");
-            return;
-        }
+
+        // Registry first so Pass-2 can spawn the buy immediately; PG insert is
+        // backgrounded. Later transitions await `pending_inserts` for this pg_id.
         self.registry.upsert(
             delta.position,
             PositionMeta {
                 pg_id: pos.id,
                 run_id,
                 rule_id: delta.rule,
-                mint,
+                mint: mint.clone(),
                 trade_mode: info.mode,
                 token_program_id,
                 creator,
@@ -214,10 +237,19 @@ impl Sink {
                 inflight_intent: None,
             },
         );
+        let repo = self.repo.clone();
+        let pg_id = pos.id;
+        let handle = tokio::spawn(async move {
+            if let Err(e) = repo.insert_position(&pos).await {
+                warn!(mint = %mint, pg = %pg_id, "engine sink: insert_position failed: {e}");
+            }
+        });
+        self.pending_inserts.insert(pg_id, handle);
     }
 
     async fn on_holding(&mut self, delta: &PositionDelta) {
         let Some(meta) = self.registry.get(delta.position) else { return };
+        self.await_pending_insert(meta.pg_id).await;
         let Some(fill) = delta.fill else { return };
         // Paper: persist the trigger (`target_*`) before the worst-case entry fill
         // so the UI can show the modeled adverse-slippage gap.
@@ -265,27 +297,36 @@ impl Sink {
         });
     }
 
-    /// A status-only transition (ExitPending): load the row, flip status, persist.
+    /// A status-only transition (ExitPending): fire-and-forget PG so `SubmitSell`
+    /// is not gated on the write. Awaits a pending insert first so the row exists.
     async fn on_status_only(&mut self, delta: &PositionDelta, status: &str) {
         let Some(meta) = self.registry.get(delta.position) else { return };
-        match self.repo.find_position(meta.pg_id).await {
-            Ok(Some(mut pos)) => {
-                pos.status = status.to_string();
-                if let Some(r) = delta.reason {
-                    pos.exit_reason = Some(r.label().into_owned());
+        self.await_pending_insert(meta.pg_id).await;
+        let repo = self.repo.clone();
+        let pg_id = meta.pg_id;
+        let status = status.to_string();
+        let reason = delta.reason.map(|r| r.label().into_owned());
+        tokio::spawn(async move {
+            match repo.find_position(pg_id).await {
+                Ok(Some(mut pos)) => {
+                    pos.status = status.clone();
+                    if let Some(r) = reason {
+                        pos.exit_reason = Some(r);
+                    }
+                    pos.updated_at = Utc::now();
+                    if let Err(e) = repo.update_position(&pos).await {
+                        warn!(pg = %pg_id, "engine sink: update_position({status}) failed: {e}");
+                    }
                 }
-                pos.updated_at = Utc::now();
-                if let Err(e) = self.repo.update_position(&pos).await {
-                    warn!(pg = %meta.pg_id, "engine sink: update_position({status}) failed: {e}");
-                }
+                Ok(None) => {}
+                Err(e) => warn!(pg = %pg_id, "engine sink: find_position failed: {e}"),
             }
-            Ok(None) => {}
-            Err(e) => warn!(pg = %meta.pg_id, "engine sink: find_position failed: {e}"),
-        }
+        });
     }
 
     async fn on_end(&mut self, delta: &PositionDelta) {
         let Some(meta) = self.registry.get(delta.position) else { return };
+        self.await_pending_insert(meta.pg_id).await;
         let Some(fill) = delta.fill else { return };
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let reason = delta
@@ -307,6 +348,7 @@ impl Sink {
     /// so an unentered buy that exhausted retries cannot strand the budget tracker.
     async fn on_terminal_no_fill(&mut self, delta: &PositionDelta, status: &str) {
         let Some(meta) = self.registry.get(delta.position) else { return };
+        self.await_pending_insert(meta.pg_id).await;
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
         }
@@ -332,6 +374,13 @@ impl Sink {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Wait for a background `insert_position` (if any) so later PG writes see the row.
+    async fn await_pending_insert(&mut self, pg_id: uuid::Uuid) {
+        if let Some(handle) = self.pending_inserts.remove(&pg_id) {
+            let _ = handle.await;
+        }
+    }
 
     async fn ensure_run(&mut self, rule: RuleId, info: &RuleInfo) -> anyhow::Result<uuid::Uuid> {
         if let Some(id) = self.run_cache.get(&rule) {

@@ -415,6 +415,7 @@ async fn sell_leg(
                 Some(manage_cfg.sell_slippage_bps),
                 attempt, // tip_level — escalate on retry
                 true,    // RPC-confirm (cold manual path)
+                None,    // reserves — cold path reads curve on-chain
             )
             .await
         {

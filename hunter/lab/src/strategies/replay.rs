@@ -14,7 +14,7 @@
 //!
 //! Determinism / bounding:
 //! * Events are merged by `(timestamp, mint, kind)` so the fold is reproducible.
-//! * Synthetic `Tick`s are emitted on a fixed 500 ms grid (the live [`TICK`]
+//! * Synthetic `Tick`s are emitted on a fixed [`TICK`] grid (from `TICK_MS`)
 //!   constant, single-sourced) between event timestamps and after the last trade
 //!   up to `as_of` (the run's wall-clock present — the deadness "now", so a token
 //!   quiet past `DEAD_QUIET_SECS` books `Dead`, matching the live clock).
@@ -48,7 +48,7 @@ use trading_core::strategies::paper_fill::{
 
 use crate::sweep::projection::CorpusTrade;
 
-/// The clock tick — 500 ms, derived from the engine's [`hunter_engine::TICK_MS`]
+/// The clock tick — derived from the engine's [`hunter_engine::TICK_MS`]
 /// SSOT so the live decision loop and this replay driver tick at the one cadence
 /// (plan 5.3). The guard test below asserts the derivation.
 pub const TICK: Duration = Duration::milliseconds(hunter_engine::TICK_MS);

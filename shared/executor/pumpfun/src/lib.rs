@@ -58,7 +58,7 @@ pub use alt::launch_alt_addresses;
 #[cfg(feature = "claim")]
 pub use trader::claim::{ClaimOutcome, PotStatus};
 #[cfg(feature = "probe")]
-pub use trader::probe::{EndpointResult, FanoutReport};
+pub use trader::probe::{EndpointResult, FanoutReport, SenderPinRecommendation};
 pub use trader::{BundleBuyVariant, BundleLegParams, BuySignedHook, DevBuy, PumpFunTrader};
 pub use types::{
     BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram, WalletHolding,

@@ -10,6 +10,20 @@ own *how* — SOL guards, write-ahead submit, feed confirm, classify/heal, and c
 recovery. Path names from the pre-engine stack (`execution/real.rs`,
 `runtime_cache.rs`) map to `exec_real.rs` / `InFlightGuards` / `reapers.rs`.
 
+## A0. Decision → spawn (latency)
+
+`dispatch` still runs state effects before submit effects, but Pass 1 no longer
+awaits durable PG for the hot transitions:
+
+| Transition | Pass 1 | Submit spawn |
+|---|---|---|
+| `BuySubmitted` | registry upsert + background `insert_position` (handle kept) | immediate once registry has `pg_id` |
+| `ExitPending` | fire-and-forget status update (awaits pending insert only) | not gated on the status write |
+| later fills / terminal | await pending insert, then PG | n/a |
+
+`Sink::warm_runs` on rule reload pre-caches `strategy_runs` so the first buy of a
+rule rarely awaits `insert_run`.
+
 ## A. Pre-buy guards (`decision_loop::dispatch_buy` — real mode)
 
 Paper vs real is resolved from the position's `PositionMeta.trade_mode`
@@ -38,12 +52,14 @@ EntryGuard claimed                         ← recovery reaper skips guarded pg 
 commit_sol_for_position(buy_lamports)      ← idempotent per pg_id; released on Fatal /
                                              sink terminal / sell-start / reaper drop
 
-adopt_existing_fill_if_present()           ← check THIS position's submitted sigs
-                                             before sending again
+adopt_existing_fill_if_present()           ← process-local SubmittedBuyJournal only
+                                             (empty ⇒ first attempt, skip PG)
 
 reserves_fn() re-quotes min_out            ← fresh slippage floor from the live cache
-register on_signed write-ahead hook        ← closure persists sig to DB on sign
-send_snipe_buy() [confirm=false]           ← hook fires AFTER sign, BEFORE network submit
+register on_signed write-ahead hook        ← sync journal + fire-and-forget
+                                             mark_buy_submitted (≤250 ms bound);
+                                             never holds the nonce slot on PG
+send_snipe_buy() [confirm=false]           ← hook returns immediately, then submit
 poll_feed_until_entry_fill() ~12 s         ← event-driven (TradeSignals.notify)
 on timeout → classify_silent_send(sig) routes a Reverted status through the SSOT
              classify_swap_revert(custom, SwapRoute::Curve, SwapDirection::Buy):
@@ -66,8 +82,11 @@ Engine outer bound: `MAX_ENTRY_ATTEMPTS = 3` (`FillFailed::Reverted` only).
 `FillFailed::Fatal` gives up immediately.
 
 **Why write-ahead before submit:** the signature is fixed at signing time (durable
-nonce), so it can be persisted to DB before any network round-trip. A crash between
-sign and submit leaves a `BuySubmitted` row the recovery reaper can classify.
+nonce). The process-local `SubmittedBuyJournal` is set synchronously on sign; PG
+`mark_buy_submitted` is fire-and-forget (250 ms bound) so a slow DB never delays
+fan-out. A crash between sign and submit still leaves a `BuySubmitted` row (once
+the insert lands) for the recovery reaper; same-process retries adopt from the
+journal without a PG read.
 
 **Why per-signature attribution:** adopt-before-send only matches fills against *this
 position's* submitted signatures — two concurrent positions in the same wallet on the

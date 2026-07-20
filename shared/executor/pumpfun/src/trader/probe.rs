@@ -44,6 +44,97 @@ pub struct FanoutReport {
     pub confirmed: Option<std::result::Result<(), String>>,
 }
 
+/// Ranked pin recommendation from a [`FanoutReport`]: successful endpoints
+/// sorted fastest-first, truncated to `keep` (for `HELIUS_FAST_SENDER_URLS`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenderPinRecommendation {
+    /// Fastest-first URLs that accepted the probe tx (≤ `keep`).
+    pub urls: Vec<String>,
+    /// Accept latency (ms) parallel to `urls`.
+    pub elapsed_ms: Vec<u128>,
+}
+
+impl SenderPinRecommendation {
+    /// Comma-joined value for `HELIUS_FAST_SENDER_URLS=…`.
+    pub fn urls_csv(&self) -> String {
+        self.urls.join(",")
+    }
+
+    /// Singular primary (fastest) for `HELIUS_FAST_SENDER_URL=…`.
+    pub fn primary_url(&self) -> Option<&str> {
+        self.urls.first().map(String::as_str)
+    }
+}
+
+impl FanoutReport {
+    /// Rank endpoints that **accepted** the send by `elapsed_ms` ascending and
+    /// keep at most `keep` (minimum 1). Failures are omitted — a slow accept
+    /// still ranks above a reject. Empty when nothing accepted.
+    pub fn pin_recommendation(&self, keep: usize) -> Option<SenderPinRecommendation> {
+        pin_recommendation_from_results(&self.results, keep)
+    }
+}
+
+/// Pure ranking helper (unit-tested) — see [`FanoutReport::pin_recommendation`].
+pub fn pin_recommendation_from_results(
+    results: &[EndpointResult],
+    keep: usize,
+) -> Option<SenderPinRecommendation> {
+    let keep = keep.max(1);
+    let mut ok: Vec<(&str, u128)> = results
+        .iter()
+        .filter(|r| r.outcome.is_ok())
+        .map(|r| (r.url.as_str(), r.elapsed_ms))
+        .collect();
+    if ok.is_empty() {
+        return None;
+    }
+    ok.sort_by_key(|(_, ms)| *ms);
+    ok.truncate(keep);
+    Some(SenderPinRecommendation {
+        urls: ok.iter().map(|(u, _)| (*u).to_string()).collect(),
+        elapsed_ms: ok.iter().map(|(_, ms)| *ms).collect(),
+    })
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    fn ep(url: &str, ms: u128, ok: bool) -> EndpointResult {
+        EndpointResult {
+            url: url.to_string(),
+            elapsed_ms: ms,
+            outcome: if ok {
+                Ok("sig".into())
+            } else {
+                Err("no".into())
+            },
+        }
+    }
+
+    #[test]
+    fn ranks_fastest_first_and_drops_failures() {
+        let results = vec![
+            ep("http://slow", 80, true),
+            ep("http://fail", 5, false),
+            ep("http://fast", 20, true),
+            ep("http://mid", 40, true),
+        ];
+        let pin = pin_recommendation_from_results(&results, 2).unwrap();
+        assert_eq!(pin.urls, vec!["http://fast", "http://mid"]);
+        assert_eq!(pin.elapsed_ms, vec![20, 40]);
+        assert_eq!(pin.primary_url(), Some("http://fast"));
+        assert_eq!(pin.urls_csv(), "http://fast,http://mid");
+    }
+
+    #[test]
+    fn empty_when_nothing_accepted() {
+        let results = vec![ep("http://a", 10, false)];
+        assert!(pin_recommendation_from_results(&results, 2).is_none());
+    }
+}
+
 impl PumpFunTrader {
     /// Refresh the *live* Jito tip-floor feed and return `(level, lamports)` for
     /// each retry level the escalation ladder would bid right now. Read-only —

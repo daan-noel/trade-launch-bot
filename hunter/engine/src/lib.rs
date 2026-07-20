@@ -36,11 +36,12 @@ pub use reduce::reduce;
 pub use state::EngineState;
 
 /// The decision-loop clock cadence, in milliseconds — the single source of truth
-/// for the 500 ms tick (plan decision 5, sized to ~400 ms slot latency). Both the
-/// live decision loop and the lab replay driver derive their tick interval from
-/// this one constant, and each asserts equality in a guard test (plan 5.3), so the
-/// two paths can never sample metrics at a different cadence.
-pub const TICK_MS: i64 = 500;
+/// for the clock tick (plan decision 5). Sized under one Solana slot (~400 ms) so
+/// time/quiet exits react sooner; price TP/SL still fire on Trade events and do
+/// not wait for this tick. Both the live decision loop and the lab replay driver
+/// derive their interval from this constant, and each asserts equality in a guard
+/// test (plan 5.3), so the two paths can never sample metrics at a different cadence.
+pub const TICK_MS: i64 = 200;
 
 #[cfg(test)]
 mod purity_guard {

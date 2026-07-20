@@ -32,11 +32,20 @@ use trading_core::storage::repositories::trade_repo::{SigLegs, TradeRepo};
 
 use crate::trader::{PumpFunTrader, SigStatus};
 
-use super::{FillSigStore, FillSigs, InFlightGuards};
+use super::{FillSigStore, FillSigs, InFlightGuards, SubmittedBuyJournal};
 
 /// How long to wait for the entry fill on the feed before the RPC watchdog fires
 /// (buffers the feed's index lag — mirrors the old 12 × 1 s window).
 const ENTRY_FEED_WINDOW: Duration = Duration::from_secs(12);
+/// Bound on the write-ahead `mark_buy_submitted` PG persist inside the nonce
+/// slot (audit M2). The in-memory [`SubmittedBuyJournal`] is set synchronously
+/// first, so a slow/wedged DB never holds the send — recovery for this process
+/// still sees the sig; the reaper heals cross-process via PG when the write
+/// eventually lands (or the row stays BuySubmitted without the sig and the
+/// wallet-reconcile backstop flags it).
+/// Background persist budget (send is never blocked). Sized for a few short
+/// retries while Pass-1 `insert_position` lands.
+const MARK_BUY_SUBMITTED_TIMEOUT: Duration = Duration::from_millis(400);
 /// Extended feed poll after the RPC says the buy *landed* but the feed hasn't
 /// indexed it yet.
 const EXTENDED_FEED_WINDOW: Duration = Duration::from_secs(20);
@@ -128,6 +137,8 @@ pub struct RealExecDeps {
     pub fill_sigs: FillSigStore,
     pub fill_tx: mpsc::Sender<Event>,
     pub inflight: InFlightGuards,
+    /// Process-local signed-buy journal (M2) — sync before send; PG is best-effort.
+    pub buy_journal: SubmittedBuyJournal,
 }
 
 /// Everything a buy submit needs, resolved by the loop from the cache + rule.
@@ -169,7 +180,8 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     deps.trader.commit_sol_for_position(order.pg_id.to_string(), order.lamports);
 
     // Adopt a fill from signatures this position already submitted (engine retry
-    // or crash between sign and confirm) before sending again.
+    // or crash between sign and confirm) before sending again. First attempt
+    // (empty journal) skips the PG round-trip entirely.
     if let Some(legs) = adopt_existing_fill(&deps, &wallet, &order).await {
         emit_entry_filled(&deps, &order, legs.0, legs.1).await;
         return;
@@ -181,14 +193,54 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     let signed: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let on_signed = {
         let signed = signed.clone();
+        let journal = deps.buy_journal.clone();
         let repo = deps.strategy_repo.clone();
         let pg = order.pg_id;
+        let mint = order.mint.clone();
         Box::new(move |sig: String| {
+            // Sync write-ahead (M2): process-local truth before any await so the
+            // nonce slot is never held on PG. Durable persist is fire-and-forget
+            // with a 250 ms bound (slow DB → warn + drop; journal + reaper cover).
             *signed.lock().unwrap() = Some(sig.clone());
+            journal.append(pg, sig.clone());
             let repo = repo.clone();
-            Box::pin(async move {
-                let _ = repo.mark_buy_submitted(pg, &sig).await;
-            }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            let mint = mint.clone();
+            let sig_bg = sig.clone();
+            tokio::spawn(async move {
+                // Fire-and-forget: never blocks send. Retry briefly when the
+                // background insert_position hasn't landed yet (Pass-1 async).
+                let persist = async {
+                    let mut attempt = 0u8;
+                    loop {
+                        match repo.mark_buy_submitted(pg, &sig_bg).await {
+                            Ok(Some(_)) => return Ok(()),
+                            Ok(None) => {
+                                attempt = attempt.saturating_add(1);
+                                if attempt >= 8 {
+                                    return Err(
+                                        "row missing or already Holding after retries".into(),
+                                    );
+                                }
+                                tokio::time::sleep(Duration::from_millis(25)).await;
+                            }
+                            Err(e) => return Err(e.to_string()),
+                        }
+                    }
+                };
+                match tokio::time::timeout(MARK_BUY_SUBMITTED_TIMEOUT, persist).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!(
+                        mint = %mint, pg = %pg, sig = %sig_bg,
+                        "mark_buy_submitted failed (journal kept): {e}"
+                    ),
+                    Err(_) => warn!(
+                        mint = %mint, pg = %pg, sig = %sig_bg,
+                        "mark_buy_submitted timed out after {}ms (journal kept)",
+                        MARK_BUY_SUBMITTED_TIMEOUT.as_millis()
+                    ),
+                }
+            });
+            Box::pin(async {}) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         })
     };
 
@@ -229,13 +281,18 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
 }
 
 /// Try to adopt a fill already indexed for this position's submitted signatures.
+/// Uses the process-local journal only — empty ⇒ first attempt, skip PG. Cross-
+/// process orphans are the reaper's job (`find_all_buy_submitted`).
 async fn adopt_existing_fill(
     deps: &RealExecDeps,
     wallet: &str,
     order: &BuyOrder,
 ) -> Option<(String, SigLegs)> {
-    let pos = deps.strategy_repo.find_position(order.pg_id).await.ok().flatten()?;
-    for sig in &pos.submitted_buy_signatures {
+    let sigs = deps.buy_journal.sigs(order.pg_id);
+    if sigs.is_empty() {
+        return None;
+    }
+    for sig in &sigs {
         if let Ok(Some(legs)) = deps.trade_repo.find_fill_by_signature(wallet, &order.mint, sig).await
         {
             if legs.token_amount > PARTIAL_FILL_THRESHOLD {
@@ -650,6 +707,9 @@ async fn submit_one_sell(
             )
             .await
     } else {
+        // Cache reserves for min_out when sell slippage is configured — mirrors
+        // snipe buy; avoids a cold `curve_reserves` RPC on the exit hot path.
+        let reserves = reserves_from_cache(&deps.token_cache, &order.mint);
         deps.trader
             .sell_token_once(
                 &order.mint,
@@ -660,6 +720,7 @@ async fn submit_one_sell(
                 order.slippage_bps,
                 attempt,
                 false,
+                reserves,
             )
             .await
     }

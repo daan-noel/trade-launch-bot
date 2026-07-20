@@ -33,17 +33,17 @@ fold; live, sweep, and the replay debugger all drive it.
 ## Live adapters — `live/src/strategies/engine/`
 
 The live composition root around the fold: it **produces** events (ingest pings + a
-500 ms tick + confirmed fills) and **consumes** effects (submit on-chain / paper,
-persist to PG, push SSE). All decision logic is in the fold; these are side-effects
-only.
+`TICK_MS` clock tick + confirmed fills) and **consumes** effects (submit on-chain /
+paper, persist to PG, push SSE). All decision logic is in the fold; these are
+side-effects only.
 
 | Module | Role |
 | --- | --- |
-| `decision_loop.rs` | **THE** one serialized `select!` loop (ingest ping / 500 ms tick / fill / command channels); every `reduce` call happens here; two-pass dispatch = state→PG+SSE *before* submit. `spawn_engine` → `EngineHandles { handle, armed, positions, task }` |
+| `decision_loop.rs` | **THE** one serialized `select!` loop (ingest ping / `TICK_MS` tick / fill / command channels); every `reduce` call happens here; two-pass dispatch = registry/SSE first (BuySubmitted/ExitPending PG is async) then submit spawn. `spawn_engine` → `EngineHandles { handle, armed, positions, task }` |
 | `producers.rs` | `StrategyPing` + `TokenCache` → `Event`s; first-slot settlement detection; the live freshness gate; feeds `real_reserve_sol` for deadness parity |
-| `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release, adopt-before-send, `classify_swap_revert` heal (slippage / 2006 / structural→`Fatal`), sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe; `Fatal`/`Unconfirmed` are terminal; Ambiguous emits nothing for the reaper |
+| `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release; M2 sync `SubmittedBuyJournal` + fire-and-forget bounded `mark_buy_submitted`; adopt skips PG when journal empty; curve sell uses cache reserves for min_out; `classify_swap_revert` heal; sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe |
 | `exec_paper.rs` | worst-case paper fill (`paper_fill`, slot window) → `FillConfirmed` (sim-parity) |
-| `sinks.rs` | `PositionUpdate` → the `strategy_positions` PG writer + `SseEvent::StrategyPositionUpdate`; `ArmedChanged` → `StrategyArmedChanged`; `PositionRegistry` (engine `PositionId` ↔ PG uuid + on-chain facts a sell needs); lazily creates one `strategy_runs` row per rule; stamps the `'generic'` `strategy_id` sentinel; releases SOL on terminal unentered exits |
+| `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions await the handle); `ExitPending` PG is fire-and-forget; `warm_runs` on rule reload; releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send); exit orphan nudge via `FillFailed` or direct `run_exit`; then stale `ExitPending` fail + stale `Arming` delete. Skips `InFlightGuards`-held rows |
 | `event_log.rs` | JSONL recorder (daily rotation + retention) + **conservative** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
@@ -162,8 +162,9 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
    proven on-chain revert.
 3. **Sell-confirm via the `trades` feed**, no new RPC; per-signature attribution (a
    position confirms against its OWN sell sigs, not the shared net balance).
-4. **Quiet/time exits fire on the 500 ms tick** — a token that goes silent still
-   advances to `now` so stall/time/decayed-flow conditions and the dead verdict fire.
+4. **Quiet/time exits fire on the `TICK_MS` clock tick (200 ms)** — a token that goes
+   silent still advances to `now` so stall/time/decayed-flow conditions and the dead
+   verdict fire. Price TP/SL still fire on Trade events (no tick wait).
 5. **ONE serialized decision loop** — every `reduce` happens in `decision_loop.rs`;
    no mint sharding, no interleaved position transitions.
 6. **Live-rule edit guard** — `fingerprint_id` is frozen post-create (PUT

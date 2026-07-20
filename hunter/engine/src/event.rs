@@ -316,7 +316,7 @@ pub enum Event {
     FirstSlotSettled { mint: Mint, buy_lamports: u64, sell_lamports: u64, at: Ts },
     /// A trade printed for the token.
     Trade { mint: Mint, trade: TradeLite },
-    /// The 500 ms clock tick (or a replay's synthetic tick). Advances every tracked
+    /// The clock tick (or a replay's synthetic tick; cadence = `TICK_MS`). Advances every tracked
     /// token to `now` so quiet-token metrics (stall/time/decayed flows) fire.
     Tick { now: Ts },
     /// A submitted buy/sell confirmed with a fill.
