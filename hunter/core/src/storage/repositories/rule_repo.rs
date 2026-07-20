@@ -1,9 +1,7 @@
-//! `RuleRepo` — CRUD over the redesigned `strategy_rules` table (0004): generic
-//! fingerprint + metrics rules ([`crate::models::StrategyRule`]).
-//!
-//! The pre-0004 tpsl/swing rules live on `strategy_rules_legacy` behind
-//! `StrategyRepo`'s legacy rule fns until Phase 6 deletes them. Runs, run
-//! metrics, and positions stay on `StrategyRepo`.
+//! `RuleRepo` — CRUD over the `strategy_rules` table: generic fingerprint +
+//! metrics rules ([`crate::models::StrategyRule`]). Runs, run metrics, and
+//! positions stay on `StrategyRepo`. (The pre-0004 tpsl/swing rule table was
+//! retired in Phase 7.)
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
