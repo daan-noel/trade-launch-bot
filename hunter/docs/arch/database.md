@@ -5,7 +5,7 @@
 sqlx + Postgres. Raw SQL lives **only** in `trading_core/src/storage/repositories/*`. **Two migration sets, applied by separate runners so lab-only tables never reach EC2/live:**
 
 - **Shared core** — `trading_core/migrations/` (`0001_init.sql` = clean TimescaleDB baseline; add further `00NN_*.sql`). Runner: `sqlx::migrate!("./migrations")` in `storage/postgres.rs::connect()` (then `timescale::setup_caggs`). Run by **both** bins on boot.
-- **Lab-only** — `lab/migrations/` (`0001_grouped_sweep.sql` = the `tpsl{1,2}_grouped_sweep_*` tables). Runner: `lab::storage::lab_migrations::run()`, called from `lab/main.rs` after `connect()`. Tracked in a lab-private **`_lab_migrations`** ledger (its own checksum table; reuses `migrate!` only as an embedder, never `.run()`, so core's `_sqlx_migrations` is untouched). Run by **`lab` only** → these tables never exist on EC2. Add a lab-only table = drop `NNNN_*.sql` into `lab/migrations/`.
+- **Lab-only** — `lab/migrations/` (`0001_grouped_sweep.sql` … `0005_retire_legacy_sweep_tables.sql` = the `grouped_sweep_*` tables). Runner: `lab::storage::lab_migrations::run()`, called from `lab/main.rs` after `connect()`. Tracked in a lab-private **`_lab_migrations`** ledger (its own checksum table; reuses `migrate!` only as an embedder, never `.run()`, so core's `_sqlx_migrations` is untouched). Run by **`lab` only** → these tables never exist on EC2. Add a lab-only table = drop `NNNN_*.sql` into `lab/migrations/`.
 Deep-dive detail: `@plans/database/db-pool-routing.md`, `@plans/database/db-patterns.md`.
 
 ## Connection pools
@@ -85,12 +85,15 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 - `strategy_run_metrics` — 1:1 finalize-time rollup (`win_rate`, `total_pnl_sol`, exit-reason mix, etc.)
 - `strategy_positions` — one bot-opened position; `mint_address` (the SPL mint — renamed from `mint` in `0002_strategy_positions_mint_address.sql` so the physical column matches the token-data SSOT key); `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery; `token_account TEXT` (nullable) — the wallet's token account for the mint, persisted on the entry fill so a re-buy reuses one account and the sell reads it from the row (restart-safe, no in-memory-cache dependency)
 
-### Grouped param-sweep (per-strategy triples; generic table-name-driven repo)
+### Grouped param-sweep (generic table-name-driven repo)
 
-- `tpsl{1,2}_grouped_sweep_runs` — run metadata, status(`running`/`completed`/`cancelled`), groups_done, corpus filters, label
-- `tpsl{1,2}_grouped_sweep_groups` — one per fingerprint group; best_combo_id, best_expectancy_sol, best_score
-- `tpsl{1,2}_grouped_sweep_combos` — per-run combo→params dictionary (deduped; JOINed back on read)
-- `tpsl{1,2}_grouped_sweep_results` — per (group, combo): score, win_rate, PnL metrics, exit-reason mix. Retention-filtered to ~660 rows/group max
+One family since the Phase 7 retirement — the per-strategy `{tpsl1,tpsl2,swing_1}_grouped_sweep_*`
+tables were dropped in `lab/0005`:
+
+- `grouped_sweep_runs` — run metadata, status(`running`/`completed`/`cancelled`), groups_done, corpus filters, label
+- `grouped_sweep_groups` — one per fingerprint group; best_combo_id, best_expectancy_sol, best_score
+- `grouped_sweep_combos` — per-run combo→params (`RuleParams`) dictionary (deduped; JOINed back on read)
+- `grouped_sweep_results` — per (group, combo): score, win_rate, PnL metrics, exit-reason mix (incl. `n_exit_metrics`). Retention-filtered to ~660 rows/group max
 
 ### Wallets / settings
 
