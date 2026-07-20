@@ -120,11 +120,12 @@ is **STREAM ON/OFF** (not the header trading kill switch).
   `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
   deep-linked with `?run=` + running jobs), Creation Stats, Tokens (detail = chart +
-  metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules/Fingerprints/Simulate
-  (sim table demotes live Active/Mode into a muted rule subtitle)/Replay, and the
-  generic Grouped Sweep (sticky Run › Group › Combo breadcrumb; Simple = configure→promote;
-  Full drill = combo/token inspect via `SweepTokenInspectModal` with metric panes;
-  `sweep/` + `strategy/` components, `useStreamedSweepResults`, `BackgroundJobsContext`).
+  metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules/Fingerprints/
+  **Flow discovery**/Simulate (sim table demotes live Active/Mode into a muted rule
+  subtitle)/Replay, and the generic Grouped Sweep (sticky Run › Group › Combo
+  breadcrumb; Simple = configure→promote; Full drill = combo/token inspect via
+  `SweepTokenInspectModal` with metric panes; `sweep/` + `strategy/` components,
+  `useStreamedSweepResults`, `BackgroundJobsContext`).
   **Metric panes** (lab Tokens detail; old `/strategies/metric-panes` redirects): `LabTokenInspect`
   stacks `TokenTradeChart` above registry-driven `MetricPanes`. Shared wall-clock
   crosshair / visible range (`TokenPriceChart.onCrosshairTimeChange` /
@@ -161,12 +162,19 @@ next load (no per-metric frontend work).
   (registry-guided strict/metric split); `validate.ts` mirrors backend §5 validation.
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
   `ConditionSideEditor` (entry/exit column), `RuleEditor` (builder + JSON tab + a
-  `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm`, `RulesView`/`FingerprintsView`
-  (shared list+editor, mounted by both apps' `RulesPage`/`FingerprintsPage`),
+  `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm` (registry-driven
+  `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`),
+  `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
+  `RulesPage`/`FingerprintsPage`),
   `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips; used by Rules,
   Simulate, and the generic sweep tables),
   `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips + bucket;
   used by Rules, Simulate, and `FingerprintPicker`).
+- Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
+  window + `FingerprintGroupPicker` → ranked ix-structure table (lift / wash / …) →
+  toggle draft patterns → `PUT` fingerprint or promote-style bind. Job kind
+  `discovery` in `BackgroundJobsContext` (SSE `flow_discovery_*`, mutual exclusion
+  with sweeps).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
   Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
@@ -195,9 +203,12 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   `lo..hi step s` ranges), per-row/shared-window validation, combo-count. Unit-tested.
 - `sweep/GenericAxisBuilder.tsx` — axis-row UI + projected-combo badge; `GenericSweepConfigForm`
   wraps it with corpus/method/caps + `FingerprintGroupPicker`, emitting `{axes:[...]}`.
+  When axes reference `m_flow_*`, the form requires `volume_ix_patterns` (corpus-wide
+  for the run) and sends them on start.
 - `sweep/genericSweepColumns.tsx` — combo/group columns; the swept `params` is a
   `RuleParams` blob rendered via shared `ruleParamsCell` (not one flat column per knob).
-- `[Promote…]` on any group/combo → `POST …/promote` (fingerprint find-or-created) →
+- `[Promote…]` on any group/combo → `POST …/promote` (fingerprint find-or-created;
+  copies run `volume_ix_patterns` into `metric_config`) →
   `PromoteRuleModal` opens the shared `RuleEditor` pre-filled (id-less draft → create)
   with the lab dry-run panel. Replaced the copy-blob path.
 

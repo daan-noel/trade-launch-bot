@@ -1,10 +1,13 @@
 # Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_window`)
 
-Status: **IN PROGRESS** (design settled 2026-07-17; **V0–V3 shipped 2026-07-20**;
-**V4 discovery implemented 2026-07-20**; V5 docs trails).
+Status: **COMPLETE** (design settled 2026-07-17; **V0–V5 shipped 2026-07-20**).
+Canonical refs (read these, not this file, for ongoing work):
+[metrics-reference.md](../plans/strategies/metrics-reference.md),
+[arch/strategies.md](../arch/strategies.md), [arch/sweep.md](../arch/sweep.md),
+[arch/database.md](../arch/database.md), [arch/frontend.md](../arch/frontend.md).
+This roadmap is kept only for **§8 future toggles** and historical phase checklists.
 Scope: hunter only. A follow-on to the generic engine —
 [fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md).
-Phase 5 prerequisites are met; the discovery job (§7) is the remaining product work.
 Origin: creator wash-volume tracking idea + reference reading of
 `bot-panther-new-main/src/trading/volume_bot/{bot,types}.rs` (concepts borrowed:
 pattern classifier, wallet contagion, two signed accumulators; its hardcoded
@@ -326,22 +329,14 @@ ALTER TABLE fingerprints
       - `lab/testdata/flow_discovery_labels.json` + synthetic guard test
         `hand_label_kit_synthetic` (top-5 / `expected_ambiguous`).
 
-### V5 — Docs
+### V5 — Docs ✅ 2026-07-20
 
-- [ ] 5.1 `docs/plans/strategies/metrics-reference.md` (or extend the existing metrics
-      deep-dive if one already exists): the 18 flow metrics
-      (formula / unit / eq-tol / monotonic) + classifier definition (§1.1) + NaN
-      rules (unconfigured FP, missing `ix_hash`).
-- [ ] 5.2 Arch tier: `arch/strategies.md` (flow groups + fingerprint-scoped state +
-      hash SSOT); `arch/sweep.md` (run-config `volume_ix_patterns` + promote write);
-      `arch/database.md` (`fingerprints.metric_config`, lake `ix_labels`/`wallet`);
-      `arch/frontend.md` (Fingerprints `metric_config` editor + Flow Discovery page).
-- [ ] 5.3 hunter/CLAUDE.md gotcha: **flow hash SSOT** —
-      `hunter_engine::metrics::flow_split::{ix_hash,wallet_hash}` is the only hasher;
-      adapters never roll their own. (Qualifies as a hard rule — add one bullet under
-      Gotchas, keep CLAUDE thin.)
-- [ ] 5.4 Fold or delete this roadmap once V4+V5 land (per CLAUDE roadmap hygiene);
-      durable bits already live in the arch/plans tiers above.
+- [x] 5.1 `docs/plans/strategies/metrics-reference.md` — 18 flow metrics + classifier
+      + NaN rules + discovery score summary + §8 future toggles pointer.
+- [x] 5.2 Arch: `strategies.md` / `sweep.md` / `database.md` / `frontend.md`.
+- [x] 5.3 hunter/CLAUDE.md gotcha: flow hash SSOT.
+- [x] 5.4 Roadmap marked **COMPLETE**; durable content lives in arch/plans above;
+      this file retained for §8 future toggles only (not deleted).
 
 ## 7. Discovery scoring (the automated version of the manual hunt)
 

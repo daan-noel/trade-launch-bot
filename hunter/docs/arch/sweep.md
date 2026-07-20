@@ -49,6 +49,19 @@ Ranked full list of sweep↔simulate divergences, including the not-yet-accepted
 | `registry.rs` | `sweep_tables(strategy_id)` (one arm: `"generic"` → `grouped_sweep_*`), `run_grouped(...)`; `MAX_COMBOS`; resource fences (`bounded_threads` = cores/2 by default, host-RAM admission) |
 | `generic/` | `GenericSweepStrategy` — the one sweep family (Phase 7 retired the per-strategy tpsl/swing adapters). `axes.rs` = fingerprint + TP/SL + metric-condition axes → `RuleParams` combos; `strategy.rs` = `Strategy` impl (`TokenState = MetricSeries` precompute; `resolve_entry`/`resolve_exit` scan the series); `exit_index.rs` = O(log n) prefix-extrema exit search; `guard.rs` asserts scan ≡ `run_replay` and index/SIMD ≡ scalar |
 
+### Flow axes (`m_flow_split` / `m_flow_window`)
+
+When axes reference a flow group, the corpus loads with `Selection.with_flow`
+(trade `ix_labels` + `wallet`). The start body carries optional
+`volume_ix_patterns: string[][]` — applied **corpus-wide** for that run (not per
+fingerprint). Missing patterns with flow axes ⇒ `400`. **Promote** copies the
+run's patterns into the created fingerprint's
+`metric_config.m_flow_split.volume_ix_patterns` (`find_or_create` ignores
+`metric_config` for identity, then patches). Discovery (lab
+`/strategies/flow-discovery`) is a separate job that scores structures and writes
+the same key — mutual `409` with sweeps. See
+[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+
 ## Workstation resource fences (lab-only)
 
 Grouped sweep runs hard **inside** a reserved slice of the analysis box so the desktop stays usable. No mid-run throttle. **No env overrides** — values are auto-detected / hardcoded:

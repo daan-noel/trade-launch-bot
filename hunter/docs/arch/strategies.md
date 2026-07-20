@@ -6,8 +6,9 @@ generic engine**: a rule = a `fingerprint_id` (a token-creation shape) + `params
 **pure fold** in the `hunter-engine` crate; the live and lab bins are thin adapters
 that produce events and consume effects. A decision fix lands in exactly one place.
 
-Deep-dive detail (metric registry, sweep precompute, event-log format, design
-decisions) lives in the active redesign plans under [`docs/roadmap/`](../roadmap/).
+Deep-dive detail: flow metrics + classifier in
+[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md);
+broader redesign history in [`docs/roadmap/`](../roadmap/).
 
 ## The pure engine — `hunter/engine` (crate `hunter-engine`)
 
@@ -22,7 +23,7 @@ fold; live, sweep, and the replay debugger all drive it.
 | `arm.rs` | `CompiledRule` pre-chews a rule into flat `MetricReq`s + windows + `MonoBound`s (recompiled on reload, never per event); `ArmState` machine `PendingFirstSlot → Armed → EntryPending → Entered → ExitPending → Done \| Disarmed` |
 | `reduce.rs` | the fold: arm on fingerprint match, disarm (dead / migration / derived-unsatisfiable), enter with caps checked at entry, fill retry policy (`Reverted` bounded; `Fatal` immediate give-up; exit `Unconfirmed`/`Fatal` terminal — never resold), exit priority **Dead > StopLoss > TakeProfit > Metrics**, `ManualClose` (sell), `ExternallyCleared` (book closed, no sell) |
 | `fingerprint.rs` | `Fingerprint` (criteria; lamports at rest) + `match_all` / `MatchPhase` (Instant vs Full — the two-phase first-slot split) |
-| `metrics/` | the metric registry + `TokenTrack` (in-memory per-token metric state) + `MetricSeries` (sweep precompute) + `evaluator` (Operator/Condition/eval) |
+| `metrics/` | the metric registry + `TokenTrack` (in-memory per-token metric state) + `MetricSeries` (sweep precompute) + `evaluator` (Operator/Condition/eval). Flow groups (`m_flow_split` / `m_flow_window`) live in `metrics/flow_split.rs` — fingerprint-scoped classifier state + SSOT `ix_hash`/`wallet_hash` |
 | `rule_params.rs` | `RuleParams` registry-guided parse → canonical `to_value` + validation |
 | `grouping.rs` | bucket matching (`same_bucket`) for the SOL fingerprint axes |
 | `deadness.rs` | `is_dead_verdict` + `DEAD_*` consts — the ONE deadness SSOT (core + live + sweep re-export it) |
@@ -66,6 +67,19 @@ reverts and would leave the row `ExitUnconfirmed`). The handler resolves the exi
 `fill` from the wallet's last sell (or the entry as a fallback). This is a
 real-money path; the exit is book-only, no new tx.
 
+## Volume/organic flow split (`m_flow_split` / `m_flow_window`)
+
+Split every trade's SOL into **volume-side** (creator tooling + contagion + creator
+wallet) vs **organic**, exposed as ordinary registry metrics. Patterns live on
+`fingerprints.metric_config.m_flow_split.volume_ix_patterns` (not on the rule).
+`TradeLite` carries `ix_hash` / `wallet_hash`; adapters call the engine SSOT hashers
+only. Flow state keys by `FingerprintId` on `TokenTrack`. Unconfigured fingerprint
+⇒ NaN. Full formulas / NaN rules / discovery scoring:
+[`plans/strategies/metrics-reference.md`](../plans/strategies/metrics-reference.md).
+
+Lab authoring: `POST /api/strategies/flow-discovery` scores ix-structures per
+sweep `GroupKey`; the Flow discovery page toggles patterns into `metric_config`.
+
 ## Two-phase first-slot fingerprint gate
 
 A fingerprint axis whose data settles after `TokenCreated` (`first_slot_{buy,sell}_
@@ -85,7 +99,12 @@ with a first-slot axis arms `PendingFirstSlot` and resolves on `FirstSlotSettled
 - **`strategies/engine_sim.rs`** + **`api/handlers/strategies/engine.rs`** —
   `POST /api/strategies/simulate` (`rule_id` OR inline `draft`); reuses the
   fingerprint candidate scan + the analysis-cache single-flight; results served by
-  the strategy-agnostic `positions::sim_result_{page,summary}`.
+  the strategy-agnostic `positions::sim_result_{page,summary}`. Loads `with_flow`
+  when rule params reference `m_flow_*`; dry-run uses the rule's fingerprint
+  `metric_config`.
+- **`strategies/flow_discovery.rs`** + **`api/handlers/strategies/flow_discovery.rs`** —
+  lab-only job: score trade ix-structures per fingerprint group → toggle
+  `volume_ix_patterns` (mutual `409` with sweeps; ephemeral in-RAM results).
 - **`sweep/generic/`** — the precompute-then-scan grouped sweep. `GenericSweepStrategy`
   implements the existing `sweep::strategy::Strategy` trait (so partition / two-phase
   pool / `GroupSink` persistence / refine / `ComboAgg` and the whole

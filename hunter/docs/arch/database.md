@@ -71,7 +71,7 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 ### Core trading
 
 - `tokens` — mint_address UNIQUE, creator_wallet, name/symbol, bonding_curve_address, initial_buy_lamports(BIGINT), cu_limit/price, is_mayhem_mode, ix_labels(JSONB), initial_buy_instruction(JSONB; keys `max_cost_lamports`/`spendable_lamports_in`), creation_slot(BIGINT), created_at
-- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`); price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
+- `trades` *(TimescaleDB hypertable on block_time, ~1mo retention)* — mint, wallet, trade_type, amount_lamports(BIGINT) / token_amount(BIGINT raw units), reserve_lamports/reserve_token(BIGINT venue-neutral pair), tx_signature(BYTEA), slot, block_time, venue(`curve`/`amm`), **`ix_labels`(JSONB, migration 0002, forward-only)**; price derived in `trades_priced` view (`price_per_token` = SOL/token). PK `(block_time, tx_signature, leg_index)`. **This table = the LaserStream feed.**
 - `raw_txs` *(TimescaleDB hypertable on block_time; compress 2d, retain 7d)* — tx_signature(BYTEA), slot, block_time, tx_index, payload(BYTEA = verbatim protobuf wire bytes, parse in Rust), source(SMALLINT: 0=live 1=sync). PK `(block_time, tx_signature)`. Source-of-truth feed; `trades` is a typed projection. Written by `RawTxRepo` from both the live ingest db_writer and the token_sync backfill.
 
 ### Token analysis
@@ -80,10 +80,19 @@ float. This holds across `trades`, `tokens`, and `strategy_positions`:
 
 ### Strategy (unified across all strategies — rows not tables per strategy)
 
-- `strategy_rules` — `strategy_id` discriminator, `buy_amount_sol`, `trade_mode`, `is_active`, `max_concurrent_tokens`, `max_total_tokens`, `params`(JSONB with strategy-specific gates). See [strategy-storage.md](@plans/database/strategy-storage.md).
+- `fingerprints` — shared match axes (`cu_limit`/`cu_price`/amount buckets/`ix_labels`/…); **`metric_config` JSONB NOT NULL DEFAULT '{}'** (migration 0006) — top-level keys = metric group names (e.g. `m_flow_split.volume_ix_patterns`). Identity predicate for `find_or_create` **ignores** `metric_config` (patterns are config, not identity).
+- `strategy_rules` — `fingerprint_id` FK + `buy_amount_lamports`, `trade_mode`, `is_active`, `max_concurrent_tokens`, `max_total_tokens`, `params`(JSONB: TP/SL + entry/exit metric groups). See [strategy-storage.md](@plans/database/strategy-storage.md).
 - `strategy_runs` — one activation session; `run_seq` monotonic per `(rule, mode)`; `params_snapshot` frozen at activation
 - `strategy_run_metrics` — 1:1 finalize-time rollup (`win_rate`, `total_pnl_sol`, exit-reason mix, etc.)
 - `strategy_positions` — one bot-opened position; `mint_address` (the SPL mint — renamed from `mint` in `0002_strategy_positions_mint_address.sql` so the physical column matches the token-data SSOT key); `status`(`Arming`/`BuySubmitted`/`Holding`/`ExitPending`/`End`/`ExitFailed`); amounts as BIGINT (lamports/raw units); `submitted_buy_signatures TEXT[]` for in-flight recovery; `token_account TEXT` (nullable) — the wallet's token account for the mint, persisted on the entry fill so a re-buy reuses one account and the sell reads it from the row (restart-safe, no in-memory-cache dependency)
+
+### Analysis lake (lab Parquet — not Postgres)
+
+Sealed-day trade files (`lab/src/lake/`) carry optional per-trade **`ix_labels`**
+(JSON-string, dict-encoded) and **`wallet`** (address; export LEFT JOINs
+`wallet_dict` with `unknown:{id}` COALESCE). Loaded only when
+`Selection.with_flow` (flow metrics / discovery). Pre-V0 sealed days stay NULL.
+See [lake-pg-read-paths.md](@plans/database/lake-pg-read-paths.md).
 
 ### Grouped param-sweep (generic table-name-driven repo)
 
@@ -113,6 +122,7 @@ tables were dropped in `lab/0005`:
 | `grouped_sweep_repo.rs` | `<strategy>_grouped_sweep_*` | incremental writes: `insert_run`, `append_group`, `finalize_run`, `mark_cancelled` |
 | `wallet_repo.rs` | wallets | `touch_last_seen_many` |
 | `wallet_profile_repo.rs` / `wallet_profile_tag_repo.rs` | wallet_profiles, tags | CRUD |
+| `fingerprint_repo.rs` | fingerprints | `find_or_create` (identity axes only — **not** `metric_config`), `insert`/`update`/`list`/`delete`; persists `metric_config` |
 | `strategy_repo.rs` | strategy_rules, strategy_runs, strategy_run_metrics, strategy_positions | `find_rule`, `insert_run`, `insert_position`, `update_position_status`, `mark_buy_submitted`, `find_all_holding`, `find_all_exit_pending`, `find_all_buy_submitted`, `find_reusable_token_account`, `fail_stale_exit_pending`, `finalize_run`, `find_positions_by_{run,rule}_paged` + `count_positions_by_{run,rule}` (page + total for the positions table's `X-Total-Count`), `find_tokens_by_mints_paged` + `count_tokens_by_mints` (the **matched** table: `tokens t LEFT JOIN tokens_info i` scoped to a materialized `mint = ANY($set)`, selecting the shared `token_enrichment::ENRICH_SELECT` → full `TokenEnrichmentRow`, so the response carries all ~28 enrichment fields with no client merge), `positions_summary_by_{run,rule}` (single `COUNT/SUM FILTER` aggregate for the Positions Summary panel over an optional `PositionQuery` filter — same JOIN + WHERE as the paged list; win = `status='End' AND exit_sol>entry_sol`, mirrors `StrategyPosition::is_win`; SOL sums cast BIGINT→human), `rule_counters_for_latest_paper_runs` (one batched `GROUP BY` — per-rule open/pending/total/win/loss/win_rate/avg_pnl_pct/pnl over each rule's latest paper run; same win predicate; feeds the **lab** rules-table counters, which have no runtime cache). `avg_pnl_pct` here **and** in `positions_summary_by_*` **and** the live runtime cache is the one canonical **capital-weighted return** = `Σ realized_pnl_lamports / Σ entry_lamports (closed) × 100` via `strategies::kernel::weighted_return_pct` (SSOT) — NOT a mean of per-trade price %, so its sign is always locked to `total_pnl_sol` (the old mean could show `+%`/`−◎` on the same rule), `find_open_positions` (all unsettled positions cross-rule), `managed_mints(real_only)` (projection-only "who manages this mint" — open positions `LEFT JOIN strategy_rules` for the rule name; `→ ManagedMint`; backs the portfolio bot badge / double-sell interlock), `realized_pnl_lamports_since(ts)` (real `End`-position `SUM(exit_lamports−entry_lamports)` since a boundary — the "realized today" KPI) |
 
 ## Rules
