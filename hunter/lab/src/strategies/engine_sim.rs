@@ -6,12 +6,12 @@
 //! prices identically whether it ran live, was swept, or is simulated here.
 //!
 //! It replaces the three per-strategy simulate routes (`tpsl1`/`tpsl2`/`swing1`)
-//! with one, and reuses the existing result plumbing verbatim: rows land in
-//! [`SimResults`](crate::state::sim_results) keyed by a run id, and the
-//! strategy-agnostic `positions::sim_result_page`/`sim_result_summary` endpoints
-//! serve them. Caps (`max_concurrent`/`max_total`) are applied **in the fold** by
-//! the engine (global time order), not post-hoc, so simulate honors them exactly as
-//! live does.
+//! with one. Saved-rule results land in disk-backed
+//! [`SimResults`](crate::state::sim_results) (keyed by rule id); drafts stay
+//! RAM-only. The strategy-agnostic `positions::sim_result_page` /
+//! `sim_result_summary` endpoints serve them. Caps (`max_concurrent`/`max_total`)
+//! are applied **in the fold** by the engine (global time order), not post-hoc,
+//! so simulate honors them exactly as live does.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -114,6 +114,9 @@ pub async fn spawn_engine_simulation(
     app_state.sim_cancels.insert(run_id, cancel.clone());
     app_state.sim_progress.insert(run_id, cell.clone());
     app_state.sim_results.clear(&run_id);
+    // Saved rules persist the last Done result on disk; drafts stay RAM-only.
+    let persist = req.rule_id.is_some();
+    let fingerprint_id = target.fp.id.0;
 
     actix_web::rt::spawn(async move {
         // Fire `simulation_finished` + drop the run's cancel/progress no matter how
@@ -143,7 +146,15 @@ pub async fn spawn_engine_simulation(
             Ok(rows) => SimOutcome::Done(Arc::new(rows)),
             Err(e) => classify_error(&e),
         };
-        app_state.sim_results.insert(run_id, sim_key(&target), since, until, outcome);
+        app_state.sim_results.insert(
+            run_id,
+            sim_cache_key(&target),
+            fingerprint_id,
+            since,
+            until,
+            outcome,
+            persist,
+        );
     });
 
     HttpResponse::Accepted().json(serde_json::json!({ "started": true, "run_id": run_id }))
@@ -482,15 +493,39 @@ pub(crate) async fn load_rule_fingerprint(
 }
 
 /// A stable cache key for a resolved target — its config fingerprint, so a re-run
-/// over the same window can short-circuit to the cached rows.
-fn sim_key(t: &ResolvedTarget) -> String {
-    format!(
-        "engine:{}:{}:{}:{}:{}",
+/// over the same window can short-circuit to the cached rows / stay valid on disk.
+fn sim_cache_key(t: &ResolvedTarget) -> String {
+    sim_cache_key_parts(
         t.fp.id.0,
         t.loaded.buy_amount_lamports,
         t.loaded.max_concurrent_tokens,
         t.loaded.max_total_tokens,
-        t.loaded.params.to_value(),
+        &t.loaded.params.to_value(),
+    )
+}
+
+/// Cache key for a saved [`StrategyRule`] after load — used to drop a durable
+/// disk result when the rule's trading config changes.
+pub fn sim_cache_key_for_rule(rule: &StrategyRule) -> Result<String, String> {
+    let loaded = rule_to_loaded(rule)?;
+    Ok(sim_cache_key_parts(
+        rule.fingerprint_id,
+        loaded.buy_amount_lamports,
+        loaded.max_concurrent_tokens,
+        loaded.max_total_tokens,
+        &loaded.params.to_value(),
+    ))
+}
+
+fn sim_cache_key_parts(
+    fingerprint_id: Uuid,
+    buy_amount_lamports: u64,
+    max_concurrent_tokens: u32,
+    max_total_tokens: u32,
+    params: &Value,
+) -> String {
+    format!(
+        "engine:{fingerprint_id}:{buy_amount_lamports}:{max_concurrent_tokens}:{max_total_tokens}:{params}"
     )
 }
 

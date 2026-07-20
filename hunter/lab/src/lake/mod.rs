@@ -49,6 +49,15 @@ pub fn lake_root() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("pumpfun-lake"))
 }
 
+/// On-disk last-simulation result cache (`<root>/sim-results/`).
+///
+/// Sibling of the Parquet lake under the same `$SWEEP_LAKE_DIR` root so a durable
+/// lake path also keeps finished sim rows across `hunter-lab` restarts. See
+/// [`crate::state::sim_results`].
+pub fn sim_results_dir(root: &Path) -> PathBuf {
+    root.join("sim-results")
+}
+
 /// Directory holding the day-partitioned trade files (`<root>/trades`).
 pub fn trades_dir(root: &Path) -> PathBuf {
     root.join("trades")

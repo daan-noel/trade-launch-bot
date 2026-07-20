@@ -2,7 +2,7 @@
 //!
 //! The Simulated token table pages/sorts/filters/searches over the **unified**
 //! `TableRequest` contract — same shape as Positions/Matched — but its data source
-//! is the already-resident `Vec<Value>` in [`SimResults`](crate::state::sim_results)
+//! is the working-set `Vec<Value>` hydrated from [`SimResults`](crate::state::sim_results)
 //! (lab is single-user, workstation RAM), so there's no DB to query. This module owns
 //! only the **grammar** — which frontend column key maps to which JSON field + type
 //! ([`resolve`]) — and hands it to the shared, generic evaluator

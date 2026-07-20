@@ -1,13 +1,8 @@
-//! Long-lived per-rule "last simulation" rollup — deliberately **not** the same
-//! store as [`SimResults`](super::sim_results). That cache holds the full
-//! per-token row set (potentially large) behind a 60-minute TTL sized for the
-//! Simulated table's interactive paging session; evicting it eventually is
-//! fine because a stale miss just costs a re-run. A rollup is a handful of
-//! scalars — cheap enough to keep for the life of the process — and it powers an
-//! always-visible column on the rules table, so it must not vanish on the same
-//! timer for reasons the user can't see. Kept until the rule is re-simulated (or
-//! the process restarts); no DB write (lab is single-user, workstation RAM — see
-//! `sim_results` for the same rationale).
+//! Legacy in-RAM per-rule "last simulation" rollup.
+//!
+//! The Simulate page now hydrates columns from disk-backed
+//! [`SimResults`](super::sim_results) meta (survives lab restart; no TTL). This
+//! cache is unused by the hot path and kept only so older call sites compile.
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;

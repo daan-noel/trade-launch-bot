@@ -272,9 +272,10 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**
   materializes server-side: the first POST scans the whole `tokens` table for the matched mint set,
   caches it, and pages the DB restricted to it (no 5,000-row cap). **Simulated** pages the finished
-  backtest's rows **in memory** on the server (already resident — lab is single-user), with a matching
-  `POST /simulate/result/summary` aggregate (`toSummaryBody`) for its card; `reload()` refetches on
-  the `simulation_finished` SSE (collect → fetch-first-page). Below the scalar summary, a **Temporal**
+  backtest's rows from the lab disk cache (`$SWEEP_LAKE_DIR/sim-results/`, hydrated into a
+  one-rule RAM working set), with a matching `POST /simulate/result/summary` aggregate
+  (`toSummaryBody`) for its card; unfiltered column hydrate uses meta only
+  (`POST /simulate/summaries`). `reload()` refetches on the `simulation_finished` SSE. Below the scalar summary, a **Temporal**
   band (`TemporalSummary` + `lib/strategy/temporalSummary`) shows an entry/create wall-clock **volume
   timeline** (bar height = count; grain `auto|30m|1h|2h|4h|day`, volume color by default) plus
   hold-duration × exit stacked bars (bucket scheme `auto` from closed-hold p90, or manual

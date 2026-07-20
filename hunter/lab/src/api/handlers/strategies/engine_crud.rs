@@ -19,6 +19,7 @@ use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
 
 use crate::state::local_state::LocalState;
+use crate::strategies::engine_sim::sim_cache_key_for_rule;
 
 fn fp_repo(state: &LocalState) -> FingerprintRepo {
     FingerprintRepo::new(state.core.db.clone())
@@ -133,7 +134,12 @@ pub async fn update_fingerprint(
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
     }
     match fp_repo(&app_state).update(&fp).await {
-        Ok(()) => HttpResponse::Ok().json(fp),
+        Ok(()) => {
+            // Fingerprint content is not part of `sim_key` (only the id is), so a
+            // content edit would otherwise leave a durable result looking current.
+            app_state.sim_results.clear_for_fingerprint(fp.id);
+            HttpResponse::Ok().json(fp)
+        }
         Err(e) => srv_err("update fingerprint", e),
     }
 }
@@ -206,6 +212,13 @@ pub async fn update_rule(
     apply_rule_update(&mut rule, &body);
     match rules::save_with_fp_check(&repo, &fp_repo(&app_state), &mut rule).await {
         Ok(warning) => {
+            // Drop the durable last-sim when trading config changed (`sim_key`).
+            // Rename / enable toggles that leave the key intact keep the result.
+            if let Ok(key) = sim_cache_key_for_rule(&rule) {
+                app_state.sim_results.invalidate_unless_key(&rule.id, &key);
+            } else {
+                app_state.sim_results.clear(&rule.id);
+            }
             let mut body = serde_json::to_value(&rule).unwrap_or_default();
             if let Some(w) = warning {
                 if let Some(obj) = body.as_object_mut() {
@@ -223,8 +236,12 @@ pub async fn delete_rule(
     app_state: web::Data<Arc<LocalState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
-    match rule_repo(&app_state).delete(path.into_inner()).await {
-        Ok(()) => HttpResponse::NoContent().finish(),
+    let id = path.into_inner();
+    match rule_repo(&app_state).delete(id).await {
+        Ok(()) => {
+            app_state.sim_results.clear(&id);
+            HttpResponse::NoContent().finish()
+        }
         Err(e) => srv_err("delete rule", e),
     }
 }

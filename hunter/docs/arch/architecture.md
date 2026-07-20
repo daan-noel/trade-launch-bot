@@ -93,8 +93,9 @@ shares with the engine) · `pool_index` + `pools_changed` (live pool→mint inde
 
 `core: Arc<CoreState>` + `sweep_running` / `sweep_cancel` /
 `sweep_progress` (single-flight grouped sweep) · `sim_cancels` / `sim_progress` /
-`sim_results` (per-rule backtests) · `backtest_sem` (concurrency cap) · `swing_cancels` /
-`swing_progress` / `swing_results` / `swing_runs` (swing runs) · `sweep_corpus_cache`
+`sim_results` (per-rule backtests — disk-backed under `$SWEEP_LAKE_DIR/sim-results/`,
+meta index + one-row working set in RAM; kept until re-sim / rule-config change, no TTL) ·
+`backtest_sem` (concurrency cap) · `sweep_corpus_cache`
 (`SweepCorpusCache`, warm-path corpus reuse).
 
 ## Ingest contract — `trading_core::ingest` + `<transport>::spawn(...)`

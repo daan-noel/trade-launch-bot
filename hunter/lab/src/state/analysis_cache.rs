@@ -20,9 +20,9 @@ use crate::sweep::projection::CorpusTrade;
 /// The lake trade histories for one fingerprint's candidate set: `mint → trades`.
 type Histories = Arc<HashMap<String, Arc<Vec<CorpusTrade>>>>;
 
-/// Kept in lock-step with [`SimResults`](super::sim_results)' `RESULT_TTL` (60 min):
-/// a re-opened rule whose per-token result survived must also find its shared
-/// candidate scan + lake histories still warm, so the fingerprint fast path holds.
+/// Candidate / history working-set TTL. Independent of [`SimResults`](super::sim_results)
+/// (those now persist on disk until re-sim / config change). 60 min is enough for
+/// a "Simulate All" batch + follow-up clicks without reloading the lake.
 const CACHE_TTL: Duration = Duration::from_secs(3600);
 
 /// Cache key for a fingerprint-scoped analysis window. `fingerprint_key` comes

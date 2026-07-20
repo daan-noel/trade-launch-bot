@@ -130,7 +130,7 @@ pub async fn engine_sim_result_summary(
 }
 
 /// POST `/api/strategies/simulate/summaries` — unfiltered rollups for many rules
-/// at once (Simulate page table-column hydrate). Missing/expired runs are omitted.
+/// at once (Simulate page table-column hydrate). Missing/cleared runs are omitted.
 pub async fn engine_sim_result_summaries(
     app_state: web::Data<Arc<LocalState>>,
     body: web::Json<SimSummariesRequest>,

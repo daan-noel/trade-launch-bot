@@ -71,18 +71,15 @@ pub struct LocalState {
     /// entry when a run starts and removes it when it ends (keyed like
     /// `sim_cancels`); `/api/jobs/status` reads them for recovery.
     pub sim_progress: Arc<DashMap<Uuid, Arc<ProgressCell>>>,
-    /// Finished-simulation outcomes awaiting collection, keyed by `rule_id`. The
-    /// detached backtest stores its terminal result here and the client fetches
-    /// it via `GET /api/jobs/simulations/{rule_id}/result` once the
-    /// `simulation_finished` SSE fires, so a long run's result is never tied to
-    /// the lifetime of the starting request (the old `FETCH_ERROR` source).
+    /// Last-simulation store (disk-backed for saved rules). The detached backtest
+    /// writes its terminal outcome here; the client pages it after
+    /// `simulation_finished` SSE. Durable `Done` results live under
+    /// `$SWEEP_LAKE_DIR/sim-results/` and survive lab restarts; RAM holds only the
+    /// meta index + one working-set row payload. See [`super::sim_results`].
     pub sim_results: Arc<SimResults>,
-    /// Long-lived per-rule "last simulation" rollup, powering the rules table's
-    /// inline column. Deliberately decoupled from `sim_results`' 60-minute TTL
-    /// (that cache bounds the *raw* per-token rows; this is a handful of scalars
-    /// meant to persist until the rule is re-simulated) — see [`sim_summary`]
-    /// for the full rationale. Written by [`crate::strategies::sim_spawn`]
-    /// whenever a backtest finishes successfully.
+    /// Legacy in-RAM rollup slot (unused by the disk-backed path — unfiltered
+    /// summaries now ride on [`SimResults`] meta). Kept so existing wiring
+    /// compiles; prefer `sim_results.cached_summary_json`.
     pub last_sim_summary: Arc<SimSummaryCache>,
     /// Option A: single-entry in-memory corpus cache. Written after each sweep
     /// completes (trades + fingerprints in hand); read by `list_token_results` to

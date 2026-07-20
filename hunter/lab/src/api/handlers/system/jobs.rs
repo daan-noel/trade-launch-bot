@@ -102,12 +102,13 @@ pub async fn cancel_simulation(
 /// the client fetches it here after the `simulation_finished` SSE, so a long
 /// backtest's result is never tied to the lifetime of the starting request —
 /// the structural source of the old `FETCH_ERROR`. Strategy-agnostic (keyed by
-/// `rule_id` like the cancel route). Removes the entry on read — single delivery.
+/// `rule_id` like the cancel route). Ephemeral (draft/cancel/fail) entries are
+/// single-delivery; durable disk results are left in place for the paged table.
 ///
 /// - 200 + `[BacktestTokenResult, …]` — success
 /// - 200 + `{"cancelled": true}` — the run was cancelled
 /// - 400 / 404 / 500 + `{"error": …}` — the run failed (status mirrors the cause)
-/// - 404 + `{"error": …}` — no result (still running, not started, or expired)
+/// - 404 + `{"error": …}` — no result (still running, not started, or cleared)
 pub async fn simulation_result(
     state: web::Data<Arc<LocalState>>,
     rule_id: web::Path<Uuid>,
@@ -127,7 +128,7 @@ pub async fn simulation_result(
             HttpResponse::build(code).json(serde_json::json!({ "error": message }))
         }
         None => HttpResponse::NotFound().json(serde_json::json!({
-            "error": "no simulation result (still running, not started, or expired)"
+            "error": "no simulation result (still running, not started, or cleared)"
         })),
     }
 }
