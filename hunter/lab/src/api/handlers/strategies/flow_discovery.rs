@@ -22,6 +22,7 @@ use crate::strategies::flow_discovery::{
 use crate::sweep::corpus::{CorpusSource, Selection};
 use crate::sweep::grouping::{normalize_label_vec, GroupField, SOL_BUCKET_WIDTH};
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
+use trading_core::strategies::fingerprint_axes::fp_to_engine;
 
 // ── Request bodies ───────────────────────────────────────────────────────────
 
@@ -45,6 +46,12 @@ pub struct StartFlowDiscoveryBody {
     pub token_cap: usize,
     #[serde(default)]
     pub field_filters: Option<std::collections::HashMap<String, Vec<serde_json::Value>>>,
+    /// When set, keep only tokens that **fully match** this saved fingerprint
+    /// (same SSOT as live arming — bucket axes included). Skips the looser
+    /// `field_filters` / `ix_labels_filter` path so discovery scores the FP's
+    /// real token group.
+    #[serde(default)]
+    pub fingerprint_id: Option<Uuid>,
 }
 
 fn default_bucket_width_sol() -> f64 {
@@ -278,46 +285,85 @@ async fn run_flow_discovery_job(
         });
     }
 
-    // Exact-set ix_labels filter (token-level fingerprint labels).
-    if let Some(want) = b
-        .ix_labels_filter
-        .as_ref()
-        .filter(|f| !f.is_empty())
-        .map(|f| normalize_label_vec(f.clone()))
-    {
-        corpus.tokens.retain(|t| t.fp.ix_labels == want);
-        if corpus.tokens.is_empty() {
-            let msg = "no tokens match that instruction-label filter";
-            gate.error = Some(msg.into());
-            let _ = early_tx.send(
-                HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
-            );
-            return;
-        }
-    }
-
-    if let Some(filters) = &b.field_filters {
-        for (field_str, allowed) in filters {
-            if allowed.is_empty() {
-                continue;
-            }
-            let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            if field == GroupField::IxLabels {
-                continue;
-            }
-            corpus
-                .tokens
-                .retain(|t| matches_field_filter(&t.fp, field, allowed));
-            if corpus.tokens.is_empty() {
-                let msg = format!("no tokens match the '{field_str}' field filter");
+    if let Some(fp_id) = b.fingerprint_id {
+        // Saved-fingerprint path: engine match SSOT (exact + bucket axes).
+        let repo = FingerprintRepo::new(state.db.clone());
+        let fp = match repo.find(fp_id).await {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                let msg = format!("fingerprint {fp_id} not found");
                 gate.error = Some(msg.clone());
                 let _ = early_tx.send(
                     HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
                 );
                 return;
+            }
+            Err(e) => {
+                tracing::error!("flow-discovery: fingerprint lookup failed: {e}");
+                gate.error = Some(e.to_string());
+                let _ = early_tx.send(HttpResponse::InternalServerError().json(
+                    serde_json::json!({ "error": "database error" }),
+                ));
+                return;
+            }
+        };
+        let engine_fp = fp_to_engine(&fp);
+        corpus
+            .tokens
+            .retain(|t| hunter_engine::fingerprint::matches(&engine_fp, &t.fp));
+        if corpus.tokens.is_empty() {
+            let msg = format!(
+                "no tokens in that window match fingerprint “{}” — widen the date range or token cap",
+                fp.name
+            );
+            gate.error = Some(msg.clone());
+            let _ = early_tx.send(
+                HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+            );
+            return;
+        }
+    } else {
+        // Exact-set ix_labels filter (token-level fingerprint labels).
+        if let Some(want) = b
+            .ix_labels_filter
+            .as_ref()
+            .filter(|f| !f.is_empty())
+            .map(|f| normalize_label_vec(f.clone()))
+        {
+            corpus.tokens.retain(|t| t.fp.ix_labels == want);
+            if corpus.tokens.is_empty() {
+                let msg = "no tokens match that instruction-label filter";
+                gate.error = Some(msg.into());
+                let _ = early_tx.send(
+                    HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+                );
+                return;
+            }
+        }
+
+        if let Some(filters) = &b.field_filters {
+            for (field_str, allowed) in filters {
+                if allowed.is_empty() {
+                    continue;
+                }
+                let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                if field == GroupField::IxLabels {
+                    continue;
+                }
+                corpus
+                    .tokens
+                    .retain(|t| matches_field_filter(&t.fp, field, allowed));
+                if corpus.tokens.is_empty() {
+                    let msg = format!("no tokens match the '{field_str}' field filter");
+                    gate.error = Some(msg.clone());
+                    let _ = early_tx.send(
+                        HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+                    );
+                    return;
+                }
             }
         }
     }

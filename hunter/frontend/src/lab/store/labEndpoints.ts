@@ -36,6 +36,8 @@ export interface FlowDiscoveryStartArgs {
   min_tokens?: number;
   token_cap?: number;
   field_filters?: Record<string, (number | boolean)[]>;
+  /** When set, corpus is filtered by engine fingerprint match (bucket-aware). */
+  fingerprint_id?: string;
 }
 
 /**

@@ -171,11 +171,11 @@ next load (no per-metric frontend work).
   `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips + bucket;
   used by Rules, Simulate, and `FingerprintPicker`).
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
-  window + `FingerprintGroupPicker` → ranked ix-structure table (lift / wash / …) →
-  toggle draft patterns → **Apply-to fingerprint** dropdown (auto-match on group
-  identity axes, override any saved FP, or create/bind from group key) → `PUT` /
-  promote-style bind. Job kind `discovery` in `BackgroundJobsContext` (SSE
-  `flow_discovery_*`, mutual exclusion with sweeps).
+  window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine
+  match SSOT fills the corpus) or manual `FingerprintGroupPicker` → ranked
+  ix-structure table → toggle draft patterns → Apply (`PUT` / create-bind). Job
+  kind `discovery` in `BackgroundJobsContext` (SSE `flow_discovery_*`, mutual
+  exclusion with sweeps).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
   Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and

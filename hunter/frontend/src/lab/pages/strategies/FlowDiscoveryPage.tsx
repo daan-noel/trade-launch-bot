@@ -16,6 +16,7 @@ import {
   metricConfigWithVolumePatterns,
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
+import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, parseNumbers } from '@lab/components/sweep/fingerprintFilters';
 import {
@@ -30,9 +31,10 @@ import {
   useBindFlowDiscoveryMutation,
   useLazyGetFlowDiscoveryQuery,
   useStartFlowDiscoveryMutation,
+  type FlowDiscoveryStartArgs,
 } from '@lab/store/labEndpoints';
 import type { FlowDiscoveryGroup, FlowDiscoveryResult } from 'types';
-import type { Fingerprint } from 'lib/strategy/types';
+import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 
 interface DiscoveryConfig {
   createdAfter: string;
@@ -45,6 +47,8 @@ interface DiscoveryConfig {
   tokenCap: number;
   curveOnly: boolean;
   bucketWidthSol: number;
+  /** Saved fingerprint whose match axes scope discovery (engine match SSOT). */
+  seedFingerprintId: string | null;
 }
 
 const DEFAULTS: DiscoveryConfig = {
@@ -58,7 +62,43 @@ const DEFAULTS: DiscoveryConfig = {
   tokenCap: 5000,
   curveOnly: false,
   bucketWidthSol: 0.1,
+  seedFingerprintId: null,
 };
+
+/** Compact SOL text for filter fields (avoids `1.0000000001`). */
+function solText(lamports: number | null | undefined): string {
+  const s = lamportsToSol(lamports);
+  if (s == null) return '';
+  return String(Number(s.toPrecision(12)));
+}
+
+/** Fill group-by filters from a saved fingerprint so the picker mirrors its axes.
+ *  Discovery run uses `fingerprint_id` for real engine matching (buckets included). */
+function configFromFingerprint(fp: Fingerprint): Partial<DiscoveryConfig> {
+  const fieldFiltersText: Record<string, string> = {};
+  if (fp.cu_limit != null) fieldFiltersText.cu_limit = String(fp.cu_limit);
+  if (fp.cu_price != null) fieldFiltersText.cu_price = String(fp.cu_price);
+  const init = solText(fp.init_buy_lamports);
+  if (init) fieldFiltersText.initial_buy_sol = init;
+  const max = solText(fp.max_cost_lamports);
+  if (max) fieldFiltersText.max_cost_lamports = max;
+  const spend = solText(fp.spendable_lamports_in);
+  if (spend) fieldFiltersText.spendable_lamports_in = spend;
+  const fsBuy = solText(fp.first_slot_buy_lamports);
+  if (fsBuy) fieldFiltersText.first_slot_buy_sol = fsBuy;
+  const fsSell = solText(fp.first_slot_sell_lamports);
+  if (fsSell) fieldFiltersText.first_slot_sell_sol = fsSell;
+  return {
+    seedFingerprintId: fp.id,
+    // One ALL group over tokens that match this fingerprint.
+    groupBy: [],
+    fieldFiltersText,
+    ixLabelsFilter: formatIxLabelsText(fp.ix_labels),
+    bucketWidthSol: fp.bucket_size_amount > 0 ? fp.bucket_size_amount : 0.1,
+    minTokens: 1,
+    cashbackFilter: 'all',
+  };
+}
 
 function toUtc(local: string): string | undefined {
   if (!local) return undefined;
@@ -120,6 +160,7 @@ export function FlowDiscoveryPage() {
     tokenCap,
     curveOnly,
     bucketWidthSol,
+    seedFingerprintId,
   } = config;
 
   function setField<K extends keyof DiscoveryConfig>(key: K, value: DiscoveryConfig[K]) {
@@ -128,7 +169,10 @@ export function FlowDiscoveryPage() {
 
   const ixLabelsGrouped = groupBy.includes('ix_labels');
   const ixFilter = useMemo(() => parseIxLabelsFilter(ixLabelsFilter), [ixLabelsFilter]);
-  const ixFilterError = !ixLabelsGrouped ? ixFilter.error : null;
+  // When scoping by a saved fingerprint, filters are display-only (engine match
+  // is the SSOT) — don't block Run on ix-filter parse errors.
+  const ixFilterError =
+    !seedFingerprintId && !ixLabelsGrouped ? ixFilter.error : null;
 
   const { markStarting, markFinished } = useBackgroundJobActions();
   const { isRunning } = useBackgroundJobsState();
@@ -140,10 +184,13 @@ export function FlowDiscoveryPage() {
   const [updateFp, updateState] = useUpdateFingerprintMutation();
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
 
+  const seedFp =
+    (seedFingerprintId && fingerprints.find((f) => f.id === seedFingerprintId)) || null;
+
   const [result, setResult] = useState<FlowDiscoveryResult | null>(null);
   const [selectedGroupIdx, setSelectedGroupIdx] = useState(0);
   /** Apply target — null ⇒ promote-style create/bind from the group key. */
-  const [targetFpId, setTargetFpId] = useState<string | null>(null);
+  const [targetFpId, setTargetFpId] = useState<string | null>(seedFingerprintId);
   const [draftPatterns, setDraftPatterns] = useState<string[][]>([]);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOk, setApplyOk] = useState<string | null>(null);
@@ -157,44 +204,65 @@ export function FlowDiscoveryPage() {
     (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
   const currentPatterns = volumeIxPatternsFromConfig(targetFp?.metric_config ?? {});
 
-  // When the selected discovery group changes, prefer the identity-axis match
-  // (same as before) but keep the dropdown free to override.
+  // Prefer the config-section seed fingerprint; else identity-axis auto-match.
   useEffect(() => {
-    setTargetFpId(autoMatchedFp?.id ?? null);
-    setDraftPatterns(
-      autoMatchedFp ? volumeIxPatternsFromConfig(autoMatchedFp.metric_config) : [],
-    );
+    const preferred = seedFingerprintId ?? autoMatchedFp?.id ?? null;
+    setTargetFpId(preferred);
+    const fp = preferred ? fingerprints.find((f) => f.id === preferred) : null;
+    setDraftPatterns(fp ? volumeIxPatternsFromConfig(fp.metric_config) : []);
     setApplyOk(null);
-    // Only re-seed when the group identity changes — not when the fingerprints
-    // list refetches after Apply (that would wipe in-progress toggles).
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedGroupIdx is the group SSOT
-  }, [selectedGroupIdx, result?.run_id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- group/run/seed are the SSOTs
+  }, [selectedGroupIdx, result?.run_id, seedFingerprintId]);
+
+  function selectSeedFingerprint(id: string) {
+    if (!id) {
+      setField('seedFingerprintId', null);
+      return;
+    }
+    const fp = fingerprints.find((f) => f.id === id);
+    if (!fp) return;
+    setConfig((prev) => ({ ...DEFAULTS, ...prev, ...configFromFingerprint(fp) }));
+    setTargetFpId(fp.id);
+    setDraftPatterns(volumeIxPatternsFromConfig(fp.metric_config));
+    setApplyOk(null);
+    setApplyError(null);
+  }
 
   async function handleRun() {
     if (running || ixFilterError) return;
     setApplyError(null);
     setApplyOk(null);
-    const fieldFilters: Record<string, (number | boolean)[]> = {};
-    for (const f of GROUP_FIELDS) {
-      if (f === 'ix_labels' || f === 'is_cashback_enabled') continue;
-      const nums = parseNumbers(fieldFiltersText[f] ?? '');
-      if (nums.length > 0) fieldFilters[f] = nums;
-    }
-    if (cashbackFilter !== 'all') fieldFilters.is_cashback_enabled = [cashbackFilter === 'true'];
 
     markStarting('discovery', 'discovery', 'Flow discovery');
     try {
-      const { run_id } = await startDiscovery({
+      const body: FlowDiscoveryStartArgs = {
         created_after: toUtc(createdAfter),
         created_before: toUtc(createdBefore),
         curve_only: curveOnly,
         group_by: groupBy,
         bucket_width_sol: bucketWidthSol,
-        ix_labels_filter: !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined,
-        field_filters: Object.keys(fieldFilters).length > 0 ? fieldFilters : undefined,
         min_tokens: minTokens,
         token_cap: tokenCap,
-      }).unwrap();
+      };
+      if (seedFingerprintId) {
+        body.fingerprint_id = seedFingerprintId;
+      } else {
+        const fieldFilters: Record<string, (number | boolean)[]> = {};
+        for (const f of GROUP_FIELDS) {
+          if (f === 'ix_labels' || f === 'is_cashback_enabled') continue;
+          const nums = parseNumbers(fieldFiltersText[f] ?? '');
+          if (nums.length > 0) fieldFilters[f] = nums;
+        }
+        if (cashbackFilter !== 'all') {
+          fieldFilters.is_cashback_enabled = [cashbackFilter === 'true'];
+        }
+        body.ix_labels_filter =
+          !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined;
+        body.field_filters =
+          Object.keys(fieldFilters).length > 0 ? fieldFilters : undefined;
+      }
+
+      const { run_id } = await startDiscovery(body).unwrap();
 
       // Poll briefly until the finished SSE lands the result (or timeout).
       for (let i = 0; i < 120; i++) {
@@ -203,7 +271,6 @@ export function FlowDiscoveryPage() {
           const res = await fetchResult(run_id).unwrap();
           setResult(res);
           setSelectedGroupIdx(0);
-          setDraftPatterns([]);
           markFinished('discovery', 'discovery');
           return;
         } catch {
@@ -347,6 +414,43 @@ export function FlowDiscoveryPage() {
 
       <div className="mb-4 border-t border-white/10 pt-3">
         <Accordion title="Group by fingerprint" defaultOpen>
+          <div className="mb-3 flex flex-col gap-2 rounded border border-white/8 p-3">
+            <label className="flex min-w-[16rem] flex-col gap-1 text-[11px] text-text-dim">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+                Scope by saved fingerprint
+              </span>
+              <Select
+                fieldSize="sm"
+                value={seedFingerprintId ?? ''}
+                onChange={(e) => selectSeedFingerprint(e.target.value)}
+              >
+                <option value="">Manual group-by / filters below</option>
+                {fingerprints.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name || f.id.slice(0, 8)}
+                    {f.used_by != null ? ` · used by ${f.used_by}` : ''}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            {seedFp ? (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="info">engine match · {seedFp.name}</Badge>
+                  <span className="text-[10px] text-text-dim">
+                    Discovery scores only tokens that match this fingerprint, then
+                    Apply writes volume_ix_patterns back to it.
+                  </span>
+                </div>
+                {fingerprintParamsCell(seedFp)}
+              </div>
+            ) : (
+              <p className="text-[10px] text-text-dim">
+                Pick a fingerprint to detect its volume_ix_patterns — or leave empty and
+                use the manual group-by / filters.
+              </p>
+            )}
+          </div>
           <FingerprintGroupPicker
             groupBy={groupBy}
             onToggleField={(f) =>
@@ -372,7 +476,11 @@ export function FlowDiscoveryPage() {
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}
-            emptyHint='No fields selected → one "ALL" group (noisy lift).'
+            emptyHint={
+              seedFingerprintId
+                ? 'Scoped to the saved fingerprint → one "ALL" group of matching tokens.'
+                : 'No fields selected → one "ALL" group (noisy lift).'
+            }
           />
         </Accordion>
       </div>
