@@ -4,7 +4,7 @@ import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
 import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
-import { formatSignedPct, signedToneClass } from 'lib/signedTone';
+import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 import { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
@@ -294,7 +294,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     render: (r) => {
       if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
       return (
-        <span className={cn('tabular-nums', signedToneClass(r.pnl_percent))}>
+        <span className={cn('tabular-nums', pctGradeClass(r.pnl_percent))}>
           {formatSignedPct(r.pnl_percent, 1)}
         </span>
       );
@@ -465,7 +465,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     render: (r) => {
       if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
       return (
-        <span className={cn('tabular-nums', signedToneClass(r.pnl_percent))}>
+        <span className={cn('tabular-nums', pctGradeClass(r.pnl_percent))}>
           {formatSignedPct(r.pnl_percent, 1)}
         </span>
       );

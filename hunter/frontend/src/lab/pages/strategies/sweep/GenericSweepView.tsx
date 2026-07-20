@@ -24,6 +24,8 @@ import {
 } from 'components/strategy/TemporalSummary';
 import { runSummaryFromRows, runSummarySections } from 'lib/strategy/runSummary';
 import type { TemporalRow } from 'lib/strategy/temporalSummary';
+import { cn } from 'lib/cn';
+import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -686,7 +688,7 @@ function ComboTokenResults({
         key: 'pnl_sol',
         label: 'PnL (SOL)',
         render: (r) => (
-          <span className={r.pnl_sol > 0 ? 'text-success' : r.pnl_sol < 0 ? 'text-danger' : 'text-text-dim'}>
+          <span className={cn('tabular-nums', !r.fired || r.pnl_sol == null ? 'text-text-dim' : signedToneClass(r.pnl_sol))}>
             {r.fired && r.pnl_sol != null ? r.pnl_sol.toFixed(4) : '—'}
           </span>
         ),
@@ -698,11 +700,14 @@ function ComboTokenResults({
       {
         key: 'pnl_pct',
         label: 'PnL %',
-        render: (r) => (
-          <span className={r.pnl_pct > 0 ? 'text-success' : r.pnl_pct < 0 ? 'text-danger' : 'text-text-dim'}>
-            {r.fired && r.pnl_pct != null ? `${r.pnl_pct.toFixed(1)}%` : '—'}
-          </span>
-        ),
+        render: (r) => {
+          if (!r.fired || r.pnl_pct == null) return <span className="text-text-dim">—</span>;
+          return (
+            <span className={cn('tabular-nums', pctGradeClass(r.pnl_pct))}>
+              {formatSignedPct(r.pnl_pct, 1)}
+            </span>
+          );
+        },
         searchValue: () => '',
         sortValue: (r) => r.pnl_pct,
         sortable: true,

@@ -21,6 +21,7 @@ import type { SweepResultRecord } from './types';
 // Re-exported because this module is the established import site for them.
 export { fmtSecs, pctText, solText, goodBad } from 'lib/strategy/runSummary';
 import { fmtSecs, pctText, solText, goodBad } from 'lib/strategy/runSummary';
+import { pctGradeClass } from 'lib/signedTone';
 
 const tone = (text: ReactNode, cls: string): ReactNode => (
   <span className={cn('font-medium', cls)}>{text}</span>
@@ -227,7 +228,7 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
       (r) => mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, buyAmountSol) ?? Number.NEGATIVE_INFINITY,
       (r) => {
         const v = mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, buyAmountSol);
-        return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), goodBad(v));
+        return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), pctGradeClass(v));
       },
       {
         tooltip:
@@ -248,10 +249,10 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
       '≈ Median %',
       'pnl',
       (r) => r.median_pnl_pct,
-      (r) => tone(pctText(r.median_pnl_pct), goodBad(r.median_pnl_pct)),
+      (r) => tone(pctText(r.median_pnl_pct), pctGradeClass(r.median_pnl_pct)),
       { tooltip: SKETCHED_QUANTILE_TOOLTIP },
     ),
-    metric('mean_pnl_pct', 'Mean %', 'pnl', (r) => r.mean_pnl_pct, (r) => tone(pctText(r.mean_pnl_pct), goodBad(r.mean_pnl_pct)), { defaultVisible: false }),
+    metric('mean_pnl_pct', 'Mean %', 'pnl', (r) => r.mean_pnl_pct, (r) => tone(pctText(r.mean_pnl_pct), pctGradeClass(r.mean_pnl_pct)), { defaultVisible: false }),
     metric('avg_holding_secs', 'Avg hold', 'holding', (r) => r.avg_holding_secs, (r) => tone(fmtSecs(r.avg_holding_secs), 'text-accent')),
     count('n_exit_take_profit', 'TP', 'text-green', (r) => r.n_exit_take_profit, { tooltip: 'Exited on take-profit' }),
     count('n_exit_stop_loss', 'SL', 'text-red', (r) => r.n_exit_stop_loss, { tooltip: 'Exited on stop-loss' }),
@@ -431,7 +432,7 @@ export function buildGenericGroupColumns(buyAmountSol = 1): ColumnDef<GroupedSwe
           g.fired_count,
           buyAmountSol,
         );
-        return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), goodBad(v));
+        return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), pctGradeClass(v));
       },
       {
         tooltip:
@@ -447,7 +448,7 @@ export function buildGenericGroupColumns(buyAmountSol = 1): ColumnDef<GroupedSwe
       '≈ Median %',
       'pnl',
       (g) => g.best_median_pnl_pct,
-      (g) => tone(pctText(g.best_median_pnl_pct), goodBad(g.best_median_pnl_pct)),
+      (g) => tone(pctText(g.best_median_pnl_pct), pctGradeClass(g.best_median_pnl_pct)),
       { tooltip: SKETCHED_QUANTILE_TOOLTIP },
     ),
     gm('best_avg_holding_secs', 'Avg hold', 'holding', (g) => g.best_avg_holding_secs, (g) => tone(fmtSecs(g.best_avg_holding_secs), 'text-accent')),
