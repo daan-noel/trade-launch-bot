@@ -61,21 +61,24 @@ Verified green after each: `cargo check -p hunter-live -p hunter-lab` clean;
 Commits 4 + 5 are landed (see Progress above); the code is fully off the legacy
 stack. What's left is the DB/docs/smoke tail:
 
-### Phase 7.2 / 7.3 / 7.4 (from the master plan)
+### Phase 7.2 / 7.3 / 7.4
 
-- **7.2 migration** — drop `strategy_positions.strategy_id` (the engine stamps a
-  now-meaningless `"generic"`; positions.rs no longer filters on it after commit 4);
-  **drop `strategy_rules_legacy`** now that nothing reads it (commit 5 re-pointed the
-  last readers onto `strategy_rules`); decide the fate of the old per-strategy sweep
-  tables (`{tpsl1,tpsl2,swing_1}_grouped_sweep_*`) — keep read-only or drop.
-- **7.3 docs** — rewrite `docs/arch/strategies.md` around the generic engine; update
-  `arch/sweep.md` (registry is generic-only now), `arch/database.md`, `arch/architecture.md`;
-  hunter/CLAUDE.md crate table; new `docs/plans/strategy-redesign/metrics-reference.md`.
-  Also tidy the now-stale `sweep/registry.rs` module doc header (still says "adding
-  swing later means…").
-- **7.4** — full `cargo test` across all four crates; clippy on touched code;
-  **paper runtime smoke** (esp. the rewired manual-sell reconcile) + a real-money
-  smoke before trusting the reconcile change.
+- **7.2 migration — DONE (`817ba47f`).** core `0005` drops `strategy_rules_legacy`;
+  lab `0005` drops the 12 `{tpsl1,tpsl2,swing_1}_grouped_sweep_*` tables. Applied on
+  the next lab/live boot (not yet run against a DB — `DROP TABLE IF EXISTS`, idempotent).
+  **Deliberately NOT dropped:** `strategy_positions.strategy_id` / `strategy_runs.strategy_id`
+  (harmless `'generic'` sentinel woven through the hot models — a model refactor, not a
+  schema tidy; left as an optional follow-up).
+- **7.3 docs — DONE (`95e32a2` + `39249344`).** Rewrote `docs/arch/strategies.md` around
+  the generic engine; updated `arch/architecture.md` (+ a `hunter-engine` crate row),
+  `arch/sweep.md`, `arch/database.md`, `hunter/CLAUDE.md`, and the `sweep/registry.rs`
+  doc header. **Still open (optional):** a new `docs/plans/strategy-redesign/metrics-reference.md`.
+- **7.4 — PENDING (needs the live stack / user).** Full `cargo test` + clippy are green
+  (1 pre-existing engine `RuleParams` failure, unrelated). What remains is a **paper +
+  real-money runtime smoke** of the rewired manual-sell reconcile (`solana.rs` → the new
+  `ExternallyCleared` engine path): confirm a manually-sold held real position books
+  `End`/`Manual` cleanly (no phantom re-sell, no stuck `Holding`). This is the only
+  real-money behavior change in Phase 7.
 
 ## Gotchas learned this pass
 
