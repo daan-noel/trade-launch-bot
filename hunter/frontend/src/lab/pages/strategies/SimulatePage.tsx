@@ -4,7 +4,6 @@ import { Link } from 'react-router-dom';
 import { DataTable } from 'components/table/DataTable';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import type { ColumnDef, TableQuery } from 'components/table/types';
-import { Button } from 'components/ui/Button';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import {
@@ -29,12 +28,7 @@ import {
   markerRowOverlay,
   type InspectTarget,
 } from 'components/strategy/inspectTarget';
-import {
-  matchedColumns,
-  MATCHED_KEYS,
-  simColumns,
-  SIM_KEYS,
-} from 'components/strategy/strategyColumns';
+import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
 import {
@@ -44,7 +38,6 @@ import {
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import {
-  fetchEngineMatchedPage,
   fetchEngineSimPage,
   fetchEngineSimSummary,
   fetchEngineSimTimeSummary,
@@ -87,7 +80,6 @@ import type {
 } from 'lib/strategy/temporalSummary';
 import type { SummarySection } from 'components/strategy/SummaryStatsPanel';
 import type {
-  MatchedTokenRecord,
   SimulatedSummary,
   SimulatedTokenResult,
   TemporalSummaryPayload,
@@ -102,9 +94,7 @@ type RunState = { running: boolean; summary?: SimulatedSummary; error?: string }
 
 const DASH = <span className="text-text-dim/60">—</span>;
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
-const MATCHED_NUMERIC_COLS = tokenNumericColKeys(matchedColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
-const MATCHED_AMOUNT_COLS = tokenAmountColKeys(matchedColumns);
 const keyByMint = (r: { mint_address: string }) => r.mint_address;
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
@@ -458,13 +448,10 @@ export function SimulatePage() {
   );
 }
 
-type ResultView = 'positions' | 'matched';
-
-/** The selected rule's result detail — a Positions ⇄ Matched toggle over two
- *  server-side tables: **positions** (fired outcomes + matched-but-not-fired
- *  `NoEntry` rows, with Show/Hide not-fired) and the fingerprint-**matched**
- *  candidate pool. Rendered only for the row the user picked in the rules table
- *  above; each table fetches only while its view is active. */
+/** The selected rule's result detail — one server-side table of the sim run's
+ *  per-token outcomes (fired + matched-but-not-fired `NoEntry` rows), same
+ *  full-slice contract as the sweep combo drill-in. Show/Hide not-fired mirrors
+ *  that drill-in so Charts can compare both or focus on fired only. */
 function RuleSimPositionsPanel({
   rule,
   reloadNonce,
@@ -476,10 +463,6 @@ function RuleSimPositionsPanel({
   onInspect: (v: { key: string; target: InspectTarget; rule: StrategyRule } | null) => void;
   inspectKey: string | null;
 }) {
-  const [view, setView] = useState<ResultView>('positions');
-
-  // Positions — the sim run's per-token outcomes (fired + matched-but-not-fired
-  // NoEntry rows). Fetched only while the Positions view is active.
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [showNotFired, setShowNotFired] = useLocalStorage(
     STORAGE_KEYS.simShowNotFired,
@@ -553,7 +536,7 @@ function RuleSimPositionsPanel({
     error: simTableError,
     reload: reloadSim,
   } = useServerTable<SimulatedTokenResult, SimulatedSummary>(
-    view === 'positions',
+    true,
     simBody,
     (body, signal) => fetchEngineSimPage(rule.id, body as TableRequestBody, signal),
     (summaryBody, signal) =>
@@ -573,11 +556,6 @@ function RuleSimPositionsPanel({
   }, [rule.id, baseFilterKey]);
 
   useEffect(() => {
-    if (view !== 'positions') {
-      setTimeSummary(null);
-      setLinkedTimeSummary(null);
-      return;
-    }
     const ctrl = new AbortController();
     void fetchEngineSimTimeSummary(
       rule.id,
@@ -595,10 +573,10 @@ function RuleSimPositionsPanel({
         if (!ctrl.signal.aborted) setTimeSummary(null);
       });
     return () => ctrl.abort();
-  }, [view, rule.id, timeSummaryBody, wallField, wallGrain, holdScheme, reloadNonce]);
+  }, [rule.id, timeSummaryBody, wallField, wallGrain, holdScheme, reloadNonce]);
 
   useEffect(() => {
-    if (view !== 'positions' || !linkedTimeSummaryBody || !timeSummary) {
+    if (!linkedTimeSummaryBody || !timeSummary) {
       setLinkedTimeSummary(null);
       return;
     }
@@ -623,7 +601,6 @@ function RuleSimPositionsPanel({
       });
     return () => ctrl.abort();
   }, [
-    view,
     rule.id,
     linkedTimeSummaryBody,
     timeSummary?.wallGrain,
@@ -632,31 +609,9 @@ function RuleSimPositionsPanel({
     reloadNonce,
   ]);
 
-  // Matched — every token the rule's fingerprint selects (positions are the subset
-  // that actually entered). No summary and no entry/exit overlay: these are
-  // candidates, not fills. Fetched only while the Matched view is active.
-  const [matchedQuery, setMatchedQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
-  const matchedBody = useMemo(
-    () =>
-      toTableRequest(matchedQuery, MATCHED_NUMERIC_COLS, {
-        amountCols: MATCHED_AMOUNT_COLS,
-      }),
-    [matchedQuery],
-  );
-  const {
-    items: matchedTokens,
-    total: matchedTotal,
-    loading: matchedLoading,
-    error: matchedError,
-    reload: reloadMatched,
-  } = useServerTable<MatchedTokenRecord>(view === 'matched', matchedBody, (body, signal) =>
-    fetchEngineMatchedPage(rule.id, body as TableRequestBody, signal),
-  );
-
   useEffect(() => {
     reloadSim();
-    reloadMatched();
-  }, [reloadNonce, reloadSim, reloadMatched]);
+  }, [reloadNonce, reloadSim]);
 
   const onSelectSim = useCallback(
     (key: string | null) => {
@@ -668,103 +623,59 @@ function RuleSimPositionsPanel({
 
   const simStats = useMemo(() => (simSummary ? simSummaryStats(simSummary) : null), [simSummary]);
 
-  const isMatched = view === 'matched';
   // "no simulation result" just means this rule has no resident run — the parent
   // only mounts us once it has a summary, so show the empty table, not an error.
   const simError = simTableError && !simTableError.includes('no simulation result')
     ? simTableError
     : null;
 
-  // Full Positions cohort size (fired + NoEntry). Captured while the toggle is
-  // showing everything so the badge can render `fired / all` after hide — same
-  // shape as the sweep combo drill-in.
-  const allPositionsTotal = useRef(0);
-  const allPositionsRule = useRef(rule.id);
-  if (allPositionsRule.current !== rule.id) {
-    allPositionsRule.current = rule.id;
-    allPositionsTotal.current = 0;
+  // Full cohort size while Show not-fired is on — badge renders `fired / all`
+  // after hide (sweep drill-in shape).
+  const allTotal = useRef(0);
+  const allTotalRule = useRef(rule.id);
+  if (allTotalRule.current !== rule.id) {
+    allTotalRule.current = rule.id;
+    allTotal.current = 0;
   }
-  if (showNotFired && simTotal > 0) allPositionsTotal.current = simTotal;
+  if (showNotFired && simTotal > 0) allTotal.current = simTotal;
   const nFired = simSummary?.realized.n_fired ?? 0;
-  // Stale/pre-padding payloads only store fired rows: Positions total ≈ Entered,
-  // while Matched (live fingerprint scan) can still be much larger. Hide then
-  // has nothing to remove — surface that instead of a silent no-op.
-  const hideNotFiredNoOp =
-    showNotFired && !simTableLoading && simTotal > 0 && simTotal <= nFired;
-  const positionsBadge =
-    !showNotFired && allPositionsTotal.current > simTotal
-      ? `${simTotal} / ${allPositionsTotal.current}`
-      : String(simTotal);
+  const hideNoOp = showNotFired && !simTableLoading && simTotal > 0 && simTotal <= nFired;
+  const badge =
+    !showNotFired && allTotal.current > simTotal
+      ? `${simTotal} / ${allTotal.current}`
+      : showNotFired && !simTableLoading && simTotal > nFired && nFired > 0
+        ? `${simTotal} · ${nFired} fired`
+        : String(simTotal);
 
   return (
     <section id={`sim-positions-${rule.id}`}>
       <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
         <span className="h-4 w-1 rounded-full bg-info" />
-        <h3 className="text-sm font-bold text-text">
-          {isMatched ? 'Matched Tokens' : 'Simulated Positions'}
-        </h3>
+        <h3 className="text-sm font-bold text-text">Simulated Positions</h3>
         <Badge variant="info" size="sm" className="font-mono font-normal">
-          {isMatched ? matchedTotal : positionsBadge}
+          {badge}
         </Badge>
-        <div className="flex items-center gap-1">
-          <Button
-            variant={isMatched ? 'subtle' : 'primary'}
-            size="xs"
-            onClick={() => setView('positions')}
-          >
-            Positions
-          </Button>
-          <Button
-            variant={isMatched ? 'primary' : 'subtle'}
-            size="xs"
-            onClick={() => setView('matched')}
-          >
-            Matched
-          </Button>
-        </div>
-        {!isMatched && (
-          <VisibilityToggleButton
-            visible={showNotFired}
-            disabled={hideNotFiredNoOp}
-            {...(hideNotFiredNoOp
-              ? {
-                  title:
-                    'This result has no not-fired (NoEntry) rows — re-run Simulate with the current lab binary to include matched-but-never-entered tokens.',
-                }
-              : {})}
-            onToggle={() => {
-              setShowNotFired((v) => !v);
-              setSimQuery((q) => ({ ...q, page: 1 }));
-            }}
-            label="not-fired tokens"
-          >
-            {showNotFired ? 'Hide not fired' : 'Show not fired'}
-          </VisibilityToggleButton>
-        )}
+        <VisibilityToggleButton
+          visible={showNotFired}
+          disabled={hideNoOp}
+          {...(hideNoOp
+            ? {
+                title:
+                  'This result has no not-fired (NoEntry) rows — re-run Simulate with the current lab binary.',
+              }
+            : {})}
+          onToggle={() => {
+            setShowNotFired((v) => !v);
+            setSimQuery((q) => ({ ...q, page: 1 }));
+          }}
+          label="not-fired tokens"
+        >
+          {showNotFired ? 'Hide not fired' : 'Show not fired'}
+        </VisibilityToggleButton>
         <span className="truncate font-mono text-[11px] text-text-dim">{rule.rule_name}</span>
       </div>
 
-      {isMatched ? (
-        matchedError ? (
-          <InlineAlert variant="error">{matchedError}</InlineAlert>
-        ) : (
-          <TokenTable
-            columns={matchedColumns}
-            existingKeys={MATCHED_KEYS}
-            mintSetFilter
-            charts
-            rows={matchedTokens}
-            rowKey={keyByMint}
-            serverSide
-            serverTotal={matchedTotal}
-            onQueryChange={setMatchedQuery}
-            loading={matchedLoading}
-            resetKey={rule.id}
-            tableId={`simulate-matched-${rule.id}`}
-            emptyMessage="No tokens match this rule's fingerprint."
-          />
-        )
-      ) : simError ? (
+      {simError ? (
         <InlineAlert variant="error">{simError}</InlineAlert>
       ) : (
         <>

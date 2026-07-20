@@ -12,6 +12,7 @@ import {
   peakWallCell,
   pickHoldScheme,
   pickWallGrain,
+  pnlHeatBackground,
   rebucketHold,
   rebucketWall,
   rowMatchesHoldBin,
@@ -32,6 +33,18 @@ function row(partial: Partial<TemporalRow> & Pick<TemporalRow, 'mint_address' | 
 
 const H = 3_600_000;
 const D = 86_400_000;
+
+describe('pnlHeatBackground', () => {
+  it('uses a neutral wash for exact zero (not green)', () => {
+    expect(pnlHeatBackground(0, 10, 3)).toBe('rgba(148,163,184,0.4)');
+    expect(pnlHeatBackground(0, 10, 3)).not.toMatch(/34,197,94/);
+  });
+
+  it('keeps green for profit and red for loss', () => {
+    expect(pnlHeatBackground(5, 10, 2)).toMatch(/^rgba\(34,197,94,/);
+    expect(pnlHeatBackground(-5, 10, 2)).toMatch(/^rgba\(239,68,68,/);
+  });
+});
 
 describe('pickWallGrain', () => {
   it('picks finer grains for short spans', () => {

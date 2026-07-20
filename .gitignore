@@ -62,7 +62,7 @@ wallet-backups/**/keystore/
 
 # --- Data lake / parquet / sweep artifacts ---
 *.parquet
-/lake-data
+lake-data/
 .lake/
 sweep-out/
 tpsl2-sweep-out/

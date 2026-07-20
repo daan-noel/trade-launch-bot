@@ -198,16 +198,14 @@ next load (no per-metric frontend work).
   `POST /api/strategies/simulate/summaries` round-trip (for the columns); a finished
   run still refreshes via the single-run `…/result/summary` path. The per-token
   detail below is **selection-gated** — only the selected rule's
-  `RuleSimPositionsPanel` renders, with a **Positions ⇄ Matched** toggle: Positions =
-  the run's per-token outcomes including matched-but-never-entered `NoEntry` rows
-  (`POST /api/strategies/simulate/{run_id}/result`, `simColumns` — same full-slice
-  contract as the sweep combo drill-in; **Show/Hide not fired** injects
-  `exit_reason != NoEntry`); Matched = the fingerprint's candidate pool
-  (`POST /api/strategies/simulate/{run_id}/matched`, `matchedColumns`). The matched
-  scan is the generic engine's instant-phase candidate scan (`engine_sim::
-  scan_matched_candidates`, cache-shared with the backtest) paged through the same
-  `matched_page_response` the tpsl `/matched` route uses. Each table fetches only while
-  its view is active.
+  `RuleSimPositionsPanel` renders one table — the run's per-token outcomes including
+  matched-but-never-entered `NoEntry` rows (`POST /api/strategies/simulate/{run_id}/result`,
+  `simColumns` — same full-slice contract as the sweep combo drill-in). **Show/Hide
+  not fired** injects `exit_reason != NoEntry` (server-side) so Charts can compare
+  both or focus on fired only; badge shows `N · K fired` / `K / N` like the sweep
+  drill-in. A bare `K` with no NoEntry rows means a stale pre-padding result — re-run
+  Simulate. (The separate Matched candidate tab was removed: Positions already is the
+  full matched slice.)
 
 ## Grouped sweep — generic engine (`strategies/sweep/`, redesign FE5)
 

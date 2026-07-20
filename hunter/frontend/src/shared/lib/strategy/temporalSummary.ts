@@ -654,13 +654,15 @@ export function rowMatchesWallCell(
   return ts >= a && ts < b;
 }
 
-/** Diverging red←0→green wash for pnl-colored bars. `maxAbs` is the cohort peak |pnl|. */
+/** Diverging red←0→green wash for pnl-colored bars. `maxAbs` is the cohort peak |pnl|.
+ *  Exact zero uses a neutral slate (same rule as `signedToneClass`: 0 ≠ green). */
 export function pnlHeatBackground(pnl: number, maxAbs: number, n: number): string {
   if (n <= 0) return 'rgba(255,255,255,0.04)';
+  if (pnl === 0) return 'rgba(148,163,184,0.4)';
   if (!(maxAbs > 0)) return 'rgba(255,255,255,0.1)';
   const t = Math.min(1, Math.abs(pnl) / maxAbs);
   const a = (0.22 + 0.78 * t).toFixed(3);
-  return pnl >= 0 ? `rgba(34,197,94,${a})` : `rgba(239,68,68,${a})`;
+  return pnl > 0 ? `rgba(34,197,94,${a})` : `rgba(239,68,68,${a})`;
 }
 
 /** Count intensity (cyan) for volume-first wall bars when not coloring by PnL. */
