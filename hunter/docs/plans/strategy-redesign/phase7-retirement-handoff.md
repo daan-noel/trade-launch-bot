@@ -2,7 +2,32 @@
 
 Status snapshot for continuing the tpsl1/tpsl2/swing1 retirement in a fresh
 session. Branch **`chore/retire-legacy-strategies`** (off `strategy-redesign`),
-**not pushed**. Working tree clean at handoff.
+**not pushed**.
+
+## Progress (updated)
+
+- **Commit 4 (`73f79180`) — DONE.** Live `StrategyService` retired; closes route
+  through the generic engine. Added a pure-engine `Event::ExternallyCleared
+  { position, fill }` (closes Entered→Closed as Manual WITHOUT a SubmitSell) +
+  `EngineCommand::ReconcileCleared` / `EngineHandle::reconcile_cleared`; the
+  manual wallet-sell reconcile (`solana.rs`) confirms the bag cleared via the feed
+  then drives each open real position through it. Deleted
+  `strategies/{service,runner}.rs` + `strategies/execution/`, the legacy
+  `rules.rs` handler + its routes, the `swing_legs` wire field + armed-history.
+- **Commit 5 (`07592d19`) — DONE.** Legacy strategy DOMAIN deleted from
+  `trading_core` (registry, `runtime_cache`, `exit_state`, `match_keys`,
+  `swing_1/`, `tpsl_sniper_{1,2}/`, the per-strategy rule models, `LegacyStrategyRule`,
+  the legacy half of `rules.rs`, the `strategy_rules_legacy` repo methods + JOIN).
+  Re-pointed the two remaining legacy-table readers onto generic `strategy_rules`
+  (RuleRepo): live positions-by-rule `find_rule`→`rule_repo.find`, portfolio
+  `find_active_rules`→`rule_repo.list_active`; deleted lab's dead per-strategy
+  paper-position handlers.
+
+Verified: `cargo check` core+live+lab clean; clippy no new warnings; hunter-engine
+107 tests (incl. new `externally_cleared_closes_without_sell` golden), live 14,
+lab 143, core 121 pass. **One pre-existing failure** — `hunter-core`
+`generic_params_registry_checked` (engine `RuleParams` contradiction detection for
+`time >30 AND <10`); fails identically at `73f79180`, unrelated to Phase 7.
 
 ## Scope decisions already made (do NOT re-ask)
 
@@ -33,99 +58,16 @@ Verified green after each: `cargo check -p hunter-live -p hunter-lab` clean;
 
 ## What still remains
 
-### Commit 4 — live: retire StrategyService (IN PROGRESS, not started editing)
-
-Consumer map (grep-verified). Everything routes off `DeployState.strategy`
-(a `StrategyService`) or the legacy `StrategyRuntimeCache`.
-
-**A. `state/deploy_state.rs`**
-- Replace field `pub strategy: StrategyService` (:34) with
-  `pub strategy_repo: trading_core::storage::repositories::strategy_repo::StrategyRepo`.
-- Ctor param (:71) + assignment; drop the `use crate::strategies::StrategyService` (:11).
-- `strategy_cache()` accessor (:101-103) returns `self.strategy.runtime()` — **delete it**
-  (only the legacy service had a runtime cache; grep for callers first — none expected
-  outside the deleted paths).
-
-**B. `api/handlers/strategies/positions.rs`** (KEEP the file — live positions UI)
-- `repo()` helper (:241-243): `app_state.strategy.repo()` → `&app_state.strategy_repo`.
-- `strategy_id(seg)` (:235-239): drop the `StrategyImpl::from_id` validation. All
-  positions carry `strategy_id = "generic"` (engine stamps `GENERIC_STRATEGY_ID`,
-  `strategies/engine/sinks.rs:41`). Simplest: make it return `"generic"` (or accept
-  any seg and query with `"generic"`), so `find_positions_by_strategy` still works.
-  Remove `use ...registry::StrategyImpl` (:19).
-- `swing_legs` field (:82-86) + its `From` decode (:110-113,144) + the
-  `use ...swing_1::swing::SwingLeg` (:20): **remove** (swing_1 dies in commit 5).
-- `close_position` (:587): `app_state.strategy.close_position(position_id)` →
-  `app_state.engine.manual_close(position_id)` (returns bool; same Ok(true/false) shape).
-- `get_armed_history_by_rule` (:529-547): **delete the handler** + its route
-  (`api/mod.rs:143-144`) + the FE panel (`ArmedHistoryPanel.tsx` — check callers).
-
-**C. `api/handlers/trading/solana.rs`** (:461-485, real-money manual-sell reconcile)
-- Replace the `reconcile_externally_cleared_mint(mint, strategy.repo(), trade_repo,
-  strategy.runtime(), trader)` call with: look up the open **real** `Holding` position
-  for the mint via `app_state.strategy_repo.find_holding_by_mint("generic", mint, ..)`
-  (or a suitable repo query filtered to mode='real'), then `engine.manual_close(id)`.
-  Drop `use crate::strategies::execution::real::reconcile_externally_cleared_mint`.
-  **Preserve the retry loop semantics** (retry until closed or none-open).
-  ⚠️ Real-money path — verify double-sell safety with a paper+real smoke.
-
-**D. `api/handlers/strategies/rules.rs`** (legacy rule CRUD) — **DELETE the whole file**.
-  The generic `/strategy-rules/*` routes (`handlers::strategies::engine::*`) already
-  cover create/get/update/delete/activate/pause/stop + pause-all/stop-all.
-- Remove `pub mod rules;` from `api/handlers/strategies/mod.rs`.
-- Delete the legacy routes `api/mod.rs:80-141` (the `/strategies/{strategy}/rules/*`
-  block → `rules::*`). **Keep** the `/strategies/{strategy}/positions*` routes
-  (→ `positions::*`) except armed-history. Fix the module doc (:10, :80).
-
-**E. Delete legacy modules**
-- `strategies/service.rs`, `strategies/runner.rs`, whole `strategies/execution/` dir.
-- `strategies/mod.rs`: drop `pub mod execution/runner/service;` +
-  `pub use runner::StrategyRunner;` + `pub use service::{PaperActivation, StrategyService};`.
-
-**F. `main.rs`**
-- Delete the legacy `strategy_cache` block (:632-644: `StrategyRuntimeCache::new()`,
-  `set_sse_sender`, `load_from_db`).
-- Delete the `StrategyService::new(...)` construction (:738-746) + the doc above it.
-- Delete the `strategy_cache.clone()` reaper at ~:837 (`let sc = strategy_cache.clone();`
-  — read the surrounding block; it's the legacy cache reaper, safe to drop since the
-  engine owns positions).
-- `DeployState::new(...)` call (:782-794): replace the `strategy_service.clone()` arg
-  (:785) with a fresh `StrategyRepo::new(db.clone())` for the new `strategy_repo` field.
-
-**Compile:** `cargo check -p hunter-live --target-dir "C:/Users/User/Documents/Bot/target-check"`.
-Expect fallout — fix each. Core still holds `StrategyImpl`/`StrategyRuntimeCache` at
-this point, so live compiles against them until commit 5.
-
-### Commit 5 — core: delete the legacy strategy domain
-
-Once live + lab no longer reference them, delete from `hunter/core/src/`:
-- `strategies/swing_1/`, `strategies/tpsl_sniper_1/`, `strategies/tpsl_sniper_2/` dirs
-  (+ `strategies/mod.rs` `pub mod` lines).
-- `strategies/registry.rs` (`StrategyImpl`, `Tpsl1Params/Tpsl2Params/Swing1Params`).
-- `strategies/runtime_cache.rs` + `strategies/exit_state.rs` (legacy cache + exit state).
-- `strategies/match_keys.rs` (both `fingerprint_key` + `sim_key` take `LegacyStrategyRule`).
-- `strategies/rules.rs`: **bisect at the `// LEGACY` banner (~:189)** — keep :1-187
-  (generic `RuleDraft`/`build_rule`/`create`/`save`), delete the legacy half
-  (`LegacyRuleDraft`, `validate_tpsl1/2`, `build_legacy_rule`, `create_legacy`,
-  `save_legacy`, legacy tests). Trim the `use` on :21/:25.
-- `models/strategy.rs`: `LegacyStrategyRule` (:47) + `models/{tpsl1,tpsl2,swing1}_strategy_rule.rs`
-  (`Tpsl1Rule`/`Tpsl2Rule`/`Swing1Rule`) + their `models/mod.rs` re-exports.
-- `storage/repositories/strategy_repo.rs`: legacy methods (`LegacyStrategyRuleDbRow`,
-  `insert_rule`/`update_rule`/`find_rule`/`find_rules_by_strategy`/`find_active_rules`/
-  `delete_rule`) + drop the legacy `strategy_rules_legacy` JOIN branch in the kept
-  position/name queries (surgical, ~:1535 and ~:1639 — do NOT delete those whole queries).
-- `strategies/mod.rs` re-exports of the above.
-
-**Compile:** `cargo check -p hunter-live -p hunter-lab` clean; run
-`cargo test -p hunter-core -p hunter-lab`. Grep-sweep for `tpsl`, `swing_1`,
-`StrategyImpl`, `LadderParams`, `exit_state`, `LegacyStrategyRule`.
+Commits 4 + 5 are landed (see Progress above); the code is fully off the legacy
+stack. What's left is the DB/docs/smoke tail:
 
 ### Phase 7.2 / 7.3 / 7.4 (from the master plan)
 
 - **7.2 migration** — drop `strategy_positions.strategy_id` (the engine stamps a
   now-meaningless `"generic"`; positions.rs no longer filters on it after commit 4);
-  decide fate of `strategy_rules_legacy` + old per-strategy sweep tables
-  (`{tpsl1,tpsl2,swing_1}_grouped_sweep_*`) — keep read-only or drop.
+  **drop `strategy_rules_legacy`** now that nothing reads it (commit 5 re-pointed the
+  last readers onto `strategy_rules`); decide the fate of the old per-strategy sweep
+  tables (`{tpsl1,tpsl2,swing_1}_grouped_sweep_*`) — keep read-only or drop.
 - **7.3 docs** — rewrite `docs/arch/strategies.md` around the generic engine; update
   `arch/sweep.md` (registry is generic-only now), `arch/database.md`, `arch/architecture.md`;
   hunter/CLAUDE.md crate table; new `docs/plans/strategy-redesign/metrics-reference.md`.
