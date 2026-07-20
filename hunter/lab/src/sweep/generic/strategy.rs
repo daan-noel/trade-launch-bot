@@ -557,7 +557,7 @@ fn trade_lite(ct: &CorpusTrade) -> TradeLite {
 pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
     let mut cols = Vec::new();
     for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()) {
-        let c = col_of(req.metric, req.window);
+        let c = col_of(req);
         if !cols.contains(&c) {
             cols.push(c);
         }
@@ -594,10 +594,11 @@ pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
     }
 }
 
-fn col_of(metric: MetricId, window: Option<f64>) -> SeriesColumn {
-    match window {
-        Some(w) => SeriesColumn::Window(metric, w),
-        None => SeriesColumn::Static(metric),
+fn col_of(req: &hunter_engine::arm::MetricReq) -> SeriesColumn {
+    match (req.fingerprint, req.window) {
+        (Some(fp), ws) => SeriesColumn::Flow(req.metric, ws, fp),
+        (None, Some(w)) => SeriesColumn::Window(req.metric, w),
+        (None, None) => SeriesColumn::Static(req.metric),
     }
 }
 
@@ -617,8 +618,8 @@ pub enum EntryResolution {
 /// which reads as `NaN` and satisfies no condition.
 const MISSING_COL: usize = usize::MAX;
 
-fn col_idx_of(series: &MetricSeries, metric: MetricId, window: Option<f64>) -> usize {
-    series.col_index(col_of(metric, window)).unwrap_or(MISSING_COL)
+fn col_idx_of(series: &MetricSeries, req: &hunter_engine::arm::MetricReq) -> usize {
+    series.col_index(col_of(req)).unwrap_or(MISSING_COL)
 }
 
 /// Value at a pre-resolved column index (`NaN` for an unrecorded column).
@@ -635,15 +636,25 @@ fn value_at_col(series: &MetricSeries, col: usize, row: usize) -> f64 {
 /// lockstep with the `CompiledRule`'s req list. Resolved against the run's **fixed**
 /// column set — see [`BoundCombo`].
 fn resolve_cols_in(columns: &[SeriesColumn], reqs: &[hunter_engine::arm::MetricReq]) -> Vec<usize> {
-    reqs.iter()
-        .map(|r| col_idx_in(columns, r.metric, r.window))
-        .collect()
+    reqs.iter().map(|r| col_idx_in(columns, r)).collect()
 }
 
 /// Column index within a fixed column set (`MISSING_COL` when not recorded).
-fn col_idx_in(columns: &[SeriesColumn], metric: MetricId, window: Option<f64>) -> usize {
-    let want = col_of(metric, window);
+fn col_idx_in(columns: &[SeriesColumn], req: &hunter_engine::arm::MetricReq) -> usize {
+    let want = col_of(req);
     columns.iter().position(|c| *c == want).unwrap_or(MISSING_COL)
+}
+
+fn col_idx_mono(columns: &[SeriesColumn], k: &hunter_engine::arm::MonoMetricKill) -> usize {
+    // Synthetic req so Flow/Static/Window routing matches `col_of`.
+    let req = hunter_engine::arm::MetricReq {
+        metric: k.metric,
+        window: k.window,
+        fingerprint: k.fingerprint,
+        tolerance: 0.0,
+        conds: vec![],
+    };
+    col_idx_in(columns, &req)
 }
 
 /// A compiled combo **plus its resolved series-column indices**.
@@ -670,11 +681,7 @@ impl BoundCombo {
     pub(crate) fn new(columns: &[SeriesColumn], rule: CompiledRule) -> Self {
         let entry_cols = resolve_cols_in(columns, &rule.entry_reqs);
         let exit_cols = resolve_cols_in(columns, &rule.exit_reqs);
-        let mono_cols = rule
-            .mono_kills
-            .iter()
-            .map(|k| col_idx_in(columns, k.metric, k.window))
-            .collect();
+        let mono_cols = rule.mono_kills.iter().map(|k| col_idx_mono(columns, k)).collect();
         Self { rule, entry_cols, mono_cols, exit_cols }
     }
 }
@@ -689,12 +696,17 @@ fn debug_assert_cols_match(series: &MetricSeries, c: &BoundCombo) {
             .iter()
             .zip(&c.entry_cols)
             .chain(c.rule.exit_reqs.iter().zip(&c.exit_cols))
-            .all(|(r, &col)| col == col_idx_of(series, r.metric, r.window))
-            && c.rule
-                .mono_kills
-                .iter()
-                .zip(&c.mono_cols)
-                .all(|(k, &col)| col == col_idx_of(series, k.metric, k.window)),
+            .all(|(r, &col)| col == col_idx_of(series, r))
+            && c.rule.mono_kills.iter().zip(&c.mono_cols).all(|(k, &col)| {
+                let req = hunter_engine::arm::MetricReq {
+                    metric: k.metric,
+                    window: k.window,
+                    fingerprint: k.fingerprint,
+                    tolerance: 0.0,
+                    conds: vec![],
+                };
+                col == col_idx_of(series, &req)
+            }),
         "BoundCombo column indices disagree with this token's series — the run's \
          column set is no longer fixed across tokens, so bind-time resolution is unsound"
     );

@@ -1,6 +1,6 @@
 # Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_window`)
 
-Status: **IN PROGRESS** (design settled 2026-07-17; **V0 shipped 2026-07-20**).
+Status: **IN PROGRESS** (design settled 2026-07-17; **V0+V1 shipped 2026-07-20**).
 Scope: hunter only. A follow-on to the generic engine —
 [fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md).
 Phase 5 prerequisites are met; the discovery job (§7) can trail the metrics.
@@ -241,21 +241,23 @@ ALTER TABLE fingerprints
 - [x] 0.4 Event-log: `LoggedEvent::TokenCreated.creator_wallet_hash` +
       `TradeLite` serde `default` — old JSONL → organic.
 
-### V1 — Engine metrics
+### V1 — Engine metrics ✅ 2026-07-20
 
-- [ ] 1.1 `metrics/flow_split.rs` (§3): classifier + `FlowState` + lifetime compute.
-- [ ] 1.2 `m_flow_window`: window deques (dedup by `(fingerprint, window_key)`),
+- [x] 1.1 `metrics/flow_split.rs` (§3): classifier + `FlowState` + lifetime compute.
+- [x] 1.2 `m_flow_window`: window deques (dedup by `(fingerprint, window_key)`),
       evict on trade + tick, O(1) reads.
-- [ ] 1.3 Registry: two groups, 18 metrics, units/tolerances/monotonic flags (§2),
+- [x] 1.3 Registry: two groups, 18 metrics (distinct `MetricId`s per group so
+      lifetime monotonic flags can differ; JSON names shared), units/tolerances,
       **fingerprint-config declaration** + `registry_json()` extension.
-- [ ] 1.4 `TokenTrack`/`series.rs` routing (fingerprint-scoped state, §3).
-- [ ] 1.5 `RulesReloaded` compiles `FlowPatterns` per loaded fingerprint from
-      `metric_config`; rule-save warning for unconfigured fingerprints.
-- [ ] 1.6 Tests: classifier unit tests (pattern match, contagion, creator,
-      `ix_hash=None`, unconfigured⇒NaN, `vol_share` NaN-at-zero); golden-log tests
-      (entry on `vol_net` recovery; exit on `nonvol_gross(w)=0` via tick; two
-      fingerprints on one token diverge); series determinism (`to_bits()` replay);
-      property-test streams extended with hashed fields.
+- [x] 1.4 `TokenTrack`/`series.rs` routing (fingerprint-scoped state, §3);
+      `SeriesColumn::Flow` + `MetricReq.fingerprint`.
+- [x] 1.5 `RulesReloaded` / `EngineState::reload` compiles `FlowPatterns` from
+      `Fingerprint.metric_config`; rule-save soft warning via
+      `create_with_fp_check` / `save_with_fp_check`; fingerprint CRUD validates
+      `metric_config` shape.
+- [x] 1.6 Tests: classifier unit tests; golden-log tests (entry on `vol_net`;
+      exit on `nonvol_gross(w)=0` via tick; two fingerprints diverge). Series
+      determinism for non-flow columns unchanged; sweep pattern injection is V2.
 
 ### V2 — Analysis parity
 

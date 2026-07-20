@@ -66,6 +66,15 @@ pub struct Fingerprint {
     pub first_slot_sell_lamports: Option<i64>,
     /// SOL width every bucket-matched axis on this row uses.
     pub bucket_size_amount: f64,
+    /// Per-metric-group fingerprint-side config (e.g. `m_flow_split`). Not part
+    /// of match identity — compiled into [`crate::metrics::flow_split::FlowPatterns`]
+    /// at reload. Default `{}` for older event-log / test fixtures.
+    #[serde(default = "default_metric_config")]
+    pub metric_config: serde_json::Value,
+}
+
+fn default_metric_config() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 impl Fingerprint {
@@ -235,6 +244,7 @@ mod tests {
             first_slot_buy_lamports: None,
             first_slot_sell_lamports: None,
             bucket_size_amount: 0.1,
+            metric_config: serde_json::json!({}),
         }
     }
 

@@ -16,7 +16,7 @@ use crate::event::{
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, Condition, ConditionExpr, Operator};
 use crate::metrics::track::TokenTrack;
-use crate::metrics::{group_spec, metric_spec, MetricId, MetricKind, Ts};
+use crate::metrics::{group_spec, is_flow_metric, metric_spec, MetricId, MetricKind, Ts};
 
 /// One metric read a rule side needs: the metric, the window it lives in (dynamic
 /// metrics only), its `=`-tolerance, and the DNF condition arms. Precomputed so
@@ -25,6 +25,8 @@ use crate::metrics::{group_spec, metric_spec, MetricId, MetricKind, Ts};
 pub struct MetricReq {
     pub metric: MetricId,
     pub window: Option<f64>,
+    /// Fingerprint scope for flow metrics; `None` for token-scoped groups.
+    pub fingerprint: Option<FingerprintId>,
     pub tolerance: f64,
     /// DNF: OR of AND-arms.
     pub conds: ConditionExpr,
@@ -66,6 +68,7 @@ impl MonoBound {
 pub struct MonoMetricKill {
     pub metric: MetricId,
     pub window: Option<f64>,
+    pub fingerprint: Option<FingerprintId>,
     /// Per OR arm: killing upper bound, or `None` if the arm never dies.
     pub arms: SmallVec<[Option<MonoBound>; 2]>,
 }
@@ -146,9 +149,18 @@ impl CompiledRule {
     /// Pre-chew a loaded rule. Its `params` are already parsed + validated, so this
     /// is a pure structural walk (no failure path).
     pub fn compile(rule: &LoadedRule) -> Self {
-        let entry_reqs =
-            rule.params.entry.as_ref().map(build_reqs).unwrap_or_default();
-        let exit_reqs = rule.params.exit.as_ref().map(build_reqs).unwrap_or_default();
+        let entry_reqs = rule
+            .params
+            .entry
+            .as_ref()
+            .map(|s| build_reqs(s, rule.fingerprint_id))
+            .unwrap_or_default();
+        let exit_reqs = rule
+            .params
+            .exit
+            .as_ref()
+            .map(|s| build_reqs(s, rule.fingerprint_id))
+            .unwrap_or_default();
 
         // Distinct windows across both sides (dynamic metrics only).
         let mut windows: SmallVec<[f64; 2]> = SmallVec::new();
@@ -180,6 +192,7 @@ impl CompiledRule {
                 mono_kills.push(MonoMetricKill {
                     metric: r.metric,
                     window: r.window,
+                    fingerprint: r.fingerprint,
                     arms,
                 });
             }
@@ -230,27 +243,43 @@ impl CompiledRule {
     /// the entry can never re-satisfy, so the arm should disarm
     /// ([`DisarmReason::Unsatisfiable`]).
     pub fn entry_unsatisfiable(&self, track: &TokenTrack, now: Ts) -> bool {
-        self.mono_kills
-            .iter()
-            .any(|k| k.permanently_false(track.value(k.metric, k.window, now)))
+        self.mono_kills.iter().any(|k| {
+            k.permanently_false(track.value(k.metric, k.window, k.fingerprint, now))
+        })
     }
 }
 
 /// AND every metric read in `reqs` at `now` (the **entry** combinator). Empty ⇒
 /// `true` (vacuous).
 fn reqs_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
-    reqs.iter().all(|r| eval(&r.conds, track.value(r.metric, r.window, now), r.tolerance))
+    reqs.iter().all(|r| {
+        eval(
+            &r.conds,
+            track.value(r.metric, r.window, r.fingerprint, now),
+            r.tolerance,
+        )
+    })
 }
 
 /// OR across metric reads in `reqs` at `now` (the **exit** combinator — any one
 /// satisfied metric fires). Empty ⇒ `false` (no reason to exit).
 fn reqs_any_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
-    reqs.iter().any(|r| eval(&r.conds, track.value(r.metric, r.window, now), r.tolerance))
+    reqs.iter().any(|r| {
+        eval(
+            &r.conds,
+            track.value(r.metric, r.window, r.fingerprint, now),
+            r.tolerance,
+        )
+    })
 }
 
 /// Flatten one side's parsed conditions into [`MetricReq`]s. A dynamic group's
-/// metrics carry its `window_size_sec`; static groups carry `None`.
-fn build_reqs(side: &crate::rule_params::SideConditions) -> Vec<MetricReq> {
+/// metrics carry its `window_size_sec`; static groups carry `None`. Flow metrics
+/// are scoped to `fingerprint_id`.
+fn build_reqs(
+    side: &crate::rule_params::SideConditions,
+    fingerprint_id: FingerprintId,
+) -> Vec<MetricReq> {
     let mut out = Vec::new();
     for (group_id, group) in &side.0 {
         let window = if group_spec(*group_id).kind == MetricKind::Dynamic {
@@ -262,6 +291,7 @@ fn build_reqs(side: &crate::rule_params::SideConditions) -> Vec<MetricReq> {
             out.push(MetricReq {
                 metric: *metric_id,
                 window,
+                fingerprint: is_flow_metric(*metric_id).then_some(fingerprint_id),
                 tolerance: metric_spec(*metric_id).eq_tolerance,
                 conds: conds.clone(),
             });

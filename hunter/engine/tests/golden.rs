@@ -49,6 +49,7 @@ fn cu_fp(id: u128) -> Fingerprint {
         first_slot_buy_lamports: None,
         first_slot_sell_lamports: None,
         bucket_size_amount: 0.1,
+        metric_config: serde_json::json!({}),
     }
 }
 
@@ -575,4 +576,136 @@ fn identical_event_vectors_yield_identical_effects() {
 fn compiled_rule_is_public() {
     let c = CompiledRule::compile(&rule(1, 1, json!({ "take_profit": 100 })));
     assert!(c.enter_on_arm());
+}
+
+#[test]
+fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
+    use hunter_engine::metrics::flow_split::ix_hash;
+
+    let mut fp = cu_fp(1);
+    fp.metric_config = json!({
+        "m_flow_split": { "volume_ix_patterns": [["vol"]] }
+    });
+    let params = json!({
+        "entry": { "m_flow_split": { "vol_net": [{"operator": ">", "value": 2}] } },
+        "exit": {
+            "m_flow_window": {
+                "window_size_sec": 5,
+                "nonvol_gross": [{"operator": "=", "value": 0}]
+            }
+        }
+    });
+    let mut s = EngineState::new();
+    let m = Mint::from("tokFlow");
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![fp]));
+    reduce(
+        &mut s,
+        Event::TokenCreated {
+            mint: m.clone(),
+            fp: cu_token(),
+            at: ts(0.0),
+            creator_wallet_hash: Some(99),
+        },
+    );
+    // Organic buy first — not enough vol_net to enter.
+    let fx = reduce(
+        &mut s,
+        Event::Trade {
+            mint: m.clone(),
+            trade: TradeLite {
+                side: Side::Buy,
+                sol: 1.0,
+                price: 1.0,
+                reserve_sol: 20.0,
+                at: ts(1.0),
+                ix_hash: None,
+                wallet_hash: 7,
+            },
+        },
+    );
+    assert!(buys(&fx).is_empty());
+
+    // Volume-side buy → vol_net=3 → entry.
+    let fx = reduce(
+        &mut s,
+        Event::Trade {
+            mint: m.clone(),
+            trade: TradeLite {
+                side: Side::Buy,
+                sol: 3.0,
+                price: 1.1,
+                reserve_sol: 23.0,
+                at: ts(2.0),
+                ix_hash: Some(ix_hash(&["vol"])),
+                wallet_hash: 8,
+            },
+        },
+    );
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)]);
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.1, 2.0) });
+
+    // Tick past the organic trade's window → nonvol_gross(5s)=0 → exit.
+    let fx = reduce(&mut s, Event::Tick { now: ts(7.0) });
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::Metrics]
+    );
+}
+
+#[test]
+fn two_fingerprints_flow_states_diverge() {
+    use hunter_engine::metrics::flow_split::ix_hash;
+
+    let mut fp_a = cu_fp(1);
+    fp_a.metric_config = json!({
+        "m_flow_split": { "volume_ix_patterns": [["a"]] }
+    });
+    let mut fp_b = cu_fp(2);
+    fp_b.cu_limit = Some(200_000); // same match
+    fp_b.metric_config = json!({
+        "m_flow_split": { "volume_ix_patterns": [["b"]] }
+    });
+    // Rule A enters on vol_buy>0 for pattern A; rule B would need pattern B.
+    let params_a = json!({
+        "entry": { "m_flow_split": { "vol_buy": [{"operator": ">", "value": 0}] } }
+    });
+    let params_b = json!({
+        "entry": { "m_flow_split": { "vol_buy": [{"operator": ">", "value": 0}] } }
+    });
+    let mut s = EngineState::new();
+    let m = Mint::from("tokMulti");
+    reduce(
+        &mut s,
+        reload(
+            vec![rule(1, 1, params_a), rule(2, 2, params_b)],
+            vec![fp_a, fp_b],
+        ),
+    );
+    reduce(
+        &mut s,
+        Event::TokenCreated {
+            mint: m.clone(),
+            fp: cu_token(),
+            at: ts(0.0),
+            creator_wallet_hash: None,
+        },
+    );
+    let fx = reduce(
+        &mut s,
+        Event::Trade {
+            mint: m,
+            trade: TradeLite {
+                side: Side::Buy,
+                sol: 2.0,
+                price: 1.0,
+                reserve_sol: 20.0,
+                at: ts(1.0),
+                ix_hash: Some(ix_hash(&["a"])),
+                wallet_hash: 1,
+            },
+        },
+    );
+    // Only rule 1 (pattern A) enters; rule 2 still sees organic.
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)]);
 }

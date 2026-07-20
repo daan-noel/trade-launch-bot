@@ -146,6 +146,7 @@ fn build_series(mint: &str, trades: &[crate::sweep::projection::CorpusTrade], wi
             let id = match col {
                 SeriesColumn::Static(id) => *id,
                 SeriesColumn::Window(id, _) => *id,
+                SeriesColumn::Flow(id, _, _) => *id,
             };
             let values = series.column_values(*col)?;
             Some(SeriesOut {

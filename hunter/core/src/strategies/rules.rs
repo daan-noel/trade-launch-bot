@@ -15,9 +15,12 @@ use uuid::Uuid;
 
 use crate::models::fingerprint::opt_i64;
 use crate::models::StrategyRule;
+use crate::storage::repositories::fingerprint_repo::FingerprintRepo;
 use crate::storage::repositories::rule_repo::RuleRepo;
 
 use super::rule_params::RuleParams;
+
+pub use hunter_engine::metrics::flow_split::flow_unconfigured_warning;
 
 /// Outcome of a rule CRUD write, mapped to an HTTP status by the calling edge.
 #[derive(Debug)]
@@ -162,6 +165,18 @@ pub async fn create(repo: &RuleRepo, draft: &RuleDraft) -> Result<StrategyRule, 
     Ok(rule)
 }
 
+/// [`create`] plus a soft warning when the rule references flow metrics but the
+/// fingerprint has no `m_flow_split` config (metrics will be `NaN` until set).
+pub async fn create_with_fp_check(
+    repo: &RuleRepo,
+    fp_repo: &FingerprintRepo,
+    draft: &RuleDraft,
+) -> Result<(StrategyRule, Option<String>), RuleError> {
+    let rule = create(repo, draft).await?;
+    let warning = flow_warning_for(fp_repo, rule.fingerprint_id, &rule.params).await;
+    Ok((rule, warning))
+}
+
 /// Re-validate a fully-formed generic rule and persist the edit. The caller
 /// merges its request patch into the loaded rule first (request-shaped,
 /// edge-side) and enforces any live-edit frozen-field guard.
@@ -178,6 +193,27 @@ pub async fn save(repo: &RuleRepo, rule: &StrategyRule) -> Result<(), RuleError>
         .map_err(|e| RuleError::Invalid(format!("invalid params: {e}")))?;
     repo.update(rule).await.map_err(RuleError::Repo)?;
     Ok(())
+}
+
+/// [`save`] plus the flow-unconfigured soft warning (see [`create_with_fp_check`]).
+pub async fn save_with_fp_check(
+    repo: &RuleRepo,
+    fp_repo: &FingerprintRepo,
+    rule: &StrategyRule,
+) -> Result<Option<String>, RuleError> {
+    save(repo, rule).await?;
+    Ok(flow_warning_for(fp_repo, rule.fingerprint_id, &rule.params).await)
+}
+
+async fn flow_warning_for(
+    fp_repo: &FingerprintRepo,
+    fingerprint_id: Uuid,
+    params: &Value,
+) -> Option<String> {
+    match fp_repo.find(fingerprint_id).await {
+        Ok(Some(fp)) => flow_unconfigured_warning(params, &fp.metric_config),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

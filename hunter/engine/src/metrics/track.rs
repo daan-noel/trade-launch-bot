@@ -1,14 +1,17 @@
 //! `TokenTrack` — the per-token metric state the engine folds trades and ticks
-//! into. It composes the three group states:
+//! into. It composes the group states:
 //! * static [`SnapshotState`] + [`PricePathState`] — one copy, shared by every
 //!   rule armed on the token;
 //! * dynamic [`WindowState`]s — **deduped by `window_size_sec`**, so rules that
-//!   share a window share one buffer.
+//!   share a window share one buffer;
+//! * fingerprint-scoped [`FlowState`]s — one classifier + totals per fingerprint
+//!   that has `m_flow_split` configured (volume-flow-split plan).
 //!
 //! Two fold entry points, matching the engine's events: [`on_trade`] and
 //! [`on_tick`]. Reads go through [`value`], which routes a `MetricId` (+ an
-//! optional window for dynamic metrics) to the owning group. All reads take the
-//! current `now` so every metric is evaluated at the same instant.
+//! optional window for dynamic metrics, + fingerprint for flow groups) to the
+//! owning group. All reads take the current `now` so every metric is evaluated
+//! at the same instant.
 //!
 //! [`on_trade`]: TokenTrack::on_trade
 //! [`on_tick`]: TokenTrack::on_tick
@@ -16,6 +19,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::fingerprint::FingerprintId;
+
+use super::flow_split::{FlowPatterns, FlowState};
 use super::price_path::PricePathState;
 use super::snapshot::SnapshotState;
 use super::time_window::{window_key, WindowState};
@@ -29,6 +35,10 @@ pub struct TokenTrack {
     price_path: PricePathState,
     /// Dynamic windows, keyed by [`window_key`] so equal sizes dedupe.
     windows: BTreeMap<u64, WindowState>,
+    /// Flow classifier state, keyed by fingerprint (pattern sets differ).
+    flow: BTreeMap<FingerprintId, FlowState>,
+    /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
+    creator_wallet_hash: Option<u64>,
 }
 
 impl TokenTrack {
@@ -39,6 +49,8 @@ impl TokenTrack {
             snapshot: SnapshotState::default(),
             price_path: PricePathState::new(created_at),
             windows: BTreeMap::new(),
+            flow: BTreeMap::new(),
+            creator_wallet_hash: None,
         }
     }
 
@@ -51,12 +63,43 @@ impl TokenTrack {
             .or_insert_with(|| WindowState::new(window_secs));
     }
 
+    /// Register fingerprint-scoped flow state (idempotent). `windows` are the
+    /// distinct `m_flow_window` sizes to track under this fingerprint.
+    pub fn ensure_flow(
+        &mut self,
+        fp: FingerprintId,
+        patterns: &FlowPatterns,
+        windows: &[f64],
+    ) {
+        let state = self.flow.entry(fp).or_insert_with(|| {
+            let mut s = FlowState::new(patterns.clone());
+            if let Some(h) = self.creator_wallet_hash {
+                s.set_creator(h);
+            }
+            s
+        });
+        for &w in windows {
+            state.ensure_window(w);
+        }
+    }
+
+    /// Seed the creator wallet (volume-side unconditionally) on every flow state.
+    pub fn seed_creator(&mut self, hash: u64) {
+        self.creator_wallet_hash = Some(hash);
+        for flow in self.flow.values_mut() {
+            flow.set_creator(hash);
+        }
+    }
+
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
         self.snapshot.on_trade(t.reserve_sol);
         self.price_path.on_trade(t.price, t.at);
         for w in self.windows.values_mut() {
             w.on_trade(t.side, t.sol, t.at);
+        }
+        for flow in self.flow.values_mut() {
+            flow.on_trade(&t);
         }
     }
 
@@ -66,6 +109,9 @@ impl TokenTrack {
     pub fn on_tick(&mut self, now: Ts) {
         for w in self.windows.values_mut() {
             w.evict(now);
+        }
+        for flow in self.flow.values_mut() {
+            flow.on_tick(now);
         }
     }
 
@@ -79,13 +125,20 @@ impl TokenTrack {
     /// The most recently observed SOL reserves (`NaN` before the first trade) — the
     /// liquidity reading the dead-token verdict consumes.
     pub fn current_reserves(&self) -> f64 {
-        self.value(MetricId::Liquidity, None, self.created_at)
+        self.value(MetricId::Liquidity, None, None, self.created_at)
     }
 
     /// Value of one metric at `now`. `window_secs` is required for dynamic
-    /// (`m_time_window`) metrics and ignored for static ones. An unregistered
-    /// window (or a missing one) yields `NaN` — which satisfies no condition.
-    pub fn value(&self, id: MetricId, window_secs: Option<f64>, now: Ts) -> f64 {
+    /// metrics and ignored for static ones. `fingerprint` is required for flow
+    /// groups (absent / unregistered ⇒ `NaN`). An unregistered window yields
+    /// `NaN` — which satisfies no condition.
+    pub fn value(
+        &self,
+        id: MetricId,
+        window_secs: Option<f64>,
+        fingerprint: Option<FingerprintId>,
+        now: Ts,
+    ) -> f64 {
         use MetricId::*;
         match id {
             Time | Liquidity => self.snapshot.value(id, self.created_at, now),
@@ -96,16 +149,37 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
+            VolBuy | VolSell | VolNet | VolGross | NonvolBuy | NonvolSell | NonvolNet
+            | NonvolGross | VolShare | WinVolBuy | WinVolSell | WinVolNet | WinVolGross
+            | WinNonvolBuy | WinNonvolSell | WinNonvolNet | WinNonvolGross | WinVolShare => {
+                let Some(fp) = fingerprint else {
+                    return f64::NAN;
+                };
+                match self.flow.get(&fp) {
+                    Some(f) => f.value(id, window_secs),
+                    None => f64::NAN,
+                }
+            }
         }
     }
 
-    /// Batch read a set of `(metric, optional window)` requests into a
-    /// caller-owned buffer — no allocation on the hot path. `out` must be at
-    /// least `reqs.len()` long; extra slots are left untouched.
-    pub fn values(&self, reqs: &[(MetricId, Option<f64>)], now: Ts, out: &mut [f64]) {
-        for (slot, &(id, ws)) in out.iter_mut().zip(reqs) {
-            *slot = self.value(id, ws, now);
+    /// Batch read a set of `(metric, optional window, optional fingerprint)`
+    /// requests into a caller-owned buffer — no allocation on the hot path.
+    /// `out` must be at least `reqs.len()` long; extra slots are left untouched.
+    pub fn values(
+        &self,
+        reqs: &[(MetricId, Option<f64>, Option<FingerprintId>)],
+        now: Ts,
+        out: &mut [f64],
+    ) {
+        for (slot, &(id, ws, fp)) in out.iter_mut().zip(reqs) {
+            *slot = self.value(id, ws, fp, now);
         }
+    }
+
+    /// Whether this track has flow state for `fp` (configured fingerprint).
+    pub fn has_flow(&self, fp: FingerprintId) -> bool {
+        self.flow.contains_key(&fp)
     }
 }
 
@@ -114,6 +188,7 @@ mod tests {
     use super::*;
     use crate::metrics::Side;
     use chrono::{Duration, TimeZone, Utc};
+    use uuid::Uuid;
 
     fn ts(secs: f64) -> Ts {
         Utc.timestamp_opt(1_700_000_000, 0).unwrap()
@@ -121,7 +196,18 @@ mod tests {
     }
 
     fn buy(sol: f64, price: f64, reserve: f64, secs: f64) -> TradeLite {
-        TradeLite { side: Side::Buy, sol, price, reserve_sol: reserve, at: ts(secs), ..Default::default() }
+        TradeLite {
+            side: Side::Buy,
+            sol,
+            price,
+            reserve_sol: reserve,
+            at: ts(secs),
+            ..Default::default()
+        }
+    }
+
+    fn fp(n: u128) -> FingerprintId {
+        FingerprintId(Uuid::from_u128(n))
     }
 
     #[test]
@@ -131,12 +217,12 @@ mod tests {
         track.ensure_window(10.0);
         track.on_trade(buy(3.0, 2.0, 15.0, 1.0));
 
-        assert_eq!(track.value(MetricId::Time, None, ts(5.0)), 5.0);
-        assert_eq!(track.value(MetricId::Liquidity, None, ts(5.0)), 15.0);
-        assert_eq!(track.value(MetricId::Stall, None, ts(5.0)), 4.0); // moved at t=1
-        assert_eq!(track.value(MetricId::Trail, None, ts(5.0)), 0.0); // at peak
-        assert_eq!(track.value(MetricId::Buy, Some(10.0), ts(5.0)), 3.0);
-        assert_eq!(track.value(MetricId::GrossFlow, Some(10.0), ts(5.0)), 3.0);
+        assert_eq!(track.value(MetricId::Time, None, None, ts(5.0)), 5.0);
+        assert_eq!(track.value(MetricId::Liquidity, None, None, ts(5.0)), 15.0);
+        assert_eq!(track.value(MetricId::Stall, None, None, ts(5.0)), 4.0); // moved at t=1
+        assert_eq!(track.value(MetricId::Trail, None, None, ts(5.0)), 0.0); // at peak
+        assert_eq!(track.value(MetricId::Buy, Some(10.0), None, ts(5.0)), 3.0);
+        assert_eq!(track.value(MetricId::GrossFlow, Some(10.0), None, ts(5.0)), 3.0);
     }
 
     #[test]
@@ -144,10 +230,10 @@ mod tests {
         let mut track = TokenTrack::new(ts(0.0));
         track.on_trade(buy(3.0, 2.0, 15.0, 1.0));
         // No window ensured → NaN.
-        assert!(track.value(MetricId::Buy, Some(10.0), ts(5.0)).is_nan());
+        assert!(track.value(MetricId::Buy, Some(10.0), None, ts(5.0)).is_nan());
         // Dynamic metric with no window arg → NaN.
         track.ensure_window(10.0);
-        assert!(track.value(MetricId::Buy, None, ts(5.0)).is_nan());
+        assert!(track.value(MetricId::Buy, None, None, ts(5.0)).is_nan());
     }
 
     #[test]
@@ -165,10 +251,10 @@ mod tests {
         let mut track = TokenTrack::new(ts(0.0));
         track.ensure_window(10.0);
         track.on_trade(buy(4.0, 1.0, 20.0, 0.0));
-        assert_eq!(track.value(MetricId::Buy, Some(10.0), ts(5.0)), 4.0);
+        assert_eq!(track.value(MetricId::Buy, Some(10.0), None, ts(5.0)), 4.0);
         // Tick past the window edge → flow decays to zero even with no trade.
         track.on_tick(ts(11.0));
-        assert_eq!(track.value(MetricId::Buy, Some(10.0), ts(11.0)), 0.0);
+        assert_eq!(track.value(MetricId::Buy, Some(10.0), None, ts(11.0)), 0.0);
     }
 
     #[test]
@@ -177,12 +263,48 @@ mod tests {
         track.ensure_window(10.0);
         track.on_trade(buy(3.0, 2.0, 15.0, 1.0));
         let reqs = [
-            (MetricId::Time, None),
-            (MetricId::Liquidity, None),
-            (MetricId::Buy, Some(10.0)),
+            (MetricId::Time, None, None),
+            (MetricId::Liquidity, None, None),
+            (MetricId::Buy, Some(10.0), None),
         ];
         let mut out = [0.0_f64; 3];
         track.values(&reqs, ts(5.0), &mut out);
         assert_eq!(out, [5.0, 15.0, 3.0]);
+    }
+
+    #[test]
+    fn flow_unconfigured_is_nan_configured_splits() {
+        use crate::metrics::flow_split::ix_hash;
+        use std::collections::BTreeSet;
+
+        let mut track = TokenTrack::new(ts(0.0));
+        let id = fp(1);
+        // No ensure_flow → NaN.
+        assert!(track
+            .value(MetricId::VolBuy, None, Some(id), ts(1.0))
+            .is_nan());
+
+        let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["vol"])]));
+        track.ensure_flow(id, &patterns, &[10.0]);
+        track.seed_creator(99);
+
+        let mut t = buy(4.0, 1.0, 20.0, 0.0);
+        t.ix_hash = Some(ix_hash(&["vol"]));
+        t.wallet_hash = 1;
+        track.on_trade(t);
+
+        let mut t2 = buy(6.0, 1.0, 26.0, 1.0);
+        t2.wallet_hash = 2;
+        track.on_trade(t2);
+
+        assert_eq!(track.value(MetricId::VolBuy, None, Some(id), ts(2.0)), 4.0);
+        assert_eq!(track.value(MetricId::NonvolBuy, None, Some(id), ts(2.0)), 6.0);
+        assert_eq!(
+            track.value(MetricId::WinVolBuy, Some(10.0), Some(id), ts(2.0)),
+            4.0
+        );
+        // Missing fingerprint arg → NaN even when state exists.
+        assert!(crate::metrics::is_flow_metric(MetricId::VolBuy));
+        assert!(track.value(MetricId::VolBuy, None, None, ts(2.0)).is_nan());
     }
 }

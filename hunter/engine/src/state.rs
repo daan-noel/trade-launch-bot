@@ -12,6 +12,7 @@ use crate::arm::{ArmState, CompiledRule};
 use crate::event::{IntentId, LoadedRule, Mint, PositionId, RuleId};
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::grouping::TokenFingerprint;
+use crate::metrics::flow_split::FlowPatterns;
 use crate::metrics::track::TokenTrack;
 use crate::metrics::Ts;
 
@@ -103,8 +104,9 @@ impl EngineState {
     }
 
     /// Rebuild the compiled rule set + fingerprints from a reload. Recomputes the
-    /// distinct-window union and ensures any newly-referenced window exists on every
-    /// already-tracked token (going forward — past history is not re-folded).
+    /// distinct-window union and ensures any newly-referenced window / flow state
+    /// exists on every already-tracked token (going forward — past history is not
+    /// re-folded).
     pub fn reload(&mut self, rules: &[LoadedRule], fps: &[Fingerprint]) {
         self.rules = rules.iter().map(|r| (r.id, CompiledRule::compile(r))).collect();
         self.fps = fps.to_vec();
@@ -118,18 +120,30 @@ impl EngineState {
             }
         }
         for token in self.tokens.values_mut() {
-            for &w in &self.all_windows {
-                token.track.ensure_window(w);
-            }
+            Self::ensure_track_windows_and_flow(&mut token.track, &self.all_windows, &self.fps);
         }
     }
 
-    /// A fresh track for a token created at `at`, pre-registering every rule window.
+    /// A fresh track for a token created at `at`, pre-registering every rule
+    /// window and every configured flow fingerprint.
     pub fn new_track(&self, at: Ts) -> TokenTrack {
         let mut track = TokenTrack::new(at);
-        for &w in &self.all_windows {
+        Self::ensure_track_windows_and_flow(&mut track, &self.all_windows, &self.fps);
+        track
+    }
+
+    fn ensure_track_windows_and_flow(
+        track: &mut TokenTrack,
+        windows: &[f64],
+        fps: &[Fingerprint],
+    ) {
+        for &w in windows {
             track.ensure_window(w);
         }
-        track
+        for fp in fps {
+            if let Some(patterns) = FlowPatterns::from_metric_config(&fp.metric_config) {
+                track.ensure_flow(fp.id, &patterns, windows);
+            }
+        }
     }
 }

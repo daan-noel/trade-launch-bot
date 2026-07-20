@@ -20,7 +20,9 @@
 
 use hunter_engine::metrics::evaluator::{coalesce_contributions, Condition, Operator};
 use hunter_engine::metrics::series::SeriesColumn;
-use hunter_engine::metrics::{group_by_name, metric_spec, MetricGroupId, MetricId, MetricKind};
+use hunter_engine::metrics::{
+    group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, MetricKind,
+};
 use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
 use serde::{Deserialize, Serialize};
 
@@ -383,23 +385,32 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
     }
 }
 
-/// Enforce one `window_size_sec` per (side, `m_time_window`) — RuleParams stores a
+/// Enforce one `window_size_sec` per (side, dynamic group) — RuleParams stores a
 /// single window per group per side.
 fn check_shared_windows(axes: &[ResolvedAxis]) -> Result<(), String> {
-    for want_side in [AxisSide::Entry, AxisSide::Exit] {
-        let mut window: Option<f64> = None;
-        for a in axes {
-            if let ResolvedAxis::Metric { side, group: MetricGroupId::TimeWindow, window: Some(w), .. } = a {
-                if *side != want_side {
-                    continue;
-                }
-                match window {
-                    Some(prev) if (prev - *w).abs() > f64::EPSILON => {
-                        return Err(format!(
-                            "conflicting m_time_window windows on the {want_side:?} side ({prev} vs {w}) — one window per side"
-                        ))
+    for want_group in [MetricGroupId::TimeWindow, MetricGroupId::FlowWindow] {
+        for want_side in [AxisSide::Entry, AxisSide::Exit] {
+            let mut window: Option<f64> = None;
+            for a in axes {
+                if let ResolvedAxis::Metric {
+                    side,
+                    group,
+                    window: Some(w),
+                    ..
+                } = a
+                {
+                    if *side != want_side || *group != want_group {
+                        continue;
                     }
-                    _ => window = Some(*w),
+                    match window {
+                        Some(prev) if (prev - *w).abs() > f64::EPSILON => {
+                            return Err(format!(
+                                "conflicting {} windows on the {want_side:?} side ({prev} vs {w}) — one window per side",
+                                group_spec(want_group).name,
+                            ))
+                        }
+                        _ => window = Some(*w),
+                    }
                 }
             }
         }

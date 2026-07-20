@@ -47,14 +47,18 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             state.reload(&rules, &fps);
         }
 
-        Event::TokenCreated { mint, fp, at, creator_wallet_hash: _ } => {
+        Event::TokenCreated { mint, fp, at, creator_wallet_hash } => {
             if state.tokens.contains_key(&mint) {
                 return fx; // duplicate creation — idempotent
+            }
+            let mut track = state.new_track(at);
+            if let Some(h) = creator_wallet_hash {
+                track.seed_creator(h);
             }
             let mut token = TokenState {
                 created_at: at,
                 tf: *fp,
-                track: state.new_track(at),
+                track,
                 last_meaningful_at: None,
                 first_slot_settled: false,
                 arms: BTreeMap::new(),

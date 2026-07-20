@@ -99,6 +99,11 @@ pub async fn create_fingerprint(
             serde_json::json!({ "error": "fingerprint must configure at least one match criterion" }),
         );
     }
+    if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+        &fp.metric_config,
+    ) {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+    }
     match fp_repo(&app_state).insert(&fp).await {
         Ok(()) => HttpResponse::Created().json(fp),
         Err(e) => srv_err("create fingerprint", e),
@@ -112,6 +117,11 @@ pub async fn update_fingerprint(
     body: web::Json<serde_json::Value>,
 ) -> impl Responder {
     let fp = Fingerprint::from_json(&body, path.into_inner(), chrono::Utc::now());
+    if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+        &fp.metric_config,
+    ) {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+    }
     match fp_repo(&app_state).update(&fp).await {
         Ok(()) => HttpResponse::Ok().json(fp),
         Err(e) => srv_err("update fingerprint", e),
@@ -159,8 +169,16 @@ pub async fn create_rule(
         Ok(d) => d,
         Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
     };
-    match rules::create(&rule_repo(&app_state), &draft).await {
-        Ok(rule) => HttpResponse::Created().json(rule),
+    match rules::create_with_fp_check(&rule_repo(&app_state), &fp_repo(&app_state), &draft).await {
+        Ok((rule, warning)) => {
+            let mut body = serde_json::to_value(&rule).unwrap_or_default();
+            if let Some(w) = warning {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("warning".into(), serde_json::json!(w));
+                }
+            }
+            HttpResponse::Created().json(body)
+        }
         Err(e) => rule_err(e, "create rule"),
     }
 }
@@ -176,8 +194,16 @@ pub async fn update_rule(
         return HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" }));
     };
     apply_rule_update(&mut rule, &body);
-    match rules::save(&repo, &rule).await {
-        Ok(()) => HttpResponse::Ok().json(rule),
+    match rules::save_with_fp_check(&repo, &fp_repo(&app_state), &rule).await {
+        Ok(warning) => {
+            let mut body = serde_json::to_value(&rule).unwrap_or_default();
+            if let Some(w) = warning {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("warning".into(), serde_json::json!(w));
+                }
+            }
+            HttpResponse::Ok().json(body)
+        }
         Err(e) => rule_err(e, "update rule"),
     }
 }

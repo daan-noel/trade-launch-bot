@@ -8,23 +8,28 @@
 //! track values, sampled after each fold. That shared compute is what the
 //! Phase-1.8 determinism test locks down (track ≡ series, byte-for-byte).
 
+use super::flow_split::FlowPatterns;
 use super::track::TokenTrack;
 use super::{MetricId, TradeLite, Ts};
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
+use crate::fingerprint::FingerprintId;
 
-/// One column of a [`MetricSeries`] — a static metric, or a dynamic metric at a
-/// specific `window_size_sec`.
+/// One column of a [`MetricSeries`] — a static metric, a dynamic metric at a
+/// specific `window_size_sec`, or a fingerprint-scoped flow metric.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SeriesColumn {
     Static(MetricId),
     Window(MetricId, f64),
+    /// Flow metric (`m_flow_split` / `m_flow_window`) scoped to a fingerprint.
+    Flow(MetricId, Option<f64>, FingerprintId),
 }
 
 impl SeriesColumn {
     fn eval(self, track: &TokenTrack, now: Ts) -> f64 {
         match self {
-            SeriesColumn::Static(id) => track.value(id, None, now),
-            SeriesColumn::Window(id, ws) => track.value(id, Some(ws), now),
+            SeriesColumn::Static(id) => track.value(id, None, None, now),
+            SeriesColumn::Window(id, ws) => track.value(id, Some(ws), None, now),
+            SeriesColumn::Flow(id, ws, fp) => track.value(id, ws, Some(fp), now),
         }
     }
 }
@@ -96,6 +101,22 @@ impl MetricSeries {
             reserve_sol: Vec::new(),
             dead: Vec::new(),
         }
+    }
+
+    /// Attach fingerprint-scoped flow state (and optional window sizes) before
+    /// folding trades. Required for [`SeriesColumn::Flow`] columns to leave `NaN`.
+    pub fn ensure_flow(
+        &mut self,
+        fp: FingerprintId,
+        patterns: &FlowPatterns,
+        windows: &[f64],
+    ) {
+        self.track.ensure_flow(fp, patterns, windows);
+    }
+
+    /// Seed the creator wallet hash (volume-side unconditionally).
+    pub fn seed_creator(&mut self, hash: u64) {
+        self.track.seed_creator(hash);
     }
 
     /// The deadness clock (newest meaningful-trade time) after every fold so far —

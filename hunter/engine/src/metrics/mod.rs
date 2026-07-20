@@ -8,6 +8,8 @@
 //! * `m_price_path` (static) — `stall`, `trail`
 //! * `m_time_window` (dynamic, strict param `window_size_sec`) — `gross_flow`,
 //!   `net_flow`, `buy`, `sell`
+//! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
+//! * `m_flow_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //!
 //! The **registry** below is the single source of truth for group/metric names,
 //! units, `=`-tolerances, static/dynamic kind, monotonicity, and required strict
@@ -93,6 +95,10 @@ pub enum MetricGroupId {
     PricePath,
     /// `m_time_window` — trailing-window flow aggregates.
     TimeWindow,
+    /// `m_flow_split` — volume/organic lifetime totals (fingerprint-scoped).
+    FlowSplit,
+    /// `m_flow_window` — volume/organic trailing-window totals (fingerprint-scoped).
+    FlowWindow,
 }
 
 impl MetricGroupId {
@@ -126,6 +132,34 @@ pub enum MetricId {
     Buy,
     /// Sell SOL over the trailing window (`m_time_window`).
     Sell,
+    // ── m_flow_split (lifetime; JSON names shared with m_flow_window) ───────
+    VolBuy,
+    VolSell,
+    VolNet,
+    VolGross,
+    NonvolBuy,
+    NonvolSell,
+    NonvolNet,
+    NonvolGross,
+    VolShare,
+    // ── m_flow_window (trailing; distinct ids so monotonic flags can differ) ─
+    WinVolBuy,
+    WinVolSell,
+    WinVolNet,
+    WinVolGross,
+    WinNonvolBuy,
+    WinNonvolSell,
+    WinNonvolNet,
+    WinNonvolGross,
+    WinVolShare,
+}
+
+/// True for metrics whose state is keyed by fingerprint (flow split / window).
+pub fn is_flow_metric(id: MetricId) -> bool {
+    matches!(
+        group_of(id).id,
+        MetricGroupId::FlowSplit | MetricGroupId::FlowWindow
+    )
 }
 
 impl MetricId {
@@ -206,6 +240,17 @@ pub struct StrictParamSpec {
     pub required: bool,
 }
 
+/// A fingerprint-side config field declared by a metric group (stored under
+/// `fingerprints.metric_config[group_name]`). Mirrored into `registry_json` so
+/// the FE can render editors without hardcoding keys.
+#[derive(Debug, Clone, Copy)]
+pub struct FpConfigFieldSpec {
+    pub name: &'static str,
+    /// JSON type hint for the FE (`"string[][]"` for ordered label sequences).
+    pub value_type: &'static str,
+    pub required: bool,
+}
+
 /// Registry entry for one metric group.
 #[derive(Debug, Clone, Copy)]
 pub struct GroupSpec {
@@ -213,6 +258,8 @@ pub struct GroupSpec {
     pub name: &'static str,
     pub kind: MetricKind,
     pub strict_params: &'static [StrictParamSpec],
+    /// Fingerprint-side config fields (empty for most groups).
+    pub fingerprint_config: &'static [FpConfigFieldSpec],
     pub metrics: &'static [MetricSpec],
 }
 
@@ -249,6 +296,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_snapshot",
         kind: MetricKind::Static,
         strict_params: &[],
+        fingerprint_config: &[],
         // Blue/indigo family (~212–236). Deliberately clear of the green at 170:
         // the old sky hues (185/200) sat within ~15° of `buy` and the two groups
         // were near-indistinguishable at chip size.
@@ -276,6 +324,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_price_path",
         kind: MetricKind::Static,
         strict_params: &[],
+        fingerprint_config: &[],
         // Amber/gold family (~40–62). Both metrics anchor on the all-time high:
         // `trail` is how far below it price sits, `stall` how long since it was
         // set. Nudged up off 35 to widen the gap to the red at 355.
@@ -303,6 +352,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_time_window",
         kind: MetricKind::Dynamic,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
+        fingerprint_config: &[],
         // Violet/magenta family (~278–300) for the aggregate flow metrics — but `buy` and
         // `sell` deliberately leave the family and take the candle up/down hues
         // instead. Trade DIRECTION outranks group identity: a `buy` chip has to
@@ -340,6 +390,176 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 0.1,
                 monotonic: false,
                 hue: CANDLE_DOWN_HUE,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::FlowSplit,
+        name: "m_flow_split",
+        kind: MetricKind::Static,
+        strict_params: &[],
+        fingerprint_config: &[FpConfigFieldSpec {
+            name: "volume_ix_patterns",
+            value_type: "string[][]",
+            required: true,
+        }],
+        // Teal family (~93–109) — clear of price-path (≤62) and candle green (170).
+        metrics: &[
+            MetricSpec {
+                id: MetricId::VolBuy,
+                name: "vol_buy",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 93,
+            },
+            MetricSpec {
+                id: MetricId::VolSell,
+                name: "vol_sell",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 95,
+            },
+            MetricSpec {
+                id: MetricId::VolNet,
+                name: "vol_net",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 97,
+            },
+            MetricSpec {
+                id: MetricId::VolGross,
+                name: "vol_gross",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 99,
+            },
+            MetricSpec {
+                id: MetricId::NonvolBuy,
+                name: "nonvol_buy",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 101,
+            },
+            MetricSpec {
+                id: MetricId::NonvolSell,
+                name: "nonvol_sell",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 103,
+            },
+            MetricSpec {
+                id: MetricId::NonvolNet,
+                name: "nonvol_net",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 105,
+            },
+            MetricSpec {
+                id: MetricId::NonvolGross,
+                name: "nonvol_gross",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 107,
+            },
+            MetricSpec {
+                id: MetricId::VolShare,
+                name: "vol_share",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 109,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::FlowWindow,
+        name: "m_flow_window",
+        kind: MetricKind::Dynamic,
+        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
+        // Reads the same fingerprint key as m_flow_split (one classifier, two views).
+        fingerprint_config: &[],
+        // Same teal family as m_flow_split (one classifier, two views) — the
+        // cross-group hue guard exempts this sibling pair.
+        metrics: &[
+            MetricSpec {
+                id: MetricId::WinVolBuy,
+                name: "vol_buy",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 93,
+            },
+            MetricSpec {
+                id: MetricId::WinVolSell,
+                name: "vol_sell",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 95,
+            },
+            MetricSpec {
+                id: MetricId::WinVolNet,
+                name: "vol_net",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 97,
+            },
+            MetricSpec {
+                id: MetricId::WinVolGross,
+                name: "vol_gross",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 99,
+            },
+            MetricSpec {
+                id: MetricId::WinNonvolBuy,
+                name: "nonvol_buy",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 101,
+            },
+            MetricSpec {
+                id: MetricId::WinNonvolSell,
+                name: "nonvol_sell",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 103,
+            },
+            MetricSpec {
+                id: MetricId::WinNonvolNet,
+                name: "nonvol_net",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 105,
+            },
+            MetricSpec {
+                id: MetricId::WinNonvolGross,
+                name: "nonvol_gross",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 107,
+            },
+            MetricSpec {
+                id: MetricId::WinVolShare,
+                name: "vol_share",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 109,
             },
         ],
     },
@@ -403,10 +623,22 @@ pub fn registry_json() -> serde_json::Value {
                     })
                 })
                 .collect();
+            let fp_cfg: Vec<Value> = g
+                .fingerprint_config
+                .iter()
+                .map(|p| {
+                    json!({
+                        "name": p.name,
+                        "value_type": p.value_type,
+                        "required": p.required,
+                    })
+                })
+                .collect();
             json!({
                 "name": g.name,
                 "kind": g.kind.as_str(),
                 "strict_params": strict,
+                "fingerprint_config": fp_cfg,
                 "metrics": metrics,
             })
         })
@@ -441,14 +673,22 @@ mod tests {
         group_names.dedup();
         assert_eq!(group_names.len(), REGISTRY.len());
 
-        let mut metric_names: Vec<_> =
-            REGISTRY.iter().flat_map(|g| g.metrics.iter().map(|m| m.name)).collect();
-        let total = metric_names.len();
-        metric_names.sort_unstable();
-        metric_names.dedup();
-        // Metric names are globally unique today (keeps error messages and sweep
-        // axis labels unambiguous); relax to per-group uniqueness if ever needed.
-        assert_eq!(metric_names.len(), total);
+        // Metric names are unique within a group. The same name may appear in
+        // sibling groups (m_flow_split / m_flow_window share vol_* names).
+        for g in REGISTRY {
+            let mut names: Vec<_> = g.metrics.iter().map(|m| m.name).collect();
+            let total = names.len();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(names.len(), total, "{} has duplicate metric names", g.name);
+        }
+
+        // MetricIds themselves stay globally unique.
+        let mut ids: Vec<_> = REGISTRY.iter().flat_map(|g| g.metrics.iter().map(|m| m.id)).collect();
+        let total = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), total);
     }
 
     #[test]
@@ -461,10 +701,21 @@ mod tests {
     }
 
     #[test]
-    fn only_time_is_monotonic() {
+    fn monotonic_flags_match_contract() {
+        // Lifetime accumulators that only grow: time + m_flow_split vol/nonvol
+        // buy/sell/gross. Windowed / net / share / everything else: not monotonic.
+        let lifetime_flow_mono = [
+            MetricId::VolBuy,
+            MetricId::VolSell,
+            MetricId::VolGross,
+            MetricId::NonvolBuy,
+            MetricId::NonvolSell,
+            MetricId::NonvolGross,
+        ];
         for g in REGISTRY {
             for m in g.metrics {
-                assert_eq!(m.monotonic, m.id == MetricId::Time, "{}", m.name);
+                let expect = m.id == MetricId::Time || lifetime_flow_mono.contains(&m.id);
+                assert_eq!(m.monotonic, expect, "{}.{}", g.name, m.name);
             }
         }
     }
@@ -573,10 +824,22 @@ mod tests {
 
     /// Metrics from different groups must not collide either — otherwise a
     /// `m_snapshot` chip and a `m_time_window` chip read as the same thing.
+    /// Sibling flow groups (`m_flow_split` / `m_flow_window`) share a hue family
+    /// on purpose (one classifier, two views) and are exempt.
     #[test]
     fn distinct_groups_use_distinct_hues() {
+        let flow_siblings = |a: MetricGroupId, b: MetricGroupId| {
+            matches!(
+                (a, b),
+                (MetricGroupId::FlowSplit, MetricGroupId::FlowWindow)
+                    | (MetricGroupId::FlowWindow, MetricGroupId::FlowSplit)
+            )
+        };
         for (i, ga) in REGISTRY.iter().enumerate() {
             for gb in &REGISTRY[i + 1..] {
+                if flow_siblings(ga.id, gb.id) {
+                    continue;
+                }
                 for ma in ga.metrics {
                     for mb in gb.metrics {
                         let gap = hue_gap(ma.hue, mb.hue);
