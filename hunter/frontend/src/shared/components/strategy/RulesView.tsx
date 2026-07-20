@@ -19,6 +19,7 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
+import { buildCapsColumns } from './capsRuleColumns';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleParamsColumns } from './ruleParamsColumns';
 import { RuleHoverTip } from './RuleHoverTip';
@@ -334,16 +335,7 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
       sortValue: (r) => r.buy_amount_lamports,
       sortable: true,
     },
-    {
-      key: 'caps',
-      label: 'Caps',
-      render: (r) => (
-        <span className="tabular-nums text-text-dim">
-          {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
-        </span>
-      ),
-      searchValue: (r) => `${r.max_concurrent_tokens}/${r.max_total_tokens}`,
-    },
+    ...buildCapsColumns(),
     ...buildRuleParamsColumns(),
     {
       key: 'execute',

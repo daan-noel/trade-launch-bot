@@ -55,6 +55,7 @@ import {
 } from 'store/sharedEndpoints';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
+import { buildCapsColumns } from 'components/strategy/capsRuleColumns';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
 import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
@@ -869,16 +870,7 @@ function buildColumns(
       sortValue: (r) => r.buy_amount_lamports,
       sortable: true,
     },
-    {
-      key: 'caps',
-      label: 'Caps',
-      render: (r) => (
-        <span className="tabular-nums text-text-dim">
-          {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
-        </span>
-      ),
-      searchValue: (r) => `${r.max_concurrent_tokens}/${r.max_total_tokens}`,
-    },
+    ...buildCapsColumns(),
     ...buildRuleParamsColumns(),
     {
       key: 'sim_run',

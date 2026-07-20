@@ -63,7 +63,7 @@ Generic, reused across all pages. Two modes:
 
 **Column visibility** is persisted per `tableId` to `localStorage` key `mt:table.cols` (a map of `tableId → Set<hidden_column_keys>`). All tables share one localStorage entry, keyed by `tableId` string. This is how column preferences survive refreshes.
 
-**Hidden sort-only columns:** set `sortOnly: true` (+ `sortValue`) so the column joins multi-key sort but stays out of the Columns panel and defaults hidden. A sibling column's `renderHeader(SortCtx)` (via shared `MultiSortHeader`) calls `toggleSort(key)` for each axis — Rules/Simulate use `buildFingerprintRuleColumns` and `buildRuleParamsColumns`.
+**Hidden sort-only columns:** set `sortOnly: true` (+ `sortValue`) so the column joins multi-key sort but stays out of the Columns panel and defaults hidden. A sibling column's `renderHeader(SortCtx)` (via shared `MultiSortHeader`) calls `toggleSort(key)` for each axis — Rules/Simulate use `buildFingerprintRuleColumns`, `buildRuleParamsColumns`, and `buildCapsColumns` (concurrent / total; `0` total displays/filters as `∞` and sorts as largest).
 
 ## `useTradeStream` — `hooks/useTradeStream.ts`
 
