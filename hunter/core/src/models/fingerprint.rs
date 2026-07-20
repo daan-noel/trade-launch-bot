@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::config::constants::lamports_to_sol;
+use crate::config::constants::{lamports_to_sol, tidy_sol_decimal};
 
 /// Read an optional integer field from an HTTP JSON body (accepts a JSON number
 /// or a numeric string). Shared SSOT for the generic-engine CRUD parse paths.
@@ -97,10 +97,11 @@ impl Fingerprint {
             spendable_lamports_in: opt_i64(body, "spendable_lamports_in"),
             first_slot_buy_lamports: opt_i64(body, "first_slot_buy_lamports"),
             first_slot_sell_lamports: opt_i64(body, "first_slot_sell_lamports"),
-            bucket_size_amount: body
-                .get("bucket_size_amount")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.1),
+            bucket_size_amount: tidy_sol_decimal(
+                body.get("bucket_size_amount")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.1),
+            ),
             ix_labels: body.get("ix_labels").and_then(|v| v.as_array()).map(|a| {
                 a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
             }),

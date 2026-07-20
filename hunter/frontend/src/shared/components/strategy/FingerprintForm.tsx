@@ -17,6 +17,7 @@ import {
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import { tidySolDecimal } from 'utils/format';
 import { LabelTip } from './LabelTip';
 import { VolumeIxPatternsEditor } from './VolumeIxPatternsEditor';
 
@@ -59,7 +60,7 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     spendable_sol: lamportsToSol(fp?.spendable_lamports_in),
     first_slot_buy_sol: lamportsToSol(fp?.first_slot_buy_lamports),
     first_slot_sell_sol: lamportsToSol(fp?.first_slot_sell_lamports),
-    bucket_size_amount: fp?.bucket_size_amount ?? 0.1,
+    bucket_size_amount: tidySolDecimal(fp?.bucket_size_amount ?? 0.1),
     ix_labels: formatIxLabelsText(fp?.ix_labels),
     volume_ix_patterns: volumeIxPatternsFromConfig(cfg),
     metric_config_rest: rest,
@@ -78,7 +79,7 @@ function toDraft(s: FormState): FingerprintDraft {
     spendable_lamports_in: solToLamports(s.spendable_sol),
     first_slot_buy_lamports: solToLamports(s.first_slot_buy_sol),
     first_slot_sell_lamports: solToLamports(s.first_slot_sell_sol),
-    bucket_size_amount: s.bucket_size_amount ?? 0.1,
+    bucket_size_amount: tidySolDecimal(s.bucket_size_amount ?? 0.1),
     ix_labels: labels,
     metric_config: { ...s.metric_config_rest, ...flow },
   };

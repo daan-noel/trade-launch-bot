@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::config::constants::tidy_sol_decimal;
 use crate::models::Fingerprint;
 
 #[derive(Clone)]
@@ -47,7 +48,7 @@ impl From<FingerprintDbRow> for Fingerprint {
             spendable_lamports_in: r.spendable_lamports_in,
             first_slot_buy_lamports: r.first_slot_buy_lamports,
             first_slot_sell_lamports: r.first_slot_sell_lamports,
-            bucket_size_amount: r.bucket_size_amount,
+            bucket_size_amount: tidy_sol_decimal(r.bucket_size_amount),
             ix_labels: r.ix_labels,
             metric_config: r.metric_config.0,
             created_at: r.created_at,
@@ -99,7 +100,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(fp.bucket_size_amount)
+        .bind(tidy_sol_decimal(fp.bucket_size_amount))
         .bind(fp.ix_labels.as_ref())
         .bind(sqlx::types::Json(&fp.metric_config))
         .bind(fp.created_at)
@@ -137,7 +138,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(fp.bucket_size_amount)
+        .bind(tidy_sol_decimal(fp.bucket_size_amount))
         .bind(fp.ix_labels.as_ref())
         .bind(sqlx::types::Json(&fp.metric_config))
         .execute(&self.pool)
@@ -188,7 +189,7 @@ impl FingerprintRepo {
         .bind(fp.spendable_lamports_in)
         .bind(fp.first_slot_buy_lamports)
         .bind(fp.first_slot_sell_lamports)
-        .bind(fp.bucket_size_amount)
+        .bind(tidy_sol_decimal(fp.bucket_size_amount))
         .bind(fp.ix_labels.as_ref())
         .fetch_optional(&self.pool)
         .await?;

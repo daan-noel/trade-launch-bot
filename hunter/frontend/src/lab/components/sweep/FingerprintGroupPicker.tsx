@@ -10,6 +10,7 @@ import {
   BUCKETED_GROUP_FIELDS,
   type GroupField,
 } from './groupedTypes';
+import { tidySolDecimal } from 'utils/format';
 
 /** Tri-state corpus filter on the `is_cashback_enabled` flag. */
 export type CashbackFilter = 'all' | 'true' | 'false';
@@ -342,7 +343,7 @@ export function FingerprintGroupPicker({
             value={bucketWidthSol}
             onChange={(e) => {
               const n = Number(e.target.value);
-              onSetBucketWidth(Number.isFinite(n) && n > 0 ? n : 0.1);
+              onSetBucketWidth(Number.isFinite(n) && n > 0 ? tidySolDecimal(n) : 0.1);
             }}
             className="w-20 rounded border border-white/10 bg-surface px-2 py-0.5 text-xs text-text-mid focus:border-white/25 focus:outline-none"
           />

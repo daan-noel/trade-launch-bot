@@ -74,6 +74,20 @@ pub fn lamports_to_sol(lamports: i64) -> f64 {
     lamports as f64 / LAMPORTS_PER_SOL as f64
 }
 
+/// Collapse IEEE-754 display noise on a coarse human SOL amount.
+///
+/// Postgres `REAL` / Rust `f32` round-trips turn `0.1` into
+/// `0.10000000149011612` when widened back to `f64`. Formatting as `f32` and
+/// re-parsing recovers the shortest decimal (`0.1`). Use for knobs like
+/// `bucket_size_amount` / `bucket_width_sol` — **not** for prices or PnL that
+/// need the full `f64` mantissa.
+pub fn tidy_sol_decimal(sol: f64) -> f64 {
+    if !sol.is_finite() {
+        return sol;
+    }
+    format!("{}", sol as f32).parse().unwrap_or(sol)
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -93,5 +107,15 @@ mod unit_tests {
         assert_eq!(sol_to_lamports(0.0000000015), 2);
         assert!((lamports_to_sol(1_500_000_000) - 1.5).abs() < 1e-12);
         assert_eq!(sol_to_lamports(lamports_to_sol(42)), 42);
+    }
+
+    #[test]
+    fn tidy_sol_decimal_collapses_f32_noise() {
+        // Exact bit pattern of `0.1f32` widened to f64 (the REAL→DOUBLE bug).
+        let noisy = f64::from(0.1f32);
+        assert_ne!(format!("{}", noisy), "0.1");
+        assert_eq!(tidy_sol_decimal(noisy), 0.1);
+        assert_eq!(tidy_sol_decimal(0.1), 0.1);
+        assert_eq!(tidy_sol_decimal(f64::from(0.05f32)), 0.05);
     }
 }

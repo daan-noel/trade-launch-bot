@@ -9,6 +9,16 @@ export function formatDecimalTrim(value: number, decimals: number): string {
   return trimmed || s;
 }
 
+/**
+ * Collapse f32/REAL round-trip noise on coarse SOL knobs (`bucket_size_amount`,
+ * `bucket_width_sol`). Mirrors Rust `tidy_sol_decimal`: `0.10000000149011612` → `0.1`.
+ * ~7 significant digits ≈ IEEE-754 binary32.
+ */
+export function tidySolDecimal(sol: number): number {
+  if (!Number.isFinite(sol)) return sol;
+  return Number(sol.toPrecision(7));
+}
+
 export function formatPrice(value: number): string {
   if (value === 0) return '0';
   const abs = Math.abs(value);

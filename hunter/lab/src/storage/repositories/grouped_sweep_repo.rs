@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::models::grouped_sweep::{
     GroupedSweepGroupSummary, GroupedSweepGroupWrite, GroupedSweepResult, GroupedSweepRun,
 };
+use trading_core::config::constants::tidy_sol_decimal;
 
 /// The per-strategy table triple a grouped sweep reads/writes. Field values come
 /// from fixed internal consts in [`crate::sweep::registry`], so the repo can
@@ -73,8 +74,8 @@ struct RunDbRow {
     token_cap: Option<i32>,
     max_combos: Option<i32>,
     label: Option<String>,
-    buy_amount_sol: Option<f32>,
-    bucket_width_sol: Option<f32>,
+    buy_amount_sol: Option<f64>,
+    bucket_width_sol: Option<f64>,
     volume_ix_patterns: Option<sqlx::types::Json<Value>>,
 }
 
@@ -103,8 +104,8 @@ impl From<RunDbRow> for GroupedSweepRun {
             token_cap: r.token_cap,
             max_combos: r.max_combos,
             label: r.label,
-            buy_amount_sol: r.buy_amount_sol.map(|v| v as f64),
-            bucket_width_sol: r.bucket_width_sol.map(|v| v as f64),
+            buy_amount_sol: r.buy_amount_sol.map(tidy_sol_decimal),
+            bucket_width_sol: r.bucket_width_sol.map(tidy_sol_decimal),
             volume_ix_patterns: r.volume_ix_patterns.map(|j| j.0),
         }
     }
@@ -292,8 +293,8 @@ impl GroupedSweepRepo {
             .bind(run.token_cap)
             .bind(run.max_combos)
             .bind(&run.label)
-            .bind(run.buy_amount_sol.map(|v| v as f32))
-            .bind(run.bucket_width_sol.map(|v| v as f32))
+            .bind(run.buy_amount_sol.map(tidy_sol_decimal))
+            .bind(run.bucket_width_sol.map(tidy_sol_decimal))
             .bind(run.volume_ix_patterns.as_ref().map(sqlx::types::Json))
             .execute(&self.pool)
             .await?;

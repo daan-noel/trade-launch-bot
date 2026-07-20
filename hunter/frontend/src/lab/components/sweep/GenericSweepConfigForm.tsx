@@ -35,6 +35,7 @@ import {
   type MetricAxisSide,
 } from './genericAxes';
 import { SWEEP_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import { tidySolDecimal } from 'utils/format';
 
 /** Backend `MAX_COMBOS` default + `HARD_MAX_COMBOS` backstop (mirror). */
 const DEFAULT_MAX_COMBOS = 100000;
@@ -231,8 +232,8 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     tokenCap: run.token_cap ?? defaults.tokenCap,
     maxCombos: run.max_combos ?? defaults.maxCombos,
     curveOnly: run.curve_only,
-    buyAmountSol: run.buy_amount_sol ?? defaults.buyAmountSol,
-    bucketWidthSol: run.bucket_width_sol ?? defaults.bucketWidthSol,
+    buyAmountSol: tidySolDecimal(run.buy_amount_sol ?? defaults.buyAmountSol),
+    bucketWidthSol: tidySolDecimal(run.bucket_width_sol ?? defaults.bucketWidthSol),
     volumeIxPatterns: run.volume_ix_patterns ?? defaults.volumeIxPatterns,
   };
 }

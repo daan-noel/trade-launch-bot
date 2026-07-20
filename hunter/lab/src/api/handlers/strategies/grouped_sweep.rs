@@ -32,7 +32,7 @@ use crate::sweep::grouped_engine::{CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::{group_key, normalize_label_vec, GroupField, SOL_BUCKET_WIDTH};
 use crate::sweep::registry;
 use crate::sweep::strategy::parse_method;
-use trading_core::config::constants::sol_to_lamports;
+use trading_core::config::constants::{sol_to_lamports, tidy_sol_decimal};
 use trading_core::models::Fingerprint;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 
@@ -1607,7 +1607,7 @@ pub(crate) fn fingerprint_from_group_key(
         spendable_lamports_in: None,
         first_slot_buy_lamports: None,
         first_slot_sell_lamports: None,
-        bucket_size_amount: width,
+        bucket_size_amount: tidy_sol_decimal(width),
         ix_labels: None,
         metric_config: serde_json::json!({}),
         created_at: now,

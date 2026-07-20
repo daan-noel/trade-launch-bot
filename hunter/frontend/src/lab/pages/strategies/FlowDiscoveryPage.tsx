@@ -35,6 +35,7 @@ import {
 } from '@lab/store/labEndpoints';
 import type { FlowDiscoveryGroup, FlowDiscoveryResult } from 'types';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
+import { tidySolDecimal } from 'utils/format';
 
 interface DiscoveryConfig {
   createdAfter: string;
@@ -94,7 +95,7 @@ function configFromFingerprint(fp: Fingerprint): Partial<DiscoveryConfig> {
     groupBy: [],
     fieldFiltersText,
     ixLabelsFilter: formatIxLabelsText(fp.ix_labels),
-    bucketWidthSol: fp.bucket_size_amount > 0 ? fp.bucket_size_amount : 0.1,
+    bucketWidthSol: tidySolDecimal(fp.bucket_size_amount > 0 ? fp.bucket_size_amount : 0.1),
     minTokens: 1,
     cashbackFilter: 'all',
   };

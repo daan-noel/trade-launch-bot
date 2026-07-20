@@ -18,6 +18,7 @@ import { formatIxLabelsText } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { lamportsToSol, type Fingerprint, type FingerprintDraft } from 'lib/strategy/types';
+import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
 
 function dash(): ReactNode {
   return <span className="text-text-dim">—</span>;
@@ -59,7 +60,7 @@ const COLOR_COLS: {
     key: 'ix_labels',
     valueOf: (r) => (r.ix_labels?.length ? formatIxLabelsText(r.ix_labels) : null),
   },
-  { key: 'bucket', valueOf: (r) => String(r.bucket_size_amount) },
+  { key: 'bucket', valueOf: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6) },
 ];
 
 /**
@@ -240,10 +241,14 @@ export function FingerprintsView() {
         key: 'bucket',
         label: 'Bucket',
         group: 'bucket',
-        render: (r) => <span className="font-mono tabular-nums">{r.bucket_size_amount}◎</span>,
-        searchValue: (r) => String(r.bucket_size_amount),
-        sortValue: (r) => r.bucket_size_amount,
-        filterNumber: (r) => r.bucket_size_amount,
+        render: (r) => (
+          <span className="font-mono tabular-nums">
+            {formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6)}◎
+          </span>
+        ),
+        searchValue: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6),
+        sortValue: (r) => tidySolDecimal(r.bucket_size_amount),
+        filterNumber: (r) => tidySolDecimal(r.bucket_size_amount),
         sortable: true,
         cellClassName: cellTint('bucket'),
       },

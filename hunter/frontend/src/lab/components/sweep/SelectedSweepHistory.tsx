@@ -9,6 +9,7 @@ import {
   type GroupField,
   type GroupedSweepRunRecord,
 } from './groupedTypes';
+import { tidySolDecimal } from 'utils/format';
 
 /** A read-only summary of the currently-selected sweep run's full launch config
  *  — what corpus/filters/grid it was swept over — so a saved run is legible at a
@@ -153,8 +154,8 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         </Row>
         <Row label="Caps / gates">
           min {run.min_tokens} tok/grp · token cap {run.token_cap ?? '—'} · max combos{' '}
-          {run.max_combos ?? 'default'} · buy {run.buy_amount_sol ?? 1} SOL · bucket{' '}
-          {run.bucket_width_sol ?? 0.1} SOL
+          {run.max_combos ?? 'default'} · buy {tidySolDecimal(run.buy_amount_sol ?? 1)} SOL · bucket{' '}
+          {tidySolDecimal(run.bucket_width_sol ?? 0.1)} SOL
           {run.curve_only ? ' · curve-only' : ''}
         </Row>
         {fieldLines.length > 0 && (

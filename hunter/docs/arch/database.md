@@ -99,7 +99,7 @@ See [lake-pg-read-paths.md](@plans/database/lake-pg-read-paths.md).
 One family since the Phase 7 retirement — the per-strategy `{tpsl1,tpsl2,swing_1}_grouped_sweep_*`
 tables were dropped in `lab/0005`:
 
-- `grouped_sweep_runs` — run metadata, status(`running`/`completed`/`cancelled`), groups_done, corpus filters, label
+- `grouped_sweep_runs` — run metadata, status(`running`/`completed`/`cancelled`), groups_done, corpus filters, label; `buy_amount_sol` / `bucket_width_sol` are **DOUBLE PRECISION** (`lab/0007`, not REAL — f32 widen polluted `fingerprints.bucket_size_amount` on promote). Coarse SOL knobs also pass through `tidy_sol_decimal` at the repo boundary.
 - `grouped_sweep_groups` — one per fingerprint group; best_combo_id, best_expectancy_sol, best_score
 - `grouped_sweep_combos` — per-run combo→params (`RuleParams`) dictionary (deduped; JOINed back on read)
 - `grouped_sweep_results` — per (group, combo): score, win_rate, PnL metrics, exit-reason mix (incl. `n_exit_metrics`). Retention-filtered to ~660 rows/group max
