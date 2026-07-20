@@ -1,4 +1,5 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
@@ -10,6 +11,7 @@ import { FingerprintForm } from './FingerprintForm';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
+  useGetStrategyRulesQuery,
   useCreateFingerprintMutation,
   useUpdateFingerprintMutation,
   useDeleteFingerprintMutation,
@@ -17,7 +19,12 @@ import {
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
-import { lamportsToSol, type Fingerprint, type FingerprintDraft } from 'lib/strategy/types';
+import {
+  lamportsToSol,
+  type Fingerprint,
+  type FingerprintDraft,
+  type StrategyRule,
+} from 'lib/strategy/types';
 import { formatDecimalTrim, tidySolDecimal } from 'utils/format';
 
 function dash(): ReactNode {
@@ -63,19 +70,81 @@ const COLOR_COLS: {
   { key: 'bucket', valueOf: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6) },
 ];
 
+/** Row-detail panel: which strategy rules reference this fingerprint. */
+function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
+  if (rules.length === 0) {
+    return (
+      <p className="text-[12px] text-text-dim">
+        Not used by any rules — safe to delete.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-[12px] font-medium text-text">
+          Used by {rules.length} rule{rules.length === 1 ? '' : 's'}
+        </p>
+        <Link
+          to="/strategies/rules"
+          className="text-[11px] text-accent hover:text-primary hover:underline"
+        >
+          Open Rules →
+        </Link>
+      </div>
+      <ul className="flex flex-col gap-1">
+        {rules.map((r) => (
+          <li
+            key={r.id}
+            className="flex flex-wrap items-center gap-2 text-[12px] text-text"
+          >
+            <span className="font-medium">{r.rule_name}</span>
+            <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
+            <Badge variant={r.is_active ? 'success' : 'neutral'}>
+              {r.is_active ? 'Active' : 'Idle'}
+            </Badge>
+            <span className="tabular-nums text-text-dim">
+              buy {lamportsToSol(r.buy_amount_lamports)}◎
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /**
  * Fingerprint library, shared by the live and lab apps: the match specs rules
  * reference. List (used-by count) + create/edit form (SOL inputs, lamports at
- * the API boundary) + used-by-guarded delete.
+ * the API boundary) + used-by-guarded delete. Selecting a row expands the
+ * rules that reference it.
  */
 export function FingerprintsView() {
   const { data: fps = [], isLoading } = useGetFingerprintsQuery();
+  const { data: rules = [] } = useGetStrategyRulesQuery();
   const [createFp, { isLoading: creating }] = useCreateFingerprintMutation();
   const [updateFp, { isLoading: updating }] = useUpdateFingerprintMutation();
   const [deleteFp] = useDeleteFingerprintMutation();
 
   const [editing, setEditing] = useState<Fingerprint | 'new' | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  const rulesByFp = useMemo(() => {
+    const map = new Map<string, StrategyRule[]>();
+    for (const r of rules) {
+      const list = map.get(r.fingerprint_id);
+      if (list) list.push(r);
+      else map.set(r.fingerprint_id, [r]);
+    }
+    return map;
+  }, [rules]);
+
+  const rowDetail = useCallback(
+    (fp: Fingerprint) => (
+      <FingerprintUsedByDetail rules={rulesByFp.get(fp.id) ?? []} />
+    ),
+    [rulesByFp],
+  );
 
   const valueColors = useMemo(
     () => computeSameValueCellClasses(fps, (r) => r.id, COLOR_COLS),
@@ -285,6 +354,7 @@ export function FingerprintsView() {
         colToggle
         tableId="fingerprints-v2"
         emptyMessage="No fingerprints yet — create one to start authoring rules."
+        rowDetail={rowDetail}
         rowActions={(r) => (
           <div className="flex gap-1">
             <Button variant="ghost" size="xs" onClick={() => setEditing(r)}>

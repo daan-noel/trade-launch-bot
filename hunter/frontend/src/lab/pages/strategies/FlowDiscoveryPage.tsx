@@ -646,7 +646,7 @@ export function FlowDiscoveryPage() {
                             <Checkbox checked={on} onChange={() => toggleStructure(s.ix_labels)} />
                           </td>
                           <td className="px-2 py-1">
-                            <IxLabelsDisplay labels={s.ix_labels} />
+                            <IxLabelsDisplay labels={s.ix_labels} copyJson />
                           </td>
                           <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.group_lift, 2)}</td>
                           <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.volume_share)}</td>

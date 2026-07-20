@@ -320,7 +320,7 @@ export function buildGenericGroupColumns(buyAmountSol = 1): ColumnDef<GroupedSwe
                     {p.label}:
                   </span>
                   {ixParts ? (
-                    <IxLabelsDisplay labels={ixParts} className="text-secondary" />
+                    <IxLabelsDisplay labels={ixParts} copyJson className="text-secondary" />
                   ) : (
                     <span>{chip(p.value, 'text-secondary')}</span>
                   )}
