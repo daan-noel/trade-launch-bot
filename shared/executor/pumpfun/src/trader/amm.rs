@@ -235,6 +235,7 @@ impl PumpFunTrader {
                     token_account_override,
                     slippage_bps,
                     &user,
+                    None,
                 )
                 .await?;
 
@@ -415,6 +416,10 @@ impl PumpFunTrader {
         token_account_override: Option<&str>,
         slippage_bps: Option<u64>,
         user: &Pubkey,
+        // When set, funds the WSOL ATA create (and receives the close refund).
+        // Live sells pass `None` (user pays). Holder-sim probes pass the
+        // configured wallet so empty holder accounts don't fail rent debit.
+        ata_payer: Option<&Pubkey>,
     ) -> Result<Vec<Instruction>> {
         // pool-info and global-config are independent reads — run them
         // concurrently; reserves depend on the resolved pool, so it follows.
@@ -450,11 +455,12 @@ impl PumpFunTrader {
             .await?;
         let user_quote =
             get_associated_token_address_with_program_id(user, &protocol::WSOL_MINT, &quote_tp);
+        let fund = ata_payer.unwrap_or(user);
 
         let mut ixs = Vec::with_capacity(3);
         // Ensure a WSOL account exists to receive proceeds.
         ixs.push(create_associated_token_account_idempotent(
-            user,
+            fund,
             user,
             &protocol::WSOL_MINT,
             &quote_tp,
@@ -476,7 +482,7 @@ impl PumpFunTrader {
         // post-clear `close_token_account` tx, not bundled here — a bundled close
         // would revert the whole sell if any base dust remained.
         ixs.push(spl_token::instruction::close_account(
-            &quote_tp, &user_quote, user, user, &[],
+            &quote_tp, &user_quote, fund, user, &[],
         )?);
 
         Ok(ixs)
@@ -532,6 +538,14 @@ impl PumpFunTrader {
             AccountMeta::new(cc_ata, false),                          // 17 coin_creator_vault_ata
             AccountMeta::new_readonly(cc_authority, false),           // 18 coin_creator_vault_authority
         ];
+        // Per-user volume accumulator — always derived from the instruction
+        // `user` (not the trader's cached wallet UVA) so holder-sims and any
+        // future multi-wallet path attach the correct PDA.
+        let user_uva = Pubkey::find_program_address(
+            &[b"user_volume_accumulator", user.as_ref()],
+            &protocol::PUMP_SWAP,
+        )
+        .0;
         if with_volume {
             // global_volume_accumulator is WRITTEN only when cashback volume is
             // tracked; readonly otherwise (matches real swaps). user_volume_
@@ -541,28 +555,29 @@ impl PumpFunTrader {
             } else {
                 accounts.push(AccountMeta::new_readonly(self.amm_global_volume_accumulator, false));
             }
-            accounts.push(AccountMeta::new(self.amm_user_volume_accumulator, false)); // 20
+            accounts.push(AccountMeta::new(user_uva, false)); // 20
         }
         accounts.push(AccountMeta::new_readonly(fee_config, false)); // fee_config
         accounts.push(AccountMeta::new_readonly(protocol::FEE_PROGRAM, false)); // fee_program
 
-        // Cashback pools append the user's cashback accumulator + a fixed pfee
-        // marker before the buyback pair. The layout differs by side (both
-        // verified against live on-chain swaps, PDAs matched):
-        //   buy  (volume block present): [cashback_ata(W), marker(r)]      → 27 accts
-        //   sell (no volume block):      [cashback_ata(W), uva(W), marker(r)] → 26 accts
-        // cashback_ata = ATA(user_volume_accumulator, WSOL). On the sell side the
-        // user_volume_accumulator (uva) rides in this tail because there is no
-        // earlier volume block to carry it.
+        // Tail before the buyback pair (verified 2026-07-20 against live swaps):
+        //   cashback buy:  [cashback_ata(W), pool_v2(r)]
+        //   cashback sell: [cashback_ata(W), uva(W), pool_v2(r)]
+        //   non-cashback:  [fee_share_marker(r), pool_v2(r)]
+        // cashback_ata = ATA(user_volume_accumulator, WSOL). The pre-pool_v2
+        // `PUMP_AMM_CASHBACK_GLOBAL` marker is NO longer present once pool_v2
+        // is required — keeping it shifts pool_v2 out of its remaining-account
+        // slot and reverts with InvalidPoolV2 (6062).
         if pool.is_cashback_coin {
-            let uva = self.amm_user_volume_accumulator;
             let cashback_ata =
-                get_associated_token_address_with_program_id(&uva, &protocol::WSOL_MINT, &quote_token_program);
+                get_associated_token_address_with_program_id(&user_uva, &protocol::WSOL_MINT, &quote_token_program);
             accounts.push(AccountMeta::new(cashback_ata, false)); // writable
             if !with_volume {
-                accounts.push(AccountMeta::new(uva, false)); // writable, sell-only
+                accounts.push(AccountMeta::new(user_uva, false)); // writable, sell-only
             }
-            accounts.push(AccountMeta::new_readonly(protocol::PUMP_AMM_CASHBACK_GLOBAL, false));
+            if !pool.needs_pool_v2 {
+                accounts.push(AccountMeta::new_readonly(protocol::PUMP_AMM_CASHBACK_GLOBAL, false));
+            }
         } else if let Some(marker) = pool.fee_share_marker {
             // Non-cashback swaps carry a single per-coin "fee-share" marker
             // (readonly) in this slot, on both buy and sell. The deployed program
@@ -570,6 +585,15 @@ impl PumpFunTrader {
             // reproducible offline — so it's read from a recent on-chain swap and
             // cached on `AmmPoolInfo` (see `fetch_fee_share_marker`).
             accounts.push(AccountMeta::new_readonly(marker, false));
+        }
+
+        // pool_v2 — Apr-2026 pump_amm upgrade. Required on every swap; sits
+        // immediately before the buyback pair. See `AmmPoolInfo::needs_pool_v2`.
+        if pool.needs_pool_v2 {
+            accounts.push(AccountMeta::new_readonly(
+                Self::derive_pool_v2(&pool.base_mint),
+                false,
+            ));
         }
 
         // Trailing buyback-fee block — required by the deployed pump_amm program
@@ -610,6 +634,48 @@ impl PumpFunTrader {
             &protocol::PUMP_SWAP,
         )
         .0
+    }
+
+    /// Apr-2026 pump_amm `pool_v2` PDA: `["pool-v2", base_mint]` under PumpSwap.
+    /// Appended (readonly) before the buyback-fee pair when
+    /// [`AmmPoolInfo::needs_pool_v2`] is set.
+    fn derive_pool_v2(base_mint: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(&[b"pool-v2", base_mint.as_ref()], &protocol::PUMP_SWAP).0
+    }
+
+    /// Harvest helper: `before_pk` is the account immediately before `pool_v2`
+    /// (or before the buyback pair when pool_v2 is absent).
+    ///
+    /// Detect cashback when:
+    /// - buy shape: `before == ATA(keys[20], WSOL)` (uva at fixed index 20), or
+    /// - sell shape: tail `[cashback_ata, uva(=before), pool_v2, buyback…]`
+    ///   i.e. `keys[n-5] == ATA(before_pk, WSOL)`.
+    fn is_cashback_ata_before_pool_v2(
+        keys: &[String],
+        before_pk: Pubkey,
+        needs_pool_v2: bool,
+    ) -> bool {
+        let ata = |owner: &Pubkey| {
+            get_associated_token_address_with_program_id(owner, &protocol::WSOL_MINT, &protocol::TOKEN)
+        };
+        // Buy (volume block present): uva at index 20, before_pk = cashback_ata.
+        if let Some(Ok(uva)) = keys.get(20).map(|s| Pubkey::from_str(s)) {
+            if before_pk == ata(&uva) {
+                return true;
+            }
+        }
+        // Sell: […, cashback_ata, uva(=before_pk), pool_v2, buyback, buyback_wsol]
+        if needs_pool_v2 {
+            if let Some(Ok(cashback_ata)) = keys
+                .get(keys.len().wrapping_sub(5))
+                .map(|s| Pubkey::from_str(s))
+            {
+                if cashback_ata == ata(&before_pk) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Fetch + cache pool facts (vault addresses, coin_creator, cashback flag).
@@ -672,6 +738,10 @@ impl PumpFunTrader {
             &protocol::WSOL_MINT,
             &protocol::TOKEN,
         );
+        // Apr-2026: pool_v2 is required iff the pool has a set coin_creator.
+        // Always appending it when the creator is default shifts the buyback
+        // slot and reverts (InvalidPoolV2 / buyback-not-authorized).
+        let needs_pool_v2 = coin_creator != Pubkey::default();
         let info = AmmPoolInfo {
             pool,
             base_mint: read_pubkey(data, 43)?,
@@ -684,16 +754,17 @@ impl PumpFunTrader {
             coin_creator_vault_authority,
             is_cashback_coin,
             fee_share_marker,
+            needs_pool_v2,
         };
         self.amm_pool_cache.insert(token_mint.to_string(), info);
         Ok(info)
     }
 
     /// Read the per-coin fee-share marker from a recent on-chain swap of `pool`.
-    /// The deployed pump_amm places this account 3rd-from-last in every swap
-    /// (`[marker, buyback_recipient, buyback_recipient_wsol]`); it's per-coin and
-    /// constant, so any recent successful swap yields it. `None` if the pool has
-    /// no swap in its recent history.
+    /// Tail layout is `[marker, (pool_v2)?, buyback_recipient, buyback_recipient_wsol]`
+    /// — `pool_v2` is present when the pool's coin_creator is set. It's per-coin
+    /// and constant, so any recent successful swap yields it. `None` if the pool
+    /// has no swap in its recent history.
     ///
     /// COLD path only: the steady-state source of the marker is the passive feed
     /// harvest (`observe_amm_swap_accounts`), so this is reached solely from
@@ -738,7 +809,11 @@ impl PumpFunTrader {
 
     /// Minimal JSON-RPC call against the configured full RPC node, used for the
     /// read-only transaction-history lookups above.
-    async fn rpc_json(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    pub(super) async fn rpc_json(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         rpc_json_call(&self.http, &self.config.rpc_url, method, params).await
     }
 
@@ -852,7 +927,7 @@ impl PumpFunTrader {
     /// Head indices mirror [`Self::amm_swap_accounts`] (the builder is the SSOT
     /// for the layout; the round-trip guard test pins the two together). The
     /// tail is addressed FROM THE END because the middle differs by side/coin:
-    /// `[.., marker | cashback block, buyback_recipient, buyback_recipient_wsol]`.
+    /// `[.., marker | cashback block, (pool_v2)?, buyback_recipient, buyback_wsol]`.
     pub fn observe_amm_swap_accounts(
         &self,
         token_mint: &str,
@@ -870,6 +945,7 @@ impl PumpFunTrader {
             mint = %token_mint,
             pool = %info.pool,
             cashback = info.is_cashback_coin,
+            needs_pool_v2 = info.needs_pool_v2,
             fee_share_marker = ?info.fee_share_marker.map(|p| p.to_string()),
             creator_vault = %info.coin_creator_vault_authority,
             "AMM pool facts harvested from feed (zero RPC)"
@@ -888,10 +964,10 @@ impl PumpFunTrader {
         base_token_program_id: &str,
         keys: &[String],
     ) -> Option<AmmPoolInfo> {
-        // Smallest known swap list is the non-cashback sell (24 accounts); the
-        // largest is the cashback buy (27). Anything outside that band is a
-        // layout we don't know.
-        if keys.len() < 24 || keys.len() > 27 {
+        // Smallest known swap list is the non-cashback sell without pool_v2
+        // (24); largest is the cashback buy with pool_v2 (28). Anything outside
+        // that band is a layout we don't know.
+        if keys.len() < 24 || keys.len() > 28 {
             return None;
         }
         let pk = |i: usize| Pubkey::from_str(keys.get(i)?.as_str()).ok();
@@ -927,18 +1003,28 @@ impl PumpFunTrader {
             return None;
         }
 
-        // Tail, by position from the end. `len-2` is the buyback fee recipient
-        // in every known layout — reject otherwise so a program upgrade that
-        // reshapes the tail fails safe to the cold path.
-        if pk(keys.len() - 2)? != protocol::PUMP_AMM_BUYBACK_FEE_RECIPIENT {
+        // Tail, by position from the end. `len-2` is a buyback fee recipient
+        // (any whitelist member — live swaps rotate) in every known layout.
+        if !protocol::is_amm_buyback_fee_recipient(&pk(keys.len() - 2)?) {
             return None;
         }
-        let slot3 = pk(keys.len() - 3)?;
-        let (is_cashback_coin, fee_share_marker) = if slot3 == protocol::PUMP_AMM_CASHBACK_GLOBAL {
-            (true, None)
-        } else {
-            (false, Some(slot3))
-        };
+        // Optional pool_v2 immediately before the buyback pair.
+        let expect_pool_v2 = Self::derive_pool_v2(&base_mint);
+        let n = keys.len();
+        let slot3 = pk(n - 3)?;
+        let needs_pool_v2 = slot3 == expect_pool_v2;
+        // Account immediately before pool_v2 (or before buyback when no pool_v2):
+        // cashback → cashback_ata (or legacy CASHBACK_GLOBAL); non-cashback →
+        // fee-share marker.
+        let before_pk = pk(if needs_pool_v2 { n.checked_sub(4)? } else { n - 3 })?;
+        let (is_cashback_coin, fee_share_marker) =
+            if before_pk == protocol::PUMP_AMM_CASHBACK_GLOBAL {
+                (true, None)
+            } else if Self::is_cashback_ata_before_pool_v2(keys, before_pk, needs_pool_v2) {
+                (true, None)
+            } else {
+                (false, Some(before_pk))
+            };
 
         Some(AmmPoolInfo {
             pool,
@@ -949,11 +1035,13 @@ impl PumpFunTrader {
             pool_quote_token_account,
             // Not present in a swap's account list — see the field docs; the
             // 2006 self-heal re-reads the pool from chain, never this value.
+            // `needs_pool_v2` carries the creator-set signal the builder needs.
             coin_creator: Pubkey::default(),
             coin_creator_vault_ata,
             coin_creator_vault_authority,
             is_cashback_coin,
             fee_share_marker,
+            needs_pool_v2,
         })
     }
 
@@ -1035,9 +1123,11 @@ impl PumpFunTrader {
 // ---------------------------------------------------------------------------
 
 /// Find a pump_amm buy/sell instruction (top-level or inner) for `pool` in a
-/// jsonParsed transaction and return its fee-share marker — the 3rd-from-last
-/// account. A swap is identified by program id, `accounts[0] == pool`, and the
-/// buy/sell discriminator in its data (so deposit/withdraw don't match).
+/// jsonParsed transaction and return its fee-share marker. Tail layout is
+/// `[marker, (pool_v2)?, buyback_recipient, buyback_recipient_wsol]` — when
+/// `pool_v2` is present the marker is 4th-from-last, otherwise 3rd-from-last.
+/// A swap is identified by program id, `accounts[0] == pool`, and the buy/sell
+/// discriminator in its data (so deposit/withdraw don't match).
 fn extract_swap_marker(tx: &serde_json::Value, program: &str, pool: &str) -> Option<String> {
     let msg = tx.get("transaction")?.get("message")?;
 
@@ -1075,11 +1165,25 @@ fn extract_swap_marker(tx: &serde_json::Value, program: &str, pool: &str) -> Opt
             .ok()
             .map(|d| d.starts_with(&BUY_DISC) || d.starts_with(&SELL_DISC))
             .unwrap_or(false);
-        if !is_swap || accounts.len() < 3 {
+        if !is_swap || accounts.len() < 4 {
             continue;
         }
-        // marker = 3rd-from-last ([marker, buyback_recipient, buyback_recipient_wsol]).
-        return accounts[accounts.len() - 3].as_str().map(str::to_string);
+        // base_mint is accounts[3] — derive pool_v2 to decide marker index.
+        let base_mint = accounts.get(3).and_then(|v| v.as_str())?;
+        let base_mint_pk = Pubkey::from_str(base_mint).ok()?;
+        let pool_v2 = PumpFunTrader::derive_pool_v2(&base_mint_pk);
+        let n = accounts.len();
+        let marker_idx = if accounts
+            .get(n - 3)
+            .and_then(|v| v.as_str())
+            .and_then(|s| Pubkey::from_str(s).ok())
+            == Some(pool_v2)
+        {
+            n - 4
+        } else {
+            n - 3
+        };
+        return accounts.get(marker_idx).and_then(|v| v.as_str()).map(str::to_string);
     }
     None
 }
@@ -1254,6 +1358,7 @@ mod tests {
             coin_creator_vault_authority: Pubkey::new_unique(),
             is_cashback_coin: true,
             fee_share_marker: None,
+            needs_pool_v2: true,
         }
     }
 
@@ -1364,6 +1469,8 @@ mod tests {
             coin_creator_vault_authority: authority,
             is_cashback_coin,
             fee_share_marker: if is_cashback_coin { None } else { Some(Pubkey::new_unique()) },
+            // Non-default creator ⇒ pool_v2 required (matches RPC-path rule).
+            needs_pool_v2: true,
         }
     }
 
@@ -1384,10 +1491,31 @@ mod tests {
     }
 
     #[test]
+    fn pool_v2_matches_live_swap_tail() {
+        let mint = Pubkey::from_str("oDEtMNjWncfJ1xB84BScmV33cck1mNYt3QWZR9Kpump").unwrap();
+        let v2 = PumpFunTrader::derive_pool_v2(&mint);
+        // Account[24] from live sig 3VJPxykd… on pool Dcs233… (2026-07-20).
+        assert_eq!(
+            v2.to_string(),
+            "2rP2LsZscUsV5arBiVyN27wpPYiA3YQJCZG3B1gioXgU",
+            "derived pool_v2 must match live swap account"
+        );
+        let pool = {
+            let t = dummy_trader();
+            t.derive_amm_pool(&mint)
+        };
+        assert_eq!(
+            pool.to_string(),
+            "Dcs233grAd3SRvFs569FRFgPhqjnpecQvGaj8uwBD214",
+            "canonical pool PDA must match pump API / live swaps"
+        );
+    }
+
+    #[test]
     fn harvest_round_trips_builder_layout() {
         let legacy = protocol::TOKEN;
         let t2022 = Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap();
-        // side × coin-kind × base-program variants (list lengths 24–27).
+        // side × coin-kind × base-program variants (list lengths 24–28 with pool_v2).
         for (is_buy, is_cashback, base_tp) in [
             (true, false, legacy),
             (false, false, legacy),
@@ -1405,8 +1533,8 @@ mod tests {
             );
             let got = *t.amm_pool_cache.get(&mint.to_string()).unwrap();
             // A swap's account list doesn't carry the raw coin_creator — the
-            // harvested entry stores the default sentinel; everything else must
-            // round-trip exactly.
+            // harvested entry stores the default sentinel; `needs_pool_v2` is
+            // recovered from the observed pool_v2 account and must round-trip.
             let expect = AmmPoolInfo { coin_creator: Pubkey::default(), ..pool };
             assert_eq!(got, expect, "is_buy={is_buy}, cashback={is_cashback}");
         }

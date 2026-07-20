@@ -122,11 +122,20 @@ pub(crate) struct AmmPoolInfo {
     pub coin_creator_vault_authority: Pubkey,
     pub is_cashback_coin: bool,
     /// Per-coin "fee-share" marker account the deployed pump_amm requires in
-    /// non-cashback swaps (between `fee_program` and the buyback pair). It's an
-    /// uninitialized PDA the program derives but no published IDL documents and
-    /// we can't reproduce offline — read from an observed/recent on-chain swap
-    /// and cached. `None` for cashback pools (derivable cashback block instead).
+    /// non-cashback swaps (between `fee_program` and optional `pool_v2` /
+    /// the buyback pair). It's an uninitialized PDA the program derives but no
+    /// published IDL documents and we can't reproduce offline — read from an
+    /// observed/recent on-chain swap and cached. `None` for cashback pools
+    /// (derivable cashback block instead).
     pub fee_share_marker: Option<Pubkey>,
+    /// When `true`, append PDA(["pool-v2", base_mint]) (readonly) immediately
+    /// before the trailing buyback-fee pair. Required by the Apr-2026 pump_amm
+    /// upgrade when the pool's `coin_creator` is set (non-default); omitting it
+    /// reverts with `InvalidPoolV2` (6062). Adding it when the creator is unset
+    /// shifts the buyback slot and also reverts — so the RPC path sets this from
+    /// the on-chain creator, and the harvest path recovers it by observing the
+    /// account in a live swap.
+    pub needs_pool_v2: bool,
 }
 
 /// Cached PumpSwap `GlobalConfig` facts: fee rates (bps) and a chosen protocol

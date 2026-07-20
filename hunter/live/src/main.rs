@@ -43,6 +43,7 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 ///                                                configured nonce account's
 ///                                                authority is the wallet (zero SOL)
 ///   probe simulate-sell <mint> [amount] [slippage_bps] [--cashback]
+///                                              [--holder <pubkey>|--largest-holder]
 ///                                              — simulate a real curve sell
 ///                                                against live state (zero SOL)
 ///   probe simulate-buy <mint> <sol> [slippage_bps]
@@ -52,8 +53,12 @@ fn parse_wallet_keypair(base58_key: &str) -> anyhow::Result<Keypair> {
 ///                                              — simulate a real PumpSwap AMM buy
 ///                                                of a migrated token (zero SOL)
 ///   probe simulate-amm-sell <mint> [amount] [slippage_bps]
+///                                              [--holder <pubkey>|--largest-holder]
 ///                                              — simulate a real PumpSwap AMM sell
 ///                                                of a migrated token (zero SOL)
+///   probe sim-matrix [curve_mint] [amm_mint]   — run the full buy/sell case
+///                                                table (discovers mints via
+///                                                pump.fun API when omitted)
 async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<()> {
     const LPS: f64 = pump_trader::constants::LAMPORTS_PER_SOL as f64;
     match args.first().map(String::as_str).unwrap_or("") {
@@ -128,38 +133,54 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             }
         }
         "simulate-sell" => {
-            let mint = args
-                .get(1)
-                .context("usage: probe simulate-sell <mint> [amount] [slippage_bps] [--cashback]")?;
+            let mint = args.get(1).context(
+                "usage: probe simulate-sell <mint> [amount] [slippage_bps] [--cashback] \
+                 [--holder <pubkey>|--largest-holder]",
+            )?;
             // Positional numeric args after the mint: [0] = amount (raw base
             // units), [1] = slippage_bps. Both optional; `--flags` are skipped.
             let positional: Vec<&String> =
                 args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
-            // Amount defaults to the wallet's full on-chain balance so the sim
-            // mirrors a real full exit.
-            let amount: u64 = match positional.first() {
-                Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
-                None => {
-                    let bal = trader.get_token_balance(&trader.wallet_pubkey(), mint).await?;
-                    println!(
-                        "No amount given — using on-chain balance: {} raw ({} UI)",
-                        bal.amount, bal.ui_amount
-                    );
-                    if bal.amount == 0 {
-                        anyhow::bail!("wallet holds 0 of {mint} — nothing to simulate");
-                    }
-                    bal.amount
-                }
-            };
             let slippage_bps: Option<u64> = match positional.get(1) {
                 Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
                 None => None,
             };
             let is_cashback = args.iter().any(|a| a == "--cashback");
-            println!("Simulating curve SELL — slippage_bps: {slippage_bps:?}");
-            let outcome = trader
-                .simulate_curve_sell(mint, amount, slippage_bps, is_cashback)
-                .await?;
+            let holder = resolve_sell_holder(trader, mint, &args).await?;
+            let outcome = if let Some((owner, ata, bal)) = holder {
+                let amount = match positional.first() {
+                    Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
+                    None => bal,
+                };
+                println!(
+                    "Simulating curve SELL as holder {owner} ata={ata} amount={amount} \
+                     slippage_bps: {slippage_bps:?}"
+                );
+                trader
+                    .simulate_curve_sell_as(mint, amount, &owner, &ata, slippage_bps, is_cashback)
+                    .await?
+            } else {
+                let amount: u64 = match positional.first() {
+                    Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
+                    None => {
+                        let bal = trader.get_token_balance(&trader.wallet_pubkey(), mint).await?;
+                        println!(
+                            "No amount given — using on-chain balance: {} raw ({} UI)",
+                            bal.amount, bal.ui_amount
+                        );
+                        if bal.amount == 0 {
+                            anyhow::bail!(
+                                "wallet holds 0 of {mint} — pass --largest-holder or --holder <pubkey>"
+                            );
+                        }
+                        bal.amount
+                    }
+                };
+                println!("Simulating curve SELL — slippage_bps: {slippage_bps:?}");
+                trader
+                    .simulate_curve_sell(mint, amount, slippage_bps, is_cashback)
+                    .await?
+            };
             print_sim_outcome(&outcome);
         }
         "simulate-buy" => {
@@ -213,43 +234,79 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
             print_sim_outcome(&outcome);
         }
         "simulate-amm-sell" => {
-            let mint = args
-                .get(1)
-                .context("usage: probe simulate-amm-sell <mint> [amount] [slippage_bps]")?;
+            let mint = args.get(1).context(
+                "usage: probe simulate-amm-sell <mint> [amount] [slippage_bps] \
+                 [--holder <pubkey>|--largest-holder]",
+            )?;
             let positional: Vec<&String> =
                 args.iter().skip(2).filter(|s| !s.starts_with("--")).collect();
             let routing = trader.resolve_buy_routing(mint).await?;
             if !routing.is_migrated {
                 println!("⚠️  {mint} resolves as NOT migrated — use `simulate-sell` for a curve sell.");
             }
-            // Amount defaults to the wallet's full on-chain balance (mirrors a real
-            // full exit), same as the curve `simulate-sell`.
-            let amount: u64 = match positional.first() {
-                Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
-                None => {
-                    let bal = trader.get_token_balance(&trader.wallet_pubkey(), mint).await?;
-                    println!(
-                        "No amount given — using on-chain balance: {} raw ({} UI)",
-                        bal.amount, bal.ui_amount
-                    );
-                    if bal.amount == 0 {
-                        anyhow::bail!("wallet holds 0 of {mint} — nothing to simulate");
-                    }
-                    bal.amount
-                }
-            };
             let slippage_bps: Option<u64> = match positional.get(1) {
                 Some(s) => Some(s.parse().context("slippage_bps must be a u64")?),
                 None => None,
             };
-            println!(
-                "Simulating AMM SELL — token_program={}, slippage_bps: {slippage_bps:?}",
-                routing.token_program_id
-            );
-            let outcome = trader
-                .simulate_amm_sell(mint, amount, &routing.token_program_id, None, None, slippage_bps)
-                .await?;
+            let holder = resolve_sell_holder(trader, mint, &args).await?;
+            let outcome = if let Some((owner, ata, bal)) = holder {
+                let amount = match positional.first() {
+                    Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
+                    None => bal,
+                };
+                let ata_str = ata.to_string();
+                println!(
+                    "Simulating AMM SELL as holder {owner} ata={ata} amount={amount} \
+                     token_program={}, slippage_bps: {slippage_bps:?}",
+                    routing.token_program_id
+                );
+                trader
+                    .simulate_amm_sell_as(
+                        mint,
+                        amount,
+                        &routing.token_program_id,
+                        &owner,
+                        None,
+                        Some(ata_str.as_str()),
+                        slippage_bps,
+                    )
+                    .await?
+            } else {
+                let amount: u64 = match positional.first() {
+                    Some(s) => s.parse().context("amount must be a u64 (raw base units)")?,
+                    None => {
+                        let bal = trader.get_token_balance(&trader.wallet_pubkey(), mint).await?;
+                        println!(
+                            "No amount given — using on-chain balance: {} raw ({} UI)",
+                            bal.amount, bal.ui_amount
+                        );
+                        if bal.amount == 0 {
+                            anyhow::bail!(
+                                "wallet holds 0 of {mint} — pass --largest-holder or --holder <pubkey>"
+                            );
+                        }
+                        bal.amount
+                    }
+                };
+                println!(
+                    "Simulating AMM SELL — token_program={}, slippage_bps: {slippage_bps:?}",
+                    routing.token_program_id
+                );
+                trader
+                    .simulate_amm_sell(
+                        mint,
+                        amount,
+                        &routing.token_program_id,
+                        None,
+                        None,
+                        slippage_bps,
+                    )
+                    .await?
+            };
             print_sim_outcome(&outcome);
+        }
+        "sim-matrix" => {
+            run_sim_matrix(trader, &args[1..]).await?;
         }
         "consolidate-dryrun" => {
             // Zero-SOL verification of the pre-buy consolidation path: enumerate
@@ -410,11 +467,258 @@ async fn run_probe(trader: &PumpFunTrader, args: Vec<String>) -> anyhow::Result<
         }
         other => anyhow::bail!(
             "unknown probe '{other}'. Use: ladder | fanout | check-nonces | simulate-buy | \
-             simulate-sell | simulate-amm-buy | simulate-amm-sell | consolidate-dryrun | \
-             sweep-sell-dryrun | holdings | cashback-status | claim-cashback [--execute]"
+             simulate-sell | simulate-amm-buy | simulate-amm-sell | sim-matrix | \
+             consolidate-dryrun | sweep-sell-dryrun | holdings | cashback-status | \
+             claim-cashback [--execute]"
         ),
     }
     Ok(())
+}
+
+/// Resolve `--holder <pubkey>` / `--largest-holder` for sell probes.
+/// Returns `(owner, token_account, amount)` when a holder override is requested.
+async fn resolve_sell_holder(
+    trader: &PumpFunTrader,
+    mint: &str,
+    args: &[String],
+) -> anyhow::Result<Option<(solana_sdk::pubkey::Pubkey, solana_sdk::pubkey::Pubkey, u64)>> {
+    let largest = args.iter().any(|a| a == "--largest-holder");
+    let holder_flag = args.iter().position(|a| a == "--holder");
+    if !largest && holder_flag.is_none() {
+        return Ok(None);
+    }
+    if largest {
+        let (owner, ata, amount) = trader.get_token_largest_holder(mint).await?;
+        return Ok(Some((owner, ata, amount)));
+    }
+    let idx = holder_flag.unwrap();
+    let owner_str = args
+        .get(idx + 1)
+        .context("--holder requires a pubkey argument")?;
+    let owner: solana_sdk::pubkey::Pubkey = owner_str.parse().context("invalid --holder pubkey")?;
+    let (ata, amount) = trader.get_token_account_for_owner(mint, &owner).await?;
+    Ok(Some((owner, ata, amount)))
+}
+
+/// Full buy/sell case table via Helius `simulateTransaction` (zero SOL).
+/// Discovers a live curve mint + a PumpSwap-migrated mint from the public
+/// pump.fun API when not supplied as args.
+async fn run_sim_matrix(trader: &PumpFunTrader, args: &[String]) -> anyhow::Result<()> {
+    let (curve_mint, amm_mint) = match (args.first(), args.get(1)) {
+        (Some(c), Some(a)) => (c.clone(), a.clone()),
+        _ => discover_sim_mints().await?,
+    };
+    println!("── sim-matrix (Helius simulateTransaction, zero SOL) ─────────────");
+    println!("curve mint : {curve_mint}");
+    println!("amm mint   : {amm_mint}");
+    println!("{:<22} {:<8} detail", "case", "result");
+    println!("{}", "-".repeat(72));
+
+    // 1) Curve buy
+    matrix_row("curve-buy", trader.simulate_curve_buy(&curve_mint, 0.01, Some(500)).await);
+
+    // 2) Curve sell as largest holder. Prefer the routing cashback flag; if the
+    // program still asks for a UVA (6024), retry once with cashback=true.
+    let curve_routing = trader.resolve_buy_routing(&curve_mint).await?;
+    match trader.get_token_largest_holder(&curve_mint).await {
+        Ok((owner, ata, amount)) => {
+            // Cap size: dumping a whale bag into a thin curve overflows u64 math
+            // (6024 Overflow) even with a correct account layout.
+            let sell_amt = (amount / 100).max(1).min(1_000_000_000);
+            let first = trader
+                .simulate_curve_sell_as(
+                    &curve_mint,
+                    sell_amt,
+                    &owner,
+                    &ata,
+                    Some(500),
+                    curve_routing.cashback_enabled,
+                )
+                .await;
+            let result = match &first {
+                Ok(o) if !o.success && o.custom_error == Some(6024) => {
+                    trader
+                        .simulate_curve_sell_as(
+                            &curve_mint,
+                            sell_amt,
+                            &owner,
+                            &ata,
+                            Some(500),
+                            true,
+                        )
+                        .await
+                }
+                _ => first,
+            };
+            matrix_row("curve-sell@holder", result);
+        }
+        Err(e) => println!("{:<22} {:<8} {e}", "curve-sell@holder", "SKIP"),
+    }
+
+    // 3–4) AMM buy + sell — try the discovered mint, then a short fallback list
+    // of other PumpSwap graduates if the first hits a structural fee-layout miss.
+    let mut amm_candidates = vec![amm_mint.clone()];
+    if let Ok((_, more)) = discover_sim_mints().await {
+        if more != amm_mint {
+            amm_candidates.push(more);
+        }
+    }
+    let mut amm_buy_ok_mint: Option<String> = None;
+    let mut amm_routing = trader.resolve_buy_routing(&amm_mint).await?;
+    for (i, candidate) in amm_candidates.iter().enumerate() {
+        let routing = trader.resolve_buy_routing(candidate).await?;
+        let label = if i == 0 { "amm-buy" } else { "amm-buy(retry)" };
+        let result = trader
+            .simulate_amm_buy(candidate, &routing.token_program_id, 0.01, None, Some(500))
+            .await;
+        let pass = matches!(&result, Ok(o) if o.success);
+        matrix_row(label, result);
+        if pass {
+            amm_buy_ok_mint = Some(candidate.clone());
+            amm_routing = routing;
+            break;
+        }
+    }
+    let amm_for_sell = amm_buy_ok_mint.as_deref().unwrap_or(amm_mint.as_str());
+    match trader.get_token_largest_holder(amm_for_sell).await {
+        Ok((owner, ata, amount)) => {
+            let sell_amt = (amount / 100).max(1).min(1_000_000_000);
+            let ata_str = ata.to_string();
+            matrix_row(
+                "amm-sell@holder",
+                trader
+                    .simulate_amm_sell_as(
+                        amm_for_sell,
+                        sell_amt,
+                        &amm_routing.token_program_id,
+                        &owner,
+                        None,
+                        Some(ata_str.as_str()),
+                        Some(500),
+                    )
+                    .await,
+            );
+        }
+        Err(e) => println!("{:<22} {:<8} {e}", "amm-sell@holder", "SKIP"),
+    }
+
+    // 5) Cashback claim (sim-only)
+    match trader.claim_cashback(false).await {
+        Ok(outcomes) if outcomes.is_empty() => {
+            println!("{:<22} {:<8} nothing claimable", "claim-cashback", "SKIP");
+        }
+        Ok(outcomes) => {
+            let ok = outcomes.iter().all(|o| o.err.is_none());
+            let detail = outcomes
+                .iter()
+                .map(|o| {
+                    if o.err.is_none() {
+                        format!("{} ok", o.label)
+                    } else {
+                        format!("{} REVERT", o.label)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "{:<22} {:<8} {detail}",
+                "claim-cashback",
+                if ok { "PASS" } else { "FAIL" }
+            );
+        }
+        Err(e) => println!("{:<22} {:<8} {e}", "claim-cashback", "FAIL"),
+    }
+
+    // 6) Consolidate dry-run (no-op when wallet holds nothing)
+    match trader
+        .simulate_consolidation(&curve_mint, curve_routing.token_program)
+        .await
+    {
+        Ok(sims) if sims.is_empty() => {
+            println!("{:<22} {:<8} no orphans", "consolidate-dryrun", "PASS");
+        }
+        Ok(sims) => {
+            let ok = sims.iter().all(|(_, _, o)| o.success);
+            println!(
+                "{:<22} {:<8} {} orphan tx(s)",
+                "consolidate-dryrun",
+                if ok { "PASS" } else { "FAIL" },
+                sims.len()
+            );
+        }
+        Err(e) => println!("{:<22} {:<8} {e}", "consolidate-dryrun", "FAIL"),
+    }
+
+    println!("{}", "-".repeat(72));
+    Ok(())
+}
+
+fn matrix_row(label: &str, result: pump_trader::Result<pump_trader::SimOutcome>) {
+    match result {
+        Ok(o) if o.success => {
+            println!(
+                "{:<22} {:<8} CU={:?}",
+                label, "PASS", o.units_consumed
+            );
+        }
+        Ok(o) => {
+            let name = o
+                .custom_error
+                .and_then(pump_trader::pump_error_name)
+                .unwrap_or("?");
+            println!(
+                "{:<22} {:<8} custom={:?} ({name}) {}",
+                label,
+                "FAIL",
+                o.custom_error,
+                o.err.as_deref().unwrap_or("")
+            );
+        }
+        Err(e) => println!("{:<22} {:<8} {e}", label, "FAIL"),
+    }
+}
+
+async fn discover_sim_mints() -> anyhow::Result<(String, String)> {
+    let client = reqwest::Client::new();
+    let curve = client
+        .get("https://frontend-api-v3.pump.fun/coins?offset=0&limit=20&sort=last_trade_timestamp&order=DESC&includeNsfw=false&complete=false")
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let amm = client
+        .get("https://frontend-api-v3.pump.fun/coins?offset=0&limit=40&sort=last_trade_timestamp&order=DESC&includeNsfw=false&complete=true")
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let curve_mint = curve
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|c| c.get("mint")?.as_str().map(str::to_string))
+        .context("no active curve mint from pump.fun API")?;
+    // Prefer PumpSwap graduates (empty raydium_pool) over legacy Raydium ones.
+    // Collect several so the caller can retry if the first pool is hostile
+    // (e.g. unusual fee-recipient layout).
+    let amm_mint = amm
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let mint = c.get("mint")?.as_str()?;
+            let ray = c.get("raydium_pool").and_then(|v| v.as_str()).unwrap_or("");
+            if ray.is_empty() {
+                Some(mint.to_string())
+            } else {
+                None
+            }
+        })
+        .next()
+        .context("no PumpSwap-migrated mint from pump.fun API")?;
+    Ok((curve_mint, amm_mint))
 }
 
 /// Print a [`SimOutcome`] from the curve buy/sell simulation engine: pass/revert
@@ -425,8 +729,12 @@ fn print_sim_outcome(o: &pump_trader::SimOutcome) {
     if o.success {
         println!("✅ simulation passed — CU consumed: {:?}", o.units_consumed);
     } else {
+        let name = o
+            .custom_error
+            .and_then(pump_trader::pump_error_name)
+            .unwrap_or("?");
         println!(
-            "❌ simulation reverted: {}\n   custom error: {:?} | CU consumed: {:?}",
+            "❌ simulation reverted: {}\n   custom error: {:?} ({name}) | CU consumed: {:?}",
             o.err.as_deref().unwrap_or("?"),
             o.custom_error,
             o.units_consumed

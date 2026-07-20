@@ -42,10 +42,10 @@ pub use error::{Context, Result, TradeError};
 pub use ix_layout::{DecoStep, IxLayout, LayoutKind};
 pub use nonce::NonceAuthCheck;
 pub use retry::{
-    classify_swap_revert, SwapDirection, SwapRetryDecision, SwapRoute,
-    AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, AMM_EXCEEDED_SLIPPAGE, ANCHOR_CONSTRAINT_SEEDS,
-    BONDING_CURVE_COMPLETE, CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT,
-    CURVE_MISSING_USER_VOLUME_ACCUMULATOR, CURVE_TOO_LITTLE_SOL_RECEIVED,
+    classify_swap_revert, pump_error_name, SwapDirection, SwapRetryDecision, SwapRoute,
+    AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, AMM_EXCEEDED_SLIPPAGE, AMM_INVALID_POOL_V2,
+    ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE, CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT,
+    CURVE_MISSING_USER_VOLUME_ACCUMULATOR, CURVE_OVERFLOW, CURVE_TOO_LITTLE_SOL_RECEIVED,
     CURVE_TOO_MUCH_SOL_REQUIRED,
 };
 pub use send::SigStatus;

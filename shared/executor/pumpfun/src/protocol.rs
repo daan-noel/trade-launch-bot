@@ -104,17 +104,36 @@ pub const PUMP_CURVE_FEE_RECIPIENT: Pubkey =
 /// append (the deployed program is newer than its published IDL). This is a
 /// *different* program from the curve with *different* semantics: the recipient
 /// rotates across a whitelist and the program accepts any member, so we send
-/// `buyback_fee_recipients[0]`. Verified 2026-06-22 still a live whitelist
-/// member (live pump_amm swap `6779XKXc…` used this exact account; sibling swaps
-/// rotated through `5eHhjP8J…`/`5cjcW9wE…`). Do NOT replace with the curve's
-/// `A7hAgCz…`, which is not an AMM whitelist member.
-pub const PUMP_AMM_BUYBACK_FEE_RECIPIENT: Pubkey =
-    pubkey!("5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD");
+/// [`PUMP_AMM_BUYBACK_FEE_RECIPIENTS`][0]. Verified 2026-06-22 still a live
+/// whitelist member (live pump_amm swap `6779XKXc…` used this exact account;
+/// sibling swaps rotated through `5eHhjP8J…`/`5cjcW9wE…`). Do NOT replace with
+/// the curve's `A7hAgCz…` alone — it is a whitelist member too, but the curve
+/// slot-17 exact-match recipient is a different role.
+pub const PUMP_AMM_BUYBACK_FEE_RECIPIENT: Pubkey = PUMP_AMM_BUYBACK_FEE_RECIPIENTS[0];
 
-/// Fixed pfee account that cashback-enabled PumpSwap pools append in the
-/// trailing fee block, just before the buyback recipient pair. Constant across
-/// on-chain cashback swaps; has no account data of its own (a program marker).
-/// Only present when the pool's `is_cashback_coin` flag is set.
+/// Full Apr-2026 AMM buyback-fee recipient whitelist (pump-public-docs
+/// `BREAKING_FEE_RECIPIENT.md`). Live swaps rotate across these; the harvest
+/// parser must accept **any** member at the buyback slot, not only [0].
+pub const PUMP_AMM_BUYBACK_FEE_RECIPIENTS: [Pubkey; 8] = [
+    pubkey!("5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD"),
+    pubkey!("9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7"),
+    pubkey!("GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL"),
+    pubkey!("3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR"),
+    pubkey!("5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6"),
+    pubkey!("EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL"),
+    pubkey!("5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD"),
+    pubkey!("A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW"),
+];
+
+/// `true` when `pk` is any member of [`PUMP_AMM_BUYBACK_FEE_RECIPIENTS`].
+#[inline]
+pub fn is_amm_buyback_fee_recipient(pk: &Pubkey) -> bool {
+    PUMP_AMM_BUYBACK_FEE_RECIPIENTS.iter().any(|r| r == pk)
+}
+
+/// Legacy fixed pfee marker that cashback-enabled PumpSwap pools used to append
+/// before the buyback pair. On pools that require `pool_v2`, this marker is
+/// **omitted** (replaced by the pool_v2 slot). Kept for harvest of older swaps.
 pub const PUMP_AMM_CASHBACK_GLOBAL: Pubkey =
     pubkey!("5817UmPM7KLKu2mSQVsXMJ7X2rr3PtEb3j4EioyoJgd1");
 

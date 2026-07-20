@@ -370,6 +370,7 @@ impl PumpFunTrader {
             let ixs = self.build_curve_sell_ixs(
                 &mint,
                 &pdas,
+                &signer.pubkey(),
                 &user_token_account,
                 token_amount,
                 min_sol_output,
@@ -460,6 +461,7 @@ impl PumpFunTrader {
         &self,
         mint: &Pubkey,
         pdas: &TokenPDAs,
+        user: &Pubkey,
         user_token_account: &Pubkey,
         token_amount: u64,
         min_sol_output: u64,
@@ -486,7 +488,10 @@ impl PumpFunTrader {
             AccountMeta::new(pdas.bonding_curve, false),
             AccountMeta::new(pdas.associated_bonding_curve, false),
             AccountMeta::new(*user_token_account, false),
-            AccountMeta::new(self.config.signer.pubkey(), true),
+            // `user` is the token-account owner / fee payer. Live sells always
+            // pass the configured signer; simulate-as-holder probes pass any
+            // on-chain holder (sigVerify=false).
+            AccountMeta::new(*user, true),
             AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new(pdas.creator_vault, false),
             AccountMeta::new_readonly(pdas.token_program, false),
@@ -500,8 +505,14 @@ impl PumpFunTrader {
         // cashback-enabled, or if the chain-read PDA flag says so. The caller
         // flag matters because `buy_token` caches `cashback_enabled: false`,
         // so a buy→sell flow would otherwise never include this account.
+        // Derive from instruction `user` (not the cached wallet UVA) so
+        // holder-sims and multi-signer paths pass seed checks (6024 otherwise).
         if is_cashback || pdas.cashback_enabled {
-            accounts.push(AccountMeta::new(global.user_volume_accumulator, false));
+            let (uva, _) = Pubkey::find_program_address(
+                &[b"user_volume_accumulator", user.as_ref()],
+                &protocol::PUMP_FUN,
+            );
+            accounts.push(AccountMeta::new(uva, false));
         }
 
         accounts.push(AccountMeta::new_readonly(pdas.bonding_curve_v2, false));
@@ -615,7 +626,7 @@ mod tests {
         let nonce = Pubkey::new_unique();
 
         let ixs = t
-            .build_curve_sell_ixs(&mint, &pdas, &uta, 1_000_000, 1, true, 0)
+            .build_curve_sell_ixs(&mint, &pdas, &user, &uta, 1_000_000, 1, true, 0)
             .expect("build curve sell");
         let msg = Message::new_with_nonce(ixs, Some(&user), &nonce, &user);
         let size = wire_size(&msg);

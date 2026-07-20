@@ -16,7 +16,8 @@
 //
 // Two triggers, one shared decision. Codes classified here:
 //   - 2006 stale-creator (both directions, both routes);
-//   - the sell slippage floors (6003 curve, 6004 AMM), 6024 missing-UVA,
+//   - the sell slippage floors (6003 curve, 6004 AMM), 6024 Overflow
+//     (often wrong cashback remaining accounts → RefreshCashback),
 //     6005 already-migrated (sell-only — these keep their curve/sell behavior);
 //   - the BUY slippage codes (curve 6002 `TooMuchSolRequired` / 6042
 //     `BuySlippageBelowMinTokensOut`; AMM 6004 `ExceededSlippage` shared with
@@ -56,8 +57,8 @@ pub enum SwapRetryDecision {
     /// AMM `ConstraintSeeds` (2006): the pool's `coin_creator` rotated after
     /// it was cached — evict + re-read the pool, retry.
     RefreshCoinCreator,
-    /// Curve `MissingUserVolumeAccumulator` (6024): cashback UVA was missing
-    /// — re-read the cashback flag, retry.
+    /// Curve `Overflow` (6024) often from a wrong cashback remaining-account
+    /// layout — re-read the cashback flag, retry.
     RefreshCashback,
     /// Curve `BondingCurveComplete` (6005): token already migrated — re-read
     /// migration state, re-route to the AMM.
@@ -84,9 +85,44 @@ pub const BONDING_CURVE_COMPLETE: u32 = 6005;
 /// `bonding_curve.creator` after a cache read; on an AMM swap it means the
 /// pool's `coin_creator` was populated/rotated after it was cached.
 pub const ANCHOR_CONSTRAINT_SEEDS: u32 = 2006;
-/// pump.fun `MissingUserVolumeAccumulator`: cashback UVA account not included
-/// in the tx because the cache had `is_cashback = false`.
-pub const CURVE_MISSING_USER_VOLUME_ACCUMULATOR: u32 = 6024;
+/// pump.fun `Overflow` (6024). Live logs / current IDL use this name. A wrong
+/// cashback remaining-account layout (missing/extra UVA) often surfaces here
+/// too — mis-indexed accounts feed garbage into u64 math — so sell heal still
+/// treats it as [`SwapRetryDecision::RefreshCashback`].
+pub const CURVE_OVERFLOW: u32 = 6024;
+/// Historical alias — prefer [`CURVE_OVERFLOW`].
+pub const CURVE_MISSING_USER_VOLUME_ACCUMULATOR: u32 = CURVE_OVERFLOW;
+/// PumpSwap AMM `InvalidPoolV2` (Apr-2026 upgrade): the readonly `pool_v2` PDA
+/// (`["pool-v2", base_mint]`) was missing or invalid. The published IDL still
+/// labels 6062 as `BuybackFeeRecipientMissing` — that name is stale; live
+/// program logs say `InvalidPoolV2` / "pool_v2 remaining account is missing
+/// or invalid". Structural (do not slippage-retry).
+pub const AMM_INVALID_POOL_V2: u32 = 6062;
+
+/// Human-readable name for a known pump.fun / PumpSwap custom error code.
+/// Used by probes and logs — keep in sync with the live program, not the
+/// stale published IDL aliases where they diverge (see [`AMM_INVALID_POOL_V2`]).
+pub fn pump_error_name(code: u32) -> Option<&'static str> {
+    Some(match code {
+        CURVE_TOO_MUCH_SOL_REQUIRED => "TooMuchSolRequired",
+        CURVE_TOO_LITTLE_SOL_RECEIVED => "TooLittleSolReceived",
+        AMM_EXCEEDED_SLIPPAGE => "ExceededSlippage",
+        BONDING_CURVE_COMPLETE => "BondingCurveComplete",
+        ANCHOR_CONSTRAINT_SEEDS => "ConstraintSeeds",
+        CURVE_OVERFLOW => "Overflow",
+        6027 => "NotEnoughRemainingAccounts",
+        CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT => "BuySlippageBelowMinTokensOut",
+        AMM_BUY_SLIPPAGE_BELOW_MIN_BASE => "BuySlippageBelowMinBaseAmountOut",
+        AMM_INVALID_POOL_V2 => "InvalidPoolV2",
+        // Stale IDL name; also seen when pool_v2 presence shifts the buyback slot.
+        6053 => "BuybackFeeRecipientNotAuthorized",
+        // AMM IDL: InvalidProtocolFeeRecipient. (Curve/pfee IDLs reuse 6013 for
+        // unrelated names — prefer the AMM meaning on swap paths.)
+        6013 => "InvalidProtocolFeeRecipient",
+        6060 => "InvalidPoolV2OrAccountLayout", // newer than published IDL
+        _ => return None,
+    })
+}
 
 /// Map a landed-and-reverted swap's on-chain custom error code to a retry
 /// decision. `route` is the venue the reverted tx used; `direction` is buy vs

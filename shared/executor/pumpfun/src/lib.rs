@@ -45,12 +45,12 @@ pub use executor_core::config::{
 };
 pub use executor_core::error::{Result, TradeError};
 pub use executor_core::{
-    classify_swap_revert, AccountDelta, DecoStep, Engine, IxLayout, LayoutKind, NonceAuthCheck,
-    SigStatus, SimOutcome,
-    SwapDirection, SwapRetryDecision, SwapRoute, Venue, VenueId, AMM_BUY_SLIPPAGE_BELOW_MIN_BASE,
-    AMM_EXCEEDED_SLIPPAGE, ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE,
-    CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT, CURVE_MISSING_USER_VOLUME_ACCUMULATOR,
-    CURVE_TOO_LITTLE_SOL_RECEIVED, CURVE_TOO_MUCH_SOL_REQUIRED,
+    classify_swap_revert, pump_error_name, AccountDelta, DecoStep, Engine, IxLayout, LayoutKind,
+    NonceAuthCheck, SigStatus, SimOutcome, SwapDirection, SwapRetryDecision, SwapRoute, Venue,
+    VenueId, AMM_BUY_SLIPPAGE_BELOW_MIN_BASE, AMM_EXCEEDED_SLIPPAGE, AMM_INVALID_POOL_V2,
+    ANCHOR_CONSTRAINT_SEEDS, BONDING_CURVE_COMPLETE, CURVE_BUY_SLIPPAGE_BELOW_MIN_TOKENS_OUT,
+    CURVE_MISSING_USER_VOLUME_ACCUMULATOR, CURVE_TOO_LITTLE_SOL_RECEIVED,
+    CURVE_TOO_MUCH_SOL_REQUIRED,
 };
 
 // --- pump venue items ---

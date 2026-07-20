@@ -18,7 +18,8 @@
 // ============================================================
 
 use super::PumpFunTrader;
-use crate::error::{bail, Context, Result};
+use crate::error::{bail, Context, Result, TradeError};
+use crate::protocol;
 use executor_core::SimOutcome;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
@@ -109,6 +110,39 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
         is_cashback: bool,
     ) -> Result<SimOutcome> {
+        let owner = self.config.signer.pubkey();
+        self.ensure_token_pdas(token_mint).await?;
+        if self.resolve_cached_token_account(token_mint).await?.is_none() {
+            bail!("No token account cached/found for mint {token_mint}");
+        }
+        let user_token_account = self
+            .user_token_accounts
+            .get(token_mint)
+            .map(|r| *r)
+            .context("token account not cached")?;
+        self.simulate_curve_sell_as(
+            token_mint,
+            token_amount,
+            &owner,
+            &user_token_account,
+            slippage_bps,
+            is_cashback,
+        )
+        .await
+    }
+
+    /// Like [`Self::simulate_curve_sell`], but for an arbitrary `owner` /
+    /// `token_account` (zero SOL — `sigVerify=false`). Used by probes to dry-run
+    /// a sell against a top holder when the configured wallet holds none.
+    pub async fn simulate_curve_sell_as(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        owner: &Pubkey,
+        token_account: &Pubkey,
+        slippage_bps: Option<u64>,
+        is_cashback: bool,
+    ) -> Result<SimOutcome> {
         // Always re-derive the creator from chain (don't trust a possibly-stale
         // cached vault): pump.fun can change `bonding_curve.creator` via
         // `set_creator` after a buy cached this mint's PDAs, which makes the live
@@ -117,20 +151,12 @@ impl PumpFunTrader {
         // CURRENT creator, so a simulate-sell that passes proves the live sell would
         // build the correct creator_vault.
         self.ensure_token_pdas(token_mint).await?;
-        if self.resolve_cached_token_account(token_mint).await?.is_none() {
-            bail!("No token account cached/found for mint {token_mint}");
-        }
         let mint = Pubkey::from_str(token_mint)?;
         let pdas = self
             .token_pdas
             .get(token_mint)
             .map(|r| *r)
             .context("PDAs not cached")?;
-        let user_token_account = self
-            .user_token_accounts
-            .get(token_mint)
-            .map(|r| *r)
-            .context("token account not cached")?;
 
         let reserves = match slippage_bps {
             Some(_) => self.curve_reserves(token_mint, &pdas.bonding_curve).await.ok(),
@@ -146,14 +172,19 @@ impl PumpFunTrader {
         let ixs = self.build_curve_sell_ixs(
             &mint,
             &pdas,
-            &user_token_account,
+            owner,
+            token_account,
             token_amount,
             min_sol_output,
             is_cashback,
             0,
         )?;
+        // Fee payer = configured wallet (has SOL). Instruction `user` stays the
+        // holder so token-ownership constraints pass; sigVerify=false means the
+        // holder need not actually sign. Using the holder as fee payer often
+        // hits InvalidAccountForFee (vault PDAs / empty wallets).
         let payer = self.config.signer.pubkey();
-        self.simulate_ixs(ixs, &payer, &[payer, user_token_account])
+        self.simulate_ixs(ixs, &payer, &[payer, *owner, *token_account])
             .await
     }
 
@@ -208,6 +239,31 @@ impl PumpFunTrader {
         slippage_bps: Option<u64>,
     ) -> Result<SimOutcome> {
         let user = self.config.signer.pubkey();
+        self.simulate_amm_sell_as(
+            token_mint,
+            token_amount,
+            base_token_program_id,
+            &user,
+            pool_override,
+            token_account_override,
+            slippage_bps,
+        )
+        .await
+    }
+
+    /// Like [`Self::simulate_amm_sell`], but for an arbitrary `owner` (zero SOL —
+    /// `sigVerify=false`). Pass `token_account_override` for the holder's ATA.
+    pub async fn simulate_amm_sell_as(
+        &self,
+        token_mint: &str,
+        token_amount: u64,
+        base_token_program_id: &str,
+        owner: &Pubkey,
+        pool_override: Option<&str>,
+        token_account_override: Option<&str>,
+        slippage_bps: Option<u64>,
+    ) -> Result<SimOutcome> {
+        let payer = self.config.signer.pubkey();
         let core_ixs = self
             .build_amm_sell_ixs(
                 token_mint,
@@ -216,18 +272,126 @@ impl PumpFunTrader {
                 pool_override,
                 token_account_override,
                 slippage_bps,
-                &user,
+                owner,
+                Some(&payer),
             )
             .await?;
         let mut ixs = Vec::with_capacity(core_ixs.len() + self.engine.cu_ixs_amm.len() + 1);
         ixs.extend_from_slice(&self.engine.cu_ixs_amm);
         ixs.extend(core_ixs);
         ixs.push(self.jito_tip_ix(0));
-        // The base account whose token delta we track (cache-first resolve, same
-        // source the builder used). Off the hot path, so the extra resolve is fine.
         let user_base = self
             .resolve_user_base_account(token_mint, token_account_override)
             .await?;
-        self.simulate_ixs(ixs, &user, &[user, user_base]).await
+        // See `simulate_curve_sell_as`: funded wallet pays the fee + ATA rent;
+        // holder is the instruction user / token-account owner.
+        self.simulate_ixs(ixs, &payer, &[payer, *owner, user_base])
+            .await
+    }
+
+    /// Largest non-zero **trader** token account for `mint` via
+    /// `getTokenLargestAccounts` (+ owner lookup). Skips bonding-curve /
+    /// PumpSwap vault PDAs (often the #1 holder) — selling "as" those reverts
+    /// with `Transfer: from must not carry data` because `user` is a program
+    /// account. Off-path probe helper so sells can be dry-run without the
+    /// configured wallet holding the mint.
+    pub async fn get_token_largest_holder(
+        &self,
+        mint: &str,
+    ) -> Result<(Pubkey /*owner*/, Pubkey /*token_account*/, u64 /*amount*/)> {
+        let resp = self
+            .rpc_json(
+                "getTokenLargestAccounts",
+                serde_json::json!([mint, { "commitment": "processed" }]),
+            )
+            .await?;
+        let values = resp
+            .get("value")
+            .and_then(|v| v.as_array())
+            .context("getTokenLargestAccounts: missing value")?;
+        for v in values {
+            let amount: u64 = v
+                .get("amount")
+                .and_then(|a| a.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if amount == 0 {
+                continue;
+            }
+            let ata_str = v
+                .get("address")
+                .and_then(|a| a.as_str())
+                .context("getTokenLargestAccounts: missing address")?;
+            let ata = Pubkey::from_str(ata_str)?;
+            let owner = self.token_account_owner(&ata).await?;
+            // Vault ATAs are owned by the curve/pool PDA, which itself is owned
+            // by pump / pump_amm. Real traders are system (or wallet-program)
+            // accounts — never the pump programs.
+            let owner_acct = match self.rpc.get_account(&owner).await {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            if owner_acct.owner == protocol::PUMP_FUN
+                || owner_acct.owner == protocol::PUMP_SWAP
+                || owner_acct.executable
+            {
+                continue;
+            }
+            return Ok((owner, ata, amount));
+        }
+        bail!("no non-vault holder for mint {mint}");
+    }
+
+    /// First non-zero token account for `mint` owned by `owner` (probe helper).
+    pub async fn get_token_account_for_owner(
+        &self,
+        mint: &str,
+        owner: &Pubkey,
+    ) -> Result<(Pubkey /*token_account*/, u64 /*amount*/)> {
+        let resp = self
+            .rpc_json(
+                "getTokenAccountsByOwner",
+                serde_json::json!([
+                    owner.to_string(),
+                    { "mint": mint },
+                    { "encoding": "jsonParsed", "commitment": "processed" }
+                ]),
+            )
+            .await?;
+        let values = resp
+            .get("value")
+            .and_then(|v| v.as_array())
+            .context("getTokenAccountsByOwner: missing value")?;
+        for v in values {
+            let amount: u64 = v
+                .pointer("/account/data/parsed/info/tokenAmount/amount")
+                .and_then(|a| a.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let Some(ata_str) = v.get("pubkey").and_then(|a| a.as_str()) else {
+                continue;
+            };
+            if amount == 0 {
+                continue;
+            }
+            return Ok((Pubkey::from_str(ata_str)?, amount));
+        }
+        bail!("owner {owner} holds 0 of mint {mint}");
+    }
+
+    async fn token_account_owner(&self, ata: &Pubkey) -> Result<Pubkey> {
+        let acct = self
+            .rpc
+            .get_account(ata)
+            .await
+            .with_context(|| format!("read token account {ata}"))?;
+        if acct.data.len() < 64 {
+            bail!("token account {ata} too short");
+        }
+        Ok(Pubkey::new_from_array(
+            acct.data[32..64]
+                .try_into()
+                .map_err(|_| TradeError::Other("token account owner slice".into()))?,
+        ))
     }
 }
