@@ -216,6 +216,26 @@ export function SettingsIcon({ className }: IconProps) {
   );
 }
 
+/** Closed padlock — field is locked (click to unlock). */
+export function LockIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <rect x="5.5" y="9" width="9" height="7" rx="1.2" {...stroke} />
+      <path d="M7.5 9V7a2.5 2.5 0 0 1 5 0v2" {...stroke} />
+    </Svg>
+  );
+}
+
+/** Open padlock — field is unlocked (click to re-lock). */
+export function UnlockIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <rect x="5.5" y="9" width="9" height="7" rx="1.2" {...stroke} />
+      <path d="M7.5 9V7a2.5 2.5 0 0 1 5 0" {...stroke} />
+    </Svg>
+  );
+}
+
 /** Lightweight spinner for loading icon-button states. */
 export function SpinnerIcon({ className }: IconProps) {
   return (

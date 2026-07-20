@@ -81,13 +81,17 @@ impl RuleDraft {
 }
 
 /// Overlay the mutable fields of a PUT body onto a loaded rule — SSOT for the
-/// patch shape (shared by live + lab). `fingerprint_id`, `trade_mode`,
-/// `is_active`, and `is_enabled` are intentionally not patchable here
-/// (fingerprint + trade mode frozen post-create so an in-flight entry retry
-/// cannot flip paper↔real; active/enabled only via the lifecycle endpoints).
+/// patch shape (shared by live + lab). `fingerprint_id`, `is_active`, and
+/// `is_enabled` are intentionally not patchable here (fingerprint frozen
+/// post-create; active/enabled only via the lifecycle endpoints). `trade_mode`
+/// is patchable — the editor gates it behind an unlock; open positions keep
+/// their snapshotted mode so an in-flight entry retry cannot flip paper↔real.
 pub fn apply_rule_update(rule: &mut StrategyRule, body: &Value) {
     if let Some(v) = body.get("rule_name").and_then(|v| v.as_str()) {
         rule.rule_name = v.to_string();
+    }
+    if let Some(v) = body.get("trade_mode").and_then(|v| v.as_str()) {
+        rule.trade_mode = v.to_string();
     }
     if let Some(v) = opt_i64(body, "buy_amount_lamports") {
         rule.buy_amount_lamports = v;
@@ -344,7 +348,7 @@ mod generic_tests {
     }
 
     #[test]
-    fn apply_rule_update_freezes_trade_mode() {
+    fn apply_rule_update_patches_trade_mode() {
         let mut rule = build_rule(&generic_draft(valid_params())).expect("valid");
         assert_eq!(rule.trade_mode, "paper");
         apply_rule_update(
@@ -355,7 +359,7 @@ mod generic_tests {
                 "buy_amount_lamports": 2_000_000_000_i64,
             }),
         );
-        assert_eq!(rule.trade_mode, "paper", "trade_mode must stay frozen post-create");
+        assert_eq!(rule.trade_mode, "real");
         assert_eq!(rule.rule_name, "renamed");
         assert_eq!(rule.buy_amount_lamports, 2_000_000_000);
     }

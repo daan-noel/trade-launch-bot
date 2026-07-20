@@ -3,7 +3,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { IconButton } from 'components/ui/IconButton';
-import { SaveIcon, SpinnerIcon } from 'components/ui/icons';
+import { LockIcon, SaveIcon, SpinnerIcon, UnlockIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Tabs, TabsList, TabsTrigger, TabsPanel } from 'components/ui/Tabs';
 import { cn } from 'lib/cn';
@@ -81,14 +81,31 @@ function RuleEditorInner({
   const [tab, setTab] = useState<'builder' | 'json'>('builder');
   const [jsonText, setJsonText] = useState(() => JSON.stringify(ruleParamsToJson(params), null, 2));
   const [jsonError, setJsonError] = useState<string | null>(null);
+  // Persisted rules start with mode locked; unlock via the padlock to flip paper↔real.
+  // Duplicate / promote pass an id-less `initial` — no lock control (create path).
+  const [modeUnlocked, setModeUnlocked] = useState(false);
 
   // Conditions (fingerprint + params) are locked once the rule is live — only
-  // sizing/caps stay editable. `trade_mode` is frozen on persisted rules
-  // (truthy `id`) so an in-flight entry retry cannot flip paper↔real.
-  // Duplicate / promote pass an id-less `initial` draft to prefill — mode stays
-  // editable there (create path).
+  // sizing/caps stay editable. Open positions keep their snapshotted trade_mode;
+  // flipping mode here only affects future entries.
   const conditionsLocked = Boolean(initial?.is_active);
-  const modeLocked = Boolean(initial?.id);
+  const modeCanLock = Boolean(initial?.id);
+  const modeLocked = modeCanLock && !modeUnlocked;
+
+  const toggleModeLock = () => {
+    if (modeUnlocked) {
+      setModeUnlocked(false);
+      return;
+    }
+    if (
+      !window.confirm(
+        'Unlock trade mode? Changing paper↔real affects future entries for this rule. Open positions keep their original mode.',
+      )
+    ) {
+      return;
+    }
+    setModeUnlocked(true);
+  };
 
   const setSide = (side: 'entry' | 'exit', next: SideConditions) =>
     setParams((p) => ({ ...p, [side]: next }));
@@ -146,18 +163,32 @@ function RuleEditorInner({
           <LabelTip tip={RULE_FIELD_HELP.name}>Name</LabelTip>
           <Input fieldSize="sm" value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
         </label>
-        <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+        <div className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
-          <Select
-            fieldSize="sm"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as TradeMode)}
-            disabled={modeLocked}
-          >
-            <option value="paper">paper</option>
-            <option value="real">real</option>
-          </Select>
-        </label>
+          <div className="flex items-center gap-1">
+            <Select
+              fieldSize="sm"
+              value={mode}
+              onChange={(e) => setMode(e.target.value as TradeMode)}
+              disabled={modeLocked}
+            >
+              <option value="paper">paper</option>
+              <option value="real">real</option>
+            </Select>
+            {modeCanLock && (
+              <IconButton
+                variant="ghost"
+                size="sm"
+                active={modeUnlocked}
+                onClick={toggleModeLock}
+                title={modeUnlocked ? 'Lock trade mode' : 'Unlock trade mode'}
+                aria-label={modeUnlocked ? 'Lock trade mode' : 'Unlock trade mode'}
+              >
+                {modeUnlocked ? <UnlockIcon /> : <LockIcon />}
+              </IconButton>
+            )}
+          </div>
+        </div>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.buy}>Buy (◎)</LabelTip>
           <Input

@@ -83,7 +83,8 @@ interface TokenTableCommon<R> {
    *  an `in` op on `mint`; client: a row pre-filter). */
   mintSetFilter?: boolean;
   /** Opt-in: a "Charts" toggle rendering a per-token trade-chart grid for the CURRENT
-   *  page below the table (lazy-mounted). Persisted per `tableId`. */
+   *  page below the table (lazy-mounted). Persisted per `tableId`. When on, a chart
+   *  card header click selects that token (same `onSelect` as a row — opens inspect). */
   charts?: boolean;
   /** Per-row entry/exit + swing overlay for the charts grid (when `charts` is on),
    *  matching the row's inspect modal. Called as a hook per card — see
@@ -141,7 +142,17 @@ function mintAddressOf<R>(row: R): string {
 }
 
 export function TokenTable<R>(props: TokenTableProps<R>) {
-  const { charts, useRowOverlay, renderChartCardExtra, titleOf, highlightWallet, tableId, onVisibleRowsChange } = props;
+  const {
+    charts,
+    useRowOverlay,
+    renderChartCardExtra,
+    titleOf,
+    highlightWallet,
+    tableId,
+    onVisibleRowsChange,
+    selectedKey,
+    onSelect,
+  } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() => (charts ? loadChartsPref(tableId) : false));
   const [visibleRows, setVisibleRows] = useState<R[]>([]);
@@ -196,6 +207,8 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           chartTableId={tableId ? `${tableId}_charts` : undefined}
           useRowOverlay={useRowOverlay}
           renderChartCardExtra={renderChartCardExtra}
+          selectedKey={selectedKey}
+          onSelect={onSelect}
         />
       )}
     </>

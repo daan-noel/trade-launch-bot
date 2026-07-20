@@ -409,7 +409,7 @@ export const RULE_FIELD_HELP = {
       '',
       'real — send actual buys/sells on-chain. Spends SOL from the configured wallet.',
       '',
-      'Frozen after create — pick paper or real once. To switch modes, create a new rule. Sizing/caps stay editable while live; fingerprint + entry/exit conditions lock once active.',
+      'Locked after create — unlock the padlock to flip paper↔real. That only affects future entries; open positions keep their original mode. Sizing/caps stay editable while live; fingerprint + entry/exit conditions lock once active.',
     ].join('\n'),
   },
   buy: {

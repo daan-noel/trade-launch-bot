@@ -166,7 +166,8 @@ next load (no per-metric frontend work).
   (registry-guided strict/metric split); `validate.ts` mirrors backend §5 validation.
 - `components/strategy/` — `ConditionInput` (grammar input + chips + red-underline),
   `ConditionSideEditor` (entry/exit column), `RuleEditor` (builder + JSON tab + a
-  `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm` (registry-driven
+  `renderDryRun` slot; edit mode locks `trade_mode` behind a padlock unlock),
+  `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`),
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
   `RulesPage`/`FingerprintsPage`; cross-page selection via `?rule=` / `?fp=`
@@ -312,7 +313,9 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   box (server: an `in` op on `mint_address` folded into `structuredFilters`; client: a plain row pre-filter);
   **`charts`** — a toggle rendering `<TokenChartsGrid>` (lazy-mounted, current page only, with
   `renderChartCardExtra`/`titleOf`/`highlightWallet` slots) below the table, fed by the table's
-  intercepted `onVisibleRowsChange`. Strategy-result tables also pass **`useRowOverlay`** — a per-row
+  intercepted `onVisibleRowsChange`. With `onSelect` wired, a chart **card header** click selects
+  that mint (same toggle contract as a row — opens inspect); the chart canvas itself stays
+  interactive (pan/zoom/bar-select). Strategy-result tables also pass **`useRowOverlay`** — a per-row
   hook (`ChartOverlayHook`) resolving the same **entry/exit markers + swing legs** the row's inspect
   modal shows, so the inline charts match the modal. It's built from the shared `inspectTarget` helpers
   (`markerRowOverlay` for tpsl entry/exit; `carriedSwingRowOverlay` for `live` swing1 positions whose

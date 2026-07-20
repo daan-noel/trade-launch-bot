@@ -3,6 +3,7 @@ import { useGetTokenDetailQuery } from 'store/sharedEndpoints';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import type { ChartEventMarker } from 'components/token-price-chart';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { cn } from 'lib/cn';
 
 /** Per-row chart overlay — the entry/exit markers a caller wants drawn on that
  *  row's inline chart, matching what its inspect modal shows. */
@@ -83,6 +84,9 @@ interface TokenChartCardProps<R> {
   useOverlay: ChartOverlayHook<R>;
   /** Extra content rendered in the card header (per-row context). */
   extra?: ReactNode;
+  selected?: boolean;
+  /** Header click → select (chart canvas stays interactive — see stopPropagation). */
+  onSelect?: () => void;
 }
 
 function TokenChartCard<R>({
@@ -93,14 +97,43 @@ function TokenChartCard<R>({
   chartTableId,
   useOverlay,
   extra,
+  selected,
+  onSelect,
 }: TokenChartCardProps<R>) {
   const { data: detail } = useGetTokenDetailQuery(mint, { skip: !mint });
   const heading = title ?? detail?.symbol ?? detail?.name ?? mint.slice(0, 6);
   const { eventMarkers } = useOverlay(row, mint);
+  const selectable = !!onSelect;
 
   return (
-    <div className="rounded-lg border border-white/8 bg-bg-card/40 p-4">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+    <div
+      className={cn(
+        'rounded-lg border bg-bg-card/40 p-4 transition',
+        selected
+          ? 'border-primary/45 bg-primary/8 shadow-[0_14px_32px_rgba(2,192,118,0.08)]'
+          : 'border-white/8',
+      )}
+    >
+      <div
+        className={cn(
+          'mb-2 flex flex-wrap items-center gap-2 rounded-md -mx-1 px-1 py-0.5',
+          selectable && 'cursor-pointer hover:bg-white/4',
+        )}
+        onClick={onSelect}
+        role={selectable ? 'button' : undefined}
+        tabIndex={selectable ? 0 : undefined}
+        onKeyDown={
+          selectable
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect();
+                }
+              }
+            : undefined
+        }
+        title={selectable ? 'Select token' : undefined}
+      >
         <span className="text-sm font-bold text-text">{heading}</span>
         <AddressDisplay
           address={mint}
@@ -111,13 +144,16 @@ function TokenChartCard<R>({
         />
         {extra}
       </div>
-      <LazyTokenTradeChart
-        key={mint}
-        detail={detail ?? null}
-        eventMarkers={eventMarkers ?? null}
-        highlightWallet={highlightWallet ?? null}
-        tableId={chartTableId}
-      />
+      {/* Keep chart pan/zoom/bar-select from bubbling into card selection. */}
+      <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+        <LazyTokenTradeChart
+          key={mint}
+          detail={detail ?? null}
+          eventMarkers={eventMarkers ?? null}
+          highlightWallet={highlightWallet ?? null}
+          tableId={chartTableId}
+        />
+      </div>
     </div>
   );
 }
@@ -136,6 +172,10 @@ export interface TokenChartsGridProps<R> {
   useRowOverlay?: ChartOverlayHook<R>;
   /** Extra header content per card (e.g. per-wallet buys/sells). */
   renderChartCardExtra?: (row: R) => ReactNode;
+  /** Highlight the card whose mint matches (same key as the table's `selectedKey`). */
+  selectedKey?: string | null;
+  /** Header click on a card — same contract as the table row select (toggle). */
+  onSelect?: (key: string | null) => void;
 }
 
 export function TokenChartsGrid<R>({
@@ -145,6 +185,8 @@ export function TokenChartsGrid<R>({
   highlightWallet,
   useRowOverlay,
   renderChartCardExtra,
+  selectedKey,
+  onSelect,
 }: TokenChartsGridProps<R>) {
   const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
   if (rows.length === 0) return null;
@@ -152,6 +194,7 @@ export function TokenChartsGrid<R>({
     <div className="mt-4 flex flex-col gap-4">
       {rows.map((row) => {
         const mint = (row as { mint_address?: string }).mint_address ?? '';
+        const selected = !!mint && selectedKey === mint;
         return (
           <LazyMount key={mint}>
             <TokenChartCard
@@ -162,6 +205,12 @@ export function TokenChartsGrid<R>({
               chartTableId={chartTableId}
               useOverlay={useOverlay}
               extra={renderChartCardExtra?.(row)}
+              selected={selected}
+              onSelect={
+                onSelect && mint
+                  ? () => onSelect(selected ? null : mint)
+                  : undefined
+              }
             />
           </LazyMount>
         );

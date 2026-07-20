@@ -87,7 +87,8 @@ export interface CreateRuleBody {
   params: Record<string, unknown>;
 }
 
-/** PUT /api/strategy-rules/{id} patch — `fingerprint_id`/`is_active`/`is_enabled` NOT patchable. */
+/** PUT /api/strategy-rules/{id} patch — `fingerprint_id`/`is_active`/`is_enabled` NOT
+ *  patchable. `trade_mode` is patchable (editor gates it behind unlock). */
 export type UpdateRuleBody = Partial<
   Pick<
     CreateRuleBody,
