@@ -19,10 +19,12 @@ use futures_util::TryStreamExt;
 use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
 
+use serde::{Deserialize, Serialize};
+
 use trading_core::grouping::{extract_lamports, normalize_labels};
 use trading_core::storage::repositories::trade_repo::sig_bytes_to_base58;
 
-use super::{tokens_file, trades_day_file};
+use super::{tokens_file, trades_day_file, trades_day_meta};
 
 /// Flush a Parquet row group roughly every this-many rows to bound peak builder RAM
 /// (mirrors the corpus-cache writer).
@@ -33,10 +35,20 @@ const FLUSH_ROWS: usize = 1 << 20;
 pub struct ExportSummary {
     /// Sealed days newly written this run.
     pub days_written: Vec<NaiveDate>,
-    /// Sealed days skipped because their immutable file already existed.
+    /// Sealed days skipped because their immutable file already existed
+    /// **and** the `_meta.json` row_count still matched PG `COUNT(*)`.
     pub days_skipped: usize,
     /// Token-dimension rows rewritten.
     pub tokens_written: usize,
+}
+
+/// Seal sidecar written next to each day file so a later export can detect an
+/// incomplete seal (truncated write / later sync fill) and re-export.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DayMeta {
+    day: String,
+    row_count: u64,
+    exported_at_utc: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +123,9 @@ fn tokens_schema() -> Schema {
 // ---------------------------------------------------------------------------
 
 /// Export every newly-sealed day plus the current token dimension into the lake at
-/// `root`. Idempotent: a day whose immutable file already exists is skipped, so
-/// re-running only writes days that landed since the last run.
+/// `root`. Idempotent: a day whose immutable file already exists **and** whose
+/// `_meta.json` `row_count` still matches PG is skipped; a missing/mismatched
+/// sidecar forces a re-seal.
 ///
 /// `include_today` also exports today's still-open UTC day as a non-immutable
 /// snapshot, force-overwriting it so a re-run refreshes rather than keeping a stale
@@ -130,10 +143,24 @@ pub async fn export_lake(pool: &PgPool, root: &Path, include_today: bool) -> Res
         let path = trades_day_file(root, day);
         let force = include_today && day == today;
         if path.exists() && !force {
-            summary.days_skipped += 1;
-            continue;
+            let pg_count = count_day_trades(pool, day).await?;
+            match day_seal_ok(root, day, pg_count) {
+                SealVerdict::Complete => {
+                    summary.days_skipped += 1;
+                    continue;
+                }
+                SealVerdict::Reseal { reason } => {
+                    tracing::warn!(
+                        day = %day,
+                        pg_count,
+                        reason,
+                        "lake: incomplete seal — re-exporting day"
+                    );
+                }
+            }
         }
         let n = export_day(pool, root, day).await?;
+        write_day_meta(root, day, n as u64)?;
         tracing::info!(day = %day, trades = n, force, "lake: exported day");
         summary.days_written.push(day);
     }
@@ -146,6 +173,63 @@ pub async fn export_lake(pool: &PgPool, root: &Path, include_today: bool) -> Res
         "lake: export complete"
     );
     Ok(summary)
+}
+
+/// Whether an existing day file may be skipped (`Complete`) or must be rewritten.
+#[derive(Debug, PartialEq, Eq)]
+enum SealVerdict {
+    Complete,
+    Reseal { reason: &'static str },
+}
+
+/// Compare the on-disk sidecar to `pg_count`. Pure FS + numbers — unit-tested.
+fn day_seal_ok(root: &Path, day: NaiveDate, pg_count: u64) -> SealVerdict {
+    match read_day_meta(root, day) {
+        None => SealVerdict::Reseal {
+            reason: "missing _meta.json",
+        },
+        Some(meta) if meta.row_count != pg_count => SealVerdict::Reseal {
+            reason: "row_count mismatch vs PG",
+        },
+        Some(_) => SealVerdict::Complete,
+    }
+}
+
+async fn count_day_trades(pool: &PgPool, day: NaiveDate) -> Result<u64> {
+    let start = Utc.from_utc_datetime(&day.and_hms_opt(0, 0, 0).unwrap());
+    let end = Utc.from_utc_datetime(&(day + chrono::Duration::days(1)).and_hms_opt(0, 0, 0).unwrap());
+    let (n,): (i64,) = sqlx::query_as(
+        r#"SELECT COUNT(*)::bigint FROM trades WHERE block_time >= $1 AND block_time < $2"#,
+    )
+    .bind(start)
+    .bind(end)
+    .fetch_one(pool)
+    .await
+    .context("counting day trades for seal check")?;
+    Ok(n as u64)
+}
+
+fn read_day_meta(root: &Path, day: NaiveDate) -> Option<DayMeta> {
+    let path = trades_day_meta(root, day);
+    let bytes = std::fs::read(&path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_day_meta(root: &Path, day: NaiveDate, row_count: u64) -> Result<()> {
+    let path = trades_day_meta(root, day);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let meta = DayMeta {
+        day: day.format("%Y-%m-%d").to_string(),
+        row_count,
+        exported_at_utc: Utc::now().to_rfc3339(),
+    };
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&meta)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("publishing {}", path.display()))?;
+    Ok(())
 }
 
 /// Distinct UTC days present in `trades` that are **sealed** — strictly before the
@@ -468,6 +552,29 @@ mod tests {
     use super::*;
     use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray};
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    #[test]
+    fn seal_ok_when_meta_matches_pg_count() {
+        let dir = std::env::temp_dir().join(format!("lake_seal_ok_{}", std::process::id()));
+        let day = NaiveDate::from_ymd_opt(2026, 6, 27).unwrap();
+        write_day_meta(&dir, day, 42).unwrap();
+        assert_eq!(day_seal_ok(&dir, day, 42), SealVerdict::Complete);
+        assert!(matches!(
+            day_seal_ok(&dir, day, 41),
+            SealVerdict::Reseal { reason: "row_count mismatch vs PG" }
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn seal_reseals_when_meta_missing() {
+        let dir = std::env::temp_dir().join(format!("lake_seal_miss_{}", std::process::id()));
+        let day = NaiveDate::from_ymd_opt(2026, 6, 28).unwrap();
+        assert!(matches!(
+            day_seal_ok(&dir, day, 0),
+            SealVerdict::Reseal { reason: "missing _meta.json" }
+        ));
+    }
 
     fn row(mint: &str, buy: bool, lamports: i64, raw_tok: i64) -> LakeTradeRow {
         LakeTradeRow {

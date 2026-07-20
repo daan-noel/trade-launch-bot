@@ -36,8 +36,8 @@ The repo did **not** follow this plan. Three larger currents overtook it:
 **Net effect on this plan:** the *structural* recommendations (topology split, real venue seam) largely
 landed. The *quote/multi-venue data model* landed **in forge**. The plan's **highest-priority items —
 the Phase 0 real-money bugs marked "ship before anything else" — were unshipped until 2026-07-14, when
-Part 1 (C1, M1, H2, M2, M3/M4, H1) was implemented** (see "Part 1 — SHIPPED" below; real-SOL smoke of
-the sell/close paths still pending).
+Part 1 (C1, M1, H2, M2, M3/M4, H1) was implemented** (see "Part 1 — SHIPPED" below; ops smoke
+checklist in `docs/plans/trade-execution/sell-close-smoke.md`).
 
 ---
 
@@ -51,7 +51,7 @@ Legend: ✅ done · 🟡 partial · ❌ open · ⚪ obsolete/moved. Paths are **
 | **C2** | Lab sweep threads capped at cores−6 | ✅ (2026-07-14) | `bounded_threads` (`sweep/registry.rs`) now defaults to `cores − 1` on `lab` (analysis box runs no ingest/gRPC/trader, so a sweep never co-runs the live hot path) — one core left for the OS + idle actix workers. `SWEEP_RAYON_THREADS` override + `≥1` floor kept; the live-hot-path rationale (`TOKIO_WORKER_THREADS`/`HTTP_WORKERS` reservation) dropped. |
 | **H1** | Market-cap formula wrong + inconsistent | ✅ (2026-07-14) | Real `tokens.total_supply_token` column added (migration 0003, populated at ingest from the `total_supply_for` Rust SSOT; backfill + `token_overview` view + sync script updated). `MARKET_CAP_SQL` + `market_cap_sol` repointed at `total_supply × price`. `initial_supply_token` doc-comment clarified as NOT-supply. |
 | **H2** | Ingest consumer couples strategy pings to DB backpressure | ✅ (2026-07-14) | `consumer.rs` now dispatches the cache update + reserve update + `ping_strategy` **before** the durable enqueue, and the Trade/Wallet/Token/Migration writes go through `enqueue_db_timeout` (500 ms bound + drop-metric). `notify_mint` deliberately stays after the Trade enqueue (sell-confirm ordering). |
-| **H3** | Lake day-files seal with no completeness check | ❌ | `hunter/lab/src/lake/export.rs:129-139` still skip-if-exists, no manifest/row-count, no re-seal. Sync (`hunter/scripts/db-incremental-sync.ps1`) reconciles `wallet_dict` but has no per-day `COUNT(*)` check for `trades`. |
+| **H3** | Lake day-files seal with no completeness check | ✅ (2026-07-19) | `export_lake` writes `trades/dt=…/_meta.json` (`row_count` + `exported_at_utc`); skip-if-exists only when sidecar matches PG `COUNT(*)` for that UTC day — missing/mismatched meta forces re-seal. |
 | **H4** | sim↔sweep/lake parity test `#[ignore]`d | ✅ | `hunter/lab/src/lake/duck.rs:452-524` `parity_tests` — un-ignored, self-skips when no lake present. (Proves sweep-load ↔ sim-load parity, not a lake-vs-PG baseline.) |
 | **H5** | Corpus load row-by-row, re-done every sweep | ✅ (2026-07-14) | `sweep_corpus_cache` is now reused **at sweep start** (`grouped_sweep.rs`), not only the drill-in: `lake_hash` folds a **lake-version fingerprint** (partition set + token-dim mtime/len) so the cache key is `(selection, lake version)` — a same-selection re-run over an unchanged lake skips the DuckDB load; a fresh `lake-export` invalidates it. `stage_mints` now runs **once** (`resolve_candidates` stages `sel_mints` in both paths; `load_sync` no longer re-stages). Still the **row API by design** (arrow isolation) — the deferred arrow-batch path is the remaining optional "M". |
 | **H6** | Single-rule simulate single-threaded, no `spawn_blocking` | ✅ (2026-07-14) | The per-token entry→exit resolve is extracted to a pure `resolve_token` and run via `rayon` `par_iter` inside `tokio::task::spawn_blocking` across all three backtests (`tpsl_sniper_1/2`, `swing_1`) — off the actix worker, across cores. The DuckDB `LakeSource::load` now runs its whole synchronous read inside `spawn_blocking` too (benefits sweep + simulate). `SIM_PER_MINT_CAP` stays `i64::MAX` (intentional full-history parity). |
@@ -59,13 +59,13 @@ Legend: ✅ done · 🟡 partial · ❌ open · ⚪ obsolete/moved. Paths are **
 | **H8** | Venue recognition = pump-only string match — T2/T4 blocker | ❌ hunter · ✅ forge | Hunter/ingest still substring `contains(pump_id)` (`shared/ingest/pumpfun/src/venue.rs:73-79`), `enum TxRelevance { Curve, Amm }`, `venue CHECK IN ('curve','amm')`. Forge has the open `launchpads` registry + `launchpad_id`/`market_kind`. |
 | **H9** | `Protocol` builder is a false venue seam | ✅ | Replaced by real `Venue` / `IngestVenue` traits. `protocol.rs` demoted to a static constants/descriptor module in both stacks. (Still single-venue — `VenueId::PumpFun` is the only arm.) |
 | **H10** | Strategy-code triplication across lab + core | 🟡 | A real `Strategy`/`ParamSpace` trait + generic sweep engine now exist (`hunter/lab/src/sweep/strategy.rs`), removing engine-level dup. But every concrete item is still duplicated: 3 sweep adapters (`tpsl1/tpsl2/swing1.rs`), `sweep_*`/`simulate_*_one_combo` clones in `registry.rs`, the `tpsl_sniper_1/2` decision clones (`util.rs` byte-identical), the frontend pages/columns, and **12 per-strategy sweep tables**. No `StrategyDescriptor`/`register_strategy!`/`sweep_dispatch<S>`. |
-| **M1** | Shared token account, no refcount / same-mint serialization | ✅ (2026-07-14) | Rent-reclaim `close_token_account` now gated by `has_other_open_position_on_mint` (DB check — restart-safe, replaces the proposed in-memory refcount) at both close sites (`reclaim_token_account_if_last`); same-mint real exits serialized by `runtime.mint_exit_lock` (per-`(wallet,mint)` async Mutex). |
+| **M1** | Shared token account, no refcount / same-mint serialization | ✅ (2026-07-14) | Rent-reclaim `close_token_account` now gated by `has_other_open_position_on_mint` (DB check — restart-safe, replaces the proposed in-memory refcount) at both close sites (`reclaim_token_account_if_last`). Per-position exit serialization is `InFlightGuards` (per-`pg_id`); a dedicated per-`(wallet,mint)` mutex was never landed — reclaim DB-gate is the shipped safety. |
 | **M2** | `mark_buy_submitted` DB persist held inside nonce slot | ✅ (2026-07-14) | Bounded in the `on_signed` hook (`real.rs`) with a 250 ms `tokio::time::timeout`; the shared executor stays DB-agnostic. In-memory `signed_slot` journal set synchronously first, so write-ahead recovery for this process is preserved even on timeout. |
 | **M3** | `wallet_dict` intern uses no-op `DO UPDATE` (dead tuples) | ✅ (2026-07-14) | `wallet_dict_repo.rs` rewritten: cache-first, SELECT fast path → `INSERT … ON CONFLICT DO NOTHING RETURNING id` → SELECT fallback. No more dead-tuple churn on the hot write path. |
 | **M4** | Confirm-loop wallet round-trip per call (2 RTs) | ✅ (2026-07-14) | Shared process-wide bounded `address→id` cache (`LazyLock<DashMap>`, cap 200k; ids are immutable so no invalidation) fronts `id_for`/`intern` — a resident id is 0 round-trips. |
 | **M8** | `/api/tokens` re-filters/re-sorts ~1M rows per poll | ✅ | `hunter/core/src/state/token_list_cache.rs` — staleness-bounded shared snapshot, filter-by-reference, page-only clone. (Different mechanism than the proposed per-query memo, but the per-poll full clone+sort is gone.) |
-| **M9** | Current-day analysis needs two uncoupled `--include-today` runs | ❌ | `sim_fetch.rs:144-161` still warn-only; `lake-export --include-today` exists but no chained `sync` command couples hop-1 (DB sync) to hop-2 (export). |
-| **M10** | Legacy `Position` model kept only for SSE wire shape | ❌ | `hunter/core/src/models/position.rs` + `system/stream.rs:181-184` `PositionResponse::from(...)` adapter still present. |
+| **M9** | Current-day analysis needs two uncoupled `--include-today` runs | ✅ (2026-07-19) | `db-incremental-sync.ps1 -IncludeToday -ExportLake` runs hop-1 then `cargo run -p hunter-lab -- lake-export --include-today` after FDW detach. `sim_fetch` warn points at that one-shot. |
+| **M10** | Legacy `Position` model kept only for SSE wire shape | ✅ (2026-07-19) | Dead `TpslPositionsChanged` / core `Position` / `PositionResponse` / `RuleNotifSnapshot` removed. Live path is `StrategyPositionUpdate` only (now carries `trade_mode`/`rule_name` for toasts). FE: deleted `useRulePositions` + `tpsl_positions_changed` subscribers; notifications listen to `strategy_position_update`. REST wire stays in `live/.../positions.rs`. |
 | **M14** | FE boundary cross-imports; no lint enforcement | ✅ (2026-07-14) | ESLint flat config (`frontend/eslint.config.js`, `npm run lint`) with `no-restricted-imports` boundary zones (shared ⊬ `@live`/`@lab`; live ⊬ `@lab`; lab ⊬ `@live`) — boundary-only (the `@typescript-eslint`/`react-hooks` plugins are registered just so existing disable comments resolve; no rules enabled). Offenders relocated: the grouped-creation trio (`GroupedCreationSection`/`GroupedCreationTrendChart`/`groupedCreationStats`) + `BackgroundJobsIndicator` + `sweepParamColors` moved shared→`lab/` (the shared `creationStats.ts` stayed — `sharedEndpoints` uses it); the 3 lab strategy pages dropped the live-only `sellToken` (lab can't sell — no keys/trader). Lint is green (0 violations) and the rule fires on a probe. |
 | **M15** | Shared SSE has no `onerror`/`onopen` — silent death | ✅ (2026-07-14) | `sse.ts` now tracks connection status (`connecting`/`open`/`error`) via `onopen`/`onerror`, exposes `subscribeSseStatus`/`getSseStatus` + a `useSseStatus` hook (header health dot), and an `onSseReopen` resync hook: the idempotent "refetch" subscribers (`connectTokenCreatedStream`, `connectTpslRulesChanged`) re-fire on a *reconnect* (error→open) so a page that missed frames during an outage catches up. |
 | **M16** | `SwingDetectionPage` pulls up to 20k full records | ✅ (2026-07-14) | New lab-only `POST /api/tokens/mints` (`core::collect_filtered_mints` runs the SAME `q.matches` filter as `build_tokens_list`, projects `mint_address` only) + `labApi.getTokenMints` (reuses the shared `tokensTableRequestBody` builder — SSOT with `getTokensPage`). "Swing Detection All" reads the mint set from it instead of pulling ~20k full rows to `.map` down to mints. |
@@ -90,8 +90,9 @@ stays pump/SOL for now, adopting forge's model later — see Part 5).
 
 > **Parts 1 & 2 shipped 2026-07-14 and their plan sections were removed as finished** — the
 > outcome is recorded in the status table above (C1, M1, H2, M2, M3/M4, H1, C2, H6, H5 all ✅) and
-> in commits `fb30590` (Part 1) / `4a95c7a` (Part 2). Part 1's only remaining task is the real-SOL
-> smoke test of the sell/close paths.
+> in commits `fb30590` (Part 1) / `4a95c7a` (Part 2). Part 1 real-SOL smoke is an **ops
+> checklist** ([sell-close-smoke.md](../plans/trade-execution/sell-close-smoke.md)) — classifier
+> unit coverage extended 2026-07-19; chain smoke stays manual.
 
 ### Part 3 — Modularity (H10 remainder) ⛔ DECLINED 2026-07-14 (intentional separation)
 
@@ -185,13 +186,15 @@ a USDC-paired pump token (T1) must be addable without touching anything outside 
 ## Dependency / sequencing
 
 ```
-Part 1 (real-money, no deps)  ──►  ✅ SHIPPED; only real-SOL smoke of sell/close paths remains
+Part 1 (real-money, no deps)  ──►  ✅ SHIPPED; ops smoke checklist + classifier unit tests
 Part 2 (lab throughput)       ──►  ✅ SHIPPED
 Part 3 (modularity)           ──►  ⛔ DECLINED — intentional separation; revisit per-item at strategy #4
 Part 4 (frontend)             ──►  M14/M15/M16 ✅ SHIPPED; M18 waits on New-plan #1 fork decision, M17 on Part 5
 Part 5 (venue/quote port)     ──►  deferred; port from forge when prioritized
-New-plan #1 (SSOT drift)      ──►  do before any hunter/forge shared refactor (esp. chart M18)
+H3 / M9 / M10                 ──►  ✅ SHIPPED 2026-07-19
+New-plan #1 (SSOT drift)      ──►  deferred (intentional hunter/forge forks stay)
 ```
 
-Nothing in Parts 4–5 should merge ahead of Part 1's real-SOL smoke test. **Next real work: the
-Part 1 sell/close real-SOL smoke test — the only genuinely open risk in this audit.**
+Remaining open in this audit (deferred / declined / intentional-dup only): H7/H8/M17/Part 5,
+M18, Part 3, New-plans #1–#3, and the never-reverified L/M leftovers. **No further
+must-ship work from the actionable set.**

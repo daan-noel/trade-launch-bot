@@ -491,10 +491,14 @@ async fn reload_rules(
             return;
         }
     };
+    let mut names: Vec<(RuleId, String)> = Vec::with_capacity(rules.len());
     let loaded: Vec<LoadedRule> = rules
         .iter()
         .filter_map(|r| match convert::rule_to_loaded(r) {
-            Ok(l) => Some(l),
+            Ok(l) => {
+                names.push((l.id, r.rule_name.clone()));
+                Some(l)
+            }
             Err(e) => {
                 warn!(rule = %r.id, "engine: skipping rule with invalid params: {e}");
                 None
@@ -503,7 +507,7 @@ async fn reload_rules(
         .collect();
     let engine_fps: Vec<EngineFingerprint> = fps.iter().map(convert::fp_to_engine).collect();
 
-    sink.set_rules(&loaded);
+    sink.set_rules(&loaded, &names);
     info!(rules = loaded.len(), fingerprints = engine_fps.len(), "engine: rules reloaded");
     let _ = reduce(
         state,

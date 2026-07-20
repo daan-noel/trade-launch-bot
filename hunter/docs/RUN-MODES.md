@@ -40,6 +40,7 @@ cargo run -p live                 # needs Postgres + Helius gRPC/keys (binds LIV
 cargo run -p lab                  # binds LAB_PORT :8140 by default — runs beside live, no override
 cargo run -p lab -- lake-export                  # export sealed days -> Parquet lake
 cargo run -p lab -- lake-export --include-today  # also today's open day (sweep current-day data)
+# One-shot current-day refresh (DB sync + lake): ./scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake
 
 # --- Frontend (native, separate terminal) ---
 cd hunter/frontend

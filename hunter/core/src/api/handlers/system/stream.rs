@@ -5,10 +5,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use crate::{
-    models::ingest::SseEvent, models::position::PositionResponse,
-    state::core_state::CoreState,
-};
+use crate::{models::ingest::SseEvent, state::core_state::CoreState};
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
@@ -166,42 +163,6 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             // Not mint-scoped: a list-level signal delivered to every subscriber.
             (None, "tpsl_rules_changed", json!({ "strategy": strategy }))
         }
-        SseEvent::TpslPositionsChanged {
-            strategy,
-            rule_id,
-            rule_snapshot,
-            position,
-            removed,
-            open_positions,
-            pending_positions,
-            total_positions,
-        } => {
-            // Not mint-scoped: scoped to the owning rule, not a token. The changed
-            // row is shipped in the `PositionResponse` wire shape so the client
-            // patches one row + the badge in place rather than refetching.
-            let position_json = position.as_ref().map(|p| {
-                serde_json::to_value(PositionResponse::from((**p).clone()))
-                    .unwrap_or(serde_json::Value::Null)
-            });
-            let rule_snapshot_json = rule_snapshot
-                .as_deref()
-                .and_then(|s| serde_json::to_value(s).ok())
-                .unwrap_or(serde_json::Value::Null);
-            (
-                None,
-                "tpsl_positions_changed",
-                json!({
-                    "strategy": strategy,
-                    "rule_id": rule_id,
-                    "rule_snapshot": rule_snapshot_json,
-                    "position": position_json,
-                    "removed": removed,
-                    "open_positions": open_positions,
-                    "pending_positions": pending_positions,
-                    "total_positions": total_positions,
-                }),
-            )
-        }
         SseEvent::SimulationProgress {
             rule_id,
             processed,
@@ -286,6 +247,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
             exit_reason,
             entry_price,
             exit_price,
+            trade_mode,
+            rule_name,
         } => {
             // Mint-scoped: the generic engine's position transition. The client
             // patches the one row keyed by `position_id`.
@@ -300,6 +263,8 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                     "exit_reason": exit_reason,
                     "entry_price": entry_price,
                     "exit_price": exit_price,
+                    "trade_mode": trade_mode,
+                    "rule_name": rule_name,
                 }),
             )
         }

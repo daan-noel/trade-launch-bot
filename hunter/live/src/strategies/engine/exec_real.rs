@@ -791,4 +791,24 @@ mod tests {
             SellConfirmAction::Reclassify(SwapRetryDecision::Retry)
         );
     }
+
+    #[test]
+    fn classify_sell_confirm_succeeded_pending_rpc_error_wait_never_resend() {
+        // C1: Succeeded / Pending / RPC-error must never trigger a second sell.
+        let succeeded: Result<SigStatus, ()> = Ok(SigStatus::Succeeded);
+        let pending: Result<SigStatus, ()> = Ok(SigStatus::Pending);
+        let rpc_err: Result<SigStatus, ()> = Err(());
+        assert_eq!(
+            classify_sell_confirm(&succeeded, false, false),
+            SellConfirmAction::WaitConfirm
+        );
+        assert_eq!(
+            classify_sell_confirm(&pending, true, true),
+            SellConfirmAction::WaitConfirm
+        );
+        assert_eq!(
+            classify_sell_confirm(&rpc_err, false, false),
+            SellConfirmAction::WaitConfirm
+        );
+    }
 }

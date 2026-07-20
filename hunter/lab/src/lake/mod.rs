@@ -13,11 +13,14 @@
 //!
 //! ```text
 //!   <lake_root>/trades/dt=YYYY-MM-DD/data.parquet   one immutable file per sealed day
+//!   <lake_root>/trades/dt=YYYY-MM-DD/_meta.json     seal sidecar (row_count + exported_at)
 //!   <lake_root>/tokens/tokens.parquet               token dimension (rewritten each run)
 //! ```
 //!
-//! **Immutability.** A day file is written **once**; a day whose file already exists
-//! is skipped (the day's chunk is sealed on the server, so its rows never change).
+//! **Immutability + completeness.** A day file is written **once** and skipped on
+//! later runs *only if* its `_meta.json` sidecar's `row_count` still matches
+//! `COUNT(*)` in local PG for that UTC day. A missing/mismatched sidecar forces a
+//! re-seal (truncated export, partial write, or a later sync that filled a gap).
 //! The `tokens` dimension is small and mutates (new tokens, fingerprints), so it is
 //! rewritten wholesale each export.
 //!
@@ -58,6 +61,15 @@ pub fn trades_day_file(root: &Path, day: NaiveDate) -> PathBuf {
         .join("data.parquet")
 }
 
+/// Seal sidecar for one sealed day (`<root>/trades/dt=YYYY-MM-DD/_meta.json`).
+/// Carries the PG `COUNT(*)` at export time so a later run can detect an incomplete
+/// seal and re-export instead of skip-if-exists.
+pub fn trades_day_meta(root: &Path, day: NaiveDate) -> PathBuf {
+    trades_dir(root)
+        .join(format!("dt={}", day.format("%Y-%m-%d")))
+        .join("_meta.json")
+}
+
 /// The token-dimension file (`<root>/tokens/tokens.parquet`).
 pub fn tokens_file(root: &Path) -> PathBuf {
     root.join("tokens").join("tokens.parquet")
@@ -82,6 +94,9 @@ mod tests {
         let p = trades_day_file(root, day);
         let s = p.to_string_lossy().replace('\\', "/");
         assert!(s.ends_with("trades/dt=2026-06-27/data.parquet"), "got {s}");
+        let m = trades_day_meta(root, day);
+        let ms = m.to_string_lossy().replace('\\', "/");
+        assert!(ms.ends_with("trades/dt=2026-06-27/_meta.json"), "got {ms}");
     }
 
     #[test]

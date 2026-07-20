@@ -34,6 +34,7 @@ use super::{ArmedRegistry, FillSigStore, PositionMeta, PositionRegistry};
 #[derive(Debug, Clone)]
 struct RuleInfo {
     mode: TradeMode,
+    name: String,
     max_total: Option<i64>,
     params: serde_json::Value,
 }
@@ -88,8 +89,14 @@ impl Sink {
         }
     }
 
-    /// Refresh the per-rule info from a reload (mode, cap, params snapshot).
-    pub fn set_rules(&mut self, rules: &[LoadedRule]) {
+    /// Refresh the per-rule info from a reload (mode, name, cap, params snapshot).
+    /// `names` is `(RuleId, rule_name)` parallel to `rules` — `LoadedRule` does not
+    /// carry the human label, but SSE notifications need it.
+    pub fn set_rules(&mut self, rules: &[LoadedRule], names: &[(RuleId, String)]) {
+        let name_by_id: HashMap<RuleId, &str> = names
+            .iter()
+            .map(|(id, n)| (*id, n.as_str()))
+            .collect();
         self.rules = rules
             .iter()
             .map(|r| {
@@ -97,6 +104,10 @@ impl Sink {
                     r.id,
                     RuleInfo {
                         mode: r.trade_mode,
+                        name: name_by_id
+                            .get(&r.id)
+                            .map(|s| (*s).to_string())
+                            .unwrap_or_default(),
                         max_total: (r.max_total_tokens != 0).then_some(r.max_total_tokens as i64),
                         params: r.params.to_value(),
                     },
@@ -334,6 +345,7 @@ impl Sink {
             .filter(|_| delta.status == PositionStatus::End)
             .map(|f| f.price);
         let pg_id = self.registry.get(delta.position).map(|m| m.pg_id);
+        let info = self.rules.get(&delta.rule);
         let _ = self.sse_tx.send(SseEvent::StrategyPositionUpdate {
             rule_id: delta.rule.0,
             mint_address: delta.mint.to_string(),
@@ -342,6 +354,10 @@ impl Sink {
             exit_reason: delta.reason.map(|r| exit_reason_str(r).to_string()),
             entry_price,
             exit_price,
+            trade_mode: info.map(|i| mode_str(i.mode).to_string()),
+            rule_name: info
+                .map(|i| i.name.clone())
+                .filter(|n| !n.is_empty()),
         });
     }
 }

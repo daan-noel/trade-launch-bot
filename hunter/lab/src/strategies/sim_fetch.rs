@@ -149,7 +149,8 @@ fn warn_if_stale(root: &Path) {
                 tracing::warn!(
                     newest = %newest, today = %today,
                     "simulate: lake newest day precedes today — histories for recent tokens may be \
-                     truncated; run `lab lake-export --include-today`"
+                     truncated; run `./scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake` \
+                     (or `lab lake-export --include-today` if local PG is already fresh)"
                 );
             }
         }

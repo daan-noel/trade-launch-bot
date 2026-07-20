@@ -25,7 +25,7 @@ use trading_core::storage::repositories::strategy_repo::{PositionQuery, Strategy
 /// display columns are the first entry leg / last exit leg.
 ///
 /// SSOT NOTE: the frontend consumes this AND the sibling
-/// [`trading_core::models::PositionResponse`] (the tpsl2 shape) through ONE shared
+/// the former core `PositionResponse` shape through ONE shared
 /// `RulePositionRecord` type. The two are intentionally kept as separate structs
 /// (per-strategy clones), but their SERIALIZED field set must stay a consistent
 /// superset — a field the FE type declares must be emitted by BOTH. If you add a
@@ -520,7 +520,7 @@ pub async fn get_position(
 /// (`manual_sell`, which sells the wallet's balance by mint and never touches the
 /// `StrategyPosition`), this routes through the position-aware close path so the row
 /// transitions `Holding → ExitPending → closed` over the existing
-/// `tpsl_positions_changed` stream — the operator sees live, reload-proof status.
+/// `strategy_position_update` stream — the operator sees live, reload-proof status.
 /// Real rows sell on-chain in a spawned task; the response returns as soon as the
 /// close has begun (202-style semantics), the terminal state arrives over SSE.
 pub async fn close_position(
@@ -531,7 +531,7 @@ pub async fn close_position(
     // Route through the generic engine's own close path: it resolves the PG id to
     // the live engine position and folds a `ManualClose` (a no-op if it isn't a
     // live engine-held one). The row transitions `Holding → ExitPending → closed`
-    // over the `tpsl_positions_changed` SSE. `manual_close` returns `false` only if
+    // over the `strategy_position_update` SSE. `manual_close` returns `false` only if
     // the engine loop is shutting down.
     if app_state.engine.manual_close(position_id).await {
         HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))

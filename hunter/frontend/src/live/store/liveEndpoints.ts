@@ -88,7 +88,7 @@ export const liveApi = baseApi.injectEndpoints({
     // Per-row "Sell ALL" on the rule positions table. Unlike `sellToken` (a raw
     // wallet sell by mint), this force-closes the specific strategy position via the
     // position-aware path, so the row transitions Holding → ExitPending → closed over
-    // the `tpsl_positions_changed` SSE stream — live, reload-proof status. The backend
+    // the `strategy_position_update` SSE stream — live, reload-proof status. The backend
     // returns 202 as soon as the close begins; the terminal state arrives over SSE, so
     // no cache tag is invalidated here (the stream patches the row).
     closeRulePosition: builder.mutation<{ closing: boolean }, { strategy: string; positionId: string }>({

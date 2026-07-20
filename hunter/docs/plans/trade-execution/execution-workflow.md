@@ -105,6 +105,9 @@ on Unconfirmed: FillFailed::Unconfirmed → ExitUnconfirmed (never re-sold)
 Engine outer bound: `MAX_EXIT_ATTEMPTS = 5` for safe `Reverted` (e.g. never-submitted).
 `Fatal` / `Unconfirmed` are terminal in the fold.
 
+**Real-SOL smoke:** ops checklist in [sell-close-smoke.md](./sell-close-smoke.md)
+(classifier unit-tested; chain smoke is manual).
+
 **Why SOL is released first:** `release_sol_for_position` must fire regardless of
 whether the sell succeeds or the process crashes mid-exit. Releasing after a confirmed
 sell would leave committed SOL stranded if the process crashes between sell and release.

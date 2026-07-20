@@ -2,13 +2,11 @@ import { useEffect, useState, useCallback } from 'react';
 import type { AppSettings } from 'services/api';
 import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
 import { Switch } from 'components/ui/Switch';
-import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { cn } from 'lib/cn';
 import {
   useNotificationPrefs,
   ALL_POSITION_STATUSES,
-  FP_PARAM_GROUPS,
   type PositionStatus,
 } from 'hooks/useNotificationPrefs';
 
@@ -38,11 +36,6 @@ const STATUS_PILL: Record<
   PositionStatus,
   { active: string; inactive: string; label: string }
 > = {
-  Arming: {
-    active: 'border-white/20 bg-white/8 text-text',
-    inactive: 'border-white/6 bg-transparent text-text-dim',
-    label: 'Arming',
-  },
   BuySubmitted: {
     active: 'border-info/40 bg-info/12 text-info',
     inactive: 'border-white/6 bg-transparent text-text-dim',
@@ -67,6 +60,11 @@ const STATUS_PILL: Record<
     active: 'border-red/40 bg-red/10 text-red',
     inactive: 'border-white/6 bg-transparent text-text-dim',
     label: 'Exit failed',
+  },
+  ExitUnconfirmed: {
+    active: 'border-red/40 bg-red/10 text-red',
+    inactive: 'border-white/6 bg-transparent text-text-dim',
+    label: 'Exit unconfirmed',
   },
 };
 
@@ -101,15 +99,6 @@ function NotificationSection() {
       statuses: prev.statuses.includes(s)
         ? prev.statuses.filter((x) => x !== s)
         : [...prev.statuses, s],
-    }));
-  }
-
-  function toggleFp(key: string) {
-    setPrefs((prev) => ({
-      ...prev,
-      fpParams: prev.fpParams.includes(key)
-        ? prev.fpParams.filter((x) => x !== key)
-        : [...prev.fpParams, key],
     }));
   }
 
@@ -189,27 +178,6 @@ function NotificationSection() {
               </button>
             );
           })}
-        </div>
-      </div>
-
-      <div className="mt-4">
-        <span className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-text-dim">
-          Show in notification
-        </span>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
-          {FP_PARAM_GROUPS.map((g) => (
-            <label key={g.key} className="flex cursor-pointer items-center gap-2">
-              <Checkbox
-                boxSize="sm"
-                checked={prefs.fpParams.includes(g.key)}
-                onChange={() => toggleFp(g.key)}
-              />
-              <span className="text-xs text-text">
-                {g.label}
-                <span className="ml-1.5 font-mono text-[10px] text-text-dim">{g.hint}</span>
-              </span>
-            </label>
-          ))}
         </div>
       </div>
     </section>

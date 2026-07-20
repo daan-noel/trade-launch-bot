@@ -89,46 +89,6 @@ export function sseSubscribe(type: string, cb: SseListener): () => void {
   return subscribe(type, cb);
 }
 
-/**
- * Strategy-agnostic position-change subscriber — receives deltas for BOTH
- * tpsl1 and tpsl2 without filtering. Used by the global notification hook so
- * it works regardless of which page the user is on.
- */
-export function connectAllPositionsChanged(
-  onDelta: (delta: import('types').TpslPositionDelta & { strategy: string }) => void,
-): StreamHandle {
-  const unsub = subscribe('tpsl_positions_changed', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      const p = JSON.parse(e.data) as {
-        strategy?: string;
-        rule_id?: string;
-        rule_snapshot?: import('types').RuleNotifSnapshot | null;
-        position?: import('types').RulePositionRecord | null;
-        removed?: boolean;
-        open_positions?: number;
-        pending_positions?: number;
-        total_positions?: number;
-      };
-      if (p.strategy && p.rule_id) {
-        onDelta({
-          strategy: p.strategy,
-          ruleId: p.rule_id,
-          ruleSnapshot: p.rule_snapshot ?? null,
-          position: p.position ?? null,
-          removed: !!p.removed,
-          openPositions: p.open_positions ?? 0,
-          pendingPositions: p.pending_positions ?? 0,
-          totalPositions: p.total_positions ?? 0,
-        });
-      }
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
-  return { close: unsub };
-}
-
 function subscribe(type: string, cb: SseListener): () => void {
   let set = listeners.get(type);
   if (!set) {
@@ -241,10 +201,6 @@ export function connectPaperTestStream(
   return { close: unsub };
 }
 
-// The client filters `tpsl_positions_changed` frames by the payload's `strategy`
-// string.
-type TpslStrategy = 'tpsl1' | 'tpsl2';
-
 /**
  * Terminal signal for the in-flight grouped param-sweep — the single-flight run
  * ended (normal finish, error, or user cancel). Lets a global progress indicator
@@ -277,48 +233,6 @@ export function connectSimulationFinished(
     if (typeof e.data !== 'string') return;
     try {
       onFinished(JSON.parse(e.data) as import('types').SimulationFinishedEvent);
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
-  return { close: unsub };
-}
-
-/**
- * Position change signal for `strategy`. Delivers a {@link TpslPositionDelta}:
- * the changed row + the rule's live cap counters, so the caller patches one row
- * (and the badge) in place rather than refetching the list. `removed` rows still
- * carry their `position` so the caller knows which to drop. Filtered to
- * `strategy` client-side.
- */
-export function connectTpslPositionsChanged(
-  strategy: TpslStrategy,
-  onDelta: (delta: import('types').TpslPositionDelta) => void,
-): StreamHandle {
-  const unsub = subscribe('tpsl_positions_changed', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      const p = JSON.parse(e.data) as {
-        strategy?: string;
-        rule_id?: string;
-        rule_snapshot?: import('types').RuleNotifSnapshot | null;
-        position?: import('types').RulePositionRecord | null;
-        removed?: boolean;
-        open_positions?: number;
-        pending_positions?: number;
-        total_positions?: number;
-      };
-      if (p.strategy === strategy && p.rule_id) {
-        onDelta({
-          ruleId: p.rule_id,
-          ruleSnapshot: p.rule_snapshot ?? null,
-          position: p.position ?? null,
-          removed: !!p.removed,
-          openPositions: p.open_positions ?? 0,
-          pendingPositions: p.pending_positions ?? 0,
-          totalPositions: p.total_positions ?? 0,
-        });
-      }
     } catch {
       /* ignore malformed frames */
     }

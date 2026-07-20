@@ -239,38 +239,6 @@ export interface RulePositionRecord extends TokenEnrichmentFields {
   // `TokenEnrichmentFields`; only the record-specific extras stay here.
 }
 
-/** Rule context snapshot bundled with every `tpsl_positions_changed` SSE event
- *  so notification consumers have full context without a round-trip. */
-export interface RuleNotifSnapshot {
-  rule_name: string;
-  trade_mode: string;
-  p_token_initial_buy_sol: number | null;
-  p_token_first_slot_buy_sol: number | null;
-  p_token_first_slot_sell_sol: number | null;
-  bucket_width_sol: number;
-  p_token_cu_limit: number | null;
-  p_token_cu_price: number | null;
-  p_token_max_sol_cost: number | null;
-  p_token_spendable_sol_in: number | null;
-  p_token_ix_labels: string[];
-  p_exit_take_profit: number;
-  p_exit_stop_loss: number;
-}
-
-/** Payload of the `tpsl_positions_changed` SSE event. The backend ships the
- *  changed row + the rule's live cap counters so the client patches one row + the
- *  badge in place instead of refetching. `position` is present even on removal (so
- *  the client knows which row to drop); `removed` distinguishes the two. */
-export interface TpslPositionDelta {
-  ruleId: string;
-  ruleSnapshot: RuleNotifSnapshot | null;
-  position: RulePositionRecord | null;
-  removed: boolean;
-  openPositions: number;
-  pendingPositions: number;
-  totalPositions: number;
-}
-
 /** One page of a rule's positions plus the run/rule-wide `total` (from the
  *  `X-Total-Count` header) so the pager can size itself without fetching the
  *  whole population. */

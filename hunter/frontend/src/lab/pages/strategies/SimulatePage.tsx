@@ -42,8 +42,7 @@ import {
   fingerprintParamsCell,
   fingerprintParamsSearchText,
 } from 'components/strategy/FingerprintParamsSummary';
-import { DEFAULT_POSITIONS_QUERY } from 'hooks/useRulePositions';
-import { useServerTable } from 'hooks/useServerTable';
+import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
 import type { SummarySection } from 'components/strategy/SummaryStatsPanel';

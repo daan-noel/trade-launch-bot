@@ -3,8 +3,7 @@
 //! CLAUDE.md SSOT: a formula lives in exactly ONE place. Unrealized PnL is derived
 //! **here and nowhere else** — the Holdings / Home / Live-Trading surfaces all read
 //! it through the `/api/portfolio/*` endpoints; the JS side renders the numbers, it
-//! never re-derives them. Mirrors the realized-PnL conventions of
-//! [`crate::models::position::Position::pnl_sol`] and
+//! never re-derives them. Mirrors the realized-PnL convention of
 //! [`crate::models::strategy::StrategyPosition::realized_pnl_sol`].
 
 use serde::Serialize;
@@ -30,7 +29,7 @@ pub struct ManagedMint {
 
 /// Unrealized PnL of an open bag, in human SOL. Price is SOL per token unit and
 /// amount is that same token unit, so `price × amount` is human SOL (same
-/// convention as [`crate::models::position::Position::pnl_sol`]).
+/// convention as [`crate::models::strategy::StrategyPosition::realized_pnl_sol`]).
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct UnrealizedPnl {
     /// Remaining bag's cost basis: `avg_entry_price × held_amount`.
@@ -47,8 +46,9 @@ pub struct UnrealizedPnl {
 ///
 /// **All three share one unit basis**: `avg_entry_price` and `current_mark` are SOL
 /// per the SAME token quantity `held_amount` is counted in (raw token units
-/// throughout this codebase — see [`crate::models::position::Position::pnl_sol`]),
-/// so the SOL outputs come out in human SOL. `avg_entry_price ≤ 0` ⇒ no basis, so
+/// throughout this codebase — see
+/// [`crate::models::strategy::StrategyPosition::realized_pnl_sol`]), so the SOL
+/// outputs come out in human SOL. `avg_entry_price ≤ 0` ⇒ no basis, so
 /// `unrealized_pnl_pct` falls back to 0 (the SOL fields still reflect the mark).
 pub fn unrealized_pnl(avg_entry_price: f64, current_mark: f64, held_amount: f64) -> UnrealizedPnl {
     let cost_basis_sol = avg_entry_price * held_amount;

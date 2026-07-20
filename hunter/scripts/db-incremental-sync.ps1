@@ -104,6 +104,11 @@
   # Pull today's still-open chunk too (partial day; re-run later to backfill the rest).
   # Drops the sealed-day upper bound on trades/raw_txs for this run only.
   ./scripts/db-incremental-sync.ps1 -SshTarget ubuntu@1.2.3.4 -IncludeToday
+
+.EXAMPLE
+  # One-shot current-day analysis refresh: DB sync (incl. today) then lake-export
+  # --include-today so simulate/sweep see today's trades without a second manual hop.
+  ./scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake
 #>
 param(
   [string]$SshTarget       = 'ubuntu@54.93.174.192',                      # user@host of the EC2 box
@@ -118,6 +123,7 @@ param(
   [int]   $RemotePgPort    = 0,                                           # 0 = auto-detect from remote .env (default 5555)
   [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
   [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
+  [switch]$ExportLake,                                                    # after sync: run `cargo run -p hunter-lab -- lake-export` (passes --include-today when -IncludeToday)
   [string]$LocalPgPassword = $env:PGPASSWORD
 )
 # NOTE: 'Continue', not 'Stop'. Under 'Stop', a NATIVE exe (ssh/psql) writing ANY line
@@ -757,6 +763,27 @@ ON CONFLICT (id) DO UPDATE SET
   Write-Host ""
   $doneWindow = if ($IncludeToday) { "through $sealedCutoff UTC, incl. today's partial chunk" } else { "sealed days through $sealedCutoff UTC" }
   Write-Host "Incremental sync complete ($doneWindow; server credentials removed from local catalog)."
+
+  # ---- 10. Optional hop-2: PG → Parquet lake (couples current-day analysis) ---
+  # Keeps simulate/sweep on one command instead of a separate `lake-export` hop.
+  # Runs AFTER detach so a long DuckDB export never holds the FDW server mapping.
+  if ($ExportLake) {
+    Write-Host ""
+    Write-Host "Exporting Parquet lake (hop 2)..."
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+    $exportArgs = @('run', '-p', 'hunter-lab', '--', 'lake-export')
+    if ($IncludeToday) { $exportArgs += '--include-today' }
+    Push-Location $repoRoot
+    try {
+      & cargo @exportArgs
+      if ($LASTEXITCODE -ne 0) {
+        throw "lake-export failed (exit $LASTEXITCODE). Local DB sync already completed — re-run with -ExportLake only after fixing the lab build, or run: cargo run -p hunter-lab -- lake-export$(if ($IncludeToday) { ' --include-today' })"
+      }
+      Write-Host "Lake export complete."
+    } finally {
+      Pop-Location
+    }
+  }
 }
 finally {
   if ($tunnel -and -not $tunnel.HasExited) { Stop-Process -Id $tunnel.Id -Force -ErrorAction SilentlyContinue }

@@ -18,23 +18,6 @@ pub enum IngestKind {
     CreatorActivity,
 }
 
-/// Compact rule snapshot attached to every `TpslPositionsChanged` event so
-/// notification consumers can display rule context without a round-trip.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuleNotifSnapshot {
-    pub rule_name: String,
-    pub trade_mode: String,
-    pub p_token_initial_buy_sol: Option<f64>,
-    pub bucket_width_sol: f64,
-    pub p_token_cu_limit: Option<u64>,
-    pub p_token_cu_price: Option<u64>,
-    pub p_token_max_sol_cost: Option<f64>,
-    pub p_token_spendable_sol_in: Option<f64>,
-    pub p_token_ix_labels: Vec<String>,
-    pub p_exit_take_profit: f64,
-    pub p_exit_stop_loss: f64,
-}
-
 /// Cold-lane SSE notification (enriched from cache in the HTTP handler).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -90,24 +73,6 @@ pub enum SseEvent {
     /// signal (no payload beyond the strategy); the client refetches the list.
     /// Not mint-scoped — always delivered.
     TpslRulesChanged { strategy: String },
-    /// A tpsl position opened, closed, changed status, or was removed. `rule_id`
-    /// scopes it to the owning rule. Carries the changed row + the rule's live cap
-    /// counters (cheap in-memory reads) so clients **patch one row + the badge**
-    /// in place instead of refetching the whole list. `position` is `Some` even on
-    /// removal (so the client knows which row to drop); `removed` distinguishes the
-    /// two. Boxed to keep the enum small. Not mint-scoped — always delivered.
-    TpslPositionsChanged {
-        strategy: String,
-        rule_id: uuid::Uuid,
-        /// Rule context snapshot — looked up from the runtime cache at emit time
-        /// so notification consumers have full context without a round-trip.
-        rule_snapshot: Option<Box<RuleNotifSnapshot>>,
-        position: Option<Box<crate::models::Position>>,
-        removed: bool,
-        open_positions: i64,
-        pending_positions: i64,
-        total_positions: i64,
-    },
     /// Progress of an in-flight simulation (backtest) for `rule_id`: `processed`
     /// of `total` candidate tokens resolved. Lets the dashboard show real
     /// percentages instead of a fake trickle bar. Throttled to ~100 frames per
@@ -180,12 +145,12 @@ pub enum SseEvent {
         rule_id: uuid::Uuid,
         cancelled: bool,
     },
-    /// A generic-engine (fingerprint + metrics redesign) position transition — the
-    /// new-engine analogue of [`SseEvent::TpslPositionsChanged`], emitted by the
-    /// engine's `PositionUpdate` sink. Mint-scoped. `status` is the
-    /// `strategy_positions` lifecycle string (`BuySubmitted` | `Holding` |
-    /// `ExitPending` | `End` | `ExitFailed` | `ExitUnconfirmed`); `exit_reason` is
-    /// set on the exit statuses. The client patches the one position row in place.
+    /// A generic-engine position transition, emitted by the engine's
+    /// `PositionUpdate` sink. Mint-scoped. `status` is the `strategy_positions`
+    /// lifecycle string (`BuySubmitted` | `Holding` | `ExitPending` | `End` |
+    /// `ExitFailed` | `ExitUnconfirmed`); `exit_reason` is set on exit statuses.
+    /// `trade_mode` / `rule_name` let notification toasts filter real vs paper
+    /// without a round-trip. The client patches the one position row in place.
     StrategyPositionUpdate {
         rule_id: uuid::Uuid,
         mint_address: String,
@@ -194,6 +159,9 @@ pub enum SseEvent {
         exit_reason: Option<String>,
         entry_price: Option<f64>,
         exit_price: Option<f64>,
+        /// `"real"` | `"paper"` when the sink still has the rule loaded.
+        trade_mode: Option<String>,
+        rule_name: Option<String>,
     },
     /// A generic-engine (token, rule) arming transition — armed or disarmed —
     /// emitted by the engine's `ArmedChanged` sink. There is no legacy analogue

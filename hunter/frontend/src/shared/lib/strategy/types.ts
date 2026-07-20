@@ -178,4 +178,7 @@ export interface StrategyPositionUpdateEvent {
   exit_reason?: string | null;
   entry_price?: number | null;
   exit_price?: number | null;
+  /** `"real"` | `"paper"` when the engine still has the rule loaded. */
+  trade_mode?: string | null;
+  rule_name?: string | null;
 }

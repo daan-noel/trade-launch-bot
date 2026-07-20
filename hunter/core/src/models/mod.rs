@@ -2,7 +2,6 @@ pub mod fingerprint;
 pub mod grouped_sweep;
 pub mod ingest;
 pub mod portfolio;
-pub mod position;
 pub mod raw_tx;
 pub mod strategy;
 pub mod token;
@@ -15,7 +14,6 @@ pub mod wallet_profile_tag;
 
 // Re-export types for convenience
 pub use portfolio::{unrealized_pnl, ManagedMint, UnrealizedPnl};
-pub use position::{Position, PositionResponse, PositionStatus};
 pub use raw_tx::RawTx;
 pub use fingerprint::Fingerprint;
 pub use strategy::{
