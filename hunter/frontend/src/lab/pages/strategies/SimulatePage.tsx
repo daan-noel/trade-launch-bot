@@ -19,7 +19,7 @@ import { Badge } from 'components/ui/Badge';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { TokenTable } from 'components/tokens/TokenTable';
-import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
+import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { dashPercent } from 'components/strategy/cellFormat';
 import {
   inspectFromSim,
@@ -86,6 +86,8 @@ type RunState = { running: boolean; summary?: SimulatedSummary; error?: string }
 const DASH = <span className="text-text-dim/60">—</span>;
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const MATCHED_NUMERIC_COLS = tokenNumericColKeys(matchedColumns);
+const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
+const MATCHED_AMOUNT_COLS = tokenAmountColKeys(matchedColumns);
 const keyByMint = (r: { mint_address: string }) => r.mint_address;
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
@@ -421,23 +423,23 @@ function RuleSimPositionsPanel({
   }, [simQuery, temporalSel]);
 
   const simBody = useMemo(
-    () => toTableRequest(simQueryForPage, SIM_NUMERIC_COLS),
+    () => toTableRequest(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
     [simQueryForPage],
   );
   // KPI summary tracks the page cohort (includes temporal click-filter).
   const simSummaryBody = useMemo(
-    () => toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS),
+    () => toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
     [simQueryForPage],
   );
   // Base time chart stays on the table's own filters.
   const timeSummaryBody = useMemo(
-    () => toSummaryBody(simQuery, SIM_NUMERIC_COLS),
+    () => toSummaryBody(simQuery, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
     [simQuery.search, simQuery.colFilters, simQuery.structuredFilters],
   );
   // Linked chart: mint-filtered fold with base's resolved grain/scheme locked.
   const linkedTimeSummaryBody = useMemo(() => {
     if (!temporalSel?.mints.length) return null;
-    return toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS);
+    return toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS });
   }, [temporalSel, simQueryForPage]);
   const {
     items: simTokens,
@@ -531,7 +533,10 @@ function RuleSimPositionsPanel({
   // candidates, not fills. Fetched only while the Matched view is active.
   const [matchedQuery, setMatchedQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const matchedBody = useMemo(
-    () => toTableRequest(matchedQuery, MATCHED_NUMERIC_COLS),
+    () =>
+      toTableRequest(matchedQuery, MATCHED_NUMERIC_COLS, {
+        amountCols: MATCHED_AMOUNT_COLS,
+      }),
     [matchedQuery],
   );
   const {

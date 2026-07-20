@@ -79,6 +79,13 @@ Provides SOL/USD toggle + current SOL price. Listens to `sol_price` SSE events.
 
 Cells that only need `unit` (to format labels) import `PriceUnitActionsContext`. Cells that display live USD values import `PriceUnitStateContext`. This prevents label-only cells from re-rendering on every 60s price tick.
 
+**Filter/sort units:** amount cells convert for display, but filters must match what the user
+sees. Column defs set `filterAmount: 'sol'|'usd'` and `filterNumber` via
+`amountInDisplayUnit` (`lib/priceUnitSnapshot`, mirrored from the provider).
+`toTableRequest({ amountCols })` converts typed operands back to storage before the
+server compare. Percent columns that render `×100` (Win %, Open %) use a local
+`displayUnits: (n) => n * 100` on `filterNumber` — same pattern as Simulate's `simMetric`.
+
 ## Route Suspense + chart code-split
 
 - **Suspense boundary:** `AppLayout` wraps only `<Outlet />` (not the whole `Routes` tree).

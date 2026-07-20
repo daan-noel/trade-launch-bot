@@ -5,9 +5,15 @@ import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { AmountCell, CompactCell, CurrentPriceCell, PriceCell } from 'components/tokens/priceCells';
-import { numericColKeys } from 'services/tableRequest';
+import { amountColKeys, numericColKeys } from 'services/tableRequest';
+import { amountInDisplayUnit, type AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import { formatCompact, formatDecimalTrim, formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
+
+/** SOL storage → displayed unit for PriceUnit-aware numeric filters. */
+function solFilter(n: number | null | undefined): number | null {
+  return n == null ? null : amountInDisplayUnit(n, 'sol');
+}
 
 // ---------------------------------------------------------------------------
 // Instruction-labels helpers + the copy-on-click IX-count cell. Shared by the
@@ -141,6 +147,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       ),
       sortValue: (r: { current_price?: number | null }) => r.current_price ?? null,
       searchValue: (r: { current_price?: number | null }) => String(r.current_price ?? ''),
+      filterNumber: (r: { current_price?: number | null }) => solFilter(r.current_price),
+      filterAmount: 'sol',
     },
     {
       key: 'ath_price',
@@ -150,6 +158,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       render: (r: { ath_price?: number | null }) => <PriceCell sol={r.ath_price ?? null} />,
       sortValue: (r: { ath_price?: number | null }) => r.ath_price ?? null,
       searchValue: (r: { ath_price?: number | null }) => String(r.ath_price ?? ''),
+      filterNumber: (r: { ath_price?: number | null }) => solFilter(r.ath_price),
+      filterAmount: 'sol',
     },
     {
       key: 'ath_timestamp',
@@ -171,7 +181,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       ),
       sortValue: (r: { market_cap?: number | null }) => r.market_cap ?? null,
       searchValue: (r: { market_cap?: number | null }) => String(r.market_cap ?? ''),
-      filterNumber: (r: { market_cap?: number | null }) => r.market_cap ?? null,
+      filterNumber: (r: { market_cap?: number | null }) => solFilter(r.market_cap),
+      filterAmount: 'sol',
     },
     {
       key: 'volume',
@@ -183,7 +194,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       ),
       sortValue: (r: { volume_sol_total?: number }) => r.volume_sol_total ?? null,
       searchValue: (r: { volume_sol_total?: number }) => String(r.volume_sol_total ?? ''),
-      filterNumber: (r: { volume_sol_total?: number }) => r.volume_sol_total ?? null,
+      filterNumber: (r: { volume_sol_total?: number }) => solFilter(r.volume_sol_total),
+      filterAmount: 'sol',
     },
     {
       key: 'first_slot_buy',
@@ -195,7 +207,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       ),
       sortValue: (r: { first_slot_buy_sol?: number | null }) => r.first_slot_buy_sol ?? null,
       searchValue: (r: { first_slot_buy_sol?: number | null }) => String(r.first_slot_buy_sol ?? ''),
-      filterNumber: (r: { first_slot_buy_sol?: number | null }) => r.first_slot_buy_sol ?? null,
+      filterNumber: (r: { first_slot_buy_sol?: number | null }) => solFilter(r.first_slot_buy_sol),
+      filterAmount: 'sol',
     },
     {
       key: 'first_slot_sell',
@@ -207,7 +220,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       ),
       sortValue: (r: { first_slot_sell_sol?: number | null }) => r.first_slot_sell_sol ?? null,
       searchValue: (r: { first_slot_sell_sol?: number | null }) => String(r.first_slot_sell_sol ?? ''),
-      filterNumber: (r: { first_slot_sell_sol?: number | null }) => r.first_slot_sell_sol ?? null,
+      filterNumber: (r: { first_slot_sell_sol?: number | null }) => solFilter(r.first_slot_sell_sol),
+      filterAmount: 'sol',
     },
     // initial
     {
@@ -218,7 +232,8 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       render: (r: { initial_buy_sol?: number | null }) => <AmountCell sol={r.initial_buy_sol ?? null} />,
       sortValue: (r: { initial_buy_sol?: number | null }) => r.initial_buy_sol ?? null,
       searchValue: (r: { initial_buy_sol?: number | null }) => String(r.initial_buy_sol ?? ''),
-      filterNumber: (r: { initial_buy_sol?: number | null }) => r.initial_buy_sol ?? null,
+      filterNumber: (r: { initial_buy_sol?: number | null }) => solFilter(r.initial_buy_sol),
+      filterAmount: 'sol',
     },
     {
       key: 'init_supply',
@@ -252,11 +267,12 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       sortable: true,
       render: (r: { max_cost_lamports?: number | null }) =>
         r.max_cost_lamports != null ? formatDecimalTrim(r.max_cost_lamports / 1e9, 3) : '—',
-      sortValue: (r: { max_cost_lamports?: number | null }) => r.max_cost_lamports ?? null,
+      // Sort/filter in displayed SOL (÷1e9) — matches Tokens SQL + in-memory evaluator.
+      sortValue: (r: { max_cost_lamports?: number | null }) =>
+        r.max_cost_lamports != null ? r.max_cost_lamports / 1e9 : null,
       searchValue: () => '',
       filterValue: (r: { max_cost_lamports?: number | null }) =>
         r.max_cost_lamports != null ? formatDecimalTrim(r.max_cost_lamports / 1e9, 3) : '',
-      // Numeric filter compares in the *displayed* unit (SOL), so divide lamports by 1e9.
       filterNumber: (r: { max_cost_lamports?: number | null }) =>
         r.max_cost_lamports != null ? r.max_cost_lamports / 1e9 : null,
     },
@@ -267,11 +283,11 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       sortable: true,
       render: (r: { spendable_lamports_in?: number | null }) =>
         r.spendable_lamports_in != null ? formatDecimalTrim(r.spendable_lamports_in / 1e9, 3) : '—',
-      sortValue: (r: { spendable_lamports_in?: number | null }) => r.spendable_lamports_in ?? null,
+      sortValue: (r: { spendable_lamports_in?: number | null }) =>
+        r.spendable_lamports_in != null ? r.spendable_lamports_in / 1e9 : null,
       searchValue: () => '',
       filterValue: (r: { spendable_lamports_in?: number | null }) =>
         r.spendable_lamports_in != null ? formatDecimalTrim(r.spendable_lamports_in / 1e9, 3) : '',
-      // Numeric filter compares in the *displayed* unit (SOL), so divide lamports by 1e9.
       filterNumber: (r: { spendable_lamports_in?: number | null }) =>
         r.spendable_lamports_in != null ? r.spendable_lamports_in / 1e9 : null,
     },
@@ -501,4 +517,21 @@ export const TOKEN_INFO_NUMERIC_KEYS: ReadonlySet<string> = numericColKeys(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function tokenNumericColKeys(baseColumns: ColumnDef<any>[]): Set<string> {
   return new Set([...numericColKeys(baseColumns), ...TOKEN_INFO_NUMERIC_KEYS]);
+}
+
+/** PriceUnit storage-unit map for token-info columns (union with a table's base). */
+export const TOKEN_INFO_AMOUNT_COLS: ReadonlyMap<string, AmountStorageUnit> = amountColKeys(
+  tokenInfoColumns(),
+);
+
+/**
+ * PriceUnit amount-column map for a token table: base + appended enrichment.
+ * Pass as `extras.amountCols` to {@link toTableRequest} so typed filters convert
+ * display → storage before the server compare.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function tokenAmountColKeys(
+  baseColumns: ColumnDef<any>[],
+): Map<string, AmountStorageUnit> {
+  return new Map([...amountColKeys(baseColumns), ...TOKEN_INFO_AMOUNT_COLS]);
 }

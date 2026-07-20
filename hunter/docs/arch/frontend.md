@@ -353,11 +353,14 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   legitimately differ; the render/sort/filter facts don't. The matched tables no longer hand-roll
   `init_buy`/`cu_limit`/`cu_price` — those come from the shared `initial_buy`/`cu_limit`/`cu_price`
   columns.
-- **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`): every numeric column declares `filterNumber`.
-  The `DataTable` emits raw filter text; the serializer (`toTableRequest` via `parseFilterSpec`) turns a
-  numeric-column expression into a structured op that compares **numerically** server-side (all token
-  tables, Wallet included). `!=` has no server op and maps to `eq`; the legacy `parseNumericPredicate`
-  (still used by any fully client-side table) keeps the real `!=` negation.
+- **Numeric column filters** (`>5`, `1..10`, `>=`, `!=`): every numeric column declares `filterNumber`
+  in the column's **displayed** units (percent points for Win%/Open%, SOL↔USD for PriceUnit amount
+  cells, SOL for lamports enrichment). The `DataTable` emits raw filter text; the serializer
+  (`toTableRequest` via `parseFilterSpec`) turns a numeric-column expression into a structured op.
+  PriceUnit amount columns also set `filterAmount: 'sol'|'usd'` so `toTableRequest` converts the typed
+  operand back to storage before the server compare (`lib/priceUnitSnapshot`). `!=` has no server op
+  and maps to `eq`; the legacy `parseNumericPredicate` (still used by any fully client-side table)
+  keeps the real `!=` negation.
 - Memoized column defs/price formatters; cells read context directly. localStorage via `lib/storage`
   (`mt:` namespace); column visibility in one `mt:table.cols` map keyed by `tableId`.
 

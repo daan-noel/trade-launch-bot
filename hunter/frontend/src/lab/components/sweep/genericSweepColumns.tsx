@@ -127,21 +127,33 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
     key: string,
     label: string,
     group: string,
-    value: (r: SweepResultRecord) => number,
+    value: (r: SweepResultRecord) => number | null,
     render: (r: SweepResultRecord) => ReactNode,
-    opts: { tooltip?: string; defaultVisible?: boolean } = {},
-  ): ColumnDef<SweepResultRecord> => ({
-    key,
-    label,
-    group,
-    tooltip: opts.tooltip,
-    defaultVisible: opts.defaultVisible,
-    sortable: true,
-    render,
-    sortValue: value,
-    filterNumber: value,
-    searchValue: () => '',
-  });
+    opts: {
+      tooltip?: string;
+      defaultVisible?: boolean;
+      /** Scale the wire value into displayed units for filter/search (e.g. fraction → %). */
+      displayUnits?: (n: number) => number;
+    } = {},
+  ): ColumnDef<SweepResultRecord> => {
+    const units = opts.displayUnits ?? ((n: number) => n);
+    return {
+      key,
+      label,
+      group,
+      tooltip: opts.tooltip,
+      defaultVisible: opts.defaultVisible,
+      sortable: true,
+      render,
+      // Sort stays on the wire value (order is identical under a positive scale).
+      sortValue: value,
+      filterNumber: (r) => {
+        const v = value(r);
+        return v == null || !Number.isFinite(v) ? null : units(v);
+      },
+      searchValue: () => '',
+    };
+  };
   const count = (key: string, label: string, cls: string, value: (r: SweepResultRecord) => number, opts?: { defaultVisible?: boolean; tooltip?: string }) =>
     metric(key, label, 'exits', value, (r) => tone(String(value(r)), cls), opts);
 
@@ -167,14 +179,18 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
       'open_share',
       'Open %',
       'counts',
-      (r) => (r.n_fired > 0 ? r.n_open / r.n_fired : 0),
+      (r) => (r.n_fired > 0 ? r.n_open / r.n_fired : null),
       (r) => {
         if (!r.n_fired) return tone('—', 'text-text-dim');
         const share = r.n_open / r.n_fired;
         // High open share = the realized headline rests on a thin closed sample.
         return tone(`${(share * 100).toFixed(0)}%`, share >= 0.5 ? 'text-red' : share >= 0.25 ? 'text-warning' : 'text-text-dim');
       },
-      { tooltip: 'Share of fired positions still open. High = realized stats cover only a small slice of the sample.' },
+      {
+        tooltip: 'Share of fired positions still open. High = realized stats cover only a small slice of the sample.',
+        // Display is percent points; wire value is a 0..1 fraction.
+        displayUnits: (n) => n * 100,
+      },
     ),
     metric(
       'score',
@@ -202,7 +218,11 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
         r.win_rate == null || !Number.isFinite(r.win_rate)
           ? tone('—', 'text-text-dim')
           : tone(`${(r.win_rate * 100).toFixed(0)}%`, winRateGradeClass(r.win_rate)),
-      { tooltip: 'Share of CLOSED fired tokens with PnL > 0' },
+      {
+        tooltip: 'Share of CLOSED fired tokens with PnL > 0',
+        // Display is percent points; wire value is a 0..1 fraction (same as Simulate).
+        displayUnits: (n) => n * 100,
+      },
     ),
     metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol)), {
       tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',
@@ -374,19 +394,30 @@ export function buildGenericGroupColumns(
     group: 'counts' | 'pnl' | 'holding',
     value: (g: GroupedSweepGroupRecord) => number | null,
     render: (g: GroupedSweepGroupRecord) => ReactNode,
-    opts: { tooltip?: string; defaultVisible?: boolean } = {},
-  ): ColumnDef<GroupedSweepGroupRecord> => ({
-    key,
-    label,
-    group,
-    tooltip: opts.tooltip,
-    defaultVisible: opts.defaultVisible,
-    sortable: true,
-    render,
-    sortValue: value,
-    filterNumber: value,
-    searchValue: () => '',
-  });
+    opts: {
+      tooltip?: string;
+      defaultVisible?: boolean;
+      /** Scale the wire value into displayed units for filter (e.g. fraction → %). */
+      displayUnits?: (n: number) => number;
+    } = {},
+  ): ColumnDef<GroupedSweepGroupRecord> => {
+    const units = opts.displayUnits ?? ((n: number) => n);
+    return {
+      key,
+      label,
+      group,
+      tooltip: opts.tooltip,
+      defaultVisible: opts.defaultVisible,
+      sortable: true,
+      render,
+      sortValue: value,
+      filterNumber: (g) => {
+        const v = value(g);
+        return v == null || !Number.isFinite(v) ? null : units(v);
+      },
+      searchValue: () => '',
+    };
+  };
 
   return [
     {
@@ -493,13 +524,16 @@ export function buildGenericGroupColumns(
       'best_open_share',
       'Open %',
       'counts',
-      (g) => (g.fired_count > 0 ? (g.best_n_open ?? 0) / g.fired_count : 0),
+      (g) => (g.fired_count > 0 ? (g.best_n_open ?? 0) / g.fired_count : null),
       (g) => {
         if (!g.fired_count) return tone('—', 'text-text-dim');
         const share = (g.best_n_open ?? 0) / g.fired_count;
         return tone(`${(share * 100).toFixed(0)}%`, share >= 0.5 ? 'text-red' : share >= 0.25 ? 'text-warning' : 'text-text-dim');
       },
-      { tooltip: 'Share of the winning combo’s fired positions still open. High = the realized headline rests on a thin closed sample.' },
+      {
+        tooltip: 'Share of the winning combo’s fired positions still open. High = the realized headline rests on a thin closed sample.',
+        displayUnits: (n) => n * 100,
+      },
     ),
     gm(
       'best_score',
@@ -518,10 +552,16 @@ export function buildGenericGroupColumns(
           "Checklist score of this group's best combo (MTM% × fire-rate × open-drag × win%).",
       },
     ),
-    gm('best_win_rate', 'Win %', 'pnl', (g) => g.best_win_rate, (g) =>
-      g.best_win_rate == null || !Number.isFinite(g.best_win_rate)
-        ? tone('—', 'text-text-dim')
-        : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, winRateGradeClass(g.best_win_rate)),
+    gm(
+      'best_win_rate',
+      'Win %',
+      'pnl',
+      (g) => g.best_win_rate,
+      (g) =>
+        g.best_win_rate == null || !Number.isFinite(g.best_win_rate)
+          ? tone('—', 'text-text-dim')
+          : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, winRateGradeClass(g.best_win_rate)),
+      { displayUnits: (n) => n * 100 },
     ),
     gm('best_total_pnl_sol', 'Total PnL', 'pnl', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol)), {
       tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',

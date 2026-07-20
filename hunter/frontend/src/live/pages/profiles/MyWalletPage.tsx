@@ -13,7 +13,7 @@ import { walletColumns, WALLET_KEYS } from '@live/components/wallet/walletColumn
 import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
 import { TokenTable } from 'components/tokens/TokenTable';
-import { tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
+import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { DEFAULT_PAGE_SIZE } from 'components/table/Pagination';
 import type { TableQuery } from 'components/table/types';
 import { useServerTable } from 'hooks/useServerTable';
@@ -84,16 +84,24 @@ export function MyWalletPage() {
     () => tokenNumericColKeys(baseColumnsForKeys),
     [baseColumnsForKeys],
   );
+  const amountCols = useMemo(
+    () => tokenAmountColKeys(baseColumnsForKeys),
+    [baseColumnsForKeys],
+  );
 
   // Dust hiding is a server-side filter on the scan-time value (`value_usd ≥ $1`),
   // so paging stays correct (full pages) and the summary agrees with the table.
+  // Dust is injected via `structuredFilters` (already USD storage) so PriceUnit
+  // conversion in `toTableRequest` does not rewrite it.
   const tableBody = useMemo<TableRequestBody>(() => {
     const structuredFilters = {
       ...query.structuredFilters,
       ...(hideDust ? { value_usd: { op: 'gte' as const, val: DUST_USD } } : {}),
     };
-    return toTableRequest({ ...query, structuredFilters }, numericCols);
-  }, [query, hideDust, numericCols]);
+    return toTableRequest({ ...query, structuredFilters }, numericCols, {
+      amountCols,
+    });
+  }, [query, hideDust, numericCols, amountCols]);
 
   // `fresh` (post-trade) busts the server scan cache for the next page fetch only;
   // the summary reads the freshly-warmed cache. Reset after each read.

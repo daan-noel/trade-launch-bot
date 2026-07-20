@@ -10,6 +10,7 @@ import {
 } from 'react';
 import type { PriceUnit, PriceUnitState } from 'types';
 import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
+import { setPriceUnitSnapshot } from 'lib/priceUnitSnapshot';
 import { useGetSettingsQuery, useUpdateSettingsMutation } from 'store/apiSlice';
 
 const LS_PRICE_UNIT_KEY = STORAGE_KEYS.priceUnit;
@@ -19,7 +20,9 @@ type PriceUnitAction =
   | { type: 'SET_USD_RATE'; rate: number | null };
 
 function loadPriceUnit(): PriceUnitState {
-  return getJSON<PriceUnitState>(LS_PRICE_UNIT_KEY, { unit: 'SOL', usdRate: null });
+  const s = getJSON<PriceUnitState>(LS_PRICE_UNIT_KEY, { unit: 'SOL', usdRate: null });
+  setPriceUnitSnapshot(s);
+  return s;
 }
 
 function savePriceUnit(state: PriceUnitState) {
@@ -47,6 +50,12 @@ export function PriceUnitProvider({ children }: { children: ReactNode }) {
   const { data: settings } = useGetSettingsQuery();
   const [updateSettings] = useUpdateSettingsMutation();
   const hydratedRef = useRef(false);
+
+  // Keep the non-React snapshot in lockstep so column filter accessors and
+  // `toTableRequest` convert against the same unit/rate the cells render.
+  useEffect(() => {
+    setPriceUnitSnapshot({ unit: state.unit, usdRate: state.usdRate });
+  }, [state.unit, state.usdRate]);
 
   // Hydrate the unit once server-side settings arrive (localStorage is the
   // instant cache). If the server has no stored preference yet, upload the

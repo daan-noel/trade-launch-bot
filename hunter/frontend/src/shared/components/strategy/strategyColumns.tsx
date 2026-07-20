@@ -4,10 +4,16 @@ import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
 import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
+import { amountInDisplayUnit } from 'lib/priceUnitSnapshot';
 import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 import { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
+
+/** SOL storage → displayed unit for PriceUnit-aware numeric filters. */
+function solFilter(n: number | null | undefined): number | null {
+  return n == null ? null : amountInDisplayUnit(n, 'sol');
+}
 
 export { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
 
@@ -134,7 +140,8 @@ export function legColumns<T>(prefix: LegPrefix, acc: LegAccessors<T>, opts: Leg
           },
           sortValue: (r) => acc.price(r),
           searchValue: (r) => String(acc.price(r) ?? ''),
-          filterNumber: (r) => acc.price(r),
+          filterNumber: (r) => solFilter(acc.price(r)),
+          filterAmount: 'sol',
         });
         break;
       case 'tokens':
@@ -169,6 +176,8 @@ export function legColumns<T>(prefix: LegPrefix, acc: LegAccessors<T>, opts: Leg
           },
           sortValue: (r) => sizeOf(r),
           searchValue: (r) => String(sizeOf(r) ?? ''),
+          filterNumber: (r) => solFilter(sizeOf(r)),
+          filterAmount: 'sol',
         });
         break;
       case 'time':
@@ -323,7 +332,8 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     },
     sortValue: (r) => r.pnl_sol ?? null,
     searchValue: () => '',
-    filterNumber: (r) => r.pnl_sol ?? null,
+    filterNumber: (r) => solFilter(r.pnl_sol),
+    filterAmount: 'sol',
   },
   {
     key: 'status',
@@ -489,7 +499,8 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     },
     sortValue: (r) => r.pnl_sol,
     searchValue: () => '',
-    filterNumber: (r) => r.pnl_sol ?? null,
+    filterNumber: (r) => solFilter(r.pnl_sol),
+    filterAmount: 'sol',
   },
   {
     key: 'reason',

@@ -4,6 +4,7 @@ import { tokenFiltersToSpecs, type TokenFilters } from 'components/tokens/filter
 import type { SortEntry } from 'components/table/types';
 import type { FilterSpec } from 'components/table/numericFilter';
 import { toTableRequest } from 'services/tableRequest';
+import { TOKEN_INFO_AMOUNT_COLS } from 'components/tokens/sharedTokenColumns';
 import type {
   CreationStatsArgs,
   CreationStatsResponse,
@@ -69,9 +70,10 @@ export const TOKENS_LIST_LIMIT = 20_000;
  * can't drift.
  */
 export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toTableRequest> {
-  // Numeric columns needn't be enumerated: the backend re-parses each raw
-  // per-column predicate string, so an empty `numericCols` here yields the
-  // identical lowered filter (see `lower_filter`).
+  // Numeric columns needn't be enumerated for ordinary ops: the backend re-parses
+  // each raw per-column predicate string (`lower_filter`). We still pass
+  // `amountCols` so PriceUnit-converted amount filters rewrite display→storage
+  // before that re-parse sees the operand.
   const body = toTableRequest(
     {
       page: a.page,
@@ -82,6 +84,7 @@ export function tokensTableRequestBody(a: TokensPageArgs): ReturnType<typeof toT
       structuredFilters: a.structuredFilters,
     },
     new Set(),
+    { amountCols: TOKEN_INFO_AMOUNT_COLS },
   );
   // Fold the global panel into the same filters map (panel-wins on collision).
   Object.assign(body.filters, tokenFiltersToSpecs(a.filters, a.timezone));

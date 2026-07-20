@@ -10,7 +10,13 @@ import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import { BuyIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { DateCell } from 'components/table/DateCell';
+import { amountInDisplayUnit } from 'lib/priceUnitSnapshot';
 import { LiquidityCell, PriceCell, ValueCell } from './walletPriceCells';
+
+/** USD storage → displayed unit for PriceUnit-aware numeric filters. */
+function usdFilter(n: number | null | undefined): number | null {
+  return n == null ? null : amountInDisplayUnit(n, 'usd');
+}
 
 export interface WalletActions {
   onBuy: (mint: string, tokenProgramId: string) => void;
@@ -81,7 +87,8 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <ValueCell usd={r.value_usd} />,
       sortValue: (r) => r.value_usd ?? 0,
       searchValue: (r) => String(r.value_usd ?? ''),
-      filterNumber: (r) => r.value_usd ?? null,
+      filterNumber: (r) => usdFilter(r.value_usd),
+      filterAmount: 'usd',
     },
     {
       key: 'cost_basis_sol',
@@ -133,7 +140,8 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <PriceCell usd={r.price_usd} />,
       sortValue: (r) => r.price_usd ?? 0,
       searchValue: (r) => String(r.price_usd ?? ''),
-      filterNumber: (r) => r.price_usd ?? null,
+      filterNumber: (r) => usdFilter(r.price_usd),
+      filterAmount: 'usd',
     },
     {
       key: 'price_change_24h',
@@ -163,7 +171,8 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => <LiquidityCell usd={r.liquidity} />,
       sortValue: (r) => r.liquidity ?? 0,
       searchValue: (r) => String(r.liquidity ?? ''),
-      filterNumber: (r) => r.liquidity ?? null,
+      filterNumber: (r) => usdFilter(r.liquidity),
+      filterAmount: 'usd',
     },
     {
       // ⭐ Bot-managed badge: a live strategy holds/exits this same bag, so a

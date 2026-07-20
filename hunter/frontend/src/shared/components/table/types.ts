@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import type { FilterSpec } from './numericFilter';
 
 export type SortDir = 'asc' | 'desc';
@@ -78,8 +79,18 @@ export interface ColumnDef<R> {
    * When set, such expressions filter numerically; plain text still falls back
    * to substring matching on `filterValue`/`searchValue`. Return null for rows
    * with no value (they are excluded by any numeric expression).
+   *
+   * For PriceUnit-converted amount columns, return
+   * `amountInDisplayUnit(storage, filterAmount)` and set {@link filterAmount}
+   * so server-side serializers can convert the typed operand back to storage.
    */
   filterNumber?: (row: R) => number | null;
+  /**
+   * Storage currency for amount columns whose cells convert via PriceUnit.
+   * When set, `toTableRequest` treats typed filter operands as *displayed*
+   * units and converts them to this storage unit before the server compare.
+   */
+  filterAmount?: AmountStorageUnit;
   /**
    * Whether the column may join the multi-key sort. Defaults off unless the
    * column also provides `sortValue` (which implies client-side sortability).

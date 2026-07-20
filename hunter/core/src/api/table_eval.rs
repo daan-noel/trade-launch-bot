@@ -96,12 +96,18 @@ pub fn resolve_token_enrichment_key(key: &str) -> Option<(&'static str, ColKind)
 /// Read a JSON field as `f64` (number, numeric string, or bool as 0.0/1.0); `None`
 /// if absent/null.
 fn field_num(row: &Value, field: &str) -> Option<f64> {
-    match row.get(field) {
+    let n = match row.get(field) {
         Some(Value::Number(n)) => n.as_f64(),
         Some(Value::String(s)) => s.parse().ok(),
         Some(Value::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
         _ => None,
-    }
+    }?;
+    // Lamports enrichment fields are filtered/sorted in *displayed* SOL — same
+    // contract as the Tokens SQL path (`/1e9`) and the FE `filterNumber`.
+    Some(match field {
+        "max_cost_lamports" | "spendable_lamports_in" => n / 1e9,
+        _ => n,
+    })
 }
 
 /// Read a JSON field as a lowercased string (number stringified); `None` if
@@ -416,5 +422,22 @@ mod tests {
             vec!["a", "m", "z"],
             "trades ASC breaks the pnl tie (a=2 first); m,z tie on both → mint ASC"
         );
+    }
+
+    #[test]
+    fn lamports_enrichment_filters_in_sol() {
+        // FE `filterNumber` and Tokens SQL both compare Max SOL Cost in SOL;
+        // the in-memory path must ÷1e9 the same way (1.5 SOL = 1_500_000_000).
+        let rows = vec![
+            json!({"mint_address":"low","max_cost_lamports":500_000_000u64}),
+            json!({"mint_address":"mid","max_cost_lamports":1_500_000_000u64}),
+            json!({"mint_address":"hi","max_cost_lamports":3_000_000_000u64}),
+        ];
+        let (_, total) = apply_table_request(
+            &rows,
+            &req(json!({"filters":{"max_cost_lamports":{"op":"gt","val":1.0}}})),
+            resolve_token_enrichment_key,
+        );
+        assert_eq!(total, 2, "max_cost > 1 SOL keeps 1.5 + 3.0");
     }
 }

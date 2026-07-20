@@ -13,6 +13,10 @@ import type { ColumnDef } from 'components/table/types';
 import type { TableQuery } from 'components/table/types';
 import { parseFilterSpec, type FilterSpec } from 'components/table/numericFilter';
 import {
+  amountToStorageUnit,
+  type AmountStorageUnit,
+} from 'lib/priceUnitSnapshot';
+import {
   isExitReasonFilterKey,
   normalizeExitReasonFilter,
 } from 'lib/strategy/exitReason';
@@ -32,6 +36,28 @@ export interface TableRequestBody {
 /** Extras merged into the body (e.g. the matched/simulated analysis `range`). */
 export interface TableRequestExtras {
   range?: { from?: string; to?: string };
+  /**
+   * Column key → storage currency for PriceUnit-converted amount columns.
+   * Typed filter operands are interpreted in the *displayed* unit and converted
+   * to storage before the server compare. Use {@link amountColKeys}.
+   * Structured filters (wrapper-injected) are left alone — they are already in
+   * storage units (e.g. wallet dust `$1`).
+   */
+  amountCols?: ReadonlyMap<string, AmountStorageUnit>;
+}
+
+/** Convert a structured numeric filter's operands from display → storage units. */
+function specToStorage(spec: FilterSpec, storageUnit: AmountStorageUnit): FilterSpec {
+  if (spec.op === 'between') {
+    const min = typeof spec.min === 'number' ? amountToStorageUnit(spec.min, storageUnit) : spec.min;
+    const max = typeof spec.max === 'number' ? amountToStorageUnit(spec.max, storageUnit) : spec.max;
+    return { op: 'between', min, max };
+  }
+  if (spec.op === 'in') return spec;
+  if (typeof spec.val === 'number') {
+    return { ...spec, val: amountToStorageUnit(spec.val, storageUnit) };
+  }
+  return spec;
 }
 
 /**
@@ -52,13 +78,19 @@ export function toTableRequest(
   extras?: TableRequestExtras,
 ): TableRequestBody {
   const filters: Record<string, FilterSpec> = {};
+  const amountCols = extras?.amountCols;
   for (const [key, raw] of Object.entries(query.colFilters)) {
     const text = raw.trim();
     if (!text) continue;
     // Numeric column + a recognized numeric expression → structured spec.
-    const spec = numericCols.has(key) ? parseFilterSpec(text) : null;
+    // Amount columns also try a numeric parse when listed in `amountCols` even
+    // if `numericCols` was left empty (Tokens list path), so PriceUnit conversion
+    // can still rewrite the operand before the backend re-parse.
+    const storageUnit = amountCols?.get(key);
+    const spec =
+      numericCols.has(key) || storageUnit != null ? parseFilterSpec(text) : null;
     if (spec) {
-      filters[key] = spec;
+      filters[key] = storageUnit != null ? specToStorage(spec, storageUnit) : spec;
     } else if (isExitReasonFilterKey(key)) {
       filters[key] = { op: 'contains', val: normalizeExitReasonFilter(text) };
     } else {
@@ -107,6 +139,17 @@ export function toSummaryBody(
  *  `numericCols` argument to {@link toTableRequest}. */
 export function numericColKeys<R>(columns: ColumnDef<R>[]): Set<string> {
   return new Set(columns.filter((c) => c.filterNumber).map((c) => c.key));
+}
+
+/** Column key → storage currency for PriceUnit amount columns (`filterAmount`). */
+export function amountColKeys<R>(
+  columns: ColumnDef<R>[],
+): Map<string, AmountStorageUnit> {
+  const m = new Map<string, AmountStorageUnit>();
+  for (const c of columns) {
+    if (c.filterAmount) m.set(c.key, c.filterAmount);
+  }
+  return m;
 }
 
 /**
