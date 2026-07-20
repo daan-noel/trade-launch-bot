@@ -174,7 +174,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `handlers/tokens/list.rs` | `list_tokens` (`GET /api/tokens`, in-RAM engine over a full snapshot) |
 | `handlers/tokens/metric_series.rs` | `GET /api/tokens/{mint}/metric-series` — every metric's value at every trade (rule-authoring chart panes) |
 | `handlers/system/jobs.rs` | `job_status`, `cancel/result` for simulations |
-| `handlers/strategies/engine.rs` | generic `simulate` (detached → 202) + its result page/summary/matched — one surface for every rule (`rule_id` or inline `draft`) |
+| `handlers/strategies/engine.rs` | generic `simulate` (detached → 202) + its result page/summary/matched (+ batch `POST …/simulate/summaries`) — one surface for every rule (`rule_id` or inline `draft`) |
 | `handlers/strategies/engine_crud.rs` | lab-side rule + fingerprint CRUD (`strategy_rules` / `fingerprints`, no live engine to ping) |
 | `handlers/strategies/positions.rs` | the simulated-result table (in-memory server-side paging over the finished sim's rows) |
 | `handlers/strategies/grouped_sweep.rs` | generic grouped param-sweep handler set. See [@arch/sweep.md](@arch/sweep.md) |

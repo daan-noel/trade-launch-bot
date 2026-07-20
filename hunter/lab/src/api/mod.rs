@@ -48,6 +48,11 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/simulate",
                 web::post().to(handlers::strategies::engine::simulate_engine),
             )
+            // Static path before `{run_id}` so "summaries" is never parsed as a UUID.
+            .route(
+                "/strategies/simulate/summaries",
+                web::post().to(handlers::strategies::engine::engine_sim_result_summaries),
+            )
             .route(
                 "/strategies/simulate/{run_id}/cancel",
                 web::post().to(handlers::strategies::engine::cancel_engine_simulation),

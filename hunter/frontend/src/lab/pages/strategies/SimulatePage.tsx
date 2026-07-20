@@ -79,6 +79,7 @@ import type {
 import {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
+  useGetEngineSimSummariesMutation,
 } from '@lab/store/labEndpoints';
 
 type RunState = { running: boolean; summary?: SimulatedSummary; error?: string };
@@ -104,6 +105,7 @@ export function SimulatePage() {
   const actions = useRuleActions();
   const [start] = useStartEngineSimulationMutation();
   const [fetchSummary] = useGetEngineSimSummaryMutation();
+  const [fetchSummaries] = useGetEngineSimSummariesMutation();
   const [runs, setRuns] = useState<Record<string, RunState>>({});
   const [bulkMode, setBulkMode] = useState<TradeMode | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
@@ -146,34 +148,35 @@ export function SimulatePage() {
 
   // Hydrate every rule's resident sim summary on load (and when new rules appear),
   // so the table columns + position panels show without needing a row click.
+  // One batch round-trip — missing/expired runs are omitted from the map.
   useEffect(() => {
     if (rules.length === 0) return;
     let cancelled = false;
     const pending = rules.filter((r) => !hydratedIds.current.has(r.id));
     if (pending.length === 0) return;
+    for (const rule of pending) hydratedIds.current.add(rule.id);
 
     void (async () => {
-      await Promise.all(
-        pending.map(async (rule) => {
-          hydratedIds.current.add(rule.id);
-          try {
-            const summary = await fetchSummary(rule.id).unwrap();
-            if (cancelled) return;
-            setRuns((r) => {
-              if (r[rule.id]?.running) return r;
-              return { ...r, [rule.id]: { running: false, summary } };
-            });
-          } catch {
-            /* no resident result for this rule */
+      try {
+        const summaries = await fetchSummaries(pending.map((r) => r.id)).unwrap();
+        if (cancelled) return;
+        setRuns((prev) => {
+          const next = { ...prev };
+          for (const [id, summary] of Object.entries(summaries)) {
+            if (next[id]?.running) continue;
+            next[id] = { running: false, summary };
           }
-        }),
-      );
+          return next;
+        });
+      } catch {
+        /* batch failed — leave columns empty until a per-rule fetch succeeds */
+      }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [rules, fetchSummary]);
+  }, [rules, fetchSummaries]);
 
   // One page-level subscription routes each finished run to its rule (run_id ==
   // rule_id for saved rules).

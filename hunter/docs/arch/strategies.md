@@ -139,7 +139,8 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
 - **Simulated table = in-memory server-side paging** (`lab/src/strategies/sim_query.rs`):
   the finished backtest's rows are already resident (lab is single-user), so
   `POST …/rules/{id}/simulate/result` (unified `TableRequest`) pages/sorts/filters
-  in Rust, with a `…/simulate/result/summary` aggregate over the filtered cohort.
+  in Rust, with a `…/simulate/result/summary` aggregate over the filtered cohort
+  and a batch `POST …/simulate/summaries` for the Simulate page's multi-rule hydrate.
 - **Positions table = Current run + Old runs** (`?scope=current|history` on
   `POST …/rules/{id}/positions[/summary]`): `current` pages the rule's latest run
   (`StrategyRepo::latest_run` → `find_positions_by_run_paged`); `history` pages every

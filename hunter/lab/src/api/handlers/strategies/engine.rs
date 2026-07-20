@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -17,6 +17,13 @@ use trading_core::storage::token_enrichment::TokenEnrichment;
 
 use crate::state::local_state::LocalState;
 use crate::strategies::engine_sim::{self, EngineSimRequest};
+
+/// Body for [`engine_sim_result_summaries`] — the rule/run ids whose resident
+/// unfiltered rollups the Simulate page wants in one round-trip.
+#[derive(Deserialize)]
+pub struct SimSummariesRequest {
+    pub rule_ids: Vec<Uuid>,
+}
 
 /// A matched token sent to the page. Carries the **full** shared token enrichment
 /// (`#[serde(flatten)] token`) in the response body — no client-side merge — plus
@@ -120,6 +127,15 @@ pub async fn engine_sim_result_summary(
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     super::positions::sim_result_summary(&app_state, run_id.into_inner(), body.into_inner())
+}
+
+/// POST `/api/strategies/simulate/summaries` — unfiltered rollups for many rules
+/// at once (Simulate page table-column hydrate). Missing/expired runs are omitted.
+pub async fn engine_sim_result_summaries(
+    app_state: web::Data<Arc<LocalState>>,
+    body: web::Json<SimSummariesRequest>,
+) -> impl Responder {
+    super::positions::sim_result_summaries(&app_state, &body.rule_ids)
 }
 
 /// POST `/api/strategies/simulate/{run_id}/result/time-summary` — hold + wall-clock

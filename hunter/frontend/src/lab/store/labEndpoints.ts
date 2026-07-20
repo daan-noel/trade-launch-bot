@@ -63,6 +63,16 @@ export const labApi = baseApi.injectEndpoints({
         body: { pagination: { page: 1, pageSize: 1 }, sorting: [], search: '', filters: {} },
       }),
     }),
+    /** Unfiltered rollups for many rules in one round-trip (Simulate page hydrate).
+     *  Rules with no resident result are omitted from the map. */
+    getEngineSimSummaries: builder.mutation<Record<string, SimulatedSummary>, string[]>({
+      query: (ruleIds) => ({
+        url: '/api/strategies/simulate/summaries',
+        method: 'POST',
+        body: { rule_ids: ruleIds },
+      }),
+      transformResponse: (r: { summaries: Record<string, SimulatedSummary> }) => r.summaries ?? {},
+    }),
     // On-demand metric series for a token's chart panes (redesign 5.7) — every
     // metric's value at every trade, recomputed from the lake + PG tail with the
     // SAME engine compute the live/sweep paths use (never persisted).
@@ -301,6 +311,7 @@ export const {
   useInspectReplayMutation,
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
+  useGetEngineSimSummariesMutation,
   useGetMetricSeriesQuery,
   useStartFlowDiscoveryMutation,
   useGetFlowDiscoveryQuery,

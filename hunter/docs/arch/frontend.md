@@ -192,8 +192,10 @@ next load (no per-metric frontend work).
   Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
   shows the `SimulatedSummary` rollup as separate DataTable columns (Mode, Entered /
   Closed / Win % / Avg PnL / Total PnL, plus a Run status) so sort/search/filter work
-  per field. On load it hydrates *every* rule's resident sim summary (for the columns),
-  but the per-token detail below is **selection-gated** — only the selected rule's
+  per field. On load it hydrates *every* rule's resident sim summary in **one**
+  `POST /api/strategies/simulate/summaries` round-trip (for the columns); a finished
+  run still refreshes via the single-run `…/result/summary` path. The per-token
+  detail below is **selection-gated** — only the selected rule's
   `RuleSimPositionsPanel` renders, with a **Positions ⇄ Matched** toggle: Positions =
   the run's entered outcomes (`POST /api/strategies/simulate/{run_id}/result`,
   `simColumns`); Matched = the fingerprint's candidate pool the positions are a subset
