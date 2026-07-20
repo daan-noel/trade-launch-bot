@@ -40,16 +40,21 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
   `Research & Backtesting` / `LAB`, no toggle.   Live money nav is collapsed to
-  **Positions** (`/positions`, redirects from `/live-trading`) · **Wallet** · **Trade**;
-  Armed lives under Strategies (`/strategies/armed`, redirects from `/strategies/monitor`).
-  Lab flattens single-child groups (Tokens, Trader Analysis are leaf links).
-  Metric panes are not a peer nav item — they live in lab Tokens detail
+  **Ops** (`/ops` — Waiting/Open/Recent; redirects from `/positions`, `/live-trading`,
+  `/strategies/armed`) · **Wallet** · **Trade**. Rules Analyze is
+  `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
+  are leaf links). Metric panes are not a peer nav item — they live in lab Tokens detail
   (`/strategies/metric-panes` redirects to `/tokens?mint=`). The per-app **color** is NOT in the nav config — it's
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
-**Operator clarity (jobs):** Wallet = bag overview; Positions = bot inventory;
-Trade = mint-first execute; Armed = waiting/holdings ops. Tokens table stream toggle
-is **STREAM ON/OFF** (not the header trading kill switch).
+**Operator clarity (jobs):** Wallet = bag overview; Ops = live inventory (SSE SSOT);
+Trade = mint-first execute; Rules = activate/pause + Analyze (traded history). Tokens
+table stream toggle is **STREAM ON/OFF** (not the header trading kill switch).
+
+**Live Status SSOT:** `live/slices/liveStatusSlice` + `useLiveStatusBootstrap` (mounted
+in live `App`) — REST snapshot on mount/SSE reconnect/tab visible; in-place patch on
+`strategy_position_update` / `strategy_armed_changed`. Ops, Rules live counts, Home
+open KPI, and StrategyStrip read this store only (no parallel Maps).
 
 ## Store — split `createApi` (the isolation seam)
 
@@ -264,14 +269,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   per-column representation (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM)
   engines are unchanged and identical (DB parity test). The old bespoke `f_*`/`cf` `URLSearchParams`
   builder and the dead simple `getTokens` GET endpoint were removed.
-- **Positions/Paper = server-side paged, summary tracks filters** (`useRulePositions`): the positions
-  `DataTable` runs in `serverSide` mode; the hook serializes its `TableQuery` (+ `numericCols`) into
-  the POST body, fetches one page, and reads the total off `X-Total-Count`; live SSE deltas patch only
-  rows *already on the page*. The **Positions Summary** panel renders a **separate** server-computed
-  aggregate (`POST /rules/{id}/positions/summary`, filter/search body via `toSummaryBody`) over the
-  table's current filtered cohort (mint-set included). All five strategy pages (live `TpslPage`/
-  `Swing1Page` + the 3 lab pages) share this path; the Paper Test section is a second `useRulePositions`
-  instance scoped to the paper rule.
+- **Rule Analyze (live) = server-side paged + summary** (`RuleAnalyzePage` via `useServerTable` +
+  `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|history]`
+  and `…/summary` with `toTableRequest` / `toSummaryBody`; `SimSummaryCard` renders `PositionsSummary`.
+  SSE on the same `rule_id` triggers `reload()`. Open inventory manage is **Ops** (Live Status SSOT),
+  not this table.
 - **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
   (no SSE-delta patching / settle-poll — these results are static once computed) drives the two tables
   over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**

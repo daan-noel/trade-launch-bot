@@ -44,7 +44,7 @@ import {
   type ActionProgress,
 } from 'services/sse';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
-import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { ruleAnalyzeHref, simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   disabledRuleRowClass,
   lamportsToSol,
@@ -52,11 +52,20 @@ import {
   type TradeMode,
 } from 'lib/strategy/types';
 
+export interface RuleLiveCounts {
+  open: number;
+  pending: number;
+}
+
 export interface RulesViewProps {
   /** Lab-only dry-run render-prop forwarded to the editor (FE3). */
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
   /** Lab-only: show a link icon that opens Simulate with this rule selected. */
   linkToSimulate?: boolean;
+  /** Live-only: open Analyze (positions summary + traded history) for the rule. */
+  linkToAnalyze?: boolean;
+  /** Live-only: open/pending counts from the Live Status SSOT (not list_rules). */
+  ruleLiveCounts?: Record<string, RuleLiveCounts>;
 }
 
 /**
@@ -68,7 +77,12 @@ export interface RulesViewProps {
  * archived: hidden by default, kept in the DB. The editor opens in an xl modal.
  * The lab app injects a dry-run panel via `renderDryRun`.
  */
-export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
+export function RulesView({
+  renderDryRun,
+  linkToSimulate,
+  linkToAnalyze,
+  ruleLiveCounts,
+}: RulesViewProps) {
   const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery();
   const { data: fps = [] } = useGetFingerprintsQuery();
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
@@ -282,6 +296,17 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
                 <LinkIcon className="h-3.5 w-3.5" />
               </Link>
             )}
+            {linkToAnalyze && (
+              <Link
+                to={ruleAnalyzeHref(r.id)}
+                title={`Analyze “${r.rule_name}” — positions + summary`}
+                aria-label={`Analyze ${r.rule_name}`}
+                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <LinkIcon className="h-3.5 w-3.5" />
+              </Link>
+            )}
           </div>
         </RuleHoverTip>
       ),
@@ -314,6 +339,38 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
       // Active > Idle > Disabled on desc (the natural first click).
       sortValue: (r) => (!r.is_enabled ? 0 : r.is_active ? 2 : 1),
     },
+    ...(ruleLiveCounts
+      ? ([
+          {
+            key: 'live_pos',
+            label: 'Live',
+            group: 'status',
+            render: (r: StrategyRule) => {
+              const c = ruleLiveCounts[r.id];
+              const open = c?.open ?? 0;
+              const pending = c?.pending ?? 0;
+              if (open === 0 && pending === 0) {
+                return <span className="text-text-dim">—</span>;
+              }
+              return (
+                <span className="tabular-nums text-xs">
+                  <span className="text-primary">{open} open</span>
+                  {pending > 0 && (
+                    <span className="text-text-dim"> · {pending} pend</span>
+                  )}
+                </span>
+              );
+            },
+            searchValue: (r: StrategyRule) => {
+              const c = ruleLiveCounts[r.id];
+              return `${c?.open ?? 0} ${c?.pending ?? 0}`;
+            },
+            sortValue: (r: StrategyRule) =>
+              (ruleLiveCounts[r.id]?.open ?? 0) * 1000 + (ruleLiveCounts[r.id]?.pending ?? 0),
+            sortable: true as const,
+          },
+        ] satisfies ColumnDef<StrategyRule>[])
+      : []),
     {
       key: 'mode',
       label: 'Mode',

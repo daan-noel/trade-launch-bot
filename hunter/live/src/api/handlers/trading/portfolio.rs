@@ -75,17 +75,18 @@ pub async fn get_portfolio_holdings(app_state: web::Data<Arc<DeployState>>) -> i
     }
 }
 
-/// Query params for the paged Holdings reads. `fresh=1` busts the scan cache before
+/// Query params for the paged Holdings reads. `fresh=true` busts the scan cache before
 /// serving — the Wallet page sends it once after a confirmed trade so the reload
 /// reflects the new on-chain balance immediately (normal paging/sort/filter omit it
-/// and reuse the warm scan).
+/// and reuse the warm scan). Serde's bool query deserializer only accepts
+/// `true`/`false` (not `1`/`0`).
 #[derive(Deserialize)]
 pub struct HoldingsQueryParams {
     #[serde(default)]
     pub fresh: bool,
 }
 
-/// `POST /api/portfolio/holdings/query[?fresh=1]`
+/// `POST /api/portfolio/holdings/query[?fresh=true]`
 ///
 /// One page of the wallet holdings under the unified [`TableRequest`] contract
 /// (server-side search/sort/filter/paging), mirroring the positions/matched POST.

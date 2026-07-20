@@ -13,6 +13,8 @@
 export const STRATEGY_PATHS = {
   rules: '/strategies/rules',
   fingerprints: '/strategies/fingerprints',
+  /** Live: per-rule positions + summary (traded history). */
+  ops: '/ops',
   /** Lab app only. */
   simulate: '/strategies/simulate',
 } as const;
@@ -25,6 +27,11 @@ export const STRATEGY_PARAMS = {
 export function rulesHref(ruleId?: string | null): string {
   if (!ruleId) return STRATEGY_PATHS.rules;
   return `${STRATEGY_PATHS.rules}?${STRATEGY_PARAMS.rule}=${encodeURIComponent(ruleId)}`;
+}
+
+/** Live per-rule Analyze page (positions summary + traded history). */
+export function ruleAnalyzeHref(ruleId: string): string {
+  return `${STRATEGY_PATHS.rules}/${encodeURIComponent(ruleId)}`;
 }
 
 export function fingerprintsHref(fpId?: string | null): string {

@@ -6,6 +6,7 @@ import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
 import { LiveModeControl } from '@live/components/LiveModeControl';
 import { RunningTasksIndicator } from '@live/components/RunningTasksIndicator';
 import { usePositionNotifications } from '@live/hooks/usePositionNotifications';
+import { useLiveStatusBootstrap } from '@live/hooks/useLiveStatusBootstrap';
 import { liveNav } from './nav';
 
 // Code-split each route into its own chunk. Pages export named (not default)
@@ -18,13 +19,16 @@ const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) =
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
 const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
-const MonitorPage = lazy(() => import('@live/pages/strategies/MonitorPage').then((m) => ({ default: m.MonitorPage })));
-const LiveTradingPage = lazy(() => import('@live/pages/strategies/LiveTradingPage').then((m) => ({ default: m.LiveTradingPage })));
+const OpsPage = lazy(() => import('@live/pages/strategies/OpsPage').then((m) => ({ default: m.OpsPage })));
+const RuleAnalyzePage = lazy(() =>
+  import('@live/pages/strategies/RuleAnalyzePage').then((m) => ({ default: m.RuleAnalyzePage })),
+);
 const TradePage = lazy(() => import('@live/pages/trade/TradePage').then((m) => ({ default: m.TradePage })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
-/** Mounts the global position-notification toasts (live-only). */
+/** Mounts Live Status SSOT bootstrap + position-notification toasts (live-only). */
 function NotificationMount() {
+  useLiveStatusBootstrap();
   usePositionNotifications();
   return null;
 }
@@ -55,12 +59,14 @@ export default function App() {
               <Route path="tokens" element={<TokensPage />} />
               <Route path="tokens/sync" element={<SyncTokenPage />} />
               <Route path="token/sync" element={<RedirectPreserve to="/tokens/sync" />} />
-              <Route path="strategies/armed" element={<MonitorPage />} />
-              <Route path="strategies/monitor" element={<RedirectPreserve to="/strategies/armed" />} />
+              <Route path="ops" element={<OpsPage />} />
+              <Route path="positions" element={<RedirectPreserve to="/ops" />} />
+              <Route path="live-trading" element={<RedirectPreserve to="/ops" />} />
+              <Route path="strategies/armed" element={<Navigate to="/ops?tab=waiting" replace />} />
+              <Route path="strategies/monitor" element={<Navigate to="/ops?tab=waiting" replace />} />
               <Route path="strategies/rules" element={<RulesPage />} />
+              <Route path="strategies/rules/:ruleId" element={<RuleAnalyzePage />} />
               <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
-              <Route path="positions" element={<LiveTradingPage />} />
-              <Route path="live-trading" element={<RedirectPreserve to="/positions" />} />
               <Route path="trade" element={<TradePage />} />
               <Route path="wallet" element={<MyWalletPage />} />
               <Route path="profiles" element={<ProfilesPage />} />

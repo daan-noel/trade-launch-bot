@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { setupListeners } from '@reduxjs/toolkit/query';
 import { baseApi } from 'store/baseApi';
 import syncTokenReducer from '@live/slices/syncTokenSlice';
+import liveStatusReducer from '@live/slices/liveStatusSlice';
 // Attach the shared + live endpoints onto `baseApi` for side-effect BEFORE the
 // store reads `baseApi.reducer`/`.endpoints`. Lab endpoints are never
 // imported here, so their `injectEndpoints` side effect (and code) stays out of
@@ -12,6 +13,7 @@ import './liveEndpoints';
 export const store = configureStore({
   reducer: {
     syncToken: syncTokenReducer,
+    liveStatus: liveStatusReducer,
     [baseApi.reducerPath]: baseApi.reducer,
   },
   middleware: (getDefaultMiddleware) =>

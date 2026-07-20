@@ -281,19 +281,25 @@ export function connectArmedChanged(
 
 /**
  * Generic-engine position stream (`strategy_position_update`) — one position
- * lifecycle delta the monitor / rules list patches in place.
+ * lifecycle delta the Live Status store patches in place. Pass `onReopen` so a
+ * missed frame during an outage self-heals via a REST snapshot refetch (same
+ * pattern as {@link connectArmedChanged}).
  */
 export function connectStrategyPositionUpdate(
   onDelta: (delta: import('lib/strategy/types').StrategyPositionUpdateEvent) => void,
+  onReopen?: () => void,
 ): StreamHandle {
-  const unsub = subscribe('strategy_position_update', (e) => {
-    if (typeof e.data !== 'string') return;
-    try {
-      onDelta(JSON.parse(e.data) as import('lib/strategy/types').StrategyPositionUpdateEvent);
-    } catch {
-      /* ignore malformed frames */
-    }
-  });
+  const unsub = combine(
+    subscribe('strategy_position_update', (e) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        onDelta(JSON.parse(e.data) as import('lib/strategy/types').StrategyPositionUpdateEvent);
+      } catch {
+        /* ignore malformed frames */
+      }
+    }),
+    onReopen ? onSseReopen(onReopen) : () => {},
+  );
   return { close: unsub };
 }
 

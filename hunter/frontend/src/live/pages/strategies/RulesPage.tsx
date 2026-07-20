@@ -1,6 +1,9 @@
+import { useSelector } from 'react-redux';
 import { RulesView } from 'components/strategy/RulesView';
+import { selectRuleOpenCounts } from '@live/slices/liveStatusSlice';
 
-/** Rules authoring page (live app). No dry-run panel here — simulate is lab-only. */
+/** Live Rules — activate/pause/stop + live open counts + Analyze drill-in. */
 export function RulesPage() {
-  return <RulesView />;
+  const ruleLiveCounts = useSelector(selectRuleOpenCounts);
+  return <RulesView linkToAnalyze ruleLiveCounts={ruleLiveCounts} />;
 }

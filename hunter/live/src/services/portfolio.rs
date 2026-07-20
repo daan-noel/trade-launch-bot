@@ -88,7 +88,7 @@ pub struct PortfolioSummary {
 /// RPC scan + Jupiter batch + several DB reads, so a short TTL lets the server-side
 /// Holdings table page/sort/filter over many POSTs from **one** scan instead of
 /// re-scanning per request — honoring the hot-path "no new RPC" budget. A confirmed
-/// trade (`?fresh=1` on the query endpoint) busts it so post-trade reads are fresh.
+/// trade (`?fresh=true` on the query endpoint) busts it so post-trade reads are fresh.
 const HOLDINGS_TTL: Duration = Duration::from_secs(8);
 
 /// Short-TTL cache of the composed holdings (see [`HOLDINGS_TTL`]). Held on

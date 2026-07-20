@@ -15,13 +15,13 @@ const nav: NavConfig = {
         { to: '/tokens/sync', label: 'Sync token' },
       ],
     },
-    { kind: 'item', to: '/positions', label: 'Positions' },
+    { kind: 'item', to: '/ops', label: 'Ops' },
   ],
 };
 
 describe('resolveNavPageLabel', () => {
   it('matches exact leaf paths', () => {
-    expect(resolveNavPageLabel('/positions', nav.items)).toBe('Positions');
+    expect(resolveNavPageLabel('/ops', nav.items)).toBe('Ops');
     expect(resolveNavPageLabel('/tokens/sync', nav.items)).toBe('Sync token');
   });
 

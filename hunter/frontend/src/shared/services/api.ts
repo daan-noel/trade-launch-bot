@@ -73,6 +73,47 @@ async function postTablePage<R>(
   return { items, total: Number.isFinite(total) ? total : items.length };
 }
 
+/**
+ * POST one page of a rule's live/paper positions (`scope=current|history`).
+ * Response body is a bare array; total from `X-Total-Count`.
+ * Strategy path segment is ignored by the generic engine — pass `"generic"`.
+ */
+export function fetchRulePositionsPage(
+  strategySeg: string,
+  ruleId: string,
+  body: TableRequestBody,
+  scope: 'current' | 'history' | undefined,
+  signal?: AbortSignal,
+): Promise<{ items: import('types').RulePositionRecord[]; total: number }> {
+  const q = scope ? `?scope=${scope}` : '';
+  return postTablePage(
+    `/api/strategies/${strategySeg}/rules/${encodeURIComponent(ruleId)}/positions${q}`,
+    body,
+    (json) => json as import('types').RulePositionRecord[],
+    signal,
+  );
+}
+
+/** POST the filtered Positions Summary aggregate for a rule (same scope/filters as the table). */
+export function fetchRulePositionsSummary(
+  strategySeg: string,
+  ruleId: string,
+  body: TableRequestBody,
+  scope: 'current' | 'history' | undefined,
+  signal?: AbortSignal,
+): Promise<import('types').PositionsSummary> {
+  const q = scope ? `?scope=${scope}` : '';
+  return request(
+    `${API_BASE}/api/strategies/${strategySeg}/rules/${encodeURIComponent(ruleId)}/positions/summary${q}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
+}
+
 /** POST one page of a rule's matched tokens. Response body is `{tokens}`. */
 export function fetchMatchedPage(
   strategySeg: string,
@@ -197,7 +238,7 @@ export function fetchHoldingsPage(
   fresh = false,
 ): Promise<{ items: import('types').WalletHolding[]; total: number }> {
   return postTablePage(
-    `/api/portfolio/holdings/query${fresh ? '?fresh=1' : ''}`,
+    `/api/portfolio/holdings/query${fresh ? '?fresh=true' : ''}`,
     body,
     (json) => json as import('types').WalletHolding[],
     signal,

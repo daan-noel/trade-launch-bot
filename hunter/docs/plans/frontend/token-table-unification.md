@@ -81,10 +81,10 @@ kept **Rust-only** (do not delete the JSON — the Rust test `include_str!`s it)
 ### Wallet Holdings server-side (the last client table)
 
 `GET /api/portfolio/holdings` stays for the Home widgets (full list). The Holdings
-**table** pages via `POST /api/portfolio/holdings/query[?fresh=1]` (+ `X-Total-Count`)
+**table** pages via `POST /api/portfolio/holdings/query[?fresh=true]` (+ `X-Total-Count`)
 and a `POST …/summary` roll-up. A short-TTL `HoldingsCache` (`HOLDINGS_TTL = 8s`) on
 `DeployState` warms the composed wallet scan so paging/sort/filter cost **one** scan per
-window (no new hot-path RPC); `?fresh=1` busts it after a confirmed trade. Scan-time
+window (no new hot-path RPC); `?fresh=true` busts it after a confirmed trade. Scan-time
 live marks (`value_usd`/`price_usd`/`liquidity`/`24h`) **are** server-sortable/filterable
 (so dust hiding is a real `value_usd ≥ $1` filter and the summary agrees); the 20s client
 price-poll still overlays fresher *display* values on the current page. `managed_by` is a

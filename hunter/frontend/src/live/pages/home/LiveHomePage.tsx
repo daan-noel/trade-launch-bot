@@ -1,4 +1,6 @@
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 import { StatTile } from 'components/ui/StatTile';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
@@ -10,6 +12,7 @@ import {
   useGetPortfolioSummaryQuery,
   useGetLiveModeQuery,
 } from '@live/store/liveEndpoints';
+import { selectLiveOpen } from '@live/slices/liveStatusSlice';
 
 /**
  * Home "Command Center" (live build) — the single pane of glass. KPI tiles deep-link
@@ -19,6 +22,11 @@ export function LiveHomePage() {
   const { data: summary } = useGetPortfolioSummaryQuery();
   const { data: live } = useGetLiveModeQuery();
   const { usdRate } = usePriceUnit();
+  const openMap = useSelector(selectLiveOpen);
+  const liveOpenReal = useMemo(
+    () => Object.values(openMap).filter((p) => p.mode === 'real').length,
+    [openMap],
+  );
 
   const valueSol = summary?.total_value_sol ?? null;
   const valueUsd = summary?.total_value_usd ?? null;
@@ -35,7 +43,7 @@ export function LiveHomePage() {
       <div className="mb-4 flex flex-wrap items-baseline gap-3">
         <h1 className="text-2xl font-extrabold text-text">Command Center</h1>
         <span className="text-sm text-text-mid">
-          Glance → act · Wallet = bag · Positions = bot inventory · Trade = execute
+          Glance → act · Wallet = bag · Ops = live inventory · Trade = execute
         </span>
       </div>
 
@@ -60,11 +68,11 @@ export function LiveHomePage() {
           value={realizedToday != null ? `◎${formatSigned(realizedToday, 3)}` : '—'}
           tone={signedStatTone(realizedToday)}
         />
-        <Link to="/positions" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+        <Link to="/ops" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
           <StatTile
             label="Open Positions"
-            value={summary?.open_position_count ?? '—'}
-            sub="strategy"
+            value={liveOpenReal}
+            sub="ops · live"
           />
         </Link>
         <Link to="/strategies/rules" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
