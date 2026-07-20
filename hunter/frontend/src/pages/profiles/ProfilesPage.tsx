@@ -18,6 +18,16 @@ import { sharedApi } from 'store/sharedEndpoints';
 import type { AppDispatch } from 'store/types';
 import type { ProfileType, WalletEntry, WalletProfile, WalletProfileTag } from 'types';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import {
+  EditIcon,
+  PlusIcon,
+  SaveIcon,
+  SettingsIcon,
+  SpinnerIcon,
+  TrashIcon,
+} from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Input, Textarea } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
@@ -245,9 +255,16 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
                           onKeyDown={(e) => { if (e.key === 'Enter') saveEdit(tag); if (e.key === 'Escape') cancelEdit(tag.id); }}
                           autoFocus
                         />
-                        <Button size="xs" variant="primary" onClick={() => saveEdit(tag)} disabled={saving === tag.id}>
-                          {saving === tag.id ? '…' : 'Save'}
-                        </Button>
+                        <IconButton
+                          size="lg"
+                          variant="primary"
+                          onClick={() => saveEdit(tag)}
+                          disabled={saving === tag.id}
+                          title={saving === tag.id ? 'Saving…' : 'Save'}
+                          aria-label={saving === tag.id ? 'Saving…' : 'Save'}
+                        >
+                          {saving === tag.id ? <SpinnerIcon /> : <SaveIcon />}
+                        </IconButton>
                         <Button size="xs" variant="ghost" onClick={() => cancelEdit(tag.id)}>Cancel</Button>
                       </div>
                       <ColorPicker
@@ -265,7 +282,15 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
                     /* delete confirm inline */
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-text-dim flex-1">Delete <span className="font-semibold text-text">{tag.name}</span>?</span>
-                      <Button size="xs" variant="danger" onClick={() => handleDelete(tag.id)}>Delete</Button>
+                      <IconButton
+                        size="lg"
+                        variant="danger"
+                        onClick={() => handleDelete(tag.id)}
+                        title="Delete"
+                        aria-label="Delete"
+                      >
+                        <TrashIcon />
+                      </IconButton>
                       <Button size="xs" variant="ghost" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
                     </div>
                   ) : (
@@ -281,8 +306,26 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
                           {tag.comment}
                         </span>
                       )}
-                      <Button size="xs" variant="ghost" onClick={() => startEdit(tag)}>Edit</Button>
-                      <Button size="xs" variant="danger" onClick={() => setDeleteConfirm(tag.id)}>✕</Button>
+                      <IconButtonGroup>
+                        <IconButton
+                          size="md"
+                          variant="accent"
+                          onClick={() => startEdit(tag)}
+                          title="Edit"
+                          aria-label="Edit"
+                        >
+                          <EditIcon />
+                        </IconButton>
+                        <IconButton
+                          size="md"
+                          variant="danger"
+                          onClick={() => setDeleteConfirm(tag.id)}
+                          title="Delete"
+                          aria-label="Delete"
+                        >
+                          <TrashIcon />
+                        </IconButton>
+                      </IconButtonGroup>
                     </div>
                   )}
                 </div>
@@ -311,9 +354,16 @@ function ManageTagsModal({ open, tags, onClose, onCreated, onUpdated, onDeleted 
           />
           {addError && <InlineAlert variant="error">{addError}</InlineAlert>}
           <div className="flex justify-end">
-            <Button size="sm" variant="primary" onClick={handleAdd} disabled={adding}>
-              {adding ? 'Adding…' : '+ Add tag'}
-            </Button>
+            <IconButton
+              size="lg"
+              variant="success"
+              onClick={handleAdd}
+              disabled={adding}
+              label={adding ? 'Adding…' : 'Add tag'}
+              title={adding ? 'Adding…' : 'Add tag'}
+            >
+              {adding ? <SpinnerIcon /> : <PlusIcon />}
+            </IconButton>
           </div>
         </div>
       </div>
@@ -460,9 +510,16 @@ function ProfileModal({ open, initial, forcedType, onClose, onSaved }: ProfileMo
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
+          <IconButton
+            variant="primary"
+            size="lg"
+            onClick={submit}
+            disabled={saving}
+            label={saving ? 'Saving…' : 'Save'}
+            title={saving ? 'Saving…' : 'Save'}
+          >
+            {saving ? <SpinnerIcon /> : <SaveIcon />}
+          </IconButton>
         </div>
       </div>
     </Modal>
@@ -543,9 +600,16 @@ function AddWalletModal({ open, profileId, onClose, onAdded }: AddWalletModalPro
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? 'Adding…' : 'Add wallet'}
-          </Button>
+          <IconButton
+            variant="success"
+            size="lg"
+            onClick={submit}
+            disabled={saving}
+            label={saving ? 'Adding…' : 'Add wallet'}
+            title={saving ? 'Adding…' : 'Add wallet'}
+          >
+            {saving ? <SpinnerIcon /> : <PlusIcon />}
+          </IconButton>
         </div>
       </div>
     </Modal>
@@ -622,9 +686,16 @@ function EditWalletModal({ open, wallet, onClose, onSaved }: EditWalletModalProp
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={submit} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
-          </Button>
+          <IconButton
+            variant="primary"
+            size="lg"
+            onClick={submit}
+            disabled={saving}
+            label={saving ? 'Saving…' : 'Save'}
+            title={saving ? 'Saving…' : 'Save'}
+          >
+            {saving ? <SpinnerIcon /> : <SaveIcon />}
+          </IconButton>
         </div>
       </div>
     </Modal>
@@ -670,9 +741,16 @@ function ConfirmDeleteModal({ open, label, onClose, onConfirm }: ConfirmDeleteMo
         {error && <InlineAlert variant="error">{error}</InlineAlert>}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="danger" onClick={go} disabled={busy}>
-            {busy ? 'Deleting…' : 'Delete'}
-          </Button>
+          <IconButton
+            variant="danger"
+            size="lg"
+            onClick={go}
+            disabled={busy}
+            title={busy ? 'Deleting…' : 'Delete'}
+            aria-label={busy ? 'Deleting…' : 'Delete'}
+          >
+            {busy ? <SpinnerIcon /> : <TrashIcon />}
+          </IconButton>
         </div>
       </div>
     </Modal>
@@ -733,10 +811,14 @@ function WalletRow({ wallet, onEdit, onDelete, onToggleTracked, toggling }: Wall
           seen {formatIsoLines(wallet.last_seen_at, timezone).date}
         </span>
       )}
-      <div className="flex items-center gap-1 shrink-0">
-        <Button size="xs" variant="ghost" onClick={() => onEdit(wallet)}>Edit</Button>
-        <Button size="xs" variant="danger" onClick={() => onDelete(wallet)}>✕</Button>
-      </div>
+      <IconButtonGroup className="shrink-0">
+        <IconButton size="md" variant="accent" onClick={() => onEdit(wallet)} title="Edit" aria-label="Edit">
+          <EditIcon />
+        </IconButton>
+        <IconButton size="md" variant="danger" onClick={() => onDelete(wallet)} title="Delete" aria-label="Delete">
+          <TrashIcon />
+        </IconButton>
+      </IconButtonGroup>
     </div>
   );
 }
@@ -780,8 +862,14 @@ const ProfileCard = memo(function ProfileCard({
         <TypeBadge type={profile.profile_type} />
         <span className="font-semibold text-text text-sm flex-1">{profile.name}</span>
         <span className="text-xs text-text-dim">{profile.wallets.length} wallet{profile.wallets.length !== 1 ? 's' : ''}</span>
-        <Button size="xs" variant="ghost" onClick={() => onEdit(profile)}>Edit</Button>
-        <Button size="xs" variant="danger" onClick={() => onDelete(profile)}>Delete</Button>
+        <IconButtonGroup>
+          <IconButton size="md" variant="accent" onClick={() => onEdit(profile)} title="Edit" aria-label="Edit">
+            <EditIcon />
+          </IconButton>
+          <IconButton size="md" variant="danger" onClick={() => onDelete(profile)} title="Delete" aria-label="Delete">
+            <TrashIcon />
+          </IconButton>
+        </IconButtonGroup>
       </div>
 
       {/* Tags row */}
@@ -816,14 +904,16 @@ const ProfileCard = memo(function ProfileCard({
             />
           ))
         )}
-        <Button
-          size="sm"
-          variant="ghost"
+        <IconButton
+          size="md"
+          variant="success"
           className="mt-1 self-start"
           onClick={() => onAddWallet(profile)}
+          title="Add wallet"
+          aria-label="Add wallet"
         >
-          + Add wallet
-        </Button>
+          <PlusIcon />
+        </IconButton>
       </div>
     </div>
   );
@@ -868,8 +958,14 @@ const MyProfileCard = memo(function MyProfileCard({
         </span>
         <span className="font-semibold text-text text-sm flex-1">{profile.name}</span>
         <span className="text-xs text-text-dim">{profile.wallets.length} wallet{profile.wallets.length !== 1 ? 's' : ''}</span>
-        <Button size="xs" variant="ghost" onClick={() => onEdit(profile)}>Edit</Button>
-        <Button size="xs" variant="danger" onClick={() => onDelete(profile)}>Delete</Button>
+        <IconButtonGroup>
+          <IconButton size="md" variant="accent" onClick={() => onEdit(profile)} title="Edit" aria-label="Edit">
+            <EditIcon />
+          </IconButton>
+          <IconButton size="md" variant="danger" onClick={() => onDelete(profile)} title="Delete" aria-label="Delete">
+            <TrashIcon />
+          </IconButton>
+        </IconButtonGroup>
       </div>
 
       {/* Wallets list (no tags row) */}
@@ -888,14 +984,16 @@ const MyProfileCard = memo(function MyProfileCard({
             />
           ))
         )}
-        <Button
-          size="sm"
-          variant="ghost"
+        <IconButton
+          size="md"
+          variant="success"
           className="mt-1 self-start"
           onClick={() => onAddWallet(profile)}
+          title="Add wallet"
+          aria-label="Add wallet"
         >
-          + Add wallet
-        </Button>
+          <PlusIcon />
+        </IconButton>
       </div>
     </div>
   );
@@ -1067,12 +1165,24 @@ export function ProfilesPage() {
           <p className="mt-0.5 text-xs text-text-dim">Your own wallet, plus tracked trader, whale, and dev wallet profiles.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={() => setManageTagsOpen(true)}>
-            Manage tags
-          </Button>
-          <Button variant="primary" onClick={() => setProfileModal({ open: true })}>
-            + New profile
-          </Button>
+          <IconButton
+            variant="ghost"
+            size="md"
+            onClick={() => setManageTagsOpen(true)}
+            title="Manage tags"
+            aria-label="Manage tags"
+          >
+            <SettingsIcon />
+          </IconButton>
+          <IconButton
+            variant="success"
+            size="lg"
+            onClick={() => setProfileModal({ open: true })}
+            label="New profile"
+            title="New profile"
+          >
+            <PlusIcon />
+          </IconButton>
         </div>
       </div>
 
@@ -1109,13 +1219,15 @@ export function ProfilesPage() {
               <span className="text-sm text-text-dim">
                 Add your own wallet(s) to mark your trades on charts and tables.
               </span>
-              <Button
-                variant="primary"
-                size="sm"
+              <IconButton
+                variant="success"
+                size="lg"
                 onClick={() => setProfileModal({ open: true, forcedType: 'mine' })}
+                label="Add my profile"
+                title="Add my profile"
               >
-                + Add my profile
-              </Button>
+                <PlusIcon />
+              </IconButton>
             </div>
           )}
         </div>

@@ -4,7 +4,8 @@ import type { OpenStrategyPosition } from 'types';
 import type { BadgeVariant } from 'components/ui/Badge';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { legColumns } from 'components/strategy/strategyColumns';
 
 /** Friendly labels for the canonical strategy ids. */
@@ -95,15 +96,16 @@ export function positionColumns(opts: PositionColumnsOpts = {}): ColumnDef<OpenS
         return (
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             {onSellPosition && (
-              <Button
+              <IconButton
                 variant="danger"
-                size="xs"
+                size="md"
                 disabled={busy || r.status === 'BuySubmitted'}
                 onClick={() => onSellPosition(r)}
-                title="Sell ALL — force-close this strategy position on-chain"
+                title={busy ? 'Selling…' : 'Sell ALL — force-close this strategy position on-chain'}
+                aria-label={busy ? 'Selling…' : 'Sell ALL — force-close this strategy position on-chain'}
               >
-                {busy ? 'Selling…' : 'Sell ALL'}
-              </Button>
+                {busy ? <SpinnerIcon /> : <SellIcon />}
+              </IconButton>
             )}
             <Link
               to={`/trade?mint=${encodeURIComponent(r.mint_address)}`}

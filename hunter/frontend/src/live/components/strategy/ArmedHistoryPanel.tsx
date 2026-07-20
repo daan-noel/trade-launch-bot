@@ -2,7 +2,8 @@ import { memo } from 'react';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Accordion } from 'components/ui/Accordion';
 import { Badge } from 'components/ui/Badge';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { RefreshIcon, SpinnerIcon } from 'components/ui/icons';
 import { useGetArmedHistoryQuery } from '@live/store/liveEndpoints';
 
 const shortMint = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -60,9 +61,16 @@ export const ArmedHistoryPanel = memo(function ArmedHistoryPanel({
           Current run only — candidates that armed but whose entry trigger never fired.
         </span>
         <span className="flex-1" />
-        <Button variant="ghost" size="xs" disabled={isFetching} onClick={() => void refetch()}>
-          {isFetching ? '…' : '↻ Refresh'}
-        </Button>
+        <IconButton
+          variant="ghost"
+          size="md"
+          disabled={isFetching}
+          onClick={() => void refetch()}
+          title={isFetching ? 'Refreshing…' : 'Refresh'}
+          aria-label={isFetching ? 'Refreshing…' : 'Refresh'}
+        >
+          {isFetching ? <SpinnerIcon /> : <RefreshIcon />}
+        </IconButton>
       </div>
 
       {rows.length === 0 ? (

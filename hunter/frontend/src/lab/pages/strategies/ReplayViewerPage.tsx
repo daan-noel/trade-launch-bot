@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from 'lib/cn';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import { PauseIcon, PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Badge } from 'components/ui/Badge';
@@ -241,9 +243,16 @@ export function ReplayViewerPage() {
               <Checkbox checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} />
               <span>active rules only</span>
             </label>
-            <Button variant="primary" onClick={runInspect} disabled={isLoading}>
-              {isLoading ? 'Replaying…' : 'Replay'}
-            </Button>
+            <IconButton
+              variant="primary"
+              size="lg"
+              onClick={runInspect}
+              disabled={isLoading}
+              label={isLoading ? 'Replaying…' : 'Replay'}
+              title={isLoading ? 'Replaying…' : 'Replay'}
+            >
+              {isLoading ? <SpinnerIcon /> : <PlayIcon />}
+            </IconButton>
           </div>
           <p className="text-[11px] text-text-dim/70">
             Rules load from Postgres (the log omits them), so the replay runs against the
@@ -283,13 +292,63 @@ export function ReplayViewerPage() {
               {/* --- Decision timeline (left) --- */}
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-1.5">
-                  <Button size="xs" variant="subtle" onClick={() => setSel(0)} disabled={sel === 0}>⏮</Button>
-                  <Button size="xs" variant="subtle" onClick={() => setSel((s) => Math.max(0, s - 1))} disabled={sel === 0}>◀</Button>
-                  <Button size="xs" variant={playing ? 'primary' : 'subtle'} onClick={() => setPlaying((p) => !p)}>
-                    {playing ? '⏸' : '▶'}
-                  </Button>
-                  <Button size="xs" variant="subtle" onClick={() => setSel((s) => Math.min(steps.length - 1, s + 1))} disabled={sel >= steps.length - 1}>▶</Button>
-                  <Button size="xs" variant="subtle" onClick={() => setSel(steps.length - 1)} disabled={sel >= steps.length - 1}>⏭</Button>
+                  <IconButtonGroup className="gap-1.5">
+                  <IconButton
+                    size="md"
+                    variant="subtle"
+                    onClick={() => setSel(0)}
+                    disabled={sel === 0}
+                    title="Skip to start"
+                    aria-label="Skip to start"
+                  >
+                    <span className="inline-flex -space-x-2">
+                      <PlayIcon className="rotate-180 scale-75" />
+                      <PlayIcon className="rotate-180 scale-75" />
+                    </span>
+                  </IconButton>
+                  <IconButton
+                    size="md"
+                    variant="subtle"
+                    onClick={() => setSel((s) => Math.max(0, s - 1))}
+                    disabled={sel === 0}
+                    title="Step back"
+                    aria-label="Step back"
+                  >
+                    <PlayIcon className="rotate-180" />
+                  </IconButton>
+                  <IconButton
+                    size="md"
+                    variant={playing ? 'primary' : 'subtle'}
+                    onClick={() => setPlaying((p) => !p)}
+                    title={playing ? 'Pause' : 'Play'}
+                    aria-label={playing ? 'Pause' : 'Play'}
+                  >
+                    {playing ? <PauseIcon /> : <PlayIcon />}
+                  </IconButton>
+                  <IconButton
+                    size="md"
+                    variant="subtle"
+                    onClick={() => setSel((s) => Math.min(steps.length - 1, s + 1))}
+                    disabled={sel >= steps.length - 1}
+                    title="Step forward"
+                    aria-label="Step forward"
+                  >
+                    <PlayIcon />
+                  </IconButton>
+                  <IconButton
+                    size="md"
+                    variant="subtle"
+                    onClick={() => setSel(steps.length - 1)}
+                    disabled={sel >= steps.length - 1}
+                    title="Skip to end"
+                    aria-label="Skip to end"
+                  >
+                    <span className="inline-flex -space-x-2">
+                      <PlayIcon className="scale-75" />
+                      <PlayIcon className="scale-75" />
+                    </span>
+                  </IconButton>
+                  </IconButtonGroup>
                   <span className="ml-2 font-mono text-[12px] text-text-dim tabular-nums">
                     step {sel + 1} / {steps.length}
                   </span>

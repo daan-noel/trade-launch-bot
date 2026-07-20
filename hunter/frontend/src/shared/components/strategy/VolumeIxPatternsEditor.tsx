@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { CloseIcon, PlusIcon } from 'components/ui/icons';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
 
@@ -42,9 +43,16 @@ export function VolumeIxPatternsEditor({
         />
       ))}
       {!disabled && (
-        <Button variant="ghost" size="sm" type="button" onClick={() => onChange([...patterns, []])}>
-          + pattern
-        </Button>
+        <IconButton
+          variant="success"
+          size="md"
+          type="button"
+          onClick={() => onChange([...patterns, []])}
+          title="Add pattern"
+          aria-label="Add pattern"
+        >
+          <PlusIcon />
+        </IconButton>
       )}
     </div>
   );
@@ -89,9 +97,16 @@ function PatternRow({
         />
       </div>
       {onRemove && (
-        <Button variant="ghost" size="sm" type="button" onClick={onRemove} title="Remove pattern">
-          ×
-        </Button>
+        <IconButton
+          variant="danger"
+          size="md"
+          type="button"
+          onClick={onRemove}
+          title="Remove pattern"
+          aria-label="Remove pattern"
+        >
+          <CloseIcon />
+        </IconButton>
       )}
     </div>
   );

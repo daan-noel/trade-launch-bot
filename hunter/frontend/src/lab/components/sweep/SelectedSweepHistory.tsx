@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { Badge } from 'components/ui/Badge';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import { CloseIcon, ReuseIcon, SaveIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useRenameGroupedSweepRunMutation } from '@lab/store/labEndpoints';
@@ -111,12 +113,27 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
                 if (e.key === 'Escape') setEditing(false);
               }}
             />
-            <Button variant="primary" size="sm" onClick={save} disabled={renameState.isLoading}>
-              {renameState.isLoading ? 'Saving…' : 'Save'}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
+            <IconButtonGroup className="gap-1.5">
+              <IconButton
+                variant="primary"
+                size="md"
+                onClick={save}
+                disabled={renameState.isLoading}
+                title={renameState.isLoading ? 'Saving…' : 'Save'}
+                aria-label={renameState.isLoading ? 'Saving…' : 'Save'}
+              >
+                {renameState.isLoading ? <SpinnerIcon /> : <SaveIcon />}
+              </IconButton>
+              <IconButton
+                variant="ghost"
+                size="md"
+                onClick={() => setEditing(false)}
+                title="Cancel"
+                aria-label="Cancel"
+              >
+                <CloseIcon />
+              </IconButton>
+            </IconButtonGroup>
           </span>
         ) : (
           <button
@@ -132,9 +149,16 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
           </button>
         )}
 
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={onReuse}>
-          Use these settings
-        </Button>
+        <IconButton
+          variant="ghost"
+          size="md"
+          className="ml-auto"
+          onClick={onReuse}
+          title="Use these settings"
+          aria-label="Use these settings"
+        >
+          <ReuseIcon />
+        </IconButton>
       </div>
 
       {renameState.error && (

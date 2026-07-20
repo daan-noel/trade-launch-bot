@@ -4,6 +4,8 @@ import { Link } from 'react-router-dom';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { Badge } from 'components/ui/Badge';
+import { IconButton } from 'components/ui/IconButton';
+import { BuyIcon, RefreshIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
@@ -429,9 +431,16 @@ export function MyWalletPage() {
         <Badge variant="primary" className="font-mono">
           {total} tokens
         </Badge>
-        <Button variant="subtle" size="sm" onClick={refreshAll} disabled={loading}>
-          {loading ? 'Loading…' : '↻ Refresh'}
-        </Button>
+        <IconButton
+          variant="subtle"
+          size="md"
+          onClick={refreshAll}
+          disabled={loading}
+          title={loading ? 'Loading…' : 'Refresh'}
+          aria-label={loading ? 'Loading…' : 'Refresh'}
+        >
+          {loading ? <SpinnerIcon /> : <RefreshIcon />}
+        </IconButton>
         <Button
           variant={hideDust ? 'primary' : 'subtle'}
           size="sm"
@@ -440,12 +449,24 @@ export function MyWalletPage() {
           {hideDust ? '✓ ' : ''}Hide dust
         </Button>
         <div className="flex-grow" />
-        <Button variant="subtle" size="sm" onClick={handleManualBuyOpen}>
-          + Manual Buy
-        </Button>
-        <Button variant="subtle" size="sm" onClick={handleManualSellOpen}>
-          − Manual Sell
-        </Button>
+        <IconButton
+          variant="primary"
+          size="lg"
+          onClick={handleManualBuyOpen}
+          label="Manual Buy"
+          title="Manual Buy"
+        >
+          <BuyIcon />
+        </IconButton>
+        <IconButton
+          variant="danger"
+          size="lg"
+          onClick={handleManualSellOpen}
+          label="Manual Sell"
+          title="Manual Sell"
+        >
+          <SellIcon />
+        </IconButton>
         <Link
           to="/trade"
           className="inline-flex min-h-8 items-center justify-center rounded-md border border-primary bg-primary/15 px-3 text-[12px] font-semibold text-primary transition hover:bg-primary/25"
@@ -546,9 +567,15 @@ export function MyWalletPage() {
               <Button variant="ghost" onClick={() => setBuyDialog(null)}>
                 Cancel
               </Button>
-              <Button variant="primary" onClick={handleBuySubmit}>
-                Confirm Buy
-              </Button>
+              <IconButton
+                variant="primary"
+                size="lg"
+                onClick={handleBuySubmit}
+                label="Confirm Buy"
+                title="Confirm Buy"
+              >
+                <BuyIcon />
+              </IconButton>
             </div>
           </>
         )}
@@ -602,9 +629,15 @@ export function MyWalletPage() {
               <Button variant="ghost" onClick={() => setSellDialog(null)}>
                 Cancel
               </Button>
-              <Button variant="danger" onClick={handleSellSubmit}>
-                Sell All
-              </Button>
+              <IconButton
+                variant="danger"
+                size="lg"
+                onClick={handleSellSubmit}
+                label="Sell All"
+                title="Sell All"
+              >
+                <SellIcon />
+              </IconButton>
             </div>
           </>
         )}
@@ -627,9 +660,15 @@ export function MyWalletPage() {
               <Button variant="ghost" onClick={() => setPendingSell(null)}>
                 Cancel
               </Button>
-              <Button variant="danger" onClick={confirmPendingSell}>
-                Sell Anyway
-              </Button>
+              <IconButton
+                variant="danger"
+                size="lg"
+                onClick={confirmPendingSell}
+                label="Sell Anyway"
+                title="Sell Anyway"
+              >
+                <SellIcon />
+              </IconButton>
             </div>
           </>
         )}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { SimulateIcon, SpinnerIcon } from 'components/ui/icons';
 import { Select } from 'components/ui/Select';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
@@ -99,9 +100,16 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
             </option>
           ))}
         </Select>
-        <Button variant="primary" size="sm" disabled={!canRun || running} onClick={run}>
-          {running ? 'Running…' : '▶ Run'}
-        </Button>
+        <IconButton
+          variant="primary"
+          size="lg"
+          disabled={!canRun || running}
+          onClick={run}
+          label={running ? 'Running…' : 'Run'}
+          title={running ? 'Running…' : 'Run'}
+        >
+          {running ? <SpinnerIcon /> : <SimulateIcon />}
+        </IconButton>
         {!canRun && <span className="text-[11px] text-text-dim/70">fix the draft to enable</span>}
       </div>
       {err && <p className="mt-2 text-[11px] text-red">{err}</p>}

@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 
 import { Input } from 'components/ui/Input';
+import { IconButton } from 'components/ui/IconButton';
+import { SaveIcon, SpinnerIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { formatIxLabelsText, parseIxLabelsText } from 'lib/ixLabels';
@@ -229,9 +231,16 @@ export function FingerprintForm({
               Cancel
             </Button>
           )}
-          <Button variant="primary" size="sm" disabled={!canSubmit} onClick={() => onSubmit(toDraft(s))}>
-            {initial ? 'Save' : 'Create'}
-          </Button>
+          <IconButton
+            variant="primary"
+            size="lg"
+            disabled={!canSubmit}
+            onClick={() => onSubmit(toDraft(s))}
+            label={submitting ? 'Saving…' : initial ? 'Save' : 'Create'}
+            title={submitting ? 'Saving…' : initial ? 'Save' : 'Create'}
+          >
+            {submitting ? <SpinnerIcon /> : <SaveIcon />}
+          </IconButton>
         </div>
       </div>
       {error && <p className="text-[11px] text-red">{error}</p>}

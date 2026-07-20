@@ -1,7 +1,8 @@
 import { useEffect, useMemo, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { useLocalStorage } from 'hooks/useLocalStorage';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
@@ -519,9 +520,16 @@ export function GenericSweepConfigForm({
           <Badge variant={overCap ? 'danger' : 'primary'} className="font-mono">
             ~{projected.toLocaleString()} combos/group
           </Badge>
-          <Button variant="primary" onClick={handleRun} disabled={!canRun} title={runTitle}>
-            {running ? 'Sweeping…' : 'Run grouped sweep'}
-          </Button>
+          <IconButton
+            variant="primary"
+            size="lg"
+            onClick={handleRun}
+            disabled={!canRun}
+            label={running ? 'Sweeping…' : 'Run sweep'}
+            title={runTitle}
+          >
+            {running ? <SpinnerIcon /> : <PlayIcon />}
+          </IconButton>
         </div>
       </div>
 

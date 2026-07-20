@@ -4,6 +4,15 @@ import { DataTable } from 'components/table/DataTable';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import type { ColumnDef, TableQuery } from 'components/table/types';
 import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import {
+  DuplicateIcon,
+  EditIcon,
+  SimulateIcon,
+  SpinnerIcon,
+  TrashIcon,
+} from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
@@ -202,14 +211,16 @@ export function SimulatePage() {
         key: 'execute',
         label: 'Execute',
         render: (r) => (
-          <Button
+          <IconButton
             variant="primary"
-            size="xs"
+            size="md"
             disabled={runs[r.id]?.running}
             onClick={() => void runRule(r)}
+            title={runs[r.id]?.running ? 'Running…' : 'Simulate'}
+            aria-label={runs[r.id]?.running ? 'Running…' : 'Simulate'}
           >
-            {runs[r.id]?.running ? 'Running…' : 'Simulate'}
-          </Button>
+            {runs[r.id]?.running ? <SpinnerIcon /> : <SimulateIcon />}
+          </IconButton>
         ),
         searchValue: () => 'simulate',
       },
@@ -237,22 +248,38 @@ export function SimulatePage() {
           </span>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button
+          <IconButton
             variant="subtle"
-            size="sm"
+            size="lg"
             disabled={paperCount === 0 || bulkMode !== null}
             onClick={() => runAll('paper')}
+            label={
+              bulkMode === 'paper'
+                ? 'Starting paper…'
+                : `Simulate All Paper (${paperCount})`
+            }
+            title={
+              bulkMode === 'paper'
+                ? 'Starting paper…'
+                : `Simulate All Paper (${paperCount})`
+            }
           >
-            {bulkMode === 'paper' ? 'Starting paper…' : `Simulate All Paper (${paperCount})`}
-          </Button>
-          <Button
+            {bulkMode === 'paper' ? <SpinnerIcon /> : <SimulateIcon />}
+          </IconButton>
+          <IconButton
             variant="subtle"
-            size="sm"
+            size="lg"
             disabled={realCount === 0 || bulkMode !== null}
             onClick={() => runAll('real')}
+            label={
+              bulkMode === 'real' ? 'Starting real…' : `Simulate All Real (${realCount})`
+            }
+            title={
+              bulkMode === 'real' ? 'Starting real…' : `Simulate All Real (${realCount})`
+            }
           >
-            {bulkMode === 'real' ? 'Starting real…' : `Simulate All Real (${realCount})`}
-          </Button>
+            {bulkMode === 'real' ? <SpinnerIcon /> : <SimulateIcon />}
+          </IconButton>
         </div>
       </div>
       {actions.err && <p className="text-[12px] text-red">{actions.err}</p>}
@@ -267,17 +294,35 @@ export function SimulatePage() {
         selectedKey={selectedRuleId}
         onSelect={setSelectedRuleId}
         rowActions={(r) => (
-          <div className="flex gap-1">
-            <Button variant="ghost" size="xs" onClick={() => actions.edit(r)}>
-              Edit
-            </Button>
-            <Button variant="ghost" size="xs" onClick={() => actions.duplicate(r)}>
-              Duplicate
-            </Button>
-            <Button variant="ghost" size="xs" onClick={() => void actions.remove(r)}>
-              Delete
-            </Button>
-          </div>
+          <IconButtonGroup>
+            <IconButton
+              variant="accent"
+              size="md"
+              onClick={() => actions.edit(r)}
+              title="Edit"
+              aria-label="Edit"
+            >
+              <EditIcon />
+            </IconButton>
+            <IconButton
+              variant="ghost"
+              size="md"
+              onClick={() => actions.duplicate(r)}
+              title="Duplicate"
+              aria-label="Duplicate"
+            >
+              <DuplicateIcon />
+            </IconButton>
+            <IconButton
+              variant="danger"
+              size="md"
+              onClick={() => void actions.remove(r)}
+              title="Delete"
+              aria-label="Delete"
+            >
+              <TrashIcon />
+            </IconButton>
+          </IconButtonGroup>
         )}
       />
 

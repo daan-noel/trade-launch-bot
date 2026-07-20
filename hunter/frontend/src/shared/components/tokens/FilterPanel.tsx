@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { CheckIcon, CloseIcon } from 'components/ui/icons';
 import { Input, Textarea } from 'components/ui/Input';
 import {
   activeFilterCount,
@@ -247,27 +248,31 @@ export function FilterPanel({ filters, onApply, onClear }: FilterPanelProps) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="link"
-            size="sm"
+          <IconButton
+            variant="ghost"
+            size="md"
+            type="button"
             onClick={() => {
               setDraft(defaultFilters());
               onClear();
             }}
             disabled={draftCount === 0}
+            title="Clear all"
+            aria-label="Clear all"
             className="hover:text-red disabled:hover:text-text-dim"
           >
-            Clear all
-          </Button>
-          <Button
+            <CloseIcon />
+          </IconButton>
+          <IconButton
             variant="primary"
-            size="md"
+            size="lg"
             type="submit"
             disabled={!dirty}
-            className="min-h-9 px-6 font-bold uppercase tracking-wider"
+            label={dirty ? 'Apply' : 'Applied'}
+            title={dirty ? 'Apply' : 'Applied'}
           >
-            {dirty ? 'Apply' : 'Applied'}
-          </Button>
+            <CheckIcon />
+          </IconButton>
         </div>
       </div>
 

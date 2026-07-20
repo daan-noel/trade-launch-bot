@@ -8,7 +8,8 @@ import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { PromoteIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { Accordion } from 'components/ui/Accordion';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { markerRowOverlay, type InspectTarget } from 'components/strategy/inspectTarget';
@@ -278,36 +279,38 @@ export function GenericSweepView() {
 
   const groupRowActions = useCallback(
     (g: GroupedSweepGroupRecord): ReactNode => (
-      <Button
+      <IconButton
         variant="ghost"
-        size="xs"
+        size="md"
         disabled={promoteState.isLoading}
         onClick={(e) => {
           e.stopPropagation();
           void doPromote(g.id);
         }}
         title="Promote this group's best combo → new rule"
+        aria-label="Promote this group's best combo → new rule"
       >
-        Promote
-      </Button>
+        <PromoteIcon />
+      </IconButton>
     ),
     [doPromote, promoteState.isLoading],
   );
   const comboRowActions = useCallback(
     (r: GroupedSweepResultRecord): ReactNode =>
       activeGroupId ? (
-        <Button
+        <IconButton
           variant="ghost"
-          size="xs"
+          size="md"
           disabled={promoteState.isLoading}
           onClick={(e) => {
             e.stopPropagation();
             void doPromote(activeGroupId, r.combo_id);
           }}
           title="Promote this combo → new rule"
+          aria-label="Promote this combo → new rule"
         >
-          Promote
-        </Button>
+          <PromoteIcon />
+        </IconButton>
       ) : null,
     [activeGroupId, doPromote, promoteState.isLoading],
   );
@@ -408,9 +411,16 @@ export function GenericSweepView() {
                       <option key={r.id} value={r.id}>{runPickerLine(r)}</option>
                     ))}
                   </select>
-                  <Button variant="danger" size="sm" disabled={!activeRunId || deleteState.isLoading} onClick={onDeleteRun}>
-                    {deleteState.isLoading ? 'Deleting…' : 'Delete Run'}
-                  </Button>
+                  <IconButton
+                    variant="danger"
+                    size="md"
+                    disabled={!activeRunId || deleteState.isLoading}
+                    onClick={onDeleteRun}
+                    title={deleteState.isLoading ? 'Deleting…' : 'Delete Run'}
+                    aria-label={deleteState.isLoading ? 'Deleting…' : 'Delete Run'}
+                  >
+                    {deleteState.isLoading ? <SpinnerIcon /> : <TrashIcon />}
+                  </IconButton>
                   <span className="ml-auto flex items-center gap-2">
                     <label className="text-sm text-text-dim" htmlFor="generic-sweep-prune">Clear runs before</label>
                     <input
@@ -420,9 +430,16 @@ export function GenericSweepView() {
                       value={pruneBefore}
                       onChange={(e) => setPruneBefore(e.target.value)}
                     />
-                    <Button variant="danger" size="sm" disabled={!pruneBefore || pruneState.isLoading} onClick={onPrune}>
-                      {pruneState.isLoading ? 'Clearing…' : 'Clear All OLD'}
-                    </Button>
+                    <IconButton
+                      variant="danger"
+                      size="md"
+                      disabled={!pruneBefore || pruneState.isLoading}
+                      onClick={onPrune}
+                      title={pruneState.isLoading ? 'Clearing…' : 'Clear all old runs'}
+                      aria-label={pruneState.isLoading ? 'Clearing…' : 'Clear all old runs'}
+                    >
+                      {pruneState.isLoading ? <SpinnerIcon /> : <TrashIcon />}
+                    </IconButton>
                   </span>
                 </div>
               }

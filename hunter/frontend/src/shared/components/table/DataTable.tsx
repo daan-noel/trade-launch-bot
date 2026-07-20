@@ -901,7 +901,10 @@ function TableRowInner<R>({
         ))}
         {rowActions && (
           <td
-            className={cn('border-b border-border px-2 py-1.5 text-center', actionsCellCls)}
+            className={cn(
+              'border-b border-border px-2 py-1.5 text-center align-middle',
+              actionsCellCls,
+            )}
             onClick={(e) => e.stopPropagation()}
           >
             {rowActions(row)}

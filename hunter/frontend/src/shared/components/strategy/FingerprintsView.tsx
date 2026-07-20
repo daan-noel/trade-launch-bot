@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import { EditIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
@@ -339,9 +341,15 @@ export function FingerprintsView() {
     <div className="flex flex-col gap-3 p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold text-text">Fingerprints</h1>
-        <Button variant="primary" size="sm" onClick={() => setEditing('new')}>
-          + New fingerprint
-        </Button>
+        <IconButton
+          variant="success"
+          size="lg"
+          label="New fingerprint"
+          title="New fingerprint"
+          onClick={() => setEditing('new')}
+        >
+          <PlusIcon />
+        </IconButton>
       </div>
       {err && <p className="text-[12px] text-red">{err}</p>}
       <DataTable
@@ -356,20 +364,27 @@ export function FingerprintsView() {
         emptyMessage="No fingerprints yet — create one to start authoring rules."
         rowDetail={rowDetail}
         rowActions={(r) => (
-          <div className="flex gap-1">
-            <Button variant="ghost" size="xs" onClick={() => setEditing(r)}>
-              Edit
-            </Button>
-            <Button
-              variant="ghost"
-              size="xs"
+          <IconButtonGroup>
+            <IconButton
+              variant="accent"
+              size="md"
+              title="Edit"
+              aria-label="Edit"
+              onClick={() => setEditing(r)}
+            >
+              <EditIcon />
+            </IconButton>
+            <IconButton
+              variant="danger"
+              size="md"
               disabled={Boolean(r.used_by && r.used_by > 0)}
-              title={r.used_by ? `used by ${r.used_by} rule(s)` : 'delete'}
+              title={r.used_by ? `Used by ${r.used_by} rule(s)` : 'Delete'}
+              aria-label={r.used_by ? `Used by ${r.used_by} rule(s)` : 'Delete'}
               onClick={() => remove(r)}
             >
-              Delete
-            </Button>
-          </div>
+              <TrashIcon />
+            </IconButton>
+          </IconButtonGroup>
         )}
       />
       <Modal

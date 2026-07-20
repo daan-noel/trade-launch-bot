@@ -2,6 +2,8 @@ import { useMemo, useState, type ReactNode } from 'react';
 
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
+import { IconButton } from 'components/ui/IconButton';
+import { SaveIcon, SpinnerIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Tabs, TabsList, TabsTrigger, TabsPanel } from 'components/ui/Tabs';
 import { cn } from 'lib/cn';
@@ -274,9 +276,16 @@ function RuleEditorInner({
             Cancel
           </Button>
         )}
-        <Button variant="primary" size="sm" disabled={!canSubmit} onClick={submit}>
-          {initial ? 'Save rule' : 'Create rule'}
-        </Button>
+        <IconButton
+          variant="primary"
+          size="lg"
+          disabled={!canSubmit}
+          onClick={submit}
+          label={submitting ? 'Saving…' : initial ? 'Save rule' : 'Create rule'}
+          title={submitting ? 'Saving…' : initial ? 'Save rule' : 'Create rule'}
+        >
+          {submitting ? <SpinnerIcon /> : <SaveIcon />}
+        </IconButton>
       </div>
     </div>
   );

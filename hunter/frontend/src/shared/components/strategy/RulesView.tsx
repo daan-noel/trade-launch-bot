@@ -2,7 +2,18 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import {
+  DuplicateIcon,
+  EditIcon,
+  PauseIcon,
+  PlayIcon,
+  PlusIcon,
+  SpinnerIcon,
+  StopIcon,
+  TrashIcon,
+} from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { ruleParamsCell, ruleParamsSearchText } from './RuleParamsSummary';
 import {
@@ -285,37 +296,48 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         const pausing = pausingIds.has(r.id);
         if (r.is_active || stopping || pausing) {
           return (
-            <div className="flex gap-1">
-              <Button
-                variant="subtle"
-                size="xs"
+            <IconButtonGroup>
+              <IconButton
+                variant="ghost"
+                size="md"
                 disabled={pausing || stopping}
                 onClick={() => pauseRule(r)}
-                title="Pause — stop new entries, let open positions drain"
+                title={pausing ? 'Pausing…' : 'Pause — stop new entries, let open positions drain'}
+                aria-label={pausing ? 'Pausing…' : 'Pause — stop new entries, let open positions drain'}
               >
-                {pausing ? 'Pausing…' : 'Pause'}
-              </Button>
-              <Button
+                {pausing ? <SpinnerIcon /> : <PauseIcon />}
+              </IconButton>
+              <IconButton
                 variant="danger"
-                size="xs"
+                size="md"
                 disabled={stopping}
                 onClick={() => stopRule(r)}
-                title="Stop — deactivate and force-close open positions now"
+                title={
+                  stopping
+                    ? `Stopping ${stopProg!.done}/${stopProg!.total}`
+                    : 'Stop — deactivate and force-close open positions now'
+                }
+                aria-label={
+                  stopping
+                    ? `Stopping ${stopProg!.done}/${stopProg!.total}`
+                    : 'Stop — deactivate and force-close open positions now'
+                }
               >
-                {stopping ? `Stopping ${stopProg!.done}/${stopProg!.total}` : 'Stop'}
-              </Button>
-            </div>
+                {stopping ? <SpinnerIcon /> : <StopIcon />}
+              </IconButton>
+            </IconButtonGroup>
           );
         }
         return (
-          <Button
+          <IconButton
             variant="primary"
-            size="xs"
+            size="md"
             onClick={() => void run(() => activate(r.id).unwrap(), 'Activate failed')}
             title="Activate — arm this rule to fire on matching tokens"
+            aria-label="Activate — arm this rule to fire on matching tokens"
           >
-            Activate
-          </Button>
+            <PlayIcon />
+          </IconButton>
         );
       },
       searchValue: (r) => (r.is_active ? 'pause stop' : 'activate'),
@@ -337,30 +359,48 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
             return (
               <div key={mode} className="flex items-center gap-1 rounded-md border border-white/8 px-1.5 py-1">
                 <span className="text-[11px] uppercase tracking-wide text-text-dim">{mode}</span>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={bulkBusy || stopping}
-                  onClick={() => doPauseAll(mode)}
-                >
-                  ⏸ Pause All ({activeByMode[mode]})
-                </Button>
-                <Button
-                  variant="danger"
-                  size="xs"
-                  disabled={bulkBusy || stopping}
-                  onClick={() => doStopAll(mode)}
-                >
-                  {stopping
-                    ? `■ Stopping ${bulkStop!.done}/${bulkStop!.total}`
-                    : `■ Stop All (${activeByMode[mode]})`}
-                </Button>
+                <IconButtonGroup>
+                  <IconButton
+                    variant="ghost"
+                    size="md"
+                    disabled={bulkBusy || stopping}
+                    onClick={() => doPauseAll(mode)}
+                    title={`Pause All (${activeByMode[mode]})`}
+                    aria-label={`Pause All (${activeByMode[mode]})`}
+                  >
+                    <PauseIcon />
+                  </IconButton>
+                  <IconButton
+                    variant="danger"
+                    size="md"
+                    disabled={bulkBusy || stopping}
+                    onClick={() => doStopAll(mode)}
+                    title={
+                      stopping
+                        ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
+                        : `Stop All (${activeByMode[mode]})`
+                    }
+                    aria-label={
+                      stopping
+                        ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
+                        : `Stop All (${activeByMode[mode]})`
+                    }
+                  >
+                    {stopping ? <SpinnerIcon /> : <StopIcon />}
+                  </IconButton>
+                </IconButtonGroup>
               </div>
             );
           })}
-          <Button variant="primary" size="sm" onClick={actions.openNew}>
-            + New rule
-          </Button>
+          <IconButton
+            variant="success"
+            size="lg"
+            label="New rule"
+            title="New rule"
+            onClick={actions.openNew}
+          >
+            <PlusIcon />
+          </IconButton>
         </div>
       </div>
       {err && <p className="text-[12px] text-red">{err}</p>}
@@ -374,17 +414,35 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         tableId="strategy-rules"
         emptyMessage="No rules yet — create one from a fingerprint."
         rowActions={(r) => (
-          <div className="flex gap-1">
-            <Button variant="ghost" size="xs" onClick={() => actions.edit(r)}>
-              Edit
-            </Button>
-            <Button variant="ghost" size="xs" onClick={() => actions.duplicate(r)}>
-              Duplicate
-            </Button>
-            <Button variant="ghost" size="xs" onClick={() => void actions.remove(r)}>
-              Delete
-            </Button>
-          </div>
+          <IconButtonGroup>
+            <IconButton
+              variant="accent"
+              size="md"
+              title="Edit"
+              aria-label="Edit"
+              onClick={() => actions.edit(r)}
+            >
+              <EditIcon />
+            </IconButton>
+            <IconButton
+              variant="ghost"
+              size="md"
+              title="Duplicate"
+              aria-label="Duplicate"
+              onClick={() => actions.duplicate(r)}
+            >
+              <DuplicateIcon />
+            </IconButton>
+            <IconButton
+              variant="danger"
+              size="md"
+              title="Delete"
+              aria-label="Delete"
+              onClick={() => void actions.remove(r)}
+            >
+              <TrashIcon />
+            </IconButton>
+          </IconButtonGroup>
         )}
       />
       {actions.editorNode}

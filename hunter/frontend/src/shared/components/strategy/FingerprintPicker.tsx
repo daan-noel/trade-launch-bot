@@ -1,7 +1,8 @@
 import { useState } from 'react';
 
 import { Select } from 'components/ui/Select';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { PlusIcon } from 'components/ui/icons';
 import { Modal } from 'components/ui/Modal';
 import { apiErrorMessage } from 'store/baseApi';
 import {
@@ -62,9 +63,16 @@ export function FingerprintPicker({ value, onChange, disabled }: FingerprintPick
             </option>
           ))}
         </Select>
-        <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
-          + new
-        </Button>
+        <IconButton
+          variant="success"
+          size="md"
+          disabled={disabled}
+          onClick={() => setOpen(true)}
+          label="New"
+          title="New fingerprint"
+        >
+          <PlusIcon />
+        </IconButton>
       </div>
       {selected && fingerprintParamsCell(selected)}
 

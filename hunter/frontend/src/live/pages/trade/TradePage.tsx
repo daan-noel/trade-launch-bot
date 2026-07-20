@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
+import { IconButton } from 'components/ui/IconButton';
+import { BuyIcon, SearchIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
@@ -172,9 +174,15 @@ export function TradePage() {
             className="font-mono"
           />
         </label>
-        <Button variant="primary" size="md" onClick={loadMint}>
-          Load
-        </Button>
+        <IconButton
+          variant="primary"
+          size="lg"
+          onClick={loadMint}
+          label="Load"
+          title="Load"
+        >
+          <SearchIcon />
+        </IconButton>
       </div>
 
       {actionError && <InlineAlert variant="error">{actionError}</InlineAlert>}
@@ -232,9 +240,15 @@ export function TradePage() {
                       className="w-28"
                     />
                   </label>
-                  <Button variant="primary" size="md" onClick={handleBuy}>
-                    Buy
-                  </Button>
+                  <IconButton
+                    variant="primary"
+                    size="lg"
+                    onClick={handleBuy}
+                    label="Buy"
+                    title="Buy"
+                  >
+                    <BuyIcon />
+                  </IconButton>
                 </div>
               </div>
 
@@ -258,9 +272,16 @@ export function TradePage() {
                       className="w-28"
                     />
                   </label>
-                  <Button variant="danger" size="md" disabled={selling} onClick={handleSell}>
-                    {selling ? 'Selling…' : 'Sell All'}
-                  </Button>
+                  <IconButton
+                    variant="danger"
+                    size="lg"
+                    disabled={selling}
+                    onClick={handleSell}
+                    label={selling ? 'Selling…' : 'Sell All'}
+                    title={selling ? 'Selling…' : 'Sell All'}
+                  >
+                    {selling ? <SpinnerIcon /> : <SellIcon />}
+                  </IconButton>
                 </div>
               </div>
             </div>
@@ -300,15 +321,18 @@ export function TradePage() {
           <Button variant="ghost" onClick={() => setConfirmSell(false)}>
             Cancel
           </Button>
-          <Button
+          <IconButton
             variant="danger"
+            size="lg"
             onClick={() => {
               setConfirmSell(false);
               void runSell();
             }}
+            label="Sell Anyway"
+            title="Sell Anyway"
           >
-            Sell Anyway
-          </Button>
+            <SellIcon />
+          </IconButton>
         </div>
       </Modal>
     </div>

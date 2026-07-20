@@ -4,7 +4,8 @@ import { tokenColumns } from 'components/tokens/tokenColumns';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { TokenChartsGrid } from 'components/tokens/TokenChartsGrid';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { SearchIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { SectionDivider } from 'components/ui/SectionDivider';
@@ -204,9 +205,16 @@ export function TraderAnalysisPage() {
             className="w-[110px] font-normal normal-case tracking-normal"
           />
         </label>
-        <Button variant="primary" onClick={() => run()} disabled={isFetching || !walletInput.trim()}>
-          {isFetching ? 'Loading…' : 'Analyze'}
-        </Button>
+        <IconButton
+          variant="primary"
+          size="lg"
+          onClick={() => run()}
+          disabled={isFetching || !walletInput.trim()}
+          label={isFetching ? 'Loading…' : 'Analyze'}
+          title={isFetching ? 'Loading…' : 'Analyze'}
+        >
+          {isFetching ? <SpinnerIcon /> : <SearchIcon />}
+        </IconButton>
       </div>
 
       {error && <p className="mb-2 text-sm text-red">{error}</p>}

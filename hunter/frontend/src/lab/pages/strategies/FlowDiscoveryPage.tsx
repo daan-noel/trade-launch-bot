@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Accordion } from 'components/ui/Accordion';
 import { Badge } from 'components/ui/Badge';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { CheckIcon, LinkIcon, PlayIcon, ReuseIcon, SpinnerIcon } from 'components/ui/icons';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
@@ -419,13 +420,16 @@ export function FlowDiscoveryPage() {
           />
           <LabelTip tip={SWEEP_FIELD_HELP.curveOnly}>curve only</LabelTip>
         </label>
-        <Button
+        <IconButton
           variant="primary"
+          size="lg"
           onClick={handleRun}
           disabled={running || !!ixFilterError || startState.isLoading}
+          label={running ? 'Discovering…' : 'Run discovery'}
+          title={running ? 'Discovering…' : 'Run discovery'}
         >
-          {running ? 'Discovering…' : 'Run discovery'}
-        </Button>
+          {running ? <SpinnerIcon /> : <PlayIcon />}
+        </IconButton>
       </div>
 
       <div className="mb-4 border-t border-white/10 pt-3">
@@ -579,14 +583,16 @@ export function FlowDiscoveryPage() {
                     </Select>
                   </label>
                   {autoMatchedFp && targetFpId !== autoMatchedFp.id && (
-                    <Button
+                    <IconButton
                       variant="ghost"
-                      size="sm"
+                      size="md"
                       type="button"
                       onClick={() => selectTargetFingerprint(autoMatchedFp.id)}
+                      title="Use auto-match"
+                      aria-label="Use auto-match"
                     >
-                      Use auto-match
-                    </Button>
+                      <ReuseIcon />
+                    </IconButton>
                   )}
                 </div>
                 {targetFp ? (
@@ -677,14 +683,34 @@ export function FlowDiscoveryPage() {
                       </span>
                     )}
                   </span>
-                  <Button
+                  <IconButton
                     variant="primary"
-                    size="sm"
+                    size="lg"
                     disabled={draftPatterns.length === 0 || applying}
                     onClick={handleApply}
+                    label={
+                      applying
+                        ? 'Applying…'
+                        : targetFp
+                          ? 'Update fingerprint'
+                          : 'Create / bind fingerprint'
+                    }
+                    title={
+                      applying
+                        ? 'Applying…'
+                        : targetFp
+                          ? 'Update fingerprint'
+                          : 'Create / bind fingerprint'
+                    }
                   >
-                    {targetFp ? 'Update fingerprint' : 'Create / bind fingerprint'}
-                  </Button>
+                    {applying ? (
+                      <SpinnerIcon />
+                    ) : targetFp ? (
+                      <CheckIcon />
+                    ) : (
+                      <LinkIcon />
+                    )}
+                  </IconButton>
                 </div>
                 <VolumeIxPatternsEditor patterns={draftPatterns} onChange={setDraftPatterns} />
                 {targetFp && currentPatterns.length > 0 && (

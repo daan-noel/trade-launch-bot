@@ -8,6 +8,8 @@ import { InputSyncStatus } from '@live/components/tokens/InputSyncStatus';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
+import { IconButton } from 'components/ui/IconButton';
+import { CloseIcon, RefreshIcon } from 'components/ui/icons';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Textarea } from 'components/ui/Input';
@@ -468,27 +470,37 @@ export function SyncTokenPage() {
         </label>
 
         {syncing ? (
-          <Button variant="ghost" onClick={handleCancelSync}>
-            Cancel
-          </Button>
+          <IconButton
+            variant="ghost"
+            size="md"
+            onClick={handleCancelSync}
+            title="Cancel sync"
+            aria-label="Cancel sync"
+          >
+            <CloseIcon />
+          </IconButton>
         ) : (
           <>
-            <Button
+            <IconButton
               variant="primary"
+              size="lg"
               onClick={() => handleSync(true)}
               disabled={mints.length === 0}
-              title="Quick update: downloads only transactions newer than the last sync. Fast and cheap — use this for routine refreshes."
+              label="Fetch New"
+              title="Fetch New — quick update: downloads only transactions newer than the last sync"
             >
-              Fetch New
-            </Button>
-            <Button
-              variant="ghost"
+              <RefreshIcon />
+            </IconButton>
+            <IconButton
+              variant="primary"
+              size="lg"
               onClick={handleFetchAll}
               disabled={mints.length === 0}
-              title="Full re-sync: re-downloads the entire transaction history from Helius, even data already in the database. Slow and uses more RPC credits — only needed to rebuild from scratch."
+              label="Fetch All"
+              title="Fetch All — full re-sync: re-downloads the entire transaction history from Helius"
             >
-              Fetch All
-            </Button>
+              <RefreshIcon />
+            </IconButton>
           </>
         )}
       </div>

@@ -16,7 +16,8 @@ import {
 } from 'components/tokens/filters';
 import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { SettingsIcon } from 'components/ui/icons';
 import { StatusButton } from 'components/ui/StatusButton';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTokenCreatedStream, connectTradeStream } from 'services/sse';
@@ -346,14 +347,20 @@ export function TokensPage({
       </div>
 
       <div className="mb-1.5 flex gap-1.5 justify-end">
-        <Button
+        <IconButton
           variant="subtle"
-          size="sm"
+          size="md"
           active={showAdvancedFilters || filterCount > 0}
           onClick={() => setShowAdvancedFilters((v) => !v)}
+          title={
+            filterCount > 0 ? `Advanced filters (${filterCount})` : 'Advanced filters'
+          }
+          aria-label={
+            filterCount > 0 ? `Advanced filters (${filterCount})` : 'Advanced filters'
+          }
         >
-          {filterCount > 0 ? `Advanced filters (${filterCount})` : 'Advanced filters'}
-        </Button>
+          <SettingsIcon />
+        </IconButton>
       </div>
 
       {showAdvancedFilters && (

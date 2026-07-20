@@ -2,7 +2,8 @@ import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { cn } from 'lib/cn';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { PlusIcon } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { InfoTooltip } from 'components/ui/InfoTooltip';
 import {
@@ -51,6 +52,9 @@ export interface GenericAxisBuilderProps {
   projected?: number;
 }
 
+/** Insertion slot while dragging a metric: before `beforeId`, or append when null. */
+type DropSlot = { side: MetricAxisSide; beforeId: string | null };
+
 /**
  * The registry-driven sweep axis builder (redesign FE5.1). Layout:
  *  - TP / SL strip on top (one of each; empty slot = add)
@@ -60,7 +64,9 @@ export interface GenericAxisBuilderProps {
  */
 export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBuilderProps) {
   const { data: registry } = useStrategyRegistry();
-  const [dragOverSide, setDragOverSide] = useState<MetricAxisSide | null>(null);
+  /** HTML5 DnD can't read custom MIME data during dragover — keep source id in state. */
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
 
   const combos = useMemo(() => projected ?? comboCount(rows, registry), [projected, rows, registry]);
   const windowErr = useMemo(() => sharedWindowError(rows, registry), [rows, registry]);
@@ -75,6 +81,11 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
     () => rows.filter((r) => r.kind === 'metric' && r.side === 'exit'),
     [rows],
   );
+
+  const clearDrag = () => {
+    setDraggingId(null);
+    setDropSlot(null);
+  };
 
   const setRow = (id: string, patch: Partial<GenericAxisRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -164,8 +175,11 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
           side="entry"
           rows={entryRows}
           registry={registry}
-          dragOver={dragOverSide === 'entry'}
-          onDragOverSide={setDragOverSide}
+          draggingId={draggingId}
+          dropSlot={dropSlot?.side === 'entry' ? dropSlot : null}
+          onDragStartRow={setDraggingId}
+          onDragEnd={clearDrag}
+          onDropSlot={setDropSlot}
           onPatch={setRow}
           onRemove={removeRow}
           onAdd={() => addMetric('entry')}
@@ -175,8 +189,11 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
           side="exit"
           rows={exitRows}
           registry={registry}
-          dragOver={dragOverSide === 'exit'}
-          onDragOverSide={setDragOverSide}
+          draggingId={draggingId}
+          dropSlot={dropSlot?.side === 'exit' ? dropSlot : null}
+          onDragStartRow={setDraggingId}
+          onDragEnd={clearDrag}
+          onDropSlot={setDropSlot}
           onPatch={setRow}
           onRemove={removeRow}
           onAdd={() => addMetric('exit')}
@@ -305,12 +322,32 @@ function TpSlSlot({
   );
 }
 
+/** Insert-slot line — absolutely placed so it doesn't shift row hit-testing. */
+function DropIndicator({ at }: { at: 'before' | 'after' }) {
+  return (
+    <div
+      aria-hidden
+      className={cn(
+        'pointer-events-none absolute inset-x-0 z-10 flex items-center gap-1',
+        at === 'before' ? '-top-1.5' : '-bottom-1.5',
+      )}
+    >
+      <span className="size-1.5 shrink-0 rounded-full bg-primary ring-2 ring-primary/35" />
+      <span className="h-1 flex-1 rounded-full bg-primary shadow-[0_0_10px_color-mix(in_srgb,var(--color-primary)_55%,transparent)]" />
+      <span className="size-1.5 shrink-0 rounded-full bg-primary ring-2 ring-primary/35" />
+    </div>
+  );
+}
+
 function MetricSideColumn({
   side,
   rows,
   registry,
-  dragOver,
-  onDragOverSide,
+  draggingId,
+  dropSlot,
+  onDragStartRow,
+  onDragEnd,
+  onDropSlot,
   onPatch,
   onRemove,
   onAdd,
@@ -319,35 +356,76 @@ function MetricSideColumn({
   side: MetricAxisSide;
   rows: GenericAxisRow[];
   registry: StrategyRegistry | undefined;
-  dragOver: boolean;
-  onDragOverSide: (side: MetricAxisSide | null) => void;
+  draggingId: string | null;
+  dropSlot: DropSlot | null;
+  onDragStartRow: (id: string) => void;
+  onDragEnd: () => void;
+  onDropSlot: (slot: DropSlot | null) => void;
   onPatch: (id: string, patch: Partial<GenericAxisRow>) => void;
   onRemove: (id: string) => void;
   onAdd: () => void;
   onMove: (id: string, targetSide: MetricAxisSide, beforeId: string | null) => void;
 }) {
+  const showEndIndicator = dropSlot != null && dropSlot.beforeId == null && rows.length > 0;
+
+  /** Insert slot from pointer Y vs each row's midpoint (stable across flex gaps). */
+  const slotFromPointerY = (clientY: number, columnEl: HTMLElement): DropSlot => {
+    const nodes = columnEl.querySelectorAll<HTMLElement>('[data-axis-row]');
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        return { side, beforeId: node.dataset.axisRow || null };
+      }
+    }
+    return { side, beforeId: null };
+  };
+
+  /** Skip a no-op slot (same place the dragged row already occupies). */
+  const normalizeSlot = (slot: DropSlot): DropSlot | null => {
+    if (!draggingId) return slot;
+    const fromIdx = rows.findIndex((r) => r.id === draggingId);
+    if (fromIdx < 0) return slot; // cross-column — always a real move
+    const toIdx = slot.beforeId
+      ? rows.findIndex((r) => r.id === slot.beforeId)
+      : rows.length;
+    // Removing the source shifts later indices down by one.
+    const adjustedTo = fromIdx < toIdx ? toIdx - 1 : toIdx;
+    if (adjustedTo === fromIdx) return null;
+    return slot;
+  };
+
+  const previewSlot = (clientY: number, columnEl: HTMLElement) => {
+    onDropSlot(normalizeSlot(slotFromPointerY(clientY, columnEl)));
+  };
+
+  const commitDrop = (id: string, slot: DropSlot | null) => {
+    onDropSlot(null);
+    onDragEnd();
+    if (!id || !slot) return;
+    onMove(id, side, slot.beforeId);
+  };
+
   return (
     <div
       className={cn(
         'flex flex-col gap-1.5 rounded-md border p-2 transition-colors',
-        dragOver ? 'border-primary/50 bg-primary/5' : 'border-white/10 bg-white/[0.02]',
+        dropSlot ? 'border-primary/50 bg-primary/5' : 'border-white/10 bg-white/[0.02]',
       )}
       onDragOver={(e) => {
         if (!isAxisDrag(e.dataTransfer)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-        onDragOverSide(side);
+        previewSlot(e.clientY, e.currentTarget);
       }}
       onDragLeave={(e) => {
         if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-        onDragOverSide(null);
+        onDropSlot(null);
       }}
       onDrop={(e) => {
         e.preventDefault();
-        onDragOverSide(null);
         const id = axisDragId(e.dataTransfer);
-        if (!id) return;
-        onMove(id, side, null);
+        const slot = normalizeSlot(slotFromPointerY(e.clientY, e.currentTarget));
+        commitDrop(id, slot);
       }}
     >
       <div className="flex items-center justify-between gap-1.5">
@@ -355,44 +433,50 @@ function MetricSideColumn({
           {side}
           <InfoTooltip title={SIDE_HELP[side].title} body={SIDE_HELP[side].body} />
         </span>
-        <Button variant="subtle" size="xs" onClick={onAdd}>
-          + metric
-        </Button>
+        <IconButton
+          variant="success"
+          size="md"
+          onClick={onAdd}
+          title="Add metric"
+          aria-label="Add metric"
+        >
+          <PlusIcon />
+        </IconButton>
       </div>
 
       {rows.length === 0 ? (
-        <p className="rounded border border-dashed border-white/10 px-2 py-3 text-center text-[11px] text-text-dim/50">
-          Drop here or + metric
-        </p>
+        <div
+          className={cn(
+            'rounded border border-dashed px-2 py-3 text-center text-[11px] transition-colors',
+            dropSlot
+              ? 'border-primary/50 bg-primary/10 text-primary/80'
+              : 'border-white/10 text-text-dim/50',
+          )}
+        >
+          {dropSlot ? 'Drop here' : 'Drop here or + metric'}
+        </div>
       ) : (
         <div className="flex flex-col gap-1.5">
-          {rows.map((row) => (
-            <div
-              key={row.id}
-              onDragOver={(e) => {
-                if (!isAxisDrag(e.dataTransfer)) return;
-                e.preventDefault();
-                e.stopPropagation();
-                onDragOverSide(side);
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onDragOverSide(null);
-                const id = axisDragId(e.dataTransfer);
-                if (!id || id === row.id) return;
-                onMove(id, side, row.id);
-              }}
-            >
-              <AxisRow
-                row={row}
-                registry={registry}
-                dragHandle
-                onPatch={(patch) => onPatch(row.id, patch)}
-                onRemove={() => onRemove(row.id)}
-              />
-            </div>
-          ))}
+          {rows.map((row, i) => {
+            const showBefore = dropSlot?.beforeId === row.id;
+            const showAfter = showEndIndicator && i === rows.length - 1;
+            return (
+              <div key={row.id} className="relative" data-axis-row={row.id}>
+                {showBefore && <DropIndicator at="before" />}
+                {showAfter && <DropIndicator at="after" />}
+                <AxisRow
+                  row={row}
+                  registry={registry}
+                  dragHandle
+                  dragging={draggingId === row.id}
+                  onDragStartRow={() => onDragStartRow(row.id)}
+                  onDragEnd={onDragEnd}
+                  onPatch={(patch) => onPatch(row.id, patch)}
+                  onRemove={() => onRemove(row.id)}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -404,6 +488,9 @@ function AxisRow({
   row,
   registry,
   dragHandle,
+  dragging,
+  onDragStartRow,
+  onDragEnd,
   onPatch,
   onRemove,
 }: {
@@ -411,6 +498,9 @@ function AxisRow({
   registry: StrategyRegistry | undefined;
   /** When set, a ⠿ handle starts the drag (inputs stay selectable). */
   dragHandle?: boolean;
+  dragging?: boolean;
+  onDragStartRow?: () => void;
+  onDragEnd?: () => void;
   onPatch: (patch: Partial<GenericAxisRow>) => void;
   onRemove: () => void;
 }) {
@@ -442,8 +532,9 @@ function AxisRow({
   return (
     <div
       className={cn(
-        'flex flex-wrap items-center gap-1.5 rounded-md border px-2 py-1.5',
+        'flex flex-wrap items-center gap-1.5 rounded-md border px-2 py-1.5 transition-opacity',
         err ? 'border-red/40 bg-red/5' : tintStyle ? '' : 'border-white/10 bg-surface',
+        dragging && 'opacity-40',
       )}
       style={tintStyle}
     >
@@ -454,7 +545,9 @@ function AxisRow({
             e.dataTransfer.setData(DND_MIME, row.id);
             e.dataTransfer.setData('text/plain', row.id);
             e.dataTransfer.effectAllowed = 'move';
+            onDragStartRow?.();
           }}
+          onDragEnd={() => onDragEnd?.()}
           className="shrink-0 cursor-grab select-none px-0.5 text-[12px] leading-none text-text-dim/40 active:cursor-grabbing"
           title="Drag to the other column (or reorder)"
           aria-label="Drag axis"

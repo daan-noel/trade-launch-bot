@@ -6,6 +6,9 @@ import { formatSigned, formatSignedPct, signedToneClass } from 'lib/signedTone';
 import { formatCompact } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import { BuyIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { DateCell } from 'components/table/DateCell';
 import { LiquidityCell, PriceCell, ValueCell } from './walletPriceCells';
 
@@ -290,29 +293,33 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       render: (r) => {
         const isSelling = actions.sellingMint === r.mint_address;
         return (
-          <div className="flex items-center justify-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
+          <IconButtonGroup className="gap-1.5" onClick={(e) => e.stopPropagation()}>
+            <IconButton
+              variant="primary"
+              size="md"
               onClick={() => actions.onBuy(r.mint_address, r.token_program_id)}
-              className="rounded border border-buy/50 bg-buy/12 px-2 py-0.5 text-[11px] font-semibold text-buy hover:bg-buy/22"
+              title="Buy"
+              aria-label="Buy"
             >
-              Buy
-            </button>
-            <button
-              type="button"
+              <BuyIcon />
+            </IconButton>
+            <IconButton
+              variant="danger"
+              size="md"
               disabled={isSelling}
               onClick={() => actions.onSell(r.mint_address)}
-              className="rounded border border-sell/50 bg-sell/12 px-2 py-0.5 text-[11px] font-semibold text-sell hover:bg-sell/22 disabled:opacity-45"
+              title={isSelling ? 'Selling…' : 'Sell All'}
+              aria-label={isSelling ? 'Selling…' : 'Sell All'}
             >
-              {isSelling ? 'Selling…' : 'Sell All'}
-            </button>
+              {isSelling ? <SpinnerIcon /> : <SellIcon />}
+            </IconButton>
             <Link
               to={`/trade?mint=${encodeURIComponent(r.mint_address)}`}
               className="rounded border border-white/15 bg-white/4 px-2 py-0.5 text-[11px] font-semibold text-accent hover:border-primary/40 hover:text-primary"
             >
               Trade
             </Link>
-          </div>
+          </IconButtonGroup>
         );
       },
       searchValue: () => '',

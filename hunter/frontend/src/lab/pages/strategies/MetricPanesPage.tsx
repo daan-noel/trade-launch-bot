@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { Input } from 'components/ui/Input';
-import { Button } from 'components/ui/Button';
+import { IconButton } from 'components/ui/IconButton';
+import { SearchIcon } from 'components/ui/icons';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { LabTokenInspect } from '@lab/components/strategy/LabTokenInspect';
 
@@ -46,9 +47,9 @@ export function MetricPanesPage() {
           placeholder="token mint address"
           className="max-w-md font-mono"
         />
-        <Button variant="primary" size="sm" type="submit">
-          Load
-        </Button>
+        <IconButton variant="primary" size="lg" type="submit" label="Load" title="Load">
+          <SearchIcon />
+        </IconButton>
       </form>
       {mint ? (
         <div className="rounded-lg border border-white/6 bg-bg-panel p-3">
