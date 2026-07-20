@@ -408,6 +408,13 @@ pub fn run_grouped_with_refine<S: Strategy>(
     strategy.order_for_entry_cache(&mut coarse);
     let Some(spec) = refine else {
         // No refine: the single pass is the final one — persist its groups.
+        //
+        // P0 gate (AVX-512 exit-scan plan): time the fold as its own stage so a
+        // grid/random run — the common case — logs the corpus-load-vs-fold split,
+        // not just an undifferentiated block between `corpus_loaded` and `done`.
+        // The exit-scan speedup is Amdahl-capped by this stage's share of wall-clock,
+        // so this is the number that decides whether vectorizing the scan is worth it.
+        let _stage = crate::sweep::obs::Stage::start("sweep_pass");
         let groups = run_grouped_sweep(
             strategy, &coarse, corpus, fields, width, min_tokens, coverage, observer, sink,
         )?;

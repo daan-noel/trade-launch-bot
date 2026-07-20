@@ -113,6 +113,8 @@ interface GenericSweepConfig {
   bucketWidthSol: number;
   /** Host RAM (MB) left free for OS + desktop while the run sizes its peaks. */
   ramReserveMb: number;
+  /** Opt into the AVX-512 vectorized exit scan (lab-only; host-gated server-side). */
+  useAvx512: boolean;
 }
 
 function defaultConfig(): GenericSweepConfig {
@@ -139,6 +141,9 @@ function defaultConfig(): GenericSweepConfig {
     buyAmountSol: 1.0,
     bucketWidthSol: 0.1,
     ramReserveMb: DEFAULT_RAM_RESERVE_MB,
+    // Default OFF: the scalar scan is the SSOT. Flip to `true` once the workstation
+    // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
+    useAvx512: false,
   };
 }
 
@@ -271,6 +276,7 @@ export function GenericSweepConfigForm({
     buyAmountSol,
     bucketWidthSol,
     ramReserveMb,
+    useAvx512,
   } = config;
 
   function setField<K extends keyof GenericSweepConfig>(key: K, value: GenericSweepConfig[K]) {
@@ -344,6 +350,8 @@ export function GenericSweepConfigForm({
       max_combos: effectiveCap !== DEFAULT_MAX_COMBOS ? effectiveCap : undefined,
       buy_amount_sol: buyAmountSol,
       ram_reserve_mb: ramReserveMb !== DEFAULT_RAM_RESERVE_MB ? ramReserveMb : undefined,
+      // Omit-when-default (same shape as ram_reserve_mb): only send when opted in.
+      use_avx512: useAvx512 ? true : undefined,
     });
   }
 
@@ -451,6 +459,27 @@ export function GenericSweepConfigForm({
                 )}
               >
                 {c.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="AVX-512" hint="exit scan" desc={SWEEP_FIELD_HELP.avx512.body} className="w-fit">
+          <div role="radiogroup" aria-label="AVX-512 exit scan" className="flex h-[34px] items-center gap-1">
+            {([['On', true], ['Off', false]] as const).map(([label, on]) => (
+              <button
+                key={label}
+                type="button"
+                role="radio"
+                aria-checked={useAvx512 === on}
+                onClick={() => setField('useAvx512', on)}
+                className={cn(
+                  'rounded border px-2 py-1 font-mono text-[11px] transition-colors',
+                  useAvx512 === on
+                    ? 'border-accent/60 bg-accent/15 text-accent'
+                    : 'border-white/10 text-text-dim hover:border-white/25 hover:text-text-mid',
+                )}
+              >
+                {label}
               </button>
             ))}
           </div>

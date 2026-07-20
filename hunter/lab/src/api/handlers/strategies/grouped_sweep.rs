@@ -121,6 +121,14 @@ pub struct StartGroupedSweepBody {
     /// property of the machine at run time, not of the sweep's analysis.
     #[serde(default)]
     pub ram_reserve_mb: Option<usize>,
+    /// Opt into the AVX-512 vectorized per-`(combo × token)` exit scan for this run
+    /// (lab-only speedup; the box never ships to EC2). Honored only when the host
+    /// actually has AVX-512 — otherwise the run is forced onto the scalar scan and a
+    /// toast says so. Like `ram_reserve_mb` it is a property of *how the box
+    /// computed*, not of the analysis, so it is NOT persisted on the run row and
+    /// leaves results comparable regardless of path. Omitted ⇒ scalar.
+    #[serde(default)]
+    pub use_avx512: Option<bool>,
 }
 
 fn default_min_tokens() -> usize {
@@ -359,6 +367,25 @@ pub async fn start_grouped_sweep(
     // no other run is sizing against a different value.
     let reserve_mb = crate::sweep::registry::set_ram_reserve_mb(b.ram_reserve_mb);
     tracing::info!(ram_reserve_mb = reserve_mb, "grouped sweep: desktop RAM reserve for this run");
+
+    // Apply this run's AVX-512 exit-scan choice under the same single-flight gate:
+    // honor `use_avx512` only when the host actually has AVX-512, else force scalar
+    // and toast the operator (rides the existing `sweep_notice` SSE → info toast).
+    // Process-global + set here (not persisted) exactly like the RAM reserve above.
+    let want_simd = b.use_avx512.unwrap_or(false);
+    let simd_on = want_simd && crate::sweep::registry::avx512_available();
+    crate::sweep::registry::set_use_simd(Some(simd_on));
+    tracing::info!(
+        use_avx512 = simd_on,
+        requested = want_simd,
+        "grouped sweep: AVX-512 exit scan for this run"
+    );
+    if want_simd && !simd_on {
+        let _ = state.sse_tx.send(crate::models::ingest::SseEvent::SweepNotice {
+            strategy_id: b.strategy_id.clone(),
+            message: "AVX-512 unavailable on this host — running the scalar exit scan.".to_string(),
+        });
+    }
     // Reset last run's resident baseline: it is only valid once *this* run's corpus
     // is resident (set at `corpus_loaded` below). A run that bails between here and
     // there must not inherit the prior run's corpus footprint as its own.

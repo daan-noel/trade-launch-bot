@@ -511,6 +511,20 @@ export const SWEEP_FIELD_HELP = {
       'A tight reserve costs wall-clock, not the run.',
     ].join('\n'),
   },
+  avx512: {
+    title: 'AVX-512 exit scan',
+    body: [
+      'Runs the per-combo exit scan (stop-loss / take-profit / dead search) on the CPU’s',
+      'AVX-512 vector unit, 8 prices per instruction, instead of one at a time.',
+      '',
+      'Results are byte-identical to the scalar path (a parity test proves it) — only the',
+      'speed changes, so a run is comparable whether it was on or off.',
+      '',
+      'Lab-only, and honored only on a host that has AVX-512: elsewhere the run falls back',
+      'to the scalar scan and says so. Combos with metric exit conditions use scalar either',
+      'way (only the pure TP/SL search is vectorized).',
+    ].join('\n'),
+  },
   buyAmount: {
     title: 'Buy amount (sweep)',
     body: [

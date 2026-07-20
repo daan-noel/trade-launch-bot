@@ -210,4 +210,10 @@ export interface GroupedSweepStartArgs {
    *  degrades (fewer threads / smaller batches) rather than being refused.
    *  Omitted ⇒ backend default (1024). */
   ram_reserve_mb?: number;
+  /** Opt into the AVX-512 vectorized per-`(combo × token)` exit scan (lab-only
+   *  speedup). Honored only when the host has AVX-512 — otherwise the backend forces
+   *  the scalar scan and toasts a notice. Like `ram_reserve_mb`, it's a property of
+   *  *how the box computed*, not the analysis, so it isn't persisted on the run row.
+   *  Omitted ⇒ scalar. */
+  use_avx512?: boolean;
 }

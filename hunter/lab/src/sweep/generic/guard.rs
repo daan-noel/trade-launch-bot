@@ -26,6 +26,7 @@ use trading_core::strategies::kernel::{round_trip_with_costs, CostModel, ExitCod
 
 use crate::sweep::corpus::CorpusToken;
 use crate::sweep::projection::CorpusTrade;
+use crate::sweep::strategy::TokenOutcome;
 use crate::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
 use super::strategy::{build_series, columns_for, scan, sparse_grid_for};
@@ -375,4 +376,85 @@ fn scan_matches_replay_window_flow_across_gap() {
     exit.0.insert(MetricGroupId::TimeWindow, gc);
     let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit) };
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
+}
+
+// ───────────────── scalar ≡ AVX-512 exit-scan parity (plan §P3) ─────────────────
+//
+// `resolve_exit_simd` (the vector path the frontend toggle selects) must produce a
+// **byte-identical** `TokenOutcome` to the scalar `resolve_exit` — same exit code,
+// entry/exit prices, times, slots and PnL — for every rule shape and token. This is
+// the SSOT safety net the toggle rests on (locked design decision 2): the strategy.rs
+// unit tests prove the kernel's first-exit-row search; this proves the whole outcome,
+// end to end, on the real sparse series (including the metrics-fallback branch, where
+// `resolve_exit_simd` delegates straight to scalar). On a non-AVX-512 host the SIMD
+// entry point falls back to scalar, so the assertion holds there too.
+
+/// Every exit-outcome field, as a comparable tuple.
+fn outcome_tuple(
+    o: &TokenOutcome,
+) -> (bool, ExitCode, Option<f64>, Option<f64>, Option<u64>, Option<u64>, i64, f32, f32) {
+    (
+        o.fired,
+        o.exit,
+        o.entry_price,
+        o.exit_price,
+        o.entry_slot,
+        o.exit_slot,
+        o.holding_secs,
+        o.pnl_sol,
+        o.pnl_percent,
+    )
+}
+
+#[test]
+fn simd_exit_scan_matches_scalar_across_paths() {
+    use super::strategy::{resolve_entry, resolve_exit, resolve_exit_simd, BoundCombo};
+
+    let cost = CostModel::pumpfun_default();
+    let as_of = at(100_000.0);
+
+    // Entry gated on time > 2 s so the fill defers past the first print — exercises a
+    // non-zero `fill_row` (the SIMD scan starts at `fill_row + 1`).
+    let entry_gate = {
+        let mut gc = GroupConditions::default();
+        gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
+        let mut entry = SideConditions::default();
+        entry.0.insert(MetricGroupId::Snapshot, gc);
+        RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None }
+    };
+
+    let rules = vec![
+        // TP + SL together.
+        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None },
+        // TP only / SL only (one threshold absent → the `have_sl`/`have_tp` branches).
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None },
+        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None },
+        // Neither → only Dead / Open can fire.
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None },
+        // Deferred entry (non-zero fill row).
+        entry_gate,
+        // Metrics exit → SIMD delegates to scalar; still must match.
+        exit_metric(MetricGroupId::PricePath, MetricId::Trail, Operator::Gt, 50.0),
+    ];
+
+    for (i, params) in rules.into_iter().enumerate() {
+        let compiled = CompiledRule::compile(&loaded(params));
+        let cols = columns_for(&compiled);
+        let grid = sparse_grid_for(&compiled);
+        // Bind once against the run's column set — the shape the sweep actually runs.
+        let bound = BoundCombo::new(&cols, compiled.clone());
+
+        for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
+            let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
+            let entry = resolve_entry(&series, &bound);
+            let scalar = resolve_exit(&series, &bound, &entry, BUY_SOL, &cost);
+            let simd = resolve_exit_simd(&series, &bound, &entry, BUY_SOL, &cost);
+            assert_eq!(
+                outcome_tuple(&simd),
+                outcome_tuple(&scalar),
+                "rule[{i}] token '{}': AVX-512 exit scan diverged from scalar",
+                corpus_tok.mint,
+            );
+        }
+    }
 }

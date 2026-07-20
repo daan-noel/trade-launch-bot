@@ -9,7 +9,7 @@
 //! The CPU-heavy sweep runs in a bounded rayon pool inside `spawn_blocking` so it
 //! can never starve the live trading hot path (ingest / sell-confirm).
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -176,6 +176,50 @@ pub(crate) fn set_ram_reserve_mb(mb: Option<usize>) -> usize {
 /// The reserve the current run is sized against (MB).
 pub(crate) fn ram_reserve_mb() -> usize {
     RAM_RESERVE_MB.load(Ordering::Relaxed)
+}
+
+/// Whether the current run's per-`(combo × token)` exit scan should run on the
+/// AVX-512 vector path (`resolve_exit_simd`) instead of the scalar `resolve_exit`
+/// (AVX-512 exit-scan plan). Default **false** — the scalar path is the SSOT and the
+/// toggle opts in.
+///
+/// Process-global for the same single-flight reason as [`RAM_RESERVE_MB`]: the
+/// handler refuses concurrent sweeps, so exactly one run's choice is live at a time
+/// and every rayon worker reads it lock-free from any fold depth. It is *how the box
+/// computed*, not part of the analysis, so — like the RAM reserve — it is never
+/// persisted on the run row.
+static USE_SIMD: AtomicBool = AtomicBool::new(false);
+
+/// Whether this host exposes the AVX-512 the vector exit scan needs, at runtime.
+/// The CPU-feature gate the handler consults before honoring the `use_avx512`
+/// toggle: a box without it is forced onto the scalar scan regardless of the
+/// request. Kernel needs only `avx512f` (dead lanes are built scalar), matching
+/// `generic::strategy::simd_available`.
+pub(crate) fn avx512_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::is_x86_feature_detected!("avx512f")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// Enable/disable the AVX-512 exit scan for the run about to start. `None` clears
+/// it (scalar). Call once at admission, before any fold runs — mirrors
+/// [`set_ram_reserve_mb`]. Returns the applied value. The caller is responsible for
+/// having already gated on [`avx512_available`]; this stores exactly what it's told.
+pub(crate) fn set_use_simd(on: Option<bool>) -> bool {
+    let on = on.unwrap_or(false);
+    USE_SIMD.store(on, Ordering::Relaxed);
+    on
+}
+
+/// Whether the current run's exit scan uses the AVX-512 path. Read lock-free by the
+/// per-combo scan dispatch (`GenericSweepStrategy::resolve_exit`).
+pub(crate) fn use_simd() -> bool {
+    USE_SIMD.load(Ordering::Relaxed)
 }
 
 fn sweep_ram_reserve_bytes() -> u64 {

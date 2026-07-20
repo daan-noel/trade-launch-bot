@@ -277,7 +277,16 @@ impl Strategy for GenericSweepStrategy {
         entry: &Self::Entry,
         _params: &Self::Params,
     ) -> TokenOutcome {
-        resolve_exit(series, bound, entry, self.buy_amount_sol, &self.cost)
+        // Dispatch stays here (not in the engine or the `Strategy` trait): branch on
+        // the run's process-global toggle. Both paths return byte-identical outcomes
+        // (guard test `super::guard::scan_matches_simd_*`); the toggle only changes
+        // *how* the first exit row is found. The gate that sets `use_simd()` already
+        // confirmed AVX-512 is present, and `resolve_exit_simd` re-checks defensively.
+        if crate::sweep::registry::use_simd() {
+            resolve_exit_simd(series, bound, entry, self.buy_amount_sol, &self.cost)
+        } else {
+            resolve_exit(series, bound, entry, self.buy_amount_sol, &self.cost)
+        }
     }
 
     fn params_json(&self, params: &Self::Params) -> serde_json::Value {
@@ -812,6 +821,200 @@ pub(crate) fn resolve_exit(
     }
 }
 
+// ───────────────────────────── SIMD exit scan ──────────────────────────────
+//
+// AVX-512 counterpart of the pure-TP/SL branch of `resolve_exit` (plan §P1). It
+// vectorizes ONLY the *search* for the first exit row; classification and the money
+// math (`closed` → `round_trip_with_costs`) stay the one shared scalar copy, so the
+// SSOT surface reduces to a single question — "did the vector scan find the same
+// first-crossing row as scalar?" — which the guard test (`super::guard`) proves.
+//
+// Note the price column is `f64`, so the vector width is 8 lanes (`__m512d`), not
+// the 16×f32 the plan's prose assumed — the search still runs 8-wide per instruction.
+
+/// AVX-512 counterpart of [`resolve_exit`]'s pure TP/SL scan (plan §P1, locked
+/// design decision 1). Finds the first exit *row* with the vector unit, then
+/// classifies + closes through the exact same shared kernel the scalar path uses —
+/// the money math is never duplicated.
+///
+/// Falls back to the scalar [`resolve_exit`] for the metrics-condition case
+/// (`has_exit_metrics`) and on any host without AVX-512, so it is always safe to
+/// call directly — the parity guard and the runtime CPU gate both rely on that.
+pub(crate) fn resolve_exit_simd(
+    series: &MetricSeries,
+    b: &BoundCombo,
+    entry: &EntryResolution,
+    buy_amount_sol: f64,
+    cost: &CostModel,
+) -> TokenOutcome {
+    debug_assert_cols_match(series, b);
+    let c = &b.rule;
+    let (fill_row, entry_price, entry_at) = match entry {
+        EntryResolution::NoEntry => return TokenOutcome::no_entry(),
+        EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
+    };
+    // Arbitrary metric exit conditions aren't vectorized — the scalar loop is their
+    // SSOT. The CPU gate already forces scalar when AVX-512 is absent, but re-check
+    // here so a direct caller (the parity guard, a non-AVX-512 host) stays sound.
+    if c.has_exit_metrics() || !simd_available() {
+        return resolve_exit(series, b, entry, buy_amount_sol, cost);
+    }
+    let entry_slot = fill_trade_slot(series, fill_row);
+    let n = series.n_rows();
+    // Loop-invariant thresholds — computed once, exactly the scalar loop's per-row
+    // `entry_price · (1 ∓ pct/100)`.
+    let sl_thresh = c.stop_loss.map(|sl| entry_price * (1.0 - sl / 100.0));
+    let tp_thresh = c.take_profit.map(|tp| entry_price * (1.0 + tp / 100.0));
+
+    if let Some(j) = first_exit_row(&series.price, &series.dead, fill_row + 1, n, sl_thresh, tp_thresh) {
+        let p = series.price[j];
+        // The same within-row priority the scalar loop applies: Dead > StopLoss >
+        // TakeProfit. `first_exit_row` only returns rows where one of these holds, so
+        // a row that is neither Dead nor a finite StopLoss must be a TakeProfit.
+        let exit = if series.dead[j] {
+            ExitCode::Dead
+        } else if p.is_finite() && sl_thresh.is_some_and(|t| p <= t) {
+            ExitCode::StopLoss
+        } else {
+            ExitCode::TakeProfit
+        };
+        return closed(exit, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
+    }
+
+    // Open: identical tail to the scalar path — mark to the last finite price.
+    let last_price = (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
+    let (pnl_sol, pnl_pct) = round_trip_with_costs(entry_price, last_price, buy_amount_sol, cost);
+    TokenOutcome {
+        fired: true,
+        holding_secs: 0,
+        pnl_percent: pnl_pct as f32,
+        pnl_sol: pnl_sol as f32,
+        exit: ExitCode::Open,
+        entry_time: Some(entry_at),
+        entry_price: Some(entry_price),
+        entry_slot,
+        exit_time: None,
+        exit_price: None,
+        exit_slot: None,
+    }
+}
+
+/// True only when the host has the AVX-512 features [`first_exit_row_avx512`] uses.
+/// The kernel needs just `avx512f` (the dead lanes are built scalar), matching
+/// [`crate::sweep::registry::avx512_available`].
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn simd_available() -> bool {
+    std::is_x86_feature_detected!("avx512f")
+}
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn simd_available() -> bool {
+    false
+}
+
+/// First series row in `start..n` at which the scalar exit predicate holds:
+/// `dead[j] || (price[j].is_finite() && (SL || TP))`. Returned in the same scan
+/// order the scalar loop uses, so the caller classifies exactly one row identically
+/// to scalar. Vectorized 8×`f64` on AVX-512; scalar remainder + scalar fallback.
+#[cfg(target_arch = "x86_64")]
+fn first_exit_row(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
+    if start >= n {
+        return None;
+    }
+    if simd_available() {
+        // SAFETY: `avx512f` confirmed present just above. The kernel reads `price`
+        // and `dead` only within `[start, n)`, and `n == series.n_rows()` bounds both
+        // parallel columns (see `MetricSeries`), so every access is in range.
+        unsafe { first_exit_row_avx512(price, dead, start, n, sl, tp) }
+    } else {
+        first_exit_row_scalar(price, dead, start, n, sl, tp)
+    }
+}
+#[cfg(not(target_arch = "x86_64"))]
+fn first_exit_row(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
+    first_exit_row_scalar(price, dead, start, n, sl, tp)
+}
+
+/// Scalar reference for [`first_exit_row`] — the exact predicate the scalar
+/// [`resolve_exit`] loop applies, extracted so the vector path's remainder tail, the
+/// non-AVX-512 fallback, and the parity guard all share one definition of it.
+#[inline]
+fn first_exit_row_scalar(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
+    for j in start..n {
+        if dead[j] {
+            return Some(j);
+        }
+        let p = price[j];
+        if p.is_finite() {
+            if let Some(t) = sl {
+                if p <= t {
+                    return Some(j);
+                }
+            }
+            if let Some(t) = tp {
+                if p >= t {
+                    return Some(j);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// AVX-512 kernel for [`first_exit_row`]: scans 8 `f64` prices per instruction for
+/// the first exit row, handling the `< 8` tail via [`first_exit_row_scalar`].
+///
+/// # Safety
+/// The caller must have verified `avx512f` is available (see [`first_exit_row`]).
+/// `start ≤ n` and `n` must not exceed `price.len()` or `dead.len()`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn first_exit_row_avx512(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
+    use std::arch::x86_64::*;
+    const LANES: usize = 8;
+
+    let max_v = _mm512_set1_pd(f64::MAX);
+    let sl_v = _mm512_set1_pd(sl.unwrap_or(0.0));
+    let tp_v = _mm512_set1_pd(tp.unwrap_or(0.0));
+    let have_sl = sl.is_some();
+    let have_tp = tp.is_some();
+
+    let mut j = start;
+    while j + LANES <= n {
+        // 8 prices (unaligned — the flat series buffer isn't 64-B aligned).
+        let pv = _mm512_loadu_pd(price.as_ptr().add(j));
+        // finite lanes: |p| ≤ f64::MAX — false for NaN and ±inf, exactly `is_finite`.
+        let finite = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(_mm512_abs_pd(pv), max_v);
+        // price-hit lanes: (p ≤ sl_thresh) | (p ≥ tp_thresh). Ordered compares so NaN
+        // never matches; then AND with `finite` so a −inf can't produce a phantom SL
+        // hit the scalar `is_finite()` guard would have rejected.
+        let mut price_hit: __mmask8 = 0;
+        if have_sl {
+            price_hit |= _mm512_cmp_pd_mask::<_CMP_LE_OQ>(pv, sl_v);
+        }
+        if have_tp {
+            price_hit |= _mm512_cmp_pd_mask::<_CMP_GE_OQ>(pv, tp_v);
+        }
+        price_hit &= finite;
+        // dead lanes: built scalar (dead is rarely set → cheap predictable branches),
+        // which keeps the kernel to plain AVX-512F (no BW/VL byte-mask intrinsics).
+        let mut dead_hit: __mmask8 = 0;
+        for lane in 0..LANES {
+            if dead[j + lane] {
+                dead_hit |= 1u8 << lane;
+            }
+        }
+        let hit = price_hit | dead_hit;
+        if hit != 0 {
+            return Some(j + hit.trailing_zeros() as usize);
+        }
+        j += LANES;
+    }
+    // Tail (< 8 rows left): the shared scalar predicate.
+    first_exit_row_scalar(price, dead, j, n, sl, tp)
+}
+
 /// The real trade a fill resolved on series `row` executes against: the first trade
 /// row at or after `row`. A fill that lands on a trade row returns that trade; a fill
 /// that lands on a tick (a time/stall/metrics decision between prints) returns the
@@ -862,5 +1065,120 @@ fn closed(
         exit_time: Some(exit_at),
         exit_price: Some(exit_price),
         exit_slot,
+    }
+}
+
+// ───────────────────────── SIMD kernel parity (plan §P3) ─────────────────────
+//
+// The vector kernel is only sound if `first_exit_row` returns the exact same row
+// the scalar predicate does — for every threshold config, at every block boundary,
+// and for non-finite prices the scalar `is_finite()` guard rejects. These tests
+// drive crafted `price`/`dead` arrays (no DB, no sparse grid) so the 8-lane block
+// loop, the `< 8` remainder tail, and the finite mask are each exercised at precise
+// positions. On an AVX-512 host `first_exit_row` runs the real kernel; on any other
+// host it delegates to `first_exit_row_scalar`, so the assertions hold either way.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Assert the (possibly vectorized) `first_exit_row` agrees with the scalar
+    /// reference for **every** start offset — so a block-vs-remainder split at any
+    /// alignment is covered.
+    fn assert_agrees(price: &[f64], dead: &[bool], sl: Option<f64>, tp: Option<f64>) {
+        let n = price.len();
+        assert_eq!(dead.len(), n, "test arrays must be parallel");
+        for start in 0..=n {
+            let got = first_exit_row(price, dead, start, n, sl, tp);
+            let want = first_exit_row_scalar(price, dead, start, n, sl, tp);
+            assert_eq!(
+                got, want,
+                "first_exit_row != scalar (start={start}, sl={sl:?}, tp={tp:?}, price={price:?}, dead={dead:?})"
+            );
+        }
+    }
+
+    /// Lengths straddling the 8-lane boundary: exact blocks, block+remainder, and
+    /// sub-block. A cross planted at each index exercises the tzcnt first-lane pick.
+    const LENS: [usize; 10] = [1, 7, 8, 9, 15, 16, 17, 24, 25, 40];
+
+    #[test]
+    fn simd_sl_cross_every_position() {
+        let sl = Some(0.5);
+        for &n in &LENS {
+            for cross in 0..n {
+                let mut price = vec![1.0f64; n];
+                price[cross] = 0.4; // ≤ 0.5 → SL
+                assert_agrees(&price, &vec![false; n], sl, None);
+            }
+        }
+    }
+
+    #[test]
+    fn simd_tp_cross_every_position() {
+        let tp = Some(2.0);
+        for &n in &LENS {
+            for cross in 0..n {
+                let mut price = vec![1.0f64; n];
+                price[cross] = 2.5; // ≥ 2.0 → TP
+                assert_agrees(&price, &vec![false; n], None, tp);
+            }
+        }
+    }
+
+    #[test]
+    fn simd_dead_every_position_beats_price() {
+        // Dead has priority over a same/later price cross, and fires with no TP/SL set.
+        for &n in &LENS {
+            for k in 0..n {
+                let mut dead = vec![false; n];
+                dead[k] = true;
+                // A price that would SL one row after the dead row: dead must still win.
+                let mut price = vec![1.0f64; n];
+                if k + 1 < n {
+                    price[k + 1] = 0.1;
+                }
+                assert_agrees(&price, &dead, Some(0.5), None);
+                assert_agrees(&price, &dead, None, None); // dead-only
+            }
+        }
+    }
+
+    #[test]
+    fn simd_both_thresholds_and_no_cross() {
+        let (sl, tp) = (Some(0.5), Some(2.0));
+        // No cross anywhere → None.
+        assert_agrees(&vec![1.0f64; 33], &vec![false; 33], sl, tp);
+        // SL and TP crosses on the same run — the earlier row wins (scalar order).
+        let mut price = vec![1.0f64; 33];
+        price[20] = 2.9; // TP
+        price[9] = 0.2; // SL earlier → this one
+        assert_agrees(&price, &vec![false; 33], sl, tp);
+    }
+
+    #[test]
+    fn simd_non_finite_prices_never_cross() {
+        // NaN / ±inf must be ignored exactly as scalar `is_finite()` does, even though
+        // an ordered `-inf ≤ sl` / `+inf ≥ tp` compare would "match" without the mask.
+        let (sl, tp) = (Some(0.5), Some(2.0));
+        let n = 20;
+        let mut price = vec![1.0f64; n];
+        price[3] = f64::NAN;
+        price[5] = f64::INFINITY; // ≥ tp but not finite → skip
+        price[9] = f64::NEG_INFINITY; // ≤ sl but not finite → skip
+        // No finite cross → None (the non-finite lanes must not be picked).
+        assert_agrees(&price, &vec![false; n], sl, tp);
+        assert_eq!(first_exit_row(&price, &vec![false; n], 0, n, sl, tp), None);
+        // Add a real finite SL after the non-finite noise: it, not the ±inf, is found.
+        price[12] = 0.3;
+        assert_agrees(&price, &vec![false; n], sl, tp);
+        assert_eq!(first_exit_row(&price, &vec![false; n], 0, n, sl, tp), Some(12));
+    }
+
+    #[test]
+    fn simd_empty_range_is_none() {
+        let price = vec![1.0f64; 8];
+        let dead = vec![false; 8];
+        assert_eq!(first_exit_row(&price, &dead, 8, 8, Some(0.5), Some(2.0)), None);
+        assert_eq!(first_exit_row(&[], &[], 0, 0, Some(0.5), None), None);
     }
 }
