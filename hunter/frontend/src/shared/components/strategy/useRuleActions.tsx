@@ -123,7 +123,13 @@ export function useRuleActions({ renderDryRun }: UseRuleActionsOptions = {}): Ru
     openNew: () => setEditing('new'),
     edit: (r) => setEditing(r),
     duplicate: (r) =>
-      setEditing({ ...r, id: '', rule_name: `${r.rule_name} copy`, is_active: false }),
+      setEditing({
+        ...r,
+        id: '',
+        rule_name: `${r.rule_name} copy`,
+        is_active: false,
+        is_enabled: true,
+      }),
     remove,
   };
 }

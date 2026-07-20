@@ -81,10 +81,10 @@ impl RuleDraft {
 }
 
 /// Overlay the mutable fields of a PUT body onto a loaded rule — SSOT for the
-/// patch shape (shared by live + lab). `fingerprint_id`, `trade_mode`, and
-/// `is_active` are intentionally not patchable here (fingerprint + trade mode
-/// frozen post-create so an in-flight entry retry cannot flip paper↔real;
-/// active state only via the lifecycle endpoints).
+/// patch shape (shared by live + lab). `fingerprint_id`, `trade_mode`,
+/// `is_active`, and `is_enabled` are intentionally not patchable here
+/// (fingerprint + trade mode frozen post-create so an in-flight entry retry
+/// cannot flip paper↔real; active/enabled only via the lifecycle endpoints).
 pub fn apply_rule_update(rule: &mut StrategyRule, body: &Value) {
     if let Some(v) = body.get("rule_name").and_then(|v| v.as_str()) {
         rule.rule_name = v.to_string();
@@ -131,9 +131,10 @@ fn validate_rule_fields(
 }
 
 /// Validate + assemble a new (unpersisted) [`StrategyRule`] from a draft. The
-/// new rule is inactive (`is_active = false`); a lifecycle endpoint activates
-/// it. Params are stored in their canonical serialization
-/// ([`RuleParams::to_value`]) so the JSONB shape can't drift by author.
+/// new rule is inactive (`is_active = false`) and enabled (`is_enabled = true`);
+/// lifecycle endpoints toggle those flags. Params are stored in their canonical
+/// serialization ([`RuleParams::to_value`]) so the JSONB shape can't drift by
+/// author.
 pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
     validate_rule_fields(
         &draft.rule_name,
@@ -150,6 +151,7 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
         fingerprint_id: draft.fingerprint_id,
         trade_mode: draft.trade_mode.clone(),
         is_active: false,
+        is_enabled: true,
         buy_amount_lamports: draft.buy_amount_lamports,
         max_concurrent_tokens: draft.max_concurrent_tokens,
         max_total_tokens: draft.max_total_tokens,
@@ -160,7 +162,8 @@ pub fn build_rule(draft: &RuleDraft) -> Result<StrategyRule, String> {
 }
 
 /// Reject when another rule already shares trading identity (fingerprint +
-/// sizing/caps + canonical params). `rule_name` / `is_active` are not identity.
+/// sizing/caps + canonical params). `rule_name` / `is_active` / `is_enabled`
+/// are not identity.
 async fn reject_duplicate(
     repo: &RuleRepo,
     fingerprint_id: Uuid,

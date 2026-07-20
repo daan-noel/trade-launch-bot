@@ -133,6 +133,14 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 web::post().to(handlers::strategies::engine_crud::pause_rule),
             )
             .route(
+                "/strategy-rules/{id}/enable",
+                web::post().to(handlers::strategies::engine_crud::enable_rule),
+            )
+            .route(
+                "/strategy-rules/{id}/disable",
+                web::post().to(handlers::strategies::engine_crud::disable_rule),
+            )
+            .route(
                 "/strategy-rules/{id}/stop",
                 web::post().to(handlers::strategies::engine_crud::stop_rule),
             )

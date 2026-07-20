@@ -138,6 +138,27 @@ export function CheckIcon({ className }: IconProps) {
   );
 }
 
+/** Power-on — enable a soft-archived rule. */
+export function EnableIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M10 3.5v6" {...stroke} />
+      <path d="M6.2 5.8a5.5 5.5 0 1 0 7.6 0" {...stroke} />
+    </Svg>
+  );
+}
+
+/** Power-off — soft-archive (disable) a rule without deleting it. */
+export function DisableIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M10 3.5v6" {...stroke} />
+      <path d="M6.2 5.8a5.5 5.5 0 1 0 7.6 0" {...stroke} />
+      <path d="M4.5 4.5 15.5 15.5" {...stroke} />
+    </Svg>
+  );
+}
+
 export function ReuseIcon({ className }: IconProps) {
   return (
     <Svg className={className}>

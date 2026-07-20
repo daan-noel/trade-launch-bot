@@ -118,8 +118,11 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
                 <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
                   {r.trade_mode}
                 </Badge>
-                <Badge variant={r.is_active ? 'success' : 'neutral'} size="sm">
-                  {r.is_active ? 'Active' : 'Idle'}
+                <Badge
+                  variant={!r.is_enabled ? 'danger' : r.is_active ? 'success' : 'neutral'}
+                  size="sm"
+                >
+                  {!r.is_enabled ? 'Disabled' : r.is_active ? 'Active' : 'Idle'}
                 </Badge>
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-text-dim">

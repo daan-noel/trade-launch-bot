@@ -13,6 +13,7 @@ function rule(partial: Partial<StrategyRule> & Pick<StrategyRule, 'id'>): Strate
     fingerprint_id: 'fp-1',
     trade_mode: 'paper',
     is_active: false,
+    is_enabled: true,
     buy_amount_lamports: 1_000_000_000,
     max_concurrent_tokens: 1,
     max_total_tokens: 0,

@@ -252,6 +252,45 @@ export const sharedApi = baseApi.injectEndpoints({
       query: (id) => ({ url: `/api/strategy-rules/${id}/activate`, method: 'POST' }),
       invalidatesTags: ['StrategyRule'],
     }),
+    // Soft-unarchive — orthogonal to Active/Idle.
+    enableStrategyRule: builder.mutation<StrategyRule, string>({
+      query: (id) => ({ url: `/api/strategy-rules/${id}/enable`, method: 'POST' }),
+      async onQueryStarted(id, { dispatch, queryFulfilled }) {
+        const undo = dispatch(
+          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
+            const row = draft.find((r) => r.id === id);
+            if (row) row.is_enabled = true;
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          undo.undo();
+        }
+      },
+      invalidatesTags: ['StrategyRule'],
+    }),
+    // Soft-archive (+ pause if Active). Optimistic Disabled + Idle patch.
+    disableStrategyRule: builder.mutation<StrategyRule, string>({
+      query: (id) => ({ url: `/api/strategy-rules/${id}/disable`, method: 'POST' }),
+      async onQueryStarted(id, { dispatch, queryFulfilled }) {
+        const undo = dispatch(
+          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
+            const row = draft.find((r) => r.id === id);
+            if (row) {
+              row.is_enabled = false;
+              row.is_active = false;
+            }
+          }),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          undo.undo();
+        }
+      },
+      invalidatesTags: ['StrategyRule'],
+    }),
     // Instant flag flip — optimistic Idle patch; RulesView clears Pausing on settle.
     pauseStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
@@ -383,6 +422,8 @@ export const {
   useUpdateStrategyRuleMutation,
   useDeleteStrategyRuleMutation,
   useActivateStrategyRuleMutation,
+  useEnableStrategyRuleMutation,
+  useDisableStrategyRuleMutation,
   usePauseStrategyRuleMutation,
   useStopStrategyRuleMutation,
   usePauseAllStrategyRulesMutation,

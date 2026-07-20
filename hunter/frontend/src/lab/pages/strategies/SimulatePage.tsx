@@ -113,22 +113,36 @@ export function SimulatePage() {
     rule: StrategyRule;
   } | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  /** Soft-archived rules are hidden by default — toggle to review them. */
+  const [showDisabled, setShowDisabled] = useState(false);
   const handleRef = useRef<{ close: () => void } | null>(null);
   const hydratedIds = useRef<Set<string>>(new Set());
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
+  const disabledCount = useMemo(() => rules.filter((r) => !r.is_enabled).length, [rules]);
+  const visibleRules = useMemo(
+    () => (showDisabled ? rules : rules.filter((r) => r.is_enabled)),
+    [rules, showDisabled],
+  );
+
   // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
   const fpTints = useMemo(
     () =>
-      computeSameValueCellClasses(rules, (r) => r.id, [
+      computeSameValueCellClasses(visibleRules, (r) => r.id, [
         { key: 'fingerprint', valueOf: (r) => r.fingerprint_id || null },
       ]),
-    [rules],
+    [visibleRules],
   );
 
-  const paperCount = useMemo(() => rules.filter((r) => r.trade_mode === 'paper').length, [rules]);
-  const realCount = useMemo(() => rules.filter((r) => r.trade_mode === 'real').length, [rules]);
+  const paperCount = useMemo(
+    () => visibleRules.filter((r) => r.trade_mode === 'paper').length,
+    [visibleRules],
+  );
+  const realCount = useMemo(
+    () => visibleRules.filter((r) => r.trade_mode === 'real').length,
+    [visibleRules],
+  );
 
   // Hydrate every rule's resident sim summary on load (and when new rules appear),
   // so the table columns + position panels show without needing a row click.
@@ -194,7 +208,7 @@ export function SimulatePage() {
 
   /** Queue a lake backtest for every saved rule in `mode` that isn't already running. */
   const runAll = async (mode: TradeMode) => {
-    const targets = rules.filter((r) => r.trade_mode === mode && !runs[r.id]?.running);
+    const targets = visibleRules.filter((r) => r.trade_mode === mode && !runs[r.id]?.running);
     if (targets.length === 0) return;
     setBulkMode(mode);
     setRuns((prev) => {
@@ -264,6 +278,17 @@ export function SimulatePage() {
           </span>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {disabledCount > 0 && (
+            <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-text-dim">
+              <input
+                type="checkbox"
+                checked={showDisabled}
+                onChange={(e) => setShowDisabled(e.target.checked)}
+                className="accent-accent"
+              />
+              Show disabled ({disabledCount})
+            </label>
+          )}
           <IconButton
             variant="subtle"
             size="lg"
@@ -301,7 +326,7 @@ export function SimulatePage() {
       {actions.err && <p className="text-[12px] text-red">{actions.err}</p>}
       <DataTable
         columns={columns}
-        rows={rules}
+        rows={visibleRules}
         rowKey={(r) => r.id}
         loading={isLoading}
         searchable
@@ -777,12 +802,17 @@ function buildColumns(
               </Link>
             </div>
             <span className="text-[10px] text-text-dim">
-              {r.is_active ? 'armed on live' : 'idle on live'}
+              {!r.is_enabled
+                ? 'disabled'
+                : r.is_active
+                  ? 'armed on live'
+                  : 'idle on live'}
             </span>
           </div>
         </RuleHoverTip>
       ),
-      searchValue: (r) => `${r.rule_name} ${r.is_active ? 'active' : 'idle'}`,
+      searchValue: (r) =>
+        `${r.rule_name} ${!r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'}`,
     },
     {
       key: 'mode',

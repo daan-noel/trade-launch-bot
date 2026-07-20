@@ -58,7 +58,10 @@ export interface StrategyRule {
   rule_name: string;
   fingerprint_id: string;
   trade_mode: TradeMode;
+  /** Live arming — Active/Idle. Orthogonal to `is_enabled`. */
   is_active: boolean;
+  /** Soft-archive — Disabled keeps the row but hides it from default lists. */
+  is_enabled: boolean;
   buy_amount_lamports: number;
   max_concurrent_tokens: number;
   max_total_tokens: number;
@@ -68,7 +71,7 @@ export interface StrategyRule {
 }
 
 /** POST /api/strategy-rules body. `fingerprint_id` required; `is_active` is
- *  forced false on create (lifecycle endpoints toggle it). */
+ *  forced false and `is_enabled` true on create (lifecycle endpoints toggle them). */
 export interface CreateRuleBody {
   rule_name: string;
   fingerprint_id: string;
@@ -79,7 +82,7 @@ export interface CreateRuleBody {
   params: Record<string, unknown>;
 }
 
-/** PUT /api/strategy-rules/{id} patch — `fingerprint_id`/`is_active` NOT patchable. */
+/** PUT /api/strategy-rules/{id} patch — `fingerprint_id`/`is_active`/`is_enabled` NOT patchable. */
 export type UpdateRuleBody = Partial<
   Pick<
     CreateRuleBody,

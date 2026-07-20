@@ -17,8 +17,11 @@ pub struct StrategyRule {
     pub fingerprint_id: Uuid,
     /// Execution mode: `paper` or `real`.
     pub trade_mode: String,
-    /// Whether the rule is eligible to fire.
+    /// Whether the rule is eligible to fire (Active/Idle live arming).
     pub is_active: bool,
+    /// Soft-archive flag. Disabled rules stay in the DB but are hidden from
+    /// default lists and cannot be activated until re-enabled.
+    pub is_enabled: bool,
     /// Buy size per fired token — exact lamports at rest.
     pub buy_amount_lamports: i64,
     /// Cap on concurrently-open tokens.

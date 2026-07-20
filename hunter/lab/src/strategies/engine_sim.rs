@@ -184,6 +184,7 @@ async fn resolve_target(
         fingerprint_id: draft.fingerprint_id,
         trade_mode: draft.trade_mode.clone(),
         is_active: false,
+        is_enabled: true,
         buy_amount_lamports: trading_core::config::constants::sol_to_lamports(draft.buy_amount_sol),
         max_concurrent_tokens: draft.max_concurrent_tokens,
         max_total_tokens: draft.max_total_tokens,

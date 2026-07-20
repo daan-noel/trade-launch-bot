@@ -234,11 +234,33 @@ async fn set_rule_active(state: &LocalState, id: Uuid, active: bool) -> HttpResp
     let Ok(Some(mut rule)) = repo.find(id).await else {
         return HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" }));
     };
+    if active && !rule.is_enabled {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "rule is disabled; enable it before activating"
+        }));
+    }
     rule.is_active = active;
     rule.updated_at = chrono::Utc::now();
     match repo.update(&rule).await {
         Ok(()) => HttpResponse::Ok().json(rule),
         Err(e) => srv_err("toggle rule active", e),
+    }
+}
+
+async fn set_rule_enabled(state: &LocalState, id: Uuid, enabled: bool) -> HttpResponse {
+    let repo = rule_repo(state);
+    let Ok(Some(mut rule)) = repo.find(id).await else {
+        return HttpResponse::NotFound().json(serde_json::json!({ "error": "rule not found" }));
+    };
+    rule.is_enabled = enabled;
+    // Disable ⇒ pause so Active/Idle cannot disagree with the archive flag.
+    if !enabled {
+        rule.is_active = false;
+    }
+    rule.updated_at = chrono::Utc::now();
+    match repo.update(&rule).await {
+        Ok(()) => HttpResponse::Ok().json(rule),
+        Err(e) => srv_err("toggle rule enabled", e),
     }
 }
 
@@ -256,6 +278,22 @@ pub async fn pause_rule(
     path: web::Path<Uuid>,
 ) -> impl Responder {
     set_rule_active(&app_state, path.into_inner(), false).await
+}
+
+/// POST `/api/strategy-rules/{id}/enable` — soft-unarchive.
+pub async fn enable_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    set_rule_enabled(&app_state, path.into_inner(), true).await
+}
+
+/// POST `/api/strategy-rules/{id}/disable` — soft-archive (+ pause if Active).
+pub async fn disable_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    set_rule_enabled(&app_state, path.into_inner(), false).await
 }
 
 /// `?mode=real|paper` selector for bulk pause (lab twin of the live handler).

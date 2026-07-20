@@ -23,6 +23,7 @@ struct StrategyRuleDbRow {
     fingerprint_id: Uuid,
     trade_mode: String,
     is_active: bool,
+    is_enabled: bool,
     buy_amount_lamports: i64,
     max_concurrent_tokens: i64,
     max_total_tokens: i64,
@@ -39,6 +40,7 @@ impl From<StrategyRuleDbRow> for StrategyRule {
             fingerprint_id: r.fingerprint_id,
             trade_mode: r.trade_mode,
             is_active: r.is_active,
+            is_enabled: r.is_enabled,
             buy_amount_lamports: r.buy_amount_lamports,
             max_concurrent_tokens: r.max_concurrent_tokens,
             max_total_tokens: r.max_total_tokens,
@@ -50,7 +52,7 @@ impl From<StrategyRuleDbRow> for StrategyRule {
 }
 
 // Explicit column list (struct order) — not `SELECT *`.
-const RULE_COLS: &str = "id, rule_name, fingerprint_id, trade_mode, is_active, \
+const RULE_COLS: &str = "id, rule_name, fingerprint_id, trade_mode, is_active, is_enabled, \
     buy_amount_lamports, max_concurrent_tokens, max_total_tokens, params, \
     created_at, updated_at";
 
@@ -63,9 +65,9 @@ impl RuleRepo {
         sqlx::query(
             r#"
             INSERT INTO strategy_rules
-                (id, rule_name, fingerprint_id, trade_mode, is_active, buy_amount_lamports,
+                (id, rule_name, fingerprint_id, trade_mode, is_active, is_enabled, buy_amount_lamports,
                  max_concurrent_tokens, max_total_tokens, params, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             "#,
         )
         .bind(rule.id)
@@ -73,6 +75,7 @@ impl RuleRepo {
         .bind(rule.fingerprint_id)
         .bind(&rule.trade_mode)
         .bind(rule.is_active)
+        .bind(rule.is_enabled)
         .bind(rule.buy_amount_lamports)
         .bind(rule.max_concurrent_tokens)
         .bind(rule.max_total_tokens)
@@ -92,10 +95,11 @@ impl RuleRepo {
                 fingerprint_id = $3,
                 trade_mode = $4,
                 is_active = $5,
-                buy_amount_lamports = $6,
-                max_concurrent_tokens = $7,
-                max_total_tokens = $8,
-                params = $9,
+                is_enabled = $6,
+                buy_amount_lamports = $7,
+                max_concurrent_tokens = $8,
+                max_total_tokens = $9,
+                params = $10,
                 updated_at = now()
             WHERE id = $1
             "#,
@@ -105,6 +109,7 @@ impl RuleRepo {
         .bind(rule.fingerprint_id)
         .bind(&rule.trade_mode)
         .bind(rule.is_active)
+        .bind(rule.is_enabled)
         .bind(rule.buy_amount_lamports)
         .bind(rule.max_concurrent_tokens)
         .bind(rule.max_total_tokens)
@@ -133,7 +138,7 @@ impl RuleRepo {
         Ok(rows.into_iter().map(StrategyRule::from).collect())
     }
 
-    /// Every rule armed on a fingerprint (any mode/active state) — the
+    /// Every rule armed on a fingerprint (any mode/active/enabled state) — the
     /// fingerprint editor's "used by" view and the delete guard.
     pub async fn list_by_fingerprint(
         &self,
@@ -150,10 +155,11 @@ impl RuleRepo {
     }
 
     /// The active rule set — what the live runtime cache loads (both modes;
-    /// the caller partitions paper/real).
+    /// the caller partitions paper/real). Disabled rules never arm.
     pub async fn list_active(&self) -> anyhow::Result<Vec<StrategyRule>> {
         let rows = sqlx::query_as::<_, StrategyRuleDbRow>(&format!(
-            "SELECT {RULE_COLS} FROM strategy_rules WHERE is_active ORDER BY created_at DESC"
+            "SELECT {RULE_COLS} FROM strategy_rules \
+             WHERE is_active AND is_enabled ORDER BY created_at DESC"
         ))
         .fetch_all(&self.pool)
         .await?;
@@ -161,9 +167,9 @@ impl RuleRepo {
     }
 
     /// Identity-identical rule (same fingerprint + trade knobs + canonical
-    /// `params`). `rule_name` / `is_active` are labels/lifecycle, not identity —
-    /// mirrors fingerprint `find_or_create` (name excluded). Optional
-    /// `exclude_id` skips that row (edit-self).
+    /// `params`). `rule_name` / `is_active` / `is_enabled` are labels/lifecycle,
+    /// not identity — mirrors fingerprint `find_or_create` (name excluded).
+    /// Optional `exclude_id` skips that row (edit-self).
     pub async fn find_identical(
         &self,
         fingerprint_id: Uuid,

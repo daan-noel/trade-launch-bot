@@ -171,7 +171,9 @@ next load (no per-metric frontend work).
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
   `RulesPage`/`FingerprintsPage`; cross-page selection via `?rule=` / `?fp=`
   (`useSelectionSearchParam` + `lib/strategy/nav.ts` — same-tab Router `Link`,
-  Ctrl/middle-click still opens a new tab). Fingerprints "Used by" → Rules;
+  Ctrl/middle-click still opens a new tab). Rules support soft-archive via
+  `is_enabled` (Enable/Disable endpoints; Disabled hidden by default on Rules +
+  Simulate, orthogonal to Active/Idle). Fingerprints "Used by" → Rules;
   Rules/Simulate fingerprint cells → Fingerprints; lab Rules → Simulate
   (`linkToSimulate`); Simulate rule name → Rules. Sweep Used-by / matched fp,
   Flow Discovery seed/target badges, and live Armed rule names also deep-link),

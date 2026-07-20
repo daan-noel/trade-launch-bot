@@ -4,8 +4,10 @@
 //! * `GET /api/strategies/armed` — a live snapshot of armed (token, rule) pairs.
 //! * `/api/fingerprints` — CRUD over the shared `fingerprints` rows.
 //! * `/api/strategy-rules` — CRUD + lifecycle over the generic `strategy_rules`:
-//!   per-rule activate / pause / stop (stop force-closes the rule's open positions
-//!   via the engine loop), plus `pause-all` / `stop-all` scoped by `?mode=real|paper`.
+//!   per-rule activate / pause / enable / disable / stop (stop force-closes the
+//!   rule's open positions via the engine loop), plus `pause-all` / `stop-all`
+//!   scoped by `?mode=real|paper`. `is_enabled` soft-archives inefficient rules
+//!   without deleting them (orthogonal to Active/Idle).
 //!
 //! Every rule/fingerprint mutation ends with `engine.reload_rules()` so the running
 //! loop picks up the change (a `RulesReloaded` event) without a restart.
@@ -258,10 +260,31 @@ pub async fn pause_rule(
     set_active(&app_state, path.into_inner(), false).await
 }
 
+/// POST /api/strategy-rules/{id}/enable — soft-unarchive (orthogonal to Active/Idle).
+pub async fn enable_rule(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    set_enabled(&app_state, path.into_inner(), true).await
+}
+
+/// POST /api/strategy-rules/{id}/disable — soft-archive. Also pauses if Active so
+/// the rule immediately leaves the live arm set.
+pub async fn disable_rule(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    set_enabled(&app_state, path.into_inner(), false).await
+}
+
 async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResponse {
     let Ok(Some(mut rule)) = app_state.rule_repo.find(id).await else {
         return HttpResponse::NotFound().json(json!({"error": "rule not found"}));
     };
+    if active && !rule.is_enabled {
+        return HttpResponse::BadRequest()
+            .json(json!({"error": "rule is disabled; enable it before activating"}));
+    }
     rule.is_active = active;
     rule.updated_at = Utc::now();
     match app_state.rule_repo.update(&rule).await {
@@ -271,6 +294,26 @@ async fn set_active(app_state: &DeployState, id: Uuid, active: bool) -> HttpResp
             HttpResponse::Ok().json(rule)
         }
         Err(e) => server_error("toggle rule active", e),
+    }
+}
+
+async fn set_enabled(app_state: &DeployState, id: Uuid, enabled: bool) -> HttpResponse {
+    let Ok(Some(mut rule)) = app_state.rule_repo.find(id).await else {
+        return HttpResponse::NotFound().json(json!({"error": "rule not found"}));
+    };
+    rule.is_enabled = enabled;
+    // Disable ⇒ pause so the live engine drops the rule immediately.
+    if !enabled {
+        rule.is_active = false;
+    }
+    rule.updated_at = Utc::now();
+    match app_state.rule_repo.update(&rule).await {
+        Ok(()) => {
+            app_state.engine.reload_rules().await;
+            emit_rules_changed(app_state);
+            HttpResponse::Ok().json(rule)
+        }
+        Err(e) => server_error("toggle rule enabled", e),
     }
 }
 

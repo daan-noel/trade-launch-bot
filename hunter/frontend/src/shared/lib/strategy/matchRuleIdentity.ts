@@ -1,6 +1,7 @@
 // Match a rule draft to an existing `strategy_rules` row using the same identity
 // as the backend Duplicate gate (`RuleRepo::find_identical`): fingerprint + trade
-// knobs + params. `rule_name` / `is_active` are labels/lifecycle, not identity
+// knobs + params. `rule_name` / `is_active` / `is_enabled` are labels/lifecycle,
+// not identity
 // (mirrors fingerprint `find_or_create`, which ignores `name`).
 
 import type { CreateRuleBody, StrategyRule, TradeMode } from './types';

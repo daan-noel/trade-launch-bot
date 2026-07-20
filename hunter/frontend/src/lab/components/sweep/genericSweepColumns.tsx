@@ -313,9 +313,9 @@ export interface GroupColumnLookups {
   rulesByFingerprintId?: RulesByFingerprintId;
 }
 
-/** Compact rule chips: name + paper/real + Active/Idle (Fingerprints used-by language).
- *  Rules whose `params` exactly match the group's best combo are pinned first and
- *  highlighted so the promoted twin is obvious among siblings. */
+/** Compact rule chips: name + paper/real + Active/Idle/Disabled (Fingerprints
+ *  used-by language). Rules whose `params` exactly match the group's best combo
+ *  are pinned first and highlighted so the promoted twin is obvious among siblings. */
 function usedByRulesCell(
   rules: StrategyRule[],
   fingerprint?: Fingerprint | null,
@@ -363,8 +363,11 @@ function usedByRulesCell(
             <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
               {r.trade_mode}
             </Badge>
-            <Badge variant={r.is_active ? 'success' : 'neutral'} size="sm">
-              {r.is_active ? 'Active' : 'Idle'}
+            <Badge
+              variant={!r.is_enabled ? 'danger' : r.is_active ? 'success' : 'neutral'}
+              size="sm"
+            >
+              {!r.is_enabled ? 'Disabled' : r.is_active ? 'Active' : 'Idle'}
             </Badge>
           </li>
         );
@@ -495,7 +498,12 @@ export function buildGenericGroupColumns(
         const rules = rulesForGroup(g);
         if (rules == null) return '';
         if (rules.length === 0) return 'none';
-        return rules.map((r) => `${r.rule_name} ${r.trade_mode} ${r.is_active ? 'active' : 'idle'}`).join(' ');
+        return rules
+          .map(
+            (r) =>
+              `${r.rule_name} ${r.trade_mode} ${!r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'}`,
+          )
+          .join(' ');
       },
     },
     gm('token_count', 'Tokens', 'counts', (g) => g.token_count, (g) => tone(String(g.token_count), 'text-info'), {

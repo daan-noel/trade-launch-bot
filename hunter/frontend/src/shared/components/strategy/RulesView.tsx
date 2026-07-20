@@ -6,8 +6,10 @@ import type { ColumnDef } from 'components/table/types';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import {
+  DisableIcon,
   DuplicateIcon,
   EditIcon,
+  EnableIcon,
   LinkIcon,
   PauseIcon,
   PlayIcon,
@@ -28,6 +30,8 @@ import {
   useGetStrategyRulesQuery,
   useGetFingerprintsQuery,
   useActivateStrategyRuleMutation,
+  useEnableStrategyRuleMutation,
+  useDisableStrategyRuleMutation,
   usePauseStrategyRuleMutation,
   useStopStrategyRuleMutation,
   usePauseAllStrategyRulesMutation,
@@ -52,10 +56,11 @@ export interface RulesViewProps {
 /**
  * Rules list + editor, shared by the live and lab apps. One list for all generic
  * rules (mode/status badges) with two row-action columns — **Actions** (edit /
- * duplicate / delete) and **Execute** (Activate → running rule, then Pause /
- * Stop) — plus header **Pause All / Stop All** bulk actions scoped per trade mode.
- * The editor opens in an xl modal. The lab app injects a dry-run panel via
- * `renderDryRun`.
+ * duplicate / disable / delete) and **Execute** (Activate → running rule, then
+ * Pause / Stop; Enable when Disabled) — plus header **Pause All / Stop All** bulk
+ * actions scoped per trade mode. Disabled (`is_enabled=false`) rules are soft-
+ * archived: hidden by default, kept in the DB. The editor opens in an xl modal.
+ * The lab app injects a dry-run panel via `renderDryRun`.
  */
 export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
   const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery();
@@ -65,11 +70,15 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
   const actions = useRuleActions({ renderDryRun });
 
   const [activate] = useActivateStrategyRuleMutation();
+  const [enable] = useEnableStrategyRuleMutation();
+  const [disable] = useDisableStrategyRuleMutation();
   const [pause] = usePauseStrategyRuleMutation();
   const [stop] = useStopStrategyRuleMutation();
   const [pauseAll, pauseAllState] = usePauseAllStrategyRulesMutation();
   const [stopAll, stopAllState] = useStopAllStrategyRulesMutation();
 
+  /** Soft-archived rules are hidden by default — toggle to review them. */
+  const [showDisabled, setShowDisabled] = useState(false);
   const [opErr, setOpErr] = useState<string | null>(null);
   /** Rule ids mid optimistic pause (label "Pausing…" until SSE/refetch confirms). */
   const [pausingIds, setPausingIds] = useState<Set<string>>(() => new Set());
@@ -82,19 +91,25 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
+  const disabledCount = useMemo(() => rules.filter((r) => !r.is_enabled).length, [rules]);
+  const visibleRules = useMemo(
+    () => (showDisabled ? rules : rules.filter((r) => r.is_enabled)),
+    [rules, showDisabled],
+  );
+
   // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
   const fpTints = useMemo(
     () =>
-      computeSameValueCellClasses(rules, (r) => r.id, [
+      computeSameValueCellClasses(visibleRules, (r) => r.id, [
         { key: 'fingerprint', valueOf: (r) => r.fingerprint_id || null },
       ]),
-    [rules],
+    [visibleRules],
   );
 
   // Active-rule counts per mode drive whether each mode's bulk actions show.
   const activeByMode = useMemo(() => {
     const acc: Record<TradeMode, number> = { paper: 0, real: 0 };
-    for (const r of rules) if (r.is_active) acc[r.trade_mode] += 1;
+    for (const r of rules) if (r.is_active && r.is_enabled) acc[r.trade_mode] += 1;
     return acc;
   }, [rules]);
 
@@ -271,6 +286,9 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
       label: 'Status',
       group: 'status',
       render: (r) => {
+        if (!r.is_enabled) {
+          return <Badge variant="danger">Disabled</Badge>;
+        }
         if (pausingIds.has(r.id) && r.is_active) {
           return <Badge variant="warning">Pausing…</Badge>;
         }
@@ -286,9 +304,9 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
           <Badge variant={r.is_active ? 'success' : 'neutral'}>{r.is_active ? 'Active' : 'Idle'}</Badge>
         );
       },
-      searchValue: (r) => (r.is_active ? 'active' : 'idle'),
-      // Active before Idle on desc (the natural first click).
-      sortValue: (r) => (r.is_active ? 1 : 0),
+      searchValue: (r) => (!r.is_enabled ? 'disabled' : r.is_active ? 'active' : 'idle'),
+      // Active > Idle > Disabled on desc (the natural first click).
+      sortValue: (r) => (!r.is_enabled ? 0 : r.is_active ? 2 : 1),
     },
     {
       key: 'mode',
@@ -326,6 +344,19 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
       key: 'execute',
       label: 'Execute',
       render: (r) => {
+        if (!r.is_enabled) {
+          return (
+            <IconButton
+              variant="ghost"
+              size="md"
+              onClick={() => void run(() => enable(r.id).unwrap(), 'Enable failed')}
+              title="Enable — restore this rule to the active list"
+              aria-label="Enable — restore this rule to the active list"
+            >
+              <EnableIcon />
+            </IconButton>
+          );
+        }
         const stopProg = stopByRule[r.id];
         const stopping = !!stopProg && stopProg.status === 'running';
         const pausing = pausingIds.has(r.id);
@@ -377,7 +408,7 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
           </IconButton>
         );
       },
-      searchValue: (r) => (r.is_active ? 'pause stop' : 'activate'),
+      searchValue: (r) => (!r.is_enabled ? 'enable' : r.is_active ? 'pause stop' : 'activate'),
     },
   ];
 
@@ -429,6 +460,17 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
               </div>
             );
           })}
+          {disabledCount > 0 && (
+            <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-text-dim">
+              <input
+                type="checkbox"
+                checked={showDisabled}
+                onChange={(e) => setShowDisabled(e.target.checked)}
+                className="accent-accent"
+              />
+              Show disabled ({disabledCount})
+            </label>
+          )}
           <IconButton
             variant="success"
             size="lg"
@@ -443,7 +485,7 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
       {err && <p className="text-[12px] text-red">{err}</p>}
       <DataTable
         columns={columns}
-        rows={rules}
+        rows={visibleRules}
         rowKey={(r) => r.id}
         loading={isLoading}
         searchable
@@ -472,6 +514,27 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
             >
               <DuplicateIcon />
             </IconButton>
+            {r.is_enabled ? (
+              <IconButton
+                variant="ghost"
+                size="md"
+                title="Disable — keep this rule but hide it from the default list"
+                aria-label="Disable — keep this rule but hide it from the default list"
+                onClick={() => void run(() => disable(r.id).unwrap(), 'Disable failed')}
+              >
+                <DisableIcon />
+              </IconButton>
+            ) : (
+              <IconButton
+                variant="ghost"
+                size="md"
+                title="Enable — restore this rule to the active list"
+                aria-label="Enable — restore this rule to the active list"
+                onClick={() => void run(() => enable(r.id).unwrap(), 'Enable failed')}
+              >
+                <EnableIcon />
+              </IconButton>
+            )}
             <IconButton
               variant="danger"
               size="md"

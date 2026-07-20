@@ -46,6 +46,7 @@ export function PromoteRuleModal({
             fingerprint_id: draft.fingerprint_id,
             trade_mode: draft.trade_mode,
             is_active: false,
+            is_enabled: true,
             buy_amount_lamports: draft.buy_amount_lamports,
             max_concurrent_tokens: draft.max_concurrent_tokens,
             max_total_tokens: draft.max_total_tokens,
