@@ -157,9 +157,14 @@ export function fetchEngineSimTimeSummary(
   body: TableRequestBody,
   wallField: 'entry_time' | 'created_at' = 'entry_time',
   wallGrain: import('lib/strategy/temporalSummary').WallGrainChoice = 'auto',
+  holdScheme: import('lib/strategy/temporalSummary').HoldSchemeChoice = 'auto',
   signal?: AbortSignal,
 ): Promise<import('types').TemporalSummaryPayload> {
-  const q = new URLSearchParams({ wall_field: wallField, wall_grain: wallGrain });
+  const q = new URLSearchParams({
+    wall_field: wallField,
+    wall_grain: wallGrain,
+    hold_scheme: holdScheme,
+  });
   return request(
     `${API_BASE}/api/strategies/simulate/${encodeURIComponent(runId)}/result/time-summary?${q}`,
     {

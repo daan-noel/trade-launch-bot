@@ -3,8 +3,9 @@
  * volume timeline. Shared by Simulate (server bins mirror this shape) and the
  * grouped-sweep combo drill-in (client fold over ComboTokenResult rows).
  *
- * Keep hold-bin edges in sync with `lab::strategies::sim_query::time_summary`
- * (Rust). Integer-second bins so `holding` col-filters (`15..59`) round-trip.
+ * Hold-bin **scheme** adapts to cohort density (p90 of closed holding_secs) —
+ * twin of `lab::strategies::sim_query::{pick_hold_scheme, hold_bins_for}`.
+ * Integer-second edges so `holding` col-filters (`15..59`) round-trip.
  * Wall grain picker is also twin'd there (`pick_wall_grain`).
  */
 
@@ -35,22 +36,173 @@ export type WallGrainChoice = 'auto' | WallGrain;
 
 export const WALL_GRAINS: readonly WallGrain[] = ['30m', '1h', '2h', '4h', 'day'];
 
-/** Hold-bin edges in seconds — inclusive lo, inclusive hi (`null` hi = open-ended). */
-export const HOLD_BINS: ReadonlyArray<{
+/**
+ * Hold-duration scale picked from the cohort's closed-hold p90.
+ * Dense short snipes get sub-15s resolution; long holds stretch into hours.
+ */
+export type HoldScheme =
+  | 'dense_15s'
+  | 'dense_60s'
+  | 'mid_5m'
+  | 'mid_30m'
+  | 'wide_2h'
+  | 'wide_day';
+
+export const HOLD_SCHEMES: readonly HoldScheme[] = [
+  'dense_15s',
+  'dense_60s',
+  'mid_5m',
+  'mid_30m',
+  'wide_2h',
+  'wide_day',
+];
+
+/** Manual override; `auto` uses `pickHoldScheme` on closed-hold p90. */
+export type HoldSchemeChoice = 'auto' | HoldScheme;
+
+export function parseHoldSchemeChoice(s: string | null | undefined): HoldSchemeChoice {
+  if (!s || s === 'auto') return 'auto';
+  if ((HOLD_SCHEMES as readonly string[]).includes(s)) return s as HoldScheme;
+  return 'auto';
+}
+
+/** One hold-duration bucket — inclusive lo/hi seconds (`null` hi = open-ended). */
+export interface HoldBinDef {
   id: string;
   label: string;
   lo: number | null;
   hi: number | null;
   /** Still-open positions (not a hold-duration bucket). */
   isOpen?: boolean;
-}> = [
-  { id: 'lt15s', label: '<15s', lo: 0, hi: 14 },
-  { id: '15to60s', label: '15–60s', lo: 15, hi: 59 },
-  { id: '1to5m', label: '1–5m', lo: 60, hi: 299 },
-  { id: '5to30m', label: '5–30m', lo: 300, hi: 1799 },
-  { id: '30mPlus', label: '30m+', lo: 1800, hi: null },
-  { id: 'open', label: 'Open', lo: null, hi: null, isOpen: true },
-];
+}
+
+const OPEN_HOLD_BIN: HoldBinDef = {
+  id: 'open',
+  label: 'Open',
+  lo: null,
+  hi: null,
+  isOpen: true,
+};
+
+/** Closed-bin edges per scheme (Open always appended by `holdBinsFor`). */
+const HOLD_SCHEME_EDGES: Readonly<Record<HoldScheme, ReadonlyArray<readonly [number, number | null]>>> = {
+  // p90 ≤ 15s — sub-second snipes need fine buckets
+  dense_15s: [
+    [0, 2],
+    [3, 5],
+    [6, 9],
+    [10, 14],
+    [15, null],
+  ],
+  // p90 ≤ 60s
+  dense_60s: [
+    [0, 9],
+    [10, 19],
+    [20, 39],
+    [40, 59],
+    [60, null],
+  ],
+  // p90 ≤ 5m
+  mid_5m: [
+    [0, 29],
+    [30, 59],
+    [60, 119],
+    [120, 299],
+    [300, null],
+  ],
+  // p90 ≤ 30m — classic default
+  mid_30m: [
+    [0, 14],
+    [15, 59],
+    [60, 299],
+    [300, 1799],
+    [1800, null],
+  ],
+  // p90 ≤ 2h
+  wide_2h: [
+    [0, 59],
+    [60, 299],
+    [300, 899],
+    [900, 3599],
+    [3600, null],
+  ],
+  // longer
+  wide_day: [
+    [0, 299],
+    [300, 1799],
+    [1800, 7199],
+    [7200, 21_599],
+    [21_600, null],
+  ],
+};
+
+function fmtHoldEdge(secs: number): string {
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) {
+    const m = secs / 60;
+    return Number.isInteger(m) ? `${m}m` : `${Number(m.toFixed(1))}m`;
+  }
+  const h = secs / 3600;
+  return Number.isInteger(h) ? `${h}h` : `${Number(h.toFixed(1))}h`;
+}
+
+function holdBinLabel(lo: number, hi: number | null): string {
+  // Labels use exclusive-looking uppers (`15–60s` for inclusive 15..59) — same
+  // convention as the legacy fixed bins.
+  if (hi == null) return `${fmtHoldEdge(lo)}+`;
+  if (lo === 0) return `<${fmtHoldEdge(hi + 1)}`;
+  return `${fmtHoldEdge(lo)}–${fmtHoldEdge(hi + 1)}`;
+}
+
+function holdBinIdFor(lo: number, hi: number | null): string {
+  return hi == null ? `hold_${lo}_plus` : `hold_${lo}_${hi}`;
+}
+
+/** Bin definitions for a hold scheme (closed buckets + Open). */
+export function holdBinsFor(scheme: HoldScheme): HoldBinDef[] {
+  const closed = HOLD_SCHEME_EDGES[scheme].map(([lo, hi]) => ({
+    id: holdBinIdFor(lo, hi),
+    label: holdBinLabel(lo, hi),
+    lo,
+    hi,
+  }));
+  return [...closed, OPEN_HOLD_BIN];
+}
+
+/** p90 of closed holding_secs → scheme (empty → mid_30m). Twin of Rust `pick_hold_scheme`. */
+export function pickHoldScheme(closedSecs: number[]): HoldScheme {
+  if (closedSecs.length === 0) return 'mid_30m';
+  const sorted = [...closedSecs].filter((s) => Number.isFinite(s) && s >= 0).sort((a, b) => a - b);
+  if (sorted.length === 0) return 'mid_30m';
+  // Nearest-rank p90 (`ceil(0.9·n)−1`) so small cohorts aren't stuck on the median.
+  const p90 = sorted[Math.min(sorted.length - 1, Math.ceil(0.9 * sorted.length) - 1)]!;
+  if (p90 <= 15) return 'dense_15s';
+  if (p90 <= 60) return 'dense_60s';
+  if (p90 <= 300) return 'mid_5m';
+  if (p90 <= 1800) return 'mid_30m';
+  if (p90 <= 7200) return 'wide_2h';
+  return 'wide_day';
+}
+
+export function holdSchemeLabel(scheme: HoldScheme): string {
+  switch (scheme) {
+    case 'dense_15s':
+      return 'dense ≤15s';
+    case 'dense_60s':
+      return 'dense ≤1m';
+    case 'mid_5m':
+      return 'mid ≤5m';
+    case 'mid_30m':
+      return 'mid ≤30m';
+    case 'wide_2h':
+      return 'wide ≤2h';
+    case 'wide_day':
+      return 'wide multi-hour';
+  }
+}
+
+/** @deprecated Prefer `holdBinsFor(pickHoldScheme(...))` — mid_30m alias. */
+export const HOLD_BINS: readonly HoldBinDef[] = holdBinsFor('mid_30m');
 
 /** Exit reason → stack segment key (mirrors `EXIT_KEY_BY_REASON` / Rust ExitCode). */
 const EXIT_REASON_KEY: Readonly<Record<string, ExitCountKey>> = {
@@ -99,6 +251,10 @@ export interface WallCellStats {
 
 export interface TemporalSummaryData {
   hold: HoldBinStats[];
+  /** Hold-duration scale actually used (auto pick or override). */
+  holdScheme: HoldScheme;
+  /** What `pickHoldScheme` would choose for this cohort (even when overridden). */
+  holdSchemeAuto: HoldScheme;
   wall: WallCellStats[];
   /** Grain actually used for `wall` (auto pick or override). */
   wallGrain: WallGrain;
@@ -127,22 +283,24 @@ function tallyExit(exits: Record<string, number>, reason: string): void {
   else exits.other = (exits.other ?? 0) + 1;
 }
 
-function holdBinId(row: TemporalRow): string | null {
+function holdBinId(row: TemporalRow, bins: readonly HoldBinDef[]): string | null {
   if (!row.fired) return null;
   if (row.exit === 'Open') return 'open';
   const s = row.holding_secs;
   if (!Number.isFinite(s) || s < 0) return 'open';
-  for (const b of HOLD_BINS) {
+  for (const b of bins) {
     if (b.isOpen) continue;
     if (b.lo == null) continue;
     if (s < b.lo) continue;
     if (b.hi != null && s > b.hi) continue;
     return b.id;
   }
-  return '30mPlus';
+  // Last closed bucket is always open-ended — fall into it if edges ever miss.
+  const last = [...bins].reverse().find((b) => !b.isOpen);
+  return last?.id ?? 'open';
 }
 
-function holdingFilterFor(bin: (typeof HOLD_BINS)[number]): string | null {
+function holdingFilterFor(bin: HoldBinDef): string | null {
   if (bin.isOpen) return null;
   if (bin.lo == null) return null;
   if (bin.hi == null) return `>=${bin.lo}`;
@@ -212,16 +370,25 @@ function dominantExit(exits: Record<string, number>): string | null {
 /**
  * Fold fired rows into hold bins + a wall-clock volume timeline over `wallField`.
  * Not-fired (`NoEntry`) rows are skipped.
- * `grainChoice` overrides the adaptive picker when not `'auto'`.
+ * `grainChoice` / `holdChoice` override the adaptive pickers when not `'auto'`.
  */
 export function buildTemporalSummary(
   rows: TemporalRow[],
   wallField: WallTimeField = 'entry_time',
   grainChoice: WallGrainChoice = 'auto',
+  holdChoice: HoldSchemeChoice = 'auto',
 ): TemporalSummaryData {
   const fired = rows.filter((r) => r.fired);
+  const closedSecs = fired
+    .filter((r) => r.exit !== 'Open')
+    .map((r) => r.holding_secs)
+    .filter((s) => Number.isFinite(s) && s >= 0);
+  const holdSchemeAuto = pickHoldScheme(closedSecs);
+  const holdScheme = holdChoice === 'auto' ? holdSchemeAuto : holdChoice;
+  const bins = holdBinsFor(holdScheme);
+
   const holdMap = new Map<string, HoldBinStats>();
-  for (const b of HOLD_BINS) {
+  for (const b of bins) {
     holdMap.set(b.id, {
       id: b.id,
       label: b.label,
@@ -236,7 +403,7 @@ export function buildTemporalSummary(
 
   const times: number[] = [];
   for (const r of fired) {
-    const id = holdBinId(r);
+    const id = holdBinId(r, bins);
     if (!id) continue;
     const bin = holdMap.get(id)!;
     bin.n += 1;
@@ -299,7 +466,9 @@ export function buildTemporalSummary(
   }
 
   return {
-    hold: HOLD_BINS.map((b) => holdMap.get(b.id)!),
+    hold: bins.map((b) => holdMap.get(b.id)!),
+    holdScheme,
+    holdSchemeAuto,
     wall,
     wallGrain,
     wallGrainAuto,
@@ -307,6 +476,92 @@ export function buildTemporalSummary(
     wallField,
     nFired: fired.length,
   };
+}
+
+/**
+ * Re-fold rows into a fixed hold scheme (same edges as the base chart).
+ * Used for linked-brush: wall selection → hold distribution of that slice.
+ */
+export function rebucketHold(scheme: HoldScheme, rows: TemporalRow[]): HoldBinStats[] {
+  return buildTemporalSummary(rows, 'entry_time', 'auto', scheme).hold;
+}
+
+/**
+ * Re-fold rows into the base wall cell grid (same ids / grain / span).
+ * Used for linked-brush: hold selection → wall distribution of that slice.
+ */
+export function rebucketWall(
+  baseWall: WallCellStats[],
+  wallField: WallTimeField,
+  grain: WallGrain,
+  rows: TemporalRow[],
+): WallCellStats[] {
+  const cells = baseWall.map((c) => ({
+    ...c,
+    n: 0,
+    pnl_sol: 0,
+    win_rate: 0,
+    exits: emptyExits(),
+    dominant: null as string | null,
+    mints: [] as string[],
+  }));
+  const byId = new Map(cells.map((c) => [c.id, c]));
+  const wins = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.fired) continue;
+    const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
+    if (ts == null) continue;
+    const key = floorToWallGrain(ts, grain);
+    const id = `${wallField}:${key}`;
+    const cell = byId.get(id);
+    if (!cell) continue;
+    cell.n += 1;
+    cell.pnl_sol += r.pnl_sol;
+    cell.mints.push(r.mint_address);
+    tallyExit(cell.exits, r.exit);
+    if (r.exit !== 'Open' && r.pnl_sol > 0) {
+      wins.set(id, (wins.get(id) ?? 0) + 1);
+    }
+  }
+  for (const cell of cells) {
+    const closed = cell.n - (cell.exits.open ?? 0);
+    const w = wins.get(cell.id) ?? 0;
+    cell.win_rate = closed > 0 ? w / closed : 0;
+    cell.dominant = cell.n > 0 ? dominantExit(cell.exits) : null;
+  }
+  return cells;
+}
+
+/** Map a linked hold payload onto base bin edges by id (zeros when missing). */
+export function alignHoldBins(base: HoldBinStats[], linked: HoldBinStats[]): HoldBinStats[] {
+  const map = new Map(linked.map((b) => [b.id, b]));
+  return base.map(
+    (b) =>
+      map.get(b.id) ?? {
+        ...b,
+        n: 0,
+        pnl_sol: 0,
+        exits: emptyExits(),
+        mints: [],
+      },
+  );
+}
+
+/** Map a linked wall payload onto base cells by id (zeros when missing). */
+export function alignWallCells(base: WallCellStats[], linked: WallCellStats[]): WallCellStats[] {
+  const map = new Map(linked.map((c) => [c.id, c]));
+  return base.map(
+    (c) =>
+      map.get(c.id) ?? {
+        ...c,
+        n: 0,
+        pnl_sol: 0,
+        win_rate: 0,
+        exits: emptyExits(),
+        dominant: null,
+        mints: [],
+      },
+  );
 }
 
 /** Short human span for glance chips (`45m`, `6h`, `2.5d`). */
@@ -332,9 +587,44 @@ export function peakWallCell(cells: WallCellStats[]): WallCellStats | null {
   return best;
 }
 
+/** Highest-PnL wall cell among non-empty (first max on ties). */
+export function bestPnlWallCell(cells: WallCellStats[]): WallCellStats | null {
+  let best: WallCellStats | null = null;
+  for (const c of cells) {
+    if (c.n <= 0) continue;
+    if (!best || c.pnl_sol > best.pnl_sol) best = c;
+  }
+  return best;
+}
+
+/** Lowest-PnL wall cell among non-empty (first min on ties). */
+export function worstPnlWallCell(cells: WallCellStats[]): WallCellStats | null {
+  let worst: WallCellStats | null = null;
+  for (const c of cells) {
+    if (c.n <= 0) continue;
+    if (!worst || c.pnl_sol < worst.pnl_sol) worst = c;
+  }
+  return worst;
+}
+
+/** Closed count for a bin/cell (`n` minus still-open). */
+export function closedCount(n: number, exits: Record<string, number>): number {
+  return Math.max(0, n - (exits.open ?? 0));
+}
+
+/** Average PnL per position, or null when empty. */
+export function avgPnlSol(pnlSol: number, n: number): number | null {
+  if (n <= 0) return null;
+  return pnlSol / n;
+}
+
 /** Whether a row falls in a hold bin (for client-side cohort filter). */
-export function rowMatchesHoldBin(row: TemporalRow, binId: string): boolean {
-  return holdBinId(row) === binId;
+export function rowMatchesHoldBin(
+  row: TemporalRow,
+  binId: string,
+  bins: readonly HoldBinDef[] = HOLD_BINS,
+): boolean {
+  return holdBinId(row, bins) === binId;
 }
 
 /** Whether a row's wall-clock field falls in `[start, end)`. */
@@ -418,7 +708,47 @@ export function formatWallTick(iso: string, grain: WallGrain): string {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
-    minute: grain === '30m' ? '2-digit' : undefined,
+    minute: grain === '30m' || grain === '1h' ? '2-digit' : undefined,
     hour12: false,
   });
+}
+
+/** Compact clock for the chart axis (`14:30` / `14:00`). */
+export function formatWallClock(iso: string, grain: WallGrain): string {
+  const d = new Date(iso);
+  if (grain === 'day') {
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  return d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/** Short date for axis day-breaks (`Jul 15`). */
+export function formatWallDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** Full range caption above the wall chart. */
+export function formatWallRange(cells: WallCellStats[], grain: WallGrain): string | null {
+  const timed = cells.filter((c) => c.n > 0);
+  if (timed.length === 0) return null;
+  const first = timed[0]!;
+  const last = timed[timed.length - 1]!;
+  if (first.id === last.id) return formatWallTick(first.start, grain);
+  return `${formatWallTick(first.start, grain)}  →  ${formatWallTick(last.start, grain)}`;
+}
+
+/** Whether `iso` falls on a different local calendar day than `prevIso`. */
+export function isWallDayBreak(iso: string, prevIso: string | null): boolean {
+  if (prevIso == null) return true;
+  const a = new Date(iso);
+  const b = new Date(prevIso);
+  return (
+    a.getFullYear() !== b.getFullYear() ||
+    a.getMonth() !== b.getMonth() ||
+    a.getDate() !== b.getDate()
+  );
 }

@@ -50,7 +50,11 @@ import {
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
-import type { WallGrainChoice, WallTimeField } from 'lib/strategy/temporalSummary';
+import type {
+  HoldSchemeChoice,
+  WallGrainChoice,
+  WallTimeField,
+} from 'lib/strategy/temporalSummary';
 import type { SummarySection } from 'components/strategy/SummaryStatsPanel';
 import type {
   MatchedTokenRecord,
@@ -339,10 +343,13 @@ function RuleSimPositionsPanel({
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
   const [wallField, setWallField] = useState<WallTimeField>('created_at');
   const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
+  const [holdScheme, setHoldScheme] = useState<HoldSchemeChoice>('auto');
   const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
+  /** Linked brush cohort — same grain/scheme as base, filtered to the selection mints. */
+  const [linkedTimeSummary, setLinkedTimeSummary] = useState<TemporalSummaryPayload | null>(null);
 
-  // Temporal mint-set is applied to the page fetch only — summary + time-summary
-  // stay on the table's own filters so the chart doesn't collapse after a click.
+  // Temporal mint-set is applied to the page fetch only — summary + base time-summary
+  // stay on the table's own filters so the driving chart doesn't collapse after a click.
   const simQueryForPage = useMemo(() => {
     if (!temporalSel?.mints.length) return simQuery;
     return {
@@ -363,11 +370,16 @@ function RuleSimPositionsPanel({
     () => toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS),
     [simQueryForPage],
   );
-  // Time chart stays on the table's own filters so a bin click doesn't collapse it.
+  // Base time chart stays on the table's own filters.
   const timeSummaryBody = useMemo(
     () => toSummaryBody(simQuery, SIM_NUMERIC_COLS),
     [simQuery.search, simQuery.colFilters, simQuery.structuredFilters],
   );
+  // Linked chart: mint-filtered fold with base's resolved grain/scheme locked.
+  const linkedTimeSummaryBody = useMemo(() => {
+    if (!temporalSel?.mints.length) return null;
+    return toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS);
+  }, [temporalSel, simQueryForPage]);
   const {
     items: simTokens,
     total: simTotal,
@@ -392,11 +404,13 @@ function RuleSimPositionsPanel({
   });
   useEffect(() => {
     setTemporalSel(null);
+    setLinkedTimeSummary(null);
   }, [rule.id, baseFilterKey]);
 
   useEffect(() => {
     if (view !== 'positions') {
       setTimeSummary(null);
+      setLinkedTimeSummary(null);
       return;
     }
     const ctrl = new AbortController();
@@ -405,6 +419,7 @@ function RuleSimPositionsPanel({
       timeSummaryBody as TableRequestBody,
       wallField,
       wallGrain,
+      holdScheme,
       ctrl.signal,
     )
       .then((t) => {
@@ -415,7 +430,42 @@ function RuleSimPositionsPanel({
         if (!ctrl.signal.aborted) setTimeSummary(null);
       });
     return () => ctrl.abort();
-  }, [view, rule.id, timeSummaryBody, wallField, wallGrain, reloadNonce]);
+  }, [view, rule.id, timeSummaryBody, wallField, wallGrain, holdScheme, reloadNonce]);
+
+  useEffect(() => {
+    if (view !== 'positions' || !linkedTimeSummaryBody || !timeSummary) {
+      setLinkedTimeSummary(null);
+      return;
+    }
+    // Lock edges to the base cohort so ghost bars align.
+    const lockedGrain = timeSummary.wallGrain;
+    const lockedHold = timeSummary.holdScheme ?? 'mid_30m';
+    const ctrl = new AbortController();
+    void fetchEngineSimTimeSummary(
+      rule.id,
+      linkedTimeSummaryBody as TableRequestBody,
+      wallField,
+      lockedGrain,
+      lockedHold,
+      ctrl.signal,
+    )
+      .then((t) => {
+        if (!ctrl.signal.aborted) setLinkedTimeSummary(t);
+      })
+      .catch((e) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (!ctrl.signal.aborted) setLinkedTimeSummary(null);
+      });
+    return () => ctrl.abort();
+  }, [
+    view,
+    rule.id,
+    linkedTimeSummaryBody,
+    timeSummary?.wallGrain,
+    timeSummary?.holdScheme,
+    wallField,
+    reloadNonce,
+  ]);
 
   // Matched — every token the rule's fingerprint selects (positions are the subset
   // that actually entered). No summary and no entry/exit overlay: these are
@@ -523,15 +573,35 @@ function RuleSimPositionsPanel({
             <TemporalSummary
               data={{
                 ...timeSummary,
+                holdScheme: timeSummary.holdScheme ?? 'mid_30m',
+                holdSchemeAuto:
+                  timeSummary.holdSchemeAuto ?? timeSummary.holdScheme ?? 'mid_30m',
                 wallGrainAuto: timeSummary.wallGrainAuto ?? timeSummary.wallGrain,
                 wallSpanMs: timeSummary.wallSpanMs ?? 0,
               }}
+              linkedData={
+                linkedTimeSummary
+                  ? {
+                      ...linkedTimeSummary,
+                      holdScheme: linkedTimeSummary.holdScheme ?? timeSummary.holdScheme ?? 'mid_30m',
+                      holdSchemeAuto:
+                        linkedTimeSummary.holdSchemeAuto ??
+                        linkedTimeSummary.holdScheme ??
+                        'mid_30m',
+                      wallGrainAuto:
+                        linkedTimeSummary.wallGrainAuto ?? linkedTimeSummary.wallGrain,
+                      wallSpanMs: linkedTimeSummary.wallSpanMs ?? 0,
+                    }
+                  : null
+              }
               selection={temporalSel}
               onSelect={setTemporalSel}
               wallField={wallField}
               onWallFieldChange={setWallField}
               wallGrain={wallGrain}
               onWallGrainChange={setWallGrain}
+              holdScheme={holdScheme}
+              onHoldSchemeChange={setHoldScheme}
             />
           )}
           <TokenTable

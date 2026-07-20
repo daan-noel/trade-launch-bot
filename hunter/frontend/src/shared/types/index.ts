@@ -370,6 +370,10 @@ export interface SimulatedSummary extends RunSummary {
  *  `sim_query::time_summary` / FE `buildTemporalSummary`. */
 export interface TemporalSummaryPayload {
   hold: import('lib/strategy/temporalSummary').HoldBinStats[];
+  /** Hold-duration scale actually used (auto or override). */
+  holdScheme?: import('lib/strategy/temporalSummary').HoldScheme;
+  /** Auto pick for this cohort (present even when `holdScheme` was overridden). */
+  holdSchemeAuto?: import('lib/strategy/temporalSummary').HoldScheme;
   wall: import('lib/strategy/temporalSummary').WallCellStats[];
   wallGrain: import('lib/strategy/temporalSummary').WallGrain;
   /** Auto pick for this cohort (present even when `wallGrain` was overridden). */

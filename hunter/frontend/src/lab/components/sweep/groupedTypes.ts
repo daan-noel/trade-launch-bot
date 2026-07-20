@@ -115,7 +115,7 @@ export interface GroupedSweepGroupRecord {
   /** The best combo's `n_fired` — sample size behind the headline pick. */
   fired_count: number;
   best_combo_id: number;
-  /** Robust realized score of the winning combo; `null` when < 2 closed trades. */
+  /** Checklist score of the winning combo; `null` when never fired. */
   best_score: number | null;
   best_expectancy_sol: number;
   best_win_rate: number;

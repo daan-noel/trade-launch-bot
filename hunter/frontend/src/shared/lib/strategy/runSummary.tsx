@@ -69,6 +69,8 @@ export interface RunMetrics {
   worst_pnl_pct: number | null;
   std_pnl_pct: number | null;
   profit_factor: number | null;
+  /** Mean pnl% over all fired incl. open marks — present on sweep/sim wire. */
+  mtm_pnl_pct?: number;
   score: number | null;
   avg_holding_secs: number;
   median_holding_secs: number;
@@ -309,10 +311,14 @@ export function runSummaryFromRows(rows: RunOutcomeRow[]): RunSummary {
   const open = fired.filter((r) => r.exit === 'Open');
   const openPnl = open.reduce((s, r) => s + r.pnl_sol, 0);
   const exits = countExits(closed);
-  return {
-    realized: metricsOf(closed, fired.length, open.length, openPnl, exits),
-    mtm: metricsOf(fired, fired.length, open.length, openPnl, zeroExitCounts()),
-  };
+  const mtmPct = fired.length
+    ? fired.reduce((s, r) => s + r.pnl_pct, 0) / fired.length
+    : 0;
+  const realized = metricsOf(closed, fired.length, open.length, openPnl, exits);
+  const mtm = metricsOf(fired, fired.length, open.length, openPnl, zeroExitCounts());
+  realized.mtm_pnl_pct = mtmPct;
+  mtm.mtm_pnl_pct = mtmPct;
+  return { realized, mtm };
 }
 
 // --- the renderer ------------------------------------------------------------

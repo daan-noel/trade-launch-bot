@@ -63,8 +63,15 @@ function tpsl(raw: unknown, key: 'take_profit' | 'stop_loss'): number | null {
 
 // --- combo columns ----------------------------------------------------------
 
+/** Per-trade MTM % from SOL totals + run notional (opens included). */
+function mtmPctOf(totalPnl: number, openPnl: number, nFired: number, buySol: number): number | null {
+  if (!(nFired > 0) || !(buySol > 0)) return null;
+  return ((totalPnl + openPnl) / (buySol * nFired)) * 100;
+}
+
 /** Build the generic-engine combo-results table columns. */
-export function buildGenericComboColumns(): ColumnDef<SweepResultRecord>[] {
+
+export function buildGenericComboColumns(buyAmountSol = 1): ColumnDef<SweepResultRecord>[] {
   return [
     {
       key: 'p_take_profit',
@@ -100,13 +107,13 @@ export function buildGenericComboColumns(): ColumnDef<SweepResultRecord>[] {
       render: (r) => ruleParamsCell(r.params),
       searchValue: () => '',
     },
-    ...genericStatColumns(),
+    ...genericStatColumns(buyAmountSol),
   ];
 }
 
 /** The stat/count/exit columns shared by the combo table (order mirrors the
  *  legacy sweep so the two read the same). */
-function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
+function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[] {
   const metric = (
     key: string,
     label: string,
@@ -165,8 +172,17 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
       'Score',
       'pnl',
       (r) => r.score ?? Number.NEGATIVE_INFINITY,
-      (r) => (r.score == null ? tone('—', 'text-text-dim') : tone(pctText(r.score), goodBad(r.score))),
-      { tooltip: 'Robust rank: mean − 1.64·σ/√n over closed trades. Blank when < 2 closed trades.' },
+      (r) =>
+        r.score == null
+          ? tone('—', 'text-text-dim')
+          : tone(
+              `${r.score >= 0 ? '+' : ''}${formatDecimalTrim(r.score, 4)}`,
+              goodBad(r.score),
+            ),
+      {
+        tooltip:
+          'MTM% × (fired/matched) × (1 − 0.5·open%) × win%. Matches the manual checklist. Blank when never fired.',
+      },
     ),
     metric(
       'win_rate',
@@ -177,7 +193,7 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
         r.win_rate == null || !Number.isFinite(r.win_rate)
           ? tone('—', 'text-text-dim')
           : tone(`${(r.win_rate * 100).toFixed(0)}%`, goodBad(r.win_rate, 0.5)),
-      { tooltip: 'Share of fired tokens with PnL > 0' },
+      { tooltip: 'Share of CLOSED fired tokens with PnL > 0' },
     ),
     metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol)), {
       tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',
@@ -202,6 +218,20 @@ function genericStatColumns(): ColumnDef<SweepResultRecord>[] {
       {
         tooltip:
           'Mark-to-market: realized Total PnL + unrealized Open PnL. What the combo is actually worth if every open bag were sold at its last price.',
+      },
+    ),
+    metric(
+      'mtm_pnl_pct',
+      'MTM %',
+      'pnl',
+      (r) => mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, buyAmountSol) ?? Number.NEGATIVE_INFINITY,
+      (r) => {
+        const v = mtmPctOf(r.total_pnl_sol, r.open_pnl_sol ?? 0, r.n_fired, buyAmountSol);
+        return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), goodBad(v));
+      },
+      {
+        tooltip:
+          'Average per-trade return % including still-open marks (MTM PnL ÷ (buy × fired)). Feeds the Score.',
       },
     ),
     metric('expectancy_sol', 'Expectancy', 'pnl', (r) => r.expectancy_sol, (r) => tone(solText(r.expectancy_sol), goodBad(r.expectancy_sol))),
@@ -246,7 +276,7 @@ function keyParts(group: GroupedSweepGroupRecord): { label: string; value: strin
 }
 
 /** Build the generic-engine group-summary table columns. */
-export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[] {
+export function buildGenericGroupColumns(buyAmountSol = 1): ColumnDef<GroupedSweepGroupRecord>[] {
   // `group` mirrors the combo table's banners (counts / pnl / holding) so the
   // two stacked tables on the sweep page read the same. Columns must stay in
   // group order — DataTable bands *consecutive* runs of same-`group` columns.
@@ -344,8 +374,14 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
       (g) =>
         g.best_score == null
           ? tone('—', 'text-text-dim')
-          : tone(pctText(g.best_score), goodBad(g.best_score)),
-      { tooltip: "Robust score of this group's best combo (matches the drill-in default sort)." },
+          : tone(
+              `${g.best_score >= 0 ? '+' : ''}${formatDecimalTrim(g.best_score, 4)}`,
+              goodBad(g.best_score),
+            ),
+      {
+        tooltip:
+          "Checklist score of this group's best combo (MTM% × fire-rate × open-drag × win%).",
+      },
     ),
     gm('best_win_rate', 'Win %', 'pnl', (g) => g.best_win_rate, (g) =>
       g.best_win_rate == null || !Number.isFinite(g.best_win_rate)
@@ -375,6 +411,31 @@ export function buildGenericGroupColumns(): ColumnDef<GroupedSweepGroupRecord>[]
       {
         tooltip:
           'Mark-to-market: realized Total PnL + unrealized Open PnL. What the group is actually worth if every open bag were sold at its last price.',
+      },
+    ),
+    gm(
+      'best_mtm_pnl_pct',
+      'MTM %',
+      'pnl',
+      (g) =>
+        mtmPctOf(
+          g.best_total_pnl_sol,
+          g.best_open_pnl_sol ?? 0,
+          g.fired_count,
+          buyAmountSol,
+        ),
+      (g) => {
+        const v = mtmPctOf(
+          g.best_total_pnl_sol,
+          g.best_open_pnl_sol ?? 0,
+          g.fired_count,
+          buyAmountSol,
+        );
+        return v == null ? tone('—', 'text-text-dim') : tone(pctText(v), goodBad(v));
+      },
+      {
+        tooltip:
+          "Winning combo's average per-trade return % including still-open marks.",
       },
     ),
     gm('best_expectancy_sol', 'Expectancy', 'pnl', (g) => g.best_expectancy_sol, (g) => tone(solText(g.best_expectancy_sol), goodBad(g.best_expectancy_sol))),

@@ -75,9 +75,9 @@ impl CoverageFloor {
 }
 
 /// One group's full sweep: its key, how many tokens fell into it, the per-combo
-/// ranked metrics, and the winning combo. The winner is chosen on the **robust,
-/// realized** `score` (the same metric the drill-in table sorts by) among combos
-/// clearing the [`CoverageFloor`] — see [`best_combo`].
+/// ranked metrics, and the winning combo. The winner is chosen on the checklist
+/// `score` (the same metric the drill-in table sorts by) among combos clearing
+/// the [`CoverageFloor`] — see [`best_combo`].
 pub struct GroupResult {
     pub key: GroupKey,
     pub token_count: usize,
@@ -87,11 +87,11 @@ pub struct GroupResult {
     /// the sink's `group_done`, not after the sweep. Populated throughout when no
     /// sink consumes the group (the coarse refine pass / tests using `NoopSink`).
     pub metrics: Vec<ComboMetrics>,
-    /// Combo id maximising the robust realized `score` among combos clearing the
+    /// Combo id maximising the checklist `score` among combos clearing the
     /// coverage floor (see [`best_combo`]).
     pub best_combo_id: u32,
-    /// The winning combo's robust `score` (`μ−Z·σ/√n` over closed trades), or
-    /// `None` when it has < 2 closed trades. The page's headline metric.
+    /// The winning combo's checklist `score`, or `None` when it never fired.
+    /// The page's headline metric.
     pub best_score: Option<f64>,
     /// The winning combo's expectancy per trade — kept as a secondary readout
     /// (no longer the ranking metric).
@@ -805,12 +805,17 @@ fn free_persisted_metrics(gr: &mut GroupResult) {
 }
 
 /// Assemble a [`GroupResult`] from a group's ranked metrics + the coverage floor.
+/// Rewrites each combo's checklist `score` with `matched = token_count` before
+/// crowning the winner so fire-rate reflects group coverage.
 fn make_group_result(
     key: GroupKey,
     token_count: usize,
-    metrics: Vec<ComboMetrics>,
+    mut metrics: Vec<ComboMetrics>,
     coverage: CoverageFloor,
 ) -> GroupResult {
+    for m in &mut metrics {
+        m.rescore_for_group(token_count);
+    }
     let (best_combo_id, best_score, best_expectancy_sol) =
         best_combo(&metrics, token_count, coverage);
     GroupResult {
@@ -823,11 +828,10 @@ fn make_group_result(
     }
 }
 
-/// Best combo = max robust **realized** `score` (`μ−Z·σ/√n` over closed trades)
-/// among combos clearing the [`CoverageFloor`] — the same metric the drill-in
-/// table sorts by, so the crowned combo *is* row 1 of its own table. Ties break
-/// by fired count, then [`marked_pnl_sol`] (realized + open — see there for why
-/// `score` itself stays realized-only). Returns `(combo_id, score, expectancy_sol)`.
+/// Best combo = max checklist `score` among combos clearing the [`CoverageFloor`]
+/// — the same metric the drill-in table sorts by, so the crowned combo *is* row 1
+/// of its own table. Ties break by fired count, then [`marked_pnl_sol`].
+/// Returns `(combo_id, score, expectancy_sol)`.
 ///
 /// If no combo clears the floor, fall back to the most-fired combo (a low-
 /// confidence pick — logged) so the group still surfaces something. `(0, None,
@@ -873,9 +877,8 @@ fn best_combo(
     }
 }
 
-/// Rank two floor-clearing combos: higher robust `score` first (an absent score
-/// — fewer than 2 closed trades — sorts as worst), then more fired tokens, then
-/// higher [`marked_pnl_sol`].
+/// Rank two floor-clearing combos: higher checklist `score` first (absent score
+/// sorts as worst), then more fired tokens, then higher [`marked_pnl_sol`].
 fn rank_combo(a: &ComboMetrics, b: &ComboMetrics) -> Ordering {
     score_cmp(a.score, b.score)
         .then_with(|| a.n_fired.cmp(&b.n_fired))
@@ -883,17 +886,8 @@ fn rank_combo(a: &ComboMetrics, b: &ComboMetrics) -> Ordering {
 }
 
 /// A combo's PnL **including** the mark on positions still open at the run's
-/// `as_of` — realized `total_pnl_sol` plus unrealized `open_pnl_sol`.
-///
-/// Ranking on realized-only let a combo bank a small closed profit while sitting
-/// on a large unrealized loss and outrank one that had already taken the same
-/// loss, which is a bookkeeping artifact rather than a real edge.
-///
-/// **`score` deliberately stays realized-only.** It is `μ−Z·σ/√n` over *closed*
-/// trades — a confidence-discounted per-trade statistic — and an open mark is a
-/// single point-in-time valuation with no trade distribution to contribute to it.
-/// Folding it in would inflate `n` with a non-observation. So this only moves the
-/// PnL tie-break (and the sub-floor fallback), not the primary key.
+/// `as_of` — realized `total_pnl_sol` plus unrealized `open_pnl_sol`. Used as the
+/// score tie-break (score already folds opens into its MTM% term).
 fn marked_pnl_sol(m: &ComboMetrics) -> f64 {
     m.total_pnl_sol + m.open_pnl_sol
 }
@@ -1019,6 +1013,7 @@ mod tests {
             worst_pnl_pct: 0.0,
             std_pnl_pct: 0.0,
             profit_factor: None,
+            mtm_pnl_pct: 0.0,
             score: None,
             expectancy_sol: 0.0,
             avg_holding_secs: 0.0,
@@ -1075,7 +1070,7 @@ mod tests {
         // Largest group (devA, 2 tokens) sorts first.
         assert_eq!(groups[0].token_count, 2);
         assert_eq!(groups[1].token_count, 1);
-        // Identical per-combo returns (σ=0) ⇒ score == realized mean == param, so
+        // All fire, no opens, WR=1 ⇒ score == mtm_pnl_pct == param, so
         // the winner is still params[1] = 3.0 → combo_id 1.
         assert_eq!(groups[0].best_combo_id, 1);
         assert_eq!(groups[0].best_score, Some(3.0));

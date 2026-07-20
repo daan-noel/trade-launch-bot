@@ -128,8 +128,9 @@ pub fn summarize(rows: &[Value]) -> RunSummary {
 // ── Temporal summary (hold bins + wall-clock heatmap) ─────────────────────────
 //
 // Wire shape mirrors `frontend/.../temporalSummary.ts` (`TemporalSummaryData`).
-// Hold-bin edges are integer seconds and **must stay in sync** with the FE
-// `HOLD_BINS` constant (filters use `15..59` etc.).
+// Hold-bin **scheme** adapts to cohort density (p90 of closed holding_secs) —
+// twin of FE `pickHoldScheme` / `holdBinsFor`. Edges are integer seconds
+// (filters use `15..59` etc.).
 
 /// Wall-clock field the heatmap bins on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,15 +168,133 @@ struct HoldBinDef {
     is_open: bool,
 }
 
-/// Inclusive integer-second bins — SSOT twin of FE `HOLD_BINS`.
-const HOLD_BINS: &[HoldBinDef] = &[
-    HoldBinDef { id: "lt15s", label: "<15s", lo: Some(0), hi: Some(14), is_open: false },
-    HoldBinDef { id: "15to60s", label: "15–60s", lo: Some(15), hi: Some(59), is_open: false },
-    HoldBinDef { id: "1to5m", label: "1–5m", lo: Some(60), hi: Some(299), is_open: false },
-    HoldBinDef { id: "5to30m", label: "5–30m", lo: Some(300), hi: Some(1799), is_open: false },
-    HoldBinDef { id: "30mPlus", label: "30m+", lo: Some(1800), hi: None, is_open: false },
-    HoldBinDef { id: "open", label: "Open", lo: None, hi: None, is_open: true },
-];
+/// Adaptive hold-duration scale — twin of FE `HoldScheme`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldScheme {
+    Dense15s,
+    Dense60s,
+    Mid5m,
+    Mid30m,
+    Wide2h,
+    WideDay,
+}
+
+impl HoldScheme {
+    fn as_str(self) -> &'static str {
+        match self {
+            HoldScheme::Dense15s => "dense_15s",
+            HoldScheme::Dense60s => "dense_60s",
+            HoldScheme::Mid5m => "mid_5m",
+            HoldScheme::Mid30m => "mid_30m",
+            HoldScheme::Wide2h => "wide_2h",
+            HoldScheme::WideDay => "wide_day",
+        }
+    }
+
+    fn parse_override(s: &str) -> Option<Self> {
+        match s {
+            "dense_15s" => Some(HoldScheme::Dense15s),
+            "dense_60s" => Some(HoldScheme::Dense60s),
+            "mid_5m" => Some(HoldScheme::Mid5m),
+            "mid_30m" => Some(HoldScheme::Mid30m),
+            "wide_2h" => Some(HoldScheme::Wide2h),
+            "wide_day" => Some(HoldScheme::WideDay),
+            _ => None,
+        }
+    }
+}
+
+const OPEN_HOLD_BIN: HoldBinDef = HoldBinDef {
+    id: "open",
+    label: "Open",
+    lo: None,
+    hi: None,
+    is_open: true,
+};
+
+/// Inclusive integer-second bins per scheme — twin of FE `HOLD_SCHEME_EDGES`.
+fn hold_bins_for(scheme: HoldScheme) -> &'static [HoldBinDef] {
+    match scheme {
+        HoldScheme::Dense15s => &[
+            HoldBinDef { id: "hold_0_2", label: "<3s", lo: Some(0), hi: Some(2), is_open: false },
+            HoldBinDef { id: "hold_3_5", label: "3–6s", lo: Some(3), hi: Some(5), is_open: false },
+            HoldBinDef { id: "hold_6_9", label: "6–10s", lo: Some(6), hi: Some(9), is_open: false },
+            HoldBinDef { id: "hold_10_14", label: "10–15s", lo: Some(10), hi: Some(14), is_open: false },
+            HoldBinDef { id: "hold_15_plus", label: "15s+", lo: Some(15), hi: None, is_open: false },
+            OPEN_HOLD_BIN,
+        ],
+        HoldScheme::Dense60s => &[
+            HoldBinDef { id: "hold_0_9", label: "<10s", lo: Some(0), hi: Some(9), is_open: false },
+            HoldBinDef { id: "hold_10_19", label: "10–20s", lo: Some(10), hi: Some(19), is_open: false },
+            HoldBinDef { id: "hold_20_39", label: "20–40s", lo: Some(20), hi: Some(39), is_open: false },
+            HoldBinDef { id: "hold_40_59", label: "40–60s", lo: Some(40), hi: Some(59), is_open: false },
+            HoldBinDef { id: "hold_60_plus", label: "60s+", lo: Some(60), hi: None, is_open: false },
+            OPEN_HOLD_BIN,
+        ],
+        HoldScheme::Mid5m => &[
+            HoldBinDef { id: "hold_0_29", label: "<30s", lo: Some(0), hi: Some(29), is_open: false },
+            HoldBinDef { id: "hold_30_59", label: "30–60s", lo: Some(30), hi: Some(59), is_open: false },
+            HoldBinDef { id: "hold_60_119", label: "1–2m", lo: Some(60), hi: Some(119), is_open: false },
+            HoldBinDef { id: "hold_120_299", label: "2–5m", lo: Some(120), hi: Some(299), is_open: false },
+            HoldBinDef { id: "hold_300_plus", label: "5m+", lo: Some(300), hi: None, is_open: false },
+            OPEN_HOLD_BIN,
+        ],
+        HoldScheme::Mid30m => &[
+            HoldBinDef { id: "hold_0_14", label: "<15s", lo: Some(0), hi: Some(14), is_open: false },
+            HoldBinDef { id: "hold_15_59", label: "15–60s", lo: Some(15), hi: Some(59), is_open: false },
+            HoldBinDef { id: "hold_60_299", label: "1–5m", lo: Some(60), hi: Some(299), is_open: false },
+            HoldBinDef { id: "hold_300_1799", label: "5–30m", lo: Some(300), hi: Some(1799), is_open: false },
+            HoldBinDef { id: "hold_1800_plus", label: "30m+", lo: Some(1800), hi: None, is_open: false },
+            OPEN_HOLD_BIN,
+        ],
+        HoldScheme::Wide2h => &[
+            HoldBinDef { id: "hold_0_59", label: "<1m", lo: Some(0), hi: Some(59), is_open: false },
+            HoldBinDef { id: "hold_60_299", label: "1–5m", lo: Some(60), hi: Some(299), is_open: false },
+            HoldBinDef { id: "hold_300_899", label: "5–15m", lo: Some(300), hi: Some(899), is_open: false },
+            HoldBinDef { id: "hold_900_3599", label: "15–60m", lo: Some(900), hi: Some(3599), is_open: false },
+            HoldBinDef { id: "hold_3600_plus", label: "1h+", lo: Some(3600), hi: None, is_open: false },
+            OPEN_HOLD_BIN,
+        ],
+        HoldScheme::WideDay => &[
+            HoldBinDef { id: "hold_0_299", label: "<5m", lo: Some(0), hi: Some(299), is_open: false },
+            HoldBinDef { id: "hold_300_1799", label: "5–30m", lo: Some(300), hi: Some(1799), is_open: false },
+            HoldBinDef { id: "hold_1800_7199", label: "30m–2h", lo: Some(1800), hi: Some(7199), is_open: false },
+            HoldBinDef { id: "hold_7200_21599", label: "2–6h", lo: Some(7200), hi: Some(21_599), is_open: false },
+            HoldBinDef { id: "hold_21600_plus", label: "6h+", lo: Some(21_600), hi: None, is_open: false },
+            OPEN_HOLD_BIN,
+        ],
+    }
+}
+
+/// p90 of closed holding_secs → scheme. Twin of FE `pickHoldScheme`.
+fn pick_hold_scheme(closed_secs: &[i64]) -> HoldScheme {
+    if closed_secs.is_empty() {
+        return HoldScheme::Mid30m;
+    }
+    let mut sorted: Vec<i64> = closed_secs.iter().copied().filter(|s| *s >= 0).collect();
+    if sorted.is_empty() {
+        return HoldScheme::Mid30m;
+    }
+    sorted.sort_unstable();
+    // Nearest-rank p90 (`ceil(0.9·n)−1`) — twin of FE `pickHoldScheme`.
+    let idx = ((0.9 * sorted.len() as f64).ceil() as usize)
+        .saturating_sub(1)
+        .min(sorted.len() - 1);
+    let p90 = sorted[idx];
+    if p90 <= 15 {
+        HoldScheme::Dense15s
+    } else if p90 <= 60 {
+        HoldScheme::Dense60s
+    } else if p90 <= 300 {
+        HoldScheme::Mid5m
+    } else if p90 <= 1800 {
+        HoldScheme::Mid30m
+    } else if p90 <= 7200 {
+        HoldScheme::Wide2h
+    } else {
+        HoldScheme::WideDay
+    }
+}
 
 fn holding_filter_for(b: &HoldBinDef) -> Option<String> {
     if b.is_open {
@@ -236,14 +355,14 @@ fn tally_exit(exits: &mut serde_json::Map<String, Value>, reason: &str) {
     exits.insert(key.into(), json!(n));
 }
 
-fn hold_bin_id(exit: &str, holding_secs: i64) -> &'static str {
+fn hold_bin_id(exit: &str, holding_secs: i64, bins: &[HoldBinDef]) -> &'static str {
     if exit == "Open" {
         return "open";
     }
     if holding_secs < 0 {
         return "open";
     }
-    for b in HOLD_BINS {
+    for b in bins {
         if b.is_open {
             continue;
         }
@@ -258,7 +377,11 @@ fn hold_bin_id(exit: &str, holding_secs: i64) -> &'static str {
         }
         return b.id;
     }
-    "30mPlus"
+    bins.iter()
+        .rev()
+        .find(|b| !b.is_open)
+        .map(|b| b.id)
+        .unwrap_or("open")
 }
 
 fn parse_rfc3339_ms(s: &str) -> Option<i64> {
@@ -373,13 +496,26 @@ fn dominant_exit(exits: &serde_json::Map<String, Value>) -> Option<&'static str>
 }
 
 /// Fold filtered sim rows into the temporal summary payload the FE timeline renders.
-/// `grain_override`: `None` / auto → adaptive pick; `Some` forces that bucket size.
+/// `grain_override` / `hold_scheme_override`: `None` / auto → adaptive pick; `Some` forces.
 pub fn time_summary(
     rows: &[Value],
     wall_field: WallTimeField,
     grain_override: Option<&str>,
+    hold_scheme_override: Option<&str>,
 ) -> Value {
-    let mut hold: Vec<Value> = HOLD_BINS
+    let closed_secs: Vec<i64> = rows
+        .iter()
+        .filter(|r| r.get("exit_reason").and_then(Value::as_str).unwrap_or("Open") != "Open")
+        .map(|r| r.get("holding_secs").and_then(Value::as_i64).unwrap_or(0))
+        .filter(|s| *s >= 0)
+        .collect();
+    let hold_scheme_auto = pick_hold_scheme(&closed_secs);
+    let hold_scheme = hold_scheme_override
+        .and_then(HoldScheme::parse_override)
+        .unwrap_or(hold_scheme_auto);
+    let bins = hold_bins_for(hold_scheme);
+
+    let mut hold: Vec<Value> = bins
         .iter()
         .map(|b| {
             json!({
@@ -394,7 +530,7 @@ pub fn time_summary(
             })
         })
         .collect();
-    let hold_index: std::collections::HashMap<&str, usize> = HOLD_BINS
+    let hold_index: std::collections::HashMap<&str, usize> = bins
         .iter()
         .enumerate()
         .map(|(i, b)| (b.id, i))
@@ -417,7 +553,7 @@ pub fn time_summary(
             .unwrap_or("Open");
         let holding = row.get("holding_secs").and_then(Value::as_i64).unwrap_or(0);
         let pnl = row.get("pnl_sol").and_then(Value::as_f64).unwrap_or(0.0);
-        let bin_id = hold_bin_id(exit, holding);
+        let bin_id = hold_bin_id(exit, holding, bins);
         if let Some(&idx) = hold_index.get(bin_id) {
             let obj = hold[idx].as_object_mut().expect("hold bin object");
             let n = obj.get("n").and_then(Value::as_i64).unwrap_or(0) + 1;
@@ -535,6 +671,8 @@ pub fn time_summary(
 
     json!({
         "hold": hold,
+        "holdScheme": hold_scheme.as_str(),
+        "holdSchemeAuto": hold_scheme_auto.as_str(),
         "wall": wall_cells,
         "wallGrain": wall_grain.as_str(),
         "wallGrainAuto": wall_grain_auto.as_str(),
@@ -685,14 +823,17 @@ mod tests {
                 "pnl_sol":0.1,"entry_time":"2026-07-15T15:00:00Z"
             }),
         ];
-        let body = time_summary(&rows, WallTimeField::EntryTime, None);
+        let body = time_summary(&rows, WallTimeField::EntryTime, None, None);
         assert_eq!(body["nFired"], 3);
+        // Closed holds 10s + 20s → p90=20 → dense_60s
+        assert_eq!(body["holdScheme"], "dense_60s");
+        assert_eq!(body["holdSchemeAuto"], "dense_60s");
         let hold = body["hold"].as_array().unwrap();
-        let lt15 = hold.iter().find(|b| b["id"] == "lt15s").unwrap();
-        assert_eq!(lt15["n"], 1);
-        assert_eq!(lt15["exits"]["n_exit_take_profit"], 1);
-        let s15 = hold.iter().find(|b| b["id"] == "15to60s").unwrap();
-        assert_eq!(s15["n"], 1);
+        let b10 = hold.iter().find(|b| b["id"] == "hold_10_19").unwrap();
+        assert_eq!(b10["n"], 1);
+        assert_eq!(b10["exits"]["n_exit_take_profit"], 1);
+        let b20 = hold.iter().find(|b| b["id"] == "hold_20_39").unwrap();
+        assert_eq!(b20["n"], 1);
         let open = hold.iter().find(|b| b["id"] == "open").unwrap();
         assert_eq!(open["n"], 1);
         assert_eq!(body["wallGrain"], "30m");
@@ -706,9 +847,22 @@ mod tests {
             .sum();
         assert_eq!(wall_n, 3);
 
-        let forced = time_summary(&rows, WallTimeField::EntryTime, Some("1h"));
+        let forced = time_summary(&rows, WallTimeField::EntryTime, Some("1h"), Some("dense_15s"));
         assert_eq!(forced["wallGrain"], "1h");
         assert_eq!(forced["wallGrainAuto"], "30m");
+        assert_eq!(forced["holdScheme"], "dense_15s");
+        assert_eq!(forced["holdSchemeAuto"], "dense_60s");
+    }
+
+    #[test]
+    fn pick_hold_scheme_tracks_density() {
+        assert_eq!(pick_hold_scheme(&[5, 8, 12]), HoldScheme::Dense15s);
+        assert_eq!(pick_hold_scheme(&[10, 20, 45]), HoldScheme::Dense60s);
+        assert_eq!(pick_hold_scheme(&[60, 120, 240]), HoldScheme::Mid5m);
+        assert_eq!(pick_hold_scheme(&[300, 600, 1200]), HoldScheme::Mid30m);
+        assert_eq!(pick_hold_scheme(&[3600, 4000, 5000]), HoldScheme::Wide2h);
+        assert_eq!(pick_hold_scheme(&[10_000, 20_000]), HoldScheme::WideDay);
+        assert_eq!(pick_hold_scheme(&[]), HoldScheme::Mid30m);
     }
 
     #[test]

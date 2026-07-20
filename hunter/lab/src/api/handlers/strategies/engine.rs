@@ -141,12 +141,20 @@ pub async fn engine_sim_result_time_summary(
             Some(g)
         }
     });
+    let hold_scheme = query.get("hold_scheme").map(String::as_str).and_then(|g| {
+        if g.is_empty() || g == "auto" {
+            None
+        } else {
+            Some(g)
+        }
+    });
     super::positions::sim_result_time_summary(
         &app_state,
         run_id.into_inner(),
         body.into_inner(),
         wall_field,
         wall_grain,
+        hold_scheme,
     )
 }
 

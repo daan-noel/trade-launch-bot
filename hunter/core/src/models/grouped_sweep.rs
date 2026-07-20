@@ -86,8 +86,7 @@ pub struct GroupedSweepGroupSummary {
     pub token_count: i32,
     pub fired_count: i64,
     pub best_combo_id: i32,
-    /// Robust realized `score` of the winning combo (`μ−Z·σ/√n` over closed
-    /// trades); `None` when it has < 2 closed trades. The page's headline metric.
+    /// Checklist `score` of the winning combo; `None` when it never fired.
     pub best_score: Option<f64>,
     pub best_expectancy_sol: f64,
     // --- Winning combo's full stat line (JOINed from the `_results` row for
@@ -143,11 +142,11 @@ pub struct GroupedSweepResult {
     pub p90_pnl_pct: f64,
     pub best_pnl_pct: f64,
     pub worst_pnl_pct: f64,
-    /// Stddev of realized per-trade pnl% — the dispersion term in `score`.
+    /// Stddev of realized per-trade pnl% (display).
     pub std_pnl_pct: f64,
     /// `None` = no losing trades (infinite profit factor); UI shows ∞.
     pub profit_factor: Option<f64>,
-    /// Robust rank `μ − z·σ/√n` over closed trades; `None` when n_closed < 2.
+    /// Checklist rank; `None` when nothing fired.
     pub score: Option<f64>,
     pub expectancy_sol: f64,
     pub avg_holding_secs: f64,

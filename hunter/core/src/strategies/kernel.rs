@@ -221,7 +221,12 @@ pub struct RunMetrics {
     pub worst_pnl_pct: f64,
     pub std_pnl_pct: f64,
     pub profit_factor: Option<f64>,
-    /// Robust rank `μ − Z·σ/√n` over closed trades; `None` when n_closed < 2.
+    /// Mean per-trade pnl% over **all fired** positions (still-open marks
+    /// included). The profitability term in [`checklist_score`].
+    pub mtm_pnl_pct: f64,
+    /// Checklist rank (see [`checklist_score`]): MTM% × fire-rate × open-drag
+    /// × win-rate. `None` when nothing fired. Grouped sweep rewrites this with
+    /// the group's matched-token count after finalize.
     pub score: Option<f64>,
     pub avg_holding_secs: f64,
     pub median_holding_secs: f64,
@@ -248,8 +253,11 @@ pub struct RunMetrics {
 
 // ── Streaming aggregate (ported from lab sweep::aggregate) ─────────────────────
 
-/// Confidence multiplier for the robust score's one-sided lower bound (~95% z).
-const SCORE_Z: f64 = 1.64;
+/// Floor under win-rate in [`checklist_score`] so an all-open book (WR = 0)
+/// still gets a tiny multiplier instead of zeroing the whole rank.
+const SCORE_WIN_RATE_FLOOR: f64 = 0.01;
+/// Weight on open-share in [`checklist_score`]: `× (1 − w · n_open/n_fired)`.
+const SCORE_OPEN_DRAG: f64 = 0.5;
 
 /// Streaming accumulator across every token a run fires on. Every PnL/holding/
 /// win-rate stat is **realized-only** (closed positions — includes the
@@ -264,7 +272,7 @@ const SCORE_Z: f64 = 1.64;
 /// Public so the analysis path can fold into the **same** accumulator the live /
 /// paper kernel uses: `lab`'s per-combo sweep wraps one of these per combo (its
 /// `ComboAgg`) so backtest metrics are byte-identical to a live run's, with no
-/// second copy of the sketch / robust-score math to drift.
+/// second copy of the sketch / score math to drift.
 #[derive(Clone)]
 pub struct RunAgg {
     fired: u64,
@@ -281,6 +289,8 @@ pub struct RunAgg {
     pnl_sketch: QuantileSketch,
     closed_pct_sum: f64,
     closed_pct_sum_sq: f64,
+    /// Σ pnl% over **all fired** (open marks included) — feeds `mtm_pnl_pct`.
+    fired_pct_sum: f64,
     holding_sum: i64,
     holding_sketch: QuantileSketch,
     exit_counts: [u32; 10],
@@ -301,6 +311,7 @@ impl Default for RunAgg {
             pnl_sketch: QuantileSketch::default(),
             closed_pct_sum: 0.0,
             closed_pct_sum_sq: 0.0,
+            fired_pct_sum: 0.0,
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
             exit_counts: [0; 10],
@@ -320,6 +331,8 @@ impl RunAgg {
             return;
         }
         self.fired += 1;
+        let p = o.pnl_percent as f64;
+        self.fired_pct_sum += p;
         if o.exit == ExitCode::Open {
             self.open += 1;
             self.open_pnl_sol_sum += o.pnl_sol as f64;
@@ -327,7 +340,7 @@ impl RunAgg {
             self.pnl_sol_sum += o.pnl_sol as f64;
             self.pnl_min = self.pnl_min.min(o.pnl_percent);
             self.pnl_max = self.pnl_max.max(o.pnl_percent);
-            self.pnl_sketch.record(o.pnl_percent as f64);
+            self.pnl_sketch.record(p);
             if o.pnl_sol > 0.0 {
                 self.wins += 1;
                 self.gross_win_sol += o.pnl_sol as f64;
@@ -336,7 +349,6 @@ impl RunAgg {
             }
             self.holding_sum += o.holding_secs;
             self.holding_sketch.record(o.holding_secs as f64);
-            let p = o.pnl_percent as f64;
             self.closed_pct_sum += p;
             self.closed_pct_sum_sq += p * p;
         }
@@ -345,7 +357,9 @@ impl RunAgg {
 
     /// Collapse the accumulator to the final rolled-up [`RunMetrics`]. Every
     /// PnL/win-rate/holding figure is realized-only (denominator `n_closed`,
-    /// never `n_fired`) — see [`RunAgg`]'s doc.
+    /// never `n_fired`) — see [`RunAgg`]'s doc. Score uses MTM% (opens included)
+    /// with `matched = n_fired` (fire-rate = 1); grouped sweep rewrites score
+    /// with the group's token count via [`checklist_score`].
     pub fn finalize(self) -> RunMetrics {
         let n_closed = self.fired - self.open;
         let n = n_closed as f64;
@@ -360,6 +374,11 @@ impl RunAgg {
             )
         };
         let mean_pnl_pct = if n_closed == 0 { 0.0 } else { self.closed_pct_sum / n };
+        let mtm_pnl_pct = if self.fired == 0 {
+            0.0
+        } else {
+            self.fired_pct_sum / self.fired as f64
+        };
         let (avg_holding_secs, median_holding_secs) = if n_closed == 0 {
             (0.0, 0.0)
         } else {
@@ -370,16 +389,18 @@ impl RunAgg {
         } else {
             None
         };
-        let (std_pnl_pct, score) =
-            robust_score(n_closed, self.closed_pct_sum, self.closed_pct_sum_sq);
+        let expectancy_sol = if n_closed == 0 { 0.0 } else { self.pnl_sol_sum / n };
+        let std_pnl_pct = sample_std_pct(n_closed, self.closed_pct_sum, self.closed_pct_sum_sq);
+        let win_rate = if n_closed == 0 { 0.0 } else { self.wins as f64 / n };
+        let score = checklist_score(self.fired, self.open, self.fired, mtm_pnl_pct, win_rate);
         RunMetrics {
             n_fired: self.fired,
             n_open: self.open,
             n_closed,
-            win_rate: if n_closed == 0 { 0.0 } else { self.wins as f64 / n },
+            win_rate,
             total_pnl_sol: self.pnl_sol_sum,
             open_pnl_sol: self.open_pnl_sol_sum,
-            expectancy_sol: if n_closed == 0 { 0.0 } else { self.pnl_sol_sum / n },
+            expectancy_sol,
             mean_pnl_pct,
             median_pnl_pct,
             p90_pnl_pct,
@@ -387,6 +408,7 @@ impl RunAgg {
             worst_pnl_pct,
             std_pnl_pct,
             profit_factor,
+            mtm_pnl_pct,
             score,
             avg_holding_secs,
             median_holding_secs,
@@ -425,6 +447,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     let mut gross_loss_sol = 0.0f64;
     let mut closed_pct: Vec<f64> = Vec::new();
     let mut closed_holding: Vec<i64> = Vec::new();
+    let mut fired_pct_sum = 0.0f64;
     let mut exit_counts = [0u32; 10];
 
     for o in outcomes {
@@ -432,12 +455,13 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
             continue;
         }
         fired += 1;
+        let pnl_pct = o.pnl_percent as f64;
+        fired_pct_sum += pnl_pct;
         if o.exit == ExitCode::Open {
             open += 1;
             open_pnl_sol_sum += o.pnl_sol as f64;
         } else {
             let pnl_sol = o.pnl_sol as f64;
-            let pnl_pct = o.pnl_percent as f64;
             pnl_sol_sum += pnl_sol;
             if pnl_sol > 0.0 {
                 wins += 1;
@@ -467,6 +491,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     let closed_pct_sum: f64 = closed_pct.iter().sum();
     let closed_pct_sum_sq: f64 = closed_pct.iter().map(|p| p * p).sum();
     let mean_pnl_pct = if n_closed == 0 { 0.0 } else { closed_pct_sum / n };
+    let mtm_pnl_pct = if fired == 0 { 0.0 } else { fired_pct_sum / fired as f64 };
     closed_holding.sort_unstable();
     let (avg_holding_secs, median_holding_secs) = if closed_holding.is_empty() {
         (0.0, 0.0)
@@ -475,16 +500,19 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     };
     let profit_factor =
         if gross_loss_sol > 0.0 { Some(gross_win_sol / gross_loss_sol) } else { None };
-    let (std_pnl_pct, score) = robust_score(n_closed, closed_pct_sum, closed_pct_sum_sq);
+    let expectancy_sol = if n_closed == 0 { 0.0 } else { pnl_sol_sum / n };
+    let std_pnl_pct = sample_std_pct(n_closed, closed_pct_sum, closed_pct_sum_sq);
+    let win_rate = if n_closed == 0 { 0.0 } else { wins as f64 / n };
+    let score = checklist_score(fired, open, fired, mtm_pnl_pct, win_rate);
 
     RunMetrics {
         n_fired: fired,
         n_open: open,
         n_closed,
-        win_rate: if n_closed == 0 { 0.0 } else { wins as f64 / n },
+        win_rate,
         total_pnl_sol: pnl_sol_sum,
         open_pnl_sol: open_pnl_sol_sum,
-        expectancy_sol: if n_closed == 0 { 0.0 } else { pnl_sol_sum / n },
+        expectancy_sol,
         mean_pnl_pct,
         median_pnl_pct,
         p90_pnl_pct,
@@ -492,6 +520,7 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
         worst_pnl_pct,
         std_pnl_pct,
         profit_factor,
+        mtm_pnl_pct,
         score,
         avg_holding_secs,
         median_holding_secs,
@@ -586,18 +615,41 @@ fn exact_quantile_i64(sorted: &[i64], q: f64) -> f64 {
     sorted[idx.min(sorted.len() - 1)] as f64
 }
 
-/// One-sided lower-confidence bound on realized per-trade return:
-/// `μ − Z·σ/√n` over closed positions. `(stddev, Some(score))`, or `(0, None)`
-/// when n < 2 (one closed trade is no evidence of a repeatable edge).
-fn robust_score(n_closed: u64, sum: f64, sum_sq: f64) -> (f64, Option<f64>) {
+/// Sample stddev of closed per-trade pnl% — display column only.
+fn sample_std_pct(n_closed: u64, sum: f64, sum_sq: f64) -> f64 {
     if n_closed < 2 {
-        return (0.0, None);
+        return 0.0;
     }
     let n = n_closed as f64;
     let mean = sum / n;
     let var = ((sum_sq - n * mean * mean) / (n - 1.0)).max(0.0);
-    let std = var.sqrt();
-    (std, Some(mean - SCORE_Z * std / n.sqrt()))
+    var.sqrt()
+}
+
+/// Manual-checklist rank used by the grouped sweep:
+/// `mtm_pct × (n_fired/matched) × (1 − 0.5·n_open/n_fired) × max(win_rate, ε)`.
+///
+/// - `mtm_pct` — mean pnl% over all fired (still-open marks included)
+/// - fire-rate — coverage of the matched group (capped at 1)
+/// - open-drag — soft penalty for unsettled bags
+/// - win-rate — closed-only; floored so all-open books don't zero the score
+///
+/// `None` when nothing fired or `matched == 0`. Public so the sweep can rewrite
+/// a combo's score with the group's true matched-token count after finalize.
+pub fn checklist_score(
+    n_fired: u64,
+    n_open: u64,
+    matched: u64,
+    mtm_pnl_pct: f64,
+    win_rate: f64,
+) -> Option<f64> {
+    if n_fired == 0 || matched == 0 {
+        return None;
+    }
+    let fire_rate = (n_fired as f64 / matched as f64).min(1.0);
+    let open_drag = (n_open as f64 / n_fired as f64).min(1.0);
+    let wr = win_rate.max(SCORE_WIN_RATE_FLOOR);
+    Some(mtm_pnl_pct * fire_rate * (1.0 - SCORE_OPEN_DRAG * open_drag) * wr)
 }
 
 fn exit_index(e: ExitCode) -> usize {
@@ -825,5 +877,53 @@ mod tests {
         assert_eq!(m.n_fired, 0);
         assert_eq!(m.score, None);
         assert_eq!(m.profit_factor, None);
+    }
+
+    // ── checklist_score ─────────────────────────────────────────────────────
+
+    #[test]
+    fn score_is_mtm_pct_when_fully_closed_and_all_wins() {
+        // fire_rate=1, open_drag=0, win_rate=1 → score == mtm_pnl_pct.
+        let rows = vec![
+            outcome(0.5, 50.0, ExitCode::TakeProfit, 5),
+            outcome(0.5, 50.0, ExitCode::TakeProfit, 5),
+        ];
+        let m = exact_run_metrics(rows.iter());
+        assert!((m.mtm_pnl_pct - 50.0).abs() < 1e-9);
+        assert_eq!(m.score, Some(50.0));
+    }
+
+    #[test]
+    fn score_includes_open_marks_in_mtm_and_penalises_open_share() {
+        let rows = vec![
+            outcome(0.1, 10.0, ExitCode::TakeProfit, 5),
+            outcome(0.1, 10.0, ExitCode::TakeProfit, 5),
+            outcome(5.0, 90.0, ExitCode::Open, 0),
+        ];
+        let m = exact_run_metrics(rows.iter());
+        // MTM mean = (10+10+90)/3 = 36.666…
+        assert!((m.mtm_pnl_pct - 110.0 / 3.0).abs() < 1e-9);
+        // × 1 × (1 − 0.5·1/3) × 1.0 = × (5/6)
+        let expected = m.mtm_pnl_pct * (1.0 - 0.5 / 3.0);
+        assert!((m.score.unwrap() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn score_none_when_nothing_fired() {
+        assert_eq!(exact_run_metrics(std::iter::empty()).score, None);
+        assert_eq!(
+            checklist_score(0, 0, 10, 50.0, 1.0),
+            None,
+            "unfired combo has no score"
+        );
+    }
+
+    #[test]
+    fn checklist_score_scales_with_fire_rate() {
+        // Same book, half coverage → half score.
+        let full = checklist_score(10, 0, 10, 40.0, 1.0).unwrap();
+        let half = checklist_score(5, 0, 10, 40.0, 1.0).unwrap();
+        assert!((full - 40.0).abs() < 1e-9);
+        assert!((half - 20.0).abs() < 1e-9);
     }
 }

@@ -18,7 +18,7 @@
 use crate::sweep::strategy::TokenOutcome;
 use trading_core::models::grouped_sweep::ComboTokenResult;
 use trading_core::strategies::kernel::{
-    exact_run_metrics, ExitCode, RunAgg, RunMetrics, TokenOutcome as CoreOutcome,
+    checklist_score, exact_run_metrics, ExitCode, RunAgg, RunMetrics, TokenOutcome as CoreOutcome,
 };
 
 /// Streaming accumulator for one combo across every token it fired on. A thin
@@ -78,13 +78,15 @@ pub struct ComboMetrics {
     pub p90_pnl_pct: f64,
     pub best_pnl_pct: f64,
     pub worst_pnl_pct: f64,
-    /// Stddev of realized (closed) per-trade pnl% — the dispersion/risk term the
-    /// `score` penalises. `0` when fewer than 2 closed trades.
+    /// Stddev of realized (closed) per-trade pnl% — display only.
     pub std_pnl_pct: f64,
     /// gross wins ÷ gross losses; `None` = no losing trades (infinite).
     pub profit_factor: Option<f64>,
-    /// Robust rank: `μ − Z·σ/√n` over closed trades — the table's default sort.
-    /// `None` when n_closed < 2 (no evidence of a repeatable edge → sorts last).
+    /// Mean pnl% over all fired (still-open marks included).
+    pub mtm_pnl_pct: f64,
+    /// Checklist rank — the table's default sort. Grouped sweep rewrites with
+    /// the group's matched-token count via [`Self::rescore_for_group`].
+    /// `None` when nothing fired.
     pub score: Option<f64>,
     pub expectancy_sol: f64,
     pub avg_holding_secs: f64,
@@ -128,6 +130,7 @@ impl ComboMetrics {
             worst_pnl_pct: m.worst_pnl_pct,
             std_pnl_pct: m.std_pnl_pct,
             profit_factor: m.profit_factor,
+            mtm_pnl_pct: m.mtm_pnl_pct,
             score: m.score,
             expectancy_sol: m.expectancy_sol,
             avg_holding_secs: m.avg_holding_secs,
@@ -165,6 +168,18 @@ impl ComboMetrics {
             })
             .collect();
         Self::from_run(combo_id, exact_run_metrics(outcomes.iter()))
+    }
+
+    /// Rewrite [`Self::score`] with the group's matched-token count so fire-rate
+    /// is `n_fired / matched` (not the provisional `= 1` from finalize).
+    pub fn rescore_for_group(&mut self, matched: usize) {
+        self.score = checklist_score(
+            self.n_fired,
+            self.n_open,
+            matched as u64,
+            self.mtm_pnl_pct,
+            self.win_rate,
+        );
     }
 }
 
@@ -260,41 +275,26 @@ mod tests {
     }
 
     #[test]
-    fn score_none_under_two_closed_trades() {
-        // One closed trade: a great return but no evidence it repeats → no score.
-        let mut a = ComboAgg::default();
-        a.record(&outcome(2.0, 200.0, ExitCode::TakeProfit, 10));
-        let m = a.finalize(0);
-        assert_eq!(m.n_closed, 1);
+    fn score_none_when_nothing_fired() {
+        let m = ComboAgg::default().finalize(0);
+        assert_eq!(m.n_fired, 0);
         assert_eq!(m.score, None);
-        assert_eq!(m.std_pnl_pct, 0.0);
     }
 
     #[test]
-    fn score_penalises_dispersion_below_the_mean() {
-        // Same realized mean (0%), but a wide spread → σ>0 → score < mean.
-        let mut a = ComboAgg::default();
-        a.record(&outcome(1.0, 100.0, ExitCode::TakeProfit, 5));
-        a.record(&outcome(-1.0, -100.0, ExitCode::StopLoss, 5));
-        let m = a.finalize(0);
-        assert!(m.std_pnl_pct > 0.0);
-        assert!(m.score.unwrap() < 0.0, "dispersion pulls the lower bound under the mean");
-    }
-
-    #[test]
-    fn open_positions_excluded_from_score_and_holding() {
-        // An open (unrealized) winner must not feed the realized mean/stddev or
-        // the holding-time stats.
+    fn score_is_checklist_product_and_includes_open_in_mtm() {
         let mut a = ComboAgg::default();
         a.record(&outcome(0.1, 10.0, ExitCode::TakeProfit, 5));
         a.record(&outcome(0.1, 10.0, ExitCode::TakeProfit, 5));
-        a.record(&outcome(5.0, 999.0, ExitCode::Open, 0)); // ignored by the score
-        let m = a.finalize(0);
-        assert_eq!(m.n_closed, 2);
-        assert_eq!(m.n_open, 1);
-        assert!(m.std_pnl_pct.abs() < 1e-9, "two identical closed returns → σ=0");
-        assert_eq!(m.score, Some(10.0));
-        assert_eq!(m.n_exit_open, 1);
+        a.record(&outcome(5.0, 90.0, ExitCode::Open, 0));
+        let mut m = a.finalize(0);
+        assert!((m.mtm_pnl_pct - 110.0 / 3.0).abs() < 1e-6);
+        // finalize uses matched=n_fired → fire_rate=1; open_drag=1/3; win_rate=1.
+        let expected = m.mtm_pnl_pct * (1.0 - 0.5 / 3.0);
+        assert!((m.score.unwrap() - expected).abs() < 1e-6);
+        // Group rescore with matched=6 → fire_rate=0.5.
+        m.rescore_for_group(6);
+        assert!((m.score.unwrap() - expected * 0.5).abs() < 1e-6);
     }
 
     #[test]

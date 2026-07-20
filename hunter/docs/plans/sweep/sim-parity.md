@@ -62,12 +62,9 @@ condition `eval`, `CompiledRule::compile`.
    `run.buy_amount_sol.unwrap_or(DEFAULT)` → promote drafts the rule at the same
    notional. The 1.0 default only fires when the caller omits it, and a sweep has no
    rule to source a notional from (it explores many combos). Residual = 4b above.
-6. **`best_combo` ranking counts open positions.** `marked_pnl_sol =
-   total_pnl_sol + open_pnl_sol` drives the `rank_combo` tie-break and the sub-floor
-   fallback. **`score` stays realized-only** by design — it is `μ − Z·σ/√n` over CLOSED
-   trades, and an open mark is a one-point valuation with no trade distribution; folding
-   it in would inflate `n` with a non-observation. This moved the tie-break, not the
-   primary key. Pinned by `pnl_tiebreak_counts_open_positions` and
+6. **`best_combo` ranking includes open positions in score.** Checklist `score` uses
+   MTM% (opens included) × fire-rate × open-drag × win-rate; `marked_pnl_sol` remains
+   the tie-break. Pinned by `pnl_tiebreak_counts_open_positions` and
    `score_still_outranks_marked_pnl`.
 
 ### Open — not user-approved work, listed so it is not lost

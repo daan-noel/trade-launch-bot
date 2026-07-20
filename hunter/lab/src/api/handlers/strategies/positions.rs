@@ -90,13 +90,15 @@ pub fn sim_result_summary(state: &LocalState, rule_id: Uuid, req: TableRequest) 
 /// POST `.../rules/{rule_id}/simulate/result/time-summary` — hold-duration +
 /// wall-clock bins over the filtered sim cohort (same filter grammar as
 /// [`sim_result_summary`]). Query: `wall_field` = `entry_time`|`created_at`,
-/// `wall_grain` = `auto`|`30m`|`1h`|`2h`|`4h`|`day`.
+/// `wall_grain` = `auto`|`30m`|`1h`|`2h`|`4h`|`day`,
+/// `hold_scheme` = `auto`|`dense_15s`|`dense_60s`|`mid_5m`|`mid_30m`|`wide_2h`|`wide_day`.
 pub fn sim_result_time_summary(
     state: &LocalState,
     rule_id: Uuid,
     req: TableRequest,
     wall_field: &str,
     wall_grain: Option<&str>,
+    hold_scheme: Option<&str>,
 ) -> HttpResponse {
     let rows = match peek_sim_rows(state, rule_id) {
         Ok(rows) => rows,
@@ -104,6 +106,7 @@ pub fn sim_result_time_summary(
     };
     let filtered = crate::strategies::sim_query::filter_rows(&rows, &req);
     let field = crate::strategies::sim_query::WallTimeField::parse(wall_field);
-    let body = crate::strategies::sim_query::time_summary(&filtered, field, wall_grain);
+    let body =
+        crate::strategies::sim_query::time_summary(&filtered, field, wall_grain, hold_scheme);
     HttpResponse::Ok().json(body)
 }

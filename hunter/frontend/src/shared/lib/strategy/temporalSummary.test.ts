@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
+  avgPnlSol,
+  bestPnlWallCell,
   buildTemporalSummary,
+  closedCount,
+  formatWallClock,
+  formatWallRange,
   formatWallSpan,
+  holdBinsFor,
+  isWallDayBreak,
   peakWallCell,
+  pickHoldScheme,
   pickWallGrain,
+  rebucketHold,
+  rebucketWall,
   rowMatchesHoldBin,
+  worstPnlWallCell,
   type TemporalRow,
 } from './temporalSummary';
 
@@ -32,8 +43,49 @@ describe('pickWallGrain', () => {
   });
 });
 
+describe('pickHoldScheme', () => {
+  it('picks denser schemes for short closed holds', () => {
+    expect(pickHoldScheme([5, 8, 12])).toBe('dense_15s');
+    expect(pickHoldScheme([10, 20, 45])).toBe('dense_60s');
+    expect(pickHoldScheme([60, 120, 240])).toBe('mid_5m');
+    expect(pickHoldScheme([300, 600, 1200])).toBe('mid_30m');
+    expect(pickHoldScheme([3600, 4000, 5000])).toBe('wide_2h');
+    expect(pickHoldScheme([10_000, 20_000])).toBe('wide_day');
+    expect(pickHoldScheme([])).toBe('mid_30m');
+  });
+});
+
+describe('wall axis labels', () => {
+  it('formats clock-first ticks and day breaks', () => {
+    expect(formatWallClock('2026-07-15T14:30:00Z', '30m')).toMatch(/\d{2}:\d{2}/);
+    // Noon UTC stays on the same local calendar day in common US/EU offsets.
+    expect(isWallDayBreak('2026-07-16T12:00:00Z', '2026-07-15T12:00:00Z')).toBe(true);
+    expect(isWallDayBreak('2026-07-15T16:00:00Z', '2026-07-15T14:00:00Z')).toBe(false);
+  });
+
+  it('builds a range caption from filled cells', () => {
+    const rows: TemporalRow[] = [
+      row({
+        mint_address: 'a',
+        exit: 'TakeProfit',
+        holding_secs: 10,
+        created_at: '2026-07-15T10:00:00Z',
+      }),
+      row({
+        mint_address: 'b',
+        exit: 'TakeProfit',
+        holding_secs: 10,
+        created_at: '2026-07-15T16:00:00Z',
+      }),
+    ];
+    const t = buildTemporalSummary(rows, 'created_at', '1h');
+    const range = formatWallRange(t.wall, t.wallGrain);
+    expect(range).toContain('→');
+  });
+});
+
 describe('buildTemporalSummary', () => {
-  it('bins hold duration and stacks exits', () => {
+  it('bins hold duration adaptively and stacks exits', () => {
     const rows: TemporalRow[] = [
       row({ mint_address: 'a', exit: 'TakeProfit', holding_secs: 10, pnl_sol: 1 }),
       row({ mint_address: 'b', exit: 'StopLoss', holding_secs: 20, pnl_sol: -0.5 }),
@@ -43,15 +95,31 @@ describe('buildTemporalSummary', () => {
     ];
     const t = buildTemporalSummary(rows);
     expect(t.nFired).toBe(4);
-    const lt15 = t.hold.find((b) => b.id === 'lt15s')!;
-    expect(lt15.n).toBe(1);
-    expect(lt15.exits.n_exit_take_profit).toBe(1);
-    const s15 = t.hold.find((b) => b.id === '15to60s')!;
-    expect(s15.n).toBe(1);
-    expect(s15.exits.n_exit_stop_loss).toBe(1);
+    // closed 10/20/120 → nearest-rank p90=120 → mid_5m
+    expect(t.holdScheme).toBe('mid_5m');
+    const bins = holdBinsFor('mid_5m');
+    // 10s + 20s → <30s; 120s → 2–5m
+    const under30 = t.hold.find((b) => b.id === 'hold_0_29')!;
+    expect(under30.n).toBe(2);
+    expect(under30.exits.n_exit_take_profit).toBe(1);
+    expect(under30.exits.n_exit_stop_loss).toBe(1);
+    expect(t.hold.find((b) => b.id === 'hold_120_299')!.n).toBe(1);
     const open = t.hold.find((b) => b.id === 'open')!;
     expect(open.n).toBe(1);
-    expect(rowMatchesHoldBin(rows[0], 'lt15s')).toBe(true);
+    expect(rowMatchesHoldBin(rows[0], 'hold_0_29', bins)).toBe(true);
+  });
+
+  it('uses dense_15s when all closed holds are sub-15s', () => {
+    const rows: TemporalRow[] = [
+      row({ mint_address: 'a', exit: 'TakeProfit', holding_secs: 2, pnl_sol: 1 }),
+      row({ mint_address: 'b', exit: 'StopLoss', holding_secs: 7, pnl_sol: -0.5 }),
+      row({ mint_address: 'c', exit: 'TakeProfit', holding_secs: 12, pnl_sol: 0.2 }),
+    ];
+    const t = buildTemporalSummary(rows);
+    expect(t.holdScheme).toBe('dense_15s');
+    expect(t.hold.find((b) => b.id === 'hold_0_2')!.n).toBe(1);
+    expect(t.hold.find((b) => b.id === 'hold_6_9')!.n).toBe(1);
+    expect(t.hold.find((b) => b.id === 'hold_10_14')!.n).toBe(1);
   });
 
   it('builds wall cells from created_at with adaptive 30m grain', () => {
@@ -81,6 +149,39 @@ describe('buildTemporalSummary', () => {
     expect(filled[0].mints).toEqual(['a', 'b']);
     expect(peakWallCell(t.wall)?.n).toBe(2);
     expect(formatWallSpan(t.wallSpanMs)).toBe('15m');
+  });
+
+  it('picks best/worst PnL wall cells and avg helpers', () => {
+    const rows: TemporalRow[] = [
+      row({
+        mint_address: 'a',
+        exit: 'TakeProfit',
+        holding_secs: 10,
+        pnl_sol: 2,
+        created_at: '2026-07-15T10:00:00Z',
+      }),
+      row({
+        mint_address: 'b',
+        exit: 'StopLoss',
+        holding_secs: 20,
+        pnl_sol: -1,
+        created_at: '2026-07-15T16:00:00Z',
+      }),
+      row({
+        mint_address: 'c',
+        exit: 'Open',
+        holding_secs: 0,
+        pnl_sol: 0.25,
+        created_at: '2026-07-15T16:30:00Z',
+      }),
+    ];
+    const t = buildTemporalSummary(rows, 'created_at', '1h');
+    const best = bestPnlWallCell(t.wall)!;
+    const worst = worstPnlWallCell(t.wall)!;
+    expect(best.pnl_sol).toBe(2);
+    expect(worst.pnl_sol).toBe(-0.75);
+    expect(avgPnlSol(best.pnl_sol, best.n)).toBe(2);
+    expect(closedCount(worst.n, worst.exits)).toBe(1);
   });
 
   it('uses 1h grain when span is about a day', () => {
@@ -121,5 +222,52 @@ describe('buildTemporalSummary', () => {
     const t = buildTemporalSummary(rows, 'created_at', '1h');
     expect(t.wallGrain).toBe('1h');
     expect(t.wallGrainAuto).toBe('30m');
+  });
+
+  it('honors manual hold-scheme override while keeping auto pick', () => {
+    const rows: TemporalRow[] = [
+      row({ mint_address: 'a', exit: 'TakeProfit', holding_secs: 10 }),
+      row({ mint_address: 'b', exit: 'StopLoss', holding_secs: 20 }),
+    ];
+    const t = buildTemporalSummary(rows, 'entry_time', 'auto', 'dense_15s');
+    expect(t.holdScheme).toBe('dense_15s');
+    expect(t.holdSchemeAuto).toBe('dense_60s');
+    expect(t.hold.find((b) => b.id === 'hold_10_14')!.n).toBe(1);
+  });
+
+  it('rebuckets hold/wall for linked brush while keeping base edges', () => {
+    const rows: TemporalRow[] = [
+      row({
+        mint_address: 'a',
+        exit: 'TakeProfit',
+        holding_secs: 5,
+        pnl_sol: 1,
+        created_at: '2026-07-15T10:00:00Z',
+      }),
+      row({
+        mint_address: 'b',
+        exit: 'StopLoss',
+        holding_secs: 120,
+        pnl_sol: -1,
+        created_at: '2026-07-15T16:00:00Z',
+      }),
+    ];
+    const base = buildTemporalSummary(rows, 'created_at', '1h', 'mid_5m');
+    const holdOnlyA = rebucketHold(
+      'mid_5m',
+      rows.filter((r) => r.mint_address === 'a'),
+    );
+    expect(holdOnlyA.map((b) => b.id)).toEqual(base.hold.map((b) => b.id));
+    expect(holdOnlyA.find((b) => b.id === 'hold_0_29')!.n).toBe(1);
+    expect(holdOnlyA.find((b) => b.id === 'hold_120_299')!.n).toBe(0);
+
+    const wallOnlyB = rebucketWall(
+      base.wall,
+      'created_at',
+      '1h',
+      rows.filter((r) => r.mint_address === 'b'),
+    );
+    expect(wallOnlyB.map((c) => c.id)).toEqual(base.wall.map((c) => c.id));
+    expect(wallOnlyB.reduce((s, c) => s + c.n, 0)).toBe(1);
   });
 });

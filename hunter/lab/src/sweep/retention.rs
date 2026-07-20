@@ -193,6 +193,7 @@ mod tests {
             worst_pnl_pct: 0.0,
             std_pnl_pct: 0.0,
             profit_factor: None,
+            mtm_pnl_pct: 0.0,
             score,
             expectancy_sol: 0.0,
             avg_holding_secs: 0.0,

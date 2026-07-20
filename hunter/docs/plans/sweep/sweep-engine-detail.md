@@ -41,7 +41,7 @@ The group/combo tables carry the matching `n_open` / open-share columns.
 - `avg_pnl_sol f64` — mean PnL per position
 - `median_pnl_sol f64` — p50 of per-position PnL distribution (QuantileSketch)
 - `p90_pnl_sol f64` — p90 of per-position PnL distribution (QuantileSketch, ~15% relative error)
-- `expectancy_sol f64` — `avg_pnl_sol` weighted by win probability (primary ranking for best-combo selection per group)
+- `expectancy_sol f64` — mean realized PnL per closed trade (SOL); secondary readout — ranking uses `score`
 
 **Exit reason mix** (fraction of exits by type, sums to 1.0):
 - `exit_tp f64` — take-profit exits
@@ -313,24 +313,23 @@ Human-facing reference for the **Grouped Sweep** result-table and combo-table co
 The storage layout for these is [Combo Column Families](#combo-column-families) above; the
 approximation mechanism is [QuantileSketch](#quantilesketch--aggregaters).
 
-### Score — `aggregate.rs` → `robust_score()`
+### Score — `kernel.rs` → `checklist_score()`
 
-**Formula:** `mean − 1.64 × (std / √n)` — a **lower confidence bound** on the combo's true
-average return. It answers *"what's the worst I can credibly believe this combo's real mean
-is, given the data?"*
+**Formula:** `MTM% × (n_fired / matched) × (1 − 0.5 · n_open/n_fired) × max(win_rate, 0.01)`
+
+The manual-checklist rank: mark-to-market average return, times how much of the group
+fired, soft-penalised for still-open bags, times closed win rate.
 
 | Variable | Meaning |
 | --- | --- |
-| `mean` | Average % return across closed trades |
-| `std` | Sample standard deviation of closed returns |
-| `n` | Number of closed trades |
-| `1.64` | ~95% one-sided confidence multiplier (Z-score) |
+| `MTM%` | Mean per-trade pnl% over **all fired** (still-open marks included) |
+| `matched` | Group token count (rewritten in `make_group_result`) |
+| `n_fired / matched` | Fire-rate / coverage |
+| `n_open / n_fired` | Open-share drag (weight 0.5) |
+| `win_rate` | Closed-only wins / closed; floored at 0.01 so all-open ≠ zero |
 
-**Example:** mean = +50%, std = 80%, n = 10 → `50 − 1.64 × (80 / √10) = +8.5`.
-
-Why it matters: high mean with few trades → low score (no repeatable edge proven); high mean
-with volatile returns → low score (punishes inconsistency); high mean + many trades + tight
-returns → high score (reliable edge). Score is `None` (shown `—`) below 2 closed trades.
+Score is `None` (shown `—`) when nothing fired. Coverage floor still gates who can be
+crowned `best_combo`.
 
 ### Combo-table columns
 
@@ -342,8 +341,8 @@ returns → high score (reliable edge). Score is `None` (shown `—`) below 2 cl
   error). Robust to outliers.
 - **P90 %** — p90 of all trade returns (same sketch): the upside-tail "good day", a ceiling
   not a floor.
-- **Std %** — sample std of **closed** returns, `√[(Σx² − n·μ²) / (n−1)]`. Feeds the Score
-  formula to penalise inconsistency; `0` below 2 closed trades.
+- **Std %** — sample std of **closed** returns, `√[(Σx² − n·μ²) / (n−1)]`. Display only;
+  Score uses Sortino downside on SOL expectancy, not this column. `0` below 2 closed trades.
 
 Best % / Worst % are exact running min/max — no approximation.
 
@@ -352,7 +351,8 @@ Best % / Worst % are exact running min/max — no approximation.
 | Metric | Scope |
 | --- | --- |
 | Mean %, Median %, P90 % | All fired (open positions mark-to-market included) |
-| Std %, Score | Closed trades only |
+| Std % | Closed trades only (display) |
+| MTM %, Score | All fired (opens included in MTM%) |
 | Holding time (avg/median) | Closed trades only |
 | Win rate, Total PnL, Expectancy | All fired |
 

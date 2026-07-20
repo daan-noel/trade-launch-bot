@@ -259,11 +259,15 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   the `simulation_finished` SSE (collect → fetch-first-page). Below the scalar summary, a **Temporal**
   band (`TemporalSummary` + `lib/strategy/temporalSummary`) shows an entry/create wall-clock **volume
   timeline** (bar height = count; grain `auto|30m|1h|2h|4h|day`, volume color by default) plus
-  hold-duration × exit stacked bars and glance chips (`peak` / `span` / `timed`). Simulate bins via
-  `POST …/result/time-summary?wall_field=&wall_grain=` (same filter body as summary; grain picker
-  twin'd in `lab::strategies::sim_query`); sweep combo drill-in folds client-side from
-  `ComboTokenResult` rows. Clicking a bin/cell (or the peak chip) filters the positions table by mint
-  set (chart stays on the pre-click cohort). Default wall field is **created at**.
+  hold-duration × exit stacked bars (bucket scheme `auto` from closed-hold p90, or manual
+  `dense_15s`…`wide_day`), insight chips (`peak volume` / `best PnL` / `worst PnL` / `span` /
+  `timed`), and a **selection inspector** when a bin or cell is active. **Linked brush:**
+  selecting a wall candle rebins hold over that mint set (and vice versa); the driving chart
+  stays on the base cohort with a faint ghost of the full distribution under the linked bars.
+  Simulate bins via `POST …/result/time-summary?wall_field=&wall_grain=&hold_scheme=` (base =
+  table filters; linked = mint-filtered refetch with base grain/scheme locked); sweep combo
+  drill-in folds client-side from `ComboTokenResult` rows. Clicking also filters the positions
+  table by mint set. Default wall field is **created at**.
 - **Token enrichment is server-side, not client-merged — for EVERY token table.** Every token-result
   table (Matched, Positions current/history, lab paper positions, Simulated, Sweep drill-in, **and, since
   Phase 4, Wallet Holdings**) receives the full `TOKEN_ENRICH_FIELDS` set **in the response body** — the

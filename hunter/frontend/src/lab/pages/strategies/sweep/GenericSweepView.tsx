@@ -272,8 +272,9 @@ export function GenericSweepView() {
     [activeRunId, promote],
   );
 
-  const groupColumns = useMemo(() => buildGenericGroupColumns(), []);
-  const comboColumns = useMemo(() => buildGenericComboColumns(), []);
+  const buyAmountSol = activeRun?.buy_amount_sol ?? 1;
+  const groupColumns = useMemo(() => buildGenericGroupColumns(buyAmountSol), [buyAmountSol]);
+  const comboColumns = useMemo(() => buildGenericComboColumns(buyAmountSol), [buyAmountSol]);
 
   const groupRowActions = useCallback(
     (g: GroupedSweepGroupRecord): ReactNode => (
