@@ -15,8 +15,8 @@ use tokio::sync::broadcast;
 use tracing::warn;
 
 use hunter_engine::event::{
-    ArmedDelta, ArmedStateTag, DisarmReason, ExitReason, LoadedRule, PositionDelta, PositionStatus,
-    RuleId, TradeMode,
+    ArmedDelta, ArmedStateTag, DisarmReason, LoadedRule, PositionDelta, PositionStatus, RuleId,
+    TradeMode,
 };
 
 use trading_core::models::ingest::SseEvent;
@@ -272,7 +272,7 @@ impl Sink {
             Ok(Some(mut pos)) => {
                 pos.status = status.to_string();
                 if let Some(r) = delta.reason {
-                    pos.exit_reason = Some(exit_reason_str(r).to_string());
+                    pos.exit_reason = Some(r.label().into_owned());
                 }
                 pos.updated_at = Utc::now();
                 if let Err(e) = self.repo.update_position(&pos).await {
@@ -288,9 +288,12 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else { return };
         let Some(fill) = delta.fill else { return };
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
-        let reason = delta.reason.map(exit_reason_str).unwrap_or("Metrics");
+        let reason = delta
+            .reason
+            .map(|r| r.label().into_owned())
+            .unwrap_or_else(|| "Metrics".to_string());
         if let Ok(Some(mut pos)) = self.repo.find_position(meta.pg_id).await {
-            pos.close(fill.price, fill.sol, fill.token_amount, fs.sigs, fill.at, reason);
+            pos.close(fill.price, fill.sol, fill.token_amount, fs.sigs, fill.at, &reason);
             if let Err(e) = self.repo.update_position(&pos).await {
                 warn!(pg = %meta.pg_id, "engine sink: close update failed: {e}");
             }
@@ -319,7 +322,7 @@ impl Sink {
                 _ => pos.mark_exit_failed(exit_price, Utc::now()),
             }
             if let Some(r) = delta.reason {
-                pos.exit_reason = Some(exit_reason_str(r).to_string());
+                pos.exit_reason = Some(r.label().into_owned());
             }
             if let Err(e) = self.repo.update_position(&pos).await {
                 warn!(pg = %meta.pg_id, "engine sink: {status} update failed: {e}");
@@ -370,7 +373,7 @@ impl Sink {
             mint_address: delta.mint.to_string(),
             position_id: pg_id.unwrap_or_default(),
             status: position_status_str(delta.status).to_string(),
-            exit_reason: delta.reason.map(|r| exit_reason_str(r).to_string()),
+            exit_reason: delta.reason.map(|r| r.label().into_owned()),
             entry_price,
             exit_price,
             trade_mode: info.map(|i| mode_str(i.mode).to_string()),
@@ -396,17 +399,6 @@ fn position_status_str(s: PositionStatus) -> &'static str {
         PositionStatus::End => "End",
         PositionStatus::ExitFailed => "ExitFailed",
         PositionStatus::ExitUnconfirmed => "ExitUnconfirmed",
-    }
-}
-
-fn exit_reason_str(r: ExitReason) -> &'static str {
-    match r {
-        ExitReason::TakeProfit => "TakeProfit",
-        ExitReason::StopLoss => "StopLoss",
-        ExitReason::Metrics => "Metrics",
-        ExitReason::Dead => "Dead",
-        ExitReason::Manual => "Manual",
-        ExitReason::Migrated => "Migrated",
     }
 }
 

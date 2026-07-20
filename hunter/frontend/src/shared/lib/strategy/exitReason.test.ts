@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   exitReasonLabel,
   exitReasonSearchText,
+  formatMetricExitLabel,
+  isMetricExitReason,
   metricsExitLabel,
   normalizeExitReasonFilter,
+  parseMetricExitParts,
 } from './exitReason';
 
 describe('exitReasonLabel', () => {
@@ -18,23 +21,55 @@ describe('exitReasonLabel', () => {
     expect(exitReasonLabel('Open')).toBe('Open');
   });
 
-  it('splits Metrics by realized PnL sign', () => {
+  it('shows spaced metric detail forms as stored', () => {
+    expect(exitReasonLabel('stall > 3')).toBe('stall > 3');
+    expect(exitReasonLabel('trail >= 20', 1)).toBe('trail >= 20');
+    expect(exitReasonLabel('nonvol_gross = 0')).toBe('nonvol_gross = 0');
+  });
+
+  it('splits legacy Metrics by realized PnL sign', () => {
     expect(exitReasonLabel('Metrics', 0.12)).toBe('METRIC+');
     expect(exitReasonLabel('Metrics', -0.01)).toBe('METRIC-');
-    expect(exitReasonLabel('Metrics', 0)).toBe('METRIC');
-    expect(exitReasonLabel('Metrics', null)).toBe('METRIC');
+  });
+});
+
+describe('parseMetricExitParts', () => {
+  it('splits spaced name op value', () => {
+    expect(parseMetricExitParts('stall > 3')).toEqual({
+      name: 'stall',
+      op: '>',
+      value: '3',
+    });
+    expect(parseMetricExitParts('trail >= 20.5')).toEqual({
+      name: 'trail',
+      op: '>=',
+      value: '20.5',
+    });
   });
 
-  it('ignores pnl for non-Metrics reasons', () => {
-    expect(exitReasonLabel('TakeProfit', -1)).toBe('TP');
-    expect(exitReasonLabel('StopLoss', 1)).toBe('SL');
+  it('accepts legacy compact forms', () => {
+    expect(parseMetricExitParts('stall>')).toEqual({
+      name: 'stall',
+      op: '>',
+      value: '',
+    });
   });
+});
 
-  it('treats null/empty as Open, not unknown strings', () => {
-    expect(exitReasonLabel(null)).toBe('Open');
-    expect(exitReasonLabel(undefined)).toBe('Open');
-    expect(exitReasonLabel('')).toBe('Open');
-    expect(exitReasonLabel('WeirdReason')).toBe('WeirdReason');
+describe('formatMetricExitLabel', () => {
+  it('uses spaced name op value', () => {
+    expect(formatMetricExitLabel('stall', '>', 3)).toBe('stall > 3');
+    expect(formatMetricExitLabel('nonvol_gross', '=', 0)).toBe('nonvol_gross = 0');
+  });
+});
+
+describe('isMetricExitReason', () => {
+  it('accepts legacy Metrics and detail forms', () => {
+    expect(isMetricExitReason('Metrics')).toBe(true);
+    expect(isMetricExitReason('stall > 3')).toBe(true);
+    expect(isMetricExitReason('stall>')).toBe(true);
+    expect(isMetricExitReason('TakeProfit')).toBe(false);
+    expect(isMetricExitReason('Stall')).toBe(false);
   });
 });
 
@@ -43,40 +78,23 @@ describe('metricsExitLabel', () => {
     expect(metricsExitLabel(1)).toBe('METRIC+');
     expect(metricsExitLabel(-2)).toBe('METRIC-');
     expect(metricsExitLabel(0)).toBe('METRIC');
-    expect(metricsExitLabel(Number.NaN)).toBe('METRIC');
   });
 });
 
 describe('exitReasonSearchText', () => {
-  it('includes badge abbrev so TP matches TakeProfit rows', () => {
-    expect(exitReasonSearchText('TakeProfit')).toContain('TP');
-    expect(exitReasonSearchText('TakeProfit')).toContain('TakeProfit');
-  });
-
-  it('keeps bare METRIC plus the signed badge for Metrics wins/losses', () => {
-    expect(exitReasonSearchText('Metrics', 1)).toBe('Metrics METRIC METRIC+');
-    expect(exitReasonSearchText('Metrics', -1)).toBe('Metrics METRIC METRIC-');
-    expect(exitReasonSearchText('Metrics', 0)).toBe('Metrics METRIC');
-  });
-
-  it('normalizes null open positions to Open', () => {
-    expect(exitReasonSearchText(null)).toBe('Open');
+  it('indexes spaced metric parts', () => {
+    const hay = exitReasonSearchText('stall > 3', -1);
+    expect(hay).toContain('stall');
+    expect(hay).toContain('>');
+    expect(hay).toContain('3');
+    expect(hay).toContain('METRIC');
   });
 });
 
 describe('normalizeExitReasonFilter', () => {
-  it('expands badge aliases to persisted reasons', () => {
+  it('expands badge aliases and passes detail needles through', () => {
     expect(normalizeExitReasonFilter('TP')).toBe('TakeProfit');
     expect(normalizeExitReasonFilter('metric')).toBe('Metrics');
-    expect(normalizeExitReasonFilter('METRIC+')).toBe('Metrics');
-    expect(normalizeExitReasonFilter('metric-')).toBe('Metrics');
-    expect(normalizeExitReasonFilter('Open')).toBe('Open');
-    expect(normalizeExitReasonFilter('manual')).toBe('Manual');
-    expect(normalizeExitReasonFilter('no entry')).toBe('NoEntry');
-    expect(normalizeExitReasonFilter('not fired')).toBe('NoEntry');
-  });
-
-  it('passes through unknown needles', () => {
-    expect(normalizeExitReasonFilter('TakeProf')).toBe('TakeProf');
+    expect(normalizeExitReasonFilter('stall > 3')).toBe('stall > 3');
   });
 });

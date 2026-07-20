@@ -10,14 +10,17 @@
 //! * Effect order is reproducible: the fold iterates tokens/rules in sorted key
 //!   order (see [`crate::state`]).
 
+use std::borrow::Cow;
+use std::fmt;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::grouping::TokenFingerprint;
-use crate::metrics::{Ts, TradeLite};
+use crate::metrics::evaluator::Operator;
+use crate::metrics::{metric_id_by_name, MetricId, Ts, TradeLite};
 use crate::rule_params::RuleParams;
 
 /// A token mint address — the event stream's partition key. `Arc<str>` so cloning
@@ -80,22 +83,166 @@ pub enum TradeMode {
     Real,
 }
 
-/// Why a position closed. Persisted vocabulary (plan §4):
-/// `TakeProfit | StopLoss | Metrics | Dead | Manual | Migrated`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Why a position closed. Persisted as a short string label ([`ExitReason::label`]):
+/// `TakeProfit | StopLoss | Dead | Manual | Migrated | {name} {op} {value}`
+/// (e.g. `stall > 3`, `trail >= 20`). Legacy rows may still store bare `Metrics`
+/// or the brief `{name}{op}` form (`stall>`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExitReason {
     /// Price reached `entry_price · (1 + take_profit/100)`.
     TakeProfit,
     /// Price fell to `entry_price · (1 − stop_loss/100)`.
     StopLoss,
-    /// All of the rule's `exit` metric conditions held.
-    Metrics,
+    /// An exit metric condition held — name, operator, and authored threshold.
+    Metrics {
+        metric: MetricId,
+        operator: Operator,
+        /// Authored condition threshold (not the live metric reading).
+        value: f64,
+    },
     /// The token was judged dead (liquidity gone + silent).
     Dead,
     /// A manual sell / stop-all closed it.
     Manual,
     /// The token migrated off the curve.
     Migrated,
+}
+
+impl ExitReason {
+    /// Persisted / displayed label. Ladder reasons keep PascalCase; metric exits
+    /// are spaced `name op value` (`stall > 3`, `nonvol_gross = 0`).
+    pub fn label(self) -> Cow<'static, str> {
+        match self {
+            Self::TakeProfit => Cow::Borrowed("TakeProfit"),
+            Self::StopLoss => Cow::Borrowed("StopLoss"),
+            Self::Dead => Cow::Borrowed("Dead"),
+            Self::Manual => Cow::Borrowed("Manual"),
+            Self::Migrated => Cow::Borrowed("Migrated"),
+            Self::Metrics {
+                metric,
+                operator,
+                value,
+            } => Cow::Owned(format_metric_exit_label(metric, operator, value)),
+        }
+    }
+
+    pub fn is_metrics(self) -> bool {
+        matches!(self, Self::Metrics { .. })
+    }
+}
+
+/// Compact threshold for labels: integers without `.0`, else trimmed decimals.
+pub fn format_metric_threshold(v: f64) -> String {
+    if !v.is_finite() {
+        return v.to_string();
+    }
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        return format!("{}", v as i64);
+    }
+    let s = format!("{v:.6}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Spaced metric-exit label SSOT: `name op value`.
+pub fn format_metric_exit_label(metric: MetricId, operator: Operator, value: f64) -> String {
+    format!(
+        "{} {} {}",
+        metric.name(),
+        operator.symbol(),
+        format_metric_threshold(value)
+    )
+}
+
+impl fmt::Display for ExitReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+impl Serialize for ExitReason {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.label())
+    }
+}
+
+impl<'de> Deserialize<'de> for ExitReason {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        parse_exit_reason(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!("unknown exit reason: {s}"))
+        })
+    }
+}
+
+/// Parse a persisted exit-reason label. Accepts ladder names and spaced
+/// `name op value` detail forms. Bare legacy `"Metrics"` / compact `stall>` are
+/// recognized by [`is_metric_exit_label`] for rollups but not reconstructed here
+/// without a threshold (compact → threshold `0` only when parsing for typed use
+/// is impossible — prefer [`parse_metric_exit_label`]).
+pub fn parse_exit_reason(s: &str) -> Option<ExitReason> {
+    match s {
+        "TakeProfit" => Some(ExitReason::TakeProfit),
+        "StopLoss" => Some(ExitReason::StopLoss),
+        "Dead" => Some(ExitReason::Dead),
+        "Manual" => Some(ExitReason::Manual),
+        "Migrated" => Some(ExitReason::Migrated),
+        other => parse_metric_exit_label(other).map(|(metric, operator, value)| {
+            ExitReason::Metrics {
+                metric,
+                operator,
+                value,
+            }
+        }),
+    }
+}
+
+/// True for bare legacy `"Metrics"`, spaced `name op value`, or brief `{name}{op}`.
+pub fn is_metric_exit_label(s: &str) -> bool {
+    s == "Metrics" || parse_metric_exit_label(s).is_some()
+}
+
+const METRIC_OPS: &[(&str, Operator)] = &[
+    (">=", Operator::Gte),
+    ("<=", Operator::Lte),
+    ("!=", Operator::Ne),
+    (">", Operator::Gt),
+    ("<", Operator::Lt),
+    ("=", Operator::Eq),
+];
+
+/// Parse `name op value` (`stall > 3`) or legacy compact `name{op}` (`stall>`).
+/// Compact forms return `value = 0.0` as a placeholder (rollup detection only).
+pub fn parse_metric_exit_label(s: &str) -> Option<(MetricId, Operator, f64)> {
+    let s = s.trim();
+    // Spaced form: split on whitespace into [name, op, value, ...].
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() >= 3 {
+        let name = parts[0];
+        let op_sym = parts[1];
+        let val_str = parts[2];
+        let metric = metric_id_by_name(name)?;
+        let operator = METRIC_OPS
+            .iter()
+            .find(|(sym, _)| *sym == op_sym)
+            .map(|(_, op)| *op)?;
+        let value: f64 = val_str.parse().ok()?;
+        return Some((metric, operator, value));
+    }
+    // Legacy compact `{name}{op}` (no threshold).
+    for &(sym, op) in METRIC_OPS {
+        if let Some(name) = s.strip_suffix(sym) {
+            if name.is_empty() || name.chars().any(|c| c.is_whitespace()) {
+                continue;
+            }
+            if let Some(metric) = metric_id_by_name(name) {
+                return Some((metric, op, 0.0));
+            }
+        }
+    }
+    None
 }
 
 /// Why a submitted buy/sell did not confirm. Drives the fold's retry policy.

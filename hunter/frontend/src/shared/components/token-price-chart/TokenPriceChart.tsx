@@ -251,13 +251,22 @@ function buildEventSeriesMarkers(
     const time = resolveEventBarTime(m, sortedTrades, bars, groupMode, intervalSec);
     if (time == null) continue;
     const isEntry = m.kind === 'entry';
+    const isSignal = m.role === 'signal';
     out.push({
       time,
       position: isEntry ? 'belowBar' : 'aboveBar',
-      color: isEntry ? CHART_COLORS.entry : CHART_COLORS.exit,
-      shape: isEntry ? 'arrowUp' : 'arrowDown',
+      color: isSignal
+        ? isEntry
+          ? CHART_COLORS.signalEntry
+          : CHART_COLORS.signalExit
+        : isEntry
+          ? CHART_COLORS.entry
+          : CHART_COLORS.exit,
+      // Fills keep directional arrows; metric signals are circles so the two
+      // layers stay glanceably distinct when both are on the chart.
+      shape: isSignal ? 'circle' : isEntry ? 'arrowUp' : 'arrowDown',
       text: m.label ?? (isEntry ? 'Entry' : 'Exit'),
-      size: 2,
+      size: isSignal ? 1 : 2,
     });
   }
   return out;
@@ -1480,7 +1489,10 @@ export function TokenPriceChart({
 
     if (!eventMarkers) return;
 
+    // Price lines are fill-only — metric signal markers already label the bar;
+    // a second dashed line at nearly the same price reads as a duplicate fill.
     for (const m of eventMarkers) {
+      if (m.role === 'signal') continue;
       const value = athChartValue(m.priceInSol, metric, toValue);
       if (value == null) continue;
       const isEntry = m.kind === 'entry';

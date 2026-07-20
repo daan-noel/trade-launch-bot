@@ -79,10 +79,21 @@ pub fn eval_one(cond: Condition, value: f64, tol: f64) -> bool {
 /// validation rejects empty at rule save). Any arm whose conditions all hold
 /// satisfies the expr.
 pub fn eval(arms: &[Vec<Condition>], value: f64, tol: f64) -> bool {
-    if arms.is_empty() {
-        return true;
+    first_satisfied_cond(arms, value, tol).is_some() || arms.is_empty()
+}
+
+/// First condition on the first satisfied DNF arm, if any.
+/// Empty arms / non-finite value ⇒ `None` (vacuous-true is not a fire detail).
+pub fn first_satisfied_cond(arms: &[Vec<Condition>], value: f64, tol: f64) -> Option<Condition> {
+    if arms.is_empty() || !value.is_finite() {
+        return None;
     }
-    arms.iter().any(|arm| arm.iter().all(|&c| eval_one(c, value, tol)))
+    for arm in arms {
+        if !arm.is_empty() && arm.iter().all(|&c| eval_one(c, value, tol)) {
+            return Some(arm[0]);
+        }
+    }
+    None
 }
 
 /// Parse wire JSON into DNF arms. Accepts legacy flat `[{op,value},…]` (one arm)

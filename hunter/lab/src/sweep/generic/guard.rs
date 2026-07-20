@@ -141,7 +141,7 @@ fn exit_code_of(reason: Option<ExitReason>) -> ExitCode {
         None => ExitCode::Open,
         Some(ExitReason::TakeProfit) => ExitCode::TakeProfit,
         Some(ExitReason::StopLoss) => ExitCode::StopLoss,
-        Some(ExitReason::Metrics) => ExitCode::Metrics,
+        Some(ExitReason::Metrics { .. }) => ExitCode::Metrics,
         Some(ExitReason::Dead) => ExitCode::Dead,
         Some(ExitReason::Manual) => ExitCode::Open,
         Some(ExitReason::Migrated) => ExitCode::Open,

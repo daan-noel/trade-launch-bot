@@ -8,7 +8,9 @@ import { MetricPanes, type MetricPanesRuleOverride } from '@lab/components/strat
 
 /**
  * Lab token inspect: trade-history chart + metric panes sharing crosshair /
- * visible range, with rule metric entry/exit markers on the price chart.
+ * visible range. Overlay layers stay separate by `ChartEventMarker.role`:
+ * `fill` = backend entry/exit result (`extraEventMarkers`); `signal` = first
+ * metric-condition fire from the panes (circle / blue·amber, no price line).
  */
 export function LabTokenInspect({
   detail,
@@ -16,7 +18,7 @@ export function LabTokenInspect({
   error = null,
   tableId = 'lab_token_inspect_trades',
   showDetailPanel = true,
-  /** Sweep/sim entry·exit markers merged with metric-pane fires. */
+  /** Backend fill entry·exit markers; merged with pane `signal` markers. */
   extraEventMarkers = [],
   ruleOverride = null,
 }: {

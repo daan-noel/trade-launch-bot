@@ -65,6 +65,12 @@ export interface ChartEventMarker {
   txSignature?: string | null;
   /** Short label drawn on the marker / axis, e.g. "Entry" or "Exit · TP". */
   label?: string;
+  /**
+   * `fill` (default) = backend run/position entry·exit result.
+   * `signal` = frontend-computed first metric fire (inspect metric panes).
+   * Kept visually distinct so the two never read as the same pointer.
+   */
+  role?: 'fill' | 'signal';
 }
 
 export type ChartGroupMode = 'time' | 'slot';

@@ -7,9 +7,9 @@ import type { MetricPanesRuleOverride } from '@lab/components/strategy/MetricPan
 
 /**
  * Run-result token inspect (sweep combos + simulate positions) — chart with the
- * run's entry/exit fill markers + metric panes. `ruleOverride` pins the panes to
- * the exact params that produced the run, so its `· metrics` markers show the
- * signal tick the fill markers trailed.
+ * run's **fill** entry/exit markers + metric panes. `ruleOverride` pins the panes
+ * to the exact params that produced the run; pane fires land as `signal` markers
+ * (`name op value`, e.g. `stall > 3`) so they stay distinct from the fill arrows.
  */
 export function LabTokenInspectModal({
   target,

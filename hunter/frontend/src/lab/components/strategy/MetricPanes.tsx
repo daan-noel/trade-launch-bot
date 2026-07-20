@@ -49,7 +49,8 @@ function loadPrefs(): Prefs {
 
 /** Pin the pane overlay to explicit params instead of the saved-rule dropdown —
  *  e.g. the exact sweep combo / simulated rule the caller is inspecting, so the
- *  `· metrics` markers are computed from the same params that produced the run. */
+ *  `signal` markers (`{metric}{op}`) are computed from the same params that
+ *  produced the run. */
 export interface MetricPanesRuleOverride {
   /** Raw `RuleParams` JSON (a rule's `params` or a sweep combo's blob). */
   paramsJson: unknown;
@@ -77,7 +78,7 @@ export interface MetricPanesProps {
  * Registry-driven metric panes for one token (lab-only — metric-series needs the
  * lake). Plots selected metrics on a shared wall-clock axis with the price chart
  * (crosshair + visible range), overlays a rule's thresholds, and reports first
- * entry/exit metric fires as chart markers.
+ * entry/exit metric fires as `role: 'signal'` chart markers (`{metric}{op}`).
  */
 export function MetricPanes({
   mint,

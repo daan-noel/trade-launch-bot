@@ -87,6 +87,10 @@ export const CHART_COLORS = {
    *  distinct from the candle up/down greens & reds so they pop at a glance. */
   entry: '#02c076',
   exit: '#f6465d',
+  /** Frontend metric-pane signal markers (first condition fire) — cool/amber so
+   *  they never collide with the fill entry/exit greens & reds above. */
+  signalEntry: '#5dade2',
+  signalExit: '#f0b429',
   /** Selected OHLC bar / line point */
   barSelected: '#fddc3b',
   /** Fixed marker color for the user's own ("mine") tracked wallet — bypasses the

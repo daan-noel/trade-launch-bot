@@ -587,6 +587,17 @@ pub fn metric_spec(id: MetricId) -> &'static MetricSpec {
         .expect("every MetricId has a REGISTRY entry")
 }
 
+/// Resolve a metric by its JSON name (`time`, `stall`, `vol_buy`, …). When the
+/// same name appears in more than one group (flow split vs window), the first
+/// registry hit wins — enough for exit-reason label parse/display.
+pub fn metric_id_by_name(name: &str) -> Option<MetricId> {
+    REGISTRY
+        .iter()
+        .flat_map(|g| g.metrics.iter())
+        .find(|m| m.name == name)
+        .map(|m| m.id)
+}
+
 /// The group a metric belongs to.
 pub fn group_of(id: MetricId) -> &'static GroupSpec {
     REGISTRY

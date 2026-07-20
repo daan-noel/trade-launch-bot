@@ -14,7 +14,7 @@ use crate::event::{
     DisarmReason, ExitReason, IntentId, LoadedRule, PositionId, RuleId, TradeMode,
 };
 use crate::fingerprint::FingerprintId;
-use crate::metrics::evaluator::{eval, Condition, ConditionExpr, Operator};
+use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr, Operator};
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{group_spec, is_flow_metric, metric_spec, MetricId, MetricKind, Ts};
 
@@ -236,7 +236,20 @@ impl CompiledRule {
     /// metric its condition expr is DNF (`,` AND / `|` OR). `false` when the rule
     /// authored no exit metrics — the caller falls back to TP/SL/dead only.
     pub fn exit_metrics_satisfied(&self, track: &TokenTrack, now: Ts) -> bool {
-        self.has_exit_metrics() && reqs_any_satisfied(&self.exit_reqs, track, now)
+        self.exit_metrics_fired(track, now).is_some()
+    }
+
+    /// First exit metric that holds at `now`, with the first satisfied condition
+    /// (operator + authored threshold) — stamped on [`ExitReason::Metrics`].
+    pub fn exit_metrics_fired(
+        &self,
+        track: &TokenTrack,
+        now: Ts,
+    ) -> Option<(MetricId, Operator, f64)> {
+        if !self.has_exit_metrics() {
+            return None;
+        }
+        reqs_first_fired(&self.exit_reqs, track, now)
     }
 
     /// Whether the armed side may submit a buy at `now`.
@@ -272,15 +285,19 @@ fn reqs_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
 }
 
 /// OR across metric reads in `reqs` at `now` (the **exit** combinator — any one
-/// satisfied metric fires). Empty ⇒ `false` (no reason to exit).
-fn reqs_any_satisfied(reqs: &[MetricReq], track: &TokenTrack, now: Ts) -> bool {
-    reqs.iter().any(|r| {
-        eval(
-            &r.conds,
-            track.value(r.metric, r.window, r.fingerprint, now),
-            r.tolerance,
-        )
-    })
+/// satisfied metric fires). Returns that metric + first satisfied condition.
+fn reqs_first_fired(
+    reqs: &[MetricReq],
+    track: &TokenTrack,
+    now: Ts,
+) -> Option<(MetricId, Operator, f64)> {
+    for r in reqs {
+        let reading = track.value(r.metric, r.window, r.fingerprint, now);
+        if let Some(c) = first_satisfied_cond(&r.conds, reading, r.tolerance) {
+            return Some((r.metric, c.operator, c.value));
+        }
+    }
+    None
 }
 
 /// Flatten one side's parsed conditions into [`MetricReq`]s. A dynamic group's

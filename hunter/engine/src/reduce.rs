@@ -460,8 +460,12 @@ fn decide_arm(
                     }
                 }
             }
-            if c.exit_metrics_satisfied(&token.track, now) {
-                return ArmDecision::Exit(ExitReason::Metrics);
+            if let Some((metric, operator, value)) = c.exit_metrics_fired(&token.track, now) {
+                return ArmDecision::Exit(ExitReason::Metrics {
+                    metric,
+                    operator,
+                    value,
+                });
             }
             ArmDecision::None
         }

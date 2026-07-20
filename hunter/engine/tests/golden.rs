@@ -212,7 +212,14 @@ fn metrics_exit_on_time_condition() {
     assert!(sells(&fx).is_empty());
     // Past +5 s → metrics exit (tick-driven).
     let fx = reduce(&mut s, Event::Tick { now: ts(6.0) });
-    assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Metrics]);
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::Metrics {
+            metric: hunter_engine::metrics::MetricId::Time,
+            operator: hunter_engine::metrics::evaluator::Operator::Gt,
+            value: 5.0,
+        }]
+    );
 }
 
 #[test]
@@ -268,7 +275,14 @@ fn stall_exit_on_quiet_token_is_tick_driven() {
     assert!(sells(&fx).is_empty());
     // Quiet until t=5 → stall = 4 s > 3 → exit on the tick alone.
     let fx = reduce(&mut s, Event::Tick { now: ts(5.0) });
-    assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Metrics]);
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::Metrics {
+            metric: hunter_engine::metrics::MetricId::Stall,
+            operator: hunter_engine::metrics::evaluator::Operator::Gt,
+            value: 3.0,
+        }]
+    );
 }
 
 #[test]
@@ -688,7 +702,11 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
     let fx = reduce(&mut s, Event::Tick { now: ts(7.0) });
     assert_eq!(
         sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-        vec![ExitReason::Metrics]
+        vec![ExitReason::Metrics {
+            metric: hunter_engine::metrics::MetricId::WinNonvolGross,
+            operator: hunter_engine::metrics::evaluator::Operator::Eq,
+            value: 0.0,
+        }]
     );
 }
 

@@ -21,14 +21,15 @@ export interface InspectTarget {
   exitLabel?: string | null;
 }
 
-/** Build the chart entry/exit markers for an inspect target. Shared by both the
- *  inspect modals and the per-row charts-grid overlay, so the "chart" button's
- *  inline charts mark entry/exit identically to the modal. */
+/** Build the chart **fill** entry/exit markers for an inspect target (backend
+ *  run/position result). Shared by inspect modals and the per-row charts-grid
+ *  overlay. Metric-pane condition fires use `role: 'signal'` separately. */
 export function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
   const markers: ChartEventMarker[] = [];
   if (target.entryTime != null && target.entryPrice != null) {
     markers.push({
       kind: 'entry',
+      role: 'fill',
       time: target.entryTime,
       priceInSol: target.entryPrice,
       txSignature: target.entryTx ?? null,
@@ -38,6 +39,7 @@ export function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
   if (target.exitTime != null && target.exitPrice != null) {
     markers.push({
       kind: 'exit',
+      role: 'fill',
       time: target.exitTime,
       priceInSol: target.exitPrice,
       txSignature: target.exitTx ?? null,

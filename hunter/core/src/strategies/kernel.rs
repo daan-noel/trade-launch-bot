@@ -40,18 +40,16 @@ pub enum ExitCode {
     /// produces this (it closes silent tokens via its clock sweep). Counts as a
     /// **closed** loss in the rollup. See [`crate::strategies::death`].
     Dead = 9,
-    /// The generic engine's single metric-condition exit (`ExitReason::Metrics`):
-    /// any of a rule's exit metric conditions became true. Collapses the legacy
-    /// ladder's granular metric exits (trailing / stall / time / liquidity /
-    /// next-kill) into one bucket — the redesigned engine has no per-metric exit
-    /// codes, only "an exit condition group fired". Only the generic sweep/replay
-    /// emits it; the legacy strategies never do.
+    /// The generic engine's metric-condition exit (`ExitReason::Metrics`): any of
+    /// a rule's exit metric conditions became true. Rollups still bucket every
+    /// detail label (`stall > 3`, legacy `stall>` / bare `Metrics`) here — the
+    /// per-metric detail lives on the persisted string, not on this code.
     Metrics = 10,
 }
 
 impl ExitCode {
-    /// Map a ladder reason string (the `ExitReason::as_str` form persisted on
-    /// positions / returned by the registry) to a code.
+    /// Map a persisted exit-reason label to a code. Metric detail forms
+    /// (`stall > 3`, …) and legacy `"Metrics"` both map to [`ExitCode::Metrics`].
     pub fn from_reason(reason: &str) -> Self {
         match reason {
             "TakeProfit" => ExitCode::TakeProfit,
@@ -62,10 +60,10 @@ impl ExitCode {
             "LiquidityExit" => ExitCode::LiquidityExit,
             "NextKill" => ExitCode::NextKill,
             "Dead" => ExitCode::Dead,
-            "Metrics" => ExitCode::Metrics,
             "Open" => ExitCode::Open,
             // Matched fingerprint / armed but never filled — distinct from still-Open.
             "NoEntry" => ExitCode::NoEntry,
+            r if hunter_engine::event::is_metric_exit_label(r) => ExitCode::Metrics,
             _ => ExitCode::Open,
         }
     }

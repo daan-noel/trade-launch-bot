@@ -723,18 +723,6 @@ fn outcome_from_builder(
     }
 }
 
-/// The persisted exit-reason token for an [`ExitReason`], matching the live sink's
-/// vocabulary (plan §4).
-fn exit_reason_str(r: ExitReason) -> &'static str {
-    match r {
-        ExitReason::TakeProfit => "TakeProfit",
-        ExitReason::StopLoss => "StopLoss",
-        ExitReason::Metrics => "Metrics",
-        ExitReason::Dead => "Dead",
-        ExitReason::Manual => "Manual",
-        ExitReason::Migrated => "Migrated",
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -964,7 +952,13 @@ mod tests {
         let key = |o: &[PositionOutcome]| {
             let mut v: Vec<_> = o
                 .iter()
-                .map(|p| (p.mint.clone(), p.exit_reason.map(exit_reason_str), p.entry_price.to_bits()))
+                .map(|p| {
+                    (
+                        p.mint.clone(),
+                        p.exit_reason.map(|r| r.label().into_owned()),
+                        p.entry_price.to_bits(),
+                    )
+                })
                 .collect();
             v.sort();
             v
@@ -1000,7 +994,7 @@ pub fn outcome_to_row(
                 outcome.exit_time,
                 outcome.exit_tx.clone(),
                 outcome.exit_time.map(|t| (t - outcome.entry_time).num_seconds()),
-                exit_reason_str(reason).to_string(),
+                reason.label().into_owned(),
             ),
             // Open at end of history — mark unrealized PnL to the last price; exit
             // fields stay None (no sell fired), reason "Open".

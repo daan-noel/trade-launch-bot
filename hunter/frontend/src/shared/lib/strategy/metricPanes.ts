@@ -8,6 +8,7 @@ import type { RuleParams, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { MetricSeriesColumn, MetricSeriesResponse, StrategyRule } from './types';
 import { ruleParamsFromJson } from './ruleParams';
+import { formatMetricExitLabel } from './exitReason';
 
 const DEFAULT_WINDOWS = [10, 30, 60];
 
@@ -141,6 +142,20 @@ function sideMetricRows(
   return out;
 }
 
+/** First condition on the first satisfied DNF arm — spaced `name op value` labels. */
+function firstSatisfiedCondition(
+  arms: ConditionExpr,
+  value: number,
+  eqTolerance: number,
+): Condition | null {
+  for (const arm of arms) {
+    if (arm.length && arm.every((c) => evalMetricCondition(c, value, eqTolerance))) {
+      return arm[0];
+    }
+  }
+  return null;
+}
+
 /**
  * Side combinator mirrors the engine (`arm.rs`): entry ANDs across metrics;
  * exit ORs (any one satisfied metric fires). Within a metric, DNF still applies.
@@ -153,17 +168,47 @@ function sidePassesAt(
   combinator: 'and' | 'or',
 ): boolean {
   const rows = sideMetricRows(side, registry);
-  // Callers only invoke when the side has at least one metric; empty ⇒ vacuous
-  // entry-true / exit-false matching the engine.
+  // Empty ⇒ vacuous entry-true / exit-false matching the engine.
   if (rows.length === 0) return combinator === 'and';
-  const pred = (row: (typeof rows)[number]): boolean => {
+  return firstFiredMetricLabel(side, idx, byKey, registry, combinator) != null;
+}
+
+/**
+ * Spaced label for the metric that justifies a side pass at `idx`:
+ * `name op value` (e.g. `stall > 3`). Exit OR → first satisfied metric; entry
+ * AND → first authored metric (all must hold). `null` when the side does not
+ * pass (or is empty — callers that need vacuous-true use {@link sidePassesAt}).
+ */
+function firstFiredMetricLabel(
+  side: SideConditions | undefined,
+  idx: number,
+  byKey: Map<string, MetricSeriesColumn>,
+  registry: StrategyRegistry | undefined,
+  combinator: 'and' | 'or',
+): string | null {
+  const rows = sideMetricRows(side, registry);
+  if (rows.length === 0) return null;
+
+  let andLabel: string | null = null;
+  for (const row of rows) {
     const gSpec = registry?.groups.find((g) => g.name === row.groupName);
     const col = byKey.get(metricColKey(row.metric, row.dynamic ? row.window : null));
-    const value = col?.values[idx];
+    const reading = col?.values[idx];
     const tol = gSpec?.metrics.find((m) => m.name === row.metric)?.eq_tolerance ?? 0;
-    return value != null && evalMetricConditions(row.arms, value, tol);
-  };
-  return combinator === 'and' ? rows.every(pred) : rows.some(pred);
+    if (reading == null || !Number.isFinite(reading)) {
+      if (combinator === 'and') return null;
+      continue;
+    }
+    const cond = firstSatisfiedCondition(row.arms, reading, tol);
+    if (cond == null) {
+      if (combinator === 'and') return null;
+      continue;
+    }
+    const label = formatMetricExitLabel(row.metric, cond.operator, cond.value);
+    if (combinator === 'or') return label;
+    if (andLabel == null) andLabel = label;
+  }
+  return combinator === 'and' ? andLabel : null;
 }
 
 /** Per-metric pass/fail at one series index (for the crosshair readout). */
@@ -205,6 +250,10 @@ export function metricConditionStatesAt(
 /**
  * First trade index where entry may fire (entry AND holds and exit OR does not —
  * mirrors `CompiledRule::can_enter`); then first later exit.
+ *
+ * Markers are `role: 'signal'` with spaced `name op value` labels (e.g.
+ * `stall > 3`) — the frontend condition-fire estimate, never the backend fill
+ * pointers.
  */
 export function findRuleFireMarkers(
   params: RuleParams,
@@ -222,22 +271,28 @@ export function findRuleFireMarkers(
   );
 
   let entryIdx: number | null = null;
+  let entryLabel: string | null = null;
   if (hasEntry) {
     for (let i = 0; i < n; i++) {
-      if (!sidePassesAt(params.entry, i, byKey, registry, 'and')) continue;
+      const label = firstFiredMetricLabel(params.entry, i, byKey, registry, 'and');
+      if (label == null) continue;
       // Engine refuses entry while exit metrics already hold.
       if (hasExit && sidePassesAt(params.exit, i, byKey, registry, 'or')) continue;
       entryIdx = i;
+      entryLabel = label;
       break;
     }
   }
 
   let exitIdx: number | null = null;
+  let exitLabel: string | null = null;
   if (hasExit) {
     const start = entryIdx != null ? entryIdx + 1 : 0;
     for (let i = start; i < n; i++) {
-      if (sidePassesAt(params.exit, i, byKey, registry, 'or')) {
+      const label = firstFiredMetricLabel(params.exit, i, byKey, registry, 'or');
+      if (label != null) {
         exitIdx = i;
+        exitLabel = label;
         break;
       }
     }
@@ -249,9 +304,10 @@ export function findRuleFireMarkers(
     if (price != null && Number.isFinite(price)) {
       markers.push({
         kind: 'entry',
+        role: 'signal',
         time: data.at[entryIdx],
         priceInSol: price,
-        label: 'Entry · metrics',
+        label: entryLabel ?? 'entry',
       });
     }
   }
@@ -260,9 +316,10 @@ export function findRuleFireMarkers(
     if (price != null && Number.isFinite(price)) {
       markers.push({
         kind: 'exit',
+        role: 'signal',
         time: data.at[exitIdx],
         priceInSol: price,
-        label: 'Exit · metrics',
+        label: exitLabel ?? 'exit',
       });
     }
   }

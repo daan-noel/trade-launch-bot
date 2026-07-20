@@ -1,21 +1,69 @@
 /**
  * Exit-reason display + filter vocabulary (SSOT).
  *
- * Persisted strings come from the engine (`TakeProfit`, `Metrics`, `Open`, …).
- * The Reason / Exit Reason columns show compact badges; filters must accept
- * either the stored name or the badge label (`TP`, `METRIC+`, `Open`).
- *
- * Metric-condition exits (`Metrics`) are further split by realized PnL sign so
- * wins (`METRIC+`) and losses (`METRIC-`) are glanceable — the engine stores
- * one reason; the UI overlays the outcome.
+ * Persisted strings come from the engine (`TakeProfit`, `stall > 3`, `Open`, …).
+ * Metric-condition exits store spaced `name op value`; legacy rows may still
+ * hold bare `Metrics` or compact `stall>`. Badge rendering separates the three
+ * tokens visually when the spaced form is present.
  */
 
+export interface MetricExitParts {
+  name: string;
+  op: string;
+  /** Threshold string as stored (may be empty for legacy compact `stall>`). */
+  value: string;
+}
+
+/** Spaced `name op value` (e.g. `stall > 3`). */
+const METRIC_EXIT_SPACED =
+  /^([a-z][a-z0-9_]*) (>=|<=|!=|>|<|=) ([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/;
+
+/** Legacy compact `{name}{op}` (e.g. `stall>`). */
+const METRIC_EXIT_COMPACT = /^([a-z][a-z0-9_]*)(>=|<=|!=|>|<|=)$/;
+
+/** Parse a metric-exit label into display parts (spaced or compact). */
+export function parseMetricExitParts(
+  reason: string | null | undefined,
+): MetricExitParts | null {
+  if (!reason) return null;
+  const spaced = METRIC_EXIT_SPACED.exec(reason.trim());
+  if (spaced) {
+    return { name: spaced[1], op: spaced[2], value: spaced[3] };
+  }
+  const compact = METRIC_EXIT_COMPACT.exec(reason.trim());
+  if (compact) {
+    return { name: compact[1], op: compact[2], value: '' };
+  }
+  return null;
+}
+
+/** True for bare legacy `Metrics` or a metric detail label. */
+export function isMetricExitReason(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return reason === 'Metrics' || parseMetricExitParts(reason) != null;
+}
+
+/** Format a metric fire as spaced `name op value` (frontend signal markers). */
+export function formatMetricExitLabel(
+  name: string,
+  op: string,
+  value: number,
+): string {
+  return `${name} ${op} ${formatMetricThreshold(value)}`;
+}
+
+/** Compact threshold for labels — mirrors the engine's format_metric_threshold. */
+export function formatMetricThreshold(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  if (v === 0) return '0';
+  if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
+  const s = v.toFixed(6);
+  return s.replace(/\.?0+$/, '');
+}
+
 /** Compact badge label for a persisted `exit_reason`. Still-open / null →
- *  `"Open"`. Unknown strings render as themselves (never silently relabeled
- *  Open — that made Metrics/Manual/Migrated unfilterable as "Open").
- *
- *  Pass `pnlSol` for `Metrics` rows so the badge splits win/loss
- *  (`METRIC+` / `METRIC-`); other reasons ignore it. */
+ *  `"Open"`. Metric detail forms render as stored (spaced). Legacy bare
+ *  `Metrics` still splits win/loss via `pnlSol`. */
 export function exitReasonLabel(
   reason: string | null | undefined,
   pnlSol?: number | null,
@@ -56,25 +104,28 @@ export function exitReasonLabel(
   }
 }
 
-/** `Metrics` → `METRIC+` / `METRIC-` / `METRIC` from realized SOL PnL sign. */
+/** Legacy bare `Metrics` → `METRIC+` / `METRIC-` / `METRIC` from PnL sign. */
 export function metricsExitLabel(pnlSol?: number | null): string {
   if (pnlSol == null || !Number.isFinite(pnlSol) || pnlSol === 0) return 'METRIC';
   return pnlSol > 0 ? 'METRIC+' : 'METRIC-';
 }
 
-/** Per-column filter/search haystack: stored reason + badge label so both
- *  `TakeProfit` and `TP` (and `Open` for null) match on the client. Pass
- *  `pnlSol` so Metrics wins/losses are filterable as `METRIC+` / `METRIC-`. */
+/** Per-column filter/search haystack. */
 export function exitReasonSearchText(
   reason: string | null | undefined,
   pnlSol?: number | null,
 ): string {
   const stored = reason?.trim() ? reason.trim() : 'Open';
   const label = exitReasonLabel(reason, pnlSol);
-  // Always keep bare `METRIC` in the haystack so a plain "metric" filter still
-  // hits both win and loss Metrics rows.
-  if (reason === 'Metrics' && label !== 'METRIC') {
-    return `${stored} METRIC ${label}`;
+  if (isMetricExitReason(reason)) {
+    const parts = new Set([stored, 'METRIC', label]);
+    const parsed = parseMetricExitParts(reason);
+    if (parsed) {
+      parts.add(parsed.name);
+      parts.add(parsed.op);
+      if (parsed.value) parts.add(parsed.value);
+    }
+    return [...parts].join(' ');
   }
   return label === stored ? stored : `${stored} ${label}`;
 }
@@ -103,8 +154,6 @@ const EXIT_REASON_FILTER_ALIASES: Readonly<Record<string, string>> = {
   dead: 'Dead',
   metric: 'Metrics',
   metrics: 'Metrics',
-  // Signed Metrics badges — server only stores `Metrics`, so these collapse to
-  // that; client `filterValue` still distinguishes METRIC+/METRIC- per row.
   'metric+': 'Metrics',
   'metrics+': 'Metrics',
   'metric-': 'Metrics',
@@ -117,16 +166,12 @@ const EXIT_REASON_FILTER_ALIASES: Readonly<Record<string, string>> = {
   'not fired': 'NoEntry',
 };
 
-/** Map a Reason / Exit Reason filter needle to the persisted string when the
- *  user typed a badge abbrev (`TP` → `TakeProfit`). Unknown text is returned
- *  trimmed unchanged (substring contains still applies). */
 export function normalizeExitReasonFilter(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
   return EXIT_REASON_FILTER_ALIASES[trimmed.toLowerCase()] ?? trimmed;
 }
 
-/** Column keys that filter on persisted `exit_reason`. */
 export function isExitReasonFilterKey(key: string): boolean {
   return key === 'reason' || key === 'exit_reason';
 }

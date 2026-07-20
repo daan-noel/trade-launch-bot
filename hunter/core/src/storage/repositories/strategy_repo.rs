@@ -228,7 +228,8 @@ const CLOSED_PRED: &str = "sp.entry_price IS NOT NULL AND sp.status IN ('End','E
 
 /// (`exit_reason` value → result column) for the summary's per-reason counts.
 /// One list so the SQL, the row struct, and `ExitReasonCounts` stay in step.
-/// Values are compile-time constants, never user input.
+/// Values are compile-time constants, never user input. `"Metrics"` is special-
+/// cased in SQL via [`metrics_exit_sql_pred`] (also matches `{metric}{op}`).
 const EXIT_REASON_COUNTS: &[(&str, &str)] = &[
     ("TakeProfit", "n_take_profit"),
     ("StopLoss", "n_stop_loss"),
@@ -241,6 +242,21 @@ const EXIT_REASON_COUNTS: &[(&str, &str)] = &[
     ("LiquidityExit", "n_liquidity"),
     ("NextKill", "n_next_kill"),
 ];
+
+/// SQL predicate: legacy bare `Metrics`, spaced `name op value`, or brief
+/// `{name}{op}` — SSOT with [`hunter_engine::event::is_metric_exit_label`].
+fn metrics_exit_sql_pred(col: &str) -> String {
+    use std::collections::BTreeSet;
+    let names: BTreeSet<&str> = hunter_engine::metrics::REGISTRY
+        .iter()
+        .flat_map(|g| g.metrics.iter().map(|m| m.name))
+        .collect();
+    let alt = names.into_iter().collect::<Vec<_>>().join("|");
+    // Compact `stall>` OR spaced `stall > 3` (value is anything non-empty to EOL).
+    format!(
+        "({col} = 'Metrics' OR {col} ~ '^({alt})(>=|<=|!=|>|<|=)($| )' OR {col} ~ '^({alt}) (>=|<=|!=|>|<|=) ')"
+    )
+}
 
 /// Raw aggregate row behind [`StrategyRepo::positions_summary`]. Lamport sums are
 /// `BIGINT` (cast in SQL), pct/secs sums `DOUBLE PRECISION`; the repo folds these
@@ -1238,19 +1254,25 @@ impl StrategyRepo {
         // the PnL sums instead of using the never-realized hypothetical exit price.
         // One `COUNT(*) FILTER` per known exit reason, generated from the single
         // `EXIT_REASON_COUNTS` list so a new reason is added in exactly one place.
+        let metrics_pred = metrics_exit_sql_pred("sp.exit_reason");
         let exit_cols: String = EXIT_REASON_COUNTS
             .iter()
             .map(|(reason, col)| {
-                format!("COUNT(*) FILTER (WHERE {CLOSED_PRED} AND sp.exit_reason = '{reason}') AS {col}, ")
+                let pred = if *reason == "Metrics" {
+                    metrics_pred.clone()
+                } else {
+                    format!("sp.exit_reason = '{reason}'")
+                };
+                format!("COUNT(*) FILTER (WHERE {CLOSED_PRED} AND {pred}) AS {col}, ")
             })
             .collect();
         // Metric exits further split by the same win predicate as `win` / `is_win`
         // so the summary bar can show Metric+ / Metric- (PnL outcome) without a
         // second pass. `n_metrics` remains the total; win + loss must equal it.
         let metrics_split_cols = format!(
-            "COUNT(*) FILTER (WHERE {CLOSED_PRED} AND sp.exit_reason = 'Metrics' \
+            "COUNT(*) FILTER (WHERE {CLOSED_PRED} AND {metrics_pred} \
                 AND sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports) AS n_metrics_win, \
-             COUNT(*) FILTER (WHERE {CLOSED_PRED} AND sp.exit_reason = 'Metrics' \
+             COUNT(*) FILTER (WHERE {CLOSED_PRED} AND {metrics_pred} \
                 AND NOT (sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports)) AS n_metrics_loss, "
         );
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(

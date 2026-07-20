@@ -8,7 +8,12 @@ import { amountInDisplayUnit } from 'lib/priceUnitSnapshot';
 import { formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
-import { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
+import {
+  exitReasonLabel,
+  exitReasonSearchText,
+  isMetricExitReason,
+  parseMetricExitParts,
+} from 'lib/strategy/exitReason';
 
 /** SOL storage → displayed unit for PriceUnit-aware numeric filters. */
 function solFilter(n: number | null | undefined): number | null {
@@ -29,8 +34,8 @@ export { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
 // ---------------------------------------------------------------------------
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
- * and simulation-result tables. Pass `pnlSol` so Metrics exits split by outcome
- * (`METRIC+` green / `METRIC-` red), matching TP/SL glanceability. */
+ * and simulation-result tables. Pass `pnlSol` so metric exits tint by outcome
+ * (green / red), matching TP/SL glanceability. */
 export function exitReasonBadge(
   reason: string | null | undefined,
   pnlSol?: number | null,
@@ -56,15 +61,6 @@ export function exitReasonBadge(
       return <span className="font-bold text-text-dim">{label}</span>;
     case 'Dead':
       return <span className="font-bold text-red">{label}</span>;
-    case 'Metrics': {
-      const tone =
-        pnlSol != null && Number.isFinite(pnlSol) && pnlSol !== 0
-          ? pnlSol > 0
-            ? 'text-green'
-            : 'text-red'
-          : 'text-info';
-      return <span className={cn('font-bold', tone)}>{label}</span>;
-    }
     case 'Migrated':
       return <span className="font-bold text-text-dim">{label}</span>;
     case 'NoEntry':
@@ -74,8 +70,30 @@ export function exitReasonBadge(
     case undefined:
     case '':
       return <span className="text-text-dim">{label}</span>;
-    default:
+    default: {
+      // Bare `Metrics` + spaced `name op value` (and legacy compact).
+      if (isMetricExitReason(reason)) {
+        const tone =
+          pnlSol != null && Number.isFinite(pnlSol) && pnlSol !== 0
+            ? pnlSol > 0
+              ? 'text-green'
+              : 'text-red'
+            : 'text-info';
+        const parts = parseMetricExitParts(reason);
+        if (parts) {
+          // Visually separate name · op · value so the three tokens scan cleanly.
+          return (
+            <span className={cn('inline-flex items-baseline gap-1 font-bold', tone)}>
+              <span className="opacity-90">{parts.name}</span>
+              <span className="opacity-55">{parts.op}</span>
+              {parts.value ? <span>{parts.value}</span> : null}
+            </span>
+          );
+        }
+        return <span className={cn('font-bold', tone)}>{label}</span>;
+      }
       return <span className="text-text-dim">{label}</span>;
+    }
   }
 }
 
