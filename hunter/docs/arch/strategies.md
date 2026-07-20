@@ -7,7 +7,7 @@ generic engine**: a rule = a `fingerprint_id` (a token-creation shape) + `params
 that produce events and consume effects. A decision fix lands in exactly one place.
 
 Deep-dive detail (metric registry, sweep precompute, event-log format, design
-decisions) lives under [`docs/plans/strategy-redesign/`](../plans/strategy-redesign/).
+decisions) lives in the active redesign plans under [`docs/roadmap/`](../roadmap/).
 
 ## The pure engine — `hunter/engine` (crate `hunter-engine`)
 

@@ -1,6 +1,6 @@
 //! Metrics framework — the self-describing vocabulary of the generic strategy
 //! engine. Self-contained: no strategy/DB/tokio imports (parity backbone — see
-//! `hunter/docs/plans/strategy-redesign/fingerprint-metrics-engine-plan.md`).
+//! `hunter/docs/roadmap/fingerprint-metrics-engine-plan.md`).
 //!
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):

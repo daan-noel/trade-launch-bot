@@ -126,8 +126,8 @@ SOL first so the label reads in SOL. `0.1` is not f64-exact, so `bucket_sol_labe
 the upper bucket, and the nudge (0.1 lamport in ratio units) can never promote a
 genuinely sub-edge value. The dashboard mirror `creation_stats_repo::sol_bucket_sql`
 applies the identical epsilon + 1-decimal `to_char` rounding so sweep and dashboard
-produce byte-identical labels. Making the width runtime-configurable is
-[dynamic-bucket-size-plan.md](../../dynamic-bucket-size-plan.md).
+produce byte-identical labels. Making the width runtime-configurable is a separate,
+not-yet-merged per-run knob.
 
 Fingerprints are **embedded by the lake loader** (`LakeSource`/`duck.rs::load_fingerprints`
 reads the `fp_*` columns of the tokens dimension file), not a separate PG pass — the

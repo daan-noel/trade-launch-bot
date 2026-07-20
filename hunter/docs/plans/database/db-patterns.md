@@ -4,7 +4,7 @@
 > The current layout is: migrations at `trading_core/migrations/`, repos at
 > `trading_core/src/storage/repositories/`, ingest at `ingest-laserstream/src/`. The
 > `maintenance.rs` partition loop is **deleted** — TimescaleDB retention/compression policies
-> replaced it (see [timescaledb-plan.md](../../timescaledb-plan.md)). `PARTITION BY RANGE` is
+> replaced it. `PARTITION BY RANGE` is
 > replaced by hypertables. BRIN on `block_time` is replaced by Timescale chunk exclusion.
 
 Deep-dive on pool rationale, migration conventions, sqlx patterns, and query guardrails. See [@arch/database.md](@arch/database.md) for the schema overview and repo table. See [@plans/database/db-pool-routing.md](@plans/database/db-pool-routing.md) for routing logic.

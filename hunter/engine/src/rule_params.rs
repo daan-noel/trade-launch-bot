@@ -1,6 +1,6 @@
 //! `RuleParams` — the typed form of `strategy_rules.params` (JSONB), the "WHEN
 //! it trades" half of a generic rule. Canonical JSON shape (design SSOT:
-//! `hunter/docs/plans/strategy-redesign/fingerprint-metrics-engine-plan.md` §5):
+//! `hunter/docs/roadmap/fingerprint-metrics-engine-plan.md` §5):
 //!
 //! ```json
 //! {

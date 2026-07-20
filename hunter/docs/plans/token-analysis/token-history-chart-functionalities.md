@@ -3,8 +3,8 @@
 > A feature-by-feature map of the token price/history chart: **what each control,
 > overlay, marker, and interaction does**, how it's triggered, and where it lives in
 > code. This is the *functionality* companion to
-> [`chart-price-logic.md`](./chart-price-logic.md) (which covers the OHLC/price math)
-> and [`swing-detection-logic.md`](./swing-detection-logic.md) (the swing algorithm).
+> [`swing-detection-logic.md`](./swing-detection-logic.md) (the swing algorithm); the
+> OHLC/price math lives in the backend price-logic code.
 > Reuse this file as a prompt to extend or re-implement the chart UI.
 >
 > **Key files** (all under `frontend-react/src/components/token-price-chart/`)
@@ -169,7 +169,7 @@ Both are drawn with `series.createPriceLine()` and respect the active metric/uni
 - **ATH** (`showAthLine`): dashed golden (`#f0b429`) line at the all-time-high price, computed
   from `athPriceInSol` through the metric/unit converter (`athChartValue`). The checkbox is
   **disabled** (`athLineAvailable === false`) when the token has no recorded ATH. ATH itself is
-  authoritative backend data (see `chart-price-logic.md` §8–§9), not recomputed here.
+  authoritative backend data, not recomputed here.
 - **Migration** (`showMigrationLine`): dashed teal-blue (`#5dade2`) line at the fixed pump.fun
   bonding-curve graduation price `PUMP_MIGRATION_SPOT_PRICE_SOL` (`constants.ts`) — a constant,
   not token-specific.
@@ -261,7 +261,7 @@ priority:
 The **bar tooltip** shows the bar time (timezone/slot-formatted) + age, then fields from
 `BarCrosshairFields`: for candles a 2×2 **O/H/L/C** grid (colors from `CHART_OHLC_COLORS`) plus
 Vol/Liq; for line, Price + Vol/Liq. `BarFlowFields` renders the flow variant (Net / In / Out /
-Δ%) used for the per-bar volume readout (see `chart-price-logic.md` §7).
+Δ%) used for the per-bar volume readout.
 
 ---
 

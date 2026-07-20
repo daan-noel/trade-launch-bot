@@ -59,6 +59,11 @@ Deep-dive references: [docs/plans/database/lake-pg-read-paths.md](docs/plans/dat
 (which trade reads hit the lake vs PG), [docs/plans/frontend/token-list-backend.md](docs/plans/frontend/token-list-backend.md)
 (`/api/tokens` differs by bin), plus the per-subsystem docs under `docs/plans/`.
 
+**Active / unfinished plans** (WIP roadmaps — the strategy redesign, volume-flow-split,
+the audit) live in [`docs/roadmap/`](docs/roadmap/), kept separate from the permanent
+deep-dive references in `docs/plans/`. A plan is deleted (or folded into a deep-dive)
+once its work lands; `docs/plans/` never holds a throwaway plan.
+
 ## Commands
 
 ```powershell

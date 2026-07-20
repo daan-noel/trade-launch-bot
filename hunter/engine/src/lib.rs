@@ -1,7 +1,7 @@
 //! # hunter-engine — pure, deterministic strategy engine
 //!
 //! The one implementation of the fingerprint + metrics generic strategy engine
-//! (design SSOT: `hunter/docs/plans/strategy-redesign/fingerprint-metrics-engine-plan.md`).
+//! (design SSOT: `hunter/docs/roadmap/fingerprint-metrics-engine-plan.md`).
 //! Live paper, live real, simulate/backtest, and sweep all drive **this** code;
 //! they differ only in who produces events and who consumes effects — so
 //! identical data yields identical decisions by construction.
