@@ -149,7 +149,7 @@ function NotificationSection() {
           description={
             permState === 'denied'
               ? 'Blocked by browser — click the lock icon in the address bar to allow notifications for this site.'
-              : 'Send OS-level notifications so you get alerted even when this tab is in the background.'
+              : 'OS alerts with status icon + Open Ops / Trade actions (Chrome/Edge). Same position updates replace the prior toast. Failures stay until dismissed.'
           }
           checked={prefs.desktopEnabled && permState === 'granted'}
           disabled={!notifSupported || permState === 'denied'}

@@ -1,7 +1,10 @@
 import { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { connectArmedChanged, connectStrategyPositionUpdate } from 'services/sse';
 import { useToast, type ToastVariant } from 'components/ui/Toast';
 import { useNotificationPrefs } from 'hooks/useNotificationPrefs';
+import { opsNotifyHref } from 'lib/strategy/nav';
+import { ensureNotificationSw, showDesktopNotify } from '@live/lib/desktopNotify';
 
 const STATUS_VARIANT: Record<string, ToastVariant> = {
   Armed: 'neutral',
@@ -25,23 +28,6 @@ const STATUS_LABEL: Record<string, string> = {
   ExitUnconfirmed: 'Exit unconfirmed',
 };
 
-function fireToast(
-  addToast: (title: string, body: string, variant: ToastVariant) => void,
-  prefs: { desktopEnabled: boolean },
-  status: string,
-  title: string,
-  body: string,
-) {
-  addToast(title, body, STATUS_VARIANT[status] ?? 'neutral');
-  if (
-    prefs.desktopEnabled &&
-    typeof Notification !== 'undefined' &&
-    Notification.permission === 'granted'
-  ) {
-    new Notification(title, { body, silent: true });
-  }
-}
-
 /** Map `strategy_armed_changed.state` → Settings pill key. */
 function armedStatusKey(state: string): 'Armed' | 'Disarmed' | null {
   if (state === 'armed') return 'Armed';
@@ -49,11 +35,37 @@ function armedStatusKey(state: string): 'Armed' | 'Disarmed' | null {
   return null;
 }
 
-/** Mounted once in the live App — subscribes to generic-engine position + arm
- *  deltas app-wide and fires toasts according to the user's notification prefs. */
+/** Mounted once in the live App — position/arm toasts + desktop notifications.
+ *  Desktop path uses a service worker (actions, status icon, lifecycle tags).
+ *  Click / Open Ops → Ops deep-link; Trade action → trade desk. */
 export function usePositionNotifications() {
   const { addToast } = useToast();
   const [prefs] = useNotificationPrefs();
+  const navigate = useNavigate();
+
+  // Warm the notification SW so the first alert can use action buttons.
+  useEffect(() => {
+    if (prefs.desktopEnabled) void ensureNotificationSw();
+  }, [prefs.desktopEnabled]);
+
+  // SW click → navigate (also page-Notification fallback via CustomEvent).
+  useEffect(() => {
+    const onSwMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'hunter-notification-navigate' && typeof e.data.href === 'string') {
+        navigate(e.data.href);
+      }
+    };
+    const onPageNav = (e: Event) => {
+      const href = (e as CustomEvent<{ href: string }>).detail?.href;
+      if (href) navigate(href);
+    };
+    navigator.serviceWorker?.addEventListener('message', onSwMessage);
+    window.addEventListener('hunter-notification-navigate', onPageNav);
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', onSwMessage);
+      window.removeEventListener('hunter-notification-navigate', onPageNav);
+    };
+  }, [navigate]);
 
   useEffect(() => {
     const positionHandle = connectStrategyPositionUpdate((delta) => {
@@ -66,23 +78,39 @@ export function usePositionNotifications() {
       if (!isReal && !prefs.paperEnabled) return;
 
       const ruleName = delta.rule_name ?? `rule ${delta.rule_id.slice(0, 8)}`;
-      const symbol = delta.mint_address.slice(0, 8);
       const modeLabel = isReal ? 'real' : 'paper';
+      const href = opsNotifyHref({
+        status,
+        mode: tradeMode,
+        mint: delta.mint_address,
+        ruleId: delta.rule_id,
+        positionId: delta.position_id,
+      });
+      const tradeHref = `/trade?mint=${encodeURIComponent(delta.mint_address)}`;
 
-      const title = `[${modeLabel}] ${symbol} → ${STATUS_LABEL[status] ?? status}`;
+      const detail =
+        status === 'End' || status === 'ExitFailed' || status === 'ExitUnconfirmed'
+          ? delta.exit_reason
+          : null;
 
-      const bodyParts: string[] = [`"${ruleName}"`];
-      if (status === 'End' && delta.exit_reason) {
-        bodyParts.push(delta.exit_reason);
+      addToast(
+        `[${modeLabel}] ${delta.mint_address.slice(0, 8)} → ${STATUS_LABEL[status] ?? status}`,
+        [`"${ruleName}"`, detail].filter(Boolean).join(' | '),
+        STATUS_VARIANT[status] ?? 'neutral',
+      );
+
+      if (prefs.desktopEnabled) {
+        void showDesktopNotify({
+          status,
+          mint: delta.mint_address,
+          modeLabel,
+          ruleName,
+          detail,
+          href,
+          tradeHref,
+          tag: `hunter-pos-${delta.position_id}`,
+        });
       }
-      if (
-        (status === 'ExitFailed' || status === 'ExitUnconfirmed') &&
-        delta.exit_reason
-      ) {
-        bodyParts.push(delta.exit_reason);
-      }
-
-      fireToast(addToast, prefs, status, title, bodyParts.join(' | '));
     });
 
     const armedHandle = connectArmedChanged((delta) => {
@@ -95,21 +123,40 @@ export function usePositionNotifications() {
       if (!isReal && !prefs.paperEnabled) return;
 
       const ruleName = delta.rule_name ?? `rule ${delta.rule_id.slice(0, 8)}`;
-      const symbol = delta.mint_address.slice(0, 8);
       const modeLabel = isReal ? 'real' : 'paper';
+      const href = opsNotifyHref({
+        status,
+        mode: tradeMode,
+        mint: delta.mint_address,
+        ruleId: delta.rule_id,
+      });
+      const tradeHref = `/trade?mint=${encodeURIComponent(delta.mint_address)}`;
+      const detail = status === 'Disarmed' ? delta.reason : null;
 
-      const title = `[${modeLabel}] ${symbol} → ${STATUS_LABEL[status]}`;
-      const bodyParts: string[] = [`"${ruleName}"`];
-      if (status === 'Disarmed' && delta.reason) {
-        bodyParts.push(delta.reason);
+      addToast(
+        `[${modeLabel}] ${delta.mint_address.slice(0, 8)} → ${STATUS_LABEL[status]}`,
+        [`"${ruleName}"`, detail].filter(Boolean).join(' | '),
+        STATUS_VARIANT[status] ?? 'neutral',
+      );
+
+      if (prefs.desktopEnabled) {
+        void showDesktopNotify({
+          status,
+          mint: delta.mint_address,
+          modeLabel,
+          ruleName,
+          detail,
+          href,
+          tradeHref,
+          // Same tag for arm→disarm so the OS replaces the waiting toast.
+          tag: `hunter-arm-${delta.rule_id}-${delta.mint_address}`,
+        });
       }
-
-      fireToast(addToast, prefs, status, title, bodyParts.join(' | '));
     });
 
     return () => {
       positionHandle.close();
       armedHandle.close();
     };
-  }, [addToast, prefs]);
+  }, [addToast, prefs, navigate]);
 }

@@ -101,7 +101,9 @@ open KPI, and StrategyStrip read this store only (no parallel Maps).
   semantic data-viz, not chrome.
 - `AppLayout.tsx` — slots `{nav, rightSlot, beforeMain, footer}`: live passes
   `beforeMain=<NotificationMount/>` (mounts `usePositionNotifications`, which toasts
-  on `strategy_position_update` **and** `strategy_armed_changed` per Settings prefs);
+  on `strategy_position_update` **and** `strategy_armed_changed` per Settings prefs;
+  desktop path uses `/sw-notifications.js` + `showDesktopNotify` — status icon,
+  Open Ops / Trade actions, per-position tag updates, click → `opsNotifyHref`);
   lab passes `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral
   (Timezone+PriceUnit+Toast);
   **lab `App` nests `BackgroundJobsProvider` itself** (keeps its SSE out of the live build).

@@ -44,3 +44,54 @@ export function simulateHref(ruleId?: string | null): string {
   if (!ruleId) return STRATEGY_PATHS.simulate;
   return `${STRATEGY_PATHS.simulate}?${STRATEGY_PARAMS.rule}=${encodeURIComponent(ruleId)}`;
 }
+
+/** Ops deep-link query keys used by notification click-through. */
+export const OPS_PARAMS = {
+  tab: 'tab',
+  mode: 'mode',
+  status: 'status',
+  mint: 'mint',
+  rule: 'rule',
+  position: 'position',
+} as const;
+
+export type OpsTab = 'waiting' | 'open' | 'recent';
+
+/** Map a notification status pill → Ops tab that holds that row. */
+export function opsTabForNotifyStatus(status: string): OpsTab {
+  switch (status) {
+    case 'Armed':
+    case 'Disarmed':
+      return 'waiting';
+    case 'End':
+    case 'ExitFailed':
+    case 'ExitUnconfirmed':
+      return 'recent';
+    default:
+      return 'open';
+  }
+}
+
+/**
+ * Deep-link for a position/arm notification → Ops with the right tab, mode,
+ * status filter, and row selection (`mint`+`rule` for waiting; `position` for
+ * open/recent).
+ */
+export function opsNotifyHref(opts: {
+  status: string;
+  mode: string;
+  mint: string;
+  ruleId: string;
+  positionId?: string | null;
+}): string {
+  const q = new URLSearchParams();
+  q.set(OPS_PARAMS.tab, opsTabForNotifyStatus(opts.status));
+  q.set(OPS_PARAMS.mode, opts.mode === 'paper' ? 'paper' : 'real');
+  if (opts.status !== 'Armed' && opts.status !== 'Disarmed') {
+    q.set(OPS_PARAMS.status, opts.status);
+  }
+  q.set(OPS_PARAMS.mint, opts.mint);
+  if (opts.ruleId) q.set(OPS_PARAMS.rule, opts.ruleId);
+  if (opts.positionId) q.set(OPS_PARAMS.position, opts.positionId);
+  return `${STRATEGY_PATHS.ops}?${q.toString()}`;
+}

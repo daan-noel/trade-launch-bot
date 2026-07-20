@@ -10,7 +10,7 @@ import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { useSseStatus } from 'hooks/useSseStatus';
-import { rulesHref } from 'lib/strategy/nav';
+import { OPS_PARAMS, rulesHref, type OpsTab } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useCloseRulePositionMutation } from '@live/store/liveEndpoints';
@@ -25,15 +25,19 @@ import {
 } from '@live/slices/liveStatusSlice';
 import type { RootState } from '@live/store';
 
-type Tab = 'waiting' | 'open' | 'recent';
+type Tab = OpsTab;
 type ModeFilter = 'real' | 'paper' | 'all';
 
 const HOLDING_LABEL: Record<string, string> = {
   Arming: 'Arming',
+  Armed: 'Armed',
+  Disarmed: 'Disarmed',
   BuySubmitted: 'Buy submitted',
   Holding: 'Holding',
   ExitPending: 'Exit pending',
   ExitUnconfirmed: 'Exit unconfirmed',
+  End: 'End',
+  ExitFailed: 'Exit failed',
 };
 
 function statusVariant(status: string): BadgeVariant {
@@ -74,16 +78,29 @@ function modeOk(mode: string | null | undefined, filter: ModeFilter): boolean {
  */
 export function OpsPage() {
   const [params, setParams] = useSearchParams();
-  const tab = (params.get('tab') as Tab | null) ?? 'open';
-  const modeFilter = (params.get('mode') as ModeFilter | null) ?? 'real';
+  const tab = (params.get(OPS_PARAMS.tab) as Tab | null) ?? 'open';
+  const modeFilter = (params.get(OPS_PARAMS.mode) as ModeFilter | null) ?? 'real';
+  const statusFilter = params.get(OPS_PARAMS.status);
+  const mintParam = params.get(OPS_PARAMS.mint);
+  const ruleParam = params.get(OPS_PARAMS.rule);
+  const positionParam = params.get(OPS_PARAMS.position);
+
   const setTab = (t: Tab) => {
-    const next = new URLSearchParams(params);
-    next.set('tab', t);
+    // Manual tab change drops notification deep-link selection/filters.
+    const next = new URLSearchParams();
+    next.set(OPS_PARAMS.tab, t);
+    next.set(OPS_PARAMS.mode, modeFilter);
     setParams(next, { replace: true });
   };
   const setMode = (m: ModeFilter) => {
     const next = new URLSearchParams(params);
-    next.set('mode', m);
+    next.set(OPS_PARAMS.mode, m);
+    setParams(next, { replace: true });
+  };
+  const clearDeepLink = () => {
+    const next = new URLSearchParams();
+    next.set(OPS_PARAMS.tab, tab);
+    next.set(OPS_PARAMS.mode, modeFilter);
     setParams(next, { replace: true });
   };
 
@@ -111,6 +128,24 @@ export function OpsPage() {
     () => recent.filter((r) => modeOk(r.mode, modeFilter)),
     [recent, modeFilter],
   );
+  // Notification deep-link may narrow the table by status without changing KPI counts.
+  const openTableRows = useMemo(
+    () => (statusFilter ? openRows.filter((r) => r.status === statusFilter) : openRows),
+    [openRows, statusFilter],
+  );
+  const recentTableRows = useMemo(
+    () => (statusFilter ? recentRows.filter((r) => r.status === statusFilter) : recentRows),
+    [recentRows, statusFilter],
+  );
+
+  const selectedKey =
+    tab === 'waiting'
+      ? ruleParam && mintParam
+        ? `${ruleParam}|${mintParam}`
+        : null
+      : positionParam;
+
+  const deepLinkActive = Boolean(statusFilter || mintParam || positionParam || ruleParam);
 
   const exitPending = openRows.filter((r) => r.status === 'ExitPending').length;
   const totalDeployed = openRows.reduce((s, r) => s + (r.entrySol ?? 0), 0);
@@ -413,6 +448,33 @@ export function OpsPage() {
         ))}
       </div>
 
+      {deepLinkActive && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-accent/25 bg-accent/8 px-3 py-2 text-xs text-text">
+          <span>
+            From notification
+            {statusFilter ? (
+              <>
+                {' '}
+                · status <span className="font-semibold">{HOLDING_LABEL[statusFilter] ?? statusFilter}</span>
+              </>
+            ) : null}
+            {mintParam ? (
+              <>
+                {' '}
+                · mint <span className="font-mono">{mintParam.slice(0, 8)}…</span>
+              </>
+            ) : null}
+          </span>
+          <button
+            type="button"
+            onClick={clearDeepLink}
+            className="ml-auto text-[11px] font-semibold text-accent underline underline-offset-2 hover:text-primary"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       {!hydrated && snapshotLoading ? (
         <p className="py-10 text-center text-text-dim">Loading live status…</p>
       ) : tab === 'waiting' ? (
@@ -424,26 +486,67 @@ export function OpsPage() {
           defaultSort={{ col: 'age', dir: 'desc' }}
           tableId="ops-waiting"
           emptyMessage="Nothing waiting on entry."
+          selectedKey={selectedKey}
+          onSelect={(key) => {
+            if (!key) {
+              clearDeepLink();
+              return;
+            }
+            const row = armedRows.find((r) => r.key === key);
+            if (!row) return;
+            const next = new URLSearchParams(params);
+            next.set(OPS_PARAMS.mint, row.mint);
+            next.set(OPS_PARAMS.rule, row.ruleId);
+            setParams(next, { replace: true });
+          }}
         />
       ) : tab === 'open' ? (
         <DataTable
           columns={openCols}
-          rows={openRows}
+          rows={openTableRows}
           rowKey={(r) => r.positionId}
           searchable
           colFilters
           tableId="ops-open"
           emptyMessage="No open positions."
+          selectedKey={selectedKey}
+          onSelect={(key) => {
+            if (!key) {
+              clearDeepLink();
+              return;
+            }
+            const row = openTableRows.find((r) => r.positionId === key);
+            if (!row) return;
+            const next = new URLSearchParams(params);
+            next.set(OPS_PARAMS.position, row.positionId);
+            next.set(OPS_PARAMS.mint, row.mint);
+            if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
+            setParams(next, { replace: true });
+          }}
         />
       ) : (
         <DataTable
           columns={recentCols}
-          rows={recentRows}
+          rows={recentTableRows}
           rowKey={(r) => r.positionId}
           searchable
           defaultSort={{ col: 'when', dir: 'desc' }}
           tableId="ops-recent"
           emptyMessage="No closes this session yet."
+          selectedKey={selectedKey}
+          onSelect={(key) => {
+            if (!key) {
+              clearDeepLink();
+              return;
+            }
+            const row = recentTableRows.find((r) => r.positionId === key);
+            if (!row) return;
+            const next = new URLSearchParams(params);
+            next.set(OPS_PARAMS.position, row.positionId);
+            next.set(OPS_PARAMS.mint, row.mint);
+            if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
+            setParams(next, { replace: true });
+          }}
         />
       )}
     </div>
