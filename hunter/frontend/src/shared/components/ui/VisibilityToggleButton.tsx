@@ -61,6 +61,7 @@ export function VisibilityToggleButton({
           visible
             ? 'border-primary text-primary hover:bg-primary/10'
             : 'border-border text-text-dim hover:border-primary hover:text-primary',
+          'disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent',
           className,
         )}
         {...props}

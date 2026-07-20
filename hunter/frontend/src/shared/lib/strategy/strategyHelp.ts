@@ -61,6 +61,8 @@ export const SIDE_HELP = {
       '',
       'Empty metric = ignore that metric. Empty whole entry side = buy as soon as the fingerprint arms (no extra wait).',
       '',
+      'OVERLAP GATE: if any exit metric is already true at the same moment, the engine does not buy (would sell on the next tick). Keep entry and exit bands disjoint.',
+      '',
       'Monotonic tip: time only goes up. An entry like time < 30 can never succeed after 30s — the engine disarms that arm (derived unsatisfiable).',
     ].join('\n'),
   },
@@ -78,6 +80,8 @@ export const SIDE_HELP = {
       'Empty whole exit side = only TP / SL / death close the trade (no metric exit).',
       '',
       'Close reasons OR together: TP hit OR SL hit OR any exit metric OR dead/migrated.',
+      '',
+      'If an exit metric is already true when entry would fire, entry is refused until that exit clears (see entry overlap gate).',
     ].join('\n'),
   },
 } as const satisfies Record<'entry' | 'exit', HelpTip>;

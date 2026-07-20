@@ -239,6 +239,16 @@ impl CompiledRule {
         self.has_exit_metrics() && reqs_any_satisfied(&self.exit_reqs, track, now)
     }
 
+    /// Whether the armed side may submit a buy at `now`.
+    ///
+    /// Entry conditions must hold, and exit metrics (if any) must **not** already
+    /// hold. Level-triggered exit OR would otherwise sell on the next event after
+    /// fill — a worthless round-trip when params overlap. TP/SL are not part of
+    /// this gate (they need an entry price).
+    pub fn can_enter(&self, track: &TokenTrack, now: Ts) -> bool {
+        self.entry_satisfied(track, now) && !self.exit_metrics_satisfied(track, now)
+    }
+
     /// Whether a monotonic entry metric is permanently unsatisfiable at `now` —
     /// the entry can never re-satisfy, so the arm should disarm
     /// ([`DisarmReason::Unsatisfiable`]).
@@ -454,10 +464,76 @@ mod tests {
 
         assert!(compiled.exit_metrics_satisfied(&track, now));
         assert!(!compiled.entry_satisfied(&track, now));
+        assert!(!compiled.can_enter(&track, now));
 
         let mut cold = TokenTrack::new(created);
         cold.on_trade(TradeLite { side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 5.0, at: now , ..Default::default() });
         assert!(!compiled.exit_metrics_satisfied(&cold, now));
+    }
+
+    #[test]
+    fn can_enter_refuses_when_exit_metrics_already_hold() {
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+
+        // Overlapping bands: entry liquidity > 50, exit liquidity > 40 — both true
+        // at reserve 60. Buying would immediately qualify for a metrics exit.
+        let compiled = CompiledRule::compile(&rule(json!({
+            "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 50}] } },
+            "exit":  { "m_snapshot": { "liquidity": [{"operator": ">", "value": 40}] } },
+            "take_profit": 100
+        })));
+
+        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let now = created + Duration::seconds(1);
+        let mut overlap = TokenTrack::new(created);
+        overlap.on_trade(TradeLite {
+            side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 60.0, at: now,
+            ..Default::default()
+        });
+        assert!(compiled.entry_satisfied(&overlap, now));
+        assert!(compiled.exit_metrics_satisfied(&overlap, now));
+        assert!(!compiled.can_enter(&overlap, now));
+
+        // Liquidity between the bands: entry false, exit true → still no enter.
+        let mut exit_only = TokenTrack::new(created);
+        exit_only.on_trade(TradeLite {
+            side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 45.0, at: now,
+            ..Default::default()
+        });
+        assert!(!compiled.entry_satisfied(&exit_only, now));
+        assert!(compiled.exit_metrics_satisfied(&exit_only, now));
+        assert!(!compiled.can_enter(&exit_only, now));
+
+        // Below both: neither side → no enter.
+        let mut cold = TokenTrack::new(created);
+        cold.on_trade(TradeLite {
+            side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 10.0, at: now,
+            ..Default::default()
+        });
+        assert!(!compiled.can_enter(&cold, now));
+    }
+
+    #[test]
+    fn can_enter_when_entry_holds_and_exit_does_not() {
+        use crate::metrics::{Side, TradeLite};
+        use chrono::{Duration, TimeZone, Utc};
+
+        // Entry liquidity > 50; exit liquidity < 20 — disjoint.
+        let compiled = CompiledRule::compile(&rule(json!({
+            "entry": { "m_snapshot": { "liquidity": [{"operator": ">", "value": 50}] } },
+            "exit":  { "m_snapshot": { "liquidity": [{"operator": "<", "value": 20}] } },
+            "take_profit": 100
+        })));
+
+        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let now = created + Duration::seconds(1);
+        let mut track = TokenTrack::new(created);
+        track.on_trade(TradeLite {
+            side: Side::Buy, sol: 1.0, price: 1.0, reserve_sol: 80.0, at: now,
+            ..Default::default()
+        });
+        assert!(compiled.can_enter(&track, now));
     }
 
     #[test]

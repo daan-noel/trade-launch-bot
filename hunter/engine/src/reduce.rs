@@ -420,7 +420,9 @@ fn evaluate_token(
 }
 
 /// Decide one arm's fate. Priorities: armed side disarms (dead, then derived-unsat)
-/// before it enters; the open side follows `Dead > StopLoss > TakeProfit > Metrics`.
+/// before it enters; entry is gated by [`CompiledRule::can_enter`] (no buy while
+/// exit metrics already hold); the open side follows
+/// `Dead > StopLoss > TakeProfit > Metrics`.
 fn decide_arm(
     c: &CompiledRule,
     arm: &ArmState,
@@ -436,7 +438,7 @@ fn decide_arm(
             if c.entry_unsatisfiable(&token.track, now) {
                 return ArmDecision::Disarm(DisarmReason::Unsatisfiable);
             }
-            if c.enter_on_arm() || c.entry_satisfied(&token.track, now) {
+            if c.can_enter(&token.track, now) {
                 return ArmDecision::Enter;
             }
             ArmDecision::None

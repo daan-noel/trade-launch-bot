@@ -675,6 +675,27 @@ function RuleSimPositionsPanel({
     ? simTableError
     : null;
 
+  // Full Positions cohort size (fired + NoEntry). Captured while the toggle is
+  // showing everything so the badge can render `fired / all` after hide — same
+  // shape as the sweep combo drill-in.
+  const allPositionsTotal = useRef(0);
+  const allPositionsRule = useRef(rule.id);
+  if (allPositionsRule.current !== rule.id) {
+    allPositionsRule.current = rule.id;
+    allPositionsTotal.current = 0;
+  }
+  if (showNotFired && simTotal > 0) allPositionsTotal.current = simTotal;
+  const nFired = simSummary?.realized.n_fired ?? 0;
+  // Stale/pre-padding payloads only store fired rows: Positions total ≈ Entered,
+  // while Matched (live fingerprint scan) can still be much larger. Hide then
+  // has nothing to remove — surface that instead of a silent no-op.
+  const hideNotFiredNoOp =
+    showNotFired && !simTableLoading && simTotal > 0 && simTotal <= nFired;
+  const positionsBadge =
+    !showNotFired && allPositionsTotal.current > simTotal
+      ? `${simTotal} / ${allPositionsTotal.current}`
+      : String(simTotal);
+
   return (
     <section id={`sim-positions-${rule.id}`}>
       <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
@@ -683,7 +704,7 @@ function RuleSimPositionsPanel({
           {isMatched ? 'Matched Tokens' : 'Simulated Positions'}
         </h3>
         <Badge variant="info" size="sm" className="font-mono font-normal">
-          {isMatched ? matchedTotal : simTotal}
+          {isMatched ? matchedTotal : positionsBadge}
         </Badge>
         <div className="flex items-center gap-1">
           <Button
@@ -704,6 +725,13 @@ function RuleSimPositionsPanel({
         {!isMatched && (
           <VisibilityToggleButton
             visible={showNotFired}
+            disabled={hideNotFiredNoOp}
+            {...(hideNotFiredNoOp
+              ? {
+                  title:
+                    'This result has no not-fired (NoEntry) rows — re-run Simulate with the current lab binary to include matched-but-never-entered tokens.',
+                }
+              : {})}
             onToggle={() => {
               setShowNotFired((v) => !v);
               setSimQuery((q) => ({ ...q, page: 1 }));

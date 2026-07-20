@@ -134,7 +134,8 @@ is **STREAM ON/OFF** (not the header trading kill switch).
   stacks `TokenTradeChart` above registry-driven `MetricPanes`. Shared wall-clock
   crosshair / visible range (`TokenPriceChart.onCrosshairTimeChange` /
   `onVisibleTimeRangeChange`); selecting a rule auto-loads its metrics/windows,
-  overlays thresholds, and paints first metric entry/exit fires as `eventMarkers`.
+  overlays thresholds, and paints first metric entry/exit fires as `eventMarkers`
+  (entry fire skips rows where exit metrics already hold — same `can_enter` gate as the engine).
   Values are **readout-first**: a sticky strip lists every selected metric's
   crosshair/latest number; each pane has a large value rail + sparkline min/max
   and labeled thresholds (shape is secondary). Series from

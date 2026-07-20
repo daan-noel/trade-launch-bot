@@ -977,6 +977,22 @@ mod tests {
     }
 
     #[test]
+    fn hide_not_fired_filter_matches_simulate_toggle() {
+        // Exact wire shape SimulatePage injects for "Hide not fired":
+        // `filters.exit_reason = { op: "neq", val: "NoEntry" }`.
+        let rows = vec![
+            json!({"mint_address":"a","fired":true,"exit_reason":"TakeProfit"}),
+            json!({"mint_address":"b","fired":false,"exit_reason":"NoEntry"}),
+            json!({"mint_address":"c","fired":true,"exit_reason":"Open"}),
+        ];
+        let r = req(json!({"filters": {"exit_reason": {"op":"neq","val":"NoEntry"}}}));
+        let (page, total) = query(&rows, &r);
+        assert_eq!(total, 2, "neq NoEntry keeps fired + still-open");
+        let mints: Vec<&str> = page.iter().filter_map(|r| r["mint_address"].as_str()).collect();
+        assert_eq!(mints, vec!["a", "c"]);
+    }
+
+    #[test]
     fn token_enrichment_fields_sort_and_filter() {
         // Fields flattened onto the row by `token_enrich::TokenEnrichment` — the
         // frontend's `appendedTokenColumns` display keys must alias to them.

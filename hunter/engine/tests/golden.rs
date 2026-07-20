@@ -216,6 +216,45 @@ fn metrics_exit_on_time_condition() {
 }
 
 #[test]
+fn overlapping_entry_exit_metrics_do_not_enter() {
+    // Entry liquidity > 50 and exit liquidity > 40 both hold at reserve 60 —
+    // can_enter must refuse (would otherwise buy then metrics-exit next event).
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    let params = json!({
+        "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 50 }] } },
+        "exit":  { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 40 }] } },
+        "take_profit": 100
+    });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 1.0) });
+    assert!(buys(&fx).is_empty(), "must not enter while exit metrics already hold");
+}
+
+#[test]
+fn enters_once_exit_metrics_clear_while_entry_still_holds() {
+    // Entry liquidity > 10, exit liquidity > 40. At reserve 60 both hold → no
+    // buy; at reserve 30 entry still holds and exit clears → buy.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    let params = json!({
+        "entry": { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 10 }] } },
+        "exit":  { "m_snapshot": { "liquidity": [{ "operator": ">", "value": 40 }] } },
+        "take_profit": 100
+    });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    reduce(
+        &mut s,
+        Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None },
+    );
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 60.0, 1.0) });
+    assert!(buys(&fx).is_empty(), "overlap: entry and exit both true");
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 30.0, 2.0) });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "entry holds, exit cleared → buy");
+}
+
+#[test]
 fn stall_exit_on_quiet_token_is_tick_driven() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");

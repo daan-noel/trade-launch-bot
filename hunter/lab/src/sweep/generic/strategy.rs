@@ -800,8 +800,9 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usi
 }
 
 /// Walk the series to the entry decision, mirroring the armed-side `decide_arm`:
-/// `Dead > Unsatisfiable > (enter-on-arm | entry conditions)`. The fill is the
-/// worst-case adverse buy after the trigger trade (trigger slot + next slot within
+/// `Dead > Unsatisfiable > can_enter` (entry conditions hold and exit metrics, if
+/// any, do not). The fill is the worst-case adverse buy after the trigger trade
+/// (trigger slot + next slot within
 /// [`MAX_FILL_WAIT_SLOTS`](trading_core::config::constants::MAX_FILL_WAIT_SLOTS)) —
 /// same model as live paper / replay. A tick-timed decision before any print uses
 /// the first later trade as the trigger; an empty fill window ⇒ `NoEntry`.
@@ -814,8 +815,9 @@ pub(crate) fn resolve_entry(
     let c = &b.rule;
     let n = series.n_rows();
     // Column indices come pre-resolved from `bind_param` — see `BoundCombo`.
-    let (entry_cols, mono_cols) = (&b.entry_cols, &b.mono_cols);
+    let (entry_cols, mono_cols, exit_cols) = (&b.entry_cols, &b.mono_cols, &b.exit_cols);
     let enter_on_arm = c.enter_on_arm();
+    let has_exit_metrics = c.has_exit_metrics();
     for i in 0..n {
         if series.dead[i] {
             return EntryResolution::NoEntry;
@@ -824,6 +826,10 @@ pub(crate) fn resolve_entry(
             return EntryResolution::NoEntry;
         }
         if enter_on_arm || reqs_satisfied(series, &c.entry_reqs, entry_cols, i) {
+            // Mirror `CompiledRule::can_enter`: never buy while exit metrics already hold.
+            if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, exit_cols, i) {
+                continue;
+            }
             let Some(trigger_idx) = entry_trigger_trade_idx(series, i) else {
                 return EntryResolution::NoEntry;
             };

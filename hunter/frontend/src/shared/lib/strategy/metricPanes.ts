@@ -202,7 +202,10 @@ export function metricConditionStatesAt(
   return out;
 }
 
-/** First trade index where all entry metric conditions hold; then first later exit. */
+/**
+ * First trade index where entry may fire (entry AND holds and exit OR does not —
+ * mirrors `CompiledRule::can_enter`); then first later exit.
+ */
 export function findRuleFireMarkers(
   params: RuleParams,
   data: MetricSeriesResponse,
@@ -221,10 +224,11 @@ export function findRuleFireMarkers(
   let entryIdx: number | null = null;
   if (hasEntry) {
     for (let i = 0; i < n; i++) {
-      if (sidePassesAt(params.entry, i, byKey, registry, 'and')) {
-        entryIdx = i;
-        break;
-      }
+      if (!sidePassesAt(params.entry, i, byKey, registry, 'and')) continue;
+      // Engine refuses entry while exit metrics already hold.
+      if (hasExit && sidePassesAt(params.exit, i, byKey, registry, 'or')) continue;
+      entryIdx = i;
+      break;
     }
   }
 
