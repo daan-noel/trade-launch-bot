@@ -45,8 +45,15 @@ server {
     # Backend API. No trailing slash on proxy_pass => the /api/ prefix is
     # preserved, matching the backend's /api/... routes. The live backend
     # listens on ${LIVE_API_PORT} and is reached by its compose service name `live-api`.
+    #
+    # Variable + Docker embedded DNS (127.0.0.11): nginx otherwise resolves
+    # `live-api` once at start and caches the IP. After `live-api` is recreated
+    # it gets a new IP → every /api request 502s until the UI container restarts.
+    # `valid=10s` re-resolves; `ipv6=off` matches the compose IPv4 network.
     location /api/ {
-        proxy_pass http://live-api:${LIVE_API_PORT};
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $api_upstream http://live-api:${LIVE_API_PORT};
+        proxy_pass $api_upstream;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
