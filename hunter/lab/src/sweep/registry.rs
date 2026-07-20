@@ -604,6 +604,8 @@ pub async fn run_grouped(
     floor: CoverageFloor,
     max_combos: Option<usize>,
     buy_amount_sol: f64,
+    // Corpus-wide volume-ix patterns for flow-metric axes (`None` = non-flow).
+    volume_ix_patterns: Option<Vec<Vec<String>>>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -612,7 +614,7 @@ pub async fn run_grouped(
         "generic" => {
             sweep_generic(
                 axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
-                buy_amount_sol, coarse_observer, observer, sink,
+                buy_amount_sol, volume_ix_patterns, coarse_observer, observer, sink,
             )
             .await
         }
@@ -658,6 +660,7 @@ async fn sweep_generic(
     floor: CoverageFloor,
     max_combos: Option<usize>,
     buy_amount_sol: f64,
+    volume_ix_patterns: Option<Vec<Vec<String>>>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
     sink: Arc<dyn GroupSink + Send + Sync>,
@@ -669,6 +672,16 @@ async fn sweep_generic(
     let req: AxesRequest = serde_json::from_value(axes_json.clone())
         .context("invalid generic axes request")?;
     let model = AxesModel::resolve(&req).map_err(|e| anyhow!("axes: {e}"))?;
+
+    if model.references_flow() && volume_ix_patterns.is_none() {
+        bail!(
+            "axes reference m_flow_split/m_flow_window but volume_ix_patterns is missing — \
+             supply volume_ix_patterns (string[][]) or drop the flow axes"
+        );
+    }
+    let flow_patterns = volume_ix_patterns.as_ref().map(|p| {
+        hunter_engine::metrics::flow_split::FlowPatterns::from_label_sequences(p)
+    });
 
     // Grid guard: reject an explosive full grid before doing any sweep work. A full
     // grid runs exactly as chosen (capped by `cap` = the caller's Max combos/group);
@@ -694,7 +707,8 @@ async fn sweep_generic(
     if planned == 0 {
         bail!("param space is empty");
     }
-    let strategy = GenericSweepStrategy::new(model, buy_amount_sol, chrono::Utc::now());
+    let strategy =
+        GenericSweepStrategy::new(model, buy_amount_sol, chrono::Utc::now(), flow_patterns);
     let max_series_bytes = corpus
         .tokens
         .iter()
@@ -815,9 +829,16 @@ pub fn simulate_one_combo(
     params_json: &Value,
     buy_amount_sol: f64,
     as_of: chrono::DateTime<chrono::Utc>,
+    volume_ix_patterns: Option<&[Vec<String>]>,
 ) -> Result<Vec<ComboTokenResult>> {
     match strategy_id {
-        "generic" => simulate_generic_one_combo(tokens, params_json, buy_amount_sol, as_of),
+        "generic" => simulate_generic_one_combo(
+            tokens,
+            params_json,
+            buy_amount_sol,
+            as_of,
+            volume_ix_patterns,
+        ),
         other => bail!(
             "strategy '{other}' has no single-combo simulation (supported: {:?})",
             strategy_ids()
@@ -864,6 +885,7 @@ fn simulate_generic_one_combo(
     params_json: &Value,
     buy_amount_sol: f64,
     as_of: chrono::DateTime<chrono::Utc>,
+    volume_ix_patterns: Option<&[Vec<String>]>,
 ) -> Result<Vec<ComboTokenResult>> {
     use hunter_engine::arm::CompiledRule;
     use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
@@ -872,7 +894,9 @@ fn simulate_generic_one_combo(
     use trading_core::config::constants::sol_to_lamports;
     use trading_core::strategies::kernel::CostModel;
 
-    use crate::sweep::generic::strategy::{build_series, columns_for, scan, sparse_grid_for};
+    use crate::sweep::generic::strategy::{
+        build_series_with_flow, columns_for, scan, sparse_grid_for,
+    };
 
     let params = RuleParams::parse(params_json)
         .map_err(|e| anyhow!("invalid generic combo params: {e}"))?;
@@ -891,10 +915,19 @@ fn simulate_generic_one_combo(
     let columns = columns_for(&compiled);
     let grid = sparse_grid_for(&compiled);
     let cost = CostModel::pumpfun_default();
+    let flow_patterns = volume_ix_patterns.map(|p| {
+        hunter_engine::metrics::flow_split::FlowPatterns::from_label_sequences(p)
+    });
 
     let mut results = Vec::with_capacity(tokens.len());
     for tt in tokens {
-        let series = build_series(tt, columns.clone(), &grid, as_of);
+        let series = build_series_with_flow(
+            tt,
+            columns.clone(),
+            &grid,
+            as_of,
+            flow_patterns.as_ref(),
+        );
         let o = scan(&series, &compiled, buy_amount_sol, &cost);
         results.push(ComboTokenResult {
             mint_address: tt.mint.clone(),

@@ -65,19 +65,35 @@ pub struct GenericSweepStrategy {
     /// so a long-lived token records rows only where a decision could change
     /// (plan §P2). Built once; the same grid serves every token.
     grid: SparseGrid,
+    /// Corpus-wide volume-ix patterns (compiled). `None` ⇒ no flow state / NaN.
+    flow_patterns: Option<hunter_engine::metrics::flow_split::FlowPatterns>,
 }
 
 impl GenericSweepStrategy {
     /// Build the strategy from a resolved axes model. `as_of` is the run-time now
     /// the deadness clock advances toward (matches `run_replay`'s `ReplayConfig`).
-    pub fn new(model: AxesModel, buy_amount_sol: f64, as_of: Ts) -> Self {
+    /// `flow_patterns` is the run's optional `volume_ix_patterns` (corpus-wide).
+    pub fn new(
+        model: AxesModel,
+        buy_amount_sol: f64,
+        as_of: Ts,
+        flow_patterns: Option<hunter_engine::metrics::flow_split::FlowPatterns>,
+    ) -> Self {
         let columns = model.columns();
         let grid = SparseGrid {
             max_window_secs: model.max_window_secs(),
             time_horizon_secs: model.metric_value_ceiling(MetricId::Time),
             stall_horizon_secs: model.metric_value_ceiling(MetricId::Stall),
         };
-        Self { model, buy_amount_sol, as_of, cost: CostModel::pumpfun_default(), columns, grid }
+        Self {
+            model,
+            buy_amount_sol,
+            as_of,
+            cost: CostModel::pumpfun_default(),
+            columns,
+            grid,
+            flow_patterns,
+        }
     }
 
     /// Estimate the worst-case resident bytes of one token's precomputed series —
@@ -257,7 +273,13 @@ impl Strategy for GenericSweepStrategy {
     }
 
     fn prepare_token(&self, token: &CorpusToken) -> Self::TokenState {
-        build_series(token, self.columns.clone(), &self.grid, self.as_of)
+        build_series_with_flow(
+            token,
+            self.columns.clone(),
+            &self.grid,
+            self.as_of,
+            self.flow_patterns.as_ref(),
+        )
     }
 
     fn build_exit_ctx(
@@ -421,14 +443,44 @@ impl SparseGrid {
 /// Trades are folded in the corpus's load order (slot → tx_index → leg), which is
 /// block-time-monotonic — the order `run_replay` also folds them in (its global
 /// `at` sort is stable and block_time tracks slot), so the two never diverge.
-pub(crate) fn build_series(
+///
+/// When `flow_patterns` is set, seeds fingerprint-scoped flow state for every
+/// [`SeriesColumn::Flow`] fingerprint in `columns` (V2.2).
+pub(crate) fn build_series_with_flow(
     token: &CorpusToken,
     columns: Vec<SeriesColumn>,
     grid: &SparseGrid,
     as_of: Ts,
+    flow_patterns: Option<&hunter_engine::metrics::flow_split::FlowPatterns>,
 ) -> MetricSeries {
     let created = token.created_at;
     let mut series = MetricSeries::new(created, columns);
+    if let Some(patterns) = flow_patterns {
+        let windows: Vec<f64> = series
+            .columns()
+            .iter()
+            .filter_map(|c| match c {
+                SeriesColumn::Flow(_, Some(w), _) => Some(*w),
+                SeriesColumn::Window(_, w) => Some(*w),
+                _ => None,
+            })
+            .collect();
+        // Seed every fingerprint id that Flow columns read — sweep uses
+        // `SWEEP_FLOW_FP` (nil); the scan≡replay guard uses the rule's real id.
+        let mut fps: Vec<FingerprintId> = series
+            .columns()
+            .iter()
+            .filter_map(|c| match c {
+                SeriesColumn::Flow(_, _, fp) => Some(*fp),
+                _ => None,
+            })
+            .collect();
+        fps.sort_by_key(|fp| fp.0);
+        fps.dedup();
+        for fp in fps {
+            series.ensure_flow(fp, patterns, &windows);
+        }
+    }
     let trades = &token.trades;
     if trades.is_empty() {
         return series;

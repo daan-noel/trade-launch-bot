@@ -1,6 +1,6 @@
 # Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_window`)
 
-Status: **IN PROGRESS** (design settled 2026-07-17; **V0+V1 shipped 2026-07-20**).
+Status: **IN PROGRESS** (design settled 2026-07-17; **V0–V2 shipped 2026-07-20**; V3+ next).
 Scope: hunter only. A follow-on to the generic engine —
 [fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md).
 Phase 5 prerequisites are met; the discovery job (§7) can trail the metrics.
@@ -259,16 +259,16 @@ ALTER TABLE fingerprints
       exit on `nonvol_gross(w)=0` via tick; two fingerprints diverge). Series
       determinism for non-flow columns unchanged; sweep pattern injection is V2.
 
-### V2 — Analysis parity (partial 2026-07-20)
+### V2 — Analysis parity ✅ 2026-07-20
 
 - [x] 2.1 Lake replay / simulate: `with_flow` when rule params reference `m_flow_*`;
       `to_trade_lite` hashes lake columns; `ReplayToken.creator_wallet_hash` from
       `Token.creator_wallet`; dry-run uses the rule's fingerprint `metric_config`.
-- [ ] 2.2 Sweep: flow metrics as generic axes. Pattern source for a sweep run = the
+- [x] 2.2 Sweep: flow metrics as generic axes. Pattern source for a sweep run = the
       run config's optional `volume_ix_patterns` (applied corpus-wide for the run);
       **Promote** writes them into the created fingerprint's `metric_config` (width
       parity precedent).
-- [ ] 2.3 Extend the scan≡engine guard corpus with flow-metric conditions (drift lock
+- [x] 2.3 Extend the scan≡engine guard corpus with flow-metric conditions (drift lock
       inherits decision 13).
 - [x] 2.4 `GET /api/tokens/{mint}/metric-series?fingerprint_id=` — loads flow columns
       + patterns from that fingerprint; absent/unconfigured ⇒ flow groups omitted.

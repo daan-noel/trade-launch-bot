@@ -87,6 +87,18 @@ impl FlowPatterns {
         self.hashes.is_empty()
     }
 
+    /// Compile an ordered list of label sequences (the sweep run's
+    /// `volume_ix_patterns` / fingerprint config array).
+    pub fn from_label_sequences(patterns: &[Vec<String>]) -> Self {
+        let mut hashes = BTreeSet::new();
+        for p in patterns {
+            if !p.is_empty() {
+                hashes.insert(ix_hash(p));
+            }
+        }
+        Self { hashes }
+    }
+
     /// Parse `metric_config["m_flow_split"]`. `None` = key absent (unconfigured ⇒
     /// flow metrics stay `NaN`). `Some` = configured (patterns may be empty —
     /// only contagion + creator classify as volume).

@@ -58,6 +58,11 @@ pub struct GroupedSweepRun {
     /// use ("swept = run"). `None` on legacy rows → callers fall back to the default
     /// (`grouping::SOL_BUCKET_WIDTH`, 0.1). Stored for display + re-run + promotion.
     pub bucket_width_sol: Option<f64>,
+    /// Optional volume-ix pattern set for flow-metric sweeps (`string[][]`).
+    /// Compiled corpus-wide into `FlowPatterns`; Promote copies into the
+    /// fingerprint's `metric_config.m_flow_split.volume_ix_patterns`. `None` =
+    /// non-flow run / legacy row.
+    pub volume_ix_patterns: Option<Value>,
     /// Lifecycle: `running` (in flight), `completed` (full sweep), or
     /// `cancelled` (cancelled / crash-recovered → only `groups_done` groups
     /// present). Phase 4 partial persistence — a `cancelled` run is honest about

@@ -129,6 +129,11 @@ pub struct StartGroupedSweepBody {
     /// leaves results comparable regardless of path. Omitted ⇒ scalar.
     #[serde(default)]
     pub use_avx512: Option<bool>,
+    /// Corpus-wide volume-ix patterns for flow-metric axes (`string[][]`).
+    /// Required when `axes` reference `m_flow_split` / `m_flow_window`; Promote
+    /// writes them into the fingerprint's `metric_config`.
+    #[serde(default)]
+    pub volume_ix_patterns: Option<Vec<Vec<String>>>,
 }
 
 fn default_min_tokens() -> usize {
@@ -506,6 +511,14 @@ async fn run_grouped_sweep_job(
     // Stored run tag: the refine pass reports as its own method, else the sampler.
     let method_tag = if refine.is_some() { "refine".to_string() } else { method.tag().to_string() };
 
+    // Peek axes for flow groups before load so the lake projects ix_labels/wallet.
+    let with_flow = axes_json_references_flow(&b.axes);
+    if with_flow && b.volume_ix_patterns.is_none() {
+        let msg = "axes reference m_flow_split/m_flow_window but volume_ix_patterns is missing";
+        gate.error = Some(msg.into());
+        let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
+        return;
+    }
     let sel = Selection {
         mints: None,
         token_cap,
@@ -521,7 +534,7 @@ async fn run_grouped_sweep_job(
         curve_only: b.curve_only,
         // Sweep resolves the trigger by index, not signature — no `tx_signature` needed.
         with_signatures: false,
-        with_flow: false,
+        with_flow,
     };
 
     // Load the corpus from the immutable Parquet lake via DuckDB (the sole sweep
@@ -772,6 +785,10 @@ async fn run_grouped_sweep_job(
         // The clamped width actually used to partition (not the raw request), so
         // re-run + promotion restore exactly what this run swept.
         bucket_width_sol: Some(bucket_width),
+        volume_ix_patterns: b
+            .volume_ix_patterns
+            .as_ref()
+            .and_then(|p| serde_json::to_value(p).ok()),
     };
     let repo = GroupedSweepRepo::new(state.batch_db.clone(), tables);
     if let Err(e) = repo.insert_run(&run).await {
@@ -932,6 +949,7 @@ async fn run_grouped_sweep_job(
         floor,
         b.max_combos,
         b.buy_amount_sol,
+        b.volume_ix_patterns.clone(),
         coarse_observer,
         observer,
         sink,
@@ -1487,14 +1505,43 @@ pub async fn promote_group(
     // runs), find-or-created so identical winning groups map onto ONE fingerprint.
     let width = run.bucket_width_sol.unwrap_or(SOL_BUCKET_WIDTH);
     let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
-    let fp = fingerprint_from_group_key(&group.group_key, width, name);
-    let fp = match FingerprintRepo::new(state.db.clone()).find_or_create(&fp).await {
+    let mut fp = fingerprint_from_group_key(&group.group_key, width, name);
+    // V2.2: Promote copies the run's volume-ix patterns into metric_config so the
+    // live/sim rule classifies with the same set the sweep scored.
+    if let Some(patterns) = &run.volume_ix_patterns {
+        fp.metric_config = serde_json::json!({
+            "m_flow_split": { "volume_ix_patterns": patterns }
+        });
+        if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+            &fp.metric_config,
+        ) {
+            return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+        }
+    }
+    let fp_repo = FingerprintRepo::new(state.db.clone());
+    let mut fp = match fp_repo.find_or_create(&fp).await {
         Ok(f) => f,
         Err(e) => {
             tracing::error!("promote: find_or_create fingerprint failed: {e}");
             return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
         }
     };
+    // find_or_create ignores metric_config for identity — update if the run has
+    // patterns and the stored row differs (width-parity precedent for config).
+    if let Some(patterns) = &run.volume_ix_patterns {
+        let want = serde_json::json!({
+            "m_flow_split": { "volume_ix_patterns": patterns }
+        });
+        if fp.metric_config != want {
+            fp.metric_config = want;
+            fp.updated_at = Utc::now();
+            if let Err(e) = fp_repo.update(&fp).await {
+                tracing::error!("promote: update fingerprint metric_config failed: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "database error"}));
+            }
+        }
+    }
 
     let buy_amount_sol = run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL);
     let draft = serde_json::json!({
@@ -1515,6 +1562,19 @@ pub async fn promote_group(
 /// First 8 chars of a UUID, for a compact human label.
 fn short_id(id: Uuid) -> String {
     id.to_string().chars().take(8).collect()
+}
+
+/// Cheap pre-resolve check: does the axes JSON mention a flow group name?
+fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
+    let Some(arr) = axes.get("axes").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    arr.iter().any(|a| {
+        matches!(
+            a.get("group").and_then(|g| g.as_str()),
+            Some("m_flow_split" | "m_flow_window")
+        )
+    })
 }
 
 /// Rebuild a [`Fingerprint`] from a stored group key at bucket `width`. The group
@@ -1731,7 +1791,7 @@ pub async fn list_token_results(
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
             with_signatures: false,
-            with_flow: false,
+            with_flow: run.volume_ix_patterns.is_some(),
         };
         let root = crate::lake::lake_root();
         match LakeSource::new(root).load(&sel).await {
@@ -1757,8 +1817,19 @@ pub async fn list_token_results(
     // The run's own instant, NOT wall-clock now — a drill-in must reproduce the row
     // it drills into, and deadness is judged against this (parity plan B7).
     let run_as_of = run.created_at;
+    let volume_ix_patterns: Option<Vec<Vec<String>>> = run
+        .volume_ix_patterns
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
     let result = tokio::task::spawn_blocking(move || {
-        registry::simulate_one_combo(&strategy_id, &tokens, &params_json, buy_amount_sol, run_as_of)
+        registry::simulate_one_combo(
+            &strategy_id,
+            &tokens,
+            &params_json,
+            buy_amount_sol,
+            run_as_of,
+            volume_ix_patterns.as_deref(),
+        )
     })
     .await;
 

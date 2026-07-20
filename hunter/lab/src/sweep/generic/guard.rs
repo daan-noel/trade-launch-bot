@@ -18,6 +18,7 @@ use hunter_engine::event::{ExitReason, LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
 use hunter_engine::grouping::TokenFingerprint;
 use hunter_engine::metrics::evaluator::{Condition, Operator};
+use hunter_engine::metrics::flow_split::FlowPatterns;
 use hunter_engine::metrics::{MetricGroupId, MetricId, Ts};
 use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
 
@@ -29,7 +30,7 @@ use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::TokenOutcome;
 use crate::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
-use super::strategy::{build_series, columns_for, scan, sparse_grid_for};
+use super::strategy::{build_series_with_flow, columns_for, scan, sparse_grid_for};
 
 const BUY_SOL: f64 = 1.0;
 const FP_ID: uuid::Uuid = uuid::Uuid::from_u128(0x1234);
@@ -44,6 +45,19 @@ fn at(secs: f64) -> Ts {
 
 /// One synthetic trade. Reserves are REAL-reserve values (what deadness reads).
 fn ct(secs: f64, is_buy: bool, sol: f64, price: f64, reserve: f64) -> CorpusTrade {
+    ct_flow(secs, is_buy, sol, price, reserve, None, None)
+}
+
+/// Like [`ct`], with optional `ix_labels` / `wallet` for flow-classifier fixtures.
+fn ct_flow(
+    secs: f64,
+    is_buy: bool,
+    sol: f64,
+    price: f64,
+    reserve: f64,
+    ix_labels: Option<&[&str]>,
+    wallet: Option<&str>,
+) -> CorpusTrade {
     CorpusTrade {
         block_time: at(secs),
         amount_sol: sol,
@@ -57,8 +71,9 @@ fn ct(secs: f64, is_buy: bool, sol: f64, price: f64, reserve: f64) -> CorpusTrad
         leg_index: 0,
         is_buy,
         tx_signature: None,
-        ix_labels: None,
-        wallet: None,
+        ix_labels: ix_labels
+            .map(|labels| serde_json::to_string(labels).expect("labels json").into_boxed_str()),
+        wallet: wallet.map(|w| w.to_string().into_boxed_str()),
     }
 }
 
@@ -149,8 +164,28 @@ fn replay_tuple(po: Option<&PositionOutcome>, cost: &CostModel) -> (bool, ExitCo
 /// Run `rule` over `corpus_tokens` two ways — full engine replay and the scan —
 /// and assert the per-token outcomes match.
 fn assert_parity(label: &str, params: RuleParams, tokens: &[(CorpusToken, ReplayToken)], as_of: Ts) {
+    assert_parity_with_flow(label, params, tokens, as_of, None);
+}
+
+/// Like [`assert_parity`], but configures fingerprint `metric_config` + seeds the
+/// scan's flow state from the same `volume_ix_patterns` (V2.3 drift lock).
+fn assert_parity_with_flow(
+    label: &str,
+    params: RuleParams,
+    tokens: &[(CorpusToken, ReplayToken)],
+    as_of: Ts,
+    volume_ix_patterns: Option<Vec<Vec<String>>>,
+) {
     let rule = loaded(params);
-    let fp = fingerprint();
+    let mut fp = fingerprint();
+    if let Some(patterns) = &volume_ix_patterns {
+        fp.metric_config = serde_json::json!({
+            "m_flow_split": { "volume_ix_patterns": patterns }
+        });
+    }
+    let flow_patterns = volume_ix_patterns
+        .as_ref()
+        .map(|p| FlowPatterns::from_label_sequences(p));
     let cost = CostModel::pumpfun_default();
 
     // Replay each token in isolation (single-token stream) — the sweep judges each
@@ -169,7 +204,13 @@ fn assert_parity(label: &str, params: RuleParams, tokens: &[(CorpusToken, Replay
         let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
         let (r_fired, r_exit, r_entry, r_exit_price, r_pnl_sol, r_pnl_pct) = replay_tuple(po, &cost);
 
-        let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
+        let series = build_series_with_flow(
+            corpus_tok,
+            cols.clone(),
+            &grid,
+            as_of,
+            flow_patterns.as_ref(),
+        );
         let outcome = scan(&series, &compiled, BUY_SOL, &cost);
 
         assert_eq!(
@@ -350,7 +391,7 @@ fn shared_bind_matches_per_token_bind() {
         let shared = BoundCombo::new(&cols, compiled.clone());
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
-            let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
+            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
 
             let entry = resolve_entry(&series, &shared);
             let shared_out = resolve_exit(&series, &shared, &entry, BUY_SOL, &cost);
@@ -380,6 +421,67 @@ fn scan_matches_replay_window_flow_across_gap() {
     exit.0.insert(MetricGroupId::TimeWindow, gc);
     let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit) };
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
+}
+
+/// Corpus for volume/organic flow split — labeled trades + configured patterns.
+fn flow_corpus() -> Vec<(CorpusToken, ReplayToken)> {
+    vec![
+        // Enters on volume-side buy (vol_net≥3), exits when organic window goes quiet.
+        token(
+            "vol_entry",
+            vec![
+                // Organic first — not enough vol_net to enter.
+                ct_flow(1.0, true, 1.0, 1.0, 100.0, None, Some("org1")),
+                // Volume-side pattern match → vol_net=3 → entry.
+                ct_flow(2.0, true, 3.0, 1.1, 103.0, Some(&["vol"]), Some("vol1")),
+            ],
+        ),
+        // Never matches the volume pattern → never enters.
+        token(
+            "organic_only",
+            vec![
+                ct_flow(1.0, true, 5.0, 1.0, 100.0, Some(&["buy"]), Some("org2")),
+                ct_flow(3.0, true, 2.0, 1.2, 102.0, None, Some("org3")),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn scan_matches_replay_flow_split_entry_and_window_exit() {
+    // Mirror the engine golden: enter on vol_net > 2, exit when trailing
+    // nonvol_gross (5 s) ≈ 0. Patterns + scan FP id must stay aligned with replay.
+    let mut entry_gc = GroupConditions::default();
+    entry_gc.metrics.insert(
+        MetricId::VolNet,
+        vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
+    );
+    let mut entry = SideConditions::default();
+    entry.0.insert(MetricGroupId::FlowSplit, entry_gc);
+
+    let mut exit_gc = GroupConditions::default();
+    exit_gc.strict.insert("window_size_sec".to_string(), 5.0);
+    exit_gc.metrics.insert(
+        MetricId::WinNonvolGross,
+        vec![vec![Condition { operator: Operator::Eq, value: 0.0 }]],
+    );
+    let mut exit = SideConditions::default();
+    exit.0.insert(MetricGroupId::FlowWindow, exit_gc);
+
+    let params = RuleParams {
+        take_profit: None,
+        stop_loss: None,
+        entry: Some(entry),
+        exit: Some(exit),
+    };
+    let patterns = vec![vec!["vol".to_string()]];
+    assert_parity_with_flow(
+        "flow_split",
+        params,
+        &flow_corpus(),
+        at(1000.0),
+        Some(patterns),
+    );
 }
 
 // ───────────────── scalar ≡ AVX-512 exit-scan parity (plan §P3) ─────────────────
@@ -471,7 +573,7 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         let bound = BoundCombo::new(&cols, compiled.clone());
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
-            let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
+            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
             let entry = resolve_entry(&series, &bound);
             let scalar = resolve_exit(&series, &bound, &entry, BUY_SOL, &cost);
             let simd = resolve_exit_simd(&series, &bound, &entry, BUY_SOL, &cost);
@@ -526,7 +628,7 @@ fn index_exit_scan_matches_scalar_across_paths() {
         let bound = BoundCombo::new(&cols, compiled.clone());
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
-            let series = build_series(corpus_tok, cols.clone(), &grid, as_of);
+            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
             let entry = resolve_entry(&series, &bound);
             let mut idx = ExitIndex::default();
             match &entry {

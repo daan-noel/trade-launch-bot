@@ -20,9 +20,15 @@
 
 use hunter_engine::metrics::evaluator::{coalesce_contributions, Condition, Operator};
 use hunter_engine::metrics::series::SeriesColumn;
+use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::{
-    group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, MetricKind,
+    group_by_name, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
 };
+use uuid::Uuid;
+
+/// Run-scoped fingerprint id for sweep flow state (compile_combo + SeriesColumn::Flow
+/// share this so BoundCombo column indices line up). Promote materializes a real FP.
+pub const SWEEP_FLOW_FP: FingerprintId = FingerprintId(Uuid::nil());
 use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
 use serde::{Deserialize, Serialize};
 
@@ -112,9 +118,13 @@ impl ResolvedAxis {
     /// The precompute column this axis reads (metric axes only).
     fn column(&self) -> Option<SeriesColumn> {
         match self {
-            ResolvedAxis::Metric { metric, window, .. } => Some(match window {
-                Some(w) => SeriesColumn::Window(*metric, *w),
-                None => SeriesColumn::Static(*metric),
+            ResolvedAxis::Metric { metric, window, .. } => Some(if is_flow_metric(*metric) {
+                SeriesColumn::Flow(*metric, *window, SWEEP_FLOW_FP)
+            } else {
+                match window {
+                    Some(w) => SeriesColumn::Window(*metric, *w),
+                    None => SeriesColumn::Static(*metric),
+                }
             }),
             _ => None,
         }
@@ -177,6 +187,19 @@ impl AxesModel {
             }
         }
         cols
+    }
+
+    /// True when any axis references a volume-flow metric group.
+    pub fn references_flow(&self) -> bool {
+        self.axes.iter().any(|a| {
+            matches!(
+                a,
+                ResolvedAxis::Metric {
+                    group: MetricGroupId::FlowSplit | MetricGroupId::FlowWindow,
+                    ..
+                }
+            )
+        })
     }
 
     /// Largest flow window (`window_size_sec`) any metric axis reads — `0.0` if the
