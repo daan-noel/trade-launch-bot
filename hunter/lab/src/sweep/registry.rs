@@ -1,9 +1,10 @@
-//! Strategy registry — the **one** place a strategy is wired into the grouped
-//! sweep. It maps a `strategy_id` to (a) its per-strategy DB table triple and
-//! (b) its concrete sweep entry point. The handler and repo are otherwise fully
-//! generic (table-name- and data-driven), so adding "swing" later means: write a
-//! `strategies/swing.rs` (`Strategy` + `ParamSpace` + `AxesSpec`), add its tables
-//! + a match arm here, and a `lab/migrations/NNNN_*.sql` file — nothing else changes.
+//! Strategy registry — the seam between `strategy_id` and the grouped sweep. Since
+//! the tpsl/swing retirement (Phase 7) there is exactly one arm, `"generic"`, mapping
+//! to the unprefixed `grouped_sweep_*` table triple and the `GenericSweepStrategy`
+//! entry point (fingerprint + metric-condition axes, scanned over precomputed
+//! `MetricSeries`). The handler and repo stay fully table-name-/data-driven, so the
+//! registry is the one place that would grow an arm if a second sweep family ever
+//! returned — but the generic engine is designed to cover the space with one.
 //!
 //! The CPU-heavy sweep runs in a bounded rayon pool inside `spawn_blocking` so it
 //! can never starve the live trading hot path (ingest / sell-confirm).

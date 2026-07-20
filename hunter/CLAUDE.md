@@ -29,11 +29,11 @@ intra-workspace deps.
 
 | Crate | Kind | Role |
 | --- | --- | --- |
-| `trading_core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, core handlers, strategy domain (`tpsl_rules_core`), **ingest contract** (`trading_core::ingest`) |
+| `trading_core` | lib | config, models, storage, core services/state (`CoreState`), api framework + auth + SSE bridge, core handlers, strategy domain (fingerprint matching + metric-series + the shared cost/summary kernel; the pure fold lives in `hunter-engine`), **ingest contract** (`trading_core::ingest`) |
 | `pump-trader` (dep key; pkg `executor-pumpfun` at `shared/executor/pumpfun`, lib `pump_trader`; + `executor-core`) | lib | buy/sell executor; **standalone drop-in** (no workspace deps). Signs via `Arc<dyn Signer>`; typed `error::TradeError`. `probe`/`claim` off-by-default features |
 | `ingest-laserstream` (dep key; pkg `ingest-pumpfun` at `shared/ingest/pumpfun`, lib `ingest_laserstream`; + `ingest-core`) | lib | Helius LaserStream gRPC transport (client→pipeline→db_writer) + watchdog. **Standalone drop-in** (NOT `trading_core`); exposes raw transport API, bridged onto `trading_core::ingest` by `live`'s host adapter |
 | `live` | **bin** | LIVE box: strategies, trader, deploy services/state (`DeployState`), live/trading handlers, `probe`. Ships to EC2 |
-| `lab` | **bin** | ANALYSIS box: sweep/backtest, swing analyzer, local state (`LocalState`), rule-authoring + sweep handlers. NO keys / NO gRPC; never depends on the executor |
+| `lab` | **bin** | ANALYSIS box: sweep/backtest, replay/simulate over the generic engine, local state (`LocalState`), rule-authoring + sweep handlers. NO keys / NO gRPC; never depends on the executor |
 
 Each bin is its own composition root (`tokio::select!`). `live/main.rs` starts ingest
 (`live::ingest::spawn_ingest`, host adapter over the raw transport) + trading + strategy +
@@ -49,7 +49,7 @@ The frontend split is build-time (no runtime capability advertisement); the fron
 | --- | --- |
 | [docs/arch/architecture.md](docs/arch/architecture.md) | crate map, two bins' `main.rs` wiring, three state structs, ingest interface |
 | [docs/arch/ingest.md](docs/arch/ingest.md) | ingest crate + host adapter: client→pipeline→db_writer, file map |
-| [docs/arch/strategies.md](docs/arch/strategies.md) | `strategies/`: StrategyRunner, tpsl1/tpsl2 module map, exit ladder |
+| [docs/arch/strategies.md](docs/arch/strategies.md) | the generic fingerprint+metrics engine: the pure `hunter-engine` fold + the live `strategies/engine/` adapters (decision loop, producers, exec, sinks, event-log) |
 | [docs/arch/trade-execution.md](docs/arch/trade-execution.md) | executor crate: module map, key behaviors |
 | [docs/arch/database.md](docs/arch/database.md) | Postgres schema, pools, every repo→table→fns |
 | [docs/arch/frontend.md](docs/arch/frontend.md) | `frontend-react/src/`: pages, components, hooks, RTK Query/SSE |
@@ -66,7 +66,7 @@ cargo check -p hunter-live             # typecheck the live bin
 cargo check -p hunter-lab              # typecheck the analysis bin
 cargo check -p hunter-core             # typecheck the shared lib
 cargo test  -p hunter-live             # live unit tests (strategies, trader edge)
-cargo test  -p hunter-lab              # lab unit tests (sweep, swing)
+cargo test  -p hunter-lab              # lab unit tests (sweep, replay/simulate)
 cargo test  -p hunter-live -- --ignored  # integration; needs DATABASE_URL + HELIUS_RPC_URL
 cargo test  -p executor-pumpfun        # trader crate tests
 cargo run   -p hunter-live             # live box: loads .env; needs Postgres + Helius gRPC (binds LIVE_PORT :8130)
@@ -153,22 +153,25 @@ executor + `lake/` schema keep their own decoupled vocab.
 
 ## Gotchas (hot-path landmines)
 
-- **Deferred entry fingerprint gates:** a criterion whose source data isn't settled at
-  `TokenCreated` (`p_token_first_slot_{buy,sell}_sol`) must defer via
-  `StrategyRuntimeCache::pending_first_slot` + the 1s runner sweep — never block the hot path
-  with sleep/poll. Instant fingerprint axes still match synchronously in `on_token_created`.
+- **Deferred entry fingerprint gates:** a fingerprint axis whose source data isn't settled at
+  `TokenCreated` (`first_slot_{buy,sell}_lamports`) can't match synchronously. The engine arms
+  it as `PendingFirstSlot` and resolves it on the `FirstSlotSettled` event (fired when the
+  creation slot closes) — never a sleep/poll on the hot path. Instant axes still match
+  synchronously on `TokenCreated`. (See `hunter-engine` `reduce.rs` / the `MatchPhase` split.)
 - **Stale-creator `ConstraintSeeds` (2006) self-heal is unified**, not sell-only:
   `pump-trader::trader::swap_retry::classify_swap_revert` is the one SSOT decision (route ×
   direction × error code) both crates use — `live`'s sell loop + curve-buy snipe retry import
   it, no local copy. See [docs/arch/trade-execution.md](docs/arch/trade-execution.md).
-- `tpsl_sniper_1`/`tpsl_sniper_2` **decision** modules (`entry`/`exit`, in `trading_core`)
-  are intentional clones — a fix in one usually belongs in both. (Live *orchestration* is no
-  longer cloned: one registry-dispatched `live/src/strategies/{service,runner,execution}`.)
-- **Analysis-only death-close (`ExitReason::Dead`):** sim/grouped-sweep/detect no longer
-  mislabel silent-death tokens as `Open` at a stale price — the analysis exits append
-  `strategies::death::find_death_point` (shared `token_cache::is_dead_verdict` SSOT). Live
-  **paper** reuses the same `find_death_point` (`sweep_dead_paper_exits`); **real is
-  untouched** (a dead pool has no liquidity to sell into). See
+- **One engine, no per-strategy clones.** The named tpsl1/tpsl2/swing1 decision stack was
+  retired in Phase 7; there is now ONE generic fold (`hunter-engine::reduce`) driven live by
+  `live/src/strategies/engine/` and in analysis by `lab`'s replay/sweep. A decision fix lands
+  in one place. Live position closes route through the engine (`EngineHandle::manual_close` /
+  `reconcile_cleared`), never a separate service.
+- **Analysis-only death-close (`ExitReason::Dead`):** sim/grouped-sweep no longer mislabel
+  silent-death tokens as `Open` at a stale price — the shared deadness verdict
+  (`hunter-engine::deadness` / `token_cache::is_dead_verdict` SSOT, via
+  `strategies::death::find_death_point` for the exact point) books a Dead exit. The live
+  engine folds the same verdict; a dead **real** pool has no liquidity to sell into. See
   [docs/arch/strategies.md](docs/arch/strategies.md).
 - **Truncated logs drop trade legs:** the validator truncates a tx's logs past a byte limit,
   so the curve decoder under-counts legs on multi-buy bundle txs; `decode_curve_pb` recovers
