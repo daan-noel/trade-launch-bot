@@ -239,6 +239,113 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Needs window_size_sec on this group.',
     ].join('\n'),
   },
+
+  // m_flow_split / m_flow_window — same JSON names; registry appends unit/tol/monotonic.
+  vol_buy: {
+    title: 'vol_buy — volume-side buys (SOL)',
+    body: [
+      'SOL spent on buys classified as volume-side (creator tooling / wash).',
+      '',
+      'A trade is volume-side if: its ix_labels match a volume_ix_patterns row,',
+      'OR its wallet was already tagged volume on this token, OR it is the creator.',
+      '',
+      'Examples:',
+      '  >2     heavy volume-side buying (lifetime or window)',
+      '  <0.5   little tooling buy pressure',
+      '',
+      'Needs fingerprint m_flow_split.volume_ix_patterns; else NaN (never fires).',
+      'Windowed form also needs window_size_sec on m_flow_window.',
+    ].join('\n'),
+  },
+  vol_sell: {
+    title: 'vol_sell — volume-side sells (SOL)',
+    body: [
+      'SOL from sells classified as volume-side (same classifier as vol_buy).',
+      '',
+      'Examples:',
+      '  >1     volume wallets dumping',
+      '  >3 on exit → sell when tooling exits hard',
+      '',
+      'Unconfigured fingerprint ⇒ NaN. Windowed form needs window_size_sec.',
+    ].join('\n'),
+  },
+  vol_net: {
+    title: 'vol_net — volume-side net (SOL)',
+    body: [
+      'vol_buy − vol_sell. Positive = net volume-side buying; negative = net dumping.',
+      '',
+      'Examples:',
+      '  >1     tooling still accumulating',
+      '  <0     volume-side net selling',
+      '',
+      'Not monotonic. Unconfigured fingerprint ⇒ NaN.',
+    ].join('\n'),
+  },
+  vol_gross: {
+    title: 'vol_gross — volume-side activity (SOL)',
+    body: [
+      'vol_buy + vol_sell — how much volume-side tape traded (direction ignored).',
+      '',
+      'Example: >5 → at least 5◎ of volume-side flow (buys+sells).',
+      '',
+      'Useful with vol_share to require both activity and dominance.',
+    ].join('\n'),
+  },
+  nonvol_buy: {
+    title: 'nonvol_buy — organic buys (SOL)',
+    body: [
+      'SOL spent on buys that are NOT volume-side (organic / retail tape).',
+      '',
+      'Example: >2 → real buy interest outside tooling wallets.',
+      '',
+      'Trades with missing ix_labels count as organic unless wallet-tagged/creator.',
+      'Unconfigured fingerprint ⇒ NaN.',
+    ].join('\n'),
+  },
+  nonvol_sell: {
+    title: 'nonvol_sell — organic sells (SOL)',
+    body: [
+      'SOL from organic (non–volume-side) sells.',
+      '',
+      'Example: >2 on exit → organic holders dumping.',
+      '',
+      'Unconfigured fingerprint ⇒ NaN.',
+    ].join('\n'),
+  },
+  nonvol_net: {
+    title: 'nonvol_net — organic net (SOL)',
+    body: [
+      'nonvol_buy − nonvol_sell. Positive = organic accumulation; negative = organic exit.',
+      '',
+      'Examples:',
+      '  >1     organic net buying',
+      '  <0     organic net selling',
+      '',
+      'Not monotonic. Unconfigured fingerprint ⇒ NaN.',
+    ].join('\n'),
+  },
+  nonvol_gross: {
+    title: 'nonvol_gross — organic activity (SOL)',
+    body: [
+      'nonvol_buy + nonvol_sell — total organic tape (direction ignored).',
+      '',
+      'Example: >3 → meaningful organic churn alongside (or instead of) volume-side flow.',
+    ].join('\n'),
+  },
+  vol_share: {
+    title: 'vol_share — volume share of tape (%)',
+    body: [
+      'vol_gross / (vol_gross + nonvol_gross) × 100. How much of total flow is volume-side.',
+      'NaN when total gross is 0 (no scored flow yet).',
+      '',
+      'Examples:',
+      '  >70     tape dominated by volume-side',
+      '  <30     mostly organic',
+      '  40..60  mixed / contested',
+      '',
+      'Unit is percent (not SOL). Unconfigured fingerprint ⇒ NaN.',
+    ].join('\n'),
+  },
 };
 
 /** Append unit / =tol / monotonic facts from the live registry spec. */
@@ -270,13 +377,16 @@ export function metricHelpBody(
 
 export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
   window_size_sec: {
-    title: 'window_size_sec — flow lookback',
+    title: 'window_size_sec — trailing lookback',
     body: [
-      'How many seconds of recent trades to include for m_time_window metrics (gross_flow, net_flow, buy, sell).',
+      'How many seconds of recent trades to include for dynamic groups:',
+      '  • m_time_window — gross_flow, net_flow, buy, sell',
+      '  • m_flow_window — vol_*, nonvol_*, vol_share (same split as lifetime)',
       '',
-      'Required if any metric in this group has a condition. Example: 10 → sum the last 10 seconds of flow.',
+      'Required if any metric in that group has a condition. Example: 10 → last 10s only.',
       '',
-      'All m_time_window axes on the same side must share one window (sweep rejects conflicting windows).',
+      'All windowed axes on the same side must share one window per group',
+      '(sweep rejects conflicting windows). Lifetime m_flow_split ignores this.',
     ].join('\n'),
   },
 };
@@ -465,12 +575,18 @@ export const FINGERPRINT_FIELD_HELP = {
     title: 'Volume-side ix patterns',
     body: [
       'Ordered instruction-label sequences that mark a trade as volume-side for',
-      'm_flow_split / m_flow_window (exact match, same vocabulary as ix_labels).',
+      'm_flow_split / m_flow_window. Exact ordered match — same vocabulary as fingerprint ix_labels.',
       '',
-      'Example row: ["Pump.Fun: Buy"] — same full label strings as trade ix_labels / fingerprint ix_labels.',
+      'Classifier (any one is enough):',
+      '  1) trade ix_labels hash ∈ one of these pattern rows',
+      '  2) wallet already tagged volume-side on THIS token (contagion)',
+      '  3) creator wallet (always volume-side)',
+      'Otherwise the trade is organic (nonvol_*).',
       '',
-      'Also volume-side: wallets previously tagged on this token, and the creator.',
-      'Leave empty to leave flow metrics unconfigured (NaN).',
+      'Example row: ["Pump.Fun: Buy","Token Program: CloseAccount"]',
+      '',
+      'Empty / missing m_flow_split key ⇒ every flow metric is NaN (conditions never fire).',
+      'Discover candidates on Lab → Flow discovery, then Apply back here.',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;
@@ -595,9 +711,11 @@ export const SWEEP_FIELD_HELP = {
   axisWindow: {
     title: 'Window (seconds)',
     body: [
-      'Trailing window for m_time_window metrics on this axis (same meaning as window_size_sec on a rule).',
+      'Trailing window for dynamic metrics on this axis (same as window_size_sec on a rule):',
+      'm_time_window and m_flow_window.',
       '',
-      'Every m_time_window axis on the same side must use the same window — conflicts are rejected.',
+      'Every windowed axis of the same group on the same side must share one window —',
+      'conflicts are rejected. Lifetime / static metrics ignore this.',
     ].join('\n'),
   },
   axisOp: {
@@ -608,6 +726,130 @@ export const SWEEP_FIELD_HELP = {
       'Supported: >  >=  <  <=  =  !=',
       '',
       'Example: op > and values 5, 10 → combos with time > 5 and time > 10 (separate combos).',
+    ].join('\n'),
+  },
+} as const satisfies Record<string, HelpTip>;
+
+// ── Flow discovery (lab) ─────────────────────────────────────────────────────
+
+/** Form fields unique to Flow discovery (reuses SWEEP_FIELD_HELP for shared knobs). */
+export const DISCOVERY_FIELD_HELP = {
+  createdRange: {
+    title: 'Created range (UTC)',
+    body: [
+      'Only tokens whose created_at falls in this window enter discovery.',
+      '',
+      'Leave either side empty for an open bound. Times are UTC (datetime-local → ISO).',
+      'Example: last 24h of launches to rank volume-like ix structures.',
+    ].join('\n'),
+  },
+  seedFingerprint: {
+    title: 'Scope by saved fingerprint',
+    body: [
+      'When set, discovery scores only tokens that MATCH this fingerprint',
+      '(engine match SSOT — same buckets / axes as live).',
+      '',
+      'UI then uses one “ALL” group; Apply writes volume_ix_patterns back to this fingerprint.',
+      'Leave empty to partition manually with group-by / filters below.',
+    ].join('\n'),
+  },
+  applyFingerprint: {
+    title: 'Apply to fingerprint',
+    body: [
+      'Target fingerprint that receives the draft volume_ix_patterns on Apply.',
+      '',
+      '• Pick an existing row → PUT metric_config.m_flow_split on that fingerprint.',
+      '• Empty → create / bind a fingerprint from the selected group key, then write patterns.',
+      '',
+      'Auto-match highlights a saved fingerprint whose axes already equal this group.',
+    ].join('\n'),
+  },
+  draftPatterns: {
+    title: 'Draft volume_ix_patterns',
+    body: [
+      'Checked structures from the table become pattern rows (exact ix_labels sequences).',
+      'Edit freely, then Apply to write m_flow_split.volume_ix_patterns on the target fingerprint.',
+      '',
+      'Those patterns drive vol_* / nonvol_* / vol_share on rules that use this fingerprint.',
+      'Empty draft cannot Apply — toggle at least one structure (or add a row in the editor).',
+    ].join('\n'),
+  },
+} as const satisfies Record<string, HelpTip>;
+
+/** Column tips for the discovery structure ranking table. */
+export const DISCOVERY_COL_HELP = {
+  vol: {
+    title: 'Vol — include in draft',
+    body: [
+      'Check to add this ix structure as a volume_ix_patterns row in the draft below.',
+      'Unchecked rows are not written on Apply.',
+    ].join('\n'),
+  },
+  structure: {
+    title: 'Structure — trade ix_labels',
+    body: [
+      'Exact ordered instruction-label sequence on the trade (same vocabulary as fingerprint ix_labels).',
+      'This is what volume_ix_patterns matches against.',
+    ].join('\n'),
+  },
+  lift: {
+    title: 'Lift — group vs window',
+    body: [
+      'group_lift = share(structure | this group) / share(structure | whole window).',
+      '',
+      '>> 1 → structure is enriched in this fingerprint group vs the corpus.',
+      '≈ 1 → ambiguous (also common outside the group) — ambig chip when top lift < 1.25.',
+      'Example: 2.0 → twice as common here as in the overall window.',
+    ].join('\n'),
+  },
+  share: {
+    title: 'Share% — of group gross',
+    body: [
+      'This structure’s gross SOL ÷ group gross SOL × 100.',
+      '',
+      'How much of the group’s scored tape uses this exact ix sequence.',
+      'High share + high lift → strong volume-pattern candidate.',
+    ].join('\n'),
+  },
+  wash: {
+    title: 'Wash — buy/sell symmetry',
+    body: [
+      'Mean |net|/gross across tokens that used this structure (→ 0 = washy round-trip).',
+      '',
+      'Low wash_symmetry ⇒ buys and sells cancel (classic volume bot).',
+      'High ⇒ one-sided flow (less wash-like).',
+    ].join('\n'),
+  },
+  recur: {
+    title: 'Recur% — cross-token recurrence',
+    body: [
+      '% of tokens in the group where this structure’s gross ≥ 0.05 SOL.',
+      '',
+      'High → same ix pattern repeats across many launches (tooling fingerprint).',
+      'Low → one-off / sparse.',
+    ].join('\n'),
+  },
+  burst: {
+    title: 'Burst% — slot clustering',
+    body: [
+      '% of this structure’s trades that sit in ±1-slot clusters with the same structure.',
+      '',
+      'High burst → same-slot spam / coordinated volume bursts.',
+    ].join('\n'),
+  },
+  reuse: {
+    title: 'Reuse — wallet concentration',
+    body: [
+      '1 − (distinct wallets / trades), plus overlap signal — higher ⇒ fewer wallets doing more trades.',
+      '',
+      'High reuse → same wallets hammering the structure (volume-bot smell).',
+    ].join('\n'),
+  },
+  gross: {
+    title: 'Gross◎ — structure volume',
+    body: [
+      'Total absolute SOL notional for this structure inside the group (buys + sells).',
+      'Ranking context only — not written to the fingerprint.',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

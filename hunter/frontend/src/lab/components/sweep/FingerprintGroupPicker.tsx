@@ -1,9 +1,11 @@
 import { useMemo } from 'react';
+import { LabelTip } from 'components/strategy/LabelTip';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { BucketChip } from 'components/ui/BucketChip';
 import { IxLabelsInput } from 'components/ui/IxLabelsInput';
 import { cn } from 'lib/cn';
+import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import {
   GROUP_FIELDS,
   GROUP_FIELD_LABELS,
@@ -330,12 +332,14 @@ export function FingerprintGroupPicker({
           here (not in the outer form) so it sits with the fields it governs, and so
           the sweep page and the dashboard expose it identically. */}
       <div className="flex flex-wrap items-center gap-2 border-t border-white/5 pt-1.5">
-        <label
-          className="flex items-center gap-1.5 text-[11px] text-text-mid"
-          title="Width (SOL) of each bucket the continuous SOL fields (◎) are binned into. The partition, a promoted rule's live matcher, and this view all group at this width, so what you group by = what you match."
-        >
+        <label className="flex items-center gap-1.5 text-[11px] text-text-mid">
           <BucketChip width={bucketWidthSol} className="align-middle" />
-          <span className="font-bold uppercase tracking-wider text-text-dim/80">Bucket width (SOL)</span>
+          <LabelTip
+            tip={FINGERPRINT_FIELD_HELP.bucket}
+            className="font-bold uppercase tracking-wider text-text-dim/80"
+          >
+            Bucket width (SOL)
+          </LabelTip>
           <input
             type="number"
             min={0.000001}

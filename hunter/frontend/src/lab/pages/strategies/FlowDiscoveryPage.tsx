@@ -8,6 +8,7 @@ import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
 import { fingerprintParamsCell } from 'components/strategy/FingerprintParamsSummary';
+import { LabelTip } from 'components/strategy/LabelTip';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { apiErrorMessage } from 'store/baseApi';
@@ -16,6 +17,11 @@ import {
   metricConfigWithVolumePatterns,
   volumeIxPatternsFromConfig,
 } from 'lib/strategy/registry';
+import {
+  DISCOVERY_COL_HELP,
+  DISCOVERY_FIELD_HELP,
+  SWEEP_FIELD_HELP,
+} from 'lib/strategy/strategyHelp';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, parseNumbers } from '@lab/components/sweep/fingerprintFilters';
@@ -358,9 +364,12 @@ export function FlowDiscoveryPage() {
 
       <div className="mb-4 flex flex-wrap items-end gap-3 bg-surface">
         <div className="flex flex-col gap-1">
-          <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+          <LabelTip
+            tip={DISCOVERY_FIELD_HELP.createdRange}
+            className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+          >
             Created range · UTC
-          </span>
+          </LabelTip>
           <div className="flex items-center gap-1">
             <Input
               type="datetime-local"
@@ -376,9 +385,12 @@ export function FlowDiscoveryPage() {
           </div>
         </div>
         <div className="flex flex-col gap-1 w-[120px]">
-          <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+          <LabelTip
+            tip={SWEEP_FIELD_HELP.minTokens}
+            className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+          >
             Min tokens
-          </span>
+          </LabelTip>
           <Input
             type="number"
             min={1}
@@ -387,9 +399,12 @@ export function FlowDiscoveryPage() {
           />
         </div>
         <div className="flex flex-col gap-1 w-[120px]">
-          <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+          <LabelTip
+            tip={SWEEP_FIELD_HELP.tokenCap}
+            className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+          >
             Token cap
-          </span>
+          </LabelTip>
           <Input
             type="number"
             min={1}
@@ -402,7 +417,7 @@ export function FlowDiscoveryPage() {
             checked={curveOnly}
             onChange={(e) => setField('curveOnly', e.target.checked)}
           />
-          curve only
+          <LabelTip tip={SWEEP_FIELD_HELP.curveOnly}>curve only</LabelTip>
         </label>
         <Button
           variant="primary"
@@ -417,9 +432,12 @@ export function FlowDiscoveryPage() {
         <Accordion title="Group by fingerprint" defaultOpen>
           <div className="mb-3 flex flex-col gap-2 rounded border border-white/8 p-3">
             <label className="flex min-w-[16rem] flex-col gap-1 text-[11px] text-text-dim">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+              <LabelTip
+                tip={DISCOVERY_FIELD_HELP.seedFingerprint}
+                className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+              >
                 Scope by saved fingerprint
-              </span>
+              </LabelTip>
               <Select
                 fieldSize="sm"
                 value={seedFingerprintId ?? ''}
@@ -539,9 +557,12 @@ export function FlowDiscoveryPage() {
               <div className="rounded border border-white/8 p-3 flex flex-col gap-2">
                 <div className="flex flex-wrap items-end gap-3">
                   <label className="flex min-w-[16rem] flex-1 flex-col gap-1 text-[11px] text-text-dim">
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+                    <LabelTip
+                      tip={DISCOVERY_FIELD_HELP.applyFingerprint}
+                      className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+                    >
                       Apply to fingerprint
-                    </span>
+                    </LabelTip>
                     <Select
                       fieldSize="sm"
                       value={targetFpId ?? ''}
@@ -578,19 +599,38 @@ export function FlowDiscoveryPage() {
                 )}
               </div>
 
+              {selectedGroup.n_trades_scored === 0 && (
+                <InlineAlert variant="warning">
+                  {selectedGroup.n_tokens} tokens matched, but 0 trades had ix_labels — discovery
+                  needs lake trade columns written by a post–volume-flow export. Delete the sealed
+                  day folders under lake-data/trades (or their _meta.json) and re-run{' '}
+                  <code className="font-mono">cargo run -p hunter-lab -- lake-export</code>, then
+                  Run discovery again. (This page has no charts — suggested structures appear in
+                  the table below once trades score.)
+                </InlineAlert>
+              )}
+
               <div className="overflow-x-auto rounded border border-white/8">
                 <table className="w-full text-left text-[11px]">
                   <thead className="bg-white/3 text-text-dim">
                     <tr>
-                      <th className="px-2 py-1.5 font-semibold">Vol</th>
-                      <th className="px-2 py-1.5 font-semibold">Structure</th>
-                      <th className="px-2 py-1.5 font-semibold">Lift</th>
-                      <th className="px-2 py-1.5 font-semibold">Share%</th>
-                      <th className="px-2 py-1.5 font-semibold">Wash</th>
-                      <th className="px-2 py-1.5 font-semibold">Recur%</th>
-                      <th className="px-2 py-1.5 font-semibold">Burst%</th>
-                      <th className="px-2 py-1.5 font-semibold">Reuse</th>
-                      <th className="px-2 py-1.5 font-semibold">Gross◎</th>
+                      {(
+                        [
+                          ['Vol', DISCOVERY_COL_HELP.vol],
+                          ['Structure', DISCOVERY_COL_HELP.structure],
+                          ['Lift', DISCOVERY_COL_HELP.lift],
+                          ['Share%', DISCOVERY_COL_HELP.share],
+                          ['Wash', DISCOVERY_COL_HELP.wash],
+                          ['Recur%', DISCOVERY_COL_HELP.recur],
+                          ['Burst%', DISCOVERY_COL_HELP.burst],
+                          ['Reuse', DISCOVERY_COL_HELP.reuse],
+                          ['Gross◎', DISCOVERY_COL_HELP.gross],
+                        ] as const
+                      ).map(([label, tip]) => (
+                        <th key={label} className="px-2 py-1.5 font-semibold">
+                          <LabelTip tip={tip}>{label}</LabelTip>
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -626,10 +666,12 @@ export function FlowDiscoveryPage() {
 
               <div className="rounded border border-white/8 p-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-text-mid">
-                    Draft volume_ix_patterns
+                  <span className="text-xs font-semibold text-text-mid inline-flex flex-wrap items-center gap-2">
+                    <LabelTip tip={DISCOVERY_FIELD_HELP.draftPatterns}>
+                      Draft volume_ix_patterns
+                    </LabelTip>
                     {targetFp && currentPatterns.length > 0 && (
-                      <span className="ml-2 font-normal text-text-dim">
+                      <span className="font-normal text-text-dim">
                         (saved: {currentPatterns.length} pattern
                         {currentPatterns.length === 1 ? '' : 's'})
                       </span>
