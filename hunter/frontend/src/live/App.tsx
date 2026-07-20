@@ -8,6 +8,7 @@ import { RunningTasksIndicator } from '@live/components/RunningTasksIndicator';
 import { usePositionNotifications } from '@live/hooks/usePositionNotifications';
 import { useLiveStatusBootstrap } from '@live/hooks/useLiveStatusBootstrap';
 import { usePortfolioRealtime } from '@live/hooks/usePortfolioRealtime';
+import { useWalletMarksLive } from '@live/hooks/useWalletMarksLive';
 import { useTokenTradesLiveBootstrap } from 'hooks/useTokenTradesLive';
 import { liveNav } from './nav';
 
@@ -32,6 +33,7 @@ const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) 
 function NotificationMount() {
   useLiveStatusBootstrap();
   usePortfolioRealtime();
+  useWalletMarksLive();
   useTokenTradesLiveBootstrap();
   usePositionNotifications();
   return null;

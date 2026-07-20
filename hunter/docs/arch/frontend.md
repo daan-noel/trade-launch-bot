@@ -58,17 +58,19 @@ open KPI, and StrategyStrip read this store only (no parallel Maps). Legacy
 `LiveTradingPage` / `MonitorPage` (parallel REST copies) are gone — `/positions` and
 `/strategies/armed` redirect to Ops.
 
-**Live trading notify SSOT (one EventSource, three writers):**
+**Live trading notify SSOT (one EventSource, writers):**
 
 | Domain | Push | Client sink |
 | --- | --- | --- |
 | On-chain trades | `trade_executed` (includes `tx_index`/`leg_index`/reserves) | Tokens table row patch; chart `getTokenTrades` append via `watchTokenTradesMint` + `liveTradeToTradeRecord`; `useMintTradeStream` for mint-filtered feeds |
 | Strategy inventory | `strategy_position_update` / `strategy_armed_changed` | `liveStatusSlice` only |
-| Portfolio money | same position events + `trade_executed` for `mine` profile wallets | `WalletHoldings` RTK tag invalidate (`usePortfolioRealtime`); Wallet page also reloads its imperative table |
+| Portfolio money | bag-changing position events + `trade_executed` for `mine` wallets | `usePortfolioRealtime` invalidates `WalletHoldings` **and** fans out via `onPortfolioBagRefresh` (Wallet imperative table — no second SSE filter) |
+| Display marks | `trade_executed` tip (SOL spot → USD) | `useWalletMarksLive` patches Home holdings + Jupiter price cache; Wallet page tips page rows locally. Jupiter oracle (liquidity/24h/cold) refetches on mount / bag refresh / tab focus — no interval |
 
 Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
-`usePortfolioRealtime`, `useTokenTradesLiveBootstrap`, `usePositionNotifications`.
-Notify over poll — armed-history and wallet confirm no longer poll RPC on a timer.
+`usePortfolioRealtime`, `useWalletMarksLive`, `useTokenTradesLiveBootstrap`,
+`usePositionNotifications`. Tokens STREAM fallback poll defaults to 90s.
+Rule Analyze reloads history only on open/close edges (not ExitPending).
 
 ## Store — split `createApi` (the isolation seam)
 

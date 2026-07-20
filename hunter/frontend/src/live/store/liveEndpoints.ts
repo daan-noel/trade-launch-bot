@@ -71,10 +71,10 @@ export const liveApi = baseApi.injectEndpoints({
       query: (real = true) => `/api/portfolio/positions?real=${real}`,
       providesTags: ['WalletHoldings'],
     }),
-    // Live prices for the held mints, decoupled from the balance read. Polled
-    // on a short interval (see the page) so the value column ticks without
-    // re-scanning the wallet. Keyed by the (sorted) mint list — caller passes
-    // the mints already in the balances cache.
+    // Jupiter oracle for held mints (liquidity / 24h / cold marks), decoupled
+    // from the balance read. Live Value/Price tip from `trade_executed` SSE;
+    // Wallet refetches this on mount / bag refresh / tab focus — no interval.
+    // Keyed by the (sorted) mint list.
     getWalletPrices: builder.query<Record<string, WalletPrice>, string[]>({
       query: (mints) =>
         `/api/solana/prices?ids=${mints.map(encodeURIComponent).join(',')}`,

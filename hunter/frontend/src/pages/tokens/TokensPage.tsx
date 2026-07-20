@@ -152,11 +152,9 @@ export function TokensPage({
     error: tokensError,
     refetch,
   } = useGetTokensPageQuery(queryArgs, {
-    // SSE drives the live view now: `trade_executed` frames patch each row's
-    // stats in place (see the trade-stream effect below) and `token_created`
-    // pulls in new rows. This poll is just a slow safety-net resync — it heals
-    // dropped/lagged frames and re-applies the server sort that in-place patches
-    // can't. Hence FALLBACK (30s) rather than the old 5s POLL_INTERVAL_MS.
+    // SSE drives the live view: `trade_executed` patches row stats; `token_created`
+    // pulls new rows. This poll is a slow safety-net (default 90s) for sort
+    // re-apply + missed frames — not the primary tick.
     pollingInterval: live ? FALLBACK_POLL_INTERVAL_MS : 0,
     // Don't keep polling a background tab — the SSE refetch below catches it up
     // the moment it regains focus, and the timer resumes then.

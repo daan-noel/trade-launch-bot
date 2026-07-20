@@ -30,9 +30,18 @@ const posRowOverlay = markerRowOverlay(inspectFromPosition);
 
 type Scope = 'current' | 'history';
 
+/** Lifecycle edges that change the server-paged current/history tables. */
+const TABLE_RELOAD_STATUSES = new Set([
+  'Holding',
+  'End',
+  'ExitFailed',
+  'ExitUnconfirmed',
+]);
+
 /**
  * Per-rule Analyze — Positions Summary + paged traded history (current/history).
- * Open rows stay consistent with Live Status via SSE-triggered reload.
+ * Open count comes from Live Status SSE; the history table reloads only on
+ * open/close edges (not ExitPending churn).
  */
 export function RuleAnalyzePage() {
   const { ruleId = '' } = useParams<{ ruleId: string }>();
@@ -69,11 +78,12 @@ export function RuleAnalyzePage() {
     PositionsSummary
   >(!!ruleId, body, fetchPage, fetchSummary, summaryBody);
 
-  // Any position delta for this rule → reload page + summary (open patch + closed appear).
   useEffect(() => {
     if (!ruleId) return;
     const h = connectStrategyPositionUpdate((d) => {
-      if (d.rule_id === ruleId) reload();
+      if (d.rule_id !== ruleId) return;
+      if (!TABLE_RELOAD_STATUSES.has(d.status)) return;
+      reload();
     });
     return () => h.close();
   }, [ruleId, reload]);

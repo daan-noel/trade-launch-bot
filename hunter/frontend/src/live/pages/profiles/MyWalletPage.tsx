@@ -27,22 +27,35 @@ import {
   fetchHoldingByMint,
   type HoldingsTableSummary,
 } from 'services/api';
-import {
-  connectStrategyPositionUpdate,
-  connectTradeStream,
-  onSseReopen,
-} from 'services/sse';
+import { connectTradeStream } from 'services/sse';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { useGetProfilesQuery } from 'store/sharedEndpoints';
+import { usePriceUnit } from 'context/PriceUnitContext';
+import { useMintTradeStream } from 'hooks/useMintTradeStream';
+import {
+  liveTradeSpotSolPerRaw,
+  spotSolPerRawToUsd,
+  valueSolAtSpot,
+} from 'lib/liveMark';
 import {
   liveApi,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,
 } from '@live/store/liveEndpoints';
+import { onPortfolioBagRefresh } from '@live/lib/portfolioBagRefresh';
 import type { AppDispatch } from '@live/store';
 import type { LiveTrade, ManagedBy, WalletHolding } from 'types';
 import { parseSlippageBps } from '@live/lib/slippage';
+
+/** SSE tip overlay for Price/Value/PnL until the next bag scan clears it. */
+interface MarkTip {
+  price_usd: number | null;
+  value_usd: number | null;
+  value_sol: number | null;
+  unrealized_pnl_sol: number | null;
+  unrealized_pnl_pct: number | null;
+}
 
 interface BuyDialog {
   mint_address: string;
@@ -204,35 +217,82 @@ export function MyWalletPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summaryKey, summaryNonce]);
 
-  // Live prices for the CURRENT page's mints, decoupled from the (slow, RPC-bound)
-  // holdings scan and polled on a short interval, so Value/Price tick without a
-  // server round-trip. Keyed by the sorted page mints; paused while unfocused.
+  // Jupiter oracle for the CURRENT page's mints (liquidity / 24h / cold marks).
+  // No interval — SSE tips live Value/Price; refetch on bag refresh / focus below.
   const pageMints = useMemo(() => items.map((h) => h.mint_address).sort(), [items]);
-  const { data: prices } = useGetWalletPricesQuery(pageMints, {
+  const { data: prices, refetch: refetchPrices } = useGetWalletPricesQuery(pageMints, {
     skip: pageMints.length === 0,
-    pollingInterval: 20000,
-    skipPollingIfUnfocused: true,
   });
 
-  // Overlay the latest polled prices onto the current page rows for DISPLAY only
-  // (server sort/filter/dust use the scan-time snapshot). Falls back to the
-  // scan-time price until the first poll lands. Cash keeps face-value marks.
+  const { usdRate } = usePriceUnit();
+  const usdRateRef = useRef(usdRate);
+  usdRateRef.current = usdRate;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  const pageMintSetRef = useRef<Set<string>>(new Set());
+  pageMintSetRef.current = new Set(pageMints);
+
+  const [tips, setTips] = useState<Record<string, MarkTip>>({});
+
+  useMintTradeStream(pageMintSetRef, (batch) => {
+    const rate = usdRateRef.current;
+    setTips((prev) => {
+      let next: Record<string, MarkTip> | null = null;
+      for (const t of batch) {
+        const h = itemsRef.current.find((x) => x.mint_address === t.mint_address);
+        if (!h || isCashHolding(h)) continue;
+        const spot = liveTradeSpotSolPerRaw(t);
+        if (spot == null) continue;
+        const valueSol = valueSolAtSpot(spot, h.amount);
+        const priceUsd =
+          rate != null ? spotSolPerRawToUsd(spot, h.decimals, rate) : null;
+        const tip: MarkTip = {
+          price_usd: priceUsd,
+          value_usd: priceUsd != null ? priceUsd * h.ui_amount : null,
+          value_sol: valueSol,
+          unrealized_pnl_sol:
+            valueSol != null && h.cost_basis_sol != null
+              ? valueSol - h.cost_basis_sol
+              : null,
+          unrealized_pnl_pct:
+            valueSol != null && h.cost_basis_sol != null && h.cost_basis_sol > 0
+              ? ((valueSol - h.cost_basis_sol) / h.cost_basis_sol) * 100
+              : null,
+        };
+        if (!next) next = { ...prev };
+        next[t.mint_address] = tip;
+      }
+      return next ?? prev;
+    });
+  }, 250);
+
+  // Overlay Jupiter + SSE tip onto page rows for DISPLAY only (server
+  // sort/filter/dust use the scan-time snapshot). Tip wins on price/value/PnL;
+  // Jupiter still supplies liquidity / 24h / created_at. Cash keeps face marks.
   const priced = useMemo(
     () =>
       items.map((h) => {
         if (isCashHolding(h)) return h;
         const p = prices?.[h.mint_address];
-        if (!p) return h;
+        const tip = tips[h.mint_address];
+        if (!p && !tip) return h;
+        const priceUsd = tip?.price_usd ?? p?.price_usd ?? h.price_usd;
         return {
           ...h,
-          price_usd: p.price_usd,
-          value_usd: p.price_usd != null ? p.price_usd * h.ui_amount : null,
-          liquidity: p.liquidity,
-          price_change_24h: p.price_change_24h,
-          token_created_at: p.token_created_at,
+          price_usd: priceUsd,
+          value_usd:
+            tip?.value_usd ??
+            (priceUsd != null ? priceUsd * h.ui_amount : h.value_usd),
+          value_sol: tip?.value_sol ?? h.value_sol,
+          unrealized_pnl_sol: tip?.unrealized_pnl_sol ?? h.unrealized_pnl_sol,
+          unrealized_pnl_pct: tip?.unrealized_pnl_pct ?? h.unrealized_pnl_pct,
+          liquidity: p?.liquidity ?? h.liquidity,
+          price_change_24h: p?.price_change_24h ?? h.price_change_24h,
+          token_created_at: p?.token_created_at ?? h.token_created_at,
         };
       }),
-    [items, prices],
+    [items, prices, tips],
   );
   const rowByMint = useMemo(() => new Map(priced.map((r) => [r.mint_address, r])), [priced]);
 
@@ -253,13 +313,16 @@ export function MyWalletPage() {
 
   const error = tableError;
 
-  // Refresh the server-paged table + summary + Home widgets from the fresh scan.
+  // Manual refresh (button / post-trade confirm): reload table + nudge Home tags.
+  // Bag-changing SSE is owned by `usePortfolioRealtime` → `onPortfolioBagRefresh`.
   const refreshAll = useCallback(() => {
     freshRef.current = true;
+    setTips({});
     reload();
     refreshSummary();
+    void refetchPrices();
     dispatch(liveApi.util.invalidateTags(['WalletHoldings']));
-  }, [reload, refreshSummary, dispatch]);
+  }, [reload, refreshSummary, refetchPrices, dispatch]);
 
   const { data: profiles } = useGetProfilesQuery();
   const mineWalletsRef = useRef<Set<string>>(new Set());
@@ -269,39 +332,28 @@ export function MyWalletPage() {
       .flatMap((p) => p.wallets.map((w) => w.address)),
   );
 
-  // Imperative table isn't RTK-tagged — reload on the same notify signals as
-  // `usePortfolioRealtime` (real bag-changing positions + our-wallet fills + reopen).
+  // Imperative table isn't RTK-tagged — subscribe to the one portfolio bag bus
+  // (no second SSE filter). Do not re-invalidate tags here (already done).
   useEffect(() => {
-    const bagChanging = new Set(['Holding', 'End', 'ExitFailed']);
-    let timer: number | undefined;
-    const schedule = () => {
-      if (timer !== undefined) return;
-      timer = window.setTimeout(() => {
-        timer = undefined;
-        refreshAll();
-      }, 400);
-    };
-    const posH = connectStrategyPositionUpdate((d) => {
-      if (d.trade_mode === 'paper') return;
-      if (!bagChanging.has(d.status)) return;
-      schedule();
+    return onPortfolioBagRefresh(() => {
+      freshRef.current = true;
+      setTips({});
+      reload();
+      refreshSummary();
+      void refetchPrices();
     });
-    const tradeH = connectTradeStream((raw) => {
-      try {
-        const t = JSON.parse(raw) as LiveTrade;
-        if (mineWalletsRef.current.has(t.wallet)) schedule();
-      } catch {
-        /* ignore */
+  }, [reload, refreshSummary, refetchPrices]);
+
+  // Quiet bags / Jupiter oracle fields: refresh when the tab becomes visible.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && pageMints.length > 0) {
+        void refetchPrices();
       }
-    });
-    const reopenUnsub = onSseReopen(() => refreshAll());
-    return () => {
-      window.clearTimeout(timer);
-      posH.close();
-      tradeH.close();
-      reopenUnsub();
     };
-  }, [refreshAll]);
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [refetchPrices, pageMints.length]);
 
   // After a manual buy/sell submit: wait for our fill on the ingest feed (or a
   // short timeout), then refresh — no RPC polling. `prevAmount` kept for call-

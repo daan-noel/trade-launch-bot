@@ -199,5 +199,6 @@ riskiest change — carries double-sell risk; do last.**
 - Cost-basis source for **manual** (non-bot) buys — `trades` avg-entry (Phase 1.1) vs. a
   dedicated cost-basis store. Bot buys already have `strategy_positions.entry_*`.
 - Whether partial-sell (Phase 5.4) justifies the backend sell-path change now or later.
-- Whether to replace the 20s Jupiter price poll with the `trade_executed` SSE for held mints,
-  or run both.
+- ~~Whether to replace the 20s Jupiter price poll with the `trade_executed` SSE for held mints,
+  or run both.~~ **Resolved:** SSE tip for Value/Price/PnL; Jupiter on mount / bag
+  refresh / tab focus only (no interval poll).
