@@ -262,6 +262,33 @@ Two lab surfaces run exit logic, and they do NOT share one implementation:
   rejection called out. Vectorizing simulate is therefore a separate, larger project, not
   a toggle flip.
 
+### Simulate is now instrumented (measure before optimizing) — 2026-07-19
+
+Before touching the simulate fold, we need to know *where its seconds go* — the same
+Amdahl discipline as the sweep's P0 gate. `run_engine_backtest` (`strategies/engine_sim.rs`)
+now wraps each phase in the shared `obs::Stage` timer, log-only (analysis path, not the
+hot path):
+
+| Stage | Phase | Cache-backed? |
+| --- | --- | --- |
+| `sim_scan` | candidate token scan (`scan_matched_candidates`) | yes (TTL + single-flight) |
+| `sim_load` | lake trade histories (`get_or_fetch_histories_state`) | yes (TTL + single-flight) |
+| `sim_replay` | the single-threaded `reduce` fold + row build | no |
+| `sim_enrich` | fired-token DB enrichment (`fetch_enrichment`) | no |
+| `sim_backtest_total` | whole backtest after the concurrency permit | — |
+
+Read one run's split: `grep 'stage=sim_' <lab-log>` → `stage=… secs=…`. Because scan/load
+are cache + single-flight backed, a **cold** first run weights `sim_load` (DuckDB/lake read)
+and a **warm** re-run weights `sim_replay` (the fold). That cold-vs-warm split is exactly
+what decides the right tool:
+
+- `sim_load` dominates ⇒ columnar/cache work (AVX-512 irrelevant to simulate).
+- `sim_replay` dominates ⇒ the win is **precompute-per-token** (the sweep's own trick —
+  build the `MetricSeries` once per token instead of recomputing inside the fold), *not*
+  SIMD, because the fold is stateful/sequential and is the live-engine SSOT.
+
+**PENDING:** one representative simulate run to fill in the split and pick the target.
+
 ## How to resume
 1. This feature is code-complete through P4. The only work left is the **Measured
    numbers** section above (one workstation A/B run) and deciding the simulate follow-up.

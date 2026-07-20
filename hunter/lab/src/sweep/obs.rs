@@ -163,6 +163,11 @@ pub fn log_milestone(clock: &SweepClock, milestone: &str) {
 ///
 /// Drop-based on purpose: a stage that bails or is cancelled still reports how long
 /// it ran, which is exactly when the number is most wanted.
+///
+/// Domain-neutral by design — the `stage=` field names the phase, so the same timer
+/// instruments the sweep fold and the single-rule simulate/backtest phases
+/// (`sim_scan`/`sim_load`/`sim_replay`/`sim_enrich`, see `strategies::engine_sim`).
+/// Read a run's split with `stage=… secs=…`; grep the field, not the message.
 pub struct Stage {
     name: &'static str,
     started: Instant,
@@ -187,7 +192,7 @@ impl Drop for Stage {
             stage = self.name,
             secs = self.started.elapsed().as_secs_f64(),
             rss_mb = process_rss_mb(),
-            "sweep: stage done"
+            "stage done"
         );
     }
 }

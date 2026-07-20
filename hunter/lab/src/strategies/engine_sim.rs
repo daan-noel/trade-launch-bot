@@ -213,6 +213,16 @@ async fn load_fp(
 
 /// The core backtest: scan → load → replay → rows. CPU-bound work (the replay fold)
 /// runs on a blocking thread so the async worker stays free.
+///
+/// Each phase is wrapped in an [`obs::Stage`](crate::sweep::obs::Stage) timer
+/// (`sim_scan` → candidate scan, `sim_load` → lake histories, `sim_replay` → the
+/// single-threaded engine fold, `sim_enrich` → the fired-token DB enrichment) under a
+/// `sim_backtest_total` wrapper, so the lab log shows *where the seconds go* — the
+/// measurement that decides what's worth optimizing (load vs fold), the simulate
+/// counterpart of the sweep's `sweep_pass` P0 gate. The scan/load phases are cache +
+/// single-flight backed, so a warm re-run shifts the weight onto `sim_replay` and a
+/// cold run onto `sim_load`. Log-only — this is the analysis path, not the live hot
+/// path, so a handful of RSS reads per run are free.
 async fn run_engine_backtest(
     app_state: &Arc<LocalState>,
     target: &ResolvedTarget,
@@ -228,13 +238,22 @@ async fn run_engine_backtest(
         .await
         .map_err(|_| anyhow!("backtest concurrency semaphore closed"))?;
 
+    // Time the whole backtest (started after the permit, so queue-wait for a busy
+    // semaphore is excluded and this measures real work). Drop-based, so it reports
+    // even on a `?`-error or a cancellation `bail!` — the sum of the four inner
+    // stages vs this total also exposes the un-timed remainder (build set, sort, JSON).
+    let _total = crate::sweep::obs::Stage::start("sim_backtest_total");
+
     let fp = target.fp.clone();
     let cache_key = candidate_cache_key(&fp, since, until);
 
     // The matched candidate set — every token whose observed creation axes match the
     // fingerprint's instant axes (see [`scan_matched_candidates`]). Shared, cached,
     // and single-flighted with the matched-tokens endpoint.
-    let tokens = scan_matched_candidates(app_state, &fp, since, until).await?;
+    let tokens = {
+        let _stage = crate::sweep::obs::Stage::start("sim_scan");
+        scan_matched_candidates(app_state, &fp, since, until).await?
+    };
 
     let progress = Arc::new(SimProgress::new(
         app_state.sse_tx.clone(),
@@ -244,13 +263,16 @@ async fn run_engine_backtest(
     ));
     progress.start();
 
-    let histories = crate::strategies::candidate_cache::get_or_fetch_histories_state(
-        app_state,
-        cache_key,
-        &tokens,
-    )
-    .await
-    .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?;
+    let histories = {
+        let _stage = crate::sweep::obs::Stage::start("sim_load");
+        crate::strategies::candidate_cache::get_or_fetch_histories_state(
+            app_state,
+            cache_key,
+            &tokens,
+        )
+        .await
+        .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?
+    };
 
     // Build the replay set (skip tokens with no lake history — absent = no trades =
     // no entry). The whole fold is CPU-bound but single-threaded (one shared
@@ -281,24 +303,30 @@ async fn run_engine_backtest(
     let loaded = target.loaded.clone();
     let buy_amount_sol = target.buy_amount_sol;
     let progress2 = progress.clone();
-    let mut rows: Vec<EngineBacktestResult> = tokio::task::spawn_blocking(move || {
-        let outcomes = replay::run_replay(
-            std::slice::from_ref(&loaded),
-            std::slice::from_ref(&fp),
-            replay_tokens,
-            ReplayConfig { as_of: Utc::now() },
-        );
-        outcomes
-            .iter()
-            .filter_map(|o| {
-                let (symbol, created_at) = meta.get(&o.mint)?;
-                progress2.tick();
-                Some(outcome_to_row(o, symbol, *created_at, buy_amount_sol))
-            })
-            .collect()
-    })
-    .await
-    .map_err(|e| anyhow!("simulate replay task panicked: {e}"))?;
+    // The single-threaded engine fold (one shared `EngineState` — this is the phase
+    // AVX-512 does *not* apply to; its win, if any, is precompute-per-token). Row
+    // building runs inside the same blocking closure, so `sim_replay` covers it.
+    let mut rows: Vec<EngineBacktestResult> = {
+        let _stage = crate::sweep::obs::Stage::start("sim_replay");
+        tokio::task::spawn_blocking(move || {
+            let outcomes = replay::run_replay(
+                std::slice::from_ref(&loaded),
+                std::slice::from_ref(&fp),
+                replay_tokens,
+                ReplayConfig { as_of: Utc::now() },
+            );
+            outcomes
+                .iter()
+                .filter_map(|o| {
+                    let (symbol, created_at) = meta.get(&o.mint)?;
+                    progress2.tick();
+                    Some(outcome_to_row(o, symbol, *created_at, buy_amount_sol))
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| anyhow!("simulate replay task panicked: {e}"))?
+    };
 
     if cancel.load(Ordering::Relaxed) {
         anyhow::bail!("simulation cancelled");
@@ -307,9 +335,12 @@ async fn run_engine_backtest(
     // Enrich exactly the fired tokens (bounded batch), attaching token metadata +
     // row-owned ATH — mirrors the tpsl backtest.
     let result_mints: Vec<String> = rows.iter().map(|r| r.mint_address.clone()).collect();
-    let mut enrichment = crate::strategies::token_enrich::fetch_enrichment(&app_state.batch_db, &result_mints)
-        .await
-        .map_err(|e| anyhow!("token enrichment fetch failed: {e}"))?;
+    let mut enrichment = {
+        let _stage = crate::sweep::obs::Stage::start("sim_enrich");
+        crate::strategies::token_enrich::fetch_enrichment(&app_state.batch_db, &result_mints)
+            .await
+            .map_err(|e| anyhow!("token enrichment fetch failed: {e}"))?
+    };
     for r in &mut rows {
         if let Some(e) = enrichment.remove(&r.mint_address) {
             r.ath_price = e.ath_price;
