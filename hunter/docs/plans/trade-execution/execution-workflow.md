@@ -12,6 +12,11 @@ recovery. Path names from the pre-engine stack (`execution/real.rs`,
 
 ## A. Pre-buy guards (`decision_loop::dispatch_buy` — real mode)
 
+Paper vs real is resolved from the position's `PositionMeta.trade_mode`
+(snapshotted at `BuySubmitted` in Pass 1), matching sell routing — not from a
+live rule reload — so an entry retry cannot flip executors. `trade_mode` is also
+frozen post-create on the rule row (`apply_rule_update` ignores it).
+
 Checked **inline** before spawning `run_entry`. If either fires the adapter emits
 `FillFailed::Reverted` (engine may retry when free SOL returns) — no on-chain send.
 

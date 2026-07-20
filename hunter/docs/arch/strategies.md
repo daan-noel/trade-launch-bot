@@ -164,8 +164,10 @@ These surfaces are strategy-agnostic and unchanged by the retirement:
    advances to `now` so stall/time/decayed-flow conditions and the dead verdict fire.
 5. **ONE serialized decision loop** — every `reduce` happens in `decision_loop.rs`;
    no mint sharding, no interleaved position transitions.
-6. **Live-rule edit guard** — frozen fields (fingerprint) reject changes while the
-   rule is active.
+6. **Live-rule edit guard** — `fingerprint_id` and `trade_mode` are frozen
+   post-create (PUT ignores them); entry/exit params lock in the UI while the
+   rule is active. Entry dispatch + sells both route off the position's
+   snapshotted `trade_mode`, never a mid-retry rule flip.
 
 ## Persistence
 

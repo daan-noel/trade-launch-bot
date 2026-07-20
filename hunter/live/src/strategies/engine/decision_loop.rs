@@ -284,8 +284,18 @@ fn dispatch_buy(
     mint: Mint,
     lamports: u64,
 ) {
-    let mode = state.rules.get(&rule).map(|c| c.trade_mode);
     let mint_s = mint.to_string();
+    // Pass 1 already persisted BuySubmitted → PositionMeta; prefer that frozen
+    // trade_mode for this entry (incl. fold retries) so a rule reload cannot
+    // flip paper↔real mid-attempt. Fall back to the live rule only if meta is
+    // somehow missing.
+    let position = state.tokens.get(&mint).and_then(|t| match t.arms.get(&rule) {
+        Some(ArmState::EntryPending { position, .. }) => Some(*position),
+        _ => None,
+    });
+    let mode = position
+        .and_then(|p| registry.get(p).map(|m| m.trade_mode))
+        .or_else(|| state.rules.get(&rule).map(|c| c.trade_mode));
     match mode {
         Some(TradeMode::Paper) => {
             tokio::spawn(exec_paper::run_entry(
@@ -297,12 +307,7 @@ fn dispatch_buy(
             ));
         }
         Some(TradeMode::Real) => {
-            // Resolve the position id from the arm the engine just moved to
-            // EntryPending, then its durable pg id from the registry.
-            let Some(position) = state.tokens.get(&mint).and_then(|t| match t.arms.get(&rule) {
-                Some(ArmState::EntryPending { position, .. }) => Some(*position),
-                _ => None,
-            }) else {
+            let Some(position) = position else {
                 warn!(mint = %mint_s, "real buy: no EntryPending arm — skipping submit");
                 return;
             };

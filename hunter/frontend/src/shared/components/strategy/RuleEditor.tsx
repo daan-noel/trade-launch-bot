@@ -83,8 +83,10 @@ function RuleEditorInner({
   const [jsonError, setJsonError] = useState<string | null>(null);
 
   // Conditions (fingerprint + params) are locked once the rule is live — only
-  // sizing/caps stay editable (ported lock semantics). Create is fully open.
+  // sizing/caps stay editable. `trade_mode` is frozen post-create (like
+  // fingerprint) so an in-flight entry retry cannot flip paper↔real.
   const conditionsLocked = Boolean(initial?.is_active);
+  const modeLocked = Boolean(initial);
 
   const setSide = (side: 'entry' | 'exit', next: SideConditions) =>
     setParams((p) => ({ ...p, [side]: next }));
@@ -144,7 +146,12 @@ function RuleEditorInner({
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-text-dim">
           <LabelTip tip={RULE_FIELD_HELP.mode}>Mode</LabelTip>
-          <Select fieldSize="sm" value={mode} onChange={(e) => setMode(e.target.value as TradeMode)}>
+          <Select
+            fieldSize="sm"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as TradeMode)}
+            disabled={modeLocked}
+          >
             <option value="paper">paper</option>
             <option value="real">real</option>
           </Select>
