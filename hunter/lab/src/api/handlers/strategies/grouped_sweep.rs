@@ -91,7 +91,10 @@ pub struct StartGroupedSweepBody {
     /// back to that strategy's hardcoded defaults.
     #[serde(default = "default_axes")]
     pub axes: serde_json::Value,
-    /// Hard cap on tokens loaded for the corpus (server-clamped).
+    /// Hard cap on tokens loaded for the corpus — newest-N from the lake token
+    /// dimension (`ORDER BY created_at DESC LIMIT`). Clamped to
+    /// [`registry::MAX_TOKEN_CAP`]; the clamped value is what runs and what is
+    /// persisted on the run row.
     #[serde(default = "default_token_cap")]
     pub token_cap: usize,
     /// Per-group combo cap override. Omitted ⇒ the default `MAX_COMBOS`; clamped
@@ -116,7 +119,7 @@ pub struct StartGroupedSweepBody {
     /// series/fold/combo peaks. Every admission ceiling is `host free − this`, so
     /// a smaller reserve admits bigger runs on a box you're not using and a bigger
     /// one keeps the machine responsive. Omitted ⇒
-    /// `DEFAULT_SWEEP_RAM_RESERVE_MB` (2 GB); clamped server-side to
+    /// `DEFAULT_SWEEP_RAM_RESERVE_MB` (1 GB); clamped server-side to
     /// `MIN..=MAX_SWEEP_RAM_RESERVE_MB`. Run-local (not persisted): it's a
     /// property of the machine at run time, not of the sweep's analysis.
     #[serde(default)]
@@ -149,7 +152,7 @@ fn default_fire_frac() -> f64 {
     0.05
 }
 fn default_token_cap() -> usize {
-    10_000
+    registry::DEFAULT_TOKEN_CAP
 }
 fn default_axes() -> serde_json::Value {
     serde_json::Value::Object(Default::default())
@@ -489,7 +492,7 @@ async fn run_grouped_sweep_job(
     let clock = crate::sweep::obs::SweepClock::start();
     crate::sweep::obs::log_milestone(&clock, "admitted");
 
-    let token_cap = b.token_cap.clamp(1, 100_000);
+    let token_cap = registry::clamp_token_cap(b.token_cap);
     let min_tokens = b.min_tokens.max(1);
     // Per-run bucket width for the continuous SOL grouping fields. Mirror the rule
     // validator (`strategies::rules::check_bucket_width`): a non-finite or sub-floor
@@ -566,6 +569,7 @@ async fn run_grouped_sweep_job(
                 tokens: (*c.tokens).clone(),
                 hash: c.corpus_hash.clone(),
                 has_fingerprints: true,
+                candidates_capped: c.candidates_capped,
             }
         })
     };
@@ -605,18 +609,23 @@ async fn run_grouped_sweep_job(
     }
 
     // `token_cap` is a `LIMIT` on a `created_at DESC` scan (see `lake::duck`), so a
-    // window holding more tokens than the cap is silently trimmed to its **newest**
-    // slice — and the run then reads as if it covered the whole range. Landing
-    // exactly on the cap is the only signal we get without paying for a second
-    // COUNT(*), so say so rather than let a partial corpus pass for a full one
-    // (parity plan B10). A single-rule simulate has no such cap, which is exactly
-    // the kind of asymmetry that makes the two disagree on `n_fired`.
-    if corpus.tokens.len() >= token_cap {
+    // window holding more tokens than the cap is trimmed to its **newest** slice.
+    // Flag the **candidate** select (not `corpus.len()`): `curve_only` / empty
+    // histories can leave the loaded corpus below the cap even when older mints
+    // were dropped (parity plan B10). Simulate has no such cap.
+    if corpus.candidates_capped {
         let msg = format!(
             "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens in \
-             this date range were swept. Narrow the range or raise token_cap to cover it all."
+             this date range were swept ({} kept after trade filters). Narrow the range \
+             or raise token_cap (max {}) to cover it all.",
+            corpus.tokens.len(),
+            registry::MAX_TOKEN_CAP,
         );
-        tracing::warn!(token_cap, "grouped sweep: corpus truncated by token_cap");
+        tracing::warn!(
+            token_cap,
+            loaded = corpus.tokens.len(),
+            "grouped sweep: corpus truncated by token_cap"
+        );
         let _ = state.sse_tx.send(crate::models::ingest::SseEvent::SweepNotice {
             strategy_id: b.strategy_id.clone(),
             message: msg,
@@ -655,8 +664,13 @@ async fn run_grouped_sweep_job(
     {
         let cached_tokens = Arc::new(corpus.tokens.clone());
         let corpus_hash = corpus.hash.clone();
+        let candidates_capped = corpus.candidates_capped;
         let mut cache = state.sweep_corpus_cache.write().await;
-        *cache = Some(SweepCorpusCache { corpus_hash, tokens: cached_tokens });
+        *cache = Some(SweepCorpusCache {
+            corpus_hash,
+            tokens: cached_tokens,
+            candidates_capped,
+        });
     }
 
     // Optional exact-set ix_labels filter (applied post-fingerprint, in-memory so
@@ -771,10 +785,11 @@ async fn run_grouped_sweep_job(
         created_at: Utc::now(),
         status: "running".to_string(),
         groups_done: 0,
-        // Persist the corpus filters + cap knobs exactly as submitted, so the
-        // history panel can show what the run was for and a re-run can restore it.
-        // Only store an active (non-empty) ix_labels filter; an empty/omitted one
-        // means "no filter" and reads back as NULL.
+        // Persist the corpus filters + **effective** cap knobs (post-clamp), so the
+        // history panel / re-run restore what actually ran — not a fat-fingered
+        // request that the server silently ceilings. Only store an active
+        // (non-empty) ix_labels filter; an empty/omitted one means "no filter"
+        // and reads back as NULL.
         ix_labels_filter: b
             .ix_labels_filter
             .as_ref()
@@ -785,7 +800,7 @@ async fn run_grouped_sweep_job(
             .as_ref()
             .filter(|f| !f.is_empty())
             .and_then(|f| serde_json::to_value(f).ok()),
-        token_cap: Some(b.token_cap as i32),
+        token_cap: Some(token_cap as i32),
         max_combos: b.max_combos.map(|v| v as i32),
         label: None,
         buy_amount_sol: Some(b.buy_amount_sol),
@@ -1798,7 +1813,11 @@ pub async fn list_token_results(
             created_after: run.created_after,
             created_before: run.created_before,
             curve_only: run.curve_only,
-            token_cap: run.token_cap.map(|n| n as usize).unwrap_or(5_000),
+            token_cap: registry::clamp_token_cap(
+                run.token_cap
+                    .map(|n| n as usize)
+                    .unwrap_or(registry::DEFAULT_TOKEN_CAP),
+            ),
             window: crate::sweep::corpus::TradeWindow::LaunchWindow,
             per_mint_cap: sweep_per_mint_cap(),
             with_signatures: false,

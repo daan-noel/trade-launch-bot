@@ -1,5 +1,5 @@
 import { cn } from 'lib/cn';
-import { signedToneClass } from 'lib/signedTone';
+import { pctGradeClass, signedToneClass, winRateGradeClass } from 'lib/signedTone';
 import { formatDecimalTrim } from 'utils/format';
 import type { SummaryStat, SummarySection } from 'components/strategy/SummaryStatsPanel';
 
@@ -44,7 +44,8 @@ export const solText = (v: number | null | undefined) =>
 /**
  * Good/bad tone. Pivot `0` (default) uses the signed PnL rule (`signedToneClass`:
  * strict sign, zero neutral). Non-zero pivots keep threshold semantics
- * (at/above → green, below → red) for win-rate / profit-factor / etc.
+ * (at/above → green, below → red) for profit-factor / etc. Win-rate uses
+ * [`winRateGradeClass`] instead.
  */
 export const goodBad = (v: number | null | undefined, pivot = 0) => {
   if (v == null || !Number.isFinite(v)) return 'text-text-dim';
@@ -398,7 +399,7 @@ function bandStats(m: RunMetrics): SummaryStat[] {
     {
       label: 'Win %',
       value: empty ? '—' : pctOf(m.win_rate),
-      cls: empty ? undefined : goodBad(m.win_rate, 0.5),
+      cls: empty ? undefined : winRateGradeClass(m.win_rate),
     },
     { label: 'Expectancy (◎)', value: empty ? '—' : solText(m.expectancy_sol), cls: goodBad(m.expectancy_sol) },
     {
@@ -406,10 +407,10 @@ function bandStats(m: RunMetrics): SummaryStat[] {
       value: empty ? '—' : m.profit_factor == null ? '∞' : m.profit_factor.toFixed(2),
       cls: empty ? undefined : goodBad(m.profit_factor ?? 10, 1),
     },
-    { label: 'Median %', value: empty ? '—' : pctText(m.median_pnl_pct), cls: goodBad(m.median_pnl_pct) },
-    { label: 'Mean %', value: empty ? '—' : pctText(m.mean_pnl_pct), cls: goodBad(m.mean_pnl_pct) },
-    { label: 'Best %', value: empty ? '—' : pctText(m.best_pnl_pct), cls: empty ? undefined : 'text-green' },
-    { label: 'Worst %', value: empty ? '—' : pctText(m.worst_pnl_pct), cls: empty ? undefined : 'text-red' },
+    { label: 'Median %', value: empty ? '—' : pctText(m.median_pnl_pct), cls: empty ? undefined : pctGradeClass(m.median_pnl_pct) },
+    { label: 'Mean %', value: empty ? '—' : pctText(m.mean_pnl_pct), cls: empty ? undefined : pctGradeClass(m.mean_pnl_pct) },
+    { label: 'Best %', value: empty ? '—' : pctText(m.best_pnl_pct), cls: empty ? undefined : pctGradeClass(m.best_pnl_pct) },
+    { label: 'Worst %', value: empty ? '—' : pctText(m.worst_pnl_pct), cls: empty ? undefined : pctGradeClass(m.worst_pnl_pct) },
   ];
 }
 
@@ -479,7 +480,7 @@ export function runSummarySections(
     {
       label: 'Win % (real.)',
       value: nClosed === 0 ? '—' : pctOf(realized.win_rate),
-      cls: nClosed === 0 ? undefined : goodBad(realized.win_rate, 0.5),
+      cls: nClosed === 0 ? undefined : winRateGradeClass(realized.win_rate),
     },
     {
       label: 'Fired',

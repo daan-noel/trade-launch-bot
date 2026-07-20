@@ -629,11 +629,15 @@ export const SWEEP_FIELD_HELP = {
     ].join('\n'),
   },
   tokenCap: {
-    title: 'Token cap per group',
+    title: 'Token cap (corpus)',
     body: [
-      'Max tokens processed from one group (RAM/time guard).',
+      'Max tokens loaded into the sweep corpus (RAM/time guard).',
       '',
-      'If a bucket has more tokens, extras are not scored.',
+      'The lake keeps the newest N non-mayhem tokens in the date range',
+      '(ORDER BY created_at DESC). Older mints are not scored — even if they',
+      'share a fingerprint with a group you are looking at.',
+      '',
+      'Server ceiling is 100 000; simulate has no such cap (known asymmetry).',
     ].join('\n'),
   },
   maxCombos: {

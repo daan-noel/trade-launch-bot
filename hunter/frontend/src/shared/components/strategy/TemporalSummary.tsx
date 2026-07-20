@@ -36,7 +36,7 @@ import {
   type WallGrainChoice,
   type WallTimeField,
 } from 'lib/strategy/temporalSummary';
-import { signedToneClass } from 'lib/signedTone';
+import { signedToneClass, winRateGradeClass } from 'lib/signedTone';
 import { solText } from 'lib/strategy/runSummary';
 
 export type TemporalSelection =
@@ -405,7 +405,11 @@ function SelectionInspector({
           cls={avg == null ? undefined : signedToneClass(avg)}
         />
         {slice.win_rate != null && closed > 0 && (
-          <Stat label="Win" value={`${Math.round(slice.win_rate * 100)}%`} />
+          <Stat
+            label="Win"
+            value={`${Math.round(slice.win_rate * 100)}%`}
+            cls={winRateGradeClass(slice.win_rate)}
+          />
         )}
         <Stat label="Closed" value={`${closed}/${slice.n}`} />
 
@@ -960,7 +964,12 @@ function WallTimeline({
                       {c.n > 0 ? c.n : '0'}
                     </span>
                     {winLabel ? (
-                      <span className="font-mono text-[8px] leading-none text-text-dim">
+                      <span
+                        className={cn(
+                          'font-mono text-[8px] leading-none',
+                          winRateGradeClass(c.win_rate),
+                        )}
+                      >
                         {winLabel}
                       </span>
                     ) : (

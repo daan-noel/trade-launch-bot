@@ -89,8 +89,17 @@ impl LakeSource {
         //    `resolve_candidates` also stages `sel_mints` (the ONE staging for the
         //    run); the trade + fingerprint queries below join to it.
         let candidates = resolve_candidates(&conn, &tokens_lit, sel)?;
+        // Explicit mint lists are caller-sized; only the newest-N dim scan can
+        // silently drop older tokens when `LIMIT token_cap` saturates.
+        let candidates_capped =
+            sel.mints.is_none() && !candidates.is_empty() && candidates.len() >= sel.token_cap;
         if candidates.is_empty() {
-            return Ok(Corpus { tokens: Vec::new(), hash: empty_hash(), has_fingerprints: true });
+            return Ok(Corpus {
+                tokens: Vec::new(),
+                hash: empty_hash(),
+                has_fingerprints: true,
+                candidates_capped: false,
+            });
         }
 
         // 2. Per-mint capped, ordered trade pull → per-token slim buffers. The SQL
@@ -108,9 +117,16 @@ impl LakeSource {
         tracing::info!(
             tokens = tokens.len(),
             trades = tokens.iter().map(|t| t.trades.len()).sum::<usize>(),
+            candidates = candidates.len(),
+            candidates_capped,
             "corpus: loaded from Parquet lake (DuckDB)"
         );
-        Ok(Corpus { tokens, hash: lake_hash(&self.root, sel), has_fingerprints: true })
+        Ok(Corpus {
+            tokens,
+            hash: lake_hash(&self.root, sel),
+            has_fingerprints: true,
+            candidates_capped,
+        })
     }
 }
 

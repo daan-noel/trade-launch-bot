@@ -2,12 +2,11 @@
  * Signed-value tone — SSOT for glanceable green/red on PnL-like numbers.
  *
  * Rule: `> 0` green · `< 0` red · `0` / null / NaN neutral (dim).
- * Threshold metrics (win-rate, profit-factor) keep using `goodBad(v, pivot)`
- * with a non-zero pivot — that path is intentionally separate.
- *
- * Percent columns that should grade by magnitude use `pctGradeClass` instead
- * (PnL%, 24h %, etc.). SOL amounts stay on `signedToneClass` — magnitude isn't
- * comparable across bag sizes.
+ * Return-magnitude percents use `pctGradeClass` (PnL%, 24h %, etc.).
+ * Win-rate fractions use `winRateGradeClass` (50% / 75% / 90% bands).
+ * Other threshold metrics (profit-factor) keep using `goodBad(v, pivot)`.
+ * SOL amounts stay on `signedToneClass` — magnitude isn't comparable across
+ * bag sizes.
  */
 
 import { formatCompact } from 'utils/format';
@@ -40,6 +39,30 @@ export function pctGradeClass(v: number | null | undefined): string {
   if (v < 200) return 'text-warning font-semibold';
   if (v < 500) return 'text-accent font-bold';
   return 'text-primary font-extrabold';
+}
+
+/**
+ * Graded tone for win-rate fractions (unit: 0..1, e.g. `0.75` = 75%).
+ * Coin-flip (50%) is the hard pivot; higher bands flag strong / exceptional
+ * rates (often small-N — color only, never a ranking substitute).
+ *
+ * | range           | tone                          |
+ * |-----------------|-------------------------------|
+ * | `< 25%`         | red + bold                    |
+ * | `[25%, 50%)`    | red                           |
+ * | `50%`           | mid                           |
+ * | `(50%, 75%)`    | green                         |
+ * | `[75%, 90%)`    | warning + semibold            |
+ * | `≥ 90%`         | accent + bold                 |
+ */
+export function winRateGradeClass(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return 'text-text-dim';
+  if (v < 0.25) return 'text-red font-bold';
+  if (v < 0.5) return 'text-red';
+  if (v <= 0.5) return 'text-text-mid';
+  if (v < 0.75) return 'text-green';
+  if (v < 0.9) return 'text-warning font-semibold';
+  return 'text-accent font-bold';
 }
 
 /** Tailwind class for a signed number. Null/NaN → dim; zero → mid (not green). */

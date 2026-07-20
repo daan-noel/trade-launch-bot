@@ -42,6 +42,10 @@ import { tidySolDecimal } from 'utils/format';
 const DEFAULT_MAX_COMBOS = 100000;
 const HARD_MAX_COMBOS = 1000000;
 
+/** Mirror `registry::{DEFAULT,MAX}_TOKEN_CAP` — corpus newest-N load ceiling. */
+const DEFAULT_TOKEN_CAP = 10000;
+const MAX_TOKEN_CAP = 100000;
+
 /**
  * Desktop RAM reserve choices (MB) — how much host RAM the run leaves free for
  * OS + desktop. Every admission ceiling the backend computes is
@@ -142,7 +146,7 @@ function defaultConfig(): GenericSweepConfig {
     randomN: 500,
     refineTopK: 3,
     minTokens: 10,
-    tokenCap: 10000,
+    tokenCap: DEFAULT_TOKEN_CAP,
     maxCombos: DEFAULT_MAX_COMBOS,
     curveOnly: false,
     buyAmountSol: 1.0,
@@ -230,7 +234,9 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     randomN,
     refineTopK,
     minTokens: run.min_tokens,
-    tokenCap: run.token_cap ?? defaults.tokenCap,
+    // Clamp legacy runs that stored a pre-clamp fat-finger (e.g. 1e6) so re-run
+    // shows / sends the ceiling the backend actually honors.
+    tokenCap: Math.min(MAX_TOKEN_CAP, Math.max(1, run.token_cap ?? defaults.tokenCap)),
     maxCombos: run.max_combos ?? defaults.maxCombos,
     curveOnly: run.curve_only,
     buyAmountSol: tidySolDecimal(run.buy_amount_sol ?? defaults.buyAmountSol),
@@ -270,6 +276,8 @@ export function GenericSweepConfigForm({
       (GROUP_FIELDS as readonly string[]).includes(f),
     ),
     axisRows: stored.axisRows ?? DEFAULTS.axisRows,
+    // Sanitize stale localStorage / pre-clamp values (backend max is 100k).
+    tokenCap: Math.min(MAX_TOKEN_CAP, Math.max(1, stored.tokenCap ?? DEFAULTS.tokenCap)),
   };
   const {
     createdAfter,
@@ -364,7 +372,7 @@ export function GenericSweepConfigForm({
       // Generic wire axes: `AxesRequest { axes: [...] }` (cast — same slot the
       // legacy per-strategy `AxesSpec` used; resolved by `strategy_id`).
       axes: { axes: wireAxes } as unknown as GroupedSweepStartArgs['axes'],
-      token_cap: tokenCap,
+      token_cap: Math.min(MAX_TOKEN_CAP, Math.max(1, tokenCap)),
       max_combos: effectiveCap !== DEFAULT_MAX_COMBOS ? effectiveCap : undefined,
       buy_amount_sol: buyAmountSol,
       ram_reserve_mb: ramReserveMb !== DEFAULT_RAM_RESERVE_MB ? ramReserveMb : undefined,
@@ -435,8 +443,24 @@ export function GenericSweepConfigForm({
         <Field label="Min tokens / group" desc={SWEEP_FIELD_HELP.minTokens.body} className="w-[140px]">
           <Input type="number" min={1} value={minTokens} onChange={(e) => setField('minTokens', Math.max(1, Number(e.target.value) || 1))} />
         </Field>
-        <Field label="Token cap" desc={SWEEP_FIELD_HELP.tokenCap.body} className="w-[120px]">
-          <Input type="number" min={1} value={tokenCap} onChange={(e) => setField('tokenCap', Math.max(1, Number(e.target.value) || 1))} />
+        <Field
+          label="Token cap"
+          hint={`≤ ${MAX_TOKEN_CAP.toLocaleString()}`}
+          desc={SWEEP_FIELD_HELP.tokenCap.body}
+          className="w-[140px]"
+        >
+          <Input
+            type="number"
+            min={1}
+            max={MAX_TOKEN_CAP}
+            value={tokenCap}
+            onChange={(e) =>
+              setField(
+                'tokenCap',
+                Math.min(MAX_TOKEN_CAP, Math.max(1, Number(e.target.value) || 1)),
+              )
+            }
+          />
         </Field>
         <Field
           label="Max combos / group"

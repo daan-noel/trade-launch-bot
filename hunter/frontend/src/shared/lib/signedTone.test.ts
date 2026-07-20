@@ -5,6 +5,7 @@ import {
   pctGradeClass,
   signedStatTone,
   signedToneClass,
+  winRateGradeClass,
 } from './signedTone';
 
 describe('signedToneClass', () => {
@@ -31,6 +32,24 @@ describe('pctGradeClass', () => {
     expect(pctGradeClass(100)).toBe('text-warning font-semibold');
     expect(pctGradeClass(200)).toBe('text-accent font-bold');
     expect(pctGradeClass(500)).toBe('text-primary font-extrabold');
+  });
+});
+
+describe('winRateGradeClass', () => {
+  it('grades by 50/75/90 bands; null/NaN dim; 50% mid', () => {
+    expect(winRateGradeClass(null)).toBe('text-text-dim');
+    expect(winRateGradeClass(Number.NaN)).toBe('text-text-dim');
+    expect(winRateGradeClass(0)).toBe('text-red font-bold');
+    expect(winRateGradeClass(0.24)).toBe('text-red font-bold');
+    expect(winRateGradeClass(0.25)).toBe('text-red');
+    expect(winRateGradeClass(0.49)).toBe('text-red');
+    expect(winRateGradeClass(0.5)).toBe('text-text-mid');
+    expect(winRateGradeClass(0.51)).toBe('text-green');
+    expect(winRateGradeClass(0.74)).toBe('text-green');
+    expect(winRateGradeClass(0.75)).toBe('text-warning font-semibold');
+    expect(winRateGradeClass(0.89)).toBe('text-warning font-semibold');
+    expect(winRateGradeClass(0.9)).toBe('text-accent font-bold');
+    expect(winRateGradeClass(1)).toBe('text-accent font-bold');
   });
 });
 

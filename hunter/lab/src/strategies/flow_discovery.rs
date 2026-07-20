@@ -479,6 +479,7 @@ mod tests {
             tokens,
             hash: "test".into(),
             has_fingerprints: true,
+            candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
             group_by: vec![GroupField::CuLimit],
@@ -543,6 +544,7 @@ mod tests {
             tokens,
             hash: "test".into(),
             has_fingerprints: true,
+            candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
             group_by: vec![GroupField::CuLimit],
@@ -648,6 +650,7 @@ mod tests {
             tokens,
             hash: "kit".into(),
             has_fingerprints: true,
+            candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
             group_by: vec![GroupField::CuLimit],
@@ -731,6 +734,7 @@ mod tests {
             tokens,
             hash: "n".into(),
             has_fingerprints: true,
+            candidates_capped: false,
         };
         let cfg = DiscoveryConfig {
             group_by: vec![GroupField::CuLimit],

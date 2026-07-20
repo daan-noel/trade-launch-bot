@@ -1,6 +1,6 @@
 // Compact at-a-glance chip cluster for a rule's `params` (TP/SL + entry/exit
-// metric conditions). Shared by Rules, Simulate, and the generic sweep tables —
-// one SSOT so every surface that shows a rule reads the same.
+// metric conditions). Shared by Rules, Simulate, Fingerprints (used-by), and the
+// generic sweep tables — one SSOT so every surface that shows a rule reads the same.
 
 import { Fragment, type CSSProperties, type ReactNode } from 'react';
 import { cn } from 'lib/cn';

@@ -38,6 +38,20 @@ use crate::sweep::strategy::{ExitCode, ParamSpace, RefineSpec, SweepMethod};
 /// makes simulate replay the sweep group directly).
 pub const SWEEP_DEFAULT_BUY_AMOUNT_SOL: f64 = 1.0;
 
+/// Default corpus `token_cap` when the request omits it (FE form default matches).
+pub const DEFAULT_TOKEN_CAP: usize = 10_000;
+
+/// Hard ceiling on corpus `token_cap`. The lake candidate select is
+/// `ORDER BY created_at DESC LIMIT token_cap` — a fat-fingered million would
+/// OOM the lab box. FE mirrors this as the input max; the handler clamps and
+/// **persists the clamped value** so history / re-run show what actually ran.
+pub const MAX_TOKEN_CAP: usize = 100_000;
+
+/// Resolve a request's `token_cap` to the effective load cap.
+pub fn clamp_token_cap(n: usize) -> usize {
+    n.clamp(1, MAX_TOKEN_CAP)
+}
+
 /// Default cap on the param combos a single grouped sweep evaluates **per group**.
 /// Bounds the `groups × combos × tokens` work; the handler rejects a full grid
 /// whose product exceeds this before any sweep runs, and random/LHS draws are
@@ -1131,6 +1145,16 @@ mod tests {
         assert_eq!(clamp_ram_reserve_mb(Some(1)), MIN_SWEEP_RAM_RESERVE_MB);
         assert_eq!(clamp_ram_reserve_mb(Some(usize::MAX)), MAX_SWEEP_RAM_RESERVE_MB);
         assert_eq!(clamp_ram_reserve_mb(None), DEFAULT_SWEEP_RAM_RESERVE_MB);
+    }
+
+    #[test]
+    fn token_cap_clamps_to_bounds() {
+        assert_eq!(clamp_token_cap(0), 1);
+        assert_eq!(clamp_token_cap(1), 1);
+        assert_eq!(clamp_token_cap(DEFAULT_TOKEN_CAP), DEFAULT_TOKEN_CAP);
+        assert_eq!(clamp_token_cap(MAX_TOKEN_CAP), MAX_TOKEN_CAP);
+        assert_eq!(clamp_token_cap(1_000_000), MAX_TOKEN_CAP);
+        assert_eq!(clamp_token_cap(usize::MAX), MAX_TOKEN_CAP);
     }
 
     #[test]

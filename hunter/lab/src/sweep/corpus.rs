@@ -74,6 +74,11 @@ pub struct Corpus {
     /// True when token fingerprints were loaded with the trades (the lake source
     /// always embeds them). Callers skip any separate fingerprint pass when set.
     pub has_fingerprints: bool,
+    /// True when the lake **candidate** select hit `Selection::token_cap`
+    /// (`ORDER BY created_at DESC LIMIT N` saturated). Independent of the final
+    /// corpus size after `curve_only` / empty-history drops — those can leave
+    /// `tokens.len() < token_cap` even when older mints were trimmed out.
+    pub candidates_capped: bool,
 }
 
 impl Corpus {

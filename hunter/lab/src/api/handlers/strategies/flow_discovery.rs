@@ -61,7 +61,7 @@ fn default_min_tokens() -> usize {
     DEFAULT_MIN_TOKENS
 }
 fn default_token_cap() -> usize {
-    10_000
+    crate::sweep::registry::DEFAULT_TOKEN_CAP
 }
 
 #[derive(serde::Deserialize)]
@@ -224,7 +224,7 @@ async fn run_flow_discovery_job(
     state.discovery_cancel.store(false, Ordering::Release);
     state.discovery_progress.reset();
 
-    let token_cap = b.token_cap.max(1);
+    let token_cap = crate::sweep::registry::clamp_token_cap(b.token_cap);
     let sel = Selection {
         mints: None,
         token_cap,
@@ -275,9 +275,12 @@ async fn run_flow_discovery_job(
         return;
     }
 
-    if corpus.tokens.len() >= token_cap {
+    if corpus.candidates_capped {
         let msg = format!(
-            "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens were scored."
+            "Corpus hit the {token_cap}-token cap — only the newest {token_cap} tokens were scored \
+             ({} kept after trade filters; max {}).",
+            corpus.tokens.len(),
+            crate::sweep::registry::MAX_TOKEN_CAP,
         );
         let _ = state.sse_tx.send(SseEvent::FlowDiscoveryNotice {
             run_id,

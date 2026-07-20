@@ -59,6 +59,8 @@ import {
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
+import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
+import { cn } from 'lib/cn';
 import type {
   HoldSchemeChoice,
   WallGrainChoice,
@@ -836,14 +838,22 @@ function buildColumns(
       'sim_win_rate',
       'Win %',
       (s) => s.realized.win_rate,
-      (s) => <span className="tabular-nums text-text">{dashPercent(s.realized.win_rate * 100)}</span>,
+      (s) => (
+        <span className={cn('tabular-nums', winRateGradeClass(s.realized.win_rate))}>
+          {dashPercent(s.realized.win_rate * 100)}
+        </span>
+      ),
       { tooltip: 'Share of closed tokens with PnL > 0', displayUnits: (n) => n * 100 },
     ),
     simMetric(
       'sim_avg_pnl',
       'Mean %',
       (s) => s.realized.mean_pnl_pct,
-      (s) => <span className="tabular-nums text-text">{pctText(s.realized.mean_pnl_pct)}</span>,
+      (s) => (
+        <span className={cn('tabular-nums', pctGradeClass(s.realized.mean_pnl_pct))}>
+          {pctText(s.realized.mean_pnl_pct)}
+        </span>
+      ),
       { tooltip: 'Mean PnL % over closed tokens' },
     ),
     simMetric(

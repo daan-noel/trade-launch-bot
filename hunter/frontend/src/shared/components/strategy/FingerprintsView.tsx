@@ -10,6 +10,7 @@ import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { FingerprintForm } from './FingerprintForm';
+import { ruleParamsCell } from './RuleParamsSummary';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
@@ -72,7 +73,8 @@ const COLOR_COLS: {
   { key: 'bucket', valueOf: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6) },
 ];
 
-/** Expanded row detail: full rule list with status / mode / buy size. */
+/** Expanded row detail: rules that reference this fingerprint, with the same
+ *  params summary as the Rules table so you can tell them apart at a glance. */
 function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
   if (rules.length === 0) {
     return (
@@ -96,24 +98,30 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
           Open Rules →
         </Link>
       </div>
-      <ul className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+      <ul className="grid gap-2 sm:grid-cols-2">
         {rules.map((r) => (
           <li
             key={r.id}
-            className="flex flex-col gap-1 rounded-md border border-info/25 bg-info/8 px-2.5 py-2 text-left"
+            className="flex flex-col gap-2 rounded-md border border-info/25 bg-info/8 px-3 py-2.5 text-left"
           >
-            <span className="truncate text-[13px] font-semibold text-text">{r.rule_name}</span>
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text">
+                {r.rule_name}
+              </span>
               <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
                 {r.trade_mode}
               </Badge>
               <Badge variant={r.is_active ? 'success' : 'neutral'} size="sm">
                 {r.is_active ? 'Active' : 'Idle'}
               </Badge>
-              <span className="tabular-nums text-[11px] text-text-dim">
-                buy {lamportsToSol(r.buy_amount_lamports)}◎
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-text-dim">
+              <span>buy {lamportsToSol(r.buy_amount_lamports)}◎</span>
+              <span>
+                caps {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
               </span>
             </div>
+            {ruleParamsCell(r.params)}
           </li>
         ))}
       </ul>

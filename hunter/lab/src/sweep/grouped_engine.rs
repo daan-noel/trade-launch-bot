@@ -519,6 +519,7 @@ fn sub_corpus(corpus: &Corpus, idx: &[usize]) -> Corpus {
         tokens: idx.iter().map(|&i| corpus.tokens[i].clone()).collect(),
         hash: corpus.hash.clone(),
         has_fingerprints: corpus.has_fingerprints,
+        candidates_capped: corpus.candidates_capped,
     }
 }
 
@@ -1040,6 +1041,7 @@ mod tests {
             ],
             hash: "h".into(),
             has_fingerprints: false,
+            candidates_capped: false,
         }
     }
 
@@ -1123,7 +1125,12 @@ mod tests {
             (0..big).map(|i| token(&format!("a{i}"), "devA")).collect();
         tokens.push(token("b0", "devB"));
         tokens.push(token("b1", "devB"));
-        let corpus = Corpus { tokens, hash: "h".into(), has_fingerprints: false };
+        let corpus = Corpus {
+            tokens,
+            hash: "h".into(),
+            has_fingerprints: false,
+            candidates_capped: false,
+        };
 
         let params = Mock.sample(SweepMethod::Grid);
         let groups = run_grouped_sweep(

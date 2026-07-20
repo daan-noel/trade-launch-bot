@@ -409,8 +409,11 @@ export function FlowDiscoveryPage() {
           <Input
             type="number"
             min={1}
+            max={100000}
             value={tokenCap}
-            onChange={(e) => setField('tokenCap', Math.max(1, Number(e.target.value) || 1))}
+            onChange={(e) =>
+              setField('tokenCap', Math.min(100000, Math.max(1, Number(e.target.value) || 1)))
+            }
           />
         </div>
         <label className="flex h-[34px] items-center gap-1.5 text-sm text-text-mid">

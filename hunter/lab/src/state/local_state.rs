@@ -22,6 +22,8 @@ pub struct SweepCorpusCache {
     /// All tokens with fingerprints already attached, as `Arc<Vec<_>>` so
     /// cloning into the handler is a refcount bump (no copy of the trade data).
     pub tokens: Arc<Vec<CorpusToken>>,
+    /// See [`crate::sweep::corpus::Corpus::candidates_capped`].
+    pub candidates_capped: bool,
 }
 
 /// Max concurrent backtests across both strategies. Each one streams the `tokens`

@@ -21,7 +21,7 @@ import type { SweepResultRecord } from './types';
 // Re-exported because this module is the established import site for them.
 export { fmtSecs, pctText, solText, goodBad } from 'lib/strategy/runSummary';
 import { fmtSecs, pctText, solText, goodBad } from 'lib/strategy/runSummary';
-import { pctGradeClass } from 'lib/signedTone';
+import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
 
 const tone = (text: ReactNode, cls: string): ReactNode => (
   <span className={cn('font-medium', cls)}>{text}</span>
@@ -193,7 +193,7 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
       (r) =>
         r.win_rate == null || !Number.isFinite(r.win_rate)
           ? tone('—', 'text-text-dim')
-          : tone(`${(r.win_rate * 100).toFixed(0)}%`, goodBad(r.win_rate, 0.5)),
+          : tone(`${(r.win_rate * 100).toFixed(0)}%`, winRateGradeClass(r.win_rate)),
       { tooltip: 'Share of CLOSED fired tokens with PnL > 0' },
     ),
     metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol)), {
@@ -387,7 +387,7 @@ export function buildGenericGroupColumns(buyAmountSol = 1): ColumnDef<GroupedSwe
     gm('best_win_rate', 'Win %', 'pnl', (g) => g.best_win_rate, (g) =>
       g.best_win_rate == null || !Number.isFinite(g.best_win_rate)
         ? tone('—', 'text-text-dim')
-        : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, goodBad(g.best_win_rate, 0.5)),
+        : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, winRateGradeClass(g.best_win_rate)),
     ),
     gm('best_total_pnl_sol', 'Total PnL', 'pnl', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol)), {
       tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',

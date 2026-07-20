@@ -699,6 +699,7 @@ mod tests {
             tokens: vec![token("a", 4), token("b", 4)],
             hash: "h".into(),
             has_fingerprints: false,
+            candidates_capped: false,
         };
         let (stats, metrics) =
             run_sweep(&Mock, &params, &corpus, &AlwaysCancelled, params.len()).unwrap();
@@ -774,6 +775,7 @@ mod tests {
             tokens: vec![token("a", 1)],
             hash: "h".into(),
             has_fingerprints: false,
+            candidates_capped: false,
         };
         let (_stats, metrics) =
             run_sweep(&EntryMock, &params, &corpus, &crate::sweep::progress::NoopObserver, params.len())
@@ -795,6 +797,7 @@ mod tests {
             tokens: vec![token("a", 2), token("b", 1)],
             hash: "h".into(),
             has_fingerprints: false,
+            candidates_capped: false,
         };
         let params = Mock.sample(SweepMethod::Grid);
         let (stats, metrics) =
@@ -820,6 +823,7 @@ mod tests {
             tokens: vec![token("a", 3), token("b", 2), token("c", 4)],
             hash: "h".into(),
             has_fingerprints: false,
+            candidates_capped: false,
         };
         let params = Mock.sample(SweepMethod::Grid); // 3 combos
         let obs = crate::sweep::progress::NoopObserver;
@@ -855,6 +859,7 @@ mod tests {
             tokens,
             hash: "h".into(),
             has_fingerprints: false,
+            candidates_capped: false,
         };
         let params = Mock.sample(SweepMethod::Grid); // 3 combos
         let obs = crate::sweep::progress::NoopObserver;
