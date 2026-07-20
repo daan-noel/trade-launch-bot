@@ -135,13 +135,19 @@ Notify over poll — armed-history and wallet confirm no longer poll RPC on a ti
   RTK `getTokenTrades` via `useWatchTokenTradesLive`; scroll-into-view on select;
   table stream toggle labeled **STREAM ON/OFF** so it is not confused with the
   header trading kill switch; advanced filters behind a disclosure; `?mint=`
-  deep-links selection), Profiles, Settings, NotFound.
+  deep-links selection), Profiles, Settings (`pages/settings/` — 2-col
+  content-sized Trading / Notifications / Tracking / Reliability grid
+  (`items-start`, no viewport stretch); page-level Saved/error feedback;
+  notification Critical/All/Custom presets via `CRITICAL_NOTIFY_STATUSES`),
+  NotFound.
 - **Live (`@live/pages`):** **Home command center** (`home/LiveHomePage` — KPI tiles
   deep-link to Wallet / Ops / Rules; widgets `TopHoldingsWidget`/`LiveTradeFeed`/
   `StrategyStrip`; portfolio tags stay fresh via `usePortfolioRealtime`), SyncToken
   (`/tokens/sync`, legacy `/token/sync` redirects),
-  MyWallet (**bag overview** — row Buy/Sell + demoted Manual Buy/Sell; Trade desk link;
-  table reloads on position/our-wallet SSE),
+  MyWallet (**bag overview** — Funding (SOL + USDC) + trading KPIs + meme-positions
+  table; row select opens detail + live `LazyTokenTradeChart` below (ingest
+  `trade_executed` → RTK trades cache); cash not selectable; Trade desk link; table
+  reloads on position/our-wallet SSE),
   **Ops** (`/ops` — Waiting/Open/Recent from `liveStatusSlice`; armed never-fired panel;
   `/positions` + `/strategies/armed` redirect here), Trade
   (**mint-first execute** desk, `?mint=` preload), Rules/Fingerprints

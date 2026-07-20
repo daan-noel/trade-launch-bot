@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 import type { SerializedError } from '@reduxjs/toolkit';
 import { Badge } from 'components/ui/Badge';
@@ -12,7 +12,10 @@ import { InlineAlert, Modal } from 'components/ui/Modal';
 import { walletColumns, WALLET_KEYS } from '@live/components/wallet/walletColumns';
 import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
+import { isCashHolding, isCashMint } from 'lib/assetKind';
 import { TokenTable } from 'components/tokens/TokenTable';
+import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
+import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { DEFAULT_PAGE_SIZE } from 'components/table/Pagination';
 import type { TableQuery } from 'components/table/types';
@@ -29,7 +32,7 @@ import {
   connectTradeStream,
   onSseReopen,
 } from 'services/sse';
-import { apiErrorMessage } from 'store/apiSlice';
+import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { useGetProfilesQuery } from 'store/sharedEndpoints';
 import {
   liveApi,
@@ -73,12 +76,58 @@ export function MyWalletPage() {
   const dispatch = useDispatch<AppDispatch>();
   const [buyToken] = useBuyTokenMutation();
   const [sellToken] = useSellTokenMutation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mintFromUrl = searchParams.get('mint');
 
   // Server-side table view-state (paging/sort/filter). `TokenTable` emits the
   // query (already folding in the mint-set filter) and we serialize it to the
   // unified request body.
   const [query, setQuery] = useState<TableQuery>(INITIAL_QUERY);
   const [hideDust, setHideDust] = useState(false);
+
+  // Master-detail: selected holding → detail panel + live trade chart below.
+  // Cash (USDC) is not selectable — no useful meme tape / detail.
+  const [selectedMint, setSelectedMint] = useState<string | null>(() =>
+    mintFromUrl && !isCashMint(mintFromUrl) ? mintFromUrl : null,
+  );
+  const detailRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!mintFromUrl) return;
+    if (isCashMint(mintFromUrl)) return;
+    if (mintFromUrl !== selectedMint) setSelectedMint(mintFromUrl);
+  }, [mintFromUrl]); // eslint-disable-line react-hooks/exhaustive-deps -- seed from URL only
+
+  const selectMint = useCallback(
+    (mint: string | null) => {
+      if (mint && isCashMint(mint)) return;
+      setSelectedMint(mint);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (mint) next.set('mint', mint);
+          else next.delete('mint');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  useEffect(() => {
+    if (!selectedMint) return;
+    detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [selectedMint]);
+
+  const {
+    data: detail,
+    isFetching: detailLoading,
+    error: detailErrorRaw,
+  } = useGetTokenDetailQuery(selectedMint ?? '', { skip: !selectedMint });
+  const detailError = selectedMint
+    ? apiErrorMessage(detailErrorRaw, 'Failed to load detail')
+    : null;
 
   // Numeric-filtering keys must include the appended token-info columns so
   // `>5`/`1..10` on any column lowers to a structured op server-side.
@@ -167,10 +216,11 @@ export function MyWalletPage() {
 
   // Overlay the latest polled prices onto the current page rows for DISPLAY only
   // (server sort/filter/dust use the scan-time snapshot). Falls back to the
-  // scan-time price until the first poll lands.
+  // scan-time price until the first poll lands. Cash keeps face-value marks.
   const priced = useMemo(
     () =>
       items.map((h) => {
+        if (isCashHolding(h)) return h;
         const p = prices?.[h.mint_address];
         if (!p) return h;
         return {
@@ -486,11 +536,9 @@ export function MyWalletPage() {
     <div>
       <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-extrabold text-text">Wallet</h1>
-        <span className="text-sm text-text-mid">
-          Bag overview · row Buy/Sell for quick fills · Trade desk for mint-first
-        </span>
+        <span className="text-sm text-text-mid">Balances · positions · execute</span>
         <Badge variant="primary" className="font-mono">
-          {total} tokens
+          {total} positions
         </Badge>
         <IconButton
           variant="subtle"
@@ -536,7 +584,7 @@ export function MyWalletPage() {
         </Link>
       </div>
 
-      {summary && summary.positions > 0 && <HoldingsSummaryBar summary={summary} />}
+      {summary && <HoldingsSummaryBar summary={summary} />}
 
       <CashbackCard />
 
@@ -550,6 +598,8 @@ export function MyWalletPage() {
         existingKeys={WALLET_KEYS}
         mintSetFilter
         rowKey={(r) => r.mint_address}
+        selectedKey={selectedMint}
+        onSelect={selectMint}
         serverSide
         serverTotal={total}
         onQueryChange={setQuery}
@@ -560,9 +610,49 @@ export function MyWalletPage() {
         colToggle
         hoverable
         tableId="wallet"
-        emptyMessage="No token holdings found in wallet."
-        selectable={false}
+        emptyMessage="No meme positions in wallet."
       />
+
+      {/* Detail below the table (outside x-scroll) so the chart is full-width.
+          Live ticks: TokenTradeChart → useWatchTokenTradesLive → ingest SSE. */}
+      {selectedMint && (
+        <div
+          ref={detailRef}
+          id={`wallet-detail-${selectedMint}`}
+          className="mt-3.5 scroll-mt-16 flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-bold text-text">
+              {detail?.symbol ??
+                rowByMint.get(selectedMint)?.symbol ??
+                selectedMint.slice(0, 8)}
+            </span>
+            <span className="font-mono text-[11px] text-text-dim">{selectedMint}</span>
+            <div className="grow" />
+            <Link
+              to={`/trade?mint=${encodeURIComponent(selectedMint)}`}
+              className="rounded border border-white/15 bg-white/4 px-2 py-0.5 text-[11px] font-semibold text-accent hover:border-primary/40 hover:text-primary"
+            >
+              Open Trade desk →
+            </Link>
+            <Button variant="ghost" size="sm" onClick={() => selectMint(null)}>
+              Close
+            </Button>
+          </div>
+          <TokenDetailPanel
+            detail={detail ?? null}
+            loading={detailLoading}
+            error={detailError}
+          />
+          {detail && (
+            <LazyTokenTradeChart
+              key={detail.mint_address}
+              tableId="wallet_trades"
+              detail={detail}
+            />
+          )}
+        </div>
+      )}
 
       <Modal
         title={buyTitle}

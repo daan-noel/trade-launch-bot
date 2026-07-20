@@ -1,62 +1,112 @@
 import { memo } from 'react';
 import type { HoldingsTableSummary } from 'services/api';
+import { StatTile } from 'components/ui/StatTile';
 import { cn } from 'lib/cn';
 import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { formatCompact, formatUsd } from 'utils/format';
 
 /**
- * Portfolio header stat row for the Holdings page. Since the Holdings table moved
- * server-side (Phase 4), the totals are computed by the backend over the whole
- * **filtered** population (not just the current page) and handed in as `summary`, so
- * the bar always agrees with the table under any filter / dust toggle / mint set.
+ * Wallet header optimized for glanceability:
+ *   1. Hero funding tiles — SOL · USDC · Available (large)
+ *   2. Trading strip — positions / unrealized / 24h (secondary)
  *
- * Values are the composition's scan-time marks (refreshed on the ~8s scan / manual
- * refresh / trade), not the 20s display poll — the poll only overlays fresher
- * per-row display values on the current page.
+ * Cash is a balance-sheet asset, never a token-table row. Funding is unfiltered;
+ * position metrics match the filtered meme table. Values are scan-time marks.
  */
-const Tile = memo(function Tile({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="grid min-h-10 content-center gap-0.5 rounded-md border border-white/5 bg-white/2 px-2.5 py-1">
-      <span className="truncate text-[9px] font-semibold uppercase tracking-wider text-text-dim">
-        {label}
-      </span>
-      <span className="font-mono text-sm">{children}</span>
-    </div>
-  );
-});
 
 export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
   summary,
 }: {
   summary: HoldingsTableSummary;
 }) {
-  const valueSol = summary.total_value_sol;
-  const valueUsd = summary.total_value_usd;
+  const solBal = summary.sol_balance_sol;
+  const solBalUsd = summary.sol_balance_usd;
+  const cashUsd = summary.cash_value_usd;
+  const cashSol = summary.cash_value_sol;
+  const cashLines = summary.cash_holdings ?? [];
+  const usdc = cashLines.find((h) => h.symbol === 'USDC') ?? cashLines[0];
+  const posSol = summary.positions_value_sol;
+  const posUsd = summary.positions_value_usd;
   const unrealizedSol = summary.total_unrealized_pnl_sol;
   const pnlPct =
     unrealizedSol != null && summary.total_cost_basis_sol > 0
       ? (unrealizedSol / summary.total_cost_basis_sol) * 100
       : null;
 
+  const hasCash = (cashUsd != null && cashUsd > 0) || (usdc != null && usdc.ui_amount > 0);
+  const usdcUsd = hasCash ? (usdc?.value_usd ?? cashUsd) : null;
+  const usdcSol = hasCash ? (usdc?.value_sol ?? cashSol) : null;
+
+  const fundingUsd =
+    solBalUsd != null || usdcUsd != null
+      ? (solBalUsd ?? 0) + (usdcUsd ?? 0)
+      : null;
+
   return (
-    <div className="mb-3.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-      <Tile label="Total Value">
-        <span className="text-text">
-          {valueSol != null ? `◎${formatCompact(valueSol, 2)}` : '—'}
-          {valueUsd != null && (
-            <span className="ml-1.5 text-xs text-text-dim">{formatUsd(valueUsd)}</span>
-          )}
+    <div className="mb-4 grid gap-2.5">
+      {/* Hero balances — the first thing the eye hits. */}
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+        <StatTile
+          label="SOL"
+          size="md"
+          bold
+          value={solBal != null ? `◎${formatCompact(solBal, 3)}` : '—'}
+          sub={solBalUsd != null ? formatUsd(solBalUsd) : undefined}
+        />
+        <StatTile
+          label="USDC"
+          size="md"
+          bold
+          tone={hasCash ? 'default' : 'muted'}
+          value={usdcUsd != null ? formatUsd(usdcUsd) : '—'}
+          sub={
+            hasCash
+              ? [
+                  usdc != null ? `${formatCompact(usdc.ui_amount, 2)} USDC` : null,
+                  usdcSol != null ? `≈ ◎${formatCompact(usdcSol, 2)}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ') || undefined
+              : 'No cash'
+          }
+        />
+        <div className="col-span-2 lg:col-span-1">
+          <StatTile
+            label="Available"
+            size="md"
+            bold
+            tone="primary"
+            value={fundingUsd != null ? formatUsd(fundingUsd) : '—'}
+            sub="SOL + USDC dry powder"
+          />
+        </div>
+      </div>
+
+      {/* Secondary trading book — dense, not competing with balances. */}
+      <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 border-t border-white/5 pt-2">
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
+          Positions
         </span>
-      </Tile>
-      <Tile label="Unrealized PnL">
+        <span className="font-mono text-sm tabular-nums text-text">
+          {posSol != null ? `◎${formatCompact(posSol, 2)}` : '—'}
+          {posUsd != null && (
+            <span className="ml-1.5 text-xs text-text-dim">{formatUsd(posUsd)}</span>
+          )}
+          <span className="ml-1.5 text-xs text-text-dim">×{summary.positions}</span>
+        </span>
+        <span className="text-text-dim" aria-hidden>
+          ·
+        </span>
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
+          Unrealized
+        </span>
         {unrealizedSol != null ? (
-          <span className={cn('font-semibold', signedToneClass(unrealizedSol))}>
+          <span
+            className={cn(
+              'font-mono text-sm font-semibold tabular-nums',
+              signedToneClass(unrealizedSol),
+            )}
+          >
             ◎{formatSigned(unrealizedSol, 3)}
             {pnlPct != null && (
               <span className={cn('ml-1 text-xs', pctGradeClass(pnlPct))}>
@@ -65,21 +115,27 @@ export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
             )}
           </span>
         ) : (
-          <span className="text-text-dim">—</span>
+          <span className="font-mono text-sm text-text-dim">—</span>
         )}
-      </Tile>
-      <Tile label="24h Change">
+        <span className="text-text-dim" aria-hidden>
+          ·
+        </span>
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-text-dim">
+          24h
+        </span>
         {summary.change_24h_pct != null ? (
-          <span className={pctGradeClass(summary.change_24h_pct)}>
+          <span
+            className={cn(
+              'font-mono text-sm tabular-nums',
+              pctGradeClass(summary.change_24h_pct),
+            )}
+          >
             {formatSignedPct(summary.change_24h_pct, 2)}
           </span>
         ) : (
-          <span className="text-text-dim">—</span>
+          <span className="font-mono text-sm text-text-dim">—</span>
         )}
-      </Tile>
-      <Tile label="Positions">
-        <span className="text-text">{summary.positions}</span>
-      </Tile>
+      </div>
     </div>
   );
 });

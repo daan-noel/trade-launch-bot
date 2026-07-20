@@ -487,6 +487,15 @@ impl Engine {
             .unwrap_or_else(|p| p.into_inner()) = Some((lamports, std::time::Instant::now()));
     }
 
+    /// Read the cached native SOL balance (lamports), if any. `None` until the
+    /// first LaserStream account push or safety poll lands — never RPC.
+    pub fn cached_balance_lamports(&self) -> Option<u64> {
+        self.balance_lamports_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .map(|(lamports, _)| lamports)
+    }
+
     /// `true` when the push-fed (or last polled) wallet balance is newer than
     /// `max_age` — used by the host's `getBalance` watchdog to skip RPC when the
     /// LaserStream account push already covered the tick (mirrors

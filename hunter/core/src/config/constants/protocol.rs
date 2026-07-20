@@ -19,6 +19,11 @@ pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpP
 pub const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 /// Wrapped SOL mint — the quote mint for PumpSwap pools.
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+/// Circle USDC (Solana mainnet) — wallet **cash** / dry powder, not a meme position.
+/// Face value is 1 USD per UI unit (`USDC_DECIMALS`).
+pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/// USDC mint decimals (raw units → UI).
+pub const USDC_DECIMALS: u8 = 6;
 
 // CU cost-model constants (duplicated with `pump_trader::constants`) — read by
 // `lab`'s sweep cost model via `trading_core::config::constants`.

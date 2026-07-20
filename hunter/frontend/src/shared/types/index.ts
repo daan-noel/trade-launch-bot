@@ -561,6 +561,9 @@ export interface ManagedBy {
  *  unrealized PnL, and the bot-managed tag. `is_migrated`/`is_cashback_enabled`/
  *  `symbol` carry the live-authoritative values. PnL fields are `undefined` on the
  *  lean single-mint confirmation response until the next full refresh. */
+/** Wallet classification — mirrors Rust `AssetKind` (`cash` | `wrapped_sol` | `meme`). */
+export type WalletAssetKind = 'cash' | 'wrapped_sol' | 'meme';
+
 export interface WalletHolding extends TokenEnrichmentFields {
   mint_address: string;
   amount: number;
@@ -568,6 +571,8 @@ export interface WalletHolding extends TokenEnrichmentFields {
   decimals: number;
   token_account: string;
   token_program_id: string;
+  /** Server classification; cash = dry powder (USDC), not a trading position. */
+  asset_kind?: WalletAssetKind;
   price_usd: number | null;
   value_usd: number | null;
   liquidity: number | null;
@@ -577,7 +582,7 @@ export interface WalletHolding extends TokenEnrichmentFields {
   is_cashback_enabled: boolean;
   /** Mark-to-market SOL value of the bag; `null`/absent when no live SOL mark. */
   value_sol?: number | null;
-  /** Remaining bag's cost basis in SOL; `null`/absent when no recorded buys. */
+  /** Remaining bag's cost basis in SOL; `null`/absent when no recorded buys / cash. */
   cost_basis_sol?: number | null;
   unrealized_pnl_sol?: number | null;
   unrealized_pnl_pct?: number | null;
@@ -586,13 +591,18 @@ export interface WalletHolding extends TokenEnrichmentFields {
 }
 
 /** Wallet-wide roll-up from `GET /api/portfolio/summary` — the Home KPI row.
- *  Mirrors the backend `PortfolioSummary`. */
+ *  Mirrors the backend `PortfolioSummary`. Value totals include cash; cost basis /
+ *  unrealized PnL / `position_count` are meme positions only. */
 export interface PortfolioSummary {
   total_value_sol: number;
   total_value_usd: number;
+  cash_value_usd: number;
+  cash_value_sol: number;
+  positions_value_sol: number;
+  positions_value_usd: number;
   total_cost_basis_sol: number;
   total_unrealized_pnl_sol: number;
-  /** Held bags (token accounts with a balance). */
+  /** Held meme bags (excludes cash). */
   position_count: number;
   /** Realized SOL PnL from real positions that cleanly exited since 00:00 UTC. */
   realized_pnl_today_sol: number;

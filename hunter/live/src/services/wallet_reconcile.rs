@@ -20,14 +20,9 @@ use std::collections::HashSet;
 
 use tracing::{info, warn};
 
+use trading_core::models::is_expected_non_position;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 use crate::trader::{PumpFunTrader, WalletHolding};
-
-/// The native wrapped-SOL mint. The trade paths wrap/unwrap WSOL per AMM swap and
-/// close the account on completion, but a transient WSOL balance at boot is
-/// expected plumbing — never an orphaned token bag — so it is excluded from the
-/// unattributed report rather than flagged every restart.
-const WSOL_MINT: &str = pump_trader::constants::WSOL_MINT;
 
 /// One on-chain token balance the wallet holds that no open position accounts for
 /// — surfaced for manual review, never auto-acted-on.
@@ -40,15 +35,15 @@ pub struct UnattributedHolding {
 }
 
 /// Pure reconciliation: the wallet holdings whose mint is neither tracked by an
-/// open position nor an expected non-position balance (WSOL). Split from the
-/// RPC/DB I/O so the attribution rule is unit-tested directly.
+/// open position nor an expected non-position balance (WSOL plumbing + USDC cash).
+/// Split from the RPC/DB I/O so the attribution rule is unit-tested directly.
 fn unattributed<'a>(
     holdings: &'a [WalletHolding],
     tracked_mints: &HashSet<String>,
 ) -> Vec<&'a WalletHolding> {
     holdings
         .iter()
-        .filter(|h| h.mint != WSOL_MINT && !tracked_mints.contains(&h.mint))
+        .filter(|h| !is_expected_non_position(&h.mint) && !tracked_mints.contains(&h.mint))
         .collect()
 }
 
@@ -125,12 +120,19 @@ mod tests {
     }
 
     #[test]
-    fn flags_only_untracked_non_wsol_mints() {
-        let holdings = vec![holding("AAA"), holding("BBB"), holding(WSOL_MINT)];
+    fn flags_only_untracked_non_expected_mints() {
+        let wsol = trading_core::config::constants::WSOL_MINT;
+        let usdc = trading_core::config::constants::USDC_MINT;
+        let holdings = vec![
+            holding("AAA"),
+            holding("BBB"),
+            holding(wsol),
+            holding(usdc),
+        ];
         let tracked: HashSet<String> = ["AAA".to_string()].into_iter().collect();
 
         let flagged = unattributed(&holdings, &tracked);
-        // AAA is tracked, WSOL is excluded plumbing → only BBB is unattributed.
+        // AAA tracked; WSOL + USDC expected non-position → only BBB is unattributed.
         assert_eq!(flagged.len(), 1);
         assert_eq!(flagged[0].mint, "BBB");
     }
@@ -144,8 +146,11 @@ mod tests {
     }
 
     #[test]
-    fn wsol_alone_is_never_flagged() {
-        let holdings = vec![holding(WSOL_MINT)];
+    fn wsol_and_usdc_alone_are_never_flagged() {
+        let holdings = vec![
+            holding(trading_core::config::constants::WSOL_MINT),
+            holding(trading_core::config::constants::USDC_MINT),
+        ];
         let tracked: HashSet<String> = HashSet::new();
         assert!(unattributed(&holdings, &tracked).is_empty());
     }

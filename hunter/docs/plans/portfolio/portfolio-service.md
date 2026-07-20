@@ -13,6 +13,23 @@ cost basis, PnL, and "who manages this mint" are each computed in exactly one pl
 | **Realized PnL (today)** | `StrategyRepo::realized_pnl_lamports_since(ts)` | Real `End`-position `SUM(exit_lamports − entry_lamports)` since 00:00 UTC. Same exit−entry lamports basis as `positions_summary`. |
 | **Bot correlation** | `StrategyRepo::managed_mints(real_only)` → `ManagedMint` | Open positions `LEFT JOIN strategy_rules` for the rule name; projection-only. The service reduces to one badge per mint via `status_rank` (ExitPending > Holding > BuySubmitted > Arming) — the sharpest double-sell risk wins. |
 
+## Cash vs meme positions (`AssetKind`)
+
+USDC is **working capital**, not a trading bag. Classification SSOT:
+`trading_core::models::asset` (`asset_kind` / `is_cash` / `is_expected_non_position`) over
+`USDC_MINT` + `WSOL_MINT` in `config::constants::protocol`.
+
+| Rule | Cash (USDC) | Meme positions |
+| --- | --- | --- |
+| Pricing | Face $1 / UI unit | Jupiter USD mark |
+| Cost basis / unrealized PnL | Always `None` | `holding_pnl` → `unrealized_pnl` |
+| Paged Holdings table | Excluded (cash strip) | Included |
+| Summary / Home KPIs | `cash_value_*` / `cash_holdings` | `positions_value_*`, PnL, 24h, `position_count` |
+| Boot orphan reconcile | Excluded (with WSOL) | Flagged if untracked |
+
+Wire field: `PortfolioHolding.asset_kind` (`cash` \| `wrapped_sol` \| `meme`). Frontend mirror:
+`shared/lib/assetKind.ts`.
+
 ## Service composition — `live/src/services/portfolio.rs`
 
 Mirrors `wallet_tokens.rs` (on-chain + Jupiter + cache), not DB-repo-backed for the live
@@ -20,19 +37,21 @@ fields. `compose()` fires five independent reads together (`tokio::join!`): Jupi
 on-chain curve facts (uncached mints only), cost basis, token enrichment, real
 `managed_mints`. Then per holding:
 
-- **SOL mark** = `price_usd / sol_usd` (Jupiter per-UI-token price ÷ live SOL/USD). Same
-  source as the displayed `value_usd`, so value and PnL reconcile. `None` ⇒ no PnL.
-- **PnL** via `holding_pnl()` — the service's single call into `unrealized_pnl`. It only
-  lifts the SOL/raw average entry into **UI space** (`× 10^decimals`) to match the per-UI
-  mark; the arithmetic is the SSOT helper's. Cost basis needs only the average entry (shown
-  even with no live mark); mark-to-market needs both.
+- **Cash** → face `price_usd = 1`, `value_usd = ui_amount`, SOL via `value_usd / sol_usd`;
+  no Jupiter / no PnL / no managed-by / no curve flags.
+- **SOL mark (meme)** = `price_usd / sol_usd` (Jupiter per-UI-token price ÷ live SOL/USD).
+  Same source as the displayed `value_usd`, so value and PnL reconcile. `None` ⇒ no PnL.
+- **PnL (meme)** via `holding_pnl()` — the service's single call into `unrealized_pnl`. It
+  only lifts the SOL/raw average entry into **UI space** (`× 10^decimals`) to match the
+  per-UI mark; the arithmetic is the SSOT helper's. Cost basis needs only the average entry
+  (shown even with no live mark); mark-to-market needs both.
 - **Enrichment** flattened via `TokenEnrichment` (the strategy-table SSOT). `is_migrated` /
   `is_cashback_enabled` / `symbol` are overwritten with the **live-authoritative** values
   (cache → on-chain fallback), so the live wallet facts win over any stale DB copy.
 
-Endpoints: `holdings` (`list_holdings`), `summary` (`summary`, reuses `list_holdings` for
-value/PnL totals + real-money aggregates), `positions` (`open_positions`, `?real=` default
-true — the cross-strategy roll-up for Phase 4).
+Endpoints: `holdings` (full list incl. cash), `holdings/query` (meme positions only),
+`holdings/summary` (cash strip unfiltered + filtered position metrics), `summary` (Home KPIs
+with cash/positions split), `positions` (`open_positions`, `?real=` default true).
 
 ## Bounds / cost (EC2 4GB)
 

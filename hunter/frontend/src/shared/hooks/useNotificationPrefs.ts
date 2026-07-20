@@ -17,6 +17,29 @@ export const ALL_NOTIFY_STATUSES = [
 
 export type NotifyStatus = (typeof ALL_NOTIFY_STATUSES)[number];
 
+/** Statuses that matter during live trading — failures + exit flow + open holds. */
+export const CRITICAL_NOTIFY_STATUSES: readonly NotifyStatus[] = [
+  'Holding',
+  'ExitPending',
+  'ExitFailed',
+  'ExitUnconfirmed',
+];
+
+export type NotifyPreset = 'all' | 'critical' | 'custom';
+
+function statusSetEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((s) => set.has(s));
+}
+
+/** Which preset pill matches the current status selection (else `custom`). */
+export function notifyPresetOf(statuses: readonly string[]): NotifyPreset {
+  if (statusSetEqual(statuses, ALL_NOTIFY_STATUSES)) return 'all';
+  if (statusSetEqual(statuses, CRITICAL_NOTIFY_STATUSES)) return 'critical';
+  return 'custom';
+}
+
 /** @deprecated Prefer {@link ALL_NOTIFY_STATUSES}. */
 export const ALL_POSITION_STATUSES = ALL_NOTIFY_STATUSES;
 /** @deprecated Prefer {@link NotifyStatus}. */

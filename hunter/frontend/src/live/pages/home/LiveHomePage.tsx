@@ -30,6 +30,8 @@ export function LiveHomePage() {
 
   const valueSol = summary?.total_value_sol ?? null;
   const valueUsd = summary?.total_value_usd ?? null;
+  const cashUsd = summary?.cash_value_usd ?? 0;
+  const posUsd = summary?.positions_value_usd ?? 0;
   const pnlSol = summary?.total_unrealized_pnl_sol ?? null;
   const pnlPct =
     summary && summary.total_cost_basis_sol > 0
@@ -37,6 +39,13 @@ export function LiveHomePage() {
       : null;
   const realizedToday = summary?.realized_pnl_today_sol ?? null;
   void usdRate;
+
+  const walletSub =
+    valueUsd != null
+      ? cashUsd > 0
+        ? `${formatUsd(cashUsd)} cash · ${formatUsd(posUsd)} positions`
+        : formatUsd(valueUsd)
+      : undefined;
 
   return (
     <div className="pt-2">
@@ -52,7 +61,7 @@ export function LiveHomePage() {
           <StatTile
             label="Wallet Value"
             value={valueSol != null ? `◎${formatCompact(valueSol, 2)}` : '—'}
-            sub={valueUsd != null ? formatUsd(valueUsd) : undefined}
+            sub={walletSub}
           />
         </Link>
         <Link to="/wallet" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">

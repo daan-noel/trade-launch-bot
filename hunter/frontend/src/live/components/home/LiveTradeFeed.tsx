@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import type { LiveTrade } from 'types';
 import { cn } from 'lib/cn';
+import { isCashHolding } from 'lib/assetKind';
 import { formatCompact } from 'utils/format';
 import { useMintTradeStream } from 'hooks/useMintTradeStream';
 import { useGetPortfolioHoldingsQuery } from '@live/store/liveEndpoints';
@@ -9,15 +10,21 @@ const MAX_ROWS = 15;
 
 /**
  * Recent live trades on the mints you hold — the `trade_executed` SSE filtered to
- * the held-mint set (via {@link useMintTradeStream}). The feed owns its own state
- * so its high-frequency updates never re-render the KPI row or the holdings widget.
+ * the held-mint set (via {@link useMintTradeStream}). Cash (USDC) is excluded —
+ * stablecoin tape is not a meme-position signal. The feed owns its own state so
+ * its high-frequency updates never re-render the KPI row or the holdings widget.
  */
 export function LiveTradeFeed() {
   const { data: holdings = [] } = useGetPortfolioHoldingsQuery();
   // Held mint → symbol, read through a ref so the SSE handler always sees the
   // latest set without re-subscribing on every holdings refresh.
   const heldMap = useMemo(
-    () => new Map(holdings.map((h) => [h.mint_address, h.symbol ?? undefined])),
+    () =>
+      new Map(
+        holdings
+          .filter((h) => !isCashHolding(h))
+          .map((h) => [h.mint_address, h.symbol ?? undefined]),
+      ),
     [holdings],
   );
   const heldRef = useRef(heldMap);

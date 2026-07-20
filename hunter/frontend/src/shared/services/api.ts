@@ -217,10 +217,29 @@ export function fetchEngineSimTimeSummary(
   );
 }
 
-/** Whole-population roll-up for the Holdings summary bar (server-computed over the
- *  filtered set). Mirrors the Rust `HoldingsTableSummary`. */
+/** One cash line for the Wallet cash strip. Mirrors Rust `CashHoldingSummary`. */
+export interface CashHoldingSummary {
+  mint_address: string;
+  symbol: string;
+  ui_amount: number;
+  value_usd: number;
+  value_sol: number | null;
+}
+
+/** Roll-up for the Holdings summary bar + cash strip. Cash is unfiltered; position
+ *  metrics match the filtered meme table. Native SOL is the System-account
+ *  balance (push-fed cache), separate from USDC cash. Mirrors Rust
+ *  `HoldingsTableSummary`. */
 export interface HoldingsTableSummary {
   positions: number;
+  /** Native wallet SOL; `null` until the live bin's balance cache is seeded. */
+  sol_balance_sol: number | null;
+  sol_balance_usd: number | null;
+  cash_holdings: CashHoldingSummary[];
+  cash_value_usd: number | null;
+  cash_value_sol: number | null;
+  positions_value_sol: number | null;
+  positions_value_usd: number | null;
   total_value_sol: number | null;
   total_value_usd: number | null;
   total_cost_basis_sol: number;
@@ -245,9 +264,9 @@ export function fetchHoldingsPage(
   );
 }
 
-/** One composed holding by mint (or `null` if unheld) — reuses the warm holdings
- *  scan via the `in` filter, so the manual buy/sell dialogs get the authoritative
- *  `managed_by` / `token_account` / balance without a separate RPC. */
+/** One composed holding by mint (or `null` if unheld). The paged query endpoint is
+ *  meme-positions only (cash is stripped), so a miss falls through to the full
+ *  unpaged holdings list — cash / WSOL lookups still resolve for dialogs. */
 export async function fetchHoldingByMint(
   mint: string,
 ): Promise<import('types').WalletHolding | null> {
@@ -257,7 +276,11 @@ export async function fetchHoldingByMint(
     search: '',
     filters: { mint: { op: 'in', val: [mint] } },
   });
-  return items[0] ?? null;
+  if (items[0]) return items[0];
+  const all = await request(`${API_BASE}/api/portfolio/holdings`);
+  return (
+    (all as import('types').WalletHolding[]).find((h) => h.mint_address === mint) ?? null
+  );
 }
 
 /** GET-shaped POST for the Holdings summary bar — same filter body as the table so

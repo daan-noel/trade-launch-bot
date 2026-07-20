@@ -1,21 +1,22 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { cn } from 'lib/cn';
+import { isCashHolding } from 'lib/assetKind';
 import { formatSignedPct, pctGradeClass } from 'lib/signedTone';
 import { formatUsd } from 'utils/format';
 import { useGetPortfolioHoldingsQuery } from '@live/store/liveEndpoints';
 
 const TOP_N = 6;
 
-/** Top holdings by value — a glance at where the money sits, linking to the full
- *  position manager. Reuses the same portfolio cache the Holdings page fills. */
+/** Top meme positions by value — cash (USDC) is excluded; it lives on the Wallet
+ *  cash strip. Reuses the same portfolio cache the Holdings page fills. */
 export function TopHoldingsWidget() {
   const { data: holdings = [], isLoading } = useGetPortfolioHoldingsQuery();
 
   const top = useMemo(
     () =>
       [...holdings]
-        .filter((h) => (h.value_usd ?? 0) > 0)
+        .filter((h) => !isCashHolding(h) && (h.value_usd ?? 0) > 0)
         .sort((a, b) => (b.value_usd ?? 0) - (a.value_usd ?? 0))
         .slice(0, TOP_N),
     [holdings],

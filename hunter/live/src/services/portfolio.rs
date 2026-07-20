@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use trading_core::models::portfolio::{unrealized_pnl, ManagedMint};
-use trading_core::models::StrategyPosition;
+use trading_core::models::{cash_symbol, AssetKind, StrategyPosition};
 use trading_core::storage::token_enrichment::{fetch_by_mints, TokenEnrichment, TokenEnrichmentRow};
 
 use crate::services::clients::jupiter;
@@ -29,6 +29,8 @@ use crate::trader::WalletHolding;
 /// manages it (if any). The Holdings-page row and Home top-holdings widget both
 /// read this. `is_migrated`/`is_cashback_enabled`/`symbol` are the live-authoritative
 /// values (they overwrite any stale DB copy in the flattened `token`).
+///
+/// Cash (`asset_kind = cash`, e.g. USDC) is face-valued and carries no trading PnL.
 #[derive(Debug, Serialize)]
 pub struct PortfolioHolding {
     // Identity + on-chain balance (live — wins over any DB copy).
@@ -40,7 +42,10 @@ pub struct PortfolioHolding {
     pub token_account: String,
     pub token_program_id: String,
     pub symbol: Option<String>,
+    /// Wallet classification — cash vs meme position (see [`AssetKind`]).
+    pub asset_kind: AssetKind,
     // Live Jupiter marks (USD display side — same source as `value_usd`).
+    // Cash overrides to face value ($1 / UI unit).
     pub price_usd: Option<f64>,
     pub value_usd: Option<f64>,
     pub liquidity: Option<f64>,
@@ -51,12 +56,13 @@ pub struct PortfolioHolding {
     /// when no live SOL mark is available (missing Jupiter price or SOL/USD).
     pub value_sol: Option<f64>,
     /// Remaining bag's cost basis in SOL (`avg_entry × held`); `None` when the
-    /// wallet has no recorded buys for the mint (received/transferred bags).
+    /// wallet has no recorded buys for the mint (received/transferred bags),
+    /// and always `None` for cash.
     pub cost_basis_sol: Option<f64>,
     pub unrealized_pnl_sol: Option<f64>,
     pub unrealized_pnl_pct: Option<f64>,
     /// The live (real) strategy managing this bag, if any — the manual-vs-bot
-    /// double-sell guard. `None` for an unmanaged (orphan/manual) bag.
+    /// double-sell guard. `None` for an unmanaged (orphan/manual) bag / cash.
     pub managed_by: Option<ManagedMint>,
     /// Full token enrichment (name, market_cap, current_price, …) — the same SSOT
     /// the strategy result tables flatten. `is_migrated`/`is_cashback_enabled` here
@@ -65,16 +71,33 @@ pub struct PortfolioHolding {
     pub token: TokenEnrichment,
 }
 
-/// Wallet-wide roll-up backing the Home KPI row. Totals sum the per-holding SOL
-/// values; `realized_pnl_today_sol` / `active_rules` / `open_position_count` are
+/// One cash balance line for the Holdings cash strip (always unfiltered).
+#[derive(Debug, Clone, Serialize)]
+pub struct CashHoldingSummary {
+    pub mint_address: String,
+    pub symbol: String,
+    pub ui_amount: f64,
+    pub value_usd: f64,
+    pub value_sol: Option<f64>,
+}
+
+/// Wallet-wide roll-up backing the Home KPI row. Value totals include cash;
+/// cost basis / unrealized PnL / `position_count` are **meme positions only**.
+/// `realized_pnl_today_sol` / `active_rules` / `open_position_count` are
 /// cross-strategy real-money aggregates.
 #[derive(Debug, Serialize)]
 pub struct PortfolioSummary {
     pub total_value_sol: f64,
     pub total_value_usd: f64,
+    /// Face-value cash (USDC) in USD / SOL-equivalent.
+    pub cash_value_usd: f64,
+    pub cash_value_sol: f64,
+    /// Meme-bag mark-to-market (excludes cash).
+    pub positions_value_sol: f64,
+    pub positions_value_usd: f64,
     pub total_cost_basis_sol: f64,
     pub total_unrealized_pnl_sol: f64,
-    /// Number of held bags (token accounts with a balance).
+    /// Number of held **meme** bags (excludes cash / WSOL plumbing).
     pub position_count: usize,
     /// Realized SOL PnL from real positions that cleanly exited since 00:00 UTC.
     pub realized_pnl_today_sol: f64,
@@ -117,20 +140,93 @@ impl HoldingsCache {
     }
 }
 
-/// Whole-population roll-up for the server-paged Holdings table's summary bar,
-/// measured over the **filtered** set (all matching rows, not one page) so the bar
-/// agrees with the table. Values are scan-time (the client price-poll overlays
-/// fresher display marks on the current page only); `*_usd`/`*_sol`/PnL are `None`
-/// when no row in the set had a live mark.
+/// Whole-population roll-up for the server-paged Holdings table's summary bar.
+///
+/// Cash is always taken from the full scan (unfiltered — the cash strip must not
+/// vanish under dust/search). Position metrics (value/PnL/24h/count) are measured
+/// over the **filtered** meme set so the bar agrees with the table. Values are
+/// scan-time (the client price-poll overlays fresher display marks on the current
+/// page only). Native SOL is the System-account balance (push-fed cache), not an
+/// SPL row — shown separately from USDC cash.
 #[derive(Debug, Default, Serialize)]
 pub struct HoldingsTableSummary {
+    /// Meme position count (filtered set; excludes cash).
     pub positions: usize,
+    /// Native wallet SOL (System account lamports → SOL). `None` until the
+    /// LaserStream push / safety poll has seeded the trader cache.
+    pub sol_balance_sol: Option<f64>,
+    /// Native SOL × latest SOL/USD (when both are known).
+    pub sol_balance_usd: Option<f64>,
+    /// Cash balances for the sticky cash strip (unfiltered).
+    pub cash_holdings: Vec<CashHoldingSummary>,
+    pub cash_value_usd: Option<f64>,
+    pub cash_value_sol: Option<f64>,
+    /// Meme-only mark-to-market over the filtered set.
+    pub positions_value_sol: Option<f64>,
+    pub positions_value_usd: Option<f64>,
+    /// Cash + positions (when either side has a mark).
     pub total_value_sol: Option<f64>,
     pub total_value_usd: Option<f64>,
     pub total_cost_basis_sol: f64,
     pub total_unrealized_pnl_sol: Option<f64>,
-    /// Value-weighted 24h price change across rows that have both a value and a 24h.
+    /// Value-weighted 24h across **meme** rows that have both a value and a 24h.
     pub change_24h_pct: Option<f64>,
+}
+
+/// Native wallet SOL from the push-fed trader cache (no RPC). Returns
+/// `(sol, usd)` — USD is `None` when the SOL/USD poller has not landed yet.
+pub fn native_sol_balance(state: &DeployState) -> (Option<f64>, Option<f64>) {
+    let Some(lamports) = state.trader.cached_balance_lamports() else {
+        return (None, None);
+    };
+    // Wallet balances fit in i64; clamp rather than panic on a corrupt cache.
+    let sol = trading_core::config::constants::lamports_to_sol(lamports.min(i64::MAX as u64) as i64);
+    let usd = state.latest_sol_price().map(|rate| sol * rate);
+    (Some(sol), usd)
+}
+
+/// Split composed holdings into cash vs trading positions.
+pub fn partition_cash(
+    holdings: &[PortfolioHolding],
+) -> (Vec<&PortfolioHolding>, Vec<&PortfolioHolding>) {
+    let mut cash = Vec::new();
+    let mut positions = Vec::new();
+    for h in holdings {
+        if h.asset_kind == AssetKind::Cash {
+            cash.push(h);
+        } else {
+            positions.push(h);
+        }
+    }
+    (cash, positions)
+}
+
+/// Build the cash strip lines + roll-up from cash holdings.
+pub fn cash_summary(cash: &[&PortfolioHolding]) -> (Vec<CashHoldingSummary>, f64, Option<f64>) {
+    let mut lines = Vec::with_capacity(cash.len());
+    let mut usd = 0.0;
+    let mut sol = 0.0;
+    let mut has_sol = false;
+    for h in cash {
+        let value_usd = h.value_usd.unwrap_or(h.ui_amount);
+        usd += value_usd;
+        if let Some(v) = h.value_sol {
+            sol += v;
+            has_sol = true;
+        }
+        lines.push(CashHoldingSummary {
+            mint_address: h.mint_address.clone(),
+            symbol: h
+                .symbol
+                .clone()
+                .or_else(|| cash_symbol(&h.mint_address).map(str::to_string))
+                .unwrap_or_else(|| "CASH".to_string()),
+            ui_amount: h.ui_amount,
+            value_usd,
+            value_sol: h.value_sol,
+        });
+    }
+    (lines, usd, has_sol.then_some(sol))
 }
 
 /// Enriched holdings + cost basis + unrealized PnL + bot tag for the bot wallet —
@@ -162,14 +258,22 @@ pub async fn list_holdings_cached(
 /// totals, then layers the real-money strategy aggregates on top.
 pub async fn summary(state: &DeployState) -> anyhow::Result<PortfolioSummary> {
     let holdings = list_holdings_cached(state, false).await?;
+    let (cash, positions) = partition_cash(&holdings);
 
-    let mut total_value_sol = 0.0;
-    let mut total_value_usd = 0.0;
+    let mut cash_value_usd = 0.0;
+    let mut cash_value_sol = 0.0;
+    for h in &cash {
+        cash_value_usd += h.value_usd.unwrap_or(h.ui_amount);
+        cash_value_sol += h.value_sol.unwrap_or(0.0);
+    }
+
+    let mut positions_value_sol = 0.0;
+    let mut positions_value_usd = 0.0;
     let mut total_cost_basis_sol = 0.0;
     let mut total_unrealized_pnl_sol = 0.0;
-    for h in holdings.iter() {
-        total_value_sol += h.value_sol.unwrap_or(0.0);
-        total_value_usd += h.value_usd.unwrap_or(0.0);
+    for h in &positions {
+        positions_value_sol += h.value_sol.unwrap_or(0.0);
+        positions_value_usd += h.value_usd.unwrap_or(0.0);
         total_cost_basis_sol += h.cost_basis_sol.unwrap_or(0.0);
         total_unrealized_pnl_sol += h.unrealized_pnl_sol.unwrap_or(0.0);
     }
@@ -196,11 +300,15 @@ pub async fn summary(state: &DeployState) -> anyhow::Result<PortfolioSummary> {
     let open_position_count = state.strategy_repo().managed_mints(true).await?.len();
 
     Ok(PortfolioSummary {
-        total_value_sol,
-        total_value_usd,
+        total_value_sol: cash_value_sol + positions_value_sol,
+        total_value_usd: cash_value_usd + positions_value_usd,
+        cash_value_usd,
+        cash_value_sol,
+        positions_value_sol,
+        positions_value_usd,
         total_cost_basis_sol,
         total_unrealized_pnl_sol,
-        position_count: holdings.len(),
+        position_count: positions.len(),
         realized_pnl_today_sol,
         active_rules,
         open_position_count,
@@ -338,51 +446,94 @@ async fn compose(
     Ok(holdings
         .into_iter()
         .map(|h| {
+            let kind = trading_core::models::asset_kind(&h.mint);
             let cached = state.token_cache.get(&h.mint);
             let entry = jupiter.get(&h.mint);
             let enrich_row = enrich_by_mint.get(&h.mint);
 
-            let price_usd = entry.and_then(|e| e.price_usd);
-            let value_usd = price_usd.map(|p| p * h.ui_amount);
+            // Cash = face $1 / UI unit (no Jupiter flicker, no trading PnL).
+            // Meme bags use Jupiter marks + avg-entry unrealized PnL.
+            let (price_usd, value_usd, liquidity, price_change_24h, token_created_at, pnl) =
+                if kind == AssetKind::Cash {
+                    let price_usd = Some(1.0);
+                    let value_usd = Some(h.ui_amount);
+                    (
+                        price_usd,
+                        value_usd,
+                        None,
+                        None,
+                        None,
+                        HoldingPnl {
+                            cost_basis_sol: None,
+                            unrealized_pnl_sol: None,
+                            unrealized_pnl_pct: None,
+                        },
+                    )
+                } else {
+                    let price_usd = entry.and_then(|e| e.price_usd);
+                    let value_usd = price_usd.map(|p| p * h.ui_amount);
+                    let mark_sol_per_ui = match (price_usd, sol_usd) {
+                        (Some(pu), Some(su)) if su > 0.0 => Some(pu / su),
+                        _ => None,
+                    };
+                    let pnl = holding_pnl(
+                        avg_entries.get(&h.mint).map(|a| a.avg_entry_price),
+                        mark_sol_per_ui,
+                        h.decimals,
+                        h.ui_amount,
+                    );
+                    (
+                        price_usd,
+                        value_usd,
+                        entry.and_then(|e| e.liquidity),
+                        entry.and_then(|e| e.price_change_24h),
+                        entry.and_then(|e| e.token_created_at.clone()),
+                        pnl,
+                    )
+                };
 
-            // Live-authoritative migration/cashback (cache → on-chain fallback).
-            let is_migrated = cached
-                .as_ref()
-                .map(|s| s.is_migrated)
-                .or_else(|| chain_facts.get(&h.mint).map(|f| f.is_migrated))
-                .unwrap_or(false);
-            let is_cashback_enabled = cached
-                .as_ref()
-                .map(|s| s.token.is_cashback_enabled)
-                .or_else(|| chain_facts.get(&h.mint).map(|f| f.cashback_enabled))
-                .unwrap_or(false);
-            let symbol = cached
-                .as_ref()
-                .map(|s| s.token.symbol.clone())
-                .or_else(|| enrich_row.map(|r| r.symbol.clone()));
-
-            // SOL mark from the same Jupiter source as `value_usd` (per UI token),
-            // converted through the live SOL/USD. `None` when either is missing.
-            let mark_sol_per_ui = match (price_usd, sol_usd) {
-                (Some(pu), Some(su)) if su > 0.0 => Some(pu / su),
+            let value_sol = match (value_usd, sol_usd) {
+                (Some(vu), Some(su)) if su > 0.0 => Some(vu / su),
                 _ => None,
             };
-            let value_sol = mark_sol_per_ui.map(|m| m * h.ui_amount);
 
-            // Cost basis + unrealized PnL, delegated to the SSOT compute site.
-            let pnl = holding_pnl(
-                avg_entries.get(&h.mint).map(|a| a.avg_entry_price),
-                mark_sol_per_ui,
-                h.decimals,
-                h.ui_amount,
-            );
+            // Live-authoritative migration/cashback (cache → on-chain fallback).
+            // Cash has no curve/AMM migration story — force false.
+            let (is_migrated, is_cashback_enabled) = if kind == AssetKind::Cash {
+                (false, false)
+            } else {
+                (
+                    cached
+                        .as_ref()
+                        .map(|s| s.is_migrated)
+                        .or_else(|| chain_facts.get(&h.mint).map(|f| f.is_migrated))
+                        .unwrap_or(false),
+                    cached
+                        .as_ref()
+                        .map(|s| s.token.is_cashback_enabled)
+                        .or_else(|| chain_facts.get(&h.mint).map(|f| f.cashback_enabled))
+                        .unwrap_or(false),
+                )
+            };
+            let symbol = if kind == AssetKind::Cash {
+                Some(cash_symbol(&h.mint).unwrap_or("USDC").to_string())
+            } else {
+                cached
+                    .as_ref()
+                    .map(|s| s.token.symbol.clone())
+                    .or_else(|| enrich_row.map(|r| r.symbol.clone()))
+            };
 
             let mut token = enrich_row.map(TokenEnrichment::from).unwrap_or_default();
             token.is_migrated = is_migrated;
             token.is_cashback_enabled = is_cashback_enabled;
 
-            // Resolve the bot badge before `h.mint` is moved into the struct.
-            let managed_by = managed_by_mint.get(&h.mint).cloned();
+            // Cash is never strategy-managed; resolve bot badge for meme bags only.
+            let managed_by = if kind == AssetKind::Cash {
+                None
+            } else {
+                managed_by_mint.get(&h.mint).cloned()
+            };
 
             PortfolioHolding {
                 mint_address: h.mint,
@@ -392,11 +543,12 @@ async fn compose(
                 token_account: h.token_account,
                 token_program_id: h.token_program_id,
                 symbol,
+                asset_kind: kind,
                 price_usd,
                 value_usd,
-                liquidity: entry.and_then(|e| e.liquidity),
-                price_change_24h: entry.and_then(|e| e.price_change_24h),
-                token_created_at: entry.and_then(|e| e.token_created_at.clone()),
+                liquidity,
+                price_change_24h,
+                token_created_at,
                 value_sol,
                 cost_basis_sol: pnl.cost_basis_sol,
                 unrealized_pnl_sol: pnl.unrealized_pnl_sol,
@@ -450,5 +602,55 @@ mod tests {
         assert!(status_rank("ExitPending") > status_rank("Holding"));
         assert!(status_rank("Holding") > status_rank("BuySubmitted"));
         assert!(status_rank("BuySubmitted") > status_rank("Arming"));
+    }
+
+    fn stub_holding(mint: &str, kind: AssetKind, ui: f64, value_usd: f64) -> PortfolioHolding {
+        PortfolioHolding {
+            mint_address: mint.to_string(),
+            amount: (ui * 1_000_000.0) as u64,
+            ui_amount: ui,
+            decimals: 6,
+            token_account: format!("ata-{mint}"),
+            token_program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".into(),
+            symbol: Some(if kind == AssetKind::Cash { "USDC".into() } else { "MEME".into() }),
+            asset_kind: kind,
+            price_usd: Some(if kind == AssetKind::Cash { 1.0 } else { value_usd / ui }),
+            value_usd: Some(value_usd),
+            liquidity: None,
+            price_change_24h: if kind == AssetKind::Cash { None } else { Some(5.0) },
+            token_created_at: None,
+            value_sol: Some(value_usd / 100.0),
+            cost_basis_sol: if kind == AssetKind::Cash { None } else { Some(1.0) },
+            unrealized_pnl_sol: if kind == AssetKind::Cash { None } else { Some(0.5) },
+            unrealized_pnl_pct: if kind == AssetKind::Cash { None } else { Some(50.0) },
+            managed_by: None,
+            token: TokenEnrichment::default(),
+        }
+    }
+
+    #[test]
+    fn partition_cash_splits_usdc_from_meme() {
+        let usdc = trading_core::config::constants::USDC_MINT;
+        let rows = vec![
+            stub_holding(usdc, AssetKind::Cash, 100.0, 100.0),
+            stub_holding("MemeMint", AssetKind::Meme, 10.0, 50.0),
+        ];
+        let (cash, positions) = partition_cash(&rows);
+        assert_eq!(cash.len(), 1);
+        assert_eq!(cash[0].mint_address, usdc);
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].mint_address, "MemeMint");
+    }
+
+    #[test]
+    fn cash_summary_face_values_roll_up() {
+        let usdc = trading_core::config::constants::USDC_MINT;
+        let rows = vec![stub_holding(usdc, AssetKind::Cash, 250.0, 250.0)];
+        let refs: Vec<&PortfolioHolding> = rows.iter().collect();
+        let (lines, usd, sol) = cash_summary(&refs);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].symbol, "USDC");
+        assert!((usd - 250.0).abs() < 1e-9);
+        assert!((sol.unwrap() - 2.5).abs() < 1e-9);
     }
 }

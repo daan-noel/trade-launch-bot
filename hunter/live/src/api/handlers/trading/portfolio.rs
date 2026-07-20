@@ -11,7 +11,7 @@ use serde_json::Value;
 use trading_core::api::table_eval::{apply_table_request, resolve_token_enrichment_key, ColKind};
 use trading_core::api::table_query::{Page, TableRequest};
 
-use crate::services::portfolio::{self, HoldingsTableSummary};
+use crate::services::portfolio::{self, cash_summary, partition_cash, HoldingsTableSummary};
 use crate::state::deploy_state::DeployState;
 
 /// Column grammar for the server-paged Holdings table: frontend column key → the
@@ -31,6 +31,7 @@ fn holdings_resolve(key: &str) -> Option<(&'static str, ColKind)> {
         // identity + on-chain balance (row-owned on PortfolioHolding)
         "mint_address" => ("mint_address", Text),
         "symbol" => ("symbol", Text),
+        "asset_kind" => ("asset_kind", Text),
         "ui_amount" => ("ui_amount", Number),
         "amount" => ("amount", Number),
         "decimals" => ("decimals", Number),
@@ -53,7 +54,7 @@ fn holdings_resolve(key: &str) -> Option<(&'static str, ColKind)> {
 }
 
 /// Serialize the composed holdings to JSON rows the in-memory evaluator reads.
-fn holdings_to_values(holdings: &[portfolio::PortfolioHolding]) -> Vec<Value> {
+fn holdings_to_values(holdings: &[&portfolio::PortfolioHolding]) -> Vec<Value> {
     holdings
         .iter()
         .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
@@ -63,8 +64,9 @@ fn holdings_to_values(holdings: &[portfolio::PortfolioHolding]) -> Vec<Value> {
 /// `GET /api/portfolio/holdings`
 ///
 /// Full enriched wallet holdings (unpaged) — backs the Home top-holdings widget +
-/// live-trade feed. The Holdings **page** uses the paged POST below; both share the
-/// short-TTL scan cache.
+/// live-trade feed. Includes cash (USDC) with `asset_kind: "cash"`; consumers that
+/// want meme bags only must filter. The Holdings **page** uses the paged POST
+/// below (positions only); both share the short-TTL scan cache.
 pub async fn get_portfolio_holdings(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
     match portfolio::list_holdings_cached(app_state.get_ref(), false).await {
         Ok(holdings) => HttpResponse::Ok().json(holdings.as_ref()),
@@ -88,11 +90,11 @@ pub struct HoldingsQueryParams {
 
 /// `POST /api/portfolio/holdings/query[?fresh=true]`
 ///
-/// One page of the wallet holdings under the unified [`TableRequest`] contract
-/// (server-side search/sort/filter/paging), mirroring the positions/matched POST.
-/// Runs the in-memory [`apply_table_request`] evaluator over the composed holdings
-/// (bounded — tens of tokens) with [`holdings_resolve`]; the full match count rides
-/// `X-Total-Count`.
+/// One page of the wallet **meme positions** under the unified [`TableRequest`]
+/// contract (server-side search/sort/filter/paging). Cash (USDC) is excluded here —
+/// it rides the summary's `cash_holdings` strip instead. Runs the in-memory
+/// [`apply_table_request`] evaluator over the composed positions (bounded — tens of
+/// tokens) with [`holdings_resolve`]; the full match count rides `X-Total-Count`.
 pub async fn query_portfolio_holdings(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<HoldingsQueryParams>,
@@ -107,7 +109,8 @@ pub async fn query_portfolio_holdings(
                 .json(serde_json::json!({ "error": e.to_string() }));
         }
     };
-    let values = holdings_to_values(&holdings);
+    let (_cash, positions) = partition_cash(&holdings);
+    let values = holdings_to_values(&positions);
     let (page, total) = apply_table_request(&values, &req, holdings_resolve);
     HttpResponse::Ok()
         .insert_header(("X-Total-Count", total.to_string()))
@@ -117,10 +120,10 @@ pub async fn query_portfolio_holdings(
 
 /// `POST /api/portfolio/holdings/summary`
 ///
-/// Whole-population roll-up (value/cost/PnL/24h) over the **filtered** holdings for
-/// the page's summary bar — same request body as the table so the two agree, but
-/// measured over every matching row (not one page). Bounded, so we simply evaluate
-/// the filters with an all-encompassing page and sum the result.
+/// Roll-up for the page's summary bar + cash strip. Cash is always taken from the
+/// full scan (unfiltered). Native SOL comes from the push-fed trader cache (no
+/// RPC). Position metrics (value/PnL/24h/count) use the same filter body as the
+/// table so the bar agrees with the meme-position grid.
 pub async fn portfolio_holdings_summary(
     app_state: web::Data<Arc<DeployState>>,
     body: web::Json<TableRequest>,
@@ -137,17 +140,33 @@ pub async fn portfolio_holdings_summary(
                 .json(serde_json::json!({ "error": e.to_string() }));
         }
     };
-    let values = holdings_to_values(&holdings);
+    let (cash, positions) = partition_cash(&holdings);
+    let (cash_holdings, cash_usd, cash_sol) = cash_summary(&cash);
+    let (sol_balance_sol, sol_balance_usd) = portfolio::native_sol_balance(app_state.get_ref());
+
+    let values = holdings_to_values(&positions);
     let (rows, _) = apply_table_request(&values, &req, holdings_resolve);
 
     let num = |row: &Value, k: &str| row.get(k).and_then(Value::as_f64);
-    let mut s = HoldingsTableSummary { positions: rows.len(), ..Default::default() };
-    let (mut value_sol, mut value_usd, mut pnl, mut has_value, mut has_pnl) =
+    let mut s = HoldingsTableSummary {
+        positions: rows.len(),
+        sol_balance_sol,
+        sol_balance_usd,
+        cash_holdings,
+        cash_value_usd: (!cash.is_empty()).then_some(cash_usd),
+        cash_value_sol: cash_sol,
+        ..Default::default()
+    };
+    let (mut pos_sol, mut pos_usd, mut pnl, mut has_value, mut has_pnl) =
         (0.0, 0.0, 0.0, false, false);
     let (mut wchange, mut wweight) = (0.0, 0.0);
     for row in &rows {
+        // Defensive: never fold a cash row into position math if one slips through.
+        if row.get("asset_kind").and_then(Value::as_str) == Some("cash") {
+            continue;
+        }
         if let Some(v) = num(row, "value_usd") {
-            value_usd += v;
+            pos_usd += v;
             has_value = true;
             if let Some(c) = num(row, "price_change_24h") {
                 wchange += v * c;
@@ -155,7 +174,7 @@ pub async fn portfolio_holdings_summary(
             }
         }
         if let Some(v) = num(row, "value_sol") {
-            value_sol += v;
+            pos_sol += v;
         }
         if let Some(v) = num(row, "cost_basis_sol") {
             s.total_cost_basis_sol += v;
@@ -165,10 +184,25 @@ pub async fn portfolio_holdings_summary(
             has_pnl = true;
         }
     }
-    s.total_value_usd = has_value.then_some(value_usd);
-    s.total_value_sol = has_value.then_some(value_sol);
+    s.positions_value_usd = has_value.then_some(pos_usd);
+    s.positions_value_sol = has_value.then_some(pos_sol);
     s.total_unrealized_pnl_sol = has_pnl.then_some(pnl);
     s.change_24h_pct = (wweight > 0.0).then(|| wchange / wweight);
+
+    let has_cash = s.cash_value_usd.is_some();
+    s.total_value_usd = match (has_cash, has_value) {
+        (true, true) => Some(cash_usd + pos_usd),
+        (true, false) => Some(cash_usd),
+        (false, true) => Some(pos_usd),
+        (false, false) => None,
+    };
+    s.total_value_sol = match (cash_sol, has_value) {
+        (Some(cs), true) => Some(cs + pos_sol),
+        (Some(cs), false) => Some(cs),
+        (None, true) => Some(pos_sol),
+        (None, false) => None,
+    };
+
     HttpResponse::Ok().json(s)
 }
 

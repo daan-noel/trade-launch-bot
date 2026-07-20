@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import type { ColumnDef } from 'components/table/types';
 import type { WalletHolding } from 'types';
 import { cn } from 'lib/cn';
+import { isCashHolding } from 'lib/assetKind';
 import { formatSigned, formatSignedPct, pctGradeClass, signedToneClass } from 'lib/signedTone';
 import { formatCompact } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
@@ -44,7 +45,12 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       group: 'identity',
       width: '90px',
       sortable: true,
-      render: (r) => <span className="font-bold text-text">{r.symbol ?? '—'}</span>,
+      render: (r) => (
+        <span className="inline-flex items-center gap-1.5 font-bold text-text">
+          {r.symbol ?? '—'}
+          {isCashHolding(r) && <Badge variant="success">Cash</Badge>}
+        </span>
+      ),
       sortValue: (r) => r.symbol ?? '',
       searchValue: (r) => r.symbol ?? '',
     },
@@ -113,6 +119,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       width: '135px',
       sortable: true,
       render: (r) => {
+        if (isCashHolding(r)) return <span className="text-text-dim">—</span>;
         const sol = r.unrealized_pnl_sol;
         if (sol == null) return <span className="text-text-dim">—</span>;
         const pct = r.unrealized_pnl_pct;
@@ -150,7 +157,9 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       width: '90px',
       sortable: true,
       render: (r) => {
-        if (r.price_change_24h == null) return <span className="text-text-dim">—</span>;
+        if (isCashHolding(r) || r.price_change_24h == null) {
+          return <span className="text-text-dim">—</span>;
+        }
         const c = r.price_change_24h;
         return (
           <span className={cn('tabular-nums', pctGradeClass(c))}>
@@ -206,12 +215,14 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       group: 'flags',
       width: '80px',
       sortable: true,
-      render: (r) =>
-        r.is_migrated ? (
+      render: (r) => {
+        if (isCashHolding(r)) return <span className="text-text-dim">—</span>;
+        return r.is_migrated ? (
           <Badge variant="primary">AMM</Badge>
         ) : (
           <span className="text-text-dim">Curve</span>
-        ),
+        );
+      },
       sortValue: (r) => (r.is_migrated ? 1 : 0),
       searchValue: (r) => (r.is_migrated ? 'migrated amm' : 'curve'),
     },
@@ -221,12 +232,14 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       group: 'flags',
       width: '80px',
       sortable: true,
-      render: (r) =>
-        r.is_cashback_enabled ? (
+      render: (r) => {
+        if (isCashHolding(r)) return <span className="text-text-dim">—</span>;
+        return r.is_cashback_enabled ? (
           <Badge variant="success">✓</Badge>
         ) : (
           <span className="text-text-dim">—</span>
-        ),
+        );
+      },
       sortValue: (r) => (r.is_cashback_enabled ? 1 : 0),
       searchValue: (r) => String(r.is_cashback_enabled),
     },
@@ -302,6 +315,10 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
       width: '210px',
       sortable: false,
       render: (r) => {
+        // Cash is dry powder — shown in the Funding band, not traded here.
+        if (isCashHolding(r)) {
+          return <span className="text-[11px] text-text-dim">Working capital</span>;
+        }
         const isSelling = actions.sellingMint === r.mint_address;
         return (
           <IconButtonGroup className="gap-1.5" onClick={(e) => e.stopPropagation()}>
