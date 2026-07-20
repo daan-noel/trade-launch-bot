@@ -108,6 +108,26 @@ Result is stored in `simulationResultSlice` / `swingResultSlice` and retrieved v
 
 **`buildGroupColumns` / `buildSweepColumns`**: column factories called once per render with the current `strategyId`. Memoized with `useMemo` — column defs are stable objects so `DataTable` doesn't re-sort unnecessarily.
 
+## Strategy cross-page selection — `?rule=` / `?fp=`
+
+Same deep-link shape as Tokens `?mint=` and Sweep `?run=`: selection in the URL so
+same-tab navigation (and Ctrl/middle-click new tabs) land with the row selected.
+
+| Param | Page | Helper |
+|---|---|---|
+| `?rule=<id>` | `/strategies/rules`, `/strategies/simulate` | `rulesHref` / `simulateHref` |
+| `?fp=<id>` | `/strategies/fingerprints` | `fingerprintsHref(id)` |
+
+- `lib/strategy/nav.ts` — path + href builders (SSOT for cross-links). Simulate is
+  lab-only — never link to it from the live app.
+- `hooks/useSelectionSearchParam(param)` — bidirectional `selectedKey` ↔ search param
+  (`replace: true` on user select; URL seeds on load / back-forward).
+- Fingerprints "Used by" → `rulesHref`; Rules (lab `linkToSimulate`) → `simulateHref`;
+  Simulate rule name → `rulesHref`; fingerprint cells → `fingerprintsHref`.
+- Sweep group Used-by chips → `rulesHref`; matched fingerprint → `fingerprintsHref`.
+- Flow Discovery seed/target badges → `fingerprintsHref`.
+- Live Armed rule columns → `rulesHref`.
+
 ## Memo & Render Discipline
 
 - **Column defs** created with `useMemo(() => buildColumns(...), [deps])` — never inline in JSX

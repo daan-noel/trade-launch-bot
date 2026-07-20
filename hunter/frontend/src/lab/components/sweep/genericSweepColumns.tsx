@@ -1,10 +1,14 @@
 import { Fragment, type CSSProperties, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+
 import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { LinkIcon } from 'components/ui/icons';
 import { ruleParamsCell } from 'components/strategy/RuleParamsSummary';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { cn } from 'lib/cn';
+import { fingerprintsHref, rulesHref } from 'lib/strategy/nav';
 import { ruleParamsJsonEqual } from 'lib/strategy/ruleParams';
 import type { Fingerprint, StrategyRule } from 'lib/strategy/types';
 import { formatDecimalTrim } from 'utils/format';
@@ -318,14 +322,18 @@ function usedByRulesCell(
             )}
           >
             <RuleHoverTip rule={r} fingerprint={fingerprint}>
-              <span
+              <Link
+                to={rulesHref(r.id)}
+                onClick={(e) => e.stopPropagation()}
                 className={cn(
-                  'max-w-48 cursor-default truncate text-[12px] font-medium',
-                  isBest ? 'text-primary' : 'text-text',
+                  'inline-flex max-w-52 items-center gap-0.5 text-[12px] font-medium hover:underline',
+                  isBest ? 'text-primary' : 'text-accent',
                 )}
+                title={`Open rule “${r.rule_name}”`}
               >
-                {r.rule_name}
-              </span>
+                <span className="truncate">{r.rule_name}</span>
+                <LinkIcon className="h-3.5 w-3.5 shrink-0" />
+              </Link>
             </RuleHoverTip>
             {isBest && (
               <Badge variant="primary" size="sm" title="Params match this group's best combo">
@@ -388,34 +396,59 @@ export function buildGenericGroupColumns(
       sortable: false,
       render: (g) => {
         const parts = keyParts(g);
-        if (parts.length === 0) return chip('ALL tokens', 'text-text-dim');
+        const fp = fingerprintByGroupId?.get(g.id);
+        const fpLabel = fp ? fp.name || fp.id.slice(0, 8) : null;
+        if (parts.length === 0 && !fp) return chip('ALL tokens', 'text-text-dim');
         return (
-          <div className="grid grid-cols-[auto_1fr] items-start gap-x-3 gap-y-1 text-left">
-            {parts.map((p) => {
-              const isIxLabels = p.label === GROUP_FIELD_LABELS.ix_labels;
-              const ixParts = isIxLabels ? p.value.split(' | ') : null;
-              return (
-                <Fragment key={p.label}>
-                  <span className="text-[11px] leading-tight text-text-dim" title={`${p.label}: ${p.value}`}>
-                    {p.label}:
-                  </span>
-                  {ixParts ? (
-                    <IxLabelsDisplay labels={ixParts} copyJson className="text-secondary" />
-                  ) : (
-                    <span>{chip(p.value, 'text-secondary')}</span>
-                  )}
-                </Fragment>
-              );
-            })}
+          <div className="flex flex-col gap-1.5 text-left">
+            {fp && (
+              <Link
+                to={fingerprintsHref(fp.id)}
+                onClick={(e) => e.stopPropagation()}
+                title={`Open fingerprint “${fpLabel}”`}
+                aria-label={`Open fingerprint ${fpLabel}`}
+                className="inline-flex items-center gap-1 self-start text-[12px] font-medium text-accent hover:text-primary hover:underline"
+              >
+                <LinkIcon className="h-3.5 w-3.5 shrink-0" />
+                <span className="font-mono">{fpLabel}</span>
+              </Link>
+            )}
+            {parts.length > 0 && (
+              <div className="grid grid-cols-[auto_1fr] items-start gap-x-3 gap-y-1">
+                {parts.map((p) => {
+                  const isIxLabels = p.label === GROUP_FIELD_LABELS.ix_labels;
+                  const ixParts = isIxLabels ? p.value.split(' | ') : null;
+                  return (
+                    <Fragment key={p.label}>
+                      <span
+                        className="text-[11px] leading-tight text-text-dim"
+                        title={`${p.label}: ${p.value}`}
+                      >
+                        {p.label}:
+                      </span>
+                      {ixParts ? (
+                        <IxLabelsDisplay labels={ixParts} copyJson className="text-secondary" />
+                      ) : (
+                        <span>{chip(p.value, 'text-secondary')}</span>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       },
-      searchValue: (g) => keyParts(g).map((p) => `${p.label} ${p.value}`).join(' '),
+      searchValue: (g) => {
+        const fp = fingerprintByGroupId?.get(g.id);
+        const fpText = fp ? fp.name || fp.id : '';
+        return [fpText, ...keyParts(g).map((p) => `${p.label} ${p.value}`)].filter(Boolean).join(' ');
+      },
     },
     {
       key: 'used_by',
       label: 'Used by',
-      group: 'group',
+      group: 'used_by',
       tooltip:
         'Saved rules whose fingerprint matches this group (same identity as promote). A "best" badge marks params that exactly match this group\'s winning combo. — = no saved fingerprint; none = fingerprint exists but no rules yet.',
       sortable: true,

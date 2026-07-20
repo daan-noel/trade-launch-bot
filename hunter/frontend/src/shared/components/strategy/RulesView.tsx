@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
@@ -7,6 +8,7 @@ import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import {
   DuplicateIcon,
   EditIcon,
+  LinkIcon,
   PauseIcon,
   PlayIcon,
   PlusIcon,
@@ -20,6 +22,7 @@ import { buildRuleParamsColumns } from './ruleParamsColumns';
 import { RuleHoverTip } from './RuleHoverTip';
 import { useRuleActions } from './useRuleActions';
 import type { RuleEditorDraft } from './RuleEditor';
+import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetStrategyRulesQuery,
@@ -36,11 +39,14 @@ import {
   type ActionProgress,
 } from 'services/sse';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 
 export interface RulesViewProps {
   /** Lab-only dry-run render-prop forwarded to the editor (FE3). */
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
+  /** Lab-only: show a link icon that opens Simulate with this rule selected. */
+  linkToSimulate?: boolean;
 }
 
 /**
@@ -51,9 +57,10 @@ export interface RulesViewProps {
  * The editor opens in an xl modal. The lab app injects a dry-run panel via
  * `renderDryRun`.
  */
-export function RulesView({ renderDryRun }: RulesViewProps) {
+export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
   const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery();
   const { data: fps = [] } = useGetFingerprintsQuery();
+  const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
 
   const actions = useRuleActions({ renderDryRun });
 
@@ -241,7 +248,20 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       group: 'name',
       render: (r) => (
         <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
-          <span className="cursor-default font-medium text-text">{r.rule_name}</span>
+          <div className="flex items-center justify-center gap-1">
+            <span className="cursor-default font-medium text-text">{r.rule_name}</span>
+            {linkToSimulate && (
+              <Link
+                to={simulateHref(r.id)}
+                title={`Simulate “${r.rule_name}”`}
+                aria-label={`Simulate ${r.rule_name}`}
+                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <LinkIcon className="h-3.5 w-3.5" />
+              </Link>
+            )}
+          </div>
         </RuleHoverTip>
       ),
       searchValue: (r) => r.rule_name,
@@ -430,6 +450,8 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         colFilters
         tableId="strategy-rules"
         emptyMessage="No rules yet — create one from a fingerprint."
+        selectedKey={selectedKey}
+        onSelect={setSelectedKey}
         rowActions={(r) => (
           <IconButtonGroup>
             <IconButton

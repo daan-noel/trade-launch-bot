@@ -165,8 +165,12 @@ next load (no per-metric frontend work).
   `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`),
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
-  `RulesPage`/`FingerprintsPage`; fingerprint "Used by" shows rule-name chips,
-  row select + edit modal expand the full consumer list),
+  `RulesPage`/`FingerprintsPage`; cross-page selection via `?rule=` / `?fp=`
+  (`useSelectionSearchParam` + `lib/strategy/nav.ts` — same-tab Router `Link`,
+  Ctrl/middle-click still opens a new tab). Fingerprints "Used by" → Rules;
+  Rules/Simulate fingerprint cells → Fingerprints; lab Rules → Simulate
+  (`linkToSimulate`); Simulate rule name → Rules. Sweep Used-by / matched fp,
+  Flow Discovery seed/target badges, and live Armed rule names also deep-link),
   `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips; used by Rules,
   Simulate, and the generic sweep tables),
   `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips + bucket;

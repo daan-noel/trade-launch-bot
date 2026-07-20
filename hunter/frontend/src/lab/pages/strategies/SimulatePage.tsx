@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 import { DataTable } from 'components/table/DataTable';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
@@ -9,6 +10,7 @@ import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import {
   DuplicateIcon,
   EditIcon,
+  LinkIcon,
   SimulateIcon,
   SpinnerIcon,
   TrashIcon,
@@ -55,7 +57,9 @@ import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
 import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
+import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
 import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
@@ -100,7 +104,7 @@ export function SimulatePage() {
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [runs, setRuns] = useState<Record<string, RunState>>({});
   const [bulkMode, setBulkMode] = useState<TradeMode | null>(null);
-  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
   const [inspect, setInspect] = useState<{
     key: string;
     target: InspectTarget;
@@ -755,7 +759,18 @@ function buildColumns(
       render: (r) => (
         <RuleHoverTip rule={r} fingerprint={fpById.get(r.fingerprint_id)}>
           <div className="flex min-w-40 cursor-default flex-col gap-0.5">
-            <span className="font-medium text-text">{r.rule_name}</span>
+            <div className="flex items-center justify-center gap-1">
+              <span className="font-medium text-text">{r.rule_name}</span>
+              <Link
+                to={rulesHref(r.id)}
+                title={`Open rule “${r.rule_name}”`}
+                aria-label={`Open rule ${r.rule_name}`}
+                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <LinkIcon className="h-3.5 w-3.5" />
+              </Link>
+            </div>
             <span className="text-[10px] text-text-dim">
               {r.is_active ? 'armed on live' : 'idle on live'}
             </span>

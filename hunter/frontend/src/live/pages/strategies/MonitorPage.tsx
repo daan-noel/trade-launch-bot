@@ -4,12 +4,14 @@ import { Link } from 'react-router-dom';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
+import { LinkIcon } from 'components/ui/icons';
 import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { connectArmedChanged, connectStrategyPositionUpdate } from 'services/sse';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { useGetArmedQuery } from '@live/store/liveEndpoints';
+import { rulesHref } from 'lib/strategy/nav';
 
 type ArmedRow = { key: string; ruleId: string; mint: string; armedAt: number };
 type HoldingRow = {
@@ -136,6 +138,21 @@ export function MonitorPage() {
     setHistoryRuleId(historyRuleOptions[0]?.id ?? null);
   }, [historyRuleId, historyRuleOptions]);
 
+  const ruleLink = (ruleId: string) => {
+    const name = ruleName(ruleId);
+    return (
+      <Link
+        to={rulesHref(ruleId)}
+        className="inline-flex items-center gap-0.5 text-accent hover:text-primary hover:underline"
+        onClick={(e) => e.stopPropagation()}
+        title={`Open rule “${name}”`}
+      >
+        <span>{name}</span>
+        <LinkIcon className="h-3.5 w-3.5 shrink-0" />
+      </Link>
+    );
+  };
+
   const armedColumns: ColumnDef<ArmedRow>[] = [
     {
       key: 'mint',
@@ -146,7 +163,7 @@ export function MonitorPage() {
     {
       key: 'rule',
       label: 'Rule',
-      render: (r) => <span className="text-text">{ruleName(r.ruleId)}</span>,
+      render: (r) => ruleLink(r.ruleId),
       searchValue: (r) => ruleName(r.ruleId),
     },
     {
@@ -190,7 +207,7 @@ export function MonitorPage() {
     {
       key: 'rule',
       label: 'Rule',
-      render: (r) => <span className="text-text">{ruleName(r.ruleId)}</span>,
+      render: (r) => ruleLink(r.ruleId),
       searchValue: (r) => ruleName(r.ruleId),
     },
     {

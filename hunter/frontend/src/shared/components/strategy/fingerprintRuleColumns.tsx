@@ -2,9 +2,13 @@
 // axis chips) whose header offers per-axis sort toggles, backed by hidden
 // sort-only columns. SSOT so both pages sort the same axes the same way.
 
+import { Link } from 'react-router-dom';
+
 import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
+import { LinkIcon } from 'components/ui/icons';
 import type { Fingerprint } from 'lib/strategy/types';
+import { fingerprintsHref } from 'lib/strategy/nav';
 
 import {
   fingerprintParamsCell,
@@ -89,11 +93,21 @@ export function buildFingerprintRuleColumns<R extends FingerprintRuleRow>(
     group: 'fingerprint',
     render: (r) => {
       const fp = fpOf(r);
+      const label = fp?.name || r.fingerprint_id.slice(0, 8);
       return (
         <div className="flex min-w-48 flex-col gap-1">
-          <span className="font-mono text-[12px] text-text-dim">
-            {fp?.name || r.fingerprint_id.slice(0, 8)}
-          </span>
+          <div className="flex items-center justify-center gap-1">
+            <span className="font-mono text-[12px] text-text-dim">{label}</span>
+            <Link
+              to={fingerprintsHref(r.fingerprint_id)}
+              title={`Open fingerprint “${label}”`}
+              aria-label={`Open fingerprint ${label}`}
+              className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <LinkIcon className="h-3.5 w-3.5" />
+            </Link>
+          </div>
           {fp ? fingerprintParamsCell(fp) : null}
         </div>
       );

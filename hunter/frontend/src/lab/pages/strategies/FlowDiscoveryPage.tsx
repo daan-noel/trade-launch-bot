@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+
 import { Accordion } from 'components/ui/Accordion';
 import { Badge } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
@@ -14,6 +16,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { apiErrorMessage } from 'store/baseApi';
 import { useGetFingerprintsQuery, useUpdateFingerprintMutation } from 'store/sharedEndpoints';
+import { fingerprintsHref } from 'lib/strategy/nav';
 import {
   metricConfigWithVolumePatterns,
   volumeIxPatternsFromConfig,
@@ -447,7 +450,14 @@ export function FlowDiscoveryPage() {
             {seedFp ? (
               <div className="flex flex-col gap-1.5">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="info">engine match · {seedFp.name}</Badge>
+                  <Link
+                    to={fingerprintsHref(seedFp.id)}
+                    className="inline-flex items-center gap-1 rounded-md hover:opacity-90"
+                    title={`Open fingerprint “${seedFp.name}”`}
+                  >
+                    <Badge variant="info">engine match · {seedFp.name}</Badge>
+                    <LinkIcon className="h-3.5 w-3.5 text-accent" />
+                  </Link>
                   <span className="text-[10px] text-text-dim">
                     Discovery scores only tokens that match this fingerprint, then
                     Apply writes volume_ix_patterns back to it.
@@ -585,7 +595,14 @@ export function FlowDiscoveryPage() {
                 </div>
                 {targetFp ? (
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="info">update · {targetFp.name}</Badge>
+                    <Link
+                      to={fingerprintsHref(targetFp.id)}
+                      className="inline-flex items-center gap-1 rounded-md hover:opacity-90"
+                      title={`Open fingerprint “${targetFp.name}”`}
+                    >
+                      <Badge variant="info">update · {targetFp.name}</Badge>
+                      <LinkIcon className="h-3.5 w-3.5 text-accent" />
+                    </Link>
                     {fingerprintParamsCell(targetFp)}
                   </div>
                 ) : (

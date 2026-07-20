@@ -5,12 +5,13 @@ import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
-import { EditIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
+import { EditIcon, LinkIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { FingerprintForm } from './FingerprintForm';
 import { ruleParamsCell } from './RuleParamsSummary';
+import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { apiErrorMessage } from 'store/baseApi';
 import {
   useGetFingerprintsQuery,
@@ -22,6 +23,7 @@ import {
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   lamportsToSol,
   type Fingerprint,
@@ -74,7 +76,9 @@ const COLOR_COLS: {
 ];
 
 /** Expanded row detail: rules that reference this fingerprint, with the same
- *  params summary as the Rules table so you can tell them apart at a glance. */
+ *  params summary as the Rules table so you can tell them apart at a glance.
+ *  Each card navigates to Rules with that rule selected (`?rule=`). Same-tab
+ *  by default; Ctrl/middle-click still opens a new tab. */
 function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
   if (rules.length === 0) {
     return (
@@ -92,7 +96,7 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
           Used by {rules.length} rule{rules.length === 1 ? '' : 's'}
         </p>
         <Link
-          to="/strategies/rules"
+          to={rulesHref()}
           className="text-[11px] text-accent hover:text-primary hover:underline"
         >
           Open Rules →
@@ -100,28 +104,32 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
       </div>
       <ul className="grid gap-2 sm:grid-cols-2">
         {rules.map((r) => (
-          <li
-            key={r.id}
-            className="flex flex-col gap-2 rounded-md border border-info/25 bg-info/8 px-3 py-2.5 text-left"
-          >
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text">
-                {r.rule_name}
-              </span>
-              <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
-                {r.trade_mode}
-              </Badge>
-              <Badge variant={r.is_active ? 'success' : 'neutral'} size="sm">
-                {r.is_active ? 'Active' : 'Idle'}
-              </Badge>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-text-dim">
-              <span>buy {lamportsToSol(r.buy_amount_lamports)}◎</span>
-              <span>
-                caps {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
-              </span>
-            </div>
-            {ruleParamsCell(r.params)}
+          <li key={r.id}>
+            <Link
+              to={rulesHref(r.id)}
+              className="flex flex-col gap-2 rounded-md border border-info/25 bg-info/8 px-3 py-2.5 text-left transition-colors hover:border-accent/40 hover:bg-info/14"
+              title={`Open rule “${r.rule_name}”`}
+            >
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text">
+                  {r.rule_name}
+                </span>
+                <LinkIcon className="h-3.5 w-3.5 shrink-0 text-accent" />
+                <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
+                  {r.trade_mode}
+                </Badge>
+                <Badge variant={r.is_active ? 'success' : 'neutral'} size="sm">
+                  {r.is_active ? 'Active' : 'Idle'}
+                </Badge>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-text-dim">
+                <span>buy {lamportsToSol(r.buy_amount_lamports)}◎</span>
+                <span>
+                  caps {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
+                </span>
+              </div>
+              {ruleParamsCell(r.params)}
+            </Link>
           </li>
         ))}
       </ul>
@@ -142,6 +150,7 @@ export function FingerprintsView() {
   const [updateFp, { isLoading: updating }] = useUpdateFingerprintMutation();
   const [deleteFp] = useDeleteFingerprintMutation();
 
+  const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.fingerprint);
   const [editing, setEditing] = useState<Fingerprint | 'new' | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -388,6 +397,8 @@ export function FingerprintsView() {
         colToggle
         tableId="fingerprints-v2"
         emptyMessage="No fingerprints yet — create one to start authoring rules."
+        selectedKey={selectedKey}
+        onSelect={setSelectedKey}
         rowDetail={rowDetail}
         rowActions={(r) => (
           <IconButtonGroup>

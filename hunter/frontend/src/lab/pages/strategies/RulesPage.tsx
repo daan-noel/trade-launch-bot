@@ -5,6 +5,9 @@ import { DryRunPanel } from '@lab/components/strategy/DryRunPanel';
  *  panel injected, so an unsaved draft can be simulated against recent history. */
 export function RulesPage() {
   return (
-    <RulesView renderDryRun={(draft, canRun) => <DryRunPanel draft={draft} canRun={canRun} />} />
+    <RulesView
+      linkToSimulate
+      renderDryRun={(draft, canRun) => <DryRunPanel draft={draft} canRun={canRun} />}
+    />
   );
 }
