@@ -161,6 +161,30 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(trades: &[T]) -> Vec<CorpusT
         .collect()
 }
 
+/// Like [`project_trades`], but fills `ix_labels` / `wallet` from the live [`Trade`]
+/// for volume-flow metric series / simulate PG tails.
+pub fn project_trades_with_flow(trades: &[trading_core::models::trade::Trade]) -> Vec<CorpusTrade> {
+    trades
+        .iter()
+        .map(|t| CorpusTrade {
+            block_time: t.block_time(),
+            amount_sol: t.amount_sol(),
+            token_amount: t.token_amount(),
+            price_per_token: t.price_per_token(),
+            reserve_sol: t.reserve_sol(),
+            reserve_token: t.reserve_token(),
+            real_reserve_sol: t.real_reserve_sol(),
+            real_token_reserves: t.real_token_reserves(),
+            slot: t.slot(),
+            leg_index: t.leg_index(),
+            is_buy: t.is_buy(),
+            tx_signature: None,
+            ix_labels: Some(Box::from(t.instruction_labels.to_string())),
+            wallet: Some(Box::from(t.wallet_address.as_str())),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

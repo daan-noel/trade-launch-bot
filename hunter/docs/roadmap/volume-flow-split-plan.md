@@ -259,19 +259,19 @@ ALTER TABLE fingerprints
       exit on `nonvol_gross(w)=0` via tick; two fingerprints diverge). Series
       determinism for non-flow columns unchanged; sweep pattern injection is V2.
 
-### V2 — Analysis parity
+### V2 — Analysis parity (partial 2026-07-20)
 
-- [ ] 2.1 Lake replay produces hashed events (§5); flow metrics live in simulate +
-      dry-run automatically (generic simulate resolves them via the rule's
-      fingerprint).
+- [x] 2.1 Lake replay / simulate: `with_flow` when rule params reference `m_flow_*`;
+      `to_trade_lite` hashes lake columns; `ReplayToken.creator_wallet_hash` from
+      `Token.creator_wallet`; dry-run uses the rule's fingerprint `metric_config`.
 - [ ] 2.2 Sweep: flow metrics as generic axes. Pattern source for a sweep run = the
       run config's optional `volume_ix_patterns` (applied corpus-wide for the run);
       **Promote** writes them into the created fingerprint's `metric_config` (width
       parity precedent).
 - [ ] 2.3 Extend the scan≡engine guard corpus with flow-metric conditions (drift lock
       inherits decision 13).
-- [ ] 2.4 `GET /api/tokens/{mint}/metric-series` gains optional `fingerprint_id` (flow
-      panes need a pattern context; absent ⇒ flow columns omitted).
+- [x] 2.4 `GET /api/tokens/{mint}/metric-series?fingerprint_id=` — loads flow columns
+      + patterns from that fingerprint; absent/unconfigured ⇒ flow groups omitted.
 
 ### V3 — Frontend (registry-driven, small by design)
 

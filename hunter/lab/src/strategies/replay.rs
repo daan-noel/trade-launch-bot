@@ -70,6 +70,8 @@ pub struct ReplayToken {
     /// driver from the creation-slot trades (a `FirstSlotSettled` event).
     pub tf: TokenFingerprint,
     pub trades: Arc<Vec<CorpusTrade>>,
+    /// Creator wallet FNV hash for volume-flow classification (`None` when unknown).
+    pub creator_wallet_hash: Option<u64>,
 }
 
 /// One replayed position's realized lifecycle — the engine-neutral outcome the
@@ -204,8 +206,7 @@ impl Replay {
                     mint: mint.clone(),
                     fp: Box::new(t.tf.clone()),
                     at: t.created_at,
-                    // Lake tokens dim has no creator address yet (V0); V2 may add it.
-                    creator_wallet_hash: None,
+                    creator_wallet_hash: t.creator_wallet_hash,
                 },
                 sig: None,
             });
@@ -640,6 +641,7 @@ mod tests {
             created_at: at(created),
             tf: tf(),
             trades: Arc::new(trades),
+            creator_wallet_hash: None,
         }
     }
 

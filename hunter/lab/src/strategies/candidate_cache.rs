@@ -63,6 +63,7 @@ pub async fn get_or_fetch_histories(
     cache: &AnalysisCache,
     key: AnalysisCacheKey,
     tokens: &Arc<Vec<Token>>,
+    with_flow: bool,
 ) -> Result<Arc<HashMap<String, Arc<Vec<CorpusTrade>>>>> {
     if let Some(cached) = cache.get_histories(&key) {
         tracing::debug!(
@@ -78,10 +79,11 @@ pub async fn get_or_fetch_histories(
     let result = cell
         .get_or_try_init(|| async move {
             let mints: Vec<String> = tokens.iter().map(|t| t.mint_address.clone()).collect();
-            let histories = fetch_sim_histories(&mints, false).await?;
+            let histories = fetch_sim_histories(&mints, false, with_flow).await?;
             tracing::info!(
                 strategy = %insert_key.strategy_id,
                 n = histories.len(),
+                with_flow,
                 "analysis cache: history miss — loaded from lake"
             );
             Ok::<_, anyhow::Error>(cache.insert_histories(insert_key, histories))
@@ -107,8 +109,9 @@ pub async fn get_or_fetch_histories_state(
     state: &LocalState,
     key: AnalysisCacheKey,
     tokens: &Arc<Vec<Token>>,
+    with_flow: bool,
 ) -> Result<Arc<HashMap<String, Arc<Vec<CorpusTrade>>>>> {
-    get_or_fetch_histories(&state.analysis_cache, key, tokens).await
+    get_or_fetch_histories(&state.analysis_cache, key, tokens, with_flow).await
 }
 
 #[cfg(test)]

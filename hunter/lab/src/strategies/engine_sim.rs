@@ -245,7 +245,6 @@ async fn run_engine_backtest(
     let _total = crate::sweep::obs::Stage::start("sim_backtest_total");
 
     let fp = target.fp.clone();
-    let cache_key = candidate_cache_key(&fp, since, until);
 
     // The matched candidate set — every token whose observed creation axes match the
     // fingerprint's instant axes (see [`scan_matched_candidates`]). Shared, cached,
@@ -263,12 +262,14 @@ async fn run_engine_backtest(
     ));
     progress.start();
 
+    let with_flow = rule_needs_flow(&target.loaded);
     let histories = {
         let _stage = crate::sweep::obs::Stage::start("sim_load");
         crate::strategies::candidate_cache::get_or_fetch_histories_state(
             app_state,
-            cache_key,
+            history_cache_key(&fp, since, until, with_flow),
             &tokens,
+            with_flow,
         )
         .await
         .map_err(|e| anyhow!("lake trade fetch failed: {e}"))?
@@ -281,12 +282,15 @@ async fn run_engine_backtest(
         .iter()
         .filter_map(|t| {
             let trades = histories.get(&t.mint_address)?.clone();
+            let creator_wallet_hash = (!t.creator_wallet.is_empty())
+                .then(|| hunter_engine::metrics::flow_split::wallet_hash(&t.creator_wallet));
             Some(ReplayToken {
                 mint: t.mint_address.clone(),
                 symbol: t.symbol.clone(),
                 created_at: t.created_at,
                 tf: observed_axes(t, None, None),
                 trades,
+                creator_wallet_hash,
             })
         })
         .collect();
@@ -378,6 +382,34 @@ fn candidate_cache_key(
     until: Option<DateTime<Utc>>,
 ) -> AnalysisCacheKey {
     AnalysisCacheKey::new("engine", fp.id.0.to_string(), since, until)
+}
+
+/// History-cache key — distinct from the candidate key when `with_flow` so a
+/// slim (no ix_labels/wallet) hit never poisons a flow simulate.
+fn history_cache_key(
+    fp: &EngineFingerprint,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+    with_flow: bool,
+) -> AnalysisCacheKey {
+    let strategy = if with_flow { "engine+flow" } else { "engine" };
+    AnalysisCacheKey::new(strategy, fp.id.0.to_string(), since, until)
+}
+
+/// True when the rule's params reference a flow metric group (needs lake flow cols).
+fn rule_needs_flow(loaded: &LoadedRule) -> bool {
+    use hunter_engine::metrics::MetricGroupId;
+    for side in [loaded.params.entry.as_ref(), loaded.params.exit.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        if side.0.contains_key(&MetricGroupId::FlowSplit)
+            || side.0.contains_key(&MetricGroupId::FlowWindow)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Scan (or reuse) the fingerprint's **matched** candidate set: every token whose

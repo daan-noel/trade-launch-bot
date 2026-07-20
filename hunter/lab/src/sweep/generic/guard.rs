@@ -79,6 +79,7 @@ fn token(mint: &str, trades: Vec<CorpusTrade>) -> (CorpusToken, ReplayToken) {
         created_at: base(),
         tf,
         trades,
+        creator_wallet_hash: None,
     };
     (corpus, replay)
 }

@@ -51,6 +51,7 @@ const SIM_PER_MINT_CAP: i64 = i64::MAX;
 pub async fn fetch_sim_histories(
     mints: &[String],
     curve_only: bool,
+    with_flow: bool,
 ) -> Result<HashMap<String, Arc<Vec<CorpusTrade>>>> {
     if mints.is_empty() {
         return Ok(HashMap::new());
@@ -71,7 +72,9 @@ pub async fn fetch_sim_histories(
         // Populate `tx_signature` (Solscan links) — the ONLY difference from a sweep
         // load; every other row/field is identical, so a rule prices the same either way.
         with_signatures: true,
-        with_flow: false,
+        // `ix_labels` + `wallet` for volume-flow metrics (V2) — off unless the run
+        // references `m_flow_*` so non-flow sims stay slim.
+        with_flow,
     };
 
     let corpus = LakeSource::new(root).load(&sel).await?;
@@ -82,8 +85,13 @@ pub async fn fetch_sim_histories(
 /// lake read the backtest uses, so the detect funnel and the sim resolve identical legs +
 /// entry + exit by construction (no separate PG read, no `MAX_TRADES_RETAINED` cap). Returns
 /// the mint's full history, or an empty buffer when the token has no lake rows.
-pub async fn fetch_sim_history_one(mint: &str, curve_only: bool) -> Result<Arc<Vec<CorpusTrade>>> {
-    let mut map = fetch_sim_histories(std::slice::from_ref(&mint.to_string()), curve_only).await?;
+pub async fn fetch_sim_history_one(
+    mint: &str,
+    curve_only: bool,
+    with_flow: bool,
+) -> Result<Arc<Vec<CorpusTrade>>> {
+    let mut map =
+        fetch_sim_histories(std::slice::from_ref(&mint.to_string()), curve_only, with_flow).await?;
     Ok(map.remove(mint).unwrap_or_default())
 }
 
@@ -107,7 +115,18 @@ pub async fn fetch_full_history_one(
     mint: &str,
     curve_only: bool,
 ) -> Result<Arc<Vec<CorpusTrade>>> {
-    let lake = fetch_sim_history_one(mint, curve_only).await?;
+    fetch_full_history_one_opts(repo, mint, curve_only, false).await
+}
+
+/// Like [`fetch_full_history_one`], optionally loading flow columns (`ix_labels` /
+/// `wallet`) from the lake and projecting them from the PG tail.
+pub async fn fetch_full_history_one_opts(
+    repo: &TradeRepo,
+    mint: &str,
+    curve_only: bool,
+    with_flow: bool,
+) -> Result<Arc<Vec<CorpusTrade>>> {
+    let lake = fetch_sim_history_one(mint, curve_only, with_flow).await?;
 
     // PG fresh tail: full per-mint history (`limit <= 0` ⇒ unbounded), venue-filtered
     // to match the lake's `curve_only`.
@@ -122,7 +141,11 @@ pub async fn fetch_full_history_one(
         return Ok(lake); // no fresh tail — reuse the lake Arc, no copy
     }
     let mut merged = (*lake).clone();
-    merged.extend(project_trades(&tail));
+    if with_flow {
+        merged.extend(crate::sweep::projection::project_trades_with_flow(&tail));
+    } else {
+        merged.extend(project_trades(&tail));
+    }
     Ok(Arc::new(merged))
 }
 
