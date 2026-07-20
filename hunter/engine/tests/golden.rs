@@ -362,6 +362,19 @@ fn entry_fill_failure_retries_then_gives_up() {
 }
 
 #[test]
+fn entry_fatal_gives_up_without_retry() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![rule(1, 1, json!({ "take_profit": 100 }))], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) });
+    let intent = buy_intent(&fx);
+    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Fatal });
+    assert!(buys(&fx).is_empty(), "Fatal must not retry");
+    assert_eq!(statuses(&fx), vec![PositionStatus::ExitFailed]);
+    assert!(!s.tokens.contains_key(&m));
+}
+
+#[test]
 fn manual_close_sells_held_position() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");

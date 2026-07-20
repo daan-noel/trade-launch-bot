@@ -108,6 +108,10 @@ pub enum FillFailReason {
     /// A sell whose clearing the feed never confirmed and that did not revert —
     /// re-selling risks a double-sell, so the position is alarmed, never re-sold.
     Unconfirmed,
+    /// Structural / non-retryable failure (e.g. `StopFeeBurn` from
+    /// `classify_swap_revert`) — give up immediately; a blind resend would only
+    /// re-pay fees.
+    Fatal,
 }
 
 /// A confirmed fill (entry or exit). `sol` is the SOL spent (entry) or received

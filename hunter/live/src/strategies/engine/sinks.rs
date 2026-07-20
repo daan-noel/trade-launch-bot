@@ -24,6 +24,8 @@ use trading_core::models::{StrategyPosition, StrategyRun};
 use trading_core::state::token_cache::TokenCache;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 
+use crate::trader::PumpFunTrader;
+
 use super::{ArmedRegistry, FillSigStore, PositionMeta, PositionRegistry};
 
 /// Per-rule facts the sink needs when it materializes a position/run (mode, the
@@ -50,6 +52,8 @@ pub struct Sink {
     registry: PositionRegistry,
     armed: ArmedRegistry,
     fill_sigs: FillSigStore,
+    /// Real trader — used to release SOL commitments on terminal unentered exits.
+    trader: Option<Arc<PumpFunTrader>>,
     /// The real trading wallet address (position owner for real mode).
     wallet: String,
     /// Per-rule info, refreshed on reload.
@@ -68,6 +72,7 @@ impl Sink {
         armed: ArmedRegistry,
         fill_sigs: FillSigStore,
         wallet: String,
+        trader: Option<Arc<PumpFunTrader>>,
     ) -> Self {
         Self {
             repo,
@@ -76,6 +81,7 @@ impl Sink {
             registry,
             armed,
             fill_sigs,
+            trader,
             wallet,
             rules: HashMap::new(),
             run_cache: HashMap::new(),
@@ -193,6 +199,7 @@ impl Sink {
                 token_account: None,
                 entry_price: None,
                 cashback_enabled: cashback,
+                inflight_intent: None,
             },
         );
     }
@@ -263,9 +270,13 @@ impl Sink {
 
     /// A terminal transition with no confirmed fill (ExitFailed / ExitUnconfirmed):
     /// stamp a hypothetical exit price (last known spot) so the row still carries a
-    /// PnL for analysis, then persist.
+    /// PnL for analysis, then persist. Also releases any SOL commitment (idempotent)
+    /// so an unentered buy that exhausted retries cannot strand the budget tracker.
     async fn on_terminal_no_fill(&mut self, delta: &PositionDelta, status: &str) {
         let Some(meta) = self.registry.get(delta.position) else { return };
+        if let Some(trader) = &self.trader {
+            trader.release_sol_for_position(&meta.pg_id.to_string());
+        }
         let exit_price = self
             .token_cache
             .get(&meta.mint)

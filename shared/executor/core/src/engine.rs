@@ -429,9 +429,17 @@ impl Engine {
 
     /// Reserve `buy_lamports` of SOL for `position_id`. Called before a real buy
     /// is sent; the reservation persists until `release_sol_for_position`.
+    /// Idempotent for the same `position_id` — a second call is a no-op so engine
+    /// entry retries (each spawning a new submit task) cannot double-count.
     pub fn commit_sol_for_position(&self, position_id: String, buy_lamports: u64) {
-        self.committed_lamports.fetch_add(buy_lamports, Ordering::Relaxed);
-        self.position_commitments.insert(position_id, buy_lamports);
+        use dashmap::mapref::entry::Entry;
+        match self.position_commitments.entry(position_id) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(v) => {
+                self.committed_lamports.fetch_add(buy_lamports, Ordering::Relaxed);
+                v.insert(buy_lamports);
+            }
+        }
     }
 
     /// Release the reservation for `position_id`. No-op if never committed.

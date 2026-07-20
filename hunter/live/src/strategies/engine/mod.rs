@@ -30,12 +30,77 @@ pub mod sinks;
 
 use std::sync::Arc;
 
+use dashmap::DashSet;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use hunter_engine::event::{Fill, IntentId, PositionId, RuleId, TradeMode};
 
 pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
+
+/// RAII interlock claiming a PG position id for an in-flight entry or exit task.
+/// Recovery reapers skip ids present in these sets so they never race a live task.
+#[derive(Debug, Clone, Default)]
+pub struct InFlightGuards {
+    entry: Arc<DashSet<Uuid>>,
+    exit: Arc<DashSet<Uuid>>,
+}
+
+impl InFlightGuards {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Claim `pg_id` for an entry task. Returns `None` if already claimed.
+    pub fn try_begin_entry(&self, pg_id: Uuid) -> Option<EntryGuard> {
+        if self.entry.insert(pg_id) {
+            Some(EntryGuard { set: self.entry.clone(), pg_id })
+        } else {
+            None
+        }
+    }
+
+    /// Claim `pg_id` for an exit task. Returns `None` if already claimed.
+    pub fn try_begin_exit(&self, pg_id: Uuid) -> Option<ExitGuard> {
+        if self.exit.insert(pg_id) {
+            Some(ExitGuard { set: self.exit.clone(), pg_id })
+        } else {
+            None
+        }
+    }
+
+    pub fn entry_held(&self, pg_id: Uuid) -> bool {
+        self.entry.contains(&pg_id)
+    }
+
+    pub fn exit_held(&self, pg_id: Uuid) -> bool {
+        self.exit.contains(&pg_id)
+    }
+}
+
+/// Held for the lifetime of a real buy task — Drop frees the slot (panic-safe).
+pub struct EntryGuard {
+    set: Arc<DashSet<Uuid>>,
+    pg_id: Uuid,
+}
+
+impl Drop for EntryGuard {
+    fn drop(&mut self) {
+        self.set.remove(&self.pg_id);
+    }
+}
+
+/// Held for the lifetime of a real sell task — Drop frees the slot (panic-safe).
+pub struct ExitGuard {
+    set: Arc<DashSet<Uuid>>,
+    pg_id: Uuid,
+}
+
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        self.set.remove(&self.pg_id);
+    }
+}
 
 /// A command into the serialized decision loop from *outside* the ingest / tick /
 /// fill paths — i.e. from HTTP handlers (rule CRUD reloads, manual position
@@ -140,6 +205,10 @@ pub struct PositionMeta {
     pub token_account: Option<String>,
     pub entry_price: Option<f64>,
     pub cashback_enabled: bool,
+    /// The intent currently in flight for this position (entry or exit). The exit
+    /// reaper uses it to emit `FillFailed` back into the engine when a sell task
+    /// dies but the process is still up.
+    pub inflight_intent: Option<IntentId>,
 }
 
 /// Shared engine-position ↔ PG-row registry. The sink writes it; the executor and

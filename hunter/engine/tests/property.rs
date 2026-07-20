@@ -223,7 +223,8 @@ fn random_streams_preserve_invariants_and_never_panic() {
                             let reason = match rng.below(3) {
                                 0 => FillFailReason::Reverted,
                                 1 => FillFailReason::Timeout,
-                                _ => FillFailReason::Unconfirmed,
+                                2 => FillFailReason::Unconfirmed,
+                                _ => FillFailReason::Fatal,
                             };
                             Event::FillFailed { intent, reason }
                         }

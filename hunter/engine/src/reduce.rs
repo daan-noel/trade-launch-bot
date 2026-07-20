@@ -195,7 +195,9 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 Some(ArmState::EntryPending { intent: pend, position, attempts })
                     if pend == intent =>
                 {
-                    if attempts < MAX_ENTRY_ATTEMPTS {
+                    // Fatal = structural / StopFeeBurn — never burn fee retries.
+                    let retry = reason != FillFailReason::Fatal && attempts < MAX_ENTRY_ATTEMPTS;
+                    if retry {
                         let next = state.next_intent(rule_id, mint.clone());
                         let lamports =
                             state.rules.get(&rule_id).map(|c| c.buy_amount_lamports).unwrap_or(0);
@@ -249,19 +251,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             reason: Some(exit_reason),
                             intent: Some(intent),
                         }));
-                    } else if attempts < MAX_EXIT_ATTEMPTS {
-                        let next = state.next_intent(rule_id, mint.clone());
-                        token.arms.insert(
-                            rule_id,
-                            ArmState::ExitPending {
-                                intent: next.clone(),
-                                position,
-                                reason: exit_reason,
-                                attempts: attempts + 1,
-                            },
-                        );
-                        fx.push(Effect::SubmitSell { intent: next, position, reason: exit_reason });
-                    } else {
+                    } else if reason == FillFailReason::Fatal || attempts >= MAX_EXIT_ATTEMPTS {
                         decrement_open(state, rule_id);
                         state.positions.remove(&position);
                         token.arms.insert(rule_id, ArmState::Done);
@@ -274,6 +264,18 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             reason: Some(exit_reason),
                             intent: Some(intent),
                         }));
+                    } else {
+                        let next = state.next_intent(rule_id, mint.clone());
+                        token.arms.insert(
+                            rule_id,
+                            ArmState::ExitPending {
+                                intent: next.clone(),
+                                position,
+                                reason: exit_reason,
+                                attempts: attempts + 1,
+                            },
+                        );
+                        fx.push(Effect::SubmitSell { intent: next, position, reason: exit_reason });
                     }
                 }
                 _ => {}

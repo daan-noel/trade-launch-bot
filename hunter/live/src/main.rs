@@ -761,12 +761,8 @@ async fn main() -> anyhow::Result<()> {
         task: strategy_task,
     } = engine_handles;
 
-    // Recovery reaper backstop: settles durable `strategy_positions` rows the engine
-    // loop can't resolve itself (a dead sell task's stuck `ExitPending`, an ambiguous
-    // buy's abandoned `BuySubmitted`). Fire-and-forget — advisory cleanup, never fatal.
-    let _engine_reaper = strategies::engine::reapers::spawn_reaper(
-        trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone()),
-    );
+    // Recovery reaper is spawned inside the engine loop (needs fill_tx + in-flight
+    // guards) — see `strategies::engine::decision_loop`.
 
     let deploy_state = Arc::new(state::deploy_state::DeployState::new(
         core_state.clone(),

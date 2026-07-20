@@ -31,7 +31,7 @@ use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::{reduce, EngineState};
 
 use trading_core::config::constants::{
-    resolve_buy_slippage_bps, resolve_sell_slippage_bps, MAX_SNIPE_AGE_SECS,
+    resolve_buy_slippage_bps, resolve_sell_slippage_bps, sol_to_lamports, MAX_SNIPE_AGE_SECS,
 };
 use trading_core::models::ingest::{SseEvent, StrategyPing};
 use trading_core::storage::repositories::settings_repo::AppSettings;
@@ -49,7 +49,9 @@ use super::event_log::{self, EventLogRecorder};
 use super::exec_real::{BuyOrder, RealExecDeps, SellOrder};
 use super::producers::Producer;
 use super::sinks::Sink;
-use super::{exec_paper, ArmedRegistry, EngineCommand, EngineHandle, PositionRegistry};
+use super::{
+    exec_paper, ArmedRegistry, EngineCommand, EngineHandle, InFlightGuards, PositionRegistry,
+};
 
 /// The clock tick — 500 ms, sized to ~400 ms slot latency (plan decision 5).
 /// Derived from the engine's [`hunter_engine::TICK_MS`] SSOT so live + lab replay
@@ -129,6 +131,7 @@ async fn run_loop(
 
     let wallet = trader.wallet_pubkey();
     let fill_sigs = super::FillSigStore::new();
+    let inflight = InFlightGuards::new();
 
     let mut state = EngineState::new();
     let mut producer = Producer::new(token_cache.clone());
@@ -140,6 +143,7 @@ async fn run_loop(
         armed,
         fill_sigs.clone(),
         wallet.clone(),
+        Some(trader.clone()),
     );
     let mut recorder = EventLogRecorder::from_env();
 
@@ -151,6 +155,7 @@ async fn run_loop(
         trade_signals: trade_signals.clone(),
         fill_sigs: fill_sigs.clone(),
         fill_tx: fill_tx.clone(),
+        inflight: inflight.clone(),
     };
 
     // Initial rule load.
@@ -159,6 +164,21 @@ async fn run_loop(
     // Boot recovery: replay the recent log to re-arm tokens that had no open
     // position at crash time (effects discarded — PG + reapers own open rows).
     boot_recover(&strategy_repo, &recorder, &mut state).await;
+
+    // Recovery reaper (buy adopt/drop + exit redrive + stale fail). Immediate first
+    // tick, then every 60 s. Owns the fill_tx so a live ExitPending orphan can be
+    // nudged via FillFailed without reconstructing opaque intents from PG alone.
+    let _reaper = super::reapers::spawn_reaper(super::reapers::ReaperDeps {
+        strategy_repo: strategy_repo.clone(),
+        trade_repo: trade_repo.clone(),
+        trader: trader.clone(),
+        token_cache: token_cache.clone(),
+        trade_signals: trade_signals.clone(),
+        inflight: inflight.clone(),
+        registry: registry.clone(),
+        fill_tx: fill_tx.clone(),
+        settings: settings.clone(),
+    });
 
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -240,7 +260,9 @@ async fn dispatch(
     for fx in effects {
         match fx {
             Effect::SubmitBuy { intent, rule, mint, lamports } => {
-                dispatch_buy(state, registry, real_deps, token_cache, settings, intent, rule, mint, lamports);
+                dispatch_buy(
+                    state, registry, real_deps, token_cache, settings, intent, rule, mint, lamports,
+                );
             }
             Effect::SubmitSell { intent, position, reason: _ } => {
                 dispatch_sell(registry, real_deps, token_cache, settings, intent, position);
@@ -277,14 +299,56 @@ fn dispatch_buy(
         Some(TradeMode::Real) => {
             // Resolve the position id from the arm the engine just moved to
             // EntryPending, then its durable pg id from the registry.
-            let position = state.tokens.get(&mint).and_then(|t| match t.arms.get(&rule) {
+            let Some(position) = state.tokens.get(&mint).and_then(|t| match t.arms.get(&rule) {
                 Some(ArmState::EntryPending { position, .. }) => Some(*position),
                 _ => None,
-            });
-            let Some(meta) = position.and_then(|p| registry.get(p)) else {
+            }) else {
+                warn!(mint = %mint_s, "real buy: no EntryPending arm — skipping submit");
+                return;
+            };
+            let Some(meta) = registry.get(position) else {
                 warn!(mint = %mint_s, "real buy: no position meta — skipping submit");
                 return;
             };
+
+            // Pre-buy SOL guards (balance-floor + optional max_committed_sol).
+            // Fail → FillFailed::Reverted so the engine can retry when free SOL returns.
+            if !real_deps.trader.can_commit_buy(lamports) {
+                warn!(mint = %mint_s, lamports, "real buy blocked by SOL balance-floor guard");
+                let tx = real_deps.fill_tx.clone();
+                let intent = intent.clone();
+                tokio::spawn(async move {
+                    let _ = tx
+                        .send(Event::FillFailed {
+                            intent,
+                            reason: hunter_engine::event::FillFailReason::Reverted,
+                        })
+                        .await;
+                });
+                return;
+            }
+            if let Some(max_sol) = settings.borrow().max_committed_sol {
+                let ceiling = sol_to_lamports(max_sol).max(0) as u64;
+                let committed = real_deps.trader.committed_lamports();
+                if committed.saturating_add(lamports) > ceiling {
+                    warn!(
+                        mint = %mint_s, lamports, committed, ceiling,
+                        "real buy blocked by max_committed_sol guard"
+                    );
+                    let tx = real_deps.fill_tx.clone();
+                    let intent = intent.clone();
+                    tokio::spawn(async move {
+                        let _ = tx
+                            .send(Event::FillFailed {
+                                intent,
+                                reason: hunter_engine::event::FillFailReason::Reverted,
+                            })
+                            .await;
+                    });
+                    return;
+                }
+            }
+
             let (creator, token_program_id, cashback) = token_cache
                 .get(&mint_s)
                 .map(|e| {
@@ -292,11 +356,14 @@ fn dispatch_buy(
                     (
                         t.creator_wallet.clone(),
                         t.token_program_id.clone().unwrap_or_default(),
-                        false,
+                        t.is_cashback_enabled,
                     )
                 })
                 .unwrap_or_default();
             let slippage_bps = buy_slippage(settings);
+            registry.update(position, |m| {
+                m.inflight_intent = Some(intent.clone());
+            });
             let order = BuyOrder {
                 intent,
                 pg_id: meta.pg_id,
@@ -338,16 +405,17 @@ fn dispatch_sell(
             ));
         }
         TradeMode::Real => {
-            let is_migrated =
-                token_cache.get(&mint).map(|e| e.value().is_migrated).unwrap_or(false);
+            registry.update(position, |m| {
+                m.inflight_intent = Some(intent.clone());
+            });
             let order = SellOrder {
                 intent,
+                pg_id: meta.pg_id,
                 mint,
                 token_amount,
                 token_account: meta.token_account,
                 creator: meta.creator,
                 token_program_id: meta.token_program_id,
-                is_migrated,
                 cashback_enabled: meta.cashback_enabled,
                 slippage_bps: sell_slippage(settings),
             };

@@ -8,7 +8,7 @@
 //     `execute_sell`, `buy.rs`'s `buy_token_inner`, `amm.rs`'s `amm_sell`/
 //     `amm_buy`) — the sync trigger, since `confirm_transaction` surfaces the
 //     revert synchronously (see `tx.rs:226`);
-//   - `live`'s feed-confirmed bot loop (`strategies::execution::real`), which
+//   - `live`'s feed-confirmed bot loop (`strategies::engine::exec_real`), which
 //     depends on this crate and calls `classify_swap_revert` directly instead
 //     of keeping its own copy — the async trigger, since a `confirm=false`
 //     send only learns the outcome from the LaserStream feed / a later
