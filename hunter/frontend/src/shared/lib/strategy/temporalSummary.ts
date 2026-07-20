@@ -204,11 +204,11 @@ export function holdSchemeLabel(scheme: HoldScheme): string {
 /** @deprecated Prefer `holdBinsFor(pickHoldScheme(...))` — mid_30m alias. */
 export const HOLD_BINS: readonly HoldBinDef[] = holdBinsFor('mid_30m');
 
-/** Exit reason → stack segment key (mirrors `EXIT_KEY_BY_REASON` / Rust ExitCode). */
+/** Exit reason → stack segment key (mirrors `EXIT_KEY_BY_REASON` / Rust ExitCode).
+ *  `Metrics` is split by PnL in [`tallyExit`]. */
 const EXIT_REASON_KEY: Readonly<Record<string, ExitCountKey>> = {
   TakeProfit: 'n_exit_take_profit',
   StopLoss: 'n_exit_stop_loss',
-  Metrics: 'n_exit_metrics',
   Dead: 'n_exit_dead',
   Manual: 'n_exit_manual',
   TrailingStop: 'n_exit_trailing',
@@ -273,9 +273,18 @@ function emptyExits(): Record<string, number> {
   return o;
 }
 
-function tallyExit(exits: Record<string, number>, reason: string): void {
+function tallyExit(exits: Record<string, number>, reason: string, pnlSol?: number): void {
   if (reason === 'Open') {
     exits.open = (exits.open ?? 0) + 1;
+    return;
+  }
+  if (reason === 'Metrics') {
+    const key =
+      pnlSol != null && Number.isFinite(pnlSol) && pnlSol > 0
+        ? 'n_exit_metrics_win'
+        : 'n_exit_metrics_loss';
+    exits[key] = (exits[key] ?? 0) + 1;
+    exits.n_exit_metrics = (exits.n_exit_metrics ?? 0) + 1;
     return;
   }
   const key = EXIT_REASON_KEY[reason];
@@ -355,7 +364,10 @@ export function floorToWallGrain(ms: number, grain: WallGrain): number {
 function dominantExit(exits: Record<string, number>): string | null {
   let best: string | null = null;
   let n = 0;
+  const metricsSplit =
+    (exits.n_exit_metrics_win ?? 0) + (exits.n_exit_metrics_loss ?? 0);
   for (const k of EXIT_KINDS) {
+    if (k.legacyMetricsTotal && metricsSplit > 0) continue;
     const c = exits[k.key] ?? 0;
     if (c > n) {
       n = c;
@@ -409,7 +421,7 @@ export function buildTemporalSummary(
     bin.n += 1;
     bin.pnl_sol += r.pnl_sol;
     bin.mints.push(r.mint_address);
-    tallyExit(bin.exits, r.exit);
+    tallyExit(bin.exits, r.exit, r.pnl_sol);
     const ts = parseTsMs(wallField === 'entry_time' ? r.entry_time : r.created_at);
     if (ts != null) times.push(ts);
   }
@@ -451,7 +463,7 @@ export function buildTemporalSummary(
       cell.n += 1;
       cell.pnl_sol += r.pnl_sol;
       cell.mints.push(r.mint_address);
-      tallyExit(cell.exits, r.exit);
+      tallyExit(cell.exits, r.exit, r.pnl_sol);
       if (r.exit !== 'Open' && r.pnl_sol > 0) {
         wins.set(key, (wins.get(key) ?? 0) + 1);
       }
@@ -518,7 +530,7 @@ export function rebucketWall(
     cell.n += 1;
     cell.pnl_sol += r.pnl_sol;
     cell.mints.push(r.mint_address);
-    tallyExit(cell.exits, r.exit);
+    tallyExit(cell.exits, r.exit, r.pnl_sol);
     if (r.exit !== 'Open' && r.pnl_sol > 0) {
       wins.set(id, (wins.get(id) ?? 0) + 1);
     }
@@ -667,7 +679,11 @@ export function holdBarSegments(exits: Record<string, number>): Array<{
   label: string;
 }> {
   const out: Array<{ key: string; n: number; bar: string; label: string }> = [];
+  const metricsSplit =
+    (exits.n_exit_metrics_win ?? 0) + (exits.n_exit_metrics_loss ?? 0);
   for (const k of EXIT_KINDS) {
+    // Prefer Metric+/Metric-; skip the unsplittable total when the split is present.
+    if (k.legacyMetricsTotal && metricsSplit > 0) continue;
     const n = exits[k.key] ?? 0;
     if (n > 0) out.push({ key: k.key, n, bar: k.bar, label: k.label });
   }

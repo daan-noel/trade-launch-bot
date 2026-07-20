@@ -247,7 +247,15 @@ pub struct RunMetrics {
     pub n_exit_dead: u32,
     /// Generic-engine metric-condition exits (`ExitCode::Metrics`). 0 for the
     /// legacy strategies (which use the granular ladder codes above).
+    /// Equals `n_exit_metrics_win + n_exit_metrics_loss`.
     pub n_exit_metrics: u32,
+    /// Metric exits with positive realized SOL. `#[serde(default)]` so older
+    /// sweep rows that only stored the total still deserialize.
+    #[serde(default)]
+    pub n_exit_metrics_win: u32,
+    /// Metric exits that are not wins (loss or break-even).
+    #[serde(default)]
+    pub n_exit_metrics_loss: u32,
     pub n_exit_open: u32,
 }
 
@@ -294,6 +302,10 @@ pub struct RunAgg {
     holding_sum: i64,
     holding_sketch: QuantileSketch,
     exit_counts: [u32; 10],
+    /// `ExitCode::Metrics` with `pnl_sol > 0`.
+    metrics_win: u32,
+    /// `ExitCode::Metrics` that are not wins (`pnl_sol <= 0`).
+    metrics_loss: u32,
 }
 
 impl Default for RunAgg {
@@ -315,6 +327,8 @@ impl Default for RunAgg {
             holding_sum: 0,
             holding_sketch: QuantileSketch::default(),
             exit_counts: [0; 10],
+            metrics_win: 0,
+            metrics_loss: 0,
         }
     }
 }
@@ -351,6 +365,13 @@ impl RunAgg {
             self.holding_sketch.record(o.holding_secs as f64);
             self.closed_pct_sum += p;
             self.closed_pct_sum_sq += p * p;
+            if o.exit == ExitCode::Metrics {
+                if o.pnl_sol > 0.0 {
+                    self.metrics_win += 1;
+                } else {
+                    self.metrics_loss += 1;
+                }
+            }
         }
         self.exit_counts[exit_index(o.exit)] += 1;
     }
@@ -422,6 +443,8 @@ impl RunAgg {
             n_exit_next_kill: self.exit_counts[7],
             n_exit_dead: self.exit_counts[8],
             n_exit_metrics: self.exit_counts[9],
+            n_exit_metrics_win: self.metrics_win,
+            n_exit_metrics_loss: self.metrics_loss,
         }
     }
 }
@@ -449,6 +472,8 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
     let mut closed_holding: Vec<i64> = Vec::new();
     let mut fired_pct_sum = 0.0f64;
     let mut exit_counts = [0u32; 10];
+    let mut metrics_win = 0u32;
+    let mut metrics_loss = 0u32;
 
     for o in outcomes {
         if !o.fired {
@@ -471,6 +496,13 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
             }
             closed_pct.push(pnl_pct);
             closed_holding.push(o.holding_secs);
+            if o.exit == ExitCode::Metrics {
+                if o.pnl_sol > 0.0 {
+                    metrics_win += 1;
+                } else {
+                    metrics_loss += 1;
+                }
+            }
         }
         exit_counts[exit_index(o.exit)] += 1;
     }
@@ -534,6 +566,8 @@ pub fn exact_run_metrics<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -
         n_exit_next_kill: exit_counts[7],
         n_exit_dead: exit_counts[8],
         n_exit_metrics: exit_counts[9],
+        n_exit_metrics_win: metrics_win,
+        n_exit_metrics_loss: metrics_loss,
     }
 }
 
@@ -594,6 +628,8 @@ pub fn run_summary<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -> RunS
     mtm.n_exit_next_kill = 0;
     mtm.n_exit_dead = 0;
     mtm.n_exit_metrics = 0;
+    mtm.n_exit_metrics_win = 0;
+    mtm.n_exit_metrics_loss = 0;
     mtm.n_exit_open = 0;
     // The open cohort is what MTM folded in; keep the counts describing the run.
     mtm.n_open = realized.n_open;

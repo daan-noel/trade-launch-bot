@@ -169,8 +169,16 @@ pub struct PositionsSummary {
 pub struct ExitReasonCounts {
     pub take_profit: i64,
     pub stop_loss: i64,
-    /// The generic engine's single metric-condition exit.
+    /// The generic engine's single metric-condition exit (total).
+    /// Equals `metrics_win + metrics_loss` — kept so callers that only need
+    /// the reason count don't have to sum the PnL split.
     pub metrics: i64,
+    /// Metric exits with positive realized SOL (`is_win`).
+    #[serde(default)]
+    pub metrics_win: i64,
+    /// Metric exits that are not wins (loss or break-even).
+    #[serde(default)]
+    pub metrics_loss: i64,
     /// Death-close: liquidity gone and the token went silent.
     pub dead: i64,
     /// Operator-initiated close (a "Sell ALL" / rule stop) — live-only; the

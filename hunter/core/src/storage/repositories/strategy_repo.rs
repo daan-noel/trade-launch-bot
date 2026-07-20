@@ -267,6 +267,8 @@ struct PositionsSummaryRow {
     n_take_profit: i64,
     n_stop_loss: i64,
     n_metrics: i64,
+    n_metrics_win: i64,
+    n_metrics_loss: i64,
     n_dead: i64,
     n_manual: i64,
     n_trailing: i64,
@@ -1242,6 +1244,15 @@ impl StrategyRepo {
                 format!("COUNT(*) FILTER (WHERE {CLOSED_PRED} AND sp.exit_reason = '{reason}') AS {col}, ")
             })
             .collect();
+        // Metric exits further split by the same win predicate as `win` / `is_win`
+        // so the summary bar can show Metric+ / Metric- (PnL outcome) without a
+        // second pass. `n_metrics` remains the total; win + loss must equal it.
+        let metrics_split_cols = format!(
+            "COUNT(*) FILTER (WHERE {CLOSED_PRED} AND sp.exit_reason = 'Metrics' \
+                AND sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports) AS n_metrics_win, \
+             COUNT(*) FILTER (WHERE {CLOSED_PRED} AND sp.exit_reason = 'Metrics' \
+                AND NOT (sp.status = 'End' AND sp.exit_lamports > sp.entry_lamports)) AS n_metrics_loss, "
+        );
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
             "SELECT \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL) AS tokens, \
@@ -1273,6 +1284,7 @@ impl StrategyRepo {
                                   AND sp.status IN ('End','ExitFailed'))::DOUBLE PRECISION AS worst_pct, \
                COUNT(*) FILTER (WHERE sp.entry_price IS NOT NULL AND i.is_migrated) AS migrated, \
                {exit_cols}\
+               {metrics_split_cols}\
                COALESCE(json_agg(json_build_object( \
                           'mint_address', sp.mint_address, \
                           'entry_price', sp.entry_price, \
@@ -1343,6 +1355,8 @@ impl StrategyRepo {
                 take_profit: row.n_take_profit,
                 stop_loss: row.n_stop_loss,
                 metrics: row.n_metrics,
+                metrics_win: row.n_metrics_win,
+                metrics_loss: row.n_metrics_loss,
                 dead: row.n_dead,
                 manual: row.n_manual,
                 trailing: row.n_trailing,

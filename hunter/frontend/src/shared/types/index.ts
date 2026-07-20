@@ -286,7 +286,12 @@ export interface PositionsSummary {
 export interface ExitReasonCounts {
   take_profit: number;
   stop_loss: number;
+  /** Total metric-condition exits (`metrics_win + metrics_loss`). */
   metrics: number;
+  /** Metric exits with positive realized SOL. */
+  metrics_win?: number;
+  /** Metric exits that are not wins (loss or break-even). */
+  metrics_loss?: number;
   dead: number;
   manual: number;
   trailing: number;

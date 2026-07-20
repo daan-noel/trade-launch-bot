@@ -62,6 +62,8 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     n_exit_next_kill: s.exits.next_kill,
     n_exit_dead: s.exits.dead,
     n_exit_metrics: s.exits.metrics,
+    n_exit_metrics_win: s.exits.metrics_win ?? 0,
+    n_exit_metrics_loss: s.exits.metrics_loss ?? 0,
     n_exit_manual: s.exits.manual,
     n_exit_open: s.open,
   };

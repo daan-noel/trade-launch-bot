@@ -3,13 +3,23 @@
  *
  * Persisted strings come from the engine (`TakeProfit`, `Metrics`, `Open`, …).
  * The Reason / Exit Reason columns show compact badges; filters must accept
- * either the stored name or the badge label (`TP`, `METRIC`, `Open`).
+ * either the stored name or the badge label (`TP`, `METRIC+`, `Open`).
+ *
+ * Metric-condition exits (`Metrics`) are further split by realized PnL sign so
+ * wins (`METRIC+`) and losses (`METRIC-`) are glanceable — the engine stores
+ * one reason; the UI overlays the outcome.
  */
 
 /** Compact badge label for a persisted `exit_reason`. Still-open / null →
  *  `"Open"`. Unknown strings render as themselves (never silently relabeled
- *  Open — that made Metrics/Manual/Migrated unfilterable as "Open"). */
-export function exitReasonLabel(reason: string | null | undefined): string {
+ *  Open — that made Metrics/Manual/Migrated unfilterable as "Open").
+ *
+ *  Pass `pnlSol` for `Metrics` rows so the badge splits win/loss
+ *  (`METRIC+` / `METRIC-`); other reasons ignore it. */
+export function exitReasonLabel(
+  reason: string | null | undefined,
+  pnlSol?: number | null,
+): string {
   switch (reason) {
     case 'LiquidityExit':
       return 'LIQ';
@@ -31,7 +41,7 @@ export function exitReasonLabel(reason: string | null | undefined): string {
     case 'Dead':
       return 'DEAD';
     case 'Metrics':
-      return 'METRIC';
+      return metricsExitLabel(pnlSol);
     case 'Migrated':
       return 'MIG';
     case 'Open':
@@ -44,11 +54,26 @@ export function exitReasonLabel(reason: string | null | undefined): string {
   }
 }
 
+/** `Metrics` → `METRIC+` / `METRIC-` / `METRIC` from realized SOL PnL sign. */
+export function metricsExitLabel(pnlSol?: number | null): string {
+  if (pnlSol == null || !Number.isFinite(pnlSol) || pnlSol === 0) return 'METRIC';
+  return pnlSol > 0 ? 'METRIC+' : 'METRIC-';
+}
+
 /** Per-column filter/search haystack: stored reason + badge label so both
- *  `TakeProfit` and `TP` (and `Open` for null) match on the client. */
-export function exitReasonSearchText(reason: string | null | undefined): string {
+ *  `TakeProfit` and `TP` (and `Open` for null) match on the client. Pass
+ *  `pnlSol` so Metrics wins/losses are filterable as `METRIC+` / `METRIC-`. */
+export function exitReasonSearchText(
+  reason: string | null | undefined,
+  pnlSol?: number | null,
+): string {
   const stored = reason?.trim() ? reason.trim() : 'Open';
-  const label = exitReasonLabel(reason);
+  const label = exitReasonLabel(reason, pnlSol);
+  // Always keep bare `METRIC` in the haystack so a plain "metric" filter still
+  // hits both win and loss Metrics rows.
+  if (reason === 'Metrics' && label !== 'METRIC') {
+    return `${stored} METRIC ${label}`;
+  }
   return label === stored ? stored : `${stored} ${label}`;
 }
 
@@ -76,6 +101,12 @@ const EXIT_REASON_FILTER_ALIASES: Readonly<Record<string, string>> = {
   dead: 'Dead',
   metric: 'Metrics',
   metrics: 'Metrics',
+  // Signed Metrics badges — server only stores `Metrics`, so these collapse to
+  // that; client `filterValue` still distinguishes METRIC+/METRIC- per row.
+  'metric+': 'Metrics',
+  'metrics+': 'Metrics',
+  'metric-': 'Metrics',
+  'metrics-': 'Metrics',
   mig: 'Migrated',
   migrated: 'Migrated',
   open: 'Open',

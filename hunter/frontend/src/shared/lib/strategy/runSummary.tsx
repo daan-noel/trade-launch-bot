@@ -90,7 +90,12 @@ export interface RunMetrics {
   n_exit_liquidity: number;
   n_exit_next_kill: number;
   n_exit_dead: number;
+  /** Total metric-condition exits. Prefer the win/loss split when present. */
   n_exit_metrics: number;
+  /** Metric exits with positive realized SOL. Optional for older wire payloads. */
+  n_exit_metrics_win?: number;
+  /** Metric exits that are not wins (loss / break-even). */
+  n_exit_metrics_loss?: number;
   n_exit_open: number;
   /** Operator-initiated close. Optional because it has **no Rust `RunMetrics`
    *  peer**: the analysis kernel can't produce a manual close, so only the
@@ -119,6 +124,8 @@ export interface RunOutcomeRow {
 export type ExitCountKey =
   | 'n_exit_take_profit'
   | 'n_exit_stop_loss'
+  | 'n_exit_metrics_win'
+  | 'n_exit_metrics_loss'
   | 'n_exit_metrics'
   | 'n_exit_dead'
   | 'n_exit_manual'
@@ -136,12 +143,15 @@ export type ExitCountKey =
  * legacy tpsl/swing ladders actually emit, so on those runs the numbers shown
  * didn't add up to `n_closed` while *looking* like a complete breakdown.
  *
- * Colors are **status** semantics, not categorical: good (TP) / bad (SL) /
- * terminal (Dead) / neutral-rule-driven (Metrics). Note `Dead` is deliberately
- * `accent`, not `red` — it shared red with `StopLoss` before, which made the two
- * indistinguishable in a color-only tile even though they mean opposite things
- * about the rule (your stop worked vs. the token died under you). Every swatch
+ * Colors are **status** semantics, not categorical: good (TP / Metric+) / bad
+ * (SL / Metric-) / terminal (Dead). Metric exits are split by realized PnL so a
+ * metric-heavy rule's win/loss mix is glanceable — same idea as the Reason badge.
+ * Note `Dead` is deliberately `accent`, not `red` — it shared red with `StopLoss`
+ * before, which made the two indistinguishable in a color-only tile. Every swatch
  * ships beside a text label, so color is never the sole identity cue.
+ *
+ * `n_exit_metrics` (unsplittable total) is a **legacy fallback** only — used when
+ * the wire has a total but no win/loss split (older sweep rows).
  */
 export const EXIT_KINDS: ReadonlyArray<{
   key: ExitCountKey;
@@ -155,10 +165,22 @@ export const EXIT_KINDS: ReadonlyArray<{
    *  works. A zero there is information ("nothing ever hit the stop"); a zero on
    *  a legacy reason the engine can't emit is just noise. */
   core?: boolean;
+  /** Skip in the accounted sum when the win/loss split is present (avoids
+   *  double-counting `n_exit_metrics` against Metric+/Metric-). */
+  legacyMetricsTotal?: boolean;
 }> = [
   { key: 'n_exit_take_profit', label: 'Take profit', full: 'Take profit', cls: 'text-green', bar: 'bg-green', core: true },
   { key: 'n_exit_stop_loss', label: 'Stop loss', full: 'Stop loss', cls: 'text-red', bar: 'bg-red', core: true },
-  { key: 'n_exit_metrics', label: 'Metric', full: 'Metric exit condition', cls: 'text-info', bar: 'bg-info' },
+  { key: 'n_exit_metrics_win', label: 'Metric+', full: 'Metric exit (win)', cls: 'text-green', bar: 'bg-green' },
+  { key: 'n_exit_metrics_loss', label: 'Metric-', full: 'Metric exit (loss)', cls: 'text-red', bar: 'bg-red' },
+  {
+    key: 'n_exit_metrics',
+    label: 'Metric',
+    full: 'Metric exit condition',
+    cls: 'text-info',
+    bar: 'bg-info',
+    legacyMetricsTotal: true,
+  },
   { key: 'n_exit_dead', label: 'Dead', full: 'Died (liquidity gone)', cls: 'text-accent', bar: 'bg-accent' },
   { key: 'n_exit_manual', label: 'Manual', full: 'Closed by operator', cls: 'text-secondary', bar: 'bg-secondary' },
   { key: 'n_exit_trailing', label: 'Trailing', full: 'Trailing stop', cls: 'text-primary', bar: 'bg-primary' },
@@ -169,11 +191,11 @@ export const EXIT_KINDS: ReadonlyArray<{
 ];
 
 /** Persisted `ExitReason` string → the `RunMetrics` counter it feeds. Mirrors the
- *  Rust `ExitCode::from_reason`; `Open`/`NoEntry` are not exits and are absent. */
+ *  Rust `ExitCode::from_reason`; `Open`/`NoEntry` are not exits and are absent.
+ *  `Metrics` is handled in [`countExits`] (PnL split) — not listed here. */
 const EXIT_KEY_BY_REASON: Readonly<Record<string, ExitCountKey>> = {
   TakeProfit: 'n_exit_take_profit',
   StopLoss: 'n_exit_stop_loss',
-  Metrics: 'n_exit_metrics',
   Dead: 'n_exit_dead',
   Manual: 'n_exit_manual',
   TrailingStop: 'n_exit_trailing',
@@ -186,9 +208,18 @@ const EXIT_KEY_BY_REASON: Readonly<Record<string, ExitCountKey>> = {
 /** All exit counters at zero — the base every builder starts from. */
 export function zeroExitCounts(): Record<ExitCountKey, number> {
   return {
-    n_exit_take_profit: 0, n_exit_stop_loss: 0, n_exit_metrics: 0, n_exit_dead: 0,
-    n_exit_manual: 0, n_exit_trailing: 0, n_exit_stall: 0, n_exit_liquidity: 0,
-    n_exit_time: 0, n_exit_next_kill: 0,
+    n_exit_take_profit: 0,
+    n_exit_stop_loss: 0,
+    n_exit_metrics_win: 0,
+    n_exit_metrics_loss: 0,
+    n_exit_metrics: 0,
+    n_exit_dead: 0,
+    n_exit_manual: 0,
+    n_exit_trailing: 0,
+    n_exit_stall: 0,
+    n_exit_liquidity: 0,
+    n_exit_time: 0,
+    n_exit_next_kill: 0,
   };
 }
 
@@ -218,7 +249,20 @@ export function exitBreakdown(m: RunMetrics): ExitSlice[] {
   const denom = closed > 0 ? closed : 1;
   const slices: ExitSlice[] = [];
   let accounted = 0;
+  const metricsWin = m.n_exit_metrics_win ?? 0;
+  const metricsLoss = m.n_exit_metrics_loss ?? 0;
+  const metricsSplit = metricsWin + metricsLoss;
+  // Prefer the PnL split; fall back to the unsplittable total only when the
+  // wire has no win/loss counters (older sweep rows).
+  const useMetricsSplit = metricsSplit > 0 || (m.n_exit_metrics ?? 0) === 0;
   for (const k of EXIT_KINDS) {
+    if (k.legacyMetricsTotal && useMetricsSplit) continue;
+    if (
+      !useMetricsSplit &&
+      (k.key === 'n_exit_metrics_win' || k.key === 'n_exit_metrics_loss')
+    ) {
+      continue;
+    }
     const n = m[k.key] ?? 0;
     accounted += n;
     if (n > 0 || k.core) {
@@ -249,10 +293,17 @@ function median(vals: number[]): number {
 
 /** Tally the exit reasons of a cohort of closed rows. A reason with no counter
  *  (`Manual`, `Migrated`, a typo) is intentionally *not* forced into a bucket —
- *  it goes unaccounted so [`exitBreakdown`] surfaces it as `Other`. */
+ *  it goes unaccounted so [`exitBreakdown`] surfaces it as `Other`.
+ *  `Metrics` splits by realized PnL (`Metric+` / `Metric-`). */
 function countExits(closed: RunOutcomeRow[]): Record<ExitCountKey, number> {
   const counts = zeroExitCounts();
   for (const r of closed) {
+    if (r.exit === 'Metrics') {
+      counts.n_exit_metrics += 1;
+      if (r.pnl_sol > 0) counts.n_exit_metrics_win += 1;
+      else counts.n_exit_metrics_loss += 1;
+      continue;
+    }
     const key = EXIT_KEY_BY_REASON[r.exit];
     if (key) counts[key] += 1;
   }

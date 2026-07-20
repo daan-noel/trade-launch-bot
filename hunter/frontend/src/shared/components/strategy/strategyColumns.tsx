@@ -23,9 +23,13 @@ export { exitReasonLabel, exitReasonSearchText } from 'lib/strategy/exitReason';
 // ---------------------------------------------------------------------------
 
 /** Render an exit reason as a compact colored badge, shared by the live-position
- * and simulation-result tables. */
-export function exitReasonBadge(reason: string | null | undefined) {
-  const label = exitReasonLabel(reason);
+ * and simulation-result tables. Pass `pnlSol` so Metrics exits split by outcome
+ * (`METRIC+` green / `METRIC-` red), matching TP/SL glanceability. */
+export function exitReasonBadge(
+  reason: string | null | undefined,
+  pnlSol?: number | null,
+) {
+  const label = exitReasonLabel(reason, pnlSol);
   switch (reason) {
     case 'LiquidityExit':
       return <span className="font-bold text-primary">{label}</span>;
@@ -46,8 +50,15 @@ export function exitReasonBadge(reason: string | null | undefined) {
       return <span className="font-bold text-text-dim">{label}</span>;
     case 'Dead':
       return <span className="font-bold text-red">{label}</span>;
-    case 'Metrics':
-      return <span className="font-bold text-info">{label}</span>;
+    case 'Metrics': {
+      const tone =
+        pnlSol != null && Number.isFinite(pnlSol) && pnlSol !== 0
+          ? pnlSol > 0
+            ? 'text-green'
+            : 'text-red'
+          : 'text-info';
+      return <span className={cn('font-bold', tone)}>{label}</span>;
+    }
     case 'Migrated':
       return <span className="font-bold text-text-dim">{label}</span>;
     case 'Open':
@@ -338,10 +349,10 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     label: 'Exit Reason',
     group: 'state',
     sortable: true,
-    render: (r) => exitReasonBadge(r.exit_reason),
-    sortValue: (r) => r.exit_reason ?? 'Open',
-    searchValue: (r) => exitReasonSearchText(r.exit_reason),
-    filterValue: (r) => exitReasonSearchText(r.exit_reason),
+    render: (r) => exitReasonBadge(r.exit_reason, r.pnl_sol),
+    sortValue: (r) => exitReasonLabel(r.exit_reason, r.pnl_sol),
+    searchValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
+    filterValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
   },
 ];
 
@@ -485,10 +496,10 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     label: 'Reason',
     group: 'result',
     sortable: true,
-    render: (r) => exitReasonBadge(r.exit_reason),
-    sortValue: (r) => r.exit_reason || 'Open',
-    searchValue: (r) => exitReasonSearchText(r.exit_reason),
-    filterValue: (r) => exitReasonSearchText(r.exit_reason),
+    render: (r) => exitReasonBadge(r.exit_reason, r.pnl_sol),
+    sortValue: (r) => exitReasonLabel(r.exit_reason, r.pnl_sol),
+    searchValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
+    filterValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
   },
   // Trade count comes from the shared "Token Trades" enrichment column
   // (`trade_count`), appended by `TokenTable` — the sim no longer carries its own.
