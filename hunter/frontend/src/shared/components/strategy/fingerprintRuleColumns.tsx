@@ -7,6 +7,12 @@ import { Link } from 'react-router-dom';
 import type { ColumnDef, SortValue } from 'components/table/types';
 import { MultiSortHeader } from 'components/table/MultiSortHeader';
 import { LinkIcon } from 'components/ui/icons';
+import {
+  IX_LABELS_FILTER_PLACEHOLDER,
+  IX_LABELS_FILTER_TITLE,
+  isIxLabelJsonFilter,
+  ixLabelsMatchFilter,
+} from 'lib/ixLabels';
 import type { Fingerprint } from 'lib/strategy/types';
 import { fingerprintsHref } from 'lib/strategy/nav';
 
@@ -113,6 +119,18 @@ export function buildFingerprintRuleColumns<R extends FingerprintRuleRow>(
       );
     },
     searchValue: (r) => fingerprintParamsSearchText(fpOf(r), r.fingerprint_id),
+    // JSON paste → ordered-exact on fp.ix_labels; otherwise substring on the
+    // full fingerprint search text (name / axes / pretty labels).
+    filterMatch: (r, raw) => {
+      if (isIxLabelJsonFilter(raw)) {
+        return ixLabelsMatchFilter(fpOf(r)?.ix_labels, raw);
+      }
+      return fingerprintParamsSearchText(fpOf(r), r.fingerprint_id)
+        .toLowerCase()
+        .includes(raw.toLowerCase());
+    },
+    filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
+    filterTitle: `${IX_LABELS_FILTER_TITLE}. Non-JSON text still matches name/axes/labels as substring.`,
     cellClassName: opts?.cellClassName,
     renderHeader: (ctx) => (
       <MultiSortHeader title="Fingerprint" axes={FP_SORT_AXES} ctx={ctx} />

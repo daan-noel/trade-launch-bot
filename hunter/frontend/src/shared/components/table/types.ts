@@ -74,6 +74,17 @@ export interface ColumnDef<R> {
    */
   filterValue?: (row: R) => string;
   /**
+   * Custom per-column filter predicate. When set, the filter-row text is passed
+   * through here instead of substring/`filterNumber` matching — used for
+   * structured grammars (e.g. `ix_labels` JSON vs text). Return true to keep
+   * the row. Client-side tables only (`serverSide` skips local filtering).
+   */
+  filterMatch?: (row: R, raw: string) => boolean;
+  /** Override the filter-row input placeholder (default `filter…` / numeric hint). */
+  filterPlaceholder?: string;
+  /** Native tooltip on the filter-row input. */
+  filterTitle?: string;
+  /**
    * Numeric value (in the column's *displayed* units) used by the per-column
    * filter row for comparison/range expressions like `>5`, `<=10`, `1..5`.
    * When set, such expressions filter numerically; plain text still falls back

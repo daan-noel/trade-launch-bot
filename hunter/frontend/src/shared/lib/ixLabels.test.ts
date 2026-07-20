@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatIxLabelsText, parseIxLabelsText } from './ixLabels';
+import {
+  formatIxLabelsText,
+  isIxLabelJsonFilter,
+  ixLabelsMatchFilter,
+  parseIxLabelFilter,
+  parseIxLabelsText,
+} from './ixLabels';
 
 describe('formatIxLabelsText', () => {
   it('pretty-prints a JSON array', () => {
@@ -56,5 +62,37 @@ describe('parseIxLabelsText', () => {
 
   it('treats empty JSON array as no labels', () => {
     expect(parseIxLabelsText('[]')).toEqual({ labels: null, error: null });
+  });
+});
+
+describe('parseIxLabelFilter / ixLabelsMatchFilter', () => {
+  const labels = ['Pump.Fun: Create', 'Pump.Fun: Buy'];
+
+  it('JSON array is ordered exact (case-insensitive)', () => {
+    expect(parseIxLabelFilter('["Pump.Fun: Create","Pump.Fun: Buy"]')).toEqual({
+      kind: 'json',
+      needles: ['Pump.Fun: Create', 'Pump.Fun: Buy'],
+    });
+    expect(ixLabelsMatchFilter(labels, '["pump.fun: create","pump.fun: buy"]')).toBe(true);
+    expect(ixLabelsMatchFilter(labels, '["Pump.Fun: Buy","Pump.Fun: Create"]')).toBe(false);
+    expect(ixLabelsMatchFilter(labels, '["Pump.Fun: Create"]')).toBe(false);
+  });
+
+  it('accepts { instructions: [...] } JSON object', () => {
+    expect(
+      ixLabelsMatchFilter(labels, '{"instructions":["Pump.Fun: Create","Pump.Fun: Buy"]}'),
+    ).toBe(true);
+  });
+
+  it('plain text is substring-any', () => {
+    expect(ixLabelsMatchFilter(labels, 'Buy')).toBe(true);
+    expect(ixLabelsMatchFilter(labels, 'Jito')).toBe(false);
+    expect(ixLabelsMatchFilter(labels, 'Jito\nBuy')).toBe(true);
+  });
+
+  it('isIxLabelJsonFilter is true only for the JSON branch', () => {
+    expect(isIxLabelJsonFilter('["a"]')).toBe(true);
+    expect(isIxLabelJsonFilter('Buy')).toBe(false);
+    expect(isIxLabelJsonFilter('[oops')).toBe(false);
   });
 });

@@ -405,12 +405,13 @@ export function DataTable<R>({
     [colGroups],
   );
 
-  // Resolve each active column filter once (not per row): a numeric column whose
-  // filter text is a comparison/range expression (`>5`, `1..10`) gets a numeric
-  // predicate; everything else matches the displayed text as a substring.
+  // Resolve each active column filter once (not per row): custom `filterMatch`
+  // wins; else a numeric column whose filter text is a comparison/range
+  // (`>5`, `1..10`) gets a numeric predicate; else substring on displayed text.
   const activeColFilters = useMemo(() => {
     const out: {
       col: ColumnDef<R>;
+      raw: string;
       needle: string;
       numeric: ((n: number) => boolean) | null;
     }[] = [];
@@ -422,8 +423,9 @@ export function DataTable<R>({
       if (!text) continue;
       const col = columns.find((c) => c.key === key);
       if (!col) continue;
-      const numeric = col.filterNumber ? parseNumericPredicate(text) : null;
-      out.push({ col, needle: text.toLowerCase(), numeric });
+      const numeric =
+        col.filterMatch || !col.filterNumber ? null : parseNumericPredicate(text);
+      out.push({ col, raw: text, needle: text.toLowerCase(), numeric });
     }
     return out;
   }, [serverSide, debouncedColFilters, columns]);
@@ -444,8 +446,10 @@ export function DataTable<R>({
         );
         if (!hit) return false;
       }
-      for (const { col, needle, numeric } of activeColFilters) {
-        if (numeric) {
+      for (const { col, raw, needle, numeric } of activeColFilters) {
+        if (col.filterMatch) {
+          if (!col.filterMatch(row, raw)) return false;
+        } else if (numeric) {
           const n = col.filterNumber!(row);
           if (n == null || !numeric(n)) return false;
         } else {
@@ -797,8 +801,16 @@ export function DataTable<R>({
                       <Input
                         type="text"
                         fieldSize="table"
-                        placeholder={col.filterNumber ? '>0  1..5' : 'filter…'}
-                        title={col.filterNumber ? 'Text matches; or use >  >=  <  <=  =  !=  or a range like 1..5' : undefined}
+                        placeholder={
+                          col.filterPlaceholder ??
+                          (col.filterNumber ? '>0  1..5' : 'filter…')
+                        }
+                        title={
+                          col.filterTitle ??
+                          (col.filterNumber
+                            ? 'Text matches; or use >  >=  <  <=  =  !=  or a range like 1..5'
+                            : undefined)
+                        }
                         value={colFiltersMap[col.key] ?? ''}
                         onChange={(e) =>
                           setColFiltersMap((m) => ({ ...m, [col.key]: e.target.value }))

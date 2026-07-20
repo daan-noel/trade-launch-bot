@@ -20,7 +20,12 @@ import {
   useUpdateFingerprintMutation,
   useDeleteFingerprintMutation,
 } from 'store/sharedEndpoints';
-import { formatIxLabelsText } from 'lib/ixLabels';
+import {
+  formatIxLabelsText,
+  IX_LABELS_FILTER_PLACEHOLDER,
+  IX_LABELS_FILTER_TITLE,
+  ixLabelsMatchFilter,
+} from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
@@ -314,6 +319,9 @@ export function FingerprintsView() {
         render: (r) =>
           r.ix_labels?.length ? <IxLabelsDisplay labels={r.ix_labels} copyJson /> : dash(),
         searchValue: (r) => (r.ix_labels?.length ? formatIxLabelsText(r.ix_labels) : ''),
+        filterMatch: (r, raw) => ixLabelsMatchFilter(r.ix_labels, raw),
+        filterPlaceholder: IX_LABELS_FILTER_PLACEHOLDER,
+        filterTitle: IX_LABELS_FILTER_TITLE,
         cellClassName: cellTint('ix_labels'),
       },
       {

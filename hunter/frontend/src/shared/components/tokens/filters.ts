@@ -1,5 +1,6 @@
 import type { TokenRecord } from 'types';
 import type { FilterSpec } from 'components/table/numericFilter';
+import { ixLabelsMatchFilter } from 'lib/ixLabels';
 import { datetimeLocalToUtcWallClock } from 'utils/date';
 import { STORAGE_KEYS, getString, setString, remove } from 'lib/storage';
 
@@ -256,49 +257,7 @@ function ixLabelStrings(raw: unknown): string[] {
 }
 
 function ixLabelList(t: TokenRecord): string[] {
-  return ixLabelStrings(t.instruction_labels).map((s) => s.toLowerCase());
-}
-
-type IxLabelFilter =
-  | { kind: 'none' }
-  | { kind: 'text'; needles: string[] }
-  | { kind: 'json'; needles: string[] };
-
-/** Plain lines/comma list (substring, any) vs pasted JSON array/object (ordered exact). */
-function parseIxLabelFilter(raw: string): IxLabelFilter {
-  const trimmed = raw.trim();
-  if (!trimmed) return { kind: 'none' };
-
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(trimmed) as unknown;
-      const arr = Array.isArray(parsed)
-        ? parsed
-        : (parsed as { instructions?: unknown[] })?.instructions;
-      if (Array.isArray(arr)) {
-        const needles = arr.map((v) => String(v).trim()).filter(Boolean);
-        if (needles.length > 0) return { kind: 'json', needles };
-      }
-    } catch {
-      /* fall through to text mode */
-    }
-  }
-
-  const needles = trimmed
-    .split(/[\n,]/)
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  return needles.length > 0 ? { kind: 'text', needles } : { kind: 'none' };
-}
-
-function ixLabelsMatchJson(needles: string[], labels: string[]): boolean {
-  const want = needles.map((n) => n.toLowerCase());
-  if (want.length !== labels.length) return false;
-  return want.every((n, i) => labels[i] === n);
-}
-
-function ixLabelsMatchText(needles: string[], labels: string[]): boolean {
-  return needles.some((n) => labels.some((l) => l.includes(n)));
+  return ixLabelStrings(t.instruction_labels);
 }
 
 export function filtersEmpty(f: TokenFilters): boolean {
@@ -501,15 +460,7 @@ export function tokenPassesFilters(f: TokenFilters, t: TokenRecord): boolean {
   if (!optF64(t.cu_price, f.cu_price_min, f.cu_price_max)) return false;
   if (!rangeF64(t.ix_labels_count, f.ix_count_min, f.ix_count_max)) return false;
 
-  const ixFilter = parseIxLabelFilter(f.ix_label);
-  if (ixFilter.kind !== 'none') {
-    const labels = ixLabelList(t);
-    const matched =
-      ixFilter.kind === 'json'
-        ? ixLabelsMatchJson(ixFilter.needles, labels)
-        : ixLabelsMatchText(ixFilter.needles, labels);
-    if (!matched) return false;
-  }
+  if (!ixLabelsMatchFilter(ixLabelList(t), f.ix_label)) return false;
 
   // Flags
   if (!triMatch(t.is_migrated, f.migrated)) return false;
