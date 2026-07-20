@@ -100,6 +100,9 @@ export interface GroupedSweepRunRecord {
   /** Bucket width (SOL) the continuous SOL group fields were binned at — the width
    *  a promoted rule's matcher must use so it matches the same bucket. `null` legacy. */
   bucket_width_sol: number | null;
+  /** Corpus-wide volume-ix patterns used when the run swept flow axes. `null` =
+   *  non-flow run / legacy. Promote copies these into the fingerprint. */
+  volume_ix_patterns: string[][] | null;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */
@@ -216,4 +219,7 @@ export interface GroupedSweepStartArgs {
    *  *how the box computed*, not the analysis, so it isn't persisted on the run row.
    *  Omitted ⇒ scalar. */
   use_avx512?: boolean;
+  /** Corpus-wide volume-ix patterns when axes reference `m_flow_*`. Required by
+   *  the backend for those runs; omitted otherwise. */
+  volume_ix_patterns?: string[][];
 }

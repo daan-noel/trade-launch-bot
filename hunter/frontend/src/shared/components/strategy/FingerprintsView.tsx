@@ -16,6 +16,7 @@ import {
 } from 'store/sharedEndpoints';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { lamportsToSol, type Fingerprint, type FingerprintDraft } from 'lib/strategy/types';
 
 function dash(): ReactNode {
@@ -216,6 +217,24 @@ export function FingerprintsView() {
           r.ix_labels?.length ? <IxLabelsDisplay labels={r.ix_labels} copyJson /> : dash(),
         searchValue: (r) => (r.ix_labels?.length ? formatIxLabelsText(r.ix_labels) : ''),
         cellClassName: cellTint('ix_labels'),
+      },
+      {
+        key: 'flow_patterns',
+        label: 'flow patterns',
+        group: 'ix',
+        render: (r) => {
+          const n = volumeIxPatternsFromConfig(r.metric_config).length;
+          if (n === 0) return dash();
+          return (
+            <Badge variant="primary" className="font-mono tabular-nums">
+              {n}
+            </Badge>
+          );
+        },
+        searchValue: (r) => String(volumeIxPatternsFromConfig(r.metric_config).length),
+        sortValue: (r) => volumeIxPatternsFromConfig(r.metric_config).length,
+        filterNumber: (r) => volumeIxPatternsFromConfig(r.metric_config).length || null,
+        sortable: true,
       },
       {
         key: 'bucket',

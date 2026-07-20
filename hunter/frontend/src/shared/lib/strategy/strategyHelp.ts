@@ -121,6 +121,25 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'If you use any metric here, you must set window_size_sec (e.g. 10). Kind: dynamic.',
     ].join('\n'),
   },
+  m_flow_split: {
+    title: 'm_flow_split — volume vs organic (lifetime)',
+    body: [
+      'Splits every trade into volume-side (creator tooling) vs organic, using the',
+      'fingerprint\'s volume_ix_patterns + wallet contagion + creator wallet.',
+      '',
+      'Metrics (SOL unless noted): vol_buy/sell/net/gross, nonvol_*, vol_share (%).',
+      'Unconfigured fingerprint ⇒ all NaN (conditions never fire). Kind: static.',
+    ].join('\n'),
+  },
+  m_flow_window: {
+    title: 'm_flow_window — volume vs organic (trailing)',
+    body: [
+      'Same split as m_flow_split, but over the last N seconds (window_size_sec).',
+      'Reads the same volume_ix_patterns from the fingerprint (no duplicate config).',
+      '',
+      'Metric names mirror m_flow_split (vol_*, nonvol_*, vol_share). Kind: dynamic.',
+    ].join('\n'),
+  },
 };
 
 // ── Per-metric meaning ───────────────────────────────────────────────────────
@@ -440,6 +459,18 @@ export const FINGERPRINT_FIELD_HELP = {
       'Example: ["Pump.Fun: Create","Pump.Fun: Buy"]',
       '',
       'Matched as an exact ordered sequence. Leave empty to skip this filter.',
+    ].join('\n'),
+  },
+  volume_ix_patterns: {
+    title: 'Volume-side ix patterns',
+    body: [
+      'Ordered instruction-label sequences that mark a trade as volume-side for',
+      'm_flow_split / m_flow_window (exact match, same vocabulary as ix_labels).',
+      '',
+      'Example row: ["create", "buy"]',
+      '',
+      'Also volume-side: wallets previously tagged on this token, and the creator.',
+      'Leave empty to leave flow metrics unconfigured (NaN).',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

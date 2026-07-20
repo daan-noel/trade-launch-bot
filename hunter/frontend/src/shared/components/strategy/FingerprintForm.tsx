@@ -10,8 +10,15 @@ import {
   type Fingerprint,
   type FingerprintDraft,
 } from 'lib/strategy/types';
+import {
+  groupsWithFingerprintConfig,
+  metricConfigWithVolumePatterns,
+  useStrategyRegistry,
+  volumeIxPatternsFromConfig,
+} from 'lib/strategy/registry';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from './LabelTip';
+import { VolumeIxPatternsEditor } from './VolumeIxPatternsEditor';
 
 export interface FingerprintFormProps {
   /** Existing fingerprint to edit; omit to create. */
@@ -34,9 +41,15 @@ interface FormState {
   bucket_size_amount: number | null;
   /** Textarea text — pretty JSON string array (see `parseIxLabelsText`). */
   ix_labels: string;
+  /** `m_flow_split.volume_ix_patterns` rows (other metric_config keys preserved on save). */
+  volume_ix_patterns: string[][];
+  /** Original metric_config minus flow key — merged back on save. */
+  metric_config_rest: Record<string, unknown>;
 }
 
 function fromFingerprint(fp?: Fingerprint): FormState {
+  const cfg = fp?.metric_config ?? {};
+  const { m_flow_split: _flow, ...rest } = cfg;
   return {
     name: fp?.name ?? '',
     cu_limit: fp?.cu_limit ?? null,
@@ -48,11 +61,14 @@ function fromFingerprint(fp?: Fingerprint): FormState {
     first_slot_sell_sol: lamportsToSol(fp?.first_slot_sell_lamports),
     bucket_size_amount: fp?.bucket_size_amount ?? 0.1,
     ix_labels: formatIxLabelsText(fp?.ix_labels),
+    volume_ix_patterns: volumeIxPatternsFromConfig(cfg),
+    metric_config_rest: rest,
   };
 }
 
 function toDraft(s: FormState): FingerprintDraft {
   const { labels } = parseIxLabelsText(s.ix_labels);
+  const flow = metricConfigWithVolumePatterns(s.volume_ix_patterns);
   return {
     name: s.name.trim(),
     cu_limit: s.cu_limit,
@@ -64,6 +80,7 @@ function toDraft(s: FormState): FingerprintDraft {
     first_slot_sell_lamports: solToLamports(s.first_slot_sell_sol),
     bucket_size_amount: s.bucket_size_amount ?? 0.1,
     ix_labels: labels,
+    metric_config: { ...s.metric_config_rest, ...flow },
   };
 }
 
@@ -97,6 +114,8 @@ export function FingerprintForm({
 }: FingerprintFormProps) {
   const [s, setS] = useState<FormState>(() => fromFingerprint(initial));
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setS((p) => ({ ...p, [k]: v }));
+  const { data: registry } = useStrategyRegistry();
+  const fpConfigGroups = groupsWithFingerprintConfig(registry);
 
   const ixParsed = useMemo(() => parseIxLabelsText(s.ix_labels), [s.ix_labels]);
   const criteria = criterionCount(s);
@@ -179,6 +198,21 @@ export function FingerprintForm({
           error={ixParsed.error}
         />
       </label>
+
+      {fpConfigGroups.some((g) =>
+        (g.fingerprint_config ?? []).some((f) => f.name === 'volume_ix_patterns'),
+      ) && (
+        <div className="flex flex-col gap-1 text-[11px] text-text-dim">
+          <LabelTip tip={FINGERPRINT_FIELD_HELP.volume_ix_patterns}>
+            volume_ix_patterns (m_flow_split)
+          </LabelTip>
+          <VolumeIxPatternsEditor
+            patterns={s.volume_ix_patterns}
+            onChange={(p) => set('volume_ix_patterns', p)}
+            disabled={submitting}
+          />
+        </div>
+      )}
 
       <div className="flex items-center justify-between">
         <span className="text-[11px] text-text-dim/80">

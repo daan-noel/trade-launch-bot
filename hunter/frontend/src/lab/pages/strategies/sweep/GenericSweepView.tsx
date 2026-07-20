@@ -255,12 +255,18 @@ export function GenericSweepView() {
   // --- promote ---
   const [promote, promoteState] = usePromoteSweepGroupMutation();
   const [promoteDraft, setPromoteDraft] = useState<PromotedRuleDraft | null>(null);
+  /** Fingerprint created by the latest promote — enables flow metric-series on inspect. */
+  const [promotedFp, setPromotedFp] = useState<{ groupId: string; fingerprintId: string } | null>(
+    null,
+  );
   const promoteErr = apiErrorMessage(promoteState.error, 'Promote failed');
   const doPromote = useCallback(
     async (groupId: string, comboId?: number) => {
       if (!activeRunId) return;
       try {
-        setPromoteDraft(await promote({ runId: activeRunId, groupId, comboId }).unwrap());
+        const draft = await promote({ runId: activeRunId, groupId, comboId }).unwrap();
+        setPromoteDraft(draft);
+        setPromotedFp({ groupId, fingerprintId: draft.fingerprint_id });
       } catch { /* surfaced via promoteErr */ }
     },
     [activeRunId, promote],
@@ -522,6 +528,9 @@ export function GenericSweepView() {
                   comboParams={
                     results.find((r) => r.combo_id === activeComboId)?.params ?? null
                   }
+                  inspectFingerprintId={
+                    promotedFp?.groupId === activeGroupId ? promotedFp.fingerprintId : null
+                  }
                   onClose={() => setActiveComboId(null)}
                 />
               )}
@@ -545,6 +554,7 @@ function ComboTokenResults({
   groupId,
   comboId,
   comboParams,
+  inspectFingerprintId,
   onClose,
 }: {
   strategyId: string;
@@ -554,6 +564,8 @@ function ComboTokenResults({
   /** The combo's swept `RuleParams` blob — pins the inspect's metric panes to the
    *  exact params that produced these rows. Null when the row paged out of view. */
   comboParams: Record<string, unknown> | null;
+  /** Promoted fingerprint for this group — enables flow metric-series panes. */
+  inspectFingerprintId: string | null;
   onClose: () => void;
 }) {
   const query = useGetComboTokenResultsQuery({ strategyId, runId, groupId, comboId });
@@ -760,7 +772,13 @@ function ComboTokenResults({
           titleSuffix="Sweep inspect"
           ruleOverride={
             comboParams
-              ? { paramsJson: comboParams, fingerprintId: null, label: `combo #${comboId}` }
+              ? {
+                  paramsJson: comboParams,
+                  // Flow panes need a fingerprint with metric_config — available
+                  // after Promote for this group (run patterns → FP).
+                  fingerprintId: inspectFingerprintId,
+                  label: `combo #${comboId}`,
+                }
               : null
           }
           onClose={() => setSelected(null)}

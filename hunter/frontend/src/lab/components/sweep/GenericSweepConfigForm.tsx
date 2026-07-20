@@ -20,6 +20,9 @@ import { parseNumbers, parseIxLabelsFilter } from './fingerprintFilters';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
+import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
+import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import { LabelTip } from 'components/strategy/LabelTip';
 import {
   axisRowError,
   comboCount,
@@ -115,6 +118,8 @@ interface GenericSweepConfig {
   ramReserveMb: number;
   /** Opt into the AVX-512 vectorized exit scan (lab-only; host-gated server-side). */
   useAvx512: boolean;
+  /** Corpus-wide volume-ix patterns when axes reference m_flow_*. */
+  volumeIxPatterns: string[][];
 }
 
 function defaultConfig(): GenericSweepConfig {
@@ -144,7 +149,12 @@ function defaultConfig(): GenericSweepConfig {
     // Default OFF: the scalar scan is the SSOT. Flip to `true` once the workstation
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
     useAvx512: false,
+    volumeIxPatterns: [],
   };
+}
+
+function axesReferenceFlow(rows: GenericAxisRow[]): boolean {
+  return rows.some((r) => r.kind === 'metric' && (r.group === 'm_flow_split' || r.group === 'm_flow_window'));
 }
 
 function isoToLocalInput(iso: string | null): string {
@@ -223,6 +233,7 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     curveOnly: run.curve_only,
     buyAmountSol: run.buy_amount_sol ?? defaults.buyAmountSol,
     bucketWidthSol: run.bucket_width_sol ?? defaults.bucketWidthSol,
+    volumeIxPatterns: run.volume_ix_patterns ?? defaults.volumeIxPatterns,
   };
 }
 
@@ -277,6 +288,7 @@ export function GenericSweepConfigForm({
     bucketWidthSol,
     ramReserveMb,
     useAvx512,
+    volumeIxPatterns,
   } = config;
 
   function setField<K extends keyof GenericSweepConfig>(key: K, value: GenericSweepConfig[K]) {
@@ -303,6 +315,10 @@ export function GenericSweepConfigForm({
     () => serializeAxisRows(axisRows, registry),
     [axisRows, registry],
   );
+  const needsFlowPatterns = axesReferenceFlow(axisRows);
+  const flowPatternsOk =
+    !needsFlowPatterns ||
+    volumeIxPatterns.some((p) => p.some((s) => s.trim().length > 0));
 
   const projected = useMemo(() => {
     if (methodKind !== 'grid') return Math.max(1, randomN);
@@ -311,7 +327,7 @@ export function GenericSweepConfigForm({
 
   const effectiveCap = Math.min(Math.max(1, maxCombos || DEFAULT_MAX_COMBOS), HARD_MAX_COMBOS);
   const overCap = projected > effectiveCap;
-  const canRun = axesValid && !overCap && !running && !ixFilterError;
+  const canRun = axesValid && !overCap && !running && !ixFilterError && flowPatternsOk;
 
   function toggleGroupField(f: GroupField) {
     setField('groupBy', groupBy.includes(f) ? groupBy.filter((x) => x !== f) : [...groupBy, f]);
@@ -352,6 +368,11 @@ export function GenericSweepConfigForm({
       ram_reserve_mb: ramReserveMb !== DEFAULT_RAM_RESERVE_MB ? ramReserveMb : undefined,
       // Omit-when-default (same shape as ram_reserve_mb): only send when opted in.
       use_avx512: useAvx512 ? true : undefined,
+      volume_ix_patterns: needsFlowPatterns
+        ? volumeIxPatterns
+            .map((p) => p.map((s) => s.trim()).filter(Boolean))
+            .filter((p) => p.length > 0)
+        : undefined,
     });
   }
 
@@ -361,7 +382,9 @@ export function GenericSweepConfigForm({
       ? 'Fix the axes: every row needs a valid metric/operator and at least one value'
       : ixFilterError
         ? `Fix the instruction-label filter: ${ixFilterError}`
-        : 'Run the grouped sweep';
+        : !flowPatternsOk
+          ? 'Flow axes require at least one volume_ix_patterns row'
+          : 'Run the grouped sweep';
 
   return (
     <div className="mb-4 bg-surface">
@@ -537,6 +560,32 @@ export function GenericSweepConfigForm({
           <GenericAxisBuilder rows={axisRows} onChange={(rows) => setField('axisRows', rows)} projected={projected} />
         </Accordion>
       </div>
+
+      {needsFlowPatterns && (
+        <div className="mt-3 border-t border-white/10 pt-3">
+          <Accordion title="Volume-ix patterns (flow axes)" defaultOpen>
+            <div className="flex flex-col gap-2">
+              <span className="text-[11px] text-text-dim">
+                <LabelTip tip={FINGERPRINT_FIELD_HELP.volume_ix_patterns}>
+                  Corpus-wide patterns for this run
+                </LabelTip>
+                {' — '}required when axes use m_flow_split / m_flow_window. Promote copies
+                them into the fingerprint.
+              </span>
+              <VolumeIxPatternsEditor
+                patterns={volumeIxPatterns}
+                onChange={(p) => setField('volumeIxPatterns', p)}
+                disabled={running}
+              />
+              {!flowPatternsOk && (
+                <InlineAlert variant="error">
+                  Add at least one non-empty volume-ix pattern before running.
+                </InlineAlert>
+              )}
+            </div>
+          </Accordion>
+        </div>
+      )}
 
       {ixFilterError && (
         <div className="mt-2">

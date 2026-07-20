@@ -1,6 +1,6 @@
 # Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_window`)
 
-Status: **IN PROGRESS** (design settled 2026-07-17; **V0–V2 shipped 2026-07-20**; V3+ next).
+Status: **IN PROGRESS** (design settled 2026-07-17; **V0–V3 shipped 2026-07-20**; V4 discovery next).
 Scope: hunter only. A follow-on to the generic engine —
 [fingerprint-metrics-engine-plan.md](fingerprint-metrics-engine-plan.md).
 Phase 5 prerequisites are met; the discovery job (§7) can trail the metrics.
@@ -275,14 +275,16 @@ ALTER TABLE fingerprints
 
 ### V3 — Frontend (registry-driven, small by design)
 
-- [ ] 3.1 FingerprintsPage/editor: `metric_config` section rendered from the
+- [x] 3.1 FingerprintsPage/editor: `metric_config` section rendered from the
       registry's fingerprint-config declaration (pattern list editor = rows of
       ordered label chips; reuse the ix_labels display vocabulary).
-- [ ] 3.2 Chart metric panes: pass the selected rule's fingerprint to metric-series;
+- [x] 3.2 Chart metric panes: pass the selected rule's fingerprint to metric-series;
       flow panes appear in the picker via the registry (no other FE work).
-- [ ] 3.3 Rule editor / monitor / sweep axis builder: **zero work** — verify the new
+      Sweep inspect uses the promoted group's fingerprint id when available.
+- [x] 3.3 Rule editor / monitor / sweep axis builder: **zero work** — verify the new
       groups appear and conditions round-trip (the §8-of-backend-plan extensibility
-      contract's first real exercise).
+      contract's first real exercise). Sweep start form also sends
+      `volume_ix_patterns` when flow axes are selected.
 
 ### V4 — Discovery job (§7)
 

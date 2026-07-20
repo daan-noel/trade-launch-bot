@@ -31,6 +31,9 @@ export interface Fingerprint {
   /** SOL width of the match bucket (default 0.1). */
   bucket_size_amount: number;
   ix_labels: string[] | null;
+  /** Per-metric-group fingerprint-side config (e.g. `m_flow_split.volume_ix_patterns`).
+   *  Absent/`{}` ⇒ flow metrics stay NaN. */
+  metric_config: Record<string, unknown>;
   created_at: string;
   updated_at: string;
   /** How many rules reference this fingerprint — folded in by the list endpoint
