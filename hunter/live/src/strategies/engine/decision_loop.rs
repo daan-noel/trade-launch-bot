@@ -298,12 +298,16 @@ fn dispatch_buy(
         .or_else(|| state.rules.get(&rule).map(|c| c.trade_mode));
     match mode {
         Some(TradeMode::Paper) => {
+            let trigger_abs = exec_paper::latest_trade_abs_idx(token_cache, &mint_s);
             tokio::spawn(exec_paper::run_entry(
                 real_deps.fill_tx.clone(),
                 token_cache.clone(),
+                registry.clone(),
+                position,
                 intent,
                 mint_s,
                 lamports,
+                trigger_abs,
             ));
         }
         Some(TradeMode::Real) => {
@@ -401,12 +405,14 @@ fn dispatch_sell(
     let token_amount = meta.entry_token_amount.unwrap_or(0);
     match meta.trade_mode {
         TradeMode::Paper => {
+            let fire_abs = exec_paper::latest_trade_abs_idx(token_cache, &mint);
             tokio::spawn(exec_paper::run_exit(
                 real_deps.fill_tx.clone(),
                 token_cache.clone(),
                 intent,
                 mint,
                 token_amount,
+                fire_abs,
             ));
         }
         TradeMode::Real => {

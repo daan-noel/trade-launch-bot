@@ -204,11 +204,23 @@ pub struct PositionMeta {
     /// Persisted wallet token account for the mint (set after entry fill).
     pub token_account: Option<String>,
     pub entry_price: Option<f64>,
+    /// Paper-only: trigger-trade snapshot for `target_*` (armed signal, distinct
+    /// from the worst-case entry fill). Consumed by the sink on `Holding`.
+    pub paper_target: Option<PaperTarget>,
     pub cashback_enabled: bool,
     /// The intent currently in flight for this position (entry or exit). The exit
     /// reaper uses it to emit `FillFailed` back into the engine when a sell task
     /// dies but the process is still up.
     pub inflight_intent: Option<IntentId>,
+}
+
+/// Trigger-trade snapshot the paper fill model arms from (→ DB `target_*`).
+#[derive(Debug, Clone)]
+pub struct PaperTarget {
+    pub price: f64,
+    pub token_amount: u64,
+    pub time: chrono::DateTime<chrono::Utc>,
+    pub tx: String,
 }
 
 /// Shared engine-position ↔ PG-row registry. The sink writes it; the executor and

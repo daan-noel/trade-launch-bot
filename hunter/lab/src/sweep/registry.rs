@@ -942,7 +942,7 @@ fn simulate_generic_one_combo(
             as_of,
             flow_patterns.as_ref(),
         );
-        let o = scan(&series, &compiled, buy_amount_sol, &cost);
+        let o = scan(&tt.trades, &series, &compiled, buy_amount_sol, &cost);
         results.push(ComboTokenResult {
             mint_address: tt.mint.clone(),
             symbol: tt.symbol.clone(),

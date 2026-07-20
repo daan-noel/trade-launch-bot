@@ -211,7 +211,7 @@ fn assert_parity_with_flow(
             as_of,
             flow_patterns.as_ref(),
         );
-        let outcome = scan(&series, &compiled, BUY_SOL, &cost);
+        let outcome = scan(&corpus_tok.trades, &series, &compiled, BUY_SOL, &cost);
 
         assert_eq!(
             outcome.fired, r_fired,
@@ -256,19 +256,48 @@ fn assert_parity_with_flow(
 /// The sample corpus — one token per exit path.
 fn corpus() -> Vec<(CorpusToken, ReplayToken)> {
     vec![
-        // TP: price doubles → +100% ≥ TP 50%.
-        token("tp", vec![ct(0.0, true, 1.0, 1.0, 100.0), ct(3.0, true, 0.5, 2.0, 100.0)]),
-        // SL: price halves → −50% ≤ SL 30%.
-        token("sl", vec![ct(0.0, true, 1.0, 1.0, 100.0), ct(3.0, false, 0.5, 0.5, 100.0)]),
+        // TP: trigger → adverse entry buy → later print (past fill window) clears TP.
+        token(
+            "tp",
+            vec![
+                ct(0.0, true, 1.0, 1.0, 100.0),
+                ct(1.0, true, 0.5, 1.1, 100.0),
+                ct(10.0, true, 0.5, 2.0, 100.0),
+            ],
+        ),
+        // SL: trigger → entry fill → later sell clears −30% SL.
+        token(
+            "sl",
+            vec![
+                ct(0.0, true, 1.0, 1.0, 100.0),
+                ct(1.0, true, 0.5, 1.05, 100.0),
+                ct(10.0, false, 0.5, 0.5, 100.0),
+            ],
+        ),
         // Metrics: peak 2.0 then 0.8 → 60% off peak (trail > 50).
         token(
             "metrics",
-            vec![ct(0.0, true, 1.0, 1.0, 100.0), ct(1.0, true, 0.5, 2.0, 100.0), ct(3.0, false, 0.5, 0.8, 100.0)],
+            vec![
+                ct(0.0, true, 1.0, 1.0, 100.0),
+                ct(0.5, true, 0.5, 1.05, 100.0),
+                ct(10.0, true, 0.5, 2.0, 100.0),
+                ct(12.0, false, 0.5, 0.8, 100.0),
+            ],
         ),
-        // Dead: healthy price but liquidity gone (5 < 30) then silent → dead in the tail.
-        token("dead", vec![ct(0.0, true, 1.0, 1.0, 5.0)]),
+        // Dead: need an in-window entry fill, then liquidity gone + silent.
+        token(
+            "dead",
+            vec![ct(0.0, true, 1.0, 1.0, 5.0), ct(1.0, true, 0.5, 1.05, 5.0)],
+        ),
         // Open: mild drift, liquidity healthy, never triggers anything.
-        token("open", vec![ct(0.0, true, 1.0, 1.0, 100.0), ct(3.0, true, 0.5, 1.1, 100.0)]),
+        token(
+            "open",
+            vec![
+                ct(0.0, true, 1.0, 1.0, 100.0),
+                ct(1.0, true, 0.5, 1.05, 100.0),
+                ct(10.0, true, 0.5, 1.1, 100.0),
+            ],
+        ),
     ]
 }
 
@@ -316,13 +345,32 @@ fn scan_matches_replay_pure_dead_open_rule() {
 /// Fixtures with multi-hour gaps between trades — the sparse grid's stress case.
 fn gappy_corpus() -> Vec<(CorpusToken, ReplayToken)> {
     vec![
-        // Revive: 2 h silence (flows decay to 0, time/stall grow) then a live trade.
-        token("revive", vec![ct(0.0, true, 2.0, 1.0, 100.0), ct(7200.0, true, 2.0, 1.2, 100.0)]),
-        // Dead mid-gap: liquidity gone, silent past the 300 s quiet window inside a
-        // long gap, then a late trade (the verdict is booked before it lands).
-        token("dead_midgap", vec![ct(0.0, true, 1.0, 1.0, 5.0), ct(7200.0, true, 1.0, 1.0, 5.0)]),
-        // Healthy but idle: one trade, reserves fine, rides to Open in the tail.
-        token("idle", vec![ct(0.0, true, 2.0, 1.0, 100.0)]),
+        // Revive: early worst-case entry fill, 2 h silence, then live prints (also
+        // enough post-gap buys for a deferred time-gate entry to fill).
+        token(
+            "revive",
+            vec![
+                ct(0.0, true, 2.0, 1.0, 100.0),
+                ct(1.0, true, 2.0, 1.05, 100.0),
+                ct(7200.0, true, 2.0, 1.2, 100.0),
+                ct(7201.0, true, 2.0, 1.25, 100.0),
+            ],
+        ),
+        // Dead mid-gap: enter via in-window fill, liquidity gone, silent past the
+        // 300 s quiet window inside a long gap, then a late trade.
+        token(
+            "dead_midgap",
+            vec![
+                ct(0.0, true, 1.0, 1.0, 5.0),
+                ct(1.0, true, 0.5, 1.05, 5.0),
+                ct(7200.0, true, 1.0, 1.0, 5.0),
+            ],
+        ),
+        // Healthy but idle: trigger + fill, reserves fine, rides to Open in the tail.
+        token(
+            "idle",
+            vec![ct(0.0, true, 2.0, 1.0, 100.0), ct(1.0, true, 2.0, 1.05, 100.0)],
+        ),
     ]
 }
 
@@ -393,10 +441,10 @@ fn shared_bind_matches_per_token_bind() {
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
             let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
 
-            let entry = resolve_entry(&series, &shared);
-            let shared_out = resolve_exit(&series, &shared, &entry, BUY_SOL, &cost);
+            let entry = resolve_entry(&corpus_tok.trades, &series, &shared);
+            let shared_out = resolve_exit(&corpus_tok.trades, &series, &shared, &entry, BUY_SOL, &cost);
             // `scan` binds against this token's own series — the reference.
-            let per_token_out = scan(&series, &compiled, BUY_SOL, &cost);
+            let per_token_out = scan(&corpus_tok.trades, &series, &compiled, BUY_SOL, &cost);
 
             let m = &corpus_tok.mint;
             assert_eq!(shared_out.fired, per_token_out.fired, "{m}: fired");
@@ -574,9 +622,10 @@ fn simd_exit_scan_matches_scalar_across_paths() {
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
             let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
-            let entry = resolve_entry(&series, &bound);
-            let scalar = resolve_exit(&series, &bound, &entry, BUY_SOL, &cost);
-            let simd = resolve_exit_simd(&series, &bound, &entry, BUY_SOL, &cost);
+            let trades = &corpus_tok.trades;
+            let entry = resolve_entry(trades, &series, &bound);
+            let scalar = resolve_exit(trades, &series, &bound, &entry, BUY_SOL, &cost);
+            let simd = resolve_exit_simd(trades, &series, &bound, &entry, BUY_SOL, &cost);
             assert_eq!(
                 outcome_tuple(&simd),
                 outcome_tuple(&scalar),
@@ -629,7 +678,8 @@ fn index_exit_scan_matches_scalar_across_paths() {
 
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
             let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
-            let entry = resolve_entry(&series, &bound);
+            let trades = &corpus_tok.trades;
+            let entry = resolve_entry(trades, &series, &bound);
             let mut idx = ExitIndex::default();
             match &entry {
                 super::strategy::EntryResolution::Entered { fill_row, .. }
@@ -639,8 +689,8 @@ fn index_exit_scan_matches_scalar_across_paths() {
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(&series, &bound, &entry, BUY_SOL, &cost);
-            let indexed = resolve_exit_indexed(&series, &bound, &entry, BUY_SOL, &cost, &idx);
+            let scalar = resolve_exit(trades, &series, &bound, &entry, BUY_SOL, &cost);
+            let indexed = resolve_exit_indexed(trades, &series, &bound, &entry, BUY_SOL, &cost, &idx);
             assert_outcomes_eq(
                 &indexed,
                 &scalar,
@@ -677,6 +727,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
         let n = 8 + (next() % 40) as usize;
         let t0 = base();
         let mut series = MetricSeries::new(t0, vec![]);
+        let mut trades: Vec<CorpusTrade> = Vec::with_capacity(n);
         let mut price = 1.0_f64;
         for i in 0..n {
             let r = next();
@@ -687,13 +738,35 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
                 price = (price * (1.0 + shock as f64 * 0.03)).max(0.01);
             }
             let at = t0 + Duration::milliseconds((i as i64) * 500);
-            series.push_trade(TradeLite {
-                side: if r % 2 == 0 { Side::Buy } else { Side::Sell },
-                sol: 1.0 + (r % 5) as f64,
-                price,
-                reserve_sol: 50.0,
-                at,
-                ..Default::default()
+            let is_buy = r % 2 == 0;
+            let sol = 1.0 + (r % 5) as f64;
+            let slot = i as u64;
+            series.push_trade_at(
+                TradeLite {
+                    side: if is_buy { Side::Buy } else { Side::Sell },
+                    sol,
+                    price,
+                    reserve_sol: 50.0,
+                    at,
+                    ..Default::default()
+                },
+                Some(slot),
+            );
+            trades.push(CorpusTrade {
+                block_time: at,
+                amount_sol: sol,
+                token_amount: 1.0,
+                price_per_token: price,
+                reserve_sol: Some(50.0),
+                reserve_token: Some(1.0),
+                real_reserve_sol: Some(50.0),
+                real_token_reserves: Some(1.0),
+                slot,
+                leg_index: 0,
+                is_buy,
+                tx_signature: None,
+                ix_labels: None,
+                wallet: None,
             });
             if is_hole {
                 // Overwrite to NaN after push so the hull carry path is exercised.
@@ -716,13 +789,13 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
             };
             let compiled = CompiledRule::compile(&loaded(params));
             let bound = BoundCombo::new(series.columns(), compiled);
-            let entry = resolve_entry(&series, &bound);
+            let entry = resolve_entry(&trades, &series, &bound);
             let mut idx = ExitIndex::default();
             if let super::strategy::EntryResolution::Entered { fill_row, .. } = &entry {
                 idx.rebuild(&series, *fill_row);
             }
-            let scalar = resolve_exit(&series, &bound, &entry, BUY_SOL, &cost);
-            let indexed = resolve_exit_indexed(&series, &bound, &entry, BUY_SOL, &cost, &idx);
+            let scalar = resolve_exit(&trades, &series, &bound, &entry, BUY_SOL, &cost);
+            let indexed = resolve_exit_indexed(&trades, &series, &bound, &entry, BUY_SOL, &cost, &idx);
             assert_outcomes_eq(
                 &indexed,
                 &scalar,

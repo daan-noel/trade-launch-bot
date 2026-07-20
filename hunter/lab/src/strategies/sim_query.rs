@@ -37,6 +37,8 @@ fn resolve(key: &str) -> Option<(&'static str, ColKind)> {
         "entry_tx" => ("entry_tx", Text),
         "exit_tx" => ("exit_tx", Text),
         "target_price" => ("target_price", Number),
+        "target_token_amount" => ("target_token_amount", Number),
+        "target_tx" => ("target_tx", Text),
         "entry_price" => ("entry_price", Number),
         "ath_price" => ("ath_price", Number),
         "exit_price" => ("exit_price", Number),

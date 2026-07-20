@@ -53,9 +53,10 @@ pub const MAX_MANUAL_BUY_SOL: f64 = 5.0;
 // Strategy thresholds (hot path — read per-event; must stay as const)
 // ---------------------------------------------------------------------------
 
-/// Worst-case paper/backtest fill window (entry and exit): the fill candidates are
-/// the trigger slot S plus the next observed slot after S, provided that slot is
-/// within this many slots of S. If the next slot is farther away only slot S is used.
+/// Worst-case paper/backtest fill window (entry and exit) — used by
+/// [`crate::strategies::paper_fill`]: the fill candidates are the trigger/fire
+/// slot S plus the next observed slot after S, provided that slot is within this
+/// many slots of S. If the next slot is farther away only slot S is used.
 pub const MAX_FILL_WAIT_SLOTS: u64 = 3; // ≈ 1 s at 400 ms/slot
 
 

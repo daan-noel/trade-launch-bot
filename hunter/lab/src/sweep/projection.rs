@@ -23,7 +23,7 @@ use crate::models::trade::TradeRow;
 /// row type both the grouped sweep and single-rule simulate walk.
 ///
 /// `tx_signature` is an **`Option`** so that one row type serves both readers: the
-/// sweep loads it `None` (the trigger is resolved by index —
+/// sweep loads it `None` (the trigger/fill is resolved by index via
 /// [`find_worst_case_paper_entry_at`] — so the ~88 B base58 string is dead weight in
 /// the hot loop, and `None` is a bare 16 B, no heap), while single-rule **simulate**
 /// loads it `Some` because its result tables render `entry_tx`/`exit_tx` as Solscan
@@ -32,7 +32,7 @@ use crate::models::trade::TradeRow;
 /// other `Trade` `String`/`Uuid`/JSON field is dropped.
 ///
 /// [`find_worst_case_paper_entry_at`]:
-///   crate::strategies::tpsl_sniper_2::entry::find_worst_case_paper_entry_at
+///   trading_core::strategies::paper_fill::find_worst_case_paper_entry_at
 /// [`Selection::with_signatures`]: crate::sweep::corpus::Selection::with_signatures
 #[derive(Clone, Debug)]
 pub struct CorpusTrade {

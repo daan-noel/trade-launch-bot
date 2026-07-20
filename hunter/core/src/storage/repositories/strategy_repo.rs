@@ -1614,6 +1614,33 @@ impl StrategyRepo {
     /// signature is stored as a JSONB array. Mirrors the old per-strategy
     /// `update_entry`; the `RETURNING` lets the caller sync the cache without a
     /// follow-up read.
+    /// Persist the trigger-trade (`target_*`) snapshot that armed a paper/sim
+    /// position — distinct from the worst-case `entry_*` fill. No-op fields stay
+    /// null when the caller has no trigger (legacy rows).
+    pub async fn record_target(
+        &self,
+        id: Uuid,
+        price: f64,
+        token_amount: u64,
+        time: DateTime<Utc>,
+        tx: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE strategy_positions \
+             SET target_price = $2, target_token_amount = $3, target_time = $4, \
+                 target_tx = $5, updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(price)
+        .bind(token_amount as i64)
+        .bind(time)
+        .bind(tx)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn record_entry_fill(
         &self,

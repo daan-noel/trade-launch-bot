@@ -23,9 +23,9 @@
 //!   `DEAD_QUIET_SECS` of their last trade and drop out of the tracked set.
 //!
 //! The sim fill model mirrors `live::strategies::engine::exec_paper`: a submit
-//! fills at the token's canonical spot at the instant the engine decided (the
-//! triggering event's time + the last trade's price), so paper-live and simulate
-//! price a round-trip identically.
+//! fills at the **worst-case** adverse price in the trigger/fire slot window
+//! ([`trading_core::strategies::paper_fill`]), so paper-live and simulate price a
+//! round-trip identically.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,13 +34,17 @@ use chrono::{DateTime, Duration, Utc};
 
 use hunter_engine::deadness::DEAD_QUIET_SECS;
 use hunter_engine::event::{
-    Effect, Event, ExitReason, Fill, IntentId, LoadedRule, Mint, PositionId, PositionStatus,
-    RuleId,
+    Effect, Event, ExitReason, Fill, FillFailReason, IntentId, LoadedRule, Mint, PositionId,
+    PositionStatus, RuleId,
 };
 use hunter_engine::fingerprint::Fingerprint as EngineFingerprint;
 use hunter_engine::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
 use hunter_engine::metrics::Ts;
 use hunter_engine::{reduce, EngineState};
+
+use trading_core::strategies::paper_fill::{
+    find_worst_case_paper_entry_at, find_worst_case_paper_exit_at,
+};
 
 use crate::sweep::projection::CorpusTrade;
 
@@ -81,6 +85,12 @@ pub struct ReplayToken {
 pub struct PositionOutcome {
     pub mint: String,
     pub rule: RuleId,
+    /// Trigger-trade snapshot that armed the buy (distinct from the worst-case
+    /// `entry_*` fill — the gap is modeled adverse slippage).
+    pub target_price: Option<f64>,
+    pub target_token_amount: Option<f64>,
+    pub target_time: Option<Ts>,
+    pub target_tx: Option<String>,
     pub entry_price: f64,
     pub entry_token_amount: u64,
     pub entry_time: Ts,
@@ -91,6 +101,16 @@ pub struct PositionOutcome {
     pub exit_reason: Option<ExitReason>,
     /// Last observed spot for the token — the mark for an open (unexited) position.
     pub last_price: f64,
+}
+
+/// Trigger-trade snapshot stashed when a worst-case entry fill is queued, then
+/// copied onto the result row when the position reaches `Holding`.
+#[derive(Clone, Debug)]
+struct TargetSnap {
+    price: f64,
+    token_amount: f64,
+    time: Ts,
+    tx: String,
 }
 
 /// Config for a replay run.
@@ -132,6 +152,8 @@ struct Queued {
     event: Event,
     /// The corpus signature for a `Trade` (its fill tx link); `None` otherwise.
     sig: Option<Box<str>>,
+    /// Corpus index of a `Trade` event into [`Replay::trades`]; `None` otherwise.
+    trade_idx: Option<usize>,
 }
 
 /// The replay engine: owns the fold state plus the small adapter maps the sim
@@ -141,6 +163,10 @@ struct Replay {
     cfg: ReplayConfig,
     /// Merged, sorted producer events.
     queue: Vec<Queued>,
+    /// Per-mint lake trades — worst-case fill resolvers key by index into these.
+    trades: HashMap<Mint, Arc<Vec<CorpusTrade>>>,
+    /// Per-mint last folded trade's corpus index (trigger/fire for paper fills).
+    last_trade_idx: HashMap<Mint, usize>,
     /// Per-mint last trade signature (entry/exit `tx` for a fill on that token).
     last_sig: HashMap<Mint, String>,
     /// Per-mint last observed spot (open-position mark).
@@ -151,16 +177,36 @@ struct Replay {
     /// token) — resolved at the token's first trade, mirroring `exec_paper`'s
     /// wait-for-price.
     pending_buys: HashMap<Mint, IntentId>,
+    /// Worst-case fills whose pricing trade is still ahead in the stream. Applied
+    /// when that corpus index is folded so `current_price` has caught up to the
+    /// fill (immediate apply at the trigger would SL/TP against a stale spot).
+    deferred_fills: HashMap<Mint, DeferredFill>,
+    /// Trigger snapshot for an in-flight entry on this mint (set when the fill is
+    /// queued, consumed when `Holding` records the row).
+    pending_targets: HashMap<Mint, TargetSnap>,
     /// In-flight result rows, keyed by engine position id.
     builders: HashMap<PositionId, Builder>,
     /// Finished outcomes.
     done: Vec<PositionOutcome>,
 }
 
+/// A paper fill waiting for its pricing trade to be folded.
+struct DeferredFill {
+    fill_idx: usize,
+    event: Event,
+}
+
+impl DeferredFill {
+    fn fills_at(&self, trade_idx: usize) -> bool {
+        self.fill_idx == trade_idx
+    }
+}
+
 /// A result row under construction (from `BuySubmitted` to `End`/open).
 struct Builder {
     mint: String,
     rule: RuleId,
+    target: Option<TargetSnap>,
     entry_price: f64,
     entry_token_amount: u64,
     entry_time: Ts,
@@ -181,10 +227,14 @@ impl Replay {
             state,
             cfg,
             queue: Vec::new(),
+            trades: HashMap::new(),
+            last_trade_idx: HashMap::new(),
             last_sig: HashMap::new(),
             last_price: HashMap::new(),
             last_trade_at: None,
             pending_buys: HashMap::new(),
+            deferred_fills: HashMap::new(),
+            pending_targets: HashMap::new(),
             builders: HashMap::new(),
             done: Vec::new(),
         }
@@ -196,6 +246,7 @@ impl Replay {
         for t in tokens {
             let mint = Mint::from(t.mint.as_str());
             let trades = &t.trades;
+            self.trades.insert(mint.clone(), Arc::clone(trades));
 
             // TokenCreated at the token's creation time (first-slot axes still None).
             self.queue.push(Queued {
@@ -209,6 +260,7 @@ impl Replay {
                     creator_wallet_hash: t.creator_wallet_hash,
                 },
                 sig: None,
+                trade_idx: None,
             });
 
             if let Some(first) = trades.first() {
@@ -219,7 +271,7 @@ impl Replay {
                 let mut fs_buy = 0.0;
                 let mut fs_sell = 0.0;
                 let mut settle_at: Option<Ts> = None;
-                for ct in trades.iter() {
+                for (trade_idx, ct) in trades.iter().enumerate() {
                     if ct.slot == creation_slot {
                         if ct.is_buy {
                             fs_buy += ct.amount_sol;
@@ -240,6 +292,7 @@ impl Replay {
                             trade: crate::sweep::projection::to_trade_lite(ct),
                         },
                         sig: ct.tx_signature.clone(),
+                        trade_idx: Some(trade_idx),
                     });
                     self.last_trade_at =
                         Some(self.last_trade_at.map_or(ct.block_time, |m| m.max(ct.block_time)));
@@ -262,6 +315,7 @@ impl Replay {
                         at: settle_at,
                     },
                     sig: None,
+                    trade_idx: None,
                 });
             }
         }
@@ -282,13 +336,16 @@ impl Replay {
             if let Some(nt) = next_tick.as_mut() {
                 self.emit_ticks_until(nt, q.at);
             }
-            // Remember a trade's signature + price for fills/marks on this token
-            // before the fold consumes the event.
+            // Remember a trade's signature / price / corpus index for fills/marks
+            // on this token before the fold consumes the event.
             if let Event::Trade { ref mint, ref trade } = q.event {
                 if let Some(sig) = q.sig {
                     self.last_sig.insert(mint.clone(), sig.into());
                 }
                 self.last_price.insert(mint.clone(), trade.price);
+                if let Some(idx) = q.trade_idx {
+                    self.last_trade_idx.insert(mint.clone(), idx);
+                }
             }
             self.fold_event(q.event, q.at);
         }
@@ -340,24 +397,35 @@ impl Replay {
                 Event::Trade { mint, .. } => Some(mint.clone()),
                 _ => None,
             };
+            // SubmitBuy from a Trade uses that trade as the worst-case trigger;
+            // tick / arm decisions defer until the next print (same as the sweep
+            // scan's `entry_trigger_trade_idx`).
+            let trade_trigger = traded_mint.is_some();
+            let trade_idx_now = traded_mint
+                .as_ref()
+                .and_then(|m| self.last_trade_idx.get(m).copied());
             let effects = reduce(&mut self.state, ev);
             for fx in effects {
-                self.on_effect(fx, now, &mut work);
+                self.on_effect(fx, now, &mut work, trade_trigger);
             }
-            // A price just landed — release any buy that was waiting for one.
+            // After the print updates spot: confirm any worst-case fill priced on
+            // this corpus index (scan's `fill_row`), then resolve pending entries
+            // that were waiting for a trigger trade.
+            if let (Some(mint), Some(idx)) = (traded_mint.as_ref(), trade_idx_now) {
+                if self.deferred_fills.get(mint).is_some_and(|d| d.fills_at(idx)) {
+                    let def = self.deferred_fills.remove(mint).unwrap();
+                    work.push(def.event);
+                }
+            }
             if let Some(mint) = traded_mint {
-                if let Some(intent) = self.pending_buys.get(&mint).cloned() {
-                    if let Some(price) = self.price_of(&mint) {
-                        self.pending_buys.remove(&mint);
-                        // Look up the lamports the intent submitted via its rule.
-                        let lamports = self
-                            .state
-                            .rules
-                            .get(&intent.rule)
-                            .map(|c| c.buy_amount_lamports)
-                            .unwrap_or(0);
-                        work.push(self.buy_fill(intent, lamports, price, now));
-                    }
+                if let Some(intent) = self.pending_buys.remove(&mint) {
+                    let lamports = self
+                        .state
+                        .rules
+                        .get(&intent.rule)
+                        .map(|c| c.buy_amount_lamports)
+                        .unwrap_or(0);
+                    self.queue_entry_fill(&mint, intent, lamports, &mut work);
                 }
             }
         }
@@ -365,40 +433,120 @@ impl Replay {
 
     /// Handle one effect: sim-fill submits (feeding the fill event back onto the
     /// work stack) and record position-lifecycle updates.
-    fn on_effect(&mut self, fx: Effect, now: Ts, work: &mut Vec<Event>) {
+    fn on_effect(&mut self, fx: Effect, now: Ts, work: &mut Vec<Event>, trade_trigger: bool) {
         match fx {
             Effect::SubmitBuy { intent, rule: _, mint, lamports } => {
-                match self.price_of(&mint) {
-                    Some(price) => work.push(self.buy_fill(intent, lamports, price, now)),
-                    // No finite price yet (enter-on-arm pre-trade): defer to the
-                    // token's first priced trade, like `exec_paper`'s wait-for-price.
-                    None => {
-                        self.pending_buys.insert(mint, intent);
-                    }
+                if trade_trigger {
+                    self.queue_entry_fill(&mint, intent, lamports, work);
+                } else {
+                    // Tick / enter-on-arm: next print becomes the trigger.
+                    self.pending_buys.insert(mint, intent);
                 }
             }
             Effect::SubmitSell { intent, position, reason: _ } => {
-                // A sell only fires from a held position, so a price always exists;
-                // fill the held token amount at the current spot.
-                let price = self.price_of(&intent.mint).unwrap_or(0.0);
                 let token_amount =
                     self.builders.get(&position).map(|b| b.entry_token_amount).unwrap_or(0);
-                let sol = (token_amount as f64 / TOKEN_SCALE) * price;
-                work.push(Event::FillConfirmed {
-                    intent,
-                    fill: Fill { price, sol, token_amount, at: now },
-                });
+                let mint = intent.mint.clone();
+                self.queue_exit_fill(&mint, intent, token_amount, now, work);
             }
             Effect::PositionUpdate(delta) => self.on_position_update(delta),
             Effect::ArmedChanged(_) => {}
         }
     }
 
+    /// Resolve the worst-case entry after the mint's last folded trade (trigger).
+    /// Empty window → `FillFailed`. Otherwise confirm now if the pricing trade is
+    /// already the current print, else defer until that corpus index is folded.
+    fn queue_entry_fill(
+        &mut self,
+        mint: &Mint,
+        intent: IntentId,
+        lamports: u64,
+        work: &mut Vec<Event>,
+    ) {
+        let Some(&trigger_idx) = self.last_trade_idx.get(mint) else {
+            self.pending_buys.insert(mint.clone(), intent);
+            return;
+        };
+        let Some(trades) = self.trades.get(mint).cloned() else {
+            self.pending_buys.insert(mint.clone(), intent);
+            return;
+        };
+        match find_worst_case_paper_entry_at(trades.as_slice(), trigger_idx) {
+            None => {
+                self.pending_targets.remove(mint);
+                work.push(Event::FillFailed {
+                    intent,
+                    reason: FillFailReason::Timeout,
+                });
+            }
+            Some(fill) => {
+                let trigger = &trades[trigger_idx];
+                self.pending_targets.insert(
+                    mint.clone(),
+                    TargetSnap {
+                        price: trigger.price_per_token,
+                        token_amount: trigger.token_amount,
+                        time: trigger.block_time,
+                        tx: trigger.tx_signature.as_deref().unwrap_or("").to_string(),
+                    },
+                );
+                let event = self.buy_fill(intent, lamports, fill.price, fill.block_time);
+                self.emit_or_defer(mint, fill.trade_idx, event, work);
+            }
+        }
+    }
+
+    /// Worst-case exit after the mint's last folded trade (fire). Analysis path:
+    /// market-fill at the fire trade when the window is empty.
+    fn queue_exit_fill(
+        &mut self,
+        mint: &Mint,
+        intent: IntentId,
+        token_amount: u64,
+        now: Ts,
+        work: &mut Vec<Event>,
+    ) {
+        if let (Some(&fire_idx), Some(trades)) =
+            (self.last_trade_idx.get(mint), self.trades.get(mint).cloned())
+        {
+            if let Some(fill) = find_worst_case_paper_exit_at(trades.as_slice(), fire_idx, true) {
+                let sol = (token_amount as f64 / TOKEN_SCALE) * fill.price;
+                let event = Event::FillConfirmed {
+                    intent,
+                    fill: Fill {
+                        price: fill.price,
+                        sol,
+                        token_amount,
+                        at: fill.block_time,
+                    },
+                };
+                self.emit_or_defer(mint, fill.trade_idx, event, work);
+                return;
+            }
+        }
+        let price = self.price_of(mint).unwrap_or(0.0);
+        let sol = (token_amount as f64 / TOKEN_SCALE) * price;
+        work.push(Event::FillConfirmed {
+            intent,
+            fill: Fill { price, sol, token_amount, at: now },
+        });
+    }
+
+    fn emit_or_defer(&mut self, mint: &Mint, fill_idx: usize, event: Event, work: &mut Vec<Event>) {
+        let current = self.last_trade_idx.get(mint).copied();
+        if current == Some(fill_idx) {
+            work.push(event);
+        } else {
+            self.deferred_fills.insert(mint.clone(), DeferredFill { fill_idx, event });
+        }
+    }
+
     /// Build the `FillConfirmed` for an entry buy (mirrors `exec_paper::run_entry`).
-    fn buy_fill(&self, intent: IntentId, lamports: u64, price: f64, now: Ts) -> Event {
+    fn buy_fill(&self, intent: IntentId, lamports: u64, price: f64, at: Ts) -> Event {
         let sol = lamports as f64 / LAMPORTS_PER_SOL_F64;
         let token_amount = ((sol / price) * TOKEN_SCALE).round().max(0.0) as u64;
-        Event::FillConfirmed { intent, fill: Fill { price, sol, token_amount, at: now } }
+        Event::FillConfirmed { intent, fill: Fill { price, sol, token_amount, at } }
     }
 
     /// Record a position transition into the in-flight result row.
@@ -411,6 +559,7 @@ impl Replay {
                     Builder {
                         mint: delta.mint.to_string(),
                         rule: delta.rule,
+                        target: None,
                         entry_price: 0.0,
                         entry_token_amount: 0,
                         entry_time: Utc::now(),
@@ -422,9 +571,12 @@ impl Replay {
             PositionStatus::Holding => {
                 if let (Some(b), Some(fill)) = (self.builders.get_mut(&delta.position), delta.fill) {
                     b.entered = true;
+                    b.target = self.pending_targets.remove(&delta.mint);
                     b.entry_price = fill.price;
                     b.entry_token_amount = fill.token_amount;
                     b.entry_time = fill.at;
+                    // Prefer the fill trade's sig (adverse print); fall back to the
+                    // last folded trade's sig when the slim corpus omitted it.
                     b.entry_tx = sig;
                 }
             }
@@ -461,19 +613,7 @@ impl Replay {
     ) {
         let mint = Mint::from(b.mint.as_str());
         let last_price = self.last_price.get(&mint).copied().unwrap_or(exit_price);
-        self.done.push(PositionOutcome {
-            mint: b.mint,
-            rule: b.rule,
-            entry_price: b.entry_price,
-            entry_token_amount: b.entry_token_amount,
-            entry_time: b.entry_time,
-            entry_tx: b.entry_tx,
-            exit_price: Some(exit_price),
-            exit_time: Some(exit_time),
-            exit_tx: Some(exit_tx),
-            exit_reason: reason,
-            last_price,
-        });
+        self.done.push(outcome_from_builder(b, Some(exit_price), Some(exit_time), Some(exit_tx), reason, last_price));
     }
 
     /// Drain the remaining in-flight builders — every still-held position becomes an
@@ -486,19 +626,7 @@ impl Replay {
             }
             let mint = Mint::from(b.mint.as_str());
             let last_price = self.last_price.get(&mint).copied().unwrap_or(b.entry_price);
-            self.done.push(PositionOutcome {
-                mint: b.mint,
-                rule: b.rule,
-                entry_price: b.entry_price,
-                entry_token_amount: b.entry_token_amount,
-                entry_time: b.entry_time,
-                entry_tx: b.entry_tx,
-                exit_price: None,
-                exit_time: None,
-                exit_tx: None,
-                exit_reason: None,
-                last_price,
-            });
+            self.done.push(outcome_from_builder(b, None, None, None, None, last_price));
         }
         self.done
     }
@@ -534,6 +662,11 @@ pub struct EngineBacktestResult {
     pub mint_address: String,
     pub symbol: String,
     pub created_at: DateTime<Utc>,
+    /// Trigger-trade snapshot (scalp/signal) — gap vs `entry_*` is adverse slippage.
+    pub target_price: Option<f64>,
+    pub target_token_amount: Option<f64>,
+    pub target_time: Option<DateTime<Utc>>,
+    pub target_tx: Option<String>,
     pub entry_price: f64,
     pub ath_price: Option<f64>,
     pub entry_token_amount: f64,
@@ -549,6 +682,37 @@ pub struct EngineBacktestResult {
     pub exit_reason: String,
     #[serde(flatten)]
     pub token: crate::strategies::token_enrich::TokenEnrichment,
+}
+
+fn outcome_from_builder(
+    b: Builder,
+    exit_price: Option<f64>,
+    exit_time: Option<Ts>,
+    exit_tx: Option<String>,
+    exit_reason: Option<ExitReason>,
+    last_price: f64,
+) -> PositionOutcome {
+    let (target_price, target_token_amount, target_time, target_tx) = match b.target {
+        Some(t) => (Some(t.price), Some(t.token_amount), Some(t.time), Some(t.tx)),
+        None => (None, None, None, None),
+    };
+    PositionOutcome {
+        mint: b.mint,
+        rule: b.rule,
+        target_price,
+        target_token_amount,
+        target_time,
+        target_tx,
+        entry_price: b.entry_price,
+        entry_token_amount: b.entry_token_amount,
+        entry_time: b.entry_time,
+        entry_tx: b.entry_tx,
+        exit_price,
+        exit_time,
+        exit_tx,
+        exit_reason,
+        last_price,
+    }
 }
 
 /// The persisted exit-reason token for an [`ExitReason`], matching the live sink's
@@ -646,24 +810,27 @@ mod tests {
     }
 
     /// Enter-on-arm rule (no entry conditions), TP +100% — a price that doubles
-    /// past entry fires TakeProfit.
+    /// past the worst-case entry fill fires TakeProfit.
     #[test]
     fn enters_on_arm_and_takes_profit() {
         let rules = [rule(1, 1, serde_json::json!({ "take_profit": 100 }), 1)];
         let fps = [fp(1)];
-        // High reserves so the token never dies; a later trade doubles the price.
+        // Trigger → adverse entry buy in-window → later TP print (beyond the
+        // MAX_FILL_WAIT_SLOTS entry window so it isn't absorbed into the fill).
         let t = token(
             "aaa",
             0.0,
             vec![
-                trade(0.0, true, 1.0, 1.0, 100.0),
-                trade(2.0, true, 1.0, 2.5, 100.0), // +150% > +100% TP
+                trade(0.0, true, 1.0, 1.0, 100.0), // trigger
+                trade(0.4, true, 1.0, 1.1, 100.0), // worst-case entry fill
+                trade(10.0, true, 1.0, 2.5, 100.0), // +127% vs entry 1.1 → TP
             ],
         );
         let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(400.0) });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].exit_reason, Some(ExitReason::TakeProfit));
-        assert_eq!(out[0].entry_price, 1.0);
+        assert_eq!(out[0].target_price, Some(1.0), "trigger trade is the target");
+        assert_eq!(out[0].entry_price, 1.1, "worst-case fill is the entry");
         assert!(out[0].exit_price.unwrap() >= 2.0);
     }
 
@@ -676,8 +843,9 @@ mod tests {
             "bbb",
             0.0,
             vec![
-                trade(0.0, true, 1.0, 1.0, 100.0),
-                trade(2.0, false, 1.0, 0.5, 100.0), // −50% < −30% SL
+                trade(0.0, true, 1.0, 1.0, 100.0),  // trigger
+                trade(0.4, true, 1.0, 1.05, 100.0), // worst-case entry fill
+                trade(10.0, false, 1.0, 0.5, 100.0), // −52% vs entry → SL
             ],
         );
         let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(400.0) });
@@ -692,11 +860,14 @@ mod tests {
     fn quiet_token_books_dead_via_tail_ticks() {
         let rules = [rule(1, 1, serde_json::json!({ "take_profit": 1000 }), 1)];
         let fps = [fp(1)];
-        // Low real reserves (<30) + no trade after t=1 → dead 300 s later.
+        // Low real reserves (<30) + no trade after entry → dead 300 s later.
         let t = token(
             "ccc",
             0.0,
-            vec![trade(0.0, true, 1.0, 1.0, 1.0), trade(1.0, true, 1.0, 1.0, 1.0)],
+            vec![
+                trade(0.0, true, 1.0, 1.0, 1.0),
+                trade(0.4, true, 1.0, 1.0, 1.0), // entry fill
+            ],
         );
         let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(1000.0) });
         assert_eq!(out.len(), 1);
@@ -712,10 +883,14 @@ mod tests {
         let t = token(
             "ddd",
             0.0,
-            vec![trade(0.0, true, 1.0, 1.0, 100.0), trade(2.0, true, 1.0, 1.7, 100.0)],
+            vec![
+                trade(0.0, true, 1.0, 1.0, 100.0),
+                trade(0.4, true, 1.0, 1.05, 100.0), // entry fill
+                trade(10.0, true, 1.0, 1.7, 100.0),
+            ],
         );
-        // as_of only 3 s out — not quiet long enough to die; stays open.
-        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(3.0) });
+        // as_of shortly after the mark print — not quiet long enough to die.
+        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(12.0) });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].exit_reason, None, "still open");
         assert_eq!(out[0].last_price, 1.7);
@@ -731,8 +906,17 @@ mod tests {
         let rules = [rule(1, 1, serde_json::json!({ "take_profit": 1000 }), 1)];
         let fps = [fp(1)];
         // Both healthy (never die) and never hit TP → the first holds open forever.
-        let a = token("aaa", 0.0, vec![trade(0.0, true, 1.0, 1.0, 100.0)]);
-        let b = token("bbb", 1.0, vec![trade(1.0, true, 1.0, 1.0, 100.0)]);
+        // Each needs a post-trigger buy so the worst-case entry window can fill.
+        let a = token(
+            "aaa",
+            0.0,
+            vec![trade(0.0, true, 1.0, 1.0, 100.0), trade(0.4, true, 1.0, 1.05, 100.0)],
+        );
+        let b = token(
+            "bbb",
+            1.0,
+            vec![trade(1.0, true, 1.0, 1.0, 100.0), trade(1.4, true, 1.0, 1.05, 100.0)],
+        );
         let out = run_replay(&rules, &fps, vec![a, b], ReplayConfig { as_of: at(5.0) });
         assert_eq!(out.len(), 1, "cap=1 lets only one token hold at a time");
         assert_eq!(out[0].mint, "aaa", "the earlier token wins the single slot");
@@ -746,8 +930,24 @@ mod tests {
         let fps = [fp(1)];
         let mk = || {
             vec![
-                token("aaa", 0.0, vec![trade(0.0, true, 1.0, 1.0, 100.0), trade(2.0, true, 1.0, 2.5, 100.0)]),
-                token("bbb", 1.0, vec![trade(1.0, true, 1.0, 1.0, 50.0), trade(3.0, false, 1.0, 0.4, 50.0)]),
+                token(
+                    "aaa",
+                    0.0,
+                    vec![
+                        trade(0.0, true, 1.0, 1.0, 100.0),
+                        trade(0.4, true, 1.0, 1.1, 100.0),
+                        trade(10.0, true, 1.0, 2.5, 100.0),
+                    ],
+                ),
+                token(
+                    "bbb",
+                    1.0,
+                    vec![
+                        trade(1.0, true, 1.0, 1.0, 50.0),
+                        trade(1.4, true, 1.0, 1.05, 50.0),
+                        trade(10.0, false, 1.0, 0.4, 50.0),
+                    ],
+                ),
             ]
         };
         let cfg = ReplayConfig { as_of: at(1000.0) };
@@ -810,6 +1010,10 @@ pub fn outcome_to_row(
         mint_address: outcome.mint.clone(),
         symbol: symbol.to_string(),
         created_at,
+        target_price: outcome.target_price,
+        target_token_amount: outcome.target_token_amount,
+        target_time: outcome.target_time,
+        target_tx: outcome.target_tx.clone(),
         entry_price: outcome.entry_price,
         ath_price: None,
         // Match the legacy row: the "entry_token_amount" column carries the SOL

@@ -10,6 +10,7 @@ pub mod analysis;
 pub mod death;
 pub mod fingerprint_axes;
 pub mod kernel;
+pub mod paper_fill;
 pub mod rules;
 // Lives in the pure `hunter-engine` crate; re-exported for path stability.
 pub use hunter_engine::rule_params;

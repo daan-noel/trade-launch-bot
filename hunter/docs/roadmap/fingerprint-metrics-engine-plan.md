@@ -617,9 +617,8 @@ Determinism rules (violation = bug):
       `FillFailed` (⇒ engine resubmit) ONLY when safe (never-signed / confirmed revert /
       definitively-unsold); a truly-ambiguous outcome emits **nothing** and leaves the
       durable row for the reaper. Reuses `snipe_reserves_from_cache`.
-- [x] 4.4 `exec_paper.rs`: transaction-free fill at the token's canonical spot at the
-      instant the engine decided (parity with the sim path — both fill at the spot the
-      triggering event carries). No sigs stashed. Death close stays engine-driven (`Dead`).
+- [x] 4.4 `exec_paper.rs`: worst-case slot-window fill via `trading_core::strategies::paper_fill`
+      (parity with sim/sweep — trigger/`target_*` vs adverse `entry_*`). No sigs stashed. Death close stays engine-driven (`Dead`).
 - [x] 4.5 `sinks.rs`: `PositionUpdate` → `strategy_positions` writer (lazy one-run-per-rule
       via `insert_run`; `record_entry_fill`/`close`; fill sigs threaded via the
       intent-keyed `FillSigStore` since the pure `Fill` carries none) + a **new**

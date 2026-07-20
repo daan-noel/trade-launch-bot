@@ -209,6 +209,7 @@ impl Sink {
                 entry_token_amount: None,
                 token_account: None,
                 entry_price: None,
+                paper_target: None,
                 cashback_enabled: cashback,
                 inflight_intent: None,
             },
@@ -218,6 +219,23 @@ impl Sink {
     async fn on_holding(&mut self, delta: &PositionDelta) {
         let Some(meta) = self.registry.get(delta.position) else { return };
         let Some(fill) = delta.fill else { return };
+        // Paper: persist the trigger (`target_*`) before the worst-case entry fill
+        // so the UI can show the modeled adverse-slippage gap.
+        if let Some(target) = meta.paper_target.clone() {
+            if let Err(e) = self
+                .repo
+                .record_target(
+                    meta.pg_id,
+                    target.price,
+                    target.token_amount,
+                    target.time,
+                    &target.tx,
+                )
+                .await
+            {
+                warn!(pg = %meta.pg_id, "engine sink: record_target failed: {e}");
+            }
+        }
         // Fill signatures + token account stashed by the executor, keyed by intent.
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let entry_tx = fs.sigs.first().map(String::as_str).unwrap_or("");
@@ -240,6 +258,7 @@ impl Sink {
         self.registry.update(delta.position, |m| {
             m.entry_token_amount = Some(fill.token_amount);
             m.entry_price = Some(fill.price);
+            m.paper_target = None;
             if fs.token_account.is_some() {
                 m.token_account = fs.token_account.clone();
             }

@@ -42,7 +42,7 @@ only.
 | `decision_loop.rs` | **THE** one serialized `select!` loop (ingest ping / 500 ms tick / fill / command channels); every `reduce` call happens here; two-pass dispatch = state→PG+SSE *before* submit. `spawn_engine` → `EngineHandles { handle, armed, positions, task }` |
 | `producers.rs` | `StrategyPing` + `TokenCache` → `Event`s; first-slot settlement detection; the live freshness gate; feeds `real_reserve_sol` for deadness parity |
 | `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release, adopt-before-send, `classify_swap_revert` heal (slippage / 2006 / structural→`Fatal`), sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe; `Fatal`/`Unconfirmed` are terminal; Ambiguous emits nothing for the reaper |
-| `exec_paper.rs` | worst-case paper fill model → `FillConfirmed` (sim-parity) |
+| `exec_paper.rs` | worst-case paper fill (`paper_fill`, slot window) → `FillConfirmed` (sim-parity) |
 | `sinks.rs` | `PositionUpdate` → the `strategy_positions` PG writer + `SseEvent::StrategyPositionUpdate`; `ArmedChanged` → `StrategyArmedChanged`; `PositionRegistry` (engine `PositionId` ↔ PG uuid + on-chain facts a sell needs); lazily creates one `strategy_runs` row per rule; stamps the `'generic'` `strategy_id` sentinel; releases SOL on terminal unentered exits |
 | `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send); exit orphan nudge via `FillFailed` or direct `run_exit`; then stale `ExitPending` fail + stale `Arming` delete. Skips `InFlightGuards`-held rows |
 | `event_log.rs` | JSONL recorder (daily rotation + retention) + **conservative** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded) |
@@ -95,7 +95,8 @@ with a first-slot axis arms `PendingFirstSlot` and resolves on `FirstSlotSettled
   over one shared `EngineState`, so cross-token concurrency/lifetime caps apply
   exactly as live (not a post-hoc per-token select). Synthetic 500 ms ticks between
   event times, emission stopping the instant `state.tokens` empties (long quiet gaps
-  are O(1) jumps). Sim fills mirror `exec_paper`.
+  are O(1) jumps). Sim fills mirror `exec_paper` (worst-case slot-window fill via
+  `trading_core::strategies::paper_fill`).
 - **`strategies/engine_sim.rs`** + **`api/handlers/strategies/engine.rs`** —
   `POST /api/strategies/simulate` (`rule_id` OR inline `draft`); reuses the
   fingerprint candidate scan + the analysis-cache single-flight; results served by

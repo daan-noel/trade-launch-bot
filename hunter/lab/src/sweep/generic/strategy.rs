@@ -36,6 +36,9 @@ use hunter_engine::TICK_MS;
 
 use trading_core::config::constants::sol_to_lamports;
 use trading_core::strategies::kernel::{round_trip_with_costs, CostModel, ExitCode};
+use trading_core::strategies::paper_fill::{
+    find_worst_case_paper_entry_at, find_worst_case_paper_exit_at, PaperFill,
+};
 
 use crate::sweep::corpus::CorpusToken;
 use crate::sweep::projection::CorpusTrade;
@@ -302,17 +305,17 @@ impl Strategy for GenericSweepStrategy {
 
     fn resolve_entry(
         &self,
-        _trades: &[CorpusTrade],
+        trades: &[CorpusTrade],
         series: &Self::TokenState,
         bound: &Self::BoundParams,
         _params: &Self::Params,
     ) -> Self::Entry {
-        resolve_entry(series, bound)
+        resolve_entry(trades, series, bound)
     }
 
     fn resolve_exit(
         &self,
-        _trades: &[CorpusTrade],
+        trades: &[CorpusTrade],
         series: &Self::TokenState,
         bound: &Self::BoundParams,
         entry: &Self::Entry,
@@ -322,9 +325,9 @@ impl Strategy for GenericSweepStrategy {
         // AVX-512 toggle still selectable (exit-index plan Phase 5). Default path
         // is the O(log n) index; SIMD remains for A/B. Both must match scalar.
         if crate::sweep::registry::use_simd() {
-            resolve_exit_simd(series, bound, entry, self.buy_amount_sol, &self.cost)
+            resolve_exit_simd(trades, series, bound, entry, self.buy_amount_sol, &self.cost)
         } else {
-            resolve_exit_indexed(series, bound, entry, self.buy_amount_sol, &self.cost, ctx)
+            resolve_exit_indexed(trades, series, bound, entry, self.buy_amount_sol, &self.cost, ctx)
         }
     }
 
@@ -659,9 +662,9 @@ fn col_of(req: &hunter_engine::arm::MetricReq) -> SeriesColumn {
 /// The resolved entry for one combo on one token.
 #[derive(Clone, Copy, Debug)]
 pub enum EntryResolution {
-    /// Never armed→entered: dead/unsatisfiable before entry, or no fill price.
+    /// Never armed→entered: dead/unsatisfiable before entry, or no worst-case fill.
     NoEntry,
-    /// Entered — the fill landed at series row `fill_row`.
+    /// Entered — the worst-case fill landed at series row `fill_row`.
     Entered { fill_row: usize, price: f64, at: Ts },
 }
 
@@ -797,11 +800,16 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usi
 }
 
 /// Walk the series to the entry decision, mirroring the armed-side `decide_arm`:
-/// `Dead > Unsatisfiable > (enter-on-arm | entry conditions)`. The fill lands at
-/// the first row with a finite price at or after the decision (an enter-on-arm or
-/// tick-timed decision before the first print defers to that print — exactly the
-/// engine's `pending_buys` wait-for-price).
-pub(crate) fn resolve_entry(series: &MetricSeries, b: &BoundCombo) -> EntryResolution {
+/// `Dead > Unsatisfiable > (enter-on-arm | entry conditions)`. The fill is the
+/// worst-case adverse buy after the trigger trade (trigger slot + next slot within
+/// [`MAX_FILL_WAIT_SLOTS`](trading_core::config::constants::MAX_FILL_WAIT_SLOTS)) —
+/// same model as live paper / replay. A tick-timed decision before any print uses
+/// the first later trade as the trigger; an empty fill window ⇒ `NoEntry`.
+pub(crate) fn resolve_entry(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    b: &BoundCombo,
+) -> EntryResolution {
     debug_assert_cols_match(series, b);
     let c = &b.rule;
     let n = series.n_rows();
@@ -816,14 +824,20 @@ pub(crate) fn resolve_entry(series: &MetricSeries, b: &BoundCombo) -> EntryResol
             return EntryResolution::NoEntry;
         }
         if enter_on_arm || reqs_satisfied(series, &c.entry_reqs, entry_cols, i) {
-            // Fill at the first finite, positive price at or after the decision.
-            for j in i..n {
-                let p = series.price[j];
-                if p.is_finite() && p > 0.0 {
-                    return EntryResolution::Entered { fill_row: j, price: p, at: series.at[j] };
-                }
-            }
-            return EntryResolution::NoEntry; // never priced ⇒ never filled
+            let Some(trigger_idx) = entry_trigger_trade_idx(series, i) else {
+                return EntryResolution::NoEntry;
+            };
+            let Some(fill) = find_worst_case_paper_entry_at(trades, trigger_idx) else {
+                return EntryResolution::NoEntry;
+            };
+            let Some(fill_row) = series_row_for_trade_idx(series, fill.trade_idx) else {
+                return EntryResolution::NoEntry;
+            };
+            return EntryResolution::Entered {
+                fill_row,
+                price: fill.price,
+                at: fill.block_time,
+            };
         }
     }
     EntryResolution::NoEntry
@@ -833,6 +847,7 @@ pub(crate) fn resolve_entry(series: &MetricSeries, b: &BoundCombo) -> EntryResol
 /// Falls back to scalar [`resolve_exit`] for `NoEntry`, metrics exits, or an
 /// unready index (parity reference never deleted).
 pub(crate) fn resolve_exit_indexed(
+    trades: &[CorpusTrade],
     series: &MetricSeries,
     b: &BoundCombo,
     entry: &EntryResolution,
@@ -847,7 +862,7 @@ pub(crate) fn resolve_exit_indexed(
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
     if c.has_exit_metrics() || !index.is_ready() {
-        return resolve_exit(series, b, entry, buy_amount_sol, cost);
+        return resolve_exit(trades, series, b, entry, buy_amount_sol, cost);
     }
 
     let entry_slot = fill_trade_slot(series, fill_row);
@@ -858,23 +873,12 @@ pub(crate) fn resolve_exit_indexed(
 
     use super::exit_index::{pick_exit_row, ExitKind};
     if let Some((j, kind)) = pick_exit_row(index.dead_row(), sl_row, tp_row) {
-        let p = series.price[j];
         let exit = match kind {
             ExitKind::Dead => ExitCode::Dead,
             ExitKind::StopLoss => ExitCode::StopLoss,
             ExitKind::TakeProfit => ExitCode::TakeProfit,
         };
-        return closed(
-            exit,
-            entry_price,
-            entry_at,
-            entry_slot,
-            p,
-            series.at[j],
-            fill_trade_slot(series, j),
-            buy_amount_sol,
-            cost,
-        );
+        return close_at_fire(trades, series, exit, entry_price, entry_at, entry_slot, j, buy_amount_sol, cost);
     }
 
     // Open: mark to last finite (precomputed on the index for the whole series).
@@ -901,8 +905,10 @@ pub(crate) fn resolve_exit_indexed(
 
 /// Walk from the entry fill to the exit decision, mirroring the open-side
 /// `decide_arm`: `Dead > StopLoss > TakeProfit > Metrics`. No exit by the tail ⇒
-/// `Open`, marked to the last known price.
+/// `Open`, marked to the last known price. Exit *price* is the worst-case adverse
+/// fill after the firing row (analysis: market-fill fallback on an empty window).
 pub(crate) fn resolve_exit(
+    trades: &[CorpusTrade],
     series: &MetricSeries,
     b: &BoundCombo,
     entry: &EntryResolution,
@@ -926,23 +932,34 @@ pub(crate) fn resolve_exit(
     let exit_cols = &b.exit_cols;
     for j in (fill_row + 1)..n {
         if series.dead[j] {
-            return closed(ExitCode::Dead, entry_price, entry_at, entry_slot, series.price[j], series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
+            return close_at_fire(
+                trades, series, ExitCode::Dead, entry_price, entry_at, entry_slot, j, buy_amount_sol, cost,
+            );
         }
         let p = series.price[j];
         if p.is_finite() {
             if let Some(sl) = c.stop_loss {
                 if p <= entry_price * (1.0 - sl / 100.0) {
-                    return closed(ExitCode::StopLoss, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
+                    return close_at_fire(
+                        trades, series, ExitCode::StopLoss, entry_price, entry_at, entry_slot, j,
+                        buy_amount_sol, cost,
+                    );
                 }
             }
             if let Some(tp) = c.take_profit {
                 if p >= entry_price * (1.0 + tp / 100.0) {
-                    return closed(ExitCode::TakeProfit, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
+                    return close_at_fire(
+                        trades, series, ExitCode::TakeProfit, entry_price, entry_at, entry_slot, j,
+                        buy_amount_sol, cost,
+                    );
                 }
             }
         }
         if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, exit_cols, j) {
-            return closed(ExitCode::Metrics, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
+            return close_at_fire(
+                trades, series, ExitCode::Metrics, entry_price, entry_at, entry_slot, j, buy_amount_sol,
+                cost,
+            );
         }
     }
     // Open: mark to the last finite price (unrealized — excluded from the realized
@@ -984,6 +1001,7 @@ pub(crate) fn resolve_exit(
 /// (`has_exit_metrics`) and on any host without AVX-512, so it is always safe to
 /// call directly — the parity guard and the runtime CPU gate both rely on that.
 pub(crate) fn resolve_exit_simd(
+    trades: &[CorpusTrade],
     series: &MetricSeries,
     b: &BoundCombo,
     entry: &EntryResolution,
@@ -1000,7 +1018,7 @@ pub(crate) fn resolve_exit_simd(
     // SSOT. The CPU gate already forces scalar when AVX-512 is absent, but re-check
     // here so a direct caller (the parity guard, a non-AVX-512 host) stays sound.
     if c.has_exit_metrics() || !simd_available() {
-        return resolve_exit(series, b, entry, buy_amount_sol, cost);
+        return resolve_exit(trades, series, b, entry, buy_amount_sol, cost);
     }
     let entry_slot = fill_trade_slot(series, fill_row);
     let n = series.n_rows();
@@ -1021,7 +1039,9 @@ pub(crate) fn resolve_exit_simd(
         } else {
             ExitCode::TakeProfit
         };
-        return closed(exit, entry_price, entry_at, entry_slot, p, series.at[j], fill_trade_slot(series, j), buy_amount_sol, cost);
+        return close_at_fire(
+            trades, series, exit, entry_price, entry_at, entry_slot, j, buy_amount_sol, cost,
+        );
     }
 
     // Open: identical tail to the scalar path — mark to the last finite price.
@@ -1166,6 +1186,108 @@ fn fill_trade_slot(series: &MetricSeries, row: usize) -> Option<u64> {
     (row..series.n_rows()).find_map(|j| series.slot[j])
 }
 
+/// Corpus trade index that *triggers* an entry decision at series `decision_row`:
+/// the trade on that row when it is a print, else the first print after it
+/// (tick / enter-on-arm before a price — same deferral as replay `pending_buys`).
+fn entry_trigger_trade_idx(series: &MetricSeries, decision_row: usize) -> Option<usize> {
+    if series.slot.get(decision_row).copied().flatten().is_some() {
+        return trade_idx_at_row(series, decision_row);
+    }
+    first_trade_idx_after_row(series, decision_row)
+}
+
+/// Corpus index of the trade on series `row` (`None` when `row` is a tick).
+fn trade_idx_at_row(series: &MetricSeries, row: usize) -> Option<usize> {
+    if series.slot.get(row).copied().flatten().is_none() {
+        return None;
+    }
+    Some(series.slot[..=row].iter().filter(|s| s.is_some()).count() - 1)
+}
+
+/// Corpus index of the first trade row strictly after `row`.
+fn first_trade_idx_after_row(series: &MetricSeries, row: usize) -> Option<usize> {
+    let n = series.n_rows();
+    if n == 0 {
+        return None;
+    }
+    let before = if row >= n {
+        series.slot.iter().filter(|s| s.is_some()).count()
+    } else {
+        series.slot[..=row].iter().filter(|s| s.is_some()).count()
+    };
+    let from = row.saturating_add(1).min(n);
+    let after = series.slot[from..].iter().filter(|s| s.is_some()).count();
+    (after > 0).then_some(before)
+}
+
+/// Series row of the `trade_idx`-th trade print (`None` if out of range).
+fn series_row_for_trade_idx(series: &MetricSeries, trade_idx: usize) -> Option<usize> {
+    let mut seen = 0usize;
+    for (row, slot) in series.slot.iter().enumerate() {
+        if slot.is_some() {
+            if seen == trade_idx {
+                return Some(row);
+            }
+            seen += 1;
+        }
+    }
+    None
+}
+
+/// Worst-case exit fill after the ladder fires at series row `fire_row`.
+/// Analysis path: market-fill at the firing trade when the window is empty.
+fn worst_case_exit_fill(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    fire_row: usize,
+) -> Option<PaperFill> {
+    let fire_idx = trade_idx_at_row(series, fire_row)
+        .or_else(|| {
+            // Tick-timed fire: use the last trade at or before the row as the signal.
+            (0..=fire_row)
+                .rev()
+                .find_map(|r| trade_idx_at_row(series, r))
+        })?;
+    find_worst_case_paper_exit_at(trades, fire_idx, true)
+}
+
+/// Book a closed outcome at the worst-case fill after fire row `j`.
+fn close_at_fire(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    exit: ExitCode,
+    entry_price: f64,
+    entry_at: DateTime<Utc>,
+    entry_slot: Option<u64>,
+    fire_row: usize,
+    buy_amount_sol: f64,
+    cost: &CostModel,
+) -> TokenOutcome {
+    let fill = worst_case_exit_fill(trades, series, fire_row).unwrap_or_else(|| {
+        // No mappable fire trade (should be rare): fall back to the series spot.
+        PaperFill {
+            trade_idx: 0,
+            price: series.price[fire_row],
+            token_amount: 0.0,
+            slot: series.slot[fire_row].unwrap_or(0),
+            block_time: series.at[fire_row],
+            tx_signature: String::new(),
+        }
+    });
+    let exit_row = series_row_for_trade_idx(series, fill.trade_idx).unwrap_or(fire_row);
+    closed(
+        exit,
+        entry_price,
+        entry_at,
+        entry_slot,
+        fill.price,
+        fill.block_time,
+        fill_trade_slot(series, exit_row),
+        buy_amount_sol,
+        cost,
+    )
+}
+
 /// The scan as one call (entry then exit) — the guard test's per-token driver and
 /// the single-combo drill-in's per-token driver (`simulate_generic_one_combo`).
 /// Binds the rule against **this series'** columns, so a single-token caller needs no
@@ -1173,14 +1295,15 @@ fn fill_trade_slot(series: &MetricSeries, row: usize) -> Option<u64> {
 /// (`bind_param`) and reuses that across every token, which is the whole point of
 /// [`BoundCombo`].
 pub(crate) fn scan(
+    trades: &[CorpusTrade],
     series: &MetricSeries,
     c: &CompiledRule,
     buy_amount_sol: f64,
     cost: &CostModel,
 ) -> TokenOutcome {
     let bound = BoundCombo::new(series.columns(), c.clone());
-    let entry = resolve_entry(series, &bound);
-    resolve_exit(series, &bound, &entry, buy_amount_sol, cost)
+    let entry = resolve_entry(trades, series, &bound);
+    resolve_exit(trades, series, &bound, &entry, buy_amount_sol, cost)
 }
 
 #[allow(clippy::too_many_arguments)]
