@@ -591,9 +591,26 @@ impl PumpFunTrader {
         const COMPLETE_OFFSET: usize = 48;
         const CASHBACK_OFFSET: usize = 82;
 
+        let mut out = HashMap::new();
+        // Memoize: cashback is create-time fixed; `is_migrated=true` is terminal.
+        // Unmigrated cached facts are still re-checked (migration can flip).
+        let mut need: Vec<String> = Vec::new();
+        for m in mints {
+            if let Some(f) = self.curve_facts_cache.get(m) {
+                if f.is_migrated {
+                    out.insert(m.clone(), *f);
+                    continue;
+                }
+            }
+            need.push(m.clone());
+        }
+        if need.is_empty() {
+            return out;
+        }
+
         // Derive the bonding-curve PDA for every mint we can parse, keeping the
         // mint string alongside it so results map back to the caller's keys.
-        let derived: Vec<(String, Pubkey)> = mints
+        let derived: Vec<(String, Pubkey)> = need
             .iter()
             .filter_map(|m| {
                 let mint = Pubkey::from_str(m).ok()?;
@@ -601,7 +618,6 @@ impl PumpFunTrader {
             })
             .collect();
 
-        let mut out = HashMap::new();
         // getMultipleAccounts is capped at 100 accounts per request.
         for chunk in derived.chunks(100) {
             let pubkeys: Vec<Pubkey> = chunk.iter().map(|(_, pda)| *pda).collect();
@@ -615,14 +631,13 @@ impl PumpFunTrader {
             for ((mint, _), account) in chunk.iter().zip(accounts) {
                 if let Some(acct) = account {
                     if acct.data.len() > COMPLETE_OFFSET {
-                        out.insert(
-                            mint.clone(),
-                            crate::types::CurveFacts {
-                                is_migrated: acct.data[COMPLETE_OFFSET] != 0,
-                                cashback_enabled: acct.data.len() > CASHBACK_OFFSET
-                                    && acct.data[CASHBACK_OFFSET] != 0,
-                            },
-                        );
+                        let facts = crate::types::CurveFacts {
+                            is_migrated: acct.data[COMPLETE_OFFSET] != 0,
+                            cashback_enabled: acct.data.len() > CASHBACK_OFFSET
+                                && acct.data[CASHBACK_OFFSET] != 0,
+                        };
+                        self.curve_facts_cache.insert(mint.clone(), facts);
+                        out.insert(mint.clone(), facts);
                     }
                 }
             }

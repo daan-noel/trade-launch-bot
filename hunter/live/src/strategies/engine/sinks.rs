@@ -31,6 +31,7 @@ use trading_core::models::{StrategyPosition, StrategyRun};
 use trading_core::state::token_cache::TokenCache;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 
+use crate::ingest::HeldPoolGate;
 use crate::trader::PumpFunTrader;
 
 use super::{ArmedRegistry, FillSigStore, PositionMeta, PositionRegistry};
@@ -62,6 +63,8 @@ pub struct Sink {
     fill_sigs: FillSigStore,
     /// Real trader — used to release SOL commitments on terminal unentered exits.
     trader: Option<Arc<PumpFunTrader>>,
+    /// Retains LaserStream AMM pool subs for unsettled real positions.
+    held_pools: Option<HeldPoolGate>,
     /// The real trading wallet address (position owner for real mode).
     wallet: String,
     /// Per-rule info, refreshed on reload.
@@ -84,6 +87,7 @@ impl Sink {
         fill_sigs: FillSigStore,
         wallet: String,
         trader: Option<Arc<PumpFunTrader>>,
+        held_pools: Option<HeldPoolGate>,
     ) -> Self {
         Self {
             repo,
@@ -93,6 +97,7 @@ impl Sink {
             armed,
             fill_sigs,
             trader,
+            held_pools,
             wallet,
             rules: HashMap::new(),
             run_cache: HashMap::new(),
@@ -237,6 +242,7 @@ impl Sink {
                 inflight_intent: None,
             },
         );
+        self.retain_held_pool(&mint, info.mode);
         let repo = self.repo.clone();
         let pg_id = pos.id;
         let handle = tokio::spawn(async move {
@@ -251,6 +257,7 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else { return };
         self.await_pending_insert(meta.pg_id).await;
         let Some(fill) = delta.fill else { return };
+        self.retain_held_pool(&meta.mint, meta.trade_mode);
         // Paper: persist the trigger (`target_*`) before the worst-case entry fill
         // so the UI can show the modeled adverse-slippage gap.
         if let Some(target) = meta.paper_target.clone() {
@@ -339,6 +346,8 @@ impl Sink {
                 warn!(pg = %meta.pg_id, "engine sink: close update failed: {e}");
             }
         }
+        self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
+            .await;
         self.registry.remove(delta.position);
     }
 
@@ -370,10 +379,54 @@ impl Sink {
                 warn!(pg = %meta.pg_id, "engine sink: {status} update failed: {e}");
             }
         }
+        self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
+            .await;
         self.registry.remove(delta.position);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Keep this mint's PumpSwap pool on the LaserStream filter for the life of
+    /// the real position (independent of `track_post_migration`).
+    fn retain_held_pool(&self, mint: &str, mode: TradeMode) {
+        if mode != TradeMode::Real {
+            return;
+        }
+        let Some(gate) = &self.held_pools else {
+            return;
+        };
+        gate.note(mint);
+        if self
+            .token_cache
+            .get(mint)
+            .map(|e| e.is_migrated)
+            .unwrap_or(false)
+        {
+            gate.track_migrated(mint);
+        }
+    }
+
+    /// Drop held-pool retention once no other open real position shares the mint.
+    async fn release_held_pool(&self, mint: &str, mode: TradeMode, exclude_id: uuid::Uuid) {
+        if mode != TradeMode::Real {
+            return;
+        }
+        let Some(gate) = &self.held_pools else {
+            return;
+        };
+        match self
+            .repo
+            .has_other_open_position_on_mint(&self.wallet, mint, "real", exclude_id)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => gate.release(mint),
+            Err(e) => warn!(
+                mint = %mint,
+                "engine sink: held-pool release check failed (keeping subscription): {e}"
+            ),
+        }
+    }
 
     /// Wait for a background `insert_position` (if any) so later PG writes see the row.
     async fn await_pending_insert(&mut self, pg_id: uuid::Uuid) {

@@ -7,7 +7,10 @@
 
 pub mod consumer;
 pub mod db_writer;
+pub mod held_pools;
 pub mod watchdog;
+
+pub use held_pools::HeldPoolGate;
 
 use std::sync::Arc;
 
@@ -37,6 +40,8 @@ pub struct IngestSpawnResult {
     pub consumer_task: JoinHandle<()>,
     pub db_writer_task: JoinHandle<()>,
     pub ingest_handle: Arc<IngestHandle>,
+    /// Retains AMM pool subscriptions for unsettled real positions.
+    pub held_pools: HeldPoolGate,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -71,6 +76,7 @@ pub async fn spawn_ingest(
         .start(live);
 
     let handle = Arc::new(handle);
+    let held_pools = HeldPoolGate::new(handle.clone(), settings_rx.clone());
 
     let heartbeat = DbHeartbeat::new();
 
@@ -83,6 +89,7 @@ pub async fn spawn_ingest(
         trader,
         trade_signals.clone(),
         handle.clone(),
+        held_pools.clone(),
     );
 
     let db_writer = DbWriter::new(db, trade_signals, heartbeat.clone());
@@ -132,5 +139,6 @@ pub async fn spawn_ingest(
         consumer_task,
         db_writer_task,
         ingest_handle: handle,
+        held_pools,
     }
 }

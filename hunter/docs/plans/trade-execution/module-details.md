@@ -110,8 +110,6 @@ The bonding curve program requires the fee recipient at **exactly instruction ac
 
 ## `reserves.rs` — ReserveCache
 
-WS-fed (not polled). The cache is populated from two sources:
-1. `on_trade_executed` in `pipeline.rs` — every decoded trade includes current virtual reserves; these are the most up-to-date
-2. One-shot RPC fetch on first AMM trade for a mint — prewarms the AMM pool entry
+WS-fed (not polled). The cache is populated from decoded ingest trades (`update_live_reserves`); on a miss/stale read the trade path falls back to a single on-chain vault/`getAccountInfo` read. There is no separate getTransaction prewarm.
 
 Entries are tagged by venue (`Curve` / `Amm`) and have a `freshness_secs` threshold. Stale reads log a warning but are still returned (better than blocking on stale data during a sell decision).

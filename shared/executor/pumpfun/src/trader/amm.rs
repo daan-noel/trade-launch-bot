@@ -35,6 +35,7 @@ use spl_associated_token_account::{
     instruction::create_associated_token_account_idempotent,
 };
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info};
 
@@ -689,6 +690,18 @@ impl PumpFunTrader {
             debug!(mint = %token_mint, "amm_pool_info cache hit (feed harvest; no RPC)");
             return Ok(info);
         }
+        // Singleflight: concurrent cold callers for the same mint share one
+        // getTransaction burst (sell retries / overlapping manual+bot exits).
+        let lock = self
+            .amm_pool_cold_locks
+            .entry(token_mint.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+        if let Some(info) = self.amm_pool_cache.get(token_mint).map(|r| *r) {
+            debug!(mint = %token_mint, "amm_pool_info cache hit after cold wait");
+            return Ok(info);
+        }
         info!(
             mint = %token_mint,
             "amm_pool_info cold path — RPC fallback (no feed harvest since boot)"
@@ -700,6 +713,22 @@ impl PumpFunTrader {
             None => self.derive_amm_pool(&mint),
         };
 
+        let info = self
+            .load_amm_pool_info_from_chain(pool, base_token_program_id, None)
+            .await?;
+        self.amm_pool_cache.insert(token_mint.to_string(), info);
+        Ok(info)
+    }
+
+    /// On-chain pool account → [`AmmPoolInfo`]. When `reuse_fee_share_marker` is
+    /// `Some`, that marker is kept (2006 self-heal) instead of re-running
+    /// `fetch_fee_share_marker`'s getTransaction burst.
+    async fn load_amm_pool_info_from_chain(
+        &self,
+        pool: Pubkey,
+        base_token_program_id: &str,
+        reuse_fee_share_marker: Option<Pubkey>,
+    ) -> Result<AmmPoolInfo> {
         let account = self
             .rpc
             .get_account(&pool)
@@ -711,12 +740,10 @@ impl PumpFunTrader {
         }
 
         let is_cashback_coin = data[AMM_POOL_IS_CASHBACK_OFFSET] != 0;
-        // Non-cashback swaps require a per-coin fee-share marker the deployed
-        // program derives but we can't reproduce offline — recover it from a
-        // recent on-chain swap. Cashback pools use a derivable block in that slot
-        // and don't need it. Done once per coin (the whole AmmPoolInfo is cached).
         let fee_share_marker = if is_cashback_coin {
             None
+        } else if let Some(m) = reuse_fee_share_marker {
+            Some(m)
         } else {
             match self.fetch_fee_share_marker(&pool).await? {
                 Some(m) => Some(m),
@@ -731,18 +758,13 @@ impl PumpFunTrader {
 
         let coin_creator = read_pubkey(data, AMM_POOL_COIN_CREATOR_OFFSET)?;
         let coin_creator_vault_authority = self.amm_coin_creator_vault_authority(&coin_creator);
-        // The creator vault is always a WSOL ATA under the LEGACY token program
-        // (the AMM quote side is wrapped SOL), regardless of the base program.
         let coin_creator_vault_ata = get_associated_token_address_with_program_id(
             &coin_creator_vault_authority,
             &protocol::WSOL_MINT,
             &protocol::TOKEN,
         );
-        // Apr-2026: pool_v2 is required iff the pool has a set coin_creator.
-        // Always appending it when the creator is default shifts the buyback
-        // slot and reverts (InvalidPoolV2 / buyback-not-authorized).
         let needs_pool_v2 = coin_creator != Pubkey::default();
-        let info = AmmPoolInfo {
+        Ok(AmmPoolInfo {
             pool,
             base_mint: read_pubkey(data, 43)?,
             quote_mint: read_pubkey(data, 75)?,
@@ -755,9 +777,7 @@ impl PumpFunTrader {
             is_cashback_coin,
             fee_share_marker,
             needs_pool_v2,
-        };
-        self.amm_pool_cache.insert(token_mint.to_string(), info);
-        Ok(info)
+        })
     }
 
     /// Read the per-coin fee-share marker from a recent on-chain swap of `pool`.
@@ -1067,38 +1087,40 @@ impl PumpFunTrader {
         // Compare the derived vault AUTHORITY, not the raw creator: the authority
         // is what the failing swap actually referenced, and a feed-harvested
         // entry doesn't know its `coin_creator` (only the derived pair).
-        let prev_authority = self
-            .amm_pool_cache
-            .get(token_mint)
-            .map(|r| r.coin_creator_vault_authority);
-        // Evict so `amm_pool_info` performs a fresh on-chain read (canonical pool,
-        // matching the sell path's `pool_override = None`) instead of serving the
-        // stale cached entry.
-        self.amm_pool_cache.remove(token_mint);
+        let prev = self.amm_pool_cache.get(token_mint).map(|r| *r);
+        let prev_authority = prev.map(|p| p.coin_creator_vault_authority);
+        // Reuse a known fee-share marker — the 2006 heal only needs a fresh
+        // coin_creator from the pool account; re-running getTransaction for the
+        // marker is pure waste.
+        let reuse_marker = prev.and_then(|p| p.fee_share_marker);
+        let mint = Pubkey::from_str(token_mint)?;
+        let pool_pk = prev
+            .map(|p| p.pool)
+            .unwrap_or_else(|| self.derive_amm_pool(&mint));
         let pool = self
-            .amm_pool_info(token_mint, None, base_token_program_id)
+            .load_amm_pool_info_from_chain(pool_pk, base_token_program_id, reuse_marker)
             .await?;
+        self.amm_pool_cache.insert(token_mint.to_string(), pool);
         if prev_authority == Some(pool.coin_creator_vault_authority) {
             return Ok(None);
         }
         Ok(Some(pool.coin_creator_vault_authority))
     }
 
-    /// override → cache → on-chain lookup (mirrors `sell_token`).
+    /// override → cache → mint-filtered on-chain lookup (same shape as curve sell).
     pub(super) async fn resolve_user_base_account(
         &self,
         token_mint: &str,
         token_account_override: Option<&str>,
     ) -> Result<Pubkey> {
         if let Some(o) = token_account_override {
-            return Pubkey::from_str(o).context("invalid token_account_override");
-        }
-        if let Some(pk) = self.user_token_accounts.get(token_mint).map(|r| *r) {
+            let pk = Pubkey::from_str(o).context("invalid token_account_override")?;
+            self.user_token_accounts
+                .insert(token_mint.to_string(), pk);
             return Ok(pk);
         }
-        let holdings = self.get_all_token_accounts().await?;
-        match holdings.iter().find(|h| h.mint == token_mint) {
-            Some(h) => Pubkey::from_str(&h.token_account).context("invalid token account pubkey"),
+        match self.resolve_cached_token_account(token_mint).await? {
+            Some(pk) => Ok(pk),
             None => bail!("No token account found for mint {}", token_mint),
         }
     }

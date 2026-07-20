@@ -18,6 +18,18 @@ use trading_core::storage::repositories::{
     trade_repo::{SeedAgg, TradeRepo},
 };
 
+/// Outcome of [`seed_token_cache`]: cache is populated, and the caller must
+/// subscribe AMM pools for any unsettled real positions on already-migrated
+/// mints (see [`crate::ingest::HeldPoolGate`]).
+#[derive(Debug, Default)]
+pub struct SeedOutcome {
+    /// Every unsettled real-mode mint — retained so a later migration event
+    /// does not untrack the pool while the position is still open.
+    pub held_mints: Vec<String>,
+    /// Subset of [`Self::held_mints`] already migrated — subscribed immediately.
+    pub held_migrated_mints: Vec<String>,
+}
+
 /// Populate `token_cache` from the database so historical tokens and their trade
 /// stats are available after a restart.
 ///
@@ -37,7 +49,10 @@ use trading_core::storage::repositories::{
 ///      `SEED_TRADES_PER_MINT` per mint into the cache, lifetime aggregates carried
 ///      along — no separate aggregate pass. Unsettled-position mints first so their
 ///      exits resume soonest.
-pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> anyhow::Result<()> {
+pub async fn seed_token_cache(
+    pool: &PgPool,
+    token_cache: Arc<TokenCache>,
+) -> anyhow::Result<SeedOutcome> {
     let token_repo = TokenRepo::new(pool.clone());
     let trade_repo = TradeRepo::new(pool.clone());
 
@@ -72,7 +87,7 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
     let total = token_by_mint.len();
     if total == 0 {
         info!("Cache seed: no tokens in DB — nothing to load");
-        return Ok(());
+        return Ok(SeedOutcome::default());
     }
 
     // 2. Persisted metrics for the seeded set.
@@ -111,12 +126,32 @@ pub async fn seed_token_cache(pool: &PgPool, token_cache: Arc<TokenCache>) -> an
         token_cache.entry(mint).or_insert(state);
     }
 
+    // Unsettled real positions on already-migrated mints need their PumpSwap
+    // pools on the LaserStream filter immediately — otherwise the first AMM exit
+    // after restart falls through to the getTransaction cold path.
+    let held_mints: Vec<String> = held_set.iter().cloned().collect();
+    let mut held_migrated_mints: Vec<String> = Vec::new();
+    for mint in &held_mints {
+        let migrated = token_cache
+            .get(mint)
+            .map(|e| e.is_migrated)
+            .or_else(|| info_by_mint.get(mint).map(|i| i.is_migrated))
+            .unwrap_or(false);
+        if migrated {
+            held_migrated_mints.push(mint.clone());
+        }
+    }
+
     info!(
         held = held_present.len(),
+        held_migrated = held_migrated_mints.len(),
         "Cache seed complete: {total} tokens loaded from DB"
     );
 
-    Ok(())
+    Ok(SeedOutcome {
+        held_mints,
+        held_migrated_mints,
+    })
 }
 
 /// Assemble a complete `TokenState` from a token row, its optional persisted

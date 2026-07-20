@@ -52,10 +52,14 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Skip counters for stuck BuySubmitted rows past the review window — still
+        // try feed-adopt every tick, but don't burn signature_state RPC every 60s.
+        let mut stuck_rpc_skip: std::collections::HashMap<uuid::Uuid, u8> =
+            std::collections::HashMap::new();
         // Do NOT consume the immediate first tick — boot sweep runs right away.
         loop {
             tick.tick().await;
-            redrive_orphaned_buy_submitted(&deps).await;
+            redrive_orphaned_buy_submitted(&deps, &mut stuck_rpc_skip).await;
             redrive_orphaned_exit_pending(&deps).await;
             for mode in ["real", "paper"] {
                 match deps.strategy_repo.fail_stale_exit_pending(mode, EXIT_PENDING_STALE).await {
@@ -73,9 +77,16 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
     })
 }
 
+/// How many reaper ticks to skip `signature_state` RPC for a stuck row past
+/// [`BUY_SUBMITTED_REVIEW`] (feed-adopt still runs every tick). 10 × 60s ≈ 10 min.
+const STUCK_RPC_SKIP_TICKS: u8 = 10;
+
 /// Recover `BuySubmitted` rows — adopt indexed fills, drop only when every
 /// submitted sig confirmed-reverted, else wait. Never re-sends.
-async fn redrive_orphaned_buy_submitted(deps: &ReaperDeps) {
+async fn redrive_orphaned_buy_submitted(
+    deps: &ReaperDeps,
+    stuck_rpc_skip: &mut std::collections::HashMap<uuid::Uuid, u8>,
+) {
     let submitted = match deps.strategy_repo.find_all_buy_submitted("real").await {
         Ok(p) => p,
         Err(err) => {
@@ -84,6 +95,10 @@ async fn redrive_orphaned_buy_submitted(deps: &ReaperDeps) {
         }
     };
     let wallet = deps.trader.wallet_pubkey();
+    let live_ids: std::collections::HashSet<uuid::Uuid> =
+        submitted.iter().map(|p| p.id).collect();
+    stuck_rpc_skip.retain(|id, _| live_ids.contains(id));
+
     for position in submitted {
         if deps.inflight.entry_held(position.id) {
             continue;
@@ -127,6 +142,7 @@ async fn redrive_orphaned_buy_submitted(deps: &ReaperDeps) {
                             "reaper: adopted BuySubmitted fill → Holding"
                         );
                         adopted = true;
+                        stuck_rpc_skip.remove(&position.id);
                         // If the engine still tracks this pg id, synthesize FillConfirmed
                         // so TP/SL monitoring resumes.
                         if let Some(engine_id) = deps.registry.engine_id(position.id) {
@@ -169,6 +185,27 @@ async fn redrive_orphaned_buy_submitted(deps: &ReaperDeps) {
             continue;
         }
 
+        let age = Utc::now().signed_duration_since(position.updated_at);
+        let past_review =
+            age > chrono::Duration::from_std(BUY_SUBMITTED_REVIEW).unwrap_or_default();
+        if past_review {
+            match stuck_rpc_skip.get_mut(&position.id) {
+                Some(n) if *n > 0 => {
+                    *n -= 1;
+                    continue;
+                }
+                _ => {
+                    warn!(
+                        position_id = %position.id,
+                        mint = %position.mint_address,
+                        "reaper: BuySubmitted unresolved past review window — manual review \
+                         (throttling signature_state RPC)"
+                    );
+                    stuck_rpc_skip.insert(position.id, STUCK_RPC_SKIP_TICKS);
+                }
+            }
+        }
+
         // 2. Drop ONLY if EVERY submitted sig is a confirmed revert.
         let mut all_reverted = true;
         for sig in &position.submitted_buy_signatures {
@@ -180,6 +217,7 @@ async fn redrive_orphaned_buy_submitted(deps: &ReaperDeps) {
         }
 
         if all_reverted {
+            stuck_rpc_skip.remove(&position.id);
             match deps.strategy_repo.delete_position(position.id).await {
                 Ok(()) => {
                     deps.trader.release_sol_for_position(&position.id.to_string());
@@ -207,16 +245,6 @@ async fn redrive_orphaned_buy_submitted(deps: &ReaperDeps) {
                     position_id = %position.id,
                     "reaper: delete BuySubmitted failed: {err}"
                 ),
-            }
-        } else {
-            let age = Utc::now().signed_duration_since(position.updated_at);
-            if age > chrono::Duration::from_std(BUY_SUBMITTED_REVIEW).unwrap_or_default() {
-                warn!(
-                    position_id = %position.id,
-                    mint = %position.mint_address,
-                    "reaper: BuySubmitted unresolved past review window — manual review \
-                     (NOT auto-deleting)"
-                );
             }
         }
     }

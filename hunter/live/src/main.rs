@@ -1035,38 +1035,34 @@ async fn main() -> anyhow::Result<()> {
     // FALLBACK for plans/reconnects that don't deliver account pushes — not the primary
     // source. The first tick fires immediately so the affordability cache is non-empty
     // before the first snipe (the feed may not have pushed a wallet update yet); then
-    // every 10 min. Consumer: `PumpFunTrader::can_commit_buy` (reads the cache, no hot-path RPC).
+    // every 10 min, skipping the RPC when the push already refreshed within the window
+    // (same freshness gate as the blockhash watchdog).
     {
         let trader = trader.clone();
         tokio::spawn(async move {
+            const BALANCE_POLL_SECS: u64 = 600;
+            let mut first = true;
             loop {
-                match trader.get_sol_balance().await {
-                    Ok(lamports) => trader.update_balance_lamports_cache(lamports),
-                    Err(e) => warn!("SOL balance safety poll failed (guard stays on last cached value): {e}"),
+                if first
+                    || !trader.balance_cache_is_fresher_than(std::time::Duration::from_secs(
+                        BALANCE_POLL_SECS,
+                    ))
+                {
+                    match trader.get_sol_balance().await {
+                        Ok(lamports) => trader.update_balance_lamports_cache(lamports),
+                        Err(e) => warn!(
+                            "SOL balance safety poll failed (guard stays on last cached value): {e}"
+                        ),
+                    }
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                first = false;
+                tokio::time::sleep(std::time::Duration::from_secs(BALANCE_POLL_SECS)).await;
             }
         });
     }
 
     // In-memory caches (shared between services and API handlers)
     let token_cache = Arc::new(state::token_cache::TokenCache::new());
-
-    // Seed the cache off the boot critical path: ingest/HTTP start immediately and
-    // the cache hydrates in the background (build-then-insert keeps it race-safe vs
-    // the live pipeline). A failure is logged, not fatal — the system still runs and
-    // the cache fills from live events. See `crate::seed`.
-    {
-        let db = db.clone();
-        let token_cache = token_cache.clone();
-        tokio::spawn(async move {
-            let started = std::time::Instant::now();
-            match seed::seed_token_cache(&db, token_cache).await {
-                Ok(()) => info!("Cache seed task finished in {:?}", started.elapsed()),
-                Err(e) => error!("Cache seed task failed (cache will fill from live events): {e}"),
-            }
-        });
-    }
 
     let (sse_tx, _) = tokio::sync::broadcast::channel::<models::ingest::SseEvent>(512);
 
@@ -1159,6 +1155,29 @@ async fn main() -> anyhow::Result<()> {
     let consumer_task = ingest_result.consumer_task;
     let db_writer_task = ingest_result.db_writer_task;
     let ingest_handle = ingest_result.ingest_handle;
+    let held_pools = ingest_result.held_pools;
+
+    // Seed the cache off the boot critical path (after ingest so held migrated
+    // pools can be subscribed immediately). Build-then-insert keeps it race-safe
+    // vs the live pipeline. See `crate::seed`.
+    {
+        let db = db.clone();
+        let token_cache = token_cache.clone();
+        let held_pools = held_pools.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            match seed::seed_token_cache(&db, token_cache).await {
+                Ok(outcome) => {
+                    for mint in &outcome.held_mints {
+                        held_pools.note(mint);
+                    }
+                    held_pools.track_migrated_many(&outcome.held_migrated_mints);
+                    info!("Cache seed task finished in {:?}", started.elapsed());
+                }
+                Err(e) => error!("Cache seed task failed (cache will fill from live events): {e}"),
+            }
+        });
+    }
 
     // Bridge the operator live-mode toggle to the ingest transport. The host
     // `live_tx` (flipped by `PUT /api/system/live`) and the ingest crate's own
@@ -1216,6 +1235,7 @@ async fn main() -> anyhow::Result<()> {
         trade_signals: trade_signals.clone(),
         sse_tx: sse_tx.clone(),
         settings: settings_tx.subscribe(),
+        held_pools,
     });
     let strategies::engine::EngineHandles {
         handle: engine_handle,

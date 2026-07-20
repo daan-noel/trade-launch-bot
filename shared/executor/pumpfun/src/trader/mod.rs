@@ -192,6 +192,9 @@ pub struct PumpFunTrader {
     // get/insert with no `.await` held, and sharding means the WS-ingest writer
     // and the trade readers no longer serialize on one global mutex.
     pub(crate) amm_pool_cache: Arc<DashMap<String, AmmPoolInfo>>,
+    /// Per-mint mutex serializing the `amm_pool_info` cold path so concurrent
+    /// sellers don't each fire `getSignaturesForAddress` + `getTransaction`.
+    pub(crate) amm_pool_cold_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     // GlobalConfig + the instant it was fetched. Governance-mutable fee bps mean
     // a stale cache would silently loosen slippage protection forever; the fetch
     // instant lets `amm_config` refresh past a max-age.
@@ -207,6 +210,9 @@ pub struct PumpFunTrader {
     // Per-mint bonding-curve routing facts (creator / token program / cashback /
     // migration). Served without RPC once a mint is observed migrated.
     pub(crate) curve_routing_cache: Arc<DashMap<String, query::CurveRouting>>,
+    /// Dashboard/wallet `resolve_curve_facts_batch` memo — migration + cashback
+    /// are immutable once observed migrated (cashback is create-time fixed).
+    pub(crate) curve_facts_cache: Arc<DashMap<String, crate::types::CurveFacts>>,
 
     // WS-fed live reserve snapshots (mint → latest post-trade reserves), read on
     // the slippage / AMM-reserve hot path with an on-chain fallback.
@@ -313,11 +319,13 @@ impl PumpFunTrader {
             amm_global_volume_accumulator,
             amm_user_volume_accumulator,
             amm_pool_cache: Arc::new(DashMap::new()),
+            amm_pool_cold_locks: Arc::new(DashMap::new()),
             amm_global_config: Arc::new(std::sync::Mutex::new(None)),
             amm_config_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             user_token_accounts: Arc::new(DashMap::new()),
             token_pdas: Arc::new(DashMap::new()),
             curve_routing_cache: Arc::new(DashMap::new()),
+            curve_facts_cache: Arc::new(DashMap::new()),
             reserve_cache: Arc::new(ReserveCache::default()),
             buy_pool_legacy: Arc::new(Mutex::new(Vec::new())),
             buy_pool_2022: Arc::new(Mutex::new(Vec::new())),

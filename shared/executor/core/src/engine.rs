@@ -487,6 +487,21 @@ impl Engine {
             .unwrap_or_else(|p| p.into_inner()) = Some((lamports, std::time::Instant::now()));
     }
 
+    /// `true` when the push-fed (or last polled) wallet balance is newer than
+    /// `max_age` — used by the host's `getBalance` watchdog to skip RPC when the
+    /// LaserStream account push already covered the tick (mirrors
+    /// [`BlockhashCache::is_fresher_than`]).
+    pub fn balance_cache_is_fresher_than(&self, max_age: std::time::Duration) -> bool {
+        match *self
+            .balance_lamports_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+        {
+            Some((_, at)) => at.elapsed() < max_age,
+            None => false,
+        }
+    }
+
     /// Validate a caller-supplied buy size against `config.limits.max_buy_sol` and
     /// convert to lamports. The crate's last-line spend guard — see the free
     /// [`buy_lamports_checked`] for the rejected cases.

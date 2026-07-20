@@ -35,6 +35,7 @@ use trading_core::{
 use trading_core::ingest::TraderHook;
 
 use super::db_writer::DbWriteOp;
+use super::held_pools::HeldPoolGate;
 
 pub const DB_QUEUE_CAP: usize = 16384;
 pub const STRATEGY_QUEUE_CAP: usize = 512;
@@ -65,6 +66,7 @@ pub struct IngestConsumer {
     trader: Arc<dyn TraderHook>,
     trade_signals: Arc<TradeSignals>,
     ingest_handle: Arc<IngestHandle>,
+    held_pools: HeldPoolGate,
     shed: Arc<ShedCounters>,
 }
 
@@ -79,6 +81,7 @@ impl IngestConsumer {
         trader: Arc<dyn TraderHook>,
         trade_signals: Arc<TradeSignals>,
         ingest_handle: Arc<IngestHandle>,
+        held_pools: HeldPoolGate,
     ) -> (Self, Arc<ShedCounters>) {
         let shed = Arc::new(ShedCounters::default());
         (
@@ -91,6 +94,7 @@ impl IngestConsumer {
                 trader,
                 trade_signals,
                 ingest_handle,
+                held_pools,
                 shed: shed.clone(),
             },
             shed,
@@ -311,9 +315,16 @@ impl IngestConsumer {
     async fn on_token_migrated(&self, e: TokenMigrated, track_post_migration: bool) {
         let mint = e.mint.clone();
 
-        // The decode task auto-registered the pool; undo if tracking is off.
-        if !track_post_migration {
+        // The decode task auto-registered the pool. Keep it when the operator wants
+        // all post-migration AMM traffic, OR when an unsettled real position needs
+        // the feed for zero-RPC pool harvest + sell-confirm. Untracking a held mint
+        // reintroduces the getTransaction cold burst on every AMM exit.
+        if !track_post_migration && !self.held_pools.contains(&mint) {
             self.ingest_handle.untrack_pools(&[mint.clone()]);
+        } else if self.held_pools.contains(&mint) {
+            // Ensure the held set's subscribe path stays in sync if the auto-
+            // register was raced by a clear_pools; track is idempotent.
+            self.held_pools.track_migrated(&mint);
         }
 
         let metrics = self.token_cache.get_mut(&mint).map(|mut token_state| {
@@ -379,18 +390,37 @@ impl IngestConsumer {
     }
 
     fn clear_pools(&self) {
+        // Preserve pools backing unsettled real positions — those are not optional
+        // "record AMM history" subscriptions; exits depend on them.
+        let held = self.held_pools.snapshot();
         let n = self.ingest_handle.pool_index().len();
         self.ingest_handle.pool_index().clear();
+        if !held.is_empty() {
+            self.ingest_handle.track_pools(&held);
+        }
         self.ingest_handle.pools_changed().notify_one();
-        info!("Tracking: post-migration disabled — cleared {n} pool(s); AMM trades no longer recorded");
+        info!(
+            cleared = n,
+            held = held.len(),
+            "Tracking: post-migration disabled — cleared pools; kept {} held-position pool(s)",
+            held.len()
+        );
     }
 
     fn reseed_live_pools(&self) {
         let now = Utc::now();
         let mut mints_to_seed: Vec<String> = Vec::new();
         for entry in self.token_cache.iter() {
-            if entry.is_migrated && pool_is_live(entry.value(), now) {
+            if entry.is_migrated
+                && (pool_is_live(entry.value(), now) || self.held_pools.contains(entry.key()))
+            {
                 mints_to_seed.push(entry.key().clone());
+            }
+        }
+        // Held mints may not still be in the activity window / cache — keep them.
+        for mint in self.held_pools.snapshot() {
+            if !mints_to_seed.iter().any(|m| m == &mint) {
+                mints_to_seed.push(mint);
             }
         }
         if !mints_to_seed.is_empty() {

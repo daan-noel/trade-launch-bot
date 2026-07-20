@@ -75,6 +75,8 @@ pub struct EngineDeps {
     pub trade_signals: Arc<TradeSignals>,
     pub sse_tx: broadcast::Sender<SseEvent>,
     pub settings: watch::Receiver<AppSettings>,
+    /// Retains LaserStream AMM pool subs for unsettled real positions.
+    pub held_pools: crate::ingest::HeldPoolGate,
 }
 
 /// Build the command/fill channels, spawn the loop, and return the HTTP-facing
@@ -128,6 +130,7 @@ async fn run_loop(
         trade_signals,
         sse_tx,
         settings,
+        held_pools,
     } = deps;
 
     let wallet = trader.wallet_pubkey();
@@ -146,6 +149,7 @@ async fn run_loop(
         fill_sigs.clone(),
         wallet.clone(),
         Some(trader.clone()),
+        Some(held_pools),
     );
     let mut recorder = EventLogRecorder::from_env();
 

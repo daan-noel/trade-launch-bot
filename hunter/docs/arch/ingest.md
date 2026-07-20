@@ -65,6 +65,7 @@ Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `s
 | File | Responsibility |
 | --- | --- |
 | `mod.rs` | `spawn_ingest(...)` — builds `Ingest`, starts it, spawns consumer + db_writer tasks, starts watchdog thread; returns `IngestSpawnResult` |
+| `held_pools.rs` | `HeldPoolGate` — keeps PumpSwap pools subscribed for unsettled **real** positions even when `track_post_migration` is off (feed harvest + sell-confirm) |
 | `consumer.rs` | `IngestConsumer` — translates `IngestEvent` → `trading_core` types; fans out to token_cache, DB, strategy, SSE, trader; handles `track_mayhem` / `track_post_migration` policy transitions |
 | `db_writer.rs` | `DbWriter` — batches (1000 ops / 150ms), dedups, persists; stamps `DbHeartbeat` each flush; signals `TradeSignals` per `(wallet,mint)`; `DbWriteOp` variants: `Raw(RawBlobJob)` · `Token` · `Wallet` · `Trade` · `Metrics` · `Migration` |
 | `watchdog.rs` | `DbHeartbeat` (atomic ms stamp), `spawn_watchdog` (OS thread); force-exits when DB queue backed up and no commit within `watchdog_stall_timeout_secs` |
@@ -74,6 +75,8 @@ Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `s
 `on_token_created` (Token+Wallet+Metrics+cache+ping+SSE) · `on_trade` (Trade+Wallet+Metrics+reserves+inline AMM account-list harvest+ping+SSE) · `on_token_migrated` (pool gate+Migration+ping) · `on_creator_activity` (ping) · `on_liquidity` (SSE only)
 
 AMM `Trade` events may carry `amm_swap_accounts` (the top-level PumpSwap swap's resolved account list, harvested by `decode_amm_live_pb`, one per pool per tx). `on_trade` feeds it to `TraderHook::observe_amm_swap_accounts` inline (pure CPU — replaces the old spawned RPC `prewarm_amm_pool`); `amm_pool_prewarmed` still means "trader cache warm for this mint", and a rejected parse just retries on the next swap.
+
+**Held-position pool retention:** `track_post_migration` only gates *all* AMM history recording. Unsettled real positions always keep their pool on the gRPC filter (`HeldPoolGate`, noted by the engine sink + boot seed) so harvest + feed-confirm stay warm. `on_token_migrated` / `clear_pools` must not untrack a held mint — that path was reintroducing the `getSignaturesForAddress` + `getTransaction` cold burst on every AMM exit.
 
 ## Decoder — `decode/`
 
