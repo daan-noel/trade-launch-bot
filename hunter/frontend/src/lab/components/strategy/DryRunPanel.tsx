@@ -23,9 +23,9 @@ const WINDOWS = [
 /**
  * The in-editor dry-run panel (FE3, lab-only): simulate the *unsaved* draft
  * against a recent creation window via the generic simulate endpoint (inline
- * draft), then show the funnel summary. Injected into the shared `RuleEditor`
- * via its `renderDryRun` render-prop, so the shared editor never imports the
- * lab-only simulate endpoints (boundary-clean).
+ * draft), then show the full shared run-summary panel (same tiles as Simulate).
+ * Injected into the shared `RuleEditor` via its `renderDryRun` render-prop, so
+ * the shared editor never imports the lab-only simulate endpoints (boundary-clean).
  */
 export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; canRun: boolean }) {
   const [start] = useStartEngineSimulationMutation();
@@ -113,11 +113,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
         {!canRun && <span className="text-[11px] text-text-dim/70">fix the draft to enable</span>}
       </div>
       {err && <p className="mt-2 text-[11px] text-red">{err}</p>}
-      {summary && (
-        <div className="mt-2">
-          <SimSummary summary={summary} />
-        </div>
-      )}
+      {summary && <SimSummary summary={summary} />}
     </div>
   );
 }

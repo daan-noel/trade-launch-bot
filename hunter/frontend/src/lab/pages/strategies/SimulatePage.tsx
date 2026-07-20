@@ -8,8 +8,10 @@ import { Button } from 'components/ui/Button';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import {
+  DisableIcon,
   DuplicateIcon,
   EditIcon,
+  EnableIcon,
   LinkIcon,
   SimulateIcon,
   SpinnerIcon,
@@ -52,7 +54,12 @@ import {
   toTableRequest,
   type TableRequestBody,
 } from 'services/tableRequest';
-import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
+import {
+  useDisableStrategyRuleMutation,
+  useEnableStrategyRuleMutation,
+  useGetFingerprintsQuery,
+  useGetStrategyRulesQuery,
+} from 'store/sharedEndpoints';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
@@ -112,6 +119,8 @@ export function SimulatePage() {
   const { data: rules = [], isLoading } = useGetStrategyRulesQuery();
   const { data: fps = [] } = useGetFingerprintsQuery();
   const actions = useRuleActions();
+  const [enable] = useEnableStrategyRuleMutation();
+  const [disable] = useDisableStrategyRuleMutation();
   const [start] = useStartEngineSimulationMutation();
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [fetchSummaries] = useGetEngineSimSummariesMutation();
@@ -126,8 +135,18 @@ export function SimulatePage() {
   const [reloadNonce, setReloadNonce] = useState(0);
   /** Soft-archived rules are hidden by default — toggle to review them. */
   const [showDisabled, setShowDisabled] = useState(false);
+  const [opErr, setOpErr] = useState<string | null>(null);
   const handleRef = useRef<{ close: () => void } | null>(null);
   const hydratedIds = useRef<Set<string>>(new Set());
+
+  const runLifecycle = async (fn: () => Promise<unknown>, fail: string) => {
+    setOpErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setOpErr(apiErrorMessage(e as never) ?? fail);
+    }
+  };
 
   const fpById = useMemo(() => new Map(fps.map((f) => [f.id, f])), [fps]);
 
@@ -335,7 +354,9 @@ export function SimulatePage() {
           </IconButton>
         </div>
       </div>
-      {actions.err && <p className="text-[12px] text-red">{actions.err}</p>}
+      {(actions.err || opErr) && (
+        <p className="text-[12px] text-red">{actions.err || opErr}</p>
+      )}
       <DataTable
         columns={columns}
         rows={visibleRules}
@@ -367,6 +388,27 @@ export function SimulatePage() {
             >
               <DuplicateIcon />
             </IconButton>
+            {r.is_enabled ? (
+              <IconButton
+                variant="ghost"
+                size="md"
+                title="Disable — keep this rule but hide it from the default list"
+                aria-label="Disable — keep this rule but hide it from the default list"
+                onClick={() => void runLifecycle(() => disable(r.id).unwrap(), 'Disable failed')}
+              >
+                <DisableIcon />
+              </IconButton>
+            ) : (
+              <IconButton
+                variant="ghost"
+                size="md"
+                title="Enable — restore this rule to the active list"
+                aria-label="Enable — restore this rule to the active list"
+                onClick={() => void runLifecycle(() => enable(r.id).unwrap(), 'Enable failed')}
+              >
+                <EnableIcon />
+              </IconButton>
+            )}
             <IconButton
               variant="danger"
               size="md"

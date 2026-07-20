@@ -887,7 +887,9 @@ function WallTimeline({
                 height: barMaxH + 34,
               }}
             >
-              {cells.map((c) => {
+              {cells.map((c, i) => {
+                const prev = i > 0 ? cells[i - 1]!.start : null;
+                const dayBreak = grain !== 'day' && isWallDayBreak(c.start, prev);
                 const active = selection?.kind === 'wall' && selection.cellId === c.id;
                 const ghost = ghostById?.get(c.id);
                 const ghostH =
@@ -929,6 +931,8 @@ function WallTimeline({
                     }
                     className={cn(
                       'relative flex h-full flex-col items-center justify-end gap-0.5 rounded-sm px-0.5 transition',
+                      // Day boundary: full-height rule so calendar days read as separate blocks.
+                      dayBreak && i > 0 && 'border-l-2 border-info/45 pl-1',
                       active && 'bg-primary/20 ring-1 ring-primary/70',
                       c.n > 0 && onSelect && 'hover:bg-white/5',
                     )}
@@ -1023,11 +1027,19 @@ function WallTimeline({
                     key={c.id}
                     className={cn(
                       'flex min-w-0 flex-col items-center gap-0.5',
+                      dayBreak && i > 0 && 'border-l-2 border-info/45 pl-1',
                       active && 'rounded-sm bg-primary/15',
                     )}
                     title={formatWallTick(c.start, grain)}
                   >
-                    <span className="h-1.5 w-px bg-white/35" />
+                    <span
+                      className={cn(
+                        'w-px',
+                        dayBreak || i === 0
+                          ? 'h-2.5 bg-info/70'
+                          : 'h-1.5 bg-white/35',
+                      )}
+                    />
                     {grain === 'day' ? (
                       <span
                         className={cn(
@@ -1048,7 +1060,12 @@ function WallTimeline({
                           {formatWallClock(c.start, grain)}
                         </span>
                         {(dayBreak || i === 0) && (
-                          <span className="w-full text-center font-mono text-[9px] font-semibold leading-tight text-text-mid">
+                          <span
+                            className={cn(
+                              'w-full text-center font-mono text-[10px] font-bold leading-tight',
+                              active ? 'text-primary' : 'text-info',
+                            )}
+                          >
                             {formatWallDate(c.start)}
                           </span>
                         )}

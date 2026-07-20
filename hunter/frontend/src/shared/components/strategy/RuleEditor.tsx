@@ -83,10 +83,12 @@ function RuleEditorInner({
   const [jsonError, setJsonError] = useState<string | null>(null);
 
   // Conditions (fingerprint + params) are locked once the rule is live — only
-  // sizing/caps stay editable. `trade_mode` is frozen post-create (like
-  // fingerprint) so an in-flight entry retry cannot flip paper↔real.
+  // sizing/caps stay editable. `trade_mode` is frozen on persisted rules
+  // (truthy `id`) so an in-flight entry retry cannot flip paper↔real.
+  // Duplicate / promote pass an id-less `initial` draft to prefill — mode stays
+  // editable there (create path).
   const conditionsLocked = Boolean(initial?.is_active);
-  const modeLocked = Boolean(initial);
+  const modeLocked = Boolean(initial?.id);
 
   const setSide = (side: 'entry' | 'exit', next: SideConditions) =>
     setParams((p) => ({ ...p, [side]: next }));
@@ -288,8 +290,8 @@ function RuleEditorInner({
           size="lg"
           disabled={!canSubmit}
           onClick={submit}
-          label={submitting ? 'Saving…' : initial ? 'Save rule' : 'Create rule'}
-          title={submitting ? 'Saving…' : initial ? 'Save rule' : 'Create rule'}
+          label={submitting ? 'Saving…' : initial?.id ? 'Save rule' : 'Create rule'}
+          title={submitting ? 'Saving…' : initial?.id ? 'Save rule' : 'Create rule'}
         >
           {submitting ? <SpinnerIcon /> : <SaveIcon />}
         </IconButton>
