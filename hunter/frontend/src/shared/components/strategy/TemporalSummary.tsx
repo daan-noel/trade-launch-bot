@@ -36,6 +36,7 @@ import {
   type WallGrainChoice,
   type WallTimeField,
 } from 'lib/strategy/temporalSummary';
+import { signedToneClass } from 'lib/signedTone';
 import { solText } from 'lib/strategy/runSummary';
 
 export type TemporalSelection =
@@ -396,12 +397,12 @@ function SelectionInspector({
         <Stat
           label="PnL"
           value={pnlText(slice.pnl_sol)}
-          cls={pnlCls(slice.pnl_sol)}
+          cls={signedToneClass(slice.pnl_sol)}
         />
         <Stat
           label="Avg"
           value={avg == null ? '—' : pnlText(avg)}
-          cls={avg == null ? undefined : pnlCls(avg)}
+          cls={avg == null ? undefined : signedToneClass(avg)}
         />
         {slice.win_rate != null && closed > 0 && (
           <Stat label="Win" value={`${Math.round(slice.win_rate * 100)}%`} />
@@ -731,7 +732,7 @@ function HoldBars({
               <span
                 className={cn(
                   'font-mono text-[11px] font-bold',
-                  b.n === 0 ? 'text-text-dim' : pnlCls(b.pnl_sol),
+                  b.n === 0 ? 'text-text-dim' : signedToneClass(b.pnl_sol),
                 )}
               >
                 {b.n === 0 ? '—' : pnlText(b.pnl_sol)}
@@ -945,7 +946,7 @@ function WallTimeline({
                     <span
                       className={cn(
                         'w-full truncate text-center font-mono text-[9px] font-bold leading-none',
-                        c.n === 0 ? 'text-transparent' : pnlCls(c.pnl_sol),
+                        c.n === 0 ? 'text-transparent' : signedToneClass(c.pnl_sol),
                       )}
                     >
                       {c.n > 0 ? pnlText(c.pnl_sol) : '0'}
@@ -1130,10 +1131,4 @@ function WallToolbar({
 
 function pnlText(v: number): string {
   return `${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 2)}`;
-}
-
-function pnlCls(v: number): string {
-  if (v > 0) return 'text-green';
-  if (v < 0) return 'text-red';
-  return 'text-text-mid';
 }

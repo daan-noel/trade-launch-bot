@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import type { HoldingsTableSummary } from 'services/api';
 import { cn } from 'lib/cn';
+import { formatSigned, formatSignedPct, signedToneClass } from 'lib/signedTone';
 import { formatCompact, formatUsd } from 'utils/format';
 
 /**
@@ -13,15 +14,6 @@ import { formatCompact, formatUsd } from 'utils/format';
  * refresh / trade), not the 20s display poll — the poll only overlays fresher
  * per-row display values on the current page.
  */
-function pnlClass(v: number | null): string {
-  if (v == null || v === 0) return 'text-text';
-  return v > 0 ? 'text-green' : 'text-red';
-}
-
-function signed(v: number, digits: number): string {
-  return `${v > 0 ? '+' : ''}${formatCompact(v, digits)}`;
-}
-
 const Tile = memo(function Tile({
   label,
   children,
@@ -64,9 +56,9 @@ export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
       </Tile>
       <Tile label="Unrealized PnL">
         {unrealizedSol != null ? (
-          <span className={cn('font-semibold', pnlClass(unrealizedSol))}>
-            ◎{signed(unrealizedSol, 3)}
-            {pnlPct != null && <span className="ml-1 text-xs">({signed(pnlPct, 1)}%)</span>}
+          <span className={cn('font-semibold', signedToneClass(unrealizedSol))}>
+            ◎{formatSigned(unrealizedSol, 3)}
+            {pnlPct != null && <span className="ml-1 text-xs">({formatSignedPct(pnlPct, 1)})</span>}
           </span>
         ) : (
           <span className="text-text-dim">—</span>
@@ -74,8 +66,8 @@ export const HoldingsSummaryBar = memo(function HoldingsSummaryBar({
       </Tile>
       <Tile label="24h Change">
         {summary.change_24h_pct != null ? (
-          <span className={cn('font-semibold', pnlClass(summary.change_24h_pct))}>
-            {signed(summary.change_24h_pct, 2)}%
+          <span className={cn('font-semibold', signedToneClass(summary.change_24h_pct))}>
+            {formatSignedPct(summary.change_24h_pct, 2)}
           </span>
         ) : (
           <span className="text-text-dim">—</span>

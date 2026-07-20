@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { StatTile } from 'components/ui/StatTile';
 import { usePriceUnit } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
+import { formatSigned, formatSignedPct, signedStatTone } from 'lib/signedTone';
 import { TopHoldingsWidget } from '@live/components/home/TopHoldingsWidget';
 import { LiveTradeFeed } from '@live/components/home/LiveTradeFeed';
 import { StrategyStrip } from '@live/components/home/StrategyStrip';
@@ -9,17 +10,6 @@ import {
   useGetPortfolioSummaryQuery,
   useGetLiveModeQuery,
 } from '@live/store/liveEndpoints';
-
-/** `+`-prefixed compact number for signed PnL displays. */
-function signed(v: number, digits: number): string {
-  return `${v > 0 ? '+' : ''}${formatCompact(v, digits)}`;
-}
-
-function pnlTone(v: number): 'green' | 'red' | 'default' {
-  if (v > 0) return 'green';
-  if (v < 0) return 'red';
-  return 'default';
-}
 
 /**
  * Home "Command Center" (live build) — the single pane of glass. KPI tiles deep-link
@@ -60,15 +50,15 @@ export function LiveHomePage() {
         <Link to="/wallet" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
           <StatTile
             label="Unrealized PnL"
-            value={pnlSol != null ? `◎${signed(pnlSol, 3)}` : '—'}
-            sub={pnlPct != null ? `${signed(pnlPct, 1)}%` : undefined}
-            tone={pnlSol != null ? pnlTone(pnlSol) : 'default'}
+            value={pnlSol != null ? `◎${formatSigned(pnlSol, 3)}` : '—'}
+            sub={pnlPct != null ? formatSignedPct(pnlPct, 1) : undefined}
+            tone={signedStatTone(pnlSol)}
           />
         </Link>
         <StatTile
           label="Realized Today"
-          value={realizedToday != null ? `◎${signed(realizedToday, 3)}` : '—'}
-          tone={realizedToday != null ? pnlTone(realizedToday) : 'default'}
+          value={realizedToday != null ? `◎${formatSigned(realizedToday, 3)}` : '—'}
+          tone={signedStatTone(realizedToday)}
         />
         <Link to="/positions" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
           <StatTile

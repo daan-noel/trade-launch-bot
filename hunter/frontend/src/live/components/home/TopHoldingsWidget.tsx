@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { cn } from 'lib/cn';
+import { formatSignedPct, signedToneClass } from 'lib/signedTone';
 import { formatUsd } from 'utils/format';
 import { useGetPortfolioHoldingsQuery } from '@live/store/liveEndpoints';
 
@@ -42,14 +43,8 @@ export function TopHoldingsWidget() {
                 <span className="flex items-center gap-2 tabular-nums">
                   <span className="text-text-mid">{h.value_usd != null ? formatUsd(h.value_usd) : '—'}</span>
                   {pct != null && (
-                    <span
-                      className={cn(
-                        'w-14 text-right font-semibold',
-                        pct > 0 ? 'text-green' : pct < 0 ? 'text-red' : 'text-text-dim',
-                      )}
-                    >
-                      {pct > 0 ? '+' : ''}
-                      {pct.toFixed(1)}%
+                    <span className={cn('w-14 text-right font-semibold', signedToneClass(pct))}>
+                      {formatSignedPct(pct, 1)}
                     </span>
                   )}
                 </span>

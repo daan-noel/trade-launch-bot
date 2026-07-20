@@ -1,4 +1,5 @@
 import { cn } from 'lib/cn';
+import { signedToneClass } from 'lib/signedTone';
 import { formatDecimalTrim } from 'utils/format';
 import type { SummaryStat, SummarySection } from 'components/strategy/SummaryStatsPanel';
 
@@ -40,9 +41,16 @@ export const pctText = (v: number | null | undefined) =>
 export const solText = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? '—' : `◎${v >= 0 ? '+' : ''}${formatDecimalTrim(v, 4)}`;
 
-/** Green at/above `pivot`, red below. The one good/bad tone rule. */
-export const goodBad = (v: number | null | undefined, pivot = 0) =>
-  v != null && Number.isFinite(v) && v >= pivot ? 'text-green' : 'text-red';
+/**
+ * Good/bad tone. Pivot `0` (default) uses the signed PnL rule (`signedToneClass`:
+ * strict sign, zero neutral). Non-zero pivots keep threshold semantics
+ * (at/above → green, below → red) for win-rate / profit-factor / etc.
+ */
+export const goodBad = (v: number | null | undefined, pivot = 0) => {
+  if (v == null || !Number.isFinite(v)) return 'text-text-dim';
+  if (pivot === 0) return signedToneClass(v);
+  return v >= pivot ? 'text-green' : 'text-red';
+};
 
 const pctOf = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toFixed(0)}%`;

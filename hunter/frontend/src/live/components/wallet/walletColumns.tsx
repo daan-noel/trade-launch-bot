@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import type { ColumnDef } from 'components/table/types';
 import type { WalletHolding } from 'types';
 import { cn } from 'lib/cn';
+import { formatSigned, formatSignedPct, signedToneClass } from 'lib/signedTone';
 import { formatCompact } from 'utils/format';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
@@ -105,16 +106,11 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
         const sol = r.unrealized_pnl_sol;
         if (sol == null) return <span className="text-text-dim">—</span>;
         const pct = r.unrealized_pnl_pct;
-        const cls = sol > 0 ? 'text-green' : sol < 0 ? 'text-red' : 'text-text';
         return (
-          <span className={cn('font-semibold tabular-nums', cls)}>
-            ◎{sol > 0 ? '+' : ''}
-            {formatCompact(sol, 3)}
+          <span className={cn('font-semibold tabular-nums', signedToneClass(sol))}>
+            ◎{formatSigned(sol, 3)}
             {pct != null && (
-              <span className="ml-1 text-[11px]">
-                ({pct > 0 ? '+' : ''}
-                {pct.toFixed(1)}%)
-              </span>
+              <span className="ml-1 text-[11px]">({formatSignedPct(pct, 1)})</span>
             )}
           </span>
         );
@@ -144,14 +140,8 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
         if (r.price_change_24h == null) return <span className="text-text-dim">—</span>;
         const c = r.price_change_24h;
         return (
-          <span
-            className={cn(
-              'font-semibold tabular-nums',
-              c > 0 && 'text-green',
-              c < 0 && 'text-red',
-            )}
-          >
-            {c > 0 ? `+${c.toFixed(2)}%` : `${c.toFixed(2)}%`}
+          <span className={cn('font-semibold tabular-nums', signedToneClass(c))}>
+            {formatSignedPct(c, 2)}
           </span>
         );
       },

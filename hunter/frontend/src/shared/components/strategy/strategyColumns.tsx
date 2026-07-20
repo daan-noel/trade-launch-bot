@@ -4,6 +4,7 @@ import { ageClass, formatAge, formatDecimalTrim } from 'utils/format';
 import { AmountCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { DateCell } from 'components/table/DateCell';
 import { cn } from 'lib/cn';
+import { formatSignedPct, signedToneClass } from 'lib/signedTone';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { coreTokenColumns } from 'components/tokens/sharedTokenColumns';
 
@@ -269,9 +270,8 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     render: (r) => {
       if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
       return (
-        <span className={cn('font-bold', r.pnl_percent >= 0 ? 'text-green' : 'text-red')}>
-          {r.pnl_percent >= 0 ? '+' : ''}
-          {r.pnl_percent.toFixed(1)}%
+        <span className={cn('font-bold', signedToneClass(r.pnl_percent))}>
+          {formatSignedPct(r.pnl_percent, 1)}
         </span>
       );
     },
@@ -291,9 +291,8 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
       // basis (mirrors `StrategyPosition::is_win`/`positions_summary`), so color
       // off `pnl_sol` itself rather than `pnl_percent` (price-basis; can disagree
       // with SOL-basis under slippage/fees in real mode).
-      const positive = r.pnl_sol >= 0;
       return (
-        <span className={cn('font-bold', positive ? 'text-green' : 'text-red')}>
+        <span className={cn('font-bold', signedToneClass(r.pnl_sol))}>
           <AmountCell sol={r.pnl_sol} />
         </span>
       );
@@ -441,9 +440,8 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     render: (r) => {
       if (r.pnl_percent == null) return <span className="text-text-dim">—</span>;
       return (
-        <span className={cn('font-bold', r.pnl_percent >= 0 ? 'text-green' : 'text-red')}>
-          {r.pnl_percent >= 0 ? '+' : ''}
-          {r.pnl_percent.toFixed(1)}%
+        <span className={cn('font-bold', signedToneClass(r.pnl_percent))}>
+          {formatSignedPct(r.pnl_percent, 1)}
         </span>
       );
     },
@@ -459,7 +457,7 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     render: (r) => {
       if (r.pnl_sol == null) return <span className="text-text-dim">—</span>;
       return (
-        <span className={cn('font-bold', r.pnl_sol >= 0 ? 'text-green' : 'text-red')}>
+        <span className={cn('font-bold', signedToneClass(r.pnl_sol))}>
           <AmountCell sol={r.pnl_sol} />
         </span>
       );

@@ -116,6 +116,18 @@ Result is stored in `simulationResultSlice` / `swingResultSlice` and retrieved v
 - **No anonymous objects in JSX props** — `style={{ color: 'red' }}` inline creates a new object each render; extract to a const or use Tailwind classes
 - **`useCallback` on event handlers passed to memoized children** — otherwise the child re-renders on every parent render
 
+## Signed value tone — `lib/signedTone.ts`
+
+Glanceable green/red for PnL-like numbers. SSOT:
+
+- `signedToneClass(v)` → Tailwind class (`>0` green, `<0` red, `0` mid, null/NaN dim)
+- `signedStatTone(v)` → `StatTile` tone names
+- `formatSigned` / `formatSignedPct` → `+`-prefixed display strings
+
+`lib/strategy/runSummary.goodBad(v)` (pivot `0`) delegates here so sweep/sim/live summaries
+match wallet/home. Non-zero pivots (win-rate 0.5, profit-factor 1) keep threshold semantics.
+Do **not** reintroduce local `pnlClass` / `v > 0 ? 'text-green' : …` ternaries for signed PnL.
+
 ## localStorage — `lib/storage.ts`
 
 All localStorage access goes through `lib/storage` wrapper. Keys are namespaced `mt:`:
