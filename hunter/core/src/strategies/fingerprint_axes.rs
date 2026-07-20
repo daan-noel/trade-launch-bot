@@ -5,10 +5,9 @@
 //! parity, decision 6): `live`'s `strategies::engine::convert` re-exports it, and
 //! `lab`'s replay producer calls it directly.
 //!
-//! It reproduces exactly what the legacy `tpsl_sniper_1/entry/mod.rs` `check_*`
-//! set read from a token — the `cu_*`/label sequence exact axes and the lamports
-//! axes pulled from the creation instruction args — so the redesign's matcher sees
-//! the same inputs the named strategies did.
+//! The observed axes are the `cu_*`/label-sequence exact axes plus the lamports
+//! axes pulled from the creation instruction args — the full set the engine
+//! matcher grades a fingerprint against.
 //!
 //! This module also holds the DB-row → engine-type converters
 //! ([`fp_to_engine`], [`rule_to_loaded`]) for the same reason: both edges feed the

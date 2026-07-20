@@ -9,8 +9,7 @@ use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::strategies::kernel::{round_trip_with_costs, weighted_return_pct, CostModel};
 use crate::models::portfolio::ManagedMint;
 use crate::models::strategy::{
-    ExitReasonCounts, PositionsSummary, StrategyPosition, LegacyStrategyRule, StrategyRun,
-    StrategyRunMetrics,
+    ExitReasonCounts, PositionsSummary, StrategyPosition, StrategyRun, StrategyRunMetrics,
 };
 use crate::storage::token_enrichment::{
     enrich_filter_sql, enrich_sort_sql, FilterKind, TokenEnrichmentRow, ENRICH_SELECT,
@@ -22,9 +21,10 @@ use crate::storage::token_enrichment::{
 // bind/read as `i64` directly. SOL ↔ lamports use the shared `config::constants`
 // DB-boundary helpers.
 
-/// Repo spanning the unified strategy schema: `strategy_rules_legacy` (the
-/// pre-0004 rules — the redesigned `strategy_rules` lives on `RuleRepo`),
-/// `strategy_runs`, `strategy_run_metrics`, `strategy_positions`.
+/// Repo spanning the unified strategy schema (`strategy_runs`,
+/// `strategy_run_metrics`, `strategy_positions`). The generic engine's rule CRUD
+/// lives on `RuleRepo` (`strategy_rules`); the pre-0004 `strategy_rules_legacy`
+/// table is no longer read here (retired in Phase 7).
 #[derive(Clone)]
 pub struct StrategyRepo {
     pool: PgPool,
@@ -33,39 +33,6 @@ pub struct StrategyRepo {
 // ---------------------------------------------------------------------------
 // DB rows — keep sqlx derives out of domain models
 // ---------------------------------------------------------------------------
-
-#[derive(sqlx::FromRow)]
-struct LegacyStrategyRuleDbRow {
-    id: Uuid,
-    strategy_id: String,
-    rule_name: String,
-    buy_amount_sol: f64,
-    trade_mode: String,
-    is_active: bool,
-    max_concurrent_tokens: Option<i64>,
-    max_total_tokens: Option<i64>,
-    params: Json<Value>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-impl From<LegacyStrategyRuleDbRow> for LegacyStrategyRule {
-    fn from(r: LegacyStrategyRuleDbRow) -> Self {
-        Self {
-            id: r.id,
-            strategy_id: r.strategy_id,
-            rule_name: r.rule_name,
-            buy_amount_sol: r.buy_amount_sol,
-            trade_mode: r.trade_mode,
-            is_active: r.is_active,
-            max_concurrent_tokens: r.max_concurrent_tokens,
-            max_total_tokens: r.max_total_tokens,
-            params: r.params.0,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        }
-    }
-}
 
 #[derive(sqlx::FromRow)]
 struct StrategyRunDbRow {
@@ -207,8 +174,8 @@ struct RuleCountersRow {
 }
 
 /// Shared aggregate column list for the batched per-rule latest-run counters
-/// (`rule_counters_for_latest_paper_runs` / `rule_counters_for_latest_runs`). Kept
-/// in ONE place so the win/open/closed predicates can't drift from each other — and
+/// ([`StrategyRepo::rule_counters_for_latest_paper_runs`]). Kept in ONE place so
+/// the win/open/closed predicates can't drift from each other — and
 /// they mirror [`StrategyRepo::positions_summary`] so the rule-row and the Positions
 /// Summary panel always agree. Expects a `latest l(rule_id, run_id)` CTE LEFT-JOINed
 /// to `strategy_positions p` and a trailing `GROUP BY l.rule_id`.
@@ -327,9 +294,6 @@ struct OpenMark {
 // Explicit column lists (struct order). Not `SELECT *` so a new physical
 // column isn't pulled into every read and the wire contract stays decoupled.
 // ---------------------------------------------------------------------------
-
-const RULE_COLS: &str = "id, strategy_id, rule_name, buy_amount_sol, trade_mode, is_active, \
-    max_concurrent_tokens, max_total_tokens, params, created_at, updated_at";
 
 const RUN_COLS: &str = "id, strategy_id, rule_id, mode, run_seq, status, params_snapshot, \
     max_total_tokens, started_at, finished_at";
@@ -693,102 +657,6 @@ impl StrategyRepo {
     /// (e.g. `trade_repo::find_tx_by_fill` on the paper fill-recovery path).
     pub fn pool(&self) -> &PgPool {
         &self.pool
-    }
-
-    // -- Rules (LEGACY — pre-0004 tpsl/swing rules, read-only reference table;
-    //    the generic engine's rule CRUD lives on `RuleRepo`) --------------------
-
-    pub async fn insert_rule(&self, rule: &LegacyStrategyRule) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO strategy_rules_legacy
-                (id, strategy_id, rule_name, buy_amount_sol, trade_mode, is_active,
-                 max_concurrent_tokens, max_total_tokens, params, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            "#,
-        )
-        .bind(rule.id)
-        .bind(&rule.strategy_id)
-        .bind(&rule.rule_name)
-        .bind(rule.buy_amount_sol)
-        .bind(&rule.trade_mode)
-        .bind(rule.is_active)
-        .bind(rule.max_concurrent_tokens)
-        .bind(rule.max_total_tokens)
-        .bind(Json(&rule.params))
-        .bind(rule.created_at)
-        .bind(rule.updated_at)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn update_rule(&self, rule: &LegacyStrategyRule) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE strategy_rules_legacy SET
-                rule_name = $2,
-                buy_amount_sol = $3,
-                trade_mode = $4,
-                is_active = $5,
-                max_concurrent_tokens = $6,
-                max_total_tokens = $7,
-                params = $8,
-                updated_at = now()
-            WHERE id = $1
-            "#,
-        )
-        .bind(rule.id)
-        .bind(&rule.rule_name)
-        .bind(rule.buy_amount_sol)
-        .bind(&rule.trade_mode)
-        .bind(rule.is_active)
-        .bind(rule.max_concurrent_tokens)
-        .bind(rule.max_total_tokens)
-        .bind(Json(&rule.params))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn find_rule(&self, id: Uuid) -> anyhow::Result<Option<LegacyStrategyRule>> {
-        let row = sqlx::query_as::<_, LegacyStrategyRuleDbRow>(&format!(
-            "SELECT {RULE_COLS} FROM strategy_rules_legacy WHERE id = $1"
-        ))
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(LegacyStrategyRule::from))
-    }
-
-    pub async fn find_rules_by_strategy(
-        &self,
-        strategy_id: &str,
-    ) -> anyhow::Result<Vec<LegacyStrategyRule>> {
-        let rows = sqlx::query_as::<_, LegacyStrategyRuleDbRow>(&format!(
-            "SELECT {RULE_COLS} FROM strategy_rules_legacy WHERE strategy_id = $1 ORDER BY created_at DESC"
-        ))
-        .bind(strategy_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(LegacyStrategyRule::from).collect())
-    }
-
-    pub async fn find_active_rules(&self) -> anyhow::Result<Vec<LegacyStrategyRule>> {
-        let rows = sqlx::query_as::<_, LegacyStrategyRuleDbRow>(&format!(
-            "SELECT {RULE_COLS} FROM strategy_rules_legacy WHERE is_active ORDER BY created_at DESC"
-        ))
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(LegacyStrategyRule::from).collect())
-    }
-
-    pub async fn delete_rule(&self, id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM strategy_rules_legacy WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 
     // -- Runs -----------------------------------------------------------------
@@ -1517,41 +1385,6 @@ impl StrategyRepo {
         Ok(map_rule_counters(rows))
     }
 
-    /// Batched per-rule counters scoped to each rule's **latest run in the rule's own
-    /// `trade_mode`** — the DB source for the **live** rules-list row. Because the
-    /// latest run of an active rule is its current (`Running`) run and the latest run
-    /// of a stopped rule is its last run, this gives "current-run stats while active,
-    /// last-run stats while inactive" from ONE query. Used so the row survives a
-    /// restart and covers inactive rules — the in-memory `closed_stats` cache only
-    /// warms active + `Running` rules on boot ([`load_from_db`]). Aggregation mirrors
-    /// [`positions_summary`] via the shared `RULE_COUNTERS_SELECT`; rules with no run
-    /// / no positions are simply absent (caller defaults them to zero).
-    pub async fn rule_counters_for_latest_runs(
-        &self,
-        strategy_id: &str,
-    ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
-        // `latest` = each rule's newest run IN ITS OWN mode (join on r.trade_mode so a
-        // rule that ever switched modes still resolves to its current mode's run).
-        let sql = format!(
-            "WITH latest AS ( \
-                SELECT DISTINCT ON (r.id) r.id AS rule_id, run.id AS run_id \
-                FROM strategy_rules_legacy r \
-                JOIN strategy_runs run ON run.rule_id = r.id AND run.mode = r.trade_mode \
-                WHERE r.strategy_id = $1 \
-                ORDER BY r.id, run.run_seq DESC \
-            ) \
-            SELECT {RULE_COUNTERS_SELECT} \
-            FROM latest l \
-            LEFT JOIN strategy_positions p ON p.run_id = l.run_id \
-            GROUP BY l.rule_id"
-        );
-        let rows = sqlx::query_as::<_, RuleCountersRow>(&sql)
-            .bind(strategy_id)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(map_rule_counters(rows))
-    }
-
     /// Page-bounded positions for a strategy family — the HTTP list view.
     pub async fn find_positions_by_strategy(
         &self,
@@ -1638,12 +1471,11 @@ impl StrategyRepo {
     /// A mint can have several open positions — the caller picks the one that matters.
     pub async fn managed_mints(&self, real_only: bool) -> anyhow::Result<Vec<ManagedMint>> {
         let rows: Vec<(String, Option<Uuid>, Option<String>, String, String)> = sqlx::query_as(
-            // Positions may reference a generic-engine rule (`strategy_rules`) or a
-            // pre-0004 rule (`strategy_rules_legacy`) — resolve the name from either.
-            "SELECT p.mint_address, p.rule_id, COALESCE(r.rule_name, rl.rule_name), p.status, p.mode \
+            // Positions reference a generic-engine rule (`strategy_rules`); the name
+            // rides along via a LEFT JOIN (null if the rule was since deleted).
+            "SELECT p.mint_address, p.rule_id, r.rule_name, p.status, p.mode \
              FROM strategy_positions p \
              LEFT JOIN strategy_rules r ON r.id = p.rule_id \
-             LEFT JOIN strategy_rules_legacy rl ON rl.id = p.rule_id \
              WHERE p.status NOT IN ('End', 'ExitFailed') \
                AND ($1 = false OR p.mode = 'real') \
              ORDER BY p.created_at DESC",

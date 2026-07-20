@@ -318,7 +318,9 @@ pub async fn get_positions_by_rule(
     let pq = PositionQuery::from(req);
     let repo = repo(&app_state);
 
-    let rule = match repo.find_rule(rule_id).await {
+    // The rule's trade_mode drives run selection. Rules live in the generic
+    // `strategy_rules` table (RuleRepo), not the retired legacy table.
+    let rule = match app_state.rule_repo.find(rule_id).await {
         Ok(Some(rule)) => rule,
         Ok(None) => return json_positions(Vec::new()),
         Err(e) => return list_error("load rule", e),
@@ -400,7 +402,8 @@ pub async fn get_positions_summary_by_rule(
     let repo = repo(&app_state);
     let pq = PositionQuery::from(body.into_inner());
 
-    let rule = match repo.find_rule(rule_id).await {
+    // Rules live in the generic `strategy_rules` table (RuleRepo).
+    let rule = match app_state.rule_repo.find(rule_id).await {
         Ok(Some(rule)) => rule,
         Ok(None) => return HttpResponse::Ok().json(PositionsSummary::default()),
         Err(e) => return list_error("load rule", e),

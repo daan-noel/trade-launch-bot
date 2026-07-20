@@ -39,33 +39,6 @@ impl StrategyRule {
     }
 }
 
-/// LEGACY (pre-0004 schema, now `strategy_rules_legacy`) — a configured rule of
-/// the named tpsl1/tpsl2/swing1 strategies. Kept read-only for reference while
-/// the old strategy modules still compile; deleted with them in Phase 6 of the
-/// strategy redesign.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LegacyStrategyRule {
-    pub id: Uuid,
-    /// Strategy family identifier (e.g. `tpsl_sniper_1`).
-    pub strategy_id: String,
-    /// Human-facing rule label.
-    pub rule_name: String,
-    /// Buy size in SOL per fired token.
-    pub buy_amount_sol: f64,
-    /// Execution mode: `paper` or `real`.
-    pub trade_mode: String,
-    /// Whether the rule is eligible to fire.
-    pub is_active: bool,
-    /// Cap on concurrently-open tokens (None = unbounded).
-    pub max_concurrent_tokens: Option<i64>,
-    /// Cap on total tokens across the run's lifetime (None = unbounded).
-    pub max_total_tokens: Option<i64>,
-    /// Strategy-specific parameters as JSON.
-    pub params: Value,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
 /// One execution of a rule (real or paper). Backs the `strategy_runs` table.
 /// `run_seq` is monotonic per `(rule_id, mode)`; `params_snapshot` freezes the
 /// rule params at launch so later rule edits don't rewrite history.

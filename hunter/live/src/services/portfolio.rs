@@ -184,9 +184,10 @@ pub async fn summary(state: &DeployState) -> anyhow::Result<PortfolioSummary> {
         state.strategy_repo().realized_pnl_lamports_since(start_of_day).await?,
     );
 
+    // Active real rules live in the generic `strategy_rules` table (RuleRepo).
     let active_rules = state
-        .strategy_repo()
-        .find_active_rules()
+        .rule_repo
+        .list_active()
         .await?
         .into_iter()
         .filter(|r| r.trade_mode == "real")
