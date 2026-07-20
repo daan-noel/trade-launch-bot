@@ -67,7 +67,8 @@ function cleanColFilters(map: Record<string, string>): Record<string, string> {
  * touched that table's toggles — silently shipping a feature nobody can see.
  */
 function loadVisibleCols(tableId: string, columns: ColumnDef<unknown>[]): Set<string> {
-  const isDefaultVisible = (c: ColumnDef<unknown>) => c.defaultVisible !== false;
+  const isDefaultVisible = (c: ColumnDef<unknown>) =>
+    c.defaultVisible !== false && !c.sortOnly;
   const defaults = new Set(columns.filter(isDefaultVisible).map((c) => c.key));
   const stored = getTableCols(tableId);
   if (!stored) return defaults;
@@ -75,7 +76,10 @@ function loadVisibleCols(tableId: string, columns: ColumnDef<unknown>[]): Set<st
   if (stored.some((k) => !columns.some((c) => c.key === k))) return defaults;
 
   const known = getTableKnownCols(tableId);
-  const set = new Set(stored.filter((k) => columns.some((c) => c.key === k)));
+  const sortOnlyKeys = new Set(columns.filter((c) => c.sortOnly).map((c) => c.key));
+  const set = new Set(
+    stored.filter((k) => columns.some((c) => c.key === k) && !sortOnlyKeys.has(k)),
+  );
   if (!known) {
     // Legacy blob written before known-columns tracking: new columns can't be
     // distinguished from hidden ones, so union in the defaults once. This may
@@ -278,7 +282,13 @@ export function DataTable<R>({
   const [search, setSearch] = useState('');
   const [colFiltersMap, setColFiltersMap] = useState<Record<string, string>>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() =>
-    tableId ? loadVisibleCols(tableId, columns as ColumnDef<unknown>[]) : new Set(columns.filter((c) => c.defaultVisible !== false).map((c) => c.key)),
+    tableId
+      ? loadVisibleCols(tableId, columns as ColumnDef<unknown>[])
+      : new Set(
+          columns
+            .filter((c) => c.defaultVisible !== false && !c.sortOnly)
+            .map((c) => c.key),
+        ),
   );
   // The column-key set, and a stable string signature of it. Callers don't all
   // memoize their `columns` array, so keying the persist effect on the array
@@ -669,6 +679,7 @@ export function DataTable<R>({
       {colToggle && showColPanel && (() => {
         const grouped: { group: string; cols: typeof columns }[] = [];
         for (const col of columns) {
+          if (col.sortOnly) continue;
           const g = col.group ?? '';
           const last = grouped[grouped.length - 1];
           if (last && last.group === g) last.cols.push(col);

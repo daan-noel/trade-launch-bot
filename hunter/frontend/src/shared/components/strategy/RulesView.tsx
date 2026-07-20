@@ -15,11 +15,8 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
-import { ruleParamsCell, ruleParamsSearchText } from './RuleParamsSummary';
-import {
-  fingerprintParamsCell,
-  fingerprintParamsSearchText,
-} from './FingerprintParamsSummary';
+import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
+import { buildRuleParamsColumns } from './ruleParamsColumns';
 import { RuleHoverTip } from './RuleHoverTip';
 import { useRuleActions } from './useRuleActions';
 import type { RuleEditorDraft } from './RuleEditor';
@@ -270,6 +267,8 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         );
       },
       searchValue: (r) => (r.is_active ? 'active' : 'idle'),
+      // Active before Idle on desc (the natural first click).
+      sortValue: (r) => (r.is_active ? 1 : 0),
     },
     {
       key: 'mode',
@@ -281,24 +280,9 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       searchValue: (r) => r.trade_mode,
       sortValue: (r) => r.trade_mode,
     },
-    {
-      key: 'fingerprint',
-      label: 'Fingerprint',
-      group: 'fingerprint',
-      render: (r) => {
-        const fp = fpById.get(r.fingerprint_id);
-        return (
-          <div className="flex min-w-48 flex-col gap-1">
-            <span className="font-mono text-[12px] text-text-dim">
-              {fp?.name || r.fingerprint_id.slice(0, 8)}
-            </span>
-            {fp ? fingerprintParamsCell(fp) : null}
-          </div>
-        );
-      },
-      searchValue: (r) => fingerprintParamsSearchText(fpById.get(r.fingerprint_id), r.fingerprint_id),
+    ...buildFingerprintRuleColumns(fpById, {
       cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
-    },
+    }),
     {
       key: 'buy',
       label: 'Buy',
@@ -317,13 +301,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       ),
       searchValue: (r) => `${r.max_concurrent_tokens}/${r.max_total_tokens}`,
     },
-    {
-      key: 'params',
-      label: 'Params',
-      group: 'params',
-      render: (r) => ruleParamsCell(r.params),
-      searchValue: (r) => ruleParamsSearchText(r.params),
-    },
+    ...buildRuleParamsColumns(),
     {
       key: 'execute',
       label: 'Execute',

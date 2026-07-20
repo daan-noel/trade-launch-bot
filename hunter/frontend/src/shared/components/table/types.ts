@@ -88,6 +88,12 @@ export interface ColumnDef<R> {
    */
   sortable?: boolean;
   defaultVisible?: boolean;
+  /**
+   * Sort-key-only column: participates in multi-key sort (via `sortValue`) but
+   * stays out of the Columns panel and defaults hidden. Used with a sibling
+   * column's `renderHeader` that calls `toggleSort(this.key)`.
+   */
+  sortOnly?: boolean;
   width?: string;
   group?: string;
 }

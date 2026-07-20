@@ -196,3 +196,19 @@ export function ruleParamsSearchText(raw: unknown): string {
   if (parts.length === 0) return 'fingerprint only';
   return parts.join(' ');
 }
+
+/** Numeric sort keys for the params multi-sort header (null = unset / empty). */
+export function ruleParamsSortParts(raw: unknown): {
+  take_profit: number | null;
+  stop_loss: number | null;
+  entry_count: number | null;
+  exit_count: number | null;
+} {
+  const { take_profit, stop_loss, entry, exit } = parseParams(raw);
+  return {
+    take_profit,
+    stop_loss,
+    entry_count: entry.length > 0 ? entry.length : null,
+    exit_count: exit.length > 0 ? exit.length : null,
+  };
+}

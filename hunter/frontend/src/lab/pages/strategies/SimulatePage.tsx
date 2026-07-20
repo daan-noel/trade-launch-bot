@@ -50,13 +50,10 @@ import {
   type TableRequestBody,
 } from 'services/tableRequest';
 import { useGetFingerprintsQuery, useGetStrategyRulesQuery } from 'store/sharedEndpoints';
-import { ruleParamsCell, ruleParamsSearchText } from 'components/strategy/RuleParamsSummary';
 import { RuleHoverTip } from 'components/strategy/RuleHoverTip';
 import { useRuleActions } from 'components/strategy/useRuleActions';
-import {
-  fingerprintParamsCell,
-  fingerprintParamsSearchText,
-} from 'components/strategy/FingerprintParamsSummary';
+import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
+import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
@@ -775,25 +772,11 @@ function buildColumns(
         <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
       ),
       searchValue: (r) => r.trade_mode,
+      sortValue: (r) => r.trade_mode,
     },
-    {
-      key: 'fingerprint',
-      label: 'Fingerprint',
-      group: 'fingerprint',
-      render: (r) => {
-        const fp = fpById.get(r.fingerprint_id);
-        return (
-          <div className="flex min-w-48 flex-col gap-1">
-            <span className="font-mono text-[12px] text-text-dim">
-              {fp?.name || r.fingerprint_id.slice(0, 8)}
-            </span>
-            {fp ? fingerprintParamsCell(fp) : null}
-          </div>
-        );
-      },
-      searchValue: (r) => fingerprintParamsSearchText(fpById.get(r.fingerprint_id), r.fingerprint_id),
+    ...buildFingerprintRuleColumns(fpById, {
       cellClassName: (r) => fpTints.get(`${r.id}\0fingerprint`),
-    },
+    }),
     {
       key: 'buy',
       label: 'Buy',
@@ -802,13 +785,7 @@ function buildColumns(
       sortValue: (r) => r.buy_amount_lamports,
       sortable: true,
     },
-    {
-      key: 'params',
-      label: 'Params',
-      group: 'params',
-      render: (r) => ruleParamsCell(r.params),
-      searchValue: (r) => ruleParamsSearchText(r.params),
-    },
+    ...buildRuleParamsColumns(),
     {
       key: 'sim_run',
       label: 'Run',
