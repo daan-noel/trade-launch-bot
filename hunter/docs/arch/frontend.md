@@ -165,8 +165,8 @@ next load (no per-metric frontend work).
   `renderDryRun` slot), `FingerprintPicker`/`FingerprintForm` (registry-driven
   `metric_config` section + `VolumeIxPatternsEditor` for `m_flow_split.volume_ix_patterns`),
   `RulesView`/`FingerprintsView` (shared list+editor, mounted by both apps'
-  `RulesPage`/`FingerprintsPage`; fingerprint row select expands the rules that
-  reference it — the "Used by" column is only the count),
+  `RulesPage`/`FingerprintsPage`; fingerprint "Used by" shows rule-name chips,
+  row select + edit modal expand the full consumer list),
   `RuleParamsSummary` (`ruleParamsCell` — TP/SL + in/out metric chips; used by Rules,
   Simulate, and the generic sweep tables),
   `FingerprintParamsSummary` (`fingerprintParamsCell` — set match-axis chips + bucket;
@@ -353,15 +353,6 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 
 ## Known follow-ups (NOT yet done)
 
-- **Strategy split by job (plan §7):** the lab `Tpsl{1,2}Page` still carry live-only controls
-  (activate/pause/stop, manual sell) that the **lab** backend doesn't serve — so the lab
-  build still imports `useSellTokenMutation` from `@live/store/liveEndpoints` (a workstation-only
-  leak; the prod live bundle is clean). Splitting into a live `LiveStrategiesPage` (`/strategies/live`,
-  full live control) + lab `AuthoringTpsl{1,2}Page` (CRUD + simulate + paper only) is pending —
-  it **depends on the backend follow-up** below.
-- **Backend follow-up:** register rule **CRUD + activate/pause/stop** (and `/matched`) on the
-  **live** bin; until then a live Live-Strategies page would 404. See
-  `live/src/strategies/tpsl_sniper_1/lifecycle.rs` (logic exists, no HTTP route).
 - **No enforced boundary:** a few `src/shared/*` files do real value imports from `@lab` (e.g.
   `dashboard/GroupedCreationSection.tsx` → `labEndpoints`); they stay out of the live bundle only
   because no live route reaches them (tree-shaking),

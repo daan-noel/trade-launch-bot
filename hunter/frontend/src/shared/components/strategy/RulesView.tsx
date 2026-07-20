@@ -83,7 +83,8 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     return acc;
   }, [rules]);
 
-  // SSE: confirm pause flips + track stop rollups.
+  // SSE: live engine broadcasts rule flips; also tracks stop rollups.
+  // Pause success clears `pausingIds` itself (lab has no `tpsl_rules_changed`).
   useEffect(() => {
     const rulesH = connectTpslRulesChanged(() => {
       setPausingIds(new Set());
@@ -132,17 +133,24 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     }
   };
 
+  const clearPausing = (ids: Iterable<string>) => {
+    setPausingIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  };
+
   const pauseRule = (r: StrategyRule) => {
     setPausingIds((prev) => new Set(prev).add(r.id));
     void run(async () => {
       try {
         await pause(r.id).unwrap();
+        // Don't wait for `tpsl_rules_changed` — lab never emits it, and live
+        // SSE can lag; mutation success + RTK invalidation already flipped Idle.
+        clearPausing([r.id]);
       } catch (e) {
-        setPausingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(r.id);
-          return next;
-        });
+        clearPausing([r.id]);
         throw e;
       }
     }, 'Pause failed');
@@ -156,7 +164,9 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
       return;
     void run(async () => {
       const res = await stop(r.id).unwrap();
-      if (res.action_id) {
+      // Lab (and live with nothing open) returns total=0 + immediate done SSE;
+      // don't park the row on a "Stopping…" spinner that has no work to track.
+      if (res.action_id && (res.total ?? 0) > 0) {
         setStopByRule((prev) => ({
           ...prev,
           [r.id]: {
@@ -174,12 +184,22 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
   };
 
   const doPauseAll = (mode: TradeMode) => {
-    for (const r of rules) {
-      if (r.is_active && r.trade_mode === mode) {
-        setPausingIds((prev) => new Set(prev).add(r.id));
+    const ids = rules.filter((r) => r.is_active && r.trade_mode === mode).map((r) => r.id);
+    if (ids.length === 0) return;
+    setPausingIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+    void run(async () => {
+      try {
+        await pauseAll(mode).unwrap();
+        clearPausing(ids);
+      } catch (e) {
+        clearPausing(ids);
+        throw e;
       }
-    }
-    void run(() => pauseAll(mode).unwrap(), 'Pause all failed');
+    }, 'Pause all failed');
   };
 
   const doStopAll = (mode: TradeMode) => {
@@ -190,7 +210,7 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
     if (!window.confirm(warn)) return;
     void run(async () => {
       const res = await stopAll(mode).unwrap();
-      if (res.action_id) {
+      if (res.action_id && (res.total ?? 0) > 0) {
         setStopByMode((prev) => ({
           ...prev,
           [mode]: {
@@ -294,7 +314,9 @@ export function RulesView({ renderDryRun }: RulesViewProps) {
         const stopProg = stopByRule[r.id];
         const stopping = !!stopProg && stopProg.status === 'running';
         const pausing = pausingIds.has(r.id);
-        if (r.is_active || stopping || pausing) {
+        // Once inactive (optimistic or server), show Activate — do not keep the
+        // Pause/Stop cluster solely because `pausingIds` hasn't cleared yet.
+        if (r.is_active || stopping) {
           return (
             <IconButtonGroup>
               <IconButton

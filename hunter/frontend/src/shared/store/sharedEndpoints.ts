@@ -249,7 +249,7 @@ export const sharedApi = baseApi.injectEndpoints({
       query: (id) => ({ url: `/api/strategy-rules/${id}/activate`, method: 'POST' }),
       invalidatesTags: ['StrategyRule'],
     }),
-    // Instant flag flip — optimistic Idle patch; `tpsl_rules_changed` SSE confirms.
+    // Instant flag flip — optimistic Idle patch; RulesView clears Pausing on settle.
     pauseStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
       async onQueryStarted(id, { dispatch, queryFulfilled }) {

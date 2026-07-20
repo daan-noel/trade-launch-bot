@@ -247,3 +247,103 @@ pub async fn pause_rule(
 ) -> impl Responder {
     set_rule_active(&app_state, path.into_inner(), false).await
 }
+
+/// `?mode=real|paper` selector for bulk pause (lab twin of the live handler).
+#[derive(serde::Deserialize)]
+pub struct ModeParam {
+    pub mode: String,
+}
+
+/// POST `/api/strategy-rules/pause-all?mode=real|paper` — flip `is_active=false`
+/// for every active rule of `mode`. Lab has no engine, so this is a pure DB flag
+/// flip (live also reloads the engine + emits SSE).
+pub async fn pause_all_rules(
+    app_state: web::Data<Arc<LocalState>>,
+    query: web::Query<ModeParam>,
+) -> impl Responder {
+    pause_all_of_mode(&app_state, query.mode.as_str()).await
+}
+
+async fn pause_all_of_mode(state: &LocalState, mode: &str) -> HttpResponse {
+    let rules = match rule_repo(state).list().await {
+        Ok(v) => v,
+        Err(e) => return srv_err("pause-all: list rules", e),
+    };
+    let mut paused = 0usize;
+    for mut rule in rules
+        .into_iter()
+        .filter(|r| r.is_active && r.trade_mode == mode)
+    {
+        rule.is_active = false;
+        rule.updated_at = chrono::Utc::now();
+        if let Err(e) = rule_repo(state).update(&rule).await {
+            return srv_err("pause-all: update rule", e);
+        }
+        paused += 1;
+    }
+    HttpResponse::Ok().json(serde_json::json!({ "paused": paused }))
+}
+
+/// Emit a terminal `action_progress` so the Rules UI clears its Stopping spinner
+/// (lab has no positions to close — `total` is always 0).
+fn emit_stop_done(
+    state: &LocalState,
+    action_id: Uuid,
+    rule_id: Option<Uuid>,
+) {
+    let _ = state.sse_tx.send(trading_core::models::ingest::SseEvent::ActionProgress {
+        action_id,
+        mint_address: None,
+        rule_id,
+        kind: "stop".into(),
+        status: "done".into(),
+        done: 0,
+        total: 0,
+        error: None,
+    });
+}
+
+/// POST `/api/strategy-rules/{id}/stop` — lab twin of the live Stop. No engine /
+/// open positions here, so this is deactivate + an immediate `action_progress`
+/// done frame (same 202 wire shape the shared RulesView expects).
+pub async fn stop_rule(
+    app_state: web::Data<Arc<LocalState>>,
+    path: web::Path<Uuid>,
+) -> impl Responder {
+    let id = path.into_inner();
+    let pause_resp = set_rule_active(&app_state, id, false).await;
+    if !pause_resp.status().is_success() {
+        return pause_resp;
+    }
+    let action_id = Uuid::new_v4();
+    emit_stop_done(&app_state, action_id, Some(id));
+    HttpResponse::Accepted().json(serde_json::json!({
+        "action_id": action_id,
+        "kind": "stop",
+        "rule_id": id,
+        "total": 0,
+        "closing": true,
+    }))
+}
+
+/// POST `/api/strategy-rules/stop-all?mode=real|paper` — deactivate every active
+/// rule of `mode` (no positions to force-close on lab).
+pub async fn stop_all_rules(
+    app_state: web::Data<Arc<LocalState>>,
+    query: web::Query<ModeParam>,
+) -> impl Responder {
+    let mode = query.mode.as_str();
+    let pause_resp = pause_all_of_mode(&app_state, mode).await;
+    if !pause_resp.status().is_success() {
+        return pause_resp;
+    }
+    let action_id = Uuid::new_v4();
+    emit_stop_done(&app_state, action_id, None);
+    HttpResponse::Accepted().json(serde_json::json!({
+        "action_id": action_id,
+        "kind": "stop",
+        "mode": mode,
+        "total": 0,
+        "closing": true,
+    }))
+}

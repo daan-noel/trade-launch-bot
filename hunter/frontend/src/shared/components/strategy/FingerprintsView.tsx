@@ -72,19 +72,21 @@ const COLOR_COLS: {
   { key: 'bucket', valueOf: (r) => formatDecimalTrim(tidySolDecimal(r.bucket_size_amount), 6) },
 ];
 
-/** Row-detail panel: which strategy rules reference this fingerprint. */
+/** Expanded row detail: full rule list with status / mode / buy size. */
 function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
   if (rules.length === 0) {
     return (
-      <p className="text-[12px] text-text-dim">
-        Not used by any rules — safe to delete.
-      </p>
+      <div className="rounded-md border border-dashed border-white/12 bg-white/2 px-3 py-2.5">
+        <p className="text-[12px] text-text-dim">
+          Not used by any rules — safe to delete.
+        </p>
+      </div>
     );
   }
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2.5">
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-[12px] font-medium text-text">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">
           Used by {rules.length} rule{rules.length === 1 ? '' : 's'}
         </p>
         <Link
@@ -94,20 +96,24 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
           Open Rules →
         </Link>
       </div>
-      <ul className="flex flex-col gap-1">
+      <ul className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
         {rules.map((r) => (
           <li
             key={r.id}
-            className="flex flex-wrap items-center gap-2 text-[12px] text-text"
+            className="flex flex-col gap-1 rounded-md border border-info/25 bg-info/8 px-2.5 py-2 text-left"
           >
-            <span className="font-medium">{r.rule_name}</span>
-            <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'}>{r.trade_mode}</Badge>
-            <Badge variant={r.is_active ? 'success' : 'neutral'}>
-              {r.is_active ? 'Active' : 'Idle'}
-            </Badge>
-            <span className="tabular-nums text-text-dim">
-              buy {lamportsToSol(r.buy_amount_lamports)}◎
-            </span>
+            <span className="truncate text-[13px] font-semibold text-text">{r.rule_name}</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant={r.trade_mode === 'real' ? 'warning' : 'info'} size="sm">
+                {r.trade_mode}
+              </Badge>
+              <Badge variant={r.is_active ? 'success' : 'neutral'} size="sm">
+                {r.is_active ? 'Active' : 'Idle'}
+              </Badge>
+              <span className="tabular-nums text-[11px] text-text-dim">
+                buy {lamportsToSol(r.buy_amount_lamports)}◎
+              </span>
+            </div>
           </li>
         ))}
       </ul>
@@ -327,7 +333,11 @@ export function FingerprintsView() {
         key: 'used_by',
         label: 'Used by',
         group: 'used',
-        render: (r) => <Badge className="text-lg" variant={r.used_by ? 'info' : 'neutral'}>{r.used_by ?? 0}</Badge>,
+        render: (r) => (
+          <Badge className="text-lg" variant={r.used_by ? 'info' : 'neutral'}>
+            {r.used_by ?? 0}
+          </Badge>
+        ),
         searchValue: (r) => String(r.used_by ?? 0),
         sortValue: (r) => r.used_by ?? 0,
         filterNumber: (r) => r.used_by ?? 0,
@@ -337,10 +347,18 @@ export function FingerprintsView() {
     [valueColors],
   );
 
+  const editingRules =
+    editing && editing !== 'new' ? (rulesByFp.get(editing.id) ?? []) : [];
+
   return (
     <div className="flex flex-col gap-3 p-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-text">Fingerprints</h1>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-lg font-semibold text-text">Fingerprints</h1>
+          <span className="text-sm text-text-mid">
+            Match specs · select a row to see which rules use it
+          </span>
+        </div>
         <IconButton
           variant="success"
           size="lg"
@@ -393,13 +411,16 @@ export function FingerprintsView() {
         onClose={() => setEditing(null)}
       >
         {editing !== null && (
-          <FingerprintForm
-            initial={editing === 'new' ? undefined : editing}
-            onSubmit={submit}
-            onCancel={() => setEditing(null)}
-            submitting={creating || updating}
-            error={err}
-          />
+          <div className="flex flex-col gap-3">
+            {editing !== 'new' && <FingerprintUsedByDetail rules={editingRules} />}
+            <FingerprintForm
+              initial={editing === 'new' ? undefined : editing}
+              onSubmit={submit}
+              onCancel={() => setEditing(null)}
+              submitting={creating || updating}
+              error={err}
+            />
+          </div>
         )}
       </Modal>
     </div>

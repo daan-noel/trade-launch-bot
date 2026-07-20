@@ -102,6 +102,16 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 "/strategy-rules",
                 web::post().to(handlers::strategies::engine_crud::create_rule),
             )
+            // Bulk lifecycle — literal segments before `{id}/...` so they never bind `{id}`.
+            // Lab stop/stop-all deactivate only (no engine / positions to force-close).
+            .route(
+                "/strategy-rules/pause-all",
+                web::post().to(handlers::strategies::engine_crud::pause_all_rules),
+            )
+            .route(
+                "/strategy-rules/stop-all",
+                web::post().to(handlers::strategies::engine_crud::stop_all_rules),
+            )
             .route(
                 "/strategy-rules/{id}",
                 web::get().to(handlers::strategies::engine_crud::get_rule),
@@ -121,6 +131,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategy-rules/{id}/pause",
                 web::post().to(handlers::strategies::engine_crud::pause_rule),
+            )
+            .route(
+                "/strategy-rules/{id}/stop",
+                web::post().to(handlers::strategies::engine_crud::stop_rule),
             )
             // ── Grouped param-sweeps (generic across strategies) ──
             .route(
