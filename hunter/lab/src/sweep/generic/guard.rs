@@ -440,7 +440,7 @@ fn flow_corpus() -> Vec<(CorpusToken, ReplayToken)> {
         token(
             "organic_only",
             vec![
-                ct_flow(1.0, true, 5.0, 1.0, 100.0, Some(&["buy"]), Some("org2")),
+                ct_flow(1.0, true, 5.0, 1.0, 100.0, Some(&["Pump.Fun: Buy"]), Some("org2")),
                 ct_flow(3.0, true, 2.0, 1.2, 102.0, None, Some("org3")),
             ],
         ),

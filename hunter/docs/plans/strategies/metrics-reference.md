@@ -18,7 +18,14 @@ Otherwise **organic**. Contagion is per-token only (cross-token is a future togg
 Config lives on the fingerprint (not the rule):
 
 ```json
-{ "m_flow_split": { "volume_ix_patterns": [["create","buy"], ["buy","closeaccount"]] } }
+{
+  "m_flow_split": {
+    "volume_ix_patterns": [
+      ["Pump.Fun: Create", "Pump.Fun: Buy"],
+      ["Pump.Fun: Buy", "Token Program: CloseAccount"]
+    ]
+  }
+}
 ```
 
 `m_flow_window` reads the **same** `m_flow_split` key (one classifier, two views).

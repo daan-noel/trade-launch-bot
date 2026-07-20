@@ -30,7 +30,7 @@ dev inserting vs. how much real money is arriving").
  │ stats over corpus    │                      └──────────────┘  fingerprints.metric_config
  └──────────────────────┘                                        { "m_flow_split":
                                                                     { "volume_ix_patterns":
-                                                                      [["create","buy"], …] } }
+                                                                      [["Pump.Fun: Buy"], …] } }
                                                                               │
  ═══════════════════════════════════════════════════════════════════════════ │ ═════════
  RUNTIME (live · replay · simulate · sweep — same fold)         RulesReloaded │ compiles
@@ -83,7 +83,7 @@ wallet-tagged/creator.
    mirrors `strategy_rules.params`: **top-level keys = metric group names**, values =
    that group's fingerprint-side config, validated against the engine registry at save:
    ```json
-   { "m_flow_split": { "volume_ix_patterns": [["create","buy"], ["buy","closeaccount"]] } }
+   { "m_flow_split": { "volume_ix_patterns": [["Pump.Fun: Create","Pump.Fun: Buy"], ["Pump.Fun: Buy","Token Program: CloseAccount"]] } }
    ```
    The registry gains a per-group *fingerprint-config* declaration (beside strict
    params), so a future group needing fingerprint-side config = one file + registry
@@ -415,13 +415,13 @@ table so the user can re-sort in the UI.
   "group_by": ["cu_limit", "ix_labels"],
   "groups": [
     {
-      "group_key": { "cu_limit": "200000", "ix_labels": "create | buy" },
+      "group_key": { "cu_limit": "200000", "ix_labels": "Pump.Fun: Create | Pump.Fun: Buy" },
       "n_tokens": 42,
       "n_trades_scored": 12004,          // excl. NULL ix_labels
       "ambiguity": true,                 // top structure lift < LIFT_AMBIGUOUS
       "structures": [
         {
-          "ix_labels": ["create", "buy"],
+          "ix_labels": ["Pump.Fun: Create", "Pump.Fun: Buy"],
           "volume_share": 61.2,
           "wash_symmetry": 0.08,
           "cross_token_recurrence": 95.0,
@@ -449,7 +449,7 @@ window" run — still clamped by server-side max `token_cap` like sweeps):
   "token_cap": 5000,
   "min_tokens": 3,
   "field_filters": { "cu_limit": ["200000"] },
-  "ix_labels_filter": ["create", "buy"]
+  "ix_labels_filter": ["Pump.Fun: Create", "Pump.Fun: Buy"]
 }
 ```
 
@@ -470,7 +470,7 @@ not silent UI workarounds. Keep the kit small (≤10 groups); quality over cover
 | volume share | "the biggest trader" heuristic |
 | wash symmetry | wash loops net to ~0 while gross balloons |
 | cross-token recurrence | creator tooling appears on every token in the batch |
-| **group lift** | the discriminator; lift≈1 on `["buy"]` honestly flags "indistinguishable by structure" |
+| **group lift** | the discriminator; lift≈1 on `["Pump.Fun: Buy"]` honestly flags "indistinguishable by structure" |
 | slot-burst clustering | bundlers |
 | wallet reuse | rotation isn't free within a batch |
 
@@ -491,9 +491,10 @@ not silent UI workarounds. Keep the kit small (≤10 groups); quality over cover
 
 ## 9. Risks / open edges
 
-- **Hash-set classification is only as good as the patterns.** Vanilla `["buy"]`
-  tooling degrades the split to contagion + creator only; the lift score (§7) tells
-  you which groups to trust. This ceiling is inherent to the approach, not a bug.
+- **Hash-set classification is only as good as the patterns.** Vanilla
+  `["Pump.Fun: Buy"]` tooling degrades the split to contagion + creator only; the
+  lift score (§7) tells you which groups to trust. This ceiling is inherent to the
+  approach, not a bug.
 - **`ix_hash=None` history**: pre-0002 PG rows and pre-V0 sealed lake days classify
   everything organic — backtests over that range under-count `vol_*`. Forward-only,
   accepted (decision 7). Discovery **excludes** those rows from score denominators

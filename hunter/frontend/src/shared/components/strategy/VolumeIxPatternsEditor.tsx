@@ -85,7 +85,7 @@ function PatternRow({
             onCommit(next ?? []);
           }}
           error={parsed.error}
-          placeholder='["create", "buy"]'
+          placeholder={'[\n  "Pump.Fun: Buy"\n]'}
         />
       </div>
       {onRemove && (

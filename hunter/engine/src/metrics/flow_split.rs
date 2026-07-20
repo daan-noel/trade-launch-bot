@@ -410,19 +410,22 @@ mod tests {
 
     #[test]
     fn ix_hash_is_order_and_boundary_sensitive() {
-        let a = ix_hash(&["create", "buy"]);
-        let b = ix_hash(&["buy", "create"]);
-        let c = ix_hash(&["createbuy"]);
+        let a = ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"]);
+        let b = ix_hash(&["Pump.Fun: Buy", "Pump.Fun: Create"]);
+        let c = ix_hash(&["Pump.Fun: CreatePump.Fun: Buy"]);
         assert_ne!(a, b);
         assert_ne!(a, c);
-        assert_eq!(a, ix_hash(&["create", "buy"]));
+        assert_eq!(a, ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"]));
     }
 
     #[test]
     fn ix_hash_opt_none_on_empty() {
         let empty: &[&str] = &[];
         assert_eq!(ix_hash_opt(empty), None);
-        assert_eq!(ix_hash_opt(&["buy"]), Some(ix_hash(&["buy"])));
+        assert_eq!(
+            ix_hash_opt(&["Pump.Fun: Buy"]),
+            Some(ix_hash(&["Pump.Fun: Buy"]))
+        );
     }
 
     #[test]
@@ -436,17 +439,23 @@ mod tests {
     fn patterns_from_metric_config() {
         assert!(FlowPatterns::from_metric_config(&json!({})).is_none());
         let p = FlowPatterns::from_metric_config(&json!({
-            "m_flow_split": { "volume_ix_patterns": [["create", "buy"], ["buy"]] }
+            "m_flow_split": {
+                "volume_ix_patterns": [
+                    ["Pump.Fun: Create", "Pump.Fun: Buy"],
+                    ["Pump.Fun: Buy"]
+                ]
+            }
         }))
         .unwrap();
-        assert!(p.contains(ix_hash(&["create", "buy"])));
-        assert!(p.contains(ix_hash(&["buy"])));
-        assert!(!p.contains(ix_hash(&["sell"])));
+        assert!(p.contains(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])));
+        assert!(p.contains(ix_hash(&["Pump.Fun: Buy"])));
+        assert!(!p.contains(ix_hash(&["Pump.Fun: Sell"])));
     }
 
     #[test]
     fn classify_pattern_contagion_creator_and_missing_ix() {
-        let patterns = FlowPatterns::new(BTreeSet::from([ix_hash(&["create", "buy"])]));
+        let patterns =
+            FlowPatterns::new(BTreeSet::from([ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])]));
         let mut st = FlowState::new(patterns);
         st.set_creator(wallet_hash("creator"));
 
@@ -455,7 +464,13 @@ mod tests {
 
         // Pattern match → volume + tags wallet.
         let w = wallet_hash("bot1");
-        let t = trade(Side::Buy, 2.0, Some(ix_hash(&["create", "buy"])), w, 1.0);
+        let t = trade(
+            Side::Buy,
+            2.0,
+            Some(ix_hash(&["Pump.Fun: Create", "Pump.Fun: Buy"])),
+            w,
+            1.0,
+        );
         assert!(st.classify(&t));
         st.on_trade(&t);
         assert!(st.tagged_wallets.contains(&w));
@@ -470,7 +485,7 @@ mod tests {
         assert!(!st.classify(&trade(
             Side::Buy,
             1.0,
-            Some(ix_hash(&["buy"])),
+            Some(ix_hash(&["Pump.Fun: Buy"])),
             wallet_hash("normie2"),
             4.0
         )));
@@ -525,7 +540,7 @@ mod tests {
     fn flow_unconfigured_warning_fires() {
         let params = json!({"entry": {"m_flow_split": {"vol_buy": [{"operator": ">", "value": 1}]}}});
         assert!(flow_unconfigured_warning(&params, &json!({})).is_some());
-        let cfg = json!({"m_flow_split": {"volume_ix_patterns": [["buy"]]}});
+        let cfg = json!({"m_flow_split": {"volume_ix_patterns": [["Pump.Fun: Buy"]]}});
         assert!(flow_unconfigured_warning(&params, &cfg).is_none());
     }
 }

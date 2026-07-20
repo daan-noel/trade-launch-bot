@@ -611,7 +611,7 @@ mod tests {
             leg_index: 0,
             block_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
             tx_signature: vec![7u8; 64], // valid 64-byte sig → non-empty base58
-            ix_labels: serde_json::json!(["buy"]),
+            ix_labels: serde_json::json!(["Pump.Fun: Buy"]),
             wallet_address: "Wallet111".into(),
         }
     }

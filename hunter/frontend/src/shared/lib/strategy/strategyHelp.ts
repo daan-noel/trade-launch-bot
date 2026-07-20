@@ -467,7 +467,7 @@ export const FINGERPRINT_FIELD_HELP = {
       'Ordered instruction-label sequences that mark a trade as volume-side for',
       'm_flow_split / m_flow_window (exact match, same vocabulary as ix_labels).',
       '',
-      'Example row: ["create", "buy"]',
+      'Example row: ["Pump.Fun: Buy"] — same full label strings as trade ix_labels / fingerprint ix_labels.',
       '',
       'Also volume-side: wallets previously tagged on this token, and the creator.',
       'Leave empty to leave flow metrics unconfigured (NaN).',

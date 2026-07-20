@@ -426,46 +426,52 @@ mod tests {
     }
 
     /// Wash-like structure: high gross, near-zero net, shared across tokens in a
-    /// tight CU group — should rank above a vanilla `["buy"]` that also appears
-    /// in the out-of-group window.
+    /// tight CU group — should rank above a vanilla `["Pump.Fun: Buy"]` that also
+    /// appears in the out-of-group window.
     #[test]
     fn wash_structure_ranks_above_ambient_buy() {
-        // Group A (cu=200k): 3 tokens with wash tooling ["create","buy"] + organic buys
+        // Group A (cu=200k): wash tooling ["Pump.Fun: Create","Pump.Fun: Buy"] + organic buys
         let mut tokens = vec![
             tok(
                 "a1",
                 200_000,
                 vec![
-                    trade(&["create", "buy"], "w1", 1.0, true, 100),
-                    trade(&["create", "buy"], "w1", 1.0, false, 100),
-                    trade(&["buy"], "org1", 0.2, true, 110),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w1", 1.0, true, 100),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w1", 1.0, false, 100),
+                    trade(&["Pump.Fun: Buy"], "org1", 0.2, true, 110),
                 ],
             ),
             tok(
                 "a2",
                 200_000,
                 vec![
-                    trade(&["create", "buy"], "w2", 1.0, true, 200),
-                    trade(&["create", "buy"], "w2", 1.0, false, 200),
-                    trade(&["buy"], "org2", 0.2, true, 210),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w2", 1.0, true, 200),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w2", 1.0, false, 200),
+                    trade(&["Pump.Fun: Buy"], "org2", 0.2, true, 210),
                 ],
             ),
             tok(
                 "a3",
                 200_000,
                 vec![
-                    trade(&["create", "buy"], "w3", 1.0, true, 300),
-                    trade(&["create", "buy"], "w3", 1.0, false, 301),
-                    trade(&["buy"], "org3", 0.2, true, 310),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w3", 1.0, true, 300),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "w3", 1.0, false, 301),
+                    trade(&["Pump.Fun: Buy"], "org3", 0.2, true, 310),
                 ],
             ),
         ];
-        // Out-of-group ambient: many vanilla buys so ["buy"] has high window share
+        // Out-of-group ambient: many vanilla buys so ["Pump.Fun: Buy"] has high window share
         for i in 0..10 {
             tokens.push(tok(
                 &format!("b{i}"),
                 300_000,
-                vec![trade(&["buy"], &format!("bx{i}"), 2.0, true, 1000 + i)],
+                vec![trade(
+                    &["Pump.Fun: Buy"],
+                    &format!("bx{i}"),
+                    2.0,
+                    true,
+                    1000 + i,
+                )],
             ));
         }
 
@@ -487,7 +493,7 @@ mod tests {
             .expect("200k group");
         assert!(g.n_tokens >= 3);
         let top = &g.structures[0];
-        assert_eq!(top.ix_labels, vec!["create", "buy"]);
+        assert_eq!(top.ix_labels, vec!["Pump.Fun: Create", "Pump.Fun: Buy"]);
         assert!(
             top.group_lift > LIFT_AMBIGUOUS,
             "wash tooling should lift above ambient: got {}",
@@ -501,8 +507,8 @@ mod tests {
         assert!(!g.ambiguity);
     }
 
-    /// Ambient `["buy"]` alone inside a group that also sees it everywhere ⇒
-    /// lift≈1 and ambiguity flag.
+    /// Ambient `["Pump.Fun: Buy"]` alone inside a group that also sees it
+    /// everywhere ⇒ lift≈1 and ambiguity flag.
     #[test]
     fn ambient_buy_flags_ambiguity() {
         let mut tokens = Vec::new();
@@ -510,7 +516,13 @@ mod tests {
             tokens.push(tok(
                 &format!("t{i}"),
                 200_000,
-                vec![trade(&["buy"], &format!("w{i}"), 1.0, true, 100 + i)],
+                vec![trade(
+                    &["Pump.Fun: Buy"],
+                    &format!("w{i}"),
+                    1.0,
+                    true,
+                    100 + i,
+                )],
             ));
         }
         // Same structure outside the group
@@ -518,7 +530,13 @@ mod tests {
             tokens.push(tok(
                 &format!("o{i}"),
                 300_000,
-                vec![trade(&["buy"], &format!("ow{i}"), 1.0, true, 200 + i)],
+                vec![trade(
+                    &["Pump.Fun: Buy"],
+                    &format!("ow{i}"),
+                    1.0,
+                    true,
+                    200 + i,
+                )],
             ));
         }
         let corpus = Corpus {
@@ -541,7 +559,7 @@ mod tests {
         let buy = g
             .structures
             .iter()
-            .find(|s| s.ix_labels == ["buy"])
+            .find(|s| s.ix_labels == ["Pump.Fun: Buy"])
             .expect("buy structure");
         assert!(
             (buy.group_lift - 1.0).abs() < 0.15,
@@ -554,18 +572,18 @@ mod tests {
     /// or the fixture expects ambiguity.
     #[test]
     fn hand_label_kit_synthetic() {
-        // Fixture: wash group expects ["create","buy"] in top-5; ambient-only
-        // group expects ambiguity.
+        // Fixture: wash group expects create+buy in top-5; ambient-only group
+        // expects ambiguity. Labels use the real ingest vocabulary.
         let labels: Value = serde_json::json!([
             {
                 "group_key": { "cu_limit": "200000" },
-                "volume_structures": [["create", "buy"]],
+                "volume_structures": [["Pump.Fun: Create", "Pump.Fun: Buy"]],
                 "expected_ambiguous": false,
                 "notes": "synthetic wash batch"
             },
             {
                 "group_key": { "cu_limit": "300000" },
-                "volume_structures": [["buy"]],
+                "volume_structures": [["Pump.Fun: Buy"]],
                 "expected_ambiguous": true,
                 "notes": "ambient buy only"
             }
@@ -576,24 +594,24 @@ mod tests {
                 "w1",
                 200_000,
                 vec![
-                    trade(&["create", "buy"], "a", 1.0, true, 1),
-                    trade(&["create", "buy"], "a", 1.0, false, 1),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "a", 1.0, true, 1),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "a", 1.0, false, 1),
                 ],
             ),
             tok(
                 "w2",
                 200_000,
                 vec![
-                    trade(&["create", "buy"], "b", 1.0, true, 2),
-                    trade(&["create", "buy"], "b", 1.0, false, 2),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "b", 1.0, true, 2),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "b", 1.0, false, 2),
                 ],
             ),
             tok(
                 "w3",
                 200_000,
                 vec![
-                    trade(&["create", "buy"], "c", 1.0, true, 3),
-                    trade(&["create", "buy"], "c", 1.0, false, 3),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "c", 1.0, true, 3),
+                    trade(&["Pump.Fun: Create", "Pump.Fun: Buy"], "c", 1.0, false, 3),
                 ],
             ),
         ];
@@ -601,16 +619,28 @@ mod tests {
             tokens.push(tok(
                 &format!("amb{i}"),
                 300_000,
-                vec![trade(&["buy"], &format!("m{i}"), 1.0, true, 50 + i as u64)],
+                vec![trade(
+                    &["Pump.Fun: Buy"],
+                    &format!("m{i}"),
+                    1.0,
+                    true,
+                    50 + i as u64,
+                )],
             ));
         }
-        // Dilute ["buy"] across many out-of-group tokens so the 300k-only
+        // Dilute ["Pump.Fun: Buy"] across many out-of-group tokens so the 300k-only
         // ambient group has lift≈1 (ambiguous), while wash at 200k still lifts.
         for i in 0..20 {
             tokens.push(tok(
                 &format!("x{i}"),
                 400_000,
-                vec![trade(&["buy"], &format!("x{i}"), 1.0, true, 90 + i as u64)],
+                vec![trade(
+                    &["Pump.Fun: Buy"],
+                    &format!("x{i}"),
+                    1.0,
+                    true,
+                    90 + i as u64,
+                )],
             ));
         }
 
@@ -688,7 +718,13 @@ mod tests {
             tokens.push(tok(
                 &format!("p{i}"),
                 200_000,
-                vec![trade(&["buy"], &format!("p{i}"), 0.1, true, 10 + i as u64)],
+                vec![trade(
+                    &["Pump.Fun: Buy"],
+                    &format!("p{i}"),
+                    0.1,
+                    true,
+                    10 + i as u64,
+                )],
             ));
         }
         let corpus = Corpus {

@@ -1,11 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Accordion } from 'components/ui/Accordion';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
+import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
+import { fingerprintParamsCell } from 'components/strategy/FingerprintParamsSummary';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { apiErrorMessage } from 'store/baseApi';
@@ -140,16 +142,33 @@ export function FlowDiscoveryPage() {
 
   const [result, setResult] = useState<FlowDiscoveryResult | null>(null);
   const [selectedGroupIdx, setSelectedGroupIdx] = useState(0);
+  /** Apply target — null ⇒ promote-style create/bind from the group key. */
+  const [targetFpId, setTargetFpId] = useState<string | null>(null);
   const [draftPatterns, setDraftPatterns] = useState<string[][]>([]);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOk, setApplyOk] = useState<string | null>(null);
 
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
-  const boundFp = selectedGroup
+  const autoMatchedFp = selectedGroup
     ? matchFingerprint(selectedGroup.group_key, fingerprints, bucketWidthSol)
     : null;
-  const currentPatterns = volumeIxPatternsFromConfig(boundFp?.metric_config ?? {});
+  const targetFp: Fingerprint | null =
+    (targetFpId && fingerprints.find((f) => f.id === targetFpId)) || null;
+  const currentPatterns = volumeIxPatternsFromConfig(targetFp?.metric_config ?? {});
+
+  // When the selected discovery group changes, prefer the identity-axis match
+  // (same as before) but keep the dropdown free to override.
+  useEffect(() => {
+    setTargetFpId(autoMatchedFp?.id ?? null);
+    setDraftPatterns(
+      autoMatchedFp ? volumeIxPatternsFromConfig(autoMatchedFp.metric_config) : [],
+    );
+    setApplyOk(null);
+    // Only re-seed when the group identity changes — not when the fingerprints
+    // list refetches after Apply (that would wipe in-progress toggles).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedGroupIdx is the group SSOT
+  }, [selectedGroupIdx, result?.run_id]);
 
   async function handleRun() {
     if (running || ixFilterError) return;
@@ -209,30 +228,40 @@ export function FlowDiscoveryPage() {
     setApplyOk(null);
   }
 
+  function selectTargetFingerprint(id: string) {
+    const nextId = id || null;
+    setTargetFpId(nextId);
+    setApplyOk(null);
+    if (nextId) {
+      const fp = fingerprints.find((f) => f.id === nextId);
+      if (fp) setDraftPatterns(volumeIxPatternsFromConfig(fp.metric_config));
+    }
+  }
+
   async function handleApply() {
     if (!selectedGroup || draftPatterns.length === 0) return;
     setApplyError(null);
     setApplyOk(null);
     const patterns = draftPatterns.map((p) => p.map((s) => s.trim()).filter(Boolean)).filter((p) => p.length > 0);
     try {
-      if (boundFp) {
+      if (targetFp) {
         await updateFp({
-          id: boundFp.id,
+          id: targetFp.id,
           body: {
-            name: boundFp.name,
-            cu_limit: boundFp.cu_limit,
-            cu_price: boundFp.cu_price,
-            init_buy_lamports: boundFp.init_buy_lamports,
-            max_cost_lamports: boundFp.max_cost_lamports,
-            spendable_lamports_in: boundFp.spendable_lamports_in,
-            first_slot_buy_lamports: boundFp.first_slot_buy_lamports,
-            first_slot_sell_lamports: boundFp.first_slot_sell_lamports,
-            bucket_size_amount: boundFp.bucket_size_amount,
-            ix_labels: boundFp.ix_labels,
+            name: targetFp.name,
+            cu_limit: targetFp.cu_limit,
+            cu_price: targetFp.cu_price,
+            init_buy_lamports: targetFp.init_buy_lamports,
+            max_cost_lamports: targetFp.max_cost_lamports,
+            spendable_lamports_in: targetFp.spendable_lamports_in,
+            first_slot_buy_lamports: targetFp.first_slot_buy_lamports,
+            first_slot_sell_lamports: targetFp.first_slot_sell_lamports,
+            bucket_size_amount: targetFp.bucket_size_amount,
+            ix_labels: targetFp.ix_labels,
             metric_config: metricConfigWithVolumePatterns(patterns),
           },
         }).unwrap();
-        setApplyOk(`Updated fingerprint “${boundFp.name}”.`);
+        setApplyOk(`Updated fingerprint “${targetFp.name}”.`);
       } else {
         const fp = await bindFp({
           group_key: selectedGroup.group_key,
@@ -240,6 +269,7 @@ export function FlowDiscoveryPage() {
           volume_ix_patterns: patterns,
           name: `flow · ${groupKeyLabel(selectedGroup.group_key)}`,
         }).unwrap();
+        setTargetFpId(fp.id);
         setApplyOk(`Bound fingerprint “${fp.name}”.`);
       }
     } catch (e) {
@@ -367,11 +397,7 @@ export function FlowDiscoveryPage() {
                 <button
                   key={i}
                   type="button"
-                  onClick={() => {
-                    setSelectedGroupIdx(i);
-                    setDraftPatterns([]);
-                    setApplyOk(null);
-                  }}
+                  onClick={() => setSelectedGroupIdx(i)}
                   className={`rounded border px-2 py-1.5 text-left text-xs transition ${
                     i === selectedGroupIdx
                       ? 'border-accent/50 bg-accent/10 text-text'
@@ -399,10 +425,47 @@ export function FlowDiscoveryPage() {
                 {selectedGroup.ambiguity && (
                   <Badge variant="warning">top structure lift ≈ 1 — split may be noisy</Badge>
                 )}
-                {boundFp ? (
-                  <Badge variant="info">bound · {boundFp.name}</Badge>
+              </div>
+
+              <div className="rounded border border-white/8 p-3 flex flex-col gap-2">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex min-w-[16rem] flex-1 flex-col gap-1 text-[11px] text-text-dim">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+                      Apply to fingerprint
+                    </span>
+                    <Select
+                      fieldSize="sm"
+                      value={targetFpId ?? ''}
+                      onChange={(e) => selectTargetFingerprint(e.target.value)}
+                    >
+                      <option value="">Create / bind from group key</option>
+                      {fingerprints.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name || f.id.slice(0, 8)}
+                          {f.used_by != null ? ` · used by ${f.used_by}` : ''}
+                          {autoMatchedFp?.id === f.id ? ' · auto-match' : ''}
+                        </option>
+                      ))}
+                    </Select>
+                  </label>
+                  {autoMatchedFp && targetFpId !== autoMatchedFp.id && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      type="button"
+                      onClick={() => selectTargetFingerprint(autoMatchedFp.id)}
+                    >
+                      Use auto-match
+                    </Button>
+                  )}
+                </div>
+                {targetFp ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="info">update · {targetFp.name}</Badge>
+                    {fingerprintParamsCell(targetFp)}
+                  </div>
                 ) : (
-                  <Badge variant="neutral">unbound — Create / bind</Badge>
+                  <Badge variant="neutral">will create / bind fingerprint from this group</Badge>
                 )}
               </div>
 
@@ -456,9 +519,9 @@ export function FlowDiscoveryPage() {
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-text-mid">
                     Draft volume_ix_patterns
-                    {boundFp && currentPatterns.length > 0 && (
+                    {targetFp && currentPatterns.length > 0 && (
                       <span className="ml-2 font-normal text-text-dim">
-                        (current: {currentPatterns.length} pattern
+                        (saved: {currentPatterns.length} pattern
                         {currentPatterns.length === 1 ? '' : 's'})
                       </span>
                     )}
@@ -469,13 +532,13 @@ export function FlowDiscoveryPage() {
                     disabled={draftPatterns.length === 0 || applying}
                     onClick={handleApply}
                   >
-                    {boundFp ? 'Update fingerprint' : 'Create / bind fingerprint'}
+                    {targetFp ? 'Update fingerprint' : 'Create / bind fingerprint'}
                   </Button>
                 </div>
                 <VolumeIxPatternsEditor patterns={draftPatterns} onChange={setDraftPatterns} />
-                {boundFp && currentPatterns.length > 0 && (
+                {targetFp && currentPatterns.length > 0 && (
                   <details className="mt-2 text-[10px] text-text-dim">
-                    <summary className="cursor-pointer">Current config</summary>
+                    <summary className="cursor-pointer">Saved config</summary>
                     <pre className="mt-1 overflow-x-auto rounded bg-black/20 p-2 font-mono">
                       {JSON.stringify(metricConfigWithVolumePatterns(currentPatterns), null, 2)}
                     </pre>
