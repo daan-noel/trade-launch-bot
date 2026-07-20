@@ -307,6 +307,12 @@ impl IngestConsumer {
             token_amount,
             price_per_token,
             tx_signature: e.signature,
+            tx_index: e.tx_index,
+            leg_index: e.leg_index,
+            reserve_sol: e.reserves.virtual_sol,
+            // Token reserves are raw u64 on the event; chart/REST use f64 amounts.
+            reserve_token: e.reserves.virtual_token.map(|v| v as f64),
+            venue: venue_str(e.venue).to_string(),
             slot: e.slot,
             timestamp: e.block_time,
         });

@@ -54,7 +54,21 @@ table stream toggle is **STREAM ON/OFF** (not the header trading kill switch).
 **Live Status SSOT:** `live/slices/liveStatusSlice` + `useLiveStatusBootstrap` (mounted
 in live `App`) — REST snapshot on mount/SSE reconnect/tab visible; in-place patch on
 `strategy_position_update` / `strategy_armed_changed`. Ops, Rules live counts, Home
-open KPI, and StrategyStrip read this store only (no parallel Maps).
+open KPI, and StrategyStrip read this store only (no parallel Maps). Legacy
+`LiveTradingPage` / `MonitorPage` (parallel REST copies) are gone — `/positions` and
+`/strategies/armed` redirect to Ops.
+
+**Live trading notify SSOT (one EventSource, three writers):**
+
+| Domain | Push | Client sink |
+| --- | --- | --- |
+| On-chain trades | `trade_executed` (includes `tx_index`/`leg_index`/reserves) | Tokens table row patch; chart `getTokenTrades` append via `watchTokenTradesMint` + `liveTradeToTradeRecord`; `useMintTradeStream` for mint-filtered feeds |
+| Strategy inventory | `strategy_position_update` / `strategy_armed_changed` | `liveStatusSlice` only |
+| Portfolio money | same position events + `trade_executed` for `mine` profile wallets | `WalletHoldings` RTK tag invalidate (`usePortfolioRealtime`); Wallet page also reloads its imperative table |
+
+Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
+`usePortfolioRealtime`, `useTokenTradesLiveBootstrap`, `usePositionNotifications`.
+Notify over poll — armed-history and wallet confirm no longer poll RPC on a timer.
 
 ## Store — split `createApi` (the isolation seam)
 
@@ -116,21 +130,22 @@ open KPI, and StrategyStrip read this store only (no parallel Maps).
 
 ## Pages by mode
 
-- **Shared:** Tokens (live-ingest monitor — `token_created`/`trade_executed` SSE;
-  detail panel below the table with scroll-into-view on select; table stream
-  toggle labeled **STREAM ON/OFF** so it is not confused with the header trading
-  kill switch; advanced filters behind a disclosure; `?mint=` deep-links
-  selection), Profiles, Settings, NotFound.
+- **Shared:** Tokens (live-ingest monitor — `token_created`/`trade_executed` SSE
+  patches table rows; detail/chart `TokenTradeChart` appends the same frames into
+  RTK `getTokenTrades` via `useWatchTokenTradesLive`; scroll-into-view on select;
+  table stream toggle labeled **STREAM ON/OFF** so it is not confused with the
+  header trading kill switch; advanced filters behind a disclosure; `?mint=`
+  deep-links selection), Profiles, Settings, NotFound.
 - **Live (`@live/pages`):** **Home command center** (`home/LiveHomePage` — KPI tiles
-  deep-link to Wallet / Positions / Rules; widgets `TopHoldingsWidget`/`LiveTradeFeed`/
-  `StrategyStrip` over `/api/portfolio/{summary,holdings,positions}`), SyncToken
+  deep-link to Wallet / Ops / Rules; widgets `TopHoldingsWidget`/`LiveTradeFeed`/
+  `StrategyStrip`; portfolio tags stay fresh via `usePortfolioRealtime`), SyncToken
   (`/tokens/sync`, legacy `/token/sync` redirects),
-  MyWallet (**bag overview** — row Buy/Sell + demoted Manual Buy/Sell; Trade desk link),
-  **Positions** (`/positions` — bot inventory / cross-strategy real open positions),
-  **Armed** (`/strategies/armed` — waiting + holdings + never-fired history), Trade
+  MyWallet (**bag overview** — row Buy/Sell + demoted Manual Buy/Sell; Trade desk link;
+  table reloads on position/our-wallet SSE),
+  **Ops** (`/ops` — Waiting/Open/Recent from `liveStatusSlice`; armed never-fired panel;
+  `/positions` + `/strategies/armed` redirect here), Trade
   (**mint-first execute** desk, `?mint=` preload), Rules/Fingerprints
-  (+ `InputSyncStatus`, `wallet/` components; `useTradeStream`,
-  `usePositionNotifications`; `syncTokenSlice`).
+  (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
   deep-linked with `?run=` + running jobs), Creation Stats, Tokens (detail = chart +
   metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules/Fingerprints/

@@ -112,7 +112,8 @@ export const liveApi = baseApi.injectEndpoints({
     }),
     // Current-run "armed but never fired" candidates for a rule — read straight
     // from the in-memory runtime cache (these rows are deleted on drop, so there's
-    // no DB history). A convenience read; the panel polls it while a rule is open.
+    // no DB history). A convenience read; `ArmedHistoryPanel` refetches on
+    // `strategy_armed_changed` / SSE reopen (no poll).
     // Generic-engine armed snapshot for the live monitor — the currently-armed
     // (token, rule) pairs. Live deltas ride the `strategy_armed_changed` SSE;
     // this is the initial + reconnect refetch.

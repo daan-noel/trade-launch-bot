@@ -1,56 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { LiveTrade } from 'types';
 import { cn } from 'lib/cn';
 import { formatCompact } from 'utils/format';
-import { connectTradeStream } from 'services/sse';
+import { useMintTradeStream } from 'hooks/useMintTradeStream';
 import { useGetPortfolioHoldingsQuery } from '@live/store/liveEndpoints';
 
 const MAX_ROWS = 15;
 
 /**
  * Recent live trades on the mints you hold — the `trade_executed` SSE filtered to
- * the held-mint set (the same visibleMints pattern the Tokens page uses). Trades
- * are bursty, so incoming frames buffer in a ref and flush on a short timer; the
- * feed owns its own state so its high-frequency updates never re-render the KPI
- * row or the holdings widget.
+ * the held-mint set (via {@link useMintTradeStream}). The feed owns its own state
+ * so its high-frequency updates never re-render the KPI row or the holdings widget.
  */
 export function LiveTradeFeed() {
   const { data: holdings = [] } = useGetPortfolioHoldingsQuery();
   // Held mint → symbol, read through a ref so the SSE handler always sees the
   // latest set without re-subscribing on every holdings refresh.
-  const heldRef = useRef<Map<string, string | undefined>>(new Map());
-  heldRef.current = useMemo(
+  const heldMap = useMemo(
     () => new Map(holdings.map((h) => [h.mint_address, h.symbol ?? undefined])),
     [holdings],
   );
+  const heldRef = useRef(heldMap);
+  heldRef.current = heldMap;
+
+  const mintsRef = useRef<Set<string>>(new Set());
+  mintsRef.current = new Set(heldMap.keys());
 
   const [trades, setTrades] = useState<LiveTrade[]>([]);
 
-  useEffect(() => {
-    const buf: LiveTrade[] = [];
-    let timer: number | undefined;
-    const flush = () => {
-      timer = undefined;
-      if (buf.length === 0) return;
-      const batch = buf.splice(0).reverse(); // newest first
-      setTrades((prev) => [...batch, ...prev].slice(0, MAX_ROWS));
-    };
-    const es = connectTradeStream((raw) => {
-      try {
-        const t = JSON.parse(raw) as LiveTrade;
-        if (heldRef.current.has(t.mint_address)) {
-          buf.push(t);
-          if (timer === undefined) timer = window.setTimeout(flush, 400);
-        }
-      } catch {
-        /* ignore malformed frames */
-      }
-    });
-    return () => {
-      window.clearTimeout(timer);
-      es.close();
-    };
-  }, []);
+  useMintTradeStream(mintsRef, (batch) => {
+    // Newest first in the feed.
+    const reversed = [...batch].reverse();
+    setTrades((prev) => [...reversed, ...prev].slice(0, MAX_ROWS));
+  }, 400);
 
   return (
     <div className="rounded-lg border border-white/5 bg-white/2 p-3">
@@ -66,7 +48,7 @@ export function LiveTradeFeed() {
             const symbol = heldRef.current.get(t.mint_address) ?? t.mint_address.slice(0, 6);
             return (
               <li
-                key={t.tx_signature}
+                key={`${t.tx_signature}:${t.leg_index ?? 0}`}
                 className="flex items-center justify-between gap-2 text-xs tabular-nums"
               >
                 <span className="flex items-center gap-2">

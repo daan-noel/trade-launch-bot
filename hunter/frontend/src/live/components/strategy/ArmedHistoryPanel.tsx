@@ -1,9 +1,10 @@
-import { memo } from 'react';
+import { memo, useEffect } from 'react';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Accordion } from 'components/ui/Accordion';
 import { Badge } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
 import { RefreshIcon, SpinnerIcon } from 'components/ui/icons';
+import { connectArmedChanged } from 'services/sse';
 import { useGetArmedHistoryQuery } from '@live/store/liveEndpoints';
 
 const shortMint = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -25,8 +26,8 @@ const watchedSecs = (armed: string, ended: string) => {
  * that matched and armed on the live feed but whose entry trigger never came
  * (window closed, armer cap evicted them, or the rule was stopped). Read from the
  * in-memory runtime cache (these rows are deleted on drop, so there's no DB
- * history); the list resets when a fresh run starts. Polled while open so it stays
- * current. Collapsed by default — a convenience view, not a primary table.
+ * history); the list resets when a fresh run starts. Refetches on
+ * `strategy_armed_changed` / SSE reopen — no polling. Collapsed by default.
  */
 export const ArmedHistoryPanel = memo(function ArmedHistoryPanel({
   strategy,
@@ -38,8 +39,28 @@ export const ArmedHistoryPanel = memo(function ArmedHistoryPanel({
 }) {
   const { data, isFetching, refetch } = useGetArmedHistoryQuery(
     selectedRuleId ? { strategy, ruleId: selectedRuleId } : skipToken,
-    { pollingInterval: 10_000, refetchOnMountOrArgChange: true },
+    { refetchOnMountOrArgChange: true },
   );
+
+  useEffect(() => {
+    if (!selectedRuleId) return;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        void refetch();
+      }, 300);
+    };
+    const h = connectArmedChanged((d) => {
+      if (d.rule_id === selectedRuleId) schedule();
+    }, schedule);
+    return () => {
+      window.clearTimeout(timer);
+      h.close();
+    };
+  }, [selectedRuleId, refetch]);
+
   const records = data ?? [];
   // Newest first — the most recent misses are the interesting ones.
   const rows = [...records].reverse();

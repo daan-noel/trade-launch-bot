@@ -24,7 +24,13 @@ import {
   fetchHoldingByMint,
   type HoldingsTableSummary,
 } from 'services/api';
+import {
+  connectStrategyPositionUpdate,
+  connectTradeStream,
+  onSseReopen,
+} from 'services/sse';
 import { apiErrorMessage } from 'store/apiSlice';
+import { useGetProfilesQuery } from 'store/sharedEndpoints';
 import {
   liveApi,
   useGetWalletPricesQuery,
@@ -32,7 +38,7 @@ import {
   useSellTokenMutation,
 } from '@live/store/liveEndpoints';
 import type { AppDispatch } from '@live/store';
-import type { ManagedBy, WalletHolding } from 'types';
+import type { LiveTrade, ManagedBy, WalletHolding } from 'types';
 import { parseSlippageBps } from '@live/lib/slippage';
 
 interface BuyDialog {
@@ -205,37 +211,84 @@ export function MyWalletPage() {
     dispatch(liveApi.util.invalidateTags(['WalletHoldings']));
   }, [reload, refreshSummary, dispatch]);
 
-  // After a confirmed trade the wallet's new on-chain balance can lag the RPC
-  // read by a moment. Poll just the traded mint — one cheap RPC + price each
-  // attempt — until its raw amount actually moves, then reload the current page
-  // + summary from a fresh scan (no full wallet re-scan per attempt). If the
-  // change never lands within the window, refresh anyway so we can't sit stale.
+  const { data: profiles } = useGetProfilesQuery();
+  const mineWalletsRef = useRef<Set<string>>(new Set());
+  mineWalletsRef.current = new Set(
+    (profiles ?? [])
+      .filter((p) => p.profile_type === 'mine')
+      .flatMap((p) => p.wallets.map((w) => w.address)),
+  );
+
+  // Imperative table isn't RTK-tagged — reload on the same notify signals as
+  // `usePortfolioRealtime` (real bag-changing positions + our-wallet fills + reopen).
+  useEffect(() => {
+    const bagChanging = new Set(['Holding', 'End', 'ExitFailed']);
+    let timer: number | undefined;
+    const schedule = () => {
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        refreshAll();
+      }, 400);
+    };
+    const posH = connectStrategyPositionUpdate((d) => {
+      if (d.trade_mode === 'paper') return;
+      if (!bagChanging.has(d.status)) return;
+      schedule();
+    });
+    const tradeH = connectTradeStream((raw) => {
+      try {
+        const t = JSON.parse(raw) as LiveTrade;
+        if (mineWalletsRef.current.has(t.wallet)) schedule();
+      } catch {
+        /* ignore */
+      }
+    });
+    const reopenUnsub = onSseReopen(() => refreshAll());
+    return () => {
+      window.clearTimeout(timer);
+      posH.close();
+      tradeH.close();
+      reopenUnsub();
+    };
+  }, [refreshAll]);
+
+  // After a manual buy/sell submit: wait for our fill on the ingest feed (or a
+  // short timeout), then refresh — no RPC polling. `prevAmount` kept for call-
+  // site compatibility; balance change is observed via the feed + scan refresh.
   const confirmTrade = useCallback(
-    async (mint: string, prevAmount: number | undefined, label: string) => {
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        const sub = dispatch(
-          liveApi.endpoints.getWalletHolding.initiate(mint, { forceRefetch: true }),
-        );
+    (mint: string, _prevAmount: number | undefined, label: string) => {
+      let settled = false;
+      const finish = (msg: string) => {
+        if (settled) return;
+        settled = true;
+        tradeH.close();
+        window.clearTimeout(timeout);
+        refreshAll();
+        setActionSuccess(msg);
+      };
+      const tradeH = connectTradeStream((raw) => {
         try {
-          const holding = await sub.unwrap();
-          if ((holding?.amount ?? undefined) !== prevAmount) {
-            refreshAll();
-            setActionSuccess(`${label} successful — holdings updated.`);
+          const t = JSON.parse(raw) as LiveTrade;
+          if (t.mint_address !== mint) return;
+          // Require a configured `mine` wallet match — otherwise fall through to timeout
+          // (don't treat the next stranger fill on this mint as "our" confirm).
+          if (
+            mineWalletsRef.current.size === 0 ||
+            !mineWalletsRef.current.has(t.wallet)
+          ) {
             return;
           }
+          finish(`${label} successful — holdings updated.`);
         } catch {
-          // Transient RPC/Jupiter error during confirmation; keep retrying.
-        } finally {
-          sub.unsubscribe();
+          /* ignore */
         }
-      }
-      refreshAll();
-      setActionSuccess(
-        `${label} confirmed. Balances took a moment to update on-chain — refreshed.`,
-      );
+      });
+      const timeout = window.setTimeout(() => {
+        finish(`${label} submitted — refreshed holdings.`);
+      }, 8_000);
     },
-    [dispatch, refreshAll],
+    [refreshAll],
   );
 
   // Shared "sell all" submit for both the row button and the manual dialog. The

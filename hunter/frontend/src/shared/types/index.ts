@@ -728,6 +728,13 @@ export interface LiveTrade {
   token_amount: number;
   price_per_token: number;
   tx_signature: string;
+  /** Canonical intra-slot order — must match `TradeRecord` / chart sort. */
+  tx_index: number;
+  leg_index: number;
+  /** Venue-neutral post-trade reserves (optional on older frames). */
+  reserve_sol?: number | null;
+  reserve_token?: number | null;
+  venue?: 'curve' | 'amm' | string;
   slot: number;
   timestamp: string;
   /** Snapshot of the mint's stats after this trade; absent if the token isn't

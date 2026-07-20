@@ -16,6 +16,7 @@ import { usePriceUnit } from 'context/PriceUnitContext';
 import { useTimezone } from 'context/TimezoneContext';
 import { usePriceDisplay } from 'hooks/usePriceDisplay';
 import { useProfileWallets } from 'hooks/useProfileWallets';
+import { useWatchTokenTradesLive } from 'hooks/useTokenTradesLive';
 import { formatTimestampMs } from 'utils/date';
 import { apiErrorMessage, useGetTokenTradesQuery } from 'store/apiSlice';
 import type { TokenDetailRecord, TradeRecord } from 'types';
@@ -126,6 +127,8 @@ export function TokenTradeChart({
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelectionDetail | null>(null);
 
   const mint = detail?.mint_address ?? '';
+  // Live append: `trade_executed` → RTK `getTokenTrades` cache (shared watch set).
+  useWatchTokenTradesLive(mint || null);
   const {
     data: tradesData,
     isFetching: tradesLoading,

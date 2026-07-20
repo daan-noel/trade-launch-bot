@@ -38,6 +38,17 @@ pub enum SseEvent {
         token_amount: u64,
         price_per_token: f64,
         tx_signature: String,
+        /// Intra-slot order keys — same canonical `(slot, tx_index, leg_index)` the
+        /// REST trade history and chart aggregators use. Required so live SSE
+        /// appends sort identically to a full refetch (no bar reordering drift).
+        tx_index: u32,
+        leg_index: u32,
+        /// Venue-neutral post-trade reserves (curve virtual / AMM real) so the
+        /// live chart tip can use reserve spot, not only `price_per_token`.
+        reserve_sol: Option<f64>,
+        reserve_token: Option<f64>,
+        /// `"curve"` | `"amm"` — matches `trades.venue` / `TradeRecord.venue`.
+        venue: String,
         slot: u64,
         timestamp: DateTime<Utc>,
     },

@@ -13,6 +13,7 @@ import { useSseStatus } from 'hooks/useSseStatus';
 import { OPS_PARAMS, rulesHref, type OpsTab } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
 import { apiErrorMessage } from 'store/apiSlice';
+import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { useCloseRulePositionMutation } from '@live/store/liveEndpoints';
 import {
   selectLiveArmed,
@@ -24,6 +25,9 @@ import {
   type LiveOpenRow,
 } from '@live/slices/liveStatusSlice';
 import type { RootState } from '@live/store';
+
+/** Path segment only validates; armed-history is keyed by `rule_id` in the runtime. */
+const ARMED_HISTORY_STRATEGY = 'generic';
 
 type Tab = OpsTab;
 type ModeFilter = 'real' | 'paper' | 'all';
@@ -478,28 +482,34 @@ export function OpsPage() {
       {!hydrated && snapshotLoading ? (
         <p className="py-10 text-center text-text-dim">Loading live status…</p>
       ) : tab === 'waiting' ? (
-        <DataTable
-          columns={waitingCols}
-          rows={armedRows}
-          rowKey={(r) => r.key}
-          searchable
-          defaultSort={{ col: 'age', dir: 'desc' }}
-          tableId="ops-waiting"
-          emptyMessage="Nothing waiting on entry."
-          selectedKey={selectedKey}
-          onSelect={(key) => {
-            if (!key) {
-              clearDeepLink();
-              return;
-            }
-            const row = armedRows.find((r) => r.key === key);
-            if (!row) return;
-            const next = new URLSearchParams(params);
-            next.set(OPS_PARAMS.mint, row.mint);
-            next.set(OPS_PARAMS.rule, row.ruleId);
-            setParams(next, { replace: true });
-          }}
-        />
+        <>
+          <DataTable
+            columns={waitingCols}
+            rows={armedRows}
+            rowKey={(r) => r.key}
+            searchable
+            defaultSort={{ col: 'age', dir: 'desc' }}
+            tableId="ops-waiting"
+            emptyMessage="Nothing waiting on entry."
+            selectedKey={selectedKey}
+            onSelect={(key) => {
+              if (!key) {
+                clearDeepLink();
+                return;
+              }
+              const row = armedRows.find((r) => r.key === key);
+              if (!row) return;
+              const next = new URLSearchParams(params);
+              next.set(OPS_PARAMS.mint, row.mint);
+              next.set(OPS_PARAMS.rule, row.ruleId);
+              setParams(next, { replace: true });
+            }}
+          />
+          <ArmedHistoryPanel
+            strategy={ARMED_HISTORY_STRATEGY}
+            selectedRuleId={ruleParam}
+          />
+        </>
       ) : tab === 'open' ? (
         <DataTable
           columns={openCols}
