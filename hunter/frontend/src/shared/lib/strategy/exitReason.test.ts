@@ -14,6 +14,7 @@ describe('exitReasonLabel', () => {
     expect(exitReasonLabel('Manual')).toBe('MANUAL');
     expect(exitReasonLabel('Migrated')).toBe('MIG');
     expect(exitReasonLabel('Dead')).toBe('DEAD');
+    expect(exitReasonLabel('NoEntry')).toBe('No entry');
     expect(exitReasonLabel('Open')).toBe('Open');
   });
 
@@ -71,6 +72,8 @@ describe('normalizeExitReasonFilter', () => {
     expect(normalizeExitReasonFilter('metric-')).toBe('Metrics');
     expect(normalizeExitReasonFilter('Open')).toBe('Open');
     expect(normalizeExitReasonFilter('manual')).toBe('Manual');
+    expect(normalizeExitReasonFilter('no entry')).toBe('NoEntry');
+    expect(normalizeExitReasonFilter('not fired')).toBe('NoEntry');
   });
 
   it('passes through unknown needles', () => {

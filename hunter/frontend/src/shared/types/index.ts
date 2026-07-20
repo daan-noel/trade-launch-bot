@@ -324,6 +324,10 @@ export interface MatchedTokensResponse {
 export interface SimulatedTokenResult extends TokenEnrichmentFields {
   mint_address: string;
   symbol: string;
+  /** Whether the strategy took a position. `false` ⇒ matched fingerprint but
+   *  never entered (`exit_reason: "NoEntry"`) — same contract as sweep
+   *  `ComboTokenResult.fired`. Absent on legacy resident payloads. */
+  fired?: boolean;
   /** Trigger-trade (scalp signal) snapshot that armed the position, distinct
    * from the worst-case `entry_*` fill. The gap is the modeled adverse
    * slippage. null only for legacy paper rows that never recorded a target. */
@@ -332,20 +336,22 @@ export interface SimulatedTokenResult extends TokenEnrichmentFields {
   target_token_amount: number | null;
   target_time: string | null;
   target_tx: string | null;
-  entry_price: number;
+  /** Null when not fired (`NoEntry`). */
+  entry_price: number | null;
   /** All-time-high price from `tokens_info` (row-owned enrichment); null if the
    *  token has no info row. */
   ath_price: number | null;
-  /** Tokens bought at entry; SOL derived as `entry_price × entry_token_amount`. */
-  entry_token_amount: number;
-  entry_tx: string;
-  entry_time: string;
+  /** SOL notional the rule deployed (rendered as entry size); null when not fired. */
+  entry_token_amount: number | null;
+  entry_tx: string | null;
+  entry_time: string | null;
   exit_price: number | null;
   exit_tx: string | null;
   exit_time: string | null;
   holding_secs: number | null;
   pnl_percent: number | null;
   pnl_sol: number | null;
+  /** Includes `"NoEntry"` for matched-but-never-entered candidates. */
   exit_reason: string;
   // Token enrichment fields come from `TokenEnrichmentFields` (the backend bakes
   // them in once per backtest run via `lab::strategies::token_enrich`); only

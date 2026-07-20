@@ -44,6 +44,8 @@ export function exitReasonLabel(
       return metricsExitLabel(pnlSol);
     case 'Migrated':
       return 'MIG';
+    case 'NoEntry':
+      return 'No entry';
     case 'Open':
     case null:
     case undefined:
@@ -110,6 +112,9 @@ const EXIT_REASON_FILTER_ALIASES: Readonly<Record<string, string>> = {
   mig: 'Migrated',
   migrated: 'Migrated',
   open: 'Open',
+  noentry: 'NoEntry',
+  'no entry': 'NoEntry',
+  'not fired': 'NoEntry',
 };
 
 /** Map a Reason / Exit Reason filter needle to the persisted string when the

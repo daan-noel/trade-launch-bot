@@ -44,14 +44,17 @@ fn peek_sim_rows(state: &LocalState, rule_id: Uuid) -> Result<Arc<Vec<serde_json
 /// wire shape the Simulate table columns and summary card both consume.
 fn summary_json(state: &LocalState, rule_id: Uuid, rows: &[Value]) -> Value {
     let metrics = crate::strategies::sim_query::summarize(rows);
-    // Graduated-to-AMM count over the same cohort. A token attribute
-    // (`is_migrated`), not a kernel PnL figure, so it rides on the response body
-    // beside `computed_at` rather than inside `RunSummary`. Every sim row is an
-    // entered position, so this counts among `n_fired` — matching the live
-    // card's "migrated among entered".
+    // Graduated-to-AMM count over **fired** rows only (NoEntry is matched-but-
+    // never-entered — matching the live card's "migrated among entered" and the
+    // sweep drill-in's `fired && is_migrated` filter).
     let migrated = rows
         .iter()
-        .filter(|r| r.get("is_migrated").and_then(Value::as_bool).unwrap_or(false))
+        .filter(|r| {
+            let fired = r.get("fired").and_then(Value::as_bool).unwrap_or_else(|| {
+                r.get("exit_reason").and_then(Value::as_str) != Some("NoEntry")
+            });
+            fired && r.get("is_migrated").and_then(Value::as_bool).unwrap_or(false)
+        })
         .count();
     // Flattened `RunMetrics` — the same field names the grouped sweep and a
     // live/paper run emit, so one frontend component renders all three (parity

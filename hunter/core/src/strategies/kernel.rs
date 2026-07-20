@@ -64,6 +64,8 @@ impl ExitCode {
             "Dead" => ExitCode::Dead,
             "Metrics" => ExitCode::Metrics,
             "Open" => ExitCode::Open,
+            // Matched fingerprint / armed but never filled — distinct from still-Open.
+            "NoEntry" => ExitCode::NoEntry,
             _ => ExitCode::Open,
         }
     }

@@ -33,6 +33,8 @@ fn resolve(key: &str) -> Option<(&'static str, ColKind)> {
     Some(match key {
         "mint_address" => ("mint_address", Text),
         "symbol" => ("symbol", Text),
+        // Bool JSON → 0/1 via `field_num` (same as the Fired Yes/No column).
+        "fired" => ("fired", Number),
         "reason" | "exit_reason" => ("exit_reason", Text),
         "entry_tx" => ("entry_tx", Text),
         "exit_tx" => ("exit_tx", Text),
@@ -74,10 +76,13 @@ pub fn filter_rows(rows: &[Value], req: &TableRequest) -> Vec<Value> {
     filter_table_request(rows, req, resolve)
 }
 
-/// Narrow one sim result row (the JSON shape [`super::replay::outcome_to_row`]
-/// emits) to the kernel's [`TokenOutcome`]. Every row in a finished sim's payload
-/// is an *entered* position — the replay only emits a row once an entry filled —
-/// so `fired` is unconditionally true and `n_fired` is the row count.
+/// Narrow one sim result row (the JSON shape [`super::replay::outcome_to_row`] /
+/// [`super::replay::no_entry_row`] emit) to the kernel's [`TokenOutcome`].
+///
+/// Rows cover the full matched candidate set: entered positions (`fired: true`)
+/// and matched-but-never-entered (`exit_reason: "NoEntry"`, `fired: false`). The
+/// kernel skips `!fired` the same way the sweep drill-in does, so `n_fired` stays
+/// the entered count.
 ///
 /// "Closed" is decided by `exit_reason`, **not** by `exit_time != null`: the
 /// analysis-only death-close (`ExitCode::Dead`) is a genuine close that carries no
@@ -90,10 +95,16 @@ fn row_to_outcome(row: &Value) -> TokenOutcome {
         .and_then(Value::as_str)
         .map(ExitCode::from_reason)
         .unwrap_or(ExitCode::Open);
+    // Prefer the explicit `fired` flag (new rows); fall back to exit_reason for
+    // any legacy resident payload that predated the field.
+    let fired = row
+        .get("fired")
+        .and_then(Value::as_bool)
+        .unwrap_or(exit != ExitCode::NoEntry);
     TokenOutcome {
-        fired: true,
-        // Open rows carry `holding_secs: null`; the kernel excludes them from every
-        // holding statistic anyway, so 0 is never summed.
+        fired,
+        // Open / NoEntry rows carry `holding_secs: null`; the kernel excludes them
+        // from every holding statistic anyway, so 0 is never summed.
         holding_secs: row.get("holding_secs").and_then(Value::as_i64).unwrap_or(0),
         pnl_percent: num("pnl_percent") as f32,
         pnl_sol: num("pnl_sol") as f32,
@@ -507,7 +518,10 @@ pub fn time_summary(
 ) -> Value {
     let closed_secs: Vec<i64> = rows
         .iter()
-        .filter(|r| r.get("exit_reason").and_then(Value::as_str).unwrap_or("Open") != "Open")
+        .filter(|r| {
+            let exit = r.get("exit_reason").and_then(Value::as_str).unwrap_or("Open");
+            exit != "Open" && exit != "NoEntry"
+        })
         .map(|r| r.get("holding_secs").and_then(Value::as_i64).unwrap_or(0))
         .filter(|s| *s >= 0)
         .collect();
@@ -543,16 +557,21 @@ pub fn time_summary(
     let field_key = wall_field.json_key();
 
     for row in rows {
-        n_fired += 1; // every sim row is an entered position
+        let exit = row
+            .get("exit_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("Open");
+        // Not-fired matched candidates ride in the Positions table but are not
+        // temporal outcomes (parity with FE `buildTemporalSummary`).
+        if exit == "NoEntry" {
+            continue;
+        }
+        n_fired += 1;
         let mint = row
             .get("mint_address")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let exit = row
-            .get("exit_reason")
-            .and_then(Value::as_str)
-            .unwrap_or("Open");
         let holding = row.get("holding_secs").and_then(Value::as_i64).unwrap_or(0);
         let pnl = row.get("pnl_sol").and_then(Value::as_f64).unwrap_or(0.0);
         let bin_id = hold_bin_id(exit, holding, bins);
@@ -733,6 +752,24 @@ mod tests {
         assert!((m.open_pnl_sol - 1_000.0).abs() < 1e-9, "open mark surfaced separately");
         assert!((m.win_rate - 0.5).abs() < 1e-9, "win rate over closed only");
         assert_eq!(m.best_pnl_pct, 50.0, "the open mark must not become the best");
+    }
+
+    #[test]
+    fn no_entry_rows_do_not_inflate_n_fired() {
+        // Matched-but-never-entered ride in the Positions payload (parity with
+        // the sweep drill-in) but must not count toward fire-rate / PnL.
+        let rows = vec![
+            sim_row(1.0, 50.0, "TakeProfit", Some(10)),
+            json!({
+                "mint_address": "m", "symbol": "S",
+                "fired": false, "exit_reason": "NoEntry",
+                "pnl_sol": null, "pnl_percent": null, "holding_secs": null,
+            }),
+        ];
+        let m = summarize(&rows).realized;
+        assert_eq!(m.n_fired, 1);
+        assert_eq!(m.n_closed, 1);
+        assert!((m.total_pnl_sol - 1.0).abs() < 1e-9);
     }
 
     #[test]

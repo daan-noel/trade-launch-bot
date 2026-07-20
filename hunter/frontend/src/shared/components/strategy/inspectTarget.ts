@@ -56,6 +56,7 @@ export function markerRowOverlay<R>(toTarget: (r: R) => InspectTarget): ChartOve
 
 /** Map a backtest/simulate result row to an inspect target. */
 export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
+  const fired = r.fired !== false && r.exit_reason !== 'NoEntry';
   return {
     mint_address: r.mint_address,
     symbol: r.symbol,
@@ -65,7 +66,8 @@ export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
     exitTime: r.exit_time,
     exitPrice: r.exit_price,
     exitTx: r.exit_tx,
-    exitLabel: r.exit_reason && r.exit_reason !== 'Open' ? r.exit_reason : null,
+    exitLabel:
+      fired && r.exit_reason && r.exit_reason !== 'Open' ? r.exit_reason : null,
   };
 }
 

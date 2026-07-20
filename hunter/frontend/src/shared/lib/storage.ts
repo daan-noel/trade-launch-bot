@@ -29,6 +29,8 @@ export const STORAGE_KEYS = {
   sweepSel: `${PREFIX}sweep.sel`,
   /** Sweep results "show not-fired tokens" toggle. */
   sweepShowNotFired: `${PREFIX}sweep.showNotFired`,
+  /** Simulate Positions "show not-fired (NoEntry) tokens" toggle. */
+  simShowNotFired: `${PREFIX}simulate.showNotFired`,
   /** Map of `{ [tableId]: visibleColumnKey[] }` — all DataTable column toggles. */
   tableCols: `${PREFIX}table.cols`,
   /** Map of `{ [tableId]: everyColumnKey[] }` — the column set that existed when

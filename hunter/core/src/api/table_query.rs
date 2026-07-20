@@ -134,8 +134,9 @@ pub enum FilterOp {
     #[default]
     Contains,
     Eq,
-    /// Not-equal (`!=`) — a numeric-column op, the negation of `Eq`. On a text
-    /// column it's dropped like any other non-text op.
+    /// Not-equal (`!=`) — works on numeric columns and text columns (exact,
+    /// case-insensitive). Used by Simulate's "hide not-fired" filter
+    /// (`exit_reason != NoEntry`).
     Neq,
     In,
     Gt,

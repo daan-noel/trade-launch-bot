@@ -197,9 +197,11 @@ next load (no per-metric frontend work).
   run still refreshes via the single-run `…/result/summary` path. The per-token
   detail below is **selection-gated** — only the selected rule's
   `RuleSimPositionsPanel` renders, with a **Positions ⇄ Matched** toggle: Positions =
-  the run's entered outcomes (`POST /api/strategies/simulate/{run_id}/result`,
-  `simColumns`); Matched = the fingerprint's candidate pool the positions are a subset
-  of (`POST /api/strategies/simulate/{run_id}/matched`, `matchedColumns`). The matched
+  the run's per-token outcomes including matched-but-never-entered `NoEntry` rows
+  (`POST /api/strategies/simulate/{run_id}/result`, `simColumns` — same full-slice
+  contract as the sweep combo drill-in; **Show/Hide not fired** injects
+  `exit_reason != NoEntry`); Matched = the fingerprint's candidate pool
+  (`POST /api/strategies/simulate/{run_id}/matched`, `matchedColumns`). The matched
   scan is the generic engine's instant-phase candidate scan (`engine_sim::
   scan_matched_candidates`, cache-shared with the backtest) paged through the same
   `matched_page_response` the tpsl `/matched` route uses. Each table fetches only while

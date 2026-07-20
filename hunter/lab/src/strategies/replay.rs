@@ -657,28 +657,36 @@ fn sol_to_lamports(sol: f64) -> u64 {
 /// legacy `BacktestTokenResult`, so the frontend + server-side query work
 /// unchanged. `token` (enrichment) + `ath_price` are filled by the handler after a
 /// bounded batch fetch.
+///
+/// Matched-but-never-entered tokens are emitted with `fired: false`,
+/// `exit_reason: "NoEntry"`, and null entry/exit fill fields (parity with the
+/// sweep combo drill-in's `ComboTokenResult`).
 #[derive(Clone, serde::Serialize)]
 pub struct EngineBacktestResult {
     pub mint_address: String,
     pub symbol: String,
     pub created_at: DateTime<Utc>,
+    /// Whether the strategy took a position (entry fill landed).
+    pub fired: bool,
     /// Trigger-trade snapshot (scalp/signal) — gap vs `entry_*` is adverse slippage.
     pub target_price: Option<f64>,
     pub target_token_amount: Option<f64>,
     pub target_time: Option<DateTime<Utc>>,
     pub target_tx: Option<String>,
-    pub entry_price: f64,
+    /// `None` when not fired (`NoEntry`).
+    pub entry_price: Option<f64>,
     pub ath_price: Option<f64>,
-    pub entry_token_amount: f64,
-    pub entry_tx: String,
-    pub entry_time: DateTime<Utc>,
+    /// SOL notional the rule would deploy; `None` when not fired.
+    pub entry_token_amount: Option<f64>,
+    pub entry_tx: Option<String>,
+    pub entry_time: Option<DateTime<Utc>>,
     pub exit_price: Option<f64>,
     pub exit_tx: Option<String>,
     pub exit_time: Option<DateTime<Utc>>,
     pub holding_secs: Option<i64>,
     pub pnl_percent: Option<f64>,
     pub pnl_sol: Option<f64>,
-    /// `TakeProfit | StopLoss | Metrics | Dead | Manual | Migrated | Open`.
+    /// `TakeProfit | StopLoss | Metrics | Dead | Manual | Migrated | Open | NoEntry`.
     pub exit_reason: String,
     #[serde(flatten)]
     pub token: crate::strategies::token_enrich::TokenEnrichment,
@@ -1010,17 +1018,18 @@ pub fn outcome_to_row(
         mint_address: outcome.mint.clone(),
         symbol: symbol.to_string(),
         created_at,
+        fired: true,
         target_price: outcome.target_price,
         target_token_amount: outcome.target_token_amount,
         target_time: outcome.target_time,
         target_tx: outcome.target_tx.clone(),
-        entry_price: outcome.entry_price,
+        entry_price: Some(outcome.entry_price),
         ath_price: None,
         // Match the legacy row: the "entry_token_amount" column carries the SOL
         // notional the rule deployed (the frontend renders it as size).
-        entry_token_amount: buy_amount_sol,
-        entry_tx: outcome.entry_tx.clone(),
-        entry_time: outcome.entry_time,
+        entry_token_amount: Some(buy_amount_sol),
+        entry_tx: Some(outcome.entry_tx.clone()),
+        entry_time: Some(outcome.entry_time),
         exit_price,
         exit_tx,
         exit_time,
@@ -1028,6 +1037,34 @@ pub fn outcome_to_row(
         pnl_percent: Some(quantize_f32(pct)),
         pnl_sol: Some(quantize_f32(sol)),
         exit_reason,
+        token: crate::strategies::token_enrich::TokenEnrichment::default(),
+    }
+}
+
+/// A matched candidate that never entered — same wire shape as a fired row, with
+/// null fills and `exit_reason: "NoEntry"` (parity with the sweep combo drill-in).
+pub fn no_entry_row(mint: &str, symbol: &str, created_at: Ts) -> EngineBacktestResult {
+    EngineBacktestResult {
+        mint_address: mint.to_string(),
+        symbol: symbol.to_string(),
+        created_at,
+        fired: false,
+        target_price: None,
+        target_token_amount: None,
+        target_time: None,
+        target_tx: None,
+        entry_price: None,
+        ath_price: None,
+        entry_token_amount: None,
+        entry_tx: None,
+        entry_time: None,
+        exit_price: None,
+        exit_tx: None,
+        exit_time: None,
+        holding_secs: None,
+        pnl_percent: None,
+        pnl_sol: None,
+        exit_reason: "NoEntry".to_string(),
         token: crate::strategies::token_enrich::TokenEnrichment::default(),
     }
 }

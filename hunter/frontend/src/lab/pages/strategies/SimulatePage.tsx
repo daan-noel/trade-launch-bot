@@ -18,6 +18,7 @@ import {
 import { Badge } from 'components/ui/Badge';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { dashPercent } from 'components/strategy/cellFormat';
@@ -57,8 +58,10 @@ import { useRuleActions } from 'components/strategy/useRuleActions';
 import { buildFingerprintRuleColumns } from 'components/strategy/fingerprintRuleColumns';
 import { buildRuleParamsColumns } from 'components/strategy/ruleParamsColumns';
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
+import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import { STORAGE_KEYS } from 'lib/storage';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   disabledRuleRowClass,
@@ -416,10 +419,10 @@ export function SimulatePage() {
 type ResultView = 'positions' | 'matched';
 
 /** The selected rule's result detail — a Positions ⇄ Matched toggle over two
- *  server-side tables: the entered **positions** (the sim run's outcomes) and the
- *  fingerprint-**matched** candidate pool they're a subset of. Rendered only for the
- *  row the user picked in the rules table above; each table fetches only while its
- *  view is active. */
+ *  server-side tables: **positions** (fired outcomes + matched-but-not-fired
+ *  `NoEntry` rows, with Show/Hide not-fired) and the fingerprint-**matched**
+ *  candidate pool. Rendered only for the row the user picked in the rules table
+ *  above; each table fetches only while its view is active. */
 function RuleSimPositionsPanel({
   rule,
   reloadNonce,
@@ -433,9 +436,13 @@ function RuleSimPositionsPanel({
 }) {
   const [view, setView] = useState<ResultView>('positions');
 
-  // Positions (entered) — the sim run's per-token outcomes. Fetched only while the
-  // Positions view is active.
+  // Positions — the sim run's per-token outcomes (fired + matched-but-not-fired
+  // NoEntry rows). Fetched only while the Positions view is active.
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
+  const [showNotFired, setShowNotFired] = useLocalStorage(
+    STORAGE_KEYS.simShowNotFired,
+    true,
+  );
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
   const [wallField, setWallField] = useState<WallTimeField>('created_at');
   const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
@@ -444,18 +451,35 @@ function RuleSimPositionsPanel({
   /** Linked brush cohort — same grain/scheme as base, filtered to the selection mints. */
   const [linkedTimeSummary, setLinkedTimeSummary] = useState<TemporalSummaryPayload | null>(null);
 
+  // Hide-not-fired injects a server-side `exit_reason != NoEntry` (text `neq`) so
+  // paging/totals stay correct — same toggle as the sweep combo drill-in.
+  const applyNotFiredFilter = useCallback(
+    (q: TableQuery): TableQuery => {
+      if (showNotFired) return q;
+      return {
+        ...q,
+        structuredFilters: {
+          ...q.structuredFilters,
+          exit_reason: { op: 'neq', val: 'NoEntry' },
+        },
+      };
+    },
+    [showNotFired],
+  );
+
   // Temporal mint-set is applied to the page fetch only — summary + base time-summary
   // stay on the table's own filters so the driving chart doesn't collapse after a click.
   const simQueryForPage = useMemo(() => {
-    if (!temporalSel?.mints.length) return simQuery;
+    const base = applyNotFiredFilter(simQuery);
+    if (!temporalSel?.mints.length) return base;
     return {
-      ...simQuery,
+      ...base,
       structuredFilters: {
-        ...simQuery.structuredFilters,
+        ...base.structuredFilters,
         mint_address: { op: 'in' as const, val: temporalSel.mints },
       },
     };
-  }, [simQuery, temporalSel]);
+  }, [simQuery, temporalSel, applyNotFiredFilter]);
 
   const simBody = useMemo(
     () => toTableRequest(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
@@ -466,10 +490,13 @@ function RuleSimPositionsPanel({
     () => toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
     [simQueryForPage],
   );
-  // Base time chart stays on the table's own filters.
+  // Base time chart stays on the table's own filters (+ not-fired toggle).
   const timeSummaryBody = useMemo(
-    () => toSummaryBody(simQuery, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
-    [simQuery.search, simQuery.colFilters, simQuery.structuredFilters],
+    () =>
+      toSummaryBody(applyNotFiredFilter(simQuery), SIM_NUMERIC_COLS, {
+        amountCols: SIM_AMOUNT_COLS,
+      }),
+    [simQuery.search, simQuery.colFilters, simQuery.structuredFilters, applyNotFiredFilter],
   );
   // Linked chart: mint-filtered fold with base's resolved grain/scheme locked.
   const linkedTimeSummaryBody = useMemo(() => {
@@ -632,6 +659,18 @@ function RuleSimPositionsPanel({
             Matched
           </Button>
         </div>
+        {!isMatched && (
+          <VisibilityToggleButton
+            visible={showNotFired}
+            onToggle={() => {
+              setShowNotFired((v) => !v);
+              setSimQuery((q) => ({ ...q, page: 1 }));
+            }}
+            label="not-fired tokens"
+          >
+            {showNotFired ? 'Hide not fired' : 'Show not fired'}
+          </VisibilityToggleButton>
+        )}
         <span className="truncate font-mono text-[11px] text-text-dim">{rule.rule_name}</span>
       </div>
 
@@ -717,9 +756,13 @@ function RuleSimPositionsPanel({
             serverTotal={simTotal}
             onQueryChange={setSimQuery}
             loading={simTableLoading}
-            resetKey={rule.id}
+            resetKey={`${rule.id}_${showNotFired}`}
             tableId={`simulate-positions-${rule.id}`}
-            emptyMessage="No positions in this simulation result."
+            emptyMessage={
+              showNotFired
+                ? 'No tokens in this simulation result.'
+                : 'No fired positions in this simulation result.'
+            }
           />
         </>
       )}
@@ -844,6 +887,16 @@ function buildColumns(
       searchValue: (r) => String(lamportsToSol(r.buy_amount_lamports)),
       sortValue: (r) => r.buy_amount_lamports,
       sortable: true,
+    },
+    {
+      key: 'caps',
+      label: 'Caps',
+      render: (r) => (
+        <span className="tabular-nums text-text-dim">
+          {r.max_concurrent_tokens}/{r.max_total_tokens || '∞'}
+        </span>
+      ),
+      searchValue: (r) => `${r.max_concurrent_tokens}/${r.max_total_tokens}`,
     },
     ...buildRuleParamsColumns(),
     {

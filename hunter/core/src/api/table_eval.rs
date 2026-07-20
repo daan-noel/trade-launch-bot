@@ -161,6 +161,14 @@ fn row_matches(row: &Value, field: &str, kind: ColKind, spec: &FilterSpec) -> bo
             }
             _ => true,
         },
+        (ColKind::Text, FilterOp::Neq) => match operand_text(&spec.val) {
+            Some(needle) if !needle.is_empty() => {
+                // Missing/null field ≠ needle (exclude-only filter should drop
+                // rows that *are* the needle; absent counts as "not equal").
+                !field_text(row, field).is_some_and(|hay| hay == needle)
+            }
+            _ => true,
+        },
         // Set membership: `val` is a JSON array; the row's field must equal one of
         // its (trimmed, lowercased) entries. An empty/absent/non-array operand is
         // not a constraint (keeps the row), mirroring the SQL side dropping it.
@@ -359,6 +367,21 @@ mod tests {
     fn numeric_op_on_text_is_ignored() {
         let (_, total) = apply_table_request(&rows(), &req(json!({"filters": {"symbol": {"op":"gt","val":5}}})), resolve);
         assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn text_neq_excludes_exact_match() {
+        let rows = vec![
+            json!({"mint_address":"a","symbol":"BONK","exit_reason":"TakeProfit"}),
+            json!({"mint_address":"b","symbol":"WIF","exit_reason":"NoEntry"}),
+            json!({"mint_address":"c","symbol":"POP","exit_reason":"Open"}),
+        ];
+        let (_, total) = apply_table_request(
+            &rows,
+            &req(json!({"filters": {"reason": {"op":"neq","val":"NoEntry"}}})),
+            resolve,
+        );
+        assert_eq!(total, 2, "neq NoEntry keeps TakeProfit + Open");
     }
 
     #[test]

@@ -36,7 +36,9 @@ use trading_core::strategies::fingerprint_axes::{fp_to_engine, observed_axes, ru
 use crate::state::analysis_cache::AnalysisCacheKey;
 use crate::state::local_state::LocalState;
 use crate::state::sim_results::SimOutcome;
-use crate::strategies::replay::{self, outcome_to_row, EngineBacktestResult, ReplayConfig, ReplayToken};
+use crate::strategies::replay::{
+    self, no_entry_row, outcome_to_row, EngineBacktestResult, ReplayConfig, ReplayToken,
+};
 use crate::strategies::sim_progress::SimProgress;
 
 /// Serialize a backtest row vector to JSON values for storage.
@@ -337,8 +339,21 @@ async fn run_engine_backtest(
         anyhow::bail!("simulation cancelled");
     }
 
-    // Enrich exactly the fired tokens (bounded batch), attaching token metadata +
-    // row-owned ATH — mirrors the tpsl backtest.
+    // Pad matched candidates that never entered — no lake history, never armed,
+    // entry give-up, or empty fill window. Same full-slice contract as the sweep
+    // combo drill-in (`simulate_one_combo` always returns one row per token).
+    {
+        let entered: std::collections::HashSet<String> =
+            rows.iter().map(|r| r.mint_address.clone()).collect();
+        for t in tokens.iter() {
+            if !entered.contains(&t.mint_address) {
+                rows.push(no_entry_row(&t.mint_address, &t.symbol, t.created_at));
+            }
+        }
+    }
+
+    // Enrich every result row (fired + NoEntry), attaching token metadata +
+    // row-owned ATH — mirrors the tpsl / sweep drill-in.
     let result_mints: Vec<String> = rows.iter().map(|r| r.mint_address.clone()).collect();
     let mut enrichment = {
         let _stage = crate::sweep::obs::Stage::start("sim_enrich");
@@ -353,12 +368,13 @@ async fn run_engine_backtest(
         }
     }
 
-    // Same display order as the tpsl backtest: TakeProfit first, other closed exits
-    // next, still-Open last; ties by pnl% desc.
+    // Display order: TakeProfit first, other closed exits, still-Open, NoEntry
+    // last; ties by pnl% desc (NoEntry has null pnl → sorts as 0).
     rows.sort_by(|a, b| {
         let rank = |r: &str| match r {
             "TakeProfit" => 0,
             "Open" => 2,
+            "NoEntry" => 3,
             _ => 1,
         };
         rank(&a.exit_reason)

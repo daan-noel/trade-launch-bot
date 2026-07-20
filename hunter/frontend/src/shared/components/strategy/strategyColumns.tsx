@@ -67,6 +67,8 @@ export function exitReasonBadge(
     }
     case 'Migrated':
       return <span className="font-bold text-text-dim">{label}</span>;
+    case 'NoEntry':
+      return <span className="italic text-text-dim">{label}</span>;
     case 'Open':
     case null:
     case undefined:
@@ -408,6 +410,21 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
     searchValue: (r) => r.symbol,
   },
   mintColumn<SimulatedTokenResult>(),
+  {
+    key: 'fired',
+    label: 'Fired',
+    group: 'result',
+    sortable: true,
+    render: (r) => {
+      const fired = r.fired !== false && r.exit_reason !== 'NoEntry';
+      return (
+        <span className={fired ? 'text-success' : 'text-text-dim'}>{fired ? 'Yes' : 'No'}</span>
+      );
+    },
+    searchValue: (r) =>
+      r.fired !== false && r.exit_reason !== 'NoEntry' ? 'yes' : 'no',
+    sortValue: (r) => (r.fired !== false && r.exit_reason !== 'NoEntry' ? 1 : 0),
+  },
   ...coreTokenColumns(new Set(['symbol', 'mint_address'])),
   ...legColumns<SimulatedTokenResult>(
     'target',
