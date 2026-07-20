@@ -44,7 +44,12 @@ import {
 } from 'services/sse';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
-import { lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
+import {
+  disabledRuleRowClass,
+  lamportsToSol,
+  type StrategyRule,
+  type TradeMode,
+} from 'lib/strategy/types';
 
 export interface RulesViewProps {
   /** Lab-only dry-run render-prop forwarded to the editor (FE3). */
@@ -494,6 +499,7 @@ export function RulesView({ renderDryRun, linkToSimulate }: RulesViewProps) {
         emptyMessage="No rules yet — create one from a fingerprint."
         selectedKey={selectedKey}
         onSelect={setSelectedKey}
+        rowClassName={disabledRuleRowClass}
         rowActions={(r) => (
           <IconButtonGroup>
             <IconButton

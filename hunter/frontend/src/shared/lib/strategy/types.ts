@@ -70,6 +70,11 @@ export interface StrategyRule {
   updated_at: string;
 }
 
+/** DataTable `rowClassName` for soft-archived rules (Rules + Simulate). */
+export function disabledRuleRowClass(r: Pick<StrategyRule, 'is_enabled'>): string | undefined {
+  return r.is_enabled ? undefined : 'opacity-40 bg-white/[0.02] hover:bg-white/[0.04]';
+}
+
 /** POST /api/strategy-rules body. `fingerprint_id` required; `is_active` is
  *  forced false and `is_enabled` true on create (lifecycle endpoints toggle them). */
 export interface CreateRuleBody {

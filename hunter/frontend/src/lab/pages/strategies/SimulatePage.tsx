@@ -60,7 +60,13 @@ import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
-import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
+import {
+  disabledRuleRowClass,
+  lamportsToSol,
+  type Fingerprint,
+  type StrategyRule,
+  type TradeMode,
+} from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
 import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
 import { cn } from 'lib/cn';
@@ -337,6 +343,7 @@ export function SimulatePage() {
         emptyMessage="No rules yet — author one on the Rules page."
         selectedKey={selectedRuleId}
         onSelect={setSelectedRuleId}
+        rowClassName={disabledRuleRowClass}
         rowActions={(r) => (
           <IconButtonGroup>
             <IconButton
