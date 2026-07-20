@@ -1,16 +1,9 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { useEffect } from 'react';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import clsx from 'clsx';
 import { IngestToggle } from '@shared/components/IngestToggle';
 import { useQuoteAssetsQuery } from '@shared/store/endpoints';
-
-const NAV: { to: string; label: string; icon: string; end?: boolean }[] = [
-  { to: '/', label: 'Dashboard', icon: '◉', end: true },
-  { to: '/launch', label: 'Launch Console', icon: '🚀' },
-  { to: '/launches', label: 'Launched Tokens', icon: '≡' },
-  { to: '/wallets', label: 'Wallet Pool', icon: '◈' },
-  { to: '/templates', label: 'Launch Templates', icon: '⚙' },
-  { to: '/metadata', label: 'Metadata', icon: '⬡' },
-];
+import { documentTitleFor, NAV } from './nav';
 
 function SolPrice() {
   const { data } = useQuoteAssetsQuery(undefined, {
@@ -25,6 +18,12 @@ function SolPrice() {
 }
 
 export function AppShell() {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    document.title = documentTitleFor(pathname);
+  }, [pathname]);
+
   return (
     <div className="flex min-h-screen">
       <aside className="w-56 shrink-0 border-r border-[var(--color-line)] bg-[var(--color-panel)] flex flex-col">

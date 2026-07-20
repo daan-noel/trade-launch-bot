@@ -99,11 +99,11 @@ is **STREAM ON/OFF** (not the header trading kill switch).
   `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral (Timezone+PriceUnit+Toast);
   **lab `App` nests `BackgroundJobsProvider` itself** (keeps its SSE out of the live build).
   **Route Suspense lives inside `AppLayout` around `<Outlet />`** (not around `Routes`) so a
-  lazy page chunk keeps the header/nav mounted; fallback is `SuspenseFallback` (`Loading…`).
+  lazy page chunk keeps the header/nav mounted; fallback is `SuspenseFallback` → `LoadingState`.
 - **Chart code-split:** `lightweight-charts` is not pulled into route/table chunks up front.
-  Call sites use `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)`; `TokenTable`'s Charts
-  toggle dynamically imports `TokenChartsGrid`. Lab Creation Stats owns `GroupedCreationSection`
-  (lab-only page — no live `extraSections` inject).
+  Call sites use `LazyTokenTradeChart` / `LazyLabTokenInspect(Modal)` / `LazyTokenChartsGrid`;
+  all lazy Suspense fallbacks share `LoadingState` (`page` / `panel` / `inline`). Lab Creation
+  Stats owns `GroupedCreationSection` (lab-only page — no live `extraSections` inject).
 
 ## Pages by mode
 

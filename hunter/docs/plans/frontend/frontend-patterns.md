@@ -82,10 +82,15 @@ Cells that only need `unit` (to format labels) import `PriceUnitActionsContext`.
 ## Route Suspense + chart code-split
 
 - **Suspense boundary:** `AppLayout` wraps only `<Outlet />` (not the whole `Routes` tree).
-  Lazy route chunks show `SuspenseFallback` (`Loading…`) in the main pane; header/nav stay mounted.
+  Lazy route chunks show `SuspenseFallback` → `LoadingState` (`page`) in the main pane;
+  header/nav stay mounted.
+- **Lazy-chunk placeholder SSOT:** every Suspense fallback for a `lazy()` import uses
+  `LoadingState` (`components/ui/LoadingState`) — `page` for routes, `panel` for chart /
+  inspect shells, `inline` for compact embeds. `LazyLabTokenInspectModal` paints the modal
+  chrome immediately with a `panel` placeholder inside (never a blank `null` fallback).
 - **`lightweight-charts` deferral:** never static-import `TokenTradeChart` / inspect modals from a
   route or from `TokenTable`. Use `LazyTokenTradeChart`, `LazyLabTokenInspect(Modal)`, and
-  `TokenTable`'s dynamic `TokenChartsGrid` import (Charts toggle). Creation-stats trend charts
+  `TokenTable`'s `LazyTokenChartsGrid` (Charts toggle). Creation-stats trend charts
   are lazy inside the page/section so the control shell paints first.
 
 ## BackgroundJobsContext — `context/BackgroundJobsContext.tsx`

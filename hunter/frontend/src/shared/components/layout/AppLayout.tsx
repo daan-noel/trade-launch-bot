@@ -1,8 +1,9 @@
-import { Suspense, type ReactNode } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Suspense, useEffect, type ReactNode } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
 import { Header } from './Header';
 import { RouteErrorBoundary } from 'components/ui/ErrorBoundary';
 import { SuspenseFallback } from 'components/ui/SuspenseFallback';
+import { documentTitleFor } from './documentTitle';
 import type { NavConfig } from './navTypes';
 
 /**
@@ -29,12 +30,20 @@ export function AppLayout({
   beforeMain?: ReactNode;
   footer?: ReactNode;
 }) {
+  const { pathname } = useLocation();
+
+  // Tab title = nav page label + app identity (SSOT: nav.ts). Page-first so
+  // Chrome's right-truncation keeps the differentiating segment visible.
+  useEffect(() => {
+    document.title = documentTitleFor(pathname, nav);
+  }, [pathname, nav]);
+
   return (
     <div className="flex min-h-screen flex-col bg-bg text-text">
       {beforeMain}
       <Header nav={nav} rightSlot={rightSlot} />
       <main className="flex-1 px-6 py-5 animate-[fade-in-up_0.25s_ease_both]">
-        {/* Page throw → fallback card; lazy chunk → Loading…; nav stays live. */}
+        {/* Page throw → fallback card; lazy chunk → LoadingState; nav stays live. */}
         <RouteErrorBoundary variant="page">
           <Suspense fallback={<SuspenseFallback />}>
             <Outlet />

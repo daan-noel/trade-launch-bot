@@ -5,6 +5,7 @@ import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { LoadingState } from 'components/ui/LoadingState';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetGroupedCreationStatsQuery } from '@lab/store/labEndpoints';
 import { parseNumbers, parseIxLabelsFilter } from '@lab/components/sweep/fingerprintFilters';
@@ -292,7 +293,9 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           </div>
 
           {/* Multi-series calendar trend (when each group is active). */}
-          <Suspense fallback={<p className="text-text-dim">Loading chart…</p>}>
+          <Suspense
+            fallback={<LoadingState variant="inline" label="Loading chart…" />}
+          >
             <GroupedCreationTrendChart
               points={data?.points ?? []}
               groups={groups}

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useMemo } from 'react';
+import { LoadingState } from 'components/ui/LoadingState';
 import { Button } from 'components/ui/Button';
 import { Select } from 'components/ui/Select';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
@@ -196,7 +197,9 @@ export function CreationStatsPage() {
         {trend.isLoading ? (
           <p className="text-text-dim">Loading…</p>
         ) : trend.data && trend.data.points.length > 0 ? (
-          <Suspense fallback={<p className="text-text-dim">Loading chart…</p>}>
+          <Suspense
+            fallback={<LoadingState variant="inline" label="Loading chart…" />}
+          >
             <CreationTrendChart points={trend.data.points} />
           </Suspense>
         ) : (

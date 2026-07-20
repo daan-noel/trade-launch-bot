@@ -7,7 +7,13 @@ import type { NavConfig } from 'components/layout/navTypes';
  * The `LIVE` badge pulses as a "this is armed" cue.
  */
 export const liveNav: NavConfig = {
-  identity: { subtitle: 'Live Trading', badge: 'LIVE', glyph: '◈', pulse: true },
+  identity: {
+    appTitle: 'Hunter Live',
+    subtitle: 'Live Trading',
+    badge: 'LIVE',
+    glyph: '◈',
+    pulse: true,
+  },
   items: [
     { kind: 'item', to: '/', label: 'Home' },
     {

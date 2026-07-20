@@ -24,6 +24,11 @@ export type NavEntry = NavLeaf | NavGroup;
  * auto-adapt (teal on live, violet on lab).
  */
 export interface AppIdentity {
+  /**
+   * Browser-tab product identity (e.g. `Hunter Live` / `Hunter Lab`). Kept
+   * distinct from the in-header brand string so four open apps stay readable.
+   */
+  appTitle: string;
   /** Short line under the app name stating the app's purpose. */
   subtitle: string;
   /** Corner badge chip text (e.g. `LIVE` / `LAB`). */

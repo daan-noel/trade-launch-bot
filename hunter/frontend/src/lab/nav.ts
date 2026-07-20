@@ -6,7 +6,12 @@ import type { NavConfig } from 'components/layout/navTypes';
  * Metric panes live inside Tokens detail (not a peer Strategies page).
  */
 export const labNav: NavConfig = {
-  identity: { subtitle: 'Research & Backtesting', badge: 'LAB', glyph: '◇' },
+  identity: {
+    appTitle: 'Hunter Lab',
+    subtitle: 'Research & Backtesting',
+    badge: 'LAB',
+    glyph: '◇',
+  },
   items: [
     { kind: 'item', to: '/', label: 'Home' },
     { kind: 'item', to: '/creation-stats', label: 'Creation Stats' },

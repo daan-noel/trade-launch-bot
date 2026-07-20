@@ -1,4 +1,5 @@
 import { lazy, Suspense, type ComponentProps } from 'react';
+import { LoadingState } from 'components/ui/LoadingState';
 
 const TokenTradeChart = lazy(() =>
   import('./TokenTradeChart').then((m) => ({ default: m.TokenTradeChart })),
@@ -7,13 +8,7 @@ const TokenTradeChart = lazy(() =>
 /** Defers `lightweight-charts` until the chart actually mounts. */
 export function LazyTokenTradeChart(props: ComponentProps<typeof TokenTradeChart>) {
   return (
-    <Suspense
-      fallback={
-        <div className="flex items-center justify-center py-16 text-sm text-text-dim">
-          Loading chart…
-        </div>
-      }
-    >
+    <Suspense fallback={<LoadingState variant="panel" label="Loading chart…" />}>
       <TokenTradeChart {...props} />
     </Suspense>
   );
