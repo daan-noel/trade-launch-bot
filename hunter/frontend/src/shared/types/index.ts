@@ -366,6 +366,16 @@ export interface SimulatedSummary extends RunSummary {
   n_migrated?: number;
 }
 
+/** Hold + wall-clock bins for the Temporal summary band — mirrors lab
+ *  `sim_query::time_summary` / FE `buildTemporalSummary`. */
+export interface TemporalSummaryPayload {
+  hold: import('lib/strategy/temporalSummary').HoldBinStats[];
+  wall: import('lib/strategy/temporalSummary').WallCellStats[];
+  wallGrain: 'hour' | 'day';
+  wallField: 'entry_time' | 'created_at';
+  nFired: number;
+}
+
 /** Metadata for one paper-test run (a single activate→finish cycle). */
 export interface PaperRunResponse {
   run_seq: number;

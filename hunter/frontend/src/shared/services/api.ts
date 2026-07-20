@@ -151,6 +151,25 @@ export function fetchEngineSimSummary(
   );
 }
 
+/** POST hold + wall-clock bins for the Temporal summary band. */
+export function fetchEngineSimTimeSummary(
+  runId: string,
+  body: TableRequestBody,
+  wallField: 'entry_time' | 'created_at' = 'entry_time',
+  signal?: AbortSignal,
+): Promise<import('types').TemporalSummaryPayload> {
+  const q = new URLSearchParams({ wall_field: wallField });
+  return request(
+    `${API_BASE}/api/strategies/simulate/${encodeURIComponent(runId)}/result/time-summary?${q}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
+}
+
 /** Whole-population roll-up for the Holdings summary bar (server-computed over the
  *  filtered set). Mirrors the Rust `HoldingsTableSummary`. */
 export interface HoldingsTableSummary {

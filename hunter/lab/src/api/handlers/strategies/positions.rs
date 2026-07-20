@@ -86,3 +86,23 @@ pub fn sim_result_summary(state: &LocalState, rule_id: Uuid, req: TableRequest) 
     }
     HttpResponse::Ok().json(body)
 }
+
+/// POST `.../rules/{rule_id}/simulate/result/time-summary` — hold-duration +
+/// wall-clock bins over the filtered sim cohort (same filter grammar as
+/// [`sim_result_summary`]). `wall_field` query: `entry_time` (default) or
+/// `created_at`.
+pub fn sim_result_time_summary(
+    state: &LocalState,
+    rule_id: Uuid,
+    req: TableRequest,
+    wall_field: &str,
+) -> HttpResponse {
+    let rows = match peek_sim_rows(state, rule_id) {
+        Ok(rows) => rows,
+        Err(resp) => return resp,
+    };
+    let filtered = crate::strategies::sim_query::filter_rows(&rows, &req);
+    let field = crate::strategies::sim_query::WallTimeField::parse(wall_field);
+    let body = crate::strategies::sim_query::time_summary(&filtered, field);
+    HttpResponse::Ok().json(body)
+}

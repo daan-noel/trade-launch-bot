@@ -14,7 +14,8 @@
 //! Only whitelisted keys are honored (unknown → ignored). Several columns use a
 //! friendlier display key than the underlying JSON field, so those are aliased here.
 
-use serde_json::Value;
+use chrono::TimeZone;
+use serde_json::{json, Value};
 
 use trading_core::api::table_eval::{apply_table_request, filter_table_request, resolve_token_enrichment_key, ColKind};
 use trading_core::api::table_query::TableRequest;
@@ -122,6 +123,357 @@ fn row_to_outcome(row: &Value) -> TokenOutcome {
 pub fn summarize(rows: &[Value]) -> RunSummary {
     let outcomes: Vec<TokenOutcome> = rows.iter().map(row_to_outcome).collect();
     run_summary(outcomes.iter())
+}
+
+// ── Temporal summary (hold bins + wall-clock heatmap) ─────────────────────────
+//
+// Wire shape mirrors `frontend/.../temporalSummary.ts` (`TemporalSummaryData`).
+// Hold-bin edges are integer seconds and **must stay in sync** with the FE
+// `HOLD_BINS` constant (filters use `15..59` etc.).
+
+/// Wall-clock field the heatmap bins on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallTimeField {
+    EntryTime,
+    CreatedAt,
+}
+
+impl WallTimeField {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "created_at" => WallTimeField::CreatedAt,
+            _ => WallTimeField::EntryTime,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            WallTimeField::EntryTime => "entry_time",
+            WallTimeField::CreatedAt => "created_at",
+        }
+    }
+
+    fn json_key(self) -> &'static str {
+        self.as_str()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HoldBinDef {
+    id: &'static str,
+    label: &'static str,
+    lo: Option<i64>,
+    hi: Option<i64>,
+    is_open: bool,
+}
+
+/// Inclusive integer-second bins — SSOT twin of FE `HOLD_BINS`.
+const HOLD_BINS: &[HoldBinDef] = &[
+    HoldBinDef { id: "lt15s", label: "<15s", lo: Some(0), hi: Some(14), is_open: false },
+    HoldBinDef { id: "15to60s", label: "15–60s", lo: Some(15), hi: Some(59), is_open: false },
+    HoldBinDef { id: "1to5m", label: "1–5m", lo: Some(60), hi: Some(299), is_open: false },
+    HoldBinDef { id: "5to30m", label: "5–30m", lo: Some(300), hi: Some(1799), is_open: false },
+    HoldBinDef { id: "30mPlus", label: "30m+", lo: Some(1800), hi: None, is_open: false },
+    HoldBinDef { id: "open", label: "Open", lo: None, hi: None, is_open: true },
+];
+
+fn holding_filter_for(b: &HoldBinDef) -> Option<String> {
+    if b.is_open {
+        return None;
+    }
+    let lo = b.lo?;
+    match b.hi {
+        Some(hi) => Some(format!("{lo}..{hi}")),
+        None => Some(format!(">={lo}")),
+    }
+}
+
+fn empty_exits() -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    for k in [
+        "n_exit_take_profit",
+        "n_exit_stop_loss",
+        "n_exit_metrics",
+        "n_exit_dead",
+        "n_exit_manual",
+        "n_exit_trailing",
+        "n_exit_stall",
+        "n_exit_time",
+        "n_exit_liquidity",
+        "n_exit_next_kill",
+        "other",
+        "open",
+    ] {
+        m.insert(k.into(), json!(0));
+    }
+    m
+}
+
+fn exit_key(code: ExitCode) -> &'static str {
+    match code {
+        ExitCode::TakeProfit => "n_exit_take_profit",
+        ExitCode::StopLoss => "n_exit_stop_loss",
+        ExitCode::Metrics => "n_exit_metrics",
+        ExitCode::Dead => "n_exit_dead",
+        ExitCode::TrailingStop => "n_exit_trailing",
+        ExitCode::Stall => "n_exit_stall",
+        ExitCode::TimeStop => "n_exit_time",
+        ExitCode::LiquidityExit => "n_exit_liquidity",
+        ExitCode::NextKill => "n_exit_next_kill",
+        ExitCode::Open | ExitCode::NoEntry => "open",
+    }
+}
+
+fn tally_exit(exits: &mut serde_json::Map<String, Value>, reason: &str) {
+    let key = if reason == "Manual" {
+        "n_exit_manual"
+    } else if reason == "Open" {
+        "open"
+    } else {
+        exit_key(ExitCode::from_reason(reason))
+    };
+    let n = exits.get(key).and_then(Value::as_i64).unwrap_or(0) + 1;
+    exits.insert(key.into(), json!(n));
+}
+
+fn hold_bin_id(exit: &str, holding_secs: i64) -> &'static str {
+    if exit == "Open" {
+        return "open";
+    }
+    if holding_secs < 0 {
+        return "open";
+    }
+    for b in HOLD_BINS {
+        if b.is_open {
+            continue;
+        }
+        let Some(lo) = b.lo else { continue };
+        if holding_secs < lo {
+            continue;
+        }
+        if let Some(hi) = b.hi {
+            if holding_secs > hi {
+                continue;
+            }
+        }
+        return b.id;
+    }
+    "30mPlus"
+}
+
+fn parse_rfc3339_ms(s: &str) -> Option<i64> {
+    // Accept RFC3339 / ISO-8601; chrono via DateTime parse used elsewhere in lab —
+    // keep this light: use `time`/`chrono` if available on trading_core rows.
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+        .or_else(|| {
+            // Some rows may omit the offset suffix; try appending Z.
+            if !s.ends_with('Z') && !s.contains('+') {
+                chrono::DateTime::parse_from_rfc3339(&format!("{s}Z"))
+                    .ok()
+                    .map(|dt| dt.timestamp_millis())
+            } else {
+                None
+            }
+        })
+}
+
+fn floor_to_grain(ms: i64, grain_hour: bool) -> i64 {
+    if grain_hour {
+        ms - ms.rem_euclid(3_600_000)
+    } else {
+        ms - ms.rem_euclid(86_400_000)
+    }
+}
+
+fn dominant_exit(exits: &serde_json::Map<String, Value>) -> Option<&'static str> {
+    const ORDER: &[(&str, &str)] = &[
+        ("n_exit_take_profit", "Take profit"),
+        ("n_exit_stop_loss", "Stop loss"),
+        ("n_exit_metrics", "Metric"),
+        ("n_exit_dead", "Dead"),
+        ("n_exit_manual", "Manual"),
+        ("n_exit_trailing", "Trailing"),
+        ("n_exit_stall", "Stall"),
+        ("n_exit_time", "Time"),
+        ("n_exit_liquidity", "Liquidity"),
+        ("n_exit_next_kill", "Next kill"),
+        ("open", "Open"),
+        ("other", "Other"),
+    ];
+    let mut best: Option<&'static str> = None;
+    let mut n = 0i64;
+    for &(k, label) in ORDER {
+        let c = exits.get(k).and_then(Value::as_i64).unwrap_or(0);
+        if c > n {
+            n = c;
+            best = Some(label);
+        }
+    }
+    best
+}
+
+/// Fold filtered sim rows into the temporal summary payload the FE heatmap renders.
+pub fn time_summary(rows: &[Value], wall_field: WallTimeField) -> Value {
+    let mut hold: Vec<Value> = HOLD_BINS
+        .iter()
+        .map(|b| {
+            json!({
+                "id": b.id,
+                "label": b.label,
+                "n": 0,
+                "pnl_sol": 0.0,
+                "exits": empty_exits(),
+                "holdingFilter": holding_filter_for(b),
+                "exitFilter": if b.is_open { Value::String("Open".into()) } else { Value::Null },
+                "mints": [],
+            })
+        })
+        .collect();
+    let hold_index: std::collections::HashMap<&str, usize> = HOLD_BINS
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id, i))
+        .collect();
+
+    let mut times: Vec<i64> = Vec::new();
+    let mut n_fired = 0usize;
+    let field_key = wall_field.json_key();
+
+    for row in rows {
+        n_fired += 1; // every sim row is an entered position
+        let mint = row
+            .get("mint_address")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let exit = row
+            .get("exit_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("Open");
+        let holding = row.get("holding_secs").and_then(Value::as_i64).unwrap_or(0);
+        let pnl = row.get("pnl_sol").and_then(Value::as_f64).unwrap_or(0.0);
+        let bin_id = hold_bin_id(exit, holding);
+        if let Some(&idx) = hold_index.get(bin_id) {
+            let obj = hold[idx].as_object_mut().expect("hold bin object");
+            let n = obj.get("n").and_then(Value::as_i64).unwrap_or(0) + 1;
+            obj.insert("n".into(), json!(n));
+            let p = obj.get("pnl_sol").and_then(Value::as_f64).unwrap_or(0.0) + pnl;
+            obj.insert("pnl_sol".into(), json!(p));
+            if let Some(Value::Object(ex)) = obj.get_mut("exits") {
+                tally_exit(ex, exit);
+            }
+            if !mint.is_empty() {
+                if let Some(Value::Array(mints)) = obj.get_mut("mints") {
+                    mints.push(Value::String(mint.clone()));
+                }
+            }
+        }
+        if let Some(ts) = row
+            .get(field_key)
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_ms)
+        {
+            times.push(ts);
+        }
+    }
+
+    let (wall_grain, wall_cells) = if times.is_empty() {
+        ("day", Vec::new())
+    } else {
+        let min_t = *times.iter().min().unwrap();
+        let max_t = *times.iter().max().unwrap();
+        let grain_hour = max_t - min_t <= 72 * 3_600_000;
+        let step = if grain_hour { 3_600_000 } else { 86_400_000 };
+        let start0 = floor_to_grain(min_t, grain_hour);
+        let end0 = floor_to_grain(max_t, grain_hour) + step;
+        let mut cells: std::collections::BTreeMap<
+            i64,
+            (i64, f64, serde_json::Map<String, Value>, i64, Vec<String>),
+        > = std::collections::BTreeMap::new();
+        let mut t = start0;
+        while t < end0 {
+            cells.insert(t, (0, 0.0, empty_exits(), 0, Vec::new()));
+            t += step;
+        }
+        for row in rows {
+            let mint = row
+                .get("mint_address")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let exit = row
+                .get("exit_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("Open");
+            let pnl = row.get("pnl_sol").and_then(Value::as_f64).unwrap_or(0.0);
+            let Some(ts) = row
+                .get(field_key)
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339_ms)
+            else {
+                continue;
+            };
+            let key = floor_to_grain(ts, grain_hour);
+            if let Some(cell) = cells.get_mut(&key) {
+                cell.0 += 1;
+                cell.1 += pnl;
+                tally_exit(&mut cell.2, exit);
+                if exit != "Open" && pnl > 0.0 {
+                    cell.3 += 1;
+                }
+                if !mint.is_empty() {
+                    cell.4.push(mint);
+                }
+            }
+        }
+        let grain = if grain_hour { "hour" } else { "day" };
+        let wall: Vec<Value> = cells
+            .into_iter()
+            .map(|(key, (n, pnl, exits, wins, mints))| {
+                let closed = n - exits.get("open").and_then(Value::as_i64).unwrap_or(0);
+                let win_rate = if closed > 0 {
+                    wins as f64 / closed as f64
+                } else {
+                    0.0
+                };
+                let dominant = if n > 0 {
+                    dominant_exit(&exits).map(Value::from).unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                json!({
+                    "id": format!("{}:{key}", wall_field.as_str()),
+                    "start": chrono::Utc
+                        .timestamp_millis_opt(key)
+                        .single()
+                        .map(|d| d.to_rfc3339())
+                        .unwrap_or_default(),
+                    "end": chrono::Utc
+                        .timestamp_millis_opt(key + step)
+                        .single()
+                        .map(|d| d.to_rfc3339())
+                        .unwrap_or_default(),
+                    "n": n,
+                    "pnl_sol": pnl,
+                    "win_rate": win_rate,
+                    "exits": exits,
+                    "dominant": dominant,
+                    "mints": mints,
+                })
+            })
+            .collect();
+        (grain, wall)
+    };
+
+    json!({
+        "hold": hold,
+        "wall": wall_cells,
+        "wallGrain": wall_grain,
+        "wallField": wall_field.as_str(),
+        "nFired": n_fired,
+    })
 }
 
 #[cfg(test)]
@@ -247,6 +599,42 @@ mod tests {
         assert_eq!(sim.n_exit_dead, sweep.n_exit_dead);
         assert_eq!(sim.n_exit_metrics, sweep.n_exit_metrics);
         assert_eq!(sim.profit_factor.is_some(), sweep.profit_factor.is_some());
+    }
+
+    #[test]
+    fn time_summary_hold_bins_match_edges() {
+        let rows = vec![
+            json!({
+                "mint_address":"a","exit_reason":"TakeProfit","holding_secs":10,
+                "pnl_sol":1.0,"entry_time":"2026-07-15T14:30:00Z"
+            }),
+            json!({
+                "mint_address":"b","exit_reason":"StopLoss","holding_secs":20,
+                "pnl_sol":-0.5,"entry_time":"2026-07-15T14:45:00Z"
+            }),
+            json!({
+                "mint_address":"c","exit_reason":"Open","holding_secs":0,
+                "pnl_sol":0.1,"entry_time":"2026-07-15T15:00:00Z"
+            }),
+        ];
+        let body = time_summary(&rows, WallTimeField::EntryTime);
+        assert_eq!(body["nFired"], 3);
+        let hold = body["hold"].as_array().unwrap();
+        let lt15 = hold.iter().find(|b| b["id"] == "lt15s").unwrap();
+        assert_eq!(lt15["n"], 1);
+        assert_eq!(lt15["exits"]["n_exit_take_profit"], 1);
+        let s15 = hold.iter().find(|b| b["id"] == "15to60s").unwrap();
+        assert_eq!(s15["n"], 1);
+        let open = hold.iter().find(|b| b["id"] == "open").unwrap();
+        assert_eq!(open["n"], 1);
+        assert_eq!(body["wallGrain"], "hour");
+        let wall_n: i64 = body["wall"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["n"].as_i64().unwrap_or(0))
+            .sum();
+        assert_eq!(wall_n, 3);
     }
 
     #[test]

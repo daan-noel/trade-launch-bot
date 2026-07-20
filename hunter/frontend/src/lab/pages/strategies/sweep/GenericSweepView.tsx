@@ -17,7 +17,12 @@ import {
   type SummaryStat,
   type SummarySection,
 } from 'components/strategy/SummaryStatsPanel';
+import {
+  TemporalSummary,
+  type TemporalSelection,
+} from 'components/strategy/TemporalSummary';
 import { runSummaryFromRows, runSummarySections } from 'lib/strategy/runSummary';
+import type { TemporalRow } from 'lib/strategy/temporalSummary';
 import { useBackgroundJobActions, useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { apiErrorMessage } from 'store/apiSlice';
 import {
@@ -566,7 +571,14 @@ function ComboTokenResults({
     [showNotFired, rows],
   );
   const [selected, setSelected] = useState<string | null>(null);
-  useEffect(() => setSelected(null), [comboId]);
+  const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
+  /** Frozen cohort for the Temporal chart so a click-filter doesn't collapse it. */
+  const [chartPinned, setChartPinned] = useState<ComboTokenResult[] | null>(null);
+  useEffect(() => {
+    setSelected(null);
+    setTemporalSel(null);
+    setChartPinned(null);
+  }, [comboId]);
 
   // Summary cohort = the table's current filtered rows (null until the table first
   // reports them → fall back to the full set so the card shows immediately). Reset
@@ -574,10 +586,42 @@ function ComboTokenResults({
   const [filteredRows, setFilteredRows] = useState<ComboTokenResult[] | null>(null);
   useEffect(() => setFilteredRows(null), [comboId]);
   const onFilteredRowsChange = useCallback((r: ComboTokenResult[]) => setFilteredRows(r), []);
+
+  const rowsForTable = useMemo(() => {
+    if (!temporalSel?.mints.length) return visible;
+    const set = new Set(temporalSel.mints);
+    return visible.filter((r) => set.has(r.mint_address));
+  }, [visible, temporalSel]);
+
   const summary = useMemo(
-    () => buildComboSummary(filteredRows ?? visible),
-    [filteredRows, visible],
+    () => buildComboSummary(filteredRows ?? rowsForTable),
+    [filteredRows, rowsForTable],
   );
+
+  const temporalRows: TemporalRow[] = useMemo(() => {
+    const src = chartPinned ?? filteredRows ?? visible;
+    return src.map((r) => ({
+      mint_address: r.mint_address,
+      fired: r.fired,
+      exit: r.exit,
+      pnl_sol: r.pnl_sol,
+      holding_secs: r.holding_secs,
+      entry_time: r.entry_time,
+      created_at: r.created_at,
+    }));
+  }, [chartPinned, filteredRows, visible]);
+
+  const onTemporalSelect = useCallback(
+    (sel: TemporalSelection) => {
+      if (sel && !chartPinned) {
+        setChartPinned(filteredRows ?? visible);
+      }
+      if (!sel) setChartPinned(null);
+      setTemporalSel(sel);
+    },
+    [chartPinned, filteredRows, visible],
+  );
+
   const selectedRow = selected ? rows.find((r) => r.mint_address === selected) ?? null : null;
 
   const columns = useMemo<ColumnDef<ComboTokenResult>[]>(
@@ -673,13 +717,20 @@ function ComboTokenResults({
       {err && <InlineAlert variant="error">{err}</InlineAlert>}
 
       {!err && rows.length > 0 && (
-        <SummaryStatsPanel
-          title="Combo results summary"
-          subtitle="Tracks the table's filters"
-          heroStats={summary.hero}
-          sections={summary.sections}
-          accentClass="bg-secondary"
-        />
+        <>
+          <SummaryStatsPanel
+            title="Combo results summary"
+            subtitle="Tracks the table's filters"
+            heroStats={summary.hero}
+            sections={summary.sections}
+            accentClass="bg-secondary"
+          />
+          <TemporalSummary
+            rows={temporalRows}
+            selection={temporalSel}
+            onSelect={onTemporalSelect}
+          />
+        </>
       )}
 
       <TokenTable
@@ -687,7 +738,7 @@ function ComboTokenResults({
         existingKeys={existingKeys}
         charts
         useRowOverlay={comboRowOverlay}
-        rows={visible}
+        rows={rowsForTable}
         rowKey={(r) => r.mint_address}
         searchable
         colFilters

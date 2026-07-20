@@ -61,6 +61,10 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
                 web::post().to(handlers::strategies::engine::engine_sim_result_summary),
             )
             .route(
+                "/strategies/simulate/{run_id}/result/time-summary",
+                web::post().to(handlers::strategies::engine::engine_sim_result_time_summary),
+            )
+            .route(
                 "/strategies/simulate/{run_id}/matched",
                 web::post().to(handlers::strategies::engine::engine_matched_tokens),
             )

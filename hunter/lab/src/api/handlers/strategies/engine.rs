@@ -122,6 +122,26 @@ pub async fn engine_sim_result_summary(
     super::positions::sim_result_summary(&app_state, run_id.into_inner(), body.into_inner())
 }
 
+/// POST `/api/strategies/simulate/{run_id}/result/time-summary` — hold + wall-clock
+/// bins for the Temporal summary band (filter body matches `/result/summary`).
+pub async fn engine_sim_result_time_summary(
+    app_state: web::Data<Arc<LocalState>>,
+    run_id: web::Path<Uuid>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    body: web::Json<TableRequest>,
+) -> impl Responder {
+    let wall_field = query
+        .get("wall_field")
+        .map(String::as_str)
+        .unwrap_or("entry_time");
+    super::positions::sim_result_time_summary(
+        &app_state,
+        run_id.into_inner(),
+        body.into_inner(),
+        wall_field,
+    )
+}
+
 /// POST `/api/strategies/simulate/{run_id}/matched` — one page of the tokens whose
 /// creation axes match the rule's fingerprint (the **matched** candidate pool the
 /// run's positions are a subset of). `run_id` is the saved rule's id. The scan is

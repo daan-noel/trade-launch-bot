@@ -23,12 +23,17 @@ import {
 } from 'components/strategy/strategyColumns';
 import { LabTokenInspectModal } from '@lab/components/strategy/LabTokenInspectModal';
 import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
+import {
+  TemporalSummary,
+  type TemporalSelection,
+} from 'components/strategy/TemporalSummary';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import {
   fetchEngineMatchedPage,
   fetchEngineSimPage,
   fetchEngineSimSummary,
+  fetchEngineSimTimeSummary,
 } from 'services/api';
 import {
   toSummaryBody,
@@ -45,8 +50,14 @@ import {
 import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { lamportsToSol, type Fingerprint, type StrategyRule, type TradeMode } from 'lib/strategy/types';
 import { goodBad, pctText, runSummarySections, solText } from 'lib/strategy/runSummary';
+import type { WallTimeField } from 'lib/strategy/temporalSummary';
 import type { SummarySection } from 'components/strategy/SummaryStatsPanel';
-import type { MatchedTokenRecord, SimulatedSummary, SimulatedTokenResult } from 'types';
+import type {
+  MatchedTokenRecord,
+  SimulatedSummary,
+  SimulatedTokenResult,
+  TemporalSummaryPayload,
+} from 'types';
 import {
   useStartEngineSimulationMutation,
   useGetEngineSimSummaryMutation,
@@ -325,8 +336,34 @@ function RuleSimPositionsPanel({
   // Positions (entered) — the sim run's per-token outcomes. Fetched only while the
   // Positions view is active.
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
-  const simBody = useMemo(() => toTableRequest(simQuery, SIM_NUMERIC_COLS), [simQuery]);
+  const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
+  const [wallField, setWallField] = useState<WallTimeField>('entry_time');
+  const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
+
+  // Temporal mint-set is applied to the page fetch only — summary + time-summary
+  // stay on the table's own filters so the chart doesn't collapse after a click.
+  const simQueryForPage = useMemo(() => {
+    if (!temporalSel?.mints.length) return simQuery;
+    return {
+      ...simQuery,
+      structuredFilters: {
+        ...simQuery.structuredFilters,
+        mint_address: { op: 'in' as const, val: temporalSel.mints },
+      },
+    };
+  }, [simQuery, temporalSel]);
+
+  const simBody = useMemo(
+    () => toTableRequest(simQueryForPage, SIM_NUMERIC_COLS),
+    [simQueryForPage],
+  );
+  // KPI summary tracks the page cohort (includes temporal click-filter).
   const simSummaryBody = useMemo(
+    () => toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS),
+    [simQueryForPage],
+  );
+  // Time chart stays on the table's own filters so a bin click doesn't collapse it.
+  const timeSummaryBody = useMemo(
     () => toSummaryBody(simQuery, SIM_NUMERIC_COLS),
     [simQuery.search, simQuery.colFilters, simQuery.structuredFilters],
   );
@@ -345,6 +382,38 @@ function RuleSimPositionsPanel({
       fetchEngineSimSummary(rule.id, summaryBody as TableRequestBody, signal),
     simSummaryBody,
   );
+
+  // Clear temporal cohort when the table's own filters change or the rule switches.
+  const baseFilterKey = JSON.stringify({
+    s: simQuery.search,
+    c: simQuery.colFilters,
+    f: simQuery.structuredFilters,
+  });
+  useEffect(() => {
+    setTemporalSel(null);
+  }, [rule.id, baseFilterKey]);
+
+  useEffect(() => {
+    if (view !== 'positions') {
+      setTimeSummary(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    void fetchEngineSimTimeSummary(
+      rule.id,
+      timeSummaryBody as TableRequestBody,
+      wallField,
+      ctrl.signal,
+    )
+      .then((t) => {
+        if (!ctrl.signal.aborted) setTimeSummary(t);
+      })
+      .catch((e) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (!ctrl.signal.aborted) setTimeSummary(null);
+      });
+    return () => ctrl.abort();
+  }, [view, rule.id, timeSummaryBody, wallField, reloadNonce]);
 
   // Matched — every token the rule's fingerprint selects (positions are the subset
   // that actually entered). No summary and no entry/exit overlay: these are
@@ -446,6 +515,15 @@ function RuleSimPositionsPanel({
               heroStats={simStats.hero}
               sections={simStats.sections}
               accentClass="bg-info"
+            />
+          )}
+          {timeSummary && timeSummary.nFired > 0 && (
+            <TemporalSummary
+              data={timeSummary}
+              selection={temporalSel}
+              onSelect={setTemporalSel}
+              wallField={wallField}
+              onWallFieldChange={setWallField}
             />
           )}
           <TokenTable

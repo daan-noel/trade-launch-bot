@@ -245,7 +245,11 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   caches it, and pages the DB restricted to it (no 5,000-row cap). **Simulated** pages the finished
   backtest's rows **in memory** on the server (already resident — lab is single-user), with a matching
   `POST /simulate/result/summary` aggregate (`toSummaryBody`) for its card; `reload()` refetches on
-  the `simulation_finished` SSE (collect → fetch-first-page).
+  the `simulation_finished` SSE (collect → fetch-first-page). Below the scalar summary, a **Temporal**
+  band (`TemporalSummary` + `lib/strategy/temporalSummary`) shows hold-duration × exit stacked bars and
+  an entry/create wall-clock PnL heatmap. Simulate bins via `POST …/result/time-summary` (same filter
+  body as summary); sweep combo drill-in folds client-side from `ComboTokenResult` rows. Clicking a
+  bin/cell filters the positions table by mint set (chart stays on the pre-click cohort).
 - **Token enrichment is server-side, not client-merged — for EVERY token table.** Every token-result
   table (Matched, Positions current/history, lab paper positions, Simulated, Sweep drill-in, **and, since
   Phase 4, Wallet Holdings**) receives the full `TOKEN_ENRICH_FIELDS` set **in the response body** — the
