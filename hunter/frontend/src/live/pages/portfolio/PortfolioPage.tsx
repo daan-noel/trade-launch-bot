@@ -6,11 +6,21 @@ import { StatTile } from 'components/ui/StatTile';
 import { LinkIcon } from 'components/ui/icons';
 import { floorHref, rulesHref } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
-import { formatSigned, signedStatTone, signedToneClass, winRateGradeClass } from 'lib/signedTone';
+import {
+  formatSigned,
+  formatSignedPct,
+  pctGradeClass,
+  signedStatTone,
+  signedToneClass,
+  winRateGradeClass,
+} from 'lib/signedTone';
+import { pnlPctFromSol } from 'lib/pnlPct';
 import {
   useGetPortfolioPerformanceQuery,
   useGetPortfolioSummaryQuery,
 } from '@live/store/liveEndpoints';
+import { PortfolioByRuleCharts } from '@live/components/portfolio/PortfolioByRuleCharts';
+import { PortfolioRuleDetail } from '@live/components/portfolio/PortfolioRuleDetail';
 import type { PortfolioRulePnl } from 'types';
 
 type Range = 'today' | '7d' | 'all';
@@ -24,6 +34,7 @@ export function PortfolioPage() {
   const [params, setParams] = useSearchParams();
   const range = (params.get('range') as Range | null) ?? 'today';
   const mode = (params.get('mode') as Mode | null) ?? 'real';
+  const selectedRule = params.get('rule');
   const setRange = (r: Range) => {
     const next = new URLSearchParams(params);
     next.set('range', r);
@@ -49,6 +60,7 @@ export function PortfolioPage() {
           <Link
             to={rulesHref(r.rule_id)}
             className="inline-flex items-center gap-0.5 font-medium text-accent hover:text-primary hover:underline"
+            onClick={(e) => e.stopPropagation()}
           >
             <span>{r.rule_name ?? r.rule_id.slice(0, 8)}</span>
             <LinkIcon className="h-3.5 w-3.5 shrink-0" />
@@ -67,6 +79,23 @@ export function PortfolioPage() {
         ),
         sortValue: (r) => r.realized_pnl_sol,
         searchValue: (r) => String(r.realized_pnl_sol),
+      },
+      {
+        key: 'pnl_pct',
+        label: 'PnL%',
+        sortable: true,
+        render: (r) => {
+          const pct = pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol);
+          return pct != null ? (
+            <span className={`tabular-nums text-xs ${pctGradeClass(pct)}`}>
+              {formatSignedPct(pct, 1)}
+            </span>
+          ) : (
+            <span className="text-text-dim">—</span>
+          );
+        },
+        sortValue: (r) => pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol) ?? 0,
+        searchValue: (r) => String(pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol) ?? ''),
       },
       {
         key: 'win',
@@ -136,6 +165,11 @@ export function PortfolioPage() {
     [mode],
   );
 
+  const selectedRow = useMemo(
+    () => (selectedRule ? data?.by_rule.find((r) => r.rule_id === selectedRule) : undefined),
+    [data?.by_rule, selectedRule],
+  );
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -155,11 +189,13 @@ export function PortfolioPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        {([
-          ['today', 'Today'],
-          ['7d', '7 days'],
-          ['all', 'All-time'],
-        ] as const).map(([key, label]) => (
+        {(
+          [
+            ['today', 'Today'],
+            ['7d', '7 days'],
+            ['all', 'All-time'],
+          ] as const
+        ).map(([key, label]) => (
           <button
             key={key}
             type="button"
@@ -216,6 +252,8 @@ export function PortfolioPage() {
         />
       </div>
 
+      {data && data.by_rule.length > 0 && <PortfolioByRuleCharts rows={data.by_rule} />}
+
       <DataTable
         columns={columns}
         rows={data?.by_rule ?? []}
@@ -225,7 +263,20 @@ export function PortfolioPage() {
         defaultSort={{ col: 'pnl', dir: 'desc' }}
         tableId="portfolio-by-rule"
         emptyMessage="No closed trades in this window."
+        selectedKey={selectedRule}
+        rowDetail={(r) => <PortfolioRuleDetail row={r} range={range} mode={mode} />}
+        onSelect={(key) => {
+          const next = new URLSearchParams(params);
+          if (!key) next.delete('rule');
+          else next.set('rule', key);
+          setParams(next, { replace: true });
+        }}
       />
+
+      {/* Keep selection keyed even if table remounts mid-fetch */}
+      {selectedRule && !selectedRow && !isLoading ? (
+        <p className="text-[11px] text-text-dim">Selected rule has no closes in this window.</p>
+      ) : null}
     </div>
   );
 }

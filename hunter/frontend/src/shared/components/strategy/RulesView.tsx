@@ -19,6 +19,7 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
+import { StatTile } from 'components/ui/StatTile';
 import { buildCapsColumns } from './capsRuleColumns';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
 import { buildRuleParamsColumns } from './ruleParamsColumns';
@@ -45,8 +46,10 @@ import {
 } from 'services/sse';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import {
+  formatSigned,
   formatSignedPct,
   pctGradeClass,
+  signedStatTone,
   signedToneClass,
   winRateGradeClass,
 } from 'lib/signedTone';
@@ -149,6 +152,58 @@ export function RulesView({
     () => (showDisabled ? rules : rules.filter((r) => r.is_enabled)),
     [rules, showDisabled],
   );
+
+  /** Cross-rule rollup for the Control TOTAL strip (same scope as scoreboard). */
+  const scoreboardTotals = useMemo(() => {
+    let pnl = 0;
+    let wins = 0;
+    let losses = 0;
+    let entered = 0;
+    let open = 0;
+    let active = 0;
+    let weightedAvgPct = 0;
+    let avgWeight = 0;
+    for (const r of visibleRules) {
+      if (!showScores) break;
+      const closed = closedCount(r);
+      const n = r.total_positions ?? 0;
+      if (n > 0) pnl += r.total_pnl_sol ?? 0;
+      wins += r.win_count ?? 0;
+      losses += r.loss_count ?? 0;
+      entered += n;
+      open += r.open_positions ?? 0;
+      if (r.is_active && r.is_enabled) active += 1;
+      if (closed > 0 && r.avg_pnl_pct != null && Number.isFinite(r.avg_pnl_pct)) {
+        weightedAvgPct += r.avg_pnl_pct * closed;
+        avgWeight += closed;
+      }
+    }
+    const closed = wins + losses;
+    const winRate = closed > 0 ? (wins / closed) * 100 : null;
+    const avgPct = avgWeight > 0 ? weightedAvgPct / avgWeight : null;
+    let liveOpen = 0;
+    let livePending = 0;
+    if (ruleLiveCounts) {
+      for (const c of Object.values(ruleLiveCounts)) {
+        liveOpen += c.open;
+        livePending += c.pending;
+      }
+    }
+    return {
+      pnl,
+      wins,
+      losses,
+      closed,
+      entered,
+      open,
+      active,
+      winRate,
+      avgPct,
+      liveOpen,
+      livePending,
+      traded: visibleRules.filter((r) => (r.total_positions ?? 0) > 0).length,
+    };
+  }, [visibleRules, showScores, ruleLiveCounts]);
 
   // Tint fingerprint cells when ≥2 rules share the same fingerprint_id.
   const fpTints = useMemo(
@@ -739,6 +794,72 @@ export function RulesView({
         </div>
       </div>
       {err && <p className="text-[12px] text-red">{err}</p>}
+      {showScores && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+          <StatTile
+            label="Total PnL"
+            value={`◎${formatSigned(scoreboardTotals.pnl, 3)}`}
+            sub={`${scoreboardTotals.traded} rules traded`}
+            tone={signedStatTone(scoreboardTotals.pnl)}
+            size="sm"
+          />
+          <StatTile
+            label="Avg%"
+            value={
+              scoreboardTotals.avgPct != null ? (
+                <span className={pctGradeClass(scoreboardTotals.avgPct)}>
+                  {formatSignedPct(scoreboardTotals.avgPct, 1)}
+                </span>
+              ) : (
+                '—'
+              )
+            }
+            sub={(scoreScope ?? 'current') === 'current' ? 'current run' : 'all-time'}
+            size="sm"
+          />
+          <StatTile
+            label="Win rate"
+            value={
+              scoreboardTotals.winRate != null
+                ? `${Math.round(scoreboardTotals.winRate)}%`
+                : '—'
+            }
+            sub={`${scoreboardTotals.wins}W / ${scoreboardTotals.losses}L`}
+            size="sm"
+          />
+          <StatTile
+            label="Closed"
+            value={scoreboardTotals.closed}
+            sub={`N ${scoreboardTotals.entered}`}
+            tone="muted"
+            size="sm"
+          />
+          <StatTile
+            label="Active"
+            value={scoreboardTotals.active}
+            tone="primary"
+            size="sm"
+          />
+          <StatTile
+            label="Open"
+            value={ruleLiveCounts ? scoreboardTotals.liveOpen : scoreboardTotals.open}
+            sub={
+              ruleLiveCounts
+                ? `${scoreboardTotals.livePending} pending`
+                : 'from scoreboard'
+            }
+            tone="green"
+            size="sm"
+          />
+          <StatTile
+            label="Rules"
+            value={visibleRules.length}
+            sub={showDisabled ? 'incl. disabled' : 'enabled'}
+            tone="muted"
+            size="sm"
+          />
+        </div>
+      )}
       <DataTable
         columns={columns}
         rows={visibleRules}

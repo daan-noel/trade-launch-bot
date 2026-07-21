@@ -13,9 +13,10 @@
 export const STRATEGY_PATHS = {
   rules: '/strategies/rules',
   fingerprints: '/strategies/fingerprints',
-  /** Live Floor — waiting / open / attention / recent (route stays `/ops`). */
-  ops: '/ops',
-  floor: '/ops',
+  /** Live Floor — waiting / open / attention / recent. */
+  floor: '/floor',
+  /** @deprecated Prefer `floor`; kept for any lingering `/ops` string refs. */
+  ops: '/floor',
   /** Live Portfolio — cross-rule money. */
   portfolio: '/portfolio',
   /** Lab app only. */

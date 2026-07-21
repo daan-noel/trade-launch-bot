@@ -2,7 +2,7 @@
  *
  * Page Notifications cannot show action buttons; Chromium only honors `actions`
  * via ServiceWorkerRegistration.showNotification. This SW is notification-only
- * (no offline/cache) and posts click targets (Ops / Trade) back to the live SPA.
+ * (no offline/cache) and posts click targets (Floor / Trade) back to the live SPA.
  */
 
 self.addEventListener('install', (event) => {
@@ -17,7 +17,7 @@ self.addEventListener('notificationclick', (event) => {
   const data = event.notification.data || {};
   event.notification.close();
 
-  let href = typeof data.href === 'string' ? data.href : '/ops';
+  let href = typeof data.href === 'string' ? data.href : '/floor';
   if (event.action === 'trade' && typeof data.tradeHref === 'string') {
     href = data.tradeHref;
   }

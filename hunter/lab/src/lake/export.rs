@@ -284,7 +284,10 @@ struct LakeTradeRow {
     block_time: DateTime<Utc>,
     /// Raw 64-byte signature (BYTEA in `trades`); converted to base58 on write.
     tx_signature: Vec<u8>,
-    ix_labels: serde_json::Value,
+    /// Nullable: migration 0002 is forward-only (pre-column rows stay NULL), and a
+    /// lab mirror may also have NULL when sync omitted the column. Empty/NULL →
+    /// Parquet null (same as empty label array).
+    ix_labels: Option<serde_json::Value>,
     wallet_address: String,
 }
 
@@ -399,7 +402,8 @@ impl TradeBuilders {
         // BYTEA → base58, the exact encoding `trade_repo` uses on the PG read path,
         // so a lake signature is byte-identical to what simulate showed pre-migration.
         self.tx_signature.append_value(sig_bytes_to_base58(&r.tx_signature));
-        let labels = normalize_labels(&r.ix_labels);
+        let empty = serde_json::Value::Null;
+        let labels = normalize_labels(r.ix_labels.as_ref().unwrap_or(&empty));
         if labels.is_empty() {
             self.ix_labels.append_null();
         } else {
@@ -611,7 +615,7 @@ mod tests {
             leg_index: 0,
             block_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
             tx_signature: vec![7u8; 64], // valid 64-byte sig → non-empty base58
-            ix_labels: serde_json::json!(["Pump.Fun: Buy"]),
+            ix_labels: Some(serde_json::json!(["Pump.Fun: Buy"])),
             wallet_address: "Wallet111".into(),
         }
     }
@@ -634,6 +638,24 @@ mod tests {
         assert!((price.value(0) - 1.5 / 3_000_000.0).abs() < 1e-18, "price = sol/token");
         assert!((vsol.value(0) - 30.0).abs() < 1e-12, "vsol lamports→SOL ÷1e9");
         assert!((vtok.value(0) - 84.0).abs() < 1e-12, "vtok raw→f64");
+    }
+
+    #[test]
+    fn null_ix_labels_writes_parquet_null() {
+        use arrow::array::Array;
+        let mut r = row("m1", true, 1_000_000_000, 1_000);
+        r.ix_labels = None;
+        let mut b = TradeBuilders::default();
+        b.push(&r);
+        let schema = Arc::new(trades_schema());
+        let batch = b.finish(&schema).unwrap();
+        let ix = batch
+            .column_by_name(crate::lake::schema::T_IX_LABELS)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(ix.is_null(0));
     }
 
     #[test]

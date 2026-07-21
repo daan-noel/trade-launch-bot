@@ -33,7 +33,7 @@ export const liveNav: NavConfig = {
         { to: '/strategies/fingerprints', label: 'Fingerprints' },
       ],
     },
-    { kind: 'item', to: '/ops', label: 'Floor' },
+    { kind: 'item', to: '/floor', label: 'Floor' },
     { kind: 'item', to: '/portfolio', label: 'Portfolio' },
     { kind: 'item', to: '/wallet', label: 'Wallet' },
     { kind: 'item', to: '/trade', label: 'Trade' },

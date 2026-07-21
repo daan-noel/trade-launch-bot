@@ -60,6 +60,10 @@ export interface LiveClosedRow {
   exitReason: string | null;
   entryPrice: number | null;
   exitPrice: number | null;
+  entrySol: number | null;
+  exitSol: number | null;
+  entryTime: string | null;
+  exitTime: string | null;
   /** Realized SOL PnL when both legs known; null until hydrate / SSE with amounts. */
   pnlSol: number | null;
   closedAt: number;
@@ -134,6 +138,10 @@ function closedFromRecent(
     exitReason: p.exit_reason ?? null,
     entryPrice: p.entry_price ?? null,
     exitPrice: p.exit_price ?? null,
+    entrySol,
+    exitSol,
+    entryTime: p.entry_time ?? null,
+    exitTime: p.exit_time ?? null,
     pnlSol,
     closedAt: Number.isFinite(closedAt) ? closedAt : Date.now(),
   };
@@ -279,6 +287,10 @@ const liveStatusSlice = createSlice({
           exitReason: d.exit_reason ?? null,
           entryPrice: d.entry_price ?? prev?.entryPrice ?? null,
           exitPrice: d.exit_price ?? null,
+          entrySol: prev?.entrySol ?? null,
+          exitSol: null,
+          entryTime: prev?.entryTime ?? null,
+          exitTime: null,
           pnlSol: null,
           closedAt: now,
         };

@@ -639,6 +639,7 @@ export interface RecentClosedPosition {
   exit_reason?: string | null;
   entry_price?: number | null;
   exit_price?: number | null;
+  entry_time?: string | null;
   /** Human SOL — present on StrategyPosition JSON; used for PnL. */
   entry_sol?: number | null;
   exit_sol?: number | null;

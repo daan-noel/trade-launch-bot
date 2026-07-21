@@ -68,13 +68,13 @@ export default function App() {
               <Route path="tokens" element={<TokensPage />} />
               <Route path="tokens/sync" element={<SyncTokenPage />} />
               <Route path="token/sync" element={<RedirectPreserve to="/tokens/sync" />} />
-              <Route path="ops" element={<OpsPage />} />
-              <Route path="floor" element={<RedirectPreserve to="/ops" />} />
+              <Route path="floor" element={<OpsPage />} />
+              <Route path="ops" element={<RedirectPreserve to="/floor" />} />
               <Route path="portfolio" element={<PortfolioPage />} />
-              <Route path="positions" element={<RedirectPreserve to="/ops" />} />
-              <Route path="live-trading" element={<RedirectPreserve to="/ops" />} />
-              <Route path="strategies/armed" element={<Navigate to="/ops?tab=waiting" replace />} />
-              <Route path="strategies/monitor" element={<Navigate to="/ops?tab=waiting" replace />} />
+              <Route path="positions" element={<RedirectPreserve to="/floor" />} />
+              <Route path="live-trading" element={<RedirectPreserve to="/floor" />} />
+              <Route path="strategies/armed" element={<Navigate to="/floor?tab=waiting" replace />} />
+              <Route path="strategies/monitor" element={<Navigate to="/floor?tab=waiting" replace />} />
               <Route path="strategies/rules" element={<RulesPage />} />
               <Route path="strategies/rules/:ruleId" element={<RuleAnalyzePage />} />
               <Route path="strategies/fingerprints" element={<FingerprintsPage />} />

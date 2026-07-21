@@ -17,10 +17,22 @@ import {
   type OpsTab,
 } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
-import { formatSigned, signedToneClass } from 'lib/signedTone';
+import {
+  formatSigned,
+  formatSignedPct,
+  pctGradeClass,
+  signedToneClass,
+} from 'lib/signedTone';
+import { resolvePnlPct } from 'lib/pnlPct';
 import { apiErrorMessage } from 'store/apiSlice';
 import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
-import { useCloseRulePositionMutation } from '@live/store/liveEndpoints';
+import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
+import { FloorPositionDetail } from '@live/components/floor/FloorPositionDetail';
+import { FloorMintChart } from '@live/components/floor/FloorMintChart';
+import {
+  useCloseRulePositionMutation,
+  useGetPortfolioHoldingsQuery,
+} from '@live/store/liveEndpoints';
 import {
   selectLiveArmed,
   selectLiveOpen,
@@ -31,6 +43,7 @@ import {
   type LiveOpenRow,
 } from '@live/slices/liveStatusSlice';
 import type { RootState } from '@live/store';
+import type { WalletHolding } from 'types';
 
 /** Path segment only validates; armed-history is keyed by `rule_id` in the runtime. */
 const ARMED_HISTORY_STRATEGY = 'generic';
@@ -87,7 +100,7 @@ function modeOk(mode: string | null | undefined, filter: ModeFilter): boolean {
 /**
  * Floor — live book across rules (Waiting / Open / Needs attention / Recent).
  * Manage inventory + sell; full run history lives on Rules Evidence.
- * Route stays `/ops` for deep-link stability.
+ * Canonical route is `/floor` (`/ops` and legacy paths redirect here).
  */
 export function OpsPage() {
   const [params, setParams] = useSearchParams();
@@ -134,6 +147,30 @@ export function OpsPage() {
   const [closePosition] = useCloseRulePositionMutation();
   const [sellingId, setSellingId] = useState<string | null>(null);
   const [sellErr, setSellErr] = useState<string | null>(null);
+
+  // Bag marks (SSOT unrealized_pnl) — join by mint for real open MTM / PnL%.
+  const { data: holdings = [] } = useGetPortfolioHoldingsQuery();
+  const holdingByMint = useMemo(() => {
+    const m = new Map<string, WalletHolding>();
+    for (const h of holdings) {
+      if (h.asset_kind === 'cash' || h.asset_kind === 'wrapped_sol') continue;
+      m.set(h.mint_address, h);
+    }
+    return m;
+  }, [holdings]);
+
+  const openMark = useCallback(
+    (row: LiveOpenRow): { mtmSol: number | null; mtmPct: number | null } => {
+      if (row.mode !== 'real') return { mtmSol: null, mtmPct: null };
+      const h = holdingByMint.get(row.mint);
+      if (!h) return { mtmSol: null, mtmPct: null };
+      return {
+        mtmSol: h.unrealized_pnl_sol ?? null,
+        mtmPct: h.unrealized_pnl_pct ?? null,
+      };
+    },
+    [holdingByMint],
+  );
 
   const armedRows = useMemo(
     () => Object.values(armedMap).filter((r) => modeOk(r.tradeMode, modeFilter)),
@@ -185,6 +222,35 @@ export function OpsPage() {
 
   const exitPending = attentionRows.length;
   const totalDeployed = openRows.reduce((s, r) => s + (r.entrySol ?? 0), 0);
+
+  const openMtmByRule = useMemo(() => {
+    const acc = new Map<string, { label: string; value: number }>();
+    for (const r of holdingOpenRows) {
+      const { mtmSol } = openMark(r);
+      if (mtmSol == null || !Number.isFinite(mtmSol)) continue;
+      const key = r.ruleId ?? r.positionId;
+      const label = r.ruleName ?? (r.ruleId ? r.ruleId.slice(0, 8) : r.mint.slice(0, 8));
+      const prev = acc.get(key);
+      acc.set(key, { label, value: (prev?.value ?? 0) + mtmSol });
+    }
+    return [...acc.entries()]
+      .map(([key, v]) => ({ key, label: v.label, value: v.value }))
+      .sort((a, b) => b.value - a.value);
+  }, [holdingOpenRows, openMark]);
+
+  const recentPnlByRule = useMemo(() => {
+    const acc = new Map<string, { label: string; value: number }>();
+    for (const r of recentRows) {
+      if (r.pnlSol == null || !Number.isFinite(r.pnlSol)) continue;
+      const key = r.ruleId ?? r.positionId;
+      const label = r.ruleName ?? (r.ruleId ? r.ruleId.slice(0, 8) : r.mint.slice(0, 8));
+      const prev = acc.get(key);
+      acc.set(key, { label, value: (prev?.value ?? 0) + r.pnlSol });
+    }
+    return [...acc.entries()]
+      .map(([key, v]) => ({ key, label: v.label, value: v.value }))
+      .sort((a, b) => b.value - a.value);
+  }, [recentRows]);
 
   const onSell = useCallback(
     async (row: LiveOpenRow) => {
@@ -288,6 +354,26 @@ export function OpsPage() {
     },
   ];
 
+  const waitingDetail = (r: LiveArmedRow) => (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-3 text-[11px]">
+        <span className="text-text-dim">
+          Waiting for entry · armed{' '}
+          <span className="tabular-nums text-text">{fmtAge(Date.now() - r.armedAt)}</span>
+        </span>
+        {ruleLink(r.ruleId, r.ruleName)}
+        <Link
+          to={`/trade?mint=${encodeURIComponent(r.mint)}`}
+          className="font-semibold text-accent hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Trade
+        </Link>
+      </div>
+      <FloorMintChart mint={r.mint} tableId="floor-waiting" />
+    </div>
+  );
+
   const openCols: ColumnDef<LiveOpenRow>[] = [
     {
       key: 'mint',
@@ -319,6 +405,21 @@ export function OpsPage() {
       searchValue: (r) => HOLDING_LABEL[r.status] ?? r.status,
     },
     {
+      key: 'age',
+      label: 'Age',
+      sortable: true,
+      render: (r) => {
+        const t = r.entryTime ? Date.parse(r.entryTime) : r.updatedAt;
+        return (
+          <span className="tabular-nums text-text-dim">
+            {Number.isFinite(t) ? fmtAge(Date.now() - t) : '—'}
+          </span>
+        );
+      },
+      sortValue: (r) => (r.entryTime ? Date.parse(r.entryTime) : r.updatedAt),
+      searchValue: () => '',
+    },
+    {
       key: 'entry',
       label: 'Entry ◎',
       sortable: true,
@@ -331,10 +432,38 @@ export function OpsPage() {
       searchValue: (r) => String(r.entrySol ?? ''),
     },
     {
-      key: 'price',
-      label: 'Entry price',
-      render: (r) => <span className="tabular-nums">{r.entryPrice ?? '—'}</span>,
-      searchValue: (r) => String(r.entryPrice ?? ''),
+      key: 'mtm',
+      label: 'MTM ◎',
+      sortable: true,
+      render: (r) => {
+        const { mtmSol } = openMark(r);
+        return mtmSol != null ? (
+          <span className={`tabular-nums text-xs font-semibold ${signedToneClass(mtmSol)}`}>
+            {formatSigned(mtmSol, 3)}
+          </span>
+        ) : (
+          <span className="text-text-dim">—</span>
+        );
+      },
+      sortValue: (r) => openMark(r).mtmSol ?? 0,
+      searchValue: (r) => String(openMark(r).mtmSol ?? ''),
+    },
+    {
+      key: 'pnl_pct',
+      label: 'PnL%',
+      sortable: true,
+      render: (r) => {
+        const { mtmPct } = openMark(r);
+        return mtmPct != null ? (
+          <span className={`tabular-nums text-xs ${pctGradeClass(mtmPct)}`}>
+            {formatSignedPct(mtmPct, 1)}
+          </span>
+        ) : (
+          <span className="text-text-dim">—</span>
+        );
+      },
+      sortValue: (r) => openMark(r).mtmPct ?? 0,
+      searchValue: (r) => String(openMark(r).mtmPct ?? ''),
     },
     {
       key: 'actions',
@@ -384,6 +513,34 @@ export function OpsPage() {
     },
   ];
 
+  const openDetail = (r: LiveOpenRow) => {
+    const { mtmSol, mtmPct } = openMark(r);
+    const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
+    return (
+      <FloorPositionDetail
+        facts={{
+          mint: r.mint,
+          ruleId: r.ruleId,
+          ruleName: r.ruleName,
+          mode: r.mode,
+          status: HOLDING_LABEL[r.status] ?? r.status,
+          entrySol: r.entrySol,
+          entryPrice: r.entryPrice,
+          holdLabel: Number.isFinite(entryMs) ? fmtAge(Date.now() - entryMs) : null,
+          mtmSol,
+          pnlPct: mtmPct,
+          inspect: {
+            mint_address: r.mint,
+            entryTime: r.entryTime,
+            entryPrice: r.entryPrice,
+            exitTime: null,
+            exitPrice: null,
+          },
+        }}
+      />
+    );
+  };
+
   const recentCols: ColumnDef<LiveClosedRow>[] = [
     {
       key: 'mint',
@@ -413,6 +570,42 @@ export function OpsPage() {
       searchValue: (r) => String(r.pnlSol ?? ''),
     },
     {
+      key: 'pnl_pct',
+      label: 'PnL%',
+      sortable: true,
+      render: (r) => {
+        const pct = resolvePnlPct({
+          pnlSol: r.pnlSol,
+          entrySol: r.entrySol,
+          entryPrice: r.entryPrice,
+          exitPrice: r.exitPrice,
+        });
+        return pct != null ? (
+          <span className={`tabular-nums text-xs ${pctGradeClass(pct)}`}>
+            {formatSignedPct(pct, 1)}
+          </span>
+        ) : (
+          <span className="text-text-dim">—</span>
+        );
+      },
+      sortValue: (r) =>
+        resolvePnlPct({
+          pnlSol: r.pnlSol,
+          entrySol: r.entrySol,
+          entryPrice: r.entryPrice,
+          exitPrice: r.exitPrice,
+        }) ?? 0,
+      searchValue: (r) =>
+        String(
+          resolvePnlPct({
+            pnlSol: r.pnlSol,
+            entrySol: r.entrySol,
+            entryPrice: r.entryPrice,
+            exitPrice: r.exitPrice,
+          }) ?? '',
+        ),
+    },
+    {
       key: 'status',
       label: 'Status',
       render: (r) => <Badge variant={statusVariant(r.status)}>{r.status}</Badge>,
@@ -425,6 +618,23 @@ export function OpsPage() {
       searchValue: (r) => r.exitReason ?? '',
     },
     {
+      key: 'hold',
+      label: 'Hold',
+      sortable: true,
+      render: (r) => {
+        const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
+        if (!Number.isFinite(entryMs)) return <span className="text-text-dim">—</span>;
+        return (
+          <span className="tabular-nums text-text-dim">{fmtAge(r.closedAt - entryMs)}</span>
+        );
+      },
+      sortValue: (r) => {
+        const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
+        return Number.isFinite(entryMs) ? r.closedAt - entryMs : 0;
+      },
+      searchValue: () => '',
+    },
+    {
       key: 'when',
       label: 'Closed',
       sortable: true,
@@ -435,6 +645,41 @@ export function OpsPage() {
       searchValue: () => '',
     },
   ];
+
+  const recentDetail = (r: LiveClosedRow) => {
+    const pct = resolvePnlPct({
+      pnlSol: r.pnlSol,
+      entrySol: r.entrySol,
+      entryPrice: r.entryPrice,
+      exitPrice: r.exitPrice,
+    });
+    const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
+    return (
+      <FloorPositionDetail
+        facts={{
+          mint: r.mint,
+          ruleId: r.ruleId,
+          ruleName: r.ruleName,
+          mode: r.mode,
+          status: r.status,
+          entrySol: r.entrySol,
+          entryPrice: r.entryPrice,
+          exitPrice: r.exitPrice,
+          holdLabel: Number.isFinite(entryMs) ? fmtAge(r.closedAt - entryMs) : null,
+          pnlSol: r.pnlSol,
+          pnlPct: pct,
+          inspect: {
+            mint_address: r.mint,
+            entryTime: r.entryTime,
+            entryPrice: r.entryPrice,
+            exitTime: r.exitTime ?? new Date(r.closedAt).toISOString(),
+            exitPrice: r.exitPrice,
+            exitLabel: r.exitReason,
+          },
+        }}
+      />
+    );
+  };
 
   const tabs: { id: Tab; label: string; count: number }[] = [
     { id: 'open', label: 'Open', count: holdingOpenRows.length },
@@ -567,6 +812,7 @@ export function OpsPage() {
             tableId="floor-waiting"
             emptyMessage="Nothing waiting on entry."
             selectedKey={selectedKey}
+            rowDetail={waitingDetail}
             onSelect={(key) => {
               if (!key) {
                 clearDeepLink();
@@ -586,57 +832,75 @@ export function OpsPage() {
           />
         </>
       ) : tab === 'recent' ? (
-        <DataTable
-          columns={recentCols}
-          rows={recentTableRows}
-          rowKey={(r) => r.positionId}
-          searchable
-          defaultSort={{ col: 'when', dir: 'desc' }}
-          tableId="floor-recent"
-          emptyMessage="No recent closes — full history is on Rules Evidence."
-          selectedKey={selectedKey}
-          onSelect={(key) => {
-            if (!key) {
-              clearDeepLink();
-              return;
-            }
-            const row = recentTableRows.find((r) => r.positionId === key);
-            if (!row) return;
-            const next = new URLSearchParams(params);
-            next.set(OPS_PARAMS.position, row.positionId);
-            next.set(OPS_PARAMS.mint, row.mint);
-            if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
-            setParams(next, { replace: true });
-          }}
-        />
+        <>
+          <FloorBookStrip
+            title="Recent PnL by rule"
+            rows={recentPnlByRule}
+            empty="No recent closes with PnL yet."
+          />
+          <DataTable
+            columns={recentCols}
+            rows={recentTableRows}
+            rowKey={(r) => r.positionId}
+            searchable
+            defaultSort={{ col: 'when', dir: 'desc' }}
+            tableId="floor-recent"
+            emptyMessage="No recent closes — full history is on Rules Evidence."
+            selectedKey={selectedKey}
+            rowDetail={recentDetail}
+            onSelect={(key) => {
+              if (!key) {
+                clearDeepLink();
+                return;
+              }
+              const row = recentTableRows.find((r) => r.positionId === key);
+              if (!row) return;
+              const next = new URLSearchParams(params);
+              next.set(OPS_PARAMS.position, row.positionId);
+              next.set(OPS_PARAMS.mint, row.mint);
+              if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
+              setParams(next, { replace: true });
+            }}
+          />
+        </>
       ) : (
-        <DataTable
-          columns={openCols}
-          rows={openTableRows}
-          rowKey={(r) => r.positionId}
-          searchable
-          colFilters
-          tableId={tab === 'attention' ? 'floor-attention' : 'floor-open'}
-          emptyMessage={
-            tab === 'attention'
-              ? 'Nothing stuck — no ExitPending / ExitFailed / ExitUnconfirmed.'
-              : 'No open positions.'
-          }
-          selectedKey={selectedKey}
-          onSelect={(key) => {
-            if (!key) {
-              clearDeepLink();
-              return;
+        <>
+          {tab === 'open' && (
+            <FloorBookStrip
+              title="Open MTM by rule"
+              rows={openMtmByRule}
+              empty="No bag marks yet — real holdings need a wallet refresh."
+            />
+          )}
+          <DataTable
+            columns={openCols}
+            rows={openTableRows}
+            rowKey={(r) => r.positionId}
+            searchable
+            colFilters
+            tableId={tab === 'attention' ? 'floor-attention' : 'floor-open'}
+            emptyMessage={
+              tab === 'attention'
+                ? 'Nothing stuck — no ExitPending / ExitFailed / ExitUnconfirmed.'
+                : 'No open positions.'
             }
-            const row = openTableRows.find((r) => r.positionId === key);
-            if (!row) return;
-            const next = new URLSearchParams(params);
-            next.set(OPS_PARAMS.position, row.positionId);
-            next.set(OPS_PARAMS.mint, row.mint);
-            if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
-            setParams(next, { replace: true });
-          }}
-        />
+            selectedKey={selectedKey}
+            rowDetail={openDetail}
+            onSelect={(key) => {
+              if (!key) {
+                clearDeepLink();
+                return;
+              }
+              const row = openTableRows.find((r) => r.positionId === key);
+              if (!row) return;
+              const next = new URLSearchParams(params);
+              next.set(OPS_PARAMS.position, row.positionId);
+              next.set(OPS_PARAMS.mint, row.mint);
+              if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
+              setParams(next, { replace: true });
+            }}
+          />
+        </>
       )}
     </div>
   );

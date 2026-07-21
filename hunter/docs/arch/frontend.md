@@ -40,18 +40,22 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
   `Research & Backtesting` / `LAB`, no toggle.   Live money nav is collapsed to
-  **Floor** (`/ops` — Waiting/Open/Needs attention/Recent; redirects from `/positions`, `/live-trading`,
-  `/strategies/armed`, `/floor`) · **Portfolio** (`/portfolio`) · **Wallet** · **Trade**. Rules Evidence is
+  **Floor** (`/floor` — Waiting/Open/Needs attention/Recent; redirects from `/ops`, `/positions`, `/live-trading`,
+  `/strategies/armed`, `/strategies/monitor`) · **Portfolio** (`/portfolio`) · **Wallet** · **Trade**. Rules Evidence is
   `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
   are leaf links). Metric panes are not a peer nav item — they live in lab Tokens detail
   (`/strategies/metric-panes` redirects to `/tokens?mint=`). The per-app **color** is NOT in the nav config — it's
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
-**Operator clarity (jobs):** Wallet = bag overview; Floor = live inventory (SSE SSOT);
-Portfolio = cross-rule money; Trade = mint-first execute; Rules = **Control** (activate/pause + scoreboard scoped
-current-run / all-time) + **Evidence** pane (run navigator, summary, positions).
+**Operator clarity (jobs):** Wallet = bag overview; Floor = live inventory (SSE SSOT;
+Open/Recent columns include MTM/PnL%; row select expands mint chart + facts); Portfolio =
+cross-rule money (PnL% + by-rule bars + rule drill-in); Trade = mint-first execute; Rules =
+**Control** (TOTAL rollup + activate/pause + scoreboard scoped current-run / all-time) +
+**Evidence** pane (run navigator, summary, positions).
 Tokens table stream toggle is **STREAM ON/OFF**
 (not the header trading kill switch).
+
+Live money nav: **Floor** (`/floor`) · **Portfolio** · **Wallet** · **Trade**.
 
 **Live Status SSOT:** `live/slices/liveStatusSlice` + `useLiveStatusBootstrap` (mounted
 in live `App`) — REST snapshot on mount / SSE reconnect / tab visible / `sse_resync`:
@@ -169,8 +173,8 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   table; row select opens detail + live `LazyTokenTradeChart` below (ingest
   `trade_executed` → RTK trades cache); cash not selectable; Trade desk link; table
   reloads on position/our-wallet SSE),
-  **Ops** (`/ops` — Waiting/Open/Recent from `liveStatusSlice`; armed never-fired panel;
-  `/positions` + `/strategies/armed` redirect here), Trade
+  **Floor** (`/floor` — Waiting/Open/Recent from `liveStatusSlice`; armed never-fired panel;
+  `/ops` + `/positions` + `/strategies/armed` redirect here), Trade
   (**mint-first execute** desk, `?mint=` preload), Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
