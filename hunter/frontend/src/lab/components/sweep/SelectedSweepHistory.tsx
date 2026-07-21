@@ -8,6 +8,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useRenameGroupedSweepRunMutation } from '@lab/store/labEndpoints';
 import {
   GROUP_FIELD_LABELS,
+  SOL_BUCKET_WIDTH,
   type GroupField,
   type GroupedSweepRunRecord,
 } from './groupedTypes';
@@ -179,7 +180,7 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         <Row label="Caps / gates">
           min {run.min_tokens} tok/grp · token cap {run.token_cap ?? '—'} · max combos{' '}
           {run.max_combos ?? 'default'} · buy {tidySolDecimal(run.buy_amount_sol ?? 1)} SOL · bucket{' '}
-          {tidySolDecimal(run.bucket_width_sol ?? 0.1)} SOL
+          {tidySolDecimal(run.bucket_width_sol ?? SOL_BUCKET_WIDTH)} SOL
           {run.curve_only ? ' · curve-only' : ''}
         </Row>
         {fieldLines.length > 0 && (

@@ -13,6 +13,7 @@ import {
   FingerprintGroupPicker,
   type CashbackFilter,
 } from '@lab/components/sweep/FingerprintGroupPicker';
+import { SOL_BUCKET_WIDTH } from '@lab/components/sweep/groupedTypes';
 import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
@@ -131,7 +132,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       groupBy,
       top,
       // Send only a non-default width so the 0.1 case keeps a stable cache key.
-      ...(bucketWidth !== 0.1 ? { bucketWidth } : {}),
+      ...(bucketWidth !== SOL_BUCKET_WIDTH ? { bucketWidth } : {}),
       ...(Object.keys(fieldFilters).length > 0 ? { fieldFilters } : {}),
       // ix_labels grouping and the exact-set filter are mutually exclusive
       // (matches the sweep page): drop the filter when grouping by ix_labels.

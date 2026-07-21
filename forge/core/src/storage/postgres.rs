@@ -98,19 +98,15 @@ pub async fn connect(settings: &Settings) -> anyhow::Result<DbPools> {
         Some(API_STATEMENT_TIMEOUT),
     )
     .await?;
-    let batch = build_pool(
-        settings,
-        settings.db_batch_max_connections,
-        settings.db_batch_min_connections,
-        None,
-    )
-    .await?;
+    // No batch consumer yet — share `api` rather than opening a third pool and
+    // burning connection budget on the live box. Promote to a dedicated pool
+    // (no statement timeout) when long analysis jobs land.
+    let batch = api.clone();
 
     tracing::info!(
         hot = settings.db_max_connections,
         api = settings.db_api_max_connections,
-        batch = settings.db_batch_max_connections,
-        "PostgreSQL pools connected, migrations applied"
+        "PostgreSQL pools connected, migrations applied (batch shares api — no dedicated pool yet)"
     );
 
     Ok(DbPools { hot, api, batch })

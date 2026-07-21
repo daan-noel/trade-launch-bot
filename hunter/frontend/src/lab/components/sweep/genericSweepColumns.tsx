@@ -34,6 +34,11 @@ import { pctGradeClass, winRateGradeClass } from 'lib/signedTone';
 const tone = (text: ReactNode, cls: string): ReactNode => (
   <span className={cn('font-medium', cls)}>{text}</span>
 );
+
+/** Mark-to-market SOL: realized total + unrealized open (shared by combo/group cols). */
+function mtmPnlSol(totalPnlSol: number, openPnlSol: number | null | undefined): number {
+  return totalPnlSol + (openPnlSol ?? 0);
+}
 function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   return (
     <span
@@ -239,9 +244,9 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
       'pnl_mtm_sol',
       'PnL (MTM)',
       'pnl',
-      (r) => r.total_pnl_sol + (r.open_pnl_sol ?? 0),
+      (r) => mtmPnlSol(r.total_pnl_sol, r.open_pnl_sol),
       (r) => {
-        const mtm = r.total_pnl_sol + (r.open_pnl_sol ?? 0);
+        const mtm = mtmPnlSol(r.total_pnl_sol, r.open_pnl_sol);
         return tone(solText(mtm), goodBad(mtm));
       },
       {
@@ -586,9 +591,9 @@ export function buildGenericGroupColumns(
       'best_pnl_mtm_sol',
       'PnL (MTM)',
       'pnl',
-      (g) => g.best_total_pnl_sol + (g.best_open_pnl_sol ?? 0),
+      (g) => mtmPnlSol(g.best_total_pnl_sol, g.best_open_pnl_sol),
       (g) => {
-        const mtm = g.best_total_pnl_sol + (g.best_open_pnl_sol ?? 0);
+        const mtm = mtmPnlSol(g.best_total_pnl_sol, g.best_open_pnl_sol);
         return tone(solText(mtm), goodBad(mtm));
       },
       {

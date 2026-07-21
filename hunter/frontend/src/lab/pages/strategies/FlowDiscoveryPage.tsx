@@ -31,6 +31,7 @@ import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPi
 import { parseIxLabelsFilter, parseNumbers } from '@lab/components/sweep/fingerprintFilters';
 import {
   GROUP_FIELDS,
+  SOL_BUCKET_WIDTH,
   type GroupField,
 } from '@lab/components/sweep/groupedTypes';
 import {
@@ -73,7 +74,7 @@ const DEFAULTS: DiscoveryConfig = {
   minTokens: 3,
   tokenCap: 5000,
   curveOnly: false,
-  bucketWidthSol: 0.1,
+  bucketWidthSol: SOL_BUCKET_WIDTH,
   seedFingerprintId: null,
 };
 
@@ -106,7 +107,9 @@ function configFromFingerprint(fp: Fingerprint): Partial<DiscoveryConfig> {
     groupBy: [],
     fieldFiltersText,
     ixLabelsFilter: formatIxLabelsText(fp.ix_labels),
-    bucketWidthSol: tidySolDecimal(fp.bucket_size_amount > 0 ? fp.bucket_size_amount : 0.1),
+    bucketWidthSol: tidySolDecimal(
+      fp.bucket_size_amount > 0 ? fp.bucket_size_amount : SOL_BUCKET_WIDTH,
+    ),
     minTokens: 1,
     cashbackFilter: 'all',
   };
@@ -493,7 +496,9 @@ export function FlowDiscoveryPage() {
             cashbackFilter={cashbackFilter}
             onSetCashback={(v) => setField('cashbackFilter', v)}
             bucketWidthSol={bucketWidthSol}
-            onSetBucketWidth={(n) => setField('bucketWidthSol', n <= 0 ? 0.1 : n)}
+            onSetBucketWidth={(n) =>
+              setField('bucketWidthSol', n <= 0 ? SOL_BUCKET_WIDTH : n)
+            }
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}

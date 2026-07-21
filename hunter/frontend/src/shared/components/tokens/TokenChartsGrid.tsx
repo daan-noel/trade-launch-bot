@@ -45,7 +45,7 @@ const useNoRowOverlay: ChartOverlayHook<unknown> = () => NO_OVERLAY;
  * (plus a 400px pre-load margin). Once shown it stays mounted (a re-sort reorders
  * the DOM but keeps charts mounted via `key`).
  */
-export function LazyMount({ minHeight = 380, children }: { minHeight?: number; children: ReactNode }) {
+function LazyMount({ minHeight = 380, children }: { minHeight?: number; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(false);
 

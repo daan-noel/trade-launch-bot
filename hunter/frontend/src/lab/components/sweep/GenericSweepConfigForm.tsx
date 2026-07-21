@@ -16,6 +16,7 @@ import {
   type GroupField,
   type GroupedSweepRunRecord,
   type GroupedSweepStartArgs,
+  SOL_BUCKET_WIDTH,
 } from './groupedTypes';
 import { parseNumbers, parseIxLabelsFilter } from './fingerprintFilters';
 import { formatIxLabelsText } from 'lib/ixLabels';
@@ -150,7 +151,7 @@ function defaultConfig(): GenericSweepConfig {
     maxCombos: DEFAULT_MAX_COMBOS,
     curveOnly: false,
     buyAmountSol: 1.0,
-    bucketWidthSol: 0.1,
+    bucketWidthSol: SOL_BUCKET_WIDTH,
     ramReserveMb: DEFAULT_RAM_RESERVE_MB,
     // Default OFF: the scalar scan is the SSOT. Flip to `true` once the workstation
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
@@ -578,7 +579,7 @@ export function GenericSweepConfigForm({
             cashbackFilter={cashbackFilter}
             onSetCashback={(v) => setField('cashbackFilter', v)}
             bucketWidthSol={bucketWidthSol}
-            onSetBucketWidth={(n) => setField('bucketWidthSol', n <= 0 ? 0.1 : n)}
+            onSetBucketWidth={(n) => setField('bucketWidthSol', n <= 0 ? SOL_BUCKET_WIDTH : n)}
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}

@@ -17,7 +17,7 @@ type GetState = () => RootState;
  * Patch Home holdings + any cached Jupiter price maps from a `trade_executed`
  * tip. Does not replace the RPC holdings scan — display marks only.
  */
-export function applyWalletMarkFromTrade(
+function applyWalletMarkFromTrade(
   dispatch: AppDispatch,
   getState: GetState,
   trade: LiveTrade,

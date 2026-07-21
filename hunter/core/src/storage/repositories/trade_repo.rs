@@ -922,38 +922,6 @@ impl TradeRepo {
     }
 }
 
-/// Look up the on-chain `tx_signature` for a real trade matching a paper fill.
-/// Paper execution finds fills in the in-memory cache (which strips `tx_signature`
-/// for Phase B), then calls this to recover the real signature so paper positions
-/// store the same tx as sim positions and the frontend highlight works identically.
-/// Returns `None` for time-driven exits where no real trade occurred.
-///
-/// Price is derived now (the table has no `price_per_token` column), so the match
-/// converts the stored lamports to SOL (`amount_lamports::float8 / 1e9`) before dividing
-/// by `token_amount`, matching the `price_of()`/`lamports_to_sol()` convention every
-/// caller uses to compute the requested `price_per_token` (SOL, not lamports, per
-/// token). Best-effort lookup; the raw signature bytes are decoded back to base58.
-pub async fn find_tx_by_fill(
-    pool: &PgPool,
-    mint: &str,
-    block_time: DateTime<Utc>,
-    price_per_token: f64,
-) -> sqlx::Result<Option<String>> {
-    let bytes: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT tx_signature FROM trades \
-         WHERE mint_address = $1 AND block_time = $2 \
-           AND (amount_lamports::float8 / 1e9 / NULLIF(token_amount, 0)) = $3 \
-         LIMIT 1",
-    )
-    .bind(mint)
-    .bind(block_time)
-    .bind(price_per_token)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(bytes.map(|b| sig_bytes_to_base58(&b)))
-}
-
 /// Rolled-up result of one or more trade legs sharing a `(wallet, mint, side)`,
 /// summed by transaction signature ([`TradeRepo::find_fill_by_signature`] /
 /// [`TradeRepo::sum_legs_by_signatures`]). For an entry the summary is the adopted

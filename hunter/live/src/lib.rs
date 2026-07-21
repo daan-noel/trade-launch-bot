@@ -7,6 +7,7 @@
 pub mod api;
 pub mod config;
 pub mod ingest;
+pub mod protocol_ssot;
 pub mod seed;
 pub mod services;
 pub mod state;

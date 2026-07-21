@@ -679,7 +679,7 @@ impl StrategyRepo {
     }
 
     /// The underlying pool — for the few callers that need a free-function query
-    /// (e.g. `trade_repo::find_tx_by_fill` on the paper fill-recovery path).
+    /// (paper fill-recovery / per-signature attribution paths).
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
