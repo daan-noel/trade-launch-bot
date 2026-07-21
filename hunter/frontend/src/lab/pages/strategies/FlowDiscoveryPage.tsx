@@ -21,7 +21,12 @@ import { LabelTip } from 'components/strategy/LabelTip';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { apiErrorMessage } from 'store/baseApi';
-import { useGetFingerprintsQuery, useUpdateFingerprintMutation } from 'store/sharedEndpoints';
+import {
+  useGetFingerprintsQuery,
+  useGetTokenDetailQuery,
+  useGetTokenTradesQuery,
+  useUpdateFingerprintMutation,
+} from 'store/sharedEndpoints';
 import { fingerprintsHref } from 'lib/strategy/nav';
 import {
   metricConfigWithVolumePatterns,
@@ -34,6 +39,8 @@ import {
   type HelpTip,
 } from 'lib/strategy/strategyHelp';
 import { formatIxLabelsText } from 'lib/ixLabels';
+import { FlowPreviewChart } from '@lab/components/flow/FlowPreviewChart';
+import { patternKeysFrom } from '@lab/lib/flow/classifyFlow';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, parseNumbers } from '@lab/components/sweep/fingerprintFilters';
 import {
@@ -53,7 +60,13 @@ import {
   useStartFlowDiscoveryMutation,
   type FlowDiscoveryStartArgs,
 } from '@lab/store/labEndpoints';
-import type { FlowDiscoveryGroup, FlowDiscoveryResult, FlowDiscoveryStructure } from 'types';
+import type {
+  FlowDiscoveryGroup,
+  FlowDiscoveryResult,
+  FlowDiscoveryStructure,
+  FlowDiscoveryTokenGross,
+  TradeRecord,
+} from 'types';
 import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
@@ -479,6 +492,15 @@ export function FlowDiscoveryPage() {
   const [draftPatterns, setDraftPatterns] = useState<string[][]>([]);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyOk, setApplyOk] = useState<string | null>(null);
+  const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
+  const patternKeys = useMemo(() => patternKeysFrom(draftPatterns), [draftPatterns]);
+  const { data: previewTrades = [], isFetching: previewTradesLoading } = useGetTokenTradesQuery(
+    selectedTokenMint ?? '',
+    { skip: !selectedTokenMint },
+  );
+  const { data: previewDetail } = useGetTokenDetailQuery(selectedTokenMint ?? '', {
+    skip: !selectedTokenMint,
+  });
 
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
@@ -542,6 +564,7 @@ export function FlowDiscoveryPage() {
     const fp = preferred ? fingerprints.find((f) => f.id === preferred) : null;
     setDraftPatterns(fp ? volumeIxPatternsFromConfig(fp.metric_config) : []);
     setApplyOk(null);
+    setSelectedTokenMint(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- group/run/seed are the SSOTs
   }, [selectedGroupIdx, result?.run_id, seedFingerprintId]);
 
@@ -996,6 +1019,18 @@ export function FlowDiscoveryPage() {
                 )}
                 </div>
 
+                {selectedGroup.tokens.length > 0 && (
+                  <TokenPreviewPanel
+                    tokens={selectedGroup.tokens}
+                    selectedMint={selectedTokenMint}
+                    onSelect={setSelectedTokenMint}
+                    trades={previewTrades}
+                    tradesLoading={previewTradesLoading}
+                    creatorWallet={previewDetail?.creator_wallet ?? null}
+                    patternKeys={patternKeys}
+                  />
+                )}
+
                 <div className="rounded border border-white/8 p-3">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-text-mid inline-flex flex-wrap items-center gap-2">
@@ -1112,5 +1147,77 @@ function StructureTable({
       selectable={false}
       paginate={false}
     />
+  );
+}
+
+/** Ranked member-token picker (cheap gross_sol roster, no trade payload) +
+ *  the per-token candlestick preview for whichever one is picked. Only the
+ *  picked token's full trade history is ever fetched — the roster itself
+ *  can't show a real vol/organic split (that needs the trade-level
+ *  classifier), which is exactly what picking a token and reading the chart
+ *  below gives you instead. */
+function TokenPreviewPanel({
+  tokens,
+  selectedMint,
+  onSelect,
+  trades,
+  tradesLoading,
+  creatorWallet,
+  patternKeys,
+}: {
+  tokens: FlowDiscoveryTokenGross[];
+  selectedMint: string | null;
+  onSelect: (mint: string) => void;
+  trades: TradeRecord[];
+  tradesLoading: boolean;
+  creatorWallet: string | null;
+  patternKeys: ReadonlySet<string>;
+}) {
+  return (
+    <div className="rounded border border-white/8 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-text-mid">
+          Token preview · {tokens.length.toLocaleString()} ranked
+        </span>
+        {selectedMint && tradesLoading && (
+          <span className="text-[10px] text-text-dim">Loading trades…</span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <div className="flex max-h-70 w-56 shrink-0 flex-col gap-1 overflow-y-auto pr-1">
+          {tokens.map((t) => (
+            <button
+              key={t.mint_address}
+              type="button"
+              onClick={() => onSelect(t.mint_address)}
+              className={`rounded border px-2 py-1 text-left text-[10px] transition ${
+                t.mint_address === selectedMint
+                  ? 'border-accent/50 bg-accent/10 text-text'
+                  : 'border-white/8 text-text-mid hover:border-white/20'
+              }`}
+            >
+              <div className="truncate font-mono">{t.mint_address}</div>
+              <div className="text-text-dim">
+                {fmt(t.gross_sol)}◎ · {t.n_trades.toLocaleString()} trades
+              </div>
+            </button>
+          ))}
+        </div>
+        <div className="min-w-0 flex-1">
+          {selectedMint ? (
+            <FlowPreviewChart
+              trades={trades}
+              patternKeys={patternKeys}
+              creatorWallet={creatorWallet}
+            />
+          ) : (
+            <p className="text-[11px] text-text-dim">
+              Pick a token to preview its vol/non-vol split — updates live as you toggle
+              structures below.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

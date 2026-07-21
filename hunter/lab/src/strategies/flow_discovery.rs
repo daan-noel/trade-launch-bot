@@ -16,6 +16,8 @@ use crate::sweep::grouping::{GroupField, GroupKey, SOL_BUCKET_WIDTH};
 
 /// Cap ranked structures returned per group (wire + UI).
 pub const MAX_STRUCTURES_PER_GROUP: usize = 64;
+/// Cap ranked per-token roster returned per group (wire + UI token picker).
+pub const MAX_TOKENS_PER_GROUP: usize = 500;
 /// `group_lift` below this ⇒ ambiguity warning (plan §7.1).
 pub const LIFT_AMBIGUOUS: f64 = 1.25;
 /// Per-token gross floor for "meaningful volume" in cross-token recurrence.
@@ -78,6 +80,16 @@ pub struct WalletGross {
     pub gross_sol: f64,
 }
 
+/// One token's aggregate contribution to a `DiscoveryGroup` — a cheap roster
+/// (no trade payload) so the UI can rank/pick a token to preview in detail
+/// without fetching every member token's full trade history up front.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TokenGross {
+    pub mint_address: String,
+    pub gross_sol: f64,
+    pub n_trades: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryGroup {
     pub group_key: Value,
@@ -85,6 +97,9 @@ pub struct DiscoveryGroup {
     pub n_trades_scored: u64,
     pub ambiguity: bool,
     pub structures: Vec<StructureScore>,
+    /// Ranked (desc gross_sol) member-token roster, capped at
+    /// `MAX_TOKENS_PER_GROUP` — drives the per-token preview picker.
+    pub tokens: Vec<TokenGross>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -200,6 +215,8 @@ fn score_group(
     let mut by_struct: HashMap<u64, Acc> = HashMap::new();
     let mut group_gross_total = 0.0_f64;
     let mut n_trades_scored = 0_u64;
+    let mut token_gross: HashMap<usize, f64> = HashMap::new();
+    let mut token_trades: HashMap<usize, u64> = HashMap::new();
 
     for &ti in idxs {
         let tok: &CorpusToken = &corpus.tokens[ti];
@@ -229,6 +246,8 @@ fn score_group(
                 acc.wallets_by_token.entry(ti).or_default().insert(wh);
                 *acc.gross_by_wallet.entry(wh).or_insert(0.0) += g;
             }
+            *token_gross.entry(ti).or_insert(0.0) += g;
+            *token_trades.entry(ti).or_insert(0) += 1;
         }
     }
 
@@ -351,12 +370,28 @@ fn score_group(
         .map(|s| s.group_lift < cfg.lift_ambiguous)
         .unwrap_or(false);
 
+    let mut tokens: Vec<TokenGross> = token_gross
+        .into_iter()
+        .map(|(ti, gross_sol)| TokenGross {
+            mint_address: corpus.tokens[ti].mint.clone(),
+            gross_sol,
+            n_trades: token_trades.get(&ti).copied().unwrap_or(0),
+        })
+        .collect();
+    tokens.sort_by(|a, b| {
+        b.gross_sol
+            .partial_cmp(&a.gross_sol)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    tokens.truncate(MAX_TOKENS_PER_GROUP);
+
     DiscoveryGroup {
         group_key: key.to_json(),
         n_tokens,
         n_trades_scored,
         ambiguity,
         structures,
+        tokens,
     }
 }
 

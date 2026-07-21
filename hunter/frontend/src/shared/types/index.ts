@@ -538,6 +538,14 @@ export interface FlowDiscoveryStructure {
   wallets: FlowDiscoveryWalletGross[];
 }
 
+/** One token's aggregate contribution to a `FlowDiscoveryGroup` — a cheap
+ *  roster (no trade payload) driving the per-token preview picker. */
+export interface FlowDiscoveryTokenGross {
+  mint_address: string;
+  gross_sol: number;
+  n_trades: number;
+}
+
 /** One fingerprint group in a flow-discovery result. */
 export interface FlowDiscoveryGroup {
   group_key: Record<string, string>;
@@ -545,6 +553,8 @@ export interface FlowDiscoveryGroup {
   n_trades_scored: number;
   ambiguity: boolean;
   structures: FlowDiscoveryStructure[];
+  /** Ranked (desc gross_sol) member-token roster, capped server-side. */
+  tokens: FlowDiscoveryTokenGross[];
 }
 
 /** `GET /api/strategies/flow-discovery/{run_id}` response. */
@@ -849,6 +859,10 @@ export interface TradeRecord {
   real_token_reserves?: number | null;
   /** Trading venue: 'curve' (bonding curve) or 'amm' (post-migration PumpSwap). */
   venue?: 'curve' | 'amm';
+  /** Ordered ix-structure labels for this trade's tx, when the ingest pipeline
+   *  captured them — null/absent on pre-labeling history. Drives flow-split
+   *  structural matching (`hunter_engine::metrics::flow_split::ix_hash`). */
+  instruction_labels?: string[] | null;
 }
 
 export type ProfileType = 'mine' | 'trader' | 'whale' | 'dev';
