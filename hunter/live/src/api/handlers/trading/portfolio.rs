@@ -261,7 +261,7 @@ fn default_recent_limit() -> i64 {
 
 /// `GET /api/portfolio/recent-closes[?limit=50]`
 ///
-/// Latest `End` / `ExitFailed` rows from `strategy_positions` — hydrates Ops
+/// Latest `End` / `ExitFailed` rows from `strategy_positions` — hydrates Floor
 /// Recent so closes survive refresh / missed SSE.
 pub async fn get_portfolio_recent_closes(
     app_state: web::Data<Arc<DeployState>>,
@@ -271,6 +271,37 @@ pub async fn get_portfolio_recent_closes(
         Ok(positions) => HttpResponse::Ok().json(positions),
         Err(e) => {
             tracing::warn!("get_portfolio_recent_closes failed: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PerformanceQuery {
+    #[serde(default = "default_perf_range")]
+    pub range: String,
+    #[serde(default = "default_perf_mode")]
+    pub mode: String,
+}
+
+fn default_perf_range() -> String {
+    "today".into()
+}
+fn default_perf_mode() -> String {
+    "real".into()
+}
+
+/// `GET /api/portfolio/performance?range=today|7d|all&mode=real|paper`
+///
+/// Cross-rule closed-trade rollup for the Portfolio page.
+pub async fn get_portfolio_performance(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<PerformanceQuery>,
+) -> impl Responder {
+    match portfolio::performance(app_state.get_ref(), &query.range, &query.mode).await {
+        Ok(body) => HttpResponse::Ok().json(body),
+        Err(e) => {
+            tracing::warn!("get_portfolio_performance failed: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
         }
     }

@@ -23,6 +23,9 @@ const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) =
 const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
 const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
 const OpsPage = lazy(() => import('@live/pages/strategies/OpsPage').then((m) => ({ default: m.OpsPage })));
+const PortfolioPage = lazy(() =>
+  import('@live/pages/portfolio/PortfolioPage').then((m) => ({ default: m.PortfolioPage })),
+);
 const RuleAnalyzePage = lazy(() =>
   import('@live/pages/strategies/RuleAnalyzePage').then((m) => ({ default: m.RuleAnalyzePage })),
 );
@@ -66,6 +69,8 @@ export default function App() {
               <Route path="tokens/sync" element={<SyncTokenPage />} />
               <Route path="token/sync" element={<RedirectPreserve to="/tokens/sync" />} />
               <Route path="ops" element={<OpsPage />} />
+              <Route path="floor" element={<RedirectPreserve to="/ops" />} />
+              <Route path="portfolio" element={<PortfolioPage />} />
               <Route path="positions" element={<RedirectPreserve to="/ops" />} />
               <Route path="live-trading" element={<RedirectPreserve to="/ops" />} />
               <Route path="strategies/armed" element={<Navigate to="/ops?tab=waiting" replace />} />

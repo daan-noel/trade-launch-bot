@@ -629,7 +629,7 @@ export interface OpenStrategyPosition {
   entry_time?: string | null;
 }
 
-/** Closed row from `GET /api/portfolio/recent-closes` (Ops Recent hydrate). */
+/** Closed row from `GET /api/portfolio/recent-closes` (Floor Recent hydrate). */
 export interface RecentClosedPosition {
   id: string;
   rule_id: string | null;
@@ -639,8 +639,35 @@ export interface RecentClosedPosition {
   exit_reason?: string | null;
   entry_price?: number | null;
   exit_price?: number | null;
+  /** Human SOL — present on StrategyPosition JSON; used for PnL. */
+  entry_sol?: number | null;
+  exit_sol?: number | null;
   exit_time?: string | null;
   updated_at?: string;
+}
+
+/** `GET /api/portfolio/performance` — Portfolio page rollup. */
+export interface PortfolioRulePnl {
+  rule_id: string;
+  rule_name: string | null;
+  closed: number;
+  win: number;
+  loss: number;
+  win_rate: number;
+  realized_pnl_sol: number;
+  total_entry_sol: number;
+}
+
+export interface PortfolioPerformance {
+  range: 'today' | '7d' | 'all' | string;
+  mode: string;
+  since: string | null;
+  realized_pnl_sol: number;
+  closed: number;
+  win: number;
+  loss: number;
+  win_rate: number;
+  by_rule: PortfolioRulePnl[];
 }
 
 /// Live, fast-changing market data for one mint (Jupiter). Fetched separately

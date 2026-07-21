@@ -5,6 +5,7 @@ import { StatTile } from 'components/ui/StatTile';
 import { useUsdRate } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
 import { formatSigned, formatSignedPct, signedStatTone } from 'lib/signedTone';
+import { floorHref, portfolioHref, rulesHref } from 'lib/strategy/nav';
 import { TopHoldingsWidget } from '@live/components/home/TopHoldingsWidget';
 import { LiveTradeFeed } from '@live/components/home/LiveTradeFeed';
 import { StrategyStrip } from '@live/components/home/StrategyStrip';
@@ -52,7 +53,7 @@ export function LiveHomePage() {
       <div className="mb-4 flex flex-wrap items-baseline gap-3">
         <h1 className="text-2xl font-extrabold text-text">Command Center</h1>
         <span className="text-sm text-text-mid">
-          Glance → act · Wallet = bag · Ops = live inventory · Trade = execute
+          Glance → act · Floor = book · Portfolio = money · Rules = keep/kill
         </span>
       </div>
 
@@ -72,19 +73,26 @@ export function LiveHomePage() {
             tone={signedStatTone(pnlSol)}
           />
         </Link>
-        <StatTile
-          label="Realized Today"
-          value={realizedToday != null ? `◎${formatSigned(realizedToday, 3)}` : '—'}
-          tone={signedStatTone(realizedToday)}
-        />
-        <Link to="/ops" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+        <Link
+          to={portfolioHref('today')}
+          className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+        >
           <StatTile
-            label="Open Positions"
-            value={liveOpenReal}
-            sub="ops · live"
+            label="Realized Today"
+            value={realizedToday != null ? `◎${formatSigned(realizedToday, 3)}` : '—'}
+            tone={signedStatTone(realizedToday)}
           />
         </Link>
-        <Link to="/strategies/rules" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
+        <Link
+          to={floorHref({ tab: 'open', mode: 'real' })}
+          className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+        >
+          <StatTile label="Open Positions" value={liveOpenReal} sub="floor · live" />
+        </Link>
+        <Link
+          to={rulesHref()}
+          className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+        >
           <StatTile label="Active Rules" value={summary?.active_rules ?? '—'} sub="armed on live" />
         </Link>
         <StatTile

@@ -367,12 +367,75 @@ pub async fn open_positions(
     Ok(positions)
 }
 
-/// Latest closed positions for Ops Recent hydrate (DB-backed, not session SSE).
+/// Latest closed positions for Floor Recent hydrate (DB-backed, not session SSE).
 pub async fn recent_closed(
     state: &DeployState,
     limit: i64,
 ) -> anyhow::Result<Vec<StrategyPosition>> {
     state.strategy_repo().find_recent_closed(limit).await
+}
+
+/// Portfolio page wire shape — closed-trade money over a calendar window.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PortfolioPerformance {
+    pub range: String,
+    pub mode: String,
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    pub realized_pnl_sol: f64,
+    pub closed: i64,
+    pub win: i64,
+    pub loss: i64,
+    pub win_rate: f64,
+    pub by_rule: Vec<trading_core::storage::repositories::strategy_repo::RulePeriodPnlRow>,
+}
+
+/// `range`: `today` | `7d` | `all`. `mode`: `real` | `paper`.
+pub async fn performance(
+    state: &DeployState,
+    range: &str,
+    mode: &str,
+) -> anyhow::Result<PortfolioPerformance> {
+    let now = chrono::Utc::now();
+    let since = match range {
+        "today" => Some(
+            now.date_naive()
+                .and_hms_opt(0, 0, 0)
+                .expect("00:00:00")
+                .and_utc(),
+        ),
+        "7d" => Some(now - chrono::Duration::days(7)),
+        _ => None,
+    };
+    let range_label = match range {
+        "today" => "today",
+        "7d" => "7d",
+        _ => "all",
+    };
+    let mode = if mode == "paper" { "paper" } else { "real" };
+    let by_rule = state
+        .strategy_repo()
+        .portfolio_pnl_by_rule(mode, since)
+        .await?;
+    let closed: i64 = by_rule.iter().map(|r| r.closed).sum();
+    let win: i64 = by_rule.iter().map(|r| r.win).sum();
+    let loss: i64 = by_rule.iter().map(|r| r.loss).sum();
+    let realized_pnl_sol: f64 = by_rule.iter().map(|r| r.realized_pnl_sol).sum();
+    let win_rate = if closed > 0 {
+        (win as f64 / closed as f64) * 100.0
+    } else {
+        0.0
+    };
+    Ok(PortfolioPerformance {
+        range: range_label.into(),
+        mode: mode.into(),
+        since,
+        realized_pnl_sol,
+        closed,
+        win,
+        loss,
+        win_rate,
+        by_rule,
+    })
 }
 
 /// Per-bag cost basis + unrealized PnL. **The only place the service turns a mark

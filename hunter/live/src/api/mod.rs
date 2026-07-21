@@ -139,6 +139,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/portfolio/recent-closes",
                 web::get().to(handlers::trading::get_portfolio_recent_closes),
             )
+            .route(
+                "/portfolio/performance",
+                web::get().to(handlers::trading::get_portfolio_performance),
+            )
             // On-chain Solana queries
             .route("/solana/wallet/tokens", web::get().to(handlers::trading::get_wallet_tokens))
             .route("/solana/wallet/tokens/{mint}", web::get().to(handlers::trading::get_wallet_token))

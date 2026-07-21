@@ -230,6 +230,51 @@ pub struct RuleCounters {
     pub total_pnl_sol: f64,
 }
 
+/// One rule's closed-trade rollup over a calendar window — Portfolio page.
+#[derive(Debug, Clone, Serialize)]
+pub struct RulePeriodPnlRow {
+    pub rule_id: Uuid,
+    pub rule_name: Option<String>,
+    pub closed: i64,
+    pub win: i64,
+    pub loss: i64,
+    pub win_rate: f64,
+    pub realized_pnl_sol: f64,
+    pub total_entry_sol: f64,
+}
+
+#[derive(sqlx::FromRow)]
+struct RulePeriodPnlDbRow {
+    rule_id: Uuid,
+    rule_name: Option<String>,
+    closed: i64,
+    win: i64,
+    loss: i64,
+    total_pnl_lamports: i64,
+    total_entry_lamports: i64,
+}
+
+impl From<RulePeriodPnlDbRow> for RulePeriodPnlRow {
+    fn from(r: RulePeriodPnlDbRow) -> Self {
+        let closed = r.closed;
+        let win_rate = if closed > 0 {
+            (r.win as f64 / closed as f64) * 100.0
+        } else {
+            0.0
+        };
+        Self {
+            rule_id: r.rule_id,
+            rule_name: r.rule_name,
+            closed,
+            win: r.win,
+            loss: r.loss,
+            win_rate,
+            realized_pnl_sol: lamports_to_sol(r.total_pnl_lamports),
+            total_entry_sol: lamports_to_sol(r.total_entry_lamports),
+        }
+    }
+}
+
 /// Raw batched counter row (one per rule) behind
 /// [`StrategyRepo::rule_counters_for_latest_paper_runs`]. Same win/open/closed
 /// predicates as [`PositionsSummaryRow`], grouped by `rule_id`.
@@ -1759,6 +1804,69 @@ impl StrategyRepo {
         .fetch_one(&self.pool)
         .await?;
         Ok(sum)
+    }
+
+    /// Cross-rule closed-trade rollup for the Portfolio page — one row per rule
+    /// with closes in the window. `since = None` ⇒ all-time. Win = clean `End`
+    /// with positive realized SOL (same predicate as [`RuleCounters`]).
+    pub async fn portfolio_pnl_by_rule(
+        &self,
+        mode: &str,
+        since: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Vec<RulePeriodPnlRow>> {
+        let rows = sqlx::query_as::<_, RulePeriodPnlDbRow>(
+            r#"
+            SELECT p.rule_id AS rule_id,
+                   r.rule_name AS rule_name,
+                   COUNT(*) FILTER (
+                     WHERE p.status IN ('End', 'ExitFailed')
+                       AND p.entry_lamports IS NOT NULL
+                       AND p.exit_lamports IS NOT NULL
+                   )::BIGINT AS closed,
+                   COUNT(*) FILTER (
+                     WHERE p.status = 'End'
+                       AND p.entry_lamports IS NOT NULL
+                       AND p.exit_lamports IS NOT NULL
+                       AND (p.exit_lamports - p.entry_lamports) > 0
+                   )::BIGINT AS win,
+                   COUNT(*) FILTER (
+                     WHERE p.status IN ('End', 'ExitFailed')
+                       AND p.entry_lamports IS NOT NULL
+                       AND p.exit_lamports IS NOT NULL
+                       AND NOT (
+                         p.status = 'End' AND (p.exit_lamports - p.entry_lamports) > 0
+                       )
+                   )::BIGINT AS loss,
+                   COALESCE(SUM(p.exit_lamports - p.entry_lamports) FILTER (
+                     WHERE p.status IN ('End', 'ExitFailed')
+                       AND p.entry_lamports IS NOT NULL
+                       AND p.exit_lamports IS NOT NULL
+                   ), 0)::BIGINT AS total_pnl_lamports,
+                   COALESCE(SUM(p.entry_lamports) FILTER (
+                     WHERE p.status IN ('End', 'ExitFailed')
+                       AND p.entry_lamports IS NOT NULL
+                       AND p.exit_lamports IS NOT NULL
+                   ), 0)::BIGINT AS total_entry_lamports
+            FROM strategy_positions p
+            LEFT JOIN strategy_rules r ON r.id = p.rule_id
+            WHERE p.mode = $1
+              AND p.rule_id IS NOT NULL
+              AND p.status IN ('End', 'ExitFailed')
+              AND ($2::timestamptz IS NULL OR p.exit_time >= $2)
+            GROUP BY p.rule_id, r.rule_name
+            HAVING COUNT(*) FILTER (
+              WHERE p.status IN ('End', 'ExitFailed')
+                AND p.entry_lamports IS NOT NULL
+                AND p.exit_lamports IS NOT NULL
+            ) > 0
+            ORDER BY total_pnl_lamports DESC
+            "#,
+        )
+        .bind(mode)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(RulePeriodPnlRow::from).collect())
     }
 
     /// Distinct mints with an unsettled **real** position — every mint the wallet

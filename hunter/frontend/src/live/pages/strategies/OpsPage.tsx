@@ -10,8 +10,14 @@ import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
 import { useSseStatus } from 'hooks/useSseStatus';
-import { OPS_PARAMS, rulesHref, type OpsTab } from 'lib/strategy/nav';
+import {
+  OPS_PARAMS,
+  portfolioHref,
+  rulesHref,
+  type OpsTab,
+} from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
+import { formatSigned, signedToneClass } from 'lib/signedTone';
 import { apiErrorMessage } from 'store/apiSlice';
 import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { useCloseRulePositionMutation } from '@live/store/liveEndpoints';
@@ -28,6 +34,8 @@ import type { RootState } from '@live/store';
 
 /** Path segment only validates; armed-history is keyed by `rule_id` in the runtime. */
 const ARMED_HISTORY_STRATEGY = 'generic';
+
+const ATTENTION_STATUSES = new Set(['ExitPending', 'ExitFailed', 'ExitUnconfirmed']);
 
 type Tab = OpsTab;
 type ModeFilter = 'real' | 'paper' | 'all';
@@ -77,12 +85,20 @@ function modeOk(mode: string | null | undefined, filter: ModeFilter): boolean {
 }
 
 /**
- * Live Ops — the real-time manage cockpit (Waiting / Open / Recent).
- * Reads the Live Status SSOT only; never owns a parallel armed/open Map.
+ * Floor — live book across rules (Waiting / Open / Needs attention / Recent).
+ * Manage inventory + sell; full run history lives on Rules Evidence.
+ * Route stays `/ops` for deep-link stability.
  */
 export function OpsPage() {
   const [params, setParams] = useSearchParams();
-  const tab = (params.get(OPS_PARAMS.tab) as Tab | null) ?? 'open';
+  const rawTab = params.get(OPS_PARAMS.tab) as Tab | null;
+  const tab: Tab =
+    rawTab === 'waiting' ||
+    rawTab === 'open' ||
+    rawTab === 'attention' ||
+    rawTab === 'recent'
+      ? rawTab
+      : 'open';
   const modeFilter = (params.get(OPS_PARAMS.mode) as ModeFilter | null) ?? 'real';
   const statusFilter = params.get(OPS_PARAMS.status);
   const mintParam = params.get(OPS_PARAMS.mint);
@@ -90,7 +106,6 @@ export function OpsPage() {
   const positionParam = params.get(OPS_PARAMS.position);
 
   const setTab = (t: Tab) => {
-    // Manual tab change drops notification deep-link selection/filters.
     const next = new URLSearchParams();
     next.set(OPS_PARAMS.tab, t);
     next.set(OPS_PARAMS.mode, modeFilter);
@@ -128,19 +143,36 @@ export function OpsPage() {
     () => Object.values(openMap).filter((r) => modeOk(r.mode, modeFilter)),
     [openMap, modeFilter],
   );
+  const attentionRows = useMemo(
+    () => openRows.filter((r) => ATTENTION_STATUSES.has(r.status)),
+    [openRows],
+  );
+  const holdingOpenRows = useMemo(
+    () => openRows.filter((r) => !ATTENTION_STATUSES.has(r.status)),
+    [openRows],
+  );
   const recentRows = useMemo(
     () => recent.filter((r) => modeOk(r.mode, modeFilter)),
     [recent, modeFilter],
   );
-  // Notification deep-link may narrow the table by status without changing KPI counts.
-  const openTableRows = useMemo(
-    () => (statusFilter ? openRows.filter((r) => r.status === statusFilter) : openRows),
-    [openRows, statusFilter],
-  );
-  const recentTableRows = useMemo(
-    () => (statusFilter ? recentRows.filter((r) => r.status === statusFilter) : recentRows),
-    [recentRows, statusFilter],
-  );
+
+  const openTableSource = tab === 'attention' ? attentionRows : holdingOpenRows;
+  const openTableRows = useMemo(() => {
+    let rows = openTableSource;
+    if (ruleParam) rows = rows.filter((r) => r.ruleId === ruleParam);
+    if (statusFilter) rows = rows.filter((r) => r.status === statusFilter);
+    return rows;
+  }, [openTableSource, statusFilter, ruleParam]);
+  const recentTableRows = useMemo(() => {
+    let rows = recentRows;
+    if (ruleParam) rows = rows.filter((r) => r.ruleId === ruleParam);
+    if (statusFilter) rows = rows.filter((r) => r.status === statusFilter);
+    return rows;
+  }, [recentRows, statusFilter, ruleParam]);
+  const waitingTableRows = useMemo(() => {
+    if (!ruleParam) return armedRows;
+    return armedRows.filter((r) => r.ruleId === ruleParam);
+  }, [armedRows, ruleParam]);
 
   const selectedKey =
     tab === 'waiting'
@@ -151,7 +183,7 @@ export function OpsPage() {
 
   const deepLinkActive = Boolean(statusFilter || mintParam || positionParam || ruleParam);
 
-  const exitPending = openRows.filter((r) => r.status === 'ExitPending').length;
+  const exitPending = attentionRows.length;
   const totalDeployed = openRows.reduce((s, r) => s + (r.entrySol ?? 0), 0);
 
   const onSell = useCallback(
@@ -169,7 +201,6 @@ export function OpsPage() {
           strategy: row.strategyId || 'generic',
           positionId: row.positionId,
         }).unwrap();
-        // 200 `{ closed: true }` — bag already gone / booked without SSE transition.
         if (res && 'closed' in res && res.closed) {
           setSellingId(null);
         }
@@ -203,6 +234,7 @@ export function OpsPage() {
         to={rulesHref(ruleId)}
         className="inline-flex items-center gap-0.5 text-accent hover:text-primary hover:underline"
         onClick={(e) => e.stopPropagation()}
+        title="Open Rules Evidence"
       >
         <span>{label}</span>
         <LinkIcon className="h-3.5 w-3.5 shrink-0" />
@@ -366,6 +398,21 @@ export function OpsPage() {
       searchValue: (r) => r.ruleName ?? r.ruleId ?? '',
     },
     {
+      key: 'pnl',
+      label: 'PnL',
+      sortable: true,
+      render: (r) =>
+        r.pnlSol != null ? (
+          <span className={`tabular-nums text-xs font-semibold ${signedToneClass(r.pnlSol)}`}>
+            {formatSigned(r.pnlSol, 3)}◎
+          </span>
+        ) : (
+          <span className="text-text-dim">—</span>
+        ),
+      sortValue: (r) => r.pnlSol ?? 0,
+      searchValue: (r) => String(r.pnlSol ?? ''),
+    },
+    {
       key: 'status',
       label: 'Status',
       render: (r) => <Badge variant={statusVariant(r.status)}>{r.status}</Badge>,
@@ -390,8 +437,9 @@ export function OpsPage() {
   ];
 
   const tabs: { id: Tab; label: string; count: number }[] = [
+    { id: 'open', label: 'Open', count: holdingOpenRows.length },
     { id: 'waiting', label: 'Waiting', count: armedRows.length },
-    { id: 'open', label: 'Open', count: openRows.length },
+    { id: 'attention', label: 'Needs attention', count: attentionRows.length },
     { id: 'recent', label: 'Recent', count: recentRows.length },
   ];
 
@@ -399,9 +447,16 @@ export function OpsPage() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <div className="flex flex-wrap items-baseline gap-3">
-          <h1 className="text-lg font-extrabold text-text">Ops</h1>
+          <h1 className="text-lg font-extrabold text-text">Floor</h1>
           <span className="text-sm text-text-mid">
-            Live manage · Waiting + Open + recent closes (full history on Rules)
+            Live book · sell / triage ·{' '}
+            <Link to={rulesHref()} className="text-accent hover:underline">
+              Rules Evidence
+            </Link>
+            {' · '}
+            <Link to={portfolioHref('today')} className="text-accent hover:underline">
+              Portfolio
+            </Link>
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -437,24 +492,24 @@ export function OpsPage() {
         <StatTile label="Waiting" value={armedRows.length} tone="primary" />
         <StatTile
           label="Open"
-          value={openRows.length}
+          value={holdingOpenRows.length}
           sub={`◎${formatCompact(totalDeployed, 2)} deployed`}
           tone="green"
         />
         <StatTile
-          label="Exit pending"
+          label="Needs attention"
           value={exitPending}
           tone={exitPending > 0 ? 'red' : 'muted'}
         />
         <StatTile
-          label="Recent closes"
+          label="Recent"
           value={recentRows.length}
-          sub="last N from DB"
+          sub="last closes · not full history"
           tone="muted"
         />
       </div>
 
-      <div className="flex gap-1 border-b border-white/8">
+      <div className="flex flex-wrap gap-1 border-b border-white/8">
         {tabs.map((t) => (
           <button
             key={t.id}
@@ -478,7 +533,8 @@ export function OpsPage() {
             {statusFilter ? (
               <>
                 {' '}
-                · status <span className="font-semibold">{HOLDING_LABEL[statusFilter] ?? statusFilter}</span>
+                · status{' '}
+                <span className="font-semibold">{HOLDING_LABEL[statusFilter] ?? statusFilter}</span>
               </>
             ) : null}
             {mintParam ? (
@@ -504,11 +560,11 @@ export function OpsPage() {
         <>
           <DataTable
             columns={waitingCols}
-            rows={armedRows}
+            rows={waitingTableRows}
             rowKey={(r) => r.key}
             searchable
             defaultSort={{ col: 'age', dir: 'desc' }}
-            tableId="ops-waiting"
+            tableId="floor-waiting"
             emptyMessage="Nothing waiting on entry."
             selectedKey={selectedKey}
             onSelect={(key) => {
@@ -516,7 +572,7 @@ export function OpsPage() {
                 clearDeepLink();
                 return;
               }
-              const row = armedRows.find((r) => r.key === key);
+              const row = waitingTableRows.find((r) => r.key === key);
               if (!row) return;
               const next = new URLSearchParams(params);
               next.set(OPS_PARAMS.mint, row.mint);
@@ -529,22 +585,22 @@ export function OpsPage() {
             selectedRuleId={ruleParam}
           />
         </>
-      ) : tab === 'open' ? (
+      ) : tab === 'recent' ? (
         <DataTable
-          columns={openCols}
-          rows={openTableRows}
+          columns={recentCols}
+          rows={recentTableRows}
           rowKey={(r) => r.positionId}
           searchable
-          colFilters
-          tableId="ops-open"
-          emptyMessage="No open positions."
+          defaultSort={{ col: 'when', dir: 'desc' }}
+          tableId="floor-recent"
+          emptyMessage="No recent closes — full history is on Rules Evidence."
           selectedKey={selectedKey}
           onSelect={(key) => {
             if (!key) {
               clearDeepLink();
               return;
             }
-            const row = openTableRows.find((r) => r.positionId === key);
+            const row = recentTableRows.find((r) => r.positionId === key);
             if (!row) return;
             const next = new URLSearchParams(params);
             next.set(OPS_PARAMS.position, row.positionId);
@@ -555,20 +611,24 @@ export function OpsPage() {
         />
       ) : (
         <DataTable
-          columns={recentCols}
-          rows={recentTableRows}
+          columns={openCols}
+          rows={openTableRows}
           rowKey={(r) => r.positionId}
           searchable
-          defaultSort={{ col: 'when', dir: 'desc' }}
-          tableId="ops-recent"
-          emptyMessage="No closes this session yet."
+          colFilters
+          tableId={tab === 'attention' ? 'floor-attention' : 'floor-open'}
+          emptyMessage={
+            tab === 'attention'
+              ? 'Nothing stuck — no ExitPending / ExitFailed / ExitUnconfirmed.'
+              : 'No open positions.'
+          }
           selectedKey={selectedKey}
           onSelect={(key) => {
             if (!key) {
               clearDeepLink();
               return;
             }
-            const row = recentTableRows.find((r) => r.positionId === key);
+            const row = openTableRows.find((r) => r.positionId === key);
             if (!row) return;
             const next = new URLSearchParams(params);
             next.set(OPS_PARAMS.position, row.positionId);

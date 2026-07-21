@@ -8,7 +8,8 @@ Live Rules is a **control board**, not an authoring form with history bolted on.
 | --- | --- |
 | **Rules Control** (sticky scoreboard) | Compare rules · activate/pause · current-run health |
 | **Evidence** (lower pane / `:ruleId` route) | Prove why — runs · summary · positions · charts |
-| **Ops** | Inventory (sell / waiting / open) — not rule ON/OFF |
+| **Floor** (`/ops`) | Inventory (sell / waiting / open / attention) — not rule ON/OFF |
+| **Portfolio** | Cross-rule money over time |
 | **Rule Editor** | Params drawer — secondary |
 
 ## Scopes

@@ -40,15 +40,15 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   gating. `identity` (`{subtitle, badge, glyph?, pulse?}`) drives the Header logo block. Live nav
   (`liveNav`) = `Live Trading` / `LIVE` (pulsing) + Live-mode toggle; lab nav (`labNav`) =
   `Research & Backtesting` / `LAB`, no toggle.   Live money nav is collapsed to
-  **Ops** (`/ops` — Waiting/Open/Recent; redirects from `/positions`, `/live-trading`,
-  `/strategies/armed`) · **Wallet** · **Trade**. Rules Analyze is
+  **Floor** (`/ops` — Waiting/Open/Needs attention/Recent; redirects from `/positions`, `/live-trading`,
+  `/strategies/armed`, `/floor`) · **Portfolio** (`/portfolio`) · **Wallet** · **Trade**. Rules Evidence is
   `/strategies/rules/:ruleId`. Lab flattens single-child groups (Tokens, Trader Analysis
   are leaf links). Metric panes are not a peer nav item — they live in lab Tokens detail
   (`/strategies/metric-panes` redirects to `/tokens?mint=`). The per-app **color** is NOT in the nav config — it's
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
-**Operator clarity (jobs):** Wallet = bag overview; Ops = live inventory (SSE SSOT);
-Trade = mint-first execute; Rules = **Control** (activate/pause + scoreboard scoped
+**Operator clarity (jobs):** Wallet = bag overview; Floor = live inventory (SSE SSOT);
+Portfolio = cross-rule money; Trade = mint-first execute; Rules = **Control** (activate/pause + scoreboard scoped
 current-run / all-time) + **Evidence** pane (run navigator, summary, positions).
 Tokens table stream toggle is **STREAM ON/OFF**
 (not the header trading kill switch).

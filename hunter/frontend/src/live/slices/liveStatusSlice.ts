@@ -60,6 +60,8 @@ export interface LiveClosedRow {
   exitReason: string | null;
   entryPrice: number | null;
   exitPrice: number | null;
+  /** Realized SOL PnL when both legs known; null until hydrate / SSE with amounts. */
+  pnlSol: number | null;
   closedAt: number;
 }
 
@@ -116,6 +118,12 @@ function closedFromRecent(
     : p.updated_at
       ? Date.parse(p.updated_at)
       : Date.now();
+  const entrySol = p.entry_sol ?? null;
+  const exitSol = p.exit_sol ?? null;
+  const pnlSol =
+    entrySol != null && exitSol != null && Number.isFinite(entrySol) && Number.isFinite(exitSol)
+      ? exitSol - entrySol
+      : null;
   return {
     positionId: p.id,
     ruleId,
@@ -126,6 +134,7 @@ function closedFromRecent(
     exitReason: p.exit_reason ?? null,
     entryPrice: p.entry_price ?? null,
     exitPrice: p.exit_price ?? null,
+    pnlSol,
     closedAt: Number.isFinite(closedAt) ? closedAt : Date.now(),
   };
 }
@@ -270,6 +279,7 @@ const liveStatusSlice = createSlice({
           exitReason: d.exit_reason ?? null,
           entryPrice: d.entry_price ?? prev?.entryPrice ?? null,
           exitPrice: d.exit_price ?? null,
+          pnlSol: null,
           closedAt: now,
         };
         state.recentClosed = [
