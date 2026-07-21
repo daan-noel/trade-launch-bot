@@ -26,6 +26,13 @@
   so the server prunes to exactly the sealed window. TimescaleDB auto-creates the
   destination chunks on insert, so there is no partition-ensure step anymore.
 
+  **Stability (cold / large windows).** `trades` / `raw_txs` are pulled in fixed-hour
+  chunks (default 6h, not one giant INSERT), with a smaller FDW `fetch_size`, SSH
+  keepalives, and transient-error retries. A cold local DB (empty trades) clamps
+  the watermark to the remote MIN so we never ask the 4GB EC2 box to stream the
+  whole rolling window in one cursor. Partial progress is durable: each chunk
+  commits independently; re-runs resume from the advanced watermark.
+
   Non-destructive & idempotent throughout: existing local rows are never deleted;
   the dedup PKs + ON CONFLICT make re-running over an overlapping window a no-op.
   Strategy tables upsert server-wins WITHOUT propagating server-side deletes, so the
@@ -127,6 +134,9 @@ param(
   [switch]$IncludeRawTxs,                                                 # also sync raw_txs (BYTEA payloads, large; off by default)
   [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
   [switch]$ExportLake,                                                    # after sync: run `cargo run -p hunter-lab -- lake-export` (passes --include-today when -IncludeToday)
+  [int]   $FdwFetchSize    = 10000,                                       # postgres_fdw fetch_size (smaller = gentler on 4GB EC2 RAM; was 50000)
+  [int]   $HypertableChunkHours = 6,                                      # trades/raw_txs pull window size (hours); smaller = safer on EC2 RAM
+  [int]   $ChunkRetries    = 4,                                           # retries per chunk on transient FDW/tunnel drops
   [string]$LocalPgPassword = $env:PGPASSWORD
 )
 # NOTE: 'Continue', not 'Stop'. Under 'Stop', a NATIVE exe (ssh/psql) writing ANY line
@@ -147,7 +157,14 @@ if ($SshTarget -match '^-') {
 # regardless of the workstation's OS timezone.
 $env:PGOPTIONS = '-c timezone=UTC'
 $localPg = @('-h', $LocalPgHost, '-p', "$LocalPgPort", '-U', $LocalPgUser, '-d', $Database, '-v', 'ON_ERROR_STOP=1')
-$sshOpts = @('-i', $SshKey, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10')
+$sshOpts = @(
+  '-i', $SshKey,
+  '-o', 'StrictHostKeyChecking=accept-new',
+  '-o', 'ConnectTimeout=10',
+  '-o', 'ServerAliveInterval=20',
+  '-o', 'ServerAliveCountMax=6',
+  '-o', 'TCPKeepAlive=yes'
+)
 
 # ---- SSH passphrase handling (Windows-safe, no agent / no admin) -------------
 # The script SSHes twice (read .env, then open the backgrounded tunnel). On Windows
@@ -228,8 +245,12 @@ function Invoke-LocalSqlFile([string]$sql) {
   try {
     & psql @localPg -f $f 2>$errf
     $code = $LASTEXITCODE
+    $err = ''
     if (Test-Path $errf) { $err = (Get-Content $errf -Raw); if ($err -and $err.Trim()) { Write-Host $err.TrimEnd() } }
-    if ($code -ne 0) { throw "psql failed (exit $code; see above)" }
+    if ($code -ne 0) {
+      $detail = if ($err -and $err.Trim()) { $err.Trim() } else { '(no stderr)' }
+      throw "psql failed (exit $code): $detail"
+    }
   }
   finally { Remove-Item $f, $errf -ErrorAction SilentlyContinue }
 }
@@ -247,6 +268,21 @@ function Get-LocalScalar([string]$sql) {
   }
   finally { Remove-Item $errf -ErrorAction SilentlyContinue }
 }
+function Get-LocalRows([string]$sql) {
+  Use-LocalPw
+  $errf = [System.IO.Path]::GetTempFileName()
+  try {
+    $r = (& psql @localPg -tAF "`t" -c $sql 2>$errf)
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+      $err = if (Test-Path $errf) { (Get-Content $errf -Raw) } else { '' }
+      throw "psql query failed: $sql`n$err"
+    }
+    if ($null -eq $r) { return @() }
+    return @($r | ForEach-Object { "$_" } | Where-Object { $_ -match '\S' })
+  }
+  finally { Remove-Item $errf -ErrorAction SilentlyContinue }
+}
 # Fast, silent TCP probe (Test-NetConnection does a slow ICMP ping + progress UI).
 function Test-Port([int]$Port) {
   $c = New-Object System.Net.Sockets.TcpClient
@@ -255,6 +291,163 @@ function Test-Port([int]$Port) {
     if ($iar.AsyncWaitHandle.WaitOne(800) -and $c.Connected) { $c.EndConnect($iar); return $true }
     return $false
   } catch { return $false } finally { $c.Close() }
+}
+function Test-TransientSyncError([string]$msg) {
+  $msg -match '(?i)server closed the connection|no connection to the server|connection reset|could not connect to server|SSL connection has been closed|terminating connection|timeout expired|broken pipe|Connection timed out|server closed the connection unexpectedly|could not receive data from server|FATAL:\s+the database system is (starting|recovering|shutting)'
+}
+function Wait-Port([int]$Port, [string]$label, [int]$Seconds = 60) {
+  foreach ($i in 1..$Seconds) {
+    if (Test-Port $Port) { return $true }
+    Start-Sleep -Seconds 1
+  }
+  throw "$label port $Port never became reachable (waited ${Seconds}s)"
+}
+function Assert-SyncTransport {
+  if (-not (Test-Port $LocalPgPort)) {
+    Write-Warning "Local Postgres on :$LocalPgPort is down (OOM restart?). Waiting up to 90s..."
+    Wait-Port $LocalPgPort 'Local Postgres' 90 | Out-Null
+  }
+  if ($tunnel.HasExited) { throw "SSH tunnel process exited; re-run the script to reopen it." }
+  if (-not (Test-Port $TunnelLocalPort)) {
+    throw "SSH tunnel port $TunnelLocalPort is not accepting connections; re-run the script."
+  }
+}
+# Recreate the FDW server mapping after a dropped remote connection so the next
+# chunk opens a fresh remote session (stale user mappings / cached conns otherwise
+# keep failing with "no connection to the server").
+function Repair-FdwAttach {
+  Write-Host "  re-attaching postgres_fdw after transport error ..."
+  Use-LocalPw
+  $pwEsc = $remotePw -replace "'", "''"
+  Invoke-LocalSqlFile @"
+DROP SERVER IF EXISTS ec2_sync CASCADE;
+CREATE SERVER ec2_sync FOREIGN DATA WRAPPER postgres_fdw
+  OPTIONS (
+    host '$FdwTunnelHost',
+    port '$TunnelLocalPort',
+    dbname '$remoteDb',
+    fetch_size '$FdwFetchSize',
+    connect_timeout '30',
+    keepalives '1',
+    keepalives_idle '30',
+    keepalives_interval '10',
+    keepalives_count '5'
+  );
+CREATE USER MAPPING FOR CURRENT_USER SERVER ec2_sync
+  OPTIONS (user '$remoteUser', password '$pwEsc');
+DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;
+CREATE SCHEMA ec2_sync_src;
+IMPORT FOREIGN SCHEMA public
+  LIMIT TO ($importList)
+  FROM SERVER ec2_sync INTO ec2_sync_src;
+"@
+}
+function Invoke-LocalSqlFileRetry([string]$sql, [string]$label) {
+  $attempt = 0
+  while ($true) {
+    $attempt++
+    try {
+      Use-LocalPw
+      Invoke-LocalSqlFile $sql
+      return
+    } catch {
+      $msg = "$_"
+      if ($attempt -ge $ChunkRetries -or -not (Test-TransientSyncError $msg)) { throw }
+      Write-Warning ("{0}: transient failure (attempt {1}/{2}) -- {3}" -f $label, $attempt, $ChunkRetries, $(
+        $flat = ("$msg" -replace '\s+', ' ').Trim()
+        if ($flat.Length -gt 180) { $flat.Substring(0, 180) + '...' } else { $flat }
+      ))
+      Assert-SyncTransport
+      try { Repair-FdwAttach } catch {
+        Write-Warning "  FDW re-attach failed: $_"
+      }
+      Start-Sleep -Seconds ([Math]::Min(30, 5 * $attempt))
+    }
+  }
+}
+# Time windows over [fromTs, toTs) in $HypertableChunkHours steps. First/last
+# chunks are clipped to the watermark and cutoff so a mid-window watermark does
+# not re-pull earlier hours. Default 6h keeps each FDW cursor small enough for
+# the 4GB EC2 box (a full multi-day INSERT was dropping the remote connection).
+function Get-HypertableChunks([string]$fromTs, [string]$toTs) {
+  if ($HypertableChunkHours -lt 1) { throw "-HypertableChunkHours must be >= 1 (got $HypertableChunkHours)" }
+  $rows = Get-LocalRows @"
+WITH bounds AS (
+  SELECT '$fromTs'::timestamptz AS lo, '$toTs'::timestamptz AS hi
+),
+grid AS (
+  SELECT generate_series(
+    date_trunc('hour', lo),
+    hi,
+    interval '$HypertableChunkHours hours'
+  ) AS chunk_start
+  FROM bounds
+)
+SELECT
+  GREATEST(chunk_start, (SELECT lo FROM bounds))::text,
+  LEAST(chunk_start + interval '$HypertableChunkHours hours', (SELECT hi FROM bounds))::text
+FROM grid, bounds
+WHERE GREATEST(chunk_start, lo) < LEAST(chunk_start + interval '$HypertableChunkHours hours', hi)
+ORDER BY 1;
+"@
+  $chunks = @()
+  foreach ($row in $rows) {
+    $parts = $row -split "`t"
+    if ($parts.Count -lt 2) { continue }
+    $chunks += [pscustomobject]@{ From = $parts[0].Trim(); To = $parts[1].Trim() }
+  }
+  return $chunks
+}
+function Sync-TradesChunks([string]$fromWm, [string]$toCutoff, [string]$windowLabel) {
+  $chunks = @(Get-HypertableChunks $fromWm $toCutoff)
+  if ($chunks.Count -eq 0) {
+    Write-Host "-- trades ($windowLabel): nothing to pull (watermark >= cutoff)"
+    return
+  }
+  Write-Host ("-- trades ($windowLabel): {0} x {1}h chunk(s) [{2} .. {3})" -f $chunks.Count, $HypertableChunkHours, $chunks[0].From, $toCutoff)
+  $i = 0
+  foreach ($c in $chunks) {
+    $i++
+    $label = "trades chunk $i/$($chunks.Count) [$($c.From) .. $($c.To))"
+    Write-Host "  $label"
+    Invoke-LocalSqlFileRetry @"
+\echo '-- $label'
+INSERT INTO trades (
+  mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
+  reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time, tx_signature,
+  ix_labels
+)
+SELECT
+  tr.mint_address, tr.wallet_id, tr.trade_type, tr.venue, tr.amount_lamports, tr.token_amount,
+  tr.reserve_lamports, tr.reserve_token, tr.slot, tr.tx_index, tr.leg_index, tr.block_time, tr.tx_signature,
+  tr.ix_labels
+FROM ec2_sync_src.trades tr
+WHERE block_time >= '$($c.From)'::timestamptz AND block_time < '$($c.To)'::timestamptz
+ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
+"@ $label
+  }
+}
+function Sync-RawTxsChunks([string]$fromWm, [string]$toCutoff, [string]$windowLabel) {
+  $chunks = @(Get-HypertableChunks $fromWm $toCutoff)
+  if ($chunks.Count -eq 0) {
+    Write-Host "-- raw_txs ($windowLabel): nothing to pull (watermark >= cutoff)"
+    return
+  }
+  Write-Host ("-- raw_txs ($windowLabel): {0} x {1}h chunk(s) [{2} .. {3})" -f $chunks.Count, $HypertableChunkHours, $chunks[0].From, $toCutoff)
+  $i = 0
+  foreach ($c in $chunks) {
+    $i++
+    $label = "raw_txs chunk $i/$($chunks.Count) [$($c.From) .. $($c.To))"
+    Write-Host "  $label"
+    Invoke-LocalSqlFileRetry @"
+\echo '-- $label'
+INSERT INTO raw_txs (tx_signature, slot, block_time, tx_index, payload, source)
+SELECT r.tx_signature, r.slot, r.block_time, r.tx_index, r.payload, r.source
+FROM ec2_sync_src.raw_txs r
+WHERE block_time >= '$($c.From)'::timestamptz AND block_time < '$($c.To)'::timestamptz
+ON CONFLICT (block_time, tx_signature) DO NOTHING;
+"@ $label
+  }
 }
 
 # ---- 0. Lock down the .pem so Windows OpenSSH accepts it (idempotent) --------
@@ -312,7 +505,7 @@ Write-Host "  server postgres: 127.0.0.1:$RemotePgPort (db=$remoteDb user=$remot
 $fwd = "0.0.0.0:${TunnelLocalPort}:127.0.0.1:${RemotePgPort}"
 Write-Host "Opening tunnel  local:$TunnelLocalPort  ->  $SshTarget : $RemotePgPort ..."
 Write-Host "  (if a passphrase prompt appears below, enter the key passphrase to open the tunnel)"
-$tunnelArgs = $sshOpts + @('-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=30', '-N', '-L', $fwd, $SshTarget)
+$tunnelArgs = $sshOpts + @('-o', 'ExitOnForwardFailure=yes', '-N', '-L', $fwd, $SshTarget)
 # -NoNewWindow: share this console so ssh's passphrase prompt is reachable. A hidden
 # window would leave the prompt invisible and the tunnel stuck forever.
 $tunnel = Start-Process ssh -ArgumentList $tunnelArgs -PassThru -NoNewWindow
@@ -345,7 +538,17 @@ try {
 CREATE EXTENSION IF NOT EXISTS postgres_fdw;
 DROP SERVER IF EXISTS ec2_sync CASCADE;
 CREATE SERVER ec2_sync FOREIGN DATA WRAPPER postgres_fdw
-  OPTIONS (host '$FdwTunnelHost', port '$TunnelLocalPort', dbname '$remoteDb', fetch_size '50000');
+  OPTIONS (
+    host '$FdwTunnelHost',
+    port '$TunnelLocalPort',
+    dbname '$remoteDb',
+    fetch_size '$FdwFetchSize',
+    connect_timeout '30',
+    keepalives '1',
+    keepalives_idle '30',
+    keepalives_interval '10',
+    keepalives_count '5'
+  );
 CREATE USER MAPPING FOR CURRENT_USER SERVER ec2_sync
   OPTIONS (user '$remoteUser', password '$pwEsc');
 DROP SCHEMA IF EXISTS ec2_sync_src CASCADE;
@@ -412,6 +615,22 @@ END `$`$;
     Write-Host "  raw_txs >=          $rawWm"
   }
 
+  # Cold local DB: epoch watermarks would ask FDW to scan from 1970. Clamp to the
+  # remote table's actual MIN so each day-chunk is a real Timescale partition pull
+  # (and we don't OOM the 4GB EC2 box on a bogus full-history cursor).
+  if ($tradesWm -match '^1970-01-01') {
+    Write-Host "  cold local trades -- clamping watermark to remote MIN(block_time)"
+    $remoteTradesMin = Get-LocalScalar "SELECT COALESCE(MIN(block_time), '$sealedCutoff'::timestamptz)::text FROM ec2_sync_src.trades"
+    $tradesWm = $remoteTradesMin
+    Write-Host "  trades >=           $tradesWm  (clamped)"
+  }
+  if ($IncludeRawTxs -and $rawWm -match '^1970-01-01') {
+    Write-Host "  cold local raw_txs -- clamping watermark to remote MIN(block_time)"
+    $remoteRawMin = Get-LocalScalar "SELECT COALESCE(MIN(block_time), '$sealedCutoff'::timestamptz)::text FROM ec2_sync_src.raw_txs"
+    $rawWm = $remoteRawMin
+    Write-Host "  raw_txs >=          $rawWm  (clamped)"
+  }
+
   # ---- 7. Upserts (predicate pushed to server; psql prints each row count) ----
   # Order: wallet_dict + tokens first (referenced), then dependents + the
   # sealed-window hypertable pulls. TimescaleDB routes inserts to chunks (creating
@@ -419,17 +638,6 @@ END `$`$;
   Write-Host "Appending new rows ..."
 
   $windowLabel = if ($IncludeToday) { 'incl. today' } else { 'sealed days only' }
-
-  $rawTxsSql = if ($IncludeRawTxs) { @"
-\echo '-- raw_txs ($windowLabel)'
--- Explicit, name-matched column list -- see the tokens/trades comments above for
--- why positional SELECT * is unsafe once local/server column order can diverge.
-INSERT INTO raw_txs (tx_signature, slot, block_time, tx_index, payload, source)
-SELECT r.tx_signature, r.slot, r.block_time, r.tx_index, r.payload, r.source
-FROM ec2_sync_src.raw_txs r
-WHERE block_time >= '$rawWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
-ON CONFLICT (block_time, tx_signature) DO NOTHING;
-"@ } else { "\echo 'raw_txs: skipped (pass -IncludeRawTxs to sync)'" }
 
   # wallet_dict as a NON-DESTRUCTIVE FAITHFUL MERGE of the server (self-healing).
   #
@@ -459,7 +667,7 @@ ON CONFLICT (block_time, tx_signature) DO NOTHING;
   # resolvable. One server scan/run; all else is local + indexed. Atomic (BEGIN/COMMIT).
   # `$walletWm` above is now only informational.
   Write-Host "Merging wallet_dict (non-destructive faithful mirror; server wins, old rows preserved) ..."
-  Invoke-LocalSqlFile @"
+  Invoke-LocalSqlFileRetry @"
 \echo '-- wallet_dict (non-destructive faithful merge; self-healing)'
 BEGIN;
 -- One remote scan into a local temp table so the merge below is all local + indexed.
@@ -497,9 +705,9 @@ BEGIN
   END IF;
 END `$`$;
 COMMIT;
-"@
+"@ 'wallet_dict merge'
 
-  Invoke-LocalSqlFile @"
+  Invoke-LocalSqlFileRetry @"
 \echo '-- tokens'
 -- created_at>=watermark is the fast path (FDW pushes it down), but server tokens
 -- can arrive with a created_at EARLIER than the local max (out-of-order discovery,
@@ -554,26 +762,16 @@ ON CONFLICT (mint_address) DO UPDATE SET
   first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
   first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports
 WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
+"@ 'tokens + tokens_info'
 
-\echo '-- trades ($windowLabel)'
--- Explicit, name-matched column list -- trades is the highest-stakes table here
--- (financial data); a positional SELECT * would silently miswire columns on any
--- future one-sided ALTER TABLE, same failure mode as tokens/tokens_info above.
-INSERT INTO trades (
-  mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
-  reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time, tx_signature,
-  ix_labels
-)
-SELECT
-  tr.mint_address, tr.wallet_id, tr.trade_type, tr.venue, tr.amount_lamports, tr.token_amount,
-  tr.reserve_lamports, tr.reserve_token, tr.slot, tr.tx_index, tr.leg_index, tr.block_time, tr.tx_signature,
-  tr.ix_labels
-FROM ec2_sync_src.trades tr
-WHERE block_time >= '$tradesWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
-ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
-
-$rawTxsSql
-"@
+  # Hypertables: fixed-hour chunks + retries. Never one giant INSERT over the full
+  # [watermark, cutoff) window -- that OOMs / drops the FDW connection on EC2.
+  Sync-TradesChunks $tradesWm $sealedCutoff $windowLabel
+  if ($IncludeRawTxs) {
+    Sync-RawTxsChunks $rawWm $sealedCutoff $windowLabel
+  } else {
+    Write-Host "raw_txs: skipped (pass -IncludeRawTxs to sync)"
+  }
 
   # ---- 7a. Integrity report: residual orphaned trades ------------------------
   # The HARD completeness guard (every SERVER id present locally) runs INSIDE the
@@ -635,7 +833,7 @@ END `$`$;
   # strategy_runs block below deletes such divergent local rows first (server
   # wins). That is the ONLY delete here (a constraint-conflict resolver, not a
   # tombstone).
-  Invoke-LocalSqlFile @"
+  Invoke-LocalSqlFileRetry @"
 -- Retire the old tombstone bookkeeping table (deletes are no longer propagated).
 DROP TABLE IF EXISTS _ec2_sync_seen_ids;
 
@@ -776,7 +974,7 @@ ON CONFLICT (id) DO UPDATE SET
   exit_reason = EXCLUDED.exit_reason, extra = EXCLUDED.extra,
   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
   token_account = EXCLUDED.token_account;
-"@
+"@ 'strategy tables'
 
   # ---- 8. Sync _sqlx_migrations so local backend doesn't re-apply applied migrations ---
   # The server's checksum records are authoritative (same files, same binary).
