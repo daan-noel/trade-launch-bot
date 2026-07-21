@@ -43,8 +43,21 @@ pub async fn strategy_registry() -> impl Responder {
 }
 
 /// GET /api/strategies/armed — currently-armed (token, rule) pairs (live monitor).
+///
+/// Filters out any (rule, mint) that already has an unsettled `strategy_positions`
+/// row — belt-and-suspenders if the in-memory armed set lagged behind a buy.
 pub async fn list_armed(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    HttpResponse::Ok().json(app_state.armed.snapshot())
+    let mut armed = app_state.armed.snapshot();
+    if let Ok(open) = app_state.strategy_repo.find_open_positions().await {
+        let occupied: HashSet<(Uuid, String)> = open
+            .into_iter()
+            .filter_map(|p| p.rule_id.map(|r| (r, p.mint_address)))
+            .collect();
+        if !occupied.is_empty() {
+            armed.retain(|e| !occupied.contains(&(e.rule_id, e.mint_address.clone())));
+        }
+    }
+    HttpResponse::Ok().json(armed)
 }
 
 // ── Fingerprints ─────────────────────────────────────────────────────────────
@@ -149,11 +162,49 @@ pub async fn delete_fingerprint(
 // ── Rules ────────────────────────────────────────────────────────────────────
 
 /// GET /api/strategy-rules
+///
+/// Each rule is enriched with DB-backed score fields (`total_positions`,
+/// `win_rate`, `total_pnl_sol`, …): all-time for real rules, latest paper run
+/// for paper — so the Rules table scoreboard does not depend on an in-RAM cache.
 pub async fn list_rules(app_state: web::Data<Arc<DeployState>>) -> impl Responder {
-    match app_state.rule_repo.list().await {
-        Ok(v) => HttpResponse::Ok().json(v),
-        Err(e) => server_error("list rules", e),
-    }
+    let rules = match app_state.rule_repo.list().await {
+        Ok(v) => v,
+        Err(e) => return server_error("list rules", e),
+    };
+    let paper = app_state
+        .strategy_repo
+        .rule_counters_for_latest_paper_runs("generic")
+        .await
+        .unwrap_or_default();
+    let real = app_state
+        .strategy_repo
+        .rule_counters_for_all_real()
+        .await
+        .unwrap_or_default();
+    let out: Vec<Value> = rules
+        .into_iter()
+        .map(|r| {
+            let counters = if r.trade_mode == "paper" {
+                paper.get(&r.id)
+            } else {
+                real.get(&r.id)
+            };
+            let mut v = serde_json::to_value(&r).unwrap_or_else(|_| json!({}));
+            if let Value::Object(map) = &mut v {
+                let c = counters.cloned().unwrap_or_default();
+                map.insert("total_positions".into(), json!(c.total_positions));
+                map.insert("open_positions".into(), json!(c.open_positions));
+                map.insert("pending_positions".into(), json!(c.pending_positions));
+                map.insert("win_count".into(), json!(c.win_count));
+                map.insert("loss_count".into(), json!(c.loss_count));
+                map.insert("win_rate".into(), json!(c.win_rate));
+                map.insert("avg_pnl_pct".into(), json!(c.avg_pnl_pct));
+                map.insert("total_pnl_sol".into(), json!(c.total_pnl_sol));
+            }
+            v
+        })
+        .collect();
+    HttpResponse::Ok().json(out)
 }
 
 /// GET /api/strategy-rules/{id}

@@ -328,6 +328,14 @@ pub async fn open_positions(
     Ok(positions)
 }
 
+/// Latest closed positions for Ops Recent hydrate (DB-backed, not session SSE).
+pub async fn recent_closed(
+    state: &DeployState,
+    limit: i64,
+) -> anyhow::Result<Vec<StrategyPosition>> {
+    state.strategy_repo().find_recent_closed(limit).await
+}
+
 /// Per-bag cost basis + unrealized PnL. **The only place the service turns a mark
 /// into PnL** — the arithmetic is delegated to
 /// [`trading_core::models::portfolio::unrealized_pnl`] (the SSOT compute site);

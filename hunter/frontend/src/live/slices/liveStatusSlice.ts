@@ -1,12 +1,12 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { OpenStrategyPosition } from 'types';
+import type { OpenStrategyPosition, RecentClosedPosition } from 'types';
 import type {
   ArmedChangedEvent,
   ArmedEntry,
   StrategyPositionUpdateEvent,
 } from 'lib/strategy/types';
 
-/** Cap on session "recent closes" ring (SSE End / ExitFailed / ExitUnconfirmed). */
+/** Cap on "recent closes" ring (SSE + DB hydrate). */
 const MAX_RECENT_CLOSED = 50;
 
 /** Statuses that count as open inventory (still actionable / in flight). */
@@ -105,6 +105,31 @@ function openFromPortfolio(
   };
 }
 
+function closedFromRecent(
+  p: RecentClosedPosition,
+  ruleNames: Record<string, string>,
+): LiveClosedRow | null {
+  if (!TERMINAL_STATUSES.has(p.status)) return null;
+  const ruleId = p.rule_id;
+  const closedAt = p.exit_time
+    ? Date.parse(p.exit_time)
+    : p.updated_at
+      ? Date.parse(p.updated_at)
+      : Date.now();
+  return {
+    positionId: p.id,
+    ruleId,
+    ruleName: (ruleId && ruleNames[ruleId]) || null,
+    mint: p.mint_address,
+    mode: p.mode,
+    status: p.status,
+    exitReason: p.exit_reason ?? null,
+    entryPrice: p.entry_price ?? null,
+    exitPrice: p.exit_price ?? null,
+    closedAt: Number.isFinite(closedAt) ? closedAt : Date.now(),
+  };
+}
+
 const liveStatusSlice = createSlice({
   name: 'liveStatus',
   initialState,
@@ -113,18 +138,20 @@ const liveStatusSlice = createSlice({
       state.snapshotLoading = true;
     },
     /**
-     * Replace armed + open from REST. Preserves `recentClosed` (session ring).
-     * `ruleNames` maps rule_id → rule_name (portfolio rows have no name today).
+     * Replace armed + open from REST; merge DB recent closes (newest-first).
+     * Drops armed rows that collide with an open (rule, mint) — Waiting must
+     * never sit next to a buy-confirmed Open after snapshot.
      */
     applySnapshot(
       state,
       action: PayloadAction<{
         armed: ArmedEntry[];
         positions: OpenStrategyPosition[];
+        recentClosed?: RecentClosedPosition[];
         ruleNames: Record<string, string>;
       }>,
     ) {
-      const { armed, positions, ruleNames } = action.payload;
+      const { armed, positions, recentClosed, ruleNames } = action.payload;
       const nextArmed: Record<string, LiveArmedRow> = {};
       const now = Date.now();
       for (const e of armed) {
@@ -140,6 +167,7 @@ const liveStatusSlice = createSlice({
         };
       }
       const nextOpen: Record<string, LiveOpenRow> = {};
+      const openKeys = new Set<string>();
       for (const p of positions) {
         const row = openFromPortfolio(p, ruleNames);
         if (!row) continue;
@@ -147,9 +175,29 @@ const liveStatusSlice = createSlice({
         if (prev?.ruleName && !row.ruleName) row.ruleName = prev.ruleName;
         if (prev?.entrySol != null && row.entrySol == null) row.entrySol = prev.entrySol;
         nextOpen[row.positionId] = row;
+        if (row.ruleId) openKeys.add(armedKey(row.ruleId, row.mint));
+      }
+      // Snapshot must not resurrect Waiting for mints already Open.
+      for (const key of openKeys) {
+        delete nextArmed[key];
       }
       state.armed = nextArmed;
       state.open = nextOpen;
+
+      if (recentClosed) {
+        const fromDb: LiveClosedRow[] = [];
+        for (const p of recentClosed) {
+          const row = closedFromRecent(p, ruleNames);
+          if (row) fromDb.push(row);
+        }
+        // Prefer DB order; keep any newer session-only closes not yet in DB page.
+        const dbIds = new Set(fromDb.map((r) => r.positionId));
+        const sessionExtra = state.recentClosed.filter((r) => !dbIds.has(r.positionId));
+        state.recentClosed = [...fromDb, ...sessionExtra]
+          .sort((a, b) => b.closedAt - a.closedAt)
+          .slice(0, MAX_RECENT_CLOSED);
+      }
+
       state.hydrated = true;
       state.lastSnapshotAt = now;
       state.snapshotLoading = false;
@@ -161,6 +209,11 @@ const liveStatusSlice = createSlice({
       const d = action.payload;
       const key = armedKey(d.rule_id, d.mint_address);
       if (d.state === 'armed') {
+        // Ignore arm if this mint is already an open position for the rule.
+        const occupied = Object.values(state.open).some(
+          (o) => o.ruleId === d.rule_id && o.mint === d.mint_address,
+        );
+        if (occupied) return;
         const prev = state.armed[key];
         state.armed[key] = {
           key,

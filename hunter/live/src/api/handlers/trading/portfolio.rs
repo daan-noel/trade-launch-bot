@@ -248,3 +248,30 @@ pub async fn get_portfolio_positions(
         }
     }
 }
+
+#[derive(Deserialize)]
+pub struct RecentClosedQuery {
+    #[serde(default = "default_recent_limit")]
+    pub limit: i64,
+}
+
+fn default_recent_limit() -> i64 {
+    50
+}
+
+/// `GET /api/portfolio/recent-closes[?limit=50]`
+///
+/// Latest `End` / `ExitFailed` rows from `strategy_positions` — hydrates Ops
+/// Recent so closes survive refresh / missed SSE.
+pub async fn get_portfolio_recent_closes(
+    app_state: web::Data<Arc<DeployState>>,
+    query: web::Query<RecentClosedQuery>,
+) -> impl Responder {
+    match portfolio::recent_closed(app_state.get_ref(), query.limit).await {
+        Ok(positions) => HttpResponse::Ok().json(positions),
+        Err(e) => {
+            tracing::warn!("get_portfolio_recent_closes failed: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({ "error": e.to_string() }))
+        }
+    }
+}

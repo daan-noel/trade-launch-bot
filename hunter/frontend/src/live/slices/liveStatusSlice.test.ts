@@ -10,19 +10,19 @@ import reducer, {
 const empty = reducer(undefined, { type: '@@init' });
 
 describe('liveStatusSlice', () => {
-  it('applySnapshot replaces armed + open and preserves recentClosed', () => {
-    const withRecent = reducer(
+  it('applySnapshot replaces armed + open and hydrates recentClosed from DB', () => {
+    const withSession = reducer(
       empty,
       applyPositionDelta({
         rule_id: 'r1',
         mint_address: 'm1',
-        position_id: 'p-old',
+        position_id: 'p-session',
         status: 'End',
         exit_reason: 'TakeProfit',
       }),
     );
     const next = reducer(
-      withRecent,
+      withSession,
       applySnapshot({
         armed: [{ rule_id: 'r1', mint_address: 'm2', state: 'armed' }],
         positions: [
@@ -36,14 +36,48 @@ describe('liveStatusSlice', () => {
             entry_sol: 0.5,
           },
         ],
+        recentClosed: [
+          {
+            id: 'p-db',
+            rule_id: 'r1',
+            mint_address: 'm9',
+            mode: 'real',
+            status: 'End',
+            exit_reason: 'StopLoss',
+            exit_time: '2026-07-20T12:00:00.000Z',
+          },
+        ],
         ruleNames: { r1: 'Alpha' },
       }),
     );
     expect(Object.keys(next.armed)).toEqual([armedKey('r1', 'm2')]);
     expect(next.open.p1?.ruleName).toBe('Alpha');
     expect(next.open.p1?.entrySol).toBe(0.5);
-    expect(next.recentClosed).toHaveLength(1);
+    expect(next.recentClosed.map((r) => r.positionId)).toContain('p-db');
+    expect(next.recentClosed.map((r) => r.positionId)).toContain('p-session');
     expect(next.hydrated).toBe(true);
+  });
+
+  it('applySnapshot drops armed that collide with open (rule, mint)', () => {
+    const next = reducer(
+      empty,
+      applySnapshot({
+        armed: [{ rule_id: 'r1', mint_address: 'm1', state: 'armed' }],
+        positions: [
+          {
+            id: 'p1',
+            strategy_id: 'generic',
+            rule_id: 'r1',
+            mint_address: 'm1',
+            mode: 'real',
+            status: 'Holding',
+          },
+        ],
+        ruleNames: {},
+      }),
+    );
+    expect(next.armed[armedKey('r1', 'm1')]).toBeUndefined();
+    expect(next.open.p1?.status).toBe('Holding');
   });
 
   it('Holding → ExitPending → End moves open into recentClosed', () => {

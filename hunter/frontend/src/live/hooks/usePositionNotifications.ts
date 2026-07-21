@@ -37,7 +37,7 @@ function armedStatusKey(state: string): 'Armed' | 'Disarmed' | null {
 
 /** Mounted once in the live App — position/arm toasts + desktop notifications.
  *  Desktop path uses a service worker (actions, status icon, lifecycle tags).
- *  Click / Open Ops → Ops deep-link; Trade action → trade desk. */
+ *  Click / Ops → Ops deep-link; Trade action → trade desk. */
 export function usePositionNotifications() {
   const { addToast } = useToast();
   const [prefs] = useNotificationPrefs();
@@ -116,6 +116,8 @@ export function usePositionNotifications() {
     const armedHandle = connectArmedChanged((delta) => {
       const status = armedStatusKey(delta.state);
       if (!status || !prefs.statuses.includes(status)) return;
+      // Leave-Waiting after buy — not an operator-facing disarm (dead/migrated/…).
+      if (status === 'Disarmed' && delta.reason === 'entered') return;
 
       const tradeMode = delta.trade_mode ?? 'paper';
       const isReal = tradeMode === 'real';

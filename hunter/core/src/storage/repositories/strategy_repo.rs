@@ -179,8 +179,9 @@ struct RuleCountersRow {
 /// they mirror [`StrategyRepo::positions_summary`] so the rule-row and the Positions
 /// Summary panel always agree. Expects a `latest l(rule_id, run_id)` CTE LEFT-JOINed
 /// to `strategy_positions p` and a trailing `GROUP BY l.rule_id`.
-const RULE_COUNTERS_SELECT: &str = "\
-    l.rule_id AS rule_id, \
+/// Aggregate arms shared by latest-run (alias `l`/`p`) and all-time (alias `p`)
+/// rule-counter queries — keep predicates identical to `positions_summary`.
+const RULE_COUNTERS_AGGS: &str = "\
     COUNT(p.*) FILTER (WHERE p.entry_price IS NOT NULL) AS total, \
     COUNT(p.*) FILTER (WHERE p.status IN ('Holding','Arming','BuySubmitted')) AS open, \
     COUNT(p.*) FILTER (WHERE p.status IN ('Arming','BuySubmitted')) AS pending, \
@@ -191,6 +192,10 @@ const RULE_COUNTERS_SELECT: &str = "\
              FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS total_pnl_lamports, \
     COALESCE(SUM(p.entry_lamports) \
              FILTER (WHERE p.entry_price IS NOT NULL AND p.status IN ('End','ExitFailed')), 0)::BIGINT AS closed_entry_lamports";
+
+const RULE_COUNTERS_SELECT: &str = "\
+    l.rule_id AS rule_id, \
+    {aggs}";
 
 /// Fold the raw batched rows into the `rule_id → RuleCounters` map (win-rate +
 /// capital-weighted return derived here). Shared by both `rule_counters_*` queries.
@@ -1404,6 +1409,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
         // `latest` = each rule's newest paper run; join its positions and aggregate
         // via the shared `RULE_COUNTERS_SELECT` (predicates mirror `positions_summary`).
+        let select = RULE_COUNTERS_SELECT.replace("{aggs}", RULE_COUNTERS_AGGS);
         let sql = format!(
             "WITH latest AS ( \
                 SELECT DISTINCT ON (rule_id) rule_id, id AS run_id \
@@ -1411,13 +1417,28 @@ impl StrategyRepo {
                 WHERE mode = 'paper' AND rule_id IS NOT NULL AND strategy_id = $1 \
                 ORDER BY rule_id, run_seq DESC \
             ) \
-            SELECT {RULE_COUNTERS_SELECT} \
+            SELECT {select} \
             FROM latest l \
             LEFT JOIN strategy_positions p ON p.run_id = l.run_id \
             GROUP BY l.rule_id"
         );
         let rows = sqlx::query_as::<_, RuleCountersRow>(&sql)
             .bind(strategy_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(map_rule_counters(rows))
+    }
+
+    /// All-time per-rule counters for **real** positions — Rules scoreboard (live).
+    /// Paper rules use [`rule_counters_for_latest_paper_runs`] (current run only).
+    pub async fn rule_counters_for_all_real(&self) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
+        let sql = format!(
+            "SELECT p.rule_id AS rule_id, {RULE_COUNTERS_AGGS} \
+             FROM strategy_positions p \
+             WHERE p.mode = 'real' AND p.rule_id IS NOT NULL \
+             GROUP BY p.rule_id"
+        );
+        let rows = sqlx::query_as::<_, RuleCountersRow>(&sql)
             .fetch_all(&self.pool)
             .await?;
         Ok(map_rule_counters(rows))
@@ -1495,6 +1516,25 @@ impl StrategyRepo {
             "SELECT {POSITION_COLS} FROM strategy_positions \
              WHERE status NOT IN ('End', 'ExitFailed') ORDER BY created_at DESC"
         ))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Most recent clean/failed closes across all rules — Ops Recent hydrate.
+    /// Ordered by exit time (fallback `updated_at`), newest first. Bounded.
+    pub async fn find_recent_closed(
+        &self,
+        limit: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let limit = limit.clamp(1, 200);
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE status IN ('End', 'ExitFailed') \
+             ORDER BY COALESCE(exit_time, updated_at) DESC \
+             LIMIT $1"
+        ))
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())

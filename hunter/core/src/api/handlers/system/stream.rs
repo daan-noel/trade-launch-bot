@@ -356,6 +356,7 @@ fn render_sse_frame(event: &SseEvent, state: &CoreState) -> SseFrame {
                 }),
             )
         }
+        SseEvent::SseResync => (None, "sse_resync", json!({})),
     };
 
     let frame = format!(
@@ -386,7 +387,15 @@ pub async fn run_sse_render_bridge(state: Arc<CoreState>) {
                 let frame = Arc::new(render_sse_frame(&event, state.as_ref()));
                 let _ = state.sse_frame_tx.send(frame);
             }
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                // Dropped frames leave Live Status lying — tell every subscriber
+                // to refetch rather than silently continuing.
+                tracing::warn!(skipped = n, "sse bridge lagged — emitting sse_resync");
+                if state.sse_frame_tx.receiver_count() > 0 {
+                    let frame = Arc::new(render_sse_frame(&SseEvent::SseResync, state.as_ref()));
+                    let _ = state.sse_frame_tx.send(frame);
+                }
+            }
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }
@@ -418,7 +427,12 @@ pub async fn stream_events(
                             Ok::<_, actix_web::Error>(frame.bytes.clone());
                         return Some((chunk, (rx, mint_filter)));
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // End this stream so EventSource reconnects and clients
+                        // hit onSseReopen → snapshot (silent continue lost closes).
+                        tracing::warn!(skipped = n, "sse subscriber lagged — closing stream");
+                        return None;
+                    }
                     Err(broadcast::error::RecvError::Closed) => return None,
                 }
             }

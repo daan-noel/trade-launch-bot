@@ -118,6 +118,11 @@ function subscribe(type: string, cb: SseListener): () => void {
       sawError = true;
       setStatus('error');
     };
+    // Bridge lag emits `sse_resync` without dropping the TCP connection — same
+    // catch-up path as a reconnect (Live Status snapshot, etc.).
+    shared.addEventListener('sse_resync', () => {
+      for (const fn of reopenListeners) fn();
+    });
   }
   // Attach a DOM listener for this event type once; it fans out to every
   // current subscriber of that type.

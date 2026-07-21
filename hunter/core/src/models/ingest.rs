@@ -198,7 +198,8 @@ pub enum SseEvent {
     /// emitted by the engine's `ArmedChanged` sink. There is no legacy analogue
     /// (armed state was pull-only before the redesign). Mint-scoped. `state` is
     /// `"armed"` | `"disarmed"`; `reason` is the disarm reason (`dead` | `migrated`
-    /// | `unsatisfiable`) when disarmed. `trade_mode` / `rule_name` mirror
+    /// | `unsatisfiable` | `entered`) when disarmed. `entered` means buy left
+    /// Waiting (not a toastable disarm). `trade_mode` / `rule_name` mirror
     /// [`StrategyPositionUpdate`] so notification toasts can filter real vs paper
     /// without a round-trip.
     StrategyArmedChanged {
@@ -228,4 +229,7 @@ pub enum SseEvent {
         total: u64,
         error: Option<String>,
     },
+    /// Broadcast when the SSE render bridge drops frames (`Lagged`). Not
+    /// mint-scoped — clients must refetch Live Status / other delta views.
+    SseResync,
 }

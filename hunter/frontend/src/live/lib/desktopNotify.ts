@@ -2,23 +2,28 @@
  * Desktop (OS) notifications for Hunter Live — Chromium/Windows best path.
  *
  * Uses a notification-only service worker so we get:
- * - action buttons (Open Ops / Trade) — ignored on plain `new Notification()`
- * - status-colored icon + optional hero card image
+ * - action buttons (Ops / Trade) — ignored on plain `new Notification()`
+ * - status-colored icon (text stays the primary signal)
  * - per-position `tag` + `renotify` so BuySubmitted→Holding→Exit updates one toast
  * - `requireInteraction` for failed / unconfirmed exits
  *
  * Falls back to page `Notification` when the SW is unavailable.
+ *
+ * Copy targets (desktop glanceability): title ≤ ~40 chars, body ≤ ~90 chars.
+ * No hero `image` — Windows crops it and it only duplicated title/body.
  */
+
+import { exitReasonLabel } from 'lib/strategy/exitReason';
 
 export interface DesktopNotifyPayload {
   status: string;
-  /** Short mint prefix already truncated for title, or full mint for actions. */
+  /** Full mint; truncated for title/body. */
   mint: string;
   modeLabel: 'real' | 'paper';
   ruleName: string;
   /** Extra line (exit reason, disarm reason). */
   detail?: string | null;
-  /** Ops deep-link (click / Open). */
+  /** Ops deep-link (click / Ops). */
   href: string;
   /** Optional Trade desk link. */
   tradeHref?: string | null;
@@ -34,7 +39,6 @@ interface NotifyAction {
 
 /** Options accepted by `ServiceWorkerRegistration.showNotification`. */
 interface SwNotifyOptions extends NotificationOptions {
-  image?: string;
   renotify?: boolean;
   actions?: NotifyAction[];
   data?: {
@@ -55,15 +59,16 @@ const STATUS_COLOR: Record<string, string> = {
   ExitUnconfirmed: '#f97316',
 };
 
+/** Short OS-facing labels — event first, scannable in ~2 words. */
 const STATUS_LABEL: Record<string, string> = {
   Armed: 'Armed',
   Disarmed: 'Disarmed',
-  BuySubmitted: 'Buy submitted',
+  BuySubmitted: 'Buying',
   Holding: 'Holding',
-  ExitPending: 'Exit pending',
+  ExitPending: 'Exiting',
   End: 'Closed',
   ExitFailed: 'Exit failed',
-  ExitUnconfirmed: 'Exit unconfirmed',
+  ExitUnconfirmed: 'Unconfirmed',
 };
 
 const iconCache = new Map<string, string>();
@@ -91,7 +96,17 @@ export async function ensureNotificationSw(): Promise<ServiceWorkerRegistration 
   }
 }
 
-function roundRect(
+function mintShort(mint: string): string {
+  return mint.length > 8 ? mint.slice(0, 8) : mint;
+}
+
+function clip(s: string, max: number): string {
+  const t = s.trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, Math.max(1, max - 1))}…`;
+}
+
+function fillRoundRect(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
@@ -107,8 +122,22 @@ function roundRect(
   ctx.arcTo(x, y + h, x, y, rr);
   ctx.arcTo(x, y, x + w, y, rr);
   ctx.closePath();
+  ctx.fill();
 }
 
+/** Compact detail for the body — exit reasons use Ops badge vocabulary. */
+function formatDetail(status: string, detail: string | null | undefined): string | null {
+  if (!detail) return null;
+  if (status === 'End' || status === 'ExitFailed' || status === 'ExitUnconfirmed') {
+    return exitReasonLabel(detail);
+  }
+  return clip(detail, 36);
+}
+
+/**
+ * Minimal status glyph: soft dark tile + colored disk.
+ * Color carries urgency; letter is a secondary cue (colorblind / collapsed trays).
+ */
 function statusIconDataUrl(status: string): string {
   const cached = iconCache.get(status);
   if (cached) return cached;
@@ -121,80 +150,44 @@ function statusIconDataUrl(status: string): string {
   const ctx = canvas.getContext('2d');
   if (!ctx) return '/favicon-live.svg';
 
+  ctx.fillStyle = '#18181b';
+  fillRoundRect(ctx, 0, 0, 128, 128, 28);
+
+  ctx.beginPath();
+  ctx.arc(64, 64, 40, 0, Math.PI * 2);
   ctx.fillStyle = color;
-  roundRect(ctx, 0, 0, 128, 128, 28);
   ctx.fill();
-  ctx.fillStyle = '#0f0f0f';
-  ctx.font = '700 64px system-ui, Segoe UI, sans-serif';
+
+  ctx.fillStyle = '#0a0a0a';
+  ctx.font = '600 44px "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(letter, 64, 68);
+  ctx.fillText(letter, 64, 66);
 
   const url = canvas.toDataURL('image/png');
   iconCache.set(status, url);
   return url;
 }
 
-/** Wide hero card — Chromium may show it; Windows Action Center often still prefers icon+text. */
-function statusCardImage(payload: DesktopNotifyPayload): string | undefined {
-  const canvas = document.createElement('canvas');
-  canvas.width = 720;
-  canvas.height = 200;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return undefined;
-
-  const color = STATUS_COLOR[payload.status] ?? '#13ceaf';
-  const label = STATUS_LABEL[payload.status] ?? payload.status;
-
-  ctx.fillStyle = '#141414';
-  ctx.fillRect(0, 0, 720, 200);
-
-  ctx.fillStyle = color;
-  roundRect(ctx, 24, 40, 120, 120, 24);
-  ctx.fill();
-  ctx.fillStyle = '#0f0f0f';
-  ctx.font = '700 56px system-ui, Segoe UI, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label.charAt(0).toUpperCase(), 84, 104);
-
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#f5f5f5';
-  ctx.font = '700 36px system-ui, Segoe UI, sans-serif';
-  ctx.fillText(label, 168, 70);
-
-  ctx.fillStyle = '#a3a3a3';
-  ctx.font = '600 28px ui-monospace, Consolas, monospace';
-  const mintShort =
-    payload.mint.length > 12 ? `${payload.mint.slice(0, 8)}…` : payload.mint;
-  ctx.fillText(`${payload.modeLabel}  ·  ${mintShort}`, 168, 112);
-
-  const sub = payload.detail
-    ? `${payload.ruleName}  ·  ${payload.detail}`
-    : payload.ruleName;
-  ctx.fillStyle = '#737373';
-  ctx.font = '500 24px system-ui, Segoe UI, sans-serif';
-  const clipped = sub.length > 48 ? `${sub.slice(0, 47)}…` : sub;
-  ctx.fillText(clipped, 168, 152);
-
-  return canvas.toDataURL('image/png');
-}
-
+/** Title: what happened + which mint. ~25–40 chars. */
 function buildTitle(payload: DesktopNotifyPayload): string {
   const label = STATUS_LABEL[payload.status] ?? payload.status;
-  const mintShort =
-    payload.mint.length > 12 ? payload.mint.slice(0, 8) : payload.mint;
-  return `${label} · ${mintShort}`;
+  return `${label} · ${mintShort(payload.mint)}`;
 }
 
+/**
+ * Body: mode · rule · optional detail.
+ * One glance line; no quotes, no filler.
+ */
 function buildBody(payload: DesktopNotifyPayload): string {
-  const parts = [`${payload.modeLabel}`, `"${payload.ruleName}"`];
-  if (payload.detail) parts.push(payload.detail);
-  return parts.join(' · ');
+  const mode = payload.modeLabel === 'real' ? 'Real' : 'Paper';
+  const rule = clip(payload.ruleName, 28);
+  const detail = formatDetail(payload.status, payload.detail);
+  return detail ? `${mode} · ${rule} · ${detail}` : `${mode} · ${rule}`;
 }
 
 function buildActions(payload: DesktopNotifyPayload): NotifyAction[] {
-  const actions: NotifyAction[] = [{ action: 'open', title: 'Open Ops' }];
+  const actions: NotifyAction[] = [{ action: 'open', title: 'Ops' }];
   if (payload.tradeHref) {
     actions.push({ action: 'trade', title: 'Trade' });
   }
@@ -217,7 +210,6 @@ export async function showDesktopNotify(payload: DesktopNotifyPayload): Promise<
   const title = buildTitle(payload);
   const body = buildBody(payload);
   const icon = statusIconDataUrl(payload.status);
-  const image = statusCardImage(payload);
   const critical = CRITICAL.has(payload.status);
   const actions = buildActions(payload);
 
@@ -235,12 +227,11 @@ export async function showDesktopNotify(payload: DesktopNotifyPayload): Promise<
       status: payload.status,
     },
   };
-  if (image) options.image = image;
 
   const reg = await ensureNotificationSw();
   if (reg?.active || reg?.waiting || reg?.installing) {
     try {
-      // lib.dom's NotificationOptions omits Chromium `actions` / `image`.
+      // lib.dom's NotificationOptions omits Chromium `actions`.
       await reg.showNotification(title, { ...options, actions } as NotificationOptions);
       return;
     } catch {

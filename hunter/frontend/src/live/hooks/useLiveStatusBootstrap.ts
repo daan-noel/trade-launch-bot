@@ -14,9 +14,9 @@ import type { AppDispatch } from '@live/store';
 
 /**
  * App-wide Live Status SSOT bootstrap — one mount in live `App`.
- * Snapshot (armed + open positions) on mount / SSE reconnect / tab visible;
- * deltas patch the `liveStatus` slice in place. Pages must read the slice, not
- * own a parallel Map.
+ * Snapshot (armed + open + recent closes) on mount / SSE reconnect / tab visible /
+ * sse_resync; deltas patch the `liveStatus` slice in place. Pages must read the
+ * slice, not own a parallel Map.
  */
 export function useLiveStatusBootstrap(): void {
   const dispatch = useDispatch<AppDispatch>();
@@ -28,10 +28,11 @@ export function useLiveStatusBootstrap(): void {
     inflight.current = ac;
     dispatch(snapshotStart());
     try {
-      const [armedRes, posRes, rulesRes] = await Promise.all([
+      const [armedRes, posRes, recentRes, rulesRes] = await Promise.all([
         dispatch(liveApi.endpoints.getArmed.initiate(undefined, { forceRefetch: true })),
         // `false` = real + paper so the store is mode-complete; UI filters.
         dispatch(liveApi.endpoints.getPortfolioPositions.initiate(false, { forceRefetch: true })),
+        dispatch(liveApi.endpoints.getPortfolioRecentCloses.initiate(50, { forceRefetch: true })),
         dispatch(sharedApi.endpoints.getStrategyRules.initiate(undefined)),
       ]);
       if (ac.signal.aborted) return;
@@ -47,6 +48,7 @@ export function useLiveStatusBootstrap(): void {
         applySnapshot({
           armed: armedRes.data ?? [],
           positions: posRes.data ?? [],
+          recentClosed: recentRes.error ? undefined : (recentRes.data ?? []),
           ruleNames,
         }),
       );

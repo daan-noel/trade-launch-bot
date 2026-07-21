@@ -4,6 +4,7 @@ import type {
   WalletPrice,
   PortfolioSummary,
   OpenStrategyPosition,
+  RecentClosedPosition,
   CashbackStatus,
   CashbackClaimResult,
 } from 'types';
@@ -69,6 +70,11 @@ export const liveApi = baseApi.injectEndpoints({
     // Live-Trading roll-up). `real` defaults to true (real-money monitor).
     getPortfolioPositions: builder.query<OpenStrategyPosition[], boolean | void>({
       query: (real = true) => `/api/portfolio/positions?real=${real}`,
+      providesTags: ['WalletHoldings'],
+    }),
+    /** Latest End/ExitFailed rows — Ops Recent hydrate (DB, not session SSE). */
+    getPortfolioRecentCloses: builder.query<RecentClosedPosition[], number | void>({
+      query: (limit = 50) => `/api/portfolio/recent-closes?limit=${limit}`,
       providesTags: ['WalletHoldings'],
     }),
     // Jupiter oracle for held mints (liquidity / 24h / cold marks), decoupled
@@ -145,6 +151,7 @@ export const {
   useGetPortfolioHoldingsQuery,
   useGetPortfolioSummaryQuery,
   useGetPortfolioPositionsQuery,
+  useGetPortfolioRecentClosesQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
   useSellTokenMutation,

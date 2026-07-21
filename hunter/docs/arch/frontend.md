@@ -48,15 +48,22 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
 **Operator clarity (jobs):** Wallet = bag overview; Ops = live inventory (SSE SSOT);
-Trade = mint-first execute; Rules = activate/pause + Analyze (traded history). Tokens
-table stream toggle is **STREAM ON/OFF** (not the header trading kill switch).
+Trade = mint-first execute; Rules = activate/pause + **scoreboard** + master–detail
+Analyze panel (DB history / temporal). Tokens table stream toggle is **STREAM ON/OFF**
+(not the header trading kill switch).
 
 **Live Status SSOT:** `live/slices/liveStatusSlice` + `useLiveStatusBootstrap` (mounted
-in live `App`) — REST snapshot on mount/SSE reconnect/tab visible; in-place patch on
-`strategy_position_update` / `strategy_armed_changed`. Ops, Rules live counts, Home
-open KPI, and StrategyStrip read this store only (no parallel Maps). Legacy
-`LiveTradingPage` / `MonitorPage` (parallel REST copies) are gone — `/positions` and
+in live `App`) — REST snapshot on mount / SSE reconnect / tab visible / `sse_resync`:
+armed + open positions + **recent closes from DB** (`GET /api/portfolio/recent-closes`).
+In-place patch on `strategy_position_update` / `strategy_armed_changed`. Snapshot drops
+armed rows that collide with open `(rule, mint)` (Waiting must not stick after buy).
+Ops, Rules live counts, Home open KPI, and StrategyStrip read this store only (no
+parallel Maps). Legacy `LiveTradingPage` / `MonitorPage` are gone — `/positions` and
 `/strategies/armed` redirect to Ops.
+
+**Armed leave-Waiting:** engine Enter does not emit `ArmedChanged(Disarmed)`; the
+position sink clears `ArmedRegistry` + emits `disarmed`/`entered` on `BuySubmitted` /
+`Holding`. `GET /api/strategies/armed` also filters out mints with unsettled positions.
 
 **Live trading notify SSOT (one EventSource, writers):**
 
@@ -70,7 +77,9 @@ open KPI, and StrategyStrip read this store only (no parallel Maps). Legacy
 Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
 `usePortfolioRealtime`, `useWalletMarksLive`, `useTokenTradesLiveBootstrap`,
 `usePositionNotifications`. Tokens STREAM fallback poll defaults to 90s.
-Rule Analyze reloads history only on open/close edges (not ExitPending).
+Rule Analyze (embedded on Rules + `/strategies/rules/:ruleId`) reloads history only on
+open/close edges (not ExitPending). Rules scoreboard columns (`PnL` / `Win%` / `N`) come
+from `GET /api/strategy-rules` DB enrichment (real = all-time, paper = latest run).
 
 ## Store — split `createApi` (the isolation seam)
 
@@ -118,8 +127,9 @@ Rule Analyze reloads history only on open/close edges (not ExitPending).
 - `AppLayout.tsx` — slots `{nav, rightSlot, beforeMain, footer}`: live passes
   `beforeMain=<NotificationMount/>` (mounts `usePositionNotifications`, which toasts
   on `strategy_position_update` **and** `strategy_armed_changed` per Settings prefs;
-  desktop path uses `/sw-notifications.js` + `showDesktopNotify` — status icon,
-  Open Ops / Trade actions, per-position tag updates, click → `opsNotifyHref`);
+  desktop path uses `/sw-notifications.js` + `showDesktopNotify` — concise
+  title/body (status · mint / mode · rule · detail), status icon (no hero
+  image), Ops / Trade actions, per-position tag updates, click → `opsNotifyHref`);
   lab passes `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral
   (Timezone+PriceUnit+Toast);
   **lab `App` nests `BackgroundJobsProvider` itself** (keeps its SSE out of the live build).
@@ -294,9 +304,10 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   per-column representation (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM)
   engines are unchanged and identical (DB parity test). The old bespoke `f_*`/`cf` `URLSearchParams`
   builder and the dead simple `getTokens` GET endpoint were removed.
-- **Rule Analyze (live) = server-side paged + summary** (`RuleAnalyzePage` via `useServerTable` +
+- **Rule Analyze (live) = server-side paged + summary** (`RuleAnalyzePanel` via `useServerTable` +
   `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|history]`
-  and `…/summary` with `toTableRequest` / `toSummaryBody`; `SimSummaryCard` renders `PositionsSummary`.
+  and `…/summary` with `toTableRequest` / `toSummaryBody`; `SimSummaryCard` + page-cohort
+  `TemporalSummary` (click → mint `in` filter). Embedded under Rules when a row is selected;
   SSE on the same `rule_id` triggers `reload()`. Open inventory manage is **Ops** (Live Status SSOT),
   not this table.
 - **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook

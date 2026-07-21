@@ -256,9 +256,14 @@ impl Sink {
             }
         });
         self.pending_inserts.insert(pg_id, handle);
+        // Leave Waiting: Enter does not emit ArmedChanged(Disarmed). Clear the
+        // armed registry (+ SSE) so snapshots cannot re-inject a stale Waiting row.
+        self.leave_waiting(delta.rule.0, delta.mint.as_str());
     }
 
     async fn on_holding(&mut self, delta: &PositionDelta) {
+        // Safety net if BuySubmitted skipped leave_waiting (unknown rule / crash recovery).
+        self.leave_waiting(delta.rule.0, delta.mint.as_str());
         let Some(meta) = self.registry.get(delta.position) else { return };
         self.await_pending_insert(meta.pg_id).await;
         let Some(fill) = delta.fill else { return };
@@ -438,6 +443,25 @@ impl Sink {
         if let Some(handle) = self.pending_inserts.remove(&pg_id) {
             let _ = handle.await;
         }
+    }
+
+    /// Drop (rule, mint) from the armed Waiting set and notify clients. Enter does
+    /// not emit `ArmedChanged(Disarmed)` from the pure engine — without this,
+    /// `GET /api/strategies/armed` keeps the mint and every snapshot re-injects
+    /// a stale Waiting row next to Open.
+    fn leave_waiting(&self, rule_id: uuid::Uuid, mint: &str) {
+        self.armed.clear(rule_id, mint);
+        let info = self.rules.get(&RuleId(rule_id));
+        let _ = self.sse_tx.send(SseEvent::StrategyArmedChanged {
+            rule_id,
+            mint_address: mint.to_string(),
+            state: "disarmed".to_string(),
+            reason: Some("entered".to_string()),
+            trade_mode: info.map(|i| mode_str(i.mode).to_string()),
+            rule_name: info
+                .map(|i| i.name.clone())
+                .filter(|n| !n.is_empty()),
+        });
     }
 
     async fn ensure_run(&mut self, rule: RuleId, info: &RuleInfo) -> anyhow::Result<uuid::Uuid> {

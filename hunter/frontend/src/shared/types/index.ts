@@ -628,6 +628,20 @@ export interface OpenStrategyPosition {
   entry_time?: string | null;
 }
 
+/** Closed row from `GET /api/portfolio/recent-closes` (Ops Recent hydrate). */
+export interface RecentClosedPosition {
+  id: string;
+  rule_id: string | null;
+  mint_address: string;
+  mode: string;
+  status: string;
+  exit_reason?: string | null;
+  entry_price?: number | null;
+  exit_price?: number | null;
+  exit_time?: string | null;
+  updated_at?: string;
+}
+
 /// Live, fast-changing market data for one mint (Jupiter). Fetched separately
 /// from the slow wallet balance read so the wallet table can refresh values on
 /// a poll without re-scanning the chain; merged onto {@link WalletHolding}.

@@ -382,7 +382,7 @@ export function OpsPage() {
         <div className="flex flex-wrap items-baseline gap-3">
           <h1 className="text-lg font-extrabold text-text">Ops</h1>
           <span className="text-sm text-text-mid">
-            Live manage · Waiting + Open + session closes (Analyze = per-rule history)
+            Live manage · Waiting + Open + recent closes (full history on Rules)
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -430,7 +430,7 @@ export function OpsPage() {
         <StatTile
           label="Recent closes"
           value={recentRows.length}
-          sub="this session"
+          sub="last N from DB"
           tone="muted"
         />
       </div>

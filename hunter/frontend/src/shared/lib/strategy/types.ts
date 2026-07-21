@@ -68,6 +68,16 @@ export interface StrategyRule {
   params: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  /** DB scoreboard (list_rules enrichment). Absent/0 until something trades. */
+  total_positions?: number;
+  open_positions?: number;
+  pending_positions?: number;
+  win_count?: number;
+  loss_count?: number;
+  /** 0–100. */
+  win_rate?: number;
+  avg_pnl_pct?: number;
+  total_pnl_sol?: number;
 }
 
 /** DataTable `rowClassName` for soft-archived rules (Rules + Simulate). */

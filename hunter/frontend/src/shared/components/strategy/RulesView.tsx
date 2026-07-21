@@ -44,7 +44,7 @@ import {
   type ActionProgress,
 } from 'services/sse';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
-import { ruleAnalyzeHref, simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   disabledRuleRowClass,
   lamportsToSol,
@@ -62,10 +62,18 @@ export interface RulesViewProps {
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
   /** Lab-only: show a link icon that opens Simulate with this rule selected. */
   linkToSimulate?: boolean;
-  /** Live-only: open Analyze (positions summary + traded history) for the rule. */
+  /** Live-only: select a rule to open the Analyze panel (master–detail on Rules). */
   linkToAnalyze?: boolean;
   /** Live-only: open/pending counts from the Live Status SSOT (not list_rules). */
   ruleLiveCounts?: Record<string, RuleLiveCounts>;
+  /** Live-only: show realized PnL / win% / N score columns (from rule list wire). */
+  showScores?: boolean;
+  /** Live-only: Analyze panel under the table for the selected rule. */
+  renderAnalyze?: (ctx: {
+    ruleId: string;
+    rule: StrategyRule;
+    clear: () => void;
+  }) => ReactNode;
 }
 
 /**
@@ -82,10 +90,16 @@ export function RulesView({
   linkToSimulate,
   linkToAnalyze,
   ruleLiveCounts,
+  showScores,
+  renderAnalyze,
 }: RulesViewProps) {
   const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery();
   const { data: fps = [] } = useGetFingerprintsQuery();
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
+  const selectedRule = useMemo(
+    () => (selectedKey ? rules.find((r) => r.id === selectedKey) : undefined),
+    [rules, selectedKey],
+  );
 
   const actions = useRuleActions({ renderDryRun });
 
@@ -297,21 +311,79 @@ export function RulesView({
               </Link>
             )}
             {linkToAnalyze && (
-              <Link
-                to={ruleAnalyzeHref(r.id)}
+              <button
+                type="button"
                 title={`Analyze “${r.rule_name}” — positions + summary`}
                 aria-label={`Analyze ${r.rule_name}`}
-                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
-                onClick={(e) => e.stopPropagation()}
+                className="inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent hover:bg-accent/15 hover:text-primary"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedKey(r.id);
+                }}
               >
-                <LinkIcon className="h-3.5 w-3.5" />
-              </Link>
+                Analyze
+              </button>
             )}
           </div>
         </RuleHoverTip>
       ),
       searchValue: (r) => r.rule_name,
     },
+    ...(showScores
+      ? ([
+          {
+            key: 'score_pnl',
+            label: 'PnL',
+            group: 'score',
+            render: (r: StrategyRule) => {
+              const v = r.total_pnl_sol ?? 0;
+              if ((r.total_positions ?? 0) === 0) {
+                return <span className="text-text-dim">—</span>;
+              }
+              const cls =
+                v > 0 ? 'text-green' : v < 0 ? 'text-red' : 'text-text-mid';
+              return (
+                <span className={`tabular-nums text-xs font-semibold ${cls}`}>
+                  {v > 0 ? '+' : ''}
+                  {v.toFixed(3)}◎
+                </span>
+              );
+            },
+            searchValue: (r: StrategyRule) => String(r.total_pnl_sol ?? 0),
+            sortValue: (r: StrategyRule) => r.total_pnl_sol ?? 0,
+            sortable: true as const,
+          },
+          {
+            key: 'score_win',
+            label: 'Win%',
+            group: 'score',
+            render: (r: StrategyRule) => {
+              if ((r.win_count ?? 0) + (r.loss_count ?? 0) === 0) {
+                return <span className="text-text-dim">—</span>;
+              }
+              return (
+                <span className="tabular-nums text-xs text-text-mid">
+                  {Math.round(r.win_rate ?? 0)}%
+                </span>
+              );
+            },
+            searchValue: (r: StrategyRule) => String(r.win_rate ?? 0),
+            sortValue: (r: StrategyRule) => r.win_rate ?? 0,
+            sortable: true as const,
+          },
+          {
+            key: 'score_n',
+            label: 'N',
+            group: 'score',
+            render: (r: StrategyRule) => (
+              <span className="tabular-nums text-xs text-text-mid">{r.total_positions ?? 0}</span>
+            ),
+            searchValue: (r: StrategyRule) => String(r.total_positions ?? 0),
+            sortValue: (r: StrategyRule) => r.total_positions ?? 0,
+            sortable: true as const,
+          },
+        ] satisfies ColumnDef<StrategyRule>[])
+      : []),
     {
       key: 'status',
       label: 'Status',
@@ -602,6 +674,13 @@ export function RulesView({
           </IconButtonGroup>
         )}
       />
+      {renderAnalyze && selectedKey && selectedRule
+        ? renderAnalyze({
+            ruleId: selectedKey,
+            rule: selectedRule,
+            clear: () => setSelectedKey(null),
+          })
+        : null}
       {actions.editorNode}
     </div>
   );
