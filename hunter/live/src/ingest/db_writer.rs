@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use futures_util::stream::{self, StreamExt};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
@@ -27,7 +26,6 @@ use super::watchdog::DbHeartbeat;
 
 const BATCH_MAX: usize = 1000;
 const FLUSH_INTERVAL_MS: u64 = 150;
-const METRIC_WRITE_CONCURRENCY: usize = 6;
 
 // ── DbWriteOp ─────────────────────────────────────────────────────────────────
 
@@ -205,37 +203,41 @@ impl DbWriter {
             self.trade_signals.notify(&t.wallet_address, &t.mint_address);
         }
 
-        // Metrics.
-        let metric_writes: Vec<_> = metrics.into_values().map(|m| {
-            let info_repo = self.info_repo.clone();
-            async move {
-                if let Err(e) = info_repo
-                    .upsert_metrics(
-                        &m.mint,
-                        m.ath_price,
-                        m.ath_timestamp,
-                        m.age_seconds,
-                        m.volume_sol,
-                        m.market_cap,
-                        m.trade_count,
-                        m.last_trade_at,
-                        m.current_price,
-                        m.is_dead,
-                        m.is_migrated,
-                        m.lifetime_secs,
-                        m.first_slot_buy_sol,
-                        m.first_slot_sell_sol,
-                    )
-                    .await
-                {
-                    warn!("DbWriter: metrics {}: {e}", m.mint);
+        // Metrics — one batched multi-row upsert instead of a per-mint fan-out. The
+        // old `buffer_unordered` path held several pool connections at once and issued
+        // one round-trip per distinct mint; under a saturated pool that was the ingest
+        // write most likely to time out `acquire()`. Fall back to per-row on failure so
+        // one bad row can't drop the whole batch (mirrors tokens/raws/trades above).
+        if !metrics.is_empty() {
+            let rows: Vec<TokenMetricsWrite> = metrics.into_values().collect();
+            if let Err(e) = self.info_repo.upsert_metrics_many(&rows).await {
+                warn!("DbWriter: metrics bulk upsert failed ({e}); retrying per-row");
+                for m in &rows {
+                    if let Err(e) = self
+                        .info_repo
+                        .upsert_metrics(
+                            &m.mint,
+                            m.ath_price,
+                            m.ath_timestamp,
+                            m.age_seconds,
+                            m.volume_sol,
+                            m.market_cap,
+                            m.trade_count,
+                            m.last_trade_at,
+                            m.current_price,
+                            m.is_dead,
+                            m.is_migrated,
+                            m.lifetime_secs,
+                            m.first_slot_buy_sol,
+                            m.first_slot_sell_sol,
+                        )
+                        .await
+                    {
+                        warn!("DbWriter: metrics {}: {e}", m.mint);
+                    }
                 }
             }
-        }).collect();
-        stream::iter(metric_writes)
-            .buffer_unordered(METRIC_WRITE_CONCURRENCY)
-            .collect::<Vec<()>>()
-            .await;
+        }
 
         // Migrations.
         for mint in &migrations {

@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::config::constants::{lamports_to_sol, sol_to_lamports};
 use crate::models::token_info::TokenInfo;
+use crate::state::token_metrics::TokenMetricsWrite;
 
 /// Repo over the (clean-rebuild) `tokens_info` metrics table.
 ///
@@ -26,6 +27,37 @@ pub struct TokenInfoRepo {
 const INFO_COLS: &str = "mint_address, ath_price, ath_timestamp, volume_sol, trade_count, \
     last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, \
     first_slot_buy_lamports, first_slot_sell_lamports, updated_at";
+
+/// INSERT column list shared by the single-row [`TokenInfoRepo::upsert_metrics`] and
+/// the batched [`TokenInfoRepo::upsert_metrics_many`]. Bind order must match this list;
+/// `updated_at` is the 13th column (fed `now()` / a bound timestamp).
+const METRICS_INSERT_COLS: &str = "mint_address, ath_price, ath_timestamp, volume_sol, \
+    trade_count, last_trade_at, current_price, is_dead, is_migrated, lifetime_secs, \
+    first_slot_buy_lamports, first_slot_sell_lamports, updated_at";
+
+/// The `ON CONFLICT … DO UPDATE` tail shared by both metric upsert paths, so the
+/// per-column merge rules (ath preserve-on-null, last_trade_at monotonic, is_migrated
+/// sticky) can never drift between the single-row and batched writes. Leading space:
+/// it is concatenated directly after the `VALUES (…)` clause.
+const METRICS_UPSERT_CONFLICT: &str = " ON CONFLICT (mint_address) DO UPDATE \
+        SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price), \
+            ath_timestamp = CASE WHEN EXCLUDED.ath_price IS NOT NULL \
+                            THEN EXCLUDED.ath_timestamp ELSE tokens_info.ath_timestamp END, \
+            volume_sol = EXCLUDED.volume_sol, \
+            trade_count = EXCLUDED.trade_count, \
+            last_trade_at = CASE \
+                WHEN EXCLUDED.last_trade_at IS NULL THEN tokens_info.last_trade_at \
+                WHEN tokens_info.last_trade_at IS NULL THEN EXCLUDED.last_trade_at \
+                WHEN EXCLUDED.last_trade_at > tokens_info.last_trade_at THEN EXCLUDED.last_trade_at \
+                ELSE tokens_info.last_trade_at \
+            END, \
+            current_price = EXCLUDED.current_price, \
+            is_dead = EXCLUDED.is_dead, \
+            is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated, \
+            lifetime_secs = COALESCE(EXCLUDED.lifetime_secs, tokens_info.lifetime_secs), \
+            first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports, \
+            first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports, \
+            updated_at = EXCLUDED.updated_at";
 
 type InfoRow = (
     String,                  // mint_address
@@ -117,38 +149,15 @@ impl TokenInfoRepo {
         first_slot_buy_sol: f64,
         first_slot_sell_sol: f64,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO tokens_info
-                (mint_address, ath_price, ath_timestamp, volume_sol, trade_count,
-                 last_trade_at, current_price, is_dead, is_migrated, lifetime_secs,
-                 first_slot_buy_lamports, first_slot_sell_lamports, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
-            ON CONFLICT (mint_address) DO UPDATE
-                SET ath_price = COALESCE(EXCLUDED.ath_price, tokens_info.ath_price),
-                    ath_timestamp = CASE WHEN EXCLUDED.ath_price IS NOT NULL
-                                    THEN EXCLUDED.ath_timestamp ELSE tokens_info.ath_timestamp END,
-                    volume_sol = EXCLUDED.volume_sol,
-                    trade_count = EXCLUDED.trade_count,
-                    last_trade_at = CASE
-                        WHEN EXCLUDED.last_trade_at IS NULL THEN tokens_info.last_trade_at
-                        WHEN tokens_info.last_trade_at IS NULL THEN EXCLUDED.last_trade_at
-                        WHEN EXCLUDED.last_trade_at > tokens_info.last_trade_at THEN EXCLUDED.last_trade_at
-                        ELSE tokens_info.last_trade_at
-                    END,
-                    current_price = EXCLUDED.current_price,
-                    is_dead = EXCLUDED.is_dead,
-                    is_migrated = tokens_info.is_migrated OR EXCLUDED.is_migrated,
-                    lifetime_secs = COALESCE(EXCLUDED.lifetime_secs, tokens_info.lifetime_secs),
-                    -- Plain overwrite (not COALESCE-preserve like ath): the value
-                    -- grows monotonically within the open creation-slot window and
-                    -- freezes once closed, so the latest in-memory value is always
-                    -- authoritative.
-                    first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
-                    first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports,
-                    updated_at = EXCLUDED.updated_at
-            "#,
-        )
+        // `first_slot_*` do a plain overwrite (not COALESCE-preserve like ath): the
+        // value grows monotonically within the open creation-slot window and freezes
+        // once closed, so the latest in-memory value is always authoritative. That
+        // (and every other per-column merge rule) lives in `METRICS_UPSERT_CONFLICT`,
+        // shared with the batched path so the two can't drift.
+        sqlx::query(&format!(
+            "INSERT INTO tokens_info ({METRICS_INSERT_COLS}) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now()){METRICS_UPSERT_CONFLICT}"
+        ))
         .bind(mint)
         .bind(ath_price)
         .bind(ath_timestamp)
@@ -165,6 +174,49 @@ impl TokenInfoRepo {
         .execute(&self.pool)
         .await?;
 
+        Ok(())
+    }
+
+    /// Batched form of [`Self::upsert_metrics`] — one multi-row
+    /// `INSERT … ON CONFLICT DO UPDATE` per flush instead of one statement per mint.
+    /// The db_writer flushes every distinct mint touched in a ~150 ms window; the old
+    /// per-mint fan-out held several pool connections at once and issued one
+    /// round-trip per mint, making it the ingest write most likely to exhaust the
+    /// pool under load. This holds ONE connection for one round-trip per chunk.
+    ///
+    /// Reuses [`METRICS_INSERT_COLS`] + [`METRICS_UPSERT_CONFLICT`], so the per-column
+    /// merge rules are byte-identical to the single-row path (SSOT). `updated_at` is a
+    /// single timestamp bound once for the whole batch.
+    pub async fn upsert_metrics_many(&self, rows: &[TokenMetricsWrite]) -> anyhow::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        // 13 binds/row; a single statement caps at 65535 bind params (the wire
+        // protocol's int16 count) and sqlx 0.6 does not guard it, so chunk well under.
+        const METRICS_UPSERT_CHUNK: usize = 2000;
+        let now = Utc::now();
+        for chunk in rows.chunks(METRICS_UPSERT_CHUNK) {
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
+                sqlx::QueryBuilder::new(format!("INSERT INTO tokens_info ({METRICS_INSERT_COLS}) "));
+            qb.push_values(chunk, |mut b, m| {
+                b.push_bind(&m.mint)
+                    .push_bind(m.ath_price)
+                    .push_bind(m.ath_timestamp)
+                    .push_bind(m.volume_sol)
+                    .push_bind(m.trade_count)
+                    .push_bind(m.last_trade_at)
+                    .push_bind(m.current_price)
+                    .push_bind(m.is_dead)
+                    .push_bind(m.is_migrated)
+                    .push_bind(m.lifetime_secs)
+                    // Human SOL → lamports (BIGINT) on write.
+                    .push_bind(sol_to_lamports(m.first_slot_buy_sol))
+                    .push_bind(sol_to_lamports(m.first_slot_sell_sol))
+                    .push_bind(now);
+            });
+            qb.push(METRICS_UPSERT_CONFLICT);
+            qb.build().execute(&self.pool).await?;
+        }
         Ok(())
     }
 
