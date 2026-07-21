@@ -823,8 +823,26 @@ export const DISCOVERY_COL_HELP = {
       'a common bundler/sniper shape, not an organic manual buy.',
     ].join('\n'),
   },
+  side: {
+    title: 'Side — which trade direction uses this shape?',
+    body: [
+      '"buy-only" / "sell-only": this exact ix_labels sequence only ever shows up on one',
+      'side — true for most venues, since Pump.Fun\'s buy and sell instructions have',
+      'different labels already.',
+      '',
+      '"both sides": the same label sequence is used for BOTH buys and sells (e.g. Axiom’s',
+      'generic swap instruction). Wash for a "both sides" row is meaningful on its own —',
+      'the buy and its matching sell live in the same row, so a near-zero Wash really does',
+      'mean a round-trip through this one shape.',
+      '',
+      'For "buy-only"/"sell-only" rows, Wash will almost always read ≈1 (there’s nothing',
+      'in THIS row to net against) — that does NOT mean the wallet isn’t washing. It may',
+      'just be washing through a different shape on the other side. Check Contagion% to see',
+      'if that’s already covered.',
+    ].join('\n'),
+  },
   lift: {
-    title: 'Lift — is this shape special to this group?',
+    title: 'Lift × — is this shape special to this group?',
     body: [
       '(this shape’s % of THIS group’s SOL) ÷ (this shape’s % of ALL tokens’ SOL).',
       '',
@@ -849,7 +867,7 @@ export const DISCOVERY_COL_HELP = {
     ].join('\n'),
   },
   wash: {
-    title: 'Wash — do the buys and sells cancel out?',
+    title: 'Wash 0–1 — do the buys and sells cancel out?',
     body: [
       'Average of |buys − sells| ÷ total volume, per token that used this shape.',
       '',
@@ -888,7 +906,7 @@ export const DISCOVERY_COL_HELP = {
     ].join('\n'),
   },
   reuse: {
-    title: 'Reuse — wallet concentration',
+    title: 'Reuse 0–1 — wallet concentration',
     body: [
       '1 − (distinct wallets ÷ number of trades) using this structure — rises toward 1 as',
       'fewer unique wallets account for more of the trades.',
@@ -911,6 +929,24 @@ export const DISCOVERY_COL_HELP = {
       '',
       'Example: 5 buys of 1 SOL + 5 matching sells of 1 SOL on this structure → Gross◎ = 10,',
       'even though the net flow is ≈ 0 (that near-zero net is what Wash also measures).',
+    ].join('\n'),
+  },
+  contagion: {
+    title: 'Contagion% — would this row already get swept in?',
+    body: [
+      'Of THIS row’s SOL, how much comes from wallets that ALSO traded on a structure',
+      'you’ve already checked above. Mirrors how the live engine actually classifies volume:',
+      'once a wallet’s trade matches a checked pattern, ALL of that wallet’s later trades —',
+      'any side, any shape — count as volume too, not just the matching row.',
+      '',
+      'Example: you check a buy-only row traded by wallets A, B, C. This sell-only row is',
+      'traded 8 SOL by A and 2 SOL by a new wallet D → Contagion% = 8 / 10 = 80.',
+      '',
+      'High → checking the row above already covers this one live; you probably don’t need',
+      'to check this row too. Low/blank → this row’s wallets aren’t caught by your current',
+      'picks — check it separately if it’s part of the same wash flow (e.g. the sell leg of',
+      'a buy-only shape you already checked). "—" = nothing checked yet, or this row is',
+      'itself checked.',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

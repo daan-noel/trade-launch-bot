@@ -31,12 +31,18 @@ const AXIS_HUE: Record<string, number> = {
   bkt: 340,
 };
 
-/** Registry-consistent tint for a fingerprint axis (same engine as metrics). */
-function axisTint(label: string): CSSProperties {
+/** Registry-consistent tint for a fingerprint axis (same engine as metrics).
+ *  Exported so other surfaces showing the same underlying axes (e.g. a
+ *  discovery group-key header) reuse this exact hue table instead of
+ *  inventing a second one. */
+export function axisTint(label: string): CSSProperties {
   return metricColorStyle({ hue: AXIS_HUE[label], group: 'fingerprint', metric: label }).style;
 }
 
-function chip(text: ReactNode, opts?: { style?: CSSProperties; title?: string }): ReactNode {
+/** Exported so other surfaces (e.g. a discovery/sweep group-key header) can
+ *  render their own key=value chips in the same visual language as the axis
+ *  chips below, instead of inventing a second chip style. */
+export function chip(text: ReactNode, opts?: { style?: CSSProperties; title?: string }): ReactNode {
   return (
     <span
       title={opts?.title}

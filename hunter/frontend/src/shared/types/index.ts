@@ -515,6 +515,12 @@ export interface FlowDiscoveryNoticeEvent {
   message: string;
 }
 
+/** One wallet's gross SOL contribution to a `FlowDiscoveryStructure`. */
+export interface FlowDiscoveryWalletGross {
+  wallet_hash: string;
+  gross_sol: number;
+}
+
 /** One ranked ix-structure from a flow-discovery group. */
 export interface FlowDiscoveryStructure {
   ix_labels: string[];
@@ -527,6 +533,9 @@ export interface FlowDiscoveryStructure {
   wallet_overlap: number;
   n_trades: number;
   gross_sol: number;
+  buy_sol: number;
+  sell_sol: number;
+  wallets: FlowDiscoveryWalletGross[];
 }
 
 /** One fingerprint group in a flow-discovery result. */

@@ -58,6 +58,24 @@ pub struct StructureScore {
     pub wallet_overlap: f64,
     pub n_trades: u64,
     pub gross_sol: f64,
+    /// Buy-side gross SOL for this structure (`is_buy` trades only).
+    pub buy_sol: f64,
+    /// Sell-side gross SOL for this structure.
+    pub sell_sol: f64,
+    /// Per-wallet gross SOL on this structure — lets the UI preview live's
+    /// wallet-contagion classifier (a wallet tagged by one checked structure
+    /// sweeps its trades on OTHER structures into "volume" too, even if those
+    /// don't match any pattern themselves — e.g. a buy-only and a sell-only
+    /// ix_labels shape fired by the same bot wallet).
+    pub wallets: Vec<WalletGross>,
+}
+
+/// One wallet's gross SOL contribution to a `StructureScore`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WalletGross {
+    /// Stringified `wallet_hash` (u64 as decimal text — avoids JS f64 precision loss).
+    pub wallet_hash: String,
+    pub gross_sol: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,6 +192,8 @@ fn score_group(
         gross_by_token: HashMap<usize, f64>,
         /// per-token net (buy − sell)
         net_by_token: HashMap<usize, f64>,
+        /// per-wallet gross (drives the contagion-overlap preview)
+        gross_by_wallet: HashMap<u64, f64>,
         slots: Vec<u64>,
     }
 
@@ -207,6 +227,7 @@ fn score_group(
                 let wh = hunter_engine::metrics::flow_split::wallet_hash(w);
                 acc.wallets.insert(wh);
                 acc.wallets_by_token.entry(ti).or_default().insert(wh);
+                *acc.gross_by_wallet.entry(wh).or_insert(0.0) += g;
             }
         }
     }
@@ -276,6 +297,20 @@ fn score_group(
         };
         let wallet_overlap = mean_jaccard(&acc.wallets_by_token);
 
+        let mut wallets: Vec<WalletGross> = acc
+            .gross_by_wallet
+            .into_iter()
+            .map(|(wh, gross_sol)| WalletGross {
+                wallet_hash: wh.to_string(),
+                gross_sol,
+            })
+            .collect();
+        wallets.sort_by(|a, b| {
+            b.gross_sol
+                .partial_cmp(&a.gross_sol)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         structures.push(StructureScore {
             ix_labels: labels,
             volume_share,
@@ -287,6 +322,9 @@ fn score_group(
             wallet_overlap,
             n_trades: acc.n_trades,
             gross_sol: acc.gross,
+            buy_sol: acc.buy,
+            sell_sol: acc.sell,
+            wallets,
         });
     }
 

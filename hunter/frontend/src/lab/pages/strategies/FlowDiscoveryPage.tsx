@@ -9,8 +9,14 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
+import { DataTable } from 'components/table/DataTable';
+import type { ColumnDef } from 'components/table/types';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
-import { fingerprintParamsCell } from 'components/strategy/FingerprintParamsSummary';
+import {
+  fingerprintParamsCell,
+  chip as paramChip,
+  axisTint,
+} from 'components/strategy/FingerprintParamsSummary';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
@@ -25,11 +31,13 @@ import {
   DISCOVERY_COL_HELP,
   DISCOVERY_FIELD_HELP,
   SWEEP_FIELD_HELP,
+  type HelpTip,
 } from 'lib/strategy/strategyHelp';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from '@lab/components/sweep/FingerprintGroupPicker';
 import { parseIxLabelsFilter, parseNumbers } from '@lab/components/sweep/fingerprintFilters';
 import {
+  GROUP_FIELD_LABELS,
   GROUP_FIELDS,
   SOL_BUCKET_WIDTH,
   type GroupField,
@@ -45,7 +53,7 @@ import {
   useStartFlowDiscoveryMutation,
   type FlowDiscoveryStartArgs,
 } from '@lab/store/labEndpoints';
-import type { FlowDiscoveryGroup, FlowDiscoveryResult } from 'types';
+import type { FlowDiscoveryGroup, FlowDiscoveryResult, FlowDiscoveryStructure } from 'types';
 import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
@@ -130,6 +138,273 @@ function fmt(n: number, digits = 1): string {
 function groupKeyLabel(gk: Record<string, string>): string {
   const parts = Object.entries(gk).map(([k, v]) => `${k}=${v}`);
   return parts.length ? parts.join(' · ') : 'ALL';
+}
+
+/** Discovery `GroupField` → the `fingerprintParamsCell` axis-hue key for the
+ *  same underlying concept, so a group-key chip gets the EXACT hue a
+ *  fingerprint's own param chip would use for that axis (same SSOT palette,
+ *  not a second hand-picked one). Fields with no fingerprint-axis counterpart
+ *  (`is_cashback_enabled`) fall through to the hashed-hue fallback. */
+const GROUP_FIELD_AXIS: Partial<Record<GroupField, string>> = {
+  cu_limit: 'cu_limit',
+  cu_price: 'cu_price',
+  initial_buy_sol: 'init',
+  max_cost_lamports: 'max',
+  spendable_lamports_in: 'spend',
+  first_slot_buy_sol: 'fs_buy',
+  first_slot_sell_sol: 'fs_sell',
+};
+
+/** Backend sentinel for "field absent on this fingerprint" — mirrors
+ *  `engine::grouping::MISSING`. */
+const MISSING_GROUP_VALUE = '∅';
+
+/** Selected-group header — reuses `fingerprintParamsCell`'s chip style +
+ *  `axisTint` hue table so the group-key header reads consistently with the
+ *  fingerprint-param chips shown a few lines below it on this same page,
+ *  instead of the flat `key=value · key=value` string used by the sidebar
+ *  list. `ix_labels` is excluded from the chip row — a pipe-joined instruction
+ *  sequence doesn't compress into a `label=value` chip, so it renders as
+ *  pretty-printed JSON via `IxLabelsDisplay` instead (same as the sweep
+ *  table's group-key column). It DOES still get an `Nix` count chip in the
+ *  row though — same `${ix.length}ix` chip `fingerprintParamsCell` renders for
+ *  a fingerprint's own `ix_labels` axis, same `axisTint('ix')` hue. */
+function groupKeyChips(gk: Record<string, string>) {
+  const entries = Object.entries(gk);
+  if (entries.length === 0) {
+    return <span className="text-sm font-bold text-text">ALL tokens</span>;
+  }
+  const ixValue = gk.ix_labels;
+  const ixParts =
+    ixValue != null && ixValue !== MISSING_GROUP_VALUE ? ixValue.split(' | ') : null;
+  const chipEntries = entries.filter(([k]) => k !== 'ix_labels');
+  return (
+    <div className="flex flex-col gap-1.5">
+      {(chipEntries.length > 0 || ixParts) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {chipEntries.map(([k, v]) => {
+            const label = GROUP_FIELD_LABELS[k as GroupField] ?? k;
+            const axisLabel = GROUP_FIELD_AXIS[k as GroupField] ?? k;
+            return (
+              <span key={k}>
+                {paramChip(
+                  <>
+                    <span className="text-text-dim">{label}=</span>
+                    {v}
+                  </>,
+                  { style: axisTint(axisLabel), title: `${label}: ${v}` },
+                )}
+              </span>
+            );
+          })}
+          {ixParts && (
+            <span>
+              {paramChip(`${ixParts.length}ix`, {
+                style: axisTint('ix'),
+                title: formatIxLabelsText(ixParts),
+              })}
+            </span>
+          )}
+        </div>
+      )}
+      {ixValue != null && (
+        <div className="flex items-start gap-1.5">
+          <span className="pt-0.5 text-[9px] font-bold uppercase tracking-wider text-text-dim/80">
+            {GROUP_FIELD_LABELS.ix_labels}:
+          </span>
+          <IxLabelsDisplay
+            labels={ixValue === MISSING_GROUP_VALUE ? [] : ixValue.split(' | ')}
+            copyJson
+            empty={MISSING_GROUP_VALUE}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Buy-only / sell-only / both-sided (e.g. Axiom's shared swap ix), from a
+ *  structure's buy_sol/sell_sol split — a 2% dust tolerance absorbs noise. */
+function sideOf(s: { buy_sol: number; sell_sol: number }): 'buy' | 'sell' | 'both' {
+  const total = s.buy_sol + s.sell_sol;
+  if (total <= 0) return 'both';
+  const buyFrac = s.buy_sol / total;
+  if (buyFrac >= 0.98) return 'buy';
+  if (buyFrac <= 0.02) return 'sell';
+  return 'both';
+}
+
+/** Text color for a 0..1 "how bot/wash-like does this value look" grade —
+ *  dim slate at 0 (no signal) fading up through warning into danger red as the
+ *  signal strengthens. Mirrors the warning=volume convention used by the flow
+ *  split bar above this table. */
+function signalColor(t: number): string {
+  const c = Math.max(0, Math.min(1, t));
+  if (c <= 0.02) return 'rgba(148,163,184,0.55)';
+  const warn: [number, number, number] = [244, 224, 122];
+  const danger: [number, number, number] = [242, 54, 69];
+  const r = Math.round(warn[0] + (danger[0] - warn[0]) * c);
+  const g = Math.round(warn[1] + (danger[1] - warn[1]) * c);
+  const b = Math.round(warn[2] + (danger[2] - warn[2]) * c);
+  const a = (0.45 + 0.55 * c).toFixed(2);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/** Lift ≈1 is common-everywhere noise; ≥3× concentrated here is the strongest
+ *  "this shape is this group's own tooling" signal (see DISCOVERY_COL_HELP.lift). */
+const liftGrade = (lift: number) => signalColor((lift - 1) / 2);
+/** Recur% / Burst% / Reuse are already 0..1 or 0..100 signals — higher = more bot-like. */
+const pctGrade = (pct: number) => signalColor(pct / 100);
+const unitGrade = (v: number) => signalColor(v);
+/** Wash trends toward 0 as buys/sells cancel out (bot round-trip) — invert so
+ *  the danger end lines up with "money went in a circle", not with 1. */
+const washGrade = (wash: number) => signalColor(1 - wash);
+
+/** Flatten a rich `{title, body}` help tip into the plain string DataTable's
+ *  `ColumnDef.tooltip` (native title attr) expects — same convention as the
+ *  generic sweep table's column tooltips. */
+function helpText(tip: HelpTip): string {
+  return `${tip.title}\n\n${tip.body}`;
+}
+
+/** Ranking-table columns for the ix-structure DataTable. `draftPatterns`/
+ *  `contagionByStructure` are per-render (selection + checked-structure
+ *  dependent), so this is rebuilt via `useMemo` rather than module-level. */
+function buildStructureColumns(opts: {
+  draftPatterns: string[][];
+  contagionByStructure: Map<string, number | null>;
+  onToggle: (labels: string[]) => void;
+}): ColumnDef<FlowDiscoveryStructure>[] {
+  const { draftPatterns, contagionByStructure, onToggle } = opts;
+  const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+
+  return [
+    {
+      key: 'vol',
+      label: 'Vol',
+      tooltip: helpText(DISCOVERY_COL_HELP.vol),
+      render: (s) => (
+        <Checkbox
+          checked={draftKeys.has(JSON.stringify(s.ix_labels))}
+          onChange={() => onToggle(s.ix_labels)}
+        />
+      ),
+      searchValue: () => '',
+    },
+    {
+      key: 'structure',
+      label: 'Structure',
+      tooltip: helpText(DISCOVERY_COL_HELP.structure),
+      render: (s) => <IxLabelsDisplay labels={s.ix_labels} copyJson />,
+      searchValue: (s) => formatIxLabelsText(s.ix_labels),
+    },
+    {
+      key: 'side',
+      label: 'Side',
+      tooltip: helpText(DISCOVERY_COL_HELP.side),
+      render: (s) => {
+        const side = sideOf(s);
+        if (side === 'buy') return <Badge variant="buy" size="sm">buy-only</Badge>;
+        if (side === 'sell') return <Badge variant="sell" size="sm">sell-only</Badge>;
+        return <Badge variant="neutral" size="sm">both sides</Badge>;
+      },
+      sortValue: (s) => sideOf(s),
+      searchValue: (s) => sideOf(s),
+    },
+    {
+      key: 'lift',
+      label: 'Lift ×',
+      tooltip: helpText(DISCOVERY_COL_HELP.lift),
+      render: (s) => <span style={{ color: liftGrade(s.group_lift) }}>{fmt(s.group_lift, 2)}</span>,
+      sortValue: (s) => s.group_lift,
+      filterNumber: (s) => s.group_lift,
+      searchValue: () => '',
+    },
+    {
+      key: 'share',
+      label: 'Share%',
+      tooltip: helpText(DISCOVERY_COL_HELP.share),
+      render: (s) => fmt(s.volume_share),
+      sortValue: (s) => s.volume_share,
+      filterNumber: (s) => s.volume_share,
+      searchValue: () => '',
+    },
+    {
+      key: 'wash',
+      label: 'Wash 0–1',
+      tooltip: helpText(DISCOVERY_COL_HELP.wash),
+      render: (s) => {
+        const side = sideOf(s);
+        return (
+          <span
+            style={side === 'both' ? { color: washGrade(s.wash_symmetry) } : undefined}
+            title={
+              side === 'both'
+                ? undefined
+                : 'Wash ≈1 is trivial for a one-sided row — check Contagion% instead'
+            }
+          >
+            {fmt(s.wash_symmetry, 2)}
+          </span>
+        );
+      },
+      sortValue: (s) => s.wash_symmetry,
+      filterNumber: (s) => s.wash_symmetry,
+      searchValue: () => '',
+    },
+    {
+      key: 'recur',
+      label: 'Recur%',
+      tooltip: helpText(DISCOVERY_COL_HELP.recur),
+      render: (s) => (
+        <span style={{ color: pctGrade(s.cross_token_recurrence) }}>
+          {fmt(s.cross_token_recurrence)}
+        </span>
+      ),
+      sortValue: (s) => s.cross_token_recurrence,
+      filterNumber: (s) => s.cross_token_recurrence,
+      searchValue: () => '',
+    },
+    {
+      key: 'burst',
+      label: 'Burst%',
+      tooltip: helpText(DISCOVERY_COL_HELP.burst),
+      render: (s) => <span style={{ color: pctGrade(s.slot_burst) }}>{fmt(s.slot_burst)}</span>,
+      sortValue: (s) => s.slot_burst,
+      filterNumber: (s) => s.slot_burst,
+      searchValue: () => '',
+    },
+    {
+      key: 'reuse',
+      label: 'Reuse 0–1',
+      tooltip: helpText(DISCOVERY_COL_HELP.reuse),
+      render: (s) => <span style={{ color: unitGrade(s.wallet_reuse) }}>{fmt(s.wallet_reuse, 2)}</span>,
+      sortValue: (s) => s.wallet_reuse,
+      filterNumber: (s) => s.wallet_reuse,
+      searchValue: () => '',
+    },
+    {
+      key: 'gross',
+      label: 'Gross◎',
+      tooltip: helpText(DISCOVERY_COL_HELP.gross),
+      render: (s) => fmt(s.gross_sol),
+      sortValue: (s) => s.gross_sol,
+      filterNumber: (s) => s.gross_sol,
+      searchValue: () => '',
+    },
+    {
+      key: 'contagion',
+      label: 'Contagion%',
+      tooltip: helpText(DISCOVERY_COL_HELP.contagion),
+      render: (s) => {
+        const c = contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null;
+        if (c == null) return <span className="text-text-dim/50">—</span>;
+        return <span style={{ color: pctGrade(c) }}>{fmt(c)}</span>;
+      },
+      sortValue: (s) => contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null,
+      searchValue: () => '',
+    },
+  ];
 }
 
 
@@ -219,6 +494,39 @@ export function FlowDiscoveryPage() {
     const organicGross = Math.max(0, totalGross - volumeGross);
     const volumePct = totalGross > 0 ? (volumeGross / totalGross) * 100 : 0;
     return { volumeGross, organicGross, totalGross, volumePct };
+  }, [selectedGroup, draftPatterns]);
+  /** % of each UNCHECKED row's gross SOL that comes from wallets already tagged
+   *  by a CHECKED row — previews live's wallet-contagion classifier (flow_split.rs
+   *  FlowState::classify), which sweeps a tagged wallet's later trades into
+   *  "volume" on ANY structure, not just the one that matched. Null = checked
+   *  already, or nothing checked yet to compare against. */
+  const contagionByStructure = useMemo(() => {
+    const map = new Map<string, number | null>();
+    if (!selectedGroup) return map;
+    const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+    const checkedWalletGross = new Map<string, number>();
+    for (const s of selectedGroup.structures) {
+      if (!draftKeys.has(JSON.stringify(s.ix_labels))) continue;
+      for (const w of s.wallets) {
+        checkedWalletGross.set(
+          w.wallet_hash,
+          (checkedWalletGross.get(w.wallet_hash) ?? 0) + w.gross_sol,
+        );
+      }
+    }
+    for (const s of selectedGroup.structures) {
+      const key = JSON.stringify(s.ix_labels);
+      if (draftKeys.has(key) || checkedWalletGross.size === 0 || s.gross_sol <= 0) {
+        map.set(key, null);
+        continue;
+      }
+      let overlap = 0;
+      for (const w of s.wallets) {
+        if (checkedWalletGross.has(w.wallet_hash)) overlap += w.gross_sol;
+      }
+      map.set(key, (overlap / s.gross_sol) * 100);
+    }
+    return map;
   }, [selectedGroup, draftPatterns]);
   const autoMatchedFp = selectedGroup
     ? findFingerprintForGroupKey(selectedGroup.group_key, fingerprints, bucketWidthSol)
@@ -553,24 +861,23 @@ export function FlowDiscoveryPage() {
             ) : (
               <div className="flex max-h-[65vh] flex-col gap-1 overflow-y-auto pr-1">
                 {result.groups.map((g, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => setSelectedGroupIdx(i)}
-                  className={`rounded border px-2 py-1.5 text-left text-xs transition ${
-                    i === selectedGroupIdx
-                      ? 'border-accent/50 bg-accent/10 text-text'
-                      : 'border-white/8 text-text-mid hover:border-white/20'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate font-mono">{groupKeyLabel(g.group_key)}</span>
-                    {g.ambiguity && <Badge variant="warning">ambig</Badge>}
-                  </div>
-                  <div className="mt-0.5 text-[10px] text-text-dim">
-                    {g.n_tokens} tokens · {g.n_trades_scored.toLocaleString()} trades
-                  </div>
-                </button>
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setSelectedGroupIdx(i)}
+                    className={`rounded border px-2 py-1.5 text-left text-xs transition ${i === selectedGroupIdx
+                        ? 'border-accent/50 bg-accent/10 text-text'
+                        : 'border-white/8 text-text-mid hover:border-white/20'
+                      }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate font-mono">{groupKeyLabel(g.group_key)}</span>
+                      {g.ambiguity && <Badge variant="warning">ambig</Badge>}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-text-dim">
+                      {g.n_tokens} tokens · {g.n_trades_scored.toLocaleString()} trades
+                    </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -578,111 +885,172 @@ export function FlowDiscoveryPage() {
 
           {selectedGroup && (
             <div className="min-w-0 flex-1 flex flex-col gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-bold text-text">
-                  {groupKeyLabel(selectedGroup.group_key)}
-                </h2>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded border-l-2 border-accent/60 bg-white/2 py-1.5 pl-2.5 pr-2">
+                {groupKeyChips(selectedGroup.group_key)}
+                <span className="text-[11px] text-text-dim">
+                  {selectedGroup.n_tokens.toLocaleString()} tokens ·{' '}
+                  {selectedGroup.n_trades_scored.toLocaleString()} trades
+                </span>
                 {selectedGroup.ambiguity && (
                   <Badge variant="warning">top structure lift ≈ 1 — split may be noisy</Badge>
                 )}
               </div>
 
-              <div className="rounded border border-white/8 p-3 flex flex-col gap-2">
-                <div className="flex flex-wrap items-end gap-3">
-                  <label className="flex min-w-[16rem] flex-1 flex-col gap-1 text-[11px] text-text-dim">
-                    <LabelTip
-                      tip={DISCOVERY_FIELD_HELP.applyFingerprint}
-                      className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
-                    >
-                      Apply to fingerprint
-                    </LabelTip>
-                    <Select
-                      fieldSize="sm"
-                      value={targetFpId ?? ''}
-                      onChange={(e) => selectTargetFingerprint(e.target.value)}
-                    >
-                      <option value="">Create / bind from group key</option>
-                      {fingerprints.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          {f.name || f.id.slice(0, 8)}
-                          {f.used_by != null ? ` · used by ${f.used_by}` : ''}
-                          {autoMatchedFp?.id === f.id ? ' · auto-match' : ''}
-                        </option>
-                      ))}
-                    </Select>
-                  </label>
-                  {autoMatchedFp && targetFpId !== autoMatchedFp.id && (
-                    <IconButton
-                      variant="ghost"
-                      size="md"
-                      type="button"
-                      onClick={() => selectTargetFingerprint(autoMatchedFp.id)}
-                      title="Use auto-match"
-                      aria-label="Use auto-match"
-                    >
-                      <ReuseIcon />
-                    </IconButton>
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-2 rounded border border-white/8 p-3">
+                    <div className="flex flex-wrap items-end gap-3">
+                      <label className="flex min-w-0 flex-1 flex-col gap-1 text-[11px] text-text-dim">
+                        <LabelTip
+                          tip={DISCOVERY_FIELD_HELP.applyFingerprint}
+                          className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+                        >
+                          Apply to fingerprint
+                        </LabelTip>
+                      <Select
+                        fieldSize="sm"
+                        value={targetFpId ?? ''}
+                        onChange={(e) => selectTargetFingerprint(e.target.value)}
+                      >
+                        <option value="">Create / bind from group key</option>
+                        {fingerprints.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name || f.id.slice(0, 8)}
+                            {f.used_by != null ? ` · used by ${f.used_by}` : ''}
+                            {autoMatchedFp?.id === f.id ? ' · auto-match' : ''}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                    {autoMatchedFp && targetFpId !== autoMatchedFp.id && (
+                      <IconButton
+                        variant="ghost"
+                        size="md"
+                        type="button"
+                        onClick={() => selectTargetFingerprint(autoMatchedFp.id)}
+                        title="Use auto-match"
+                        aria-label="Use auto-match"
+                      >
+                        <ReuseIcon />
+                      </IconButton>
+                    )}
+                  </div>
+                  {targetFp ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link
+                        to={fingerprintsHref(targetFp.id)}
+                        className="inline-flex items-center gap-1 rounded-md hover:opacity-90"
+                        title={`Open fingerprint “${targetFp.name}”`}
+                      >
+                        <Badge variant="info">update · {targetFp.name}</Badge>
+                        <LinkIcon className="h-3.5 w-3.5 text-accent" />
+                      </Link>
+                      {fingerprintParamsCell(targetFp)}
+                    </div>
+                  ) : (
+                    <Badge variant="neutral">will create / bind fingerprint from this group</Badge>
                   )}
                 </div>
-                {targetFp ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link
-                      to={fingerprintsHref(targetFp.id)}
-                      className="inline-flex items-center gap-1 rounded-md hover:opacity-90"
-                      title={`Open fingerprint “${targetFp.name}”`}
-                    >
-                      <Badge variant="info">update · {targetFp.name}</Badge>
-                      <LinkIcon className="h-3.5 w-3.5 text-accent" />
-                    </Link>
-                    {fingerprintParamsCell(targetFp)}
-                  </div>
-                ) : (
-                  <Badge variant="neutral">will create / bind fingerprint from this group</Badge>
-                )}
-              </div>
 
-              {flowSplit && flowSplit.totalGross > 0 && (
-                <div className="rounded border border-white/8 p-3">
-                  <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-                    <LabelTip
-                      tip={DISCOVERY_FIELD_HELP.volumeSplit}
-                      className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
-                    >
-                      Flow split · checked structures
-                    </LabelTip>
-                    <span className="font-mono text-[11px] text-text-dim">
-                      {fmt(flowSplit.volumePct)}% volume of {fmt(flowSplit.totalGross)}◎ scored
-                    </span>
+                {flowSplit && flowSplit.totalGross > 0 && (
+                  <div className="rounded border border-white/8 p-3">
+                    <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                      <LabelTip
+                        tip={DISCOVERY_FIELD_HELP.volumeSplit}
+                        className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+                      >
+                        Flow split · checked structures
+                      </LabelTip>
+                      <span className="font-mono text-[11px] text-text-dim">
+                        {fmt(flowSplit.volumePct)}% volume of {fmt(flowSplit.totalGross)}◎ scored
+                      </span>
+                    </div>
+                    <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/6">
+                      {flowSplit.volumeGross > 0 && (
+                        <div
+                          className="h-full rounded-full bg-warning"
+                          style={{
+                            width: `${flowSplit.volumePct}%`,
+                            marginRight: flowSplit.organicGross > 0 ? 2 : 0,
+                          }}
+                        />
+                      )}
+                      {flowSplit.organicGross > 0 && (
+                        <div
+                          className="h-full rounded-full bg-white/20"
+                          style={{ width: `${100 - flowSplit.volumePct}%` }}
+                        />
+                      )}
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] text-text-dim">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="size-2 rounded-full bg-warning" /> Volume (checked):{' '}
+                        {fmt(flowSplit.volumeGross)}◎
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="size-2 rounded-full bg-white/30" /> Organic (unchecked):{' '}
+                        {fmt(flowSplit.organicGross)}◎
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/6">
-                    {flowSplit.volumeGross > 0 && (
-                      <div
-                        className="h-full rounded-full bg-warning"
-                        style={{
-                          width: `${flowSplit.volumePct}%`,
-                          marginRight: flowSplit.organicGross > 0 ? 2 : 0,
-                        }}
-                      />
-                    )}
-                    {flowSplit.organicGross > 0 && (
-                      <div
-                        className="h-full rounded-full bg-white/20"
-                        style={{ width: `${100 - flowSplit.volumePct}%` }}
-                      />
-                    )}
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] text-text-dim">
-                    <span className="inline-flex items-center gap-1">
-                      <span className="size-2 rounded-full bg-warning" /> Volume (checked):{' '}
-                      {fmt(flowSplit.volumeGross)}◎
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="size-2 rounded-full bg-white/30" /> Organic (unchecked):{' '}
-                      {fmt(flowSplit.organicGross)}◎
-                    </span>
-                  </div>
+                )}
                 </div>
-              )}
+
+                <div className="rounded border border-white/8 p-3">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-text-mid inline-flex flex-wrap items-center gap-2">
+                      <LabelTip tip={DISCOVERY_FIELD_HELP.draftPatterns}>
+                        Draft volume_ix_patterns
+                      </LabelTip>
+                      {targetFp && currentPatterns.length > 0 && (
+                        <span className="font-normal text-text-dim">
+                          (saved: {currentPatterns.length} pattern
+                          {currentPatterns.length === 1 ? '' : 's'})
+                        </span>
+                      )}
+                    </span>
+                    <IconButton
+                      variant="primary"
+                      size="lg"
+                      disabled={draftPatterns.length === 0 || applying}
+                      onClick={handleApply}
+                      label={
+                        applying
+                          ? 'Applying…'
+                          : targetFp
+                            ? 'Update fingerprint'
+                            : 'Create / bind fingerprint'
+                      }
+                      title={
+                        applying
+                          ? 'Applying…'
+                          : targetFp
+                            ? 'Update fingerprint'
+                            : 'Create / bind fingerprint'
+                      }
+                    >
+                      {applying ? (
+                        <SpinnerIcon />
+                      ) : targetFp ? (
+                        <CheckIcon />
+                      ) : (
+                        <LinkIcon />
+                      )}
+                    </IconButton>
+                  </div>
+                  <div className="max-h-90 overflow-y-auto pr-1">
+                    <VolumeIxPatternsEditor patterns={draftPatterns} onChange={setDraftPatterns} />
+                  </div>
+                  {targetFp && currentPatterns.length > 0 && (
+                    <details className="mt-2 text-[10px] text-text-dim">
+                      <summary className="cursor-pointer">Saved config</summary>
+                      <pre className="mt-1 overflow-x-auto rounded bg-black/20 p-2 font-mono">
+                        {JSON.stringify(metricConfigWithVolumePatterns(currentPatterns), null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              </div>
 
               {selectedGroup.n_trades_scored === 0 && (
                 <InlineAlert variant="warning">
@@ -695,116 +1063,54 @@ export function FlowDiscoveryPage() {
                 </InlineAlert>
               )}
 
-              <div className="overflow-x-auto rounded border border-white/8">
-                <table className="w-full text-left text-[11px]">
-                  <thead className="bg-white/3 text-text-dim">
-                    <tr>
-                      {(
-                        [
-                          ['Vol', DISCOVERY_COL_HELP.vol],
-                          ['Structure', DISCOVERY_COL_HELP.structure],
-                          ['Lift', DISCOVERY_COL_HELP.lift],
-                          ['Share%', DISCOVERY_COL_HELP.share],
-                          ['Wash', DISCOVERY_COL_HELP.wash],
-                          ['Recur%', DISCOVERY_COL_HELP.recur],
-                          ['Burst%', DISCOVERY_COL_HELP.burst],
-                          ['Reuse', DISCOVERY_COL_HELP.reuse],
-                          ['Gross◎', DISCOVERY_COL_HELP.gross],
-                        ] as const
-                      ).map(([label, tip]) => (
-                        <th key={label} className="px-2 py-1.5 font-semibold">
-                          <LabelTip tip={tip}>{label}</LabelTip>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedGroup.structures.map((s) => {
-                      const key = JSON.stringify(s.ix_labels);
-                      const on = draftPatterns.some((p) => JSON.stringify(p) === key);
-                      return (
-                        <tr
-                          key={key}
-                          className={`border-t border-white/6 ${on ? 'bg-accent/8' : ''}`}
-                        >
-                          <td className="px-2 py-1">
-                            <Checkbox checked={on} onChange={() => toggleStructure(s.ix_labels)} />
-                          </td>
-                          <td className="px-2 py-1">
-                            <IxLabelsDisplay labels={s.ix_labels} copyJson />
-                          </td>
-                          <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.group_lift, 2)}</td>
-                          <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.volume_share)}</td>
-                          <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.wash_symmetry, 2)}</td>
-                          <td className="px-2 py-1 font-mono tabular-nums">
-                            {fmt(s.cross_token_recurrence)}
-                          </td>
-                          <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.slot_burst)}</td>
-                          <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.wallet_reuse, 2)}</td>
-                          <td className="px-2 py-1 font-mono tabular-nums">{fmt(s.gross_sol)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="rounded border border-white/8 p-3">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-text-mid inline-flex flex-wrap items-center gap-2">
-                    <LabelTip tip={DISCOVERY_FIELD_HELP.draftPatterns}>
-                      Draft volume_ix_patterns
-                    </LabelTip>
-                    {targetFp && currentPatterns.length > 0 && (
-                      <span className="font-normal text-text-dim">
-                        (saved: {currentPatterns.length} pattern
-                        {currentPatterns.length === 1 ? '' : 's'})
-                      </span>
-                    )}
-                  </span>
-                  <IconButton
-                    variant="primary"
-                    size="lg"
-                    disabled={draftPatterns.length === 0 || applying}
-                    onClick={handleApply}
-                    label={
-                      applying
-                        ? 'Applying…'
-                        : targetFp
-                          ? 'Update fingerprint'
-                          : 'Create / bind fingerprint'
-                    }
-                    title={
-                      applying
-                        ? 'Applying…'
-                        : targetFp
-                          ? 'Update fingerprint'
-                          : 'Create / bind fingerprint'
-                    }
-                  >
-                    {applying ? (
-                      <SpinnerIcon />
-                    ) : targetFp ? (
-                      <CheckIcon />
-                    ) : (
-                      <LinkIcon />
-                    )}
-                  </IconButton>
-                </div>
-                <VolumeIxPatternsEditor patterns={draftPatterns} onChange={setDraftPatterns} />
-                {targetFp && currentPatterns.length > 0 && (
-                  <details className="mt-2 text-[10px] text-text-dim">
-                    <summary className="cursor-pointer">Saved config</summary>
-                    <pre className="mt-1 overflow-x-auto rounded bg-black/20 p-2 font-mono">
-                      {JSON.stringify(metricConfigWithVolumePatterns(currentPatterns), null, 2)}
-                    </pre>
-                  </details>
-                )}
-              </div>
+              <StructureTable
+                structures={selectedGroup.structures}
+                draftPatterns={draftPatterns}
+                contagionByStructure={contagionByStructure}
+                onToggle={toggleStructure}
+              />
             </div>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/** Ranking table itself, split out so its `columns` memo only recomputes on
+ *  selection/checked-pattern changes, not on every `FlowDiscoveryPage` render. */
+function StructureTable({
+  structures,
+  draftPatterns,
+  contagionByStructure,
+  onToggle,
+}: {
+  structures: FlowDiscoveryStructure[];
+  draftPatterns: string[][];
+  contagionByStructure: Map<string, number | null>;
+  onToggle: (labels: string[]) => void;
+}) {
+  const draftKeysSig = draftPatterns.map((p) => JSON.stringify(p)).join('|');
+  const columns = useMemo(
+    () => buildStructureColumns({ draftPatterns, contagionByStructure, onToggle }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagionByStructure are the real identities
+    [draftKeysSig, contagionByStructure, onToggle],
+  );
+  return (
+    <DataTable
+      columns={columns}
+      rows={structures}
+      rowKey={(s) => JSON.stringify(s.ix_labels)}
+      rowClassName={(s) =>
+        draftPatterns.some((p) => JSON.stringify(p) === JSON.stringify(s.ix_labels))
+          ? 'bg-accent/8'
+          : undefined
+      }
+      searchable={false}
+      colFilters={false}
+      colToggle={false}
+      selectable={false}
+      paginate={false}
+    />
   );
 }
