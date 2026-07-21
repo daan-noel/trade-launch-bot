@@ -27,11 +27,14 @@
   destination chunks on insert, so there is no partition-ensure step anymore.
 
   **Stability (cold / large windows).** `trades` / `raw_txs` are pulled in fixed-hour
-  chunks (default 6h, not one giant INSERT), with a smaller FDW `fetch_size`, SSH
+  chunks (default 2h, not one giant INSERT), with a smaller FDW `fetch_size`, SSH
   keepalives, and transient-error retries. A cold local DB (empty trades) clamps
   the watermark to the remote MIN so we never ask the 4GB EC2 box to stream the
   whole rolling window in one cursor. Partial progress is durable: each chunk
-  commits independently; re-runs resume from the advanced watermark.
+  commits independently; re-runs resume from the advanced watermark. Before each
+  chunk's real INSERT, a best-effort remote COUNT(*) (its own short statement_timeout,
+  never blocks the pull) prints "~N row(s) ... pulling" so a slow chunk reads as
+  "working on N rows" instead of silence that looks hung.
 
   Non-destructive & idempotent throughout: existing local rows are never deleted;
   the dedup PKs + ON CONFLICT make re-running over an overlapping window a no-op.
@@ -135,8 +138,9 @@ param(
   [switch]$IncludeToday,                                                  # also pull today's still-open chunk (partial day; default = sealed days only)
   [switch]$ExportLake,                                                    # after sync: run `cargo run -p hunter-lab -- lake-export` (passes --include-today when -IncludeToday)
   [int]   $FdwFetchSize    = 10000,                                       # postgres_fdw fetch_size (smaller = gentler on 4GB EC2 RAM; was 50000)
-  [int]   $HypertableChunkHours = 6,                                      # trades/raw_txs pull window size (hours); smaller = safer on EC2 RAM
+  [int]   $HypertableChunkHours = 2,                                      # trades/raw_txs pull window size (hours); smaller = safer on EC2 RAM + commits/visible progress sooner (was 6)
   [int]   $ChunkRetries    = 4,                                           # retries per chunk on transient FDW/tunnel drops
+  [int]   $ChunkPreviewTimeoutMs = 8000,                                  # cap on the cheap remote COUNT(*) printed before each chunk (0 = skip preview)
   [string]$LocalPgPassword = $env:PGPASSWORD
 )
 # NOTE: 'Continue', not 'Stop'. Under 'Stop', a NATIVE exe (ssh/psql) writing ANY line
@@ -283,6 +287,27 @@ function Get-LocalRows([string]$sql) {
   }
   finally { Remove-Item $errf -ErrorAction SilentlyContinue }
 }
+# Cheap remote COUNT(*) for the upcoming chunk window, printed BEFORE the real
+# INSERT so a slow chunk shows "pulling ~N rows" instead of silence that looks
+# hung. Best-effort only: capped by its own statement_timeout (independent of
+# the real pull) and returns $null on any failure/timeout -- a stalled preview
+# must never block or fail the actual sync, it just prints "(unavailable)".
+function Get-RemoteChunkPreviewCount([string]$table, [string]$fromTs, [string]$toTs) {
+  if ($ChunkPreviewTimeoutMs -le 0) { return $null }
+  Use-LocalPw
+  $sql = "SET statement_timeout = $ChunkPreviewTimeoutMs; SELECT count(*) FROM ec2_sync_src.$table WHERE block_time >= '$fromTs'::timestamptz AND block_time < '$toTs'::timestamptz;"
+  $errf = [System.IO.Path]::GetTempFileName()
+  try {
+    $r = (& psql @localPg -tAc $sql 2>$errf)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $lines = @($r | ForEach-Object { "$_" } | Where-Object { $_ -match '\S' })
+    if ($lines.Count -eq 0) { return $null }
+    $n = 0L
+    if ([int64]::TryParse($lines[-1].Trim(), [ref]$n)) { return $n }
+    return $null
+  } catch { return $null }
+  finally { Remove-Item $errf -ErrorAction SilentlyContinue }
+}
 # Fast, silent TCP probe (Test-NetConnection does a slow ICMP ping + progress UI).
 function Test-Port([int]$Port) {
   $c = New-Object System.Net.Sockets.TcpClient
@@ -367,7 +392,7 @@ function Invoke-LocalSqlFileRetry([string]$sql, [string]$label) {
 }
 # Time windows over [fromTs, toTs) in $HypertableChunkHours steps. First/last
 # chunks are clipped to the watermark and cutoff so a mid-window watermark does
-# not re-pull earlier hours. Default 6h keeps each FDW cursor small enough for
+# not re-pull earlier hours. Default 2h keeps each FDW cursor small enough for
 # the 4GB EC2 box (a full multi-day INSERT was dropping the remote connection).
 function Get-HypertableChunks([string]$fromTs, [string]$toTs) {
   if ($HypertableChunkHours -lt 1) { throw "-HypertableChunkHours must be >= 1 (got $HypertableChunkHours)" }
@@ -410,6 +435,9 @@ function Sync-TradesChunks([string]$fromWm, [string]$toCutoff, [string]$windowLa
     $i++
     $label = "trades chunk $i/$($chunks.Count) [$($c.From) .. $($c.To))"
     Write-Host "  $label"
+    $preview = Get-RemoteChunkPreviewCount 'trades' $c.From $c.To
+    if ($null -ne $preview) { Write-Host "    ~$preview row(s) on server for this window -- pulling ..." }
+    else { Write-Host "    (row-count preview unavailable/timed out; pulling anyway -- a large/contended window can take minutes)" }
     Invoke-LocalSqlFileRetry @"
 \echo '-- $label'
 INSERT INTO trades (
@@ -439,6 +467,9 @@ function Sync-RawTxsChunks([string]$fromWm, [string]$toCutoff, [string]$windowLa
     $i++
     $label = "raw_txs chunk $i/$($chunks.Count) [$($c.From) .. $($c.To))"
     Write-Host "  $label"
+    $preview = Get-RemoteChunkPreviewCount 'raw_txs' $c.From $c.To
+    if ($null -ne $preview) { Write-Host "    ~$preview row(s) on server for this window -- pulling ..." }
+    else { Write-Host "    (row-count preview unavailable/timed out; pulling anyway -- a large/contended window can take minutes)" }
     Invoke-LocalSqlFileRetry @"
 \echo '-- $label'
 INSERT INTO raw_txs (tx_signature, slot, block_time, tx_index, payload, source)

@@ -80,6 +80,11 @@ each crate's own decoupled vocabulary (don't leak a product's domain names into 
 - **Backend latency first.** Both products run hot ingest/strategy/sell-confirm paths.
   No blocking I/O, `.await`-on-lock, per-event alloc, redundant RPC/DB round-trips, or
   lock contention on a hot path. **Notify over poll**; sell-confirm stays feed-based.
+- **Spend Helius sparingly.** Helius RPC calls (and credits) are a paid, capped budget.
+  Before adding or keeping any Helius API call, prove it's worth it: prefer the existing
+  push/stream feeds, cache, and batch requests over polling; reuse a value already in
+  hand instead of re-fetching; never call per-event on a hot path. If an RPC call doesn't
+  change a decision, delete it.
 - **Modular & concise.** handler → service → repo; one responsibility per module. Short
   answers; non-trivial plans go to a `*-plan.md` file, not inline.
 - **Deploy target is a 2vCPU / 4GB EC2 box** (IO-bound, RAM-constrained). Only the
