@@ -30,7 +30,20 @@ function basisAmount(trade: TradeRecord, basis: FlowBasis): number {
 
 /** Cumulative vol/non-vol series over one token's trades, classified via the
  *  {@link classifyFlowTrades} preview. Both lines share one time axis
- *  (carry-forward at every observed bucket) so they always step together. */
+ *  (carry-forward at every observed bucket) so they always step together.
+ *
+ *  Bucket totals are accumulated first (order-independent `+=`), THEN
+ *  prefix-summed over buckets sorted by time — not a single running total
+ *  written per-trade in processing order. A live/very-recent token can have
+ *  trades whose `tx_index` hasn't been backfilled yet, which the shared
+ *  `compareTradesChronologically` falls back to treating as `0`; that can
+ *  put a trade slightly out of true time order within its bucket. Writing a
+ *  *running* cumulative value keyed by processing order would let an
+ *  out-of-order trade overwrite an earlier bucket with a smaller snapshot,
+ *  drawing a line that visibly DROPS — impossible for a true cumulative sum.
+ *  Per-bucket totals + a final prefix-sum are immune to that: every bucket's
+ *  amount lands in the right place regardless of processing order, so the
+ *  displayed series is monotonic by construction. */
 export function buildFlowLines(
   trades: readonly TradeRecord[],
   groupMode: ChartGroupMode,
@@ -49,21 +62,30 @@ export function buildFlowLines(
     classifyOpts,
   );
 
-  const byKey = new Map<number, { vol: number; nonVol: number }>();
-  let volCum = 0;
-  let nonVolCum = 0;
+  const volByBucket = new Map<number, number>();
+  const nonVolByBucket = new Map<number, number>();
   for (const t of classified) {
     const key =
       groupMode === 'slot' ? tradeBarSlot(t.raw) : tradeBarTime(t.raw.block_time, intervalSec);
     if (key == null) continue;
+    const k = key as number;
     const amt = basisAmount(t.raw, basis);
-    if (t.isVol) volCum += amt;
-    else nonVolCum += amt;
-    byKey.set(key as number, { vol: volCum, nonVol: nonVolCum });
+    const bucket = t.isVol ? volByBucket : nonVolByBucket;
+    bucket.set(k, (bucket.get(k) ?? 0) + amt);
   }
 
-  const keys = [...byKey.keys()].sort((a, b) => a - b);
-  const vol = keys.map((k) => ({ time: k as UTCTimestamp, value: byKey.get(k)!.vol }));
-  const nonVol = keys.map((k) => ({ time: k as UTCTimestamp, value: byKey.get(k)!.nonVol }));
+  const keys = [...new Set([...volByBucket.keys(), ...nonVolByBucket.keys()])].sort(
+    (a, b) => a - b,
+  );
+  const vol: FlowLinePoint[] = [];
+  const nonVol: FlowLinePoint[] = [];
+  let volCum = 0;
+  let nonVolCum = 0;
+  for (const k of keys) {
+    volCum += volByBucket.get(k) ?? 0;
+    nonVolCum += nonVolByBucket.get(k) ?? 0;
+    vol.push({ time: k as UTCTimestamp, value: volCum });
+    nonVol.push({ time: k as UTCTimestamp, value: nonVolCum });
+  }
   return { vol, nonVol };
 }

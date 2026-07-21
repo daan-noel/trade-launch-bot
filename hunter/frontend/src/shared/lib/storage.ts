@@ -57,6 +57,8 @@ export const STORAGE_KEYS = {
   groupedFilters: `${PREFIX}dashboard.grouped.filters`,
   groupedCashback: `${PREFIX}dashboard.grouped.cashback`,
   groupedIxLabels: `${PREFIX}dashboard.grouped.ixLabels`,
+  /** FlowPreviewChart toolbar toggle state (flow-discovery). */
+  flowPreviewChartPrefs: `${PREFIX}flow.previewChart.prefs`,
 } as const;
 
 // ── raw string accessors ────────────────────────────────────────────────────

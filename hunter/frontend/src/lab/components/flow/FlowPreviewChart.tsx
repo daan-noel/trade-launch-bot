@@ -85,7 +85,54 @@ import { useTimezone } from 'context/TimezoneContext';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { formatTimestampMs } from 'utils/date';
 import { buildFlowLines, type FlowBasis, type FlowLinePoint } from '@lab/lib/flow/flowChartData';
+import { getString, setString, STORAGE_KEYS } from 'lib/storage';
 import type { TradeRecord } from 'types';
+
+interface FlowPreviewChartPrefs {
+  style: ChartStyle;
+  groupMode: ChartGroupMode;
+  interval: ChartInterval;
+  basis: FlowBasis;
+  trimEmptyBars: boolean;
+  seedCreatorAsVol: boolean;
+  showTradeMarkers: boolean;
+  showWalletMarkers: boolean;
+  showAthLine: boolean;
+  showMigrationLine: boolean;
+}
+
+const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
+  style: 'candles',
+  groupMode: 'time',
+  interval: '1s',
+  basis: 'sol',
+  trimEmptyBars: true,
+  seedCreatorAsVol: false,
+  showTradeMarkers: false,
+  showWalletMarkers: false,
+  showAthLine: true,
+  showMigrationLine: true,
+};
+
+/** Toolbar toggles persist across sessions (mirrors `TokenPriceChart`'s
+ *  `loadPrefs`/`savePrefs`); transient view state (range-select mode, the
+ *  "More" panel, bar/range selection) does not. */
+function loadFlowChartPrefs(): FlowPreviewChartPrefs {
+  try {
+    const raw = getString(STORAGE_KEYS.flowPreviewChartPrefs);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<FlowPreviewChartPrefs>;
+      return { ...DEFAULT_FLOW_CHART_PREFS, ...parsed };
+    }
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_FLOW_CHART_PREFS;
+}
+
+function saveFlowChartPrefs(prefs: FlowPreviewChartPrefs) {
+  setString(STORAGE_KEYS.flowPreviewChartPrefs, JSON.stringify(prefs));
+}
 
 /** Trades within the clicked bar — same bucket-key matching `TokenTradeChart`
  *  uses for its own bar-click selection. */
@@ -263,16 +310,17 @@ export function FlowPreviewChart({
   const rangeSelectModeRef = useRef(false);
   const selectedBarRef = useRef<ChartBarSelection | null>(null);
 
-  const [style, setStyle] = useState<ChartStyle>('candles');
-  const [groupMode, setGroupMode] = useState<ChartGroupMode>('time');
-  const [interval, setInterval] = useState<ChartInterval>('1m');
-  const [basis, setBasis] = useState<FlowBasis>('sol');
-  const [trimEmptyBars, setTrimEmptyBars] = useState(false);
-  const [seedCreatorAsVol, setSeedCreatorAsVol] = useState(false);
-  const [showTradeMarkers, setShowTradeMarkers] = useState(true);
-  const [showWalletMarkers, setShowWalletMarkers] = useState(true);
-  const [showAthLine, setShowAthLine] = useState(true);
-  const [showMigrationLine, setShowMigrationLine] = useState(true);
+  const initialPrefs = useRef(loadFlowChartPrefs()).current;
+  const [style, setStyle] = useState<ChartStyle>(initialPrefs.style);
+  const [groupMode, setGroupMode] = useState<ChartGroupMode>(initialPrefs.groupMode);
+  const [interval, setInterval] = useState<ChartInterval>(initialPrefs.interval);
+  const [basis, setBasis] = useState<FlowBasis>(initialPrefs.basis);
+  const [trimEmptyBars, setTrimEmptyBars] = useState(initialPrefs.trimEmptyBars);
+  const [seedCreatorAsVol, setSeedCreatorAsVol] = useState(initialPrefs.seedCreatorAsVol);
+  const [showTradeMarkers, setShowTradeMarkers] = useState(initialPrefs.showTradeMarkers);
+  const [showWalletMarkers, setShowWalletMarkers] = useState(initialPrefs.showWalletMarkers);
+  const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
+  const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -317,6 +365,32 @@ export function FlowPreviewChart({
     if (!selectedRange) return null;
     return computeRangeStats(sortedTrades, selectedRange, groupMode, intervalSec);
   }, [selectedRange, sortedTrades, groupMode, intervalSec]);
+
+  useEffect(() => {
+    saveFlowChartPrefs({
+      style,
+      groupMode,
+      interval,
+      basis,
+      trimEmptyBars,
+      seedCreatorAsVol,
+      showTradeMarkers,
+      showWalletMarkers,
+      showAthLine,
+      showMigrationLine,
+    });
+  }, [
+    style,
+    groupMode,
+    interval,
+    basis,
+    trimEmptyBars,
+    seedCreatorAsVol,
+    showTradeMarkers,
+    showWalletMarkers,
+    showAthLine,
+    showMigrationLine,
+  ]);
 
   useEffect(() => {
     barsRef.current = bars;
