@@ -13,7 +13,7 @@ import {
 } from 'lib/signedTone';
 import { fetchRulePositionsPage } from 'services/api';
 import { FloorMintChart } from '@live/components/floor/FloorMintChart';
-import { buildEventMarkers } from 'components/strategy/inspectTarget';
+import { buildEventMarkers, inspectFromPosition } from 'components/strategy/inspectTarget';
 import type { PortfolioRulePnl, RulePositionRecord } from 'types';
 
 const STRATEGY_SEG = 'generic';
@@ -91,16 +91,7 @@ export function PortfolioRuleDetail({
   }, [row.rule_id, sinceMs]);
 
   const markers = useMemo(
-    () => (pick ? buildEventMarkers({
-      mint_address: pick.mint_address,
-      entryTime: pick.entry_time,
-      entryPrice: pick.entry_price,
-      entryTx: pick.entry_tx,
-      exitTime: pick.exit_time,
-      exitPrice: pick.exit_price,
-      exitTx: pick.exit_tx,
-      exitLabel: pick.exit_reason,
-    }) : null),
+    () => (pick ? buildEventMarkers(inspectFromPosition(pick)) : null),
     [pick],
   );
 

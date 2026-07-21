@@ -10,6 +10,13 @@ import type { RulePositionRecord, SimulatedTokenResult } from 'types';
 export interface InspectTarget {
   mint_address: string;
   symbol?: string | null;
+  /** Trigger-trade (signal) snapshot — the trade that armed this position, distinct
+   *  from the actual entry fill. Drawn as a `signal` marker so the gap to the entry
+   *  fill (slippage between "signal fired" and "we filled") is visible. Omit/null
+   *  when there's no separate trigger (e.g. sim results without a target). */
+  targetTime?: string | null;
+  targetPrice?: number | null;
+  targetTx?: string | null;
   entryTime: string | null;
   /** null for an armed position whose entry hasn't filled yet. */
   entryPrice: number | null;
@@ -26,6 +33,23 @@ export interface InspectTarget {
  *  overlay. Metric-pane condition fires use `role: 'signal'` separately. */
 export function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
   const markers: ChartEventMarker[] = [];
+  // Trigger (signal) point — only when it's a distinct trade from the entry fill.
+  // If we filled on the very trade that armed us (same tx), the gap is zero and a
+  // second pointer at the same bar is pure noise, so skip it.
+  const sameAsEntry =
+    target.targetTx != null &&
+    target.entryTx != null &&
+    target.targetTx === target.entryTx;
+  if (target.targetTime != null && target.targetPrice != null && !sameAsEntry) {
+    markers.push({
+      kind: 'entry',
+      role: 'signal',
+      time: target.targetTime,
+      priceInSol: target.targetPrice,
+      txSignature: target.targetTx ?? null,
+      label: 'Signal',
+    });
+  }
   if (target.entryTime != null && target.entryPrice != null) {
     markers.push({
       kind: 'entry',
@@ -77,6 +101,9 @@ export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
 export function inspectFromPosition(r: RulePositionRecord): InspectTarget {
   return {
     mint_address: r.mint_address,
+    targetTime: r.target_time,
+    targetPrice: r.target_price,
+    targetTx: r.target_tx,
     entryTime: r.entry_time,
     entryPrice: r.entry_price,
     entryTx: r.entry_tx,

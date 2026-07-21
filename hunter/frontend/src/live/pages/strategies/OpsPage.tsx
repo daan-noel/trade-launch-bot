@@ -211,12 +211,15 @@ export function OpsPage() {
     return armedRows.filter((r) => r.ruleId === ruleParam);
   }, [armedRows, ruleParam]);
 
-  const selectedKey =
-    tab === 'waiting'
-      ? ruleParam && mintParam
-        ? `${ruleParam}|${mintParam}`
-        : null
-      : positionParam;
+  const selectedKey = positionParam;
+
+  // Armed-history context follows the selected waiting row, independent of the
+  // `rule` deep-link filter (which must stay notification-only — see onSelect
+  // below). Cheap lookup over the small in-memory armed set.
+  const selectedArmedRuleId = useMemo(
+    () => armedRows.find((r) => r.key === positionParam)?.ruleId ?? null,
+    [armedRows, positionParam],
+  );
 
   const deepLinkActive = Boolean(statusFilter || mintParam || positionParam || ruleParam);
 
@@ -821,14 +824,14 @@ export function OpsPage() {
               const row = waitingTableRows.find((r) => r.key === key);
               if (!row) return;
               const next = new URLSearchParams(params);
+              next.set(OPS_PARAMS.position, row.key);
               next.set(OPS_PARAMS.mint, row.mint);
-              next.set(OPS_PARAMS.rule, row.ruleId);
               setParams(next, { replace: true });
             }}
           />
           <ArmedHistoryPanel
             strategy={ARMED_HISTORY_STRATEGY}
-            selectedRuleId={ruleParam}
+            selectedRuleId={selectedArmedRuleId}
           />
         </>
       ) : tab === 'recent' ? (
@@ -858,7 +861,6 @@ export function OpsPage() {
               const next = new URLSearchParams(params);
               next.set(OPS_PARAMS.position, row.positionId);
               next.set(OPS_PARAMS.mint, row.mint);
-              if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
               setParams(next, { replace: true });
             }}
           />
@@ -896,7 +898,6 @@ export function OpsPage() {
               const next = new URLSearchParams(params);
               next.set(OPS_PARAMS.position, row.positionId);
               next.set(OPS_PARAMS.mint, row.mint);
-              if (row.ruleId) next.set(OPS_PARAMS.rule, row.ruleId);
               setParams(next, { replace: true });
             }}
           />
