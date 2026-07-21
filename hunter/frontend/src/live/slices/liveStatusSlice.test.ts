@@ -80,6 +80,31 @@ describe('liveStatusSlice', () => {
     expect(next.open.p1?.status).toBe('Holding');
   });
 
+  it('ignores position deltas with empty or nil position_id', () => {
+    const withOpen = reducer(
+      empty,
+      applyPositionDelta({
+        rule_id: 'r1',
+        mint_address: 'm1',
+        position_id: 'p1',
+        status: 'Holding',
+        trade_mode: 'real',
+      }),
+    );
+    const ignored = reducer(
+      withOpen,
+      applyPositionDelta({
+        rule_id: 'r1',
+        mint_address: 'm1',
+        position_id: '00000000-0000-0000-0000-000000000000',
+        status: 'End',
+        trade_mode: 'real',
+      }),
+    );
+    expect(ignored.open.p1?.status).toBe('Holding');
+    expect(ignored.recentClosed).toEqual([]);
+  });
+
   it('Holding → ExitPending → End moves open into recentClosed', () => {
     let s = reducer(
       empty,

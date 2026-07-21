@@ -11,7 +11,6 @@ export function RulesPage() {
   const ruleLiveCounts = useSelector(selectRuleOpenCounts);
   return (
     <RulesView
-      linkToAnalyze
       showScores
       ruleLiveCounts={ruleLiveCounts}
       renderAnalyze={({ ruleId, rule, clear }) => (

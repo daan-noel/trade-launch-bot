@@ -190,7 +190,7 @@ pub enum SseEvent {
         exit_reason: Option<String>,
         entry_price: Option<f64>,
         exit_price: Option<f64>,
-        /// `"real"` | `"paper"` when the sink still has the rule loaded.
+        /// `"real"` | `"paper"` from the frozen position meta (fallback: rule table).
         trade_mode: Option<String>,
         rule_name: Option<String>,
     },

@@ -35,6 +35,19 @@ function armedStatusKey(state: string): 'Armed' | 'Disarmed' | null {
   return null;
 }
 
+/**
+ * Mode filter for toasts. Missing mode: allow if either real or paper is enabled
+ * (do not invent paper/real — that used to drop real alerts).
+ */
+function modeAllowed(
+  tradeMode: string | null | undefined,
+  prefs: { realEnabled: boolean; paperEnabled: boolean },
+): boolean {
+  if (tradeMode === 'real') return prefs.realEnabled;
+  if (tradeMode === 'paper') return prefs.paperEnabled;
+  return prefs.realEnabled || prefs.paperEnabled;
+}
+
 /** Mounted once in the live App — position/arm toasts + desktop notifications.
  *  Desktop path uses a service worker (actions, status icon, lifecycle tags).
  *  Click / Ops → Ops deep-link; Trade action → trade desk. */
@@ -71,14 +84,11 @@ export function usePositionNotifications() {
     const positionHandle = connectStrategyPositionUpdate((delta) => {
       const status = delta.status;
       if (!prefs.statuses.includes(status)) return;
+      if (!modeAllowed(delta.trade_mode, prefs)) return;
 
-      const tradeMode = delta.trade_mode ?? 'paper';
-      const isReal = tradeMode === 'real';
-      if (isReal && !prefs.realEnabled) return;
-      if (!isReal && !prefs.paperEnabled) return;
-
+      const tradeMode = delta.trade_mode ?? 'real';
+      const modeLabel = tradeMode === 'paper' ? 'paper' : 'real';
       const ruleName = delta.rule_name ?? `rule ${delta.rule_id.slice(0, 8)}`;
-      const modeLabel = isReal ? 'real' : 'paper';
       const href = opsNotifyHref({
         status,
         mode: tradeMode,
@@ -118,14 +128,11 @@ export function usePositionNotifications() {
       if (!status || !prefs.statuses.includes(status)) return;
       // Leave-Waiting after buy — not an operator-facing disarm (dead/migrated/…).
       if (status === 'Disarmed' && delta.reason === 'entered') return;
+      if (!modeAllowed(delta.trade_mode, prefs)) return;
 
       const tradeMode = delta.trade_mode ?? 'paper';
-      const isReal = tradeMode === 'real';
-      if (isReal && !prefs.realEnabled) return;
-      if (!isReal && !prefs.paperEnabled) return;
-
+      const modeLabel = tradeMode === 'real' ? 'real' : 'paper';
       const ruleName = delta.rule_name ?? `rule ${delta.rule_id.slice(0, 8)}`;
-      const modeLabel = isReal ? 'real' : 'paper';
       const href = opsNotifyHref({
         status,
         mode: tradeMode,

@@ -62,13 +62,11 @@ export interface RulesViewProps {
   renderDryRun?: (draft: RuleEditorDraft | null, canRun: boolean) => ReactNode;
   /** Lab-only: show a link icon that opens Simulate with this rule selected. */
   linkToSimulate?: boolean;
-  /** Live-only: select a rule to open the Analyze panel (master–detail on Rules). */
-  linkToAnalyze?: boolean;
   /** Live-only: open/pending counts from the Live Status SSOT (not list_rules). */
   ruleLiveCounts?: Record<string, RuleLiveCounts>;
   /** Live-only: show realized PnL / win% / N score columns (from rule list wire). */
   showScores?: boolean;
-  /** Live-only: Analyze panel under the table for the selected rule. */
+  /** Live-only: Analyze panel under the table for the selected rule (row click). */
   renderAnalyze?: (ctx: {
     ruleId: string;
     rule: StrategyRule;
@@ -88,7 +86,6 @@ export interface RulesViewProps {
 export function RulesView({
   renderDryRun,
   linkToSimulate,
-  linkToAnalyze,
   ruleLiveCounts,
   showScores,
   renderAnalyze,
@@ -309,20 +306,6 @@ export function RulesView({
               >
                 <LinkIcon className="h-3.5 w-3.5" />
               </Link>
-            )}
-            {linkToAnalyze && (
-              <button
-                type="button"
-                title={`Analyze “${r.rule_name}” — positions + summary`}
-                aria-label={`Analyze ${r.rule_name}`}
-                className="inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent hover:bg-accent/15 hover:text-primary"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedKey(r.id);
-                }}
-              >
-                Analyze
-              </button>
             )}
           </div>
         </RuleHoverTip>

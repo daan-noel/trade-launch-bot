@@ -146,18 +146,34 @@ impl Sink {
 
     /// Consume one `PositionUpdate`: persist the transition to PG, keep the
     /// registry current, and push the SSE delta.
+    ///
+    /// Terminal handlers return whether the position was finalized. SSE is
+    /// emitted **before** `registry.remove` so clients always get a real
+    /// `position_id` (and entry price) on End / ExitFailed / ExitUnconfirmed.
     pub async fn on_position_update(&mut self, delta: PositionDelta) {
-        match delta.status {
-            PositionStatus::BuySubmitted => self.on_buy_submitted(&delta).await,
-            PositionStatus::Holding => self.on_holding(&delta).await,
-            PositionStatus::ExitPending => self.on_status_only(&delta, "ExitPending").await,
+        let finalized = match delta.status {
+            PositionStatus::BuySubmitted => {
+                self.on_buy_submitted(&delta).await;
+                false
+            }
+            PositionStatus::Holding => {
+                self.on_holding(&delta).await;
+                false
+            }
+            PositionStatus::ExitPending => {
+                self.on_status_only(&delta, "ExitPending").await;
+                false
+            }
             PositionStatus::End => self.on_end(&delta).await,
             PositionStatus::ExitFailed => self.on_terminal_no_fill(&delta, "ExitFailed").await,
             PositionStatus::ExitUnconfirmed => {
                 self.on_terminal_no_fill(&delta, "ExitUnconfirmed").await
             }
-        }
+        };
         self.emit_position_sse(&delta);
+        if finalized {
+            self.registry.remove(delta.position);
+        }
     }
 
     /// Consume one `ArmedChanged`: push the arming SSE (armed state is push-only
@@ -341,10 +357,15 @@ impl Sink {
         });
     }
 
-    async fn on_end(&mut self, delta: &PositionDelta) {
-        let Some(meta) = self.registry.get(delta.position) else { return };
+    /// Returns `true` when finalized — caller emits SSE then drops the registry row.
+    async fn on_end(&mut self, delta: &PositionDelta) -> bool {
+        let Some(meta) = self.registry.get(delta.position) else {
+            return false;
+        };
         self.await_pending_insert(meta.pg_id).await;
-        let Some(fill) = delta.fill else { return };
+        let Some(fill) = delta.fill else {
+            return false;
+        };
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let reason = delta
             .reason
@@ -358,15 +379,19 @@ impl Sink {
         }
         self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
             .await;
-        self.registry.remove(delta.position);
+        true
     }
 
     /// A terminal transition with no confirmed fill (ExitFailed / ExitUnconfirmed):
     /// stamp a hypothetical exit price (last known spot) so the row still carries a
     /// PnL for analysis, then persist. Also releases any SOL commitment (idempotent)
     /// so an unentered buy that exhausted retries cannot strand the budget tracker.
-    async fn on_terminal_no_fill(&mut self, delta: &PositionDelta, status: &str) {
-        let Some(meta) = self.registry.get(delta.position) else { return };
+    ///
+    /// Returns `true` when finalized — caller emits SSE then drops the registry row.
+    async fn on_terminal_no_fill(&mut self, delta: &PositionDelta, status: &str) -> bool {
+        let Some(meta) = self.registry.get(delta.position) else {
+            return false;
+        };
         self.await_pending_insert(meta.pg_id).await;
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
@@ -391,7 +416,7 @@ impl Sink {
         }
         self.release_held_pool(&meta.mint, meta.trade_mode, meta.pg_id)
             .await;
-        self.registry.remove(delta.position);
+        true
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -488,26 +513,38 @@ impl Sink {
     }
 
     fn emit_position_sse(&self, delta: &PositionDelta) {
+        let Some(meta) = self.registry.get(delta.position) else {
+            // No registry row (duplicate terminal / unknown id) — skip rather
+            // than broadcast a nil position_id that cannot patch Live Status.
+            warn!(
+                rule = %delta.rule.0,
+                mint = %delta.mint,
+                status = ?delta.status,
+                "engine sink: skip position SSE — no registry meta"
+            );
+            return;
+        };
+        // Frozen per-position mode (set at BuySubmitted) — not the live rule table.
+        let trade_mode = Some(mode_str(meta.trade_mode).to_string());
         let entry_price = delta
             .fill
             .filter(|_| delta.status == PositionStatus::Holding)
             .map(|f| f.price)
-            .or_else(|| self.registry.get(delta.position).and_then(|m| m.entry_price));
+            .or(meta.entry_price);
         let exit_price = delta
             .fill
             .filter(|_| delta.status == PositionStatus::End)
             .map(|f| f.price);
-        let pg_id = self.registry.get(delta.position).map(|m| m.pg_id);
         let info = self.rules.get(&delta.rule);
         let _ = self.sse_tx.send(SseEvent::StrategyPositionUpdate {
             rule_id: delta.rule.0,
             mint_address: delta.mint.to_string(),
-            position_id: pg_id.unwrap_or_default(),
+            position_id: meta.pg_id,
             status: position_status_str(delta.status).to_string(),
             exit_reason: delta.reason.map(|r| r.label().into_owned()),
             entry_price,
             exit_price,
-            trade_mode: info.map(|i| mode_str(i.mode).to_string()),
+            trade_mode,
             rule_name: info
                 .map(|i| i.name.clone())
                 .filter(|n| !n.is_empty()),

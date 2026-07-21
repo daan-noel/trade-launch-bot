@@ -229,6 +229,10 @@ const liveStatusSlice = createSlice({
     },
     applyPositionDelta(state, action: PayloadAction<StrategyPositionUpdateEvent>) {
       const d = action.payload;
+      // Nil / empty ids cannot key the open map (stale terminal frames).
+      if (!d.position_id || d.position_id === '00000000-0000-0000-0000-000000000000') {
+        return;
+      }
       const now = Date.now();
       const prev = state.open[d.position_id];
 

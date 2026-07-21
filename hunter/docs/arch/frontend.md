@@ -57,6 +57,8 @@ in live `App`) — REST snapshot on mount / SSE reconnect / tab visible / `sse_r
 armed + open positions + **recent closes from DB** (`GET /api/portfolio/recent-closes`).
 In-place patch on `strategy_position_update` / `strategy_armed_changed`. Snapshot drops
 armed rows that collide with open `(rule, mint)` (Waiting must not stick after buy).
+Terminal position SSE is emitted **before** the sink drops registry meta so
+`position_id` / `trade_mode` stay populated; the slice ignores nil/empty ids.
 Ops, Rules live counts, Home open KPI, and StrategyStrip read this store only (no
 parallel Maps). Legacy `LiveTradingPage` / `MonitorPage` are gone — `/positions` and
 `/strategies/armed` redirect to Ops.
