@@ -24,6 +24,10 @@ export const baseApi = createApi({
     'Settings',
     'LiveMode',
     'WalletHoldings',
+    // Closed-trade PnL for the Portfolio page (both real + paper). Split from
+    // WalletHoldings so a paper close can refresh performance WITHOUT triggering
+    // the expensive real-wallet RPC scan those holdings reads carry.
+    'PortfolioPerf',
     'StrategyResult',
     'StrategyPaper',
     'Profiles',

@@ -16,6 +16,9 @@ const COALESCE_MS = 500;
 /** Statuses that imply the on-chain bag / PnL totals may have changed. */
 const BAG_CHANGING = new Set(['Holding', 'End', 'ExitFailed']);
 
+/** Terminal closes that change *closed-trade* performance (both real + paper). */
+const PERF_CHANGING = new Set(['End', 'ExitFailed']);
+
 /**
  * Keep WalletHoldings-tagged RTK data (Home KPIs, Top Holdings, portfolio
  * summary) fresh from the same on-chain / engine notify path as Ops:
@@ -53,9 +56,26 @@ export function usePortfolioRealtime(): void {
     }, COALESCE_MS);
   }, [bump]);
 
+  // Lightweight paper-close refresh: only re-fetch the Portfolio performance
+  // read, NOT the real-wallet holdings/summary RPC scans (paper never touches
+  // the on-chain bag). Kept on its own coalesce timer so it can't be starved by
+  // — or starve — the heavier real bag bump above.
+  const perfTimerRef = useRef<number | undefined>(undefined);
+  const schedulePerfBump = useCallback(() => {
+    if (perfTimerRef.current !== undefined) return;
+    perfTimerRef.current = window.setTimeout(() => {
+      perfTimerRef.current = undefined;
+      dispatch(liveApi.util.invalidateTags(['PortfolioPerf']));
+    }, COALESCE_MS);
+  }, [dispatch]);
+
   useEffect(() => {
     const posH = connectStrategyPositionUpdate((d) => {
-      if (d.trade_mode === 'paper') return;
+      if (d.trade_mode === 'paper') {
+        // Paper closes don't move the wallet bag — just refresh closed PnL.
+        if (PERF_CHANGING.has(d.status)) schedulePerfBump();
+        return;
+      }
       if (!BAG_CHANGING.has(d.status)) return;
       scheduleBump();
     });
@@ -71,11 +91,13 @@ export function usePortfolioRealtime(): void {
     return () => {
       window.clearTimeout(timerRef.current);
       timerRef.current = undefined;
+      window.clearTimeout(perfTimerRef.current);
+      perfTimerRef.current = undefined;
       posH.close();
       tradeH.close();
       reopenUnsub();
     };
-  }, [bump, scheduleBump]);
+  }, [bump, scheduleBump, schedulePerfBump]);
 
   useEffect(() => {
     const onVis = () => {

@@ -78,7 +78,11 @@ export const liveApi = baseApi.injectEndpoints({
       query: (limit = 50) => `/api/portfolio/recent-closes?limit=${limit}`,
       providesTags: ['WalletHoldings'],
     }),
-    /** Cross-rule closed PnL for the Portfolio page. */
+    /**
+     * Cross-rule closed PnL for the Portfolio page. Tagged `WalletHoldings` so a
+     * real bag change refreshes it, PLUS `PortfolioPerf` so a *paper* close can
+     * refresh it on its own without invalidating the real-wallet holdings reads.
+     */
     getPortfolioPerformance: builder.query<
       PortfolioPerformance,
       { range?: 'today' | '7d' | 'all'; mode?: 'real' | 'paper' } | void
@@ -88,7 +92,7 @@ export const liveApi = baseApi.injectEndpoints({
         const mode = arg && typeof arg === 'object' ? (arg.mode ?? 'real') : 'real';
         return `/api/portfolio/performance?range=${range}&mode=${mode}`;
       },
-      providesTags: ['WalletHoldings'],
+      providesTags: ['WalletHoldings', 'PortfolioPerf'],
     }),
     // Jupiter oracle for held mints (liquidity / 24h / cold marks), decoupled
     // from the balance read. Live Value/Price tip from `trade_executed` SSE;
