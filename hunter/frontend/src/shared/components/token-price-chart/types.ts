@@ -217,6 +217,8 @@ export interface TokenPriceChartProps {
   metric?: ChartMetric;
   onMetricChange?: (metric: ChartMetric) => void;
   className?: string;
+  /** Fixed pixel height. Omit (the default) to size the height to the chart's
+   *  measured width for a readable aspect ratio instead of a wide-flat band. */
   height?: number;
   /** Fired when a chart bar/candle is clicked; null clears selection. */
   onBarClick?: (selection: ChartBarSelection | null) => void;

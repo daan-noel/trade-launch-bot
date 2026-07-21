@@ -59,34 +59,35 @@ describe('buildFlowLines', () => {
     expect(lines.nonVol.at(-1)!.value).toBeCloseTo(600, 6);
   });
 
-  it('real_sol marks the net token bag to the candle-close real spot, carrying it forward', () => {
+  it('real_sol marks the net token bag to the candle-close canonical spot, carrying it forward', () => {
     const trades: TradeRecord[] = [
-      // Bucket A: net 1000 tokens, real spot 20/1000 = 0.02 → 1000 × 0.02 = 20.
+      // Bucket A: net 1000 tokens, spot 20/1000 = 0.02 → 1000 × 0.02 = 20.
       trade({
         slot: 1,
         block_time: '2026-07-21T01:00:00Z',
         token_amount: 1000,
         trade_type: 'buy',
-        real_sol_reserves: 20,
-        real_token_reserves: 1000,
+        reserve_sol: 20,
+        reserve_token: 1000,
       }),
-      // Bucket B: net 1100 tokens, real spot 44/1100 = 0.04 → 1100 × 0.04 = 44
+      // Bucket B: net 1100 tokens, spot 44/1100 = 0.04 → 1100 × 0.04 = 44
       // (price appreciated → the bag is worth more per token).
       trade({
         slot: 2,
         block_time: '2026-07-21T01:01:00Z',
         token_amount: 100,
         trade_type: 'buy',
-        real_sol_reserves: 44,
-        real_token_reserves: 1100,
+        reserve_sol: 44,
+        reserve_token: 1100,
       }),
-      // Bucket C: a trade with NO reserve data → spot carries forward (0.04);
-      // net 1200 tokens → 1200 × 0.04 = 48.
+      // Bucket C: a trade with NO reserve pair and price_per_token 0 → no
+      // resolvable spot, so it carries forward (0.04); net 1200 → 1200 × 0.04 = 48.
       trade({
         slot: 3,
         block_time: '2026-07-21T01:02:00Z',
         token_amount: 100,
         trade_type: 'buy',
+        price_per_token: 0,
       }),
     ];
     const lines = buildFlowLines(trades, 'time', 60, 'real_sol', NO_PATTERNS);

@@ -49,6 +49,7 @@ import {
   createChartOptions,
   createChartPriceFormatter,
   LINE_SERIES_OPTIONS,
+  responsiveChartHeight,
 } from 'components/token-price-chart/constants';
 import type {
   ChartBarSelection,
@@ -112,7 +113,7 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   style: 'candles',
   groupMode: 'time',
   interval: '1s',
-  basis: 'net_sol',
+  basis: 'real_sol',
   trimEmptyBars: true,
   // Live ALWAYS classifies the creator wallet as volume (flow_split.rs
   // FlowState::classify), so default ON to mirror live. Turn OFF only to
@@ -161,17 +162,21 @@ function tradesInBar(trades: TradeRecord[], bar: ChartBarSelection): TradeRecord
   return trades.filter((t) => tradeBarTime(t.block_time, intervalSec) === bar.barTime);
 }
 
-/** Non-vol overlay color — brown/amber, distinct from the buy/sell candle
- *  green/red pair (`CHART_COLORS.up`/`.down`) and from the vol-side green so
- *  it reads as a third signal. */
-const NON_VOL_COLOR = '#c17a3a';
+/** Vol/non-vol overlay line colors, by what each side represents:
+ *  - VOL is dev-generated volume → red (`#EF5350`).
+ *  - NON_VOL is real trader volume → gold (`#F5C542`).
+ *  Both are high-luminance so they read at a glance over the candle field. */
+const VOL_LINE_COLOR = '#EF5350';
+const NON_VOL_COLOR = '#F5C542';
 
-/** Outline color for the ORGANIC (non-volume) candles — a vivid bright gold
- *  (the non-vol family pushed high for maximum glanceability). The candle BODY
- *  keeps its normal up/down green/red; only the border + wick get this color,
- *  so the usually-rare organic bars are framed and pop out of the volume
- *  majority without losing their direction. */
-const NON_VOL_OUTLINE_COLOR = '#ffd21a';
+/** Pure-volume (dev-generated) candles are DE-EMPHASISED rather than
+ *  highlighted: their body + border + wick are painted a dark grey just a hair
+ *  above the chart background (`CHART_COLORS.background` = #1a1a1a) — close
+ *  enough to nearly recede, different enough to still read as a bar — leaving
+ *  the colored organic (real-trader) candles to stand out. Applied only when
+ *  EVERY trade in the bar is volume. Same color tints the toolbar toggle + the
+ *  line-mode marker so they all read as one thing. */
+const VOL_GHOST_COLOR = '#35363d';
 
 /** lightweight-charts rejects any line value outside ±9.007e13. The token basis
  *  is a cumulative whole-token count that runs to 1e14+ for a normal pump.fun
@@ -204,29 +209,30 @@ function VolumeBarsIcon() {
   );
 }
 
-/** Outline the organic (non-volume) candles so they pop out of the volume
- *  majority at a glance — border + wick get the bright amber, the BODY keeps
- *  its normal up/down color (direction stays readable). A bar counts as volume
- *  if it carries ≥1 volume trade (`volumeBarTimes`); everything else is
- *  organic. The selected bar keeps its own border highlight. */
-function outlineNonVolumeCandles(
+/** Ghost the pure-volume candles into the background so the organic ones stand
+ *  out — body + border + wick all get the shallow translucent dark, sacrificing
+ *  this bar's up/down color to read it as "dev-generated volume, not a real
+ *  move". A bar is ghosted only if EVERY trade in it is volume
+ *  (`pureVolumeBarTimes`); bars with any organic trade keep their normal color. */
+function outlineVolumeCandles(
   data: ReturnType<typeof barsToCandleData>,
-  volumeBarTimes: ReadonlySet<number>,
+  pureVolumeBarTimes: ReadonlySet<number>,
 ) {
   return data.map((c) => {
-    if (volumeBarTimes.has(c.time as number)) return c;
+    if (!pureVolumeBarTimes.has(c.time as number)) return c;
     return {
       ...c,
-      wickColor: NON_VOL_OUTLINE_COLOR,
-      borderColor: (c as { borderColor?: string }).borderColor ?? NON_VOL_OUTLINE_COLOR,
+      color: VOL_GHOST_COLOR,
+      wickColor: VOL_GHOST_COLOR,
+      borderColor: VOL_GHOST_COLOR,
     };
   });
 }
 
 const BASIS_OPTIONS: { value: FlowBasis; label: string }[] = [
+  { value: 'real_sol', label: 'Real SOL' },
   { value: 'net_sol', label: 'Net SOL' },
   { value: 'token', label: 'Token' },
-  { value: 'real_sol', label: 'Real SOL' },
 ];
 
 /** Segmented pill group — same visual language as the shared `ChartToolbar`
@@ -351,6 +357,9 @@ export interface FlowPreviewChartProps {
   /** Drives the "Migration" reference line the same way the shared chart's
    *  toggle does (the line itself is a fixed pump.fun constant either way). */
   isMigrated?: boolean;
+  /** Fixed pixel height. Omit (the default) to let the chart size its height
+   *  to its width via {@link responsiveChartHeight} — the chart width fills
+   *  the column, so a fixed height renders wide-and-flat on a big monitor. */
   height?: number;
 }
 
@@ -371,7 +380,7 @@ export function FlowPreviewChart({
   creatorWallet,
   athPriceInSol = null,
   isMigrated = false,
-  height = 320,
+  height: fixedHeight,
 }: FlowPreviewChartProps) {
   const { timezone } = useTimezone();
   const profileWallets = useProfileWallets();
@@ -390,6 +399,14 @@ export function FlowPreviewChart({
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
   const rangeSelectModeRef = useRef(false);
   const selectedBarRef = useRef<ChartBarSelection | null>(null);
+
+  // Height tracks width unless the caller pins it (`fixedHeight`). Kept in a ref
+  // too so the resize observer can compare without re-running the create effect.
+  const [chartHeight, setChartHeight] = useState(() => fixedHeight ?? responsiveChartHeight(0));
+  const chartHeightRef = useRef(chartHeight);
+  useEffect(() => {
+    chartHeightRef.current = chartHeight;
+  }, [chartHeight]);
 
   const initialPrefs = useRef(loadFlowChartPrefs()).current;
   const [style, setStyle] = useState<ChartStyle>(initialPrefs.style);
@@ -476,11 +493,11 @@ export function FlowPreviewChart({
     highlightVolumeBars,
   ]);
 
-  // Bar time-keys that carry ≥1 volume-classified trade (checked ix-patterns +
+  // Bar time-keys whose trades are ALL volume-classified (checked ix-patterns +
   // creator seed + forward contagion — the same classifier the overlay lines
-  // use). Drives the "highlight volume bars" spotlight. Empty (cheap) while the
-  // toggle is off.
-  const volumeBarTimes = useMemo(() => {
+  // use). A bar with even one organic trade is excluded. Drives the "highlight
+  // volume bars" spotlight. Empty (cheap) while the toggle is off.
+  const pureVolumeBarTimes = useMemo(() => {
     const set = new Set<number>();
     if (!highlightVolumeBars) return set;
     const classified = classifyFlowTrades(
@@ -493,10 +510,18 @@ export function FlowPreviewChart({
       })),
       classifyOpts,
     );
+    // Per bar, tally total vs volume trades; keep only the bars where they match.
+    const total = new Map<number, number>();
+    const volCount = new Map<number, number>();
     for (const c of classified) {
-      if (!c.isVol) continue;
       const key = groupMode === 'slot' ? tradeBarSlot(c) : tradeBarTime(c.block_time, intervalSec);
-      if (key != null) set.add(key as number);
+      if (key == null) continue;
+      const k = key as number;
+      total.set(k, (total.get(k) ?? 0) + 1);
+      if (c.isVol) volCount.set(k, (volCount.get(k) ?? 0) + 1);
+    }
+    for (const [k, t] of total) {
+      if ((volCount.get(k) ?? 0) === t) set.add(k);
     }
     return set;
   }, [highlightVolumeBars, sortedTrades, classifyOpts, groupMode, intervalSec]);
@@ -524,9 +549,12 @@ export function FlowPreviewChart({
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    const initialHeight = fixedHeight ?? responsiveChartHeight(el.clientWidth);
+    chartHeightRef.current = initialHeight;
+    setChartHeight(initialHeight);
     const chart = createChart(
       el,
-      createChartOptions(el.clientWidth, height, groupMode, 'SOL', timezone),
+      createChartOptions(el.clientWidth, initialHeight, groupMode, 'SOL', timezone),
     );
     chartRef.current = chart;
 
@@ -545,7 +573,7 @@ export function FlowPreviewChart({
     rangeSelectPrimRef.current = rangePrim;
 
     const volSeries = chart.addSeries(LineSeries, {
-      color: CHART_COLORS.up,
+      color: VOL_LINE_COLOR,
       lineWidth: 2,
       priceScaleId: 'left',
       title: 'Vol makers',
@@ -641,8 +669,19 @@ export function FlowPreviewChart({
     });
 
     const observer = new ResizeObserver(() => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
+      const node = containerRef.current;
+      if (!node) return;
+      const width = node.clientWidth;
+      if (!(width > 0)) return;
+      // Height is derived from WIDTH only (never the observed height) so there's
+      // no height->width->height feedback loop.
+      const nextHeight = fixedHeight ?? responsiveChartHeight(width);
+      if (nextHeight !== chartHeightRef.current) {
+        chartHeightRef.current = nextHeight;
+        setChartHeight(nextHeight);
+        chart.applyOptions({ width, height: nextHeight });
+      } else {
+        chart.applyOptions({ width });
       }
     });
     observer.observe(el);
@@ -674,26 +713,24 @@ export function FlowPreviewChart({
     // closes over `intervalAtMount`, which must be rebuilt whenever the
     // bucket width changes or `tradesInBar` filters against the wrong width.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [style, groupMode, intervalSec, height, timezone]);
+  }, [style, groupMode, intervalSec, fixedHeight, timezone]);
 
   useEffect(() => {
     if (style === 'candles') {
       const highlight = selectedBar ? new Set([selectedBar.barTime as number]) : undefined;
       const data = barsToCandleData(bars, highlight);
-      // Candles support a per-bar border/wick color → outline the organic
-      // (non-volume) ones in amber so they pop at a glance while keeping their
-      // up/down body. Only when there's a volume bar to contrast against (else
-      // every bar is organic → no point). Line mode can't per-point recolor, so
-      // it uses markers (in the markers effect).
+      // Candles support per-bar colors → ghost the pure-volume ones into the
+      // background so the organic candles stand out. Only when there's such a
+      // bar. Line mode can't per-point recolor, so it uses markers instead.
       const finalData =
-        highlightVolumeBars && volumeBarTimes.size > 0
-          ? outlineNonVolumeCandles(data, volumeBarTimes)
+        highlightVolumeBars && pureVolumeBarTimes.size > 0
+          ? outlineVolumeCandles(data, pureVolumeBarTimes)
           : data;
       (mainSeriesRef.current as ISeriesApi<'Candlestick'> | null)?.setData(finalData);
     } else {
       (mainSeriesRef.current as ISeriesApi<'Line'> | null)?.setData(barsToLineData(bars));
     }
-  }, [bars, style, selectedBar, highlightVolumeBars, volumeBarTimes]);
+  }, [bars, style, selectedBar, highlightVolumeBars, pureVolumeBarTimes]);
 
   // The token basis is a cumulative whole-token count that runs past
   // lightweight-charts' ±9.007e13 series-value ceiling, so it's charted divided
@@ -726,14 +763,16 @@ export function FlowPreviewChart({
     const markers: SeriesMarker<UTCTimestamp>[] = showTradeMarkers
       ? buildTradeMarkers(sortedTrades, groupMode, intervalSec)
       : [];
-    if (highlightVolumeBars && style === 'line' && volumeBarTimes.size > 0) {
-      // Mark the organic (non-volume) points — the rare ones worth spotting.
+    if (highlightVolumeBars && style === 'line' && pureVolumeBarTimes.size > 0) {
+      // Mark the pure-volume points — every trade in them is volume. Line mode
+      // can't per-point recolor, so a below-bar grey square IS the highlight;
+      // candle mode instead repaints the whole bar grey (setData effect above).
       for (const bar of bars) {
-        if (volumeBarTimes.has(bar.time as number)) continue;
+        if (!pureVolumeBarTimes.has(bar.time as number)) continue;
         markers.push({
           time: bar.time,
           position: 'belowBar',
-          color: NON_VOL_OUTLINE_COLOR,
+          color: VOL_GHOST_COLOR,
           shape: 'square',
           size: 1,
         });
@@ -758,7 +797,7 @@ export function FlowPreviewChart({
     style,
     selectedBar,
     highlightVolumeBars,
-    volumeBarTimes,
+    pureVolumeBarTimes,
   ]);
 
   // Tracked-wallet markers.
@@ -926,7 +965,7 @@ export function FlowPreviewChart({
         chart.applyOptions({ handleScroll: true, handleScale: true });
       }
     };
-  }, [rangeSelectMode, style, groupMode, intervalSec, height, timezone]);
+  }, [rangeSelectMode, style, groupMode, intervalSec, fixedHeight, timezone]);
 
   // True (unscaled) cumulative readouts — token counts render compact (with a
   // trillions tier), SOL keeps its ◎ formatting. Mirrors the scaled series above.
@@ -1052,8 +1091,8 @@ export function FlowPreviewChart({
           active={highlightVolumeBars}
           onClick={() => setHighlightVolumeBars((v) => !v)}
           label="Toggle flow-split candle highlight"
-          tooltip="Outline the organic (non-volume) candles in amber so they stand out at a glance from the volume_ix_pattern bars (checked patterns + creator + contagion) — body colors unchanged"
-          activeColor={NON_VOL_OUTLINE_COLOR}
+          tooltip="Fade the pure-volume candles into the background (shallow dark) — bars whose every trade is volume-classified (checked patterns + creator + contagion). Bars with any organic trade keep their normal up/down color"
+          activeColor={VOL_GHOST_COLOR}
         >
           <VolumeBarsIcon />
         </IconToggleButton>
@@ -1154,7 +1193,7 @@ export function FlowPreviewChart({
         ) : (
           <span className="text-text-dim/50">hover the chart for O/H/L/C/Vol/Liq</span>
         )}
-        <span style={{ color: CHART_COLORS.up }}>
+        <span style={{ color: VOL_LINE_COLOR }}>
           <span className="font-semibold">VolMk</span>{' '}
           {readVol != null ? formatFlow(readVol) : '—'}
         </span>
@@ -1165,7 +1204,7 @@ export function FlowPreviewChart({
       </div>
 
       <div className="relative">
-        <div ref={containerRef} style={{ height }} />
+        <div ref={containerRef} style={{ height: chartHeight }} />
 
         {rangeTooltip && (
           <RangeSelectTooltip
@@ -1194,10 +1233,10 @@ export function FlowPreviewChart({
               layout="grid"
             />
             <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
-              <span className="font-semibold" style={{ color: CHART_COLORS.up }}>
+              <span className="font-semibold" style={{ color: VOL_LINE_COLOR }}>
                 VolMk
               </span>
-              <span style={{ color: CHART_COLORS.up }}>
+              <span style={{ color: VOL_LINE_COLOR }}>
                 {readVol != null ? formatFlow(readVol) : '—'}
               </span>
               <span className="font-semibold" style={{ color: NON_VOL_COLOR }}>

@@ -166,6 +166,27 @@ export const DEFAULT_CHART_PREFS = {
   showWalletMarkers: true,
 };
 
+/** Responsive chart height. The chart width fills its container (fluid), so on a
+ *  wide monitor a fixed height renders as a wide-flat band that squashes price
+ *  action and — in the flow view — collapses the vol vs non-vol separation. This
+ *  grows the height with the width to keep a readable aspect ratio, clamped to
+ *  [min, max]. Derived from WIDTH ONLY (never from an observed height) so there
+ *  is no height->width->height feedback loop that could thrash a scrollbar
+ *  gutter (see `TokenPriceChart`'s width-only ResizeObserver note). */
+export const CHART_HEIGHT_MIN = 320;
+export const CHART_HEIGHT_MAX = 560;
+export const CHART_ASPECT_MAX = 2.2;
+
+export function responsiveChartHeight(
+  width: number,
+  min = CHART_HEIGHT_MIN,
+  max = CHART_HEIGHT_MAX,
+  aspect = CHART_ASPECT_MAX,
+): number {
+  if (!(width > 0)) return min;
+  return Math.round(Math.min(max, Math.max(min, width / aspect)));
+}
+
 export function createChartOptions(
   width: number,
   height: number,

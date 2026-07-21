@@ -48,6 +48,7 @@ import {
   DEFAULT_CHART_PREFS,
   LINE_SERIES_OPTIONS,
   LS_CHART_PREFS_KEY,
+  responsiveChartHeight,
   SERIES_BY_STYLE,
   TOKEN_TOTAL_SUPPLY,
 } from './constants';
@@ -495,7 +496,7 @@ export function TokenPriceChart({
   metric = 'price',
   onMetricChange,
   className,
-  height = 320,
+  height: fixedHeight,
   onBarClick,
   selectedBar = null,
   onRangeChange,
@@ -539,6 +540,13 @@ export function TokenPriceChart({
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
+
+  // Height tracks width unless the caller pins it (`fixedHeight`). A fluid width
+  // with a fixed height renders wide-and-flat on a big monitor; deriving height
+  // from width keeps a readable aspect ratio. Set from the measured width at
+  // chart creation (below); resize stays width-only, so this never feeds a
+  // height->width->height loop (see the ResizeObserver note in the create effect).
+  const [chartHeight, setChartHeight] = useState(() => fixedHeight ?? responsiveChartHeight(0));
 
   const initialPrefs = loadPrefs();
   const [groupMode, setGroupMode] = useState<ChartGroupMode>(initialPrefs.groupMode);
@@ -812,15 +820,15 @@ export function TokenPriceChart({
     if (!el) return;
 
     const rect = el.getBoundingClientRect();
+    const width = rect.width || el.clientWidth;
+    // Derive height from the measured WIDTH (one-way) so the chart isn't a
+    // wide-flat band on a big monitor. Resize stays width-only (below), so this
+    // never becomes a height->width->height feedback loop.
+    const initialHeight = fixedHeight ?? responsiveChartHeight(width);
+    setChartHeight(initialHeight);
     const chart = createChart(
       el,
-      createChartOptions(
-        rect.width || el.clientWidth,
-        height,
-        groupMode,
-        priceUnit,
-        chartTimezone,
-      ),
+      createChartOptions(width, initialHeight, groupMode, priceUnit, chartTimezone),
     );
     chartRef.current = chart;
 
@@ -1058,7 +1066,7 @@ export function TokenPriceChart({
       setRangeTooltip(null);
       setWalletMarkersTooltip(null);
     };
-  }, [showChart, height, groupingKey, groupMode, priceUnit, chartTimezone]);
+  }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -1433,7 +1441,7 @@ export function TokenPriceChart({
         chart.applyOptions({ handleScroll: true, handleScale: true });
       }
     };
-  }, [showChart, height, groupingKey, groupMode, priceUnit, chartTimezone, rangeSelectMode]);
+  }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone, rangeSelectMode]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -1521,7 +1529,7 @@ export function TokenPriceChart({
       <Placeholder
         message="Select a token row to view price history."
         className={className}
-        height={height}
+        height={chartHeight}
       />
     );
   }
@@ -1531,7 +1539,7 @@ export function TokenPriceChart({
       <Placeholder
         message={`Loading trades for ${symbol}…`}
         className={className}
-        height={height}
+        height={chartHeight}
       />
     );
   }
@@ -1540,7 +1548,7 @@ export function TokenPriceChart({
     return (
       <div
         className={panelClass(cn('flex items-center justify-center p-4 text-xs text-red', className))}
-        style={{ ...panelStyle, height, borderColor: '#f2364544' }}
+        style={{ ...panelStyle, height: chartHeight, borderColor: '#f2364544' }}
       >
         {error}
       </div>
@@ -1552,7 +1560,7 @@ export function TokenPriceChart({
       <Placeholder
         message={`No trades recorded for ${symbol}.`}
         className={className}
-        height={height}
+        height={chartHeight}
       />
     );
   }
@@ -1562,7 +1570,7 @@ export function TokenPriceChart({
       <Placeholder
         message={`No chart data for ${symbol} at ${groupMode === 'slot' ? 'slot' : interval} grouping.`}
         className={className}
-        height={height}
+        height={chartHeight}
       />
     );
   }
@@ -1600,7 +1608,7 @@ export function TokenPriceChart({
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}
         onRangeSelectModeChange={setRangeSelectMode}
       />
-      <div className="relative" style={{ height, width: '100%' }}>
+      <div className="relative" style={{ height: chartHeight, width: '100%' }}>
         <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
         {barTooltip && (
           <BarCrosshairTooltip

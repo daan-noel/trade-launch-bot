@@ -162,6 +162,24 @@ function groupKeyLabel(gk: Record<string, string>): string {
   return parts.length ? parts.join(' · ') : 'ALL';
 }
 
+/** Compact group-key label for a fingerprint NAME. Unlike `groupKeyLabel` this
+ *  drops `∅` (absent) params — they carry no info in a name — and collapses the
+ *  pipe-joined `ix_labels` sequence into a `Nix` count so the name stays short
+ *  instead of listing every instruction. */
+function groupKeyName(gk: Record<string, string>): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(gk)) {
+    if (v === MISSING_GROUP_VALUE) continue;
+    if (k === 'ix_labels') {
+      parts.push(`${v.split(' | ').length}ix`);
+      continue;
+    }
+    const short = GROUP_FIELD_AXIS[k as GroupField] ?? k;
+    parts.push(`${short}=${v}`);
+  }
+  return parts.length ? parts.join(' · ') : 'ALL';
+}
+
 /** Discovery `GroupField` → the `fingerprintParamsCell` axis-hue key for the
  *  same underlying concept, so a group-key chip gets the EXACT hue a
  *  fingerprint's own param chip would use for that axis (same SSOT palette,
@@ -838,7 +856,7 @@ export function FlowDiscoveryPage() {
           group_key: selectedGroup.group_key,
           bucket_width_sol: bucketWidthSol,
           volume_ix_patterns: patterns,
-          name: `flow · ${groupKeyLabel(selectedGroup.group_key)}`,
+          name: `flow · ${groupKeyName(selectedGroup.group_key)}`,
         }).unwrap();
         setTargetFpId(fp.id);
         setApplyOk(`Bound fingerprint “${fp.name}”.`);

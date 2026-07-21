@@ -1,9 +1,9 @@
 import type { UTCTimestamp } from 'lightweight-charts';
 import {
   compareTradesChronologically,
-  poolSpotPriceSol,
   tradeBarSlot,
   tradeBarTime,
+  tradeSpotPriceSol,
 } from 'components/token-price-chart/chartBars';
 import type { ChartGroupMode } from 'components/token-price-chart/types';
 import type { TradeRecord } from 'types';
@@ -17,10 +17,13 @@ import { classifyFlowTrades, type FlowClassifyOptions } from './classifyFlow';
  *  - `token`    — net token balance: Σ(buy − sell) of `token_amount`. How many
  *                 tokens the cohort is net *holding*.
  *  - `real_sol` — mark-to-market SOL value of that net token balance, priced at
- *                 each candle's real-reserve spot (`poolSpotPriceSol` =
- *                 `real_sol_reserves / real_token_reserves`). What the cohort's
- *                 bag is currently *worth*, vs `net_sol` = what it cost. The gap
- *                 between the two lines is unrealized PnL. */
+ *                 each candle's canonical spot (`tradeSpotPriceSol` = the GMGN
+ *                 `reserve_sol / reserve_token` pair, `price_per_token` fallback
+ *                 — the SAME price the candles draw at). What the cohort's bag is
+ *                 currently *worth*, vs `net_sol` = what it cost; the gap between
+ *                 the two lines is unrealized PnL. (The literal non-virtual
+ *                 `real_reserve_sol` is a live-decoder-only field, never persisted,
+ *                 so it isn't available on this historical trades endpoint.) */
 export type FlowBasis = 'net_sol' | 'token' | 'real_sol';
 
 export interface FlowLinePoint {
@@ -44,8 +47,8 @@ interface FlowBucket {
   volTok: number;
   nonVolSol: number;
   nonVolTok: number;
-  /** Real-reserve spot of the LAST trade in the bucket (candle close). Null
-   *  until a trade carrying real reserves lands in it. */
+  /** Canonical spot of the LAST trade in the bucket (candle close). Null until a
+   *  trade with a resolvable spot lands in it. */
   spot: number | null;
 }
 
@@ -64,8 +67,8 @@ interface FlowBucket {
  *  net balance falls when the cohort sells; that's the point.)
  *
  *  For `real_sol` the value at a candle is the cohort's cumulative net TOKEN
- *  balance × the candle-close real-reserve spot, carried forward across buckets
- *  with no reserve data. */
+ *  balance × the candle-close canonical spot, carried forward across buckets
+ *  with no resolvable spot. */
 export function buildFlowLines(
   trades: readonly TradeRecord[],
   groupMode: ChartGroupMode,
@@ -105,9 +108,9 @@ export function buildFlowLines(
       bucket.nonVolSol += solDelta;
       bucket.nonVolTok += tokDelta;
     }
-    // Trades are processed in chronological order, so the last real-reserve
-    // spot written wins → the candle-close price.
-    const spot = poolSpotPriceSol(raw);
+    // Trades are processed in chronological order, so the last spot written
+    // wins → the candle-close price.
+    const spot = tradeSpotPriceSol(raw);
     if (spot != null) bucket.spot = spot;
   }
 
