@@ -22,7 +22,9 @@ awaits durable PG for the hot transitions:
 | later fills / terminal | await pending insert, then PG | n/a |
 
 `Sink::warm_runs` on rule reload pre-caches `strategy_runs` so the first buy of a
-rule rarely awaits `insert_run`.
+rule rarely awaits `insert_run`. Cold miss reuses the latest still-`Running` row
+(and deletes empty leading shells from older always-insert warm behavior) so a
+restart does not push paper scoreboard N/PnL onto a new empty `run_seq`.
 
 ## A. Pre-buy guards (`decision_loop::dispatch_buy` — real mode)
 

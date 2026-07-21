@@ -44,6 +44,12 @@ import {
   type ActionProgress,
 } from 'services/sse';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import {
+  formatSignedPct,
+  pctGradeClass,
+  signedToneClass,
+  winRateGradeClass,
+} from 'lib/signedTone';
 import { simulateHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   disabledRuleRowClass,
@@ -51,6 +57,11 @@ import {
   type StrategyRule,
   type TradeMode,
 } from 'lib/strategy/types';
+
+/** Closed trades behind Win% / Avg% / Exp (entered + terminal). */
+function closedCount(r: StrategyRule): number {
+  return (r.win_count ?? 0) + (r.loss_count ?? 0);
+}
 
 export interface RuleLiveCounts {
   open: number;
@@ -64,7 +75,7 @@ export interface RulesViewProps {
   linkToSimulate?: boolean;
   /** Live-only: open/pending counts from the Live Status SSOT (not list_rules). */
   ruleLiveCounts?: Record<string, RuleLiveCounts>;
-  /** Live-only: show realized PnL / win% / N score columns (from rule list wire). */
+  /** Live-only: show scoreboard columns from rule-list wire (PnL, Avg%, Exp, Win%, W/L, N). */
   showScores?: boolean;
   /** Live-only: Analyze panel under the table for the selected rule (row click). */
   renderAnalyze?: (ctx: {
@@ -323,10 +334,10 @@ export function RulesView({
               if ((r.total_positions ?? 0) === 0) {
                 return <span className="text-text-dim">—</span>;
               }
-              const cls =
-                v > 0 ? 'text-green' : v < 0 ? 'text-red' : 'text-text-mid';
               return (
-                <span className={`tabular-nums text-xs font-semibold ${cls}`}>
+                <span
+                  className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}
+                >
                   {v > 0 ? '+' : ''}
                   {v.toFixed(3)}◎
                 </span>
@@ -337,16 +348,63 @@ export function RulesView({
             sortable: true as const,
           },
           {
+            key: 'score_avg',
+            label: 'Avg%',
+            group: 'score',
+            render: (r: StrategyRule) => {
+              if (closedCount(r) === 0) {
+                return <span className="text-text-dim">—</span>;
+              }
+              const v = r.avg_pnl_pct ?? 0;
+              return (
+                <span className={`tabular-nums text-xs ${pctGradeClass(v)}`}>
+                  {formatSignedPct(v, 1)}
+                </span>
+              );
+            },
+            searchValue: (r: StrategyRule) => String(r.avg_pnl_pct ?? 0),
+            sortValue: (r: StrategyRule) => r.avg_pnl_pct ?? 0,
+            sortable: true as const,
+          },
+          {
+            key: 'score_exp',
+            label: 'Exp',
+            group: 'score',
+            render: (r: StrategyRule) => {
+              const n = closedCount(r);
+              if (n === 0) {
+                return <span className="text-text-dim">—</span>;
+              }
+              const v = (r.total_pnl_sol ?? 0) / n;
+              return (
+                <span className={`tabular-nums text-xs font-semibold ${signedToneClass(v)}`}>
+                  {v > 0 ? '+' : ''}
+                  {v.toFixed(3)}◎
+                </span>
+              );
+            },
+            searchValue: (r: StrategyRule) => {
+              const n = closedCount(r);
+              return n > 0 ? String((r.total_pnl_sol ?? 0) / n) : '';
+            },
+            sortValue: (r: StrategyRule) => {
+              const n = closedCount(r);
+              return n > 0 ? (r.total_pnl_sol ?? 0) / n : 0;
+            },
+            sortable: true as const,
+          },
+          {
             key: 'score_win',
             label: 'Win%',
             group: 'score',
             render: (r: StrategyRule) => {
-              if ((r.win_count ?? 0) + (r.loss_count ?? 0) === 0) {
+              if (closedCount(r) === 0) {
                 return <span className="text-text-dim">—</span>;
               }
+              const pct = r.win_rate ?? 0;
               return (
-                <span className="tabular-nums text-xs text-text-mid">
-                  {Math.round(r.win_rate ?? 0)}%
+                <span className={`tabular-nums text-xs ${winRateGradeClass(pct / 100)}`}>
+                  {Math.round(pct)}%
                 </span>
               );
             },
@@ -355,12 +413,52 @@ export function RulesView({
             sortable: true as const,
           },
           {
+            key: 'score_wl',
+            label: 'W/L',
+            group: 'score',
+            render: (r: StrategyRule) => {
+              const w = r.win_count ?? 0;
+              const l = r.loss_count ?? 0;
+              if (w + l === 0) {
+                return <span className="text-text-dim">—</span>;
+              }
+              return (
+                <span className="tabular-nums text-xs">
+                  <span className="text-green">{w}</span>
+                  <span className="text-text-dim">/</span>
+                  <span className="text-red">{l}</span>
+                </span>
+              );
+            },
+            searchValue: (r: StrategyRule) =>
+              `${r.win_count ?? 0}/${r.loss_count ?? 0}`,
+            sortValue: (r: StrategyRule) =>
+              (r.win_count ?? 0) * 1_000_000 + (r.loss_count ?? 0),
+            sortable: true as const,
+          },
+          {
             key: 'score_n',
             label: 'N',
             group: 'score',
-            render: (r: StrategyRule) => (
-              <span className="tabular-nums text-xs text-text-mid">{r.total_positions ?? 0}</span>
-            ),
+            render: (r: StrategyRule) => {
+              const total = r.total_positions ?? 0;
+              const closed = closedCount(r);
+              if (total === 0) {
+                return <span className="text-text-dim">—</span>;
+              }
+              // Entered total; when some are still open, show closed beside it.
+              return (
+                <span
+                  className="tabular-nums text-xs text-text-mid"
+                  title="Entered positions (closed count when any still open)"
+                >
+                  {total}
+                  {closed < total && (
+                    <span className="text-text-dim"> · {closed}c</span>
+                  )}
+                </span>
+              );
+            },
             searchValue: (r: StrategyRule) => String(r.total_positions ?? 0),
             sortValue: (r: StrategyRule) => r.total_positions ?? 0,
             sortable: true as const,

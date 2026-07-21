@@ -80,8 +80,9 @@ Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
 `usePortfolioRealtime`, `useWalletMarksLive`, `useTokenTradesLiveBootstrap`,
 `usePositionNotifications`. Tokens STREAM fallback poll defaults to 90s.
 Rule Analyze (embedded on Rules + `/strategies/rules/:ruleId`) reloads history only on
-open/close edges (not ExitPending). Rules scoreboard columns (`PnL` / `Win%` / `N`) come
-from `GET /api/strategy-rules` DB enrichment (real = all-time, paper = latest run).
+open/close edges (not ExitPending). Rules scoreboard columns (`PnL` / `Avg%` / `Exp` /
+`Win%` / `W/L` / `N`) come from `GET /api/strategy-rules` DB enrichment (real = all-time,
+paper = latest run). `Exp` is client-derived expectancy (`PnL / closed`).
 
 ## Store — split `createApi` (the isolation seam)
 

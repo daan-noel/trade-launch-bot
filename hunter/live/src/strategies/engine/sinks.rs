@@ -11,7 +11,9 @@
 //! insert (insert is spawned; later transitions await that handle so fill writes
 //! never race a missing row). `ExitPending` status flips are fire-and-forget so
 //! `SubmitSell` is not gated on PG. Runs are warmed on rule reload so the first
-//! buy of a rule rarely blocks on `ensure_run`.
+//! buy of a rule rarely blocks on `ensure_run`. Cold miss reuses the latest
+//! still-`Running` DB run (and collapses empty leading shells) so a process
+//! restart does not orphan the paper scoreboard onto a new empty `run_seq`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -494,6 +496,34 @@ impl Sink {
             return Ok(*id);
         }
         let mode = mode_str(info.mode);
+        // Drop empty newest shells left by the old always-insert warm path so
+        // latest-run scoreboard / position reads land on the real bag again.
+        match self.repo.delete_empty_leading_runs(rule.0, mode).await {
+            Ok(0) => {}
+            Ok(n) => {
+                warn!(
+                    rule = %rule.0,
+                    mode,
+                    deleted = n,
+                    "engine sink: collapsed empty leading strategy_runs"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    rule = %rule.0,
+                    mode,
+                    "engine sink: delete_empty_leading_runs failed: {e}"
+                );
+            }
+        }
+        // Reuse the open run across restarts. Only mint when none exists or the
+        // latest was finalized (Stopped/Finished/Cancelled).
+        if let Some(existing) = self.repo.latest_run(rule.0, mode).await? {
+            if existing.status == "Running" {
+                self.run_cache.insert(rule, existing.id);
+                return Ok(existing.id);
+            }
+        }
         let seq = self.repo.next_run_seq(rule.0, mode).await?;
         let run = StrategyRun {
             id: uuid::Uuid::new_v4(),

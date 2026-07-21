@@ -748,6 +748,44 @@ impl StrategyRepo {
         Ok(row.map(StrategyRun::from))
     }
 
+    /// Delete empty `Running` shells that sit ahead of an older still-`Running`
+    /// bag for the same `(rule_id, mode)`.
+    ///
+    /// Pre-fix `Sink::ensure_run` minted a new run on every cold cache miss
+    /// (process restart / warm), so paper scoreboard joins on
+    /// `DISTINCT ON (rule_id) … ORDER BY run_seq DESC` saw an empty latest run
+    /// while positions lived under prior `run_id`s. Safe vs a future
+    /// finish-on-stop → new-run-on-activate lifecycle: those older siblings are
+    /// terminal (`Finished`/`Stopped`), so this DELETE does not touch them.
+    pub async fn delete_empty_leading_runs(
+        &self,
+        rule_id: Uuid,
+        mode: &str,
+    ) -> anyhow::Result<u64> {
+        let res = sqlx::query(
+            "DELETE FROM strategy_runs r \
+             WHERE r.rule_id = $1 AND r.mode = $2 AND r.status = 'Running' \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM strategy_positions p WHERE p.run_id = r.id \
+             ) \
+             AND EXISTS ( \
+                 SELECT 1 FROM strategy_runs older \
+                 WHERE older.rule_id = r.rule_id AND older.mode = r.mode \
+                   AND older.run_seq < r.run_seq \
+                   AND older.status = 'Running' \
+                   AND EXISTS ( \
+                       SELECT 1 FROM strategy_positions p2 \
+                       WHERE p2.run_id = older.id \
+                   ) \
+             )",
+        )
+        .bind(rule_id)
+        .bind(mode)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     /// `(run_id, run_seq)` for every run of a rule in a mode, newest first. Backs
     /// the run-history positions view: the caller takes the first (latest) run as
     /// the "current run" to exclude, and maps the rest onto each history position's
