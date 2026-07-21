@@ -752,7 +752,7 @@ function RuleSimPositionsPanel({
             onQueryChange={setSimQuery}
             loading={simTableLoading}
             resetKey={`${rule.id}_${showNotFired}`}
-            tableId={`simulate-positions-${rule.id}`}
+            tableId="simulate-positions"
             emptyMessage={
               showNotFired
                 ? 'No tokens in this simulation result.'

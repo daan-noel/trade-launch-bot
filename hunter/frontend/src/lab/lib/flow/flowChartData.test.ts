@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { buildFlowLines } from './flowChartData';
-import { patternKeysFrom } from './classifyFlow';
 import type { TradeRecord } from 'types';
 
 /** Minimal trade fixture — only the fields `buildFlowLines`/`classifyFlow`
@@ -24,46 +23,75 @@ function trade(overrides: Partial<TradeRecord>): TradeRecord {
   };
 }
 
+const NO_PATTERNS = { patternKeys: new Set<string>(), creatorWallet: null };
+
 describe('buildFlowLines', () => {
-  const patternKeys = patternKeysFrom([['A']]);
-
-  it('never decreases even when a late-arriving trade sorts slightly out of true time order', () => {
-    // A live/very-recent token can have a trade whose tx_index hasn't been
-    // backfilled yet (falls back to 0), landing it earlier in
-    // `compareTradesChronologically`'s order than its real block_time implies.
-    // The bucket-total + prefix-sum design must stay monotonic regardless.
+  it('nets buy − sell (net_sol) so the line drops when a cohort sells', () => {
     const trades: TradeRecord[] = [
-      trade({ slot: 100, tx_index: 5, block_time: '2026-07-21T01:00:00Z', amount_sol: 10 }),
-      trade({ slot: 100, tx_index: 6, block_time: '2026-07-21T01:00:30Z', amount_sol: 10 }),
-      // Same slot, but tx_index unresolved (0) — sorts BEFORE the two above
-      // even though its real time (bucket) is later.
-      trade({ slot: 100, tx_index: 0, block_time: '2026-07-21T01:01:30Z', amount_sol: 50 }),
-      trade({ slot: 101, tx_index: 1, block_time: '2026-07-21T01:02:00Z', amount_sol: 10 }),
+      trade({ slot: 1, block_time: '2026-07-21T01:00:00Z', amount_sol: 10, trade_type: 'buy' }),
+      trade({ slot: 2, block_time: '2026-07-21T01:01:00Z', amount_sol: 4, trade_type: 'sell' }),
     ];
-
-    const lines = buildFlowLines(trades, 'time', 60, 'sol', { patternKeys, creatorWallet: null });
-
-    for (const series of [lines.vol, lines.nonVol]) {
-      for (let i = 1; i < series.length; i++) {
-        expect(series[i].value).toBeGreaterThanOrEqual(series[i - 1].value);
-      }
-    }
-    // Total across both series' final points must equal the full sum in.
-    const totalIn = trades.reduce((s, t) => s + t.amount_sol, 0);
-    const totalOut = (lines.vol.at(-1)?.value ?? 0) + (lines.nonVol.at(-1)?.value ?? 0);
-    expect(totalOut).toBeCloseTo(totalIn, 6);
+    const lines = buildFlowLines(trades, 'time', 60, 'net_sol', NO_PATTERNS);
+    expect(lines.nonVol[0].value).toBeCloseTo(10, 6);
+    // A sell pulls the running net BACK down — impossible under the old gross flow.
+    expect(lines.nonVol.at(-1)!.value).toBeCloseTo(6, 6);
   });
 
   it('attributes each trade to its own time bucket regardless of processing order', () => {
+    // A live/very-recent token can have a trade whose tx_index hasn't been
+    // backfilled yet (falls back to 0), landing it out of true time order in
+    // `compareTradesChronologically`. The per-bucket total + prefix-sum design
+    // must place each net delta in the right bucket regardless of array order.
     const early = trade({ slot: 1, tx_index: 0, block_time: '2026-07-21T01:00:00Z', amount_sol: 5 });
     const late = trade({ slot: 2, tx_index: 0, block_time: '2026-07-21T01:05:00Z', amount_sol: 7 });
-    // Pass already out of chronological order — buildFlowLines re-sorts, but
-    // the bucket totals themselves don't depend on array order at all.
-    const lines = buildFlowLines([late, early], 'time', 60, 'sol', {
-      patternKeys: new Set(),
-      creatorWallet: null,
-    });
+    const lines = buildFlowLines([late, early], 'time', 60, 'net_sol', NO_PATTERNS);
     expect(lines.nonVol[0].value).toBeCloseTo(5, 6);
     expect(lines.nonVol.at(-1)!.value).toBeCloseTo(12, 6);
+  });
+
+  it('token basis tracks the net token balance', () => {
+    const trades: TradeRecord[] = [
+      trade({ slot: 1, block_time: '2026-07-21T01:00:00Z', token_amount: 1000, trade_type: 'buy' }),
+      trade({ slot: 2, block_time: '2026-07-21T01:01:00Z', token_amount: 400, trade_type: 'sell' }),
+    ];
+    const lines = buildFlowLines(trades, 'time', 60, 'token', NO_PATTERNS);
+    expect(lines.nonVol[0].value).toBeCloseTo(1000, 6);
+    expect(lines.nonVol.at(-1)!.value).toBeCloseTo(600, 6);
+  });
+
+  it('real_sol marks the net token bag to the candle-close real spot, carrying it forward', () => {
+    const trades: TradeRecord[] = [
+      // Bucket A: net 1000 tokens, real spot 20/1000 = 0.02 → 1000 × 0.02 = 20.
+      trade({
+        slot: 1,
+        block_time: '2026-07-21T01:00:00Z',
+        token_amount: 1000,
+        trade_type: 'buy',
+        real_sol_reserves: 20,
+        real_token_reserves: 1000,
+      }),
+      // Bucket B: net 1100 tokens, real spot 44/1100 = 0.04 → 1100 × 0.04 = 44
+      // (price appreciated → the bag is worth more per token).
+      trade({
+        slot: 2,
+        block_time: '2026-07-21T01:01:00Z',
+        token_amount: 100,
+        trade_type: 'buy',
+        real_sol_reserves: 44,
+        real_token_reserves: 1100,
+      }),
+      // Bucket C: a trade with NO reserve data → spot carries forward (0.04);
+      // net 1200 tokens → 1200 × 0.04 = 48.
+      trade({
+        slot: 3,
+        block_time: '2026-07-21T01:02:00Z',
+        token_amount: 100,
+        trade_type: 'buy',
+      }),
+    ];
+    const lines = buildFlowLines(trades, 'time', 60, 'real_sol', NO_PATTERNS);
+    expect(lines.nonVol[0].value).toBeCloseTo(20, 6);
+    expect(lines.nonVol[1].value).toBeCloseTo(44, 6);
+    expect(lines.nonVol.at(-1)!.value).toBeCloseTo(48, 6);
   });
 });

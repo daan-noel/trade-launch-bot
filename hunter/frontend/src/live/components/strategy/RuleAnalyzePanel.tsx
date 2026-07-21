@@ -476,7 +476,7 @@ export function RuleAnalyzePanel({
         useRowOverlay={posRowOverlay}
         charts
         resetKey={`${ruleId}_${scopeKey(scope)}`}
-        tableId={`rule-evidence-${ruleId}`}
+        tableId="rule-evidence"
         emptyMessage={
           scope.kind === 'all'
             ? 'No positions in any run.'

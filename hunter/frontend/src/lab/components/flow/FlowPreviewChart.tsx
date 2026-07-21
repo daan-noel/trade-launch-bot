@@ -25,6 +25,7 @@ import {
   computeRangeStats,
   dropEmptyBars,
   migrationChartValue,
+  tradeBarSlot,
   tradeBarTime,
 } from 'components/token-price-chart/chartBars';
 import { BarCrosshairFields } from 'components/token-price-chart/BarCrosshairFields';
@@ -86,7 +87,9 @@ import { cn } from 'lib/cn';
 import { useTimezone } from 'context/TimezoneContext';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { formatTimestampMs } from 'utils/date';
+import { formatCompact, formatDecimalTrim } from 'utils/format';
 import { formatIxLabelsText } from 'lib/ixLabels';
+import { classifyFlowTrades } from '@lab/lib/flow/classifyFlow';
 import { buildFlowLines, type FlowBasis, type FlowLinePoint } from '@lab/lib/flow/flowChartData';
 import { getString, setString, STORAGE_KEYS } from 'lib/storage';
 import type { TradeRecord } from 'types';
@@ -102,13 +105,14 @@ interface FlowPreviewChartPrefs {
   showWalletMarkers: boolean;
   showAthLine: boolean;
   showMigrationLine: boolean;
+  highlightVolumeBars: boolean;
 }
 
 const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   style: 'candles',
   groupMode: 'time',
   interval: '1s',
-  basis: 'sol',
+  basis: 'net_sol',
   trimEmptyBars: true,
   // Live ALWAYS classifies the creator wallet as volume (flow_split.rs
   // FlowState::classify), so default ON to mirror live. Turn OFF only to
@@ -118,6 +122,7 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   showWalletMarkers: false,
   showAthLine: true,
   showMigrationLine: true,
+  highlightVolumeBars: false,
 };
 
 /** Toolbar toggles persist across sessions (mirrors `TokenPriceChart`'s
@@ -128,7 +133,13 @@ function loadFlowChartPrefs(): FlowPreviewChartPrefs {
     const raw = getString(STORAGE_KEYS.flowPreviewChartPrefs);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<FlowPreviewChartPrefs>;
-      return { ...DEFAULT_FLOW_CHART_PREFS, ...parsed };
+      const merged = { ...DEFAULT_FLOW_CHART_PREFS, ...parsed };
+      // Guard the basis against a stale persisted value — the old two-way
+      // toggle stored 'sol', which no longer exists (now net_sol/token/real_sol).
+      if (!BASIS_OPTIONS.some((o) => o.value === merged.basis)) {
+        merged.basis = DEFAULT_FLOW_CHART_PREFS.basis;
+      }
+      return merged;
     }
   } catch {
     /* ignore */
@@ -155,9 +166,67 @@ function tradesInBar(trades: TradeRecord[], bar: ChartBarSelection): TradeRecord
  *  it reads as a third signal. */
 const NON_VOL_COLOR = '#c17a3a';
 
+/** Outline color for the ORGANIC (non-volume) candles — a vivid bright gold
+ *  (the non-vol family pushed high for maximum glanceability). The candle BODY
+ *  keeps its normal up/down green/red; only the border + wick get this color,
+ *  so the usually-rare organic bars are framed and pop out of the volume
+ *  majority without losing their direction. */
+const NON_VOL_OUTLINE_COLOR = '#ffd21a';
+
+/** lightweight-charts rejects any line value outside ±9.007e13. The token basis
+ *  is a cumulative whole-token count that runs to 1e14+ for a normal pump.fun
+ *  token (≈1e15 raw supply, traded over repeatedly), so its two flow lines are
+ *  charted divided by this scale (multiplied back for every axis/readout label);
+ *  the two SOL bases (net_sol / real_sol) are orders of magnitude smaller and
+ *  chart 1:1. */
+const TOKEN_FLOW_SERIES_SCALE = 1e6;
+
+function flowSeriesScale(basis: FlowBasis): number {
+  return basis === 'token' ? TOKEN_FLOW_SERIES_SCALE : 1;
+}
+
+/** Compact token count with a trillions tier — {@link formatCompact} caps at G,
+ *  but cumulative token counts reach 1e14+. */
+function formatTokenCount(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1e12) return `${formatDecimalTrim(v / 1e12, 2)}T`;
+  return formatCompact(v, 2);
+}
+
+/** Three bars with the middle one lit — "highlight the flow-split odd-ones-out". */
+function VolumeBarsIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <rect x="3" y="8" width="3" height="8" rx="0.5" fill="currentColor" opacity="0.4" />
+      <rect x="8.5" y="4" width="3" height="12" rx="0.5" fill="currentColor" />
+      <rect x="14" y="9.5" width="3" height="6.5" rx="0.5" fill="currentColor" opacity="0.4" />
+    </svg>
+  );
+}
+
+/** Outline the organic (non-volume) candles so they pop out of the volume
+ *  majority at a glance — border + wick get the bright amber, the BODY keeps
+ *  its normal up/down color (direction stays readable). A bar counts as volume
+ *  if it carries ≥1 volume trade (`volumeBarTimes`); everything else is
+ *  organic. The selected bar keeps its own border highlight. */
+function outlineNonVolumeCandles(
+  data: ReturnType<typeof barsToCandleData>,
+  volumeBarTimes: ReadonlySet<number>,
+) {
+  return data.map((c) => {
+    if (volumeBarTimes.has(c.time as number)) return c;
+    return {
+      ...c,
+      wickColor: NON_VOL_OUTLINE_COLOR,
+      borderColor: (c as { borderColor?: string }).borderColor ?? NON_VOL_OUTLINE_COLOR,
+    };
+  });
+}
+
 const BASIS_OPTIONS: { value: FlowBasis; label: string }[] = [
-  { value: 'sol', label: 'SOL' },
+  { value: 'net_sol', label: 'Net SOL' },
   { value: 'token', label: 'Token' },
+  { value: 'real_sol', label: 'Real SOL' },
 ];
 
 /** Segmented pill group — same visual language as the shared `ChartToolbar`
@@ -333,6 +402,7 @@ export function FlowPreviewChart({
   const [showWalletMarkers, setShowWalletMarkers] = useState(initialPrefs.showWalletMarkers);
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
+  const [highlightVolumeBars, setHighlightVolumeBars] = useState(initialPrefs.highlightVolumeBars);
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -390,6 +460,7 @@ export function FlowPreviewChart({
       showWalletMarkers,
       showAthLine,
       showMigrationLine,
+      highlightVolumeBars,
     });
   }, [
     style,
@@ -402,7 +473,33 @@ export function FlowPreviewChart({
     showWalletMarkers,
     showAthLine,
     showMigrationLine,
+    highlightVolumeBars,
   ]);
+
+  // Bar time-keys that carry ≥1 volume-classified trade (checked ix-patterns +
+  // creator seed + forward contagion — the same classifier the overlay lines
+  // use). Drives the "highlight volume bars" spotlight. Empty (cheap) while the
+  // toggle is off.
+  const volumeBarTimes = useMemo(() => {
+    const set = new Set<number>();
+    if (!highlightVolumeBars) return set;
+    const classified = classifyFlowTrades(
+      sortedTrades.map((t) => ({
+        wallet_address: t.wallet_address,
+        sol: t.amount_sol,
+        ix_labels: t.instruction_labels,
+        block_time: t.block_time,
+        slot: t.slot,
+      })),
+      classifyOpts,
+    );
+    for (const c of classified) {
+      if (!c.isVol) continue;
+      const key = groupMode === 'slot' ? tradeBarSlot(c) : tradeBarTime(c.block_time, intervalSec);
+      if (key != null) set.add(key as number);
+    }
+    return set;
+  }, [highlightVolumeBars, sortedTrades, classifyOpts, groupMode, intervalSec]);
 
   useEffect(() => {
     barsRef.current = bars;
@@ -582,26 +679,66 @@ export function FlowPreviewChart({
   useEffect(() => {
     if (style === 'candles') {
       const highlight = selectedBar ? new Set([selectedBar.barTime as number]) : undefined;
-      (mainSeriesRef.current as ISeriesApi<'Candlestick'> | null)?.setData(
-        barsToCandleData(bars, highlight),
-      );
+      const data = barsToCandleData(bars, highlight);
+      // Candles support a per-bar border/wick color → outline the organic
+      // (non-volume) ones in amber so they pop at a glance while keeping their
+      // up/down body. Only when there's a volume bar to contrast against (else
+      // every bar is organic → no point). Line mode can't per-point recolor, so
+      // it uses markers (in the markers effect).
+      const finalData =
+        highlightVolumeBars && volumeBarTimes.size > 0
+          ? outlineNonVolumeCandles(data, volumeBarTimes)
+          : data;
+      (mainSeriesRef.current as ISeriesApi<'Candlestick'> | null)?.setData(finalData);
     } else {
       (mainSeriesRef.current as ISeriesApi<'Line'> | null)?.setData(barsToLineData(bars));
     }
-  }, [bars, style, selectedBar]);
+  }, [bars, style, selectedBar, highlightVolumeBars, volumeBarTimes]);
 
+  // The token basis is a cumulative whole-token count that runs past
+  // lightweight-charts' ±9.007e13 series-value ceiling, so it's charted divided
+  // by TOKEN_FLOW_SERIES_SCALE with a custom axis formatter that multiplies back;
+  // the SOL bases (net_sol/real_sol) are small and chart 1:1. Header/crosshair readouts always read
+  // the true (unscaled) values straight off `lines`.
   useEffect(() => {
-    volSeriesRef.current?.setData(lines.vol);
-    nonVolSeriesRef.current?.setData(lines.nonVol);
-  }, [lines]);
+    const scale = flowSeriesScale(basis);
+    const priceFormat =
+      basis === 'token'
+        ? {
+            type: 'custom' as const,
+            formatter: (v: number) => formatTokenCount(v * scale),
+            minMove: 0.01,
+          }
+        : { type: 'price' as const, precision: 2, minMove: 0.01 };
+    const toData = (pts: FlowLinePoint[]) =>
+      scale === 1 ? pts : pts.map((p) => ({ time: p.time, value: p.value / scale }));
+    volSeriesRef.current?.applyOptions({ priceFormat });
+    nonVolSeriesRef.current?.applyOptions({ priceFormat });
+    volSeriesRef.current?.setData(toData(lines.vol));
+    nonVolSeriesRef.current?.setData(toData(lines.nonVol));
+  }, [lines, basis]);
 
-  // Trade (buy/sell count) markers + the selected-bar marker.
+  // Trade (buy/sell count) markers + the selected-bar marker + line-mode
+  // volume-bar highlight (candle mode spotlights via the setData effect above).
   useEffect(() => {
     const series = mainSeriesRef.current;
     if (!series) return;
     const markers: SeriesMarker<UTCTimestamp>[] = showTradeMarkers
       ? buildTradeMarkers(sortedTrades, groupMode, intervalSec)
       : [];
+    if (highlightVolumeBars && style === 'line' && volumeBarTimes.size > 0) {
+      // Mark the organic (non-volume) points — the rare ones worth spotting.
+      for (const bar of bars) {
+        if (volumeBarTimes.has(bar.time as number)) continue;
+        markers.push({
+          time: bar.time,
+          position: 'belowBar',
+          color: NON_VOL_OUTLINE_COLOR,
+          shape: 'square',
+          size: 1,
+        });
+      }
+    }
     if (selectedBar) {
       const bar = bars.find((b) => b.time === selectedBar.barTime);
       if (bar) markers.push(barSelectionMarker(bar));
@@ -612,7 +749,17 @@ export function FlowPreviewChart({
     if (sorted.length > 0) {
       markersPluginRef.current = createSeriesMarkers(series, sorted) as MarkersPlugin;
     }
-  }, [showTradeMarkers, sortedTrades, groupMode, intervalSec, bars, style, selectedBar]);
+  }, [
+    showTradeMarkers,
+    sortedTrades,
+    groupMode,
+    intervalSec,
+    bars,
+    style,
+    selectedBar,
+    highlightVolumeBars,
+    volumeBarTimes,
+  ]);
 
   // Tracked-wallet markers.
   useEffect(() => {
@@ -781,7 +928,9 @@ export function FlowPreviewChart({
     };
   }, [rangeSelectMode, style, groupMode, intervalSec, height, timezone]);
 
-  const unit = basis === 'token' ? '' : '◎';
+  // True (unscaled) cumulative readouts — token counts render compact (with a
+  // trillions tier), SOL keeps its ◎ formatting. Mirrors the scaled series above.
+  const formatFlow = (v: number) => (basis === 'token' ? formatTokenCount(v) : formatAmount(v, '◎'));
   const readVol = flowCrosshair?.vol ?? lines.vol.at(-1)?.value ?? null;
   const readNonVol = flowCrosshair?.nonVol ?? lines.nonVol.at(-1)?.value ?? null;
   const moreActive = showMore || showAthLine || showMigrationLine || rangeSelectMode;
@@ -899,6 +1048,16 @@ export function FlowPreviewChart({
           <TrimGapsIcon />
         </IconToggleButton>
 
+        <IconToggleButton
+          active={highlightVolumeBars}
+          onClick={() => setHighlightVolumeBars((v) => !v)}
+          label="Toggle flow-split candle highlight"
+          tooltip="Outline the organic (non-volume) candles in amber so they stand out at a glance from the volume_ix_pattern bars (checked patterns + creator + contagion) — body colors unchanged"
+          activeColor={NON_VOL_OUTLINE_COLOR}
+        >
+          <VolumeBarsIcon />
+        </IconToggleButton>
+
         <button
           type="button"
           onClick={() => setShowMore((v) => !v)}
@@ -997,11 +1156,11 @@ export function FlowPreviewChart({
         )}
         <span style={{ color: CHART_COLORS.up }}>
           <span className="font-semibold">VolMk</span>{' '}
-          {readVol != null ? formatAmount(readVol, unit) : '—'}
+          {readVol != null ? formatFlow(readVol) : '—'}
         </span>
         <span style={{ color: NON_VOL_COLOR }}>
           <span className="font-semibold">NonVol</span>{' '}
-          {readNonVol != null ? formatAmount(readNonVol, unit) : '—'}
+          {readNonVol != null ? formatFlow(readNonVol) : '—'}
         </span>
       </div>
 
@@ -1039,13 +1198,13 @@ export function FlowPreviewChart({
                 VolMk
               </span>
               <span style={{ color: CHART_COLORS.up }}>
-                {readVol != null ? formatAmount(readVol, unit) : '—'}
+                {readVol != null ? formatFlow(readVol) : '—'}
               </span>
               <span className="font-semibold" style={{ color: NON_VOL_COLOR }}>
                 NonVol
               </span>
               <span style={{ color: NON_VOL_COLOR }}>
-                {readNonVol != null ? formatAmount(readNonVol, unit) : '—'}
+                {readNonVol != null ? formatFlow(readNonVol) : '—'}
               </span>
             </div>
           </div>

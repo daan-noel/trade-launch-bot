@@ -190,6 +190,19 @@ const LEGACY_SINGLETON_KEYS = [
   'swing_detection_criteria',
 ];
 
+/** Stale `mt:`-prefixed table-chart flags keyed on a volatile id (rule id / run
+ *  id). The `tableId` embedded the id, so a fresh key accrued per rule ever
+ *  visited and none were ever pruned. Those call sites now pass a stable
+ *  `tableId`, so any `…-<id>`(`_charts`) leftover is dead weight — purge it. The
+ *  stable keys (`mt:tablecharts:simulate-positions`, `…:rule-evidence`, and their
+ *  `_charts` siblings) have no trailing `-<id>` and never match. */
+function isStaleTableChartsKey(key: string): boolean {
+  return (
+    key.startsWith('mt:tablecharts:simulate-positions-') ||
+    key.startsWith('mt:tablecharts:rule-evidence-')
+  );
+}
+
 /** True for any flat legacy app key — a `*_cols` toggle, a `sweep_cfg_*` field,
  *  or a known singleton. `mt:`-prefixed keys are current and never match. */
 function isLegacyStorageKey(key: string): boolean {
@@ -217,7 +230,8 @@ export function cleanupLegacyStorage(): void {
     const stale: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && isLegacyStorageKey(key)) stale.push(key);
+      if (key && (isLegacyStorageKey(key) || isStaleTableChartsKey(key)))
+        stale.push(key);
     }
     for (const key of stale) localStorage.removeItem(key);
   } catch {
