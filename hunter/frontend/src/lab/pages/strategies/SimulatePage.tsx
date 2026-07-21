@@ -529,6 +529,19 @@ function RuleSimPositionsPanel({
     if (!temporalSel?.mints.length) return null;
     return toSummaryBody(simQueryForPage, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS });
   }, [temporalSel, simQueryForPage]);
+  // Stable fetchers — inline arrows are new every render and `useServerTable`
+  // lists them as effect deps, which cleared the summary card in a loop and made
+  // Temporal pattern mount/unmount (the "vibration" / style break).
+  const fetchSimPage = useCallback(
+    (body: unknown, signal: AbortSignal) =>
+      fetchEngineSimPage(rule.id, body as TableRequestBody, signal),
+    [rule.id],
+  );
+  const fetchSimSummary = useCallback(
+    (summaryBody: unknown, signal: AbortSignal) =>
+      fetchEngineSimSummary(rule.id, summaryBody as TableRequestBody, signal),
+    [rule.id],
+  );
   const {
     items: simTokens,
     total: simTotal,
@@ -539,10 +552,10 @@ function RuleSimPositionsPanel({
   } = useServerTable<SimulatedTokenResult, SimulatedSummary>(
     true,
     simBody,
-    (body, signal) => fetchEngineSimPage(rule.id, body as TableRequestBody, signal),
-    (summaryBody, signal) =>
-      fetchEngineSimSummary(rule.id, summaryBody as TableRequestBody, signal),
+    fetchSimPage,
+    fetchSimSummary,
     simSummaryBody,
+    rule.id,
   );
 
   // Clear temporal cohort when the table's own filters change or the rule switches.

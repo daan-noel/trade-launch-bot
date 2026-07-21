@@ -133,7 +133,9 @@ export function Modal({ title, open, onClose, children, size = 'md' }: ModalProp
             ×
           </button>
         </div>
-        <div className="overflow-y-auto overflow-x-hidden p-5">{children}</div>
+        <div className="scrollbar-gutter-stable overflow-y-auto overflow-x-hidden p-5">
+          {children}
+        </div>
       </div>
     </div>,
     document.body,

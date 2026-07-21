@@ -44,9 +44,10 @@ export interface UseServerTable<R, S> {
  * or pass its JSON key via `bodyKey`. Pass `summaryBody` when the summary
  * endpoint ignores pagination/sort (defaults to `body`).
  *
- * `fetchPage` / `fetchSummary` are effect deps: if they close over a resource id
- * (rule, run, scope), recreate them with `useCallback` so a resource switch
- * refetches even when the filter body is unchanged.
+ * Fetchers are read from refs (not effect deps) so an inline arrow doesn't
+ * retrigger a clear→refetch loop that flashes the summary card / Temporal band.
+ * When the closed-over resource changes without the filter body changing (e.g.
+ * another rule id), pass `resourceKey` so both effects re-run.
  */
 export function useServerTable<R, S = unknown>(
   enabled: boolean,
@@ -54,6 +55,8 @@ export function useServerTable<R, S = unknown>(
   fetchPage: (body: unknown, signal: AbortSignal) => Promise<ServerPage<R>>,
   fetchSummary?: (summaryBody: unknown, signal: AbortSignal) => Promise<S>,
   summaryBody?: unknown,
+  /** Bust page+summary caches when the closed-over resource changes (rule id, scope). */
+  resourceKey?: string | number,
 ): UseServerTable<R, S> {
   const [items, setItems] = useState<R[]>([]);
   const [total, setTotal] = useState(0);
@@ -66,6 +69,11 @@ export function useServerTable<R, S = unknown>(
   const summaryKey = JSON.stringify(summaryBody ?? body);
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  const fetchPageRef = useRef(fetchPage);
+  fetchPageRef.current = fetchPage;
+  const fetchSummaryRef = useRef(fetchSummary);
+  fetchSummaryRef.current = fetchSummary;
 
   useEffect(() => {
     if (!enabled) {
@@ -82,7 +90,7 @@ export function useServerTable<R, S = unknown>(
     setLoading(true);
     void (async () => {
       try {
-        const page = await fetchPage(body, ctrl.signal);
+        const page = await fetchPageRef.current(body, ctrl.signal);
         if (ctrl.signal.aborted) return;
         setItems(page.items);
         setTotal(page.total);
@@ -95,27 +103,26 @@ export function useServerTable<R, S = unknown>(
       }
     })();
     return () => ctrl.abort();
-    // `body` is captured via `bodyKey`. `fetchPage` must be listed: callers like
-    // RuleAnalyzePanel close over `ruleId`/`scope`, and those change without the
-    // filter body changing — omitting it left the prior rule's page stuck.
+    // `body` is captured via `bodyKey`. Fetchers live in refs — pass `resourceKey`
+    // when the closed-over id/scope changes without the filter body changing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, bodyKey, nonce, fetchPage]);
+  }, [enabled, bodyKey, nonce, resourceKey]);
 
   useEffect(() => {
-    if (!enabled || !fetchSummary) {
+    if (!enabled || !fetchSummaryRef.current) {
       setSummary(null);
       return;
     }
     summaryInflight.current?.abort();
     const ctrl = new AbortController();
     summaryInflight.current = ctrl;
-    // Drop the prior resource's card immediately so a failed/slow summary can't
-    // leave another rule's aggregates on screen (or look like "no summary").
+    // Drop the prior cohort's card immediately so a failed/slow summary can't
+    // leave another filter's aggregates on screen (or look like "no summary").
     setSummary(null);
     const payload = summaryBody ?? body;
     void (async () => {
       try {
-        const s = await fetchSummary(payload, ctrl.signal);
+        const s = await fetchSummaryRef.current!(payload, ctrl.signal);
         if (!ctrl.signal.aborted) setSummary(s);
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -124,7 +131,7 @@ export function useServerTable<R, S = unknown>(
     })();
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, summaryKey, nonce, fetchSummary]);
+  }, [enabled, summaryKey, nonce, resourceKey]);
 
   return { items, total, summary, loading, error, reload };
 }

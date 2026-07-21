@@ -824,9 +824,16 @@ export function TokenPriceChart({
     );
     chartRef.current = chart;
 
+    // Width-only resize. Feeding contentRect.height back into applyOptions fights
+    // the fixed parent height and the inspect-modal scrollbar (content grows →
+    // gutter appears → width/height thrash → visible vibration / style break).
+    let lastWidth = Math.round(rect.width || el.clientWidth || 0);
     const ro = new ResizeObserver((entries) => {
-      const { width, height: h } = entries[0]?.contentRect ?? { width: 0, height: 0 };
-      if (width > 0 && h > 0) chartRef.current?.applyOptions({ width, height: h });
+      const width = Math.round(entries[0]?.contentRect.width ?? 0);
+      if (width > 0 && width !== lastWidth) {
+        lastWidth = width;
+        chartRef.current?.applyOptions({ width });
+      }
     });
     ro.observe(el);
 

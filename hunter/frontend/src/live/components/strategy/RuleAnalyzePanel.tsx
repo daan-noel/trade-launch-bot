@@ -126,7 +126,7 @@ export function RuleAnalyzePanel({
   const { items, total, summary, loading, error, reload } = useServerTable<
     RulePositionRecord,
     PositionsSummary
-  >(!!ruleId, body, fetchPage, fetchSummary, summaryBody);
+  >(!!ruleId, body, fetchPage, fetchSummary, summaryBody, `${ruleId}:${scope}`);
 
   useEffect(() => {
     setTemporalSel(null);
