@@ -13,8 +13,9 @@
     1. Opens an SSH tunnel to the server's published Postgres host port.
     2. Attaches the server as a postgres_fdw foreign server (schema ec2_sync_src).
     3. Verifies local vs remote column parity (aborts on schema drift).
-    4. Per table: INSERT INTO <local> SELECT * FROM ec2_sync_src.<t>
+    4. Per table: INSERT INTO <local> (<named cols>) SELECT <named cols> FROM ec2_sync_src.<t>
        WHERE <watermark predicate>  ON CONFLICT ...
+       (Never `SELECT *` -- local/server column order can diverge after ALTER TABLE.)
        The watermark is a literal, so postgres_fdw PUSHES IT DOWN to the server
        (remote chunk pruning) -- only new rows are fetched.
 
@@ -35,6 +36,7 @@
     tokens_info      PK(mint_address)                            -> DO UPDATE (newer updated_at wins)
     trades           PK(block_time, tx_signature, leg_index)     -> DO NOTHING (append-only)
     raw_txs          PK(block_time, tx_signature)                -> DO NOTHING (append-only; opt-in)
+    fingerprints         PK(id)                                  -> DO UPDATE, non-destructive (server wins; local rows kept)
     strategy_rules       PK(id)                                  -> DO UPDATE, non-destructive (server wins; local rows kept)
     strategy_runs        PK(id)                                  -> DO UPDATE, non-destructive (server wins; local rows kept)
     strategy_run_metrics PK(run_id)                              -> DO UPDATE, non-destructive (server wins; local rows kept)
@@ -61,11 +63,12 @@
   missing locally after the merge; a separate post-trades REPORT (step 7a) just logs the
   residual orphans (ids absent from BOTH dicts -- pre-remint history that ages out).
 
-  Strategy tables (strategy_rules/runs/run_metrics/positions) ARE synced (server wins)
+  Strategy tables (fingerprints/rules/runs/run_metrics/positions) ARE synced (server wins)
   so the LIVE box's real+paper positions are viewable on the lab. They are copied
   FULL-TABLE each run (tiny vs trades; no watermark) and upserted with DO UPDATE so a
   server-side status/exit-fill change refreshes the local row. FK-safe order:
-  strategy_rules -> strategy_runs -> strategy_run_metrics -> strategy_positions. NOTE:
+  fingerprints -> strategy_rules -> strategy_runs -> strategy_run_metrics ->
+  strategy_positions. NOTE:
   server ids overwrite local rows on id-conflict, so a lab-authored rule/run sharing a
   UUID with the server's would be clobbered (UUIDs collide with ~0 probability).
 
@@ -113,7 +116,7 @@
 param(
   [string]$SshTarget       = 'ubuntu@54.93.174.192',                      # user@host of the EC2 box
   [string]$SshKey          = $(foreach ($p in "$PSScriptRoot/../aws-ec2-key.pem", "$HOME/.ssh/aws-ec2-key.pem") { if (Test-Path $p) { $p; break } }),
-  [string]$RemoteDir       = '~/projects/hunter',                         # where the server's .env lives
+  [string]$RemoteDir       = '~/trade-launch-bot/hunter',                         # where the server's .env lives
   [string]$Database        = 'hunter_bot',
   [string]$LocalPgHost     = 'localhost',
   [int]   $LocalPgPort     = 5555,                                        # local hunter_bot port (5555 dockerized, 5432 native)
@@ -134,6 +137,11 @@ param(
 # so 'Continue' loses no real safety while making the script robust to stderr noise.
 $ErrorActionPreference = 'Continue'
 if (-not $LocalPgPassword) { throw "Set the LOCAL DB password: `$env:PGPASSWORD='...'  (or -LocalPgPassword)" }
+# PowerShell switches are -IncludeToday / -ExportLake / -IncludeRawTxs (not --include-today).
+# A leading-dash "host" almost always means a Unix-style flag was bound positionally to $SshTarget.
+if ($SshTarget -match '^-') {
+  throw "SshTarget looks like a flag ('$SshTarget'). Use PowerShell switches, e.g.: .\db-incremental-sync.ps1 -IncludeToday"
+}
 
 # Force UTC so the sealed-day boundary (start-of-today) is computed in UTC
 # regardless of the workstation's OS timezone.
@@ -196,14 +204,13 @@ Initialize-SshPassphrase
 # token_sync_state was dropped server-side (2026-07-07, unused) -- not synced.
 $syncTables = @('wallet_dict', 'tokens', 'tokens_info', 'trades')
 if ($IncludeRawTxs) { $syncTables += 'raw_txs' }
-# Strategy tables (FK chain: rules -> runs -> run_metrics -> positions). Copied
-# full-table each run with DO UPDATE (server wins) so live's real+paper positions
-# show on the lab. Appended AFTER market data so the FDW import + parity guard cover
-# them; their inserts + tombstone-delete propagation run in a dedicated FK-ordered
-# block (see step 7b) -- deletes are scoped to ids previously seen from the server
-# (see `_ec2_sync_seen_ids` in step 7b), so a lab-authored rule/run/position is never
-# a delete candidate.
-$strategyTables = @('strategy_rules', 'strategy_runs', 'strategy_run_metrics', 'strategy_positions')
+# Strategy tables (FK chain: fingerprints -> rules -> runs -> run_metrics ->
+# positions). Copied full-table each run with DO UPDATE (server wins) so live's
+# real+paper positions show on the lab. Appended AFTER market data so the FDW
+# import + parity guard cover them; their inserts run in a dedicated FK-ordered
+# block (see step 7b). Non-destructive: no local row is deleted (lab-authored
+# rows and aged-out server history survive).
+$strategyTables = @('fingerprints', 'strategy_rules', 'strategy_runs', 'strategy_run_metrics', 'strategy_positions')
 $syncTables += $strategyTables
 $importList = ($syncTables -join ', ')
 
@@ -272,7 +279,13 @@ Remove-Item $sshErr -ErrorAction SilentlyContinue
 if ($sshCode -ne 0 -or -not $remoteEnv) { throw "Could not read $RemoteDir/.env on $SshTarget" }
 $renv = @{}
 foreach ($line in ($remoteEnv -split "`n")) {
-  if ($line -match '^\s*([A-Z_]+)=(.*)$') { $renv[$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'") }
+  # Strip unquoted inline comments (`KEY=5555  # postgres`) -- remote .env keeps
+  # at-a-glance banners; without this, [int]$renv['DB_PORT'] throws on the comment.
+  if ($line -match '^\s*([A-Z_]+)=(.*)$') {
+    $val = $Matches[2]
+    if ($val -match '^([^#]*?)\s+#') { $val = $Matches[1] }
+    $renv[$Matches[1]] = $val.Trim().Trim('"').Trim("'")
+  }
 }
 $remotePw   = $renv['POSTGRES_PASSWORD']; if (-not $remotePw) { throw "POSTGRES_PASSWORD not found in remote .env" }
 $remoteUser = if ($renv['POSTGRES_USER']) { $renv['POSTGRES_USER'] } else { 'postgres' }
@@ -280,9 +293,14 @@ $remoteDb   = if ($renv['POSTGRES_DB'])   { $renv['POSTGRES_DB'] }   else { 'hun
 # DB_PORT is the current name; POSTGRES_HOST_PORT is read as a fallback for a
 # server whose .env predates the rename (deploy/*/compose.yml PORTS block).
 if ($RemotePgPort -le 0) {
-  $RemotePgPort = if ($renv['DB_PORT']) { [int]$renv['DB_PORT'] }
-                  elseif ($renv['POSTGRES_HOST_PORT']) { [int]$renv['POSTGRES_HOST_PORT'] }
-                  else { 5555 }
+  $portRaw = if ($renv['DB_PORT']) { $renv['DB_PORT'] }
+             elseif ($renv['POSTGRES_HOST_PORT']) { $renv['POSTGRES_HOST_PORT'] }
+             else { '5555' }
+  $parsed = 0
+  if (-not [int]::TryParse($portRaw, [ref]$parsed) -or $parsed -le 0) {
+    throw "Remote DB port is not an integer ('$portRaw'). Check DB_PORT / POSTGRES_HOST_PORT in $RemoteDir/.env"
+  }
+  $RemotePgPort = $parsed
 }
 Write-Host "  server postgres: 127.0.0.1:$RemotePgPort (db=$remoteDb user=$remoteUser)"
 
@@ -422,19 +440,19 @@ ON CONFLICT (block_time, tx_signature) DO NOTHING;
   # left the local mirror missing ~98k scattered server ids -> 58% of synced trades
   # referenced a wallet_id with no wallet_dict row, and every `trades JOIN wallet_dict`
   # read silently DROPPED those trades. (`trades.wallet_id` has NO FK, so orphans are
-  # allowed; `lab` never mints its own ids — no intern() in the lab bin — so the local
+  # allowed; `lab` never mints its own ids -- no intern() in the lab bin -- so the local
   # dict is meant to track the server's.)
   #
   # A naive TRUNCATE + full-replace is ALSO wrong: the server has a 7-day rolling
   # window and RE-MINTED/AGED-OUT old wallet ids, but the LAB retains trade history
   # LONGER than 7 days. Replacing wholesale discards the old (id,address) rows the
-  # mirror accumulated for those older days — which the server can no longer supply —
+  # mirror accumulated for those older days -- which the server can no longer supply --
   # re-orphaning historical trades on every run (observed: it fixed Jul+ but re-broke
   # Jun 29-30 to ~90% orphaned).
   #
   # Correct: a non-destructive merge. Pull the server dict into a temp table once, then
   #   1. drop any local row whose ADDRESS the server now maps to a DIFFERENT id (a real
-  #      server-side reassignment — server wins; old trades on the dropped id become
+  #      server-side reassignment -- server wins; old trades on the dropped id become
   #      unresolvable, unavoidable for a genuine re-mint), then
   #   2. UPSERT every server row by id (add missing, correct reassigned addresses).
   # Local-only ids the server no longer has are PRESERVED, so historical trades stay
@@ -450,7 +468,7 @@ CREATE INDEX ON wd_src (id);
 CREATE INDEX ON wd_src (address);
 ANALYZE wd_src;
 
--- (1) Server reassigned an address to a new id → drop the stale local holder so the
+-- (1) Server reassigned an address to a new id -> drop the stale local holder so the
 --     server row can land without violating UNIQUE(address). (A merely aged-out old
 --     wallet has NO server row here, so its local row is left untouched below.)
 DELETE FROM wallet_dict l USING wd_src s
@@ -469,7 +487,7 @@ SELECT setval(pg_get_serial_sequence('wallet_dict', 'id'),
               (SELECT GREATEST(MAX(id), 1) FROM wallet_dict));
 
 -- Completeness guard (in-txn): every SERVER id must now be present locally. A non-zero
--- count means the merge dropped/skipped server rows (a real regression) — abort.
+-- count means the merge dropped/skipped server rows (a real regression) -- abort.
 DO `$`$
 DECLARE gaps bigint;
 BEGIN
@@ -543,11 +561,13 @@ WHERE EXCLUDED.updated_at >= tokens_info.updated_at;
 -- future one-sided ALTER TABLE, same failure mode as tokens/tokens_info above.
 INSERT INTO trades (
   mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount,
-  reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time, tx_signature
+  reserve_lamports, reserve_token, slot, tx_index, leg_index, block_time, tx_signature,
+  ix_labels
 )
 SELECT
   tr.mint_address, tr.wallet_id, tr.trade_type, tr.venue, tr.amount_lamports, tr.token_amount,
-  tr.reserve_lamports, tr.reserve_token, tr.slot, tr.tx_index, tr.leg_index, tr.block_time, tr.tx_signature
+  tr.reserve_lamports, tr.reserve_token, tr.slot, tr.tx_index, tr.leg_index, tr.block_time, tr.tx_signature,
+  tr.ix_labels
 FROM ec2_sync_src.trades tr
 WHERE block_time >= '$tradesWm'::timestamptz AND block_time < '$sealedCutoff'::timestamptz
 ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING;
@@ -558,11 +578,11 @@ $rawTxsSql
   # ---- 7a. Integrity report: residual orphaned trades ------------------------
   # The HARD completeness guard (every SERVER id present locally) runs INSIDE the
   # wallet_dict merge transaction above and aborts on a real mirror regression. Here
-  # we only REPORT the residual: trades whose wallet_id is absent from BOTH dicts —
+  # we only REPORT the residual: trades whose wallet_id is absent from BOTH dicts --
   # wallets the server re-minted/aged out of its 7-day window whose historical trades
   # the lab still retains. These render as `unknown:<id>` in the UI (the LEFT-join
   # fallback in trade_repo.rs), NOT as dropped rows, and they age out of the lab's own
-  # retention over time. Informational only — a rolling window of old orphans is
+  # retention over time. Informational only -- a rolling window of old orphans is
   # EXPECTED (server retention < lab retention) and must not fail the sync.
   Write-Host "Reporting residual trade->wallet_dict orphans (informational) ..."
   Invoke-LocalSqlFile @"
@@ -582,13 +602,18 @@ END `$`$;
 "@
 
   # ---- 7b. Strategy tables (view LIVE positions on the lab) ------------------
-  # Full-table copy each run, server wins, NON-DESTRUCTIVE. FK-safe order: rules ->
-  # runs -> run_metrics -> positions. These tables are tiny vs trades, so no
-  # watermark: we pull the whole remote table and upsert, with an explicit
-  # name-matched column list on both the INSERT and the DO UPDATE SET (see the
-  # tokens/trades comments above -- a positional SELECT * would silently misalign
-  # columns the moment local/server column order diverges, e.g. a future
-  # migration's ALTER TABLE ADD COLUMN). Both real + paper rows are pulled.
+  # Full-table copy each run, server wins, NON-DESTRUCTIVE. FK-safe order:
+  # fingerprints -> rules -> runs -> run_metrics -> positions. These tables are
+  # tiny vs trades, so no watermark: we pull the whole remote table and upsert,
+  # with an explicit name-matched column list on both the INSERT and the DO
+  # UPDATE SET (see the tokens/trades comments above -- a positional SELECT *
+  # would silently misalign columns the moment local/server column order
+  # diverges). Both real + paper rows are pulled.
+  #
+  # Column lists MUST match the post-0004 redesign (fingerprint_id +
+  # buy_amount_lamports + is_enabled on strategy_rules; fingerprints mirrored
+  # first for the FK) -- keep them aligned with fingerprint_repo::FINGERPRINT_COLS
+  # / rule_repo::RULE_COLS / strategy_repo::{RUN,POSITION}_COLS.
   #
   # NON-DESTRUCTIVE by design: the upsert ADDS new server rows and REFRESHES
   # changed ones (server wins), but NEVER deletes a local row. So the lab KEEPS
@@ -600,34 +625,61 @@ END `$`$;
   # the lab until removed manually -- the accepted cost of retaining old local data.
   # (A former `_ec2_sync_seen_ids` tombstone table propagated those deletes; it was
   # removed, and dropped below so it doesn't linger on existing local DBs.)
-  Write-Host "Mirroring strategy tables (rules/runs/run_metrics/positions; server wins, non-destructive upsert) ..."
-  # Explicit, plain INSERT..SELECT..ON CONFLICT DO UPDATE per table, in FK-safe order
-  # (rules -> runs -> run_metrics -> positions). Server wins. DO UPDATE excludes the
-  # PK; EXCLUDED refreshes every other column so a server-side status/exit-fill change
-  # updates the local row. NOTE: strategy_runs ALSO has UNIQUE(rule_id,mode,run_seq).
-  # ON CONFLICT (id) only resolves the PK, so a lab-authored run that shares that triple
-  # with a server run under a different id WOULD collide on the secondary key -- the
-  # strategy_runs block below deletes such divergent local rows first (server wins).
-  # That is the ONLY delete here (a constraint-conflict resolver, not a tombstone).
+  Write-Host "Mirroring strategy tables (fingerprints/rules/runs/run_metrics/positions; server wins, non-destructive upsert) ..."
+  # Explicit, plain INSERT..SELECT..ON CONFLICT DO UPDATE per table, in FK-safe
+  # order. Server wins. DO UPDATE excludes the PK; EXCLUDED refreshes every other
+  # column so a server-side status/exit-fill change updates the local row. NOTE:
+  # strategy_runs ALSO has UNIQUE(rule_id,mode,run_seq). ON CONFLICT (id) only
+  # resolves the PK, so a lab-authored run that shares that triple with a server
+  # run under a different id WOULD collide on the secondary key -- the
+  # strategy_runs block below deletes such divergent local rows first (server
+  # wins). That is the ONLY delete here (a constraint-conflict resolver, not a
+  # tombstone).
   Invoke-LocalSqlFile @"
 -- Retire the old tombstone bookkeeping table (deletes are no longer propagated).
 DROP TABLE IF EXISTS _ec2_sync_seen_ids;
 
-\echo '-- strategy_rules'
--- Explicit, name-matched column list -- see the tokens/trades comments above for
--- why positional SELECT * is unsafe once local/server column order can diverge.
-INSERT INTO strategy_rules (
-  id, strategy_id, rule_name, buy_amount_sol, trade_mode, is_active,
-  max_concurrent_tokens, max_total_tokens, params, created_at, updated_at
+\echo '-- fingerprints'
+-- Must land before strategy_rules (FK fingerprint_id). Column list matches
+-- fingerprint_repo::FINGERPRINT_COLS (post-0004 + 0006 metric_config).
+INSERT INTO fingerprints (
+  id, name, cu_limit, cu_price, init_buy_lamports, max_cost_lamports,
+  spendable_lamports_in, first_slot_buy_lamports, first_slot_sell_lamports,
+  bucket_size_amount, ix_labels, metric_config, created_at, updated_at
 )
 SELECT
-  r.id, r.strategy_id, r.rule_name, r.buy_amount_sol, r.trade_mode, r.is_active,
-  r.max_concurrent_tokens, r.max_total_tokens, r.params, r.created_at, r.updated_at
+  f.id, f.name, f.cu_limit, f.cu_price, f.init_buy_lamports, f.max_cost_lamports,
+  f.spendable_lamports_in, f.first_slot_buy_lamports, f.first_slot_sell_lamports,
+  f.bucket_size_amount, f.ix_labels, f.metric_config, f.created_at, f.updated_at
+FROM ec2_sync_src.fingerprints f
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name, cu_limit = EXCLUDED.cu_limit, cu_price = EXCLUDED.cu_price,
+  init_buy_lamports = EXCLUDED.init_buy_lamports, max_cost_lamports = EXCLUDED.max_cost_lamports,
+  spendable_lamports_in = EXCLUDED.spendable_lamports_in,
+  first_slot_buy_lamports = EXCLUDED.first_slot_buy_lamports,
+  first_slot_sell_lamports = EXCLUDED.first_slot_sell_lamports,
+  bucket_size_amount = EXCLUDED.bucket_size_amount, ix_labels = EXCLUDED.ix_labels,
+  metric_config = EXCLUDED.metric_config, created_at = EXCLUDED.created_at,
+  updated_at = EXCLUDED.updated_at;
+
+\echo '-- strategy_rules'
+-- Post-0004 redesign columns (rule_repo::RULE_COLS) -- NOT the legacy
+-- strategy_id / buy_amount_sol shape.
+INSERT INTO strategy_rules (
+  id, rule_name, fingerprint_id, trade_mode, is_active, is_enabled,
+  buy_amount_lamports, max_concurrent_tokens, max_total_tokens, params,
+  created_at, updated_at
+)
+SELECT
+  r.id, r.rule_name, r.fingerprint_id, r.trade_mode, r.is_active, r.is_enabled,
+  r.buy_amount_lamports, r.max_concurrent_tokens, r.max_total_tokens, r.params,
+  r.created_at, r.updated_at
 FROM ec2_sync_src.strategy_rules r
 ON CONFLICT (id) DO UPDATE SET
-  strategy_id = EXCLUDED.strategy_id, rule_name = EXCLUDED.rule_name,
-  buy_amount_sol = EXCLUDED.buy_amount_sol, trade_mode = EXCLUDED.trade_mode,
-  is_active = EXCLUDED.is_active, max_concurrent_tokens = EXCLUDED.max_concurrent_tokens,
+  rule_name = EXCLUDED.rule_name, fingerprint_id = EXCLUDED.fingerprint_id,
+  trade_mode = EXCLUDED.trade_mode, is_active = EXCLUDED.is_active,
+  is_enabled = EXCLUDED.is_enabled, buy_amount_lamports = EXCLUDED.buy_amount_lamports,
+  max_concurrent_tokens = EXCLUDED.max_concurrent_tokens,
   max_total_tokens = EXCLUDED.max_total_tokens, params = EXCLUDED.params,
   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at;
 
@@ -764,7 +816,7 @@ ON CONFLICT (id) DO UPDATE SET
   $doneWindow = if ($IncludeToday) { "through $sealedCutoff UTC, incl. today's partial chunk" } else { "sealed days through $sealedCutoff UTC" }
   Write-Host "Incremental sync complete ($doneWindow; server credentials removed from local catalog)."
 
-  # ---- 10. Optional hop-2: PG → Parquet lake (couples current-day analysis) ---
+  # ---- 10. Optional hop-2: PG -> Parquet lake (couples current-day analysis) ---
   # Keeps simulate/sweep on one command instead of a separate `lake-export` hop.
   # Runs AFTER detach so a long DuckDB export never holds the FDW server mapping.
   if ($ExportLake) {
@@ -777,7 +829,7 @@ ON CONFLICT (id) DO UPDATE SET
     try {
       & cargo @exportArgs
       if ($LASTEXITCODE -ne 0) {
-        throw "lake-export failed (exit $LASTEXITCODE). Local DB sync already completed — re-run with -ExportLake only after fixing the lab build, or run: cargo run -p hunter-lab -- lake-export$(if ($IncludeToday) { ' --include-today' })"
+        throw "lake-export failed (exit $LASTEXITCODE). Local DB sync already completed -- re-run with -ExportLake only after fixing the lab build, or run: cargo run -p hunter-lab -- lake-export$(if ($IncludeToday) { ' --include-today' })"
       }
       Write-Host "Lake export complete."
     } finally {
