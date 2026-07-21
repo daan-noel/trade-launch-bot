@@ -77,7 +77,13 @@ export interface RulesViewProps {
   ruleLiveCounts?: Record<string, RuleLiveCounts>;
   /** Live-only: show scoreboard columns from rule-list wire (PnL, Avg%, Exp, Win%, W/L, N). */
   showScores?: boolean;
-  /** Live-only: Analyze panel under the table for the selected rule (row click). */
+  /**
+   * Live Control scoreboard scope. `current` = latest-run counters (keep/kill);
+   * `all` = real all-time / paper latest. When set, the Control strip shows scope chips.
+   */
+  scoreScope?: 'current' | 'all';
+  onScoreScopeChange?: (scope: 'current' | 'all') => void;
+  /** Live-only: Evidence panel under the Control table for the selected rule. */
   renderAnalyze?: (ctx: {
     ruleId: string;
     rule: StrategyRule;
@@ -92,16 +98,21 @@ export interface RulesViewProps {
  * Pause / Stop; Enable when Disabled) — plus header **Pause All / Stop All** bulk
  * actions scoped per trade mode. Disabled (`is_enabled=false`) rules are soft-
  * archived: hidden by default, kept in the DB. The editor opens in an xl modal.
- * The lab app injects a dry-run panel via `renderDryRun`.
+ * Live injects scoreboard + sticky Control scope chips + Evidence via
+ * `renderAnalyze`. The lab app injects a dry-run panel via `renderDryRun`.
  */
 export function RulesView({
   renderDryRun,
   linkToSimulate,
   ruleLiveCounts,
   showScores,
+  scoreScope,
+  onScoreScopeChange,
   renderAnalyze,
 }: RulesViewProps) {
-  const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery();
+  const { data: rules = [], isLoading, refetch } = useGetStrategyRulesQuery(
+    scoreScope ?? undefined,
+  );
   const { data: fps = [] } = useGetFingerprintsQuery();
   const [selectedKey, setSelectedKey] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
   const selectedRule = useMemo(
@@ -623,8 +634,46 @@ export function RulesView({
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-semibold text-text">Rules</h1>
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 ${
+          showScores && onScoreScopeChange
+            ? 'sticky top-0 z-20 -mx-4 border-b border-white/6 bg-bg/95 px-4 py-3 backdrop-blur-sm'
+            : ''
+        }`}
+      >
+        <div className="flex flex-wrap items-baseline gap-3">
+          <h1 className="text-lg font-semibold text-text">
+            {showScores ? 'Rules Control' : 'Rules'}
+          </h1>
+          {showScores && onScoreScopeChange && (
+            <div className="flex gap-1">
+              {([
+                ['current', 'Current run'],
+                ['all', 'All-time'],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => onScoreScopeChange(key)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                    (scoreScope ?? 'current') === key
+                      ? 'bg-primary/20 text-primary'
+                      : 'bg-white/5 text-text-dim hover:bg-white/8'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {showScores && (
+            <span className="text-[11px] text-text-dim">
+              {(scoreScope ?? 'current') === 'current'
+                ? 'Scoreboard = latest run — Pause from Execute or Evidence'
+                : 'Scoreboard = all-time (real) / latest run (paper)'}
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {(['paper', 'real'] as TradeMode[]).map((mode) => {
             const bulkStop = stopByMode[mode];

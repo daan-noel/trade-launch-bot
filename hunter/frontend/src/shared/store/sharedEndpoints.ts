@@ -227,8 +227,21 @@ export const sharedApi = baseApi.injectEndpoints({
     }),
 
     // ── Strategy rules (generic engine, live bin) ────────────────────────────
-    getStrategyRules: builder.query<StrategyRule[], void>({
-      query: () => '/api/strategy-rules',
+    // `scoreScope`: `current` = latest-run counters (Control keep/kill);
+    // omit/`all` = legacy (real all-time, paper latest run).
+    getStrategyRules: builder.query<StrategyRule[], 'current' | 'all' | void>({
+      query: (scoreScope) =>
+        scoreScope === 'current'
+          ? '/api/strategy-rules?score_scope=current'
+          : '/api/strategy-rules',
+      providesTags: ['StrategyRule'],
+    }),
+    /** Run navigator — live-only route; Evidence pane is the sole consumer. */
+    getStrategyRuleRuns: builder.query<
+      import('lib/strategy/types').StrategyRuleRun[],
+      string
+    >({
+      query: (id) => `/api/strategy-rules/${encodeURIComponent(id)}/runs`,
       providesTags: ['StrategyRule'],
     }),
     getStrategyRule: builder.query<StrategyRule, string>({
@@ -256,12 +269,10 @@ export const sharedApi = baseApi.injectEndpoints({
     enableStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/enable`, method: 'POST' }),
       async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = dispatch(
-          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
-            const row = draft.find((r) => r.id === id);
-            if (row) row.is_enabled = true;
-          }),
-        );
+        const undo = patchAllRuleLists(dispatch, (draft) => {
+          const row = draft.find((r) => r.id === id);
+          if (row) row.is_enabled = true;
+        });
         try {
           await queryFulfilled;
         } catch {
@@ -274,15 +285,13 @@ export const sharedApi = baseApi.injectEndpoints({
     disableStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/disable`, method: 'POST' }),
       async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = dispatch(
-          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
-            const row = draft.find((r) => r.id === id);
-            if (row) {
-              row.is_enabled = false;
-              row.is_active = false;
-            }
-          }),
-        );
+        const undo = patchAllRuleLists(dispatch, (draft) => {
+          const row = draft.find((r) => r.id === id);
+          if (row) {
+            row.is_enabled = false;
+            row.is_active = false;
+          }
+        });
         try {
           await queryFulfilled;
         } catch {
@@ -295,12 +304,10 @@ export const sharedApi = baseApi.injectEndpoints({
     pauseStrategyRule: builder.mutation<StrategyRule, string>({
       query: (id) => ({ url: `/api/strategy-rules/${id}/pause`, method: 'POST' }),
       async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = dispatch(
-          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
-            const row = draft.find((r) => r.id === id);
-            if (row) row.is_active = false;
-          }),
-        );
+        const undo = patchAllRuleLists(dispatch, (draft) => {
+          const row = draft.find((r) => r.id === id);
+          if (row) row.is_active = false;
+        });
         try {
           await queryFulfilled;
         } catch {
@@ -317,12 +324,10 @@ export const sharedApi = baseApi.injectEndpoints({
     >({
       query: (id) => ({ url: `/api/strategy-rules/${id}/stop`, method: 'POST' }),
       async onQueryStarted(id, { dispatch, queryFulfilled }) {
-        const undo = dispatch(
-          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
-            const row = draft.find((r) => r.id === id);
-            if (row) row.is_active = false;
-          }),
-        );
+        const undo = patchAllRuleLists(dispatch, (draft) => {
+          const row = draft.find((r) => r.id === id);
+          if (row) row.is_active = false;
+        });
         try {
           await queryFulfilled;
         } catch {
@@ -335,13 +340,11 @@ export const sharedApi = baseApi.injectEndpoints({
     pauseAllStrategyRules: builder.mutation<{ paused: number }, TradeMode>({
       query: (mode) => ({ url: `/api/strategy-rules/pause-all?mode=${mode}`, method: 'POST' }),
       async onQueryStarted(mode, { dispatch, queryFulfilled }) {
-        const undo = dispatch(
-          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
-            for (const r of draft) {
-              if (r.is_active && r.trade_mode === mode) r.is_active = false;
-            }
-          }),
-        );
+        const undo = patchAllRuleLists(dispatch, (draft) => {
+          for (const r of draft) {
+            if (r.is_active && r.trade_mode === mode) r.is_active = false;
+          }
+        });
         try {
           await queryFulfilled;
         } catch {
@@ -356,13 +359,11 @@ export const sharedApi = baseApi.injectEndpoints({
     >({
       query: (mode) => ({ url: `/api/strategy-rules/stop-all?mode=${mode}`, method: 'POST' }),
       async onQueryStarted(mode, { dispatch, queryFulfilled }) {
-        const undo = dispatch(
-          sharedApi.util.updateQueryData('getStrategyRules', undefined, (draft) => {
-            for (const r of draft) {
-              if (r.is_active && r.trade_mode === mode) r.is_active = false;
-            }
-          }),
-        );
+        const undo = patchAllRuleLists(dispatch, (draft) => {
+          for (const r of draft) {
+            if (r.is_active && r.trade_mode === mode) r.is_active = false;
+          }
+        });
         try {
           await queryFulfilled;
         } catch {
@@ -400,6 +401,24 @@ export const sharedApi = baseApi.injectEndpoints({
   }),
 });
 
+/** Optimistic lifecycle patches must update every `getStrategyRules` cache key. */
+const RULE_LIST_ARGS: Array<'current' | 'all' | undefined> = [undefined, 'current', 'all'];
+
+function patchAllRuleLists(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dispatch: (action: any) => { undo: () => void },
+  recipe: (draft: StrategyRule[]) => void,
+): { undo: () => void } {
+  const undos = RULE_LIST_ARGS.map((arg) =>
+    dispatch(sharedApi.util.updateQueryData('getStrategyRules', arg, recipe)),
+  );
+  return {
+    undo: () => {
+      for (const u of undos) u.undo();
+    },
+  };
+}
+
 export const {
   useGetTokensPageQuery,
   useGetCreationStatsQuery,
@@ -417,6 +436,7 @@ export const {
   useUpdateFingerprintMutation,
   useDeleteFingerprintMutation,
   useGetStrategyRulesQuery,
+  useGetStrategyRuleRunsQuery,
   useGetStrategyRuleQuery,
   useCreateStrategyRuleMutation,
   useUpdateStrategyRuleMutation,

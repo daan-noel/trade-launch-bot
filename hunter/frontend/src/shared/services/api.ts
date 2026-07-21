@@ -74,18 +74,40 @@ async function postTablePage<R>(
 }
 
 /**
- * POST one page of a rule's live/paper positions (`scope=current|history`).
+ * POST one page of a rule's live/paper positions.
+ * `scope`: `current` | `history` | `all` | `run` (with `runSeq`).
  * Response body is a bare array; total from `X-Total-Count`.
  * Strategy path segment is ignored by the generic engine — pass `"generic"`.
  */
+export type PositionFetchScope =
+  | { kind: 'current' }
+  | { kind: 'history' }
+  | { kind: 'all' }
+  | { kind: 'run'; runSeq: number }
+  | { kind: 'legacy' };
+
+function positionScopeQuery(scope: PositionFetchScope | undefined): string {
+  if (!scope || scope.kind === 'legacy') return '';
+  if (scope.kind === 'run') {
+    return `?scope=run&run_seq=${encodeURIComponent(String(scope.runSeq))}`;
+  }
+  return `?scope=${scope.kind}`;
+}
+
 export function fetchRulePositionsPage(
   strategySeg: string,
   ruleId: string,
   body: TableRequestBody,
-  scope: 'current' | 'history' | undefined,
+  scope: PositionFetchScope | 'current' | 'history' | undefined,
   signal?: AbortSignal,
 ): Promise<{ items: import('types').RulePositionRecord[]; total: number }> {
-  const q = scope ? `?scope=${scope}` : '';
+  const normalized: PositionFetchScope | undefined =
+    scope == null
+      ? undefined
+      : typeof scope === 'string'
+        ? { kind: scope }
+        : scope;
+  const q = positionScopeQuery(normalized);
   return postTablePage(
     `/api/strategies/${strategySeg}/rules/${encodeURIComponent(ruleId)}/positions${q}`,
     body,
@@ -99,10 +121,16 @@ export function fetchRulePositionsSummary(
   strategySeg: string,
   ruleId: string,
   body: TableRequestBody,
-  scope: 'current' | 'history' | undefined,
+  scope: PositionFetchScope | 'current' | 'history' | undefined,
   signal?: AbortSignal,
 ): Promise<import('types').PositionsSummary> {
-  const q = scope ? `?scope=${scope}` : '';
+  const normalized: PositionFetchScope | undefined =
+    scope == null
+      ? undefined
+      : typeof scope === 'string'
+        ? { kind: scope }
+        : scope;
+  const q = positionScopeQuery(normalized);
   return request(
     `${API_BASE}/api/strategies/${strategySeg}/rules/${encodeURIComponent(ruleId)}/positions/summary${q}`,
     {

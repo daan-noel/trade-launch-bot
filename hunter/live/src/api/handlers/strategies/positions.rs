@@ -204,11 +204,17 @@ impl PositionListParams {
 pub enum PositionScope {
     Current,
     History,
+    /// Every run for the rule (real + paper); rows stamped with `run_seq`.
+    All,
+    /// One run selected by `run_seq` query param.
+    Run,
 }
 
 #[derive(serde::Deserialize)]
 pub struct ScopeParam {
     pub scope: Option<PositionScope>,
+    /// Required when `scope=run`.
+    pub run_seq: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +318,9 @@ pub async fn get_positions_by_rule(
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let (_strategy, rule_id) = path.into_inner();
-    let scope = scope.into_inner().scope;
+    let scope_param = scope.into_inner();
+    let scope = scope_param.scope;
+    let run_seq = scope_param.run_seq;
     let req = body.into_inner();
     let (limit, offset) = req.pagination.bounds();
     let pq = PositionQuery::from(req);
@@ -330,6 +338,8 @@ pub async fn get_positions_by_rule(
     // filter apply to both list + count. The scope selects which run(s):
     //   `current` — the rule's latest run only (both modes);
     //   `history` — every prior run, each row stamped with its `run_seq`;
+    //   `all`     — every run (incl. current), rows stamped with `run_seq`;
+    //   `run`     — one run by `run_seq` query param;
     //   absent    — legacy: paper = latest run, real = full lifetime history.
     let (result, total, seq_map) = match scope {
         Some(PositionScope::Current) => match repo.latest_run(rule_id, &rule.trade_mode).await {
@@ -361,6 +371,37 @@ pub async fn get_positions_by_rule(
                 repo.count_positions_by_rule_excluding_run(rule_id, latest_run_id, &pq).await,
                 Some(seq_map),
             )
+        }
+        Some(PositionScope::All) => {
+            let runs = match repo.run_seqs_for_rule(rule_id, &rule.trade_mode).await {
+                Ok(runs) => runs,
+                Err(e) => return list_error("load runs", e),
+            };
+            let seq_map: std::collections::HashMap<Uuid, i64> = runs.into_iter().collect();
+            (
+                repo.find_positions_by_rule_paged(rule_id, limit, offset, &pq).await,
+                repo.count_positions_by_rule(rule_id, &pq).await,
+                Some(seq_map),
+            )
+        }
+        Some(PositionScope::Run) => {
+            let Some(seq) = run_seq else {
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"error": "scope=run requires run_seq"}));
+            };
+            match repo.find_run_by_seq(rule_id, &rule.trade_mode, seq).await {
+                Ok(Some(run)) => {
+                    let mut seq_map = std::collections::HashMap::new();
+                    seq_map.insert(run.id, run.run_seq);
+                    (
+                        repo.find_positions_by_run_paged(run.id, limit, offset, &pq).await,
+                        repo.count_positions_by_run(run.id, &pq).await,
+                        Some(seq_map),
+                    )
+                }
+                Ok(None) => return json_positions_with_total(Vec::new(), 0),
+                Err(e) => return list_error("load run by seq", e),
+            }
         }
         None if rule.trade_mode == "paper" => match repo.latest_run(rule_id, "paper").await {
             Ok(Some(run)) => (
@@ -398,7 +439,9 @@ pub async fn get_positions_summary_by_rule(
     body: web::Json<TableRequest>,
 ) -> impl Responder {
     let (_strategy, rule_id) = path.into_inner();
-    let scope = scope.into_inner().scope;
+    let scope_param = scope.into_inner();
+    let scope = scope_param.scope;
+    let run_seq = scope_param.run_seq;
     let repo = repo(&app_state);
     let pq = PositionQuery::from(body.into_inner());
 
@@ -437,6 +480,18 @@ pub async fn get_positions_summary_by_rule(
             Ok(None) => Ok(PositionsSummary::default()),
             Err(e) => return list_error("load current run", e),
         },
+        Some(PositionScope::All) => repo.positions_summary_by_rule(rule_id, &pq, price_of).await,
+        Some(PositionScope::Run) => {
+            let Some(seq) = run_seq else {
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"error": "scope=run requires run_seq"}));
+            };
+            match repo.find_run_by_seq(rule_id, &rule.trade_mode, seq).await {
+                Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
+                Ok(None) => Ok(PositionsSummary::default()),
+                Err(e) => return list_error("load run by seq", e),
+            }
+        }
         None if rule.trade_mode == "paper" => match repo.latest_run(rule_id, "paper").await {
             Ok(Some(run)) => repo.positions_summary_by_run(run.id, &pq, price_of).await,
             Ok(None) => Ok(PositionsSummary::default()),

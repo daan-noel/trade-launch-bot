@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { InlineAlert } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
+import { IconButton } from 'components/ui/IconButton';
+import { IconButtonGroup } from 'components/ui/IconButtonGroup';
+import { PauseIcon, PlayIcon, SpinnerIcon, StopIcon } from 'components/ui/icons';
 import { SimSummaryCard } from 'components/strategy/SimSummaryCard';
 import { TemporalSummary, type TemporalSelection } from 'components/strategy/TemporalSummary';
 import {
@@ -16,19 +19,26 @@ import { numericColKeys, toSummaryBody, toTableRequest } from 'services/tableReq
 import {
   fetchRulePositionsPage,
   fetchRulePositionsSummary,
+  type PositionFetchScope,
 } from 'services/api';
 import { connectStrategyPositionUpdate } from 'services/sse';
+import { apiErrorMessage } from 'store/baseApi';
+import {
+  useActivateStrategyRuleMutation,
+  useGetStrategyRuleRunsQuery,
+  usePauseStrategyRuleMutation,
+  useStopStrategyRuleMutation,
+} from 'store/sharedEndpoints';
 import type { TableQuery } from 'components/table/types';
 import type { PositionsSummary, RulePositionRecord } from 'types';
-import type { StrategyRule } from 'lib/strategy/types';
+import type { StrategyRule, StrategyRuleRun } from 'lib/strategy/types';
 import type { TemporalRow } from 'lib/strategy/temporalSummary';
 import { selectOpenByRule } from '@live/slices/liveStatusSlice';
+import { signedToneClass } from 'lib/signedTone';
 
 const STRATEGY_SEG = 'generic';
 const POS_NUMERIC = numericColKeys(positionColumns);
 const posRowOverlay = markerRowOverlay(inspectFromPosition);
-
-type Scope = 'current' | 'history';
 
 const TABLE_RELOAD_STATUSES = new Set([
   'Holding',
@@ -36,6 +46,12 @@ const TABLE_RELOAD_STATUSES = new Set([
   'ExitFailed',
   'ExitUnconfirmed',
 ]);
+
+/** Evidence scope: current run · one run #N · all-time. */
+export type EvidenceScope =
+  | { kind: 'current' }
+  | { kind: 'run'; runSeq: number }
+  | { kind: 'all' };
 
 function holdingSecs(r: RulePositionRecord): number {
   if (!r.entry_time) return 0;
@@ -59,34 +75,61 @@ function toTemporalRow(r: RulePositionRecord): TemporalRow {
   };
 }
 
+function toFetchScope(s: EvidenceScope): PositionFetchScope {
+  if (s.kind === 'run') return { kind: 'run', runSeq: s.runSeq };
+  return { kind: s.kind };
+}
+
+function scopeKey(s: EvidenceScope): string {
+  return s.kind === 'run' ? `run:${s.runSeq}` : s.kind;
+}
+
+function formatRunPnl(run: StrategyRuleRun): string {
+  if (!run.has_metrics || run.total_pnl_sol == null) return '—';
+  const v = run.total_pnl_sol;
+  return `${v > 0 ? '+' : ''}${v.toFixed(3)}◎`;
+}
+
 export interface RuleAnalyzePanelProps {
   ruleId: string;
   rule?: StrategyRule | null;
-  /** Compact header when embedded under the Rules table. */
+  /** Compact header when embedded under the Rules Control table. */
   embedded?: boolean;
   onClose?: () => void;
+  /** Align Evidence default with Control score scope when selecting a rule. */
+  initialScopeKind?: 'current' | 'all';
 }
 
 /**
- * Per-rule Analyze body — Positions Summary + temporal bands + paged history.
- * Used embedded on Rules (master–detail) and as the standalone Analyze route.
+ * Rules Evidence — run navigator + Positions Summary + temporal + history.
+ * Activate/Pause/Stop live in the header so keep/kill stays next to the proof.
  */
 export function RuleAnalyzePanel({
   ruleId,
   rule,
   embedded,
   onClose,
+  initialScopeKind = 'current',
 }: RuleAnalyzePanelProps) {
   const price = usePriceDisplay();
-  const [scope, setScope] = useState<Scope>('current');
+  const [scope, setScope] = useState<EvidenceScope>(() =>
+    initialScopeKind === 'all' ? { kind: 'all' } : { kind: 'current' },
+  );
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
-  /** True after we auto-flipped Current→History for an empty current run. */
-  const [autoOpenedHistory, setAutoOpenedHistory] = useState(false);
-  /** One auto-flip attempt per rule select (don't fight a manual Current click). */
-  const autoHistoryTried = useRef(false);
+  const [opErr, setOpErr] = useState<string | null>(null);
+  const [pausing, setPausing] = useState(false);
 
   const liveOpen = useSelector(selectOpenByRule(ruleId));
+  const { data: runs = [], isFetching: runsLoading } = useGetStrategyRuleRunsQuery(ruleId, {
+    skip: !ruleId,
+  });
+  const [activate] = useActivateStrategyRuleMutation();
+  const [pause] = usePauseStrategyRuleMutation();
+  const [stop] = useStopStrategyRuleMutation();
+
+  const currentRun = runs[0] ?? null;
+  const priorRuns = runs.slice(1);
 
   const body = useMemo(() => {
     const base = toTableRequest(query, POS_NUMERIC);
@@ -112,43 +155,31 @@ export function RuleAnalyzePanel({
     };
   }, [query, temporalSel]);
 
+  const fetchScope = useMemo(() => toFetchScope(scope), [scope]);
+
   const fetchPage = useCallback(
     (b: unknown, signal: AbortSignal) =>
-      fetchRulePositionsPage(STRATEGY_SEG, ruleId, b as never, scope, signal),
-    [ruleId, scope],
+      fetchRulePositionsPage(STRATEGY_SEG, ruleId, b as never, fetchScope, signal),
+    [ruleId, fetchScope],
   );
   const fetchSummary = useCallback(
     (b: unknown, signal: AbortSignal) =>
-      fetchRulePositionsSummary(STRATEGY_SEG, ruleId, b as never, scope, signal),
-    [ruleId, scope],
+      fetchRulePositionsSummary(STRATEGY_SEG, ruleId, b as never, fetchScope, signal),
+    [ruleId, fetchScope],
   );
 
   const { items, total, summary, loading, error, reload } = useServerTable<
     RulePositionRecord,
     PositionsSummary
-  >(!!ruleId, body, fetchPage, fetchSummary, summaryBody, `${ruleId}:${scope}`);
+  >(!!ruleId, body, fetchPage, fetchSummary, summaryBody, `${ruleId}:${scopeKey(scope)}`);
 
   useEffect(() => {
     setTemporalSel(null);
-    setScope('current');
+    setScope(initialScopeKind === 'all' ? { kind: 'all' } : { kind: 'current' });
     setQuery(DEFAULT_POSITIONS_QUERY);
-    setAutoOpenedHistory(false);
-    autoHistoryTried.current = false;
-  }, [ruleId]);
-
-  // Real scoreboard N is all-time; Analyze defaults to the latest run. After
-  // Stop→Activate the current run is empty while N still counts priors — flip
-  // to History once so Positions Summary matches what the operator clicked for.
-  useEffect(() => {
-    if (loading || autoHistoryTried.current) return;
-    if (scope !== 'current' || total > 0) return;
-    if (rule?.trade_mode !== 'real' || (rule.total_positions ?? 0) <= 0) return;
-    autoHistoryTried.current = true;
-    setAutoOpenedHistory(true);
-    setScope('history');
-    setTemporalSel(null);
-    setQuery((q) => ({ ...q, page: 1 }));
-  }, [loading, scope, total, rule]);
+    setOpErr(null);
+    setPausing(false);
+  }, [ruleId, initialScopeKind]);
 
   useEffect(() => {
     if (!ruleId) return;
@@ -162,59 +193,146 @@ export function RuleAnalyzePanel({
 
   const temporalRows = useMemo(() => items.map(toTemporalRow), [items]);
 
+  const showRunCol = scope.kind === 'all';
+  const tableColumns = useMemo(
+    () =>
+      showRunCol
+        ? positionColumns
+        : positionColumns.filter((c) => c.key !== 'run_seq'),
+    [showRunCol],
+  );
+  const tableKeys = useMemo(
+    () => new Set(tableColumns.map((c) => c.key)),
+    [tableColumns],
+  );
+
+  const runAction = async (fn: () => Promise<unknown>, fail: string) => {
+    setOpErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setOpErr(apiErrorMessage(e as never) ?? fail);
+    }
+  };
+
+  const pauseRule = () => {
+    if (!rule) return;
+    setPausing(true);
+    void runAction(async () => {
+      try {
+        await pause(rule.id).unwrap();
+      } finally {
+        setPausing(false);
+      }
+    }, 'Pause failed');
+  };
+
+  const stopRule = () => {
+    if (!rule) return;
+    if (
+      rule.trade_mode === 'real' &&
+      !window.confirm(
+        `Stop "${rule.rule_name}" and close its open positions? REAL mode sends on-chain sells.`,
+      )
+    ) {
+      return;
+    }
+    void runAction(() => stop(rule.id).unwrap(), 'Stop failed');
+  };
+
+  const selectScope = (next: EvidenceScope) => {
+    setScope(next);
+    setQuery((q) => ({ ...q, page: 1 }));
+    setTemporalSel(null);
+  };
+
   if (!ruleId) {
     return <InlineAlert variant="error">Missing rule id.</InlineAlert>;
   }
 
+  const scopeLabel =
+    scope.kind === 'current'
+      ? currentRun
+        ? `Current run #${currentRun.run_seq}`
+        : 'Current run'
+      : scope.kind === 'all'
+        ? 'All-time'
+        : `Run #${scope.runSeq}`;
+
   return (
-    <div className={`flex flex-col gap-4 ${embedded ? 'rounded-lg border border-white/8 bg-panel/40 p-4' : ''}`}>
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-3">
-          {embedded ? (
-            <h2 className="text-base font-extrabold text-text">
-              {rule?.rule_name ?? ruleId.slice(0, 8)}
-            </h2>
-          ) : (
-            <h1 className="text-lg font-extrabold text-text">
-              {rule?.rule_name ?? ruleId.slice(0, 8)}
-            </h1>
-          )}
-          {rule && (
-            <Badge variant={rule.trade_mode === 'real' ? 'warning' : 'info'}>
-              {rule.trade_mode}
-            </Badge>
-          )}
-          {rule && (
-            <Badge variant={rule.is_active ? 'success' : 'neutral'}>
-              {rule.is_active ? 'Active' : 'Idle'}
-            </Badge>
-          )}
-          <span className="text-sm text-text-mid">
-            Analyze · {liveOpen.length} open live
-          </span>
+    <div
+      className={`flex flex-col gap-4 ${embedded ? 'rounded-lg border border-white/8 bg-panel/40 p-4' : ''}`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex flex-wrap items-baseline gap-3">
+            {embedded ? (
+              <h2 className="text-base font-extrabold text-text">
+                {rule?.rule_name ?? ruleId.slice(0, 8)}
+              </h2>
+            ) : (
+              <h1 className="text-lg font-extrabold text-text">
+                {rule?.rule_name ?? ruleId.slice(0, 8)}
+              </h1>
+            )}
+            {rule && (
+              <Badge variant={rule.trade_mode === 'real' ? 'warning' : 'info'}>
+                {rule.trade_mode}
+              </Badge>
+            )}
+            {rule && (
+              <Badge variant={rule.is_active ? 'success' : 'neutral'}>
+                {rule.is_active ? 'Active' : 'Idle'}
+              </Badge>
+            )}
+            <span className="text-sm text-text-mid">
+              Evidence · {scopeLabel} · {liveOpen.length} open live
+            </span>
+          </div>
+          <p className="text-[11px] text-text-dim">
+            Pause stops new entries; open positions still drain on Ops.
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex gap-1">
-            {(['current', 'history'] as Scope[]).map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => {
-                  setAutoOpenedHistory(false);
-                  setScope(s);
-                  setQuery((q) => ({ ...q, page: 1 }));
-                  setTemporalSel(null);
-                }}
-                className={`rounded-md px-2.5 py-1 text-xs font-semibold capitalize ${
-                  scope === s
-                    ? 'bg-primary/20 text-primary'
-                    : 'bg-white/5 text-text-dim hover:bg-white/8'
-                }`}
-              >
-                {s === 'current' ? 'Current run' : 'History'}
-              </button>
-            ))}
-          </div>
+          {rule?.is_enabled && (
+            <IconButtonGroup>
+              {rule.is_active ? (
+                <>
+                  <IconButton
+                    variant="ghost"
+                    size="md"
+                    disabled={pausing}
+                    onClick={pauseRule}
+                    title={pausing ? 'Pausing…' : 'Pause — stop new entries'}
+                    aria-label={pausing ? 'Pausing…' : 'Pause'}
+                  >
+                    {pausing ? <SpinnerIcon /> : <PauseIcon />}
+                  </IconButton>
+                  <IconButton
+                    variant="danger"
+                    size="md"
+                    onClick={stopRule}
+                    title="Stop — deactivate and force-close open positions"
+                    aria-label="Stop"
+                  >
+                    <StopIcon />
+                  </IconButton>
+                </>
+              ) : (
+                <IconButton
+                  variant="primary"
+                  size="md"
+                  onClick={() =>
+                    void runAction(() => activate(rule.id).unwrap(), 'Activate failed')
+                  }
+                  title="Activate — arm this rule"
+                  aria-label="Activate"
+                >
+                  <PlayIcon />
+                </IconButton>
+              )}
+            </IconButtonGroup>
+          )}
           {onClose && (
             <button
               type="button"
@@ -227,20 +345,54 @@ export function RuleAnalyzePanel({
         </div>
       </div>
 
-      {error && <InlineAlert variant="error">{error}</InlineAlert>}
-
-      {autoOpenedHistory && scope === 'history' && (
-        <InlineAlert variant="warning">
-          Current run is empty — showing History. Scoreboard N={rule?.total_positions}{' '}
-          is all-time for real rules.
-        </InlineAlert>
+      {(error || opErr) && (
+        <InlineAlert variant="error">{error || opErr}</InlineAlert>
       )}
+
+      {/* Run navigator */}
+      <div className="flex flex-col gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-text-dim">
+          Runs {runsLoading ? '…' : `(${runs.length})`}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <ScopeChip
+            active={scope.kind === 'current'}
+            onClick={() => selectScope({ kind: 'current' })}
+            label={
+              currentRun
+                ? `#${currentRun.run_seq} current`
+                : 'Current run'
+            }
+            sub={
+              currentRun?.has_metrics
+                ? formatRunPnl(currentRun)
+                : currentRun?.status ?? undefined
+            }
+            tone={currentRun?.total_pnl_sol}
+          />
+          {priorRuns.slice(0, 12).map((r) => (
+            <ScopeChip
+              key={r.id}
+              active={scope.kind === 'run' && scope.runSeq === r.run_seq}
+              onClick={() => selectScope({ kind: 'run', runSeq: r.run_seq })}
+              label={`#${r.run_seq}`}
+              sub={formatRunPnl(r)}
+              tone={r.total_pnl_sol}
+            />
+          ))}
+          <ScopeChip
+            active={scope.kind === 'all'}
+            onClick={() => selectScope({ kind: 'all' })}
+            label="All-time"
+          />
+        </div>
+      </div>
 
       {summary && (
         <SimSummaryCard
           ruleName={rule?.rule_name ?? ruleId.slice(0, 8)}
           price={price}
-          title="Positions Summary"
+          title={`Summary · ${scopeLabel}`}
           summary={summary}
         />
       )}
@@ -255,8 +407,8 @@ export function RuleAnalyzePanel({
       )}
 
       <TokenTable
-        columns={positionColumns}
-        existingKeys={POSITION_KEYS}
+        columns={tableColumns}
+        existingKeys={tableKeys.size ? tableKeys : POSITION_KEYS}
         rows={items}
         rowKey={(r) => r.id}
         loading={loading}
@@ -268,14 +420,55 @@ export function RuleAnalyzePanel({
         }}
         useRowOverlay={posRowOverlay}
         charts
-        resetKey={`${ruleId}_${scope}`}
-        tableId={`rule-analyze-${ruleId}`}
+        resetKey={`${ruleId}_${scopeKey(scope)}`}
+        tableId={`rule-evidence-${ruleId}`}
         emptyMessage={
-          scope === 'history'
-            ? 'No positions in prior runs.'
-            : 'No positions in the current run yet.'
+          scope.kind === 'all'
+            ? 'No positions in any run.'
+            : scope.kind === 'run'
+              ? `No positions in run #${scope.runSeq}.`
+              : 'No positions in the current run yet — pick a prior run or All-time.'
         }
       />
     </div>
+  );
+}
+
+function ScopeChip({
+  active,
+  onClick,
+  label,
+  sub,
+  tone,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  sub?: string;
+  tone?: number | null;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-md px-2.5 py-1 text-left text-xs font-semibold ${
+        active
+          ? 'bg-primary/20 text-primary'
+          : 'bg-white/5 text-text-dim hover:bg-white/8'
+      }`}
+    >
+      <span className="block leading-tight">{label}</span>
+      {sub && (
+        <span
+          className={`block text-[10px] font-medium tabular-nums ${
+            tone != null && Number.isFinite(tone)
+              ? signedToneClass(tone)
+              : 'text-text-dim'
+          }`}
+        >
+          {sub}
+        </span>
+      )}
+    </button>
   );
 }

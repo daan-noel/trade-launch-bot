@@ -48,8 +48,9 @@ servers** — the mode is a **build-time guarantee**, not a runtime `useCapabili
   the `--color-primary` theme token, swapped per build (see "Per-app skin" below).
 
 **Operator clarity (jobs):** Wallet = bag overview; Ops = live inventory (SSE SSOT);
-Trade = mint-first execute; Rules = activate/pause + **scoreboard** + master–detail
-Analyze panel (DB history / temporal). Tokens table stream toggle is **STREAM ON/OFF**
+Trade = mint-first execute; Rules = **Control** (activate/pause + scoreboard scoped
+current-run / all-time) + **Evidence** pane (run navigator, summary, positions).
+Tokens table stream toggle is **STREAM ON/OFF**
 (not the header trading kill switch).
 
 **Live Status SSOT:** `live/slices/liveStatusSlice` + `useLiveStatusBootstrap` (mounted
@@ -79,10 +80,13 @@ position sink clears `ArmedRegistry` + emits `disarmed`/`entered` on `BuySubmitt
 Mount points in live `App` `NotificationMount`: `useLiveStatusBootstrap`,
 `usePortfolioRealtime`, `useWalletMarksLive`, `useTokenTradesLiveBootstrap`,
 `usePositionNotifications`. Tokens STREAM fallback poll defaults to 90s.
-Rule Analyze (embedded on Rules + `/strategies/rules/:ruleId`) reloads history only on
+Rule Evidence (embedded on Rules Control + `/strategies/rules/:ruleId`) reloads history only on
 open/close edges (not ExitPending). Rules scoreboard columns (`PnL` / `Avg%` / `Exp` /
-`Win%` / `W/L` / `N`) come from `GET /api/strategy-rules` DB enrichment (real = all-time,
-paper = latest run). `Exp` is client-derived expectancy (`PnL / closed`).
+`Win%` / `W/L` / `N`) come from `GET /api/strategy-rules?score_scope=current|all`
+(`current` = latest run both modes; `all` = real all-time / paper latest). `Exp` is
+client-derived expectancy (`PnL / closed`). Evidence run chips use
+`GET /api/strategy-rules/{id}/runs`; positions use `scope=current|run|all`.
+See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
 
 ## Store — split `createApi` (the isolation seam)
 
@@ -309,16 +313,15 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   per-column representation (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM)
   engines are unchanged and identical (DB parity test). The old bespoke `f_*`/`cf` `URLSearchParams`
   builder and the dead simple `getTokens` GET endpoint were removed.
-- **Rule Analyze (live) = server-side paged + summary** (`RuleAnalyzePanel` via `useServerTable` +
-  `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|history]`
-  and `…/summary` with `toTableRequest` / `toSummaryBody`; `SimSummaryCard` + page-cohort
-  `TemporalSummary` (click → mint `in` filter). Embedded under Rules when a row is selected
-  (`key={ruleId}` remount + `useServerTable` deps on the fetch closures so a rule switch
-  always refetches). Default scope is **current run**; the Rules scoreboard `N` for **real**
-  rules is **all-time** — when current is empty but `N>0`, the panel auto-opens History
-  once so the summary/table match the scoreboard.
-  SSE on the same `rule_id` triggers `reload()`. Open inventory manage is **Ops** (Live Status
-  SSOT), not this table.
+- **Rule Evidence (live) = server-side paged + summary** (`RuleAnalyzePanel` via `useServerTable` +
+  `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|run|all|history]`
+  (+ `run_seq` when `scope=run`) and `…/summary`; run chips from `GET …/strategy-rules/{id}/runs`;
+  `SimSummaryCard` + page-cohort `TemporalSummary` (click → mint `in` filter). Embedded under Rules
+  Control when a row is selected (`key={ruleId}` remount). Default Evidence scope follows Control
+  (`current` / `all`); no auto-flip to History. Activate/Pause/Stop live on Control Execute **and**
+  the Evidence header. SSE on the same `rule_id` triggers `reload()`. Open inventory manage is
+  **Ops** (Live Status SSOT), not this table. See
+  [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
 - **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
   (no SSE-delta patching / settle-poll — these results are static once computed) drives the two tables
   over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**

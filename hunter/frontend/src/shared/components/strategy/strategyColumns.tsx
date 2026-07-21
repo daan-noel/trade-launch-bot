@@ -272,6 +272,21 @@ const EXIT_TOOLTIPS: Partial<Record<LegField, string>> = {
 // priceCells), so these column arrays are referentially stable across a rate
 // tick: only the rate-aware cells re-render, not the whole table.
 export const positionColumns: ColumnDef<RulePositionRecord>[] = [
+  {
+    key: 'run_seq',
+    label: 'Run',
+    group: 'run',
+    render: (r) =>
+      r.run_seq != null ? (
+        <span className="tabular-nums text-xs text-text-mid">#{r.run_seq}</span>
+      ) : (
+        <span className="text-text-dim">—</span>
+      ),
+    sortValue: (r) => r.run_seq ?? 0,
+    searchValue: (r) => (r.run_seq != null ? String(r.run_seq) : ''),
+    filterValue: (r) => (r.run_seq != null ? String(r.run_seq) : ''),
+    sortable: true,
+  },
   mintColumn<RulePositionRecord>(),
   ...coreTokenColumns(),
   ...legColumns<RulePositionRecord>(

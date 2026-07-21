@@ -80,6 +80,28 @@ export interface StrategyRule {
   total_pnl_sol?: number;
 }
 
+/** One activation session of a rule — Evidence run navigator wire shape. */
+export interface StrategyRuleRun {
+  id: string;
+  run_seq: number;
+  status: string;
+  mode: string;
+  started_at: string;
+  finished_at: string | null;
+  has_metrics: boolean;
+  n_closed?: number | null;
+  n_open?: number | null;
+  win_rate?: number | null;
+  total_pnl_sol?: number | null;
+  expectancy_sol?: number | null;
+  n_exit_take_profit?: number | null;
+  n_exit_stop_loss?: number | null;
+  n_exit_trailing?: number | null;
+  n_exit_stall?: number | null;
+  n_exit_time?: number | null;
+  n_exit_liquidity?: number | null;
+}
+
 /** DataTable `rowClassName` for soft-archived rules (Rules + Simulate). */
 export function disabledRuleRowClass(r: Pick<StrategyRule, 'is_enabled'>): string | undefined {
   return r.is_enabled ? undefined : 'opacity-40 bg-white/[0.02] hover:bg-white/[0.04]';

@@ -71,6 +71,10 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategy-rules/{id}/stop",
                 web::post().to(handlers::strategies::engine::stop_rule),
             )
+            .route(
+                "/strategy-rules/{id}/runs",
+                web::get().to(handlers::strategies::engine::list_rule_runs),
+            )
             .route("/strategy-rules/{id}", web::get().to(handlers::strategies::engine::get_rule))
             .route("/strategy-rules/{id}", web::put().to(handlers::strategies::engine::update_rule))
             .route(

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::{types::Json, PgPool};
 use std::collections::HashMap;
@@ -61,6 +62,79 @@ impl From<StrategyRunDbRow> for StrategyRun {
             max_total_tokens: r.max_total_tokens,
             started_at: r.started_at,
             finished_at: r.finished_at,
+        }
+    }
+}
+
+/// Flat LEFT JOIN of `strategy_runs` × `strategy_run_metrics` for the Rules
+/// Evidence run navigator (`GET …/strategy-rules/{id}/runs`).
+#[derive(sqlx::FromRow)]
+struct RuleRunListDbRow {
+    id: Uuid,
+    run_seq: i64,
+    status: String,
+    mode: String,
+    started_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+    n_closed: Option<i32>,
+    n_open: Option<i32>,
+    win_rate: Option<f32>,
+    total_pnl_sol: Option<f32>,
+    expectancy_sol: Option<f32>,
+    n_exit_take_profit: Option<i32>,
+    n_exit_stop_loss: Option<i32>,
+    n_exit_trailing: Option<i32>,
+    n_exit_stall: Option<i32>,
+    n_exit_time: Option<i32>,
+    n_exit_liquidity: Option<i32>,
+}
+
+/// Public list row for a rule's runs (+ optional finalized metrics).
+#[derive(Debug, Clone, Serialize)]
+pub struct RuleRunListRow {
+    pub id: Uuid,
+    pub run_seq: i64,
+    pub status: String,
+    pub mode: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    /// True when a `strategy_run_metrics` row exists (typically finished runs).
+    pub has_metrics: bool,
+    pub n_closed: Option<i32>,
+    pub n_open: Option<i32>,
+    pub win_rate: Option<f32>,
+    pub total_pnl_sol: Option<f32>,
+    pub expectancy_sol: Option<f32>,
+    pub n_exit_take_profit: Option<i32>,
+    pub n_exit_stop_loss: Option<i32>,
+    pub n_exit_trailing: Option<i32>,
+    pub n_exit_stall: Option<i32>,
+    pub n_exit_time: Option<i32>,
+    pub n_exit_liquidity: Option<i32>,
+}
+
+impl From<RuleRunListDbRow> for RuleRunListRow {
+    fn from(r: RuleRunListDbRow) -> Self {
+        let has_metrics = r.n_closed.is_some();
+        Self {
+            id: r.id,
+            run_seq: r.run_seq,
+            status: r.status,
+            mode: r.mode,
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            has_metrics,
+            n_closed: r.n_closed,
+            n_open: r.n_open,
+            win_rate: r.win_rate,
+            total_pnl_sol: r.total_pnl_sol,
+            expectancy_sol: r.expectancy_sol,
+            n_exit_take_profit: r.n_exit_take_profit,
+            n_exit_stop_loss: r.n_exit_stop_loss,
+            n_exit_trailing: r.n_exit_trailing,
+            n_exit_stall: r.n_exit_stall,
+            n_exit_time: r.n_exit_time,
+            n_exit_liquidity: r.n_exit_liquidity,
         }
     }
 }
@@ -806,6 +880,52 @@ impl StrategyRepo {
         Ok(rows)
     }
 
+    /// One run by `(rule_id, mode, run_seq)` — Evidence pane "Run #N" scope.
+    pub async fn find_run_by_seq(
+        &self,
+        rule_id: Uuid,
+        mode: &str,
+        run_seq: i64,
+    ) -> anyhow::Result<Option<StrategyRun>> {
+        let row = sqlx::query_as::<_, StrategyRunDbRow>(&format!(
+            "SELECT {RUN_COLS} FROM strategy_runs \
+             WHERE rule_id = $1 AND mode = $2 AND run_seq = $3"
+        ))
+        .bind(rule_id)
+        .bind(mode)
+        .bind(run_seq)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(StrategyRun::from))
+    }
+
+    /// Runs for a rule (newest first) with optional finalized
+    /// [`strategy_run_metrics`](crate::models::StrategyRunMetrics) (LEFT JOIN — null
+    /// while Running / never rolled up). Backs `GET …/strategy-rules/{id}/runs`.
+    pub async fn list_runs_with_metrics(
+        &self,
+        rule_id: Uuid,
+        mode: &str,
+    ) -> anyhow::Result<Vec<RuleRunListRow>> {
+        let rows = sqlx::query_as::<_, RuleRunListDbRow>(
+            r#"
+            SELECT r.id, r.run_seq, r.status, r.mode, r.started_at, r.finished_at,
+                   m.n_closed, m.n_open, m.win_rate, m.total_pnl_sol, m.expectancy_sol,
+                   m.n_exit_take_profit, m.n_exit_stop_loss, m.n_exit_trailing,
+                   m.n_exit_stall, m.n_exit_time, m.n_exit_liquidity
+            FROM strategy_runs r
+            LEFT JOIN strategy_run_metrics m ON m.run_id = r.id
+            WHERE r.rule_id = $1 AND r.mode = $2
+            ORDER BY r.run_seq DESC
+            "#,
+        )
+        .bind(rule_id)
+        .bind(mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(RuleRunListRow::from).collect())
+    }
+
     pub async fn set_run_status(
         &self,
         id: Uuid,
@@ -1445,14 +1565,22 @@ impl StrategyRepo {
         &self,
         strategy_id: &str,
     ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
-        // `latest` = each rule's newest paper run; join its positions and aggregate
-        // via the shared `RULE_COUNTERS_SELECT` (predicates mirror `positions_summary`).
+        self.rule_counters_for_latest_runs(strategy_id, "paper").await
+    }
+
+    /// Latest-run counters for every rule in `mode` (`paper` or `real`). Shared by
+    /// the paper scoreboard and the live Rules Control `score_scope=current` chip.
+    pub async fn rule_counters_for_latest_runs(
+        &self,
+        strategy_id: &str,
+        mode: &str,
+    ) -> anyhow::Result<HashMap<Uuid, RuleCounters>> {
         let select = RULE_COUNTERS_SELECT.replace("{aggs}", RULE_COUNTERS_AGGS);
         let sql = format!(
             "WITH latest AS ( \
                 SELECT DISTINCT ON (rule_id) rule_id, id AS run_id \
                 FROM strategy_runs \
-                WHERE mode = 'paper' AND rule_id IS NOT NULL AND strategy_id = $1 \
+                WHERE mode = $2 AND rule_id IS NOT NULL AND strategy_id = $1 \
                 ORDER BY rule_id, run_seq DESC \
             ) \
             SELECT {select} \
@@ -1462,6 +1590,7 @@ impl StrategyRepo {
         );
         let rows = sqlx::query_as::<_, RuleCountersRow>(&sql)
             .bind(strategy_id)
+            .bind(mode)
             .fetch_all(&self.pool)
             .await?;
         Ok(map_rule_counters(rows))

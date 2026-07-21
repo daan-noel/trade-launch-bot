@@ -5,13 +5,13 @@ import { InlineAlert } from 'components/ui/Modal';
 import { RuleAnalyzePanel } from '@live/components/strategy/RuleAnalyzePanel';
 
 /**
- * Standalone Analyze route — same panel as the Rules master–detail embed.
+ * Standalone Evidence route — same panel as the Rules Control embed.
  * Prefer selecting a rule on `/strategies/rules?rule=`; this route remains for
  * deep links and bookmarks.
  */
 export function RuleAnalyzePage() {
   const { ruleId = '' } = useParams<{ ruleId: string }>();
-  const { data: rules = [] } = useGetStrategyRulesQuery();
+  const { data: rules = [] } = useGetStrategyRulesQuery('current');
   const rule = rules.find((r) => r.id === ruleId);
 
   if (!ruleId) {
@@ -24,7 +24,7 @@ export function RuleAnalyzePage() {
         to={rulesHref(ruleId)}
         className="text-sm text-accent hover:text-primary hover:underline"
       >
-        ← Rules
+        ← Rules Control
       </Link>
       <RuleAnalyzePanel ruleId={ruleId} rule={rule ?? null} />
     </div>
