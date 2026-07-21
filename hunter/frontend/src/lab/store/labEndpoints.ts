@@ -1,4 +1,4 @@
-﻿import { baseApi } from 'store/baseApi';
+import { baseApi } from 'store/baseApi';
 import { tokensTableRequestBody, type TokensPageArgs } from 'store/sharedEndpoints';
 import type {
   GroupedSweepRunRecord,
@@ -277,6 +277,11 @@ export const labApi = baseApi.injectEndpoints({
     getFlowDiscovery: builder.query<FlowDiscoveryResult, string>({
       query: (runId) => `/api/strategies/flow-discovery/${encodeURIComponent(runId)}`,
     }),
+    // Disk-cached last result, keyed by nothing — rehydrates the page after a
+    // reload when there's no run_id in hand yet. 404 ⇒ no cache on disk.
+    getLastFlowDiscovery: builder.query<FlowDiscoveryResult, void>({
+      query: () => '/api/strategies/flow-discovery/last',
+    }),
     // Promote-style bind: find-or-create fingerprint from group_key + patch patterns.
     bindFlowDiscovery: builder.mutation<
       Fingerprint,
@@ -316,5 +321,6 @@ export const {
   useStartFlowDiscoveryMutation,
   useGetFlowDiscoveryQuery,
   useLazyGetFlowDiscoveryQuery,
+  useGetLastFlowDiscoveryQuery,
   useBindFlowDiscoveryMutation,
 } = labApi;

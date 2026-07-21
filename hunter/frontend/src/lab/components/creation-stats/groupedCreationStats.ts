@@ -1,4 +1,4 @@
-﻿// Per-fingerprint creation-activity dashboard — shared types + helpers.
+// Per-fingerprint creation-activity dashboard — shared types + helpers.
 // Mirrors the backend `GET /api/tokens/creation-stats/grouped` response (handler
 // `creation_stats.rs::get_grouped_creation_stats`). Count-only: each fingerprint
 // group gets a day×hour fold (`cells`, reused by `CreationHeatmap`) and a calendar

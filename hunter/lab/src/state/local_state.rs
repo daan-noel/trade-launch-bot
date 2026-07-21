@@ -8,9 +8,9 @@ use tokio::sync::{RwLock, Semaphore};
 use super::core_state::CoreState;
 use super::job_progress::ProgressCell;
 use super::analysis_cache::AnalysisCache;
+use super::discovery_result_cache::DiscoveryResultCache;
 use super::sim_results::SimResults;
 use super::sim_summary::SimSummaryCache;
-use crate::strategies::flow_discovery::DiscoveryResult;
 use crate::sweep::corpus::CorpusToken;
 
 /// Option A: the fully-loaded corpus (trades + fingerprints) from the most recent
@@ -97,9 +97,11 @@ pub struct LocalState {
     pub discovery_cancel: Arc<AtomicBool>,
     /// Progress cell for `/api/jobs/status` recovery (discovery phase).
     pub discovery_progress: Arc<ProgressCell>,
-    /// Ephemeral last discovery result (keyed by `run_id`). Overwritten on the
-    /// next successful run; cleared on process restart — authoring aid only.
-    pub discovery_result: Arc<RwLock<Option<(Uuid, DiscoveryResult)>>>,
+    /// Last discovery result (keyed by `run_id`), disk-backed so it survives a
+    /// `hunter-lab` restart — authoring aid; a corpus fold can take a while and
+    /// shouldn't have to re-run just to be looked at again. See
+    /// [`super::discovery_result_cache`].
+    pub discovery_result: Arc<DiscoveryResultCache>,
 }
 
 impl LocalState {
@@ -119,7 +121,7 @@ impl LocalState {
             discovery_running: Arc::new(AtomicBool::new(false)),
             discovery_cancel: Arc::new(AtomicBool::new(false)),
             discovery_progress: Arc::new(ProgressCell::default()),
-            discovery_result: Arc::new(RwLock::new(None)),
+            discovery_result: Arc::new(DiscoveryResultCache::new()),
         }
     }
 }

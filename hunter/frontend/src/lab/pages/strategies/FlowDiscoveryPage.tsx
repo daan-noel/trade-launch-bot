@@ -40,6 +40,7 @@ import {
 } from '@lab/context/BackgroundJobsContext';
 import {
   useBindFlowDiscoveryMutation,
+  useGetLastFlowDiscoveryQuery,
   useLazyGetFlowDiscoveryQuery,
   useStartFlowDiscoveryMutation,
   type FlowDiscoveryStartArgs,
@@ -188,6 +189,16 @@ export function FlowDiscoveryPage() {
 
   const [result, setResult] = useState<FlowDiscoveryResult | null>(null);
   const [selectedGroupIdx, setSelectedGroupIdx] = useState(0);
+  const { data: lastResult } = useGetLastFlowDiscoveryQuery();
+  // Rehydrate from the disk-cached last run on mount/reload — only when this
+  // session hasn't produced (or already loaded) a result of its own.
+  useEffect(() => {
+    if (lastResult && !result) {
+      setResult(lastResult);
+      setSelectedGroupIdx(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when the cached result arrives
+  }, [lastResult]);
   /** Apply target — null ⇒ promote-style create/bind from the group key. */
   const [targetFpId, setTargetFpId] = useState<string | null>(seedFingerprintId);
   const [draftPatterns, setDraftPatterns] = useState<string[][]>([]);
@@ -540,7 +551,8 @@ export function FlowDiscoveryPage() {
             {result.groups.length === 0 ? (
               <p className="text-xs text-text-dim">No groups survived min_tokens.</p>
             ) : (
-              result.groups.map((g, i) => (
+              <div className="flex max-h-[65vh] flex-col gap-1 overflow-y-auto pr-1">
+                {result.groups.map((g, i) => (
                 <button
                   key={i}
                   type="button"
@@ -559,7 +571,8 @@ export function FlowDiscoveryPage() {
                     {g.n_tokens} tokens · {g.n_trades_scored.toLocaleString()} trades
                   </div>
                 </button>
-              ))
+                ))}
+              </div>
             )}
           </div>
 

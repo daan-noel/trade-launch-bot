@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use hunter_engine::metrics::flow_split::ix_hash;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::sweep::corpus::{Corpus, CorpusToken};
@@ -46,7 +46,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StructureScore {
     pub ix_labels: Vec<String>,
     pub volume_share: f64,
@@ -60,7 +60,7 @@ pub struct StructureScore {
     pub gross_sol: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryGroup {
     pub group_key: Value,
     pub n_tokens: usize,
@@ -69,7 +69,7 @@ pub struct DiscoveryGroup {
     pub structures: Vec<StructureScore>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveryResult {
     pub groups: Vec<DiscoveryGroup>,
 }

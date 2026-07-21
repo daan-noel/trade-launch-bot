@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchSyncPreview } from 'services/api';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';

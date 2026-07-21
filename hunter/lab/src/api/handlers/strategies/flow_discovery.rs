@@ -146,14 +146,28 @@ pub async fn get_flow_discovery(
     path: web::Path<Uuid>,
 ) -> impl Responder {
     let run_id = path.into_inner();
-    let guard = state.discovery_result.read().await;
-    match guard.as_ref() {
-        Some((id, result)) if *id == run_id => HttpResponse::Ok().json(serde_json::json!({
+    match state.discovery_result.get(run_id).await {
+        Some(result) => HttpResponse::Ok().json(serde_json::json!({
             "run_id": run_id,
             "groups": result.groups,
         })),
-        _ => HttpResponse::NotFound().json(serde_json::json!({
+        None => HttpResponse::NotFound().json(serde_json::json!({
             "error": "no discovery result for that run_id (still running, expired, or unknown)"
+        })),
+    }
+}
+
+/// `GET /api/strategies/flow-discovery/last` — whatever result is disk-cached,
+/// regardless of `run_id`. Lets the page rehydrate after a reload, when it has
+/// no `run_id` to ask for yet.
+pub async fn get_last_flow_discovery(state: web::Data<Arc<LocalState>>) -> impl Responder {
+    match state.discovery_result.get_last().await {
+        Some((run_id, result)) => HttpResponse::Ok().json(serde_json::json!({
+            "run_id": run_id,
+            "groups": result.groups,
+        })),
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "no cached discovery result"
         })),
     }
 }
@@ -429,6 +443,5 @@ async fn run_flow_discovery_job(
 }
 
 async fn store_result(state: &LocalState, run_id: Uuid, result: crate::strategies::flow_discovery::DiscoveryResult) {
-    let mut guard = state.discovery_result.write().await;
-    *guard = Some((run_id, result));
+    state.discovery_result.store(run_id, result).await;
 }

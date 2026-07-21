@@ -58,6 +58,16 @@ pub fn sim_results_dir(root: &Path) -> PathBuf {
     root.join("sim-results")
 }
 
+/// On-disk last-flow-discovery-result file (`<root>/flow-discovery/last.json`).
+///
+/// Sibling of [`sim_results_dir`]: a discovery run folds the whole corpus and can
+/// take a while, so persisting the last result under the same `$SWEEP_LAKE_DIR`
+/// root lets it survive `hunter-lab` restarts instead of forcing a re-run just to
+/// see it again. See [`crate::state::discovery_result_cache`].
+pub fn discovery_result_path(root: &Path) -> PathBuf {
+    root.join("flow-discovery").join("last.json")
+}
+
 /// Directory holding the day-partitioned trade files (`<root>/trades`).
 pub fn trades_dir(root: &Path) -> PathBuf {
     root.join("trades")
