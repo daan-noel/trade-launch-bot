@@ -370,7 +370,10 @@ pub async fn reconcile_externally_cleared_holdings(deps: &OrphanExitDeps) {
 }
 
 /// Adopt PG `Holding` rows into the live engine + registry so TP/SL/Dead and Ops
-/// close work after restart. **PG-only** — no RPC.
+/// close work after restart — for **both** modes: a real adopt resumes the live
+/// exit, a paper adopt resumes the simulated exit (`dispatch_sell` routes by the
+/// frozen `trade_mode`) so a restart doesn't strand paper bags as forever-`Open`.
+/// **PG-only** — no RPC.
 pub fn adopt_holding_into_engine(
     state: &mut hunter_engine::EngineState,
     registry: &PositionRegistry,
@@ -382,9 +385,14 @@ pub fn adopt_holding_into_engine(
     use hunter_engine::state::{PositionRef, RuleCounters, TokenState};
     use super::PositionMeta;
 
-    if pos.mode != "real" || pos.status != "Holding" || pos.entry_price.is_none() {
+    if pos.status != "Holding" || pos.entry_price.is_none() {
         return None;
     }
+    let trade_mode = match pos.mode.as_str() {
+        "real" => TradeMode::Real,
+        "paper" => TradeMode::Paper,
+        _ => return None,
+    };
     if registry.engine_id(pos.id).is_some() {
         return None;
     }
@@ -431,7 +439,7 @@ pub fn adopt_holding_into_engine(
             run_id: pos.run_id,
             rule_id,
             mint: pos.mint_address.clone(),
-            trade_mode: TradeMode::Real,
+            trade_mode,
             token_program_id: pos.token_program_id.clone(),
             creator: None,
             entry_token_amount: pos.entry_token_amount,
@@ -440,6 +448,100 @@ pub fn adopt_holding_into_engine(
             paper_target: None,
             cashback_enabled: false,
             inflight_intent: None,
+        },
+    );
+    Some(position)
+}
+
+/// Adopt a PG `BuySubmitted` row into the live engine + registry as an inert
+/// `EntryPending` arm so a restart cannot **double-buy** the same (rule, mint):
+/// the occupied arm makes the engine's entry sweep skip it (`decide_arm` returns
+/// `None` for `EntryPending`), and the reaper's existing fill/revert nudge folds it
+/// to `Holding` or terminal — exactly the same-process orphan path. **PG-only.**
+///
+/// The reconstructed `intent` keys BOTH the arm and the registry meta so the
+/// reaper's `FillConfirmed`/`FillFailed` (which reads `meta.inflight_intent`)
+/// matches the arm's `pend == intent` guard. The arm never re-buys on its own:
+/// `EntryPending` only advances on those two events, never on a `Tick`.
+pub fn adopt_buy_submitted_into_engine(
+    state: &mut hunter_engine::EngineState,
+    registry: &PositionRegistry,
+    pos: &StrategyPosition,
+) -> Option<PositionId> {
+    use hunter_engine::arm::ArmState;
+    use hunter_engine::event::TradeMode;
+    use hunter_engine::grouping::TokenFingerprint;
+    use hunter_engine::state::{PositionRef, RuleCounters, TokenState};
+    use super::PositionMeta;
+
+    if pos.status != "BuySubmitted" {
+        return None;
+    }
+    if registry.engine_id(pos.id).is_some() {
+        return None;
+    }
+    let rule_id = RuleId(pos.rule_id?);
+    let mint = Mint::from(pos.mint_address.as_str());
+    let trade_mode = match pos.mode.as_str() {
+        "real" => TradeMode::Real,
+        "paper" => TradeMode::Paper,
+        _ => return None,
+    };
+    let created_at = pos.created_at;
+
+    if let Some(token) = state.tokens.get(&mint) {
+        if token.arms.contains_key(&rule_id) {
+            return None;
+        }
+    }
+
+    let track = state.new_track(created_at);
+    let position = state.next_position();
+    state
+        .positions
+        .insert(position, PositionRef { mint: mint.clone(), rule: rule_id });
+
+    if !state.tokens.contains_key(&mint) {
+        state.tokens.insert(
+            mint.clone(),
+            TokenState {
+                created_at,
+                tf: TokenFingerprint::default(),
+                track,
+                last_meaningful_at: None,
+                first_slot_settled: true,
+                arms: Default::default(),
+            },
+        );
+    }
+
+    // Fresh intent keying both the arm and the registry meta (see doc above).
+    let intent = state.next_intent(rule_id, mint.clone());
+    let token = state.tokens.get_mut(&mint)?;
+    token.arms.insert(
+        rule_id,
+        ArmState::EntryPending { intent: intent.clone(), position, attempts: 1 },
+    );
+
+    let ctr = state.counters.entry(rule_id).or_insert(RuleCounters::default());
+    ctr.open = ctr.open.saturating_add(1);
+
+    registry.upsert(
+        position,
+        PositionMeta {
+            pg_id: pos.id,
+            run_id: pos.run_id,
+            rule_id,
+            mint: pos.mint_address.clone(),
+            trade_mode,
+            token_program_id: pos.token_program_id.clone(),
+            creator: None,
+            entry_token_amount: pos.entry_token_amount,
+            token_account: pos.token_account.clone(),
+            entry_price: pos.entry_price,
+            paper_target: None,
+            cashback_enabled: false,
+            inflight_intent: Some(intent),
         },
     );
     Some(position)

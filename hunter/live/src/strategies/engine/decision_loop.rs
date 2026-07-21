@@ -192,6 +192,11 @@ async fn run_loop(
     // so TP/SL/Dead and Ops close work after a restart.
     boot_adopt_holdings(&strategy_repo, &mut state, &registry).await;
 
+    // Adopt PG BuySubmitted rows as inert EntryPending arms so a fresh entry
+    // trigger cannot double-buy a mint whose pre-crash buy is still unsettled; the
+    // reaper folds each to Holding (fill) or terminal (revert). PG-only, no RPC.
+    boot_adopt_buy_submitted(&strategy_repo, &mut state, &registry).await;
+
     // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitFailed
     // bag + stale fail). Immediate first tick, then every 60 s.
     let _reaper = super::reapers::spawn_reaper(super::reapers::ReaperDeps {
@@ -588,28 +593,58 @@ async fn boot_recover(
     }
 }
 
-/// Rebuild in-memory `Entered` arms + registry meta from PG `Holding` rows so a
-/// process restart does not orphan live bags (Ops close / TP-SL). **PG-only.**
+/// Rebuild in-memory `Entered` arms + registry meta from PG `Holding` rows (real
+/// AND paper) so a process restart does not orphan live bags (Ops close / TP-SL)
+/// or strand paper bags as forever-`Open`. **PG-only.**
 async fn boot_adopt_holdings(
     strategy_repo: &StrategyRepo,
     state: &mut EngineState,
     registry: &PositionRegistry,
 ) {
-    let holdings = match strategy_repo.find_all_holding_real().await {
-        Ok(h) => h,
-        Err(e) => {
-            warn!("engine: boot adopt Holding load failed: {e}");
-            return;
-        }
-    };
     let mut n = 0u32;
-    for pos in &holdings {
-        if super::orphan_exit::adopt_holding_into_engine(state, registry, pos).is_some() {
-            n += 1;
+    for mode in ["real", "paper"] {
+        let holdings = match strategy_repo.find_all_holding(mode).await {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(mode, "engine: boot adopt Holding load failed: {e}");
+                continue;
+            }
+        };
+        for pos in &holdings {
+            if super::orphan_exit::adopt_holding_into_engine(state, registry, pos).is_some() {
+                n += 1;
+            }
         }
     }
     if n > 0 {
         info!(adopted = n, "engine: boot adopted Holding positions into registry");
+    }
+}
+
+/// Adopt real PG `BuySubmitted` rows as inert `EntryPending` arms so the engine
+/// treats the (rule, mint) slot as occupied and a fresh trigger cannot double-buy
+/// it; the reaper folds each to `Holding` (fill indexed) or terminal (all sigs
+/// reverted). Real-only — paper carries no on-chain double-spend risk. **PG-only.**
+async fn boot_adopt_buy_submitted(
+    strategy_repo: &StrategyRepo,
+    state: &mut EngineState,
+    registry: &PositionRegistry,
+) {
+    let submitted = match strategy_repo.find_all_buy_submitted("real").await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("engine: boot adopt BuySubmitted load failed: {e}");
+            return;
+        }
+    };
+    let mut n = 0u32;
+    for pos in &submitted {
+        if super::orphan_exit::adopt_buy_submitted_into_engine(state, registry, pos).is_some() {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        info!(adopted = n, "engine: boot adopted BuySubmitted positions into registry (dedup)");
     }
 }
 

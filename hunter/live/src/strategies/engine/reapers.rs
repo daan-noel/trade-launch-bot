@@ -87,6 +87,9 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
             tick.tick().await;
             redrive_orphaned_buy_submitted(&deps, &mut stuck_rpc_skip).await;
             orphan_exit::reconcile_externally_cleared_holdings(&deps.orphan_deps()).await;
+            // Book any ExitPending whose bag is already gone BEFORE re-driving the
+            // sell — else the re-drive would submit a phantom sell of an empty bag.
+            heal_exit_pending_cleared(&deps).await;
             redrive_orphaned_exit_pending(&deps).await;
             redrive_exit_failed_bags(&deps, &mut exit_failed_backoff).await;
             for mode in ["real", "paper"] {
@@ -100,6 +103,15 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
                     Ok(_) => {}
                     Err(e) => warn!(mode, "reaper: delete_stale_unentered: {e}"),
                 }
+            }
+            // Paper `BuySubmitted` that never filled (crash mid-sim buy) owns no
+            // on-chain bag to recover — drop it past the stale window so it can't
+            // linger as a forever-`Open` paper row. Real `BuySubmitted` is left to
+            // the buy-recovery reaper (it may own on-chain tokens).
+            match deps.strategy_repo.delete_stale_paper_buy_submitted(UNENTERED_STALE).await {
+                Ok(n) if n > 0 => info!(n, "reaper: deleted stale paper BuySubmitted rows"),
+                Ok(_) => {}
+                Err(e) => warn!("reaper: delete_stale_paper_buy_submitted: {e}"),
             }
         }
     })
@@ -318,6 +330,43 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
             OrphanStart::Started => {}
             OrphanStart::Busy | OrphanStart::NothingToSell => {}
         }
+    }
+}
+
+/// ExitPending rows whose PG net is already ≤ dust → book End (no sell, no RPC).
+/// The in-flight sell that set `ExitPending` already cleared the bag; without this
+/// the ExitPending re-drive would send a second sell that reverts for no tokens.
+async fn heal_exit_pending_cleared(deps: &ReaperDeps) {
+    let cleared = match deps
+        .strategy_repo
+        .find_exit_pending_cleared(BAG_CLEARED_THRESHOLD_RAW)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("reaper: find_exit_pending_cleared failed: {e}");
+            return;
+        }
+    };
+    if cleared.is_empty() {
+        return;
+    }
+    let orphan = deps.orphan_deps();
+    let wallet = deps.trader.wallet_pubkey();
+    let mut n = 0u32;
+    for pos in cleared {
+        // Skip a position whose exit is actively in flight in THIS process — its
+        // own confirm loop will book the close; don't race a book-close under it.
+        if deps.inflight.exit_held(pos.id) || deps.inflight.exit_mint_held(&pos.mint_address) {
+            continue;
+        }
+        let fill = orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &pos).await;
+        if orphan_exit::book_externally_cleared(&orphan, &pos, fill).await.is_ok() {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        info!(closed = n, "reaper: booked externally-cleared ExitPending rows");
     }
 }
 

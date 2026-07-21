@@ -4,7 +4,9 @@ import reducer, {
   applyPositionDelta,
   applySnapshot,
   armedKey,
+  OPEN_STATUSES,
   selectRuleOpenCounts,
+  TERMINAL_STATUSES,
 } from './liveStatusSlice';
 
 const empty = reducer(undefined, { type: '@@init' });
@@ -200,5 +202,39 @@ describe('liveStatusSlice', () => {
     );
     const counts = selectRuleOpenCounts({ liveStatus: s });
     expect(counts.r1).toEqual({ open: 1, pending: 1 });
+  });
+});
+
+describe('status partition guard (mirrors backend PositionStatus)', () => {
+  // Wire values emitted by hunter-engine `PositionStatus` via
+  // `live/src/strategies/engine/sinks.rs::position_status_str`. The Rust-side
+  // guard (`status_partition_guard` in sinks.rs) breaks compilation if a variant
+  // is added; THIS test catches the frontend half — a wire status in neither set
+  // is silently deleted from Live Status with no close recorded. Keep in sync.
+  const BACKEND_WIRE_STATUSES = [
+    'BuySubmitted',
+    'Holding',
+    'ExitPending',
+    'ExitUnconfirmed',
+    'End',
+    'ExitFailed',
+  ] as const;
+
+  it('classifies every backend wire status as open XOR terminal', () => {
+    for (const s of BACKEND_WIRE_STATUSES) {
+      const open = OPEN_STATUSES.has(s);
+      const terminal = TERMINAL_STATUSES.has(s);
+      expect(open !== terminal, `${s} must be in exactly one of OPEN/TERMINAL`).toBe(true);
+    }
+  });
+
+  it('terminal set is exactly End + ExitFailed', () => {
+    expect([...TERMINAL_STATUSES].sort()).toEqual(['End', 'ExitFailed']);
+  });
+
+  it('OPEN and TERMINAL are disjoint', () => {
+    for (const s of TERMINAL_STATUSES) {
+      expect(OPEN_STATUSES.has(s)).toBe(false);
+    }
   });
 });

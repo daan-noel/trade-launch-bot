@@ -7,11 +7,16 @@
 //! durable `strategy_positions.id` (via [`PositionRegistry`]) and lazily creates
 //! one `strategy_runs` row per rule (the run is the parent FK positions need).
 //!
-//! **Latency:** `BuySubmitted` upserts the in-memory registry **before** the PG
-//! insert (insert is spawned; later transitions await that handle so fill writes
-//! never race a missing row). `ExitPending` status flips are fire-and-forget so
-//! `SubmitSell` is not gated on PG. Runs are warmed on rule reload so the first
-//! buy of a rule rarely blocks on `ensure_run`. Cold miss reuses the latest
+//! **Durability ordering (crash-safety):** `BuySubmitted` upserts the in-memory
+//! registry (so Pass-2 can read the frozen trade_mode) and then **awaits** the PG
+//! insert before returning — the row is durable before Pass-2 can sign/send the
+//! buy, so a crash cannot orphan an on-chain bag with no DB trace. `ExitPending`
+//! likewise **awaits** a single `mark_status` UPDATE before its `SubmitSell` is
+//! dispatched, so a mid-sell crash leaves the row `ExitPending` (reaper re-drives
+//! the sell) rather than `Holding` (which boot-adopt would re-enter → double
+//! sell). Because both writes are awaited on the one serialized decision loop,
+//! later transitions can never race a missing row. Runs are warmed on rule reload
+//! so the first buy of a rule rarely blocks on `ensure_run`. Cold miss reuses the latest
 //! still-`Running` DB run (and collapses empty leading shells) so a process
 //! restart does not orphan the paper scoreboard onto a new empty `run_seq`.
 
@@ -20,7 +25,6 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
 use tracing::warn;
 
 use hunter_engine::event::{
@@ -73,9 +77,6 @@ pub struct Sink {
     rules: HashMap<RuleId, RuleInfo>,
     /// One live run per rule (lazily created on the first position).
     run_cache: HashMap<RuleId, uuid::Uuid>,
-    /// In-flight `insert_position` tasks keyed by PG id — later sink transitions
-    /// await these so a fast fill cannot `record_entry_fill` before the row exists.
-    pending_inserts: HashMap<uuid::Uuid, JoinHandle<()>>,
 }
 
 impl Sink {
@@ -103,7 +104,6 @@ impl Sink {
             wallet,
             rules: HashMap::new(),
             run_cache: HashMap::new(),
-            pending_inserts: HashMap::new(),
         }
     }
 
@@ -245,8 +245,11 @@ impl Sink {
         pos.token_program_id = token_program_id.clone();
         pos.status = "BuySubmitted".to_string();
 
-        // Registry first so Pass-2 can spawn the buy immediately; PG insert is
-        // backgrounded. Later transitions await `pending_inserts` for this pg_id.
+        // Registry first so Pass-2 can read the frozen trade_mode (in-memory);
+        // then AWAIT the PG insert so the `BuySubmitted` row is durable BEFORE
+        // Pass-2 can sign/send the buy. If a crash lands after the buy but before
+        // this row, a real on-chain bag is orphaned — the reaper only recovers
+        // rows that reached PG, and the boot wallet sweep is advisory-only.
         self.registry.upsert(
             delta.position,
             PositionMeta {
@@ -266,14 +269,9 @@ impl Sink {
             },
         );
         self.retain_held_pool(&mint, info.mode);
-        let repo = self.repo.clone();
-        let pg_id = pos.id;
-        let handle = tokio::spawn(async move {
-            if let Err(e) = repo.insert_position(&pos).await {
-                warn!(mint = %mint, pg = %pg_id, "engine sink: insert_position failed: {e}");
-            }
-        });
-        self.pending_inserts.insert(pg_id, handle);
+        if let Err(e) = self.repo.insert_position(&pos).await {
+            warn!(mint = %mint, pg = %pos.id, "engine sink: insert_position failed: {e}");
+        }
         // Leave Waiting: Enter does not emit ArmedChanged(Disarmed). Clear the
         // armed registry (+ SSE) so snapshots cannot re-inject a stale Waiting row.
         self.leave_waiting(delta.rule.0, delta.mint.as_str());
@@ -283,7 +281,6 @@ impl Sink {
         // Safety net if BuySubmitted skipped leave_waiting (unknown rule / crash recovery).
         self.leave_waiting(delta.rule.0, delta.mint.as_str());
         let Some(meta) = self.registry.get(delta.position) else { return };
-        self.await_pending_insert(meta.pg_id).await;
         let Some(fill) = delta.fill else { return };
         self.retain_held_pool(&meta.mint, meta.trade_mode);
         // Paper: persist the trigger (`target_*`) before the worst-case entry fill
@@ -332,31 +329,22 @@ impl Sink {
         });
     }
 
-    /// A status-only transition (ExitPending): fire-and-forget PG so `SubmitSell`
-    /// is not gated on the write. Awaits a pending insert first so the row exists.
+    /// A status-only transition (`ExitPending`). The write is **awaited** — a
+    /// single-row `mark_status` UPDATE that MUST commit before the caller's Pass-2
+    /// `SubmitSell` fires. If a crash lands mid-sell, the durable `ExitPending`
+    /// routes recovery to the ExitPending reaper (re-drive the sell); leaving it
+    /// `Holding` would let boot-adopt re-enter the position and sell a second time.
+    /// One local UPDATE (no RPC) — cheap relative to the sell's own network cost.
     async fn on_status_only(&mut self, delta: &PositionDelta, status: &str) {
         let Some(meta) = self.registry.get(delta.position) else { return };
-        self.await_pending_insert(meta.pg_id).await;
-        let repo = self.repo.clone();
-        let pg_id = meta.pg_id;
-        let status = status.to_string();
         let reason = delta.reason.map(|r| r.label().into_owned());
-        tokio::spawn(async move {
-            match repo.find_position(pg_id).await {
-                Ok(Some(mut pos)) => {
-                    pos.status = status.clone();
-                    if let Some(r) = reason {
-                        pos.exit_reason = Some(r);
-                    }
-                    pos.updated_at = Utc::now();
-                    if let Err(e) = repo.update_position(&pos).await {
-                        warn!(pg = %pg_id, "engine sink: update_position({status}) failed: {e}");
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => warn!(pg = %pg_id, "engine sink: find_position failed: {e}"),
-            }
-        });
+        if let Err(e) = self
+            .repo
+            .mark_status(meta.pg_id, status, reason.as_deref())
+            .await
+        {
+            warn!(pg = %meta.pg_id, "engine sink: mark_status({status}) failed: {e}");
+        }
     }
 
     /// Returns `true` when finalized — caller emits SSE then drops the registry row.
@@ -364,7 +352,6 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
         };
-        self.await_pending_insert(meta.pg_id).await;
         let Some(fill) = delta.fill else {
             return false;
         };
@@ -394,7 +381,6 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
         };
-        self.await_pending_insert(meta.pg_id).await;
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
         }
@@ -462,13 +448,6 @@ impl Sink {
                 mint = %mint,
                 "engine sink: held-pool release check failed (keeping subscription): {e}"
             ),
-        }
-    }
-
-    /// Wait for a background `insert_position` (if any) so later PG writes see the row.
-    async fn await_pending_insert(&mut self, pg_id: uuid::Uuid) {
-        if let Some(handle) = self.pending_inserts.remove(&pg_id) {
-            let _ = handle.await;
         }
     }
 
@@ -605,5 +584,65 @@ fn disarm_reason_str(r: DisarmReason) -> &'static str {
         DisarmReason::Dead => "dead",
         DisarmReason::Migrated => "migrated",
         DisarmReason::Unsatisfiable => "unsatisfiable",
+    }
+}
+
+#[cfg(test)]
+mod status_partition_guard {
+    //! SSOT guard for the position-status wire contract. The wire strings AND the
+    //! open/terminal partition below MUST mirror the frontend
+    //! `OPEN_STATUSES` / `TERMINAL_STATUSES` in
+    //! `frontend/src/live/slices/liveStatusSlice.ts` (and its vitest guard).
+    //!
+    //! Adding a `PositionStatus` variant breaks the exhaustive `match` in
+    //! [`classify`] → this file stops compiling. When you fix it: (1) map the wire
+    //! string in [`position_status_str`], (2) classify it open/terminal here, and
+    //! (3) add it to the matching frontend set — a wire status in NEITHER frontend
+    //! set is silently `delete`d from Live Status with no close recorded.
+    use super::*;
+
+    #[derive(Debug, PartialEq)]
+    enum Class {
+        /// Snapshot-open partition (`find_open_positions`: NOT IN End/ExitFailed).
+        Open,
+        /// Closed partition (`find_recent_closed`: status IN End/ExitFailed).
+        Terminal,
+    }
+
+    /// Exhaustive over `PositionStatus` — the compile-time forcing function.
+    fn classify(s: PositionStatus) -> (&'static str, Class) {
+        match s {
+            PositionStatus::BuySubmitted => ("BuySubmitted", Class::Open),
+            PositionStatus::Holding => ("Holding", Class::Open),
+            PositionStatus::ExitPending => ("ExitPending", Class::Open),
+            PositionStatus::ExitUnconfirmed => ("ExitUnconfirmed", Class::Open),
+            PositionStatus::End => ("End", Class::Terminal),
+            PositionStatus::ExitFailed => ("ExitFailed", Class::Terminal),
+        }
+    }
+
+    const ALL: [PositionStatus; 6] = [
+        PositionStatus::BuySubmitted,
+        PositionStatus::Holding,
+        PositionStatus::ExitPending,
+        PositionStatus::ExitUnconfirmed,
+        PositionStatus::End,
+        PositionStatus::ExitFailed,
+    ];
+
+    #[test]
+    fn classify_wire_string_matches_emitter() {
+        for s in ALL {
+            assert_eq!(classify(s).0, position_status_str(s), "wire string drift for {s:?}");
+        }
+    }
+
+    #[test]
+    fn only_end_and_exit_failed_are_terminal() {
+        for s in ALL {
+            let expected_terminal = matches!(s, PositionStatus::End | PositionStatus::ExitFailed);
+            let is_terminal = classify(s).1 == Class::Terminal;
+            assert_eq!(is_terminal, expected_terminal, "partition drift for {s:?}");
+        }
     }
 }

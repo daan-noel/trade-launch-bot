@@ -1200,6 +1200,33 @@ impl StrategyRepo {
         Ok(row.map(StrategyPosition::from))
     }
 
+    /// Durably flip a live position to a transient status (`ExitPending`) in a
+    /// single round-trip, without rewriting the whole row. Used on the exit path so
+    /// the "selling" state is committed BEFORE the sell is dispatched — a mid-sell
+    /// crash then leaves the row as `ExitPending` (reaper re-drives the sell), not
+    /// `Holding` (boot-adopt would re-enter it and double-sell). Terminal rows are
+    /// never resurrected: the `WHERE` refuses to overwrite a closed status.
+    pub async fn mark_status(
+        &self,
+        id: Uuid,
+        status: &str,
+        exit_reason: Option<&str>,
+    ) -> anyhow::Result<u64> {
+        let res = sqlx::query(
+            "UPDATE strategy_positions \
+             SET status = $2, \
+                 exit_reason = COALESCE($3, exit_reason), \
+                 updated_at = now() \
+             WHERE id = $1 AND status NOT IN ('End','ExitFailed','ExitUnconfirmed')",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(exit_reason)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn find_positions_by_run(
         &self,
         run_id: Uuid,
@@ -2065,16 +2092,41 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
-    /// All real `Holding` rows with an entry fill — boot registry adopt (PG-only).
-    pub async fn find_all_holding_real(&self) -> anyhow::Result<Vec<StrategyPosition>> {
+    /// All `Holding` rows with an entry fill for a mode — boot registry adopt
+    /// (PG-only). Real adopts resume TP/SL/Dead + Ops close; paper adopts resume
+    /// the simulated exit so a restart doesn't strand paper bags as forever-`Open`.
+    pub async fn find_all_holding(&self, mode: &str) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions \
-             WHERE mode = 'real' AND status = 'Holding' AND entry_price IS NOT NULL \
+             WHERE mode = $1 AND status = 'Holding' AND entry_price IS NOT NULL \
              ORDER BY created_at ASC"
         ))
+        .bind(mode)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Delete stale **paper** `BuySubmitted` rows that never recorded an entry fill
+    /// (`entry_price IS NULL`) past `stale_after`. Paper buys are a synchronous
+    /// simulation with no on-chain tokens, so a crash mid-buy leaves an
+    /// unrecoverable never-filled row — safe to drop (unlike a real `BuySubmitted`,
+    /// which may own an on-chain bag and is the buy-recovery reaper's job). Returns
+    /// rows deleted.
+    pub async fn delete_stale_paper_buy_submitted(
+        &self,
+        stale_after: std::time::Duration,
+    ) -> anyhow::Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::from_std(stale_after)?;
+        let res = sqlx::query(
+            "DELETE FROM strategy_positions \
+             WHERE status = 'BuySubmitted' AND mode = 'paper' \
+               AND entry_price IS NULL AND created_at < $1",
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
     }
 
     /// Unsettled real rows on `(wallet, mint)` excluding `exclude_id` — siblings that
@@ -2142,6 +2194,43 @@ impl StrategyRepo {
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
             WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
+              AND EXISTS (
+                    SELECT 1 FROM trades s
+                    WHERE s.wallet_id = w.id AND s.mint_address = p.mint_address
+                      AND s.trade_type = 'sell'
+                  )
+              AND COALESCE((
+                    SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
+                                    WHEN t.trade_type = 'sell' THEN -t.token_amount
+                                    ELSE 0 END)
+                    FROM trades t
+                    WHERE t.wallet_id = w.id AND t.mint_address = p.mint_address
+                  ), 0)::bigint <= $1
+            ORDER BY p.updated_at ASC
+            "#
+        ))
+        .bind(threshold_raw)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Real `ExitPending` whose wallet mint net is already ≤ `threshold_raw` (the
+    /// in-flight sell already cleared the bag — book End without RE-selling). Same
+    /// shape as [`find_exit_failed_cleared`]: requires a sell on record so a
+    /// rolling-buffer age-out of the buy alone cannot false-clear. Drives the
+    /// reaper's cleared-ExitPending heal, which must run BEFORE the ExitPending
+    /// re-drive so a gone bag is booked instead of triggering a phantom sell.
+    pub async fn find_exit_pending_cleared(
+        &self,
+        threshold_raw: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            r#"
+            SELECT {POSITION_COLS}
+            FROM strategy_positions p
+            JOIN wallet_dict w ON w.address = p.wallet
+            WHERE p.mode = 'real' AND p.status = 'ExitPending' AND p.entry_price IS NOT NULL
               AND EXISTS (
                     SELECT 1 FROM trades s
                     WHERE s.wallet_id = w.id AND s.mint_address = p.mint_address
