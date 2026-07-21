@@ -15,6 +15,7 @@ export function RulesPage() {
       ruleLiveCounts={ruleLiveCounts}
       renderAnalyze={({ ruleId, rule, clear }) => (
         <RuleAnalyzePanel
+          key={ruleId}
           ruleId={ruleId}
           rule={rule}
           embedded

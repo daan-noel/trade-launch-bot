@@ -311,9 +311,13 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 - **Rule Analyze (live) = server-side paged + summary** (`RuleAnalyzePanel` via `useServerTable` +
   `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|history]`
   and `…/summary` with `toTableRequest` / `toSummaryBody`; `SimSummaryCard` + page-cohort
-  `TemporalSummary` (click → mint `in` filter). Embedded under Rules when a row is selected;
-  SSE on the same `rule_id` triggers `reload()`. Open inventory manage is **Ops** (Live Status SSOT),
-  not this table.
+  `TemporalSummary` (click → mint `in` filter). Embedded under Rules when a row is selected
+  (`key={ruleId}` remount + `useServerTable` deps on the fetch closures so a rule switch
+  always refetches). Default scope is **current run**; the Rules scoreboard `N` for **real**
+  rules is **all-time** — when current is empty but `N>0`, the panel auto-opens History
+  once so the summary/table match the scoreboard.
+  SSE on the same `rule_id` triggers `reload()`. Open inventory manage is **Ops** (Live Status
+  SSOT), not this table.
 - **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
   (no SSE-delta patching / settle-poll — these results are static once computed) drives the two tables
   over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**

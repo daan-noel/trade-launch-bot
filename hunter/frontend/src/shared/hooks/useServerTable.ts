@@ -43,6 +43,10 @@ export interface UseServerTable<R, S> {
  * an unchanged view-state — callers memoize it (e.g. `useMemo(toTableRequest…)`)
  * or pass its JSON key via `bodyKey`. Pass `summaryBody` when the summary
  * endpoint ignores pagination/sort (defaults to `body`).
+ *
+ * `fetchPage` / `fetchSummary` are effect deps: if they close over a resource id
+ * (rule, run, scope), recreate them with `useCallback` so a resource switch
+ * refetches even when the filter body is unchanged.
  */
 export function useServerTable<R, S = unknown>(
   enabled: boolean,
@@ -91,9 +95,11 @@ export function useServerTable<R, S = unknown>(
       }
     })();
     return () => ctrl.abort();
-    // `body` is captured via `bodyKey`; `fetchPage` is expected stable.
+    // `body` is captured via `bodyKey`. `fetchPage` must be listed: callers like
+    // RuleAnalyzePanel close over `ruleId`/`scope`, and those change without the
+    // filter body changing — omitting it left the prior rule's page stuck.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, bodyKey, nonce]);
+  }, [enabled, bodyKey, nonce, fetchPage]);
 
   useEffect(() => {
     if (!enabled || !fetchSummary) {
@@ -103,6 +109,9 @@ export function useServerTable<R, S = unknown>(
     summaryInflight.current?.abort();
     const ctrl = new AbortController();
     summaryInflight.current = ctrl;
+    // Drop the prior resource's card immediately so a failed/slow summary can't
+    // leave another rule's aggregates on screen (or look like "no summary").
+    setSummary(null);
     const payload = summaryBody ?? body;
     void (async () => {
       try {
@@ -110,12 +119,12 @@ export function useServerTable<R, S = unknown>(
         if (!ctrl.signal.aborted) setSummary(s);
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return;
-        // Summary is non-blocking; leave the last-known value.
+        // Summary is non-blocking; leave null rather than a stale prior value.
       }
     })();
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, summaryKey, nonce]);
+  }, [enabled, summaryKey, nonce, fetchSummary]);
 
   return { items, total, summary, loading, error, reload };
 }

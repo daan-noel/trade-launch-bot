@@ -278,8 +278,9 @@ export interface PositionsSummary {
   migrated: number;
   /** Closed-position counts by `exit_reason`. Deliberately not exhaustive of
    *  `closed` — an `ExitFailed` position has no reason at all — so the summary
-   *  reconciles the remainder into a visible `Other` slice. */
-  exits: ExitReasonCounts;
+   *  reconciles the remainder into a visible `Other` slice. Optional for older
+   *  live binaries that predate the exits aggregate. */
+  exits?: ExitReasonCounts;
 }
 
 /** Mirrors the Rust `ExitReasonCounts`. */

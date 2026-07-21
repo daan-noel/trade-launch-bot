@@ -30,6 +30,22 @@ interface SimSummaryCardProps {
  */
 function toRunSummary(s: PositionsSummary): RunSummary {
   const closed = s.closed;
+  // Older live binaries may omit `exits`; treat as zeros so the card still
+  // renders instead of blanking the Analyze panel on a TypeError.
+  const exits = s.exits ?? {
+    take_profit: 0,
+    stop_loss: 0,
+    metrics: 0,
+    metrics_win: 0,
+    metrics_loss: 0,
+    dead: 0,
+    manual: 0,
+    trailing: 0,
+    stall: 0,
+    time: 0,
+    liquidity: 0,
+    next_kill: 0,
+  };
   const realized = {
     n_fired: s.tokens,
     n_open: s.open,
@@ -53,18 +69,18 @@ function toRunSummary(s: PositionsSummary): RunSummary {
     // this used to emit. Anything the backend doesn't model — an `ExitFailed`
     // position has no reason at all — is reconciled into `Other` by
     // `exitBreakdown` against `n_closed`, never silently dropped.
-    n_exit_take_profit: s.exits.take_profit,
-    n_exit_stop_loss: s.exits.stop_loss,
-    n_exit_trailing: s.exits.trailing,
-    n_exit_stall: s.exits.stall,
-    n_exit_time: s.exits.time,
-    n_exit_liquidity: s.exits.liquidity,
-    n_exit_next_kill: s.exits.next_kill,
-    n_exit_dead: s.exits.dead,
-    n_exit_metrics: s.exits.metrics,
-    n_exit_metrics_win: s.exits.metrics_win ?? 0,
-    n_exit_metrics_loss: s.exits.metrics_loss ?? 0,
-    n_exit_manual: s.exits.manual,
+    n_exit_take_profit: exits.take_profit,
+    n_exit_stop_loss: exits.stop_loss,
+    n_exit_trailing: exits.trailing,
+    n_exit_stall: exits.stall,
+    n_exit_time: exits.time,
+    n_exit_liquidity: exits.liquidity,
+    n_exit_next_kill: exits.next_kill,
+    n_exit_dead: exits.dead,
+    n_exit_metrics: exits.metrics,
+    n_exit_metrics_win: exits.metrics_win ?? 0,
+    n_exit_metrics_loss: exits.metrics_loss ?? 0,
+    n_exit_manual: exits.manual,
     n_exit_open: s.open,
   };
   // MTM differs from realized only by folding the open mark into the total — the

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { InlineAlert } from 'components/ui/Modal';
@@ -81,6 +81,10 @@ export function RuleAnalyzePanel({
   const [scope, setScope] = useState<Scope>('current');
   const [query, setQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
+  /** True after we auto-flipped Current→History for an empty current run. */
+  const [autoOpenedHistory, setAutoOpenedHistory] = useState(false);
+  /** One auto-flip attempt per rule select (don't fight a manual Current click). */
+  const autoHistoryTried = useRef(false);
 
   const liveOpen = useSelector(selectOpenByRule(ruleId));
 
@@ -128,7 +132,23 @@ export function RuleAnalyzePanel({
     setTemporalSel(null);
     setScope('current');
     setQuery(DEFAULT_POSITIONS_QUERY);
+    setAutoOpenedHistory(false);
+    autoHistoryTried.current = false;
   }, [ruleId]);
+
+  // Real scoreboard N is all-time; Analyze defaults to the latest run. After
+  // Stop→Activate the current run is empty while N still counts priors — flip
+  // to History once so Positions Summary matches what the operator clicked for.
+  useEffect(() => {
+    if (loading || autoHistoryTried.current) return;
+    if (scope !== 'current' || total > 0) return;
+    if (rule?.trade_mode !== 'real' || (rule.total_positions ?? 0) <= 0) return;
+    autoHistoryTried.current = true;
+    setAutoOpenedHistory(true);
+    setScope('history');
+    setTemporalSel(null);
+    setQuery((q) => ({ ...q, page: 1 }));
+  }, [loading, scope, total, rule]);
 
   useEffect(() => {
     if (!ruleId) return;
@@ -180,6 +200,7 @@ export function RuleAnalyzePanel({
                 key={s}
                 type="button"
                 onClick={() => {
+                  setAutoOpenedHistory(false);
                   setScope(s);
                   setQuery((q) => ({ ...q, page: 1 }));
                   setTemporalSel(null);
@@ -207,6 +228,13 @@ export function RuleAnalyzePanel({
       </div>
 
       {error && <InlineAlert variant="error">{error}</InlineAlert>}
+
+      {autoOpenedHistory && scope === 'history' && (
+        <InlineAlert variant="warning">
+          Current run is empty — showing History. Scoreboard N={rule?.total_positions}{' '}
+          is all-time for real rules.
+        </InlineAlert>
+      )}
 
       {summary && (
         <SimSummaryCard
