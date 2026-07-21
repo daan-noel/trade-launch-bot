@@ -32,6 +32,8 @@ tracing = "0.1"
 # Encodings for transaction submission
 base64 = "0.22"
 bincode = "1.3"
+# Cheap clone of the pre-serialized sendTransaction JSON body across fan-out endpoints.
+bytes = "1"
 # base58: decode legacy simulateTransaction account payloads in the sim decoder.
 bs58 = "0.5"
 

@@ -13,13 +13,18 @@
 //! the pre-entry events (`TokenCreated`/`FirstSlotSettled`/`Trade`/`Migrated`) for
 //! those mints; fills/manual-closes are never replayed, so no engine position is
 //! ever resurrected from the log.
+//!
+//! Writes run on a dedicated OS thread behind a bounded channel so the strategy
+//! decision loop never blocks on disk I/O (serialize/flush).
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::thread;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 use tracing::{info, warn};
 
 use hunter_engine::event::Event;
@@ -32,16 +37,17 @@ const ENV_DIR: &str = "EVENT_LOG_DIR";
 const ENV_RETENTION: &str = "EVENT_LOG_RETENTION_DAYS";
 const DEFAULT_DIR: &str = "event_log";
 const DEFAULT_RETENTION_DAYS: i64 = 7;
+/// Bound how far the decision loop can get ahead of disk. Full = drop the line.
+const WRITE_QUEUE_CAP: usize = 4096;
 
 /// Append-only recorder with daily rotation + retention pruning. The on-disk
 /// format ([`LoggedEvent`]) is defined once in `hunter_engine::event_log` — the SSOT
 /// shared with the lab replay inspector (plan 6.1).
+///
+/// `record` is lock-free/`try_send` only — never awaits disk.
 pub struct EventLogRecorder {
     dir: PathBuf,
-    retention_days: i64,
-    /// The currently-open file's date + writer (reopened on the first write of a
-    /// new UTC day).
-    open: Option<(NaiveDate, BufWriter<File>)>,
+    tx: SyncSender<LoggedEvent>,
 }
 
 impl EventLogRecorder {
@@ -58,8 +64,17 @@ impl EventLogRecorder {
             warn!("event log disabled — cannot create {}: {e}", dir.display());
             return None;
         }
+        let (tx, rx) = mpsc::sync_channel::<LoggedEvent>(WRITE_QUEUE_CAP);
+        let writer_dir = dir.clone();
+        thread::Builder::new()
+            .name("event-log-writer".into())
+            .spawn(move || writer_loop(writer_dir, retention_days, rx))
+            .map_err(|e| {
+                warn!("event log disabled — cannot spawn writer thread: {e}");
+            })
+            .ok()?;
         info!(dir = %dir.display(), retention_days, "event log recorder enabled");
-        Some(Self { dir, retention_days, open: None })
+        Some(Self { dir, tx })
     }
 
     /// The directory logs are written to (used by boot recovery).
@@ -67,53 +82,83 @@ impl EventLogRecorder {
         &self.dir
     }
 
-    /// Append one event (a no-op for `Tick`/`RulesReloaded`). Best-effort: a write
-    /// error is logged, never propagated — a failed log line must not stop trading.
-    pub fn record(&mut self, event: &Event) {
-        let Some(logged) = LoggedEvent::from_event(event) else { return };
-        let today = Utc::now().date_naive();
-        if self.open.as_ref().map(|(d, _)| *d) != Some(today) {
-            if let Err(e) = self.rotate(today) {
-                warn!("event log rotate failed: {e}");
-                return;
+    /// Append one event (a no-op for `Tick`/`RulesReloaded`). Best-effort: a full
+    /// queue or serialize failure is logged, never propagated — a failed log line
+    /// must not stop trading or stall `reduce()`.
+    pub fn record(&self, event: &Event) {
+        let Some(logged) = LoggedEvent::from_event(event) else {
+            return;
+        };
+        match self.tx.try_send(logged) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                warn!("event log write queue full — dropping line");
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                warn!("event log writer exited — dropping line");
             }
         }
-        if let Some((_, w)) = self.open.as_mut() {
+    }
+}
+
+fn writer_loop(dir: PathBuf, retention_days: i64, rx: mpsc::Receiver<LoggedEvent>) {
+    let mut open: Option<(NaiveDate, BufWriter<File>)> = None;
+    while let Ok(logged) = rx.recv() {
+        let today = Utc::now().date_naive();
+        if open.as_ref().map(|(d, _)| *d) != Some(today) {
+            match rotate(&dir, retention_days, today) {
+                Ok(w) => open = Some((today, w)),
+                Err(e) => {
+                    warn!("event log rotate failed: {e}");
+                    continue;
+                }
+            }
+        }
+        if let Some((_, w)) = open.as_mut() {
             match serde_json::to_string(&logged) {
                 Ok(line) => {
                     let _ = writeln!(w, "{line}");
+                    // Flush per line so a crash loses at most the in-flight buffer;
+                    // this runs off the decision loop so latency is acceptable.
                     let _ = w.flush();
                 }
                 Err(e) => warn!("event log serialize failed: {e}"),
             }
         }
     }
+}
 
-    /// Open today's file (append) and prune files older than the retention window.
-    fn rotate(&mut self, today: NaiveDate) -> std::io::Result<()> {
-        let path = self.dir.join(format!("events-{today}.jsonl"));
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        self.open = Some((today, BufWriter::new(file)));
-        self.prune(today);
-        Ok(())
-    }
+/// Open today's file (append) and prune files older than the retention window.
+fn rotate(
+    dir: &Path,
+    retention_days: i64,
+    today: NaiveDate,
+) -> std::io::Result<BufWriter<File>> {
+    let path = dir.join(format!("events-{today}.jsonl"));
+    let file = OpenOptions::new().create(true).append(true).open(&path)?;
+    prune(dir, retention_days, today);
+    Ok(BufWriter::new(file))
+}
 
-    /// Delete `events-*.jsonl` older than `retention_days`.
-    fn prune(&self, today: NaiveDate) {
-        let Ok(entries) = fs::read_dir(&self.dir) else { return };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            let Some(date) = name
-                .strip_prefix("events-")
-                .and_then(|s| s.strip_suffix(".jsonl"))
-                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-            else {
-                continue;
-            };
-            if (today - date).num_days() > self.retention_days {
-                let _ = fs::remove_file(entry.path());
-            }
+/// Delete `events-*.jsonl` older than `retention_days`.
+fn prune(dir: &Path, retention_days: i64, today: NaiveDate) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(date) = name
+            .strip_prefix("events-")
+            .and_then(|s| s.strip_suffix(".jsonl"))
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        else {
+            continue;
+        };
+        if (today - date).num_days() > retention_days {
+            let _ = fs::remove_file(entry.path());
         }
     }
 }
@@ -138,7 +183,8 @@ pub fn recover_armed(
     // never re-arm it from the log — PG + the reapers own its fate.
     let mut settled: HashSet<String> = held_mints.clone();
     for ev in &all {
-        if let LoggedEvent::FillConfirmed { intent, .. } | LoggedEvent::FillFailed { intent, .. } = ev {
+        if let LoggedEvent::FillConfirmed { intent, .. } | LoggedEvent::FillFailed { intent, .. } = ev
+        {
             settled.insert(intent.mint.to_string());
         }
     }
@@ -164,7 +210,9 @@ pub fn recover_armed(
 
 /// The recent (retention-window) log files, oldest first, by their date-stamped name.
 fn recent_log_files(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut files: Vec<(NaiveDate, PathBuf)> = entries
         .flatten()
         .filter_map(|e| {
@@ -182,7 +230,9 @@ fn recent_log_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn read_log_file(path: &Path, out: &mut Vec<LoggedEvent>) {
-    let Ok(file) = File::open(path) else { return };
+    let Ok(file) = File::open(path) else {
+        return;
+    };
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.trim().is_empty() {
             continue;
@@ -192,10 +242,4 @@ fn read_log_file(path: &Path, out: &mut Vec<LoggedEvent>) {
             Err(e) => warn!("event log: skipping unparseable line in {}: {e}", path.display()),
         }
     }
-}
-
-/// Parse a UTC timestamp helper (kept for symmetry / Phase 6 tooling).
-#[allow(dead_code)]
-fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
 }

@@ -151,7 +151,7 @@ async fn run_loop(
         Some(trader.clone()),
         Some(held_pools),
     );
-    let mut recorder = EventLogRecorder::from_env();
+    let recorder = EventLogRecorder::from_env();
 
     let real_deps = RealExecDeps {
         trader: trader.clone(),
@@ -217,7 +217,7 @@ async fn run_loop(
         };
 
         for event in batch.events {
-            if let Some(rec) = recorder.as_mut() {
+            if let Some(rec) = recorder.as_ref() {
                 rec.record(&event);
             }
             let effects = reduce(&mut state, event);

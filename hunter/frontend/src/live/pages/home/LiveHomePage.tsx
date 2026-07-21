@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { StatTile } from 'components/ui/StatTile';
-import { usePriceUnit } from 'context/PriceUnitContext';
+import { useUsdRate } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
 import { formatSigned, formatSignedPct, signedStatTone } from 'lib/signedTone';
 import { TopHoldingsWidget } from '@live/components/home/TopHoldingsWidget';
@@ -21,7 +21,7 @@ import { selectLiveOpen } from '@live/slices/liveStatusSlice';
 export function LiveHomePage() {
   const { data: summary } = useGetPortfolioSummaryQuery();
   const { data: live } = useGetLiveModeQuery();
-  const { usdRate } = usePriceUnit();
+  const { usdRate } = useUsdRate();
   const openMap = useSelector(selectLiveOpen);
   const liveOpenReal = useMemo(
     () => Object.values(openMap).filter((p) => p.mode === 'real').length,

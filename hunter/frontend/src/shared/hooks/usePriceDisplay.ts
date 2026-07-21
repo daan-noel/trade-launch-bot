@@ -1,9 +1,16 @@
 import { useMemo } from 'react';
-import { usePriceUnit } from 'context/PriceUnitContext';
+import { usePriceUnitSetting, useUsdRate } from 'context/PriceUnitContext';
 import { formatCompact, formatDecimalTrim, formatPrice, formatUsd } from 'utils/format';
 
+/**
+ * Formatters for SOL-denominated amounts. In SOL mode only the unit context is
+ * read by callers that use {@link usePriceUnitSetting} + snapshot; this hook
+ * still combines both for convenience panels, but keeps the memo key rate-free
+ * in SOL mode so a tick does not rebuild the returned object.
+ */
 export function usePriceDisplay() {
-  const { unit, usdRate } = usePriceUnit();
+  const { unit } = usePriceUnitSetting();
+  const { usdRate } = useUsdRate();
 
   // In SOL mode the rate isn't read by any formatter below, so fold it out of
   // the memo key: otherwise every polled SOL/USD-rate tick hands back a fresh

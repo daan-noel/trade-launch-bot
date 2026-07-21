@@ -2303,6 +2303,7 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "bs58 0.5.1",
+ "bytes",
  "dashmap 4.0.2",
  "rand 0.8.6",
  "reqwest",

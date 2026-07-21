@@ -116,10 +116,13 @@ const HOLDINGS_TTL: Duration = Duration::from_secs(8);
 
 /// Short-TTL cache of the composed holdings (see [`HOLDINGS_TTL`]). Held on
 /// [`DeployState`]; there is exactly one bot wallet per process, so a single slot
-/// suffices. `Default` = empty (cold).
+/// suffices. `Default` = empty (cold). Concurrent misses coalesce on
+/// [`Self::inflight`] so a TTL expiry never stampede wallet RPC + Jupiter + DB.
 #[derive(Default)]
 pub struct HoldingsCache {
     inner: Mutex<Option<(Instant, Arc<Vec<PortfolioHolding>>)>>,
+    /// Shared in-flight refresh. Cleared when the leader finishes (ok or err).
+    inflight: Mutex<Option<Arc<tokio::sync::OnceCell<Result<Arc<Vec<PortfolioHolding>>, String>>>>>,
 }
 
 impl HoldingsCache {
@@ -240,18 +243,54 @@ pub async fn list_holdings(state: &DeployState) -> anyhow::Result<Vec<PortfolioH
 /// the cache. Shared by the Home widgets (full list), the server-paged Holdings
 /// table, and the summary — so paging/sorting a table costs at most one scan per TTL
 /// window. Pass `force = true` (post-trade) to bypass + refresh the cache.
+/// Concurrent misses share a single in-flight refresh (no lock held across I/O).
 pub async fn list_holdings_cached(
     state: &DeployState,
     force: bool,
 ) -> anyhow::Result<Arc<Vec<PortfolioHolding>>> {
     if force {
+        // Drop coalescing so a post-trade read always starts a fresh scan.
+        *state.holdings_cache.inflight.lock().await = None;
         state.holdings_cache.invalidate().await;
     } else if let Some(v) = state.holdings_cache.get_fresh().await {
         return Ok(v);
     }
-    let fresh = Arc::new(list_holdings(state).await?);
-    state.holdings_cache.put(fresh.clone()).await;
-    Ok(fresh)
+
+    let cell = {
+        let mut g = state.holdings_cache.inflight.lock().await;
+        if let Some(c) = g.as_ref() {
+            c.clone()
+        } else {
+            let c = Arc::new(tokio::sync::OnceCell::new());
+            *g = Some(c.clone());
+            c
+        }
+    };
+
+    let out = cell
+        .get_or_init(|| async {
+            match list_holdings(state).await {
+                Ok(v) => Ok(Arc::new(v)),
+                Err(e) => Err(format!("{e:#}")),
+            }
+        })
+        .await
+        .clone();
+
+    {
+        let mut g = state.holdings_cache.inflight.lock().await;
+        if g.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cell)) {
+            *g = None;
+        }
+    }
+
+    match out {
+        Ok(v) => {
+            state.holdings_cache.put(v.clone()).await;
+            Ok(v)
+        }
+        Err(e) => Err(anyhow::anyhow!(e)),
+    }
 }
 
 /// Wallet-wide summary (Home KPIs). Reuses [`list_holdings`] for the value/PnL

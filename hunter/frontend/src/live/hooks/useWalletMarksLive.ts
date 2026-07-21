@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useDispatch, useStore } from 'react-redux';
-import { usePriceUnit } from 'context/PriceUnitContext';
+import { useUsdRate } from 'context/PriceUnitContext';
 import { startWalletMarksLive } from '@live/lib/walletMarksLive';
 import type { AppDispatch, RootState } from '@live/store';
 
@@ -11,7 +11,7 @@ import type { AppDispatch, RootState } from '@live/store';
 export function useWalletMarksLive(): void {
   const dispatch = useDispatch<AppDispatch>();
   const store = useStore<RootState>();
-  const { usdRate } = usePriceUnit();
+  const { usdRate } = useUsdRate();
   const usdRateRef = useRef(usdRate);
   usdRateRef.current = usdRate;
 

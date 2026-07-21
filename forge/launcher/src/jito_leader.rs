@@ -163,27 +163,40 @@ pub async fn wait_for_jito_leader(cfg: &LeaderGateConfig, rpc_url: &str, level: 
 /// Jito validator identity set, TTL-cached ([`JITO_IDENTITIES_TTL`]). Returns the
 /// warm set when fresh; otherwise refetches. On a fetch failure it returns the last
 /// cached set (even if stale) so a transient StakeNet blip doesn't drop the gate to
-/// ungated — only a cold cache with a failing fetch yields an empty set. Launch path
-/// only (infrequent), so briefly holding the async lock across the fetch is fine.
+/// ungated — only a cold cache with a failing fetch yields an empty set.
+///
+/// Double-checked: the mutex is **not** held across the HTTP fetch so concurrent
+/// bundle submits are not serialized behind a slow StakeNet refresh.
 async fn jito_identities_cached(http: &reqwest::Client, url: &str) -> Arc<HashSet<String>> {
     let cell = JITO_IDENTITIES.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().await;
-    if let Some((at, set)) = guard.as_ref() {
-        if at.elapsed() < JITO_IDENTITIES_TTL {
-            return set.clone();
+    let stale_fallback = {
+        let guard = cell.lock().await;
+        if let Some((at, set)) = guard.as_ref() {
+            if at.elapsed() < JITO_IDENTITIES_TTL {
+                return set.clone();
+            }
+            Some(set.clone())
+        } else {
+            None
         }
-    }
+    };
     match fetch_jito_identities(http, url).await {
         Ok(set) if !set.is_empty() => {
             let arc = Arc::new(set);
+            let mut guard = cell.lock().await;
+            // Another caller may have refreshed while we were fetching.
+            if let Some((at, set)) = guard.as_ref() {
+                if at.elapsed() < JITO_IDENTITIES_TTL {
+                    return set.clone();
+                }
+            }
             *guard = Some((Instant::now(), arc.clone()));
             arc
         }
-        // Empty or failed fetch: keep serving the last good set if we have one.
-        Ok(_) => guard.as_ref().map(|(_, s)| s.clone()).unwrap_or_default(),
+        Ok(_) => stale_fallback.unwrap_or_default(),
         Err(e) => {
             warn!(%e, "Jito validator-set refresh failed — reusing cached set if any");
-            guard.as_ref().map(|(_, s)| s.clone()).unwrap_or_default()
+            stale_fallback.unwrap_or_default()
         }
     }
 }
@@ -201,10 +214,12 @@ async fn epoch_leaders_cached(
     jito: &HashSet<String>,
 ) -> Option<Arc<HashSet<u64>>> {
     let cell = EPOCH_LEADERS.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().await;
-    if let Some(cached) = guard.as_ref() {
-        if cached.epoch == epoch {
-            return Some(cached.jito_indices.clone());
+    {
+        let guard = cell.lock().await;
+        if let Some(cached) = guard.as_ref() {
+            if cached.epoch == epoch {
+                return Some(cached.jito_indices.clone());
+            }
         }
     }
     match fetch_leader_schedule(http, rpc_url, epoch_first_slot).await {
@@ -217,7 +232,16 @@ async fn epoch_leaders_cached(
                 }
             }
             let arc = Arc::new(jito_indices);
-            *guard = Some(EpochLeaders { epoch, jito_indices: arc.clone() });
+            let mut guard = cell.lock().await;
+            if let Some(cached) = guard.as_ref() {
+                if cached.epoch == epoch {
+                    return Some(cached.jito_indices.clone());
+                }
+            }
+            *guard = Some(EpochLeaders {
+                epoch,
+                jito_indices: arc.clone(),
+            });
             Some(arc)
         }
         Err(e) => {

@@ -1,22 +1,66 @@
 import { memo } from 'react';
-import { usePriceDisplay } from 'hooks/usePriceDisplay';
-import { priceClass } from 'utils/format';
+import { usePriceUnitSetting, useUsdRate } from 'context/PriceUnitContext';
+import { formatCompact, formatDecimalTrim, formatPrice, formatUsd, priceClass } from 'utils/format';
 
 /**
  * Rate-aware price cells.
  *
- * These read the unit/USD-rate from {@link usePriceDisplay} (i.e. the
- * `PriceUnitContext`) *themselves* rather than receiving a pre-baked formatter
- * through the column definition. That keeps the column array referentially
- * stable across a USD-rate tick: previously a new rate rebuilt every column def,
- * handed the table a fresh `visCols` identity, and re-rendered the whole visible
- * grid. Now only these cells — the ones whose output actually depends on the
- * rate — re-render when it changes, via the context subscription.
+ * Unit and rate live in separate contexts. The outer cell only subscribes to
+ * the unit, so a SOL/USD tick does not re-render the SOL-mode branch. The USD
+ * branch is a child that alone subscribes to the rate.
  */
 
+const SolPrice = memo(function SolPrice({ sol }: { sol: number | null | undefined }) {
+  return <>{sol != null ? `◎${formatPrice(sol)}` : '-'}</>;
+});
+
+const UsdPrice = memo(function UsdPrice({ sol }: { sol: number | null | undefined }) {
+  const { usdRate } = useUsdRate();
+  if (sol == null) return <>-</>;
+  return <>{usdRate != null ? formatUsd(sol * usdRate) : `◎${formatPrice(sol)}`}</>;
+});
+
+const SolAmount = memo(function SolAmount({ sol }: { sol: number | null | undefined }) {
+  return <>{sol != null ? `◎${formatDecimalTrim(sol, 4)}` : '-'}</>;
+});
+
+const UsdAmount = memo(function UsdAmount({ sol }: { sol: number | null | undefined }) {
+  const { usdRate } = useUsdRate();
+  if (sol == null) return <>-</>;
+  return <>{usdRate != null ? formatUsd(sol * usdRate) : `◎${formatDecimalTrim(sol, 4)}`}</>;
+});
+
+const SolCompact = memo(function SolCompact({
+  sol,
+  digits,
+}: {
+  sol: number | null | undefined;
+  digits: number;
+}) {
+  return <>{sol != null ? `◎${formatCompact(sol, digits)}` : '-'}</>;
+});
+
+const UsdCompact = memo(function UsdCompact({
+  sol,
+  digits,
+}: {
+  sol: number | null | undefined;
+  digits: number;
+}) {
+  const { usdRate } = useUsdRate();
+  if (sol == null) return <>-</>;
+  return (
+    <>
+      {usdRate != null
+        ? `$${formatCompact(sol * usdRate, digits)}`
+        : `◎${formatCompact(sol, digits)}`}
+    </>
+  );
+});
+
 export const PriceCell = memo(function PriceCell({ sol }: { sol: number | null | undefined }) {
-  const price = usePriceDisplay();
-  return <>{sol != null ? price.displayPrice(sol) : '-'}</>;
+  const { unit } = usePriceUnitSetting();
+  return unit === 'SOL' ? <SolPrice sol={sol} /> : <UsdPrice sol={sol} />;
 });
 
 export const CurrentPriceCell = memo(function CurrentPriceCell({
@@ -24,17 +68,17 @@ export const CurrentPriceCell = memo(function CurrentPriceCell({
 }: {
   sol: number | null | undefined;
 }) {
-  const price = usePriceDisplay();
+  const { unit } = usePriceUnitSetting();
   return (
     <span className={priceClass(sol ?? undefined)}>
-      {sol != null ? price.displayPrice(sol) : '-'}
+      {unit === 'SOL' ? <SolPrice sol={sol} /> : <UsdPrice sol={sol} />}
     </span>
   );
 });
 
 export const AmountCell = memo(function AmountCell({ sol }: { sol: number | null | undefined }) {
-  const price = usePriceDisplay();
-  return <>{sol != null ? price.displayAmount(sol) : '-'}</>;
+  const { unit } = usePriceUnitSetting();
+  return unit === 'SOL' ? <SolAmount sol={sol} /> : <UsdAmount sol={sol} />;
 });
 
 export const CompactCell = memo(function CompactCell({
@@ -44,6 +88,10 @@ export const CompactCell = memo(function CompactCell({
   sol: number | null | undefined;
   digits: number;
 }) {
-  const price = usePriceDisplay();
-  return <>{sol != null ? price.displayCompact(sol, digits) : '-'}</>;
+  const { unit } = usePriceUnitSetting();
+  return unit === 'SOL' ? (
+    <SolCompact sol={sol} digits={digits} />
+  ) : (
+    <UsdCompact sol={sol} digits={digits} />
+  );
 });

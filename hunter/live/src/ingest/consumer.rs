@@ -260,6 +260,12 @@ impl IngestConsumer {
             t.instruction_labels = labels_json;
             t
         };
+        // Hash from the event labels before nulling the cache projection — keeps
+        // flow-split metrics correct while avoiding hash work under DashMap.
+        let (ix_hash, wallet_hash) = {
+            use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash};
+            (ix_hash_opt(&e.instruction_labels), wallet_hash(&wallet))
+        };
         core_trade.instruction_labels = Value::Null;
 
         // ── Hot path first (H2) ────────────────────────────────────────────────
@@ -270,27 +276,32 @@ impl IngestConsumer {
         // in the same order as before (the confirm loop re-queries `trades` on the
         // next notify; waking it before the write is even queued could miss a
         // last-leg clear under backpressure).
-        let metrics = match self.token_cache.get_mut(&mint) {
+        //
+        // Keep the DashMap mut guard short: precomputed hashes + AMM observe outside.
+        let (metrics, amm_token_program) = match self.token_cache.get_mut(&mint) {
             Some(mut token_state) => {
-                token_state.add_trade(core_trade);
-                // Zero-RPC AMM pool warmup: when the event carries the swap's
-                // resolved account list, harvest it inline (pure CPU parse — no
-                // spawn, no I/O). `amm_pool_prewarmed` keeps its meaning ("trader
-                // cache warm for this mint"); a rejected parse simply retries on
-                // the next observed swap for free.
-                if is_amm && !token_state.amm_pool_prewarmed {
-                    if let (Some(token_program), Some(keys)) = (
-                        token_state.token.token_program_id.clone(),
-                        e.amm_swap_accounts.as_deref(),
-                    ) {
-                        token_state.amm_pool_prewarmed =
-                            self.trader.observe_amm_swap_accounts(&mint, &token_program, keys);
-                    }
-                }
-                Some(metrics_from_state(&mint, &token_state))
+                token_state.add_trade_hashed(core_trade, ix_hash, wallet_hash);
+                let tp = if is_amm && !token_state.amm_pool_prewarmed {
+                    token_state.token.token_program_id.clone()
+                } else {
+                    None
+                };
+                (Some(metrics_from_state(&mint, &token_state)), tp)
             }
-            None => None,
+            None => (None, None),
         };
+        if let (Some(token_program), Some(keys)) =
+            (amm_token_program, e.amm_swap_accounts.as_deref())
+        {
+            if self
+                .trader
+                .observe_amm_swap_accounts(&mint, &token_program, keys)
+            {
+                if let Some(mut token_state) = self.token_cache.get_mut(&mint) {
+                    token_state.amm_pool_prewarmed = true;
+                }
+            }
+        }
 
         if let Some((token_reserves, sol_reserves)) = reserve_snapshot {
             // The trader takes reserves as `f64` (spot-price ratio math; it's a

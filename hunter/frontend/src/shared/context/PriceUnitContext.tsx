@@ -38,12 +38,18 @@ function reducer(state: PriceUnitState, action: PriceUnitAction): PriceUnitState
   return next;
 }
 
-interface PriceUnitContextValue extends PriceUnitState {
+interface UnitContextValue {
+  unit: PriceUnit;
   setUnit: (unit: PriceUnit) => void;
+}
+
+interface RateContextValue {
+  usdRate: number | null;
   setUsdRate: (rate: number | null) => void;
 }
 
-const PriceUnitContext = createContext<PriceUnitContextValue | null>(null);
+const UnitContext = createContext<UnitContextValue | null>(null);
+const RateContext = createContext<RateContextValue | null>(null);
 
 export function PriceUnitProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, loadPriceUnit);
@@ -84,18 +90,42 @@ export function PriceUnitProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'SET_USD_RATE', rate });
   }, []);
 
-  const value = useMemo(
-    () => ({ ...state, setUnit, setUsdRate }),
-    [state, setUnit, setUsdRate],
+  // Split providers so SOL-mode cells that only read `unit` do not re-render
+  // on every SOL/USD poll tick.
+  const unitValue = useMemo(
+    () => ({ unit: state.unit, setUnit }),
+    [state.unit, setUnit],
+  );
+  const rateValue = useMemo(
+    () => ({ usdRate: state.usdRate, setUsdRate }),
+    [state.usdRate, setUsdRate],
   );
 
   return (
-    <PriceUnitContext.Provider value={value}>{children}</PriceUnitContext.Provider>
+    <UnitContext.Provider value={unitValue}>
+      <RateContext.Provider value={rateValue}>{children}</RateContext.Provider>
+    </UnitContext.Provider>
   );
 }
 
-export function usePriceUnit() {
-  const ctx = useContext(PriceUnitContext);
-  if (!ctx) throw new Error('usePriceUnit must be used within PriceUnitProvider');
+/** Unit preference only — stable across SOL/USD rate ticks. */
+export function usePriceUnitSetting() {
+  const ctx = useContext(UnitContext);
+  if (!ctx) throw new Error('usePriceUnitSetting must be used within PriceUnitProvider');
   return ctx;
+}
+
+/** Live SOL/USD rate only — subscribe when display actually depends on USD. */
+export function useUsdRate() {
+  const ctx = useContext(RateContext);
+  if (!ctx) throw new Error('useUsdRate must be used within PriceUnitProvider');
+  return ctx;
+}
+
+/** Combined unit + rate (toggle, charts that need both). Prefer the split hooks
+ *  on hot paths so SOL mode skips rate-driven renders. */
+export function usePriceUnit() {
+  const unit = usePriceUnitSetting();
+  const rate = useUsdRate();
+  return { ...unit, ...rate };
 }

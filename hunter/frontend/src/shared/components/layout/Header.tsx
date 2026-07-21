@@ -4,7 +4,7 @@ import { NavDropdown } from 'components/ui/NavDropdown';
 import { PriceUnitToggle } from 'components/ui/PriceUnitToggle';
 import { TimezoneSelect } from 'components/ui/TimezoneSelect';
 import { useGetSolPriceQuery } from 'store/apiSlice';
-import { usePriceUnit } from 'context/PriceUnitContext';
+import { useUsdRate } from 'context/PriceUnitContext';
 import { useSseStatus } from 'hooks/useSseStatus';
 import { cn } from 'lib/cn';
 import type { NavConfig } from './navTypes';
@@ -62,7 +62,7 @@ function NavItem({ to, children }: { to: string; children: ReactNode }) {
 export function Header({ nav, rightSlot }: { nav: NavConfig; rightSlot?: ReactNode }) {
   const location = useLocation();
   const { data: usdRate } = useGetSolPriceQuery();
-  const { setUsdRate } = usePriceUnit();
+  const { setUsdRate } = useUsdRate();
   const { subtitle, badge, glyph, pulse } = nav.identity;
 
   // Mirror the fetched SOL/USD rate into the price-unit context so USD display

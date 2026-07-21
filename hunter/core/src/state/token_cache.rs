@@ -85,6 +85,22 @@ impl CachedTrade {
         use hunter_engine::grouping::normalize_labels;
         use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash};
         let labels = normalize_labels(&t.instruction_labels);
+        Self::from_trade_hashes(
+            t,
+            wallet,
+            ix_hash_opt(&labels),
+            wallet_hash(&t.wallet_address),
+        )
+    }
+
+    /// Like [`from_trade`] but with hashes precomputed outside the DashMap guard
+    /// (ingest hot path). Avoids normalize/hash work while holding the mint shard.
+    pub fn from_trade_hashes(
+        t: &Trade,
+        wallet: u32,
+        ix_hash: Option<u64>,
+        wallet_hash: u64,
+    ) -> Self {
         Self {
             wallet,
             is_buy: matches!(t.trade_type, TradeType::Buy),
@@ -101,8 +117,8 @@ impl CachedTrade {
             reserve_sol: t.reserve_sol,
             reserve_token: t.reserve_token.map(|v| v as f64),
             real_reserve_sol: t.real_reserve_sol,
-            ix_hash: ix_hash_opt(&labels),
-            wallet_hash: wallet_hash(&t.wallet_address),
+            ix_hash,
+            wallet_hash,
         }
     }
 }
@@ -335,6 +351,15 @@ impl TokenState {
     pub fn add_trade(&mut self, trade: Trade) {
         self.apply_aggregates(&trade);
         let cached = self.intern_trade(&trade);
+        self.push_trade_capped(cached);
+    }
+
+    /// Hot-path variant: hashes prepared outside the DashMap guard; only interning
+    /// + aggregates + append run under the mint lock.
+    pub fn add_trade_hashed(&mut self, trade: Trade, ix_hash: Option<u64>, wallet_hash: u64) {
+        self.apply_aggregates(&trade);
+        let wallet = self.interner.intern(&trade.wallet_address);
+        let cached = CachedTrade::from_trade_hashes(&trade, wallet, ix_hash, wallet_hash);
         self.push_trade_capped(cached);
     }
 

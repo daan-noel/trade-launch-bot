@@ -30,7 +30,7 @@ import {
 import { connectTradeStream } from 'services/sse';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { useGetProfilesQuery } from 'store/sharedEndpoints';
-import { usePriceUnit } from 'context/PriceUnitContext';
+import { useUsdRate } from 'context/PriceUnitContext';
 import { useMintTradeStream } from 'hooks/useMintTradeStream';
 import {
   liveTradeSpotSolPerRaw,
@@ -224,7 +224,7 @@ export function MyWalletPage() {
     skip: pageMints.length === 0,
   });
 
-  const { usdRate } = usePriceUnit();
+  const { usdRate } = useUsdRate();
   const usdRateRef = useRef(usdRate);
   usdRateRef.current = usdRate;
   const itemsRef = useRef(items);

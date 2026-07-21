@@ -11,6 +11,7 @@
 use crate::engine::Engine;
 use crate::error::{bail, Context, Result, TradeError};
 use base64::{engine::general_purpose, Engine as _};
+use bytes::Bytes;
 use serde_json::json;
 // `simulate_transaction` (and its config / commitment imports) is only built for
 // the cashback `claim` path.
@@ -29,7 +30,6 @@ use solana_sdk::{
 };
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -339,10 +339,9 @@ impl Engine {
     pub async fn send_transaction(&self, tx: &Transaction) -> Result<String> {
         let body = self.encode_send_body(tx)?;
         // Serialize the JSON-RPC envelope to bytes EXACTLY ONCE here, then share
-        // the buffer across every endpoint. The previous `.json(body)` re-walked
-        // and re-serialized the (base64-tx-bearing) Value per endpoint; now each
-        // request just clones an `Arc<Vec<u8>>` pointer and ships the same bytes.
-        let raw = Arc::new(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
+        // the buffer across every endpoint via cheap `Bytes` clones (no per-endpoint
+        // re-serialize or `Vec` deep-clone into the reqwest body).
+        let raw = Bytes::from(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
         self.send_raw(raw).await
     }
 
@@ -353,7 +352,7 @@ impl Engine {
         let wire = bincode::serialize(tx).context("serialize versioned tx")?;
         guard_wire_size(&wire)?;
         let body = self.encode_send_body_wire(&wire);
-        let raw = Arc::new(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
+        let raw = Bytes::from(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
         self.send_raw(raw).await
     }
 
@@ -362,25 +361,25 @@ impl Engine {
     /// returns the first acceptance. Single endpoint = a direct await; multiple =
     /// detached concurrent submissions (same signature → on-chain dedup, tip paid
     /// once), first success wins, losers keep running in the background.
-    async fn send_raw(&self, raw: Arc<Vec<u8>>) -> Result<String> {
+    async fn send_raw(&self, raw: Bytes) -> Result<String> {
         let urls = &self.config.helius_sender_urls;
 
         // Single endpoint: await directly — no spawn/channel overhead, identical
         // to the pre-fan-out hot path.
         if urls.len() == 1 {
-            return post_tx_bytes(&self.http, &urls[0], Arc::clone(&raw)).await;
+            return post_tx_bytes(&self.http, &urls[0], raw).await;
         }
 
         // Fan out: fire every endpoint concurrently as a detached task and return
         // the first acceptance. Losers keep submitting in the background (their
         // send on the dropped channel just no-ops), so the slowest endpoint never
-        // gates us while still adding its landing path. The serialized body is
-        // shared via `Arc` so each task clones a pointer, not the full tx bytes.
+        // gates us while still adding its landing path. `Bytes` clones are
+        // pointer-cheap — the payload is not reallocated per endpoint.
         let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<Result<String>>(urls.len());
         for url in urls {
             let http = self.http.clone();
             let url = url.clone();
-            let raw = Arc::clone(&raw);
+            let raw = raw.clone();
             let done_tx = done_tx.clone();
             tokio::spawn(async move {
                 // Bound each detached submission so a hung/black-holed endpoint
@@ -534,22 +533,23 @@ pub async fn post_tx(
     url: &str,
     body: &serde_json::Value,
 ) -> Result<String> {
-    let raw = Arc::new(serde_json::to_vec(body).context("serialize JSON-RPC body")?);
+    let raw = Bytes::from(serde_json::to_vec(body).context("serialize JSON-RPC body")?);
     post_tx_bytes(http, url, raw).await
 }
 
 /// As [`post_tx`] but ships a pre-serialized JSON body. The fan-out serializes
-/// the `sendTransaction` envelope once and hands every endpoint an `Arc` clone
-/// of the same bytes, so the costly base64 tx is walked exactly once per send.
+/// the `sendTransaction` envelope once and hands every endpoint a cheap
+/// [`Bytes`] clone of the same buffer, so the costly base64 tx is walked exactly
+/// once per send.
 pub async fn post_tx_bytes(
     http: &reqwest::Client,
     url: &str,
-    body: Arc<Vec<u8>>,
+    body: Bytes,
 ) -> Result<String> {
     let resp = http
         .post(url)
         .header("Content-Type", "application/json")
-        .body((*body).clone())
+        .body(body)
         .send()
         .await?;
 
