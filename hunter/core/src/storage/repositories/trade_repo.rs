@@ -229,20 +229,25 @@ impl TradeRepo {
             .intern_many(&unique)
             .await?;
 
-        for chunk in trades.chunks(TRADE_INSERT_CHUNK) {
+        // Pre-decode every signature before building the query. `push_values`
+        // cannot bubble a Result; binding `unwrap_or_default()` empty BYTEA let
+        // malformed rows collide on the dedup key and silently disappear.
+        let signatures: Vec<Vec<u8>> = trades
+            .iter()
+            .map(|t| sig_base58_to_bytes(&t.tx_signature))
+            .collect::<anyhow::Result<_>>()?;
+
+        for (chunk, sig_chunk) in trades
+            .chunks(TRADE_INSERT_CHUNK)
+            .zip(signatures.chunks(TRADE_INSERT_CHUNK))
+        {
             let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
                 "INSERT INTO trades \
                  (mint_address, wallet_id, trade_type, venue, amount_lamports, token_amount, \
                   reserve_lamports, reserve_token, slot, tx_index, leg_index, \
                   block_time, tx_signature, ix_labels) ",
             );
-            // `push_values` cannot bubble a Result, so pre-resolve the fallible
-            // signature decode into the loop's error path is not possible here;
-            // instead we decode eagerly and bind the bytes (decode errors surface
-            // as an empty-vec bind — but the model's signatures come from the chain
-            // and are valid, so this is the live path). For robustness the decode
-            // falls back to an empty Vec rather than panicking.
-            qb.push_values(chunk, |mut b, t| {
+            qb.push_values(chunk.iter().zip(sig_chunk), |mut b, (t, sig)| {
                 let wallet_id = wallet_ids.get(&t.wallet_address).copied().unwrap_or_default();
                 b.push_bind(&t.mint_address)
                     .push_bind(wallet_id)
@@ -256,7 +261,7 @@ impl TradeRepo {
                     .push_bind(t.tx_index as i32)
                     .push_bind(t.leg_index as i16)
                     .push_bind(t.block_time)
-                    .push_bind(sig_base58_to_bytes(&t.tx_signature).unwrap_or_default())
+                    .push_bind(sig.as_slice())
                     .push_bind(sqlx::types::Json(&t.instruction_labels));
             });
             qb.push(" ON CONFLICT (block_time, tx_signature, leg_index) DO NOTHING");
@@ -1085,6 +1090,18 @@ mod tests {
         assert!(
             TRADE_INSERT_CHUNK * BINDS_PER_ROW <= 65_535,
             "TRADE_INSERT_CHUNK ({TRADE_INSERT_CHUNK}) × {BINDS_PER_ROW} binds exceeds the 65535 ceiling"
+        );
+    }
+
+    /// Malformed signatures must fail closed — never become empty BYTEA keys that
+    /// collide on `(block_time, tx_signature, leg_index)`.
+    #[test]
+    fn invalid_signature_rejected_before_insert() {
+        let err = sig_base58_to_bytes("not-a-valid-base58-signature!!")
+            .expect_err("garbage signature must error");
+        assert!(
+            err.to_string().contains("invalid base58 signature"),
+            "unexpected error: {err}"
         );
     }
 

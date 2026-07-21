@@ -26,7 +26,13 @@ Host adapter (live/src/ingest/):
 
 Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `strategy_tx` cap 512 · `sse_tx` broadcast.
 
-**Backpressure:** money-critical writes (`Trade`/`Migration`/`Token`/`Wallet`) use `send().await` (never dropped); recomputable writes (`Metrics`/`Raw`) use `try_send` (dropped on Full). See `@plans/ingest/backpressure-watchdog.md`.
+**Backpressure:** money-critical writes (`Trade`/`Migration`/`Token`/`Wallet`) use
+`send_timeout(500ms)` on the hot `db_tx` (cap 16384) so a PG stall cannot wedge
+ingest / sell-confirm. On timeout the op is deferred into a bounded retry buffer
+(cap 4096) drained by a background task with `send().await`; only when that
+buffer is also full is the write shed (counted). Recomputable writes
+(`Metrics`/`Raw`) use `try_send` (dropped on Full). See
+`@plans/ingest/backpressure-watchdog.md`.
 
 **Liveness watchdog:** `db_writer.rs` stamps `DbHeartbeat` at the end of every `flush()`. A dedicated OS thread (via `watchdog::spawn_watchdog`) force-exits (`exit(1)`) when the heartbeat is stale AND the DB queue is non-empty AND live mode is on.
 

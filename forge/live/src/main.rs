@@ -230,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8230);
     let api_pool = pools.api.clone();
+    let background_jobs = http::BackgroundJobGate::default();
     let server = HttpServer::new(move || {
         App::new()
             .wrap(from_fn(require_bearer_auth))
@@ -239,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(web::Data::new(launcher_settings.clone()))
             .app_data(web::Data::new(api_auth.clone()))
             .app_data(web::Data::new(sse_hub.clone()))
+            .app_data(web::Data::new(background_jobs.clone()))
             .configure(http::configure)
     })
     .bind((host.as_str(), port))?

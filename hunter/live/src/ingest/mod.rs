@@ -29,7 +29,7 @@ use trading_core::{
 
 use trading_core::ingest::TraderHook;
 
-use consumer::{IngestConsumer, DB_QUEUE_CAP, STRATEGY_QUEUE_CAP};
+use consumer::{IngestConsumer, DB_QUEUE_CAP, DB_RETRY_CAP, STRATEGY_QUEUE_CAP};
 use db_writer::DbWriter;
 use watchdog::{DbHeartbeat, spawn_watchdog};
 
@@ -62,6 +62,8 @@ pub async fn spawn_ingest(
 
     let (db_tx, db_rx) =
         mpsc::channel::<db_writer::DbWriteOp>(DB_QUEUE_CAP);
+    let (db_retry_tx, mut db_retry_rx) =
+        mpsc::channel::<db_writer::DbWriteOp>(DB_RETRY_CAP);
 
     let live = *live_rx.borrow();
 
@@ -83,6 +85,7 @@ pub async fn spawn_ingest(
     let (consumer, _shed) = IngestConsumer::new(
         token_cache,
         db_tx.clone(),
+        db_retry_tx,
         strategy_tx,
         sse_tx,
         settings_rx.clone(),
@@ -96,6 +99,21 @@ pub async fn spawn_ingest(
 
     let consumer_task = tokio::spawn(consumer.run(event_rx));
     let db_writer_task = tokio::spawn(db_writer.run(db_rx));
+
+    // Drain durable writes that timed out on the hot path into `db_tx` without
+    // blocking the ingest loop. `send().await` applies backpressure here so rows
+    // are retained across a PG stall until the writer catches up (or the channel
+    // closes on shutdown).
+    {
+        let db_tx = db_tx.clone();
+        tokio::spawn(async move {
+            while let Some(op) = db_retry_rx.recv().await {
+                if db_tx.send(op).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
     let db_tx_weak = db_tx.downgrade();
     spawn_watchdog(

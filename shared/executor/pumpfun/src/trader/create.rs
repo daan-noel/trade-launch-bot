@@ -10,7 +10,7 @@ use super::assemble::{assemble, IxParts};
 use super::bundle_buy::BundleBuyVariant;
 use super::buy::compute_curve_buy_min_out;
 use super::PumpFunTrader;
-use crate::error::{Context, Result};
+use crate::error::{Context, Result, TradeError};
 use crate::protocol::{self, LAMPORTS_PER_SOL};
 use crate::types::{CreateTokenArgs, CreateTokenV2Args, TokenProgram};
 use executor_core::IxLayout;
@@ -321,9 +321,17 @@ impl PumpFunTrader {
         else {
             return Ok(Vec::new());
         };
-        if buy_lamports == 0 {
-            return Ok(Vec::new());
+        // Same spend guard as curve/AMM buys — rejects NaN/inf/≤0/over-max, and
+        // catches sol↔lamports drift from direct `DevBuy { .. }` constructors
+        // (forge bundle path). Zero-lamport "no buy" used to short-circuit here;
+        // that is now covered by `buy_lamports_checked` (rounds-to-0 → Err).
+        let checked = self.buy_lamports_checked(dev_buy_sol)?;
+        if checked != buy_lamports {
+            return Err(TradeError::InvalidBuyAmount(format!(
+                "dev-buy sol={dev_buy_sol} ⇒ {checked} lamports, but DevBuy.lamports={buy_lamports}"
+            )));
         }
+        let buy_lamports = checked;
         let wallet = self.config.signer.pubkey();
         let token_program_pk = token_program.pubkey();
         let user_ata =
@@ -758,6 +766,48 @@ mod tests {
             cfg.curve_create_buy_cu > cfg.curve_create_cu,
             "create+buy CU limit must exceed create-only"
         );
+    }
+
+    #[test]
+    fn dev_buy_rejects_non_finite_sol() {
+        let t = with_global(trader());
+        let mint = Pubkey::new_unique();
+        let err = t
+            .dev_buy_core_ixs(
+                &mint,
+                t.config.signer.pubkey(),
+                TokenProgram::Token2022,
+                false,
+                Some(DevBuy {
+                    sol: f64::NAN,
+                    lamports: 0,
+                    slippage_bps: None,
+                    variant: BundleBuyVariant::BuyExactSolIn,
+                }),
+            )
+            .expect_err("NaN must fail the spend guard");
+        assert!(matches!(err, TradeError::InvalidBuyAmount(_)), "{err:?}");
+    }
+
+    #[test]
+    fn dev_buy_rejects_sol_lamports_mismatch() {
+        let t = with_global(trader());
+        let mint = Pubkey::new_unique();
+        let err = t
+            .dev_buy_core_ixs(
+                &mint,
+                t.config.signer.pubkey(),
+                TokenProgram::Token2022,
+                false,
+                Some(DevBuy {
+                    sol: 0.02,
+                    lamports: 1, // should be 20_000_000
+                    slippage_bps: None,
+                    variant: BundleBuyVariant::BuyExactSolIn,
+                }),
+            )
+            .expect_err("mismatched lamports must fail");
+        assert!(matches!(err, TradeError::InvalidBuyAmount(_)), "{err:?}");
     }
 
     // --- Golden byte-identity: the `assemble()` refactor is a provable no-op. ---

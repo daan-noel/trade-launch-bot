@@ -16,8 +16,41 @@ use platform_core::models::{
 use serde::Serialize;
 use sqlx::PgPool;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// Process-local admission gate for destructive wallet-management background
+/// jobs (sweep / consolidate / restore / manage-execute). Only one may run at
+/// a time — they all mutate wallet balances/statuses and can conflict even
+/// across different mints via shared treasuries.
+#[derive(Clone, Default)]
+pub struct BackgroundJobGate(Arc<AtomicBool>);
+
+/// Held for the lifetime of a spawned background job; releases the gate on drop
+/// (success, error, cancellation, or panic unwind).
+pub struct BackgroundJobPermit(Arc<AtomicBool>);
+
+impl BackgroundJobGate {
+    pub fn try_acquire(&self) -> Option<BackgroundJobPermit> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| BackgroundJobPermit(self.0.clone()))
+    }
+}
+
+impl Drop for BackgroundJobPermit {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn job_busy() -> actix_web::Error {
+    actix_web::error::ErrorConflict(
+        "another wallet-management background job is already running",
+    )
+}
 
 use platform_core::storage::repositories::{
     BundleRepo, LaunchRepo, LaunchTemplateRepo, LaunchpadRepo, ManageActionRepo, ManagedWalletRepo,
@@ -499,11 +532,14 @@ async fn wallet_pool_sweep(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
     sse: web::Data<crate::sse::SseHub>,
+    jobs: web::Data<BackgroundJobGate>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let settings = launcher_settings(&settings)?.clone();
+    let permit = jobs.try_acquire().ok_or_else(job_busy)?;
     let pool = pool.get_ref().clone();
     let sse = sse.get_ref().clone();
     tokio::spawn(async move {
+        let _permit = permit;
         match sweep_used_and_retired(&pool, &settings, Some(&sse)).await {
             Ok(report) => tracing::info!(
                 wallets = report.outcomes.len(),
@@ -534,13 +570,16 @@ async fn wallet_pool_consolidate(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
     sse: web::Data<crate::sse::SseHub>,
+    jobs: web::Data<BackgroundJobGate>,
     body: web::Json<ConsolidateBody>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let settings = launcher_settings(&settings)?.clone();
+    let permit = jobs.try_acquire().ok_or_else(job_busy)?;
     let pool = pool.get_ref().clone();
     let sse = sse.get_ref().clone();
     let dest = body.into_inner().dest_treasury_id;
     tokio::spawn(async move {
+        let _permit = permit;
         match consolidate_all(&pool, &settings, dest, Some(&sse)).await {
             Ok(report) => tracing::info!(
                 wallets = report.outcomes.len(),
@@ -632,14 +671,17 @@ async fn wallet_pool_restore(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
     sse: web::Data<crate::sse::SseHub>,
+    jobs: web::Data<BackgroundJobGate>,
 ) -> Result<HttpResponse, actix_web::Error> {
     // Clone the settings out of app_data so the spawned job owns them (503 if the
     // box booted without a launcher config — no keystore/KEK/RPC to restore from).
     let settings = launcher_settings(&settings)?.clone();
+    let permit = jobs.try_acquire().ok_or_else(job_busy)?;
     let pool = pool.get_ref().clone();
     let sse = sse.get_ref().clone();
 
     tokio::spawn(async move {
+        let _permit = permit;
         match crate::restore::run_restore(pool, settings, sse).await {
             Ok(summary) => tracing::info!(?summary, "keystore restore finished"),
             Err(e) => tracing::error!(error = ?e, "keystore restore failed"),
@@ -1092,6 +1134,7 @@ async fn manage_execute(
     pool: web::Data<PgPool>,
     settings: web::Data<Option<LauncherSettings>>,
     sse: web::Data<crate::sse::SseHub>,
+    jobs: web::Data<BackgroundJobGate>,
     mint: web::Path<String>,
     body: web::Json<ManageRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
@@ -1101,12 +1144,14 @@ async fn manage_execute(
             "error": "token management disabled — set MANAGE_ENABLED=true to enable"
         })));
     }
+    let permit = jobs.try_acquire().ok_or_else(job_busy)?;
     let pool = pool.get_ref().clone();
     let sse = sse.get_ref().clone();
     let mint = mint.into_inner();
     let body = body.into_inner();
 
     tokio::spawn(async move {
+        let _permit = permit;
         match execute_action(&pool, &settings, &mint, &body, Some(&sse)).await {
             Ok(action) => tracing::info!(
                 action_id = %action.id,

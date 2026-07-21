@@ -89,6 +89,8 @@ impl PushHooks {
 #[derive(Clone, Copy)]
 enum DisconnectReason {
     Graceful,
+    /// Decode task / host event consumer is gone — do **not** reconnect.
+    DownstreamClosed,
     IdleTimeout,
     PipelineBackpressure,
     StreamError(tonic::Code),
@@ -99,17 +101,24 @@ impl DisconnectReason {
     fn label(self) -> &'static str {
         match self {
             DisconnectReason::Graceful => "graceful",
+            DisconnectReason::DownstreamClosed => "downstream_closed",
             DisconnectReason::IdleTimeout => "idle_timeout",
             DisconnectReason::PipelineBackpressure => "pipeline_backpressure",
             DisconnectReason::StreamError(_) => "stream_error",
             DisconnectReason::ConnectError => "connect_error",
         }
     }
+
+    /// Terminal for the transport task — reconnecting cannot help.
+    fn is_terminal(self) -> bool {
+        matches!(self, DisconnectReason::DownstreamClosed)
+    }
 }
 
 #[derive(Default)]
 struct ReconnectCounts {
     graceful: u64,
+    downstream_closed: u64,
     idle_timeout: u64,
     backpressure: u64,
     stream_error: u64,
@@ -120,6 +129,7 @@ impl ReconnectCounts {
     fn record(&mut self, reason: DisconnectReason) {
         match reason {
             DisconnectReason::Graceful => self.graceful += 1,
+            DisconnectReason::DownstreamClosed => self.downstream_closed += 1,
             DisconnectReason::IdleTimeout => self.idle_timeout += 1,
             DisconnectReason::PipelineBackpressure => self.backpressure += 1,
             DisconnectReason::StreamError(_) => self.stream_error += 1,
@@ -356,6 +366,22 @@ pub async fn run<V: IngestVenue>(
         };
 
         counts.record(reason);
+        if reason.is_terminal() {
+            info!(
+                "LaserStream: transport stopping (reason={}) — totals: graceful={} \
+                 downstream_closed={} idle_timeout={} pipeline_backpressure={} \
+                 stream_error={} connect_error={}",
+                reason.label(),
+                counts.graceful,
+                counts.downstream_closed,
+                counts.idle_timeout,
+                counts.backpressure,
+                counts.stream_error,
+                counts.connect_error,
+            );
+            return;
+        }
+
         info!(
             "LaserStream: reconnect (reason={}) — totals: graceful={} idle_timeout={} \
              pipeline_backpressure={} stream_error={} connect_error={}",
@@ -485,8 +511,11 @@ async fn run_once<V: IngestVenue>(
                                         return DisconnectReason::PipelineBackpressure;
                                     }
                                     Err(mpsc::error::SendTimeoutError::Closed(_)) => {
-                                        info!("LaserStream: pipeline receiver dropped — stopping");
-                                        return DisconnectReason::Graceful;
+                                        info!(
+                                            "LaserStream: pipeline receiver dropped — stopping \
+                                             (no reconnect)"
+                                        );
+                                        return DisconnectReason::DownstreamClosed;
                                     }
                                 }
                             }
@@ -525,7 +554,11 @@ async fn run_once<V: IngestVenue>(
                 }
             }
 
-            _ = live_rx.changed() => {
+            result = live_rx.changed() => {
+                if result.is_err() {
+                    info!("LaserStream: live-mode sender dropped — stopping (no reconnect)");
+                    return DisconnectReason::DownstreamClosed;
+                }
                 if !*live_rx.borrow() {
                     info!("LaserStream: live mode disabled — closing stream");
                     return DisconnectReason::Graceful;
@@ -550,6 +583,9 @@ mod tests {
     #[test]
     fn reason_labels_are_distinct() {
         assert_eq!(DisconnectReason::Graceful.label(), "graceful");
+        assert_eq!(DisconnectReason::DownstreamClosed.label(), "downstream_closed");
+        assert!(DisconnectReason::DownstreamClosed.is_terminal());
+        assert!(!DisconnectReason::Graceful.is_terminal());
         assert_eq!(DisconnectReason::IdleTimeout.label(), "idle_timeout");
         assert_eq!(DisconnectReason::PipelineBackpressure.label(), "pipeline_backpressure");
         assert_eq!(DisconnectReason::ConnectError.label(), "connect_error");

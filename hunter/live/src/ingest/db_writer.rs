@@ -180,18 +180,28 @@ impl DbWriter {
             }
         }
 
-        // Trades.
+        // Trades — notify only rows that actually persisted. `TradeSignals`
+        // promises a queryable committed row; waking waiters after a failed
+        // insert makes sell-confirm poll missing data.
         let trades: Vec<Trade> = trades.into_values().collect();
-        if let Err(e) = self.trade_repo.insert_many(&trades).await {
-            warn!("DbWriter: trade bulk insert failed ({e}); retrying per-row");
-            for t in &trades {
-                if let Err(e) = self.trade_repo.insert(t).await {
-                    warn!("DbWriter: trade {}#{}: {e}", t.tx_signature, t.leg_index);
+        let persisted: Vec<&Trade> = match self.trade_repo.insert_many(&trades).await {
+            Ok(()) => trades.iter().collect(),
+            Err(e) => {
+                warn!("DbWriter: trade bulk insert failed ({e}); retrying per-row");
+                let mut ok = Vec::with_capacity(trades.len());
+                for t in &trades {
+                    match self.trade_repo.insert(t).await {
+                        Ok(()) => ok.push(t),
+                        Err(e) => {
+                            warn!("DbWriter: trade {}#{}: {e}", t.tx_signature, t.leg_index)
+                        }
+                    }
                 }
+                ok
             }
-        }
+        };
 
-        for t in &trades {
+        for t in persisted {
             self.trade_signals.notify(&t.wallet_address, &t.mint_address);
         }
 
