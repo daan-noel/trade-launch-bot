@@ -196,6 +196,19 @@ export function FlowDiscoveryPage() {
 
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
+  const flowSplit = useMemo(() => {
+    if (!selectedGroup) return null;
+    const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+    let volumeGross = 0;
+    let totalGross = 0;
+    for (const s of selectedGroup.structures) {
+      totalGross += s.gross_sol;
+      if (draftKeys.has(JSON.stringify(s.ix_labels))) volumeGross += s.gross_sol;
+    }
+    const organicGross = Math.max(0, totalGross - volumeGross);
+    const volumePct = totalGross > 0 ? (volumeGross / totalGross) * 100 : 0;
+    return { volumeGross, organicGross, totalGross, volumePct };
+  }, [selectedGroup, draftPatterns]);
   const autoMatchedFp = selectedGroup
     ? findFingerprintForGroupKey(selectedGroup.group_key, fingerprints, bucketWidthSol)
     : null;
@@ -615,14 +628,57 @@ export function FlowDiscoveryPage() {
                 )}
               </div>
 
+              {flowSplit && flowSplit.totalGross > 0 && (
+                <div className="rounded border border-white/8 p-3">
+                  <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                    <LabelTip
+                      tip={DISCOVERY_FIELD_HELP.volumeSplit}
+                      className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+                    >
+                      Flow split · checked structures
+                    </LabelTip>
+                    <span className="font-mono text-[11px] text-text-dim">
+                      {fmt(flowSplit.volumePct)}% volume of {fmt(flowSplit.totalGross)}◎ scored
+                    </span>
+                  </div>
+                  <div className="flex h-2 w-full overflow-hidden rounded-full bg-white/6">
+                    {flowSplit.volumeGross > 0 && (
+                      <div
+                        className="h-full rounded-full bg-warning"
+                        style={{
+                          width: `${flowSplit.volumePct}%`,
+                          marginRight: flowSplit.organicGross > 0 ? 2 : 0,
+                        }}
+                      />
+                    )}
+                    {flowSplit.organicGross > 0 && (
+                      <div
+                        className="h-full rounded-full bg-white/20"
+                        style={{ width: `${100 - flowSplit.volumePct}%` }}
+                      />
+                    )}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[10px] text-text-dim">
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-2 rounded-full bg-warning" /> Volume (checked):{' '}
+                      {fmt(flowSplit.volumeGross)}◎
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="size-2 rounded-full bg-white/30" /> Organic (unchecked):{' '}
+                      {fmt(flowSplit.organicGross)}◎
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {selectedGroup.n_trades_scored === 0 && (
                 <InlineAlert variant="warning">
                   {selectedGroup.n_tokens} tokens matched, but 0 trades had ix_labels — discovery
                   needs lake trade columns written by a post–volume-flow export. Delete the sealed
                   day folders under lake-data/trades (or their _meta.json) and re-run{' '}
                   <code className="font-mono">cargo run -p hunter-lab -- lake-export</code>, then
-                  Run discovery again. (This page has no charts — suggested structures appear in
-                  the table below once trades score.)
+                  Run discovery again. (Suggested structures appear in the table below once
+                  trades score.)
                 </InlineAlert>
               )}
 

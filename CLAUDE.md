@@ -116,6 +116,11 @@ decisions), **not** throwaway plans.
 Windows 11 · **PowerShell is the primary shell** (a Bash tool is available for POSIX
 scripts — each takes its own syntax) · git `autocrlf=true`.
 
+**File encoding.** Never write or edit a file with characters that can break — a BOM,
+smart quotes/em-dashes pasted from elsewhere, or any non-ASCII punctuation a tool can
+mangle. Save/edit as plain **UTF-8, no BOM**. If a file needs non-ASCII content, use
+real UTF-8 characters directly, not escaped sequences.
+
 ## Env-file editing (`.env` / `.env.example`)
 
 Each product owns its pair (`hunter/.env*`, `forge/.env*`) — there is no root `.env`.
