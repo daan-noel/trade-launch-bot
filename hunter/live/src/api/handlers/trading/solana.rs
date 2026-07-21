@@ -504,9 +504,27 @@ pub async fn manual_sell(
                     };
                     let token_amount = pos.entry_token_amount.unwrap_or(0);
                     let fill = Fill { price, sol: price * token_amount as f64, token_amount, at };
-                    state.engine.reconcile_cleared(pos.id, fill).await;
+                    // Engine path when registry has the row; PG book-close on miss
+                    // (post-restart) so Holding never sticks after a Trade sell.
+                    if state.positions.engine_id(pos.id).is_some() {
+                        let _ = state.engine.reconcile_cleared(pos.id, fill).await;
+                    } else {
+                        use crate::strategies::engine::orphan_exit;
+                        if let Err(e) = orphan_exit::book_externally_cleared_pg(
+                            &state.strategy_repo,
+                            pos.id,
+                            fill,
+                            "Manual",
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                position_id = %pos.id,
+                                "manual-sell reconcile: PG book-close failed: {e}"
+                            );
+                        }
+                    }
                 }
-                // Commands are enqueued; the engine closes the rows over SSE.
                 break;
             }
         });

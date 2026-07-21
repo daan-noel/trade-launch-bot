@@ -2,11 +2,17 @@
 //! loop can't resolve on its own:
 //! - `BuySubmitted` with no live entry task → adopt / wait / drop (never re-send)
 //! - `ExitPending` with no live exit task → re-drive sell (or nudge the engine)
+//! - externally-cleared `Holding` (bag gone via Trade sell) → book End (PG `trades` net)
+//! - `ExitFailed` with remaining bag (PG net) → re-drive sell with backoff
 //! - stale `ExitPending` / `Arming` cleanup
 //!
 //! Fires once at boot (immediate tick) then every 60 s. Skips rows whose
 //! [`InFlightGuards`] slot is held so it never races a live buy/sell task.
+//!
+//! Helius: no periodic account/balance RPC. Cleared/stranded detection is Postgres
+//! `trades` net only; sell confirm stays feed-first inside `run_exit`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,10 +20,10 @@ use chrono::Utc;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use hunter_engine::event::{Event, Fill, FillFailReason};
 
-use trading_core::config::constants::resolve_sell_slippage_bps;
 use trading_core::state::token_cache::TokenCache;
 use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::settings_repo::AppSettings;
@@ -26,14 +32,18 @@ use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::trader::PumpFunTrader;
 
-use super::exec_real::{self, BuyRecoveryVerdict, RealExecDeps, SellOrder};
-use super::{FillSigStore, InFlightGuards, PositionRegistry};
+use super::exec_real::{self, BuyRecoveryVerdict};
+use super::orphan_exit::{self, OrphanExitDeps, OrphanStart, BAG_CLEARED_THRESHOLD_RAW};
+use super::{InFlightGuards, PositionRegistry};
 
 const INTERVAL: Duration = Duration::from_secs(60);
 const EXIT_PENDING_STALE: Duration = Duration::from_secs(300);
 const UNENTERED_STALE: Duration = Duration::from_secs(600);
 /// Flag unresolved `BuySubmitted` rows past this age for manual review.
 const BUY_SUBMITTED_REVIEW: Duration = Duration::from_secs(600);
+/// After a Fatal/unresolved ExitFailed redrive, skip this many reaper ticks
+/// before trying again (no Helius spam).
+const EXIT_FAILED_BACKOFF_TICKS: u8 = 5;
 
 pub struct ReaperDeps {
     pub strategy_repo: StrategyRepo,
@@ -47,6 +57,22 @@ pub struct ReaperDeps {
     pub settings: watch::Receiver<AppSettings>,
 }
 
+impl ReaperDeps {
+    fn orphan_deps(&self) -> OrphanExitDeps {
+        OrphanExitDeps {
+            strategy_repo: self.strategy_repo.clone(),
+            trade_repo: self.trade_repo.clone(),
+            trader: self.trader.clone(),
+            token_cache: self.token_cache.clone(),
+            trade_signals: self.trade_signals.clone(),
+            inflight: self.inflight.clone(),
+            registry: self.registry.clone(),
+            fill_tx: self.fill_tx.clone(),
+            settings: self.settings.clone(),
+        }
+    }
+}
+
 /// Spawn the reaper loop (immediate first tick, then every `INTERVAL`).
 pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -54,13 +80,15 @@ pub fn spawn_reaper(deps: ReaperDeps) -> JoinHandle<()> {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Skip counters for stuck BuySubmitted rows past the review window — still
         // try feed-adopt every tick, but don't burn signature_state RPC every 60s.
-        let mut stuck_rpc_skip: std::collections::HashMap<uuid::Uuid, u8> =
-            std::collections::HashMap::new();
+        let mut stuck_rpc_skip: HashMap<Uuid, u8> = HashMap::new();
+        let mut exit_failed_backoff: HashMap<Uuid, u8> = HashMap::new();
         // Do NOT consume the immediate first tick — boot sweep runs right away.
         loop {
             tick.tick().await;
             redrive_orphaned_buy_submitted(&deps, &mut stuck_rpc_skip).await;
+            orphan_exit::reconcile_externally_cleared_holdings(&deps.orphan_deps()).await;
             redrive_orphaned_exit_pending(&deps).await;
+            redrive_exit_failed_bags(&deps, &mut exit_failed_backoff).await;
             for mode in ["real", "paper"] {
                 match deps.strategy_repo.fail_stale_exit_pending(mode, EXIT_PENDING_STALE).await {
                     Ok(n) if n > 0 => info!(mode, n, "reaper: failed stale ExitPending rows"),
@@ -85,7 +113,7 @@ const STUCK_RPC_SKIP_TICKS: u8 = 10;
 /// submitted sig confirmed-reverted, else wait. Never re-sends.
 async fn redrive_orphaned_buy_submitted(
     deps: &ReaperDeps,
-    stuck_rpc_skip: &mut std::collections::HashMap<uuid::Uuid, u8>,
+    stuck_rpc_skip: &mut HashMap<Uuid, u8>,
 ) {
     let submitted = match deps.strategy_repo.find_all_buy_submitted("real").await {
         Ok(p) => p,
@@ -95,8 +123,7 @@ async fn redrive_orphaned_buy_submitted(
         }
     };
     let wallet = deps.trader.wallet_pubkey();
-    let live_ids: std::collections::HashSet<uuid::Uuid> =
-        submitted.iter().map(|p| p.id).collect();
+    let live_ids: std::collections::HashSet<Uuid> = submitted.iter().map(|p| p.id).collect();
     stuck_rpc_skip.retain(|id, _| live_ids.contains(id));
 
     for position in submitted {
@@ -143,8 +170,6 @@ async fn redrive_orphaned_buy_submitted(
                         );
                         adopted = true;
                         stuck_rpc_skip.remove(&position.id);
-                        // If the engine still tracks this pg id, synthesize FillConfirmed
-                        // so TP/SL monitoring resumes.
                         if let Some(engine_id) = deps.registry.engine_id(position.id) {
                             if let Some(meta) = deps.registry.get(engine_id) {
                                 if let Some(intent) = meta.inflight_intent {
@@ -226,7 +251,6 @@ async fn redrive_orphaned_buy_submitted(
                         mint = %position.mint_address,
                         "reaper: dropped reverted BuySubmitted (no tokens)"
                     );
-                    // Nudge engine if it still holds the arm.
                     if let Some(engine_id) = deps.registry.engine_id(position.id) {
                         if let Some(meta) = deps.registry.get(engine_id) {
                             if let Some(intent) = meta.inflight_intent {
@@ -259,11 +283,13 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
             return;
         }
     };
+    let orphan = deps.orphan_deps();
     for position in pending {
         if position.entry_price.is_none() {
             continue;
         }
-        if deps.inflight.exit_held(position.id) {
+        if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&position.mint_address)
+        {
             continue;
         }
 
@@ -288,109 +314,91 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
             }
         }
 
-        // Post-restart orphan: engine has no intent — sell directly and close the row.
-        // Claim the exit guard for the whole spawned task lifetime (moved into task).
-        let Some(guard) = deps.inflight.try_begin_exit(position.id) else {
-            continue;
-        };
-        info!(
-            position_id = %position.id,
-            mint = %position.mint_address,
-            "reaper: re-driving orphaned ExitPending sell (direct)"
-        );
+        match orphan_exit::spawn_orphan_sell(&orphan, position, "Recovery") {
+            OrphanStart::Started => {}
+            OrphanStart::Busy | OrphanStart::NothingToSell => {}
+        }
+    }
+}
 
-        let fill_sigs = FillSigStore::new();
-        let (fill_tx, mut fill_rx) = mpsc::channel::<Event>(4);
-        let real_deps = RealExecDeps {
-            trader: deps.trader.clone(),
-            token_cache: deps.token_cache.clone(),
-            trade_repo: deps.trade_repo.clone(),
-            strategy_repo: deps.strategy_repo.clone(),
-            trade_signals: deps.trade_signals.clone(),
-            fill_sigs,
-            fill_tx,
-            // Nested run_exit claims on a fresh set so it doesn't deadlock on `guard`.
-            inflight: InFlightGuards::new(),
-            buy_journal: super::SubmittedBuyJournal::new(),
-        };
-        let slippage = {
-            let s = deps.settings.borrow();
-            resolve_sell_slippage_bps(s.sell_slippage_bps, None)
-        };
-        let intent = hunter_engine::event::IntentId {
-            rule: hunter_engine::event::RuleId(position.rule_id.unwrap_or_default()),
-            mint: hunter_engine::event::Mint::from(position.mint_address.as_str()),
-            seq: 0,
-        };
-        let order = SellOrder {
-            intent,
-            pg_id: position.id,
-            mint: position.mint_address.clone(),
-            token_amount: position.entry_token_amount.unwrap_or(0),
-            token_account: position.token_account.clone(),
-            creator: None,
-            token_program_id: None,
-            cashback_enabled: false,
-            slippage_bps: slippage,
-        };
-        let repo = deps.strategy_repo.clone();
-        let token_cache = deps.token_cache.clone();
-        let exit_reason = position.exit_reason.clone();
-        let entry_price = position.entry_price;
-        let mint = position.mint_address.clone();
-        let pg_id = position.id;
+/// Re-drive real `ExitFailed` rows that still have a bag (PG net > dust).
+async fn redrive_exit_failed_bags(deps: &ReaperDeps, backoff: &mut HashMap<Uuid, u8>) {
+    let failed = match deps
+        .strategy_repo
+        .find_exit_failed_with_bag(BAG_CLEARED_THRESHOLD_RAW)
+        .await
+    {
+        Ok(p) => p,
+        Err(err) => {
+            warn!("reaper: load ExitFailed-with-bag failed: {err}");
+            return;
+        }
+    };
+    let live_ids: std::collections::HashSet<Uuid> = failed.iter().map(|p| p.id).collect();
+    backoff.retain(|id, _| live_ids.contains(id));
 
-        tokio::spawn(async move {
-            let _guard = guard; // held until this task ends
-            exec_real::run_exit(real_deps, order).await;
-            match fill_rx.recv().await {
-                Some(Event::FillConfirmed { fill, .. }) => {
-                    if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
-                        let reason = exit_reason.unwrap_or_else(|| "Recovery".to_string());
-                        pos.close(
-                            fill.price,
-                            fill.sol,
-                            fill.token_amount,
-                            vec![],
-                            fill.at,
-                            &reason,
-                        );
-                        if let Err(e) = repo.update_position(&pos).await {
-                            warn!(position_id = %pg_id, "reaper: close after recovery sell failed: {e}");
-                        } else {
-                            info!(position_id = %pg_id, "reaper: ExitPending recovered → closed");
-                        }
-                    }
-                }
-                Some(Event::FillFailed { reason: FillFailReason::Unconfirmed, .. }) => {
-                    if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
-                        let price = token_cache
-                            .get(&mint)
-                            .and_then(|e| e.value().current_price)
-                            .or(entry_price)
-                            .unwrap_or(0.0);
-                        pos.mark_exit_unconfirmed(price, Utc::now());
-                        let _ = repo.update_position(&pos).await;
-                    }
-                }
-                Some(Event::FillFailed { reason: FillFailReason::Fatal, .. }) => {
-                    if let Ok(Some(mut pos)) = repo.find_position(pg_id).await {
-                        let price = token_cache
-                            .get(&mint)
-                            .and_then(|e| e.value().current_price)
-                            .or(entry_price)
-                            .unwrap_or(0.0);
-                        pos.mark_exit_failed(price, Utc::now());
-                        let _ = repo.update_position(&pos).await;
-                    }
-                }
-                _ => {
-                    warn!(
-                        position_id = %pg_id,
-                        "reaper: direct ExitPending sell unresolved — leaving for next tick"
-                    );
-                }
+    // Also heal ExitFailed whose bag is already gone (book End, no sell / no RPC).
+    // Queried inversely: load candidates with bag above; for any ExitFailed not in
+    // that set we don't scan here — cleared-Holding reaper covers Holding-only.
+    // ExitFailed with net<=0: find via a cheap pass on the failed list? The query
+    // only returns with-bag. Separate heal:
+    heal_exit_failed_cleared(deps).await;
+
+    let orphan = deps.orphan_deps();
+    for position in failed {
+        if let Some(n) = backoff.get_mut(&position.id) {
+            if *n > 0 {
+                *n -= 1;
+                continue;
             }
-        });
+        }
+        if deps.inflight.exit_held(position.id) || deps.inflight.exit_mint_held(&position.mint_address)
+        {
+            continue;
+        }
+        match orphan_exit::spawn_orphan_sell(&orphan, position.clone(), "Recovery") {
+            OrphanStart::Started => {
+                // Back off regardless of outcome so we don't re-spam every 60s while
+                // the sell task runs / after Fatal.
+                backoff.insert(position.id, EXIT_FAILED_BACKOFF_TICKS);
+            }
+            OrphanStart::Busy => {}
+            OrphanStart::NothingToSell => {
+                let wallet = deps.trader.wallet_pubkey();
+                let fill =
+                    orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &position).await;
+                let _ = orphan_exit::book_externally_cleared(&orphan, &position, fill).await;
+            }
+        }
+    }
+}
+
+/// ExitFailed rows whose PG net is already ≤ dust → book End (no sell, no RPC).
+async fn heal_exit_failed_cleared(deps: &ReaperDeps) {
+    let cleared = match deps
+        .strategy_repo
+        .find_exit_failed_cleared(BAG_CLEARED_THRESHOLD_RAW)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("reaper: find_exit_failed_cleared failed: {e}");
+            return;
+        }
+    };
+    if cleared.is_empty() {
+        return;
+    }
+    let orphan = deps.orphan_deps();
+    let wallet = deps.trader.wallet_pubkey();
+    let mut n = 0u32;
+    for pos in cleared {
+        let fill = orphan_exit::fill_from_latest_sell(&deps.trade_repo, &wallet, &pos).await;
+        if orphan_exit::book_externally_cleared(&orphan, &pos, fill).await.is_ok() {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        info!(n, "reaper: booked cleared ExitFailed → End");
     }
 }

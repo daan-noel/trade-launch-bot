@@ -3,11 +3,14 @@ use std::sync::Arc;
 use dashmap::{DashMap, DashSet};
 use tokio::sync::{watch, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 
+use tokio::sync::mpsc;
+
+use hunter_engine::event::Event;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
-use crate::strategies::engine::{ArmedRegistry, EngineHandle};
+use crate::strategies::engine::{ArmedRegistry, EngineHandle, InFlightGuards, PositionRegistry};
 use crate::trader::PumpFunTrader;
 
 use ingest_laserstream::slot_anchor::SlotAnchor;
@@ -34,6 +37,12 @@ pub struct DeployState {
     /// Handle to the generic fingerprint+metrics engine loop — rule/fingerprint
     /// CRUD handlers ping it to reload, and manual position closes route through it.
     pub engine: EngineHandle,
+    /// Live engine position registry — Ops close checks this before orphan-sell.
+    pub positions: PositionRegistry,
+    /// Shared entry/exit/mint locks — Ops orphan-close must not race the reaper.
+    pub inflight: InFlightGuards,
+    /// Engine fill/event channel — orphan sibling `ExternallyCleared` ingress.
+    pub engine_fill_tx: mpsc::Sender<Event>,
     /// Live snapshot of armed (token, rule) pairs (the `GET /api/strategies/armed`
     /// source; the engine sink writes it).
     pub armed: ArmedRegistry,
@@ -72,6 +81,9 @@ impl DeployState {
         trader: Arc<PumpFunTrader>,
         strategy_repo: StrategyRepo,
         engine: EngineHandle,
+        positions: PositionRegistry,
+        inflight: InFlightGuards,
+        engine_fill_tx: mpsc::Sender<Event>,
         armed: ArmedRegistry,
         rule_repo: RuleRepo,
         fingerprint_repo: FingerprintRepo,
@@ -85,6 +97,9 @@ impl DeployState {
             trader,
             strategy_repo,
             engine,
+            positions,
+            inflight,
+            engine_fill_tx,
             armed,
             rule_repo,
             fingerprint_repo,

@@ -24,6 +24,7 @@ pub mod decision_loop;
 pub mod event_log;
 pub mod exec_paper;
 pub mod exec_real;
+pub mod orphan_exit;
 pub mod producers;
 pub mod reapers;
 pub mod sinks;
@@ -38,12 +39,16 @@ use hunter_engine::event::{Fill, IntentId, PositionId, RuleId, TradeMode};
 
 pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 
-/// RAII interlock claiming a PG position id for an in-flight entry or exit task.
-/// Recovery reapers skip ids present in these sets so they never race a live task.
+/// RAII interlock claiming a PG position id (and optionally a mint) for an
+/// in-flight entry or exit task. Recovery reapers skip ids/mints present in these
+/// sets so they never race a live task. The mint lock serializes exits that share
+/// one ATA so sibling positions don't fan out parallel sell RPCs.
 #[derive(Debug, Clone, Default)]
 pub struct InFlightGuards {
     entry: Arc<DashSet<Uuid>>,
     exit: Arc<DashSet<Uuid>>,
+    /// Mints with an exit currently in flight (shared-ATA coordination).
+    exit_mints: Arc<DashSet<String>>,
 }
 
 impl InFlightGuards {
@@ -69,12 +74,26 @@ impl InFlightGuards {
         }
     }
 
+    /// Claim `mint` for an exit task (one sell per mint at a time). Returns `None`
+    /// if another exit already owns the mint.
+    pub fn try_begin_exit_mint(&self, mint: &str) -> Option<ExitMintGuard> {
+        if self.exit_mints.insert(mint.to_string()) {
+            Some(ExitMintGuard { set: self.exit_mints.clone(), mint: mint.to_string() })
+        } else {
+            None
+        }
+    }
+
     pub fn entry_held(&self, pg_id: Uuid) -> bool {
         self.entry.contains(&pg_id)
     }
 
     pub fn exit_held(&self, pg_id: Uuid) -> bool {
         self.exit.contains(&pg_id)
+    }
+
+    pub fn exit_mint_held(&self, mint: &str) -> bool {
+        self.exit_mints.contains(mint)
     }
 }
 
@@ -99,6 +118,18 @@ pub struct ExitGuard {
 impl Drop for ExitGuard {
     fn drop(&mut self) {
         self.set.remove(&self.pg_id);
+    }
+}
+
+/// Held for the lifetime of a mint-scoped exit — Drop frees the mint (panic-safe).
+pub struct ExitMintGuard {
+    set: Arc<DashSet<String>>,
+    mint: String,
+}
+
+impl Drop for ExitMintGuard {
+    fn drop(&mut self) {
+        self.set.remove(&self.mint);
     }
 }
 

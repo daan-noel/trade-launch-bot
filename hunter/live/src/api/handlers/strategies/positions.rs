@@ -515,28 +515,135 @@ pub async fn get_position(
 
 /// POST /api/strategies/{strategy}/positions/{position_id}/close
 ///
-/// Force-close ONE open position now — backs the per-row "Sell ALL" button on the
-/// rule positions table. Unlike the raw `POST /api/solana/wallet/sell`
-/// (`manual_sell`, which sells the wallet's balance by mint and never touches the
-/// `StrategyPosition`), this routes through the position-aware close path so the row
-/// transitions `Holding → ExitPending → closed` over the existing
-/// `strategy_position_update` stream — the operator sees live, reload-proof status.
-/// Real rows sell on-chain in a spawned task; the response returns as soon as the
-/// close has begun (202-style semantics), the terminal state arrives over SSE.
+/// Force-close ONE open position now — backs the per-row "Sell ALL" button on Ops.
+/// Dual path (Helius-cheap):
+/// 1. Live engine registry hit → `ManualClose` (SSE Holding→ExitPending→…).
+/// 2. Registry miss (post-restart orphan) → direct `orphan_exit` sell via the same
+///    `run_exit` feed-confirm path, **or** PG book-close when `trades` net already
+///    shows the bag cleared (no sell RPC).
+/// Never returns 202 on a silent no-op.
 pub async fn close_position(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
 ) -> impl Responder {
+    use crate::strategies::engine::orphan_exit::{self, OrphanStart, BAG_CLEARED_THRESHOLD_RAW};
+
     let (_strategy, position_id) = path.into_inner();
-    // Route through the generic engine's own close path: it resolves the PG id to
-    // the live engine position and folds a `ManualClose` (a no-op if it isn't a
-    // live engine-held one). The row transitions `Holding → ExitPending → closed`
-    // over the `strategy_position_update` SSE. `manual_close` returns `false` only if
-    // the engine loop is shutting down.
-    if app_state.engine.manual_close(position_id).await {
-        HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))
-    } else {
-        HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "Failed to close position"}))
+    let pos = match app_state.strategy_repo.find_position(position_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Position not found"}));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("Failed to load position: {e}")}));
+        }
+    };
+
+    if pos.mode != "real" {
+        return HttpResponse::Conflict()
+            .json(serde_json::json!({"error": "Only real positions can be sold on-chain"}));
+    }
+
+    let status = pos.status.as_str();
+    let retry_failed = status == "ExitFailed";
+    if matches!(status, "End" | "ExitUnconfirmed")
+        || (status == "ExitFailed" && {
+            // ExitFailed with bag already gone → just book if needed; with bag → retry.
+            let wallet = app_state.trader.wallet_pubkey();
+            matches!(
+                app_state
+                    .trade_repo()
+                    .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
+                    .await,
+                Ok(net) if net <= BAG_CLEARED_THRESHOLD_RAW
+            )
+        })
+    {
+        if status == "ExitFailed" {
+            // Bag cleared — heal the row without a sell.
+            let wallet = app_state.trader.wallet_pubkey();
+            let fill = orphan_exit::fill_from_latest_sell(
+                &app_state.trade_repo(),
+                &wallet,
+                &pos,
+            )
+            .await;
+            let deps = orphan_deps_from_state(&app_state);
+            let _ = orphan_exit::book_externally_cleared(&deps, &pos, fill).await;
+            return HttpResponse::Ok().json(serde_json::json!({ "closed": true }));
+        }
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": format!("Position is already terminal ({status})")
+        }));
+    }
+
+    if !matches!(status, "Holding" | "ExitPending" | "ExitFailed") {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": format!("Cannot sell from status {status}")
+        }));
+    }
+
+    // Registry hit → engine ManualClose (live path).
+    if app_state.positions.engine_id(position_id).is_some() && !retry_failed {
+        if app_state.engine.manual_close(position_id).await {
+            return HttpResponse::Accepted().json(serde_json::json!({ "closing": true }));
+        }
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "Engine shutting down"}));
+    }
+
+    // Bag already gone (Trade sell / sibling) — book closed, no sell RPC.
+    let wallet = app_state.trader.wallet_pubkey();
+    if let Ok(net) = app_state
+        .trade_repo()
+        .net_token_amount_by_wallet_and_mint(&wallet, &pos.mint_address)
+        .await
+    {
+        if net <= BAG_CLEARED_THRESHOLD_RAW {
+            let fill =
+                orphan_exit::fill_from_latest_sell(&app_state.trade_repo(), &wallet, &pos).await;
+            let deps = orphan_deps_from_state(&app_state);
+            match orphan_exit::book_externally_cleared(&deps, &pos, fill).await {
+                Ok(()) => {
+                    return HttpResponse::Ok().json(serde_json::json!({ "closed": true }));
+                }
+                Err(e) => {
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": format!("Failed to book cleared position: {e}")
+                    }));
+                }
+            }
+        }
+    }
+
+    // Orphan / ExitFailed retry — direct sell (feed confirm), never silent 202.
+    let deps = orphan_deps_from_state(&app_state);
+    match orphan_exit::spawn_orphan_sell(&deps, pos, "Manual") {
+        OrphanStart::Started => {
+            HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))
+        }
+        OrphanStart::Busy => HttpResponse::Conflict().json(serde_json::json!({
+            "error": "Exit already in flight for this position or mint"
+        })),
+        OrphanStart::NothingToSell => HttpResponse::Conflict().json(serde_json::json!({
+            "error": "Position has zero token amount to sell"
+        })),
+    }
+}
+
+fn orphan_deps_from_state(app_state: &DeployState) -> crate::strategies::engine::orphan_exit::OrphanExitDeps {
+    use crate::strategies::engine::orphan_exit::OrphanExitDeps;
+    OrphanExitDeps {
+        strategy_repo: app_state.strategy_repo.clone(),
+        trade_repo: app_state.trade_repo(),
+        trader: app_state.trader.clone(),
+        token_cache: app_state.token_cache.clone(),
+        trade_signals: app_state.trade_signals.clone(),
+        inflight: app_state.inflight.clone(),
+        registry: app_state.positions.clone(),
+        fill_tx: app_state.engine_fill_tx.clone(),
+        settings: app_state.settings.subscribe(),
     }
 }

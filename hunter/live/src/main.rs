@@ -1241,6 +1241,8 @@ async fn main() -> anyhow::Result<()> {
         handle: engine_handle,
         armed: engine_armed,
         positions: engine_positions,
+        inflight: engine_inflight,
+        fill_tx: engine_fill_tx,
         task: strategy_task,
     } = engine_handles;
 
@@ -1252,6 +1254,9 @@ async fn main() -> anyhow::Result<()> {
         trader.clone(),
         trading_core::storage::repositories::strategy_repo::StrategyRepo::new(db.clone()),
         engine_handle,
+        engine_positions.clone(),
+        engine_inflight,
+        engine_fill_tx,
         engine_armed,
         rule_repo,
         fingerprint_repo,

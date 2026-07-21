@@ -88,15 +88,24 @@ pub fn spawn_engine(deps: EngineDeps) -> EngineHandles {
     let handle = EngineHandle::new(cmd_tx);
     let armed = ArmedRegistry::new();
     let positions = PositionRegistry::new();
+    let inflight = InFlightGuards::new();
     let task = tokio::spawn(run_loop(
         deps,
         cmd_rx,
-        fill_tx,
+        fill_tx.clone(),
         fill_rx,
         armed.clone(),
         positions.clone(),
+        inflight.clone(),
     ));
-    EngineHandles { handle, armed, positions, task }
+    EngineHandles {
+        handle,
+        armed,
+        positions,
+        inflight,
+        fill_tx,
+        task,
+    }
 }
 
 /// What [`spawn_engine`] hands back to `main.rs`: the HTTP-facing handle + the two
@@ -106,6 +115,11 @@ pub struct EngineHandles {
     pub handle: EngineHandle,
     pub armed: ArmedRegistry,
     pub positions: PositionRegistry,
+    /// Shared with HTTP orphan-close + reapers so Ops/Trade never race a live exit.
+    pub inflight: InFlightGuards,
+    /// Engine event ingress (fills + ExternallyCleared) — HTTP orphan-close uses it
+    /// to fold sibling clears into the live loop without a second sell.
+    pub fill_tx: mpsc::Sender<Event>,
     pub task: JoinHandle<()>,
 }
 
@@ -118,6 +132,7 @@ async fn run_loop(
     mut fill_rx: mpsc::Receiver<Event>,
     armed: ArmedRegistry,
     registry: PositionRegistry,
+    inflight: InFlightGuards,
 ) {
     let EngineDeps {
         mut ping_rx,
@@ -136,7 +151,6 @@ async fn run_loop(
     let wallet = trader.wallet_pubkey();
     let fill_sigs = super::FillSigStore::new();
     let buy_journal = super::SubmittedBuyJournal::new();
-    let inflight = InFlightGuards::new();
 
     let mut state = EngineState::new();
     let mut producer = Producer::new(token_cache.clone());
@@ -163,6 +177,8 @@ async fn run_loop(
         fill_tx: fill_tx.clone(),
         inflight: inflight.clone(),
         buy_journal,
+        registry: registry.clone(),
+        engine_fill_tx: Some(fill_tx.clone()),
     };
 
     // Initial rule load.
@@ -172,9 +188,12 @@ async fn run_loop(
     // position at crash time (effects discarded — PG + reapers own open rows).
     boot_recover(&strategy_repo, &recorder, &mut state).await;
 
-    // Recovery reaper (buy adopt/drop + exit redrive + stale fail). Immediate first
-    // tick, then every 60 s. Owns the fill_tx so a live ExitPending orphan can be
-    // nudged via FillFailed without reconstructing opaque intents from PG alone.
+    // Adopt PG Holding rows into the in-memory engine + registry (PG-only, no RPC)
+    // so TP/SL/Dead and Ops close work after a restart.
+    boot_adopt_holdings(&strategy_repo, &mut state, &registry).await;
+
+    // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitFailed
+    // bag + stale fail). Immediate first tick, then every 60 s.
     let _reaper = super::reapers::spawn_reaper(super::reapers::ReaperDeps {
         strategy_repo: strategy_repo.clone(),
         trade_repo: trade_repo.clone(),
@@ -463,6 +482,8 @@ async fn handle_command(
         EngineCommand::ManualClose { pg_position_id } => match registry.engine_id(pg_position_id) {
             Some(position) => EventBatch::one(Event::ManualClose { position }),
             None => {
+                // HTTP close_position handles registry-miss via orphan_exit; a bare
+                // command with no registry entry is a no-op (never pretend success).
                 warn!(pg = %pg_position_id, "manual close: no live engine position — ignoring");
                 EventBatch::none()
             }
@@ -471,6 +492,7 @@ async fn handle_command(
             match registry.engine_id(pg_position_id) {
                 Some(position) => EventBatch::one(Event::ExternallyCleared { position, fill }),
                 None => {
+                    // Trade-sell reconcile falls back to PG book-close on miss.
                     warn!(pg = %pg_position_id,
                         "reconcile cleared: no live engine position — ignoring");
                     EventBatch::none()
@@ -563,6 +585,31 @@ async fn boot_recover(
     }
     if n > 0 {
         info!(events = n, held = held.len(), "engine: boot recovery replayed");
+    }
+}
+
+/// Rebuild in-memory `Entered` arms + registry meta from PG `Holding` rows so a
+/// process restart does not orphan live bags (Ops close / TP-SL). **PG-only.**
+async fn boot_adopt_holdings(
+    strategy_repo: &StrategyRepo,
+    state: &mut EngineState,
+    registry: &PositionRegistry,
+) {
+    let holdings = match strategy_repo.find_all_holding_real().await {
+        Ok(h) => h,
+        Err(e) => {
+            warn!("engine: boot adopt Holding load failed: {e}");
+            return;
+        }
+    };
+    let mut n = 0u32;
+    for pos in &holdings {
+        if super::orphan_exit::adopt_holding_into_engine(state, registry, pos).is_some() {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        info!(adopted = n, "engine: boot adopted Holding positions into registry");
     }
 }
 

@@ -1790,6 +1790,104 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
+    /// All real `Holding` rows with an entry fill — boot registry adopt (PG-only).
+    pub async fn find_all_holding_real(&self) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE mode = 'real' AND status = 'Holding' AND entry_price IS NOT NULL \
+             ORDER BY created_at ASC"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Unsettled real rows on `(wallet, mint)` excluding `exclude_id` — siblings that
+    /// may still share the ATA after a leader sell clears the bag.
+    pub async fn find_unsettled_real_on_mint(
+        &self,
+        wallet: &str,
+        mint: &str,
+        exclude_id: Uuid,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            "SELECT {POSITION_COLS} FROM strategy_positions \
+             WHERE wallet = $1 AND mint_address = $2 AND mode = 'real' AND id <> $3 \
+               AND status IN ('Holding','ExitPending','ExitFailed','ExitUnconfirmed') \
+               AND entry_price IS NOT NULL \
+             ORDER BY created_at ASC"
+        ))
+        .bind(wallet)
+        .bind(mint)
+        .bind(exclude_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Real `ExitFailed` rows whose wallet still shows a positive `trades` net on
+    /// the mint (bag stranded). PG-only — no RPC. `threshold_raw` is the cleared
+    /// floor (typically 0).
+    pub async fn find_exit_failed_with_bag(
+        &self,
+        threshold_raw: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            r#"
+            SELECT {POSITION_COLS}
+            FROM strategy_positions p
+            JOIN wallet_dict w ON w.address = p.wallet
+            WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
+              AND COALESCE((
+                    SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
+                                    WHEN t.trade_type = 'sell' THEN -t.token_amount
+                                    ELSE 0 END)
+                    FROM trades t
+                    WHERE t.wallet_id = w.id AND t.mint_address = p.mint_address
+                  ), 0)::bigint > $1
+            ORDER BY p.updated_at ASC
+            "#
+        ))
+        .bind(threshold_raw)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Real `ExitFailed` whose wallet mint net is already ≤ `threshold_raw` (bag
+    /// gone — book End without a sell). Requires a sell on record so a rolling-buffer
+    /// age-out of the buy alone cannot false-clear. PG-only.
+    pub async fn find_exit_failed_cleared(
+        &self,
+        threshold_raw: i64,
+    ) -> anyhow::Result<Vec<StrategyPosition>> {
+        let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
+            r#"
+            SELECT {POSITION_COLS}
+            FROM strategy_positions p
+            JOIN wallet_dict w ON w.address = p.wallet
+            WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
+              AND EXISTS (
+                    SELECT 1 FROM trades s
+                    WHERE s.wallet_id = w.id AND s.mint_address = p.mint_address
+                      AND s.trade_type = 'sell'
+                  )
+              AND COALESCE((
+                    SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
+                                    WHEN t.trade_type = 'sell' THEN -t.token_amount
+                                    ELSE 0 END)
+                    FROM trades t
+                    WHERE t.wallet_id = w.id AND t.mint_address = p.mint_address
+                  ), 0)::bigint <= $1
+            ORDER BY p.updated_at ASC
+            "#
+        ))
+        .bind(threshold_raw)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
     /// The persisted `token_account` for any open position on the same
     /// `(wallet, mint)` in a mode — so a subsequent bot buy into a mint already
     /// held reuses that one account instead of the template pool minting a second.
@@ -1818,11 +1916,12 @@ impl StrategyRepo {
     }
 
     /// True if any OTHER position (excluding `exclude_id`) on this `(wallet, mint)` in
-    /// `mode` is still open — `Arming`/`BuySubmitted`/`Holding`/`ExitPending` — i.e.
-    /// may still hold tokens in the SHARED token account (two positions on one mint
-    /// intentionally reuse ONE account, see [`find_reusable_token_account`]). Gates the
-    /// rent-reclaim `close_token_account` so one position's exit never closes the
-    /// account out from under a sibling's bag (M1). Index-served by
+    /// `mode` is still unsettled — `Arming`/`BuySubmitted`/`Holding`/`ExitPending`/
+    /// `ExitFailed`/`ExitUnconfirmed` — i.e. may still hold tokens in the SHARED
+    /// token account (two positions on one mint intentionally reuse ONE account, see
+    /// [`find_reusable_token_account`]). Gates the rent-reclaim `close_token_account`
+    /// so one position's exit never closes the account out from under a sibling's bag
+    /// (M1). Index-served by
     /// `idx_strategy_positions_mint_address_status`. Restart-safe (reads the DB SSOT,
     /// not an in-memory refcount).
     pub async fn has_other_open_position_on_mint(
@@ -1836,7 +1935,8 @@ impl StrategyRepo {
             "SELECT EXISTS ( \
                  SELECT 1 FROM strategy_positions \
                  WHERE wallet = $1 AND mint_address = $2 AND mode = $3 AND id <> $4 \
-                   AND status IN ('Arming','BuySubmitted','Holding','ExitPending') \
+                   AND status IN ('Arming','BuySubmitted','Holding','ExitPending',\
+                                  'ExitFailed','ExitUnconfirmed') \
              )",
         )
         .bind(wallet)

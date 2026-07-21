@@ -97,7 +97,10 @@ export const liveApi = baseApi.injectEndpoints({
     // the `strategy_position_update` SSE stream — live, reload-proof status. The backend
     // returns 202 as soon as the close begins; the terminal state arrives over SSE, so
     // no cache tag is invalidated here (the stream patches the row).
-    closeRulePosition: builder.mutation<{ closing: boolean }, { strategy: string; positionId: string }>({
+    closeRulePosition: builder.mutation<
+      { closing?: boolean; closed?: boolean },
+      { strategy: string; positionId: string }
+    >({
       query: ({ strategy, positionId }) => ({
         url: `/api/strategies/${strategy}/positions/${positionId}/close`,
         method: 'POST',

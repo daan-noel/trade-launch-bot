@@ -44,28 +44,43 @@ side-effects only.
 | `exec_real.rs` | `SubmitBuy`/`SubmitSell` → executor submit-and-return, then synthesize a definitive `FillConfirmed`/`FillFailed` from the **trades feed** (RPC watchdog fallback). SOL commit/release; M2 sync `SubmittedBuyJournal` + fire-and-forget bounded `mark_buy_submitted`; adopt skips PG when journal empty; curve sell uses cache reserves for min_out; `classify_swap_revert` heal; sell route re-read + rent reclaim. **Double-fire safe:** `FillFailed::Reverted` only when re-submitting is safe |
 | `exec_paper.rs` | worst-case paper fill (`paper_fill`, slot window) → `FillConfirmed` (sim-parity) |
 | `sinks.rs` | `PositionUpdate` → registry + SSE; `BuySubmitted` upserts registry then background `insert_position` (later transitions await the handle); `ExitPending` PG is fire-and-forget; terminal SSE emits **before** `registry.remove` (so `position_id` / frozen `trade_mode` stay on the wire); `warm_runs` on rule reload; releases SOL on terminal unentered exits |
-| `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send); exit orphan nudge via `FillFailed` or direct `run_exit`; then stale `ExitPending` fail + stale `Arming` delete. Skips `InFlightGuards`-held rows |
+| `reapers.rs` | Boot+60 s: buy orphan adopt/drop/wait (never re-send); **externally-cleared Holding** book-close (PG `trades` net, no RPC); exit orphan nudge via `FillFailed` or shared `orphan_exit`; **ExitFailed-with-bag** redrive (PG-gated, backoff); stale `ExitPending` fail + stale `Arming` delete. Skips `InFlightGuards`-held rows/mints |
+| `orphan_exit.rs` | Shared direct-sell + PG book-close for registry-miss rows (Ops close, ExitPending/ExitFailed reapers). Feed-confirm via `run_exit`; sibling mint clear → `ExternallyCleared` / PG End |
 | `event_log.rs` | JSONL recorder (daily rotation + retention) + **conservative** boot-recovery replay (`recover_armed` = re-arm only; held/filled mints excluded; effects discarded) |
 | `convert.rs` | DB model ↔ engine type converters (re-exports `fingerprint_axes::{fp_to_engine, observed_axes, rule_to_loaded}`) |
 
 `EngineHandle` (held by the HTTP layer, enqueues commands only): `reload_rules`,
 `manual_close(pg_id)` (per-row "Sell ALL"), `close_rule(rule_id)` (per-row Stop),
 `close_mode(real)` (Stop All), `reconcile_cleared(pg_id, fill)` (externally-cleared
-close — below).
+close — below). `DeployState` also holds the shared `PositionRegistry` +
+`InFlightGuards` + engine `fill_tx` so Ops orphan-close can sell without the
+registry and still fold sibling clears.
 
 **Position lifecycle:** `BuySubmitted → Holding → ExitPending → End | ExitFailed | ExitUnconfirmed`.
 
-## Externally-cleared close (manual wallet-sell reconcile)
+**Boot Holding adopt:** after event-log re-arm, PG `Holding` rows are loaded into
+the in-memory engine (`Entered`) + registry (PG-only, no RPC) so TP/SL/Dead and
+Ops `ManualClose` work after a process restart.
 
-When a manual wallet sell (`POST /api/solana/wallet/sell`, `solana.rs`) empties a
-held mint's bag, the handler confirms via the trades feed that the balance is
-actually cleared, then drives each open **real** position through
-`EngineHandle::reconcile_cleared`. That folds `Event::ExternallyCleared { position,
-fill }`, which closes `Entered → Closed` (reason `Manual`) **without** a `SubmitSell`
-— the twin of `ManualClose` minus the sell (a sell into an already-empty wallet just
-reverts and would leave the row `ExitUnconfirmed`). The handler resolves the exit
-`fill` from the wallet's last sell (or the entry as a fallback). This is a
-real-money path; the exit is book-only, no new tx.
+**Mint-level exit lock:** `InFlightGuards` serializes sells per mint (shared ATA).
+After a leader sell clears the wallet mint net (PG), siblings are booked
+`ExternallyCleared` / End — no parallel sell fan-out.
+
+## Ops close + externally-cleared reconcile
+
+`POST …/positions/{id}/close` (Ops Sell ALL):
+
+1. Registry hit → `manual_close` (engine `ManualClose`, SSE lifecycle).
+2. Registry miss / `ExitFailed` retry → if PG `trades` net ≤ 0, book End (no sell
+   RPC); else `orphan_exit::spawn_orphan_sell` (same `run_exit` feed confirm).
+3. Never returns 202 on a silent ignore (409/404/500 with an error body).
+
+When a manual wallet sell (`POST /api/solana/wallet/sell`) empties a held mint,
+the handler confirms via PG `trades` net, then for each open **real** Holding:
+registry hit → `reconcile_cleared` (`Event::ExternallyCleared`); miss → PG
+book-close (`orphan_exit::book_externally_cleared_pg`). The 60 s reaper also runs
+`find_externally_cleared_holding_mints` so a missed reconcile cannot leave a
+ghost Holding.
 
 ## Volume/organic flow split (`m_flow_split` / `m_flow_window`)
 

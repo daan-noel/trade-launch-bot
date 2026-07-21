@@ -165,10 +165,14 @@ export function OpsPage() {
       setSellErr(null);
       setSellingId(row.positionId);
       try {
-        await closePosition({
+        const res = await closePosition({
           strategy: row.strategyId || 'generic',
           positionId: row.positionId,
         }).unwrap();
+        // 200 `{ closed: true }` — bag already gone / booked without SSE transition.
+        if (res && 'closed' in res && res.closed) {
+          setSellingId(null);
+        }
       } catch (e) {
         setSellingId(null);
         setSellErr(apiErrorMessage(e as never) ?? 'Sell failed');
@@ -180,7 +184,13 @@ export function OpsPage() {
   useEffect(() => {
     if (!sellingId) return;
     const row = openMap[sellingId];
-    if (!row || row.status === 'ExitPending' || row.status === 'End') {
+    if (
+      !row ||
+      row.status === 'ExitPending' ||
+      row.status === 'End' ||
+      row.status === 'ExitFailed' ||
+      row.status === 'ExitUnconfirmed'
+    ) {
       setSellingId(null);
     }
   }, [sellingId, openMap]);
@@ -301,7 +311,10 @@ export function OpsPage() {
       render: (r) => {
         const busy =
           sellingId === r.positionId || r.status === 'ExitPending' || r.status === 'BuySubmitted';
-        const canSell = sseLive && r.status === 'Holding' && r.mode === 'real';
+        const canSell =
+          sseLive &&
+          r.mode === 'real' &&
+          (r.status === 'Holding' || r.status === 'ExitFailed');
         return (
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             <IconButton
@@ -312,13 +325,19 @@ export function OpsPage() {
               title={
                 !sseLive
                   ? 'SSE not live — status may be stale'
-                  : canSell
-                    ? 'Sell ALL — force-close this strategy position'
-                    : 'Sell only when Holding (real)'
+                  : r.status === 'ExitFailed'
+                    ? 'Retry sell — prior exit failed; bag may still be in wallet'
+                    : canSell
+                      ? 'Sell ALL — force-close this strategy position'
+                      : 'Sell only when Holding or ExitFailed (real)'
               }
               aria-label="Sell ALL"
             >
-              {busy && r.status !== 'Holding' ? <SpinnerIcon /> : <SellIcon />}
+              {busy && r.status !== 'Holding' && r.status !== 'ExitFailed' ? (
+                <SpinnerIcon />
+              ) : (
+                <SellIcon />
+              )}
             </IconButton>
             <Link
               to={`/trade?mint=${encodeURIComponent(r.mint)}`}

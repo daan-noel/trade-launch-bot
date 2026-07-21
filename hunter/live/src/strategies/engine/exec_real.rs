@@ -32,7 +32,8 @@ use trading_core::storage::repositories::trade_repo::{SigLegs, TradeRepo};
 
 use crate::trader::{PumpFunTrader, SigStatus};
 
-use super::{FillSigStore, FillSigs, InFlightGuards, SubmittedBuyJournal};
+use super::orphan_exit;
+use super::{FillSigStore, FillSigs, InFlightGuards, PositionRegistry, SubmittedBuyJournal};
 
 /// How long to wait for the entry fill on the feed before the RPC watchdog fires
 /// (buffers the feed's index lag — mirrors the old 12 × 1 s window).
@@ -139,6 +140,13 @@ pub struct RealExecDeps {
     pub inflight: InFlightGuards,
     /// Process-local signed-buy journal (M2) — sync before send; PG is best-effort.
     pub buy_journal: SubmittedBuyJournal,
+    /// Live position registry — sibling ExternallyCleared after a mint clears.
+    pub registry: PositionRegistry,
+    /// Engine event channel (same as the decision loop's fill_tx). When set,
+    /// successful mint clears fold `ExternallyCleared` for siblings still in-engine.
+    /// Orphan sells use a private fill_tx for their own outcome, so they pass the
+    /// loop channel here separately.
+    pub engine_fill_tx: Option<mpsc::Sender<Event>>,
 }
 
 /// Everything a buy submit needs, resolved by the loop from the cache + rule.
@@ -447,6 +455,12 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
         warn!(pg = %order.pg_id, mint = %order.mint, "real sell: exit guard held — skipping");
         return;
     };
+    // One sell per mint (shared ATA) — siblings wait for reaper/nudge rather than
+    // fanning out parallel Helius sell sends.
+    let Some(_mint_guard) = deps.inflight.try_begin_exit_mint(&order.mint) else {
+        warn!(pg = %order.pg_id, mint = %order.mint, "real sell: mint exit lock held — skipping");
+        return;
+    };
 
     // Release FIRST — must fire even if the process crashes mid-exit.
     deps.trader.release_sol_for_position(&order.pg_id.to_string());
@@ -646,23 +660,38 @@ async fn finish_cleared_sell(
         order.intent.clone(),
         FillSigs { sigs: sell_sigs.to_vec(), token_account },
     );
+    let fill = Fill {
+        price: legs.price_per_token(),
+        sol: legs.amount_sol,
+        token_amount: legs.token_amount,
+        at: legs.last_block_time,
+    };
     let _ = deps
         .fill_tx
         .send(Event::FillConfirmed {
             intent: order.intent.clone(),
-            fill: Fill {
-                price: legs.price_per_token(),
-                sol: legs.amount_sol,
-                token_amount: legs.token_amount,
-                at: legs.last_block_time,
-            },
+            fill,
         })
         .await;
+
+    // Sibling book-close when the wallet mint bag is gone (PG net — no RPC).
+    let wallet = deps.trader.wallet_pubkey();
+    let engine_tx = deps.engine_fill_tx.clone().unwrap_or_else(|| deps.fill_tx.clone());
+    let _ = orphan_exit::close_siblings_if_mint_cleared(
+        &deps.strategy_repo,
+        &deps.trade_repo,
+        &deps.registry,
+        &engine_tx,
+        &wallet,
+        &order.mint,
+        order.pg_id,
+        &fill,
+    )
+    .await;
 
     // Fire-and-forget rent reclaim when no sibling still shares the account.
     let trader = deps.trader.clone();
     let repo = deps.strategy_repo.clone();
-    let wallet = deps.trader.wallet_pubkey();
     let mint = order.mint.clone();
     let pg = order.pg_id;
     tokio::spawn(async move {
