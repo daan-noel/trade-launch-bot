@@ -2,7 +2,9 @@
 
 use borsh::BorshDeserialize;
 
-use crate::protocol::{program_friendly_name, Protocol};
+use crate::protocol::Protocol;
+
+use super::program_registry::program_friendly_name;
 
 use super::trade::DecodedTradeEvent;
 

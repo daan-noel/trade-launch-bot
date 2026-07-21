@@ -92,13 +92,15 @@ pub struct Protocol {
 
 // ── Literal constants (pump.fun mainnet, June 2025) ──────────────────────────
 
-const PUMP_FUN_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
-const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
-const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
+// Program-ID literals — `pub(crate)` so the labeler's `program_registry` names
+// them without re-declaring the base58 strings (single source of truth).
+pub(crate) const PUMP_FUN_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+pub(crate) const PUMP_SWAP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+pub(crate) const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+pub(crate) const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+pub(crate) const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+pub(crate) const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
+pub(crate) const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
 const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
@@ -155,33 +157,5 @@ impl Protocol {
             lamports_per_sol: LAMPORTS_PER_SOL,
             min_trade_sol: MIN_TRADE_LAMPORTS as f64 / LAMPORTS_PER_SOL,
         }
-    }
-}
-
-/// Short human-readable label for known Solana program IDs.
-/// Used by the instruction labeler; returns `None` for unknown programs.
-pub fn program_friendly_name(id: &str) -> Option<&'static str> {
-    match id {
-        PUMP_FUN_PROGRAM_ID => Some("Pump.Fun"),
-        PUMP_SWAP_PROGRAM_ID => Some("PumpSwap"),
-        COMPUTE_BUDGET_PROGRAM_ID => Some("Compute Budget"),
-        SYSTEM_PROGRAM_ID => Some("System Program"),
-        TOKEN_PROGRAM_ID => Some("Token Program"),
-        TOKEN_2022_PROGRAM_ID => Some("Token 2022"),
-        ASSOCIATED_TOKEN_PROGRAM_ID => Some("Associated Token"),
-        "AddressLookupTab1e1111111111111111111111111" => Some("Address Lookup Table"),
-        // Common aggregator / bot programs
-        "FAdo9NCw1ssek6Z6yeWzWjhLVsr8uiCwcWNUnKgzTnHe" => Some("Arbitrage Bot"),
-        "9Zzf9QqTy3TkyXysvJBsXyuRjda5aXCEJ9vXfL2HKSYv" => Some("Arbitrage Bot"),
-        "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9" => Some("Axiom Trade"),
-        "BSfD6SHZigAfDWSjzD5Q41jw8LmKwtmjskPH9XW1mrRW" => Some("Photon"),
-        "GMgnVFR8Jb39LoXsEVzb3DvBy3ywCmdmJquHUy1Lrkqb" => Some("GMGN Bot"),
-        "DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH" => Some("DFlow Aggregator V4"),
-        "term9YPb9mzAsABaqN71A4xdbxHmpBNZavpBiQKZzN3" => Some("Terminal"),
-        "troyXT7Ty3s2rjJe4bqWaroUrS4Fjd8rbHHNHxcACF4" => Some("Trojan Trade"),
-        "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" => Some("Jupiter Aggregator V6"),
-        "b1oomGGqPKGD6errbyfbVMBuzSC8WtAAYo8MwNafWW1" => Some("Bloom Router"),
-        "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG" => Some("Meteora DAMM V2"),
-        _ => None,
     }
 }

@@ -50,16 +50,18 @@ buffer is also full is the write shed (counted). Recomputable writes
 | `decode/mod.rs` | `Decoder` (+ `HeliusDecoder` back-compat alias), `TxRelevance`, `DecodeOutput` |
 | `decode/grpc.rs` | `decode_protobuf` (self-classify), `decode_relevant_pb` (hot path), `decode_amm_protobuf` (backfill); `LazyKeys`. **Curve TradeEvents: read "Program data:" logs first, but the validator truncates logs past a byte limit, so a multi-buy bundle can lose trailing legs — when logs are empty OR carry "Log truncated", re-decode from the complete inner-instruction self-CPI events and take the larger set. AMM path is still log-only (latent same risk).** |
 | `decode/trade.rs` | Borsh `RawTradeEvent`, trade helpers |
-| `decode/instructions.rs` | `InstructionKind`, labeler |
+| `decode/instructions.rs` | `InstructionKind`, `label_instruction` (per-ix human label) |
+| `decode/program_registry.rs` | `program_friendly_name` — program-id → name table (SSOT for naming), backed by a `OnceLock<HashMap>`. Grow via the `unknown-programs` harvest |
+| `decode/analyze.rs` | `UnknownProgramCounter` — offline harvest that ranks unnamed top-level program IDs across `raw_txs` payloads — **`raw-tx` feature** |
 | `decode/create.rs` | `decode_create_events_from_logs` |
-| `raw_tx.rs` | `encode_payload` (protobuf wire bytes), `build_raw_tx_event` — **`raw-tx` feature** |
+| `raw_tx.rs` (ingest-core) | `encode_payload` / `decode_payload` (protobuf wire bytes ⇄ `SubscribeUpdateTransaction`), `build_raw_tx_event` — **`raw-tx` feature** |
 | `backfill.rs` | `rpc_to_protobuf` (RPC result → protobuf) — **`rpc-backfill` feature** |
 
 ### Feature gates
 
 | Feature | Unlocks |
 | --- | --- |
-| `raw-tx` | `IngestEvent::RawTx` (carries protobuf `payload` bytes), `raw_tx::encode_payload` |
+| `raw-tx` | `IngestEvent::RawTx` (carries protobuf `payload` bytes), `raw_tx::{encode_payload,decode_payload}`, `decode::analyze` (unknown-program harvest) |
 | `rpc-backfill` | `serde_json` dep, `backfill::rpc_to_protobuf` |
 
 `live` enables both. `IngestHandle` exposes `set_live`, `track_pools`, `untrack_pools`, `pool_index`, `pools_changed`. (Liveness is tracked host-side by `live`'s own `DbHeartbeat`, not an ingest health channel.)
@@ -91,6 +93,14 @@ Protobuf-native only (no Value/JSON path in decode). Both live ingest and `token
 Pool→mint index (`PoolIndex`) is shared: the decode task auto-registers pools on `TokenMigrated`; the consumer un-registers when `track_post_migration` is off.
 
 Codegen: committed prost/tonic bindings in `generated/`; `.proto` sources in `proto/`. Regen only when `.proto` changes.
+
+**Instruction labeling (`instruction_labels`, one string per top-level ix).** `label_instruction` names each ix by a ladder: known program + known discriminator → `"Pump.Fun: Buy"`; known program, unknown disc → `"Pump.Fun: Unknown"`; program in the `program_registry` table → `"Axiom Trade: Unknown"`; nothing matches → `"Unknown (...suffix)"`. Only *top-level* instructions are labeled (inner CPIs are used for trade recovery, not labels). To shrink the `Unknown (...)` tail, run the harvest and add the top program IDs to `program_registry.rs`:
+
+```powershell
+cargo run -p hunter-live -- unknown-programs [--days N] [--limit N] [--top N]
+```
+
+It streams `raw_txs.payload`, tallies the program IDs the labeler can't name, and prints them ranked with a Solscan link each. DB-only (no keys/Helius). Prefer *no* registry entry over a guessed one — a wrong label is worse than `Unknown`.
 
 ## Key rules
 

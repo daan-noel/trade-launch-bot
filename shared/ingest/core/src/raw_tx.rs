@@ -20,6 +20,14 @@ pub fn encode_payload(update: &SubscribeUpdateTransaction) -> Vec<u8> {
     update.encode_to_vec()
 }
 
+/// Decode a `raw_txs.payload` back into a [`SubscribeUpdateTransaction`] — the
+/// exact inverse of [`encode_payload`]. Used by offline replay/derive paths
+/// (e.g. the unknown-program harvest) so `prost` stays encapsulated here and the
+/// venue crates never depend on it directly.
+pub fn decode_payload(bytes: &[u8]) -> Result<SubscribeUpdateTransaction, prost::DecodeError> {
+    SubscribeUpdateTransaction::decode(bytes)
+}
+
 /// Wrap `update` as [`IngestEvent::RawTx`] carrying its raw 64-byte signature,
 /// block position (`tx_index`), and encoded payload. `block_time` is set to
 /// `received_at` — the gRPC stream carries no on-chain block time. Returns

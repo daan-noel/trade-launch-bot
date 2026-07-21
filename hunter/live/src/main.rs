@@ -904,6 +904,81 @@ fn print_sim_outcome(o: &pump_trader::SimOutcome) {
     }
 }
 
+/// `unknown-programs [--days N] [--limit N] [--top N]` — offline diagnostic.
+///
+/// Streams `raw_txs.payload` bytes (each a prost-encoded `SubscribeUpdateTransaction`)
+/// and tallies the top-level-instruction program IDs the labeler can't name
+/// (rendered as `Unknown (...suffix)`), then prints them ranked by frequency with
+/// a Solscan link each. Look the top offenders up once and add them to
+/// `shared/ingest/pumpfun/src/decode/program_registry.rs`.
+///
+///   --days N   look back N days over raw_txs (default 2; retention caps near 7)
+///   --limit N  scan at most N txs (default: no cap)
+///   --top N    print the top N programs (default 40)
+async fn run_unknown_programs(
+    settings: &config::Settings,
+    args: Vec<String>,
+) -> anyhow::Result<()> {
+    use futures_util::TryStreamExt;
+    use ingest_laserstream::decode::UnknownProgramCounter;
+
+    let arg_val = |flag: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let days: i32 = arg_val("--days").and_then(|s| s.parse().ok()).unwrap_or(2);
+    let limit: Option<u64> = arg_val("--limit").and_then(|s| s.parse().ok());
+    let top: usize = arg_val("--top").and_then(|s| s.parse().ok()).unwrap_or(40);
+
+    let pools = trading_core::storage::postgres::connect(settings).await?;
+    info!(days, ?limit, "unknown-programs: scanning raw_txs");
+
+    let mut counter = UnknownProgramCounter::new();
+    // Newest-first so a `--limit` samples the most recent traffic.
+    let mut stream = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT payload FROM raw_txs \
+         WHERE block_time >= now() - make_interval(days => $1) \
+         ORDER BY block_time DESC",
+    )
+    .bind(days)
+    .fetch(&pools.batch);
+
+    let mut scanned: u64 = 0;
+    while let Some(payload) = stream.try_next().await? {
+        counter.ingest_payload(&payload);
+        scanned += 1;
+        if let Some(cap) = limit {
+            if scanned >= cap {
+                break;
+            }
+        }
+    }
+    drop(stream);
+
+    let (txs_scanned, txs_failed, distinct) =
+        (counter.txs_scanned(), counter.txs_failed(), counter.distinct_programs());
+    let ranked = counter.into_ranked();
+
+    println!();
+    println!(
+        "Scanned {scanned} raw_txs row(s) — {txs_scanned} decoded, {txs_failed} undecodable — over the last {days} day(s)."
+    );
+    println!(
+        "{distinct} distinct unnamed program(s). Top {}:\n",
+        top.min(ranked.len())
+    );
+    println!("{:>10}  {:<44}  solscan", "count", "program_id");
+    for (id, count) in ranked.iter().take(top) {
+        println!("{count:>10}  {id:<44}  https://solscan.io/account/{id}");
+    }
+    println!(
+        "\nAdd the ones you recognise to \
+         shared/ingest/pumpfun/src/decode/program_registry.rs (verify each on Solscan first)."
+    );
+    Ok(())
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // Load .env before anything else
@@ -936,6 +1011,16 @@ async fn main() -> anyhow::Result<()> {
     // credentials (`TradingSecrets` — wallet key, nonce accounts, Sender URLs) plus
     // fee/tip tuning (`TraderFeeTuning`), which lab never touches.
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
+
+    // `unknown-programs` — offline diagnostic. Scans stored `raw_txs` and ranks the
+    // top-level program IDs the labeler still can't name (they render as
+    // `Unknown (...)`), so the highest-impact ones can be added to the ingest
+    // `program_registry`. DB-only: needs no trading keys / Helius endpoints, so it
+    // runs before those are required. Exits when done.
+    if std::env::args().nth(1).as_deref() == Some("unknown-programs") {
+        return run_unknown_programs(&settings, std::env::args().skip(2).collect()).await;
+    }
+
     settings
         .require_live_endpoints()
         .context("live bin is missing a required Helius endpoint")?;

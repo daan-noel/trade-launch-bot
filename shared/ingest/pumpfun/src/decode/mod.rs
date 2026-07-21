@@ -19,10 +19,19 @@ use crate::protocol::Protocol;
 // decoder modules keep referencing `super::DecodeOutput` unchanged.
 pub use ingest_core::venue::DecodeOutput;
 
+// The unknown-program harvest reads `raw_txs.payload` bytes, so it rides the same
+// `raw-tx` capability that produces them (forwarded to `ingest-core`).
+#[cfg(feature = "raw-tx")]
+pub mod analyze;
 mod create;
 mod grpc;
 mod instructions;
+mod program_registry;
 mod trade;
+
+#[cfg(feature = "raw-tx")]
+pub use analyze::UnknownProgramCounter;
+pub use program_registry::program_friendly_name;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
