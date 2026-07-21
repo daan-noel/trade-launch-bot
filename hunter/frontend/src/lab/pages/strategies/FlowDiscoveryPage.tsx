@@ -1027,6 +1027,8 @@ export function FlowDiscoveryPage() {
                     trades={previewTrades}
                     tradesLoading={previewTradesLoading}
                     creatorWallet={previewDetail?.creator_wallet ?? null}
+                    athPriceInSol={previewDetail?.ath_price ?? null}
+                    isMigrated={previewDetail?.is_migrated ?? false}
                     patternKeys={patternKeys}
                   />
                 )}
@@ -1163,6 +1165,8 @@ function TokenPreviewPanel({
   trades,
   tradesLoading,
   creatorWallet,
+  athPriceInSol,
+  isMigrated,
   patternKeys,
 }: {
   tokens: FlowDiscoveryTokenGross[];
@@ -1171,6 +1175,8 @@ function TokenPreviewPanel({
   trades: TradeRecord[];
   tradesLoading: boolean;
   creatorWallet: string | null;
+  athPriceInSol: number | null;
+  isMigrated: boolean;
   patternKeys: ReadonlySet<string>;
 }) {
   return (
@@ -1209,6 +1215,8 @@ function TokenPreviewPanel({
               trades={trades}
               patternKeys={patternKeys}
               creatorWallet={creatorWallet}
+              athPriceInSol={athPriceInSol}
+              isMigrated={isMigrated}
             />
           ) : (
             <p className="text-[11px] text-text-dim">

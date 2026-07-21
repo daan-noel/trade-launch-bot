@@ -142,7 +142,7 @@ function savePrefs(
   );
 }
 
-function buildTradeMarkers(
+export function buildTradeMarkers(
   trades: ChartTrade[],
   groupMode: ChartGroupMode,
   intervalSec: number,
@@ -272,12 +272,12 @@ function buildEventSeriesMarkers(
   return out;
 }
 
-type MarkersPlugin = {
+export type MarkersPlugin = {
   setMarkers: (markers: SeriesMarker<UTCTimestamp>[]) => void;
   detach: () => void;
 };
 
-function sortSeriesMarkers(
+export function sortSeriesMarkers(
   markers: SeriesMarker<UTCTimestamp>[],
 ): SeriesMarker<UTCTimestamp>[] {
   return [...markers].sort((a, b) => (a.time as number) - (b.time as number));
@@ -300,7 +300,7 @@ function walletGlyph(w: ProfileWalletInfo): string {
  *  exit (fee/rounding dust rarely leaves the balance at exactly zero). */
 const SELL_ALL_DUST_FRACTION = 0.02;
 
-function buildWalletMarkerDefs(
+export function buildWalletMarkerDefs(
   // Must be in canonical order (`slot → tx_index → leg_index`) — position tracking
   // for first_buy/sell_all replays each wallet's trades in execution order.
   sortedTrades: ChartTrade[],
@@ -412,7 +412,7 @@ function buildWalletMarkerDefs(
   return defs;
 }
 
-function buildWalletBarActivityMap(
+export function buildWalletBarActivityMap(
   trades: ChartTrade[],
   profileWallets: ProfileWalletInfo[],
   groupMode: ChartGroupMode,

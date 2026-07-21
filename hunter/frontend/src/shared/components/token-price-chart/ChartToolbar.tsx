@@ -48,7 +48,7 @@ function StatusBadge({ label, color }: { label: string; color: string }) {
 }
 
 /** Brackets around a dashed span — drag-to-select a time range. */
-function RangeSelectIcon() {
+export function RangeSelectIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
       <path
@@ -70,7 +70,7 @@ function RangeSelectIcon() {
 }
 
 /** Up (buy) + down (sell) arrows — per-bar buy/sell count markers. */
-function BuySellCountsIcon() {
+export function BuySellCountsIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
       <path
@@ -92,7 +92,7 @@ function BuySellCountsIcon() {
 }
 
 /** Two edges with inward arrows — collapse the empty gaps between candles. */
-function TrimGapsIcon() {
+export function TrimGapsIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
       <path d="M3 4.5v11M17 4.5v11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -115,7 +115,7 @@ function TrimGapsIcon() {
 }
 
 /** Two filled candlesticks with wicks — candlestick chart style. */
-function CandlesIcon() {
+export function CandlesIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
       <path d="M7 2.5v3.5M7 13.5V17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -127,7 +127,7 @@ function CandlesIcon() {
 }
 
 /** Map pin with a dot — tracked-wallet buy/sell markers. */
-function WalletMarkersIcon() {
+export function WalletMarkersIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
       <path
@@ -142,7 +142,7 @@ function WalletMarkersIcon() {
 }
 
 /** Rising zigzag — line chart style. */
-function LineIcon() {
+export function LineIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
       <path
@@ -170,7 +170,7 @@ const CHART_STYLE_ICONS: Record<ChartStyle, ReactNode> = {
  * gives every chart page a permanent horizontal scrollbar even when nothing is
  * hovered. Right-anchoring keeps the whole tooltip on-screen with room to spare.
  */
-function HoverTooltip({ children }: { children: ReactNode }) {
+export function HoverTooltip({ children }: { children: ReactNode }) {
   return (
     <span
       role="tooltip"
@@ -191,7 +191,7 @@ function HoverTooltip({ children }: { children: ReactNode }) {
  * lives in the tooltip since the button is icon-only. Mirrors the active-pill
  * styling of the other toolbar toggles.
  */
-function IconToggleButton({
+export function IconToggleButton({
   active,
   onClick,
   label,
