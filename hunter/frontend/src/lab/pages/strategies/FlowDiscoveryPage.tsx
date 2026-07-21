@@ -273,6 +273,67 @@ const unitGrade = (v: number) => signalColor(v);
  *  the danger end lines up with "money went in a circle", not with 1. */
 const washGrade = (wash: number) => signalColor(1 - wash);
 
+const clamp01 = (t: number) => Math.max(0, Math.min(1, t));
+
+// ── auto-suggest ("is this shape manufactured volume?") ──────────────────────
+// A client-side composite of the bot-likelihood columns, so the human doesn't
+// have to eyeball every row. Deliberately conservative: two hard gates, then a
+// vote of the normalized signals. Nothing here is written to the backend — the
+// backend still only flags degenerate `ambiguity`; this just pre-checks the
+// rows a human almost certainly would (see DISCOVERY_COL_HELP.suggested).
+
+/** Lift below this is "common everywhere" noise — never auto-flag (mirrors the
+ *  backend `LIFT_AMBIGUOUS` used for the group `ambiguity` chip). */
+const SUGGEST_MIN_LIFT = 1.25;
+/** Size floor — ignore dust-sized shapes (mirrors backend `MIN_STRUCTURE_SOL`). */
+const SUGGEST_MIN_GROSS = 0.05;
+/** A normalized 0..1 signal at/above this counts as "strong". */
+const SUGGEST_STRONG = 0.5;
+/** How many strong signals a row needs before it's Suggested (a single hot
+ *  column isn't enough — averages hide a lone spike). */
+const SUGGEST_MIN_STRONG = 2;
+
+interface StructureSuggestion {
+  /** Cleared both gates AND tripped ≥ SUGGEST_MIN_STRONG signals. */
+  suggested: boolean;
+  /** Excluded by the lift/size gate before signals were even weighed. */
+  gated: boolean;
+  /** Mean of the applicable normalized signals (0..1) — the shown %. */
+  score: number;
+  /** Human labels of the signals that crossed SUGGEST_STRONG (the "why"). */
+  reasons: string[];
+}
+
+/** Composite bot-likelihood verdict for one structure. `contagion` is the
+ *  client-side Contagion% for this row (or null when nothing's checked / it's
+ *  itself checked); it substitutes for Wash on one-sided rows, whose Wash is
+ *  meaningless (see DISCOVERY_COL_HELP.side / .suggested). */
+function suggestStructure(
+  s: FlowDiscoveryStructure,
+  side: 'buy' | 'sell' | 'both',
+  contagion: number | null,
+): StructureSuggestion {
+  const gated = s.group_lift < SUGGEST_MIN_LIFT || s.gross_sol < SUGGEST_MIN_GROSS;
+  const signals: { label: string; value: number }[] = [
+    { label: 'Recur', value: clamp01(s.cross_token_recurrence / 100) },
+    { label: 'Burst', value: clamp01(s.slot_burst / 100) },
+    { label: 'Reuse', value: clamp01(s.wallet_reuse) },
+  ];
+  if (side === 'both') {
+    signals.push({ label: 'Wash', value: clamp01(1 - s.wash_symmetry) });
+  } else if (contagion != null) {
+    signals.push({ label: 'Contagion', value: clamp01(contagion / 100) });
+  }
+  const strong = signals.filter((sig) => sig.value >= SUGGEST_STRONG);
+  const score = signals.reduce((a, sig) => a + sig.value, 0) / signals.length;
+  return {
+    gated,
+    score,
+    reasons: strong.map((sig) => sig.label),
+    suggested: !gated && strong.length >= SUGGEST_MIN_STRONG,
+  };
+}
+
 /** Flatten a rich `{title, body}` help tip into the plain string DataTable's
  *  `ColumnDef.tooltip` (native title attr) expects — same convention as the
  *  generic sweep table's column tooltips. */
@@ -286,9 +347,10 @@ function helpText(tip: HelpTip): string {
 function buildStructureColumns(opts: {
   draftPatterns: string[][];
   contagionByStructure: Map<string, number | null>;
+  suggestionByStructure: Map<string, StructureSuggestion>;
   onToggle: (labels: string[]) => void;
 }): ColumnDef<FlowDiscoveryStructure>[] {
-  const { draftPatterns, contagionByStructure, onToggle } = opts;
+  const { draftPatterns, contagionByStructure, suggestionByStructure, onToggle } = opts;
   const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
 
   return [
@@ -302,6 +364,55 @@ function buildStructureColumns(opts: {
           onChange={() => onToggle(s.ix_labels)}
         />
       ),
+      searchValue: () => '',
+    },
+    {
+      key: 'suggested',
+      label: 'Auto',
+      tooltip: helpText(DISCOVERY_COL_HELP.suggested),
+      render: (s) => {
+        const sug = suggestionByStructure.get(JSON.stringify(s.ix_labels));
+        if (!sug) return <span className="text-text-dim/50">—</span>;
+        if (sug.gated) {
+          return (
+            <span
+              className="text-text-dim/40"
+              title="Gated out — Lift × < 1.25 (ambient everywhere) or Gross◎ below the dust floor"
+            >
+              —
+            </span>
+          );
+        }
+        const pct = `${fmt(sug.score * 100, 0)}%`;
+        if (sug.suggested) {
+          return (
+            <Badge variant="warning" size="sm" title={`Strong: ${sug.reasons.join(', ')}`}>
+              vol {pct}
+            </Badge>
+          );
+        }
+        return (
+          <span
+            style={{ color: signalColor(sug.score) }}
+            title={
+              sug.reasons.length
+                ? `Strong: ${sug.reasons.join(', ')} — needs ≥ 2 to auto-flag`
+                : 'No strong signals'
+            }
+          >
+            {pct}
+          </span>
+        );
+      },
+      // Rank by band first (suggested → eligible-but-under → gated), then by
+      // score within the band — so sorting surfaces the check-me rows on top
+      // instead of interleaving badges with dim scores and "—" gated rows.
+      sortValue: (s) => {
+        const sug = suggestionByStructure.get(JSON.stringify(s.ix_labels));
+        if (!sug) return -1;
+        const band = sug.suggested ? 2 : sug.gated ? 0 : 1;
+        return band + sug.score;
+      },
       searchValue: () => '',
     },
     {
@@ -550,6 +661,36 @@ export function FlowDiscoveryPage() {
     }
     return map;
   }, [selectedGroup, draftPatterns]);
+  /** Per-structure auto-suggest verdict (client-side composite of the
+   *  bot-likelihood columns — see suggestStructure). Recomputes with contagion,
+   *  so checking a both-side wash row can light up the one-sided rows its
+   *  wallets also trade. */
+  const suggestionByStructure = useMemo(() => {
+    const map = new Map<string, StructureSuggestion>();
+    if (!selectedGroup) return map;
+    for (const s of selectedGroup.structures) {
+      const key = JSON.stringify(s.ix_labels);
+      map.set(key, suggestStructure(s, sideOf(s), contagionByStructure.get(key) ?? null));
+    }
+    return map;
+  }, [selectedGroup, contagionByStructure]);
+  /** Suggested rows not yet in the draft — drives the auto-select button. */
+  const suggestedUnchecked = useMemo(() => {
+    if (!selectedGroup) return [] as string[][];
+    const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+    return selectedGroup.structures
+      .filter((s) => {
+        const key = JSON.stringify(s.ix_labels);
+        return suggestionByStructure.get(key)?.suggested && !draftKeys.has(key);
+      })
+      .map((s) => s.ix_labels);
+  }, [selectedGroup, suggestionByStructure, draftPatterns]);
+
+  function autoSelectSuggested() {
+    if (suggestedUnchecked.length === 0) return;
+    setDraftPatterns((prev) => [...prev, ...suggestedUnchecked]);
+    setApplyOk(null);
+  }
   const autoMatchedFp = selectedGroup
     ? findFingerprintForGroupKey(selectedGroup.group_key, fingerprints, bucketWidthSol)
     : null;
@@ -1030,6 +1171,7 @@ export function FlowDiscoveryPage() {
                     athPriceInSol={previewDetail?.ath_price ?? null}
                     isMigrated={previewDetail?.is_migrated ?? false}
                     patternKeys={patternKeys}
+                    onTogglePattern={toggleStructure}
                   />
                 )}
 
@@ -1100,12 +1242,35 @@ export function FlowDiscoveryPage() {
                 </InlineAlert>
               )}
 
-              <StructureTable
-                structures={selectedGroup.structures}
-                draftPatterns={draftPatterns}
-                contagionByStructure={contagionByStructure}
-                onToggle={toggleStructure}
-              />
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="inline-flex flex-wrap items-center gap-2 text-xs font-semibold text-text-mid">
+                    <LabelTip tip={DISCOVERY_COL_HELP.suggested}>Ranked ix structures</LabelTip>
+                    {suggestedUnchecked.length > 0 && (
+                      <Badge variant="warning" size="sm">
+                        {suggestedUnchecked.length} suggested
+                      </Badge>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={suggestedUnchecked.length === 0}
+                    onClick={autoSelectSuggested}
+                    className="inline-flex items-center gap-1 rounded border border-warning/40 px-2 py-1 text-[11px] font-semibold text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Add every auto-suggested structure to the draft volume_ix_patterns"
+                  >
+                    <CheckIcon className="h-3.5 w-3.5" />
+                    Auto-select suggested
+                  </button>
+                </div>
+                <StructureTable
+                  structures={selectedGroup.structures}
+                  draftPatterns={draftPatterns}
+                  contagionByStructure={contagionByStructure}
+                  suggestionByStructure={suggestionByStructure}
+                  onToggle={toggleStructure}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -1120,18 +1285,26 @@ function StructureTable({
   structures,
   draftPatterns,
   contagionByStructure,
+  suggestionByStructure,
   onToggle,
 }: {
   structures: FlowDiscoveryStructure[];
   draftPatterns: string[][];
   contagionByStructure: Map<string, number | null>;
+  suggestionByStructure: Map<string, StructureSuggestion>;
   onToggle: (labels: string[]) => void;
 }) {
   const draftKeysSig = draftPatterns.map((p) => JSON.stringify(p)).join('|');
   const columns = useMemo(
-    () => buildStructureColumns({ draftPatterns, contagionByStructure, onToggle }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagionByStructure are the real identities
-    [draftKeysSig, contagionByStructure, onToggle],
+    () =>
+      buildStructureColumns({
+        draftPatterns,
+        contagionByStructure,
+        suggestionByStructure,
+        onToggle,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagion/suggestion maps are the real identities
+    [draftKeysSig, contagionByStructure, suggestionByStructure, onToggle],
   );
   return (
     <DataTable
@@ -1168,6 +1341,7 @@ function TokenPreviewPanel({
   athPriceInSol,
   isMigrated,
   patternKeys,
+  onTogglePattern,
 }: {
   tokens: FlowDiscoveryTokenGross[];
   selectedMint: string | null;
@@ -1178,6 +1352,7 @@ function TokenPreviewPanel({
   athPriceInSol: number | null;
   isMigrated: boolean;
   patternKeys: ReadonlySet<string>;
+  onTogglePattern: (labels: string[]) => void;
 }) {
   return (
     <div className="rounded border border-white/8 p-3">
@@ -1214,6 +1389,7 @@ function TokenPreviewPanel({
             <FlowPreviewChart
               trades={trades}
               patternKeys={patternKeys}
+              onTogglePattern={onTogglePattern}
               creatorWallet={creatorWallet}
               athPriceInSol={athPriceInSol}
               isMigrated={isMigrated}

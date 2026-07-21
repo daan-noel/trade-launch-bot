@@ -455,6 +455,15 @@ const POSITION_COLS_SP: &str = "sp.id, sp.run_id, sp.strategy_id, sp.rule_id, sp
     sp.exit_time, sp.exit_tx_signatures, sp.submitted_buy_signatures, sp.status, sp.exit_reason, \
     sp.extra, sp.created_at, sp.updated_at";
 
+/// `POSITION_COLS` qualified with the `p` alias — for reads that JOIN `wallet_dict`
+/// (which also has an `id` column, so the bare list is ambiguous there).
+const POSITION_COLS_P: &str = "p.id, p.run_id, p.strategy_id, p.rule_id, p.mode, p.mint_address, \
+    p.wallet, p.token_program_id, p.token_account, p.target_price, p.target_token_amount, \
+    p.target_time, p.target_tx, p.entry_price, p.entry_token_amount, p.entry_lamports, \
+    p.entry_time, p.entry_tx_signatures, p.exit_price, p.exit_token_amount, p.exit_lamports, \
+    p.exit_time, p.exit_tx_signatures, p.submitted_buy_signatures, p.status, p.exit_reason, \
+    p.extra, p.created_at, p.updated_at";
+
 // ---------------------------------------------------------------------------
 // Position list query: server-side sort / filter / search (whitelisted)
 // ---------------------------------------------------------------------------
@@ -2161,7 +2170,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             r#"
-            SELECT {POSITION_COLS}
+            SELECT {POSITION_COLS_P}
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
             WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
@@ -2190,7 +2199,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             r#"
-            SELECT {POSITION_COLS}
+            SELECT {POSITION_COLS_P}
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
             WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
@@ -2227,7 +2236,7 @@ impl StrategyRepo {
     ) -> anyhow::Result<Vec<StrategyPosition>> {
         let rows = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             r#"
-            SELECT {POSITION_COLS}
+            SELECT {POSITION_COLS_P}
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
             WHERE p.mode = 'real' AND p.status = 'ExitPending' AND p.entry_price IS NOT NULL

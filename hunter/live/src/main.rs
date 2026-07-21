@@ -909,8 +909,16 @@ async fn main() -> anyhow::Result<()> {
     // Load .env before anything else
     dotenvy::dotenv().ok();
 
-    // Tracing / logging
+    // Tracing / logging. Non-blocking writer: `fmt()`'s default sink does a
+    // synchronous write to stdout on the calling task's worker thread, so a
+    // stalled/full stdout pipe (docker log driver backpressure, disk pressure)
+    // would block that worker forever — with only 4 worker threads, a couple of
+    // blocked log calls (one possibly holding a DB connection) is enough to wedge
+    // the whole runtime, including unrelated background tasks. `_log_guard` must
+    // outlive `main` (dropping it stops the flush thread).
+    let (non_blocking_writer, _log_guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::fmt()
+        .with_writer(non_blocking_writer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 // The bin crate is `hunter_live` (bin target `hunter-live`), where all

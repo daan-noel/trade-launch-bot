@@ -77,13 +77,16 @@ import {
 import { RangeSelectTooltip, formatRangeDuration } from 'components/token-price-chart/RangeSelectTooltip';
 import { WalletMarkersTooltip } from 'components/token-price-chart/WalletMarkersTooltip';
 import { DataTable } from 'components/table/DataTable';
+import type { ColumnDef } from 'components/table/types';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
 import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
+import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { cn } from 'lib/cn';
 import { useTimezone } from 'context/TimezoneContext';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { formatTimestampMs } from 'utils/date';
+import { formatIxLabelsText } from 'lib/ixLabels';
 import { buildFlowLines, type FlowBasis, type FlowLinePoint } from '@lab/lib/flow/flowChartData';
 import { getString, setString, STORAGE_KEYS } from 'lib/storage';
 import type { TradeRecord } from 'types';
@@ -107,7 +110,10 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   interval: '1s',
   basis: 'sol',
   trimEmptyBars: true,
-  seedCreatorAsVol: false,
+  // Live ALWAYS classifies the creator wallet as volume (flow_split.rs
+  // FlowState::classify), so default ON to mirror live. Turn OFF only to
+  // isolate what the checked ix-patterns alone would catch.
+  seedCreatorAsVol: true,
   showTradeMarkers: false,
   showWalletMarkers: false,
   showAthLine: true,
@@ -262,6 +268,11 @@ export interface FlowPreviewChartProps {
   /** `JSON.stringify(labels)` keys of the checked volume_ix_patterns rows —
    *  redraws the two overlay lines whenever this set changes. */
   patternKeys: ReadonlySet<string>;
+  /** Toggle a trade's ix-structure in/out of the draft volume_ix_patterns —
+   *  wired to the same `draftPatterns` the ranked structure table mutates, so
+   *  the Bar-Trades table can flag a shape in-context. Omit to hide the Vol
+   *  checkbox (ix_labels stays read-only). */
+  onTogglePattern?: (labels: string[]) => void;
   /** Token creator wallet address, when known — offered as a toggle since the
    *  real classifier always treats the creator as volume-side. */
   creatorWallet?: string | null;
@@ -287,6 +298,7 @@ export interface FlowPreviewChartProps {
 export function FlowPreviewChart({
   trades,
   patternKeys,
+  onTogglePattern,
   creatorWallet,
   athPriceInSol = null,
   isMigrated = false,
@@ -774,7 +786,52 @@ export function FlowPreviewChart({
   const readNonVol = flowCrosshair?.nonVol ?? lines.nonVol.at(-1)?.value ?? null;
   const moreActive = showMore || showAthLine || showMigrationLine || rangeSelectMode;
 
-  const tradeColumns = useMemo(() => tokenTradeColumns('SOL'), []);
+  const baseTradeColumns = useMemo(() => tokenTradeColumns('SOL'), []);
+  // Prepend flow-discovery columns: the ix-structure of each trade + a Vol
+  // checkbox that toggles that exact shape in/out of the draft
+  // volume_ix_patterns (same equivalence class as the ranked structure table,
+  // keyed by JSON.stringify(labels)). Cheap to rebuild on each toggle — the
+  // Bar-Trades table only ever holds one bar's worth of rows.
+  const tradeColumns = useMemo<ColumnDef<TradeRecord>[]>(() => {
+    const flowCols: ColumnDef<TradeRecord>[] = [];
+    if (onTogglePattern) {
+      flowCols.push({
+        key: 'vol_pattern',
+        label: 'Vol',
+        tooltip:
+          'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
+          'volume_ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
+        render: (t) => {
+          const labels = t.instruction_labels;
+          if (!labels || labels.length === 0) {
+            return <span className="text-text-dim/40">—</span>;
+          }
+          return (
+            <Checkbox
+              checked={patternKeys.has(JSON.stringify(labels))}
+              onChange={() => onTogglePattern(labels)}
+            />
+          );
+        },
+        searchValue: () => '',
+      });
+    }
+    flowCols.push({
+      key: 'ix_structure',
+      label: 'ix_labels',
+      tooltip: 'Ordered instruction-label structure of this trade — the flow-split matching key.',
+      render: (t) => (
+        <IxLabelsDisplay
+          labels={t.instruction_labels ?? []}
+          empty="—"
+          copyJson
+          maxHeight="4.5rem"
+        />
+      ),
+      searchValue: (t) => formatIxLabelsText(t.instruction_labels ?? []),
+    });
+    return [...flowCols, ...baseTradeColumns];
+  }, [baseTradeColumns, patternKeys, onTogglePattern]);
   const selectionLabel = selectedBar
     ? selectedBar.groupMode === 'slot'
       ? `Slot ${selectedBar.slot}`
@@ -910,7 +967,7 @@ export function FlowPreviewChart({
             style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
             title={
               creatorWallet
-                ? 'Treat the token creator wallet as always volume-side (mirrors the live classifier)'
+                ? 'ON (default) mirrors live — the live classifier always treats the creator wallet as volume-side. Turn OFF only to isolate what the checked ix-patterns alone would catch.'
                 : 'No creator wallet known for this token'
             }
           >

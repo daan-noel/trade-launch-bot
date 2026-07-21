@@ -88,6 +88,7 @@ uuid      = { version = "1", features = ["v4", "serde"] }
 anyhow    = "1"
 tracing   = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 dashmap   = "4.0"
 actix-web = "4"
 dotenvy   = "0.15"
