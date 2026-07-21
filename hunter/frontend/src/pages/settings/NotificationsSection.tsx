@@ -156,7 +156,7 @@ export function NotificationsSection({ onSaved }: NotificationsSectionProps) {
               ? 'Blocked by browser — allow notifications via the lock icon in the address bar.'
               : 'OS alerts with status icon + Open Ops / Trade actions.'
           }
-          tip="Same position updates replace the prior toast. Failures stay until dismissed. Chrome/Edge on Windows Action Center."
+          tip="Same position updates replace the prior toast. Holding + failures play a sound; failures stay until dismissed. Chrome/Edge on Windows Action Center."
           checked={prefs.desktopEnabled && permState === 'granted'}
           disabled={!notifSupported || permState === 'denied'}
           onChange={handleDesktopToggle}

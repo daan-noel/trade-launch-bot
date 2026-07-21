@@ -129,9 +129,11 @@ from `GET /api/strategy-rules` DB enrichment (real = all-time, paper = latest ru
 - `AppLayout.tsx` — slots `{nav, rightSlot, beforeMain, footer}`: live passes
   `beforeMain=<NotificationMount/>` (mounts `usePositionNotifications`, which toasts
   on `strategy_position_update` **and** `strategy_armed_changed` per Settings prefs;
-  desktop path uses `/sw-notifications.js` + `showDesktopNotify` — concise
-  title/body (status · mint / mode · rule · detail), status icon (no hero
-  image), Ops / Trade actions, per-position tag updates, click → `opsNotifyHref`);
+  desktop path uses `/sw-notifications.js` + `showDesktopNotify` — mint-first
+  title, REAL/PAPER · rule body, full-bleed status tile + geometric mark
+  (no hero image), Ops / Trade actions; tag quietly replaces lifecycle;
+  sound on Holding + failures (`renotify` only ExitFailed / ExitUnconfirmed);
+  Web Lock claim so multi-tab does not double-fire; click → `opsNotifyHref`);
   lab passes `footer=<BackgroundJobsIndicator/>`. `AppProviders` is mode-neutral
   (Timezone+PriceUnit+Toast);
   **lab `App` nests `BackgroundJobsProvider` itself** (keeps its SSE out of the live build).
