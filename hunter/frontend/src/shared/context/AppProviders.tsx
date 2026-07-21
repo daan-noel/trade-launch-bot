@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { PriceUnitProvider } from './PriceUnitContext';
+import { PriceUnitProvider } from './PriceUnitProvider';
 import { TimezoneProvider } from './TimezoneContext';
 import { ToastProvider } from 'components/ui/Toast';
 

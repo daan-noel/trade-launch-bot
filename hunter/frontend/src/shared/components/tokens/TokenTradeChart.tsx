@@ -280,6 +280,7 @@ export function TokenTradeChart({
         onBarClick={handleBarClick}
         onRangeChange={handleRangeChange}
         athPriceInSol={detail.ath_price ?? null}
+        creatorWallet={detail.creator_wallet}
         isMigrated={detail.is_migrated}
         isMayhemMode={detail.is_mayhem_mode}
         isCashbackEnabled={detail.is_cashback_enabled}

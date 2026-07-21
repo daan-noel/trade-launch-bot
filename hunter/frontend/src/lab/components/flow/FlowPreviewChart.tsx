@@ -62,6 +62,7 @@ import type {
   ChartStyle,
   ChartWalletMarkersTooltipState,
   OhlcBar,
+  ProfileWalletInfo,
   WalletBarActivity,
 } from 'components/token-price-chart/types';
 import {
@@ -104,9 +105,12 @@ interface FlowPreviewChartPrefs {
   seedCreatorAsVol: boolean;
   showTradeMarkers: boolean;
   showWalletMarkers: boolean;
+  showDevMarkers: boolean;
+  devMarkersBoundariesOnly: boolean;
   showAthLine: boolean;
   showMigrationLine: boolean;
   highlightVolumeBars: boolean;
+  showFlowLines: boolean;
 }
 
 const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
@@ -121,9 +125,14 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   seedCreatorAsVol: true,
   showTradeMarkers: false,
   showWalletMarkers: false,
+  showDevMarkers: false,
+  // Default OFF: show every dev trade. ON keeps only the first_buy/sell_all
+  // boundaries when the dev's manufactured-volume trades clutter the chart.
+  devMarkersBoundariesOnly: false,
   showAthLine: true,
   showMigrationLine: true,
   highlightVolumeBars: false,
+  showFlowLines: true,
 };
 
 /** Toolbar toggles persist across sessions (mirrors `TokenPriceChart`'s
@@ -205,6 +214,26 @@ function VolumeBarsIcon() {
       <rect x="3" y="8" width="3" height="8" rx="0.5" fill="currentColor" opacity="0.4" />
       <rect x="8.5" y="4" width="3" height="12" rx="0.5" fill="currentColor" />
       <rect x="14" y="9.5" width="3" height="6.5" rx="0.5" fill="currentColor" opacity="0.4" />
+    </svg>
+  );
+}
+
+/** Two overlaid cumulative curves — the vol/non-vol flow-line pair. */
+function FlowLinesIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path d="M3 15 C7 14 9 8 17 5" stroke={VOL_LINE_COLOR} strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M3 16.5 C8 16 11 12 17 11" stroke={NON_VOL_COLOR} strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Upward triangle with a "D" — the dev/creator marker silhouette. */
+function DevMarkersIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path d="M10 3.5 L17 16 L3 16 Z" fill="currentColor" opacity="0.25" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <text x="10" y="14.5" textAnchor="middle" fontSize="7" fontWeight="700" fill="currentColor">D</text>
     </svg>
   );
 }
@@ -417,9 +446,14 @@ export function FlowPreviewChart({
   const [seedCreatorAsVol, setSeedCreatorAsVol] = useState(initialPrefs.seedCreatorAsVol);
   const [showTradeMarkers, setShowTradeMarkers] = useState(initialPrefs.showTradeMarkers);
   const [showWalletMarkers, setShowWalletMarkers] = useState(initialPrefs.showWalletMarkers);
+  const [showDevMarkers, setShowDevMarkers] = useState(initialPrefs.showDevMarkers);
+  const [devMarkersBoundariesOnly, setDevMarkersBoundariesOnly] = useState(
+    initialPrefs.devMarkersBoundariesOnly,
+  );
   const [showAthLine, setShowAthLine] = useState(initialPrefs.showAthLine);
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
   const [highlightVolumeBars, setHighlightVolumeBars] = useState(initialPrefs.highlightVolumeBars);
+  const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -475,9 +509,12 @@ export function FlowPreviewChart({
       seedCreatorAsVol,
       showTradeMarkers,
       showWalletMarkers,
+      showDevMarkers,
+      devMarkersBoundariesOnly,
       showAthLine,
       showMigrationLine,
       highlightVolumeBars,
+      showFlowLines,
     });
   }, [
     style,
@@ -488,9 +525,12 @@ export function FlowPreviewChart({
     seedCreatorAsVol,
     showTradeMarkers,
     showWalletMarkers,
+    showDevMarkers,
+    devMarkersBoundariesOnly,
     showAthLine,
     showMigrationLine,
     highlightVolumeBars,
+    showFlowLines,
   ]);
 
   // Bar time-keys whose trades are ALL volume-classified (checked ix-patterns +
@@ -755,6 +795,15 @@ export function FlowPreviewChart({
     nonVolSeriesRef.current?.setData(toData(lines.nonVol));
   }, [lines, basis]);
 
+  // Show/hide the two flow-split overlay lines (and their shared left price
+  // scale) as one unit. Re-applied after any series recreation (structural deps)
+  // so the toggle survives a style/group/interval change.
+  useEffect(() => {
+    volSeriesRef.current?.applyOptions({ visible: showFlowLines });
+    nonVolSeriesRef.current?.applyOptions({ visible: showFlowLines });
+    chartRef.current?.priceScale('left').applyOptions({ visible: showFlowLines });
+  }, [showFlowLines, style, groupMode, intervalSec]);
+
   // Trade (buy/sell count) markers + the selected-bar marker + line-mode
   // volume-bar highlight (candle mode spotlights via the setData effect above).
   useEffect(() => {
@@ -800,14 +849,44 @@ export function FlowPreviewChart({
     pureVolumeBarTimes,
   ]);
 
-  // Tracked-wallet markers.
+  // The token's dev/creator as a synthetic tracked wallet, so the existing
+  // wallet-marker pipeline tags its first_buy/sell_all lifecycle and renders its
+  // triangle silhouette + static dev color — no parallel dev-marker logic (SSOT).
+  const devWallet = useMemo<ProfileWalletInfo | null>(
+    () =>
+      creatorWallet
+        ? {
+            address: creatorWallet,
+            label: 'Dev',
+            profileName: 'Dev',
+            color: CHART_COLORS.dev,
+            tags: [],
+            isDev: true,
+          }
+        : null,
+    [creatorWallet],
+  );
+
+  // Tracked-wallet + dev markers share ONE plugin: compose the wallet list from
+  // the two independent toggles (dev appended LAST so a dev that's also a tracked
+  // wallet dedups to the dev entry — `buildWalletMarkerDefs` keys wallets by
+  // address, last write wins), then run the shared marker pipeline once.
   useEffect(() => {
-    if (showWalletMarkers && profileWallets.length > 0) {
-      const defs = buildWalletMarkerDefs(sortedTrades, profileWallets, bars, groupMode, intervalSec);
+    const wallets: ProfileWalletInfo[] = [];
+    if (showWalletMarkers) wallets.push(...profileWallets);
+    if (showDevMarkers && devWallet) wallets.push(devWallet);
+    if (wallets.length > 0) {
+      let defs = buildWalletMarkerDefs(sortedTrades, wallets, bars, groupMode, intervalSec);
+      if (devMarkersBoundariesOnly) {
+        // Keep only the dev's lifecycle boundaries (first_buy/sell_all) — drop its
+        // mid-position adds/trims. Dev defs are the only triangles; tracked-wallet
+        // markers (other shapes) pass through untouched.
+        defs = defs.filter((d) => d.shape !== 'triangle' || d.role != null);
+      }
       walletMarkersPrimRef.current?.setMarkers(defs);
       walletActivityMapRef.current = buildWalletBarActivityMap(
         sortedTrades,
-        profileWallets,
+        wallets,
         groupMode,
         intervalSec,
       );
@@ -815,7 +894,18 @@ export function FlowPreviewChart({
       walletMarkersPrimRef.current?.setMarkers([]);
       walletActivityMapRef.current = new Map();
     }
-  }, [showWalletMarkers, sortedTrades, profileWallets, bars, groupMode, intervalSec, style]);
+  }, [
+    showWalletMarkers,
+    showDevMarkers,
+    devMarkersBoundariesOnly,
+    devWallet,
+    sortedTrades,
+    profileWallets,
+    bars,
+    groupMode,
+    intervalSec,
+    style,
+  ]);
 
   // ATH reference line.
   useEffect(() => {
@@ -1079,12 +1169,36 @@ export function FlowPreviewChart({
         </IconToggleButton>
 
         <IconToggleButton
+          active={showDevMarkers}
+          onClick={() => setShowDevMarkers((v) => !v)}
+          disabled={!creatorWallet}
+          label="Toggle dev/creator markers"
+          tooltip={
+            creatorWallet
+              ? 'Dev/creator wallet markers — triangle silhouette with heavier first_buy (entry) and sell_all (full exit) markers'
+              : 'No creator wallet known for this token'
+          }
+          activeColor={CHART_COLORS.dev}
+        >
+          <DevMarkersIcon />
+        </IconToggleButton>
+
+        <IconToggleButton
           active={trimEmptyBars}
           onClick={() => setTrimEmptyBars((v) => !v)}
           label="Toggle trimming of empty bars"
           tooltip="Hide flat bars for intervals with no trades"
         >
           <TrimGapsIcon />
+        </IconToggleButton>
+
+        <IconToggleButton
+          active={showFlowLines}
+          onClick={() => setShowFlowLines((v) => !v)}
+          label="Toggle vol/non-vol flow lines"
+          tooltip="Show/hide the cumulative volume-maker (red) vs non-volume (gold) overlay lines"
+        >
+          <FlowLinesIcon />
         </IconToggleButton>
 
         <IconToggleButton
@@ -1145,6 +1259,33 @@ export function FlowPreviewChart({
             />
             <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
               Migration{isMigrated ? ' ✓' : ''}
+            </span>
+          </label>
+
+          <label
+            className={cn(
+              'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
+              (!showDevMarkers || !creatorWallet) && 'cursor-not-allowed opacity-40',
+            )}
+            style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+            title={
+              creatorWallet
+                ? 'Show only the dev first_buy (entry) and sell_all (full exit) markers — hides the dev’s mid-position buys/sells when manufactured volume clutters the chart. Enable the Dev toggle first.'
+                : 'No creator wallet known for this token'
+            }
+          >
+            <Checkbox
+              boxSize="sm"
+              checked={devMarkersBoundariesOnly}
+              disabled={!showDevMarkers || !creatorWallet}
+              onChange={(e) => setDevMarkersBoundariesOnly(e.target.checked)}
+            />
+            <span
+              style={
+                devMarkersBoundariesOnly && showDevMarkers ? { color: CHART_COLORS.dev } : undefined
+              }
+            >
+              Dev boundaries only
             </span>
           </label>
 

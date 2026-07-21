@@ -48,6 +48,10 @@ export interface ProfileWalletInfo {
    *  wallet on the Trader Analysis page) — its markers render larger with a
    *  glow + gold outer ring so they stand out among the other tracked wallets. */
   isHighlighted?: boolean;
+  /** True for the token's dev/creator wallet — gets its own triangle silhouette
+   *  + a fixed static color (`CHART_COLORS.dev`) so dev entries/exits (first_buy,
+   *  sell_all) are unmistakable and never collide with the `mine` diamond. */
+  isDev?: boolean;
 }
 
 /**
@@ -247,6 +251,10 @@ export interface TokenPriceChartProps {
    *  default. Pass an explicit list to override (e.g. `TokenTradeChart` adds the
    *  highlighted/synthetic input wallet); pass `[]` to force no markers. */
   profileWallets?: ProfileWalletInfo[];
+  /** Token dev/creator wallet address. When set, the toolbar's Dev toggle is
+   *  enabled and folds this wallet into the marker pipeline with its own triangle
+   *  silhouette + first_buy/sell_all lifecycle markers. Omit/null disables it. */
+  creatorWallet?: string | null;
   /** Token creation time (ISO string) — used to show per-bar tx age in the crosshair tooltip. */
   tokenCreatedAt?: string;
   /** Strategy entry/exit points to overlay as arrows + dashed price lines. */
@@ -264,6 +272,12 @@ export interface ChartToolbarProps {
   tradeCount: number;
   showTradeMarkers: boolean;
   showWalletMarkers: boolean;
+  /** Dev/creator marker toggle state. */
+  showDevMarkers: boolean;
+  /** False when no creator wallet is known — the Dev toggle renders disabled. */
+  devMarkersAvailable: boolean;
+  /** Show only the dev's first_buy/sell_all boundaries (hide mid-position trades). */
+  devMarkersBoundariesOnly: boolean;
   showAthLine: boolean;
   athLineAvailable: boolean;
   showMigrationLine: boolean;
@@ -280,6 +294,8 @@ export interface ChartToolbarProps {
   onMetricChange?: (metric: ChartMetric) => void;
   onShowTradeMarkersChange: (show: boolean) => void;
   onShowWalletMarkersChange: (show: boolean) => void;
+  onShowDevMarkersChange: (show: boolean) => void;
+  onDevMarkersBoundariesOnlyChange: (only: boolean) => void;
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
   onTrimEmptyBarsChange: (trim: boolean) => void;

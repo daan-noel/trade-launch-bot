@@ -97,6 +97,10 @@ export const CHART_COLORS = {
    *  rotating WALLET_MARKER_COLORS palette so it's recognizable at a glance among
    *  other tracked trader/whale/dev wallets. */
   mine: '#fbbf24',
+  /** Fixed marker color for the token's dev/creator wallet — violet, the one gap
+   *  in the palette (everything else is green/red/gold/amber/blue), so a dev
+   *  first_buy/sell_all never collides with candle, direction, or wallet colors. */
+  dev: '#a855f7',
   /** Glow + outer ring for the focused/highlighted wallet marker (Trader
    *  Analysis input wallet). Gold, distinct from `mine` so a wallet can be both
    *  the focus AND one of yours without the two signals colliding. */
@@ -164,6 +168,8 @@ export const DEFAULT_CHART_PREFS = {
   showMigrationLine: true,
   trimEmptyBars: false,
   showWalletMarkers: true,
+  showDevMarkers: false,
+  devMarkersBoundariesOnly: false,
 };
 
 /** Responsive chart height. The chart width fills its container (fluid), so on a

@@ -76,41 +76,16 @@ import type {
   WalletBarActivity,
 } from './types';
 
-function loadPrefs(): {
-  groupMode: ChartGroupMode;
-  interval: ChartInterval;
-  style: ChartStyle;
-  showTradeMarkers: boolean;
-  showAthLine: boolean;
-  showMigrationLine: boolean;
-  trimEmptyBars: boolean;
-  showWalletMarkers: boolean;
-} {
+type ChartPrefs = typeof DEFAULT_CHART_PREFS;
+
+function loadPrefs(): ChartPrefs {
   try {
     const raw = getString(LS_CHART_PREFS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as {
-        groupMode?: ChartGroupMode;
-        interval?: ChartInterval;
-        style?: ChartStyle;
-        showTradeMarkers?: boolean;
-        showAthLine?: boolean;
-        showMigrationLine?: boolean;
-        trimEmptyBars?: boolean;
-        showWalletMarkers?: boolean;
-      };
-      return {
-        groupMode: parsed.groupMode ?? DEFAULT_CHART_PREFS.groupMode,
-        interval: parsed.interval ?? DEFAULT_CHART_PREFS.interval,
-        style: parsed.style ?? DEFAULT_CHART_PREFS.style,
-        showTradeMarkers: parsed.showTradeMarkers ?? DEFAULT_CHART_PREFS.showTradeMarkers,
-        showAthLine: parsed.showAthLine ?? DEFAULT_CHART_PREFS.showAthLine,
-        showMigrationLine:
-          parsed.showMigrationLine ?? DEFAULT_CHART_PREFS.showMigrationLine,
-        trimEmptyBars: parsed.trimEmptyBars ?? DEFAULT_CHART_PREFS.trimEmptyBars,
-        showWalletMarkers:
-          parsed.showWalletMarkers ?? DEFAULT_CHART_PREFS.showWalletMarkers,
-      };
+      const parsed = JSON.parse(raw) as Partial<ChartPrefs>;
+      // Merge over defaults so a key added after this blob was written falls back
+      // instead of coming through undefined.
+      return { ...DEFAULT_CHART_PREFS, ...parsed };
     }
   } catch {
     /* ignore */
@@ -118,29 +93,11 @@ function loadPrefs(): {
   return DEFAULT_CHART_PREFS;
 }
 
-function savePrefs(
-  groupMode: ChartGroupMode,
-  interval: ChartInterval,
-  style: ChartStyle,
-  showTradeMarkers: boolean,
-  showAthLine: boolean,
-  showMigrationLine: boolean,
-  trimEmptyBars: boolean,
-  showWalletMarkers: boolean,
-) {
-  setString(
-    LS_CHART_PREFS_KEY,
-    JSON.stringify({
-      groupMode,
-      interval,
-      style,
-      showTradeMarkers,
-      showAthLine,
-      showMigrationLine,
-      trimEmptyBars,
-      showWalletMarkers,
-    }),
-  );
+/** Read-merge-write a subset of prefs. Each toggle handler persists only the
+ *  field it changed (`savePrefs({ showWalletMarkers: next })`); the rest are
+ *  read fresh from storage, so handlers never need to close over sibling state. */
+function savePrefs(patch: Partial<ChartPrefs>) {
+  setString(LS_CHART_PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch }));
 }
 
 export function buildTradeMarkers(
@@ -285,16 +242,20 @@ export function sortSeriesMarkers(
 }
 
 /** Silhouette per wallet CLASS: `mine` → diamond (identity wins, permanent),
- *  else focused/input → hexagon, else circle. Focus still layers its gold ring on
- *  top of whatever shape, so a focused `mine` wallet stays a diamond. */
+ *  dev/creator → triangle, else focused/input → hexagon, else circle. Focus still
+ *  layers its gold ring on top of whatever shape, so a focused `mine` wallet stays
+ *  a diamond and a focused dev stays a triangle. */
 function walletShape(w: ProfileWalletInfo): MarkerShape {
   if (w.isMine) return 'diamond';
+  if (w.isDev) return 'triangle';
   if (w.isHighlighted) return 'hexagon';
   return 'circle';
 }
 
 function walletGlyph(w: ProfileWalletInfo): string {
-  return w.isMine ? '★' : (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase();
+  if (w.isMine) return '★';
+  if (w.isDev) return 'D';
+  return (w.profileName ?? w.label ?? w.address).charAt(0).toUpperCase();
 }
 
 /** Below this fraction of the episode's peak balance, a sell is treated as a full
@@ -508,6 +469,7 @@ export function TokenPriceChart({
   isMayhemMode,
   isCashbackEnabled,
   profileWallets,
+  creatorWallet = null,
   tokenCreatedAt,
   eventMarkers = null,
 }: TokenPriceChartProps) {
@@ -519,6 +481,24 @@ export function TokenPriceChart({
   // not by convention.
   const trackedProfileWallets = useProfileWallets();
   const effectiveProfileWallets = profileWallets ?? trackedProfileWallets;
+
+  // The token's dev/creator as a synthetic tracked wallet — folded into the same
+  // marker pipeline so its first_buy/sell_all lifecycle + triangle silhouette
+  // come for free (mirrors `FlowPreviewChart`). No parallel dev-marker path.
+  const devWallet = useMemo<ProfileWalletInfo | null>(
+    () =>
+      creatorWallet
+        ? {
+            address: creatorWallet,
+            label: 'Dev',
+            profileName: 'Dev',
+            color: CHART_COLORS.dev,
+            tags: [],
+            isDev: true,
+          }
+        : null,
+    [creatorWallet],
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -557,6 +537,10 @@ export function TokenPriceChart({
   const [showMigrationLine, setShowMigrationLine] = useState(initialPrefs.showMigrationLine);
   const [trimEmptyBars, setTrimEmptyBars] = useState(initialPrefs.trimEmptyBars);
   const [showWalletMarkers, setShowWalletMarkers] = useState(initialPrefs.showWalletMarkers);
+  const [showDevMarkers, setShowDevMarkers] = useState(initialPrefs.showDevMarkers);
+  const [devMarkersBoundariesOnly, setDevMarkersBoundariesOnly] = useState(
+    initialPrefs.devMarkersBoundariesOnly,
+  );
   const { timezone: chartTimezone } = useTimezone();
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -722,71 +706,57 @@ export function TokenPriceChart({
 
   const athLineAvailable = athChartValue(athPriceInSol, metric, toValue) != null;
 
-  const handleGroupModeChange = useCallback(
-    (next: ChartGroupMode) => {
-      setGroupMode(next);
-      savePrefs(next, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
-      onBarClickRef.current?.(null);
-    },
-    [interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
-  );
+  const handleGroupModeChange = useCallback((next: ChartGroupMode) => {
+    setGroupMode(next);
+    savePrefs({ groupMode: next });
+    onBarClickRef.current?.(null);
+  }, []);
 
-  const handleIntervalChange = useCallback(
-    (next: ChartInterval) => {
-      setInterval(next);
-      savePrefs(groupMode, next, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
-      onBarClickRef.current?.(null);
-    },
-    [groupMode, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
-  );
+  const handleIntervalChange = useCallback((next: ChartInterval) => {
+    setInterval(next);
+    savePrefs({ interval: next });
+    onBarClickRef.current?.(null);
+  }, []);
 
-  const handleStyleChange = useCallback(
-    (next: ChartStyle) => {
-      setStyle(next);
-      savePrefs(groupMode, interval, next, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
-    },
-    [groupMode, interval, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
-  );
+  const handleStyleChange = useCallback((next: ChartStyle) => {
+    setStyle(next);
+    savePrefs({ style: next });
+  }, []);
 
-  const handleShowTradeMarkersChange = useCallback(
-    (next: boolean) => {
-      setShowTradeMarkers(next);
-      savePrefs(groupMode, interval, style, next, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers);
-    },
-    [groupMode, interval, style, showAthLine, showMigrationLine, trimEmptyBars, showWalletMarkers],
-  );
+  const handleShowTradeMarkersChange = useCallback((next: boolean) => {
+    setShowTradeMarkers(next);
+    savePrefs({ showTradeMarkers: next });
+  }, []);
 
-  const handleShowAthLineChange = useCallback(
-    (next: boolean) => {
-      setShowAthLine(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, next, showMigrationLine, trimEmptyBars, showWalletMarkers);
-    },
-    [groupMode, interval, style, showTradeMarkers, showMigrationLine, trimEmptyBars, showWalletMarkers],
-  );
+  const handleShowAthLineChange = useCallback((next: boolean) => {
+    setShowAthLine(next);
+    savePrefs({ showAthLine: next });
+  }, []);
 
-  const handleShowMigrationLineChange = useCallback(
-    (next: boolean) => {
-      setShowMigrationLine(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, next, trimEmptyBars, showWalletMarkers);
-    },
-    [groupMode, interval, style, showTradeMarkers, showAthLine, trimEmptyBars, showWalletMarkers],
-  );
+  const handleShowMigrationLineChange = useCallback((next: boolean) => {
+    setShowMigrationLine(next);
+    savePrefs({ showMigrationLine: next });
+  }, []);
 
-  const handleTrimEmptyBarsChange = useCallback(
-    (next: boolean) => {
-      setTrimEmptyBars(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, next, showWalletMarkers);
-    },
-    [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, showWalletMarkers],
-  );
+  const handleTrimEmptyBarsChange = useCallback((next: boolean) => {
+    setTrimEmptyBars(next);
+    savePrefs({ trimEmptyBars: next });
+  }, []);
 
-  const handleShowWalletMarkersChange = useCallback(
-    (next: boolean) => {
-      setShowWalletMarkers(next);
-      savePrefs(groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars, next);
-    },
-    [groupMode, interval, style, showTradeMarkers, showAthLine, showMigrationLine, trimEmptyBars],
-  );
+  const handleShowWalletMarkersChange = useCallback((next: boolean) => {
+    setShowWalletMarkers(next);
+    savePrefs({ showWalletMarkers: next });
+  }, []);
+
+  const handleShowDevMarkersChange = useCallback((next: boolean) => {
+    setShowDevMarkers(next);
+    savePrefs({ showDevMarkers: next });
+  }, []);
+
+  const handleDevMarkersBoundariesOnlyChange = useCallback((next: boolean) => {
+    setDevMarkersBoundariesOnly(next);
+    savePrefs({ devMarkersBoundariesOnly: next });
+  }, []);
 
   const handleSliderChange = useCallback((from: number, to: number) => {
     const chart = chartRef.current;
@@ -1267,10 +1237,23 @@ export function TokenPriceChart({
       markers.push(...buildTradeMarkers(trades, groupMode, intervalSec));
     }
 
-    if (showWalletMarkers && effectiveProfileWallets.length > 0) {
-      const walletDefs = buildWalletMarkerDefs(sortedTrades, effectiveProfileWallets, bars, groupMode, intervalSec);
+    // Tracked-wallet + dev markers share ONE plugin: compose the wallet list from
+    // the two independent toggles (dev appended LAST so a dev that's also tracked
+    // dedups to the dev entry — `buildWalletMarkerDefs` keys by address, last write
+    // wins), then run the pipeline once.
+    const markerWallets: ProfileWalletInfo[] = [];
+    if (showWalletMarkers) markerWallets.push(...effectiveProfileWallets);
+    if (showDevMarkers && devWallet) markerWallets.push(devWallet);
+    if (markerWallets.length > 0) {
+      let walletDefs = buildWalletMarkerDefs(sortedTrades, markerWallets, bars, groupMode, intervalSec);
+      if (devMarkersBoundariesOnly) {
+        // Keep only the dev's lifecycle boundaries (first_buy/sell_all) — drop its
+        // mid-position adds/trims. Dev defs are the only triangles; tracked-wallet
+        // markers (other shapes) pass through untouched.
+        walletDefs = walletDefs.filter((d) => d.shape !== 'triangle' || d.role != null);
+      }
       walletMarkersPrimRef.current?.setMarkers(walletDefs);
-      walletActivityMapRef.current = buildWalletBarActivityMap(trades, effectiveProfileWallets, groupMode, intervalSec);
+      walletActivityMapRef.current = buildWalletBarActivityMap(trades, markerWallets, groupMode, intervalSec);
     } else {
       walletMarkersPrimRef.current?.setMarkers([]);
       walletActivityMapRef.current = new Map();
@@ -1309,6 +1292,9 @@ export function TokenPriceChart({
     bars,
     effectiveProfileWallets,
     showWalletMarkers,
+    showDevMarkers,
+    devMarkersBoundariesOnly,
+    devWallet,
     eventMarkers,
   ]);
 
@@ -1588,6 +1574,9 @@ export function TokenPriceChart({
         tradeCount={trades.length}
         showTradeMarkers={showTradeMarkers}
         showWalletMarkers={showWalletMarkers}
+        showDevMarkers={showDevMarkers}
+        devMarkersAvailable={devWallet != null}
+        devMarkersBoundariesOnly={devMarkersBoundariesOnly}
         showAthLine={showAthLine}
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
@@ -1603,6 +1592,8 @@ export function TokenPriceChart({
         onMetricChange={onMetricChange}
         onShowTradeMarkersChange={handleShowTradeMarkersChange}
         onShowWalletMarkersChange={handleShowWalletMarkersChange}
+        onShowDevMarkersChange={handleShowDevMarkersChange}
+        onDevMarkersBoundariesOnlyChange={handleDevMarkersBoundariesOnlyChange}
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}

@@ -141,6 +141,25 @@ export function WalletMarkersIcon() {
   );
 }
 
+/** Upward triangle with a "D" — the dev/creator marker silhouette. */
+export function DevMarkersIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path
+        d="M10 3.5 L17 16 L3 16 Z"
+        fill="currentColor"
+        opacity="0.25"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <text x="10" y="14.5" textAnchor="middle" fontSize="7" fontWeight="700" fill="currentColor">
+        D
+      </text>
+    </svg>
+  );
+}
+
 /** Rising zigzag — line chart style. */
 export function LineIcon() {
   return (
@@ -245,6 +264,9 @@ export function ChartToolbar({
   tradeCount,
   showTradeMarkers,
   showWalletMarkers,
+  showDevMarkers,
+  devMarkersAvailable,
+  devMarkersBoundariesOnly,
   showAthLine,
   athLineAvailable,
   showMigrationLine,
@@ -260,6 +282,8 @@ export function ChartToolbar({
   onMetricChange,
   onShowTradeMarkersChange,
   onShowWalletMarkersChange,
+  onShowDevMarkersChange,
+  onDevMarkersBoundariesOnlyChange,
   onShowAthLineChange,
   onShowMigrationLineChange,
   onTrimEmptyBarsChange,
@@ -289,7 +313,8 @@ export function ChartToolbar({
     trimEmptyBars ||
     showAthLine ||
     showMigrationLine ||
-    rangeSelectMode;
+    rangeSelectMode ||
+    (showDevMarkers && devMarkersBoundariesOnly);
 
   return (
     <div
@@ -465,6 +490,21 @@ export function ChartToolbar({
           </IconToggleButton>
 
           <IconToggleButton
+            active={showDevMarkers}
+            onClick={() => onShowDevMarkersChange(!showDevMarkers)}
+            disabled={!devMarkersAvailable}
+            label="Toggle dev/creator markers"
+            tooltip={
+              devMarkersAvailable
+                ? 'Dev/creator wallet markers — triangle silhouette with heavier first_buy (entry) and sell_all (full exit) markers'
+                : 'No creator wallet known for this token'
+            }
+            activeColor={CHART_COLORS.dev}
+          >
+            <DevMarkersIcon />
+          </IconToggleButton>
+
+          <IconToggleButton
             active={trimEmptyBars}
             onClick={() => onTrimEmptyBarsChange(!trimEmptyBars)}
             label="Toggle trimming of empty candles"
@@ -530,6 +570,33 @@ export function ChartToolbar({
               />
               <span style={showMigrationLine ? { color: CHART_COLORS.migrationLine } : undefined}>
                 Migration
+              </span>
+            </label>
+
+            <label
+              className={cn(
+                'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-semibold',
+                (!showDevMarkers || !devMarkersAvailable) && 'cursor-not-allowed opacity-40',
+              )}
+              style={{ backgroundColor: CHART_COLORS.grid, color: CHART_COLORS.panelTextDim }}
+              title={
+                devMarkersAvailable
+                  ? 'Show only the dev first_buy (entry) and sell_all (full exit) markers — hides the dev’s mid-position buys/sells. Enable the Dev toggle first.'
+                  : 'No creator wallet known for this token'
+              }
+            >
+              <Checkbox
+                boxSize="sm"
+                checked={devMarkersBoundariesOnly}
+                disabled={!showDevMarkers || !devMarkersAvailable}
+                onChange={(e) => onDevMarkersBoundariesOnlyChange(e.target.checked)}
+              />
+              <span
+                style={
+                  devMarkersBoundariesOnly && showDevMarkers ? { color: CHART_COLORS.dev } : undefined
+                }
+              >
+                Dev boundaries only
               </span>
             </label>
 

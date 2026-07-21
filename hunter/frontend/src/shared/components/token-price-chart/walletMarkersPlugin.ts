@@ -13,9 +13,9 @@ import type {
 } from 'lightweight-charts';
 
 /** Silhouette encodes wallet CLASS (orthogonal to color=identity, border=direction):
- *  diamond = the user's own (`mine`) wallet, hexagon = the focused/input wallet,
- *  circle = every other tracked wallet. */
-export type MarkerShape = 'circle' | 'diamond' | 'hexagon';
+ *  diamond = the user's own (`mine`) wallet, triangle = the token's dev/creator
+ *  wallet, hexagon = the focused/input wallet, circle = every other tracked wallet. */
+export type MarkerShape = 'circle' | 'diamond' | 'triangle' | 'hexagon';
 
 export interface WalletMarkerDef {
   barTime: UTCTimestamp;
@@ -86,6 +86,14 @@ function traceShape(
     ctx.lineTo(cx + rr, cy);
     ctx.lineTo(cx, cy + rr);
     ctx.lineTo(cx - rr, cy);
+    ctx.closePath();
+    return;
+  }
+  if (shape === 'triangle') {
+    // Upward equilateral triangle, centered on (cx, cy) — the dev/creator wallet.
+    ctx.moveTo(cx, cy - rr);
+    ctx.lineTo(cx + rr * 0.866, cy + rr * 0.5);
+    ctx.lineTo(cx - rr * 0.866, cy + rr * 0.5);
     ctx.closePath();
     return;
   }
