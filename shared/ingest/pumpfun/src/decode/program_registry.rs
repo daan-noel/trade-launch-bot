@@ -3,14 +3,15 @@
 //! This is the single source of truth for turning a raw program address into a
 //! human name (`"Axiom Trade"`, `"Raydium AMM v4"`, …). It is consulted only by
 //! the display/analytics label path ([`super::instructions::label_instruction`])
-//! and the unknown-program harvest ([`super::analyze`]) — never the per-trade
-//! decode hot loop. Lookup is O(1) against a `HashMap` built once.
+//! — never the per-trade decode hot loop. Lookup is O(1) against a `HashMap`
+//! built once.
 //!
 //! **Growing the table:** run `cargo run -p hunter-live -- unknown-programs`,
-//! which ranks the program IDs in your own ingested `raw_txs` that still fall
-//! through to `Unknown (...)`. Look the top offenders up on Solscan once, then
-//! add a `(program_id, name)` row below. Prefer *no* entry over a guessed one —
-//! a wrong label is worse than `Unknown`.
+//! which ranks the program IDs still rendering as `Unknown (<program id>)` in the
+//! persisted `trades.ix_labels` (the labeler now embeds the full id there — see
+//! [`super::instructions::label_instruction`]). Look the top offenders up on
+//! Solscan once, then add a `(program_id, name)` row below. Prefer *no* entry
+//! over a guessed one — a wrong label is worse than `Unknown`.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

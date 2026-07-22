@@ -904,77 +904,95 @@ fn print_sim_outcome(o: &pump_trader::SimOutcome) {
     }
 }
 
-/// `unknown-programs [--days N] [--limit N] [--top N]` — offline diagnostic.
+/// `unknown-programs [--days N] [--top N]` — offline diagnostic.
 ///
-/// Streams `raw_txs.payload` bytes (each a prost-encoded `SubscribeUpdateTransaction`)
-/// and tallies the top-level-instruction program IDs the labeler can't name
-/// (rendered as `Unknown (...suffix)`), then prints them ranked by frequency with
-/// a Solscan link each. Look the top offenders up once and add them to
+/// Ranks the program IDs the labeler still can't name — the ones that land as
+/// `Unknown (<program id>)` in the persisted `trades.ix_labels` — by how often
+/// they appear, and prints each with a Solscan link. `trades.ix_labels` is the
+/// source (raw_txs is not persisted in this deployment), so this reflects real
+/// labelled traffic. Look the top offenders up once and add the good ones to
 /// `shared/ingest/pumpfun/src/decode/program_registry.rs`.
 ///
-///   --days N   look back N days over raw_txs (default 2; retention caps near 7)
-///   --limit N  scan at most N txs (default: no cap)
+/// NOTE: full program IDs only appear for trades labelled *after* the full-id
+/// labeler ships; rows written before then still carry the old `Unknown (...suffix)`
+/// form (grouped separately under "legacy 8-char suffixes").
+///
+///   --days N   look back N days over trades (default 3)
 ///   --top N    print the top N programs (default 40)
 async fn run_unknown_programs(
     settings: &config::Settings,
     args: Vec<String>,
 ) -> anyhow::Result<()> {
-    use futures_util::TryStreamExt;
-    use ingest_laserstream::decode::UnknownProgramCounter;
-
     let arg_val = |flag: &str| -> Option<String> {
         args.iter()
             .position(|a| a == flag)
             .and_then(|i| args.get(i + 1).cloned())
     };
-    let days: i32 = arg_val("--days").and_then(|s| s.parse().ok()).unwrap_or(2);
-    let limit: Option<u64> = arg_val("--limit").and_then(|s| s.parse().ok());
-    let top: usize = arg_val("--top").and_then(|s| s.parse().ok()).unwrap_or(40);
+    let days: i32 = arg_val("--days").and_then(|s| s.parse().ok()).unwrap_or(3);
+    let top: i64 = arg_val("--top").and_then(|s| s.parse().ok()).unwrap_or(40);
 
     let pools = trading_core::storage::postgres::connect(settings).await?;
-    info!(days, ?limit, "unknown-programs: scanning raw_txs");
+    info!(days, top, "unknown-programs: aggregating trades.ix_labels");
 
-    let mut counter = UnknownProgramCounter::new();
-    // Newest-first so a `--limit` samples the most recent traffic.
-    let mut stream = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT payload FROM raw_txs \
-         WHERE block_time >= now() - make_interval(days => $1) \
-         ORDER BY block_time DESC",
+    // Unnest the JSONB label arrays, keep only the `Unknown (...)` labels, group.
+    // The full-id form (`Unknown (<44-char id>)`) and the legacy suffix form
+    // (`Unknown (...abcd1234)`) are separated by length so the actionable full IDs
+    // aren't buried among un-lookup-able suffixes.
+    let rows: Vec<(String, i64)> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT label, count(*) AS n \
+         FROM trades t, LATERAL jsonb_array_elements_text(t.ix_labels) AS label \
+         WHERE t.ix_labels IS NOT NULL \
+           AND t.block_time >= now() - make_interval(days => $1) \
+           AND label LIKE 'Unknown (%' \
+         GROUP BY label \
+         ORDER BY n DESC \
+         LIMIT $2",
     )
     .bind(days)
-    .fetch(&pools.batch);
+    .bind(top)
+    .fetch_all(&pools.api)
+    .await?;
 
-    let mut scanned: u64 = 0;
-    while let Some(payload) = stream.try_next().await? {
-        counter.ingest_payload(&payload);
-        scanned += 1;
-        if let Some(cap) = limit {
-            if scanned >= cap {
-                break;
-            }
-        }
-    }
-    drop(stream);
-
-    let (txs_scanned, txs_failed, distinct) =
-        (counter.txs_scanned(), counter.txs_failed(), counter.distinct_programs());
-    let ranked = counter.into_ranked();
+    // Split full IDs from legacy suffixes and strip the `Unknown ( … )` wrapper.
+    let unwrap = |label: &str| -> String {
+        label
+            .strip_prefix("Unknown (")
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or(label)
+            .to_string()
+    };
+    let (full, legacy): (Vec<_>, Vec<_>) = rows
+        .into_iter()
+        .map(|(label, n)| (unwrap(&label), n))
+        .partition(|(id, _)| !id.starts_with("..."));
 
     println!();
-    println!(
-        "Scanned {scanned} raw_txs row(s) — {txs_scanned} decoded, {txs_failed} undecodable — over the last {days} day(s)."
-    );
-    println!(
-        "{distinct} distinct unnamed program(s). Top {}:\n",
-        top.min(ranked.len())
-    );
-    println!("{:>10}  {:<44}  solscan", "count", "program_id");
-    for (id, count) in ranked.iter().take(top) {
-        println!("{count:>10}  {id:<44}  https://solscan.io/account/{id}");
+    if full.is_empty() && legacy.is_empty() {
+        println!("No `Unknown (...)` labels in the last {days} day(s) — every program is named.");
+        return Ok(());
+    }
+
+    if full.is_empty() {
+        println!(
+            "No full-id unknowns yet (only legacy suffixes below) — deploy the full-id\n\
+             labeler and let new trades flow, then re-run to get lookup-able program IDs.\n"
+        );
+    } else {
+        println!("Unnamed programs (full id — add the good ones to program_registry.rs):\n");
+        println!("{:>10}  {:<44}  solscan", "count", "program_id");
+        for (id, n) in &full {
+            println!("{n:>10}  {id:<44}  https://solscan.io/account/{id}");
+        }
+    }
+
+    if !legacy.is_empty() {
+        println!("\nLegacy 8-char suffixes (pre-full-id rows — not directly lookup-able):");
+        for (suffix, n) in &legacy {
+            println!("{n:>10}  {suffix}");
+        }
     }
     println!(
-        "\nAdd the ones you recognise to \
-         shared/ingest/pumpfun/src/decode/program_registry.rs (verify each on Solscan first)."
+        "\nVerify each on Solscan before adding — a wrong label is worse than Unknown."
     );
     Ok(())
 }

@@ -199,12 +199,13 @@ pub(super) fn label_instruction(
         return format!("{}: Unknown", name);
     }
 
-    let suffix = if program_id.len() >= 8 {
-        &program_id[program_id.len() - 8..]
-    } else {
-        program_id
-    };
-    format!("Unknown (...{})", suffix)
+    // Carry the FULL program id (not a truncated suffix) so unknown programs are
+    // self-identifying in the persisted `trades.ix_labels` — that column is the
+    // only durable record of what ran (this deployment does not persist raw_txs),
+    // and the `unknown-programs` harvest ranks these to grow `program_registry`.
+    // Label arrays stay low-cardinality (ids repeat), so columnar compression is
+    // unaffected.
+    format!("Unknown ({program_id})")
 }
 
 fn label_from_parsed_or_unknown(friendly: &str, parsed_type: Option<&str>) -> String {
