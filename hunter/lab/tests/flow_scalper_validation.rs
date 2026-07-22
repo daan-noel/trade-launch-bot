@@ -1,0 +1,431 @@
+//! Phase 3 — one-shot backtest validation for the flow-reversion "dip scalper"
+//! (`docs/roadmap/flow-scalper-implementation-plan.md` §3). Drives the REAL engine
+//! fold (`run_replay`) over the sealed Parquet lake for two rules — a 2-metric
+//! MINIMAL CORE and a GATED variant — and prints the acceptance-gate stats vs the
+//! family distributions in `docs/roadmap/flow-reversion-scalper.md`.
+//!
+//! Ignored by default (reads real lake data + runs the full fold — not a unit test).
+//! Run explicitly, single-threaded, with output:
+//!   cargo test -p hunter-lab --test flow_scalper_validation -- --ignored --nocapture
+//!
+//! Lake path + cost model are the same the live `engine_sim` uses, so these numbers
+//! are what a saved-rule simulate would report. Costs ARE modelled (this corrects
+//! the plan's "no fee knob" premise): `CostModel::pumpfun_default()` already charges
+//! ~1%/leg fee + ~1%/leg slippage + tip + priority fee (~4%/round — more conservative
+//! than the plan's 2%/round), applied to realized PnL at close by `round_trip_with_costs`.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use chrono::{Datelike, DateTime, Utc};
+use uuid::Uuid;
+
+use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
+use hunter_engine::fingerprint::{Fingerprint, FingerprintId};
+use hunter_engine::grouping::TokenFingerprint;
+use hunter_engine::metrics::price_window::PriceWindowState;
+use hunter_engine::rule_params::RuleParams;
+
+use lab::sweep::corpus::{CorpusSource, CorpusToken, Selection, TradeWindow};
+use lab::sweep::projection::to_trade_lite;
+use lab::lake::duck::LakeSource;
+use lab::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
+
+use trading_core::strategies::kernel::{round_trip_with_costs, CostModel};
+
+/// Absolute lake path (test CWD is the crate dir, so a relative `./lake-data` from
+/// `.env` would not resolve). Override with `FLOW_SCALPER_LAKE`.
+fn lake_root() -> String {
+    std::env::var("FLOW_SCALPER_LAKE")
+        .unwrap_or_else(|_| "C:/Users/User/Documents/Bot/hunter/lake-data".to_string())
+}
+
+const BUY_SOL: f64 = 1.0;
+const FP_CU: i64 = 200_000;
+const FP_ID: u128 = 0xF10A_5CA1;
+const WINDOW_SEC: u64 = 30;
+
+/// A broad fingerprint every token matches — see [`uniform_tf`]. `tf` feeds ONLY
+/// fingerprint matching, never a metric, so pinning every token to one matchable
+/// shape makes the whole corpus arm; the rule's metric gates do the real filtering
+/// (the analysis doc's universe is defined by age/liquidity/flow, not creation shape).
+fn broad_fp() -> Fingerprint {
+    Fingerprint {
+        id: FingerprintId(Uuid::from_u128(FP_ID)),
+        cu_limit: Some(FP_CU),
+        cu_price: None,
+        ix_labels: None,
+        init_buy_lamports: None,
+        max_cost_lamports: None,
+        spendable_lamports_in: None,
+        first_slot_buy_lamports: None,
+        first_slot_sell_lamports: None,
+        bucket_size_amount: 0.1,
+        metric_config: serde_json::json!({}),
+    }
+}
+
+fn uniform_tf() -> TokenFingerprint {
+    TokenFingerprint { cu_limit: Some(FP_CU), ..Default::default() }
+}
+
+fn rule(id: u128, params: serde_json::Value) -> LoadedRule {
+    LoadedRule {
+        id: RuleId(Uuid::from_u128(id)),
+        fingerprint_id: FingerprintId(Uuid::from_u128(FP_ID)),
+        trade_mode: TradeMode::Paper,
+        buy_amount_lamports: (BUY_SOL * 1_000_000_000.0) as u64,
+        // Effectively uncapped: measure the raw per-token edge (the sweep's B5
+        // semantics), so the caps don't hide episodes. Re-entry lifecycle is Phase 4.
+        max_concurrent_tokens: 1_000_000,
+        max_total_tokens: 0,
+        params: RuleParams::parse(&params).expect("valid rule params"),
+    }
+}
+
+/// MINIMAL CORE — the irreducible 2-metric loop: buy a `dip`% dip vs the `win`s high,
+/// trail out at `retrace`% off the since-entry peak. Nothing else (knife-catches).
+fn minimal_core(dip: f64, win: u64, retrace: f64) -> serde_json::Value {
+    serde_json::json!({
+        "entry": { "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] } },
+        "exit":  { "m_position": { "retrace": [{"operator": ">=", "value": retrace}] } }
+    })
+}
+
+/// GATED — the core plus the universe filter (age/liquidity/hot-flow) and the safety
+/// exits (catastrophe stop via stop_loss=25 → pnl<=-25, long-stall net).
+fn gated(dip: f64, win: u64, retrace: f64) -> serde_json::Value {
+    serde_json::json!({
+        "stop_loss": 25,
+        "entry": {
+            "m_snapshot": {
+                "time": [{"operator": ">=", "value": 120}],
+                "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
+            },
+            "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
+            "m_time_window": { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] }
+        },
+        "exit": {
+            "m_position": { "retrace": [{"operator": ">=", "value": retrace}] },
+            "m_price_path": { "stall": [{"operator": ">=", "value": 15}] }
+        }
+    })
+}
+
+/// GATED + the sell-EXHAUSTION refinement: age/liquidity + dip, and a short **2 s
+/// net-flow floor** on entry — "the immediate dump is pausing" (analysis doc: net
+/// flow 1-5 s before omego's entry is negative but flips positive 5 s after; buying
+/// only once the short-window sell pressure has eased should skip falling knives).
+///
+/// NOTE a rule side carries only ONE `m_time_window` (single `window_size_sec`), so
+/// the 30 s `gross_flow` hot gate and this 2 s `net_flow` gate cannot coexist in one
+/// rule today — the exhaustion refinement needs a schema step (multi-window per group
+/// on a side) to keep BOTH. Here we trade the 30 s hot gate for the 2 s exhaustion
+/// gate; age + liquidity still bound the universe.
+fn gated_exhaustion(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde_json::Value {
+    serde_json::json!({
+        "stop_loss": 25,
+        "entry": {
+            "m_snapshot": {
+                "time": [{"operator": ">=", "value": 120}],
+                "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
+            },
+            "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
+            "m_time_window": { "window_size_sec": 2, "net_flow": [{"operator": ">=", "value": netflow_floor}] }
+        },
+        "exit": {
+            "m_position": { "retrace": [{"operator": ">=", "value": retrace}] },
+            "m_price_path": { "stall": [{"operator": ">=", "value": 15}] }
+        }
+    })
+}
+
+fn load_corpus() -> Vec<CorpusToken> {
+    let sel = Selection {
+        mints: None,
+        token_cap: 1_000_000, // all tokens across every sealed day
+        created_after: None,
+        created_before: None,
+        per_mint_cap: i64::MAX, // full history per token
+        window: TradeWindow::LaunchWindow,
+        curve_only: true, // bonding-curve only — the strategy's universe
+        with_signatures: false,
+        with_flow: false,
+    };
+    let src = LakeSource::new(lake_root());
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let corpus = rt.block_on(src.load(&sel)).expect("lake load");
+    eprintln!(
+        "loaded corpus: {} tokens, {} trades",
+        corpus.token_count(),
+        corpus.trade_count()
+    );
+    corpus.tokens
+}
+
+fn to_replay_tokens(tokens: &[CorpusToken]) -> Vec<ReplayToken> {
+    tokens
+        .iter()
+        .map(|t| ReplayToken {
+            mint: t.mint.clone(),
+            symbol: t.symbol.clone(),
+            created_at: t.created_at,
+            tf: uniform_tf(),
+            trades: Arc::clone(&t.trades),
+            creator_wallet_hash: None,
+        })
+        .collect()
+}
+
+/// The rolling-window `trail` (dip depth vs the 30s high) at the entry trigger —
+/// re-derived by folding the token's trades (same `to_trade_lite` price the engine
+/// uses) into a `PriceWindowState(30)` up to the trigger time. Informational: the
+/// entry condition already forces `trail >= 12`, so this shows the realized shape.
+fn entry_dip_depth(tokens: &HashMap<String, Arc<Vec<lab::sweep::projection::CorpusTrade>>>, o: &PositionOutcome) -> Option<f64> {
+    let trades = tokens.get(&o.mint)?;
+    let target = o.target_time?;
+    let mut pw = PriceWindowState::new(WINDOW_SEC as f64);
+    let mut last = None;
+    for ct in trades.iter() {
+        if ct.block_time > target {
+            break;
+        }
+        let t = to_trade_lite(ct);
+        pw.on_trade(t.price, t.at);
+        last = Some(pw.trail());
+    }
+    last.filter(|v| v.is_finite())
+}
+
+fn pct(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return f64::NAN;
+    }
+    let idx = (((sorted.len() - 1) as f64) * q).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn median(sorted: &[f64]) -> f64 {
+    pct(sorted, 0.5)
+}
+
+/// Is this entry in the omego busy window (the wallet-attributed 07-20/07-21 slice)?
+fn busy_window(entry_time: DateTime<Utc>) -> bool {
+    let d = entry_time.date_naive();
+    d.year() == 2026 && d.month() == 7 && (d.day() == 20 || d.day() == 21)
+}
+
+struct Report {
+    label: &'static str,
+    fired: usize,
+    closed: usize,
+    open: usize,
+    win_rate_before: f64,
+    win_rate_after: f64,
+    hold_med: f64,
+    hold_p25: f64,
+    hold_p75: f64,
+    dip_med: f64,
+    pnl_med_after: f64,
+    p10_after: f64,
+    total_realized_after: f64,
+    total_mtm_after: f64,
+    total_realized_before: f64,
+    busy_realized_after: f64,
+    busy_closed: usize,
+    exit_mix: Vec<(String, usize)>,
+}
+
+fn run(label: &'static str, params: serde_json::Value, tokens: &[CorpusToken]) -> Report {
+    let fp = broad_fp();
+    let r = rule(1, params);
+    let replay_tokens = to_replay_tokens(tokens);
+    let as_of = Utc::now();
+    let outcomes = run_replay(&[r], &[fp], replay_tokens, ReplayConfig { as_of });
+
+    let trade_map: HashMap<String, Arc<Vec<lab::sweep::projection::CorpusTrade>>> =
+        tokens.iter().map(|t| (t.mint.clone(), Arc::clone(&t.trades))).collect();
+
+    let costed = CostModel::pumpfun_default();
+    let free = CostModel::frictionless();
+
+    let mut closed_pnl_after: Vec<f64> = Vec::new();
+    let mut closed_pnl_pct_after: Vec<f64> = Vec::new();
+    let mut closed_hold: Vec<f64> = Vec::new();
+    let mut dips: Vec<f64> = Vec::new();
+    let mut wins_before = 0usize;
+    let mut wins_after = 0usize;
+    let mut open = 0usize;
+    let mut total_realized_after = 0.0;
+    let mut total_realized_before = 0.0;
+    let mut total_mtm_after = 0.0;
+    let mut busy_realized_after = 0.0;
+    let mut busy_closed = 0usize;
+    let mut exit_mix: HashMap<String, usize> = HashMap::new();
+
+    for o in &outcomes {
+        if let Some(d) = entry_dip_depth(&trade_map, o) {
+            dips.push(d);
+        }
+        let exited = o.exit_reason.is_some();
+        let exit_price = o.exit_price.unwrap_or(o.last_price);
+        let (pnl_after, pct_after) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &costed);
+        let (pnl_before, _) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &free);
+        if exited {
+            let reason = o.exit_reason.map(|r| r.label().into_owned()).unwrap_or_default();
+            *exit_mix.entry(reason).or_default() += 1;
+            closed_pnl_after.push(pnl_after);
+            closed_pnl_pct_after.push(pct_after);
+            let hold = o.exit_time.map(|t| (t - o.entry_time).num_milliseconds() as f64 / 1000.0).unwrap_or(0.0);
+            closed_hold.push(hold);
+            total_realized_after += pnl_after;
+            total_realized_before += pnl_before;
+            if pnl_before > 0.0 {
+                wins_before += 1;
+            }
+            if pnl_after > 0.0 {
+                wins_after += 1;
+            }
+            if busy_window(o.entry_time) {
+                busy_realized_after += pnl_after;
+                busy_closed += 1;
+            }
+        } else {
+            open += 1;
+        }
+        total_mtm_after += pnl_after;
+    }
+
+    closed_hold.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    closed_pnl_pct_after.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    dips.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let closed = closed_pnl_after.len();
+    let mut exit_mix: Vec<(String, usize)> = exit_mix.into_iter().collect();
+    exit_mix.sort_by(|a, b| b.1.cmp(&a.1));
+
+    Report {
+        label,
+        fired: outcomes.len(),
+        closed,
+        open,
+        win_rate_before: if closed == 0 { 0.0 } else { wins_before as f64 / closed as f64 },
+        win_rate_after: if closed == 0 { 0.0 } else { wins_after as f64 / closed as f64 },
+        hold_med: median(&closed_hold),
+        hold_p25: pct(&closed_hold, 0.25),
+        hold_p75: pct(&closed_hold, 0.75),
+        dip_med: median(&dips),
+        pnl_med_after: median(&closed_pnl_pct_after),
+        p10_after: pct(&closed_pnl_pct_after, 0.10),
+        total_realized_after,
+        total_mtm_after,
+        total_realized_before,
+        busy_realized_after,
+        busy_closed,
+        exit_mix,
+    }
+}
+
+fn print_report(r: &Report) {
+    eprintln!("\n================ {} ================", r.label);
+    eprintln!("fired={}  closed={}  open={}", r.fired, r.closed, r.open);
+    eprintln!(
+        "win rate  before-costs={:.1}%   after-costs={:.1}%   (gate: 55-70% before)",
+        r.win_rate_before * 100.0,
+        r.win_rate_after * 100.0
+    );
+    eprintln!(
+        "hold secs  p25={:.1}  med={:.1}  p75={:.1}   (gate: median in [5,60])",
+        r.hold_p25, r.hold_med, r.hold_p75
+    );
+    eprintln!(
+        "entry dip depth vs 30s high (taken)  median={:.1}%   (family band -8..-20%; >=12 by construction)",
+        r.dip_med
+    );
+    eprintln!(
+        "episode pnl%  median={:.2}%   p10={:.2}%   (gate: p10 >= -25%)",
+        r.pnl_med_after, r.p10_after
+    );
+    eprintln!(
+        "TOTAL realized PnL (after ~4%/round costs)  = {:+.3} SOL   (before costs {:+.3})",
+        r.total_realized_after, r.total_realized_before
+    );
+    eprintln!("TOTAL mark-to-market PnL (incl. open marks) = {:+.3} SOL", r.total_mtm_after);
+    eprintln!(
+        "BUSY-WINDOW (07-20/07-21) realized PnL after costs = {:+.3} SOL over {} closed  (gate: positive)",
+        r.busy_realized_after, r.busy_closed
+    );
+    eprintln!("exit mix: {:?}", r.exit_mix);
+}
+
+fn summary_line(r: &Report) {
+    eprintln!(
+        "{:<34} fired={:>5} closed={:>5} winB={:>5.1}% winA={:>5.1}% holdMed={:>5.1}s dipMed={:>5.1}% pnlMed={:>6.2}% p10={:>7.2}% realA={:>+8.2} realB={:>+8.2} SOL",
+        r.label, r.fired, r.closed, r.win_rate_before * 100.0, r.win_rate_after * 100.0,
+        r.hold_med, r.dip_med, r.pnl_med_after, r.p10_after, r.total_realized_after, r.total_realized_before,
+    );
+}
+
+#[test]
+#[ignore = "reads the real sealed lake + runs the full replay fold; run with --ignored --nocapture"]
+fn flow_scalper_one_shot_validation() {
+    let tokens = load_corpus();
+    assert!(!tokens.is_empty(), "empty corpus — check the lake path");
+
+    // The knife-catch reference (no universe filter), then the gated grid. The grid
+    // isolates the diagnosed culprit — the trailing-stop width vs feed-reactive fills
+    // (the sim's worst-case fill noise-stops a too-tight trail before reversion) —
+    // plus a dip-depth and a window probe, over the blueprint ranges (analysis doc).
+    let min_ref = run("MIN core d12/w30/r3", minimal_core(12.0, 30, 3.0), &tokens);
+    let grid: &[(&'static str, f64, u64, f64)] = &[
+        ("GATED d12/w30/r3",  12.0, 30, 3.0),
+        ("GATED d12/w30/r5",  12.0, 30, 5.0),
+        ("GATED d12/w30/r8",  12.0, 30, 8.0),
+        ("GATED d12/w30/r12", 12.0, 30, 12.0),
+        ("GATED d15/w30/r5",  15.0, 30, 5.0),
+        ("GATED d12/w60/r5",  12.0, 60, 5.0),
+    ];
+    let reports: Vec<Report> = grid
+        .iter()
+        .map(|&(label, dip, win, retrace)| run(label, gated(dip, win, retrace), &tokens))
+        .collect();
+
+    print_report(&min_ref);
+    for r in &reports {
+        print_report(r);
+    }
+    eprintln!("\n==================== ONE-LINE SUMMARY (net of ~4%/round costs) ====================");
+    summary_line(&min_ref);
+    for r in &reports {
+        summary_line(r);
+    }
+
+    assert!(min_ref.fired > 0, "no entries fired — check metrics wiring");
+}
+
+/// Separate, smaller probe of the top recommended lever — the sell-exhaustion entry
+/// gate — vs a comparison baseline, so it can run without the full 7-config grid.
+///   cargo test -p hunter-lab --test flow_scalper_validation exhaustion -- --ignored --nocapture
+#[test]
+#[ignore = "reads the real sealed lake + runs the full replay fold; run with --ignored --nocapture"]
+fn flow_scalper_exhaustion_probe() {
+    let tokens = load_corpus();
+    assert!(!tokens.is_empty(), "empty corpus — check the lake path");
+
+    // Comparison baseline (best grid config: deeper dip + 5% trail, 30s hot gate).
+    let base = run("GATED d15/w30/r5 (30s gross gate)", gated(15.0, 30, 5.0), &tokens);
+    // Exhaustion: trade the 30s gross gate for a 2s net-flow floor at two strictnesses.
+    let exh_m1 = run("EXH d15/r5 netflow(2s)>=-1", gated_exhaustion(15.0, 30, 5.0, -1.0), &tokens);
+    let exh_0 = run("EXH d15/r5 netflow(2s)>=0", gated_exhaustion(15.0, 30, 5.0, 0.0), &tokens);
+
+    print_report(&base);
+    print_report(&exh_m1);
+    print_report(&exh_0);
+    eprintln!("\n==================== EXHAUSTION PROBE SUMMARY (net of ~4%/round costs) ====================");
+    summary_line(&base);
+    summary_line(&exh_m1);
+    summary_line(&exh_0);
+}

@@ -182,6 +182,15 @@ Validate the two metrics reproduce the observed edge with the ONE-SHOT lifecycle
 already exists (enter once, trail out, done). Use simulate/replay (real fold - zero
 extra wiring), not the sweep, for this phase.
 
+> **DONE 2026-07-21 — results + verdict live in
+> [flow-reversion-scalper.md](flow-reversion-scalper.md) "Phase 3 — one-shot backtest
+> results".** Two premises below were stale and are corrected there: costs **are**
+> modelled (`CostModel::pumpfun_default` ≈ 4%/round, applied by `round_trip_with_costs`
+> — step 2 needs no new knob), and the sim already fills **worst-case adverse in the
+> post-signal slot window** (step 3 fill realism is done). Outcome: the core is
+> directionally sound but the one-shot is ~breakeven-before-costs / net-negative after,
+> so per §4 this is a STOP-and-re-examine before Phase 4/5 — not a green light.
+
 1. Author two rules and compare. (a) MINIMAL CORE (proves the 2 metrics are the whole
    logic): broad fingerprint, entry `m_price_window(30).trail >= 12`, exit
    `m_position.retrace >= 3` — nothing else. Expect it to trade junk / knife-catch, but

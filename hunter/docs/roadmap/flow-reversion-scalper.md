@@ -153,6 +153,92 @@ Missing (the actual work):
 2. Compare sim distributions (entry dip depth, hold, pnl%) against omego's actuals.
 3. Add re-entry lifecycle (3) + sizing (4); re-sweep; then paper-trade live.
 
+## Phase 3 — one-shot backtest results (2026-07-21, engine metrics (1)+(2) shipped)
+
+Ran the real engine fold (`run_replay`, not the sweep) over the **whole sealed lake —
+11 days, 7,636 tokens, 730,179 curve trades** — via a headless harness
+(`hunter/lab/tests/flow_scalper_validation.rs`, `#[ignore]`; same `CostModel` +
+fill model the live `engine_sim` uses). Every token armed (a broad fingerprint; `tf`
+feeds only matching, never a metric), so the rule's metric gates do the filtering —
+the faithful model of a universe defined by age/liquidity/flow, not creation shape.
+
+**Costs + fill realism were ALREADY modelled** (this corrects the plan's Ph3 §2/§3
+premises — no new knob needed):
+- `kernel::CostModel::pumpfun_default()` charges ~1%/leg fee + ~1%/leg slippage + tip
+  + priority fee ≈ **~4%/round** (more conservative than the plan's 2%/round), applied
+  to realized PnL at close by `round_trip_with_costs` — the exact path `outcome_to_row`
+  already used. Numbers below are net of this unless marked "before costs".
+- Fills are **worst-case adverse in the slot window AFTER the signal** (entry = highest
+  qualifying buy price, exit = lowest price, in trigger-slot + next slot ≤
+  `MAX_FILL_WAIT_SLOTS`), so the sim already books our feed-reaction slippage — no
+  "fill at signal price" optimism to re-add.
+
+**One-shot grid (no re-entry — that is Phase 4), net of ~4%/round costs:**
+
+| config (dip% / win s / retrace%) | fired | win% before | hold med | dip med | ep pnl% med | p10 | realized after | realized before |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MIN core 12/30/3 (no gates)      | 2752 | 23.0 | 3.2s | 15.3 | −7.63 | −20.5 | **−179.6** | −66.9 |
+| GATED 12/30/3                    |   98 | 55.1 | 4.3s | 13.0 | −3.65 | −11.1 | −3.69 | +0.40 |
+| GATED 12/30/5                    |   98 | 57.1 | 6.0s | 13.0 | −3.65 | −11.9 | −3.83 | +0.26 |
+| GATED 12/30/8                    |   98 | 57.1 | 7.0s | 13.0 | −3.36 | −13.5 | −3.86 | +0.22 |
+| GATED 12/30/12                   |   98 | 57.1 | 8.4s | 13.0 | −3.36 | −15.7 | −4.10 | −0.01 |
+| GATED 15/30/5                    |   68 | 57.4 | 4.5s | 15.9 | −3.09 | −12.7 | **−2.25** | **+0.60** |
+| GATED 12/60/5                    |   98 | 58.2 | 6.0s | 13.0 | −3.48 | −11.9 | −3.53 | +0.56 |
+
+**Sell-exhaustion probe** (top recommended lever; base = GATED 15/30/5, then trade the
+30s gross gate for a 2s `net_flow` floor — schema forces one or the other, see note):
+
+| variant | fired | win% before | hold med | ep pnl% med | realized after | realized before |
+| --- | --- | --- | --- | --- | --- | --- |
+| base GATED 15/30/5 (30s gross gate) | 68 | 57.4 | 4.5s | −3.09 | −2.25 | +0.60 |
+| + `net_flow(2s) ≥ −1` (drop gross)  | 63 | 55.6 | 4.1s | −3.57 | −2.14 | +0.50 |
+| + `net_flow(2s) ≥ 0` (drop gross)   | 61 | **59.0** | 4.1s | −3.05 | **−1.72** | **+0.85** |
+
+`net_flow(2s) ≥ 0` (buy only once the 2 s sell pressure is no longer negative) lifts
+win% 57.4 → 59.0 and cuts the loss ~24% (best after-cost −1.72, best before-cost +0.85)
+— so the exhaustion gate **is** the right lever, but it does NOT clear the ~4%/round
+hurdle, and this probe had to **drop the 30s gross hot gate** (the single-`m_time_window`
+limit), so it *understates* the full refinement (both gates together, once the schema
+allows it). Reinforces the STOP verdict.
+
+### Read vs the acceptance gates
+- entry dip depth (median 13–16%, ≥12 by construction) — inside/near the family band
+  [−8, −20%]. ✔ (threshold-driven, so this gate is near-circular for a `trail>=k` entry).
+- hold median in [5, 60]s — ✔ for retrace ≥ 5% (6.0–8.4s); marginal at retrace 3% /
+  dip 15 (4.3–4.5s). Wider retrace lengthens holds exactly as the too-tight-trail
+  diagnosis predicted (4.3s → 8.4s), but even retrace 12 only reaches 8.4s vs omego's
+  17s — our feed-reactive fills + the 15s stall net cap the hold.
+- win rate 55–70% **before costs** — ✔ (gated 55–58%; the entry mechanism finds the
+  regime). The universe filter is decisive: it flips win% 23 → 55+ and realized-before
+  −66.9 → ~breakeven (delta **+67 SOL before costs / +176 after**).
+- losses bounded, p10 ≥ −25% — ✔ (−11 to −16%; the −25 catastrophe SL rarely fires).
+- **POSITIVE total after costs on the busy subset — ✘.** Best is GATED 15/30/5 at
+  **−2.25 SOL** after ~4%/round (**+0.60 before**). The universe gates already select
+  the busy 07-20/07-21 window (all fires land there), so busy-subset == total here.
+
+### Verdict — STOP before Phase 4/5 (the plan's own gate)
+The 2-metric core is **directionally validated** (55–58% before-cost win, decisive
+universe-filter delta, bounded losses, entry/hold in-band) but the one-shot variant is
+only **~breakeven before costs and net-negative after** the realistic haircut — the
+median round trip is ~0% and the edge lives entirely in a **thin right tail** a
+one-shot, no-re-entry backtest under-samples. Per Ph3 §4 ("if the one-shot variant is
+not clearly positive after costs, STOP and re-examine (entry refinement, exhaustion
+gate) before building re-entry/sizing"), **do not proceed to Phase 4/5 on this v1.**
+
+Wider retrace does NOT help (realized-before degrades +0.40 → −0.01 as r3 → r12): a
+wider trail gives winners back more and lets losers ride (p10 −11 → −16), and the exit
+mix shifts to the 15s stall net firing first. The levers that matter, in priority:
+1. **Sell-exhaustion entry gate** (skip falling knives — attacks the −3% median directly).
+   _Blocked by a schema limit_: a rule side holds ONE `m_time_window` (single
+   `window_size_sec`), so the 30s `gross_flow` hot gate and a 2s `net_flow` exhaustion
+   gate **cannot coexist in one rule today** — keeping both needs a multi-window-per-group
+   step (or a dedicated short-window flow metric). The probe above trades one for the other.
+2. **Fill/latency reality** — our worst-case feed fills pay slippage omego avoids with
+   same-slot landing; needs reprice-on-retry + busy-hours-only before real money.
+3. **Re-entry (Phase 4) amplifies but does not create per-episode edge** — building it on
+   a ≤0 per-episode expectancy just scales the loss. Gate it on a positive-after-costs
+   one-shot first.
+
 ## Data caveats / next data steps
 - Window = one ~26h weekday slice; one wallet fully analyzed. Fees/tips estimated,
   not measured (amount_lamports is curve-side; pump.fun ~1%/side fee + ~0.001 tip/tx
