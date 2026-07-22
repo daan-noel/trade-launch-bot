@@ -50,9 +50,21 @@ services:
       - "-c"
       - "shared_preload_libraries=timescaledb"
       - "-c"
-      - "timescaledb.max_background_workers=${TIMESCALEDB_MAX_BG_WORKERS:-2}"
+      # MUST be > (launcher + 1 scheduler-per-DB) or the job scheduler is starved
+      # and NO policy job ever runs (compression/retention/cagg-refresh silently
+      # never fire). Launcher+scheduler eat 2 slots, so job slots = value - 2.
+      # On the 2vCPU/4GB box keep this LOW: 4 → exactly 2 job slots — one for the
+      # occasional heavy compression (CPU + up to maintenance_work_mem each), one
+      # always free for the cheap frequent cagg refreshes. Higher just invites a
+      # pathological alignment of heavy jobs to contend the 2 cores / 4GB RAM.
+      - "timescaledb.max_background_workers=${TIMESCALEDB_MAX_BG_WORKERS:-4}"
       - "-c"
       - "max_connections=${POSTGRES_MAX_CONNECTIONS:-80}"
+      - "-c"
+      # 2 vCPU box: cap autovacuum workers low. The tuner's default (10) can spawn
+      # 10 vacuum processes contending the 2 cores + each drawing maintenance_work_mem
+      # — part of the IO pressure behind the 2026-07-22 ingest stall.
+      - "autovacuum_max_workers=${POSTGRES_AUTOVACUUM_MAX_WORKERS:-3}"
       - "-c"
       - "shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}"
       - "-c"
