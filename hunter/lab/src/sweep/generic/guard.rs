@@ -133,7 +133,7 @@ fn exit_metric(group: MetricGroupId, metric: MetricId, op: Operator, value: f64)
     gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
     let mut side = SideConditions::default();
     side.0.insert(group, vec![gc]);
-    RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side) }
+    RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side), reentry: None }
 }
 
 fn exit_code_of(reason: Option<ExitReason>) -> ExitCode {
@@ -304,7 +304,7 @@ fn corpus() -> Vec<(CorpusToken, ReplayToken)> {
 #[test]
 fn scan_matches_replay_tp_sl_rule() {
     // TP 50% OR SL 30%. Enter on arm (no entry conditions).
-    let params = RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None };
+    let params = RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, reentry: None };
     assert_parity("tp_sl", params, &corpus(), at(1000.0));
 }
 
@@ -323,14 +323,14 @@ fn scan_matches_replay_entry_gated_rule() {
     let mut entry = SideConditions::default();
     entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
     let params =
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None };
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, reentry: None };
     assert_parity("entry_gate", params, &corpus(), at(1000.0));
 }
 
 #[test]
 fn scan_matches_replay_pure_dead_open_rule() {
     // No TP/SL/exit metrics: every fired token rides to Dead or Open.
-    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None };
+    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None };
     assert_parity("dead_open", params, &corpus(), at(1000.0));
 }
 
@@ -377,7 +377,7 @@ fn gappy_corpus() -> Vec<(CorpusToken, ReplayToken)> {
 #[test]
 fn scan_matches_replay_gappy_dead_open() {
     // Enter-on-arm, no exits: dead_midgap → Dead mid-gap, revive/idle → Open.
-    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None };
+    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None };
     assert_parity("gappy_dead_open", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -390,7 +390,7 @@ fn scan_matches_replay_time_gate_across_gap() {
     let mut entry = SideConditions::default();
     entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
     let params =
-        RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None };
+        RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None, reentry: None };
     assert_parity("time_gate_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -428,6 +428,7 @@ fn shared_bind_matches_per_token_bind() {
             stop_loss: Some(30.0),
             entry: None,
             exit: None,
+            reentry: None,
         },
     ];
 
@@ -467,7 +468,8 @@ fn scan_matches_replay_window_flow_across_gap() {
     gc.metrics.insert(MetricId::GrossFlow, vec![vec![Condition { operator: Operator::Lte, value: 0.0 }]]);
     let mut exit = SideConditions::default();
     exit.0.insert(MetricGroupId::TimeWindow, vec![gc]);
-    let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit) };
+    let params =
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit), reentry: None };
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -521,6 +523,7 @@ fn scan_matches_replay_flow_split_entry_and_window_exit() {
         stop_loss: None,
         entry: Some(entry),
         exit: Some(exit),
+        reentry: None,
     };
     let patterns = vec![vec!["vol".to_string()]];
     assert_parity_with_flow(
@@ -596,17 +599,17 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
         let mut entry = SideConditions::default();
         entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
-        RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None }
+        RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None, reentry: None }
     };
 
     let rules = vec![
         // TP + SL together.
-        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None },
+        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, reentry: None },
         // TP only / SL only (one threshold absent → the `have_sl`/`have_tp` branches).
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None },
-        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None },
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, reentry: None },
         // Neither → only Dead / Open can fire.
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None },
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None },
         // Deferred entry (non-zero fill row).
         entry_gate,
         // Metrics exit → SIMD delegates to scalar; still must match.
@@ -657,14 +660,15 @@ fn index_exit_scan_matches_scalar_across_paths() {
             stop_loss: Some(60.0),
             entry: Some(entry),
             exit: None,
+            reentry: None,
         }
     };
 
     let rules = vec![
-        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None },
-        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None },
-        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None },
-        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None },
+        RuleParams { take_profit: Some(50.0), stop_loss: Some(30.0), entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: None, stop_loss: Some(40.0), entry: None, exit: None, reentry: None },
+        RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None },
         entry_gate,
         // Metrics → index falls back to scalar; still must match.
         exit_metric(MetricGroupId::PricePath, MetricId::Trail, Operator::Gt, 50.0),
@@ -786,6 +790,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
                 stop_loss: *sl,
                 entry: None,
                 exit: None,
+                reentry: None,
             };
             let compiled = CompiledRule::compile(&loaded(params));
             let bound = BoundCombo::new(series.columns(), compiled);

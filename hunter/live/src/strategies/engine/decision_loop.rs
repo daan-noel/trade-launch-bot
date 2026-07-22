@@ -197,6 +197,11 @@ async fn run_loop(
     // reaper folds each to Holding (fill) or terminal (revert). PG-only, no RPC.
     boot_adopt_buy_submitted(&strategy_repo, &mut state, &registry).await;
 
+    // Seed re-entry episode counters from PG terminal-position counts for every
+    // (rule, mint) rebuilt above, so a restart cannot restart a token's episode
+    // budget from zero and over-trade it (plan Ph4 restart caveat). PG-only.
+    boot_seed_episodes(&strategy_repo, &mut state).await;
+
     // Recovery reaper (buy adopt/drop + exit redrive + cleared Holding + ExitFailed
     // bag + stale fail). Immediate first tick, then every 60 s.
     let _reaper = super::reapers::spawn_reaper(super::reapers::ReaperDeps {
@@ -645,6 +650,49 @@ async fn boot_adopt_buy_submitted(
     }
     if n > 0 {
         info!(adopted = n, "engine: boot adopted BuySubmitted positions into registry (dedup)");
+    }
+}
+
+/// Seed the in-RAM re-entry episode counters (`TokenState::episodes`) from PG:
+/// COUNT of terminal positions per (rule, mint), batched over every tracked mint
+/// whose rule has re-entry configured. Without this, a restart wipes the episode
+/// budget and a re-entry rule can over-trade a token it had already exhausted.
+/// Cheap (one indexed grouped query over the boot-adopted mints), boot-only.
+async fn boot_seed_episodes(strategy_repo: &StrategyRepo, state: &mut EngineState) {
+    // Mints worth seeding: any tracked token with an arm on a re-entry rule.
+    let mints: Vec<String> = state
+        .tokens
+        .iter()
+        .filter(|(_, t)| {
+            t.arms.keys().any(|r| {
+                state.rules.get(r).is_some_and(|c| c.reentry.is_some())
+            })
+        })
+        .map(|(m, _)| m.to_string())
+        .collect();
+    if mints.is_empty() {
+        return;
+    }
+    let counts = match strategy_repo.count_closed_by_rule_mint(&mints).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("engine: boot episode-seed load failed: {e}");
+            return;
+        }
+    };
+    let mut n = 0u32;
+    for (rule_uuid, mint_s, count) in counts {
+        let rule = RuleId(rule_uuid);
+        if state.rules.get(&rule).is_none_or(|c| c.reentry.is_none()) {
+            continue; // one-shot rule — the engine never reads its episode count
+        }
+        if let Some(token) = state.tokens.get_mut(&Mint::from(mint_s.as_str())) {
+            token.episodes.insert(rule, count.max(0) as u32);
+            n += 1;
+        }
+    }
+    if n > 0 {
+        info!(seeded = n, "engine: boot seeded re-entry episode counters");
     }
 }
 

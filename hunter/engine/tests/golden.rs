@@ -866,3 +866,179 @@ fn two_fingerprints_flow_states_diverge() {
     // Only rule 1 (pattern A) enters; rule 2 still sees organic.
     assert_eq!(buys(&fx), vec![(rid(1), BUY)]);
 }
+
+// ── Re-entry lifecycle (plan Ph4) ─────────────────────────────────────────────
+//
+// One-shot behavior is the golden non-regression: every scenario above runs rules
+// WITHOUT `reentry` and already asserts `Done` is terminal (e.g.
+// `arm_enter_then_take_profit` asserts the token is pruned after `End`).
+
+/// An enter-on-arm TP rule with re-entry configured — the fastest full-cycle rig.
+fn reentry_rule(cooldown_sec: f64, max_episodes: u32) -> LoadedRule {
+    rule_capped(
+        1,
+        1,
+        json!({
+            "take_profit": 100,
+            "reentry": { "cooldown_sec": cooldown_sec, "max_episodes_per_token": max_episodes }
+        }),
+        1,
+        0,
+    )
+}
+
+/// Run one full episode: enter (already armed / enter-on-arm), fill, TP, exit fill.
+/// Returns the close time used for the exit fill.
+fn run_episode(s: &mut EngineState, m: &Mint, t0: f64) -> f64 {
+    let fx = reduce(s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, t0) });
+    let entry = buy_intent(&fx);
+    reduce(s, Event::FillConfirmed { intent: entry, fill: fill(1.0, t0 + 0.1) });
+    let fx = reduce(s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, t0 + 0.2) });
+    let exit = sell_intent(&fx);
+    let close_at = t0 + 0.3;
+    let fx = reduce(s, Event::FillConfirmed { intent: exit, fill: fill(2.0, close_at) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+    close_at
+}
+
+#[test]
+fn reentry_rearm_after_cooldown_and_reenter() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![reentry_rule(5.0, 3)], vec![cu_fp(1)]));
+
+    // Episode 1: creation enters immediately (enter-on-arm), runs to a TP close.
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
+    let exit = sell_intent(&fx);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(2.0, 1.1) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+
+    // NOT pruned (one-shot would drop the token here): the arm is cooling down.
+    let token = s.tokens.get(&m).expect("token stays tracked through cooldown");
+    assert!(
+        matches!(token.arms.get(&rid(1)), Some(hunter_engine::arm::ArmState::Cooldown { .. })),
+        "closed episode re-arms into Cooldown"
+    );
+    assert_eq!(token.episodes.get(&rid(1)), Some(&1), "episode counted at close");
+
+    // Inside the cooldown window (until = 1.1 + 5 = 6.1): no promotion, no buy.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 5.0) });
+    assert!(buys(&fx).is_empty(), "no re-entry inside the cooldown window");
+
+    // Past the window: the same event promotes Cooldown → Armed AND re-enters
+    // (enter-on-arm), so the effects carry the re-arm notice then the buy.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 7.0) });
+    assert!(
+        fx.iter().any(|e| matches!(
+            e,
+            Effect::ArmedChanged(d) if d.state == ArmedStateTag::Armed && d.rule == rid(1)
+        )),
+        "promotion emits ArmedChanged(Armed)"
+    );
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "episode 2 entry fires after cooldown");
+    // Lifetime counter counts EPISODES: two committed entries so far.
+    assert_eq!(s.counters.get(&rid(1)).map(|c| c.total), Some(2));
+}
+
+#[test]
+fn reentry_tick_promotes_cooldown() {
+    // Promotion is trade/tick-driven — a quiet token re-arms on the clock tick.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![reentry_rule(5.0, 3)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
+    let exit = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(2.0, 1.1) });
+
+    // A tick before the deadline leaves it cooling; one after promotes (and, for an
+    // enter-on-arm rule, immediately re-enters).
+    let fx = reduce(&mut s, Event::Tick { now: ts(6.0) });
+    assert!(buys(&fx).is_empty());
+    let fx = reduce(&mut s, Event::Tick { now: ts(6.2) });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "tick past the window re-arms + re-enters");
+}
+
+#[test]
+fn reentry_episode_cap_stops_rearm() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![reentry_rule(0.0, 2)], vec![cu_fp(1)]));
+
+    // Episode 1 (from creation).
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
+    let exit = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(2.0, 1.1) });
+    assert!(s.tokens.contains_key(&m), "episode 1 of 2 re-arms");
+
+    // Episode 2 — the cap: its close must land Done and prune the token.
+    run_episode(&mut s, &m, 2.0);
+    assert!(
+        !s.tokens.contains_key(&m),
+        "episode cap reached — the close is terminal and the token prunes"
+    );
+}
+
+#[test]
+fn reentry_manual_close_never_rearms() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![reentry_rule(0.0, 10)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+
+    // A human closed it — the bot must not re-buy the token they just exited.
+    let position = *s.positions.keys().next().expect("one open position");
+    let fx = reduce(&mut s, Event::ManualClose { position });
+    let exit = sell_intent(&fx);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(1.5, 1.0) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+    assert!(!s.tokens.contains_key(&m), "Manual close is terminal even with reentry");
+}
+
+#[test]
+fn reentry_dead_exit_never_rearms() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    // Needs a non-enter-on-arm shape? No — enter-on-arm is fine; kill it via deadness.
+    reduce(&mut s, reload(vec![reentry_rule(0.0, 10)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    // Deplete reserves at t=1, then a long-quiet dust print → Dead exit (the
+    // `dead_outranks_stop_loss_on_open_position` trigger).
+    reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 5.0, 1.0) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(0.001, 0.5, 5.0, 305.0) });
+    assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Dead]);
+    let exit = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(0.5, 305.1) });
+    assert!(!s.tokens.contains_key(&m), "a dead token never re-arms");
+}
+
+#[test]
+fn reentry_cooldown_disarms_on_migration() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    reduce(&mut s, reload(vec![reentry_rule(60.0, 10)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
+    let exit = sell_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(2.0, 1.1) });
+    assert!(s.tokens.contains_key(&m), "cooling down");
+
+    // Migration while cooling: there is no curve left to re-enter — disarm + prune.
+    let fx = reduce(&mut s, Event::Migrated { mint: m.clone(), at: ts(2.0) });
+    assert_eq!(disarms(&fx), vec![DisarmReason::Migrated]);
+    assert!(!s.tokens.contains_key(&m));
+}

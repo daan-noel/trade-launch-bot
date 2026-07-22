@@ -284,6 +284,9 @@ pub struct LoadedRule {
     /// Cap on concurrently open+in-flight tokens (`0` ⇒ treated as `1`).
     pub max_concurrent_tokens: u32,
     /// Cap on total successful entries over the rule's life (`0` ⇒ unlimited).
+    /// With re-entry configured this counts **episodes**, not distinct tokens —
+    /// each re-entry is one more entry against the cap (the safer direction:
+    /// the cap fires sooner). One-shot rules are unaffected (1 token = 1 entry).
     pub max_total_tokens: u32,
     pub params: RuleParams,
 }

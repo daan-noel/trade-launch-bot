@@ -2116,6 +2116,30 @@ impl StrategyRepo {
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
     }
 
+    /// Terminal-position counts per (rule, mint) over the given mints — the boot
+    /// seed for the re-entry episode cap (plan Ph4): after a restart the engine's
+    /// in-RAM episode counters are gone, and without this a re-entry rule would
+    /// restart a token's episode budget from zero and over-trade it. One batched
+    /// indexed query (`idx_strategy_positions_mint_address_status`), boot-only.
+    pub async fn count_closed_by_rule_mint(
+        &self,
+        mints: &[String],
+    ) -> anyhow::Result<Vec<(Uuid, String, i64)>> {
+        if mints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
+            "SELECT rule_id, mint_address, COUNT(*) FROM strategy_positions \
+             WHERE mint_address = ANY($1) AND rule_id IS NOT NULL \
+               AND status IN ('End','ExitFailed','ExitUnconfirmed') \
+             GROUP BY rule_id, mint_address",
+        )
+        .bind(mints)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Delete stale **paper** `BuySubmitted` rows that never recorded an entry fill
     /// (`entry_price IS NULL`) past `stale_after`. Paper buys are a synchronous
     /// simulation with no on-chain tokens, so a crash mid-buy leaves an

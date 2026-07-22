@@ -284,7 +284,8 @@ impl AxesModel {
     }
 
     fn assemble(&self, picks: &[usize]) -> RuleParams {
-        let mut rp = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None };
+        let mut rp =
+            RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None };
         for (axis, &pick) in self.axes.iter().zip(picks) {
             match axis {
                 ResolvedAxis::TakeProfit { values } => rp.take_profit = Some(values[pick]),

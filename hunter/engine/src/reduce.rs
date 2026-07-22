@@ -63,6 +63,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 last_meaningful_at: None,
                 first_slot_settled: false,
                 arms: BTreeMap::new(),
+                episodes: BTreeMap::new(),
             };
             // Arm every rule whose fingerprint matches the instant axes. A rule whose
             // fingerprint also carries a first-slot axis stays *pending* until the
@@ -181,7 +182,9 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 {
                     decrement_open(state, rule_id);
                     state.positions.remove(&position);
-                    token.arms.insert(rule_id, ArmState::Done);
+                    // Re-arm into a cooldown if the rule allows it (else terminal Done).
+                    let next = rearm_after_close(state, &mut token.episodes, rule_id, reason, fill.at);
+                    token.arms.insert(rule_id, next);
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
                         rule: rule_id,
@@ -366,7 +369,11 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let rule_ids: SmallVec<[RuleId; 4]> = token.arms.keys().copied().collect();
             for rule_id in rule_ids {
                 match token.arms.get(&rule_id) {
-                    Some(ArmState::Armed) | Some(ArmState::PendingFirstSlot) => {
+                    // Armed / pending / cooling-down (a re-entry arm awaiting re-arm)
+                    // all disarm at migration — there is no more curve to trade.
+                    Some(ArmState::Armed)
+                    | Some(ArmState::PendingFirstSlot)
+                    | Some(ArmState::Cooldown { .. }) => {
                         token.arms.insert(rule_id, ArmState::Disarmed(DisarmReason::Migrated));
                         fx.push(armed(
                             &mint,
@@ -421,6 +428,18 @@ fn evaluate_token(
                 if cur_price > *peak_price {
                     *peak_price = cur_price;
                 }
+            }
+        }
+    }
+
+    // Re-entry: promote any cooldown arm whose window has elapsed back to Armed, so
+    // the same event's decide loop below can re-enter on a fresh signal. Sorted
+    // iteration (BTreeMap) keeps the emitted `ArmedChanged` order deterministic.
+    for (rule_id, arm) in token.arms.iter_mut() {
+        if let ArmState::Cooldown { until } = arm {
+            if now >= *until {
+                *arm = ArmState::Armed;
+                fx.push(armed(mint, *rule_id, ArmedStateTag::Armed));
             }
         }
     }
@@ -567,6 +586,48 @@ fn apply_decision(
             }));
         }
     }
+}
+
+/// The post-close arm state (plan Ph4). Re-arms into [`ArmState::Cooldown`] when the
+/// rule has re-entry configured, the close `reason` is a normal strategy exit (not a
+/// dead/manual/migrated close — see [`reason_allows_reentry`]), and the per-token
+/// episode cap is not yet reached; otherwise terminal [`ArmState::Done`]. Only rules
+/// with re-entry configured ever touch `episodes`, so one-shot rules stay untouched.
+fn rearm_after_close(
+    state: &EngineState,
+    episodes: &mut BTreeMap<RuleId, u32>,
+    rule: RuleId,
+    reason: ExitReason,
+    closed_at: Ts,
+) -> ArmState {
+    let Some(re) = state.rules.get(&rule).and_then(|c| c.reentry) else {
+        return ArmState::Done; // one-shot — no episode tracking, terminal.
+    };
+    if !reason_allows_reentry(reason) {
+        return ArmState::Done; // dead / manual / migrated — never re-arm.
+    }
+    // Count this closed episode; re-arm only while under the cap.
+    let n = {
+        let e = episodes.entry(rule).or_insert(0);
+        *e += 1;
+        *e
+    };
+    if n >= re.max_episodes_per_token {
+        return ArmState::Done;
+    }
+    let until = closed_at + chrono::Duration::milliseconds((re.cooldown_sec * 1000.0) as i64);
+    ArmState::Cooldown { until }
+}
+
+/// Whether a close `reason` is a normal strategy exit that should re-arm under
+/// re-entry. TP / SL / a metric exit ⇒ yes (the trailing stop or a rule condition
+/// fired — trade the next signal). Dead / Manual / Migrated ⇒ no: the token is gone,
+/// a human intervened, or it left the curve — re-arming would fight that.
+fn reason_allows_reentry(reason: ExitReason) -> bool {
+    matches!(
+        reason,
+        ExitReason::TakeProfit | ExitReason::StopLoss | ExitReason::Metrics { .. }
+    )
 }
 
 /// Decrement a rule's open counter on a position close (saturating).

@@ -34,7 +34,7 @@ Verdict on every existing metric vs what the strategy needs:
 | Metric | Verdict | Use in this strategy |
 | --- | --- | --- |
 | `m_snapshot.time` | keep as-is | universe gate: `time >= ~120` |
-| `m_snapshot.liquidity` | keep as-is | vsol band: `liquidity` in ~[45, 110] |
+| `m_snapshot.liquidity` | keep as-is | curve `reserve_sol` band: `liquidity` in ~[45, 110] |
 | `m_price_path.stall` | keep as-is | safety-net exit only (`stall >= 15`) |
 | `m_price_path.trail` | keep as-is, do NOT retrofit | lifetime-peak anchor is wrong for the dip trigger; see below |
 | `m_time_window.{gross_flow,net_flow,buy,sell}` | keep as-is | hot gate `gross_flow(30s) >= ~10`; later `net_flow(2s)` exhaustion refinement |
@@ -232,6 +232,25 @@ extra wiring), not the sweep, for this phase.
 
 ## Phase 4 - re-entry lifecycle (re-arm after Done)
 
+> **DONE 2026-07-22 (`strategy-redesign`, uncommitted).** Gate met after the
+> fill-sensitivity correction (see analysis doc): the honest `realFee` bottom line is
+> positive under realistic fills, so re-entry now amplifies a positive per-episode edge.
+> Shipped: `RuleParams.reentry { cooldown_sec, max_episodes_per_token }` (parse/validate/
+> round-trip, absent ⇒ one-shot — no DB migration); `ArmState::Cooldown { until }` (a
+> **parallel `TokenState.episodes: BTreeMap<RuleId,u32>`** carries the count — NOT the
+> planned `ArmSlot` struct: that would force every `arms.insert` to carry episodes
+> forward, a reset footgun; the map leaves all `ArmState` transitions untouched and dies
+> with the token); close-path re-arm on **normal exits only** (TP/SL/Metrics — never
+> Dead/Manual/Migrated); `evaluate_token` promotes Cooldown→Armed (trade/tick-driven,
+> emits `ArmedChanged(Armed)`); Migrated disarms a cooling arm; `max_total` counts
+> episodes (documented on `LoadedRule`); live boot seeds `episodes` from a batched
+> `count_closed_by_rule_mint` over the boot-adopted mints. 6 new golden tests (re-arm
+> timing, tick promotion, episode cap, Manual/Dead no-rearm, migration disarm) + the
+> pre-existing one-shot goldens as the non-regression; `cargo check` + 113 sweep guards +
+> engine/property green; clippy clean on touched code. Sweep wiring stays Phase 6 (the
+> sweep is a parallel impl; re-entry validates via simulate/replay for now). FE editor
+> deferred (absent ⇒ one-shot, so the builder is unaffected).
+
 `ArmState` is one-shot: `Done` is terminal per (token, rule), and the observed edge
 depends on rapid re-entry (median gap ~31s, up to 31 episodes/token).
 
@@ -257,15 +276,40 @@ depends on rapid re-entry (median gap ~31s, up to 31 episodes/token).
 6. Tests: cooldown promotion timing; episode cap stops re-arm; one-shot rules
    unaffected (golden logs unchanged); restart-seed test at the adapter level.
 
-## Phase 5 - liquidity-proportional sizing (pct of vsol)
+## Phase 5 - liquidity-proportional sizing (pct of curve `reserve_sol`) — DEFERRED (future)
+
+> **DEFERRED 2026-07-22 — not needed now.** Dynamic `buy_amount` (size as a pct of the
+> curve SOL reserve) is parked as future work. Phase 6 runs on the fixed
+> `buy_amount_lamports` path (unchanged default); the size sweep axis and the reserve-pct
+> scale-up step are dropped from Phase 6 until this lands. Revisit after paper/real-SOL
+> validation of the fixed-size strategy shows sizing is the next lever.
+
+**Which reserve — read before implementing (this is the whole design decision).** The
+sizing base is `TokenTrack::current_reserves()` = the metric `Liquidity` = the field
+`reserve_sol`, which is the **curve VIRTUAL SOL reserve** (renamed from
+`virtual_sol_reserves`; the same pair the canonical curve-spot `price` and the dead-token
+verdict already read). It is deliberately NOT `real_sol`:
+- **Impact, not exit-liquidity, is what sizing controls.** On pump.fun's constant-product
+  curve, buy slippage ≈ `ΔSOL / virtual_sol_reserve`, so a fixed pct of `reserve_sol`
+  yields ~constant expected slippage per entry — the actual goal of liquidity-proportional
+  sizing. Real reserve (`virtual − ~30 SOL` early) understates liquidity on young pools and
+  would OVERsize exactly where impact is worst.
+- **`real_sol` is not on the hot path.** The engine track carries only `reserve_sol`; real
+  reserves are reconstructed offline (`approx_real_sol_reserves`, lab load path). Sizing off
+  real would need new hot-path plumbing or an RPC per entry — violates the hot-path budget
+  and "spend Helius sparingly." If a future goal is instead bounding EXIT liquidity ("don't
+  buy more than I can sell back out"), `real_sol` is the honest ceiling — but that is a
+  different sizing philosophy (exit-risk cap, not impact cap) and needs a real-reserve value
+  the engine doesn't carry today. Decide which one before building.
 
 1. Rule config (params JSONB): optional
-   `"sizing": { "pct_vsol": 1.0, "min_sol": 0.4, "max_sol": 1.3 }`; absent = fixed
-   `buy_amount_lamports` (unchanged default). Validation: pct > 0, 0 < min <= max.
+   `"sizing": { "pct_reserve_sol": 1.0, "min_sol": 0.4, "max_sol": 1.3 }` — `pct_reserve_sol`
+   is percent of the curve virtual `reserve_sol` (see the decision note above). Absent =
+   fixed `buy_amount_lamports` (unchanged default). Validation: pct > 0, 0 < min <= max.
 2. Engine: at the `Enter` decision (`reduce.rs::apply_decision` / the decide tuple),
-   compute `lamports = clamp(pct/100 * track.current_reserves(), min, max)` and put it
-   on `Effect::SubmitBuy`. Reserves are already on the track (`current_reserves()`);
-   NaN reserves => fall back to fixed size.
+   compute `lamports = clamp(pct_reserve_sol/100 * track.current_reserves(), min, max)` and
+   put it on `Effect::SubmitBuy`. `current_reserves()` is already on the track (= curve
+   virtual `reserve_sol`); NaN reserves => fall back to fixed size.
 3. Live: executor takes lamports from the effect already - verify no path re-reads the
    rule's fixed amount. Paper/sim: same effect, nothing extra.
 4. FE: small editor for the sizing block on the rule form.
@@ -282,14 +326,16 @@ depends on rapid re-entry (median gap ~31s, up to 31 episodes/token).
    Add parity tests: sweep result == replay result for identical params (extend
    `guard.rs`).
 2. Grid (empirically supported ranges - analysis doc): dip `trail` {8,15,25}%, window
-   {30,60}s, trailing `retrace` {1.5,3,5,10}%, size {0.5,1,2}% vsol, cooldown {5,30}s,
-   liquidity band edges, `gross_flow` threshold {5,10,20}. Rank net of the cost
-   haircut, not gross.
+   {30,60}s, trailing `retrace` {1.5,3,5,10}%, cooldown {5,30}s, liquidity band edges,
+   `gross_flow` threshold {5,10,20}. Rank net of the cost haircut, not gross. (Size stays
+   the fixed `buy_amount_lamports`; the `size {0.5,1,2}%` of `reserve_sol` axis is deferred
+   with Phase 5.)
 3. Paper: run the best 2-3 configs as `TradeMode::Paper` rules live for some days;
    compare live-paper episode distributions to the sweep's (entry dip, hold, pnl) -
    divergence means feed/latency effects the backtest missed.
-4. Real-SOL: tiny fixed size first (min_sol clamp), busy hours only, then scale via
-   pct_vsol. Watch the ~23% submit-fail rate omego shows - our retry policy
+4. Real-SOL: tiny fixed size first (fixed `buy_amount_lamports`), busy hours only.
+   (Scaling via `pct_reserve_sol` is deferred with Phase 5.) Watch the ~23% submit-fail rate
+   omego shows - our retry policy
    (`MAX_ENTRY_ATTEMPTS`) may need a "reprice on retry" look before real money.
 
 ## Gotchas (will bite if skipped)

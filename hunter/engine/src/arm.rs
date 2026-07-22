@@ -21,6 +21,7 @@ use crate::metrics::{
     group_of, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
     MetricScope, Ts,
 };
+use crate::rule_params::ReEntry;
 
 /// Where an exit [`MetricReq`] came from — so a desugared TP/SL req still stamps
 /// the `TakeProfit` / `StopLoss` exit-reason label (analytics group by it) instead
@@ -176,6 +177,10 @@ pub struct CompiledRule {
     pub price_windows: SmallVec<[f64; 2]>,
     /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
     pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
+    /// Re-entry lifecycle (plan Ph4). `None` ⇒ one-shot: a closed position ends the
+    /// (token, rule) forever (`Done`). `Some` ⇒ a normal strategy exit re-arms the
+    /// token into [`ArmState::Cooldown`] up to the episode cap.
+    pub reentry: Option<ReEntry>,
 }
 
 impl CompiledRule {
@@ -274,6 +279,7 @@ impl CompiledRule {
             flow_windows,
             price_windows,
             mono_kills,
+            reentry: rule.params.reentry,
         }
     }
 
@@ -475,6 +481,11 @@ pub enum ArmState {
     },
     /// A sell is in flight for `intent` (the `attempts`-th try), closing for `reason`.
     ExitPending { position: PositionId, intent: IntentId, reason: ExitReason, attempts: u32 },
+    /// A re-entry rule closed a position and is waiting out its cooldown before
+    /// re-arming: the fold promotes it back to [`Armed`](Self::Armed) once a
+    /// trade/tick carries `now >= until` (plan Ph4). **Non-terminal** — the token
+    /// must stay tracked so it can re-arm, even with no open position.
+    Cooldown { until: Ts },
     /// Terminal: the position closed (or the token is done forever for this rule).
     Done,
     /// Terminal: disarmed before entry for `reason`.
@@ -483,7 +494,8 @@ pub enum ArmState {
 
 impl ArmState {
     /// Whether this arm still needs the token tracked (non-terminal). A token with
-    /// no active arms and no open position can be pruned.
+    /// no active arms and no open position can be pruned. [`Cooldown`](Self::Cooldown)
+    /// counts as active — it is awaiting re-arm, not finished.
     pub fn is_active(&self) -> bool {
         !matches!(self, ArmState::Done | ArmState::Disarmed(_))
     }

@@ -252,13 +252,43 @@ untested levers the family distribution pointed at — both REJECTED:
   (feed-reactive entry, not same-slot near the bottom), so more time just lets them bleed.
   The hold-truncation gap vs omego is **structural latency, not a tunable exit.**
 
-**All named levers are now tested and spent** (flow-gating byte-identical; deeper dips
-worse; exit-mix/hold worse). Best config across every experiment remains d15/w30/r5 at
-**−2.25 SOL after cost**. This is a final STOP: the one-shot has no positive-after-cost
-variant, so Phase 4 (re-entry) would only scale a negative per-episode expectancy. The
-only untested lever left is #2 (fill/latency realism, `flow_scalper_fill_sensitivity`) —
-and it can at best explain *why* we lose (execution), not manufacture a gross edge the
-deep-dip/exit sweeps show isn't there.
+**Flow-gating byte-identical; deeper dips worse; exit-mix/hold worse.** These three
+levers ARE spent. But the "STOP FINALIZED" conclusion first drawn here was **premature —
+it double-counted slippage** (see the fill-sensitivity correction below).
+
+**Fill-sensitivity probe = STOP verdict OVERTURNED (2026-07-22, `flow_scalper_fill_sensitivity`).**
+The `−2.25`/`−1.72` "after-cost" figures every prior phase quoted (`realA`) are **wrong
+when a fill model is in play**: `CostModel::pumpfun_default` charges ~1%/leg *slippage* on
+top of the fill model's own adverse fill price — the same slippage counted twice. The
+honest metric is `realFee` (fee + tip + priority only; the fill model is the sole slippage
+source). Repricing the SAME taken set (identical fires; only price differs) under three
+fill models:
+
+| config / fill | realFee (**honest**) | realA (double-counts) | realB (before cost) |
+| --- | --- | --- | --- |
+| GATED d15/r5 · worst | −0.90 | −2.25 | +0.60 |
+| GATED d15/r5 · **first** | **+0.52** | −0.85 | +2.04 |
+| GATED d15/r5 · signal | −0.74 | −2.09 | +0.76 |
+| EXH nf≥0 · worst | −0.50 | −1.72 | +0.85 |
+| EXH nf≥0 · **first** | **+0.61** | −0.62 | +1.98 |
+| EXH nf≥0 · **signal** | **+0.51** | −0.72 | +1.88 |
+
+- **`signal` fill (zero-slippage) is POSITIVE for EXH (+0.51)** → the entry SIGNAL has
+  genuine edge; the strategy is **not dead**. This is the plan's "worst ≤0 but signal >0 →
+  loss is execution/latency, not the signal" branch.
+- **`first` fill (next print — a realistically fast bot) is positive for BOTH configs**
+  (+0.52 / +0.61). Only the adversarial `worst`-in-slot bound is negative (−0.50/−0.90).
+- The **exhaustion config `EXH d15/r5 nf≥0` is the robust winner**: positive under `first`
+  AND `signal`, negative only under `worst`. (GATED is fragile — `signal` −0.74 because its
+  exit-side fill interaction hurts; the net_flow gate stabilizes it.)
+
+**Corrected verdict: the one-shot clears breakeven (fee-only) under any fill better than
+worst-case-adverse — so Phase 4's gate ("positive-after-costs one-shot") IS met, conditional
+on the executor landing next-print-quality fills rather than worst-in-slot.** Caveats: the
+margin is thin (+0.6 SOL fee-only / 61 eps / 11 lake days) and rests entirely on fill
+quality — live paper currently books the `worst` model (−0.5), so realizing the edge needs
+reprice-on-retry + busy-hours (Phase 6 §4). Phase 4 (re-entry) is now **justified** — it
+amplifies a now-positive per-episode edge (up to 31 eps/token) instead of a negative one.
 
 ### Read vs the acceptance gates
 - entry dip depth (median 13–16%, ≥12 by construction) — inside/near the family band
@@ -271,11 +301,26 @@ deep-dip/exit sweeps show isn't there.
   regime). The universe filter is decisive: it flips win% 23 → 55+ and realized-before
   −66.9 → ~breakeven (delta **+67 SOL before costs / +176 after**).
 - losses bounded, p10 ≥ −25% — ✔ (−11 to −16%; the −25 catastrophe SL rarely fires).
-- **POSITIVE total after costs on the busy subset — ✘.** Best is GATED 15/30/5 at
-  **−2.25 SOL** after ~4%/round (**+0.60 before**). The universe gates already select
-  the busy 07-20/07-21 window (all fires land there), so busy-subset == total here.
+- **POSITIVE total after costs on the busy subset — ✔ (CORRECTED).** Using the honest
+  `realFee` accounting (not the slippage-double-counting `realA`), the exhaustion config
+  `EXH d15/r5 nf≥0` is **+0.61 SOL** under a `first`-print fill and **+0.51** under a
+  `signal` fill — positive under every fill better than worst-in-slot. All fires land in
+  the busy 07-20/07-21 window, so busy-subset == total. (The earlier ✘ used `realA` under
+  worst-case fill = slippage counted twice; see the fill-sensitivity correction above.)
 
-### Verdict — STOP before Phase 4/5 (the plan's own gate)
+### Verdict — Phase 4 GATE MET (corrected 2026-07-22; supersedes the STOP below)
+The original STOP was drawn from `realA` (full cost model) under a worst-case fill, which
+**double-counts slippage**. Corrected to `realFee` + an explicit fill model, the 2-metric
+core (with the `net_flow(2s)≥0` exhaustion gate) is **positive after fees under realistic
+and zero-slippage fills** (+0.61 / +0.51 SOL), negative only under the adversarial
+worst-in-slot bound. The entry signal has genuine edge (`signal` fill > 0); the residual
+loss under `worst` is **execution/latency**, not the signal. Per Ph3 §4 this clears the
+"positive-after-costs one-shot" gate, so **Phase 4 (re-entry) is unblocked** — conditional
+on the executor achieving next-print fills (reprice-on-retry + busy-hours, Phase 6 §4).
+Margin is thin, so re-validate with re-entry under the `first` fill before real money.
+
+<details><summary>Superseded STOP verdict (kept for history — corrected above)</summary>
+
 The 2-metric core is **directionally validated** (55–58% before-cost win, decisive
 universe-filter delta, bounded losses, entry/hold in-band) but the one-shot variant is
 only **~breakeven before costs and net-negative after** the realistic haircut — the
@@ -283,6 +328,8 @@ median round trip is ~0% and the edge lives entirely in a **thin right tail** a
 one-shot, no-re-entry backtest under-samples. Per Ph3 §4 ("if the one-shot variant is
 not clearly positive after costs, STOP and re-examine (entry refinement, exhaustion
 gate) before building re-entry/sizing"), **do not proceed to Phase 4/5 on this v1.**
+
+</details>
 
 Wider retrace does NOT help (realized-before degrades +0.40 → −0.01 as r3 → r12): a
 wider trail gives winners back more and lets losers ride (p10 −11 → −16), and the exit

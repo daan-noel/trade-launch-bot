@@ -423,6 +423,7 @@ pub fn adopt_holding_into_engine(
                 last_meaningful_at: None,
                 first_slot_settled: true,
                 arms: Default::default(),
+                episodes: Default::default(),
             },
         );
     }
@@ -517,6 +518,7 @@ pub fn adopt_buy_submitted_into_engine(
                 last_meaningful_at: None,
                 first_slot_settled: true,
                 arms: Default::default(),
+                episodes: Default::default(),
             },
         );
     }

@@ -48,6 +48,11 @@ pub struct TokenState {
     pub first_slot_settled: bool,
     /// Per-rule arming state, sorted by rule id for deterministic iteration.
     pub arms: BTreeMap<RuleId, ArmState>,
+    /// Per-rule completed-episode count, for the re-entry cap (plan Ph4). Only ever
+    /// touched for rules with re-entry configured (a one-shot rule never inserts a
+    /// key), so it stays empty for every legacy rule. Lives beside `arms` and dies
+    /// with the token, so no separate lifetime to manage.
+    pub episodes: BTreeMap<RuleId, u32>,
 }
 
 impl TokenState {

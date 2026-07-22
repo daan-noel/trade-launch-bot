@@ -67,6 +67,23 @@ pub struct RuleParams {
     pub entry: Option<SideConditions>,
     /// Exit conditions. `None` = TP/SL/death only.
     pub exit: Option<SideConditions>,
+    /// Re-entry lifecycle. `None` = one-shot (`Done` is terminal per (token, rule) —
+    /// every stored rule's behavior). See [`ReEntry`].
+    pub reentry: Option<ReEntry>,
+}
+
+/// Optional re-entry lifecycle (plan Ph4). Absent ⇒ one-shot. Present ⇒ after a
+/// **normal strategy exit** (TP / SL / a metric exit — never Dead / Manual /
+/// Migrated) the (token, rule) re-arms: it waits `cooldown_sec` then returns to
+/// `Armed`, up to `max_episodes_per_token` entries. The dip scalper's edge is rapid
+/// re-entry (family median gap ~31 s, up to 31 episodes/token); this expresses it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReEntry {
+    /// Seconds to wait after a close before re-arming (`>= 0`; `0` ⇒ next event).
+    pub cooldown_sec: f64,
+    /// Hard cap on entries per token for this rule (`>= 1`). The Nth close re-arms
+    /// only while the episode count stays below this.
+    pub max_episodes_per_token: u32,
 }
 
 /// One side's (entry or exit) metric-condition groups. Each group maps to one or
@@ -139,6 +156,15 @@ impl RuleParams {
         if let Some(side) = &self.exit {
             root.insert("exit".into(), side_to_value(side));
         }
+        if let Some(re) = self.reentry {
+            let mut o = Map::new();
+            o.insert("cooldown_sec".into(), re.cooldown_sec.into());
+            o.insert(
+                "max_episodes_per_token".into(),
+                (re.max_episodes_per_token as u64).into(),
+            );
+            root.insert("reentry".into(), Value::Object(o));
+        }
         Value::Object(root)
     }
 
@@ -147,7 +173,10 @@ impl RuleParams {
     fn parse_shape(json: &Value) -> Result<Self, String> {
         let obj = json.as_object().ok_or("params must be a JSON object")?;
         for key in obj.keys() {
-            if !matches!(key.as_str(), "take_profit" | "stop_loss" | "entry" | "exit") {
+            if !matches!(
+                key.as_str(),
+                "take_profit" | "stop_loss" | "entry" | "exit" | "reentry"
+            ) {
                 return Err(format!("unknown params key '{key}'"));
             }
         }
@@ -156,6 +185,7 @@ impl RuleParams {
             stop_loss: parse_opt_number(obj.get("stop_loss"), "stop_loss")?,
             entry: parse_opt_side(obj.get("entry"), "entry")?,
             exit: parse_opt_side(obj.get("exit"), "exit")?,
+            reentry: parse_opt_reentry(obj.get("reentry"))?,
         })
     }
 
@@ -178,6 +208,41 @@ impl RuleParams {
             }
         }
         Ok(())
+    }
+}
+
+/// Parse the optional `reentry` object. Validated inline (it is a small nested
+/// object, unlike the flat TP/SL numbers `validate()` handles): `cooldown_sec`
+/// finite and `>= 0`; `max_episodes_per_token` an integer `>= 1`.
+fn parse_opt_reentry(v: Option<&Value>) -> Result<Option<ReEntry>, String> {
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(o)) => {
+            for k in o.keys() {
+                if !matches!(k.as_str(), "cooldown_sec" | "max_episodes_per_token") {
+                    return Err(format!("reentry: unknown key '{k}'"));
+                }
+            }
+            let cooldown_sec = o
+                .get("cooldown_sec")
+                .and_then(Value::as_f64)
+                .ok_or("reentry.cooldown_sec must be a number")?;
+            if !cooldown_sec.is_finite() || cooldown_sec < 0.0 {
+                return Err("reentry.cooldown_sec must be a finite number >= 0".into());
+            }
+            let max = o
+                .get("max_episodes_per_token")
+                .and_then(Value::as_f64)
+                .ok_or("reentry.max_episodes_per_token must be a number")?;
+            if !max.is_finite() || max < 1.0 || max.fract() != 0.0 {
+                return Err("reentry.max_episodes_per_token must be an integer >= 1".into());
+            }
+            Ok(Some(ReEntry {
+                cooldown_sec,
+                max_episodes_per_token: max as u32,
+            }))
+        }
+        Some(_) => Err("reentry must be an object".into()),
     }
 }
 
@@ -763,8 +828,51 @@ mod tests {
         );
         let mut side = SideConditions::default();
         side.0.insert(MetricGroupId::Snapshot, vec![group]);
-        let p = RuleParams { take_profit: None, stop_loss: None, entry: Some(side), exit: None };
+        let p = RuleParams {
+            take_profit: None,
+            stop_loss: None,
+            entry: Some(side),
+            exit: None,
+            reentry: None,
+        };
         let e = p.validate().unwrap_err();
         assert!(e.contains("must be finite"), "{e}");
+    }
+
+    #[test]
+    fn reentry_parses_validates_and_round_trips() {
+        let p = RuleParams::parse(&json!({
+            "reentry": { "cooldown_sec": 5, "max_episodes_per_token": 10 },
+            "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } }
+        }))
+        .expect("reentry rule is valid");
+        let re = p.reentry.expect("reentry present");
+        assert_eq!(re.cooldown_sec, 5.0);
+        assert_eq!(re.max_episodes_per_token, 10);
+        // Round-trip: to_value → parse → identical struct (no DB migration needed).
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+        // Absent ⇒ one-shot (None), the backward-compatible default.
+        assert_eq!(RuleParams::parse(&json!({})).unwrap().reentry, None);
+
+        // cooldown_sec 0 is legal (re-arm on the next event).
+        assert!(RuleParams::parse(&json!({
+            "reentry": { "cooldown_sec": 0, "max_episodes_per_token": 1 }
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn reentry_rejects_bad_values() {
+        for (bad, needle) in [
+            (json!({ "reentry": { "cooldown_sec": -1, "max_episodes_per_token": 5 } }), ">= 0"),
+            (json!({ "reentry": { "cooldown_sec": 5, "max_episodes_per_token": 0 } }), ">= 1"),
+            (json!({ "reentry": { "cooldown_sec": 5, "max_episodes_per_token": 2.5 } }), ">= 1"),
+            (json!({ "reentry": { "cooldown_sec": 5 } }), "max_episodes_per_token"),
+            (json!({ "reentry": { "cooldown_sec": 5, "max_episodes_per_token": 5, "foo": 1 } }), "unknown key"),
+        ] {
+            let e = RuleParams::parse(&bad).unwrap_err();
+            assert!(e.contains(needle), "expected '{needle}' in: {e}");
+        }
     }
 }
