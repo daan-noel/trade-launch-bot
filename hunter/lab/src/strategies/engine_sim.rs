@@ -163,6 +163,7 @@ pub async fn spawn_engine_simulation(
             fingerprint_id,
             since,
             until,
+            fill_model,
             outcome,
             persist,
         );

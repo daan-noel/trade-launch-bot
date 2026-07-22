@@ -27,6 +27,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trading_core::strategies::kernel::RunSummary;
+use trading_core::strategies::paper_fill::FillModel;
 use uuid::Uuid;
 
 use crate::lake;
@@ -59,6 +60,11 @@ pub struct SimMeta {
     pub computed_at: DateTime<Utc>,
     pub n_rows: usize,
     pub n_migrated: u64,
+    /// Which fill model priced this run's round-trips — surfaced as the Simulate
+    /// table's Fill column so a result reads with the pessimism band it was booked
+    /// under. `#[serde(default)]` so legacy metas (pre-field) load as `WorstCase`.
+    #[serde(default)]
+    pub fill_model: FillModel,
     /// Unfiltered rollup — powers the Simulate page's per-rule columns without
     /// loading rows from disk.
     pub summary: RunSummary,
@@ -168,6 +174,7 @@ impl SimResults {
         fingerprint_id: Uuid,
         from: Option<DateTime<Utc>>,
         to: Option<DateTime<Utc>>,
+        fill_model: FillModel,
         outcome: SimOutcome,
         persist: bool,
     ) {
@@ -196,6 +203,7 @@ impl SimResults {
                     computed_at,
                     n_rows: rows.len(),
                     n_migrated,
+                    fill_model,
                     summary,
                 };
                 if let Err(e) = self.write_durable(&meta, rows) {
@@ -290,6 +298,11 @@ impl SimResults {
         self.index.get(rule_id).map(|m| m.computed_at)
     }
 
+    /// Fill model the stored result was priced under, or `None` if absent.
+    pub fn fill_model(&self, rule_id: &Uuid) -> Option<FillModel> {
+        self.index.get(rule_id).map(|m| m.fill_model)
+    }
+
     /// Durable meta for a rule, if any (no row load).
     pub fn meta(&self, rule_id: &Uuid) -> Option<SimMeta> {
         self.index.get(rule_id).map(|e| e.clone())
@@ -379,6 +392,7 @@ pub fn summary_wire(meta: &SimMeta) -> Value {
     if let Some(obj) = body.as_object_mut() {
         obj.insert("computed_at".into(), serde_json::json!(meta.computed_at));
         obj.insert("n_migrated".into(), serde_json::json!(meta.n_migrated));
+        obj.insert("fill_model".into(), serde_json::json!(meta.fill_model));
     }
     body
 }
@@ -453,6 +467,7 @@ mod tests {
             fp,
             None,
             None,
+            FillModel::WorstCase,
             SimOutcome::Done(rows.clone()),
             true,
         );
@@ -491,6 +506,7 @@ mod tests {
             Uuid::new_v4(),
             None,
             None,
+            FillModel::WorstCase,
             SimOutcome::Done(Arc::new(vec![serde_json::json!({"fired": false})])),
             false,
         );
@@ -512,6 +528,7 @@ mod tests {
             Uuid::new_v4(),
             None,
             None,
+            FillModel::WorstCase,
             SimOutcome::Done(Arc::new(vec![])),
             true,
         );

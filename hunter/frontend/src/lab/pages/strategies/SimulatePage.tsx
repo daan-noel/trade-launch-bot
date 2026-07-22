@@ -16,7 +16,7 @@ import {
   SpinnerIcon,
   TrashIcon,
 } from 'components/ui/icons';
-import { Badge } from 'components/ui/Badge';
+import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
@@ -100,6 +100,15 @@ import {
 type RunState = { running: boolean; summary?: SimulatedSummary; error?: string };
 
 const DASH = <span className="text-text-dim/60">—</span>;
+
+/** One distinct hue per fill model so equal values read the same at a glance,
+ *  ordered as a pessimism spectrum: worst-case (red) → first-in-window (neutral
+ *  blue) → signal-price (green, optimistic bound). */
+const FILL_MODEL_VARIANT: Record<FillModelId, BadgeVariant> = {
+  worst_case: 'danger',
+  first_in_window: 'info',
+  signal_price: 'success',
+};
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
@@ -993,6 +1002,30 @@ function buildColumns(
         if (run.error) return run.error;
         if (run.summary) return 'done';
         return 'cancelled';
+      },
+    },
+    {
+      key: 'sim_fill_model',
+      label: 'Fill',
+      group: 'sim',
+      tooltip:
+        'Which fill model priced this result’s round-trips — the pessimism band it was booked under',
+      sortable: true,
+      render: (r) => {
+        const run = runOf(r);
+        if (!run || run.running || run.error || !run.summary) return DASH;
+        const id = run.summary.fill_model ?? 'worst_case';
+        const model = FILL_MODELS.find((m) => m.id === id);
+        return (
+          <Badge variant={FILL_MODEL_VARIANT[id]} size="sm" title={model?.hint}>
+            {model?.label ?? id}
+          </Badge>
+        );
+      },
+      sortValue: (r) => summaryOf(r)?.fill_model ?? null,
+      searchValue: (r) => {
+        const id = summaryOf(r)?.fill_model;
+        return id ? (FILL_MODELS.find((m) => m.id === id)?.label ?? id) : '';
       },
     },
     // Mirrors the grouped-sweep combo table's stat columns (same metrics, same

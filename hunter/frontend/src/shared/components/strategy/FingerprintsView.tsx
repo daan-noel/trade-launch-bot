@@ -28,7 +28,7 @@ import {
 } from 'lib/ixLabels';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
 import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
-import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
+import { flowDiscoveryHref, rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   lamportsToSol,
   type Fingerprint,
@@ -151,7 +151,13 @@ function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
  * the API boundary) + used-by-guarded delete. Selecting a row expands the
  * rules that reference it.
  */
-export function FingerprintsView() {
+export function FingerprintsView({
+  linkToFlowDiscovery = false,
+}: {
+  /** Lab-only: show a per-row deep-link into Flow discovery scoped to that
+   *  fingerprint. Off in the live app (Flow discovery is a lab surface). */
+  linkToFlowDiscovery?: boolean;
+} = {}) {
   const { data: fps = [], isLoading } = useGetFingerprintsQuery();
   const { data: rules = [] } = useGetStrategyRulesQuery();
   const [createFp, { isLoading: creating }] = useCreateFingerprintMutation();
@@ -216,7 +222,22 @@ export function FingerprintsView() {
         key: 'name',
         label: 'Name',
         group: 'name',
-        render: (r) => <span className="font-medium text-text">{r.name || r.id.slice(0, 8)}</span>,
+        render: (r) => (
+          <div className="flex items-center gap-1">
+            <span className="font-medium text-text">{r.name || r.id.slice(0, 8)}</span>
+            {linkToFlowDiscovery && (
+              <Link
+                to={flowDiscoveryHref(r.id)}
+                title={`Flow discovery for “${r.name || r.id.slice(0, 8)}”`}
+                aria-label={`Flow discovery for ${r.name || r.id.slice(0, 8)}`}
+                className="inline-flex shrink-0 rounded p-0.5 text-accent hover:bg-accent/15 hover:text-primary"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <LinkIcon className="h-3.5 w-3.5" />
+              </Link>
+            )}
+          </div>
+        ),
         searchValue: (r) => r.name,
       },
       {
@@ -372,7 +393,7 @@ export function FingerprintsView() {
         sortable: true,
       },
     ],
-    [valueColors],
+    [valueColors, linkToFlowDiscovery],
   );
 
   const editingRules =

@@ -21,6 +21,8 @@ export const STRATEGY_PATHS = {
   portfolio: '/portfolio',
   /** Lab app only. */
   simulate: '/strategies/simulate',
+  /** Lab app only. */
+  flowDiscovery: '/strategies/flow-discovery',
 } as const;
 
 export const STRATEGY_PARAMS = {
@@ -47,6 +49,13 @@ export function fingerprintsHref(fpId?: string | null): string {
 export function simulateHref(ruleId?: string | null): string {
   if (!ruleId) return STRATEGY_PATHS.simulate;
   return `${STRATEGY_PATHS.simulate}?${STRATEGY_PARAMS.rule}=${encodeURIComponent(ruleId)}`;
+}
+
+/** Lab-only. Deep-link to Flow discovery scoped to a saved fingerprint —
+ *  `?fp=<id>` seeds it as the discovery seed fingerprint on arrival. */
+export function flowDiscoveryHref(fpId?: string | null): string {
+  if (!fpId) return STRATEGY_PATHS.flowDiscovery;
+  return `${STRATEGY_PATHS.flowDiscovery}?${STRATEGY_PARAMS.fingerprint}=${encodeURIComponent(fpId)}`;
 }
 
 export function portfolioHref(range?: 'today' | '7d' | 'all'): string {

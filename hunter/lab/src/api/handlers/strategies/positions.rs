@@ -60,6 +60,7 @@ fn summary_json_from_rows(state: &LocalState, rule_id: Uuid, rows: &[Value]) -> 
     if let Some(obj) = body.as_object_mut() {
         obj.insert("computed_at".into(), json!(state.sim_results.computed_at(&rule_id)));
         obj.insert("n_migrated".into(), json!(migrated));
+        obj.insert("fill_model".into(), json!(state.sim_results.fill_model(&rule_id)));
     }
     body
 }

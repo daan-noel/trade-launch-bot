@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
+import { Accordion } from 'components/ui/Accordion';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
 import type { TokenDetailRecord } from 'types';
 import { MetricPanes, type MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
@@ -62,7 +63,9 @@ export function LabTokenInspect({
   return (
     <div className="flex flex-col gap-2.5">
       {showDetailPanel && (
-        <TokenDetailPanel detail={detail} loading={loading} error={error} />
+        <Accordion title="Detail" padding="sm" bordered={false} storageKey="mt:inspect-detail-open">
+          <TokenDetailPanel detail={detail} loading={loading} error={error} />
+        </Accordion>
       )}
       <LazyTokenTradeChart
         tableId={tableId}
@@ -73,10 +76,7 @@ export function LabTokenInspect({
         onVisibleTimeRangeChange={setVisibleTimeRange}
       />
       {mint ? (
-        <div className="border-t border-white/7 pt-2">
-          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-text-dim">
-            Metric panes
-          </h2>
+        <Accordion title="Metric panes" bordered={false} padding="sm" storageKey="mt:inspect-panes-open">
           <MetricPanes
             mint={mint}
             crosshairTimeSec={crosshairTimeSec}
@@ -85,7 +85,7 @@ export function LabTokenInspect({
             onEventMarkersChange={onEventMarkersChange}
             ruleOverride={ruleOverride}
           />
-        </div>
+        </Accordion>
       ) : null}
     </div>
   );

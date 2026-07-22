@@ -477,31 +477,54 @@ export function DataTable<R>({
     return list;
   }, [serverSide, rows, columns, debouncedSearch, activeColFilters, sortKeys]);
 
-  // Reset to page 1 when the filter/sort/pageSize view changes. Selection changes
-  // are intentionally excluded: deselecting a row should not scroll the user back
-  // to page 1, and jumping to a newly-selected row is handled by the effect below.
-  // `processed` and `rowKey` are deliberately NOT dependencies — a poll hands back
-  // a new `rows`/`processed` identity, so depending on them would reset the page
-  // out from under the user on every refresh.
+  // Reset to page 1 when the filter/sort/pageSize view *changes* — but NOT on the
+  // initial mount (page already starts at 1) and NOT on a redundant re-fire. We
+  // compare a signature of the view against the last one we acted on, rather than
+  // calling `setPage(1)` on every effect run. This is essential: an unconditional
+  // mount-time `setPage(1)` races (and, under StrictMode's double-invoke, clobbers)
+  // the "jump to the selected row's page" effect below, leaving a deep-linked
+  // selection stranded on page 1. Signature-comparison also makes it StrictMode-safe
+  // (the doubled setup sees an unchanged signature → no-op). Selection changes are
+  // intentionally excluded here; the jump effect owns them. `processed`/`rowKey` are
+  // deliberately NOT dependencies — a poll hands back a new identity, so depending
+  // on them would reset the page out from under the user on every refresh.
+  const clientResetSig = `${debouncedSearch}|${JSON.stringify(debouncedColFilters)}|${JSON.stringify(sortKeys)}|${pageSize}`;
+  const prevClientResetSig = useRef<string | null>(null);
   useEffect(() => {
     if (!paginate || serverSide) return;
-    setPage(1);
+    if (prevClientResetSig.current === null) {
+      prevClientResetSig.current = clientResetSig; // seed on mount; don't reset
+      return;
+    }
+    if (prevClientResetSig.current !== clientResetSig) {
+      prevClientResetSig.current = clientResetSig;
+      setPage(1);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearch, debouncedColFilters, sortKeys, pageSize, paginate, serverSide]);
+  }, [clientResetSig, paginate, serverSide]);
 
   // Jump to the selected row's page when a row is selected (selectedKey becomes
   // truthy or changes to a different key). Deselection (→ null) is a no-op here
-  // so the page stays where it was. `processed` and `rowKey` are intentionally
-  // excluded (poll-driven identity churn); `pageSize` is included so the jump
-  // recalculates correctly if pageSize also changed in the same render.
+  // so the page stays where it was.
+  //
+  // We DO depend on `processed` — cross-page navigation (clicking a fingerprint /
+  // rule chip lands here with `selectedKey` already set from the URL) mounts before
+  // the RTK Query rows resolve, so on first run the row isn't found yet; the jump
+  // must re-fire once the rows arrive. To stay immune to poll-driven `processed`
+  // identity churn (a refresh must not yank the user's page back), we jump exactly
+  // ONCE per selected key: `jumpedForKey` records the key we've already located, so
+  // later polls (and manual page changes) are left alone until the selection changes.
+  const jumpedForKey = useRef<string | null>(null);
   useEffect(() => {
     if (!paginate || serverSide || !selectedKey) return;
+    if (jumpedForKey.current === selectedKey) return;
     const index = processed.findIndex((row) => rowKey(row) === selectedKey);
     if (index >= 0) {
+      jumpedForKey.current = selectedKey;
       setPage(Math.floor(index / pageSize) + 1);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedKey, pageSize, paginate, serverSide]);
+  }, [selectedKey, pageSize, paginate, serverSide, processed]);
 
   // Debounce the text inputs before they drive filtering: server mode emits the
   // view-state from these; client mode feeds them into `processed` above. Either

@@ -17,6 +17,21 @@ interface AccordionProps {
   bordered?: boolean;
   /** Header + content spacing. Default 'default' (matches legacy look). */
   padding?: 'default' | 'sm' | 'none';
+  /** Persist the open/closed state under this localStorage key (survives reloads).
+   *  Falls back to `defaultOpen` when unset or unreadable. */
+  storageKey?: string;
+}
+
+function readStoredOpen(key: string | undefined, fallback: boolean): boolean {
+  if (!key) return fallback;
+  try {
+    const v = localStorage.getItem(key);
+    if (v === '0') return false;
+    if (v === '1') return true;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
 }
 
 const PAD = {
@@ -54,9 +69,21 @@ export function Accordion({
   className,
   bordered = true,
   padding = 'default',
+  storageKey,
 }: AccordionProps) {
-  const [open, setOpen] = useState(defaultOpen);
-  const toggle = () => setOpen((o) => !o);
+  const [open, setOpen] = useState(() => readStoredOpen(storageKey, defaultOpen));
+  const toggle = () =>
+    setOpen((o) => {
+      const next = !o;
+      if (storageKey) {
+        try {
+          localStorage.setItem(storageKey, next ? '1' : '0');
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
   const pad = PAD[padding];
 
   return (

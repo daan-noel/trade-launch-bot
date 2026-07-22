@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { Accordion } from 'components/ui/Accordion';
+import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { Badge } from 'components/ui/Badge';
 import { Button } from 'components/ui/Button';
 import { IconButton } from 'components/ui/IconButton';
@@ -36,7 +37,7 @@ import {
   useGetTokenTradesQuery,
   useUpdateFingerprintMutation,
 } from 'store/sharedEndpoints';
-import { fingerprintsHref } from 'lib/strategy/nav';
+import { fingerprintsHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   metricConfigWithVolumePatterns,
   volumeIxPatternsFromConfig,
@@ -642,6 +643,16 @@ export function FlowDiscoveryPage() {
 
   const selectedGroup: FlowDiscoveryGroup | null =
     result?.groups[selectedGroupIdx] ?? null;
+
+  /** Group indices whose group_key identity-matches a saved fingerprint. */
+  const fingerprintGroupIdxs = useMemo(() => {
+    const set = new Set<number>();
+    if (!result || fingerprints.length === 0) return set;
+    result.groups.forEach((g, i) => {
+      if (findFingerprintForGroupKey(g.group_key, fingerprints, bucketWidthSol)) set.add(i);
+    });
+    return set;
+  }, [result, fingerprints, bucketWidthSol]);
   const flowSplit = useMemo(() => {
     if (!selectedGroup) return null;
     const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
@@ -749,6 +760,20 @@ export function FlowDiscoveryPage() {
     setApplyOk(null);
     setApplyError(null);
   }
+
+  // Deep-link seed: arriving from Fingerprints with `?fp=<id>` scopes discovery
+  // to that fingerprint. Applied once per param value (once fingerprints load),
+  // so it seeds the config without fighting later manual seed changes.
+  const [searchParams] = useSearchParams();
+  const appliedFpParam = useRef<string | null>(null);
+  useEffect(() => {
+    const fp = searchParams.get(STRATEGY_PARAMS.fingerprint);
+    if (!fp || appliedFpParam.current === fp) return;
+    if (!fingerprints.some((f) => f.id === fp)) return; // wait for the list to load
+    appliedFpParam.current = fp;
+    if (fp !== seedFingerprintId) selectSeedFingerprint(fp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- param + loaded list are the SSOTs
+  }, [searchParams, fingerprints]);
 
   async function handleRun() {
     if (running || ixFilterError) return;
@@ -1051,25 +1076,31 @@ export function FlowDiscoveryPage() {
               <p className="text-xs text-text-dim">No groups survived min_tokens.</p>
             ) : (
               <div className="flex max-h-[65vh] flex-col gap-1 overflow-y-auto pr-1">
-                {result.groups.map((g, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setSelectedGroupIdx(i)}
-                    className={`rounded border px-2 py-1.5 text-left text-xs transition ${i === selectedGroupIdx
-                        ? 'border-accent/50 bg-accent/10 text-text'
-                        : 'border-white/8 text-text-mid hover:border-white/20'
-                      }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate font-mono">{groupKeyLabel(g.group_key)}</span>
-                      {g.ambiguity && <Badge variant="warning">ambig</Badge>}
-                    </div>
-                    <div className="mt-0.5 text-[10px] text-text-dim">
-                      {g.n_tokens} tokens · {g.n_trades_scored.toLocaleString()} trades
-                    </div>
-                  </button>
-                ))}
+                {result.groups.map((g, i) => {
+                  const isFingerprint = fingerprintGroupIdxs.has(i);
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setSelectedGroupIdx(i)}
+                      className={`rounded border px-2 py-1.5 text-left text-xs transition ${i === selectedGroupIdx
+                          ? 'border-accent/50 bg-accent/10 text-text'
+                          : isFingerprint
+                            ? 'border-l-2 border-l-accent/70 border-y-white/8 border-r-white/8 bg-accent/5 text-text-mid hover:border-white/20'
+                            : 'border-white/8 text-text-mid hover:border-white/20'
+                        }`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate font-mono">{groupKeyLabel(g.group_key)}</span>
+                        {isFingerprint && <Badge variant="info">fp</Badge>}
+                        {g.ambiguity && <Badge variant="warning">ambig</Badge>}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-text-dim">
+                        {g.n_tokens} tokens · {g.n_trades_scored.toLocaleString()} trades
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1505,21 +1536,28 @@ function TokenPreviewPanel({
       <div className="flex flex-wrap gap-3">
         <div className="flex max-h-70 w-56 shrink-0 flex-col gap-1 overflow-y-auto pr-1">
           {tokens.map((t) => (
-            <button
+            <div
               key={t.mint_address}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => onSelect(t.mint_address)}
-              className={`rounded border px-2 py-1 text-left text-[10px] transition ${
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect(t.mint_address);
+                }
+              }}
+              className={`cursor-pointer rounded border px-2 py-1 text-left text-[10px] transition ${
                 t.mint_address === selectedMint
                   ? 'border-accent/50 bg-accent/10 text-text'
                   : 'border-white/8 text-text-mid hover:border-white/20'
               }`}
             >
-              <div className="truncate font-mono">{t.mint_address}</div>
+              <AddressDisplay address={t.mint_address} truncate={false} kind="token" iconSize='lg' stopPropagation />
               <div className="text-text-dim">
                 {fmt(t.gross_sol)}◎ · {t.n_trades.toLocaleString()} trades
               </div>
-            </button>
+            </div>
           ))}
         </div>
         <div className="min-w-0 flex-1">

@@ -1,4 +1,5 @@
 import type { RunSummary } from 'lib/strategy/runSummary';
+import type { FillModelId } from 'lib/strategy/types';
 
 export type { RunMetrics, RunSummary } from 'lib/strategy/runSummary';
 
@@ -376,6 +377,10 @@ export interface SimulatedSummary extends RunSummary {
   /** Fired tokens that graduated to AMM (`is_migrated`), over the filtered
    *  cohort. Absent on legacy payloads → the Migrated tile is then hidden. */
   n_migrated?: number;
+  /** Which fill model priced this run's round-trips — rendered as the Simulate
+   *  table's Fill column. Absent/null on legacy payloads → falls back to the
+   *  default (worst-case) label. */
+  fill_model?: FillModelId | null;
 }
 
 /** Hold + wall-clock bins for the Temporal summary band — mirrors lab
