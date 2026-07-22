@@ -5,7 +5,7 @@ import type { FilterSpec } from 'components/table/numericFilter';
 import { appendedTokenColumns } from './sharedTokenColumns';
 import { MintSetInput } from './MintSetInput';
 import { LazyTokenChartsGrid } from './LazyTokenChartsGrid';
-import type { ChartOverlayHook } from './TokenChartsGrid';
+import type { ChartOverlayHook, RowChartOverlay } from './TokenChartsGrid';
 import { cn } from 'lib/cn';
 
 /** Persist the charts-grid toggle per `tableId` (localStorage; SSR/test safe). */
@@ -90,6 +90,13 @@ interface TokenTableCommon<R> {
    *  matching the row's inspect modal. Called as a hook per card — see
    *  {@link ChartOverlayHook}. */
   useRowOverlay?: ChartOverlayHook<R>;
+  /** Collapse the charts grid to ONE card per mint and overlay all of that mint's
+   *  rows' markers on it (re-entry episodes on one chart). Pass alongside
+   *  {@link mintChartGroupOverlay}; takes precedence over `useRowOverlay` in the grid. */
+  chartsGroupByMint?: boolean;
+  /** Builds a mint card's overlay from every row of that mint (pure). Required for
+   *  {@link chartsGroupByMint}. */
+  mintChartGroupOverlay?: (rows: R[], mint: string) => RowChartOverlay;
   /** Per-row extra rendered in a chart card's header when `charts` is on. */
   renderChartCardExtra?: (row: R) => ReactNode;
   /** Per-row chart-card title (else derived from the fetched detail). */
@@ -152,6 +159,9 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     onVisibleRowsChange,
     selectedKey,
     onSelect,
+    rowKey,
+    chartsGroupByMint,
+    mintChartGroupOverlay,
   } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() => (charts ? loadChartsPref(tableId) : false));
@@ -209,6 +219,9 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           renderChartCardExtra={renderChartCardExtra}
           selectedKey={selectedKey}
           onSelect={onSelect}
+          rowKey={rowKey}
+          groupByMint={chartsGroupByMint}
+          mintGroupOverlay={mintChartGroupOverlay}
         />
       )}
     </>

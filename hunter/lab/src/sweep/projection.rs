@@ -17,7 +17,9 @@ use chrono::{DateTime, Utc};
 use hunter_engine::metrics::flow_split::{ix_hash_opt, wallet_hash};
 use hunter_engine::metrics::{Side, TradeLite};
 
-use crate::models::trade::TradeRow;
+use trading_core::config::constants::approx_real_sol_reserves;
+
+use crate::models::trade::{Trade, TradeRow};
 
 /// One trade, projected to the scalar fields the entry/exit fns read — the single
 /// row type both the grouped sweep and single-rule simulate walk.
@@ -161,9 +163,30 @@ pub fn project_trades<T: TradeRow<Wallet = String>>(trades: &[T]) -> Vec<CorpusT
         .collect()
 }
 
-/// Like [`project_trades`], but fills `ix_labels` / `wallet` from the live [`Trade`]
-/// for volume-flow metric series / simulate PG tails.
-pub fn project_trades_with_flow(trades: &[trading_core::models::trade::Trade]) -> Vec<CorpusTrade> {
+/// Real (non-virtual) SOL reserves for a Postgres-read [`Trade`] row.
+///
+/// The program-emitted `real_sol_reserves` is **not persisted** — only the live
+/// decoder sets it (see [`Trade::real_reserve_sol`]) — so a row read back from
+/// Postgres always has `real_reserve_sol == None`. Reconstruct it from the persisted
+/// virtual reserve + `venue` via the SSOT [`approx_real_sol_reserves`], the **same**
+/// derivation the sealed lake applies at load (`lab::lake::duck`). That keeps a PG
+/// fresh-tail row and its eventual lake copy computing identical liquidity/deadness,
+/// so a token that lives only in the PG tail (created after the last lake export)
+/// isn't blind to liquidity offline. A live value, if somehow present, wins; a row
+/// with no reserve pair stays `None` (⇒ NaN liquidity ⇒ never a false fire).
+fn pg_real_reserve_sol(t: &Trade) -> Option<f64> {
+    t.real_reserve_sol()
+        .or_else(|| t.reserve_sol().map(|s| approx_real_sol_reserves(s, &t.venue)))
+}
+
+/// Project the Postgres **fresh tail** ([`Trade`] rows) into the slim corpus rows for
+/// per-token analysis (metric-series + single-rule simulate). `Trade`-concrete (unlike
+/// the generic [`project_trades`]) so it can **reconstruct `real_reserve_sol`** from
+/// the persisted virtual reserve + venue (see [`pg_real_reserve_sol`]) — the lake load
+/// does the same, so a PG-only token's liquidity/deadness match what the lake would
+/// produce. `with_flow` fills `ix_labels`/`wallet` for the volume-flow metrics; when
+/// false they stay `None` (slim), exactly as each caller requests.
+pub fn project_pg_tail(trades: &[Trade], with_flow: bool) -> Vec<CorpusTrade> {
     trades
         .iter()
         .map(|t| CorpusTrade {
@@ -173,14 +196,14 @@ pub fn project_trades_with_flow(trades: &[trading_core::models::trade::Trade]) -
             price_per_token: t.price_per_token(),
             reserve_sol: t.reserve_sol(),
             reserve_token: t.reserve_token(),
-            real_reserve_sol: t.real_reserve_sol(),
+            real_reserve_sol: pg_real_reserve_sol(t),
             real_token_reserves: t.real_token_reserves(),
             slot: t.slot(),
             leg_index: t.leg_index(),
             is_buy: t.is_buy(),
             tx_signature: None,
-            ix_labels: Some(Box::from(t.instruction_labels.to_string())),
-            wallet: Some(Box::from(t.wallet_address.as_str())),
+            ix_labels: with_flow.then(|| Box::from(t.instruction_labels.to_string())),
+            wallet: with_flow.then(|| Box::from(t.wallet_address.as_str())),
         })
         .collect()
 }
@@ -240,5 +263,46 @@ mod tests {
             assert_eq!(want, cached[i].chart_spot_price(), "CachedTrade row {i}");
             assert_eq!(want, sweep_rows[i].chart_spot_price(), "CorpusTrade row {i}");
         }
+    }
+
+    /// Regression guard: a Postgres-read curve `Trade` never carries the program's
+    /// `real_sol_reserves` (it isn't persisted), so the PG-tail projection MUST
+    /// reconstruct it from the virtual reserve via the SSOT `approx_real_sol_reserves`
+    /// — the exact derivation the sealed lake applies. Without this, `real_reserve_sol`
+    /// is `None` → the engine's `liquidity` metric is `NaN` for every event, blanking
+    /// the chart pane and making any `liquidity >= X` entry gate unsatisfiable, so a
+    /// profitable token created after the last lake export is silently never entered
+    /// in simulate/paper.
+    #[test]
+    fn pg_tail_reconstructs_real_reserves_like_the_lake() {
+        use trading_core::config::constants::approx_real_sol_reserves;
+
+        // Curve row with ~44.89 virtual SOL and NO persisted real reserve (the PG shape).
+        let vsol = 44.89;
+        let curve = curve_trade(1.0, 1_000_000, vsol, 900_000);
+        assert!(curve.real_reserve_sol().is_none(), "PG rows carry no real reserve");
+
+        // AMM row: real reserve == pool reserve (no virtual offset).
+        let mut amm = curve_trade(1.0, 1_000_000, 25.0, 900_000);
+        amm.venue = "amm".into();
+
+        let rows = project_pg_tail(&[curve.clone(), amm.clone()], false);
+
+        // Curve: reconstructed real = virtual − 30 (≈ 14.89), clears a `liquidity >= 10` gate.
+        let curve_real = rows[0].real_reserve_sol.expect("curve real reconstructed");
+        assert_eq!(curve_real, approx_real_sol_reserves(vsol, "curve"));
+        assert!((curve_real - 14.89).abs() < 1e-9);
+        assert!(curve_real >= 10.0, "reconstructed liquidity must satisfy the entry gate");
+        assert!(to_trade_lite(&rows[0]).reserve_sol.is_finite(), "liquidity is finite, not NaN");
+
+        // AMM: reconstructed real == the pool reserve itself.
+        assert_eq!(rows[1].real_reserve_sol, Some(approx_real_sol_reserves(25.0, "amm")));
+
+        // `with_flow=false` keeps the slim shape (no ix-label/wallet copy).
+        assert!(rows[0].ix_labels.is_none() && rows[0].wallet.is_none());
+        // `with_flow=true` fills them without disturbing the reconstruction.
+        let flow_rows = project_pg_tail(&[curve], true);
+        assert!(flow_rows[0].ix_labels.is_some() && flow_rows[0].wallet.is_some());
+        assert_eq!(flow_rows[0].real_reserve_sol, Some(curve_real));
     }
 }

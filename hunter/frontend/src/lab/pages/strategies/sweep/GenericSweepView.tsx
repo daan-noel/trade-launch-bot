@@ -12,7 +12,12 @@ import { IconButton } from 'components/ui/IconButton';
 import { PromoteIcon, SpinnerIcon, TrashIcon } from 'components/ui/icons';
 import { Accordion } from 'components/ui/Accordion';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
-import { markerRowOverlay, type InspectTarget } from 'components/strategy/inspectTarget';
+import {
+  buildEventMarkersForEpisodes,
+  episodeRowKey,
+  markerRowOverlay,
+  type InspectTarget,
+} from 'components/strategy/inspectTarget';
 import {
   SummaryStatsPanel,
   type SummaryStat,
@@ -684,7 +689,24 @@ function ComboTokenResults({
     [chartPinned, filteredRows, visible],
   );
 
-  const selectedRow = selected ? rows.find((r) => r.mint_address === selected) ?? null : null;
+  // A table row selects by episode key; a grouped charts-grid card by mint.
+  const selectedRow = selected
+    ? rows.find((r) => episodeRowKey(r) === selected) ??
+      rows.find((r) => r.mint_address === selected) ??
+      null
+    : null;
+
+  // Overlay every re-entry episode of the selected token on one chart: the combo's
+  // full token-result set is already resident client-side, so gather all fired rows
+  // for that mint and build the union of their entry/exit markers (numbered per
+  // episode). Falls back to the single clicked row when it's a one-shot token.
+  const selectedEpisodeMarkers = useMemo(() => {
+    if (!selectedRow) return null;
+    const eps = rows
+      .filter((r) => r.mint_address === selectedRow.mint_address && r.fired)
+      .map(comboTarget);
+    return buildEventMarkersForEpisodes(eps.length ? eps : [comboTarget(selectedRow)]);
+  }, [rows, selectedRow]);
 
   const columns = useMemo<ColumnDef<ComboTokenResult>[]>(
     () => [
@@ -803,8 +825,14 @@ function ComboTokenResults({
         existingKeys={existingKeys}
         charts
         useRowOverlay={comboRowOverlay}
+        chartsGroupByMint
+        mintChartGroupOverlay={(gr, _mint) => ({
+          eventMarkers: buildEventMarkersForEpisodes(
+            gr.filter((r) => r.fired).map(comboTarget),
+          ),
+        })}
         rows={rowsForTable}
-        rowKey={(r) => r.mint_address}
+        rowKey={episodeRowKey}
         searchable
         colFilters
         selectable
@@ -834,6 +862,7 @@ function ComboTokenResults({
                 }
               : null
           }
+          eventMarkers={selectedEpisodeMarkers}
           onClose={() => setSelected(null)}
         />
       )}

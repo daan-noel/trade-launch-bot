@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Modal } from 'components/ui/Modal';
 import { buildEventMarkers, type InspectTarget } from 'components/strategy/inspectTarget';
+import type { ChartEventMarker } from 'components/token-price-chart';
 import { apiErrorMessage, useGetTokenDetailQuery } from 'store/apiSlice';
 import { LabTokenInspect } from '@lab/components/strategy/LabTokenInspect';
 import type { MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
@@ -15,12 +16,17 @@ export function LabTokenInspectModal({
   target,
   titleSuffix = 'Token inspect',
   ruleOverride = null,
+  eventMarkers = null,
   onClose,
 }: {
   target: InspectTarget;
   /** Modal heading suffix, e.g. "Sweep inspect". */
   titleSuffix?: string;
   ruleOverride?: MetricPanesRuleOverride | null;
+  /** Precomputed fill markers to draw instead of the single `target`'s — used to
+   *  overlay **all re-entry episodes** of the token on one chart. Falls back to the
+   *  single-target markers when null/absent. */
+  eventMarkers?: ChartEventMarker[] | null;
   onClose: () => void;
 }) {
   const {
@@ -29,7 +35,8 @@ export function LabTokenInspectModal({
     error,
   } = useGetTokenDetailQuery(target.mint_address, { skip: !target.mint_address });
 
-  const extraEventMarkers = useMemo(() => buildEventMarkers(target), [target]);
+  const singleMarkers = useMemo(() => buildEventMarkers(target), [target]);
+  const extraEventMarkers = eventMarkers ?? singleMarkers;
   const heading = target.symbol || target.mint_address.slice(0, 8);
 
   return (

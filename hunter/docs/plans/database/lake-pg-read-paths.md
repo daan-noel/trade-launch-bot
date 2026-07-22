@@ -51,6 +51,24 @@ The swing1 backtest still **carries its legs** in the result row — so the *sim
 inspect chart's legs are the sim's own (no re-detect); only the *position* overlay
 re-detects (and now sees the fresh tail).
 
+### PG-tail rows must reconstruct real reserves (liquidity parity)
+
+The program-emitted **`real_sol_reserves` is never persisted** — only the live decoder
+sets it (`Trade::real_reserve_sol`); the DB keeps only the virtual reserve pair. The lake
+already reconstructs it at load (`lab/src/lake/duck.rs` → `approx_real_sol_reserves(vsol,
+venue)` = `vsol − 30` on curve, `== vsol` on amm). The **PG fresh tail must do the same**,
+or a PG-read row's `real_reserve_sol` is `None` → the engine's `liquidity` metric is `NaN`
+for every event (`liquidity` = last real reserve). That blanks the metric-panes liquidity
+chart **and** makes any `liquidity >= X` entry gate unsatisfiable, so a profitable token
+created *after* the last lake export (i.e. PG-tail-only) is silently never entered in
+simulate/paper — even though live entered it fine (live has the decoder's real value).
+
+`sweep/projection.rs::project_pg_tail` (used by both `fetch_full_history_one_opts` branches)
+is `Trade`-concrete and derives `real_reserve_sol` via the SSOT `approx_real_sol_reserves`,
+so a PG-tail row and its eventual sealed-lake copy compute identical liquidity/deadness. The
+generic `project_trades` (lake corpus + tests) is unaffected — the lake source builds
+`CorpusTrade` directly with the reconstruction already applied.
+
 ## Bounds are analysis-agnostic
 
 `MAX_TRADES_RETAINED` is the **live in-RAM cache trim, never an analysis read bound** —

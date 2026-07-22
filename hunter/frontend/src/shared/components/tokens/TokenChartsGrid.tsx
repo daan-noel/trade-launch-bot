@@ -82,6 +82,10 @@ interface TokenChartCardProps<R> {
   chartTableId: string;
   /** Resolves this row's entry/exit + swing overlay (called as a hook). */
   useOverlay: ChartOverlayHook<R>;
+  /** Precomputed markers to draw instead of `useOverlay`'s result — used by the
+   *  group-by-mint path to overlay a token's whole re-entry episode set on one
+   *  card. `undefined` ⇒ use the hook; `null`/array ⇒ override. */
+  eventMarkersOverride?: ChartEventMarker[] | null;
   /** Extra content rendered in the card header (per-row context). */
   extra?: ReactNode;
   selected?: boolean;
@@ -96,13 +100,16 @@ function TokenChartCard<R>({
   highlightWallet,
   chartTableId,
   useOverlay,
+  eventMarkersOverride,
   extra,
   selected,
   onSelect,
 }: TokenChartCardProps<R>) {
   const { data: detail } = useGetTokenDetailQuery(mint, { skip: !mint });
   const heading = title ?? detail?.symbol ?? detail?.name ?? mint.slice(0, 6);
-  const { eventMarkers } = useOverlay(row, mint);
+  // Always call the overlay hook (rules of hooks); the override wins when present.
+  const { eventMarkers: hookMarkers } = useOverlay(row, mint);
+  const eventMarkers = eventMarkersOverride !== undefined ? eventMarkersOverride : hookMarkers;
   const selectable = !!onSelect;
 
   return (
@@ -172,11 +179,30 @@ export interface TokenChartsGridProps<R> {
   useRowOverlay?: ChartOverlayHook<R>;
   /** Extra header content per card (e.g. per-wallet buys/sells). */
   renderChartCardExtra?: (row: R) => ReactNode;
-  /** Highlight the card whose mint matches (same key as the table's `selectedKey`). */
+  /** Highlight the card whose key matches (same key as the table's `selectedKey`). */
   selectedKey?: string | null;
   /** Header click on a card — same contract as the table row select (toggle). */
   onSelect?: (key: string | null) => void;
+  /** Unique per-row identity for the chart cards — defaults to the row's
+   *  `mint_address`. Pass when a row set can repeat the same mint (e.g. a rule
+   *  or sim/sweep run that re-enters the same token across episodes) so each
+   *  episode gets its own card instead of colliding under one React key. Also
+   *  becomes the `selectedKey`/`onSelect` identity, matching the table's own
+   *  `rowKey`. Ignored when `groupByMint` is on (cards are keyed by mint). */
+  rowKey?: (row: R) => string;
+  /** Collapse the grid to ONE card per mint (not per row) and draw the markers
+   *  {@link mintGroupOverlay} builds from all rows sharing that mint — so a token
+   *  a rule re-entered N times shows all N episodes overlaid on a single chart,
+   *  matching the inspect modal. The card's selection key is the mint. Only the
+   *  rows on the current page are grouped (the grid is page-scoped). */
+  groupByMint?: boolean;
+  /** Builds one card's overlay from every row of its mint (pure — no hooks).
+   *  Required for {@link groupByMint}; ignored otherwise. */
+  mintGroupOverlay?: (rows: R[], mint: string) => RowChartOverlay;
 }
+
+const mintOfRow = <R,>(row: R): string =>
+  (row as { mint_address?: string }).mint_address ?? '';
 
 export function TokenChartsGrid<R>({
   rows,
@@ -187,16 +213,69 @@ export function TokenChartsGrid<R>({
   renderChartCardExtra,
   selectedKey,
   onSelect,
+  rowKey,
+  groupByMint,
+  mintGroupOverlay,
 }: TokenChartsGridProps<R>) {
   const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
   if (rows.length === 0) return null;
+
+  // Group-by-mint: one card per token, its markers built from ALL of that mint's
+  // rows on the page (re-entry episodes overlaid on one chart). Falls through to
+  // the per-row path when no group overlay was supplied.
+  if (groupByMint && mintGroupOverlay) {
+    const order: string[] = [];
+    const byMint = new Map<string, R[]>();
+    for (const row of rows) {
+      const mint = mintOfRow(row);
+      const bucket = byMint.get(mint);
+      if (bucket) {
+        bucket.push(row);
+      } else {
+        byMint.set(mint, [row]);
+        order.push(mint);
+      }
+    }
+    return (
+      <div className="mt-4 flex flex-col gap-4">
+        {order.map((mint) => {
+          const groupRows = byMint.get(mint)!;
+          const rep = groupRows[0];
+          const selected = !!mint && selectedKey === mint;
+          const { eventMarkers } = mintGroupOverlay(groupRows, mint);
+          return (
+            <LazyMount key={mint}>
+              <TokenChartCard
+                row={rep}
+                mint_address={mint}
+                title={titleOf?.(rep)}
+                highlightWallet={highlightWallet}
+                chartTableId={chartTableId}
+                useOverlay={useNoRowOverlay as ChartOverlayHook<R>}
+                eventMarkersOverride={eventMarkers ?? null}
+                extra={renderChartCardExtra?.(rep)}
+                selected={selected}
+                onSelect={
+                  onSelect && mint
+                    ? () => onSelect(selected ? null : mint)
+                    : undefined
+                }
+              />
+            </LazyMount>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="mt-4 flex flex-col gap-4">
       {rows.map((row) => {
-        const mint = (row as { mint_address?: string }).mint_address ?? '';
-        const selected = !!mint && selectedKey === mint;
+        const mint = mintOfRow(row);
+        const key = rowKey ? rowKey(row) : mint;
+        const selected = !!key && selectedKey === key;
         return (
-          <LazyMount key={mint}>
+          <LazyMount key={key}>
             <TokenChartCard
               row={row}
               mint_address={mint}
@@ -207,8 +286,8 @@ export function TokenChartsGrid<R>({
               extra={renderChartCardExtra?.(row)}
               selected={selected}
               onSelect={
-                onSelect && mint
-                  ? () => onSelect(selected ? null : mint)
+                onSelect && key
+                  ? () => onSelect(selected ? null : key)
                   : undefined
               }
             />

@@ -7,6 +7,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { formatCompact, formatDecimalTrim } from 'utils/format';
 import { formatIxLabelsText } from 'lib/ixLabels';
 import { metricColorStyle } from 'lib/strategy/metricColors';
+import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 
 /** Stable per-axis hue so each fingerprint param reads with its own color,
@@ -27,9 +28,14 @@ const AXIS_HUE: Record<string, number> = {
   fs_sell: 284,
   // instructions — amber family (labels + count share the tone)
   ix: 45,
+  // flow-split volume ix patterns — cyan
+  flow: 180,
   // bucket width — rose
   bkt: 340,
 };
+
+/** Muted chip style for an absent/unconfigured status flag (no tint, dimmed). */
+const OFF_TINT: CSSProperties = { opacity: 0.5 };
 
 /** Registry-consistent tint for a fingerprint axis (same engine as metrics).
  *  Exported so other surfaces showing the same underlying axes (e.g. a
@@ -63,6 +69,24 @@ function solChip(label: string, lamports: number | null): ReactNode | null {
 function intChip(label: string, n: number | null): ReactNode | null {
   if (n == null) return null;
   return chip(`${label}=${formatCompact(n, 1)}`, { style: axisTint(label) });
+}
+
+/** Distinct at-a-glance flow-split status pill, meant to sit next to the
+ *  fingerprint NAME (not among the mono axis chips) so presence/absence of
+ *  volume ix patterns is noticeable separately. `flow N` (cyan) when configured,
+ *  a dimmed `flow✗` when not. */
+export function flowStatusBadge(fp: Fingerprint): ReactNode {
+  const n = volumeIxPatternsFromConfig(fp.metric_config).length;
+  const on = n > 0;
+  return (
+    <span
+      title={on ? `${n} volume ix pattern${n === 1 ? '' : 's'} configured` : 'no volume ix patterns'}
+      className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wide"
+      style={on ? axisTint('flow') : OFF_TINT}
+    >
+      {on ? `flow ${n}` : 'flow✗'}
+    </span>
+  );
 }
 
 /** Axis chips only (no name) — set criteria + always-on bucket width. */
@@ -104,6 +128,8 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
     parts.push(`${fp.ix_labels.length}ix`);
     parts.push(formatIxLabelsText(fp.ix_labels));
   }
+  const flowCount = volumeIxPatternsFromConfig(fp.metric_config).length;
+  parts.push(flowCount > 0 ? `flow=${flowCount}` : 'flow✗');
   parts.push(`bkt=${formatDecimalTrim(fp.bucket_size_amount, 4)}`);
   return parts.join(' ');
 }

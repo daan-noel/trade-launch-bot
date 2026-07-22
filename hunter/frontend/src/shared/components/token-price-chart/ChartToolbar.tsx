@@ -160,6 +160,31 @@ export function DevMarkersIcon() {
   );
 }
 
+/** Two dashed horizontal lines with axis-label chips — the strategy entry/exit
+ *  dashed fill-price lines. */
+export function EntryExitLinesIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path
+        d="M2 7h11"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeDasharray="2 2"
+      />
+      <rect x="14" y="5.4" width="4" height="3.2" rx="0.8" fill="currentColor" />
+      <path
+        d="M2 13h11"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeDasharray="2 2"
+      />
+      <rect x="14" y="11.4" width="4" height="3.2" rx="0.8" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** Rising zigzag — line chart style. */
 export function LineIcon() {
   return (
@@ -267,6 +292,8 @@ export function ChartToolbar({
   showDevMarkers,
   devMarkersAvailable,
   devMarkersBoundariesOnly,
+  showEventMarkers,
+  eventMarkersAvailable,
   showAthLine,
   athLineAvailable,
   showMigrationLine,
@@ -284,6 +311,7 @@ export function ChartToolbar({
   onShowWalletMarkersChange,
   onShowDevMarkersChange,
   onDevMarkersBoundariesOnlyChange,
+  onShowEventMarkersChange,
   onShowAthLineChange,
   onShowMigrationLineChange,
   onTrimEmptyBarsChange,
@@ -503,6 +531,18 @@ export function ChartToolbar({
           >
             <DevMarkersIcon />
           </IconToggleButton>
+
+          {eventMarkersAvailable && (
+            <IconToggleButton
+              active={showEventMarkers}
+              onClick={() => onShowEventMarkersChange(!showEventMarkers)}
+              label="Toggle strategy entry/exit price lines"
+              tooltip="Dashed entry/exit fill-price lines"
+              activeColor={CHART_COLORS.entry}
+            >
+              <EntryExitLinesIcon />
+            </IconToggleButton>
+          )}
 
           <IconToggleButton
             active={trimEmptyBars}

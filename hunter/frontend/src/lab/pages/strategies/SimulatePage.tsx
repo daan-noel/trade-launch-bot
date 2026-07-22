@@ -25,10 +25,13 @@ import { TokenTable } from 'components/tokens/TokenTable';
 import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
 import { dashPercent } from 'components/strategy/cellFormat';
 import {
+  buildEventMarkersForEpisodes,
+  episodeRowKey,
   inspectFromSim,
   markerRowOverlay,
   type InspectTarget,
 } from 'components/strategy/inspectTarget';
+import type { ChartEventMarker } from 'components/token-price-chart';
 import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { SummaryStatsPanel, type SummaryStat } from 'components/strategy/SummaryStatsPanel';
@@ -99,7 +102,6 @@ type RunState = { running: boolean; summary?: SimulatedSummary; error?: string }
 const DASH = <span className="text-text-dim/60">—</span>;
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
-const keyByMint = (r: { mint_address: string }) => r.mint_address;
 const simRowOverlay = markerRowOverlay(inspectFromSim);
 
 /**
@@ -132,6 +134,46 @@ export function SimulatePage() {
     target: InspectTarget;
     rule: StrategyRule;
   } | null>(null);
+  // All re-entry episodes for the inspected token, overlaid on one chart. A rule can
+  // re-enter the same mint many times; the clicked row is only one episode, so fetch
+  // the mint's full episode set (server-side, filtered) and build the union of their
+  // entry/exit markers. Null ⇒ the modal falls back to the single clicked episode
+  // (shown while this loads, or if the fetch fails).
+  const [episodeMarkers, setEpisodeMarkers] = useState<ChartEventMarker[] | null>(null);
+  useEffect(() => {
+    setEpisodeMarkers(null);
+    if (!inspect) return;
+    const { rule, target } = inspect;
+    const ctrl = new AbortController();
+    const body = toTableRequest(
+      {
+        page: 1,
+        pageSize: 1000,
+        sortKeys: [],
+        search: '',
+        colFilters: {},
+        structuredFilters: { mint_address: { op: 'in', val: [target.mint_address] } },
+      },
+      SIM_NUMERIC_COLS,
+      { amountCols: SIM_AMOUNT_COLS },
+    );
+    void (async () => {
+      try {
+        const page = await fetchEngineSimPage(rule.id, body as TableRequestBody, ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        const targets = page.items
+          .filter((r) => r.fired !== false && r.exit_reason !== 'NoEntry')
+          .map(inspectFromSim);
+        setEpisodeMarkers(
+          buildEventMarkersForEpisodes(targets.length ? targets : [target]),
+        );
+      } catch (e) {
+        if (ctrl.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return;
+        setEpisodeMarkers(null);
+      }
+    })();
+    return () => ctrl.abort();
+  }, [inspect]);
   const [reloadNonce, setReloadNonce] = useState(0);
   /** Soft-archived rules are hidden by default — toggle to review them. */
   const [showDisabled, setShowDisabled] = useState(false);
@@ -465,6 +507,7 @@ export function SimulatePage() {
             fingerprintId: inspect.rule.fingerprint_id,
             label: inspect.rule.rule_name,
           }}
+          eventMarkers={episodeMarkers}
           onClose={() => setInspect(null)}
         />
       )}
@@ -654,8 +697,14 @@ function RuleSimPositionsPanel({
 
   const onSelectSim = useCallback(
     (key: string | null) => {
-      const row = key ? simTokens.find((t) => t.mint_address === key) ?? null : null;
-      onInspect(row ? { key: row.mint_address, target: inspectFromSim(row), rule } : null);
+      // A table row selects by episode key; a grouped charts-grid card selects by
+      // mint — resolve either. The inspect modal overlays all episodes regardless.
+      const row = key
+        ? simTokens.find((t) => episodeRowKey(t) === key) ??
+          simTokens.find((t) => t.mint_address === key) ??
+          null
+        : null;
+      onInspect(row ? { key: episodeRowKey(row), target: inspectFromSim(row), rule } : null);
     },
     [simTokens, onInspect, rule],
   );
@@ -768,8 +817,16 @@ function RuleSimPositionsPanel({
             mintSetFilter
             charts
             useRowOverlay={simRowOverlay}
+            chartsGroupByMint
+            mintChartGroupOverlay={(rows, _mint) => ({
+              eventMarkers: buildEventMarkersForEpisodes(
+                rows
+                  .filter((r) => r.fired !== false && r.exit_reason !== 'NoEntry')
+                  .map(inspectFromSim),
+              ),
+            })}
             rows={simTokens}
-            rowKey={keyByMint}
+            rowKey={episodeRowKey}
             selectedKey={inspectKey}
             onSelect={onSelectSim}
             serverSide

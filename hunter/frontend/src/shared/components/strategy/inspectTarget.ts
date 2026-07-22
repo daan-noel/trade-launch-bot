@@ -73,6 +73,28 @@ export function buildEventMarkers(target: InspectTarget): ChartEventMarker[] {
   return markers;
 }
 
+/** Build the chart markers for **all re-entry episodes** of one token — the union
+ *  of every episode's signal/entry/exit markers on a single chart, so a token a
+ *  rule re-entered N times shows N entry arrows + N exit arrows together. Episodes
+ *  are ordered by entry time and, when there's more than one, each marker's label is
+ *  suffixed with its episode number (`Entry 1` … `Exit 3`) so overlapping arrows stay
+ *  legible. A single-episode token is unchanged (no suffix). Pass every fired
+ *  `InspectTarget` for the mint; unentered/`NoEntry` targets contribute nothing. */
+export function buildEventMarkersForEpisodes(targets: InspectTarget[]): ChartEventMarker[] {
+  const ordered = [...targets].sort((a, b) => {
+    const ta = a.entryTime ? Date.parse(a.entryTime) : 0;
+    const tb = b.entryTime ? Date.parse(b.entryTime) : 0;
+    return ta - tb;
+  });
+  const numbered = ordered.length > 1;
+  return ordered.flatMap((t, i) => {
+    const markers = buildEventMarkers(t);
+    if (!numbered) return markers;
+    const n = i + 1;
+    return markers.map((m) => ({ ...m, label: `${m.label} ${n}` }));
+  });
+}
+
 /** A charts-grid overlay hook that draws only entry/exit markers (no swing legs) —
  *  the tpsl case. Derives from row data, so it calls no hooks and is trivially safe
  *  to invoke per card. */
@@ -95,6 +117,19 @@ export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
     exitLabel:
       fired && r.exit_reason && r.exit_reason !== 'Open' ? r.exit_reason : null,
   };
+}
+
+/** Stable per-row identity for engine-run result rows that carry no DB `id`
+ *  (`SimulatedTokenResult` / `ComboTokenResult`). Re-entry (cooldown + episode
+ *  cap) lets a rule/combo enter the same mint more than once in a single run, so
+ *  `mint_address` alone is no longer unique — `entry_time` is (one fill per
+ *  episode). A never-entered `NoEntry` row has no `entry_time` and is unique by
+ *  mint alone (a matched-but-unentered token can't loop). Use as the table
+ *  `rowKey` / charts-grid `rowKey` / inspect-selection key for any row source
+ *  that can re-enter. `RulePositionRecord` doesn't need this — it has a real
+ *  DB `id`. */
+export function episodeRowKey(r: { mint_address: string; entry_time?: string | null }): string {
+  return r.entry_time ? `${r.mint_address}::${r.entry_time}` : r.mint_address;
 }
 
 /** Map a live/paper position row to an inspect target. */

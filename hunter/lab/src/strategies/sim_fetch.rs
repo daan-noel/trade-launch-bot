@@ -24,7 +24,7 @@ use crate::lake::{lake_root, trades_dir};
 use crate::models::trade::{Trade, TradeRow};
 use crate::storage::repositories::trade_repo::TradeRepo;
 use crate::sweep::corpus::{CorpusSource, Selection, TradeWindow};
-use crate::sweep::projection::{project_trades, CorpusTrade};
+use crate::sweep::projection::CorpusTrade;
 
 /// Uncapped per-mint history for simulate: keeps each token's **full** trade history so
 /// ATH/exit match today's PG `find_by_mints_all`. Same as the grouped sweep's default
@@ -140,12 +140,12 @@ pub async fn fetch_full_history_one_opts(
     if tail.is_empty() {
         return Ok(lake); // no fresh tail — reuse the lake Arc, no copy
     }
+    // Project the PG tail with real-reserve reconstruction (the persisted rows carry
+    // only the virtual reserve; `project_pg_tail` derives `real_reserve_sol` the same
+    // way the lake load does, so liquidity/deadness match the sealed corpus). `with_flow`
+    // additionally loads the ix-label/wallet columns for the volume-flow metrics.
     let mut merged = (*lake).clone();
-    if with_flow {
-        merged.extend(crate::sweep::projection::project_trades_with_flow(&tail));
-    } else {
-        merged.extend(project_trades(&tail));
-    }
+    merged.extend(crate::sweep::projection::project_pg_tail(&tail, with_flow));
     Ok(Arc::new(merged))
 }
 

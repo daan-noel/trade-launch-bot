@@ -278,6 +278,10 @@ export interface ChartToolbarProps {
   devMarkersAvailable: boolean;
   /** Show only the dev's first_buy/sell_all boundaries (hide mid-position trades). */
   devMarkersBoundariesOnly: boolean;
+  /** Strategy entry/exit overlay (arrow markers + dashed fill-price lines) toggle. */
+  showEventMarkers: boolean;
+  /** False when the chart has no entry/exit overlay — the toggle renders disabled. */
+  eventMarkersAvailable: boolean;
   showAthLine: boolean;
   athLineAvailable: boolean;
   showMigrationLine: boolean;
@@ -296,6 +300,7 @@ export interface ChartToolbarProps {
   onShowWalletMarkersChange: (show: boolean) => void;
   onShowDevMarkersChange: (show: boolean) => void;
   onDevMarkersBoundariesOnlyChange: (only: boolean) => void;
+  onShowEventMarkersChange: (show: boolean) => void;
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
   onTrimEmptyBarsChange: (trim: boolean) => void;

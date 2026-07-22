@@ -541,6 +541,7 @@ export function TokenPriceChart({
   const [devMarkersBoundariesOnly, setDevMarkersBoundariesOnly] = useState(
     initialPrefs.devMarkersBoundariesOnly,
   );
+  const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
   const { timezone: chartTimezone } = useTimezone();
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -756,6 +757,11 @@ export function TokenPriceChart({
   const handleDevMarkersBoundariesOnlyChange = useCallback((next: boolean) => {
     setDevMarkersBoundariesOnly(next);
     savePrefs({ devMarkersBoundariesOnly: next });
+  }, []);
+
+  const handleShowEventMarkersChange = useCallback((next: boolean) => {
+    setShowEventMarkers(next);
+    savePrefs({ showEventMarkers: next });
   }, []);
 
   const handleSliderChange = useCallback((from: number, to: number) => {
@@ -1488,7 +1494,7 @@ export function TokenPriceChart({
     }
     eventLineRefs.current = [];
 
-    if (!eventMarkers) return;
+    if (!showEventMarkers || !eventMarkers) return;
 
     // Price lines are fill-only — metric signal markers already label the bar;
     // a second dashed line at nearly the same price reads as a duplicate fill.
@@ -1508,7 +1514,7 @@ export function TokenPriceChart({
         }),
       );
     }
-  }, [eventMarkers, metric, toValue, showChart, style, bars]);
+  }, [eventMarkers, showEventMarkers, metric, toValue, showChart, style, bars]);
 
   if (!id) {
     return (
@@ -1577,6 +1583,8 @@ export function TokenPriceChart({
         showDevMarkers={showDevMarkers}
         devMarkersAvailable={devWallet != null}
         devMarkersBoundariesOnly={devMarkersBoundariesOnly}
+        showEventMarkers={showEventMarkers}
+        eventMarkersAvailable={!!eventMarkers && eventMarkers.length > 0}
         showAthLine={showAthLine}
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
@@ -1594,6 +1602,7 @@ export function TokenPriceChart({
         onShowWalletMarkersChange={handleShowWalletMarkersChange}
         onShowDevMarkersChange={handleShowDevMarkersChange}
         onDevMarkersBoundariesOnlyChange={handleDevMarkersBoundariesOnlyChange}
+        onShowEventMarkersChange={handleShowEventMarkersChange}
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}

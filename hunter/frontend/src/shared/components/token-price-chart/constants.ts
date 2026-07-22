@@ -170,6 +170,7 @@ export const DEFAULT_CHART_PREFS = {
   showWalletMarkers: true,
   showDevMarkers: false,
   devMarkersBoundariesOnly: false,
+  showEventMarkers: true,
 };
 
 /** Responsive chart height. The chart width fills its container (fluid), so on a
