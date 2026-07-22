@@ -137,12 +137,25 @@ impl DbWriter {
             }
         }
 
+        // Liveness: the heartbeat is stamped ONLY if this flush persists at least
+        // one row. Stamping unconditionally (as this did before 2026-07-22) is a
+        // false liveness signal — a flush that fails every write on an exhausted
+        // pool still looks alive, so the watchdog never restarts a wedged process.
+        // Any single successful write proves the DB path is up; that's enough.
+        let mut any_ok = false;
+
         // Tokens first (FK constraint: trades ref tokens).
-        if let Err(e) = self.token_repo.insert_many(&tokens).await {
-            warn!("DbWriter: token bulk insert failed ({e}); retrying per-row");
-            for token in &tokens {
-                if let Err(e) = self.token_repo.insert(token).await {
-                    warn!("DbWriter: token {}: {e}", token.mint_address);
+        if !tokens.is_empty() {
+            match self.token_repo.insert_many(&tokens).await {
+                Ok(()) => any_ok = true,
+                Err(e) => {
+                    warn!("DbWriter: token bulk insert failed ({e}); retrying per-row");
+                    for token in &tokens {
+                        match self.token_repo.insert(token).await {
+                            Ok(()) => any_ok = true,
+                            Err(e) => warn!("DbWriter: token {}: {e}", token.mint_address),
+                        }
+                    }
                 }
             }
         }
@@ -160,11 +173,17 @@ impl DbWriter {
                     source: 0,
                 })
                 .collect();
-            if let Err(e) = self.raw_tx_repo.insert_many(&raw_txs).await {
-                warn!("DbWriter: raw bulk insert failed ({e}); retrying per-row");
-                for tx in &raw_txs {
-                    if let Err(e) = self.raw_tx_repo.insert(tx).await {
-                        error!("DbWriter: raw tx slot={} idx={}: {e}", tx.slot, tx.tx_index);
+            match self.raw_tx_repo.insert_many(&raw_txs).await {
+                Ok(()) => any_ok = true,
+                Err(e) => {
+                    warn!("DbWriter: raw bulk insert failed ({e}); retrying per-row");
+                    for tx in &raw_txs {
+                        match self.raw_tx_repo.insert(tx).await {
+                            Ok(()) => any_ok = true,
+                            Err(e) => {
+                                error!("DbWriter: raw tx slot={} idx={}: {e}", tx.slot, tx.tx_index)
+                            }
+                        }
                     }
                 }
             }
@@ -173,8 +192,9 @@ impl DbWriter {
         // Wallets.
         if !wallets.is_empty() {
             let addrs: Vec<String> = wallets.into_iter().collect();
-            if let Err(e) = self.wallet_repo.touch_last_seen_many(&addrs, Utc::now()).await {
-                warn!("DbWriter: wallet touch ({} addrs): {e}", addrs.len());
+            match self.wallet_repo.touch_last_seen_many(&addrs, Utc::now()).await {
+                Ok(()) => any_ok = true,
+                Err(e) => warn!("DbWriter: wallet touch ({} addrs): {e}", addrs.len()),
             }
         }
 
@@ -182,22 +202,29 @@ impl DbWriter {
         // promises a queryable committed row; waking waiters after a failed
         // insert makes sell-confirm poll missing data.
         let trades: Vec<Trade> = trades.into_values().collect();
-        let persisted: Vec<&Trade> = match self.trade_repo.insert_many(&trades).await {
-            Ok(()) => trades.iter().collect(),
-            Err(e) => {
-                warn!("DbWriter: trade bulk insert failed ({e}); retrying per-row");
-                let mut ok = Vec::with_capacity(trades.len());
-                for t in &trades {
-                    match self.trade_repo.insert(t).await {
-                        Ok(()) => ok.push(t),
-                        Err(e) => {
-                            warn!("DbWriter: trade {}#{}: {e}", t.tx_signature, t.leg_index)
+        let persisted: Vec<&Trade> = if trades.is_empty() {
+            Vec::new()
+        } else {
+            match self.trade_repo.insert_many(&trades).await {
+                Ok(()) => trades.iter().collect(),
+                Err(e) => {
+                    warn!("DbWriter: trade bulk insert failed ({e}); retrying per-row");
+                    let mut ok = Vec::with_capacity(trades.len());
+                    for t in &trades {
+                        match self.trade_repo.insert(t).await {
+                            Ok(()) => ok.push(t),
+                            Err(e) => {
+                                warn!("DbWriter: trade {}#{}: {e}", t.tx_signature, t.leg_index)
+                            }
                         }
                     }
+                    ok
                 }
-                ok
             }
         };
+        if !persisted.is_empty() {
+            any_ok = true;
+        }
 
         for t in persisted {
             self.trade_signals.notify(&t.wallet_address, &t.mint_address);
@@ -210,30 +237,34 @@ impl DbWriter {
         // one bad row can't drop the whole batch (mirrors tokens/raws/trades above).
         if !metrics.is_empty() {
             let rows: Vec<TokenMetricsWrite> = metrics.into_values().collect();
-            if let Err(e) = self.info_repo.upsert_metrics_many(&rows).await {
-                warn!("DbWriter: metrics bulk upsert failed ({e}); retrying per-row");
-                for m in &rows {
-                    if let Err(e) = self
-                        .info_repo
-                        .upsert_metrics(
-                            &m.mint,
-                            m.ath_price,
-                            m.ath_timestamp,
-                            m.age_seconds,
-                            m.volume_sol,
-                            m.market_cap,
-                            m.trade_count,
-                            m.last_trade_at,
-                            m.current_price,
-                            m.is_dead,
-                            m.is_migrated,
-                            m.lifetime_secs,
-                            m.first_slot_buy_sol,
-                            m.first_slot_sell_sol,
-                        )
-                        .await
-                    {
-                        warn!("DbWriter: metrics {}: {e}", m.mint);
+            match self.info_repo.upsert_metrics_many(&rows).await {
+                Ok(()) => any_ok = true,
+                Err(e) => {
+                    warn!("DbWriter: metrics bulk upsert failed ({e}); retrying per-row");
+                    for m in &rows {
+                        match self
+                            .info_repo
+                            .upsert_metrics(
+                                &m.mint,
+                                m.ath_price,
+                                m.ath_timestamp,
+                                m.age_seconds,
+                                m.volume_sol,
+                                m.market_cap,
+                                m.trade_count,
+                                m.last_trade_at,
+                                m.current_price,
+                                m.is_dead,
+                                m.is_migrated,
+                                m.lifetime_secs,
+                                m.first_slot_buy_sol,
+                                m.first_slot_sell_sol,
+                            )
+                            .await
+                        {
+                            Ok(()) => any_ok = true,
+                            Err(e) => warn!("DbWriter: metrics {}: {e}", m.mint),
+                        }
                     }
                 }
             }
@@ -241,11 +272,16 @@ impl DbWriter {
 
         // Migrations.
         for mint in &migrations {
-            if let Err(e) = self.info_repo.update_migration_status(mint, true).await {
-                warn!("DbWriter: migration {mint}: {e}");
+            match self.info_repo.update_migration_status(mint, true).await {
+                Ok(()) => any_ok = true,
+                Err(e) => warn!("DbWriter: migration {mint}: {e}"),
             }
         }
 
-        self.heartbeat.stamp();
+        // Stamp liveness only if something persisted. An all-failed flush leaves the
+        // heartbeat stale so the watchdog can see the pipeline is wedged.
+        if any_ok {
+            self.heartbeat.stamp();
+        }
     }
 }

@@ -12,15 +12,32 @@ use crate::config::Settings;
 /// legitimate path idles inside a transaction this long.
 const IDLE_IN_TX_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Per-statement ceiling on the **API** pool only. Interactive dashboard reads
-/// should be fast; under disk pressure a pathological query is killed at this
-/// point (returning an error the handler surfaces) instead of holding its
-/// connection until the `acquire_timeout` drains the whole pool for everyone
-/// else. Deliberately *below* `db_acquire_timeout` (10s) so the slow query frees
-/// its slot before queued requests time out. Not applied to `hot` (must never
-/// kill money-critical batched trade/migration writes) or `batch` (backtests run
-/// long by design — bounded by job-level concurrency, not a statement timeout).
+/// Per-statement ceiling on the **API** pool. Interactive dashboard reads should
+/// be fast; under disk pressure a pathological query is killed at this point
+/// (returning an error the handler surfaces) instead of holding its connection
+/// until the `acquire_timeout` drains the whole pool for everyone else.
+/// Deliberately *below* `db_acquire_timeout` (10s) so the slow query frees its
+/// slot before queued requests time out.
 const API_STATEMENT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Per-statement ceiling on the **hot** (ingest/strategy) pool. Generous — a
+/// healthy batched write finishes in well under a second, so this never fires in
+/// normal operation. Its whole job is to break a *wedge*: a query stuck on a dead
+/// socket or a lock is aborted server-side, its connection returned to the pool,
+/// instead of being held forever. Before this, `hot` had NO statement timeout,
+/// so a single hung write could pin a connection indefinitely; a handful drained
+/// the pool and froze ingest for 7h on 2026-07-22. `statement_timeout` aborts the
+/// statement atomically (full rollback), so no partial/torn write — the batch
+/// just retries per-row. Kept well above any legitimate write time so it can
+/// never truncate real work.
+const HOT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Max lifetime for a pooled connection (all pools). A connection is retired and
+/// replaced once it has lived this long and is returned to the pool — defense in
+/// depth that rotates out any connection whose socket has silently gone half-open
+/// (no TCP keepalive is exposed by sqlx). Only acts on returned/idle connections,
+/// never mid-query, so it can't interrupt an in-flight write.
+const CONNECTION_MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
 
 /// The three workload-isolated Postgres connection pools. Splitting by workload
 /// keeps each contention class off the others' connections:
@@ -56,6 +73,7 @@ async fn build_pool(
         .max_connections(max_connections)
         .min_connections(min_connections)
         .acquire_timeout(settings.db_acquire_timeout)
+        .max_lifetime(CONNECTION_MAX_LIFETIME)
         // Runs once per physical connection (incl. reconnects), so the guards
         // always apply. `SET` is session-local — scoped to this pooled connection.
         .after_connect(move |conn, _meta| {
@@ -92,13 +110,14 @@ fn session_guard_sql(statement_timeout: Option<Duration>) -> String {
 /// Connect all three pools and apply pending migrations once (on the `hot` pool —
 /// it's built first at boot and owns schema setup for all three).
 pub async fn connect(settings: &Settings) -> anyhow::Result<DbPools> {
-    // `hot` runs batched, money-critical ingest writes — no statement timeout, so a
-    // slow write under load is never killed mid-batch.
+    // `hot` runs batched ingest/strategy writes. A generous 60s statement timeout
+    // never fires on healthy writes but breaks a wedged connection (dead socket /
+    // lock) instead of letting it pin a slot forever and drain the pool.
     let hot = build_pool(
         settings,
         settings.db_max_connections,
         settings.db_min_connections,
-        None,
+        Some(HOT_STATEMENT_TIMEOUT),
     )
     .await?;
 
@@ -159,10 +178,21 @@ mod tests {
     }
 
     #[test]
-    fn hot_and_batch_pools_disable_statement_timeout_but_keep_idle_guard() {
-        // hot/batch pass `None` → `statement_timeout = 0` (Postgres default: disabled),
-        // so a long batched write / backtest statement is never killed — but the idle
-        // guard still reaps a leaked transaction.
+    fn hot_pool_guard_sets_60s_statement_and_30s_idle() {
+        // The hot pool passes `Some(HOT_STATEMENT_TIMEOUT)` (60s) → 60000ms. It never
+        // fires on a healthy write but breaks a wedged connection; pins the unit
+        // conversion so 60s can't silently become `60` ms and truncate real writes.
+        assert_eq!(
+            session_guard_sql(Some(HOT_STATEMENT_TIMEOUT)),
+            "SET statement_timeout = 60000; SET idle_in_transaction_session_timeout = 30000"
+        );
+    }
+
+    #[test]
+    fn batch_pool_disables_statement_timeout_but_keeps_idle_guard() {
+        // batch passes `None` → `statement_timeout = 0` (Postgres default: disabled),
+        // so a long backtest statement is never killed — but the idle guard still
+        // reaps a leaked transaction.
         assert_eq!(
             session_guard_sql(None),
             "SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 30000"

@@ -115,18 +115,9 @@ pub async fn spawn_ingest(
         });
     }
 
-    let db_tx_weak = db_tx.downgrade();
-    spawn_watchdog(
-        heartbeat,
-        live_rx,
-        settings_rx.clone(),
-        move || {
-            db_tx_weak
-                .upgrade()
-                .map(|tx| tx.capacity() < tx.max_capacity())
-                .unwrap_or(false)
-        },
-    );
+    // The watchdog trips on "live but no successful DB write within the timeout" —
+    // no longer gated on db_tx queue depth (that proxy missed upstream stalls).
+    spawn_watchdog(heartbeat, live_rx, settings_rx.clone());
 
     // Forward gap-replay settings to the ingest transport whenever the operator
     // changes them via the settings page. Reads the current value immediately so

@@ -64,52 +64,62 @@ Runs on a **dedicated OS thread** (not tokio). Calls `std::process::exit(1)` →
 
 ### What it watches
 
-`DbWriter` stamps a shared atomic (`IngestHeartbeat`) at the **end of every `flush()`** — after all DB writes complete. This is the single "real progress" signal.
+`DbWriter` stamps a shared atomic (`DbHeartbeat`) at the end of a `flush()` **only
+when that flush persisted at least one row** (`any_ok`). An all-failed flush (e.g.
+every write timing out on an exhausted pool) does **not** stamp — so the heartbeat
+means "data is landing", not merely "the writer loop is spinning". Stamping
+unconditionally was the 2026-07-22 root cause: a wedged pipeline kept the heartbeat
+fresh and the watchdog never fired for 7h.
 
 ```
 spawn_watchdog OS thread loop:
-  ├─ read settings (enabled, stall_timeout ≥180s floor, check_interval ≥5s floor)
-  ├─ sleep(check_interval)                 [default 15s]
+  ├─ read settings (enabled, stall_timeout ≥90s floor, check_interval ≥5s floor)
+  ├─ sleep(check_interval)                 [default 10s]
   ├─ if live just resumed (off→on):        stamp heartbeat (give fresh window)
-  ├─ idle = now − last_heartbeat_stamp
-  ├─ is_stalled = enabled && live && work_pending() && idle >= timeout
-  │     work_pending() = db_tx.capacity() < db_tx.max_capacity()
-  │                    = DB write queue has undrained items
+  ├─ idle = now − last_successful_write_stamp
+  ├─ is_stalled = enabled && live && idle >= timeout
   └─ if stalled: log error → std::process::exit(1)
 ```
+
+**No queue-depth gate.** The old condition also required `work_pending()`
+(db_tx queue non-empty). That had a blind spot: an *upstream* stall (transport
+dead, nothing arriving) drains the queue empty, so `work_pending` was false and the
+watchdog stayed silent even though the feed was dead. The pump.fun firehose is never
+quiet — `live && no successful write for the timeout` is unambiguously a fault
+regardless of queue depth, so the gate was removed. This now catches BOTH a wedged
+downstream (pool exhausted) and a dead upstream (transport) with one condition.
 
 ### Timing (DB settings, adjustable via UI)
 
 | Setting | Default | Floor | Purpose |
 |---|---|---|---|
-| `watchdog_stall_timeout_secs` | **90s** | **90s** (hard floor in code) | Stale heartbeat + work pending → exit |
+| `watchdog_stall_timeout_secs` | **90s** | **90s** (hard floor in code) | Live + no successful write for this long → exit |
 | `watchdog_check_interval_secs` | **10s** | **5s** | How often the watchdog wakes |
 
-**Worst-case detection latency:** `stall_timeout` (90s) + `check_interval` (10s) = **~100s** from last DB commit to process exit.
+**Worst-case detection latency:** `stall_timeout` (90s) + `check_interval` (10s) = **~100s** from last successful write to process exit.
 
 ---
 
 ## How the Two Layers Compose
 
-### Wedged DbWriter (hung DB `.await`)
+### Wedged DbWriter (DB pool exhausted / hung write)
 
 ```
-Time 0:    DbWriter hangs on a DB call — last heartbeat stamp frozen here
-Time ~10s: Pipeline channel fills, client send_timeout fires
-           → PipelineBackpressure → reconnect after ~1s
-           → new stream, same wedge, same 10s → repeat
-Time ~90s: heartbeat still stale, db_tx queue still backed up (work_pending=true)
-           → watchdog fires on its next 10s tick
-           → exit(1) → supervisor restarts
+Time 0:    Writes start failing — a hung query holds its hot-pool connection.
+           A 60s statement_timeout on the hot pool (see storage/postgres.rs) aborts
+           the stuck query server-side, frees the connection, and writes usually
+           resume BEFORE the watchdog window — self-heal without a restart.
+Time ~90s: If writes still aren't landing (heartbeat stale, any_ok never true),
+           the watchdog fires on its next tick → exit(1) → supervisor restarts.
 ```
 
-### Dead/silent gRPC stream (pipeline healthy)
+### Dead/silent gRPC stream (transport wedged, nothing arriving)
 
 ```
-Time ~10s: No slot advance for STREAM_RECONNECT_IDLE_TIMEOUT
-           → IdleTimeout → reconnect after ~10s delay (+ jitter)
-           DbWriter keeps committing → heartbeat kept fresh
-           → watchdog never fires
+Time ~10s: Transport idle-timeout / reconnect attempts (Mechanism 1).
+Time ~90s: If the reconnect never revives the feed, no rows are written, the
+           heartbeat goes stale, and the watchdog fires — this is the case the old
+           work_pending gate MISSED (empty queue) and the 7h stall proved.
 ```
 
 ---

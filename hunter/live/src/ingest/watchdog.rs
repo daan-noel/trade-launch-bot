@@ -1,8 +1,16 @@
 //! Process watchdog for the ingest pipeline.
 //!
-//! Watches the `DbWriter` heartbeat (stamped on each committed batch) and
-//! force-exits if the DB queue has pending work but no commit arrives within the
-//! configured timeout — indicating a wedged downstream (hung DB socket, etc.).
+//! Watches the `DbWriter` heartbeat (stamped only when a flush actually persists
+//! a row) and force-exits if no successful write lands within the configured
+//! timeout while ingest is live — covering BOTH failure modes that stalled the
+//! feed for 7h on 2026-07-22: a wedged downstream (DB pool exhausted, every write
+//! timing out) AND an upstream stall (transport dead, nothing arriving to write).
+//!
+//! It deliberately does NOT gate on "DB queue has pending work". That proxy had a
+//! blind spot: an upstream stall drains the queue empty, so the old
+//! `work_pending && stale` condition never tripped and the process sat alive but
+//! dead for hours. The pump.fun feed is never quiet — live + zero successful
+//! writes for the timeout window is unambiguously a fault, queue depth or not.
 //!
 //! Runs on a dedicated OS thread (not a tokio task) so a starved runtime cannot
 //! freeze the watchdog alongside the thing it's watching.
@@ -30,7 +38,9 @@ impl DbHeartbeat {
         Self(Arc::new(AtomicU64::new(now_millis())))
     }
 
-    /// Stamp — called by the `DbWriter` at the end of each committed flush.
+    /// Stamp — called by the `DbWriter` only after a flush that persisted at
+    /// least one row. Stamping on an all-failed flush is a false liveness signal
+    /// that hides a wedged pipeline from the watchdog (the 2026-07-22 root cause).
     #[inline]
     pub fn stamp(&self) {
         self.0.store(now_millis(), Ordering::Relaxed);
@@ -52,19 +62,15 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn is_stalled(enabled: bool, live: bool, work_pending: bool, idle: Duration, timeout: Duration) -> bool {
-    enabled && live && work_pending && idle >= timeout
+fn is_stalled(enabled: bool, live: bool, idle: Duration, timeout: Duration) -> bool {
+    enabled && live && idle >= timeout
 }
 
 /// Spawn the watchdog on a dedicated OS thread.
-///
-/// `work_pending` closure: returns true when the DB queue is non-empty
-/// (typically a `WeakSender::upgrade().map(|tx| tx.capacity() < tx.max_capacity())`).
 pub fn spawn_watchdog(
     heartbeat: DbHeartbeat,
     live_rx: watch::Receiver<bool>,
     settings_rx: watch::Receiver<AppSettings>,
-    work_pending: impl Fn() -> bool + Send + 'static,
 ) {
     std::thread::Builder::new()
         .name("ingest-watchdog".into())
@@ -92,10 +98,11 @@ pub fn spawn_watchdog(
                 prev_live = live;
 
                 let idle = Duration::from_millis(heartbeat.idle_millis());
-                if is_stalled(enabled, live, work_pending(), idle, timeout) {
+                if is_stalled(enabled, live, idle, timeout) {
                     error!(
-                        "Ingest watchdog: DB queue backed up with no commit for {idle:?} \
-                         (>= {timeout:?}) while live — downstream wedged; forcing process exit"
+                        "Ingest watchdog: no successful DB write for {idle:?} (>= {timeout:?}) \
+                         while live — ingest wedged (feed stalled or DB pool exhausted); \
+                         forcing process exit"
                     );
                     std::process::exit(1);
                 }
@@ -109,15 +116,19 @@ mod tests {
     use super::*;
 
     #[test] fn paused_never_stalls() {
-        assert!(!is_stalled(true, false, true, Duration::from_secs(10_000), Duration::from_secs(120)));
+        // live=false (operator toggled ingest off) — a quiet feed is expected.
+        assert!(!is_stalled(true, false, Duration::from_secs(10_000), Duration::from_secs(120)));
     }
     #[test] fn disabled_never_stalls() {
-        assert!(!is_stalled(false, true, true, Duration::from_secs(10_000), Duration::from_secs(120)));
+        assert!(!is_stalled(false, true, Duration::from_secs(10_000), Duration::from_secs(120)));
     }
-    #[test] fn idle_queue_never_stalls() {
-        assert!(!is_stalled(true, true, false, Duration::from_secs(10_000), Duration::from_secs(120)));
+    #[test] fn fresh_write_never_stalls() {
+        // A recent successful write keeps idle below the timeout — healthy.
+        assert!(!is_stalled(true, true, Duration::from_secs(30), Duration::from_secs(120)));
     }
-    #[test] fn live_backed_up_stalls() {
-        assert!(is_stalled(true, true, true, Duration::from_secs(121), Duration::from_secs(120)));
+    #[test] fn live_and_stale_stalls() {
+        // Live, enabled, and no successful write past the timeout — fault, restart.
+        // No longer gated on queue depth: this now catches an upstream stall too.
+        assert!(is_stalled(true, true, Duration::from_secs(121), Duration::from_secs(120)));
     }
 }
