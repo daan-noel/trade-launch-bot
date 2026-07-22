@@ -199,7 +199,7 @@ fn assert_parity_with_flow(
             std::slice::from_ref(&rule),
             std::slice::from_ref(&fp),
             vec![replay_tok.clone()],
-            ReplayConfig { as_of },
+            ReplayConfig { as_of, ..Default::default() },
         );
         let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
         let (r_fired, r_exit, r_entry, r_exit_price, r_pnl_sol, r_pnl_pct) = replay_tuple(po, &cost);

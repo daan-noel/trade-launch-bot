@@ -227,6 +227,39 @@ exhausted*, not blocked: the gross hot gate is not the missing edge. The remaini
 are fill/latency realism (#2) and, if pursued at all, a fundamentally different entry
 signal — not more flow gating.
 
+**Deeper-dip + right-tail sweep (2026-07-22, `flow_scalper_deep_dip`).** The last two
+untested levers the family distribution pointed at — both REJECTED:
+
+| config | fired | winB | holdMed | pnlMed | realB | realA |
+| --- | --- | --- | --- | --- | --- | --- |
+| GATED d15/w30/r5 | 68 | 57.4 | 4.5s | −3.09 | **+0.60** | −2.25 |
+| GATED d20/w30/r5 | 42 | 61.9 | 5.2s | −3.00 | +0.22 | −1.54 |
+| GATED d25/w30/r5 | 18 | 44.4 | 3.6s | −4.23 | −0.05 | −0.80 |
+| GATED d28/w30/r5 | 15 | 53.3 | 4.8s | −3.04 | +0.11 | −0.51 |
+| GATED d20/w30/r8 | 42 | 59.5 | 5.4s | −3.00 | +0.15 | −1.61 |
+| GATED d25/w30/r8 | 18 | 44.4 | 5.1s | −4.23 | −0.19 | −0.93 |
+| TAIL d25/r8 stall=15s | 18 | 44.4 | 5.1s | −4.23 | −0.19 | −0.93 |
+| TAIL d25/r8 stall=30s | 43 | 39.5 | 5.3s | −7.50 | −2.26 | −3.98 |
+| TAIL d25/r8 stall=none | 76 | 32.0 | 8.4s | −10.65 | −5.22 | −8.19 |
+
+- **(A) Deeper dip does not help — the trend runs backwards.** `realB` *decreases* as the
+  dip deepens (+0.60 @ d15 → ~0/negative by d25) and `fired` collapses 68→15; win% *drops*
+  57→44. Deeper dips thin the sample, they don't find a better subset. The shallowest
+  config (d15/r5) is still the best one measured; no config anywhere is positive after cost.
+- **(B) The 15s stall net was cutting LOSERS, not winners.** Dropping it *did* extend holds
+  toward omego's 17s (p75 8.4s→20.6s) but wrecked everything: win% 44→32, pnlMed −4.2→−10.7,
+  p10 −14→−35, realB −0.19→−5.22. Our positions are worse than omego's *at the same age*
+  (feed-reactive entry, not same-slot near the bottom), so more time just lets them bleed.
+  The hold-truncation gap vs omego is **structural latency, not a tunable exit.**
+
+**All named levers are now tested and spent** (flow-gating byte-identical; deeper dips
+worse; exit-mix/hold worse). Best config across every experiment remains d15/w30/r5 at
+**−2.25 SOL after cost**. This is a final STOP: the one-shot has no positive-after-cost
+variant, so Phase 4 (re-entry) would only scale a negative per-episode expectancy. The
+only untested lever left is #2 (fill/latency realism, `flow_scalper_fill_sensitivity`) —
+and it can at best explain *why* we lose (execution), not manufacture a gross edge the
+deep-dip/exit sweeps show isn't there.
+
 ### Read vs the acceptance gates
 - entry dip depth (median 13–16%, ≥12 by construction) — inside/near the family band
   [−8, −20%]. ✔ (threshold-driven, so this gate is near-circular for a `trail>=k` entry).

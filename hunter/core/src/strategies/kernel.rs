@@ -125,6 +125,16 @@ impl CostModel {
         }
     }
 
+    /// Like [`pumpfun_default`](Self::pumpfun_default) but with **no `slippage_bps`**
+    /// — fee + Jito tip + priority only. Use this when the *fill price already prices
+    /// execution slippage* (an explicit paper-fill model — see
+    /// `trading_core::strategies::paper_fill::FillModel`); charging `slippage_bps` on
+    /// top would double-count it. The `slippage_bps` knob is for callers that price at
+    /// a signal spot without a granular fill model (e.g. quick analytic baselines).
+    pub fn pumpfun_fee_only() -> Self {
+        Self { slippage_bps: 0.0, ..Self::pumpfun_default() }
+    }
+
     /// A frictionless model (no fees/slippage/fixed cost) — pure price-to-price,
     /// for analytic baselines and tests.
     pub fn frictionless() -> Self {

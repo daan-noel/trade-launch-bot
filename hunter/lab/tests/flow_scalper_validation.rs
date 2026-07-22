@@ -32,6 +32,7 @@ use lab::lake::duck::LakeSource;
 use lab::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
 use trading_core::strategies::kernel::{round_trip_with_costs, CostModel};
+use trading_core::strategies::paper_fill::FillModel;
 
 /// Absolute lake path (test CWD is the crate dir, so a relative `./lake-data` from
 /// `.env` would not resolve). Override with `FLOW_SCALPER_LAKE`.
@@ -165,6 +166,32 @@ fn gated_combined(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde
     })
 }
 
+/// GATED with an OPTIONAL long-stall safety net (right-tail probe). The one-shot
+/// diagnosis was that our holds cap at 4-8s vs omego's 17s, clipping the thin right
+/// tail that IS the edge. The 15s `stall` net is a prime suspect for firing before a
+/// winner's reversion develops. `stall_sec = None` drops it entirely (retrace + the
+/// -25 catastrophe stop remain the only exits); `Some(s)` sets the net at `s` seconds.
+fn gated_stall(dip: f64, win: u64, retrace: f64, stall_sec: Option<f64>) -> serde_json::Value {
+    let mut exit = serde_json::json!({
+        "m_position": { "retrace": [{"operator": ">=", "value": retrace}] }
+    });
+    if let Some(s) = stall_sec {
+        exit["m_price_path"] = serde_json::json!({ "stall": [{"operator": ">=", "value": s}] });
+    }
+    serde_json::json!({
+        "stop_loss": 25,
+        "entry": {
+            "m_snapshot": {
+                "time": [{"operator": ">=", "value": 120}],
+                "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
+            },
+            "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
+            "m_time_window": { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] }
+        },
+        "exit": exit
+    })
+}
+
 fn load_corpus() -> Vec<CorpusToken> {
     let sel = Selection {
         mints: None,
@@ -259,33 +286,57 @@ struct Report {
     total_realized_after: f64,
     total_mtm_after: f64,
     total_realized_before: f64,
+    // Fee-only accounting (fee + tip + priority, NO cost-model slippage) — the
+    // correct pairing with an explicit fill model, which already prices execution
+    // slippage. `total_realized_after` (full model) double-counts slippage when a
+    // fill model is in play; this is the honest bottom line.
+    win_rate_feeonly: f64,
+    pnl_med_feeonly: f64,
+    total_realized_feeonly: f64,
     busy_realized_after: f64,
     busy_closed: usize,
     exit_mix: Vec<(String, usize)>,
 }
 
+/// Default (worst-case) fill — what live paper books; the existing probes use this.
 fn run(label: &'static str, params: serde_json::Value, tokens: &[CorpusToken]) -> Report {
+    run_with_fill(label, params, tokens, FillModel::WorstCase)
+}
+
+/// Run one rule under a specific [`FillModel`] (lever #2: fill-sensitivity). The
+/// taken-position SET is identical across models — only the fill PRICE differs — so
+/// the delta isolates how much of the modeled loss is fill pessimism vs no edge.
+fn run_with_fill(
+    label: &'static str,
+    params: serde_json::Value,
+    tokens: &[CorpusToken],
+    fill: FillModel,
+) -> Report {
     let fp = broad_fp();
     let r = rule(1, params);
     let replay_tokens = to_replay_tokens(tokens);
     let as_of = Utc::now();
-    let outcomes = run_replay(&[r], &[fp], replay_tokens, ReplayConfig { as_of });
+    let outcomes = run_replay(&[r], &[fp], replay_tokens, ReplayConfig { as_of, fill_model: fill });
 
     let trade_map: HashMap<String, Arc<Vec<lab::sweep::projection::CorpusTrade>>> =
         tokens.iter().map(|t| (t.mint.clone(), Arc::clone(&t.trades))).collect();
 
     let costed = CostModel::pumpfun_default();
+    let feeonly = CostModel::pumpfun_fee_only();
     let free = CostModel::frictionless();
 
     let mut closed_pnl_after: Vec<f64> = Vec::new();
     let mut closed_pnl_pct_after: Vec<f64> = Vec::new();
+    let mut closed_pnl_pct_feeonly: Vec<f64> = Vec::new();
     let mut closed_hold: Vec<f64> = Vec::new();
     let mut dips: Vec<f64> = Vec::new();
     let mut wins_before = 0usize;
     let mut wins_after = 0usize;
+    let mut wins_feeonly = 0usize;
     let mut open = 0usize;
     let mut total_realized_after = 0.0;
     let mut total_realized_before = 0.0;
+    let mut total_realized_feeonly = 0.0;
     let mut total_mtm_after = 0.0;
     let mut busy_realized_after = 0.0;
     let mut busy_closed = 0usize;
@@ -298,21 +349,27 @@ fn run(label: &'static str, params: serde_json::Value, tokens: &[CorpusToken]) -
         let exited = o.exit_reason.is_some();
         let exit_price = o.exit_price.unwrap_or(o.last_price);
         let (pnl_after, pct_after) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &costed);
+        let (pnl_feeonly, pct_feeonly) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &feeonly);
         let (pnl_before, _) = round_trip_with_costs(o.entry_price, exit_price, BUY_SOL, &free);
         if exited {
             let reason = o.exit_reason.map(|r| r.label().into_owned()).unwrap_or_default();
             *exit_mix.entry(reason).or_default() += 1;
             closed_pnl_after.push(pnl_after);
             closed_pnl_pct_after.push(pct_after);
+            closed_pnl_pct_feeonly.push(pct_feeonly);
             let hold = o.exit_time.map(|t| (t - o.entry_time).num_milliseconds() as f64 / 1000.0).unwrap_or(0.0);
             closed_hold.push(hold);
             total_realized_after += pnl_after;
+            total_realized_feeonly += pnl_feeonly;
             total_realized_before += pnl_before;
             if pnl_before > 0.0 {
                 wins_before += 1;
             }
             if pnl_after > 0.0 {
                 wins_after += 1;
+            }
+            if pnl_feeonly > 0.0 {
+                wins_feeonly += 1;
             }
             if busy_window(o.entry_time) {
                 busy_realized_after += pnl_after;
@@ -326,6 +383,7 @@ fn run(label: &'static str, params: serde_json::Value, tokens: &[CorpusToken]) -
 
     closed_hold.sort_by(|a, b| a.partial_cmp(b).unwrap());
     closed_pnl_pct_after.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    closed_pnl_pct_feeonly.sort_by(|a, b| a.partial_cmp(b).unwrap());
     dips.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let closed = closed_pnl_after.len();
@@ -348,6 +406,9 @@ fn run(label: &'static str, params: serde_json::Value, tokens: &[CorpusToken]) -
         total_realized_after,
         total_mtm_after,
         total_realized_before,
+        win_rate_feeonly: if closed == 0 { 0.0 } else { wins_feeonly as f64 / closed as f64 },
+        pnl_med_feeonly: median(&closed_pnl_pct_feeonly),
+        total_realized_feeonly,
         busy_realized_after,
         busy_closed,
         exit_mix,
@@ -378,6 +439,11 @@ fn print_report(r: &Report) {
         "TOTAL realized PnL (after ~4%/round costs)  = {:+.3} SOL   (before costs {:+.3})",
         r.total_realized_after, r.total_realized_before
     );
+    eprintln!(
+        "TOTAL realized PnL (FEE-ONLY: fee+tip+priority, no double-counted slippage) = {:+.3} SOL  \
+         win={:.1}%  pnlMed={:.2}%  <- honest bottom line for an explicit fill model",
+        r.total_realized_feeonly, r.win_rate_feeonly * 100.0, r.pnl_med_feeonly
+    );
     eprintln!("TOTAL mark-to-market PnL (incl. open marks) = {:+.3} SOL", r.total_mtm_after);
     eprintln!(
         "BUSY-WINDOW (07-20/07-21) realized PnL after costs = {:+.3} SOL over {} closed  (gate: positive)",
@@ -388,9 +454,10 @@ fn print_report(r: &Report) {
 
 fn summary_line(r: &Report) {
     eprintln!(
-        "{:<34} fired={:>5} closed={:>5} winB={:>5.1}% winA={:>5.1}% holdMed={:>5.1}s dipMed={:>5.1}% pnlMed={:>6.2}% p10={:>7.2}% realA={:>+8.2} realB={:>+8.2} SOL",
-        r.label, r.fired, r.closed, r.win_rate_before * 100.0, r.win_rate_after * 100.0,
-        r.hold_med, r.dip_med, r.pnl_med_after, r.p10_after, r.total_realized_after, r.total_realized_before,
+        "{:<34} fired={:>5} closed={:>5} winB={:>5.1}% winFee={:>5.1}% holdMed={:>5.1}s dipMed={:>5.1}% pnlMed={:>6.2}% p10={:>7.2}% realFee={:>+8.2} realA={:>+8.2} realB={:>+8.2} SOL",
+        r.label, r.fired, r.closed, r.win_rate_before * 100.0, r.win_rate_feeonly * 100.0,
+        r.hold_med, r.dip_med, r.pnl_med_after, r.p10_after,
+        r.total_realized_feeonly, r.total_realized_after, r.total_realized_before,
     );
 }
 
@@ -464,4 +531,112 @@ fn flow_scalper_exhaustion_probe() {
 
     // Sanity: the combined rule actually fires (both windows registered + evaluated).
     assert!(cmb_0.fired > 0, "combined-gate rule fired nothing — multi-window wiring bug");
+}
+
+/// Deeper-dip sweep — the one untested lever the family distribution points at. The
+/// one-shot grid only ran dip 12/15; win% and realized-after both improved 12->15, and
+/// the profitable-dip-buyer family concentrates at p25 -28% / med -14.3% vs the 30s
+/// high (analysis doc). Two hypotheses in one run:
+///   (A) DEEPER DIP: does selecting for deeper drawdowns (fewer, higher-quality
+///       knife-catches nearer the local bottom) push per-episode edge above breakeven?
+///       Sweep dip {15,20,25,28} at the best trail (r5) and a wider one (r8, since a
+///       deeper dip may bounce further before the trail should engage).
+///   (B) RIGHT-TAIL CAPTURE: our holds cap ~4-8s vs omego's 17s. Re-run the best deep
+///       dip with the 15s stall net LOOSENED (30s) and DROPPED (none) to see if the
+///       median hold and p90 pnl move toward omego's — i.e. is the stall net clipping
+///       winners before reversion? (Wider retrace already failed this; the exit MIX,
+///       not the trail width, is the suspect.)
+///   cargo test -p hunter-lab --test flow_scalper_validation deep_dip -- --ignored --nocapture
+#[test]
+#[ignore = "reads the real sealed lake + runs the full replay fold; run with --ignored --nocapture"]
+fn flow_scalper_deep_dip() {
+    let tokens = load_corpus();
+    assert!(!tokens.is_empty(), "empty corpus — check the lake path");
+
+    // (A) deeper-dip sweep at r5 (best trail) and r8 (room for a deeper bounce).
+    let dip_grid: &[(&'static str, f64, u64, f64)] = &[
+        ("GATED d15/w30/r5", 15.0, 30, 5.0),
+        ("GATED d20/w30/r5", 20.0, 30, 5.0),
+        ("GATED d25/w30/r5", 25.0, 30, 5.0),
+        ("GATED d28/w30/r5", 28.0, 30, 5.0),
+        ("GATED d20/w30/r8", 20.0, 30, 8.0),
+        ("GATED d25/w30/r8", 25.0, 30, 8.0),
+    ];
+    let dip_reports: Vec<Report> = dip_grid
+        .iter()
+        .map(|&(label, dip, win, retrace)| run(label, gated(dip, win, retrace), &tokens))
+        .collect();
+
+    // (B) right-tail: best deep dip (d25/r8) with the 15s stall net at 15s / 30s / none.
+    let tail_reports: Vec<Report> = vec![
+        run("TAIL d25/r8 stall=15s", gated_stall(25.0, 30, 8.0, Some(15.0)), &tokens),
+        run("TAIL d25/r8 stall=30s", gated_stall(25.0, 30, 8.0, Some(30.0)), &tokens),
+        run("TAIL d25/r8 stall=none", gated_stall(25.0, 30, 8.0, None), &tokens),
+    ];
+
+    for r in &dip_reports {
+        print_report(r);
+    }
+    for r in &tail_reports {
+        print_report(r);
+    }
+    eprintln!("\n==================== DEEP-DIP + RIGHT-TAIL SUMMARY (net of ~4%/round costs) ====================");
+    for r in dip_reports.iter().chain(tail_reports.iter()) {
+        summary_line(r);
+    }
+
+    assert!(dip_reports[0].fired > 0, "no entries fired — check metrics wiring");
+    // Dropping the stall net must not shrink the taken set (entry is unchanged) — it can
+    // only change exits; guards against an accidental entry-side edit.
+    assert!(
+        tail_reports[2].closed + tail_reports[2].open >= tail_reports[0].closed,
+        "dropping the stall net changed the taken set — entry side must be identical"
+    );
+}
+
+/// Lever #2 — fill-realism sensitivity. The sim fills WORST-CASE adverse in the
+/// post-signal slot window (entry = highest window buy, exit = lowest window price),
+/// while omego lands same-slot. This probe reprices the SAME taken set under three
+/// fill models to bound how much of the ~4%/round loss is fill pessimism vs a genuine
+/// absence of edge:
+///   * `worst`  — the current adverse bound (what live paper books);
+///   * `first`  — the first print after the signal (a neutral "next trade" reaction);
+///   * `signal` — the trigger/fire spot, zero slippage (the optimistic same-slot bound).
+/// Read: if even `signal` is ≤0 the strategy is dead; if `worst`≤0 but `signal`>0 the
+/// loss is fill/latency and the fix is execution (fast landing), not the entry logic.
+///   cargo test -p hunter-lab --test flow_scalper_validation fill_sensitivity -- --ignored --nocapture
+#[test]
+#[ignore = "reads the real sealed lake + runs the full replay fold; run with --ignored --nocapture"]
+fn flow_scalper_fill_sensitivity() {
+    let tokens = load_corpus();
+    assert!(!tokens.is_empty(), "empty corpus — check the lake path");
+
+    // The two best configs (pure-gated best + the exhaustion best), each × 3 fill models.
+    let runs: Vec<(&'static str, serde_json::Value, FillModel)> = vec![
+        ("GATED d15/w30/r5 [worst] ", gated(15.0, 30, 5.0), FillModel::WorstCase),
+        ("GATED d15/w30/r5 [first] ", gated(15.0, 30, 5.0), FillModel::FirstInWindow),
+        ("GATED d15/w30/r5 [signal]", gated(15.0, 30, 5.0), FillModel::SignalPrice),
+        ("EXH d15/r5 nf>=0 [worst] ", gated_exhaustion(15.0, 30, 5.0, 0.0), FillModel::WorstCase),
+        ("EXH d15/r5 nf>=0 [first] ", gated_exhaustion(15.0, 30, 5.0, 0.0), FillModel::FirstInWindow),
+        ("EXH d15/r5 nf>=0 [signal]", gated_exhaustion(15.0, 30, 5.0, 0.0), FillModel::SignalPrice),
+    ];
+    let reports: Vec<Report> = runs
+        .into_iter()
+        .map(|(label, params, model)| run_with_fill(label, params, &tokens, model))
+        .collect();
+
+    for r in &reports {
+        print_report(r);
+    }
+    eprintln!("\n==================== FILL-SENSITIVITY SUMMARY (net of ~4%/round costs) ====================");
+    for r in &reports {
+        summary_line(r);
+    }
+
+    // The taken set must be identical across fill models within a config (only price
+    // changes) — the whole premise of the controlled reprice.
+    assert_eq!(reports[0].closed, reports[1].closed, "fill model changed the GATED taken set");
+    assert_eq!(reports[1].closed, reports[2].closed, "fill model changed the GATED taken set");
+    assert_eq!(reports[3].closed, reports[4].closed, "fill model changed the EXH taken set");
+    assert_eq!(reports[4].closed, reports[5].closed, "fill model changed the EXH taken set");
 }

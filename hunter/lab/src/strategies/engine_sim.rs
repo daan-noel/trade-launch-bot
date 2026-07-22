@@ -331,7 +331,9 @@ async fn run_engine_backtest(
                 std::slice::from_ref(&loaded),
                 std::slice::from_ref(&fp),
                 replay_tokens,
-                ReplayConfig { as_of: Utc::now() },
+                // Saved-rule simulate books the worst-case (adverse) fill, same as
+                // live paper; the other FillModels are analysis-only (replay harness).
+                ReplayConfig { as_of: Utc::now(), ..Default::default() },
             );
             outcomes
                 .iter()

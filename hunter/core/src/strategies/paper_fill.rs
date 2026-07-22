@@ -43,18 +43,40 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
     }
 }
 
-/// Paper worst-case entry keyed by the trigger trade's index.
+/// Which trade in the fill window prices a paper/sim fill.
 ///
-/// Fill model: window = trigger slot `S` (always) + the next observed slot after `S`
-/// if it's within [`MAX_FILL_WAIT_SLOTS`]. Only trades at indices `> target_idx` are
-/// considered (same-slot legs after the trigger are eligible). Fill = highest
-/// qualifying buy price in the window. Returns `None` when the window has no
-/// qualifying buy.
+/// [`WorstCase`](FillModel::WorstCase) is the **only** model live paper and the
+/// grouped-sweep use (adverse on both legs); the others exist for the sim's
+/// fill-sensitivity analysis — how much of the modeled ~4%/round cost is fill
+/// *pessimism* vs a genuine absence of edge (flow-scalper lever #2). Every model
+/// shares the same fill **eligibility** (the window + a qualifying trade must
+/// exist), so the taken-position SET is identical across models and only the fill
+/// PRICE varies — a controlled reprice, not a different entry population.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FillModel {
+    /// Entry = highest qualifying buy, exit = lowest price in the window. The
+    /// pessimistic bound; what live paper and the sweep book.
+    #[default]
+    WorstCase,
+    /// Entry/exit = the FIRST qualifying trade after the signal in the window — a
+    /// neutral "take the next print" reaction (no worst-case cherry-pick).
+    FirstInWindow,
+    /// Fill at the trigger/fire trade's own spot — zero feed-reaction slippage, the
+    /// optimistic bound approximating a same-slot landing.
+    SignalPrice,
+}
+
+/// Paper entry keyed by the trigger trade's index, priced per [`FillModel`].
 ///
-/// `target_idx` must index a real trade in `trades`.
-pub fn find_worst_case_paper_entry_at<T: TradeRow>(
+/// Window = trigger slot `S` (always) + the next observed slot after `S` if it's
+/// within [`MAX_FILL_WAIT_SLOTS`]. Only trades at indices `> target_idx` are
+/// considered (same-slot legs after the trigger are eligible). Returns `None` when
+/// the window has no qualifying buy — identical eligibility for every model; only
+/// the chosen fill price differs. `target_idx` must index a real trade in `trades`.
+pub fn find_paper_entry_at<T: TradeRow>(
     trades: &[T],
     target_idx: usize,
+    model: FillModel,
 ) -> Option<PaperFill> {
     let trigger_slot = trades.get(target_idx)?.slot();
     let post = trades.get(target_idx + 1..).unwrap_or(&[]);
@@ -68,60 +90,102 @@ pub fn find_worst_case_paper_entry_at<T: TradeRow>(
         .filter(|t| t.slot() > trigger_slot && is_entry_buy(t))
         .map(|t| t.slot())
         .next();
+    let in_window = |s: u64| {
+        s == trigger_slot
+            || next_slot.is_some_and(|ns| s == ns && ns <= trigger_slot + MAX_FILL_WAIT_SLOTS)
+    };
+    let qualifies = |t: &T| in_window(t.slot()) && is_entry_buy(t);
 
-    let (best_rel, _) = post
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| {
-            let s = t.slot();
-            let in_s = s == trigger_slot;
-            let in_next =
-                next_slot.is_some_and(|ns| s == ns && ns <= trigger_slot + MAX_FILL_WAIT_SLOTS);
-            (in_s || in_next) && is_entry_buy(t)
-        })
-        .max_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))?;
-
-    Some(paper_fill_from(trades, target_idx + 1 + best_rel))
+    // Eligibility is fixed across models: a qualifying buy must exist in the window.
+    if !post.iter().any(qualifies) {
+        return None;
+    }
+    match model {
+        // Zero-slippage: the trigger's own spot (fill row = the trigger trade).
+        FillModel::SignalPrice => Some(paper_fill_from(trades, target_idx)),
+        // The first qualifying buy after the trigger.
+        FillModel::FirstInWindow => post
+            .iter()
+            .position(qualifies)
+            .map(|rel| paper_fill_from(trades, target_idx + 1 + rel)),
+        // The highest qualifying buy price in the window (adverse — the original).
+        FillModel::WorstCase => post
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| qualifies(t))
+            .max_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))
+            .map(|(rel, _)| paper_fill_from(trades, target_idx + 1 + rel)),
+    }
 }
 
-/// Paper worst-case exit keyed by the firing trade's index.
+/// Paper exit keyed by the firing trade's index, priced per [`FillModel`].
 ///
 /// Window = fire slot `S` + the next observed slot after `S` when within
-/// [`MAX_FILL_WAIT_SLOTS`]. Only trades after `fire_idx` are candidates. Fill =
-/// lowest `price_per_token` in the window (any side).
-///
-/// When the window is empty: `market_fill_on_empty_window = true` (analysis) fills
-/// at the firing trade itself; `false` (live paper poll) returns `None` so the
-/// caller can wait or fail closed.
-pub fn find_worst_case_paper_exit_at<T: TradeRow>(
+/// [`MAX_FILL_WAIT_SLOTS`]. Only trades after `fire_idx` are candidates. When the
+/// window is empty: `market_fill_on_empty_window = true` (analysis) fills at the
+/// firing trade itself; `false` (live paper poll) returns `None` so the caller can
+/// wait or fail closed. Eligibility is identical across models; only the fill price
+/// differs.
+pub fn find_paper_exit_at<T: TradeRow>(
     trades: &[T],
     fire_idx: usize,
     market_fill_on_empty_window: bool,
+    model: FillModel,
 ) -> Option<PaperFill> {
     let fire = trades.get(fire_idx)?;
     let fire_slot = fire.slot();
     let post = trades.get(fire_idx + 1..).unwrap_or(&[]);
 
     let next_slot = post.iter().map(|t| t.slot()).find(|&s| s > fire_slot);
-
     let in_window = |s: u64| match next_slot {
         Some(ns) if ns <= fire_slot + MAX_FILL_WAIT_SLOTS => s == fire_slot || s == ns,
         _ => s == fire_slot,
     };
+    let priced = |t: &T| in_window(t.slot()) && t.price_per_token() > 0.0;
 
-    let best = post
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| in_window(t.slot()) && t.price_per_token() > 0.0)
-        .min_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()));
+    let fill_idx = if post.iter().any(priced) {
+        match model {
+            // Zero-slippage: sell at the fire trade's own spot.
+            FillModel::SignalPrice => (fire.price_per_token() > 0.0).then_some(fire_idx),
+            // The first priced trade in the window.
+            FillModel::FirstInWindow => post.iter().position(priced).map(|rel| fire_idx + 1 + rel),
+            // The lowest price in the window (adverse — the original).
+            FillModel::WorstCase => post
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| priced(t))
+                .min_by(|(_, a), (_, b)| a.price_per_token().total_cmp(&b.price_per_token()))
+                .map(|(rel, _)| fire_idx + 1 + rel),
+        }
+    } else {
+        None
+    };
 
-    match best {
-        Some((rel, _)) => Some(paper_fill_from(trades, fire_idx + 1 + rel)),
+    match fill_idx {
+        Some(idx) => Some(paper_fill_from(trades, idx)),
         None if market_fill_on_empty_window && fire.price_per_token() > 0.0 => {
             Some(paper_fill_from(trades, fire_idx))
         }
         None => None,
     }
+}
+
+/// Worst-case entry (adverse). The model live paper + sweep use — a thin wrapper so
+/// they never carry a [`FillModel`]; see [`find_paper_entry_at`].
+pub fn find_worst_case_paper_entry_at<T: TradeRow>(
+    trades: &[T],
+    target_idx: usize,
+) -> Option<PaperFill> {
+    find_paper_entry_at(trades, target_idx, FillModel::WorstCase)
+}
+
+/// Worst-case exit (adverse). Live paper + sweep wrapper; see [`find_paper_exit_at`].
+pub fn find_worst_case_paper_exit_at<T: TradeRow>(
+    trades: &[T],
+    fire_idx: usize,
+    market_fill_on_empty_window: bool,
+) -> Option<PaperFill> {
+    find_paper_exit_at(trades, fire_idx, market_fill_on_empty_window, FillModel::WorstCase)
 }
 
 /// Whether the exit fill window starting at `fire_slot` is fully closed given the
@@ -251,6 +315,60 @@ mod tests {
         assert_eq!(exit.trade_idx, 0);
         assert_eq!(exit.price, 1.0);
         assert!(find_worst_case_paper_exit_at(&trades, 0, false).is_none());
+    }
+
+    // ── fill models (lever #2 sim knob) ─────────────────────────────────────
+
+    #[test]
+    fn fill_models_reprice_a_fixed_entry_set() {
+        // trigger @100, then buys 1.2 (idx1,s100), 1.5 (idx2,s101), 1.8 (idx3,s101).
+        let trades = vec![
+            leg(1.0, 1.0, 100, 0, 0),
+            leg(1.2, 1.0, 100, 1, 0),
+            leg(1.5, 1.0, 101, 0, 1),
+            leg(1.8, 1.0, 101, 1, 1),
+        ];
+        // Worst = highest buy (1.8); First = earliest qualifying buy (1.2);
+        // Signal = the trigger's own spot (1.0). All fill the SAME trigger (idx 0).
+        let worst = find_paper_entry_at(&trades, 0, FillModel::WorstCase).unwrap();
+        let first = find_paper_entry_at(&trades, 0, FillModel::FirstInWindow).unwrap();
+        let signal = find_paper_entry_at(&trades, 0, FillModel::SignalPrice).unwrap();
+        assert_eq!(worst.price, 1.8);
+        assert_eq!(first.price, 1.2);
+        assert_eq!(signal.price, 1.0);
+        assert_eq!(signal.trade_idx, 0, "signal-price fill rows at the trigger");
+        // Worst-case wrapper stays byte-identical to the parameterized WorstCase.
+        assert_eq!(find_worst_case_paper_entry_at(&trades, 0).unwrap(), worst);
+    }
+
+    #[test]
+    fn fill_models_share_entry_eligibility() {
+        // No qualifying buy after the trigger (only a sell) ⇒ None for EVERY model,
+        // so the taken-position set is identical; models differ only in price.
+        let trades = vec![leg(1.0, 1.0, 100, 0, 0), sell(0.9, 1.0, 101, 0, 1)];
+        for m in [FillModel::WorstCase, FillModel::FirstInWindow, FillModel::SignalPrice] {
+            assert!(find_paper_entry_at(&trades, 0, m).is_none(), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn fill_models_reprice_a_fixed_exit_set() {
+        // fire @100 (price 1.0); window has sell 1.1 (idx2,s101) and buy 1.3 (idx3,s101).
+        let trades = vec![
+            leg(1.0, 1.0, 100, 0, 0),
+            leg(1.4, 1.0, 100, 1, 0),
+            sell(1.1, 1.0, 101, 0, 1),
+            leg(1.3, 1.0, 101, 1, 1),
+        ];
+        // Worst = lowest in window (1.1); First = first priced after fire (1.4, idx1);
+        // Signal = the fire's own spot (1.0, idx0).
+        let worst = find_paper_exit_at(&trades, 0, false, FillModel::WorstCase).unwrap();
+        let first = find_paper_exit_at(&trades, 0, false, FillModel::FirstInWindow).unwrap();
+        let signal = find_paper_exit_at(&trades, 0, false, FillModel::SignalPrice).unwrap();
+        assert_eq!(worst.price, 1.1);
+        assert_eq!((first.price, first.trade_idx), (1.4, 1));
+        assert_eq!((signal.price, signal.trade_idx), (1.0, 0));
+        assert_eq!(find_worst_case_paper_exit_at(&trades, 0, false).unwrap(), worst);
     }
 
     #[test]

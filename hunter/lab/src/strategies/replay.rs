@@ -43,7 +43,7 @@ use hunter_engine::metrics::Ts;
 use hunter_engine::{reduce, EngineState};
 
 use trading_core::strategies::paper_fill::{
-    find_worst_case_paper_entry_at, find_worst_case_paper_exit_at,
+    find_paper_entry_at, find_paper_exit_at, FillModel,
 };
 
 use crate::sweep::projection::CorpusTrade;
@@ -119,11 +119,15 @@ pub struct ReplayConfig {
     /// The run's wall-clock present — the deadness "now" every synthetic tick
     /// advances toward (plan 5.1: run-time as-of). Captured once by the caller.
     pub as_of: Ts,
+    /// Which trade in the fill window prices entry/exit fills. Defaults to
+    /// [`FillModel::WorstCase`] (what live paper books); other models exist only for
+    /// fill-sensitivity analysis (flow-scalper lever #2).
+    pub fill_model: FillModel,
 }
 
 impl Default for ReplayConfig {
     fn default() -> Self {
-        Self { as_of: Utc::now() }
+        Self { as_of: Utc::now(), fill_model: FillModel::WorstCase }
     }
 }
 
@@ -472,7 +476,7 @@ impl Replay {
             self.pending_buys.insert(mint.clone(), intent);
             return;
         };
-        match find_worst_case_paper_entry_at(trades.as_slice(), trigger_idx) {
+        match find_paper_entry_at(trades.as_slice(), trigger_idx, self.cfg.fill_model) {
             None => {
                 self.pending_targets.remove(mint);
                 work.push(Event::FillFailed {
@@ -510,7 +514,9 @@ impl Replay {
         if let (Some(&fire_idx), Some(trades)) =
             (self.last_trade_idx.get(mint), self.trades.get(mint).cloned())
         {
-            if let Some(fill) = find_worst_case_paper_exit_at(trades.as_slice(), fire_idx, true) {
+            if let Some(fill) =
+                find_paper_exit_at(trades.as_slice(), fire_idx, true, self.cfg.fill_model)
+            {
                 let sol = (token_amount as f64 / TOKEN_SCALE) * fill.price;
                 let event = Event::FillConfirmed {
                     intent,
@@ -822,7 +828,7 @@ mod tests {
                 trade(10.0, true, 1.0, 2.5, 100.0), // +127% vs entry 1.1 → TP
             ],
         );
-        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(400.0) });
+        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(400.0), ..Default::default() });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].exit_reason, Some(ExitReason::TakeProfit));
         assert_eq!(out[0].target_price, Some(1.0), "trigger trade is the target");
@@ -844,7 +850,7 @@ mod tests {
                 trade(10.0, false, 1.0, 0.5, 100.0), // −52% vs entry → SL
             ],
         );
-        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(400.0) });
+        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(400.0), ..Default::default() });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].exit_reason, Some(ExitReason::StopLoss));
     }
@@ -865,7 +871,7 @@ mod tests {
                 trade(0.4, true, 1.0, 1.0, 1.0), // entry fill
             ],
         );
-        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(1000.0) });
+        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(1000.0), ..Default::default() });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].exit_reason, Some(ExitReason::Dead));
     }
@@ -886,7 +892,7 @@ mod tests {
             ],
         );
         // as_of shortly after the mark print — not quiet long enough to die.
-        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(12.0) });
+        let out = run_replay(&rules, &fps, vec![t], ReplayConfig { as_of: at(12.0), ..Default::default() });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].exit_reason, None, "still open");
         assert_eq!(out[0].last_price, 1.7);
@@ -913,7 +919,7 @@ mod tests {
             1.0,
             vec![trade(1.0, true, 1.0, 1.0, 100.0), trade(1.4, true, 1.0, 1.05, 100.0)],
         );
-        let out = run_replay(&rules, &fps, vec![a, b], ReplayConfig { as_of: at(5.0) });
+        let out = run_replay(&rules, &fps, vec![a, b], ReplayConfig { as_of: at(5.0), ..Default::default() });
         assert_eq!(out.len(), 1, "cap=1 lets only one token hold at a time");
         assert_eq!(out[0].mint, "aaa", "the earlier token wins the single slot");
     }
@@ -946,7 +952,7 @@ mod tests {
                 ),
             ]
         };
-        let cfg = ReplayConfig { as_of: at(1000.0) };
+        let cfg = ReplayConfig { as_of: at(1000.0), ..Default::default() };
         let a = run_replay(&rules, &fps, mk(), cfg);
         let b = run_replay(&rules, &fps, mk(), cfg);
         let key = |o: &[PositionOutcome]| {
