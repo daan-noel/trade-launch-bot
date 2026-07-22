@@ -132,7 +132,7 @@ fn exit_metric(group: MetricGroupId, metric: MetricId, op: Operator, value: f64)
     let mut gc = GroupConditions::default();
     gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
     let mut side = SideConditions::default();
-    side.0.insert(group, gc);
+    side.0.insert(group, vec![gc]);
     RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side) }
 }
 
@@ -321,7 +321,7 @@ fn scan_matches_replay_entry_gated_rule() {
     let mut gc = GroupConditions::default();
     gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
     let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::Snapshot, gc);
+    entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
     let params =
         RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None };
     assert_parity("entry_gate", params, &corpus(), at(1000.0));
@@ -388,7 +388,7 @@ fn scan_matches_replay_time_gate_across_gap() {
     let mut gc = GroupConditions::default();
     gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 3600.0 }]]);
     let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::Snapshot, gc);
+    entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
     let params =
         RuleParams { take_profit: Some(5.0), stop_loss: None, entry: Some(entry), exit: None };
     assert_parity("time_gate_gap", params, &gappy_corpus(), at(100_000.0));
@@ -466,7 +466,7 @@ fn scan_matches_replay_window_flow_across_gap() {
     gc.strict.insert("window_size_sec".to_string(), 60.0);
     gc.metrics.insert(MetricId::GrossFlow, vec![vec![Condition { operator: Operator::Lte, value: 0.0 }]]);
     let mut exit = SideConditions::default();
-    exit.0.insert(MetricGroupId::TimeWindow, gc);
+    exit.0.insert(MetricGroupId::TimeWindow, vec![gc]);
     let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit) };
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
 }
@@ -505,7 +505,7 @@ fn scan_matches_replay_flow_split_entry_and_window_exit() {
         vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
     );
     let mut entry = SideConditions::default();
-    entry.0.insert(MetricGroupId::FlowSplit, entry_gc);
+    entry.0.insert(MetricGroupId::FlowSplit, vec![entry_gc]);
 
     let mut exit_gc = GroupConditions::default();
     exit_gc.strict.insert("window_size_sec".to_string(), 5.0);
@@ -514,7 +514,7 @@ fn scan_matches_replay_flow_split_entry_and_window_exit() {
         vec![vec![Condition { operator: Operator::Eq, value: 0.0 }]],
     );
     let mut exit = SideConditions::default();
-    exit.0.insert(MetricGroupId::FlowWindow, exit_gc);
+    exit.0.insert(MetricGroupId::FlowWindow, vec![exit_gc]);
 
     let params = RuleParams {
         take_profit: None,
@@ -595,7 +595,7 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         let mut gc = GroupConditions::default();
         gc.metrics.insert(MetricId::Time, vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]]);
         let mut entry = SideConditions::default();
-        entry.0.insert(MetricGroupId::Snapshot, gc);
+        entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
         RuleParams { take_profit: Some(20.0), stop_loss: Some(60.0), entry: Some(entry), exit: None }
     };
 
@@ -651,7 +651,7 @@ fn index_exit_scan_matches_scalar_across_paths() {
             vec![vec![Condition { operator: Operator::Gt, value: 2.0 }]],
         );
         let mut entry = SideConditions::default();
-        entry.0.insert(MetricGroupId::Snapshot, gc);
+        entry.0.insert(MetricGroupId::Snapshot, vec![gc]);
         RuleParams {
             take_profit: Some(20.0),
             stop_loss: Some(60.0),

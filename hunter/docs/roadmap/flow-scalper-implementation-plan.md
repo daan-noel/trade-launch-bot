@@ -190,6 +190,17 @@ extra wiring), not the sweep, for this phase.
 > post-signal slot window** (step 3 fill realism is done). Outcome: the core is
 > directionally sound but the one-shot is ~breakeven-before-costs / net-negative after,
 > so per §4 this is a STOP-and-re-examine before Phase 4/5 — not a green light.
+>
+> **Lever #1 follow-up DONE 2026-07-22 — STOP verdict RECONFIRMED.** The single-
+> `m_time_window`-per-side schema limit is lifted: a side now carries **multiple windows
+> per group** (`SideConditions` → `Vec<GroupConditions>`; dynamic groups parse as a JSON
+> array of window clauses — engine-only, no DB migration; multi-window per group also
+> unblocks any future strategy needing two windows on one group). Re-ran the exhaustion
+> probe with BOTH the 30s `gross_flow` hot gate and the 2s `net_flow` floor in one rule:
+> the result is **byte-identical to net-flow-only** — the 30s gross gate is non-binding on
+> this universe. The earlier probe did not understate; flow-gating is not the missing
+> edge. Details + table in the analysis doc's "Both gates together" subsection. **Phase
+> 4/5 stay gated.**
 
 1. Author two rules and compare. (a) MINIMAL CORE (proves the 2 metrics are the whole
    logic): broad fingerprint, entry `m_price_window(30).trail >= 12`, exit

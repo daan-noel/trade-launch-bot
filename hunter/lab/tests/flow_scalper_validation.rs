@@ -117,11 +117,10 @@ fn gated(dip: f64, win: u64, retrace: f64) -> serde_json::Value {
 /// flow 1-5 s before omego's entry is negative but flips positive 5 s after; buying
 /// only once the short-window sell pressure has eased should skip falling knives).
 ///
-/// NOTE a rule side carries only ONE `m_time_window` (single `window_size_sec`), so
-/// the 30 s `gross_flow` hot gate and this 2 s `net_flow` gate cannot coexist in one
-/// rule today — the exhaustion refinement needs a schema step (multi-window per group
-/// on a side) to keep BOTH. Here we trade the 30 s hot gate for the 2 s exhaustion
-/// gate; age + liquidity still bound the universe.
+/// This variant TRADES the 30 s `gross_flow` hot gate for the 2 s `net_flow` gate —
+/// the "one-for-the-other" comparison the old single-`m_time_window`-per-side schema
+/// forced. Age + liquidity still bound the universe. Contrast [`gated_combined`],
+/// which keeps BOTH now that the schema allows multiple windows per group per side.
 fn gated_exhaustion(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde_json::Value {
     serde_json::json!({
         "stop_loss": 25,
@@ -132,6 +131,32 @@ fn gated_exhaustion(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> ser
             },
             "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
             "m_time_window": { "window_size_sec": 2, "net_flow": [{"operator": ">=", "value": netflow_floor}] }
+        },
+        "exit": {
+            "m_position": { "retrace": [{"operator": ">=", "value": retrace}] },
+            "m_price_path": { "stall": [{"operator": ">=", "value": 15}] }
+        }
+    })
+}
+
+/// GATED + the FULL exhaustion refinement — lever #1: keep BOTH the `win`-second
+/// `gross_flow` hot gate (there's live flow) AND the 2 s `net_flow` floor (the dump
+/// has paused) on entry, now that a side can hold **multiple `m_time_window` windows**
+/// (the array shape this branch adds). This is the refinement the old probe could only
+/// approximate by dropping one gate; here it runs as authored.
+fn gated_combined(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde_json::Value {
+    serde_json::json!({
+        "stop_loss": 25,
+        "entry": {
+            "m_snapshot": {
+                "time": [{"operator": ">=", "value": 120}],
+                "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
+            },
+            "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
+            "m_time_window": [
+                { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] },
+                { "window_size_sec": 2,   "net_flow":   [{"operator": ">=", "value": netflow_floor}] }
+            ]
         },
         "exit": {
             "m_position": { "retrace": [{"operator": ">=", "value": retrace}] },
@@ -417,15 +442,26 @@ fn flow_scalper_exhaustion_probe() {
 
     // Comparison baseline (best grid config: deeper dip + 5% trail, 30s hot gate).
     let base = run("GATED d15/w30/r5 (30s gross gate)", gated(15.0, 30, 5.0), &tokens);
-    // Exhaustion: trade the 30s gross gate for a 2s net-flow floor at two strictnesses.
+    // Exhaustion, one-for-the-other: trade the 30s gross gate for a 2s net-flow floor.
     let exh_m1 = run("EXH d15/r5 netflow(2s)>=-1", gated_exhaustion(15.0, 30, 5.0, -1.0), &tokens);
     let exh_0 = run("EXH d15/r5 netflow(2s)>=0", gated_exhaustion(15.0, 30, 5.0, 0.0), &tokens);
+    // COMBINED (lever #1): keep BOTH the 30s gross hot gate and the 2s net-flow floor
+    // — the full refinement the multi-window schema now allows in one rule.
+    let cmb_m1 = run("CMB d15/r5 gross(30s)+netflow(2s)>=-1", gated_combined(15.0, 30, 5.0, -1.0), &tokens);
+    let cmb_0 = run("CMB d15/r5 gross(30s)+netflow(2s)>=0", gated_combined(15.0, 30, 5.0, 0.0), &tokens);
 
     print_report(&base);
     print_report(&exh_m1);
     print_report(&exh_0);
+    print_report(&cmb_m1);
+    print_report(&cmb_0);
     eprintln!("\n==================== EXHAUSTION PROBE SUMMARY (net of ~4%/round costs) ====================");
     summary_line(&base);
     summary_line(&exh_m1);
     summary_line(&exh_0);
+    summary_line(&cmb_m1);
+    summary_line(&cmb_0);
+
+    // Sanity: the combined rule actually fires (both windows registered + evaluated).
+    assert!(cmb_0.fired > 0, "combined-gate rule fired nothing — multi-window wiring bug");
 }

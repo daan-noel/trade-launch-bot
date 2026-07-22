@@ -50,7 +50,16 @@ construction. See hunter/CLAUDE.md Gotchas.
 | `m_flow_split` | static (fingerprint-scoped) | none | `volume_ix_patterns: string[][]` (required when key present) |
 | `m_flow_window` | dynamic | `window_size_sec` | none (reads `m_flow_split`) |
 
-Both expose the same nine JSON metric names; registry `MetricId`s are distinct so
+**Multi-window per group** (any dynamic group — `m_time_window`, `m_price_window`,
+`m_flow_window`): a group appears under a side as a single object (one window — the
+legacy shape) OR a JSON **array** of objects, each with its own `window_size_sec`, to
+gate the same group at several window sizes at once (e.g. a 30s `gross_flow` hot gate AND
+a 2s `net_flow` exhaustion gate on entry). Each window is an independent clause (entry-AND
+/ exit-OR); windows must be distinct; static groups take a single object. The single-object
+form round-trips byte-identically (no DB migration). SSOT for the shape + validation:
+`hunter_engine::rule_params` module docs.
+
+Both flow groups expose the same nine JSON metric names; registry `MetricId`s are distinct so
 lifetime monotonic flags can differ. All SOL values use absolute trade notional;
 buy = +, sell = − for `*_net`.
 

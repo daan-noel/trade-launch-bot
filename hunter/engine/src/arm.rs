@@ -425,23 +425,27 @@ fn build_reqs(
     fingerprint_id: FingerprintId,
 ) -> Vec<MetricReq> {
     let mut out = Vec::new();
-    for (group_id, group) in &side.0 {
-        let window = if group_spec(*group_id).kind == MetricKind::Dynamic {
-            group.strict_param("window_size_sec")
-        } else {
-            None
-        };
+    for (group_id, instances) in &side.0 {
+        let is_dynamic = group_spec(*group_id).kind == MetricKind::Dynamic;
         let position_scoped = group_spec(*group_id).scope == MetricScope::Position;
-        for (metric_id, conds) in &group.metrics {
-            out.push(MetricReq {
-                metric: *metric_id,
-                window,
-                fingerprint: is_flow_metric(*metric_id).then_some(fingerprint_id),
-                tolerance: metric_spec(*metric_id).eq_tolerance,
-                conds: conds.clone(),
-                position_scoped,
-                origin: ReqOrigin::Authored,
-            });
+        // One instance per window (static groups carry exactly one, window-less).
+        for group in instances {
+            let window = if is_dynamic {
+                group.strict_param("window_size_sec")
+            } else {
+                None
+            };
+            for (metric_id, conds) in &group.metrics {
+                out.push(MetricReq {
+                    metric: *metric_id,
+                    window,
+                    fingerprint: is_flow_metric(*metric_id).then_some(fingerprint_id),
+                    tolerance: metric_spec(*metric_id).eq_tolerance,
+                    conds: conds.clone(),
+                    position_scoped,
+                    origin: ReqOrigin::Authored,
+                });
+            }
         }
     }
     out
@@ -554,6 +558,28 @@ mod tests {
             "exit":  { "m_time_window": { "window_size_sec": 10, "sell": [{"operator": ">", "value": 1}] } }
         })));
         assert_eq!(c.flow_windows.as_slice(), &[10.0]);
+        assert!(c.price_windows.is_empty());
+    }
+
+    #[test]
+    fn multi_window_group_compiles_to_distinct_reqs_and_windows() {
+        // Two m_time_window clauses on entry (30 s gross gate + 2 s net gate) become
+        // two independent entry reqs, each carrying its own window; both windows are
+        // registered so `ensure_window` opens both buffers.
+        let c = CompiledRule::compile(&rule(json!({
+            "entry": { "m_time_window": [
+                { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
+                { "window_size_sec": 2,  "net_flow":   [{"operator": ">=", "value": 0}]  }
+            ] }
+        })));
+        assert_eq!(c.entry_reqs.len(), 2);
+        let gross = c.entry_reqs.iter().find(|r| r.metric == MetricId::GrossFlow).unwrap();
+        let net = c.entry_reqs.iter().find(|r| r.metric == MetricId::NetFlow).unwrap();
+        assert_eq!(gross.window, Some(30.0));
+        assert_eq!(net.window, Some(2.0));
+        // Both distinct windows collected for ensure_window (order = req order).
+        assert_eq!(c.flow_windows.len(), 2);
+        assert!(c.flow_windows.contains(&30.0) && c.flow_windows.contains(&2.0));
         assert!(c.price_windows.is_empty());
     }
 

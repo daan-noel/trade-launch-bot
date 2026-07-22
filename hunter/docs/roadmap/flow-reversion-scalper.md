@@ -197,9 +197,35 @@ premises — no new knob needed):
 `net_flow(2s) ≥ 0` (buy only once the 2 s sell pressure is no longer negative) lifts
 win% 57.4 → 59.0 and cuts the loss ~24% (best after-cost −1.72, best before-cost +0.85)
 — so the exhaustion gate **is** the right lever, but it does NOT clear the ~4%/round
-hurdle, and this probe had to **drop the 30s gross hot gate** (the single-`m_time_window`
-limit), so it *understates* the full refinement (both gates together, once the schema
-allows it). Reinforces the STOP verdict.
+hurdle. This probe had to **drop the 30s gross hot gate** (the single-`m_time_window`
+limit) — now resolved below. Reinforces the STOP verdict.
+
+**Both gates together (2026-07-22, schema limit lifted).** The single-`m_time_window`-
+per-side limit is gone: `strategy-redesign` now lets a side carry **multiple windows per
+group** (`SideConditions` holds a `Vec<GroupConditions>`; a dynamic group parses as a
+JSON array of window clauses — `rule_params.rs`, engine-only, no DB migration). Re-ran
+the probe with the **combined** rule keeping BOTH the 30s `gross_flow ≥ 10` hot gate and
+the 2s `net_flow` floor in one rule:
+
+| variant | fired | win% before | ep pnl% med | realized after | realized before |
+| --- | --- | --- | --- | --- | --- |
+| net_flow(2s) ≥ −1 only (drop gross) | 63 | 55.6 | −3.57 | −2.14 | +0.50 |
+| **gross(30s) + net_flow(2s) ≥ −1**  | 63 | 55.6 | −3.57 | −2.14 | +0.50 |
+| net_flow(2s) ≥ 0 only (drop gross)  | 61 | 59.0 | −3.05 | −1.72 | +0.85 |
+| **gross(30s) + net_flow(2s) ≥ 0**   | 61 | 59.0 | −3.05 | −1.72 | +0.85 |
+
+The combined result is **byte-identical** to net-flow-only at each floor: the 30s
+`gross_flow ≥ 10` gate is **non-binding** on this universe — every token that has dropped
+15%+ over a 30s window with 45–110 SOL liquidity already clears 10 SOL of 30s gross flow,
+so the hot gate removes nothing the age/liquidity/dip/net_flow gates haven't. (The 2s net
+gate IS binding: combined fires 61/63 vs the gross-only base's 68; and the engine unit
+test `multi_window_group_compiles_to_distinct_reqs_and_windows` confirms both windows
+compile to distinct reqs and are registered — so this is genuine redundancy, not a
+dropped gate.) **The earlier probe did not understate the refinement; the STOP verdict
+stands unchanged** — best after-cost is still −1.72 SOL. Lever #1 is now *tested and
+exhausted*, not blocked: the gross hot gate is not the missing edge. The remaining levers
+are fill/latency realism (#2) and, if pursued at all, a fundamentally different entry
+signal — not more flow gating.
 
 ### Read vs the acceptance gates
 - entry dip depth (median 13–16%, ≥12 by construction) — inside/near the family band
@@ -228,11 +254,12 @@ gate) before building re-entry/sizing"), **do not proceed to Phase 4/5 on this v
 Wider retrace does NOT help (realized-before degrades +0.40 → −0.01 as r3 → r12): a
 wider trail gives winners back more and lets losers ride (p10 −11 → −16), and the exit
 mix shifts to the 15s stall net firing first. The levers that matter, in priority:
-1. **Sell-exhaustion entry gate** (skip falling knives — attacks the −3% median directly).
-   _Blocked by a schema limit_: a rule side holds ONE `m_time_window` (single
-   `window_size_sec`), so the 30s `gross_flow` hot gate and a 2s `net_flow` exhaustion
-   gate **cannot coexist in one rule today** — keeping both needs a multi-window-per-group
-   step (or a dedicated short-window flow metric). The probe above trades one for the other.
+1. ~~**Sell-exhaustion entry gate**~~ — **TESTED & EXHAUSTED (2026-07-22).** The 2s
+   `net_flow ≥ 0` floor is the best single lever (−1.72 SOL after cost, +0.85 before), but
+   it does not clear the ~4%/round hurdle. The schema limit that once forced dropping the
+   30s gross gate is lifted (multi-window per group; see "Both gates together" above), and
+   with BOTH gates the result is **byte-identical** — the 30s `gross_flow` hot gate is
+   non-binding on this universe. Flow-gating is not the missing edge.
 2. **Fill/latency reality** — our worst-case feed fills pay slippage omego avoids with
    same-slot landing; needs reprice-on-retry + busy-hours-only before real money.
 3. **Re-entry (Phase 4) amplifies but does not create per-episode edge** — building it on

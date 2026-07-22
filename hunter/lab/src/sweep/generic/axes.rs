@@ -298,7 +298,13 @@ impl AxesModel {
                         AxisSide::Exit => &mut rp.exit,
                     };
                     let sc = side_slot.get_or_insert_with(SideConditions::default);
-                    let gc = sc.0.entry(*group).or_insert_with(GroupConditions::default);
+                    // The sweep model places one window per (side, group) — see
+                    // `check_shared_windows` — so a single instance per group holds.
+                    let instances = sc
+                        .0
+                        .entry(*group)
+                        .or_insert_with(|| vec![GroupConditions::default()]);
+                    let gc = &mut instances[0];
                     if let Some(w) = window {
                         gc.strict.insert("window_size_sec".to_string(), *w);
                     }
@@ -324,11 +330,13 @@ impl AxesModel {
 /// * `< lows × > highs` → outside OR when crossed, ranges when the pair forms an interval
 fn coalesce_side(side: &mut Option<SideConditions>) {
     let Some(side) = side else { return };
-    for group in side.0.values_mut() {
-        for (metric_id, arms) in group.metrics.iter_mut() {
-            let flat: Vec<Condition> = arms.iter().flatten().copied().collect();
-            let tol = metric_spec(*metric_id).eq_tolerance;
-            *arms = coalesce_contributions(flat, tol);
+    for instances in side.0.values_mut() {
+        for group in instances.iter_mut() {
+            for (metric_id, arms) in group.metrics.iter_mut() {
+                let flat: Vec<Condition> = arms.iter().flatten().copied().collect();
+                let tol = metric_spec(*metric_id).eq_tolerance;
+                *arms = coalesce_contributions(flat, tol);
+            }
         }
     }
 }
@@ -498,10 +506,10 @@ mod tests {
         let p1 = m.combo_params(1);
         assert_eq!(p0.take_profit, Some(100.0));
         let entry0 = p0.entry.as_ref().unwrap();
-        let conds0 = &entry0.0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        let conds0 = &entry0.0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
         assert_eq!(conds0[0][0].value, 5.0);
         let entry1 = p1.entry.as_ref().unwrap();
-        let conds1 = &entry1.0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        let conds1 = &entry1.0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
         assert_eq!(conds1[0][0].value, 10.0);
         // The assembled params must survive the canonical parse (promotable).
         RuleParams::parse(&p0.to_value()).unwrap();
@@ -521,7 +529,7 @@ mod tests {
         assert_eq!(p0.take_profit, Some(100.0));
         // Combo 1 = time > 5 as usual.
         let p1 = m.combo_params(1);
-        let conds = &p1.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        let conds = &p1.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
         assert_eq!(conds[0][0].value, 5.0);
         // Both survive the canonical parse (promotable).
         RuleParams::parse(&p0.to_value()).unwrap();
@@ -612,7 +620,7 @@ mod tests {
         for i in 0..m.combo_count() {
             let p = m.combo_params(i);
             let arms =
-                &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Liquidity];
+                &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Liquidity];
             assert_eq!(arms.len(), 1, "combo {i}: feasible opposing bounds must AND");
             assert_eq!(arms[0].len(), 2);
             RuleParams::parse(&p.to_value()).unwrap();
@@ -630,7 +638,7 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Liquidity];
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Liquidity];
         assert_eq!(arms.len(), 2);
         assert_eq!(arms[0][0].operator, Operator::Lt);
         assert_eq!(arms[1][0].operator, Operator::Gt);
@@ -648,7 +656,7 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Liquidity];
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Liquidity];
         assert_eq!(arms.len(), 1);
         assert_eq!(arms[0].len(), 2);
     }
@@ -663,7 +671,7 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
         assert_eq!(arms.len(), 1);
         assert_eq!(arms[0].len(), 2);
         RuleParams::parse(&p.to_value()).unwrap();
@@ -679,7 +687,7 @@ mod tests {
         };
         let m = AxesModel::resolve(&req).unwrap();
         let p = m.combo_params(0);
-        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time];
+        let arms = &p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time];
         assert_eq!(arms.len(), 2);
         RuleParams::parse(&p.to_value()).unwrap();
     }

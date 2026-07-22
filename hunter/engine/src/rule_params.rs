@@ -20,6 +20,25 @@
 //! name is checked against [`crate::metrics::REGISTRY`], so a typo fails the
 //! save instead of silently never matching.
 //!
+//! **Multi-window per group.** A dynamic group (`m_time_window`, `m_price_window`,
+//! `m_flow_window`) may appear once as a plain object (one window — the legacy,
+//! backward-compatible shape every stored rule uses) OR as a JSON **array** of
+//! objects, each with its own `window_size_sec`, to place gates on the same group
+//! at several window sizes simultaneously (e.g. a 30 s `gross_flow` hot gate AND a
+//! 2 s `net_flow` exhaustion gate on entry):
+//!
+//! ```json
+//! "m_time_window": [
+//!   { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
+//!   { "window_size_sec": 2,  "net_flow":   [{"operator": ">=", "value": 0}]  }
+//! ]
+//! ```
+//!
+//! Each window is an independent clause (entry-AND / exit-OR, same combinator as
+//! across groups). Windows within a group must be distinct; static groups take a
+//! single object only. The single-object form round-trips byte-identically, so no
+//! DB migration and existing rules are untouched.
+//!
 //! Absent = unconstrained: `entry: None` ⇒ enter on arm (fingerprint alone);
 //! `exit: None` ⇒ TP/SL/death only; absent TP/SL ⇒ that guard is off.
 //!
@@ -50,13 +69,18 @@ pub struct RuleParams {
     pub exit: Option<SideConditions>,
 }
 
-/// One side's (entry or exit) metric-condition groups.
+/// One side's (entry or exit) metric-condition groups. Each group maps to one or
+/// more [`GroupConditions`] **instances** — a static group has exactly one; a
+/// dynamic group has one per distinct `window_size_sec` (multi-window per group).
+/// The instance list is kept sorted by window (ascending; a static group's single
+/// window-less instance sorts first) so parsing is authoring-order-independent and
+/// [`to_value`](RuleParams::to_value) round-trips deterministically.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct SideConditions(pub BTreeMap<MetricGroupId, GroupConditions>);
+pub struct SideConditions(pub BTreeMap<MetricGroupId, Vec<GroupConditions>>);
 
-/// One group's authored content: strict params beside per-metric condition
-/// exprs (DNF: OR of AND-arms within a metric; across metrics/groups the side
-/// combinator is entry-AND / exit-OR — see `arm.rs`).
+/// One group instance's authored content: strict params (its `window_size_sec`)
+/// beside per-metric condition exprs (DNF: OR of AND-arms within a metric; across
+/// metrics/groups/windows the side combinator is entry-AND / exit-OR — see `arm.rs`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GroupConditions {
     /// Strict (non-condition) params, e.g. `window_size_sec` — names validated
@@ -149,8 +173,8 @@ impl RuleParams {
             [("entry", self.entry.as_ref()), ("exit", self.exit.as_ref())]
         {
             let Some(side) = side else { continue };
-            for (group_id, group) in &side.0 {
-                validate_group(side_name, *group_id, group)?;
+            for (group_id, instances) in &side.0 {
+                validate_group_instances(side_name, *group_id, instances)?;
             }
         }
         Ok(())
@@ -176,51 +200,133 @@ fn parse_opt_side(v: Option<&Value>, side_name: &str) -> Result<Option<SideCondi
                 let spec = group_by_name(group_name).ok_or_else(|| {
                     format!("{side_name}: unknown metric group '{group_name}'")
                 })?;
-                let group_obj = group_val.as_object().ok_or_else(|| {
-                    format!("{side_name}.{group_name} must be an object")
-                })?;
-                let mut group = GroupConditions::default();
-                for (key, val) in group_obj {
-                    if spec.strict_param_by_name(key).is_some() {
-                        let n = val.as_f64().ok_or_else(|| {
-                            format!("{side_name}.{group_name}.{key} must be a number")
-                        })?;
-                        group.strict.insert(key.clone(), n);
-                    } else if let Some(m) = spec.metric_by_name(key) {
-                        let arms = parse_condition_expr(val).map_err(|e| {
-                            format!(
-                                "{side_name}.{group_name}.{key}: invalid condition list \
-                                 (expect [{{\"operator\": \">\", \"value\": 10}}, ...] \
-                                 or nested OR arms): {e}"
-                            )
-                        })?;
-                        // Same metric, different ops: AND if feasible, else OR.
-                        group.metrics.insert(
-                            m.id,
-                            normalize_condition_expr(arms, m.eq_tolerance),
-                        );
-                    } else {
-                        // Better message when the metric exists in another group.
-                        let owner = REGISTRY
-                            .iter()
-                            .find(|g| g.metric_by_name(key).is_some())
-                            .map(|g| g.name);
-                        return Err(match owner {
-                            Some(owner) => format!(
-                                "{side_name}.{group_name}: metric '{key}' belongs to group '{owner}'"
-                            ),
-                            None => format!(
-                                "{side_name}.{group_name}: unknown metric or param '{key}'"
-                            ),
-                        });
+                // A group is one object (single window — the legacy shape) or an
+                // array of objects (one per window). Both land as an instance list.
+                let mut instances: Vec<GroupConditions> = match group_val {
+                    Value::Array(arr) => {
+                        if arr.is_empty() {
+                            return Err(format!(
+                                "{side_name}.{group_name}: empty group (expected an object \
+                                 or a non-empty array of window clauses)"
+                            ));
+                        }
+                        arr.iter()
+                            .map(|item| parse_group_object(spec, item, side_name, group_name))
+                            .collect::<Result<_, _>>()?
                     }
-                }
-                side.0.insert(spec.id, group);
+                    Value::Object(_) => {
+                        vec![parse_group_object(spec, group_val, side_name, group_name)?]
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{side_name}.{group_name} must be an object or an array of objects"
+                        ))
+                    }
+                };
+                // Sort by window (ascending; window-less static instance sorts first)
+                // so the stored order is authoring-order-independent + round-trips.
+                instances.sort_by(|a, b| {
+                    let key = |g: &GroupConditions| g.strict_param("window_size_sec");
+                    key(a)
+                        .partial_cmp(&key(b))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                side.0.insert(spec.id, instances);
             }
             Ok(Some(side))
         }
         Some(_) => Err(format!("{side_name} must be an object")),
     }
+}
+
+/// Parse one group **instance** object: strict params (e.g. `window_size_sec`)
+/// beside per-metric condition lists, both registry-checked.
+fn parse_group_object(
+    spec: &crate::metrics::GroupSpec,
+    group_val: &Value,
+    side_name: &str,
+    group_name: &str,
+) -> Result<GroupConditions, String> {
+    let group_obj = group_val
+        .as_object()
+        .ok_or_else(|| format!("{side_name}.{group_name} must be an object"))?;
+    let mut group = GroupConditions::default();
+    for (key, val) in group_obj {
+        if spec.strict_param_by_name(key).is_some() {
+            let n = val
+                .as_f64()
+                .ok_or_else(|| format!("{side_name}.{group_name}.{key} must be a number"))?;
+            group.strict.insert(key.clone(), n);
+        } else if let Some(m) = spec.metric_by_name(key) {
+            let arms = parse_condition_expr(val).map_err(|e| {
+                format!(
+                    "{side_name}.{group_name}.{key}: invalid condition list \
+                     (expect [{{\"operator\": \">\", \"value\": 10}}, ...] \
+                     or nested OR arms): {e}"
+                )
+            })?;
+            // Same metric, different ops: AND if feasible, else OR.
+            group
+                .metrics
+                .insert(m.id, normalize_condition_expr(arms, m.eq_tolerance));
+        } else {
+            // Better message when the metric exists in another group.
+            let owner = REGISTRY
+                .iter()
+                .find(|g| g.metric_by_name(key).is_some())
+                .map(|g| g.name);
+            return Err(match owner {
+                Some(owner) => format!(
+                    "{side_name}.{group_name}: metric '{key}' belongs to group '{owner}'"
+                ),
+                None => {
+                    format!("{side_name}.{group_name}: unknown metric or param '{key}'")
+                }
+            });
+        }
+    }
+    Ok(group)
+}
+
+/// Validate a group's instance list: shape rules that span the instances (a static
+/// group takes exactly one; dynamic windows must be distinct), then each instance.
+fn validate_group_instances(
+    side_name: &str,
+    group_id: MetricGroupId,
+    instances: &[GroupConditions],
+) -> Result<(), String> {
+    use crate::metrics::MetricKind;
+    let spec = group_spec(group_id);
+    if instances.is_empty() {
+        return Err(format!("{side_name}.{}: group has no instances", spec.name));
+    }
+    if spec.kind == MetricKind::Static && instances.len() > 1 {
+        return Err(format!(
+            "{side_name}.{}: static group takes a single object (no windows to distinguish)",
+            spec.name
+        ));
+    }
+    // Distinct windows within a dynamic group — two clauses on the same window are
+    // ambiguous (they'd read the one buffer); combine them into one object instead.
+    if spec.kind == MetricKind::Dynamic {
+        for (i, a) in instances.iter().enumerate() {
+            for b in &instances[i + 1..] {
+                let (wa, wb) = (a.strict_param("window_size_sec"), b.strict_param("window_size_sec"));
+                if let (Some(wa), Some(wb)) = (wa, wb) {
+                    if (wa - wb).abs() <= f64::EPSILON {
+                        return Err(format!(
+                            "{side_name}.{}: duplicate window_size_sec {wa} — combine into one clause",
+                            spec.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for group in instances {
+        validate_group(side_name, group_id, group)?;
+    }
+    Ok(())
 }
 
 fn validate_group(
@@ -298,20 +404,32 @@ fn validate_group(
 
 fn side_to_value(side: &SideConditions) -> Value {
     let mut groups = Map::new();
-    for (group_id, group) in &side.0 {
-        let mut obj = Map::new();
-        for (name, v) in &group.strict {
-            obj.insert(name.clone(), (*v).into());
-        }
-        for (metric_id, arms) in &group.metrics {
-            obj.insert(
-                metric_spec(*metric_id).name.to_string(),
-                condition_expr_to_value(arms),
-            );
-        }
-        groups.insert(group_spec(*group_id).name.to_string(), Value::Object(obj));
+    for (group_id, instances) in &side.0 {
+        // One instance ⇒ the legacy object shape (byte-identical for stored rules);
+        // several ⇒ a JSON array of window clauses.
+        let value = match instances.as_slice() {
+            [only] => group_to_value(only),
+            many => Value::Array(many.iter().map(group_to_value).collect()),
+        };
+        groups.insert(group_spec(*group_id).name.to_string(), value);
     }
     Value::Object(groups)
+}
+
+/// Serialize one group instance back to its JSON object (strict params + per-metric
+/// condition lists).
+fn group_to_value(group: &GroupConditions) -> Value {
+    let mut obj = Map::new();
+    for (name, v) in &group.strict {
+        obj.insert(name.clone(), (*v).into());
+    }
+    for (metric_id, arms) in &group.metrics {
+        obj.insert(
+            metric_spec(*metric_id).name.to_string(),
+            condition_expr_to_value(arms),
+        );
+    }
+    Value::Object(obj)
 }
 
 #[cfg(test)]
@@ -358,7 +476,7 @@ mod tests {
         assert_eq!(parsed.stop_loss, Some(30.0));
         let entry = parsed.entry.as_ref().unwrap();
         assert_eq!(entry.0.len(), 3);
-        let tw = &entry.0[&MetricGroupId::TimeWindow];
+        let tw = &entry.0[&MetricGroupId::TimeWindow][0];
         assert_eq!(tw.strict_param("window_size_sec"), Some(10.0));
         assert_eq!(
             tw.metrics[&MetricId::GrossFlow],
@@ -444,7 +562,7 @@ mod tests {
             } }
         }))
         .expect("m_price_window rule is valid");
-        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::PriceWindow];
+        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::PriceWindow][0];
         assert_eq!(g.strict_param("window_size_sec"), Some(30.0));
         assert_eq!(
             g.metrics[&MetricId::WinTrail],
@@ -479,6 +597,73 @@ mod tests {
     }
 
     #[test]
+    fn multi_window_group_parses_dedupes_and_round_trips() {
+        // The lever-#1 shape: a 30 s gross_flow hot gate AND a 2 s net_flow
+        // exhaustion gate on the same group, same side — impossible under the old
+        // single-object shape. Authored out of window order to prove the sort.
+        let p = RuleParams::parse(&json!({
+            "entry": { "m_time_window": [
+                { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
+                { "window_size_sec": 2,  "net_flow":   [{"operator": ">=", "value": 0}]  }
+            ] }
+        }))
+        .expect("multi-window entry is valid");
+        let instances = &p.entry.as_ref().unwrap().0[&MetricGroupId::TimeWindow];
+        assert_eq!(instances.len(), 2);
+        // Sorted by window ascending: 2 s first, then 30 s.
+        assert_eq!(instances[0].strict_param("window_size_sec"), Some(2.0));
+        assert_eq!(instances[1].strict_param("window_size_sec"), Some(30.0));
+        assert!(instances[0].metrics.contains_key(&MetricId::NetFlow));
+        assert!(instances[1].metrics.contains_key(&MetricId::GrossFlow));
+
+        // Round-trips: multi-window serializes as an array, single stays an object.
+        let rv = p.to_value();
+        assert!(rv["entry"]["m_time_window"].is_array(), "multi-window ⇒ array");
+        assert_eq!(RuleParams::parse(&rv).unwrap(), p);
+
+        // A single-instance group still serializes as a plain object (no migration).
+        let one = RuleParams::parse(&json!({
+            "entry": { "m_time_window": { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] } }
+        }))
+        .unwrap();
+        assert!(one.to_value()["entry"]["m_time_window"].is_object(), "one window ⇒ object");
+        assert_eq!(RuleParams::parse(&one.to_value()).unwrap(), one);
+    }
+
+    #[test]
+    fn multi_window_rejects_duplicates_and_static_arrays() {
+        // Two clauses on the same window are ambiguous.
+        let e = RuleParams::parse(&json!({
+            "entry": { "m_time_window": [
+                { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
+                { "window_size_sec": 30, "net_flow":   [{"operator": ">=", "value": 0}]  }
+            ] }
+        }))
+        .unwrap_err();
+        assert!(e.contains("duplicate window_size_sec 30"), "{e}");
+
+        // A static group has no window to distinguish instances — array > 1 rejected.
+        let e = RuleParams::parse(&json!({
+            "entry": { "m_snapshot": [
+                { "time": [{"operator": ">=", "value": 10}] },
+                { "liquidity": [{"operator": ">=", "value": 5}] }
+            ] }
+        }))
+        .unwrap_err();
+        assert!(e.contains("static group takes a single object"), "{e}");
+
+        // An empty array is a no-op group — rejected with a clear message.
+        let e = RuleParams::parse(&json!({ "entry": { "m_time_window": [] } })).unwrap_err();
+        assert!(e.contains("empty group"), "{e}");
+
+        // A static group authored as a 1-element array is fine (degenerate array form).
+        assert!(RuleParams::parse(&json!({
+            "entry": { "m_snapshot": [{ "time": [{"operator": ">=", "value": 10}] }] }
+        }))
+        .is_ok());
+    }
+
+    #[test]
     fn tp_sl_must_be_positive() {
         for bad in [json!({"take_profit": 0}), json!({"stop_loss": -5})] {
             let e = RuleParams::parse(&bad).unwrap_err();
@@ -494,7 +679,7 @@ mod tests {
             {"operator": ">=", "value": 70}
         ]}}}))
         .unwrap();
-        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics
             [&MetricId::Liquidity];
         assert_eq!(arms.len(), 2);
 
@@ -505,7 +690,7 @@ mod tests {
         ]}}}))
         .unwrap();
         assert_eq!(
-            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time].len(),
+            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time].len(),
             2
         );
     }
@@ -527,7 +712,7 @@ mod tests {
         ]}}}))
         .unwrap();
         assert_eq!(
-            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot].metrics[&MetricId::Time].len(),
+            p.entry.as_ref().unwrap().0[&MetricGroupId::Snapshot][0].metrics[&MetricId::Time].len(),
             1
         );
 
@@ -577,7 +762,7 @@ mod tests {
             }]],
         );
         let mut side = SideConditions::default();
-        side.0.insert(MetricGroupId::Snapshot, group);
+        side.0.insert(MetricGroupId::Snapshot, vec![group]);
         let p = RuleParams { take_profit: None, stop_loss: None, entry: Some(side), exit: None };
         let e = p.validate().unwrap_err();
         assert!(e.contains("must be finite"), "{e}");
