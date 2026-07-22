@@ -22,7 +22,24 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
   }
   validateSide('entry', p.entry, reg, errors);
   validateSide('exit', p.exit, reg, errors);
+  validateReentry(p.reentry, errors);
   return errors;
+}
+
+/** Mirror of the backend `parse_opt_reentry`: `cooldown_sec` finite `>= 0`,
+ *  `max_episodes_per_token` an integer `>= 1`. */
+function validateReentry(re: RuleParams['reentry'], errors: string[]): void {
+  if (re == null) return;
+  if (!Number.isFinite(re.cooldown_sec) || re.cooldown_sec < 0) {
+    errors.push('reentry.cooldown_sec must be a finite number >= 0');
+  }
+  if (
+    !Number.isFinite(re.max_episodes_per_token) ||
+    re.max_episodes_per_token < 1 ||
+    !Number.isInteger(re.max_episodes_per_token)
+  ) {
+    errors.push('reentry.max_episodes_per_token must be an integer >= 1');
+  }
 }
 
 function validateSide(

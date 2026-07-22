@@ -184,13 +184,31 @@ export interface EngineRuleDraft {
   trade_mode?: TradeMode;
 }
 
+/** Which trade in the fill window prices a sim fill (backend
+ *  `trading_core::strategies::paper_fill::FillModel`). `worst_case` is what live
+ *  paper + the sweep book; the others reprice the SAME taken set for the
+ *  fill-sensitivity analysis (the honest bottom line was measured under
+ *  `first_in_window`). */
+export type FillModelId = 'worst_case' | 'first_in_window' | 'signal_price';
+
+/** Selectable fill models for the Simulate / dry-run controls. `worst` is the
+ *  default (pessimistic, live-paper parity); `first` is the realistic fast-bot
+ *  next-print; `signal` is the zero-slippage optimistic bound. */
+export const FILL_MODELS: ReadonlyArray<{ id: FillModelId; label: string; hint: string }> = [
+  { id: 'worst_case', label: 'Worst-case', hint: 'Adverse fill — live paper + sweep parity (default)' },
+  { id: 'first_in_window', label: 'First-in-window', hint: 'Next print after the signal — realistic fast bot' },
+  { id: 'signal_price', label: 'Signal price', hint: 'Zero-slippage — optimistic bound' },
+];
+
 /** `POST /api/strategies/simulate` body — a saved rule (`rule_id`) or an inline
- *  `draft` (ignored if `rule_id` is set), over an optional creation window. */
+ *  `draft` (ignored if `rule_id` is set), over an optional creation window.
+ *  `fill_model` (top-level, default `worst_case`) prices the round-trips. */
 export interface EngineSimRequest {
   rule_id?: string;
   draft?: EngineRuleDraft;
   since?: string;
   until?: string;
+  fill_model?: FillModelId;
 }
 
 /** `202` response of `POST /api/strategies/simulate`. `run_id` = the rule id for

@@ -6,7 +6,12 @@ import { Select } from 'components/ui/Select';
 import { apiErrorMessage } from 'store/baseApi';
 import { connectSimulationFinished } from 'services/sse';
 import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
-import { lamportsToSol, type EngineRuleDraft } from 'lib/strategy/types';
+import {
+  lamportsToSol,
+  FILL_MODELS,
+  type EngineRuleDraft,
+  type FillModelId,
+} from 'lib/strategy/types';
 import type { SimulatedSummary } from 'types';
 import {
   useStartEngineSimulationMutation,
@@ -34,6 +39,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
   const [summary, setSummary] = useState<SimulatedSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [windowHours, setWindowHours] = useState(24);
+  const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
   const handleRef = useRef<{ close: () => void } | null>(null);
   const runIdRef = useRef<string | null>(null);
 
@@ -58,7 +64,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
         ? new Date(Date.now() - windowHours * 3600 * 1000).toISOString()
         : undefined;
     try {
-      const res = await start({ draft: engineDraft, since }).unwrap();
+      const res = await start({ draft: engineDraft, since, fill_model: fillModel }).unwrap();
       runIdRef.current = res.run_id;
       handleRef.current?.close();
       handleRef.current = connectSimulationFinished(async (ev) => {
@@ -97,6 +103,19 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
           {WINDOWS.map((w) => (
             <option key={w.hours} value={w.hours}>
               {w.label}
+            </option>
+          ))}
+        </Select>
+        <Select
+          fieldSize="sm"
+          value={fillModel}
+          onChange={(e) => setFillModel(e.target.value as FillModelId)}
+          className="w-36"
+          title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
+        >
+          {FILL_MODELS.map((m) => (
+            <option key={m.id} value={m.id} title={m.hint}>
+              {m.label}
             </option>
           ))}
         </Select>

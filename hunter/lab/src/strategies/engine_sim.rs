@@ -28,6 +28,7 @@ use hunter_engine::fingerprint::{match_all, Fingerprint as EngineFingerprint, Ma
 
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::{Fingerprint as ModelFingerprint, StrategyRule};
+use trading_core::strategies::paper_fill::FillModel;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::token_repo::TokenRepo;
@@ -63,6 +64,15 @@ pub struct EngineSimRequest {
     pub since: Option<DateTime<Utc>>,
     #[serde(default)]
     pub until: Option<DateTime<Utc>>,
+    /// Which fill model prices the round-trips. Defaults to
+    /// [`FillModel::WorstCase`] — the pessimistic bound live paper + the sweep book.
+    /// The other models (`first_in_window` / `signal_price`, aliased `first` /
+    /// `signal`) exist only for the sim's fill-sensitivity analysis: they reprice the
+    /// *same* taken set to separate fill pessimism from a genuine absence of edge (the
+    /// flow-scalper honest bottom line was measured under `first`). Applies to both a
+    /// saved-rule and a draft run.
+    #[serde(default)]
+    pub fill_model: FillModel,
 }
 
 /// An inline, unsaved rule for a dry-run simulate — the "how it trades" columns
@@ -103,6 +113,7 @@ pub async fn spawn_engine_simulation(
 ) -> HttpResponse {
     let since = req.since;
     let until = req.until;
+    let fill_model = req.fill_model;
     let target = match resolve_target(&app_state, &req).await {
         Ok(t) => t,
         Err(resp) => return resp,
@@ -139,7 +150,7 @@ pub async fn spawn_engine_simulation(
         let _guard = Guard { state: app_state.clone(), run_id, cancel: cancel.clone() };
 
         let outcome = match run_engine_backtest(
-            &app_state, &target, since, until, cancel, cell,
+            &app_state, &target, since, until, fill_model, cancel, cell,
         )
         .await
         {
@@ -242,6 +253,7 @@ async fn run_engine_backtest(
     target: &ResolvedTarget,
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
+    fill_model: FillModel,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<Value>> {
@@ -331,9 +343,9 @@ async fn run_engine_backtest(
                 std::slice::from_ref(&loaded),
                 std::slice::from_ref(&fp),
                 replay_tokens,
-                // Saved-rule simulate books the worst-case (adverse) fill, same as
-                // live paper; the other FillModels are analysis-only (replay harness).
-                ReplayConfig { as_of: Utc::now(), ..Default::default() },
+                // Defaults to worst-case (what live paper books); the request can select
+                // `first`/`signal` for the fill-sensitivity reprice (honest bottom line).
+                ReplayConfig { as_of: Utc::now(), fill_model },
             );
             outcomes
                 .iter()

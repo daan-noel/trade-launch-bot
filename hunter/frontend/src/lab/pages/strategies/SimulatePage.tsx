@@ -17,6 +17,7 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
+import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
@@ -67,7 +68,9 @@ import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   disabledRuleRowClass,
   lamportsToSol,
+  FILL_MODELS,
   type Fingerprint,
+  type FillModelId,
   type StrategyRule,
   type TradeMode,
 } from 'lib/strategy/types';
@@ -117,6 +120,12 @@ export function SimulatePage() {
   const [fetchSummaries] = useGetEngineSimSummariesMutation();
   const [runs, setRuns] = useState<Record<string, RunState>>({});
   const [bulkMode, setBulkMode] = useState<TradeMode | null>(null);
+  const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
+  // Read through a ref in the run handlers: `runRule` is captured inside the
+  // memoized `columns` (deps: runs/fpById/fpTints), so a plain closure over
+  // `fillModel` would go stale until one of those changes. The ref is always current.
+  const fillModelRef = useRef(fillModel);
+  fillModelRef.current = fillModel;
   const [selectedRuleId, setSelectedRuleId] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
   const [inspect, setInspect] = useState<{
     key: string;
@@ -222,7 +231,7 @@ export function SimulatePage() {
     setRuns((r) => ({ ...r, [rule.id]: { running: true } }));
     setSelectedRuleId(rule.id);
     try {
-      await start({ rule_id: rule.id }).unwrap();
+      await start({ rule_id: rule.id, fill_model: fillModelRef.current }).unwrap();
     } catch (e) {
       setRuns((r) => ({ ...r, [rule.id]: { running: false, error: apiErrorMessage(e as never) ?? 'start failed' } }));
     }
@@ -242,7 +251,7 @@ export function SimulatePage() {
       await Promise.all(
         targets.map(async (rule) => {
           try {
-            await start({ rule_id: rule.id }).unwrap();
+            await start({ rule_id: rule.id, fill_model: fillModelRef.current }).unwrap();
           } catch (e) {
             setRuns((r) => ({
               ...r,
@@ -300,6 +309,22 @@ export function SimulatePage() {
           </span>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5 text-[12px] text-text-dim">
+            <span>Fill</span>
+            <Select
+              fieldSize="sm"
+              value={fillModel}
+              onChange={(e) => setFillModel(e.target.value as FillModelId)}
+              className="w-36"
+              title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
+            >
+              {FILL_MODELS.map((m) => (
+                <option key={m.id} value={m.id} title={m.hint}>
+                  {m.label}
+                </option>
+              ))}
+            </Select>
+          </label>
           {disabledCount > 0 && (
             <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-text-dim">
               <input

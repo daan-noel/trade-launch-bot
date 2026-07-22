@@ -110,6 +110,26 @@ function RuleEditorInner({
   const setSide = (side: 'entry' | 'exit', next: SideConditions) =>
     setParams((p) => ({ ...p, [side]: next }));
 
+  // Re-entry: absent ⇒ one-shot. Toggling on seeds the family-observed defaults
+  // (cooldown 5s, cap 10/token); toggling off drops the block entirely. Editing a
+  // field to blank stores NaN so validation flags it (kept a number for the type).
+  const reentryOn = params.reentry != null;
+  const toggleReentry = (on: boolean) =>
+    setParams((p) => ({
+      ...p,
+      reentry: on ? (p.reentry ?? { cooldown_sec: 5, max_episodes_per_token: 10 }) : null,
+    }));
+  const setReentryField = (field: 'cooldown_sec' | 'max_episodes_per_token', n: number | null) =>
+    setParams((p) => ({
+      ...p,
+      reentry: {
+        cooldown_sec: p.reentry?.cooldown_sec ?? NaN,
+        max_episodes_per_token: p.reentry?.max_episodes_per_token ?? NaN,
+        [field]: n ?? NaN,
+      },
+    }));
+  const finiteOrNull = (v: number | undefined) => (v != null && Number.isFinite(v) ? v : null);
+
   // When leaving the JSON tab, fold edited JSON back into the form model.
   const syncFromJson = (text: string) => {
     setJsonText(text);
@@ -257,6 +277,48 @@ function RuleEditorInner({
             className="w-20"
           />
         </label>
+      </div>
+
+      {/* Re-entry (optional): re-arm after each normal exit. Absent ⇒ one-shot. */}
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex h-8 items-center gap-1.5 text-[11px] text-text-dim">
+          <input
+            type="checkbox"
+            checked={reentryOn}
+            disabled={conditionsLocked}
+            onChange={(e) => toggleReentry(e.target.checked)}
+            className="accent-accent"
+          />
+          <LabelTip tip={RULE_FIELD_HELP.reentry}>Re-entry</LabelTip>
+        </label>
+        {reentryOn && (
+          <>
+            <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+              <LabelTip tip={RULE_FIELD_HELP.reentryCooldown}>Cooldown (s)</LabelTip>
+              <Input
+                fieldSize="sm"
+                numeric
+                unit="s"
+                numericValue={finiteOrNull(params.reentry?.cooldown_sec)}
+                onNumericChange={(n) => setReentryField('cooldown_sec', n)}
+                disabled={conditionsLocked}
+                className="w-20"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-text-dim">
+              <LabelTip tip={RULE_FIELD_HELP.reentryMaxEpisodes}>Max episodes/token</LabelTip>
+              <Input
+                fieldSize="sm"
+                numeric
+                integer
+                numericValue={finiteOrNull(params.reentry?.max_episodes_per_token)}
+                onNumericChange={(n) => setReentryField('max_episodes_per_token', n)}
+                disabled={conditionsLocked}
+                className="w-24"
+              />
+            </label>
+          </>
+        )}
       </div>
 
       <Tabs value={tab} onValueChange={switchTab}>

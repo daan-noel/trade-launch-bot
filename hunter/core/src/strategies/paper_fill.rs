@@ -14,6 +14,7 @@
 //! tails). Live paper keeps it `false` and waits / fails closed.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::config::constants::MAX_FILL_WAIT_SLOTS;
 use crate::models::trade::{Trade, TradeRow};
@@ -52,17 +53,24 @@ fn paper_fill_from<T: TradeRow>(trades: &[T], idx: usize) -> PaperFill {
 /// shares the same fill **eligibility** (the window + a qualifying trade must
 /// exist), so the taken-position SET is identical across models and only the fill
 /// PRICE varies — a controlled reprice, not a different entry population.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Serde: the canonical name is `snake_case` (`worst_case` / `first_in_window` /
+/// `signal_price`); the short aliases (`worst` / `first` / `signal`) match the
+/// fill-sensitivity analysis doc's column labels so a request can use either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FillModel {
     /// Entry = highest qualifying buy, exit = lowest price in the window. The
     /// pessimistic bound; what live paper and the sweep book.
     #[default]
+    #[serde(alias = "worst")]
     WorstCase,
     /// Entry/exit = the FIRST qualifying trade after the signal in the window — a
     /// neutral "take the next print" reaction (no worst-case cherry-pick).
+    #[serde(alias = "first")]
     FirstInWindow,
     /// Fill at the trigger/fire trade's own spot — zero feed-reaction slippage, the
     /// optimistic bound approximating a same-slot landing.
+    #[serde(alias = "signal")]
     SignalPrice,
 }
 
@@ -339,6 +347,33 @@ mod tests {
         assert_eq!(signal.trade_idx, 0, "signal-price fill rows at the trigger");
         // Worst-case wrapper stays byte-identical to the parameterized WorstCase.
         assert_eq!(find_worst_case_paper_entry_at(&trades, 0).unwrap(), worst);
+    }
+
+    #[test]
+    fn fill_model_serde_names_and_aliases() {
+        use serde_json::json;
+        // Canonical snake_case names.
+        for (json_name, want) in [
+            ("worst_case", FillModel::WorstCase),
+            ("first_in_window", FillModel::FirstInWindow),
+            ("signal_price", FillModel::SignalPrice),
+        ] {
+            let got: FillModel = serde_json::from_value(json!(json_name)).unwrap();
+            assert_eq!(got, want, "canonical name '{json_name}'");
+        }
+        // Short aliases the analysis doc uses (the API contract the sim request relies on).
+        for (alias, want) in [
+            ("worst", FillModel::WorstCase),
+            ("first", FillModel::FirstInWindow),
+            ("signal", FillModel::SignalPrice),
+        ] {
+            let got: FillModel = serde_json::from_value(json!(alias)).unwrap();
+            assert_eq!(got, want, "alias '{alias}'");
+        }
+        // Absent ⇒ WorstCase via #[derive(Default)] (what `#[serde(default)]` yields).
+        assert_eq!(FillModel::default(), FillModel::WorstCase);
+        // Serialize emits the canonical snake_case name.
+        assert_eq!(serde_json::to_value(FillModel::FirstInWindow).unwrap(), json!("first_in_window"));
     }
 
     #[test]

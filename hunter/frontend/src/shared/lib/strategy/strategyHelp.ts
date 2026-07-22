@@ -539,12 +539,42 @@ export const RULE_FIELD_HELP = {
   paramsJson: {
     title: 'Params JSON',
     body: [
-      'Raw strategy params: take_profit, stop_loss, entry{…}, exit{…}.',
+      'Raw strategy params: take_profit, stop_loss, entry{…}, exit{…}, reentry{…}.',
       '',
       'Each metric is a list of {operator, value} (one AND arm) or a nested list of arms for OR.',
       'Example liquidity outside band: [[{"operator":"<","value":30}],[{"operator":">=","value":70}]].',
       '',
       'Validated against the metric registry on save. Prefer the Builder tab unless you know the shape.',
+    ].join('\n'),
+  },
+  reentry: {
+    title: 'Re-entry',
+    body: [
+      'Off ⇒ one-shot: once a token+rule closes (Done), it never re-enters that token.',
+      '',
+      'On ⇒ after each NORMAL exit (TP / SL / an exit metric — never a dead/manual/migrated',
+      'close) the rule waits the cooldown, then re-arms and can enter the same token again,',
+      'up to the episode cap.',
+      '',
+      'This is what the dip-scalper needs: its edge is rapid re-entry, not a single trade.',
+    ].join('\n'),
+  },
+  reentryCooldown: {
+    title: 'Cooldown (seconds)',
+    body: [
+      'How long to wait after a close before the rule can re-arm the same token.',
+      '',
+      'A floor, not a timer: re-arm happens on the next trade/tick once the cooldown has',
+      'elapsed. 0 ⇒ eligible on the very next event. Must be ≥ 0.',
+    ].join('\n'),
+  },
+  reentryMaxEpisodes: {
+    title: 'Max episodes per token',
+    body: [
+      'Hard cap on how many times this rule may enter a single token (across the whole run).',
+      '',
+      'The Nth close re-arms only while the episode count is below this. Integer ≥ 1.',
+      'Note this also becomes what the rule’s max-total cap counts (episodes, not tokens).',
     ].join('\n'),
   },
 } as const satisfies Record<string, HelpTip>;

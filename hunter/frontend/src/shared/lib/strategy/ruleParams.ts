@@ -26,6 +26,18 @@ export interface GroupConditions {
   metrics: Record<string, ConditionExpr>;
 }
 
+/** Re-entry lifecycle (backend `hunter_engine::rule_params::ReEntry`). Absent ⇒
+ *  one-shot (`Done` terminal per token+rule). Present ⇒ after a normal exit the
+ *  (token, rule) waits `cooldown_sec` then re-arms, up to `max_episodes_per_token`
+ *  entries. Mirror of the wire `reentry` object — must round-trip so the FE never
+ *  silently drops it (it did before this field existed). */
+export interface ReEntry {
+  /** Seconds to wait after a close before re-arming (`>= 0`). */
+  cooldown_sec: number;
+  /** Hard cap on entries per token for this rule (integer `>= 1`). */
+  max_episodes_per_token: number;
+}
+
 /** The whole rule `params` object in form shape. */
 export interface RuleParams {
   /** Take-profit % of entry price (`100` = +100%). `null`/absent = off. */
@@ -36,11 +48,13 @@ export interface RuleParams {
   entry?: SideConditions;
   /** Exit side. `undefined`/empty ⇒ TP/SL/death only. */
   exit?: SideConditions;
+  /** Re-entry lifecycle. `null`/absent ⇒ one-shot. */
+  reentry?: ReEntry | null;
 }
 
 /** An empty rule (fingerprint-only, no TP/SL/conditions). */
 export function emptyRuleParams(): RuleParams {
-  return { take_profit: null, stop_loss: null, entry: {}, exit: {} };
+  return { take_profit: null, stop_loss: null, entry: {}, exit: {}, reentry: null };
 }
 
 /** Serialize form → canonical `params` JSON. Drops empty metric lists and no-op
@@ -53,6 +67,19 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
   if (entry) root.entry = entry;
   const exit = sideToJson(p.exit);
   if (exit) root.exit = exit;
+  // Re-entry rides along only when fully specified (both a cooldown and an episode
+  // cap) — the backend requires both keys and rejects a partial object.
+  const re = p.reentry;
+  if (
+    re &&
+    Number.isFinite(re.cooldown_sec) &&
+    Number.isFinite(re.max_episodes_per_token)
+  ) {
+    root.reentry = {
+      cooldown_sec: re.cooldown_sec,
+      max_episodes_per_token: re.max_episodes_per_token,
+    };
+  }
   return root;
 }
 
@@ -88,7 +115,20 @@ export function ruleParamsFromJson(json: unknown, reg: StrategyRegistry | undefi
     stop_loss: numOrNull(obj.stop_loss),
     entry: sideFromJson(obj.entry, reg) ?? {},
     exit: sideFromJson(obj.exit, reg) ?? {},
+    reentry: reentryFromJson(obj.reentry),
   };
+}
+
+/** Parse the wire `reentry` object → form (`null` when absent or malformed). Both
+ *  keys must be present + finite (a partial object is not a valid re-entry block). */
+function reentryFromJson(v: unknown): ReEntry | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const cooldown = o.cooldown_sec;
+  const max = o.max_episodes_per_token;
+  if (typeof cooldown !== 'number' || !Number.isFinite(cooldown)) return null;
+  if (typeof max !== 'number' || !Number.isFinite(max)) return null;
+  return { cooldown_sec: cooldown, max_episodes_per_token: max };
 }
 
 function sideFromJson(
