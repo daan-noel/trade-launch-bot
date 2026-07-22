@@ -5,7 +5,9 @@
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
 //! * `m_snapshot` (static) — `time`, `liquidity`
-//! * `m_price_path` (static) — `stall`, `trail`
+//! * `m_price_path` (static) — `stall`, `trail` (lifetime peak)
+//! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
+//!   (rolling-window extrema; the dip trigger)
 //! * `m_time_window` (dynamic, strict param `window_size_sec`) — `gross_flow`,
 //!   `net_flow`, `buy`, `sell`
 //! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
@@ -20,6 +22,7 @@
 pub mod evaluator;
 pub mod flow_split;
 pub mod price_path;
+pub mod price_window;
 pub mod series;
 pub mod snapshot;
 pub mod time_window;
@@ -91,8 +94,10 @@ impl Default for TradeLite {
 pub enum MetricGroupId {
     /// `m_snapshot` — instantaneous token state.
     Snapshot,
-    /// `m_price_path` — incremental price-path state.
+    /// `m_price_path` — incremental price-path state (lifetime peak).
     PricePath,
+    /// `m_price_window` — trailing-window price extrema (rolling high/low).
+    PriceWindow,
     /// `m_time_window` — trailing-window flow aggregates.
     TimeWindow,
     /// `m_flow_split` — volume/organic lifetime totals (fingerprint-scoped).
@@ -124,6 +129,10 @@ pub enum MetricId {
     Stall,
     /// Percent off the peak price (`m_price_path`).
     Trail,
+    /// Percent below the rolling-window high (`m_price_window`) — the dip trigger.
+    WinTrail,
+    /// Percent above the rolling-window low (`m_price_window`).
+    WinRise,
     /// Buy + sell SOL over the trailing window (`m_time_window`).
     GrossFlow,
     /// Buy − sell SOL over the trailing window (`m_time_window`).
@@ -344,6 +353,36 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 1.0,
                 monotonic: false,
                 hue: 62,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::PriceWindow,
+        name: "m_price_window",
+        kind: MetricKind::Dynamic,
+        strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
+        fingerprint_config: &[],
+        // Amber family (44–48), sharing the 40–62 price band with m_price_path —
+        // three views of one price path (lifetime peak vs rolling extrema), the
+        // same "one classifier, sibling groups" rationale as m_flow_split /
+        // m_flow_window. The cross-group hue guard exempts the price family; do NOT
+        // widen the gap constants (the wheel is full — see the guard test).
+        metrics: &[
+            MetricSpec {
+                id: MetricId::WinTrail,
+                name: "trail",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 44,
+            },
+            MetricSpec {
+                id: MetricId::WinRise,
+                name: "rise",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 48,
             },
         ],
     },
@@ -835,20 +874,27 @@ mod tests {
 
     /// Metrics from different groups must not collide either — otherwise a
     /// `m_snapshot` chip and a `m_time_window` chip read as the same thing.
-    /// Sibling flow groups (`m_flow_split` / `m_flow_window`) share a hue family
-    /// on purpose (one classifier, two views) and are exempt.
+    /// **Sibling families** share a hue band on purpose and are exempt:
+    /// * flow — `m_flow_split` / `m_flow_window` (one classifier, two views);
+    /// * price — `m_price_path` / `m_price_window` (lifetime vs rolling extrema of
+    ///   the one price path). `m_position` joins the price family in Phase 2.
     #[test]
     fn distinct_groups_use_distinct_hues() {
-        let flow_siblings = |a: MetricGroupId, b: MetricGroupId| {
-            matches!(
-                (a, b),
-                (MetricGroupId::FlowSplit, MetricGroupId::FlowWindow)
-                    | (MetricGroupId::FlowWindow, MetricGroupId::FlowSplit)
-            )
+        use MetricGroupId::*;
+        // Which family a group belongs to (`None` = its own group, never exempt).
+        let family = |g: MetricGroupId| -> Option<u8> {
+            match g {
+                FlowSplit | FlowWindow => Some(0),
+                PricePath | PriceWindow => Some(1),
+                _ => None,
+            }
+        };
+        let siblings = |a: MetricGroupId, b: MetricGroupId| {
+            matches!((family(a), family(b)), (Some(x), Some(y)) if x == y)
         };
         for (i, ga) in REGISTRY.iter().enumerate() {
             for gb in &REGISTRY[i + 1..] {
-                if flow_siblings(ga.id, gb.id) {
+                if siblings(ga.id, gb.id) {
                     continue;
                 }
                 for ma in ga.metrics {

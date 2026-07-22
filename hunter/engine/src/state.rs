@@ -65,8 +65,12 @@ pub struct EngineState {
     pub rules: BTreeMap<RuleId, CompiledRule>,
     /// Loaded fingerprints (input order preserved for multi-match).
     pub fps: Vec<Fingerprint>,
-    /// Union of every rule's distinct `window_size_sec` — ensured on each new track.
+    /// Union of every rule's distinct **flow** `window_size_sec` (`m_time_window` +
+    /// `m_flow_window`) — ensured on each new track.
     pub all_windows: Vec<f64>,
+    /// Union of every rule's distinct **price** `window_size_sec`
+    /// (`m_price_window`) — ensured on each new track alongside `all_windows`.
+    pub all_price_windows: Vec<f64>,
     /// Per-rule cap counters (persist across rule reloads).
     pub counters: BTreeMap<RuleId, RuleCounters>,
     /// Tracked tokens, by mint.
@@ -112,33 +116,53 @@ impl EngineState {
         self.fps = fps.to_vec();
 
         self.all_windows.clear();
+        self.all_price_windows.clear();
         for r in self.rules.values() {
-            for &w in &r.windows {
+            for &w in &r.flow_windows {
                 if !self.all_windows.contains(&w) {
                     self.all_windows.push(w);
                 }
             }
+            for &w in &r.price_windows {
+                if !self.all_price_windows.contains(&w) {
+                    self.all_price_windows.push(w);
+                }
+            }
         }
         for token in self.tokens.values_mut() {
-            Self::ensure_track_windows_and_flow(&mut token.track, &self.all_windows, &self.fps);
+            Self::ensure_track_windows_and_flow(
+                &mut token.track,
+                &self.all_windows,
+                &self.all_price_windows,
+                &self.fps,
+            );
         }
     }
 
     /// A fresh track for a token created at `at`, pre-registering every rule
-    /// window and every configured flow fingerprint.
+    /// window (flow + price) and every configured flow fingerprint.
     pub fn new_track(&self, at: Ts) -> TokenTrack {
         let mut track = TokenTrack::new(at);
-        Self::ensure_track_windows_and_flow(&mut track, &self.all_windows, &self.fps);
+        Self::ensure_track_windows_and_flow(
+            &mut track,
+            &self.all_windows,
+            &self.all_price_windows,
+            &self.fps,
+        );
         track
     }
 
     fn ensure_track_windows_and_flow(
         track: &mut TokenTrack,
         windows: &[f64],
+        price_windows: &[f64],
         fps: &[Fingerprint],
     ) {
         for &w in windows {
             track.ensure_window(w);
+        }
+        for &w in price_windows {
+            track.ensure_price_window(w);
         }
         for fp in fps {
             if let Some(patterns) = FlowPatterns::from_metric_config(&fp.metric_config) {

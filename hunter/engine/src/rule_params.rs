@@ -405,6 +405,35 @@ mod tests {
     }
 
     #[test]
+    fn price_window_group_parses_and_round_trips() {
+        // The dip trigger: entry `m_price_window(30).trail >= 12`. Auto-surfaces via
+        // the registry walk with no dedicated code (extensibility contract).
+        let p = RuleParams::parse(&json!({
+            "entry": { "m_price_window": {
+                "window_size_sec": 30,
+                "trail": [{ "operator": ">=", "value": 12 }],
+                "rise":  [{ "operator": ">=", "value": 0 }]
+            } }
+        }))
+        .expect("m_price_window rule is valid");
+        let g = &p.entry.as_ref().unwrap().0[&MetricGroupId::PriceWindow];
+        assert_eq!(g.strict_param("window_size_sec"), Some(30.0));
+        assert_eq!(
+            g.metrics[&MetricId::WinTrail],
+            vec![vec![Condition { operator: Operator::Gte, value: 12.0 }]]
+        );
+        // Full round-trip: to_value → parse → identical struct.
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+        // Dynamic group ⇒ window_size_sec required, same as m_time_window.
+        let e = RuleParams::parse(&json!({
+            "entry": { "m_price_window": { "trail": [{ "operator": ">=", "value": 12 }] } }
+        }))
+        .unwrap_err();
+        assert!(e.contains("missing required param 'window_size_sec'"), "{e}");
+    }
+
+    #[test]
     fn time_window_requires_window_size() {
         let e = RuleParams::parse(
             &json!({"entry": {"m_time_window": {"buy": [{"operator": ">", "value": 1}]}}}),

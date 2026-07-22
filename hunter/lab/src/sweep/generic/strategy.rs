@@ -625,7 +625,7 @@ pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
 /// `time`/`stall` condition ceilings (+ tolerance) and largest flow window, so the
 /// sparse series it drives records every tick this rule's scan could branch on.
 pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
-    let max_window_secs = compiled.windows.iter().cloned().fold(0.0_f64, f64::max);
+    let max_window_secs = compiled.flow_windows.iter().cloned().fold(0.0_f64, f64::max);
     // Max condition value + eq-tolerance for a monotone/static metric across both sides.
     let ceiling = |metric: MetricId| -> f64 {
         let mut max = 0.0_f64;

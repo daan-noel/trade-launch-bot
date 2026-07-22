@@ -223,6 +223,32 @@ fn metrics_exit_on_time_condition() {
 }
 
 #[test]
+fn price_window_dip_trigger_enters_on_rolling_drawdown() {
+    // The dip-reversion entry: buy once price sits >=12% below the 30 s rolling high.
+    // Proves the new m_price_window group drives a real entry through the whole fold
+    // (registry walk → compile → ensure_price_window → value routing → decide_arm).
+    let mut s = EngineState::new();
+    let m = Mint::from("tokDip");
+    let params = json!({
+        "entry": { "m_price_window": {
+            "window_size_sec": 30,
+            "trail": [{ "operator": ">=", "value": 12 }]
+        } },
+        "take_profit": 100
+    });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    // At creation the window is empty → trail NaN → no entry.
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    assert!(buys(&fx).is_empty(), "empty window: NaN trail never enters");
+    // Establish the rolling high at price 1.0 — trail 0, still no entry.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.0, 40.0, 1.0) });
+    assert!(buys(&fx).is_empty(), "at the high: trail 0 < 12");
+    // A dip to 0.85 → 15% below the 1.0 high → entry fires.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.85, 40.0, 2.0) });
+    assert_eq!(buys(&fx), vec![(rid(1), BUY)], "15% dip below the rolling high enters");
+}
+
+#[test]
 fn overlapping_entry_exit_metrics_do_not_enter() {
     // Entry liquidity > 50 and exit liquidity > 40 both hold at reserve 60 —
     // can_enter must refuse (would otherwise buy then metrics-exit next event).

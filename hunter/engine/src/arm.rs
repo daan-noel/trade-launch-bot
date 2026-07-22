@@ -16,7 +16,9 @@ use crate::event::{
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr, Operator};
 use crate::metrics::track::TokenTrack;
-use crate::metrics::{group_spec, is_flow_metric, metric_spec, MetricId, MetricKind, Ts};
+use crate::metrics::{
+    group_of, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind, Ts,
+};
 
 /// One metric read a rule side needs: the metric, the window it lives in (dynamic
 /// metrics only), its `=`-tolerance, and the DNF condition arms. Precomputed so
@@ -122,8 +124,9 @@ fn arm_mono_upper(
 }
 
 /// A [`LoadedRule`] pre-chewed for the hot path. Metric reads are flattened, the
-/// distinct windows are listed for [`TokenTrack::ensure_window`], and the entry
-/// monotonic kills are precomputed for derived-unsatisfiability disarm.
+/// distinct windows are listed (split flow vs price) for
+/// [`TokenTrack::ensure_window`] / [`TokenTrack::ensure_price_window`], and the
+/// entry monotonic kills are precomputed for derived-unsatisfiability disarm.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledRule {
     pub id: RuleId,
@@ -139,8 +142,13 @@ pub struct CompiledRule {
     pub entry_reqs: Vec<MetricReq>,
     /// Empty ⇒ no metric exit (only TP/SL/dead close).
     pub exit_reqs: Vec<MetricReq>,
-    /// Distinct `window_size_sec` values this rule reads (both sides).
-    pub windows: SmallVec<[f64; 2]>,
+    /// Distinct **flow** `window_size_sec` values this rule reads across both sides
+    /// (`m_time_window` + `m_flow_window`) — drive `ensure_window` / `ensure_flow`.
+    pub flow_windows: SmallVec<[f64; 2]>,
+    /// Distinct **price** `window_size_sec` values (`m_price_window`) — drive
+    /// `ensure_price_window`. Split from [`flow_windows`](Self::flow_windows) so a
+    /// rule pays only for the deques its metrics actually read.
+    pub price_windows: SmallVec<[f64; 2]>,
     /// Per entry-metric mono kills (for derived-unsatisfiability disarm).
     pub mono_kills: SmallVec<[MonoMetricKill; 2]>,
 }
@@ -162,12 +170,19 @@ impl CompiledRule {
             .map(|s| build_reqs(s, rule.fingerprint_id))
             .unwrap_or_default();
 
-        // Distinct windows across both sides (dynamic metrics only).
-        let mut windows: SmallVec<[f64; 2]> = SmallVec::new();
+        // Distinct windows across both sides (dynamic metrics only), split by which
+        // buffer they drive: price-extrema deques vs flow ring buffers.
+        let mut flow_windows: SmallVec<[f64; 2]> = SmallVec::new();
+        let mut price_windows: SmallVec<[f64; 2]> = SmallVec::new();
         for r in entry_reqs.iter().chain(exit_reqs.iter()) {
             if let Some(w) = r.window {
-                if !windows.contains(&w) {
-                    windows.push(w);
+                let bucket = if group_of(r.metric).id == MetricGroupId::PriceWindow {
+                    &mut price_windows
+                } else {
+                    &mut flow_windows
+                };
+                if !bucket.contains(&w) {
+                    bucket.push(w);
                 }
             }
         }
@@ -209,7 +224,8 @@ impl CompiledRule {
             stop_loss: rule.params.stop_loss,
             entry_reqs,
             exit_reqs,
-            windows,
+            flow_windows,
+            price_windows,
             mono_kills,
         }
     }
@@ -393,7 +409,8 @@ mod tests {
             "entry": { "m_time_window": { "window_size_sec": 10, "buy": [{"operator": ">", "value": 1}] } },
             "exit":  { "m_time_window": { "window_size_sec": 10, "sell": [{"operator": ">", "value": 1}] } }
         })));
-        assert_eq!(c.windows.as_slice(), &[10.0]);
+        assert_eq!(c.flow_windows.as_slice(), &[10.0]);
+        assert!(c.price_windows.is_empty());
     }
 
     #[test]

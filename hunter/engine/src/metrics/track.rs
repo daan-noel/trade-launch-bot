@@ -23,6 +23,7 @@ use crate::fingerprint::FingerprintId;
 
 use super::flow_split::{FlowPatterns, FlowState};
 use super::price_path::PricePathState;
+use super::price_window::PriceWindowState;
 use super::snapshot::SnapshotState;
 use super::time_window::{window_key, WindowState};
 use super::{MetricId, TradeLite, Ts};
@@ -33,8 +34,13 @@ pub struct TokenTrack {
     created_at: Ts,
     snapshot: SnapshotState,
     price_path: PricePathState,
-    /// Dynamic windows, keyed by [`window_key`] so equal sizes dedupe.
+    /// Dynamic flow windows, keyed by [`window_key`] so equal sizes dedupe.
     windows: BTreeMap<u64, WindowState>,
+    /// Dynamic price-extrema windows, keyed by [`window_key`]. Kept apart from
+    /// `windows` so a rule using only `m_time_window` pays for no price deque (and
+    /// vice versa) — the two dynamic groups share the `window_size_sec` param name
+    /// but not the buffers.
+    price_windows: BTreeMap<u64, PriceWindowState>,
     /// Flow classifier state, keyed by fingerprint (pattern sets differ).
     flow: BTreeMap<FingerprintId, FlowState>,
     /// Creator wallet hash from `TokenCreated` — applied to every FlowState.
@@ -49,18 +55,27 @@ impl TokenTrack {
             snapshot: SnapshotState::default(),
             price_path: PricePathState::new(created_at),
             windows: BTreeMap::new(),
+            price_windows: BTreeMap::new(),
             flow: BTreeMap::new(),
             creator_wallet_hash: None,
         }
     }
 
-    /// Register a trailing window (idempotent; deduped by `window_size_sec`).
+    /// Register a trailing flow window (idempotent; deduped by `window_size_sec`).
     /// The engine calls this for every distinct `window_size_sec` its loaded
     /// rules reference before the token starts receiving trades.
     pub fn ensure_window(&mut self, window_secs: f64) {
         self.windows
             .entry(window_key(window_secs))
             .or_insert_with(|| WindowState::new(window_secs));
+    }
+
+    /// Register a trailing price-extrema window (idempotent; deduped by
+    /// `window_size_sec`). The `m_price_window` counterpart of [`ensure_window`].
+    pub fn ensure_price_window(&mut self, window_secs: f64) {
+        self.price_windows
+            .entry(window_key(window_secs))
+            .or_insert_with(|| PriceWindowState::new(window_secs));
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
@@ -98,6 +113,9 @@ impl TokenTrack {
         for w in self.windows.values_mut() {
             w.on_trade(t.side, t.sol, t.at);
         }
+        for pw in self.price_windows.values_mut() {
+            pw.on_trade(t.price, t.at);
+        }
         for flow in self.flow.values_mut() {
             flow.on_trade(&t);
         }
@@ -109,6 +127,9 @@ impl TokenTrack {
     pub fn on_tick(&mut self, now: Ts) {
         for w in self.windows.values_mut() {
             w.evict(now);
+        }
+        for pw in self.price_windows.values_mut() {
+            pw.evict(now);
         }
         for flow in self.flow.values_mut() {
             flow.on_tick(now);
@@ -143,6 +164,12 @@ impl TokenTrack {
         match id {
             Time | Liquidity => self.snapshot.value(id, self.created_at, now),
             Stall | Trail => self.price_path.value(id, now),
+            WinTrail | WinRise => {
+                match window_secs.and_then(|ws| self.price_windows.get(&window_key(ws))) {
+                    Some(pw) => pw.value(id),
+                    None => f64::NAN,
+                }
+            }
             GrossFlow | NetFlow | Buy | Sell => {
                 match window_secs.and_then(|ws| self.windows.get(&window_key(ws))) {
                     Some(w) => w.value(id),
@@ -244,6 +271,32 @@ mod tests {
         assert_eq!(track.windows.len(), 1);
         track.ensure_window(5.0);
         assert_eq!(track.windows.len(), 2);
+    }
+
+    #[test]
+    fn routes_price_window_and_dedupes_independently_of_flow_windows() {
+        let created = ts(0.0);
+        let mut track = TokenTrack::new(created);
+        // A flow window and a price window at the SAME size must be distinct buffers.
+        track.ensure_window(30.0);
+        track.ensure_price_window(30.0);
+        track.ensure_price_window(30.0); // idempotent
+        assert_eq!(track.price_windows.len(), 1);
+        assert_eq!(track.windows.len(), 1);
+
+        // Unregistered price window / missing window arg → NaN.
+        assert!(track.value(MetricId::WinTrail, Some(60.0), None, ts(1.0)).is_nan());
+        assert!(track.value(MetricId::WinTrail, None, None, ts(1.0)).is_nan());
+        // Before any trade → NaN.
+        assert!(track.value(MetricId::WinTrail, Some(30.0), None, ts(1.0)).is_nan());
+
+        // High at t=1 (price 2.0), dip at t=2 (price 1.5) → trail = 25%, rise = 0.
+        track.on_trade(buy(1.0, 2.0, 15.0, 1.0));
+        track.on_trade(buy(1.0, 1.5, 15.0, 2.0));
+        assert!(
+            (track.value(MetricId::WinTrail, Some(30.0), None, ts(2.0)) - 25.0).abs() < 1e-9
+        );
+        assert_eq!(track.value(MetricId::WinRise, Some(30.0), None, ts(2.0)), 0.0);
     }
 
     #[test]
