@@ -427,7 +427,13 @@ pub fn adopt_holding_into_engine(
         );
     }
     let token = state.tokens.get_mut(&mint)?;
-    token.arms.insert(rule_id, ArmState::Entered { position, entry_price });
+    // Seed the position context from the adopted fill: `held` counts from the entry
+    // time, `retrace` from the entry price (the peak is re-established as live trades
+    // fold in — a conservative restart baseline).
+    token.arms.insert(
+        rule_id,
+        ArmState::Entered { position, entry_price, entered_at: created_at, peak_price: entry_price },
+    );
 
     let ctr = state.counters.entry(rule_id).or_insert(RuleCounters::default());
     ctr.open = ctr.open.saturating_add(1);

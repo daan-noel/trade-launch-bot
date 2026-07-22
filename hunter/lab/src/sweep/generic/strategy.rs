@@ -701,13 +701,16 @@ fn col_idx_in(columns: &[SeriesColumn], req: &hunter_engine::arm::MetricReq) -> 
 }
 
 fn col_idx_mono(columns: &[SeriesColumn], k: &hunter_engine::arm::MonoMetricKill) -> usize {
-    // Synthetic req so Flow/Static/Window routing matches `col_of`.
+    // Synthetic req so Flow/Static/Window routing matches `col_of`. Mono-kills are
+    // always token-scoped entry metrics, so the scope/origin fields are inert here.
     let req = hunter_engine::arm::MetricReq {
         metric: k.metric,
         window: k.window,
         fingerprint: k.fingerprint,
         tolerance: 0.0,
         conds: vec![],
+        position_scoped: false,
+        origin: hunter_engine::arm::ReqOrigin::Authored,
     };
     col_idx_in(columns, &req)
 }
@@ -759,6 +762,8 @@ fn debug_assert_cols_match(series: &MetricSeries, c: &BoundCombo) {
                     fingerprint: k.fingerprint,
                     tolerance: 0.0,
                     conds: vec![],
+                    position_scoped: false,
+                    origin: hunter_engine::arm::ReqOrigin::Authored,
                 };
                 col == col_idx_of(series, &req)
             }),

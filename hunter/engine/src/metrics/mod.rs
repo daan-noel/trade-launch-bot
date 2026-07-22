@@ -12,6 +12,8 @@
 //!   `net_flow`, `buy`, `sell`
 //! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
 //! * `m_flow_window` (dynamic, fingerprint-scoped) — same metrics over a window
+//! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `pnl`,
+//!   `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
 //!
 //! The **registry** below is the single source of truth for group/metric names,
 //! units, `=`-tolerances, static/dynamic kind, monotonicity, and required strict
@@ -21,6 +23,7 @@
 
 pub mod evaluator;
 pub mod flow_split;
+pub mod position;
 pub mod price_path;
 pub mod price_window;
 pub mod series;
@@ -104,6 +107,8 @@ pub enum MetricGroupId {
     FlowSplit,
     /// `m_flow_window` — volume/organic trailing-window totals (fingerprint-scoped).
     FlowWindow,
+    /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
+    Position,
 }
 
 impl MetricGroupId {
@@ -161,6 +166,13 @@ pub enum MetricId {
     WinNonvolNet,
     WinNonvolGross,
     WinVolShare,
+    // ── m_position (position-scoped; anchored on the entry fill; exit-only) ──
+    /// Percent below the since-entry peak — the trailing stop.
+    Retrace,
+    /// Signed percent vs the entry price.
+    Pnl,
+    /// Seconds since the entry fill.
+    Held,
 }
 
 /// True for metrics whose state is keyed by fingerprint (flow split / window).
@@ -220,6 +232,27 @@ impl MetricKind {
     }
 }
 
+/// What a group's metric state **anchors on**. Everything token-scoped is one value
+/// per token, shared by every rule armed on it. A position-scoped metric anchors on
+/// *your* entry fill, so it only has a value while a position is held — it is
+/// **exit-only** (validation rejects it under `entry`, and with no position context
+/// it reads `NaN`, satisfying nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricScope {
+    Token,
+    Position,
+}
+
+impl MetricScope {
+    /// Stable JSON/label token (frontend registry contract).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MetricScope::Token => "token",
+            MetricScope::Position => "position",
+        }
+    }
+}
+
 /// Registry entry for one metric: name, unit, `=`-tolerance, monotonicity, UI hue.
 ///
 /// `eq_tolerance` is the metric's own bucket-equality width for `=`/`!=`
@@ -266,6 +299,8 @@ pub struct GroupSpec {
     pub id: MetricGroupId,
     pub name: &'static str,
     pub kind: MetricKind,
+    /// Token-scoped (default) or position-scoped (`m_position`, exit-only).
+    pub scope: MetricScope,
     pub strict_params: &'static [StrictParamSpec],
     /// Fingerprint-side config fields (empty for most groups).
     pub fingerprint_config: &'static [FpConfigFieldSpec],
@@ -304,6 +339,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         id: MetricGroupId::Snapshot,
         name: "m_snapshot",
         kind: MetricKind::Static,
+        scope: MetricScope::Token,
         strict_params: &[],
         fingerprint_config: &[],
         // Blue/indigo family (~212–236). Deliberately clear of the green at 170:
@@ -332,6 +368,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         id: MetricGroupId::PricePath,
         name: "m_price_path",
         kind: MetricKind::Static,
+        scope: MetricScope::Token,
         strict_params: &[],
         fingerprint_config: &[],
         // Amber/gold family (~40–62). Both metrics anchor on the all-time high:
@@ -360,6 +397,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         id: MetricGroupId::PriceWindow,
         name: "m_price_window",
         kind: MetricKind::Dynamic,
+        scope: MetricScope::Token,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         fingerprint_config: &[],
         // Amber family (44–48), sharing the 40–62 price band with m_price_path —
@@ -390,6 +428,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         id: MetricGroupId::TimeWindow,
         name: "m_time_window",
         kind: MetricKind::Dynamic,
+        scope: MetricScope::Token,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         fingerprint_config: &[],
         // Violet/magenta family (~278–300) for the aggregate flow metrics — but `buy` and
@@ -436,6 +475,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         id: MetricGroupId::FlowSplit,
         name: "m_flow_split",
         kind: MetricKind::Static,
+        scope: MetricScope::Token,
         strict_params: &[],
         fingerprint_config: &[FpConfigFieldSpec {
             name: "volume_ix_patterns",
@@ -522,6 +562,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         id: MetricGroupId::FlowWindow,
         name: "m_flow_window",
         kind: MetricKind::Dynamic,
+        scope: MetricScope::Token,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         // Reads the same fingerprint key as m_flow_split (one classifier, two views).
         fingerprint_config: &[],
@@ -599,6 +640,44 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 1.0,
                 monotonic: false,
                 hue: 109,
+            },
+        ],
+    },
+    GroupSpec {
+        id: MetricGroupId::Position,
+        name: "m_position",
+        kind: MetricKind::Static,
+        scope: MetricScope::Position,
+        strict_params: &[],
+        fingerprint_config: &[],
+        // Amber family (52–58), the third view in the price family
+        // {m_price_path, m_price_window, m_position} sharing the 40–62 band — the
+        // cross-group hue guard exempts the whole family. `monotonic: false` for all
+        // three: the flag powers ENTRY-side derived disarm, and these are exit-only.
+        metrics: &[
+            MetricSpec {
+                id: MetricId::Retrace,
+                name: "retrace",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 52,
+            },
+            MetricSpec {
+                id: MetricId::Pnl,
+                name: "pnl",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 56,
+            },
+            MetricSpec {
+                id: MetricId::Held,
+                name: "held",
+                unit: Unit::Seconds,
+                eq_tolerance: 0.5,
+                monotonic: false,
+                hue: 58,
             },
         ],
     },
@@ -687,6 +766,7 @@ pub fn registry_json() -> serde_json::Value {
             json!({
                 "name": g.name,
                 "kind": g.kind.as_str(),
+                "scope": g.scope.as_str(),
                 "strict_params": strict,
                 "fingerprint_config": fp_cfg,
                 "metrics": metrics,
@@ -779,6 +859,7 @@ mod tests {
         for (jg, g) in groups.iter().zip(REGISTRY) {
             assert_eq!(jg["name"], g.name);
             assert_eq!(jg["kind"], g.kind.as_str());
+            assert_eq!(jg["scope"], g.scope.as_str());
             assert_eq!(jg["strict_params"].as_array().unwrap().len(), g.strict_params.len());
             let jm = jg["metrics"].as_array().unwrap();
             assert_eq!(jm.len(), g.metrics.len());
@@ -876,8 +957,8 @@ mod tests {
     /// `m_snapshot` chip and a `m_time_window` chip read as the same thing.
     /// **Sibling families** share a hue band on purpose and are exempt:
     /// * flow — `m_flow_split` / `m_flow_window` (one classifier, two views);
-    /// * price — `m_price_path` / `m_price_window` (lifetime vs rolling extrema of
-    ///   the one price path). `m_position` joins the price family in Phase 2.
+    /// * price — `m_price_path` / `m_price_window` / `m_position` (lifetime peak,
+    ///   rolling extrema, and since-entry — three views of the one price path).
     #[test]
     fn distinct_groups_use_distinct_hues() {
         use MetricGroupId::*;
@@ -885,7 +966,7 @@ mod tests {
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
                 FlowSplit | FlowWindow => Some(0),
-                PricePath | PriceWindow => Some(1),
+                PricePath | PriceWindow | Position => Some(1),
                 _ => None,
             }
         };

@@ -28,6 +28,11 @@ export interface ConditionSideEditorProps {
  * {@link ConditionInput} per metric. Fully registry-driven — a metric added in
  * Rust appears here on the next load with no code change (plan §8). Empty metric
  * inputs mean "unconstrained"; a group with no conditions is dropped at save.
+ *
+ * Position-scoped groups (`m_position` — retrace/pnl/held) are **exit-only**: they
+ * anchor on your entry fill, so they have no value on the entry side. The registry's
+ * `scope` flag hides them from the ENTRY picker (the backend also rejects them there),
+ * without this component hardcoding any group name.
  */
 export function ConditionSideEditor({
   side,
@@ -57,7 +62,9 @@ export function ConditionSideEditor({
         {side}
         <InfoTooltip title={sideTip.title} body={sideTip.body} />
       </div>
-      {registry.groups.map((gspec) => {
+      {registry.groups
+        .filter((gspec) => !(side === 'entry' && gspec.scope === 'position'))
+        .map((gspec) => {
         const g = group(gspec.name);
         const groupTip = GROUP_HELP[gspec.name];
         return (

@@ -18,6 +18,11 @@ export type MetricUnit = 'seconds' | 'sol' | 'percent';
  *  strict params like `window_size_sec` (`dynamic`). */
 export type MetricGroupKind = 'static' | 'dynamic';
 
+/** What a group's metric state anchors on. `token` (default) = one value per token;
+ *  `position` = anchored on your entry fill, so it only exists while holding —
+ *  **exit-only** (the backend rejects it under `entry`; the builder hides it there). */
+export type MetricScope = 'token' | 'position';
+
 /** A group's strict (non-condition) parameter, e.g. `window_size_sec`. */
 export interface StrictParamSpec {
   name: string;
@@ -48,6 +53,9 @@ export interface MetricSpec {
 export interface GroupSpec {
   name: string;
   kind: MetricGroupKind;
+  /** Token-scoped (default) or position-scoped (`m_position`, exit-only). Optional
+   *  so a pre-scope registry payload still parses. */
+  scope?: MetricScope;
   strict_params: StrictParamSpec[];
   /** Fingerprint-level config fields (empty / omitted for most groups). */
   fingerprint_config?: FpConfigFieldSpec[];

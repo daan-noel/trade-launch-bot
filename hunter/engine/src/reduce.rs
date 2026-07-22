@@ -26,6 +26,7 @@ use crate::event::{
 };
 use crate::fingerprint::{match_all, MatchPhase};
 use crate::grouping::LAMPORTS_PER_SOL_F64;
+use crate::metrics::position::PositionCtx;
 use crate::metrics::Ts;
 use crate::state::{EngineState, PositionRef, TokenState};
 
@@ -156,7 +157,14 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                 Some(ArmState::EntryPending { intent: pend, position, .. }) if pend == intent => {
                     token.arms.insert(
                         rule_id,
-                        ArmState::Entered { position, entry_price: fill.price },
+                        ArmState::Entered {
+                            position,
+                            entry_price: fill.price,
+                            entered_at: fill.at,
+                            // Peak starts at the fill: before any run-up `retrace`
+                            // measures the drop from entry (a soft stop).
+                            peak_price: fill.price,
+                        },
                     );
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
@@ -403,6 +411,20 @@ fn evaluate_token(
     let last_meaningful = token.last_meaningful_at.unwrap_or(token.created_at);
     let dead = is_dead_verdict(reserves, last_meaningful, now);
 
+    // Fold the current price into every held position's since-entry peak BEFORE
+    // deciding — one bare compare per Entered arm, no alloc — so `retrace` reads
+    // against a peak that already includes this event's price.
+    let cur_price = token.track.current_price();
+    if cur_price.is_finite() {
+        for arm in token.arms.values_mut() {
+            if let ArmState::Entered { peak_price, .. } = arm {
+                if cur_price > *peak_price {
+                    *peak_price = cur_price;
+                }
+            }
+        }
+    }
+
     let rule_ids: SmallVec<[RuleId; 4]> = token.arms.keys().copied().collect();
     for rule_id in rule_ids {
         let (decision, buy_lamports, cap, max_total) = {
@@ -421,8 +443,9 @@ fn evaluate_token(
 
 /// Decide one arm's fate. Priorities: armed side disarms (dead, then derived-unsat)
 /// before it enters; entry is gated by [`CompiledRule::can_enter`] (no buy while
-/// exit metrics already hold); the open side follows
-/// `Dead > StopLoss > TakeProfit > Metrics`.
+/// exit metrics already hold); the open side follows `Dead > exit_fired`, where
+/// `exit_fired` walks the desugared-TP/SL-then-authored exit reqs in order (so the
+/// legacy `SL > TP > Metrics` tiebreak is preserved inside the one loop).
 fn decide_arm(
     c: &CompiledRule,
     arm: &ArmState,
@@ -443,29 +466,22 @@ fn decide_arm(
             }
             ArmDecision::None
         }
-        ArmState::Entered { entry_price, .. } => {
+        ArmState::Entered { entry_price, entered_at, peak_price, .. } => {
+            // Dead stays first and special (liquidity-based, not price). Every
+            // price-based exit — the desugared TP/SL and every authored metric —
+            // flows through the one `exit_fired` loop, so priority collapses from
+            // `Dead > SL > TP > Metrics` to `Dead > exit_fired` (SL/TP are prepended
+            // pnl reqs, so their old relative order is preserved inside the loop).
             if dead {
                 return ArmDecision::Exit(ExitReason::Dead);
             }
-            let price = token.track.current_price();
-            if price.is_finite() {
-                if let Some(sl) = c.stop_loss {
-                    if price <= *entry_price * (1.0 - sl / 100.0) {
-                        return ArmDecision::Exit(ExitReason::StopLoss);
-                    }
-                }
-                if let Some(tp) = c.take_profit {
-                    if price >= *entry_price * (1.0 + tp / 100.0) {
-                        return ArmDecision::Exit(ExitReason::TakeProfit);
-                    }
-                }
-            }
-            if let Some((metric, operator, value)) = c.exit_metrics_fired(&token.track, now) {
-                return ArmDecision::Exit(ExitReason::Metrics {
-                    metric,
-                    operator,
-                    value,
-                });
+            let ctx = PositionCtx {
+                entry_price: *entry_price,
+                peak_price: *peak_price,
+                entered_at: *entered_at,
+            };
+            if let Some(reason) = c.exit_fired(&token.track, &ctx, now) {
+                return ArmDecision::Exit(reason);
             }
             ArmDecision::None
         }

@@ -187,6 +187,11 @@ impl TokenTrack {
                     None => f64::NAN,
                 }
             }
+            // Position-scoped metrics have no token state — they read from a
+            // `PositionCtx` (see `metrics::position`), never the track. Before entry
+            // (the only place `TokenTrack::value` reaches them, via the `can_enter`
+            // exit-gate) they read NaN, so a position exit metric never blocks entry.
+            Retrace | Pnl | Held => f64::NAN,
         }
     }
 

@@ -249,6 +249,80 @@ fn price_window_dip_trigger_enters_on_rolling_drawdown() {
 }
 
 #[test]
+fn position_retrace_is_a_trailing_stop_off_the_since_entry_peak() {
+    // The dip-reversion exit: a 3% trailing stop. Enter, let price run +30%, then a
+    // pullback of >3% off the new peak fires `m_position.retrace >= 3`.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokTrail");
+    let params = json!({ "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } } });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    // Run to +30% (peak 1.3): retrace 0 → hold.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.3, 40.0, 1.0) });
+    assert!(sells(&fx).is_empty(), "at the peak: retrace 0 < 3");
+    // A small dip to 1.25 → (1.3 − 1.25)/1.3 = 3.85% off the peak → trailing stop.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 1.25, 40.0, 2.0) });
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::Metrics {
+            metric: hunter_engine::metrics::MetricId::Retrace,
+            operator: hunter_engine::metrics::evaluator::Operator::Gte,
+            value: 3.0,
+        }]
+    );
+}
+
+#[test]
+fn position_held_is_a_time_stop() {
+    // `m_position.held >= 5` — a time-stop, tick-driven (no price needed).
+    let mut s = EngineState::new();
+    let m = Mint::from("tokHold");
+    let params = json!({ "exit": { "m_position": { "held": [{ "operator": ">=", "value": 5 }] } } });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    // Entry fills at t=0.5 → held counts from there.
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.5) });
+    let fx = reduce(&mut s, Event::Tick { now: ts(4.0) });
+    assert!(sells(&fx).is_empty(), "held 3.5 s < 5");
+    let fx = reduce(&mut s, Event::Tick { now: ts(6.0) });
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::Metrics {
+            metric: hunter_engine::metrics::MetricId::Held,
+            operator: hunter_engine::metrics::evaluator::Operator::Gte,
+            value: 5.0,
+        }]
+    );
+}
+
+#[test]
+fn desugared_stop_loss_still_labels_as_stoploss_and_outranks_a_metric_exit() {
+    // TP/SL desugar into m_position.pnl but keep their labels, and the prepend order
+    // preserves the old SL-before-Metrics priority. Here a −40% move trips BOTH the
+    // −30% stop (desugared pnl) and a retrace metric; the stop must win and read
+    // `StopLoss`, not `pnl <= -30`.
+    let mut s = EngineState::new();
+    let m = Mint::from("tokSL");
+    let params = json!({
+        "stop_loss": 30,
+        "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 1 }] } }
+    });
+    reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
+    let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0), creator_wallet_hash: None });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.6, 40.0, 1.0) });
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::StopLoss],
+        "desugared SL keeps its label and outranks the retrace metric",
+    );
+}
+
+#[test]
 fn overlapping_entry_exit_metrics_do_not_enter() {
     // Entry liquidity > 50 and exit liquidity > 40 both hold at reserve 60 —
     // can_enter must refuse (would otherwise buy then metrics-exit next event).

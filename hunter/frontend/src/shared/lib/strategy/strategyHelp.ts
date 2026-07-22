@@ -111,6 +111,19 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'No window_size_sec. Kind: static.',
     ].join('\n'),
   },
+  m_price_window: {
+    title: 'm_price_window — rolling price extrema',
+    body: [
+      'Price position relative to the highest/lowest print over the last N seconds',
+      '(N = window_size_sec, required). Unlike m_price_path (lifetime peak), this',
+      'high/low rolls forward, so it reads short dips inside an otherwise-hot token.',
+      '',
+      '• trail — % below the rolling-window high (the dip-buy trigger).',
+      '• rise — % above the rolling-window low (breakout/momentum).',
+      '',
+      'Empty window (no trade for N s) ⇒ NaN (never fires). Kind: dynamic.',
+    ].join('\n'),
+  },
   m_time_window: {
     title: 'm_time_window — trailing flow',
     body: [
@@ -142,6 +155,19 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'Reads the same volume_ix_patterns from the fingerprint (no duplicate config).',
       '',
       'Metric names mirror m_flow_split (vol_*, nonvol_*, vol_share). Kind: dynamic.',
+    ].join('\n'),
+  },
+  m_position: {
+    title: 'm_position — your open position (EXIT ONLY)',
+    body: [
+      'Metrics anchored on YOUR entry fill — they only exist while you hold, so this',
+      'group is exit-only (hidden on the entry side).',
+      '',
+      '• retrace — % below the highest price since entry (the trailing stop).',
+      '• pnl — signed % vs your entry price (take_profit / stop_loss desugar into this).',
+      '• held — seconds since entry (a time-stop).',
+      '',
+      'Before entry these read NaN. Kind: static.',
     ].join('\n'),
   },
 };
@@ -190,15 +216,55 @@ export const METRIC_HELP: Record<string, HelpTip> = {
     ].join('\n'),
   },
   trail: {
-    title: 'trail — drawdown from peak (%)',
+    title: 'trail — drawdown from the high (%)',
     body: [
-      'Percent drop from the highest price seen so far (high-water mark). 0 at the peak; grows as price gives back.',
+      'Percent below the high-water mark. 0 at the high; grows as price gives back.',
+      '',
+      'Two groups use this name:',
+      '• m_price_path.trail — vs the LIFETIME peak (classic trailing exit).',
+      '• m_price_window.trail — vs the ROLLING window high (the dip-buy entry).',
       '',
       'Examples:',
-      '  >20     sell after a 20% give-back from the peak',
-      '  <5      still near the high',
+      '  >=12    (window) 12%+ below the recent high → buy the dip',
+      '  >20     (lifetime) sell after a 20% give-back from the peak',
+    ].join('\n'),
+  },
+  rise: {
+    title: 'rise — climb from the rolling low (%)',
+    body: [
+      'Percent above the lowest price in the last window_size_sec (m_price_window).',
+      '0 at the low; grows as price recovers/breaks out.',
       '',
-      'Classic trailing-style exit without a separate trail parameter.',
+      'Example:  >=15   15%+ above the recent low → momentum/breakout entry.',
+    ].join('\n'),
+  },
+  retrace: {
+    title: 'retrace — give-back since entry (%)  [exit only]',
+    body: [
+      'Percent below the highest price seen SINCE YOUR ENTRY — a trailing stop off the',
+      'post-entry peak. At entry the peak is your fill, so before any run-up it measures',
+      'the drop from entry (a soft stop); after a run-up it trails the new peak.',
+      '',
+      'Example:  >=3    sell on a 3% pullback off the since-entry high.',
+    ].join('\n'),
+  },
+  pnl: {
+    title: 'pnl — profit/loss vs entry (%)  [exit only]',
+    body: [
+      'Signed percent vs your entry price. Positive = in profit, negative = underwater.',
+      'take_profit / stop_loss are shorthand for this (pnl >= tp / pnl <= −sl).',
+      '',
+      'Examples:',
+      '  >=100   +100% take-profit',
+      '  <=-25   −25% catastrophe stop',
+    ].join('\n'),
+  },
+  held: {
+    title: 'held — time in position (seconds)  [exit only]',
+    body: [
+      'Seconds since your entry fill. Only increases while you hold.',
+      '',
+      'Example:  >=60   time-stop: bail if still holding after 60s.',
     ].join('\n'),
   },
   gross_flow: {

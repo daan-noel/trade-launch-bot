@@ -15,14 +15,26 @@ use crate::event::{
 };
 use crate::fingerprint::FingerprintId;
 use crate::metrics::evaluator::{eval, first_satisfied_cond, Condition, ConditionExpr, Operator};
+use crate::metrics::position::{position_value, PositionCtx};
 use crate::metrics::track::TokenTrack;
 use crate::metrics::{
-    group_of, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind, Ts,
+    group_of, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
+    MetricScope, Ts,
 };
+
+/// Where an exit [`MetricReq`] came from — so a desugared TP/SL req still stamps
+/// the `TakeProfit` / `StopLoss` exit-reason label (analytics group by it) instead
+/// of the raw `pnl <op> value`. Entry reqs are always [`Authored`](Self::Authored).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReqOrigin {
+    Authored,
+    TakeProfit,
+    StopLoss,
+}
 
 /// One metric read a rule side needs: the metric, the window it lives in (dynamic
 /// metrics only), its `=`-tolerance, and the DNF condition arms. Precomputed so
-/// evaluation is a flat loop of `track.value(..)` + `eval(..)` reads.
+/// evaluation is a flat loop of `track.value(..)` / `position_value(..)` + `eval(..)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricReq {
     pub metric: MetricId,
@@ -32,6 +44,12 @@ pub struct MetricReq {
     pub tolerance: f64,
     /// DNF: OR of AND-arms.
     pub conds: ConditionExpr,
+    /// `true` ⇒ read from the [`PositionCtx`] (`m_position`), not the token track —
+    /// precomputed from the group's registry scope so the hot path never re-derives it.
+    pub position_scoped: bool,
+    /// Provenance (drives the exit-reason label); `Authored` for everything but the
+    /// desugared TP/SL reqs.
+    pub origin: ReqOrigin,
 }
 
 /// A derived monotonic upper bound from an **entry** condition arm: because a
@@ -136,11 +154,18 @@ pub struct CompiledRule {
     pub concurrent_cap: u32,
     /// `0` ⇒ unlimited.
     pub max_total: u32,
+    /// Authoring sugar, kept for the sweep / FE / stored rules. The **fold** does
+    /// not read these — `compile` desugars them into position `pnl` reqs prepended
+    /// to [`exit_reqs`](Self::exit_reqs); this field is the sweep's parallel-impl
+    /// input only.
     pub take_profit: Option<f64>,
+    /// See [`take_profit`](Self::take_profit).
     pub stop_loss: Option<f64>,
     /// Empty ⇒ enter on arm (the fingerprint alone is the entry signal).
     pub entry_reqs: Vec<MetricReq>,
-    /// Empty ⇒ no metric exit (only TP/SL/dead close).
+    /// The held-side exit conditions the fold evaluates via [`exit_fired`](Self::exit_fired):
+    /// desugared TP/SL (`pnl`, prepended) followed by authored exit metrics
+    /// (token- or position-scoped). Empty ⇒ only a dead-token verdict closes.
     pub exit_reqs: Vec<MetricReq>,
     /// Distinct **flow** `window_size_sec` values this rule reads across both sides
     /// (`m_time_window` + `m_flow_window`) — drive `ensure_window` / `ensure_flow`.
@@ -163,12 +188,34 @@ impl CompiledRule {
             .as_ref()
             .map(|s| build_reqs(s, rule.fingerprint_id))
             .unwrap_or_default();
-        let exit_reqs = rule
+        let mut exit_reqs = rule
             .params
             .exit
             .as_ref()
             .map(|s| build_reqs(s, rule.fingerprint_id))
             .unwrap_or_default();
+
+        // DESUGAR the `take_profit` / `stop_loss` sugar into position-scoped `pnl`
+        // exit reqs — one exit-evaluation path (`pnl >= tp` / `pnl <= -sl`) shared
+        // with authored `m_position.pnl` conditions, so the two can never drift. The
+        // top-level fields stay (the sweep + FE + stored rules read them, and this is
+        // outcome-identical to the old `entry_price * (1 ± x/100)` branch), but the
+        // fold now decides every price-based exit through the one `exit_fired` loop.
+        // PREPENDED so a catastrophe stop still ranks above softer metric exits
+        // (preserving the old `Dead > StopLoss > TakeProfit > Metrics` order:
+        // SL then TP then authored). Origin-tagged so the persisted reason still reads
+        // `TakeProfit` / `StopLoss`, not `pnl <op> value`.
+        let mut desugared: Vec<MetricReq> = Vec::new();
+        if let Some(sl) = rule.params.stop_loss {
+            desugared.push(pnl_req(Operator::Lte, -sl, ReqOrigin::StopLoss));
+        }
+        if let Some(tp) = rule.params.take_profit {
+            desugared.push(pnl_req(Operator::Gte, tp, ReqOrigin::TakeProfit));
+        }
+        if !desugared.is_empty() {
+            desugared.append(&mut exit_reqs);
+            exit_reqs = desugared;
+        }
 
         // Distinct windows across both sides (dynamic metrics only), split by which
         // buffer they drive: price-extrema deques vs flow ring buffers.
@@ -257,6 +304,12 @@ impl CompiledRule {
 
     /// First exit metric that holds at `now`, with the first satisfied condition
     /// (operator + authored threshold) — stamped on [`ExitReason::Metrics`].
+    /// Token-scoped only: reads through the track, so position metrics (which need a
+    /// [`PositionCtx`]) read `NaN` here. Used by the pre-entry [`can_enter`] gate,
+    /// where there is no position — the held-side exit uses [`exit_fired`].
+    ///
+    /// [`can_enter`]: Self::can_enter
+    /// [`exit_fired`]: Self::exit_fired
     pub fn exit_metrics_fired(
         &self,
         track: &TokenTrack,
@@ -266,6 +319,40 @@ impl CompiledRule {
             return None;
         }
         reqs_first_fired(&self.exit_reqs, track, now)
+    }
+
+    /// The **held-side** exit decision: the first exit req that fires at `now`, as a
+    /// labelled [`ExitReason`]. The one exit-evaluation path (Dead is decided before
+    /// this by the fold) — it walks `exit_reqs` in order (desugared TP/SL prepended),
+    /// reading position-scoped reqs from `ctx` and token-scoped reqs from the track,
+    /// and maps a fired req's [`ReqOrigin`] to its reason (TP/SL keep their labels;
+    /// authored metrics stamp [`ExitReason::Metrics`]).
+    pub fn exit_fired(
+        &self,
+        track: &TokenTrack,
+        ctx: &PositionCtx,
+        now: Ts,
+    ) -> Option<ExitReason> {
+        let price = track.current_price();
+        for r in &self.exit_reqs {
+            let reading = if r.position_scoped {
+                position_value(r.metric, ctx, price, now)
+            } else {
+                track.value(r.metric, r.window, r.fingerprint, now)
+            };
+            if let Some(c) = first_satisfied_cond(&r.conds, reading, r.tolerance) {
+                return Some(match r.origin {
+                    ReqOrigin::TakeProfit => ExitReason::TakeProfit,
+                    ReqOrigin::StopLoss => ExitReason::StopLoss,
+                    ReqOrigin::Authored => ExitReason::Metrics {
+                        metric: r.metric,
+                        operator: c.operator,
+                        value: c.value,
+                    },
+                });
+            }
+        }
+        None
     }
 
     /// Whether the armed side may submit a buy at `now`.
@@ -316,6 +403,20 @@ fn reqs_first_fired(
     None
 }
 
+/// A desugared TP/SL exit req: a single `m_position.pnl <op> value` condition,
+/// tagged with the ladder origin so its exit reason stays `TakeProfit`/`StopLoss`.
+fn pnl_req(op: Operator, value: f64, origin: ReqOrigin) -> MetricReq {
+    MetricReq {
+        metric: MetricId::Pnl,
+        window: None,
+        fingerprint: None,
+        tolerance: metric_spec(MetricId::Pnl).eq_tolerance,
+        conds: vec![vec![Condition { operator: op, value }]],
+        position_scoped: true,
+        origin,
+    }
+}
+
 /// Flatten one side's parsed conditions into [`MetricReq`]s. A dynamic group's
 /// metrics carry its `window_size_sec`; static groups carry `None`. Flow metrics
 /// are scoped to `fingerprint_id`.
@@ -330,6 +431,7 @@ fn build_reqs(
         } else {
             None
         };
+        let position_scoped = group_spec(*group_id).scope == MetricScope::Position;
         for (metric_id, conds) in &group.metrics {
             out.push(MetricReq {
                 metric: *metric_id,
@@ -337,6 +439,8 @@ fn build_reqs(
                 fingerprint: is_flow_metric(*metric_id).then_some(fingerprint_id),
                 tolerance: metric_spec(*metric_id).eq_tolerance,
                 conds: conds.clone(),
+                position_scoped,
+                origin: ReqOrigin::Authored,
             });
         }
     }
@@ -356,8 +460,15 @@ pub enum ArmState {
     /// already exists (`BuySubmitted`) so a fill just flips it to held.
     EntryPending { intent: IntentId, position: PositionId, attempts: u32 },
     /// Entry filled; the position is held and evaluating exit. `entry_price` is the
-    /// fill price TP/SL measure against.
-    Entered { position: PositionId, entry_price: f64 },
+    /// fill price `pnl` measures against, `entered_at` the fill time (`held`), and
+    /// `peak_price` the highest price since entry (`retrace`, folded forward each
+    /// event) — the [`PositionCtx`] the position-scoped exit metrics read.
+    Entered {
+        position: PositionId,
+        entry_price: f64,
+        entered_at: Ts,
+        peak_price: f64,
+    },
     /// A sell is in flight for `intent` (the `attempts`-th try), closing for `reason`.
     ExitPending { position: PositionId, intent: IntentId, reason: ExitReason, attempts: u32 },
     /// Terminal: the position closed (or the token is done forever for this rule).
@@ -401,6 +512,39 @@ mod tests {
         assert!(c.enter_on_arm());
         assert!(c.entry_reqs.is_empty());
         assert!(c.mono_kills.is_empty());
+    }
+
+    #[test]
+    fn tp_sl_desugar_into_prepended_origin_tagged_pnl_reqs() {
+        // take_profit / stop_loss expand to position `pnl` reqs, PREPENDED (SL, TP)
+        // ahead of authored exit metrics, each tagged with its ladder origin.
+        let c = CompiledRule::compile(&rule(json!({
+            "take_profit": 100,
+            "stop_loss": 30,
+            "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } }
+        })));
+        assert_eq!(c.exit_reqs.len(), 3, "SL + TP + authored retrace");
+        // SL first (catastrophe stop outranks softer exits), then TP, then authored.
+        assert_eq!(c.exit_reqs[0].metric, MetricId::Pnl);
+        assert_eq!(c.exit_reqs[0].origin, ReqOrigin::StopLoss);
+        assert!(c.exit_reqs[0].position_scoped);
+        assert_eq!(
+            c.exit_reqs[0].conds,
+            vec![vec![Condition { operator: Operator::Lte, value: -30.0 }]]
+        );
+        assert_eq!(c.exit_reqs[1].metric, MetricId::Pnl);
+        assert_eq!(c.exit_reqs[1].origin, ReqOrigin::TakeProfit);
+        assert_eq!(
+            c.exit_reqs[1].conds,
+            vec![vec![Condition { operator: Operator::Gte, value: 100.0 }]]
+        );
+        // The authored retrace metric keeps Authored origin and is position-scoped.
+        assert_eq!(c.exit_reqs[2].metric, MetricId::Retrace);
+        assert_eq!(c.exit_reqs[2].origin, ReqOrigin::Authored);
+        assert!(c.exit_reqs[2].position_scoped);
+        // The sugar fields survive for the sweep / FE parallel impl.
+        assert_eq!(c.take_profit, Some(100.0));
+        assert_eq!(c.stop_loss, Some(30.0));
     }
 
     #[test]

@@ -33,7 +33,9 @@ use crate::metrics::evaluator::{
     check_expr_satisfiable, condition_expr_to_value, normalize_condition_expr,
     parse_condition_expr, ConditionExpr,
 };
-use crate::metrics::{group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, REGISTRY};
+use crate::metrics::{
+    group_by_name, group_spec, metric_spec, MetricGroupId, MetricId, MetricScope, REGISTRY,
+};
 
 /// Typed, registry-checked `params`. See module docs for the JSON shape.
 #[derive(Debug, Clone, PartialEq)]
@@ -227,6 +229,15 @@ fn validate_group(
     group: &GroupConditions,
 ) -> Result<(), String> {
     let spec = group_spec(group_id);
+    // Position-scoped metrics anchor on YOUR entry fill — they have no value until a
+    // position is held, so they are exit-only (pre-entry they read NaN and could
+    // never satisfy an entry condition anyway; reject at save with a clear message).
+    if side_name == "entry" && spec.scope == MetricScope::Position {
+        return Err(format!(
+            "entry.{}: position-scoped metrics only exist while holding — exit side only",
+            spec.name
+        ));
+    }
     // Required strict params present; all strict values finite and > 0.
     for p in spec.strict_params {
         if p.required && !group.strict.contains_key(p.name) {
@@ -402,6 +413,23 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("belongs to group 'm_price_path'"), "{e}");
+    }
+
+    #[test]
+    fn position_group_is_exit_only() {
+        // Exit side: the trailing stop is fine and round-trips.
+        let p = RuleParams::parse(&json!({
+            "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } }
+        }))
+        .expect("m_position on exit is valid");
+        assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
+
+        // Entry side: position metrics only exist while holding → rejected clearly.
+        let e = RuleParams::parse(&json!({
+            "entry": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } }
+        }))
+        .unwrap_err();
+        assert!(e.contains("exit side only"), "{e}");
     }
 
     #[test]
