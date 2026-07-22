@@ -76,14 +76,127 @@ fn registry() -> &'static HashMap<&'static str, &'static str> {
 
 /// Short human-readable label for a known Solana program ID, or `None` when the
 /// program is not in the registry (the caller then falls back to
-/// `Unknown (...suffix)`).
+/// `Unknown (<program id>)`).
 pub fn program_friendly_name(id: &str) -> Option<&'static str> {
     registry().get(id).copied()
+}
+
+// ── Instruction-level decode for open (Anchor) programs (Phase 4) ─────────────
+//
+// The registry names the *program*; this names the *instruction* within it, so a
+// labelled ix goes from `"Jupiter Aggregator V6: Unknown"` to
+// `"Jupiter Aggregator V6: Route"`. Only Anchor programs are covered — their
+// 8-byte instruction discriminator is `sha256("global:<snake_case_name>")[..8]`,
+// which we COMPUTE from the name rather than hard-code. That is fail-safe: if a
+// name here is wrong (or the program isn't the Anchor variant we assumed), the
+// computed discriminator simply won't match any on-chain ix and the label stays
+// `"…: Unknown"` — a wrong *name* never yields a wrong *label*. Non-Anchor
+// programs (e.g. Raydium AMM v4's 1-byte tag) are intentionally omitted and stay
+// `Unknown`. `program_registry_tests::method_reproduces_pump_discriminators`
+// pins the SHA-256 mechanism against pump.fun's known-correct discriminators.
+
+/// `(program_id, &[(on_chain_snake_name, display_name)])`. Instruction names are
+/// the identifiers Anchor hashes (snake_case), not the camelCase IDL spelling.
+/// Only swap/route-family ixs are listed — the ones that actually appear on the
+/// trade path; admin ixs are left to fall through to `Unknown`.
+const ANCHOR_IX: &[(&str, &[(&str, &str)])] = &[
+    // Jupiter Aggregator V6 — the dominant aggregator on the trade path.
+    (
+        "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+        &[
+            ("route", "Route"),
+            ("route_with_token_ledger", "RouteWithTokenLedger"),
+            ("shared_accounts_route", "SharedAccountsRoute"),
+            ("shared_accounts_route_with_token_ledger", "SharedAccountsRouteWithTokenLedger"),
+            ("exact_out_route", "ExactOutRoute"),
+            ("shared_accounts_exact_out_route", "SharedAccountsExactOutRoute"),
+        ],
+    ),
+    // Raydium CLMM (concentrated liquidity).
+    (
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+        &[
+            ("swap", "Swap"),
+            ("swap_v2", "SwapV2"),
+            ("swap_router_base_in", "SwapRouterBaseIn"),
+        ],
+    ),
+    // Raydium CPMM (constant-product v2).
+    (
+        "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+        &[
+            ("swap_base_input", "SwapBaseInput"),
+            ("swap_base_output", "SwapBaseOutput"),
+        ],
+    ),
+    // Meteora DLMM.
+    (
+        "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+        &[
+            ("swap", "Swap"),
+            ("swap2", "Swap2"),
+            ("swap_exact_out", "SwapExactOut"),
+            ("swap_with_price_impact", "SwapWithPriceImpact"),
+        ],
+    ),
+    // Meteora DAMM V2.
+    ("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", &[("swap", "Swap")]),
+    // Meteora DBC (dynamic bonding curve).
+    ("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN", &[("swap", "Swap")]),
+    // Moonshot.
+    (
+        "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
+        &[
+            ("buy", "Buy"),
+            ("sell", "Sell"),
+            ("token_mint", "TokenMint"),
+            ("migrate_funds", "MigrateFunds"),
+        ],
+    ),
+];
+
+/// The 8-byte Anchor instruction discriminator for `name`
+/// (`sha256("global:<name>")[..8]`). `solana_sdk::hash::hash` is SHA-256.
+fn anchor_discriminator(name: &str) -> [u8; 8] {
+    let digest = solana_sdk::hash::hash(format!("global:{name}").as_bytes());
+    let mut disc = [0u8; 8];
+    disc.copy_from_slice(&digest.to_bytes()[..8]);
+    disc
+}
+
+#[allow(clippy::type_complexity)]
+fn anchor_ix_table() -> &'static HashMap<&'static str, Vec<([u8; 8], &'static str)>> {
+    static MAP: OnceLock<HashMap<&'static str, Vec<([u8; 8], &'static str)>>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        ANCHOR_IX
+            .iter()
+            .map(|(program_id, ixs)| {
+                let decoded = ixs
+                    .iter()
+                    .map(|(name, display)| (anchor_discriminator(name), *display))
+                    .collect();
+                (*program_id, decoded)
+            })
+            .collect()
+    })
+}
+
+/// Display name for the instruction `data` invokes on program `program_id`, or
+/// `None` when the program has no ix table or its discriminator doesn't match one
+/// (caller then labels it `"<program>: Unknown"`).
+pub fn program_instruction_name(program_id: &str, data: Option<&[u8]>) -> Option<&'static str> {
+    let table = anchor_ix_table().get(program_id)?;
+    let disc = data?.get(..8)?;
+    table
+        .iter()
+        .find(|(d, _)| d.as_slice() == disc)
+        .map(|(_, name)| *name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Protocol;
 
     #[test]
     fn native_and_venue_ids_resolve() {
@@ -99,5 +212,33 @@ mod tests {
     fn registry_has_no_duplicate_ids() {
         // A dup would mean the last row silently wins — catch it at build time.
         assert_eq!(registry().len(), REGISTRY.len(), "duplicate program id in REGISTRY");
+    }
+
+    #[test]
+    fn method_reproduces_pump_discriminators() {
+        // pump.fun is an Anchor program with KNOWN-correct discriminators in
+        // `protocol.rs`. Reproducing them from the instruction name proves
+        // `anchor_discriminator` really is `sha256("global:<name>")[..8]` — so the
+        // computed Jupiter/Raydium/Meteora discriminators are correct by
+        // construction (given the right instruction name).
+        let d = &Protocol::pump_fun().discriminators;
+        assert_eq!(anchor_discriminator("buy"), d.buy);
+        assert_eq!(anchor_discriminator("sell"), d.sell);
+        assert_eq!(anchor_discriminator("create"), d.create_ix);
+        assert_eq!(anchor_discriminator("migrate"), d.migrate_ix);
+    }
+
+    #[test]
+    fn known_program_ix_resolves_and_unknown_falls_through() {
+        let jup = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+        // A real `route` discriminator resolves; a bogus one falls through.
+        let route = anchor_discriminator("route");
+        assert_eq!(program_instruction_name(jup, Some(&route)), Some("Route"));
+        assert_eq!(program_instruction_name(jup, Some(&[0u8; 8])), None);
+        // Program with no ix table (Address Lookup Table) → None regardless.
+        assert_eq!(
+            program_instruction_name("AddressLookupTab1e1111111111111111111111111", Some(&route)),
+            None,
+        );
     }
 }

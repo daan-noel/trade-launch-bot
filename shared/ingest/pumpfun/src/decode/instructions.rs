@@ -4,7 +4,7 @@ use borsh::BorshDeserialize;
 
 use crate::protocol::Protocol;
 
-use super::program_registry::program_friendly_name;
+use super::program_registry::{program_friendly_name, program_instruction_name};
 
 use super::trade::DecodedTradeEvent;
 
@@ -196,7 +196,10 @@ pub(super) fn label_instruction(
     }
 
     if let Some(name) = program_friendly_name(program_id) {
-        return format!("{}: Unknown", name);
+        // Phase 4: name the instruction within known open (Anchor) programs
+        // (`Jupiter Aggregator V6: Route`); unknown/closed ones stay `: Unknown`.
+        let ix = program_instruction_name(program_id, data_bytes).unwrap_or("Unknown");
+        return format!("{name}: {ix}");
     }
 
     // Carry the FULL program id (not a truncated suffix) so unknown programs are
