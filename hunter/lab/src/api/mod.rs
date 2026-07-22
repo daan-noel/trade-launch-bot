@@ -7,9 +7,14 @@ use actix_web::web;
 /// `trading_core::api::configure_core_routes` to build the full local route set
 /// (`App::new().configure(configure_core_routes).configure(configure_local_routes)`).
 ///
-/// Live-trading routes (positions, lifecycle, matched, sync, live-mode, on-chain
-/// Solana, cashback) are deploy-only and are **not** registered here, so they 404
-/// on the local bin.
+/// Live-trading routes (position *writes* + lifecycle, matched, sync, live-mode,
+/// on-chain Solana, cashback) are deploy-only and are **not** registered here, so
+/// they 404 on the local bin.
+///
+/// The by-rule position **reads** are the one exception: they're registered below
+/// so the analysis app can inspect the real/paper positions the live engine traded
+/// (served off the mirror `db-incremental-sync.ps1` fills) against the lab-only
+/// metric panes. Read-only — no close, no lifecycle.
 pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
@@ -21,6 +26,18 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/tokens/{mint}/metric-series",
                 web::get().to(handlers::tokens::token_metric_series),
+            )
+            // ── Traded (real/paper) positions off the synced mirror — read-only.
+            //    Same wire contract as the live bin's twin; `{strategy}` is ignored
+            //    (URL back-compat). Static `summary` before the bare path so it
+            //    can't be shadowed.
+            .route(
+                "/strategies/{strategy}/rules/{rule_id}/positions/summary",
+                web::post().to(handlers::strategies::live_positions::get_positions_summary_by_rule),
+            )
+            .route(
+                "/strategies/{strategy}/rules/{rule_id}/positions",
+                web::post().to(handlers::strategies::live_positions::get_positions_by_rule),
             )
             // Redesign: time-travel debugger — replay a recorded event log through
             // the engine and dump every event→effect decision (plan 6.1)
@@ -128,6 +145,12 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategy-rules/{id}",
                 web::delete().to(handlers::strategies::engine_crud::delete_rule),
+            )
+            // Run history + finalized metrics for the Evidence run navigator (read
+            // -only twin of the live route; served off the synced mirror).
+            .route(
+                "/strategy-rules/{id}/runs",
+                web::get().to(handlers::strategies::live_positions::list_rule_runs),
             )
             .route(
                 "/strategy-rules/{id}/activate",

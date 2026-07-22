@@ -155,6 +155,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `handlers/system/system.rs` | `get_sol_price`, `get/update_settings` |
 | `handlers/system/wallets.rs` | profile / wallet / tag CRUD |
 | `handlers/strategies/mod.rs` | (doc-only) points at the generic rule-domain helpers in `strategies::rules` (validate → build → `RuleRepo`), used by both CRUD edges |
+| `handlers/strategies/rule_positions.rs` | **not routed here** — the per-rule position reads (`rule_positions_page` / `rule_positions_summary` / `rule_runs`) + the rule-list scoreboard rollup (`rules_with_counters`, `ScoreScope`), plus the `PositionResponse` wire type + `PositionScope`. Called by BOTH bins' thin handlers. Holds the run-scope semantics (`current`/`history`/`all`/`run` × the paper-vs-real default) and the score fold, so live and lab can't page different populations or score a rule differently. Bins supply only their own repos + price lookup |
 
 ### Deploy routes (`live`, take `DeployState`)
 
@@ -165,7 +166,7 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `handlers/trading/solana.rs` | `manual_buy`, `manual_sell` (Sell All), `get_wallet_tokens`, `get_wallet_token(_balance)`, `get_prices` |
 | `handlers/trading/portfolio.rs` | `/api/portfolio/{holdings,summary,positions}` — thin reads over `services::portfolio` (holdings + cost basis + PnL + bot tag; wallet KPI summary; cross-strategy open-positions roll-up). Holdings summary also surfaces native SOL (`sol_balance_sol`/`sol_balance_usd`) from the push-fed trader balance cache (no RPC). USDC is `asset_kind: cash` (face-valued, excluded from PnL / paged positions table; rides `cash_holdings` on the summary). Holdings/Home/Live-Trading surfaces |
 | `handlers/trading/cashback.rs` | `get_cashback_status`, `claim_cashback` |
-| `handlers/strategies/positions.rs` | position reads over `StrategyRepo` — by rule / mint / wallet / id; per-row "Sell ALL" routes the close through `EngineHandle::manual_close`. The `{strategy}` path segment is retained for URL back-compat but ignored (all positions are `'generic'`) |
+| `handlers/strategies/positions.rs` | position reads over `StrategyRepo` — by rule / mint / wallet / id; per-row "Sell ALL" routes the close through `EngineHandle::manual_close`. The `{strategy}` path segment is retained for URL back-compat but ignored (all positions are `'generic'`). The **by-rule** page + summary are thin adapters over the shared core module (below); the rest is deploy-only |
 | `handlers/strategies/engine.rs` | generic rule + fingerprint CRUD + lifecycle (`/strategy-rules/*`, `/fingerprints/*`, activate/pause/stop, pause-all/stop-all) + `/meta/strategy-registry` + `/strategies/armed`, over `RuleRepo`/`FingerprintRepo` + the `EngineHandle`. (The legacy per-`{strategy}` `rules.rs` handler was deleted in Phase 7) |
 
 ### Local routes (`lab`, take `LocalState`)
@@ -176,8 +177,9 @@ is built into its own SPA (`@live`/`@lab`) with a static nav. See [@arch/fronten
 | `handlers/tokens/metric_series.rs` | `GET /api/tokens/{mint}/metric-series` — every metric's value at every trade (rule-authoring chart panes) |
 | `handlers/system/jobs.rs` | `job_status`, `cancel/result` for simulations |
 | `handlers/strategies/engine.rs` | generic `simulate` (detached → 202) + its result page/summary/matched (+ batch `POST …/simulate/summaries`) — one surface for every rule (`rule_id` or inline `draft`) |
-| `handlers/strategies/engine_crud.rs` | lab-side rule + fingerprint CRUD (`strategy_rules` / `fingerprints`, no live engine to ping) |
-| `handlers/strategies/positions.rs` | the simulated-result table (in-memory server-side paging over the finished sim's rows) |
+| `handlers/strategies/engine_crud.rs` | lab-side rule + fingerprint CRUD (`strategy_rules` / `fingerprints`, no live engine to ping). `list_rules` folds in the same `?score_scope=` position counters as the live twin (shared core fn), so the lab Rules list is a real scoreboard over traded results |
+| `handlers/strategies/positions.rs` | the **simulated**-result table (in-memory server-side paging over the finished sim's rows) |
+| `handlers/strategies/live_positions.rs` | the **traded** (real/paper) positions the live engine produced, read off the synced mirror — `POST …/rules/{id}/positions[/summary]` + `GET /strategy-rules/{id}/runs`, the lab twin of the live routes. Read-only: no close, no engine. Lets the Rules Evidence pane pair a real fill with the lab-only metric panes |
 | `handlers/strategies/grouped_sweep.rs` | generic grouped param-sweep handler set. See [@arch/sweep.md](@arch/sweep.md) |
 | `handlers/replay.rs` | `POST /api/replay/inspect` — re-run a recorded event log through the fold (time-travel debugger) |
 

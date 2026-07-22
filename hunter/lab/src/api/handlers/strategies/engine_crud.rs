@@ -13,6 +13,9 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use uuid::Uuid;
 
+use trading_core::api::handlers::strategies::rule_positions::{
+    self, ScoreScope, ScoreScopeParam,
+};
 use trading_core::models::Fingerprint;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
@@ -157,11 +160,20 @@ pub async fn delete_fingerprint(
 }
 
 /// GET `/api/strategy-rules`.
-pub async fn list_rules(app_state: web::Data<Arc<LocalState>>) -> impl Responder {
-    match rule_repo(&app_state).list().await {
-        Ok(v) => HttpResponse::Ok().json(v),
-        Err(e) => srv_err("list rules", e),
-    }
+/// `?score_scope=current|all` (default `all`) — same contract + same rollup as the
+/// live twin, scored over the traded positions in the synced mirror. That's what
+/// makes the lab Rules list a real scoreboard (PnL / Avg% / Win% / W-L / N) rather
+/// than a bare list, so rules can be ranked and compared here off live results.
+pub async fn list_rules(
+    app_state: web::Data<Arc<LocalState>>,
+    query: web::Query<ScoreScopeParam>,
+) -> impl Responder {
+    rule_positions::rules_with_counters(
+        &app_state.core.strategy_repo(),
+        &rule_repo(&app_state),
+        query.into_inner().score_scope.unwrap_or(ScoreScope::All),
+    )
+    .await
 }
 
 /// GET `/api/strategy-rules/{id}`.

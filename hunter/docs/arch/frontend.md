@@ -90,6 +90,10 @@ open/close edges (not ExitPending). Rules scoreboard columns (`PnL` / `Avg%` / `
 (`current` = latest run both modes; `all` = real all-time / paper latest). `Exp` is
 client-derived expectancy (`PnL / closed`). Evidence run chips use
 `GET /api/strategy-rules/{id}/runs`; positions use `scope=current|run|all`.
+**Both apps serve all four routes** (lab off the synced mirror), so the lab Rules page is
+the same cockpit — scoreboard + TOTAL rollup + Evidence — over the traded results. The one
+live-only piece is `ruleLiveCounts` (SSE engine bags): omit it and `RulesView` drops the
+live columns and the TOTAL falls back to the DB open count.
 See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
 
 ## Store — split `createApi` (the isolation seam)
@@ -179,7 +183,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
   deep-linked with `?run=` + running jobs), Creation Stats, Tokens (detail = chart +
-  metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules/Fingerprints/
+  metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules (authoring + dry-run
+  **+ Evidence over the traded real/paper positions from the synced mirror**, where a
+  fill opens the metric panes — see the Rule Evidence bullet below)/Fingerprints/
   **Flow discovery**/Simulate (sim table demotes live Active/Mode into a muted rule
   subtitle)/Replay, and the generic Grouped Sweep (sticky Run › Group › Combo
   breadcrumb; Simple = configure→promote; Full drill = combo/token inspect via
@@ -317,15 +323,27 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
   per-column representation (`TokenQuery::from_table_request`), so the LIVE (Postgres) and LAB (in-RAM)
   engines are unchanged and identical (DB parity test). The old bespoke `f_*`/`cf` `URLSearchParams`
   builder and the dead simple `getTokens` GET endpoint were removed.
-- **Rule Evidence (live) = server-side paged + summary** (`RuleAnalyzePanel` via `useServerTable` +
+- **Rule Evidence = server-side paged + summary, shared by BOTH apps** (`shared/components/strategy/RuleAnalyzePanel`
+  via `useServerTable` +
   `fetchRulePositionsPage` / `fetchRulePositionsSummary`): `POST …/rules/{id}/positions[?scope=current|run|all|history]`
   (+ `run_seq` when `scope=run`) and `…/summary`; run chips from `GET …/strategy-rules/{id}/runs`;
   `SimSummaryCard` + page-cohort `TemporalSummary` (click → mint `in` filter). Embedded under Rules
   Control when a row is selected (`key={ruleId}` remount). Default Evidence scope follows Control
   (`current` / `all`); no auto-flip to History. Activate/Pause/Stop live on Control Execute **and**
-  the Evidence header. SSE on the same `rule_id` triggers `reload()`. Open inventory manage is
-  **Ops** (Live Status SSOT), not this table. See
+  the Evidence header. Open inventory manage is **Ops** (Live Status SSOT), not this table. See
   [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
+  The panel itself is app-agnostic; each app injects its own wiring via props:
+  - **live** (`@live/pages/strategies/RulesPage` → `LiveRuleEvidence`) passes `liveUpdates` (SSE on
+    the same `rule_id` triggers `reload()`) + `liveOpenCount` from `selectOpenByRule`. The selector
+    lives in that leaf component so a status tick re-renders the panel, not `RulesView`.
+  - **lab** (`@lab/components/strategy/LabRuleEvidence`) passes `notice` + `renderInspect` + `scoreScope`
+    (Evidence default follows the list's scoreboard scope) and serves
+    the same endpoints off the synced mirror (`lab/.../live_positions.rs`) — clicking a position opens
+    `LabTokenInspectModal` with `ruleOverride` pinned to the rule that traded and `positionEntry` on the
+    real fill, so a live fill reads against the metric panes. **No `liveUpdates`/`liveOpenCount`**: that
+    box has no ingest or SSE, so the rows are a snapshot as of the last `db-incremental-sync.ps1`.
+    Lifecycle buttons still render there, but they write the local mirror only — the live engine never
+    sees it and the next sync overwrites the row (server wins).
 - **Matched/Simulated = server-side via `useServerTable`** (lab-only). A lean page+total+summary hook
   (no SSE-delta patching / settle-poll — these results are static once computed) drives the two tables
   over `fetchMatchedPage` / `fetchSimulatedPage` (POST, `{tokens}` body + `X-Total-Count`). **Matched**

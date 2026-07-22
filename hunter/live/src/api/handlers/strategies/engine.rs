@@ -18,6 +18,9 @@ use std::sync::Arc;
 use actix_web::{web, HttpResponse, Responder};
 use chrono::Utc;
 use serde_json::{json, Value};
+use trading_core::api::handlers::strategies::rule_positions::{
+    self, ScoreScope, ScoreScopeParam,
+};
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::Fingerprint;
 use trading_core::strategies::rules::{self, apply_rule_update, RuleDraft, RuleError};
@@ -173,82 +176,14 @@ pub async fn list_rules(
     app_state: web::Data<Arc<DeployState>>,
     query: web::Query<ScoreScopeParam>,
 ) -> impl Responder {
-    let score_scope = query.into_inner().score_scope.unwrap_or(ScoreScope::All);
-    let rules = match app_state.rule_repo.list().await {
-        Ok(v) => v,
-        Err(e) => return server_error("list rules", e),
-    };
-    let (paper, real) = match score_scope {
-        ScoreScope::Current => {
-            let paper = app_state
-                .strategy_repo
-                .rule_counters_for_latest_runs("generic", "paper")
-                .await
-                .unwrap_or_default();
-            let real = app_state
-                .strategy_repo
-                .rule_counters_for_latest_runs("generic", "real")
-                .await
-                .unwrap_or_default();
-            (paper, real)
-        }
-        ScoreScope::All => {
-            let paper = app_state
-                .strategy_repo
-                .rule_counters_for_latest_paper_runs("generic")
-                .await
-                .unwrap_or_default();
-            let real = app_state
-                .strategy_repo
-                .rule_counters_for_all_real()
-                .await
-                .unwrap_or_default();
-            (paper, real)
-        }
-    };
-    let out: Vec<Value> = rules
-        .into_iter()
-        .map(|r| {
-            let counters = if r.trade_mode == "paper" {
-                paper.get(&r.id)
-            } else {
-                real.get(&r.id)
-            };
-            let mut v = serde_json::to_value(&r).unwrap_or_else(|_| json!({}));
-            if let Value::Object(map) = &mut v {
-                let c = counters.cloned().unwrap_or_default();
-                map.insert("total_positions".into(), json!(c.total_positions));
-                map.insert("open_positions".into(), json!(c.open_positions));
-                map.insert("pending_positions".into(), json!(c.pending_positions));
-                map.insert("win_count".into(), json!(c.win_count));
-                map.insert("loss_count".into(), json!(c.loss_count));
-                map.insert("win_rate".into(), json!(c.win_rate));
-                map.insert("avg_pnl_pct".into(), json!(c.avg_pnl_pct));
-                map.insert("total_pnl_sol".into(), json!(c.total_pnl_sol));
-                map.insert(
-                    "score_scope".into(),
-                    json!(match score_scope {
-                        ScoreScope::Current => "current",
-                        ScoreScope::All => "all",
-                    }),
-                );
-            }
-            v
-        })
-        .collect();
-    HttpResponse::Ok().json(out)
-}
-
-#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ScoreScope {
-    Current,
-    All,
-}
-
-#[derive(serde::Deserialize)]
-pub struct ScoreScopeParam {
-    pub score_scope: Option<ScoreScope>,
+    // Shared with the lab bin — the scoreboard is a position rollup, so both apps
+    // score a rule identically off whichever `strategy_positions` they can see.
+    rule_positions::rules_with_counters(
+        &app_state.strategy_repo,
+        &app_state.rule_repo,
+        query.into_inner().score_scope.unwrap_or(ScoreScope::All),
+    )
+    .await
 }
 
 /// GET /api/strategy-rules/{id}/runs — run navigator for Rules Evidence.
@@ -256,20 +191,13 @@ pub async fn list_rule_runs(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<Uuid>,
 ) -> impl Responder {
-    let rule_id = path.into_inner();
-    let rule = match app_state.rule_repo.find(rule_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return HttpResponse::NotFound().json(json!({"error": "rule not found"})),
-        Err(e) => return server_error("load rule", e),
-    };
-    match app_state
-        .strategy_repo
-        .list_runs_with_metrics(rule_id, &rule.trade_mode)
-        .await
-    {
-        Ok(rows) => HttpResponse::Ok().json(rows),
-        Err(e) => server_error("list rule runs", e),
-    }
+    // Shared with the lab bin (which serves this off the synced mirror).
+    rule_positions::rule_runs(
+        &app_state.strategy_repo,
+        &app_state.rule_repo,
+        path.into_inner(),
+    )
+    .await
 }
 
 /// GET /api/strategy-rules/{id}

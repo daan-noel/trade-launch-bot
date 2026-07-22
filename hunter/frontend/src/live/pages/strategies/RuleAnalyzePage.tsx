@@ -2,7 +2,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
 import { rulesHref } from 'lib/strategy/nav';
 import { InlineAlert } from 'components/ui/Modal';
-import { RuleAnalyzePanel } from '@live/components/strategy/RuleAnalyzePanel';
+import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
 
 /**
  * Standalone Evidence route — same panel as the Rules Control embed.
@@ -26,7 +26,7 @@ export function RuleAnalyzePage() {
       >
         ← Rules Control
       </Link>
-      <RuleAnalyzePanel ruleId={ruleId} rule={rule ?? null} />
+      <RuleAnalyzePanel ruleId={ruleId} rule={rule ?? null} liveUpdates />
     </div>
   );
 }

@@ -356,6 +356,18 @@ verdict already read). It is deliberately NOT `real_sol`:
 > simulate/replay. Wire it into the sweep only if paper shows cooldown interacts with the
 > per-episode params.
 >
+> **⚠️ Steps 2-4 are GATED on three sweep work items — see
+> [grouped-sweep-phase6.md](grouped-sweep-phase6.md).** Raised after step 1 landed:
+> **(A)** the sweep hardcodes `FillModel::WorstCase` and `CostModel::pumpfun_default`, i.e.
+> the one regime where this strategy is NEGATIVE (`realFee` −0.50 worst vs +0.61 first) and
+> with the `realA` slippage double-count — so **the step-2 grid would rank combos in the
+> losing regime, and the per-leg fixed cost makes that distortion rank-CHANGING across combos
+> with different fire counts**. Blocker. **(B)** TP/SL must migrate off the surviving sugar
+> branch onto `m_position.pnl`, together with bind-time req classification (else perf
+> regresses — see the finding below). **(C)** re-entry in the sweep (superseding the "NOT
+> wired" note above — the scan is O(n) single-pass and cheap; the real cost is the entry
+> cache and the one-outcome-per-combo transport).
+>
 > **Pre-existing perf finding (NOT introduced here, not fixed here).** Since Phase 2's TP/SL
 > desugaring, `has_exit_metrics()` (`!exit_reqs.is_empty()`) is **true for every rule
 > carrying `take_profit` or `stop_loss`** — verified: a pure TP+SL rule compiles to

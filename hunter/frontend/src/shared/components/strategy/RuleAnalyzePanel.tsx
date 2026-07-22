@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSelector } from 'react-redux';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { InlineAlert } from 'components/ui/Modal';
 import { Badge } from 'components/ui/Badge';
@@ -33,7 +32,6 @@ import type { TableQuery } from 'components/table/types';
 import type { PositionsSummary, RulePositionRecord } from 'types';
 import type { StrategyRule, StrategyRuleRun } from 'lib/strategy/types';
 import type { TemporalRow } from 'lib/strategy/temporalSummary';
-import { selectOpenByRule } from '@live/slices/liveStatusSlice';
 import { signedToneClass } from 'lib/signedTone';
 
 const STRATEGY_SEG = 'generic';
@@ -118,11 +116,36 @@ export interface RuleAnalyzePanelProps {
   onClose?: () => void;
   /** Align Evidence default with Control score scope when selecting a rule. */
   initialScopeKind?: 'current' | 'all';
+  /** Open-position count from the live SSE status slice (live app only). Omit on
+   *  the lab app — there is no engine there, so "N open live" would be a lie. */
+  liveOpenCount?: number | null;
+  /** Subscribe to `strategy_position_update` SSE and reload the table on status
+   *  transitions. Live app only; the lab bin emits no such stream. */
+  liveUpdates?: boolean;
+  /** Rendered under the header — e.g. the lab's "snapshot as of last sync" note. */
+  notice?: ReactNode;
+  /** Injects a token-inspect modal for the selected position. When provided, the
+   *  positions table becomes selectable (row + chart-card click) and this renders
+   *  the open modal. The live app leaves it out (no metric-series endpoint on that
+   *  bin); the lab app passes its `LabTokenInspectModal`. */
+  renderInspect?: (ctx: {
+    position: RulePositionRecord;
+    rule: StrategyRule | null;
+    onClose: () => void;
+  }) => ReactNode;
 }
 
 /**
  * Rules Evidence — run navigator + Positions Summary + temporal + history.
- * Activate/Pause/Stop live in the header so keep/kill stays next to the proof.
+ *
+ * Shared by both apps: the **live** app embeds it under Rules Control with the SSE
+ * position feed and its open count wired; the **lab** app renders it over the synced
+ * position mirror and injects a token-inspect modal via `renderInspect`, so a real
+ * fill can be read against the metric panes.
+ *
+ * Activate/Pause/Stop render in both. On the lab app they hit the lab CRUD routes,
+ * so they flip the rule in the **local mirror** only — the live engine doesn't see
+ * it, and the next `db-incremental-sync.ps1` overwrites the row (server wins).
  */
 export function RuleAnalyzePanel({
   ruleId,
@@ -130,6 +153,10 @@ export function RuleAnalyzePanel({
   embedded,
   onClose,
   initialScopeKind = 'current',
+  liveOpenCount = null,
+  liveUpdates = false,
+  notice,
+  renderInspect,
 }: RuleAnalyzePanelProps) {
   const price = usePriceDisplay();
   const [scope, setScope] = useState<EvidenceScope>(() =>
@@ -139,8 +166,8 @@ export function RuleAnalyzePanel({
   const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
   const [opErr, setOpErr] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
+  const [inspectId, setInspectId] = useState<string | null>(null);
 
-  const liveOpen = useSelector(selectOpenByRule(ruleId));
   const { data: runs = [], isFetching: runsLoading } = useGetStrategyRuleRunsQuery(ruleId, {
     skip: !ruleId,
   });
@@ -209,19 +236,27 @@ export function RuleAnalyzePanel({
     setQuery(DEFAULT_POSITIONS_QUERY);
     setOpErr(null);
     setPausing(false);
+    setInspectId(null);
   }, [ruleId, initialScopeKind]);
 
   useEffect(() => {
-    if (!ruleId) return;
+    if (!ruleId || !liveUpdates) return;
     const h = connectStrategyPositionUpdate((d) => {
       if (d.rule_id !== ruleId) return;
       if (!TABLE_RELOAD_STATUSES.has(d.status)) return;
       reload();
     });
     return () => h.close();
-  }, [ruleId, reload]);
+  }, [ruleId, reload, liveUpdates]);
 
   const temporalRows = useMemo(() => items.map(toTemporalRow), [items]);
+
+  // Selected position for the injected inspect modal. Resolved off the current page
+  // rather than held as a row, so a reload/refilter can't strand a stale copy.
+  const inspectRow = useMemo(
+    () => (inspectId ? (items.find((r) => r.id === inspectId) ?? null) : null),
+    [inspectId, items],
+  );
 
   const showRunCol = scope.kind === 'all';
   const tableColumns = useMemo(
@@ -316,12 +351,15 @@ export function RuleAnalyzePanel({
               </Badge>
             )}
             <span className="text-sm text-text-mid">
-              Evidence · {scopeLabel} · {liveOpen.length} open live
+              Evidence · {scopeLabel}
+              {liveOpenCount != null && ` · ${liveOpenCount} open live`}
             </span>
           </div>
-          <p className="text-[11px] text-text-dim">
-            Pause stops new entries; open positions still drain on Ops.
-          </p>
+          {notice ?? (
+            <p className="text-[11px] text-text-dim">
+              Pause stops new entries; open positions still drain on Ops.
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {rule?.is_enabled && (
@@ -475,6 +513,9 @@ export function RuleAnalyzePanel({
         }}
         useRowOverlay={posRowOverlay}
         charts
+        {...(renderInspect
+          ? { selectedKey: inspectId, onSelect: setInspectId }
+          : {})}
         resetKey={`${ruleId}_${scopeKey(scope)}`}
         tableId="rule-evidence"
         emptyMessage={
@@ -485,6 +526,14 @@ export function RuleAnalyzePanel({
               : 'No positions in the current run yet — pick a prior run or All-time.'
         }
       />
+
+      {renderInspect && inspectRow
+        ? renderInspect({
+            position: inspectRow,
+            rule: rule ?? null,
+            onClose: () => setInspectId(null),
+          })
+        : null}
     </div>
   );
 }

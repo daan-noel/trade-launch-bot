@@ -3,3 +3,9 @@
 //! write). The live position/lifecycle handlers live in `live`; the simulate/
 //! paper-result handlers live in `lab`. The legacy per-strategy tpsl1/tpsl2/swing1
 //! rule stack was retired in Phase 7.
+//!
+//! Per-rule position **reads** are the exception: [`rule_positions`] holds the one
+//! implementation both bins serve (live off its own table, lab off the synced
+//! mirror), so the run-scope semantics + wire shape can't drift between them.
+
+pub mod rule_positions;
