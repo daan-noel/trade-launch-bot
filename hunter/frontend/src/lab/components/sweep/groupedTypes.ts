@@ -89,6 +89,10 @@ export interface GroupedSweepRunRecord {
   ix_labels_filter: string[] | null;
   /** Per-field value filters the corpus was pinned to, or `null` when none. */
   field_filters: Record<string, (number | boolean)[]> | null;
+  /** Saved fingerprint the corpus was scoped to (engine match — exact + bucket
+   *  axes), or `null` for a manual group-by / filter run. Mutually exclusive with
+   *  `ix_labels_filter` / `field_filters`, which are `null` on a scoped run. */
+  fingerprint_id: string | null;
   /** The per-run token cap submitted; `null` for legacy runs. */
   token_cap: number | null;
   /** The per-group combo-cap override submitted; `null` ⇒ backend default. */
@@ -195,6 +199,11 @@ export interface GroupedSweepStartArgs {
   ix_labels_filter?: string[];
   /** Per-field value filters (key = GroupField tag; value = allowed numbers/bools). */
   field_filters?: Record<string, (number | boolean)[]>;
+  /** Scope the corpus to a saved fingerprint using the ENGINE matcher (exact +
+   *  bucket axes — the same gate live arms on). When set the backend ignores
+   *  `ix_labels_filter` / `field_filters`; `group_by` still partitions within the
+   *  matched slice. Omitted ⇒ manual group-by / filters. */
+  fingerprint_id?: string;
   min_tokens?: number;
   /** `grid` | `random:N` | `lhs:N` | `refine:N[:K]`. */
   method?: string;

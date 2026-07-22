@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { Badge } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
@@ -6,6 +7,8 @@ import { CloseIcon, ReuseIcon, SaveIcon, SpinnerIcon } from 'components/ui/icons
 import { Input } from 'components/ui/Input';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useRenameGroupedSweepRunMutation } from '@lab/store/labEndpoints';
+import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
+import { fingerprintsHref } from 'lib/strategy/nav';
 import {
   GROUP_FIELD_LABELS,
   SOL_BUCKET_WIDTH,
@@ -64,6 +67,7 @@ export interface SelectedSweepHistoryProps {
 
 export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: SelectedSweepHistoryProps) {
   const [rename, renameState] = useRenameGroupedSweepRunMutation();
+  const { data: fingerprints = [] } = useGetFingerprintsQuery();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -90,6 +94,11 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
         }`
       : 'any';
   const fieldLines = run.field_filters ? fieldFilterLines(run.field_filters) : [];
+  // Name the scope fingerprint when it still exists; a deleted one keeps the run
+  // honest by falling back to its id (the run row deliberately has no FK).
+  const scopeFp = run.fingerprint_id
+    ? fingerprints.find((f) => f.id === run.fingerprint_id)
+    : undefined;
 
   return (
     <div className="mb-4 bg-surface">
@@ -183,6 +192,19 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
           {tidySolDecimal(run.bucket_width_sol ?? SOL_BUCKET_WIDTH)} SOL
           {run.curve_only ? ' · curve-only' : ''}
         </Row>
+        {run.fingerprint_id && (
+          <Row label="Corpus scope">
+            <Link
+              to={fingerprintsHref(run.fingerprint_id)}
+              className="inline-flex items-center gap-1 hover:opacity-90"
+              title="Open the fingerprint this run was scoped to"
+            >
+              <Badge variant="info">
+                engine match · {scopeFp?.name ?? `${run.fingerprint_id.slice(0, 8)} (deleted)`}
+              </Badge>
+            </Link>
+          </Row>
+        )}
         {fieldLines.length > 0 && (
           <Row label="Field filters">
             <span className="flex flex-col">
@@ -206,7 +228,9 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
           <p className="mt-1 text-xs text-text-dim/60">
             {run.grouping_spec.includes('ix_labels')
               ? 'grouped by instruction labels'
-              : 'no filter — all label sets included'}
+              : run.fingerprint_id
+                ? 'scoped by fingerprint — its own ix_labels axis decided the match'
+                : 'no filter — all label sets included'}
           </p>
         )}
       </div>

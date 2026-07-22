@@ -115,6 +115,14 @@ pub struct StartGroupedSweepBody {
     /// in-memory, so the unfiltered Parquet corpus cache is reused.
     #[serde(default)]
     pub field_filters: Option<std::collections::HashMap<String, Vec<serde_json::Value>>>,
+    /// Optional saved-fingerprint scope. When set, the corpus keeps only tokens the
+    /// ENGINE matches against that fingerprint (`hunter_engine::fingerprint::matches`
+    /// — the same exact + bucket axes the live entry gate uses), and the manual
+    /// `ix_labels_filter` / `field_filters` are ignored: those compare exact values,
+    /// so they cannot express a bucket axis. Same scoping contract as flow discovery.
+    /// `group_by` still applies — it partitions *within* the matched slice.
+    #[serde(default)]
+    pub fingerprint_id: Option<Uuid>,
     /// Host RAM (MB) to leave free for the OS + desktop while this run sizes its
     /// series/fold/combo peaks. Every admission ceiling is `host free − this`, so
     /// a smaller reserve admits bigger runs on a box you're not using and a bigger
@@ -673,68 +681,120 @@ async fn run_grouped_sweep_job(
         });
     }
 
-    // Optional exact-set ix_labels filter (applied post-fingerprint, in-memory so
-    // the unfiltered Parquet corpus cache is reused across filter values): keep only
-    // tokens whose label set equals the requested set. Normalize the request set the
-    // same way the fingerprint is, so the `==` is order/dup-insensitive. An empty
-    // request set is "no filter" (not "tokens with no labels").
-    if let Some(want) = b
-        .ix_labels_filter
-        .as_ref()
-        .filter(|f| !f.is_empty())
-        .map(|f| crate::sweep::grouping::normalize_label_vec(f.clone()))
-    {
+    // Saved-fingerprint scope (mutually exclusive with the manual filters below —
+    // same contract as flow discovery). Matching goes through the ENGINE's
+    // `fingerprint::matches` SSOT so the swept slice is exactly the token set the
+    // live entry gate would arm on: exact axes stay exact, the continuous SOL axes
+    // match by bucket. The manual `field_filters` cannot express that (they compare
+    // exact values), which is why this is a separate path rather than a prefill.
+    let mut scope_fp: Option<Fingerprint> = None;
+    if let Some(fp_id) = b.fingerprint_id {
+        let fp_repo = FingerprintRepo::new(state.db.clone());
+        let fp = match fp_repo.find(fp_id).await {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("fingerprint {fp_id} not found")
+                })));
+                return;
+            }
+            Err(e) => {
+                tracing::error!("grouped sweep: fingerprint lookup failed: {e}");
+                let _ = early_tx.send(HttpResponse::InternalServerError()
+                    .json(serde_json::json!({ "error": "database error" })));
+                return;
+            }
+        };
+        let engine_fp = trading_core::strategies::fingerprint_axes::fp_to_engine(&fp);
         let before = corpus.tokens.len();
-        corpus.tokens.retain(|t| t.fp.ix_labels == want);
+        corpus
+            .tokens
+            .retain(|t| hunter_engine::fingerprint::matches(&engine_fp, &t.fp));
         tracing::info!(
+            fingerprint = %fp.name,
             kept = corpus.tokens.len(),
             dropped = before - corpus.tokens.len(),
-            labels = ?want,
-            "grouped sweep: ix_labels exact-set filter applied"
+            "grouped sweep: saved-fingerprint scope applied"
         );
         if corpus.tokens.is_empty() {
             let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
-                "error": "no tokens match that instruction-label filter — adjust the labels or widen the selection"
+                "error": format!(
+                    "no tokens in that window match fingerprint “{}” — widen the date range or token cap",
+                    fp.name
+                )
             })));
             return;
         }
+        scope_fp = Some(fp);
     }
-    // Optional per-field numeric filters — restrict the corpus to tokens whose
-    // fingerprint value for the named field is in the allowed set. Applied
-    // post-fingerprint, in-memory, reusing the unfiltered Parquet cache.
-    // Unknown keys and `ix_labels` (handled above) are skipped with a warning.
-    if let Some(filters) = &b.field_filters {
-        use crate::sweep::grouping::GroupField;
-        for (field_str, allowed) in filters {
-            if allowed.is_empty() {
-                continue;
-            }
-            let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
-                Ok(f) => f,
-                Err(_) => {
-                    tracing::warn!(key = %field_str, "grouped sweep: unknown field_filters key, skipping");
-                    continue;
-                }
-            };
-            if field == GroupField::IxLabels {
-                tracing::warn!("grouped sweep: ix_labels in field_filters — use ix_labels_filter instead, skipping");
-                continue;
-            }
+
+    // Manual corpus filters — the `else` arm of the saved-fingerprint scope above.
+    // Skipped entirely on a scoped run so a stale filter left in the form can't
+    // narrow (or contradict) what the engine matched.
+    if scope_fp.is_none() {
+        // Optional exact-set ix_labels filter (applied post-fingerprint, in-memory so
+        // the unfiltered Parquet corpus cache is reused across filter values): keep only
+        // tokens whose label set equals the requested set. Normalize the request set the
+        // same way the fingerprint is, so the `==` is order/dup-insensitive. An empty
+        // request set is "no filter" (not "tokens with no labels").
+        if let Some(want) = b
+            .ix_labels_filter
+            .as_ref()
+            .filter(|f| !f.is_empty())
+            .map(|f| crate::sweep::grouping::normalize_label_vec(f.clone()))
+        {
             let before = corpus.tokens.len();
-            corpus.tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
+            corpus.tokens.retain(|t| t.fp.ix_labels == want);
             tracing::info!(
-                field = %field_str,
                 kept = corpus.tokens.len(),
                 dropped = before - corpus.tokens.len(),
-                "grouped sweep: field filter applied"
+                labels = ?want,
+                "grouped sweep: ix_labels exact-set filter applied"
             );
             if corpus.tokens.is_empty() {
                 let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": format!(
-                        "no tokens match the '{field_str}' field filter — adjust the values or widen the selection"
-                    )
+                    "error": "no tokens match that instruction-label filter — adjust the labels or widen the selection"
                 })));
                 return;
+            }
+        }
+        // Optional per-field numeric filters — restrict the corpus to tokens whose
+        // fingerprint value for the named field is in the allowed set. Applied
+        // post-fingerprint, in-memory, reusing the unfiltered Parquet cache.
+        // Unknown keys and `ix_labels` (handled above) are skipped with a warning.
+        if let Some(filters) = &b.field_filters {
+            use crate::sweep::grouping::GroupField;
+            for (field_str, allowed) in filters {
+                if allowed.is_empty() {
+                    continue;
+                }
+                let field: GroupField = match serde_json::from_str(&format!("\"{field_str}\"")) {
+                    Ok(f) => f,
+                    Err(_) => {
+                        tracing::warn!(key = %field_str, "grouped sweep: unknown field_filters key, skipping");
+                        continue;
+                    }
+                };
+                if field == GroupField::IxLabels {
+                    tracing::warn!("grouped sweep: ix_labels in field_filters — use ix_labels_filter instead, skipping");
+                    continue;
+                }
+                let before = corpus.tokens.len();
+                corpus.tokens.retain(|t| matches_field_filter(&t.fp, field, allowed));
+                tracing::info!(
+                    field = %field_str,
+                    kept = corpus.tokens.len(),
+                    dropped = before - corpus.tokens.len(),
+                    "grouped sweep: field filter applied"
+                );
+                if corpus.tokens.is_empty() {
+                    let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({
+                        "error": format!(
+                            "no tokens match the '{field_str}' field filter — adjust the values or widen the selection"
+                        )
+                    })));
+                    return;
+                }
             }
         }
     }
@@ -790,16 +850,22 @@ async fn run_grouped_sweep_job(
         // request that the server silently ceilings. Only store an active
         // (non-empty) ix_labels filter; an empty/omitted one means "no filter"
         // and reads back as NULL.
+        // A fingerprint-scoped run stores the fingerprint, NOT the manual filters —
+        // they were ignored above, so persisting them would misreport the scope and
+        // (worse) re-apply on the token-results reload.
         ix_labels_filter: b
             .ix_labels_filter
             .as_ref()
+            .filter(|_| scope_fp.is_none())
             .filter(|f| !f.is_empty())
             .and_then(|f| serde_json::to_value(f).ok()),
         field_filters: b
             .field_filters
             .as_ref()
+            .filter(|_| scope_fp.is_none())
             .filter(|f| !f.is_empty())
             .and_then(|f| serde_json::to_value(f).ok()),
+        fingerprint_id: scope_fp.as_ref().map(|f| f.id),
         token_cap: Some(token_cap as i32),
         max_combos: b.max_combos.map(|v| v as i32),
         label: None,
@@ -1526,35 +1592,85 @@ pub async fn promote_group(
     // Fingerprint at the run's bucket width (fall back to the default for pre-0002
     // runs), find-or-created so identical winning groups map onto ONE fingerprint.
     let width = run.bucket_width_sol.unwrap_or(SOL_BUCKET_WIDTH);
-    let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
-    let mut fp = fingerprint_from_group_key(&group.group_key, width, name);
-    // V2.2: Promote copies the run's volume-ix patterns into metric_config so the
-    // live/sim rule classifies with the same set the sweep scored.
-    if let Some(patterns) = &run.volume_ix_patterns {
-        fp.metric_config = serde_json::json!({
-            "m_flow_split": { "volume_ix_patterns": patterns }
-        });
-        if let Err(e) = hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
-            &fp.metric_config,
-        ) {
-            return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
-        }
-    }
     let fp_repo = FingerprintRepo::new(state.db.clone());
-    let mut fp = match fp_repo.find_or_create(&fp).await {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::error!("promote: find_or_create fingerprint failed: {e}");
-            return HttpResponse::InternalServerError().json(serde_json::json!({"error": "database error"}));
+
+    // A fingerprint-scoped run already HAS the gate that selected its corpus — reuse
+    // it instead of synthesizing one from the group key. The group key only carries
+    // the grouped fields (and is `{}` for the usual single-"ALL"-group scoped run),
+    // so `fingerprint_from_group_key` would hand back a fingerprint with fewer axes
+    // than the sweep actually matched on — for an empty key, one that matches EVERY
+    // token. That rule would fire far wider than the results it was promoted from.
+    let mut fp = match run.fingerprint_id {
+        Some(fp_id) => match fp_repo.find(fp_id).await {
+            Ok(Some(f)) => {
+                if !group.group_key.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                    // Grouped *within* the scope: the promoted rule is the scope gate,
+                    // which is wider than this group's slice. Say so in the log — the
+                    // extra narrowing is a group-by artifact, not a fingerprint axis.
+                    tracing::warn!(
+                        %fp_id, group_key = %group.group_key,
+                        "promote: scoped run grouped by extra fields — promoting the scope fingerprint (wider than the group)"
+                    );
+                }
+                f
+            }
+            Ok(None) => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!(
+                        "this run was scoped by fingerprint {fp_id}, which no longer exists — \
+                         re-run the sweep against a saved fingerprint before promoting"
+                    )
+                }))
+            }
+            Err(e) => {
+                tracing::error!("promote: scope fingerprint lookup failed: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "database error"}));
+            }
+        },
+        None => {
+            let name = format!("sweep {} · group {}", short_id(run_id), group.group_index);
+            let mut draft_fp = fingerprint_from_group_key(&group.group_key, width, name);
+            // V2.2: Promote copies the run's volume-ix patterns into metric_config so
+            // the live/sim rule classifies with the same set the sweep scored.
+            if let Some(patterns) = &run.volume_ix_patterns {
+                draft_fp.metric_config = serde_json::json!({
+                    "m_flow_split": { "volume_ix_patterns": patterns }
+                });
+                if let Err(e) =
+                    hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(
+                        &draft_fp.metric_config,
+                    )
+                {
+                    return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+                }
+            }
+            match fp_repo.find_or_create(&draft_fp).await {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::error!("promote: find_or_create fingerprint failed: {e}");
+                    return HttpResponse::InternalServerError()
+                        .json(serde_json::json!({"error": "database error"}));
+                }
+            }
         }
     };
     // find_or_create ignores metric_config for identity — update if the run has
-    // patterns and the stored row differs (width-parity precedent for config).
+    // patterns and the stored row differs (width-parity precedent for config). On a
+    // scoped run this writes onto the *saved* fingerprint on purpose: the promoted
+    // rule must classify flow with the exact pattern set that produced these results,
+    // and a fingerprint whose patterns disagree with the sweep would silently score
+    // differently live. Validate before touching a row the user owns.
     if let Some(patterns) = &run.volume_ix_patterns {
         let want = serde_json::json!({
             "m_flow_split": { "volume_ix_patterns": patterns }
         });
         if fp.metric_config != want {
+            if let Err(e) =
+                hunter_engine::metrics::flow_split::FlowPatterns::validate_metric_config(&want)
+            {
+                return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+            }
             fp.metric_config = want;
             fp.updated_at = Utc::now();
             if let Err(e) = fp_repo.update(&fp).await {
@@ -1754,8 +1870,33 @@ pub async fn list_token_results(
     // which is exactly the width they were swept at.
     let run_width = run.bucket_width_sol.unwrap_or(crate::sweep::grouping::SOL_BUCKET_WIDTH);
 
-    // Helper: apply the run's ix_labels + field filters to an owned token vec.
+    // A fingerprint-scoped run's corpus can only be reproduced through the engine
+    // matcher (the manual filters are NULL on such a row), so resolve the scope
+    // fingerprint up front — the reload below re-applies it exactly like the run did.
+    // A deleted fingerprint leaves the id dangling: fall back to no scope rather than
+    // 500, and say so, since the group's stored mints still bound the reload.
+    let scope_engine_fp = match run.fingerprint_id {
+        Some(fp_id) => match FingerprintRepo::new(state.db.clone()).find(fp_id).await {
+            Ok(Some(f)) => Some(trading_core::strategies::fingerprint_axes::fp_to_engine(&f)),
+            Ok(None) => {
+                tracing::warn!(%fp_id, "token-results: scope fingerprint deleted — reload unscoped");
+                None
+            }
+            Err(e) => {
+                tracing::error!("token-results: fingerprint lookup failed: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(serde_json::json!({"error": "database error"}));
+            }
+        },
+        None => None,
+    };
+
+    // Helper: apply the run's fingerprint scope (or its ix_labels + field filters) to
+    // an owned token vec — the two are mutually exclusive, as at run time.
     let apply_filters = |mut tokens: Vec<crate::sweep::corpus::CorpusToken>| -> Vec<crate::sweep::corpus::CorpusToken> {
+        if let Some(engine_fp) = scope_engine_fp.as_ref() {
+            tokens.retain(|t| hunter_engine::fingerprint::matches(engine_fp, &t.fp));
+        }
         if let Some(want) = run
             .ix_labels_filter
             .as_ref()

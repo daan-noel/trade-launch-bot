@@ -1,8 +1,9 @@
 import { useEffect, useMemo, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { cn } from 'lib/cn';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { IconButton } from 'components/ui/IconButton';
-import { PlayIcon, SpinnerIcon } from 'components/ui/icons';
+import { LinkIcon, PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
@@ -23,8 +24,12 @@ import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
+import { fingerprintParamsCell } from 'components/strategy/FingerprintParamsSummary';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from 'components/strategy/LabelTip';
+import { fingerprintsHref } from 'lib/strategy/nav';
+import type { Fingerprint } from 'lib/strategy/types';
+import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   axisRowError,
   comboCount,
@@ -127,6 +132,9 @@ interface GenericSweepConfig {
   useAvx512: boolean;
   /** Corpus-wide volume-ix patterns when axes reference m_flow_*. */
   volumeIxPatterns: string[][];
+  /** Saved fingerprint the corpus is scoped to (engine match SSOT). When set the
+   *  manual value filters are not sent — the backend matches instead. */
+  seedFingerprintId: string | null;
 }
 
 function defaultConfig(): GenericSweepConfig {
@@ -157,6 +165,7 @@ function defaultConfig(): GenericSweepConfig {
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
     useAvx512: false,
     volumeIxPatterns: [],
+    seedFingerprintId: null,
   };
 }
 
@@ -243,6 +252,10 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     buyAmountSol: tidySolDecimal(run.buy_amount_sol ?? defaults.buyAmountSol),
     bucketWidthSol: tidySolDecimal(run.bucket_width_sol ?? defaults.bucketWidthSol),
     volumeIxPatterns: run.volume_ix_patterns ?? defaults.volumeIxPatterns,
+    // Restore the scope so a re-run sweeps the SAME matched slice — the manual
+    // filters are NULL on a scoped run, so without this the re-run would silently
+    // widen to the whole selection window.
+    seedFingerprintId: run.fingerprint_id ?? null,
   };
 }
 
@@ -300,7 +313,38 @@ export function GenericSweepConfigForm({
     ramReserveMb,
     useAvx512,
     volumeIxPatterns,
+    seedFingerprintId,
   } = config;
+
+  const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const seedFp: Fingerprint | null =
+    (seedFingerprintId && fingerprints.find((f) => f.id === seedFingerprintId)) || null;
+
+  /** Scope the corpus to a saved fingerprint (engine match, server-side) — or clear
+   *  back to manual group-by / filters. Selecting one drops the group-by selection
+   *  (one "ALL" group over the matched tokens is the point of scoping) and the
+   *  min-tokens floor, which is sized for wide multi-group runs and would silently
+   *  drop a fingerprint that matches only a handful of tokens. Bucket width follows
+   *  the fingerprint's own so a promoted rule keeps "swept = run". The value filters
+   *  are left untouched but not sent — the note under the select says so. */
+  function selectSeedFingerprint(id: string) {
+    if (!id) {
+      setField('seedFingerprintId', null);
+      return;
+    }
+    const fp = fingerprints.find((f) => f.id === id);
+    if (!fp) return;
+    setConfig((prev) => ({
+      ...DEFAULTS,
+      ...prev,
+      seedFingerprintId: fp.id,
+      groupBy: [],
+      minTokens: 1,
+      bucketWidthSol: tidySolDecimal(
+        fp.bucket_size_amount > 0 ? fp.bucket_size_amount : SOL_BUCKET_WIDTH,
+      ),
+    }));
+  }
 
   function setField<K extends keyof GenericSweepConfig>(key: K, value: GenericSweepConfig[K]) {
     setConfig((prev) => ({ ...DEFAULTS, ...prev, [key]: value }));
@@ -313,7 +357,9 @@ export function GenericSweepConfigForm({
 
   const ixLabelsGrouped = groupBy.includes('ix_labels');
   const ixFilter = useMemo(() => parseIxLabelsFilter(ixLabelsFilter), [ixLabelsFilter]);
-  const ixFilterError = !ixLabelsGrouped ? ixFilter.error : null;
+  // A scoped run never sends the label filter (the engine match replaces it), so a
+  // stale parse error in that box must not block the run.
+  const ixFilterError = !ixLabelsGrouped && !seedFingerprintId ? ixFilter.error : null;
 
   // Axis validity + projected combos.
   const rowErrors = useMemo(
@@ -346,13 +392,21 @@ export function GenericSweepConfigForm({
 
   function handleRun() {
     if (!canRun) return;
+    // Scoped run: the backend matches on the fingerprint's own axes, so the manual
+    // filters are not sent at all (sending them would only look like they applied —
+    // the server ignores them, and the run row stores the fingerprint instead).
+    const scoped = !!seedFingerprintId;
     const fieldFilters: Record<string, (number | boolean)[]> = {};
-    for (const f of GROUP_FIELDS) {
-      if (f === 'ix_labels' || f === 'is_cashback_enabled') continue;
-      const nums = parseNumbers(fieldFiltersText[f] ?? '');
-      if (nums.length > 0) fieldFilters[f] = nums;
+    if (!scoped) {
+      for (const f of GROUP_FIELDS) {
+        if (f === 'ix_labels' || f === 'is_cashback_enabled') continue;
+        const nums = parseNumbers(fieldFiltersText[f] ?? '');
+        if (nums.length > 0) fieldFilters[f] = nums;
+      }
+      if (cashbackFilter !== 'all') {
+        fieldFilters['is_cashback_enabled'] = [cashbackFilter === 'true'];
+      }
     }
-    if (cashbackFilter !== 'all') fieldFilters['is_cashback_enabled'] = [cashbackFilter === 'true'];
 
     onRun({
       strategy_id: GENERIC_STRATEGY_ID,
@@ -361,7 +415,9 @@ export function GenericSweepConfigForm({
       curve_only: curveOnly,
       group_by: groupBy,
       bucket_width_sol: bucketWidthSol,
-      ix_labels_filter: !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined,
+      fingerprint_id: seedFingerprintId ?? undefined,
+      ix_labels_filter:
+        !scoped && !ixLabelsGrouped && ixFilter.labels ? ixFilter.labels : undefined,
       field_filters: Object.keys(fieldFilters).length > 0 ? fieldFilters : undefined,
       min_tokens: minTokens,
       method:
@@ -571,6 +627,58 @@ export function GenericSweepConfigForm({
             </span>
           }
         >
+          {/* Saved-fingerprint scope — the engine-match path (same control the Flow
+              discovery page uses). Set → the corpus is the fingerprint's matched
+              token set and the value filters below are ignored; empty → manual
+              group-by / filters select the corpus. */}
+          <div className="mb-3 flex flex-col gap-2 rounded border border-white/8 p-3">
+            <label className="flex min-w-[16rem] flex-col gap-1 text-[11px] text-text-dim">
+              <LabelTip
+                tip={SWEEP_FIELD_HELP.seedFingerprint}
+                className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
+              >
+                Scope by saved fingerprint
+              </LabelTip>
+              <Select
+                fieldSize="sm"
+                value={seedFingerprintId ?? ''}
+                onChange={(e) => selectSeedFingerprint(e.target.value)}
+              >
+                <option value="">Manual group-by / filters below</option>
+                {fingerprints.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name || f.id.slice(0, 8)}
+                    {f.used_by != null ? ` · used by ${f.used_by}` : ''}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            {seedFp ? (
+              <div className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link
+                    to={fingerprintsHref(seedFp.id)}
+                    className="inline-flex items-center gap-1 rounded-md hover:opacity-90"
+                    title={`Open fingerprint “${seedFp.name}”`}
+                  >
+                    <Badge variant="info">engine match · {seedFp.name}</Badge>
+                    <LinkIcon className="h-3.5 w-3.5 text-accent" />
+                  </Link>
+                  <span className="text-[10px] text-text-dim">
+                    Only tokens this fingerprint matches are swept (exact axes exact,
+                    SOL axes by bucket) — the value filters below are <b>not sent</b>.
+                    Group-by still splits inside that slice.
+                  </span>
+                </div>
+                {fingerprintParamsCell(seedFp)}
+              </div>
+            ) : (
+              <p className="text-[10px] text-text-dim">
+                Pick a fingerprint to sweep exactly the tokens it matches — or leave
+                empty and select the corpus with the group-by / filters below.
+              </p>
+            )}
+          </div>
           <FingerprintGroupPicker
             groupBy={groupBy}
             onToggleField={toggleGroupField}
@@ -583,7 +691,11 @@ export function GenericSweepConfigForm({
             ixLabelsText={ixLabelsFilter}
             onSetIxLabels={(v) => setField('ixLabelsFilter', v)}
             ixFilter={ixFilter}
-            emptyHint='No fields selected → one "ALL" group (a single global sweep).'
+            emptyHint={
+              seedFingerprintId
+                ? 'No fields selected → one "ALL" group over the fingerprint\'s matched tokens.'
+                : 'No fields selected → one "ALL" group (a single global sweep).'
+            }
           />
         </Accordion>
       </div>

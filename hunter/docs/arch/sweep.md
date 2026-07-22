@@ -49,6 +49,47 @@ Ranked full list of sweep↔simulate divergences, including the not-yet-accepted
 | `registry.rs` | `sweep_tables(strategy_id)` (one arm: `"generic"` → `grouped_sweep_*`), `run_grouped(...)`; `MAX_COMBOS`; resource fences (`bounded_threads` = cores/2 by default, host-RAM admission) |
 | `generic/` | `GenericSweepStrategy` — the one sweep family (Phase 7 retired the per-strategy tpsl/swing adapters). `axes.rs` = fingerprint + TP/SL + metric-condition axes → `RuleParams` combos; `strategy.rs` = `Strategy` impl (`TokenState = MetricSeries` precompute; `resolve_entry` mirrors `can_enter` / `resolve_exit` scan the series); `exit_index.rs` = O(log n) prefix-extrema exit search; `guard.rs` asserts scan ≡ `run_replay` and index/SIMD ≡ scalar |
 
+### Corpus scope: saved fingerprint vs manual filters
+
+Two mutually-exclusive ways the start request narrows the loaded corpus, both applied in-memory *after* the lake load (so the unfiltered Parquet/`sweep_corpus_cache` entry stays reusable):
+
+- **`fingerprint_id`** (sweep form → *Group by fingerprint* → *Scope by saved fingerprint*, mirroring the Flow-discovery control) — keeps only tokens `hunter_engine::fingerprint::matches` accepts for that saved fingerprint: the **engine match SSOT**, exact axes exact and the continuous SOL axes by **bucket**, i.e. the token set the live entry gate would arm on. `group_by` still partitions *within* the matched slice (empty ⇒ one `ALL` group).
+- **`ix_labels_filter` + `field_filters`** — the manual path: exact-set label match and exact-value field pins. These cannot express a bucket axis, which is why scoping is a separate request field rather than a filter prefill. Ignored (and stored as `NULL`) whenever `fingerprint_id` is set.
+
+The scope is persisted on the run row (`grouped_sweep_runs.fingerprint_id`, `lab/migrations/0009_sweep_fingerprint_id.sql`, no FK) because it is not reconstructible from the filter columns: the token-results reload re-applies the same match, re-run restores it in the form, and **promote reuses the scope fingerprint itself** instead of synthesizing one from the group key — an `ALL` group key would otherwise yield an axis-less fingerprint that matches every token.
+
+### Metric scope: token-scoped columns vs position-scoped axes
+
+Almost every metric is **token-scoped** — one value per token per event, so the
+precompute records it as a `SeriesColumn` and the per-combo scan reads it off the
+flat buffer. `m_position` (`retrace` / `pnl` / `held`) is **position-scoped**: its
+value anchors on *your* entry fill, so it cannot be precomputed token-independently
+(a static column would only ever record `NaN` — the track holds no position state).
+
+Consequences, all enforced in code:
+
+* `axes.rs` rejects an `m_position` axis on the **entry** side (it reads `NaN`
+  before entry, so the condition could never fire) and contributes **no column**
+  for it on the exit side.
+* `strategy.rs::resolve_exit` carries a running since-entry `peak_price` (seeded to
+  the fill price, folded forward per row *before* that row's decision — mirroring
+  `reduce.rs::evaluate_token`) and evaluates position-scoped exit reqs through
+  `position_value(..)` against that `PositionCtx`, exactly as
+  `CompiledRule::exit_fired` does. Token-scoped exit reqs still read their column.
+* The desugared TP/SL `pnl` reqs (`ReqOrigin::{TakeProfit,StopLoss}`) are **skipped**
+  by that generic walk — the scan keeps its dedicated `entry_price · (1 ∓ pct/100)`
+  price-threshold branches so the outcome still stamps `StopLoss` / `TakeProfit`
+  rather than `Metrics`. Priority stays `Dead > SL > TP > authored metrics`.
+* `m_price_window` **is** token-scoped, so `trail`/`rise` precompute as an ordinary
+  `SeriesColumn::Window` — routed to the price-extrema deque (`ensure_price_window`),
+  not the flow ring buffer. Its window counts toward `SparseGrid::max_window_secs`:
+  a rolling high decays as prints age out, so the decay-region ticks must be emitted
+  exactly like a flow window's.
+
+Not wired: **re-entry** (`RuleParams.reentry`). The sweep's `TokenOutcome` is one
+episode per (token, combo); multi-episode accumulation would change the outcome
+model, aggregation and persistence. Re-entry validates via simulate/replay instead.
+
 ### Flow axes (`m_flow_split` / `m_flow_split_window`)
 
 When axes reference a flow group, the corpus loads with `Selection.with_flow`

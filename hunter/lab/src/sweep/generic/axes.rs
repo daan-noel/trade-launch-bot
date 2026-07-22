@@ -23,6 +23,7 @@ use hunter_engine::metrics::series::SeriesColumn;
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::{
     group_by_name, group_spec, is_flow_metric, metric_spec, MetricGroupId, MetricId, MetricKind,
+    MetricScope,
 };
 use uuid::Uuid;
 
@@ -115,9 +116,17 @@ impl ResolvedAxis {
         matches!(self, ResolvedAxis::Metric { side: AxisSide::Entry, .. })
     }
 
-    /// The precompute column this axis reads (metric axes only).
+    /// The precompute column this axis reads (metric axes only). Position-scoped
+    /// metrics (`m_position`) read no column: their value comes from the per-entry
+    /// `PositionCtx` during the exit scan, not a token-independent series (a static
+    /// column would only ever record `NaN`, since the track has no position state).
     fn column(&self) -> Option<SeriesColumn> {
         match self {
+            ResolvedAxis::Metric { group, .. }
+                if group_spec(*group).scope == MetricScope::Position =>
+            {
+                None
+            }
             ResolvedAxis::Metric { metric, window, .. } => Some(if is_flow_metric(*metric) {
                 SeriesColumn::Flow(*metric, *window, SWEEP_FLOW_FP)
             } else {
@@ -202,9 +211,11 @@ impl AxesModel {
         })
     }
 
-    /// Largest flow window (`window_size_sec`) any metric axis reads — `0.0` if the
-    /// swept rules read no `m_flow_window` metrics. Sizes the sparse grid's decay
-    /// region (plan §P2): past `last_trade + this`, every window flow is 0.
+    /// Largest trailing window (`window_size_sec`) any metric axis reads, across both
+    /// window families (`m_flow_window`/`m_flow_split_window` and `m_price_window`) —
+    /// `0.0` if the swept rules read no windowed metrics. Sizes the sparse grid's
+    /// decay region (plan §P2): past `last_trade + this`, every window flow is 0 and
+    /// every rolling price extremum has aged out.
     pub fn max_window_secs(&self) -> f64 {
         self.axes
             .iter()
@@ -384,6 +395,14 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
             let operator = spec.operator.ok_or("metric axis needs `operator`")?;
             let group = group_by_name(group_name)
                 .ok_or_else(|| format!("unknown metric group `{group_name}`"))?;
+            // Position-scoped metrics (`m_position`) only exist while a position is
+            // held — they read `NaN` before entry, so an entry condition on one can
+            // never fire. Reject it on the entry side (mirrors the rule-save gate).
+            if group.scope == MetricScope::Position && side == AxisSide::Entry {
+                return Err(format!(
+                    "group `{group_name}` is position-scoped (exit-only) — it has no value before entry; place it on the exit side"
+                ));
+            }
             let mspec = group
                 .metric_by_name(metric_name)
                 .ok_or_else(|| format!("metric `{metric_name}` not in group `{group_name}`"))?;
@@ -582,6 +601,47 @@ mod tests {
             axes: vec![metric_axis(AxisSide::Entry, "m_bogus", "x", ">", None, vec![1.0])],
         };
         assert!(AxesModel::resolve(&req).is_err());
+    }
+
+    #[test]
+    fn position_group_rejected_on_entry_but_swept_on_exit() {
+        // `m_position` only has a value while holding, so an entry condition on it
+        // could never fire — reject the axis rather than sweep a dead grid.
+        let entry = metric_axis(AxisSide::Entry, "m_position", "retrace", ">=", None, vec![3.0]);
+        let e = AxesModel::resolve(&AxesRequest { axes: vec![entry] }).unwrap_err();
+        assert!(e.contains("exit-only"), "{e}");
+
+        // On the exit side it sweeps normally — but contributes NO precompute column
+        // (the scan reads it from the per-entry PositionCtx, not a token series).
+        let exit = metric_axis(AxisSide::Exit, "m_position", "retrace", ">=", None, vec![1.5, 3.0, 5.0, 10.0]);
+        let m = AxesModel::resolve(&AxesRequest { axes: vec![exit] }).unwrap();
+        assert_eq!(m.combo_count(), 4);
+        assert!(m.columns().is_empty(), "position metrics must not become series columns");
+        // The assembled params must survive the canonical parse (promotable to a rule).
+        let p = m.combo_params(0);
+        let arms = &p.exit.as_ref().unwrap().0[&MetricGroupId::Position][0].metrics[&MetricId::Retrace];
+        assert_eq!(arms[0][0].value, 1.5);
+        RuleParams::parse(&p.to_value()).unwrap();
+    }
+
+    #[test]
+    fn price_window_axis_resolves_to_a_windowed_column() {
+        // The dip trigger: `m_price_window(30).trail` — a dynamic group, so it takes a
+        // window and precomputes as a Window column (routed to the price-extrema deque).
+        let axis = metric_axis(
+            AxisSide::Entry,
+            "m_price_window",
+            "trail",
+            ">=",
+            Some(30.0),
+            vec![8.0, 15.0, 25.0],
+        );
+        let m = AxesModel::resolve(&AxesRequest { axes: vec![axis] }).unwrap();
+        assert_eq!(m.combo_count(), 3);
+        assert_eq!(m.columns(), vec![SeriesColumn::Window(MetricId::WinTrail, 30.0)]);
+        // The rolling high decays between trades, so it must size the sparse grid.
+        assert_eq!(m.max_window_secs(), 30.0);
+        RuleParams::parse(&m.combo_params(0).to_value()).unwrap();
     }
 
     #[test]

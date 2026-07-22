@@ -694,6 +694,21 @@ export const FINGERPRINT_FIELD_HELP = {
 // ── Sweep config / axes ──────────────────────────────────────────────────────
 
 export const SWEEP_FIELD_HELP = {
+  seedFingerprint: {
+    title: 'Scope by saved fingerprint',
+    body: [
+      'When set, the sweep corpus keeps only tokens that MATCH this fingerprint',
+      '(engine match SSOT — exact axes exact, continuous SOL axes by bucket, same',
+      'gate the live entry arms on).',
+      '',
+      'The manual value filters below are then IGNORED — they compare exact values,',
+      'so they cannot express a bucket axis. Group-by still applies: leave it empty',
+      'for one “ALL” group over the matched tokens, or check fields to partition',
+      'inside that slice.',
+      '',
+      'Leave empty to select the corpus with the manual group-by / filters instead.',
+    ].join('\n'),
+  },
   method: {
     title: 'Sweep method',
     body: [

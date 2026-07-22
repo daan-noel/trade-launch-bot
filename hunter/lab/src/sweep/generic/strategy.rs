@@ -25,11 +25,12 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use uuid::Uuid;
 
-use hunter_engine::arm::CompiledRule;
+use hunter_engine::arm::{CompiledRule, MetricReq, ReqOrigin};
 use hunter_engine::deadness::DEAD_QUIET_SECS;
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::evaluator::eval;
+use hunter_engine::metrics::position::{position_value, PositionCtx};
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{MetricId, TradeLite, Ts};
 use hunter_engine::TICK_MS;
@@ -373,8 +374,11 @@ fn encode_picks(picks: &[usize], lens: &[usize]) -> usize {
 /// values are bit-identical — the scan can never disagree with a full replay.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SparseGrid {
-    /// Largest registered flow window (secs); `0` if the rule reads no flows. A
-    /// trade keeps changing flows until `trade + this`, after which all flows are 0.
+    /// Largest registered trailing window (secs) across BOTH window families —
+    /// `m_flow_window`/`m_flow_split_window` and `m_price_window`; `0` if the rule
+    /// reads neither. A trade keeps changing windowed metrics until `trade + this`
+    /// (flows decay to 0; a rolling price high/low drops as the print ages out),
+    /// after which every windowed read is settled for that gap.
     pub max_window_secs: f64,
     /// Max swept `time` condition value + its `=`-tolerance (secs since creation);
     /// `0` if `time` isn't swept. `time` is monotone, so past this every `time`
@@ -612,6 +616,11 @@ fn trade_lite(ct: &CorpusTrade) -> TradeLite {
 pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
     let mut cols = Vec::new();
     for req in compiled.entry_reqs.iter().chain(compiled.exit_reqs.iter()) {
+        // Position-scoped reqs (`m_position`) read the per-entry `PositionCtx` in the
+        // exit scan, not a token series column — see `exit_position_metrics_fired`.
+        if req.position_scoped {
+            continue;
+        }
         let c = col_of(req);
         if !cols.contains(&c) {
             cols.push(c);
@@ -625,7 +634,16 @@ pub(crate) fn columns_for(compiled: &CompiledRule) -> Vec<SeriesColumn> {
 /// `time`/`stall` condition ceilings (+ tolerance) and largest flow window, so the
 /// sparse series it drives records every tick this rule's scan could branch on.
 pub(crate) fn sparse_grid_for(compiled: &CompiledRule) -> SparseGrid {
-    let max_window_secs = compiled.flow_windows.iter().cloned().fold(0.0_f64, f64::max);
+    // BOTH window families: a `m_price_window` rolling high decays as old prints age
+    // out of the window, so `trail`/`rise` keep changing between trades exactly like a
+    // flow window does. Counting only `flow_windows` here would drop the decay-region
+    // ticks and let the scan miss a dip trigger a full replay sees.
+    let max_window_secs = compiled
+        .flow_windows
+        .iter()
+        .chain(compiled.price_windows.iter())
+        .cloned()
+        .fold(0.0_f64, f64::max);
     // Max condition value + eq-tolerance for a monotone/static metric across both sides.
     let ceiling = |metric: MetricId| -> f64 {
         let mut max = 0.0_f64;
@@ -797,6 +815,34 @@ fn reqs_any_satisfied(
         .any(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance))
 }
 
+/// Held-side authored exit-metric combinator (mirror of `CompiledRule::exit_fired`'s
+/// authored walk). OR across metrics — any one authored reason fires. Desugared TP/SL
+/// reqs (`origin != Authored`) are skipped: the caller's SL/TP price-threshold
+/// branches handle them with the correct `StopLoss`/`TakeProfit` label. Token-scoped
+/// reqs read the precomputed series column; position-scoped reqs (`m_position`) read
+/// the running [`PositionCtx`] at this row's price/time.
+fn exit_position_metrics_fired(
+    series: &MetricSeries,
+    reqs: &[MetricReq],
+    cols: &[usize],
+    row: usize,
+    ctx: &PositionCtx,
+) -> bool {
+    let price = series.price[row];
+    let now = series.at[row];
+    reqs.iter().zip(cols).any(|(r, &col)| {
+        if r.origin != ReqOrigin::Authored {
+            return false; // desugared TP/SL — handled by the price-threshold branch
+        }
+        let reading = if r.position_scoped {
+            position_value(r.metric, ctx, price, now)
+        } else {
+            value_at_col(series, col, row)
+        };
+        eval(&r.conds, reading, r.tolerance)
+    })
+}
+
 fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usize], row: usize) -> bool {
     c.mono_kills
         .iter()
@@ -941,6 +987,11 @@ pub(crate) fn resolve_exit(
     let has_exit_metrics = c.has_exit_metrics();
     // Pre-resolved at bind time — this was the run's most-executed heap allocation.
     let exit_cols = &b.exit_cols;
+    // Running since-entry peak for the position-scoped exit metrics (`retrace`/`pnl`).
+    // Seeded to the fill price — exactly as `reduce.rs` seeds `ArmState::Entered`'s
+    // `peak_price` — and folded forward each event BEFORE that event's exit decision,
+    // mirroring `evaluate_token`'s per-event peak fold.
+    let mut peak_price = entry_price;
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return close_at_fire(
@@ -949,6 +1000,13 @@ pub(crate) fn resolve_exit(
         }
         let p = series.price[j];
         if p.is_finite() {
+            if p > peak_price {
+                peak_price = p;
+            }
+            // SL / TP price thresholds — the labeled fast path for the desugared `pnl`
+            // reqs (`price <= entry·(1−sl)` ⟺ `pnl <= −sl`; likewise TP). Kept here so
+            // `ExitCode::StopLoss`/`TakeProfit` stay stamped; the generic loop below
+            // skips these origin-tagged reqs.
             if let Some(sl) = c.stop_loss {
                 if p <= entry_price * (1.0 - sl / 100.0) {
                     return close_at_fire(
@@ -966,11 +1024,18 @@ pub(crate) fn resolve_exit(
                 }
             }
         }
-        if has_exit_metrics && reqs_any_satisfied(series, &c.exit_reqs, exit_cols, j) {
-            return close_at_fire(
-                trades, series, ExitCode::Metrics, entry_price, entry_at, entry_slot, j, buy_amount_sol,
-                cost,
-            );
+        // Authored exit metrics (`Dead > SL > TP > Metrics` priority preserved: dead
+        // and the SL/TP branches rank ahead of this). Token-scoped reqs read the
+        // precomputed column; position-scoped reqs (`m_position`) read the running
+        // `PositionCtx` — mirroring `CompiledRule::exit_fired`.
+        if has_exit_metrics {
+            let ctx = PositionCtx { entry_price, peak_price, entered_at: entry_at };
+            if exit_position_metrics_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
+                return close_at_fire(
+                    trades, series, ExitCode::Metrics, entry_price, entry_at, entry_slot, j,
+                    buy_amount_sol, cost,
+                );
+            }
         }
     }
     // Open: mark to the last finite price (unrealized — excluded from the realized

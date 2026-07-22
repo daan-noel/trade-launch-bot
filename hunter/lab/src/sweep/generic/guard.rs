@@ -136,6 +136,32 @@ fn exit_metric(group: MetricGroupId, metric: MetricId, op: Operator, value: f64)
     RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(side), reentry: None }
 }
 
+/// One side's conditions for a single windowed (dynamic-group) metric — e.g. the
+/// `m_price_window(30).trail >= 12` dip trigger.
+fn window_metric_side(
+    group: MetricGroupId,
+    metric: MetricId,
+    window: f64,
+    op: Operator,
+    value: f64,
+) -> SideConditions {
+    let mut gc = GroupConditions::default();
+    gc.strict.insert("window_size_sec".to_string(), window);
+    gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
+    let mut side = SideConditions::default();
+    side.0.insert(group, vec![gc]);
+    side
+}
+
+/// One side's conditions for a single static-group metric (e.g. `m_position.retrace`).
+fn static_metric_side(group: MetricGroupId, metric: MetricId, op: Operator, value: f64) -> SideConditions {
+    let mut gc = GroupConditions::default();
+    gc.metrics.insert(metric, vec![vec![Condition { operator: op, value }]]);
+    let mut side = SideConditions::default();
+    side.0.insert(group, vec![gc]);
+    side
+}
+
 fn exit_code_of(reason: Option<ExitReason>) -> ExitCode {
     match reason {
         None => ExitCode::Open,
@@ -332,6 +358,161 @@ fn scan_matches_replay_pure_dead_open_rule() {
     // No TP/SL/exit metrics: every fired token rides to Dead or Open.
     let params = RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None };
     assert_parity("dead_open", params, &corpus(), at(1000.0));
+}
+
+// ───────────── flow-scalper metrics parity (Phase 6 sweep wiring) ─────────────
+//
+// The two new metric classes the flow scalper needs: the windowed price-extrema
+// entry (`m_price_window.trail`, a real precompute column) and the position-scoped
+// trailing-stop exit (`m_position.{retrace,pnl}`, evaluated against the per-entry
+// PositionCtx during the scan — NOT a token series column). These lock the scan's
+// position-aware exit + price-window entry against the real fold.
+
+/// A token that rises then dips ≥ 12% below its rolling high (so the price-window
+/// entry triggers) with a later print to fill against, plus a run-up and a peak-then-
+/// dump so both TP and the trailing stop have something to fire on.
+fn pw_dip_corpus() -> Vec<(CorpusToken, ReplayToken)> {
+    vec![
+        token(
+            "pw_dip",
+            vec![
+                ct(0.0, true, 2.0, 1.0, 100.0),
+                ct(1.0, true, 2.0, 1.2, 100.0), // 30 s rolling high = 1.2
+                ct(2.0, false, 1.0, 1.0, 100.0), // 16.7% below high → dip entry triggers
+                ct(3.0, true, 2.0, 1.05, 100.0), // worst-case entry fill lands around here
+                ct(10.0, true, 2.0, 1.8, 100.0), // run-up (peak since entry)
+                ct(12.0, false, 1.0, 1.0, 100.0), // ~44% off the 1.8 peak → trailing stop
+            ],
+        ),
+        // Never dips 12% off its rolling high → the window entry never fires.
+        token(
+            "pw_flat",
+            vec![
+                ct(0.0, true, 2.0, 1.0, 100.0),
+                ct(1.0, true, 2.0, 1.02, 100.0),
+                ct(2.0, true, 2.0, 1.05, 100.0),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn scan_matches_replay_position_retrace_exit() {
+    // Trailing stop: exit ≥ 3% below the since-entry peak (enter-on-arm). The
+    // `metrics` token peaks at 2.0 then dips to 0.8 → fires; the position-scoped
+    // metric must read the running PositionCtx, not a (NaN) series column.
+    assert_parity(
+        "position_retrace",
+        RuleParams {
+            take_profit: None,
+            stop_loss: None,
+            entry: None,
+            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+            reentry: None,
+        },
+        &corpus(),
+        at(1000.0),
+    );
+    assert_parity(
+        "position_retrace_gappy",
+        RuleParams {
+            take_profit: None,
+            stop_loss: None,
+            entry: None,
+            exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+            reentry: None,
+        },
+        &gappy_corpus(),
+        at(100_000.0),
+    );
+}
+
+#[test]
+fn scan_matches_replay_position_pnl_exit() {
+    // Authored `m_position.pnl <= -20` — a metric stop (stamps Metrics, distinct from
+    // the desugared `stop_loss` which stamps StopLoss). Position-scoped, so the scan
+    // evaluates it against the PositionCtx pnl at each row.
+    let params = exit_metric(MetricGroupId::Position, MetricId::Pnl, Operator::Lte, -20.0);
+    assert_parity("position_pnl", params, &corpus(), at(1000.0));
+}
+
+#[test]
+fn scan_matches_replay_price_window_dip_entry() {
+    // Entry on `m_price_window(30).trail >= 12` (buy a 12%+ dip off the rolling high),
+    // exit via TP. Exercises the windowed price-extrema entry column end-to-end.
+    let entry = window_metric_side(MetricGroupId::PriceWindow, MetricId::WinTrail, 30.0, Operator::Gte, 12.0);
+    let params =
+        RuleParams { take_profit: Some(20.0), stop_loss: None, entry: Some(entry), exit: None, reentry: None };
+    assert_parity("pw_dip_entry", params, &pw_dip_corpus(), at(1000.0));
+}
+
+#[test]
+fn position_retrace_actually_fires_the_trailing_stop() {
+    // Non-vacuity guard for the parity tests above: a scan≡replay assertion passes
+    // trivially if NEITHER side ever enters, so prove the two new metrics really do
+    // drive an entry and a close on this fixture.
+    let compiled = CompiledRule::compile(&loaded(RuleParams {
+        take_profit: None,
+        stop_loss: None,
+        entry: Some(window_metric_side(
+            MetricGroupId::PriceWindow,
+            MetricId::WinTrail,
+            30.0,
+            Operator::Gte,
+            12.0,
+        )),
+        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+        reentry: None,
+    }));
+    let cols = columns_for(&compiled);
+    // The dip trigger IS a precomputed column; the position metric is NOT (it reads
+    // the per-entry PositionCtx — a static column could only ever record NaN).
+    assert!(
+        cols.contains(&hunter_engine::metrics::series::SeriesColumn::Window(MetricId::WinTrail, 30.0)),
+        "m_price_window.trail must precompute as a windowed column: {cols:?}"
+    );
+    assert!(
+        !cols.iter().any(|c| matches!(
+            c,
+            hunter_engine::metrics::series::SeriesColumn::Static(MetricId::Retrace)
+        )),
+        "m_position must not become a series column: {cols:?}"
+    );
+    // The price-window decay region must be sized by the price window, not just flows.
+    assert_eq!(sparse_grid_for(&compiled).max_window_secs, 30.0);
+
+    let grid = sparse_grid_for(&compiled);
+    let cost = CostModel::pumpfun_default();
+    let toks = pw_dip_corpus();
+
+    // The dipping token: enters on the 16.7% dip, closes on the post-peak retrace.
+    let (dip, _) = &toks[0];
+    let series = build_series_with_flow(dip, cols.clone(), &grid, at(1000.0), None);
+    let out = scan(&dip.trades, &series, &compiled, BUY_SOL, &cost);
+    assert!(out.fired, "the 12% dip entry must fire");
+    assert_eq!(out.exit, ExitCode::Metrics, "the retrace trailing stop must close it");
+    assert!(
+        out.exit_price.is_some_and(|p| p < 1.8),
+        "exit must price off the post-peak dump, got {:?}",
+        out.exit_price
+    );
+
+    // The flat token never dips 12% off its rolling high → never enters.
+    let (flat, _) = &toks[1];
+    let flat_series = build_series_with_flow(flat, cols, &grid, at(1000.0), None);
+    let flat_out = scan(&flat.trades, &flat_series, &compiled, BUY_SOL, &cost);
+    assert!(!flat_out.fired, "no 12% dip → no entry");
+}
+
+#[test]
+fn scan_matches_replay_minimal_flow_scalper_core() {
+    // The irreducible 2-metric core: dip entry (price_window trail >= 12) + trailing-
+    // stop exit (position retrace >= 3), no TP/SL. Both new metric classes together.
+    let entry = window_metric_side(MetricGroupId::PriceWindow, MetricId::WinTrail, 30.0, Operator::Gte, 12.0);
+    let exit = static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0);
+    let params =
+        RuleParams { take_profit: None, stop_loss: None, entry: Some(entry), exit: Some(exit), reentry: None };
+    assert_parity("flow_scalper_core", params, &pw_dip_corpus(), at(1000.0));
 }
 
 // ───────────────────── sparse-grid parity (plan §P2) ─────────────────────

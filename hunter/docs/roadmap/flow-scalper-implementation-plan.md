@@ -319,6 +319,55 @@ verdict already read). It is deliberately NOT `real_sol`:
 
 ## Phase 6 - sweep support + grid + paper rollout
 
+> **Step 1 (sweep wiring) DONE 2026-07-22 (`strategy-redesign`, uncommitted).** The scan
+> now speaks both new metric classes; `cargo check -p hunter-lab` clean, 185 lab lib tests
+> green (7 new), clippy clean on `sweep/generic`.
+>
+> * **Entry `m_price_window.trail` needed no new axis plumbing** — it is token-scoped and
+>   dynamic, so it already resolved to `SeriesColumn::Window` and routed to
+>   `ensure_price_window`. Added coverage rather than code (`price_window_axis_resolves_to_a_windowed_column`).
+> * **`m_position` is the real work.** Position-scoped metrics can't be a token series
+>   column (a static column records only `NaN`), so: `axes.rs` rejects them on the **entry**
+>   side and emits **no column** on the exit side; `columns_for` skips `position_scoped`
+>   reqs; and scalar `resolve_exit` now carries a running since-entry `peak_price` (seeded
+>   to the fill price, folded per row *before* that row's decision — mirroring
+>   `evaluate_token`) and evaluates position reqs via `position_value(..)` against that
+>   `PositionCtx`, exactly like `CompiledRule::exit_fired`. The desugared TP/SL `pnl` reqs
+>   are skipped by that walk so the dedicated price-threshold branches keep stamping
+>   `StopLoss`/`TakeProfit`; priority stays `Dead > SL > TP > authored`.
+> * Only the **scalar** path needed changing: `resolve_exit_simd` / `resolve_exit_indexed`
+>   already delegate to scalar whenever `has_exit_metrics()`, which any position-metric rule
+>   sets.
+> * **Latent bug fixed en route:** `sparse_grid_for` sized `max_window_secs` from
+>   `flow_windows` only, so a `m_price_window` rule dropped its decay-region ticks (a rolling
+>   high falls as prints age out, exactly like a flow decays). Now chains `price_windows`.
+> * **Parity + non-vacuity:** 4 new `guard.rs` scan≡`run_replay` tests (retrace exit on both
+>   corpora, authored `pnl` stop, price-window dip entry, and the 2-metric core together),
+>   plus `position_retrace_actually_fires_the_trailing_stop` — a parity assertion alone
+>   passes if *neither* side ever enters, so this one asserts the dip really enters, the
+>   trailing stop really closes it with `ExitCode::Metrics`, and the flat token never enters.
+>
+> **NOT wired: re-entry in the sweep.** `TokenOutcome` is one episode per (token, combo);
+> multi-episode accumulation changes the outcome model, aggregation, persistence and
+> drill-in. Deliberately deferred — the grid axes that locate the edge (dip depth, window,
+> retrace, liquidity band, `gross_flow`) are all *per-episode*; re-entry amplifies a
+> per-episode edge rather than changing which params win. So **drop the `cooldown {5,30}s`
+> axis from step 2** (as the size axis was dropped with Phase 5) and validate re-entry via
+> simulate/replay. Wire it into the sweep only if paper shows cooldown interacts with the
+> per-episode params.
+>
+> **Pre-existing perf finding (NOT introduced here, not fixed here).** Since Phase 2's TP/SL
+> desugaring, `has_exit_metrics()` (`!exit_reqs.is_empty()`) is **true for every rule
+> carrying `take_profit` or `stop_loss`** — verified: a pure TP+SL rule compiles to
+> `exit_reqs=2`. Both `resolve_exit_indexed` and `resolve_exit_simd` early-return to scalar
+> on that flag, and `build_exit_ctx` only builds the index when it is false. So the O(log n)
+> exit index and the AVX-512 scan are **effectively dead for all TP/SL rules**, silently,
+> since Phase 2. Correctness is unaffected (scalar is the SSOT reference and the guards
+> compare against it). Fix, when wanted: split the flag into "has *authored* exit metrics"
+> (`exit_reqs.iter().any(|r| r.origin == ReqOrigin::Authored)`) and gate the fast paths on
+> that instead. Irrelevant to the flow scalper itself (a `retrace` exit is authored, so it
+> takes scalar either way).
+
 1. Sweep wiring (the sweep scan is a parallel impl - see gotchas): register the new
    metrics as sweep axes (`lab/src/sweep/generic/axes.rs`) and teach the columnar scan
    (`strategy.rs`) to compute windowed-high `trail` (same deque over the corpus
@@ -329,10 +378,15 @@ verdict already read). It is deliberately NOT `real_sol`:
    Add parity tests: sweep result == replay result for identical params (extend
    `guard.rs`).
 2. Grid (empirically supported ranges - analysis doc): dip `trail` {8,15,25}%, window
-   {30,60}s, trailing `retrace` {1.5,3,5,10}%, cooldown {5,30}s, liquidity band edges,
-   `gross_flow` threshold {5,10,20}. Rank net of the cost haircut, not gross. (Size stays
-   the fixed `buy_amount_lamports`; the `size {0.5,1,2}%` of `reserve_sol` axis is deferred
-   with Phase 5.)
+   {30,60}s, trailing `retrace` {1.5,3,5,10}%, liquidity band edges, `gross_flow`
+   threshold {5,10,20}. Rank net of the cost haircut, not gross. Two axes are
+   deliberately absent: **size** `{0.5,1,2}%` of `reserve_sol` (deferred with Phase 5 —
+   runs on the fixed `buy_amount_lamports`) and **cooldown** `{5,30}s` (deferred with
+   re-entry — see the step-1 note above; the sweep scores one episode per token, so a
+   cooldown axis would be a no-op grid dimension). Authoring shape, per the scope rules
+   above: the dip axis is `side: entry, group: m_price_window, metric: trail,
+   window: 30|60`; the trailing stop is `side: exit, group: m_position, metric: retrace`
+   (exit side only — an entry-side `m_position` axis is rejected at resolve time).
 3. Paper: run the best 2-3 configs as `TradeMode::Paper` rules live for some days;
    compare live-paper episode distributions to the sweep's (entry dip, hold, pnl) -
    divergence means feed/latency effects the backtest missed.

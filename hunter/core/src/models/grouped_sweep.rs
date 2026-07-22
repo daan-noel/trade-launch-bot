@@ -41,6 +41,13 @@ pub struct GroupedSweepRun {
     /// Per-field value filters the corpus was pinned to (`{"cu_price":[1000],…}`);
     /// `None` = no field filter. Stored verbatim for display + re-run.
     pub field_filters: Option<Value>,
+    /// Saved fingerprint the corpus was scoped to (engine match SSOT — exact +
+    /// bucket axes), or `None` for a manual group-by / filter run. Mutually
+    /// exclusive with `ix_labels_filter` / `field_filters`: when set, the run
+    /// matched tokens with `hunter_engine::fingerprint::matches` instead, so the
+    /// scope cannot be reconstructed from those columns and must be replayed
+    /// from this id (re-run + token-results reload).
+    pub fingerprint_id: Option<Uuid>,
     /// The per-run token cap the form submitted (`None` = legacy / backend
     /// default). Distinct from the realized `token_count`.
     pub token_cap: Option<i32>,
