@@ -1,4 +1,4 @@
-# Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_window`)
+# Strategy redesign — Volume/organic flow split (`m_flow_split` / `m_flow_split_window`)
 
 Status: **COMPLETE** (design settled 2026-07-17; **V0–V5 shipped 2026-07-20**).
 Canonical refs (read these, not this file, for ongoing work):
@@ -51,7 +51,7 @@ dev inserting vs. how much real money is arriving").
         ▼                                    ▼
  ┌─────────────────────┐            ┌───────────────────────┐
  │ vol_buy   vol_sell  │            │ nonvol_buy nonvol_sell│   m_flow_split  = since creation
- │ vol_net   vol_gross │            │ nonvol_net nonvol_gross│  m_flow_window = trailing
+ │ vol_net   vol_gross │            │ nonvol_net nonvol_gross│  m_flow_split_window = trailing
  └──────────┬──────────┘            └──────────┬────────────┘                  window_size_sec
             └────────────┬─────────────────────┘
                          ▼
@@ -87,12 +87,12 @@ wallet-tagged/creator.
    ```
    The registry gains a per-group *fingerprint-config* declaration (beside strict
    params), so a future group needing fingerprint-side config = one file + registry
-   entry, zero schema changes. `m_flow_window` reads the **same** `m_flow_split` key
+   entry, zero schema changes. `m_flow_split_window` reads the **same** `m_flow_split` key
    (one classifier, two views — never duplicate the pattern set).
 3. **Two metric groups** (separate so lifetime/windowed are independently
-   addable/removable, mirroring `m_snapshot` vs `m_time_window`):
+   addable/removable, mirroring `m_snapshot` vs `m_flow_window`):
    - `m_flow_split` — lifetime totals since creation, no strict params.
-   - `m_flow_window` — same metrics over a trailing window, strict `window_size_sec`.
+   - `m_flow_split_window` — same metrics over a trailing window, strict `window_size_sec`.
    Both are computed from ONE shared classifier state (§3).
 4. **Unconfigured fingerprint ⇒ NaN.** If the rule's fingerprint has no `m_flow_split`
    key, every flow metric is `NaN` (satisfies nothing — existing pre-first-trade
@@ -128,7 +128,7 @@ wallet-tagged/creator.
 ## 2. Metrics (the deliverable)
 
 Both groups expose the same nine metrics; `m_flow_split` = since creation,
-`m_flow_window` = over the trailing `window_size_sec`. All SOL values are the trade's
+`m_flow_split_window` = over the trailing `window_size_sec`. All SOL values are the trade's
 absolute notional split by classifier verdict (buy = +, sell = − for `*_net`).
 
 | metric | meaning | unit | eq-tol | monotonic (lifetime only) |
@@ -248,7 +248,7 @@ ALTER TABLE fingerprints
 ### V1 — Engine metrics ✅ 2026-07-20
 
 - [x] 1.1 `metrics/flow_split.rs` (§3): classifier + `FlowState` + lifetime compute.
-- [x] 1.2 `m_flow_window`: window deques (dedup by `(fingerprint, window_key)`),
+- [x] 1.2 `m_flow_split_window`: window deques (dedup by `(fingerprint, window_key)`),
       evict on trade + tick, O(1) reads.
 - [x] 1.3 Registry: two groups, 18 metrics (distinct `MetricId`s per group so
       lifetime monotonic flags can differ; JSON names shared), units/tolerances,

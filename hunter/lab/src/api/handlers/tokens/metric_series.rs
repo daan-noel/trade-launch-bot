@@ -169,7 +169,7 @@ fn build_series(
     for group in REGISTRY {
         // Flow groups need a fingerprint pattern context — skip when absent.
         let is_flow_group =
-            matches!(group.id, MetricGroupId::FlowSplit | MetricGroupId::FlowWindow);
+            matches!(group.id, MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow);
         if is_flow_group && flow.is_none() {
             continue;
         }

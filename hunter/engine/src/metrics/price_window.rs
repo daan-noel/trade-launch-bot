@@ -10,10 +10,10 @@
 //!   `(price − win_low) / win_low · 100`, `>= 0` (symmetric; breakout/momentum
 //!   entries later).
 //!
-//! Sibling of the lifetime [`PricePathState`](super::price_path::PricePathState):
-//! `m_price_path.trail` anchors on the **lifetime** peak, this on a **rolling**
+//! Sibling of the lifetime [`PriceLifetimeState`](super::price_lifetime::PriceLifetimeState):
+//! `m_price_lifetime.trail` anchors on the **lifetime** peak, this on a **rolling**
 //! one, which is why the two share the metric name `trail` across distinct groups
-//! (the `m_flow_split` / `m_flow_window` precedent).
+//! (the `m_flow_split` / `m_flow_split_window` precedent).
 //!
 //! **Dynamic** = the value depends on a per-rule strict param, so state is
 //! **deduped by `window_size_sec`**. Two monotonic deques of `(price, at)` — one
@@ -23,13 +23,13 @@
 //! (a push appends it after evicting dominated entries), so an empty deque ⇒ no
 //! trade in the window ⇒ `NaN` (engine convention: `NaN` satisfies no condition, so
 //! a flow-dead token cannot fire a dip entry — the `gross_flow` hot gate would
-//! exclude it anyway). Non-finite prices are ignored (same as `PricePathState`).
+//! exclude it anyway). Non-finite prices are ignored (same as `PriceLifetimeState`).
 
 use std::collections::VecDeque;
 
 use chrono::Duration;
 
-use super::time_window::window_key;
+use super::flow_window::window_key;
 use super::{MetricId, Ts};
 
 /// One trailing-window extrema tracker for a single `window_size_sec`.
@@ -93,7 +93,7 @@ impl PriceWindowState {
     /// eviction set — it never panics, never clears a still-in-window deque, and
     /// never reads negative. The newest trade carries the largest `at`, so it is
     /// evicted last; while either deque is non-empty its back is a valid current
-    /// price (mirrors the `stall` floor precedent in `PricePathState`).
+    /// price (mirrors the `stall` floor precedent in `PriceLifetimeState`).
     pub fn evict(&mut self, now: Ts) {
         let width = Duration::milliseconds(window_key(self.window_secs) as i64);
         let cutoff = now - width;
@@ -275,7 +275,7 @@ mod tests {
             let now = i as f64;
             s.on_trade(p, ts(now));
             // Naive baseline mirrors the eviction rule (`at < now - w` drops), so an
-            // entry exactly `w` old stays — same closed lower bound as `time_window`.
+            // entry exactly `w` old stays — same closed lower bound as `flow_window`.
             let lo_bound = now - window;
             let in_window: Vec<f64> = prices[..=i]
                 .iter()

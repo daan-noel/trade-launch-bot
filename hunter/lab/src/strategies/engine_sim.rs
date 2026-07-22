@@ -447,7 +447,7 @@ fn rule_needs_flow(loaded: &LoadedRule) -> bool {
         .flatten()
     {
         if side.0.contains_key(&MetricGroupId::FlowSplit)
-            || side.0.contains_key(&MetricGroupId::FlowWindow)
+            || side.0.contains_key(&MetricGroupId::FlowSplitWindow)
         {
             return true;
         }

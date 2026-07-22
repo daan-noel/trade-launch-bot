@@ -365,7 +365,7 @@ fn enters_once_exit_metrics_clear_while_entry_still_holds() {
 fn stall_exit_on_quiet_token_is_tick_driven() {
     let mut s = EngineState::new();
     let m = Mint::from("tokA");
-    let params = json!({ "exit": { "m_price_path": { "stall": [{ "operator": ">", "value": 3 }] } } });
+    let params = json!({ "exit": { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 3 }] } } });
     reduce(&mut s, reload(vec![rule(1, 1, params)], vec![cu_fp(1)]));
     let fx = reduce(&mut s, Event::TokenCreated { mint: m.clone(), fp: cu_token(), at: ts(0.0) , creator_wallet_hash: None});
     let entry = buy_intent(&fx);
@@ -742,7 +742,7 @@ fn flow_entry_on_vol_net_and_exit_when_organic_goes_quiet() {
     let params = json!({
         "entry": { "m_flow_split": { "vol_net": [{"operator": ">", "value": 2}] } },
         "exit": {
-            "m_flow_window": {
+            "m_flow_split_window": {
                 "window_size_sec": 5,
                 "nonvol_gross": [{"operator": "=", "value": 0}]
             }

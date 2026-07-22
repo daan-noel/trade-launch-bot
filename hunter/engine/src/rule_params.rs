@@ -8,7 +8,7 @@
 //!   "stop_loss": 30,
 //!   "entry": {
 //!     "m_snapshot":   { "time": [{"operator": ">", "value": 10}], ... },
-//!     "m_time_window": { "window_size_sec": 10, "gross_flow": [ ... ] }
+//!     "m_flow_window": { "window_size_sec": 10, "gross_flow": [ ... ] }
 //!   },
 //!   "exit": { ... }
 //! }
@@ -20,15 +20,15 @@
 //! name is checked against [`crate::metrics::REGISTRY`], so a typo fails the
 //! save instead of silently never matching.
 //!
-//! **Multi-window per group.** A dynamic group (`m_time_window`, `m_price_window`,
-//! `m_flow_window`) may appear once as a plain object (one window — the legacy,
+//! **Multi-window per group.** A dynamic group (`m_flow_window`, `m_price_window`,
+//! `m_flow_split_window`) may appear once as a plain object (one window — the legacy,
 //! backward-compatible shape every stored rule uses) OR as a JSON **array** of
 //! objects, each with its own `window_size_sec`, to place gates on the same group
 //! at several window sizes simultaneously (e.g. a 30 s `gross_flow` hot gate AND a
 //! 2 s `net_flow` exhaustion gate on entry):
 //!
 //! ```json
-//! "m_time_window": [
+//! "m_flow_window": [
 //!   { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
 //!   { "window_size_sec": 2,  "net_flow":   [{"operator": ">=", "value": 0}]  }
 //! ]
@@ -514,11 +514,11 @@ mod tests {
                 ],
                 "liquidity": [ {"operator": "=", "value": 20} ]
             },
-            "m_price_path": {
+            "m_price_lifetime": {
                 "stall": [ {"operator": "<", "value": 10} ],
                 "trail": [ {"operator": "<", "value": 10} ]
             },
-            "m_time_window": {
+            "m_flow_window": {
                 "window_size_sec": 10,
                 "gross_flow": [ {"operator": "=", "value": 15} ],
                 "net_flow": [ {"operator": "=", "value": 5} ],
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(parsed.stop_loss, Some(30.0));
         let entry = parsed.entry.as_ref().unwrap();
         assert_eq!(entry.0.len(), 3);
-        let tw = &entry.0[&MetricGroupId::TimeWindow][0];
+        let tw = &entry.0[&MetricGroupId::FlowWindow][0];
         assert_eq!(tw.strict_param("window_size_sec"), Some(10.0));
         assert_eq!(
             tw.metrics[&MetricId::GrossFlow],
@@ -595,7 +595,7 @@ mod tests {
             &json!({"exit": {"m_snapshot": {"stall": [{"operator": "<", "value": 10}]}}}),
         )
         .unwrap_err();
-        assert!(e.contains("belongs to group 'm_price_path'"), "{e}");
+        assert!(e.contains("belongs to group 'm_price_lifetime'"), "{e}");
     }
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
         // Full round-trip: to_value → parse → identical struct.
         assert_eq!(RuleParams::parse(&p.to_value()).unwrap(), p);
 
-        // Dynamic group ⇒ window_size_sec required, same as m_time_window.
+        // Dynamic group ⇒ window_size_sec required, same as m_flow_window.
         let e = RuleParams::parse(&json!({
             "entry": { "m_price_window": { "trail": [{ "operator": ">=", "value": 12 }] } }
         }))
@@ -645,15 +645,15 @@ mod tests {
     }
 
     #[test]
-    fn time_window_requires_window_size() {
+    fn flow_window_requires_window_size() {
         let e = RuleParams::parse(
-            &json!({"entry": {"m_time_window": {"buy": [{"operator": ">", "value": 1}]}}}),
+            &json!({"entry": {"m_flow_window": {"buy": [{"operator": ">", "value": 1}]}}}),
         )
         .unwrap_err();
         assert!(e.contains("missing required param 'window_size_sec'"), "{e}");
 
         // And the strict value must be positive/finite.
-        let e = RuleParams::parse(&json!({"entry": {"m_time_window": {
+        let e = RuleParams::parse(&json!({"entry": {"m_flow_window": {
             "window_size_sec": 0,
             "buy": [{"operator": ">", "value": 1}]
         }}}))
@@ -667,13 +667,13 @@ mod tests {
         // exhaustion gate on the same group, same side — impossible under the old
         // single-object shape. Authored out of window order to prove the sort.
         let p = RuleParams::parse(&json!({
-            "entry": { "m_time_window": [
+            "entry": { "m_flow_window": [
                 { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
                 { "window_size_sec": 2,  "net_flow":   [{"operator": ">=", "value": 0}]  }
             ] }
         }))
         .expect("multi-window entry is valid");
-        let instances = &p.entry.as_ref().unwrap().0[&MetricGroupId::TimeWindow];
+        let instances = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
         assert_eq!(instances.len(), 2);
         // Sorted by window ascending: 2 s first, then 30 s.
         assert_eq!(instances[0].strict_param("window_size_sec"), Some(2.0));
@@ -683,15 +683,15 @@ mod tests {
 
         // Round-trips: multi-window serializes as an array, single stays an object.
         let rv = p.to_value();
-        assert!(rv["entry"]["m_time_window"].is_array(), "multi-window ⇒ array");
+        assert!(rv["entry"]["m_flow_window"].is_array(), "multi-window ⇒ array");
         assert_eq!(RuleParams::parse(&rv).unwrap(), p);
 
         // A single-instance group still serializes as a plain object (no migration).
         let one = RuleParams::parse(&json!({
-            "entry": { "m_time_window": { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] } }
+            "entry": { "m_flow_window": { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] } }
         }))
         .unwrap();
-        assert!(one.to_value()["entry"]["m_time_window"].is_object(), "one window ⇒ object");
+        assert!(one.to_value()["entry"]["m_flow_window"].is_object(), "one window ⇒ object");
         assert_eq!(RuleParams::parse(&one.to_value()).unwrap(), one);
     }
 
@@ -699,7 +699,7 @@ mod tests {
     fn multi_window_rejects_duplicates_and_static_arrays() {
         // Two clauses on the same window are ambiguous.
         let e = RuleParams::parse(&json!({
-            "entry": { "m_time_window": [
+            "entry": { "m_flow_window": [
                 { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
                 { "window_size_sec": 30, "net_flow":   [{"operator": ">=", "value": 0}]  }
             ] }
@@ -718,7 +718,7 @@ mod tests {
         assert!(e.contains("static group takes a single object"), "{e}");
 
         // An empty array is a no-op group — rejected with a clear message.
-        let e = RuleParams::parse(&json!({ "entry": { "m_time_window": [] } })).unwrap_err();
+        let e = RuleParams::parse(&json!({ "entry": { "m_flow_window": [] } })).unwrap_err();
         assert!(e.contains("empty group"), "{e}");
 
         // A static group authored as a 1-element array is fine (degenerate array form).
@@ -809,7 +809,7 @@ mod tests {
 
         // A group carrying only its strict param constrains nothing.
         let e = RuleParams::parse(
-            &json!({"entry": {"m_time_window": {"window_size_sec": 10}}}),
+            &json!({"entry": {"m_flow_window": {"window_size_sec": 10}}}),
         )
         .unwrap_err();
         assert!(e.contains("no metric conditions"), "{e}");

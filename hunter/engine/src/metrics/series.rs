@@ -20,7 +20,7 @@ use crate::fingerprint::FingerprintId;
 pub enum SeriesColumn {
     Static(MetricId),
     Window(MetricId, f64),
-    /// Flow metric (`m_flow_split` / `m_flow_window`) scoped to a fingerprint.
+    /// Flow metric (`m_flow_split` / `m_flow_split_window`) scoped to a fingerprint.
     Flow(MetricId, Option<f64>, FingerprintId),
 }
 

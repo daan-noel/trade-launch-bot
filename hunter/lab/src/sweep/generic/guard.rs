@@ -311,7 +311,7 @@ fn scan_matches_replay_tp_sl_rule() {
 #[test]
 fn scan_matches_replay_metrics_exit_rule() {
     // Exit when trail (% off peak) exceeds 50 — no TP/SL, so only the metric fires.
-    let params = exit_metric(MetricGroupId::PricePath, MetricId::Trail, Operator::Gt, 50.0);
+    let params = exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0);
     assert_parity("trail_exit", params, &corpus(), at(1000.0));
 }
 
@@ -398,7 +398,7 @@ fn scan_matches_replay_time_gate_across_gap() {
 fn scan_matches_replay_stall_eq_exit_across_gap() {
     // Exit when stall ≈ 1800 s (`=` with the metric's tolerance) — a tolerance-edged
     // threshold reached only inside the gap. Exercises both region boundaries.
-    let params = exit_metric(MetricGroupId::PricePath, MetricId::Stall, Operator::Eq, 1800.0);
+    let params = exit_metric(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Eq, 1800.0);
     assert_parity("stall_eq_gap", params, &gappy_corpus(), at(100_000.0));
 }
 
@@ -422,7 +422,7 @@ fn shared_bind_matches_per_token_bind() {
     // and mono-kill column sets are all exercised on tokens with differing series
     // lengths and gap structure.
     let rules = [
-        exit_metric(MetricGroupId::PricePath, MetricId::Stall, Operator::Gte, 1800.0),
+        exit_metric(MetricGroupId::PriceLifetime, MetricId::Stall, Operator::Gte, 1800.0),
         RuleParams {
             take_profit: Some(50.0),
             stop_loss: Some(30.0),
@@ -467,7 +467,7 @@ fn scan_matches_replay_window_flow_across_gap() {
     gc.strict.insert("window_size_sec".to_string(), 60.0);
     gc.metrics.insert(MetricId::GrossFlow, vec![vec![Condition { operator: Operator::Lte, value: 0.0 }]]);
     let mut exit = SideConditions::default();
-    exit.0.insert(MetricGroupId::TimeWindow, vec![gc]);
+    exit.0.insert(MetricGroupId::FlowWindow, vec![gc]);
     let params =
         RuleParams { take_profit: None, stop_loss: None, entry: None, exit: Some(exit), reentry: None };
     assert_parity("flow_decay_gap", params, &gappy_corpus(), at(100_000.0));
@@ -516,7 +516,7 @@ fn scan_matches_replay_flow_split_entry_and_window_exit() {
         vec![vec![Condition { operator: Operator::Eq, value: 0.0 }]],
     );
     let mut exit = SideConditions::default();
-    exit.0.insert(MetricGroupId::FlowWindow, vec![exit_gc]);
+    exit.0.insert(MetricGroupId::FlowSplitWindow, vec![exit_gc]);
 
     let params = RuleParams {
         take_profit: None,
@@ -613,7 +613,7 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         // Deferred entry (non-zero fill row).
         entry_gate,
         // Metrics exit → SIMD delegates to scalar; still must match.
-        exit_metric(MetricGroupId::PricePath, MetricId::Trail, Operator::Gt, 50.0),
+        exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0),
     ];
 
     for (i, params) in rules.into_iter().enumerate() {
@@ -671,7 +671,7 @@ fn index_exit_scan_matches_scalar_across_paths() {
         RuleParams { take_profit: None, stop_loss: None, entry: None, exit: None, reentry: None },
         entry_gate,
         // Metrics → index falls back to scalar; still must match.
-        exit_metric(MetricGroupId::PricePath, MetricId::Trail, Operator::Gt, 50.0),
+        exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0),
     ];
 
     for (i, params) in rules.into_iter().enumerate() {

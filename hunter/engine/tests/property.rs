@@ -89,7 +89,7 @@ fn rules() -> Vec<LoadedRule> {
             params: RuleParams::parse(&json!({
                 "stop_loss": 40,
                 "entry": { "m_snapshot": { "time": [{ "operator": "<", "value": 60 }] } },
-                "exit":  { "m_price_path": { "stall": [{ "operator": ">", "value": 8 }] } }
+                "exit":  { "m_price_lifetime": { "stall": [{ "operator": ">", "value": 8 }] } }
             }))
             .unwrap(),
         },

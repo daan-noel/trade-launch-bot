@@ -70,8 +70,8 @@ pub struct EngineState {
     pub rules: BTreeMap<RuleId, CompiledRule>,
     /// Loaded fingerprints (input order preserved for multi-match).
     pub fps: Vec<Fingerprint>,
-    /// Union of every rule's distinct **flow** `window_size_sec` (`m_time_window` +
-    /// `m_flow_window`) — ensured on each new track.
+    /// Union of every rule's distinct **flow** `window_size_sec` (`m_flow_window` +
+    /// `m_flow_split_window`) — ensured on each new track.
     pub all_windows: Vec<f64>,
     /// Union of every rule's distinct **price** `window_size_sec`
     /// (`m_price_window`) — ensured on each new track alongside `all_windows`.

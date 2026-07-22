@@ -169,7 +169,7 @@ pub struct CompiledRule {
     /// (token- or position-scoped). Empty ⇒ only a dead-token verdict closes.
     pub exit_reqs: Vec<MetricReq>,
     /// Distinct **flow** `window_size_sec` values this rule reads across both sides
-    /// (`m_time_window` + `m_flow_window`) — drive `ensure_window` / `ensure_flow`.
+    /// (`m_flow_window` + `m_flow_split_window`) — drive `ensure_window` / `ensure_flow`.
     pub flow_windows: SmallVec<[f64; 2]>,
     /// Distinct **price** `window_size_sec` values (`m_price_window`) — drive
     /// `ensure_price_window`. Split from [`flow_windows`](Self::flow_windows) so a
@@ -566,8 +566,8 @@ mod tests {
     #[test]
     fn windows_deduped_across_sides() {
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_time_window": { "window_size_sec": 10, "buy": [{"operator": ">", "value": 1}] } },
-            "exit":  { "m_time_window": { "window_size_sec": 10, "sell": [{"operator": ">", "value": 1}] } }
+            "entry": { "m_flow_window": { "window_size_sec": 10, "buy": [{"operator": ">", "value": 1}] } },
+            "exit":  { "m_flow_window": { "window_size_sec": 10, "sell": [{"operator": ">", "value": 1}] } }
         })));
         assert_eq!(c.flow_windows.as_slice(), &[10.0]);
         assert!(c.price_windows.is_empty());
@@ -575,11 +575,11 @@ mod tests {
 
     #[test]
     fn multi_window_group_compiles_to_distinct_reqs_and_windows() {
-        // Two m_time_window clauses on entry (30 s gross gate + 2 s net gate) become
+        // Two m_flow_window clauses on entry (30 s gross gate + 2 s net gate) become
         // two independent entry reqs, each carrying its own window; both windows are
         // registered so `ensure_window` opens both buffers.
         let c = CompiledRule::compile(&rule(json!({
-            "entry": { "m_time_window": [
+            "entry": { "m_flow_window": [
                 { "window_size_sec": 30, "gross_flow": [{"operator": ">=", "value": 10}] },
                 { "window_size_sec": 2,  "net_flow":   [{"operator": ">=", "value": 0}]  }
             ] }

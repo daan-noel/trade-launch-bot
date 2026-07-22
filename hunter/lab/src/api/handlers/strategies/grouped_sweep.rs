@@ -133,7 +133,7 @@ pub struct StartGroupedSweepBody {
     #[serde(default)]
     pub use_avx512: Option<bool>,
     /// Corpus-wide volume-ix patterns for flow-metric axes (`string[][]`).
-    /// Required when `axes` reference `m_flow_split` / `m_flow_window`; Promote
+    /// Required when `axes` reference `m_flow_split` / `m_flow_split_window`; Promote
     /// writes them into the fingerprint's `metric_config`.
     #[serde(default)]
     pub volume_ix_patterns: Option<Vec<Vec<String>>>,
@@ -524,7 +524,7 @@ async fn run_grouped_sweep_job(
     // Peek axes for flow groups before load so the lake projects ix_labels/wallet.
     let with_flow = axes_json_references_flow(&b.axes);
     if with_flow && b.volume_ix_patterns.is_none() {
-        let msg = "axes reference m_flow_split/m_flow_window but volume_ix_patterns is missing";
+        let msg = "axes reference m_flow_split/m_flow_split_window but volume_ix_patterns is missing";
         gate.error = Some(msg.into());
         let _ = early_tx.send(HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })));
         return;
@@ -1594,7 +1594,7 @@ fn axes_json_references_flow(axes: &serde_json::Value) -> bool {
     arr.iter().any(|a| {
         matches!(
             a.get("group").and_then(|g| g.as_str()),
-            Some("m_flow_split" | "m_flow_window")
+            Some("m_flow_split" | "m_flow_split_window")
         )
     })
 }

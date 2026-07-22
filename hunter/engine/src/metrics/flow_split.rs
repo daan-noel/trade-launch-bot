@@ -1,5 +1,5 @@
 //! Volume/organic flow split — SSOT hashes, classifier, and per-fingerprint state
-//! for `m_flow_split` (lifetime) + `m_flow_window` (trailing window).
+//! for `m_flow_split` (lifetime) + `m_flow_split_window` (trailing window).
 //!
 //! See `hunter/docs/roadmap/volume-flow-split-plan.md`.
 
@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use chrono::Duration;
 use serde_json::Value;
 
-use super::time_window::window_key;
+use super::flow_window::window_key;
 use super::{MetricId, Side, TradeLite, Ts};
 
 /// FNV-1a offset basis (64-bit).
@@ -173,7 +173,7 @@ impl FlowPatterns {
 pub fn params_reference_flow(params: &Value) -> bool {
     for side in ["entry", "exit"] {
         if let Some(obj) = params.get(side).and_then(|v| v.as_object()) {
-            if obj.contains_key("m_flow_split") || obj.contains_key("m_flow_window") {
+            if obj.contains_key("m_flow_split") || obj.contains_key("m_flow_split_window") {
                 return true;
             }
         }
@@ -191,7 +191,7 @@ pub fn flow_unconfigured_warning(params: &Value, metric_config: &Value) -> Optio
         return None;
     }
     Some(
-        "rule references m_flow_split/m_flow_window but the fingerprint has no \
+        "rule references m_flow_split/m_flow_split_window but the fingerprint has no \
          m_flow_split.volume_ix_patterns config — flow metrics will be NaN"
             .into(),
     )
@@ -262,14 +262,14 @@ impl FlowTotals {
 
 /// Trailing-window vol/organic aggregator for one `window_size_sec`.
 #[derive(Debug, Clone, PartialEq)]
-struct FlowWindowState {
+struct FlowSplitWindowState {
     window_secs: f64,
     /// `(timestamp, signed SOL, is_volume)` — buy positive, sell negative.
     buf: VecDeque<(Ts, f64, bool)>,
     totals: FlowTotals,
 }
 
-impl FlowWindowState {
+impl FlowSplitWindowState {
     fn new(window_secs: f64) -> Self {
         Self {
             window_secs,
@@ -311,7 +311,7 @@ pub struct FlowState {
     tagged_wallets: BTreeSet<u64>,
     creator_wallet_hash: Option<u64>,
     lifetime: FlowTotals,
-    windows: BTreeMap<u64, FlowWindowState>,
+    windows: BTreeMap<u64, FlowSplitWindowState>,
 }
 
 impl FlowState {
@@ -333,7 +333,7 @@ impl FlowState {
     pub fn ensure_window(&mut self, window_secs: f64) {
         self.windows
             .entry(window_key(window_secs))
-            .or_insert_with(|| FlowWindowState::new(window_secs));
+            .or_insert_with(|| FlowSplitWindowState::new(window_secs));
     }
 
     /// Classify + fold one trade into lifetime and every registered window.
@@ -357,7 +357,7 @@ impl FlowState {
         }
     }
 
-    /// Lifetime (`m_flow_split`) or windowed (`m_flow_window`) read.
+    /// Lifetime (`m_flow_split`) or windowed (`m_flow_split_window`) read.
     pub fn value(&self, id: MetricId, window_secs: Option<f64>) -> f64 {
         match window_secs {
             None => self.lifetime.value(id),

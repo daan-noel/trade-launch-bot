@@ -1,4 +1,4 @@
-//! `m_price_path` — incremental price-path state (static metrics).
+//! `m_price_lifetime` — incremental price-path state (static metrics).
 //!
 //! * `stall` — seconds since the price last set a **new all-time high**. The
 //!   peak clock starts at token creation, so before the first trade `stall`
@@ -15,9 +15,9 @@
 
 use super::{secs_between, MetricId, Ts};
 
-/// Incremental `m_price_path` state.
+/// Incremental `m_price_lifetime` state.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PricePathState {
+pub struct PriceLifetimeState {
     /// Highest price seen so far. `None` until the first trade.
     peak_price: Option<f64>,
     /// Most recently observed price. `None` until the first trade.
@@ -26,7 +26,7 @@ pub struct PricePathState {
     peak_at: Ts,
 }
 
-impl PricePathState {
+impl PriceLifetimeState {
     /// Fresh state for a token created at `created_at`.
     pub fn new(created_at: Ts) -> Self {
         Self { peak_price: None, last_price: None, peak_at: created_at }
@@ -76,7 +76,7 @@ impl PricePathState {
         }
     }
 
-    /// Value of one `m_price_path` metric. Non-price-path ids yield `NaN`
+    /// Value of one `m_price_lifetime` metric. Non-price-lifetime ids yield `NaN`
     /// (unreachable — `TokenTrack` routes by group).
     pub fn value(&self, id: MetricId, now: Ts) -> f64 {
         match id {
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn stall_counts_from_creation_then_resets_only_on_new_highs() {
         let created = ts(0);
-        let mut s = PricePathState::new(created);
+        let mut s = PriceLifetimeState::new(created);
         // No trade yet: quiet since birth.
         assert_eq!(s.stall(ts(5)), 5.0);
         // First trade at t=5 establishes the peak → clock resets.
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn stall_never_reads_negative_on_regressed_block_time() {
-        let mut s = PricePathState::new(ts(0));
+        let mut s = PriceLifetimeState::new(ts(0));
         // ATH stamped at t=10; a following row carries an earlier block_time.
         s.on_trade(5.0, ts(10));
         assert_eq!(s.stall(ts(4)), 0.0);
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn trail_is_percent_below_peak() {
-        let mut s = PricePathState::new(ts(0));
+        let mut s = PriceLifetimeState::new(ts(0));
         assert!(s.trail().is_nan()); // no data yet
         s.on_trade(10.0, ts(1));
         assert_eq!(s.trail(), 0.0); // at the peak
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn non_finite_price_ignored() {
-        let mut s = PricePathState::new(ts(0));
+        let mut s = PriceLifetimeState::new(ts(0));
         s.on_trade(10.0, ts(1));
         s.on_trade(f64::NAN, ts(2));
         assert_eq!(s.trail(), 0.0);

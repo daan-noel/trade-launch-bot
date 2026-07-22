@@ -117,7 +117,7 @@ Implication for the sweep: dip depth {8,15,25}%, trail {1.5,3,5,10}%, size
 ## Strategy blueprint for hunter: "dip-reversion scalper"
 
 - Universe gate (entry AND-conditions): age >= ~120s; liquidity (vsol) in ~[45, 110];
-  m_time_window(30s) gross_flow >= ~10 SOL (hot-token filter).
+  m_flow_window(30s) gross_flow >= ~10 SOL (hot-token filter).
 - Dip trigger: drawdown from the 30-60s rolling high >= ~8-15% AND short-window (2s)
   net flow no longer strongly negative (dump pausing). v1 can skip the exhaustion
   refinement and accept knife-catches (omego eats them too: p10 loss -25%).
@@ -130,12 +130,12 @@ Implication for the sweep: dip depth {8,15,25}%, trail {1.5,3,5,10}%, size
   edge concentrated in busy hours; quiet-hour rounds are ~breakeven after fees.
 
 ### Engine fit (hunter-engine) - what exists vs what is missing
-Exists already: m_time_window {buy, sell, net_flow, gross_flow} with window_size_sec;
+Exists already: m_flow_window {buy, sell, net_flow, gross_flow} with window_size_sec;
 liquidity + time (m_snapshot); stall; TP/SL; deadness; the generic replay/sweep
 backtester inherits any fold change for free.
 Missing (the actual work):
 1. **Windowed-high drawdown metric** (entry): `trail` is % off the LIFETIME peak; the
-   dip trigger needs % off a ROLLING window high (new metric in m_price_path or a new
+   dip trigger needs % off a ROLLING window high (new metric in m_price_lifetime or a new
    dynamic group with window_size_sec).
 2. **Since-entry-peak retrace metric** (exit): the trailing stop needs the post-entry
    peak, not the lifetime peak.
@@ -197,10 +197,10 @@ premises — no new knob needed):
 `net_flow(2s) ≥ 0` (buy only once the 2 s sell pressure is no longer negative) lifts
 win% 57.4 → 59.0 and cuts the loss ~24% (best after-cost −1.72, best before-cost +0.85)
 — so the exhaustion gate **is** the right lever, but it does NOT clear the ~4%/round
-hurdle. This probe had to **drop the 30s gross hot gate** (the single-`m_time_window`
+hurdle. This probe had to **drop the 30s gross hot gate** (the single-`m_flow_window`
 limit) — now resolved below. Reinforces the STOP verdict.
 
-**Both gates together (2026-07-22, schema limit lifted).** The single-`m_time_window`-
+**Both gates together (2026-07-22, schema limit lifted).** The single-`m_flow_window`-
 per-side limit is gone: `strategy-redesign` now lets a side carry **multiple windows per
 group** (`SideConditions` holds a `Vec<GroupConditions>`; a dynamic group parses as a
 JSON array of window clauses — `rule_params.rs`, engine-only, no DB migration). Re-ran

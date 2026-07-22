@@ -1,6 +1,6 @@
 # Metrics reference — volume/organic flow split
 
-Deep-dive for `m_flow_split` / `m_flow_window`. High-level map:
+Deep-dive for `m_flow_split` / `m_flow_split_window`. High-level map:
 [`arch/strategies.md`](../../arch/strategies.md). Origin roadmap (shipped):
 [`roadmap/volume-flow-split-plan.md`](../../roadmap/volume-flow-split-plan.md).
 
@@ -28,7 +28,7 @@ Config lives on the fingerprint (not the rule):
 }
 ```
 
-`m_flow_window` reads the **same** `m_flow_split` key (one classifier, two views).
+`m_flow_split_window` reads the **same** `m_flow_split` key (one classifier, two views).
 Unconfigured fingerprint (no `m_flow_split` key) ⇒ every flow metric is **NaN**
 (satisfies nothing). `ix_hash = None` (pre-0002 / missing lake labels) ⇒ organic
 unless wallet-tagged/creator.
@@ -48,10 +48,10 @@ construction. See hunter/CLAUDE.md Gotchas.
 | group | kind | strict params | fingerprint config |
 | --- | --- | --- | --- |
 | `m_flow_split` | static (fingerprint-scoped) | none | `volume_ix_patterns: string[][]` (required when key present) |
-| `m_flow_window` | dynamic | `window_size_sec` | none (reads `m_flow_split`) |
+| `m_flow_split_window` | dynamic | `window_size_sec` | none (reads `m_flow_split`) |
 
-**Multi-window per group** (any dynamic group — `m_time_window`, `m_price_window`,
-`m_flow_window`): a group appears under a side as a single object (one window — the
+**Multi-window per group** (any dynamic group — `m_flow_window`, `m_price_window`,
+`m_flow_split_window`): a group appears under a side as a single object (one window — the
 legacy shape) OR a JSON **array** of objects, each with its own `window_size_sec`, to
 gate the same group at several window sizes at once (e.g. a 30s `gross_flow` hot gate AND
 a 2s `net_flow` exhaustion gate on entry). Each window is an independent clause (entry-AND

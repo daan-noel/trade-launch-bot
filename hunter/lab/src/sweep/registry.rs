@@ -689,7 +689,7 @@ async fn sweep_generic(
 
     if model.references_flow() && volume_ix_patterns.is_none() {
         bail!(
-            "axes reference m_flow_split/m_flow_window but volume_ix_patterns is missing — \
+            "axes reference m_flow_split/m_flow_split_window but volume_ix_patterns is missing — \
              supply volume_ix_patterns (string[][]) or drop the flow axes"
         );
     }

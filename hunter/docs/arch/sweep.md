@@ -49,7 +49,7 @@ Ranked full list of sweep↔simulate divergences, including the not-yet-accepted
 | `registry.rs` | `sweep_tables(strategy_id)` (one arm: `"generic"` → `grouped_sweep_*`), `run_grouped(...)`; `MAX_COMBOS`; resource fences (`bounded_threads` = cores/2 by default, host-RAM admission) |
 | `generic/` | `GenericSweepStrategy` — the one sweep family (Phase 7 retired the per-strategy tpsl/swing adapters). `axes.rs` = fingerprint + TP/SL + metric-condition axes → `RuleParams` combos; `strategy.rs` = `Strategy` impl (`TokenState = MetricSeries` precompute; `resolve_entry` mirrors `can_enter` / `resolve_exit` scan the series); `exit_index.rs` = O(log n) prefix-extrema exit search; `guard.rs` asserts scan ≡ `run_replay` and index/SIMD ≡ scalar |
 
-### Flow axes (`m_flow_split` / `m_flow_window`)
+### Flow axes (`m_flow_split` / `m_flow_split_window`)
 
 When axes reference a flow group, the corpus loads with `Selection.with_flow`
 (trade `ix_labels` + `wallet`). The start body carries optional

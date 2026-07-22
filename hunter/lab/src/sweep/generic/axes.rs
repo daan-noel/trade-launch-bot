@@ -89,7 +89,7 @@ pub enum ResolvedAxis {
         group: MetricGroupId,
         metric: MetricId,
         operator: Operator,
-        /// Present iff the metric's group is dynamic (`m_time_window`).
+        /// Present iff the metric's group is dynamic (`m_flow_window`).
         window: Option<f64>,
         values: Vec<Option<f64>>,
     },
@@ -151,7 +151,7 @@ impl AxesModel {
         for (i, spec) in req.axes.iter().enumerate() {
             resolved.push(resolve_one(spec).map_err(|e| format!("axis {i}: {e}"))?);
         }
-        // One window per (side, m_time_window group): RuleParams carries a single
+        // One window per (side, m_flow_window group): RuleParams carries a single
         // `window_size_sec` per group per side, so time-window axes on one side
         // must agree. Reject a mixed set rather than silently dropping one.
         check_shared_windows(&resolved)?;
@@ -195,7 +195,7 @@ impl AxesModel {
             matches!(
                 a,
                 ResolvedAxis::Metric {
-                    group: MetricGroupId::FlowSplit | MetricGroupId::FlowWindow,
+                    group: MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow,
                     ..
                 }
             )
@@ -203,7 +203,7 @@ impl AxesModel {
     }
 
     /// Largest flow window (`window_size_sec`) any metric axis reads — `0.0` if the
-    /// swept rules read no `m_time_window` metrics. Sizes the sparse grid's decay
+    /// swept rules read no `m_flow_window` metrics. Sizes the sparse grid's decay
     /// region (plan §P2): past `last_trade + this`, every window flow is 0.
     pub fn max_window_secs(&self) -> f64 {
         self.axes
@@ -241,7 +241,7 @@ impl AxesModel {
         }
     }
 
-    /// The `window_size_sec` used by the entry side's `m_time_window` group (if
+    /// The `window_size_sec` used by the entry side's `m_flow_window` group (if
     /// any) — the number of high-order entry axes' first window. Used only by the
     /// entry-cache key packing; correctness comes from the assembled RuleParams.
     pub fn entry_axis_count(&self) -> usize {
@@ -420,7 +420,7 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
 /// Enforce one `window_size_sec` per (side, dynamic group) — RuleParams stores a
 /// single window per group per side.
 fn check_shared_windows(axes: &[ResolvedAxis]) -> Result<(), String> {
-    for want_group in [MetricGroupId::TimeWindow, MetricGroupId::FlowWindow] {
+    for want_group in [MetricGroupId::FlowWindow, MetricGroupId::FlowSplitWindow] {
         for want_side in [AxisSide::Entry, AxisSide::Exit] {
             let mut window: Option<f64> = None;
             for a in axes {
@@ -483,7 +483,7 @@ mod tests {
         let req = AxesRequest {
             axes: vec![
                 metric_axis(AxisSide::Entry, "m_snapshot", "time", ">", None, vec![5.0, 10.0, 15.0]),
-                metric_axis(AxisSide::Entry, "m_time_window", "net_flow", ">", Some(10.0), vec![0.0, 2.5]),
+                metric_axis(AxisSide::Entry, "m_flow_window", "net_flow", ">", Some(10.0), vec![0.0, 2.5]),
                 tp(vec![50.0, 100.0, 200.0]),
             ],
         };
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn off_pick_on_dynamic_group_omits_window_too() {
         let mut spec =
-            metric_axis(AxisSide::Entry, "m_time_window", "net_flow", ">", Some(10.0), vec![2.5]);
+            metric_axis(AxisSide::Entry, "m_flow_window", "net_flow", ">", Some(10.0), vec![2.5]);
         spec.values.insert(0, None);
         let req = AxesRequest { axes: vec![spec] };
         let m = AxesModel::resolve(&req).unwrap();
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn dynamic_metric_requires_window() {
         let req = AxesRequest {
-            axes: vec![metric_axis(AxisSide::Entry, "m_time_window", "buy", ">", None, vec![1.0])],
+            axes: vec![metric_axis(AxisSide::Entry, "m_flow_window", "buy", ">", None, vec![1.0])],
         };
         assert!(AxesModel::resolve(&req).is_err());
     }
@@ -588,8 +588,8 @@ mod tests {
     fn conflicting_windows_rejected() {
         let req = AxesRequest {
             axes: vec![
-                metric_axis(AxisSide::Entry, "m_time_window", "buy", ">", Some(10.0), vec![1.0]),
-                metric_axis(AxisSide::Entry, "m_time_window", "sell", ">", Some(20.0), vec![1.0]),
+                metric_axis(AxisSide::Entry, "m_flow_window", "buy", ">", Some(10.0), vec![1.0]),
+                metric_axis(AxisSide::Entry, "m_flow_window", "sell", ">", Some(20.0), vec![1.0]),
             ],
         };
         assert!(AxesModel::resolve(&req).is_err());

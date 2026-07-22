@@ -13,8 +13,8 @@ Engine anatomy (so you don't re-explore):
 | --- | --- |
 | `hunter/engine/src/metrics/mod.rs` | `REGISTRY` - SSOT of groups/metrics/units/tolerances/hues; `registry_json()` feeds the FE rule builder (new metrics auto-surface) |
 | `hunter/engine/src/metrics/track.rs` | `TokenTrack` - per-token metric state; `value()` routes MetricId -> group; `ensure_window()` dedupes window buffers |
-| `hunter/engine/src/metrics/price_path.rs` | `stall`/`trail` incremental state (lifetime peak) - the model for the new windowed group |
-| `hunter/engine/src/metrics/time_window.rs` | `WindowState` - trailing flow window (the dynamic-group precedent) |
+| `hunter/engine/src/metrics/price_lifetime.rs` | `stall`/`trail` incremental state (lifetime peak) - the model for the new windowed group |
+| `hunter/engine/src/metrics/flow_window.rs` | `WindowState` - trailing flow window (the dynamic-group precedent) |
 | `hunter/engine/src/rule_params.rs` | `RuleParams::parse` - registry-guided JSONB walk; validation lives here |
 | `hunter/engine/src/arm.rs` | `CompiledRule` (pre-chewed rule, `MetricReq` reads, mono-kills), `ArmState` lifecycle |
 | `hunter/engine/src/reduce.rs` | THE fold; `decide_arm` = entry gate + exit priority `Dead > SL > TP > Metrics` |
@@ -35,10 +35,10 @@ Verdict on every existing metric vs what the strategy needs:
 | --- | --- | --- |
 | `m_snapshot.time` | keep as-is | universe gate: `time >= ~120` |
 | `m_snapshot.liquidity` | keep as-is | curve `reserve_sol` band: `liquidity` in ~[45, 110] |
-| `m_price_path.stall` | keep as-is | safety-net exit only (`stall >= 15`) |
-| `m_price_path.trail` | keep as-is, do NOT retrofit | lifetime-peak anchor is wrong for the dip trigger; see below |
-| `m_time_window.{gross_flow,net_flow,buy,sell}` | keep as-is | hot gate `gross_flow(30s) >= ~10`; later `net_flow(2s)` exhaustion refinement |
-| `m_flow_split` / `m_flow_window` | untouched | orthogonal |
+| `m_price_lifetime.stall` | keep as-is | safety-net exit only (`stall >= 15`) |
+| `m_price_lifetime.trail` | keep as-is, do NOT retrofit | lifetime-peak anchor is wrong for the dip trigger; see below |
+| `m_flow_window.{gross_flow,net_flow,buy,sell}` | keep as-is | hot gate `gross_flow(30s) >= ~10`; later `net_flow(2s)` exhaustion refinement |
+| `m_flow_split` / `m_flow_split_window` | untouched | orthogonal |
 | `take_profit` / `stop_loss` params | keep as SUGAR, desugar in the fold (Ph2) | expand to `m_position.pnl` exit reqs; catastrophe stop = `pnl <= -25` |
 | NEW `m_price_window.{trail,rise}` | Phase 1 | dip trigger: % below the ROLLING window high |
 | NEW `m_position.{retrace,pnl,held}` | Phase 2 | trailing stop + the SSOT exit vocabulary (subsumes TP/SL) |
@@ -54,11 +54,11 @@ catastrophe stop) is UNIVERSE FILTERING — it keeps the logic off dead/illiquid
 tokens; it is not part of the logic. Build and validate the 2-metric core first, then
 layer the gates.
 
-Why not add `window_size_sec` to `m_price_path` instead of a new group: that flips the
+Why not add `window_size_sec` to `m_price_lifetime` instead of a new group: that flips the
 group from Static to Dynamic, changing the JSONB shape and sweep axes of every stored
 rule that uses `trail`/`stall` today. The registry already has the right precedent:
-`m_flow_split` (lifetime) vs `m_flow_window` (windowed) are sibling groups sharing
-metric NAMES with distinct `MetricId`s. Mirror that: `m_price_path` (lifetime) vs
+`m_flow_split` (lifetime) vs `m_flow_split_window` (windowed) are sibling groups sharing
+metric NAMES with distinct `MetricId`s. Mirror that: `m_price_lifetime` (lifetime) vs
 `m_price_window` (windowed).
 
 TP/SL vs `m_position.pnl` — DESUGAR, don't keep two mechanisms. `take_profit: 100` IS
@@ -107,7 +107,7 @@ Implementation:
 4. Window plumbing: `CompiledRule.windows` currently carries one undifferentiated
    union used to `ensure_window` (flow buffers). Split by group at compile time
    (`flow_windows` vs `price_windows`, or a tagged list) so a rule using only
-   `m_time_window(30)` does not pay for a price deque and vice versa. Update
+   `m_flow_window(30)` does not pay for a price deque and vice versa. Update
    `EngineState::{all_windows, reload, new_track, ensure_track_windows_and_flow}`
    accordingly.
 5. Nothing else changes by design: `rule_params.rs` parses/validates the new group via
@@ -192,7 +192,7 @@ extra wiring), not the sweep, for this phase.
 > so per §4 this is a STOP-and-re-examine before Phase 4/5 — not a green light.
 >
 > **Lever #1 follow-up DONE 2026-07-22 — STOP verdict RECONFIRMED.** The single-
-> `m_time_window`-per-side schema limit is lifted: a side now carries **multiple windows
+> `m_flow_window`-per-side schema limit is lifted: a side now carries **multiple windows
 > per group** (`SideConditions` → `Vec<GroupConditions>`; dynamic groups parse as a JSON
 > array of window clauses — engine-only, no DB migration; multi-window per group also
 > unblocks any future strategy needing two windows on one group). Re-ran the exhaustion
@@ -206,9 +206,9 @@ extra wiring), not the sweep, for this phase.
    logic): broad fingerprint, entry `m_price_window(30).trail >= 12`, exit
    `m_position.retrace >= 3` — nothing else. Expect it to trade junk / knife-catch, but
    the winning episodes should already show the target shape. (b) GATED: add
-   `m_snapshot.time >= 120`, `liquidity in [45,110]`, `m_time_window(30).gross_flow >= 10`
+   `m_snapshot.time >= 120`, `liquidity in [45,110]`, `m_flow_window(30).gross_flow >= 10`
    to entry; add catastrophe stop `m_position.pnl <= -25` and safety net
-   `m_price_path.stall >= 15` to exit. The delta between (a) and (b) quantifies how much
+   `m_price_lifetime.stall >= 15` to exit. The delta between (a) and (b) quantifies how much
    the universe filter is worth. (Ranges: blueprint section of the analysis doc.)
 2. Costs are NOT modeled in the sim kernel today (verified: no fee/haircut knob in
    `lab/src/strategies/`). The strategy's median round trip is ~0% - WITHOUT a cost
@@ -349,7 +349,7 @@ verdict already read). It is deliberately NOT `real_sol`:
   effectively full under `MIN_CROSS_GROUP_GAP=30` + `MIN_DIRECTION_GAP=35` (checked:
   no free slot exists). Intended fix: extend the sibling-family exemption (the
   flow_split/flow_window precedent in `distinct_groups_use_distinct_hues`) to a price
-  family `{m_price_path, m_price_window, m_position}` sharing the amber band 40-62
+  family `{m_price_lifetime, m_price_window, m_position}` sharing the amber band 40-62
   (e.g. price_window 44/48, m_position 52/56/58). Three views of one price path -
   same rationale as the flow pair. Do NOT lower the gap constants.
 - **Hot path budgets**: deques are O(1) amortized, but the per-Entered-arm peak fold

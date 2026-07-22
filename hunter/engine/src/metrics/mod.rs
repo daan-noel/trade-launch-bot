@@ -5,13 +5,13 @@
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
 //! * `m_snapshot` (static) — `time`, `liquidity`
-//! * `m_price_path` (static) — `stall`, `trail` (lifetime peak)
+//! * `m_price_lifetime` (static) — `stall`, `trail` (lifetime peak)
 //! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
 //!   (rolling-window extrema; the dip trigger)
-//! * `m_time_window` (dynamic, strict param `window_size_sec`) — `gross_flow`,
+//! * `m_flow_window` (dynamic, strict param `window_size_sec`) — `gross_flow`,
 //!   `net_flow`, `buy`, `sell`
 //! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
-//! * `m_flow_window` (dynamic, fingerprint-scoped) — same metrics over a window
+//! * `m_flow_split_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `pnl`,
 //!   `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
 //!
@@ -23,12 +23,12 @@
 
 pub mod evaluator;
 pub mod flow_split;
+pub mod flow_window;
 pub mod position;
-pub mod price_path;
+pub mod price_lifetime;
 pub mod price_window;
 pub mod series;
 pub mod snapshot;
-pub mod time_window;
 pub mod track;
 
 use std::fmt;
@@ -97,16 +97,16 @@ impl Default for TradeLite {
 pub enum MetricGroupId {
     /// `m_snapshot` — instantaneous token state.
     Snapshot,
-    /// `m_price_path` — incremental price-path state (lifetime peak).
-    PricePath,
+    /// `m_price_lifetime` — incremental price-path state (lifetime peak).
+    PriceLifetime,
     /// `m_price_window` — trailing-window price extrema (rolling high/low).
     PriceWindow,
-    /// `m_time_window` — trailing-window flow aggregates.
-    TimeWindow,
+    /// `m_flow_window` — trailing-window flow aggregates.
+    FlowWindow,
     /// `m_flow_split` — volume/organic lifetime totals (fingerprint-scoped).
     FlowSplit,
-    /// `m_flow_window` — volume/organic trailing-window totals (fingerprint-scoped).
-    FlowWindow,
+    /// `m_flow_split_window` — volume/organic trailing-window totals (fingerprint-scoped).
+    FlowSplitWindow,
     /// `m_position` — metrics anchored on YOUR entry fill (position-scoped, exit-only).
     Position,
 }
@@ -130,23 +130,23 @@ pub enum MetricId {
     Time,
     /// SOL reserves (`m_snapshot`).
     Liquidity,
-    /// Seconds since the price last moved (`m_price_path`).
+    /// Seconds since the price last moved (`m_price_lifetime`).
     Stall,
-    /// Percent off the peak price (`m_price_path`).
+    /// Percent off the peak price (`m_price_lifetime`).
     Trail,
     /// Percent below the rolling-window high (`m_price_window`) — the dip trigger.
     WinTrail,
     /// Percent above the rolling-window low (`m_price_window`).
     WinRise,
-    /// Buy + sell SOL over the trailing window (`m_time_window`).
+    /// Buy + sell SOL over the trailing window (`m_flow_window`).
     GrossFlow,
-    /// Buy − sell SOL over the trailing window (`m_time_window`).
+    /// Buy − sell SOL over the trailing window (`m_flow_window`).
     NetFlow,
-    /// Buy SOL over the trailing window (`m_time_window`).
+    /// Buy SOL over the trailing window (`m_flow_window`).
     Buy,
-    /// Sell SOL over the trailing window (`m_time_window`).
+    /// Sell SOL over the trailing window (`m_flow_window`).
     Sell,
-    // ── m_flow_split (lifetime; JSON names shared with m_flow_window) ───────
+    // ── m_flow_split (lifetime; JSON names shared with m_flow_split_window) ─
     VolBuy,
     VolSell,
     VolNet,
@@ -156,7 +156,7 @@ pub enum MetricId {
     NonvolNet,
     NonvolGross,
     VolShare,
-    // ── m_flow_window (trailing; distinct ids so monotonic flags can differ) ─
+    // ── m_flow_split_window (trailing; distinct ids so monotonic flags can differ) ─
     WinVolBuy,
     WinVolSell,
     WinVolNet,
@@ -179,7 +179,7 @@ pub enum MetricId {
 pub fn is_flow_metric(id: MetricId) -> bool {
     matches!(
         group_of(id).id,
-        MetricGroupId::FlowSplit | MetricGroupId::FlowWindow
+        MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow
     )
 }
 
@@ -274,7 +274,7 @@ pub struct MetricSpec {
     pub hue: u16,
 }
 
-/// A strict (non-condition) group parameter, e.g. `m_time_window`'s
+/// A strict (non-condition) group parameter, e.g. `m_flow_window`'s
 /// `window_size_sec`. Values must be finite and `> 0`.
 #[derive(Debug, Clone, Copy)]
 pub struct StrictParamSpec {
@@ -365,8 +365,8 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
-        id: MetricGroupId::PricePath,
-        name: "m_price_path",
+        id: MetricGroupId::PriceLifetime,
+        name: "m_price_lifetime",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
         strict_params: &[],
@@ -400,10 +400,10 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Token,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         fingerprint_config: &[],
-        // Amber family (44–48), sharing the 40–62 price band with m_price_path —
+        // Amber family (44–48), sharing the 40–62 price band with m_price_lifetime —
         // three views of one price path (lifetime peak vs rolling extrema), the
         // same "one classifier, sibling groups" rationale as m_flow_split /
-        // m_flow_window. The cross-group hue guard exempts the price family; do NOT
+        // m_flow_split_window. The cross-group hue guard exempts the price family; do NOT
         // widen the gap constants (the wheel is full — see the guard test).
         metrics: &[
             MetricSpec {
@@ -425,8 +425,8 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
-        id: MetricGroupId::TimeWindow,
-        name: "m_time_window",
+        id: MetricGroupId::FlowWindow,
+        name: "m_flow_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
@@ -559,8 +559,8 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
-        id: MetricGroupId::FlowWindow,
-        name: "m_flow_window",
+        id: MetricGroupId::FlowSplitWindow,
+        name: "m_flow_split_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
@@ -651,7 +651,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         strict_params: &[],
         fingerprint_config: &[],
         // Amber family (52–58), the third view in the price family
-        // {m_price_path, m_price_window, m_position} sharing the 40–62 band — the
+        // {m_price_lifetime, m_price_window, m_position} sharing the 40–62 band — the
         // cross-group hue guard exempts the whole family. `monotonic: false` for all
         // three: the flag powers ENTRY-side derived disarm, and these are exit-only.
         metrics: &[
@@ -871,15 +871,15 @@ mod tests {
                 assert_eq!(m_json["hue"], m.hue);
             }
         }
-        // m_time_window advertises its required strict param.
-        let tw = groups.iter().find(|g| g["name"] == "m_time_window").unwrap();
+        // m_flow_window advertises its required strict param.
+        let tw = groups.iter().find(|g| g["name"] == "m_flow_window").unwrap();
         assert_eq!(tw["strict_params"][0]["name"], "window_size_sec");
         assert_eq!(tw["strict_params"][0]["required"], true);
     }
 
     /// Metrics that intentionally sit outside their group's hue family because
     /// they encode trade DIRECTION, which is colored globally (candle up/down)
-    /// rather than per-group. See the `m_time_window` comment in `REGISTRY`.
+    /// rather than per-group. See the `m_flow_window` comment in `REGISTRY`.
     const DIRECTION_METRICS: &[&str] = &["buy", "sell"];
 
     #[test]
@@ -954,10 +954,10 @@ mod tests {
     }
 
     /// Metrics from different groups must not collide either — otherwise a
-    /// `m_snapshot` chip and a `m_time_window` chip read as the same thing.
+    /// `m_snapshot` chip and a `m_flow_window` chip read as the same thing.
     /// **Sibling families** share a hue band on purpose and are exempt:
-    /// * flow — `m_flow_split` / `m_flow_window` (one classifier, two views);
-    /// * price — `m_price_path` / `m_price_window` / `m_position` (lifetime peak,
+    /// * flow — `m_flow_split` / `m_flow_split_window` (one classifier, two views);
+    /// * price — `m_price_lifetime` / `m_price_window` / `m_position` (lifetime peak,
     ///   rolling extrema, and since-entry — three views of the one price path).
     #[test]
     fn distinct_groups_use_distinct_hues() {
@@ -965,8 +965,8 @@ mod tests {
         // Which family a group belongs to (`None` = its own group, never exempt).
         let family = |g: MetricGroupId| -> Option<u8> {
             match g {
-                FlowSplit | FlowWindow => Some(0),
-                PricePath | PriceWindow | Position => Some(1),
+                FlowSplit | FlowSplitWindow => Some(0),
+                PriceLifetime | PriceWindow | Position => Some(1),
                 _ => None,
             }
         };
@@ -1006,8 +1006,8 @@ mod tests {
     fn direction_metrics_match_candle_hues() {
         let tw = REGISTRY
             .iter()
-            .find(|g| g.name == "m_time_window")
-            .expect("m_time_window group");
+            .find(|g| g.name == "m_flow_window")
+            .expect("m_flow_window group");
 
         assert_eq!(
             tw.metric_by_name("buy").expect("buy metric").hue,

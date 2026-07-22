@@ -104,11 +104,11 @@ fn gated(dip: f64, win: u64, retrace: f64) -> serde_json::Value {
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },
             "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
-            "m_time_window": { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] }
+            "m_flow_window": { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] }
         },
         "exit": {
             "m_position": { "retrace": [{"operator": ">=", "value": retrace}] },
-            "m_price_path": { "stall": [{"operator": ">=", "value": 15}] }
+            "m_price_lifetime": { "stall": [{"operator": ">=", "value": 15}] }
         }
     })
 }
@@ -119,7 +119,7 @@ fn gated(dip: f64, win: u64, retrace: f64) -> serde_json::Value {
 /// only once the short-window sell pressure has eased should skip falling knives).
 ///
 /// This variant TRADES the 30 s `gross_flow` hot gate for the 2 s `net_flow` gate —
-/// the "one-for-the-other" comparison the old single-`m_time_window`-per-side schema
+/// the "one-for-the-other" comparison the old single-`m_flow_window`-per-side schema
 /// forced. Age + liquidity still bound the universe. Contrast [`gated_combined`],
 /// which keeps BOTH now that the schema allows multiple windows per group per side.
 fn gated_exhaustion(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde_json::Value {
@@ -131,18 +131,18 @@ fn gated_exhaustion(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> ser
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },
             "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
-            "m_time_window": { "window_size_sec": 2, "net_flow": [{"operator": ">=", "value": netflow_floor}] }
+            "m_flow_window": { "window_size_sec": 2, "net_flow": [{"operator": ">=", "value": netflow_floor}] }
         },
         "exit": {
             "m_position": { "retrace": [{"operator": ">=", "value": retrace}] },
-            "m_price_path": { "stall": [{"operator": ">=", "value": 15}] }
+            "m_price_lifetime": { "stall": [{"operator": ">=", "value": 15}] }
         }
     })
 }
 
 /// GATED + the FULL exhaustion refinement — lever #1: keep BOTH the `win`-second
 /// `gross_flow` hot gate (there's live flow) AND the 2 s `net_flow` floor (the dump
-/// has paused) on entry, now that a side can hold **multiple `m_time_window` windows**
+/// has paused) on entry, now that a side can hold **multiple `m_flow_window` windows**
 /// (the array shape this branch adds). This is the refinement the old probe could only
 /// approximate by dropping one gate; here it runs as authored.
 fn gated_combined(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde_json::Value {
@@ -154,14 +154,14 @@ fn gated_combined(dip: f64, win: u64, retrace: f64, netflow_floor: f64) -> serde
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },
             "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
-            "m_time_window": [
+            "m_flow_window": [
                 { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] },
                 { "window_size_sec": 2,   "net_flow":   [{"operator": ">=", "value": netflow_floor}] }
             ]
         },
         "exit": {
             "m_position": { "retrace": [{"operator": ">=", "value": retrace}] },
-            "m_price_path": { "stall": [{"operator": ">=", "value": 15}] }
+            "m_price_lifetime": { "stall": [{"operator": ">=", "value": 15}] }
         }
     })
 }
@@ -176,7 +176,7 @@ fn gated_stall(dip: f64, win: u64, retrace: f64, stall_sec: Option<f64>) -> serd
         "m_position": { "retrace": [{"operator": ">=", "value": retrace}] }
     });
     if let Some(s) = stall_sec {
-        exit["m_price_path"] = serde_json::json!({ "stall": [{"operator": ">=", "value": s}] });
+        exit["m_price_lifetime"] = serde_json::json!({ "stall": [{"operator": ">=", "value": s}] });
     }
     serde_json::json!({
         "stop_loss": 25,
@@ -186,7 +186,7 @@ fn gated_stall(dip: f64, win: u64, retrace: f64, stall_sec: Option<f64>) -> serd
                 "liquidity": [{"operator": ">=", "value": 45}, {"operator": "<=", "value": 110}]
             },
             "m_price_window": { "window_size_sec": win, "trail": [{"operator": ">=", "value": dip}] },
-            "m_time_window": { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] }
+            "m_flow_window": { "window_size_sec": win, "gross_flow": [{"operator": ">=", "value": 10}] }
         },
         "exit": exit
     })

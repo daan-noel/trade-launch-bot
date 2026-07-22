@@ -161,7 +161,7 @@ function defaultConfig(): GenericSweepConfig {
 }
 
 function axesReferenceFlow(rows: GenericAxisRow[]): boolean {
-  return rows.some((r) => r.kind === 'metric' && (r.group === 'm_flow_split' || r.group === 'm_flow_window'));
+  return rows.some((r) => r.kind === 'metric' && (r.group === 'm_flow_split' || r.group === 'm_flow_split_window'));
 }
 
 function isoToLocalInput(iso: string | null): string {
@@ -603,7 +603,7 @@ export function GenericSweepConfigForm({
                 <LabelTip tip={FINGERPRINT_FIELD_HELP.volume_ix_patterns}>
                   Corpus-wide patterns for this run
                 </LabelTip>
-                {' — '}required when axes use m_flow_split / m_flow_window. Promote copies
+                {' — '}required when axes use m_flow_split / m_flow_split_window. Promote copies
                 them into the fingerprint.
               </span>
               <VolumeIxPatternsEditor

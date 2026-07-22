@@ -1,6 +1,6 @@
 //! `TokenTrack` — the per-token metric state the engine folds trades and ticks
 //! into. It composes the group states:
-//! * static [`SnapshotState`] + [`PricePathState`] — one copy, shared by every
+//! * static [`SnapshotState`] + [`PriceLifetimeState`] — one copy, shared by every
 //!   rule armed on the token;
 //! * dynamic [`WindowState`]s — **deduped by `window_size_sec`**, so rules that
 //!   share a window share one buffer;
@@ -22,10 +22,10 @@ use std::collections::BTreeMap;
 use crate::fingerprint::FingerprintId;
 
 use super::flow_split::{FlowPatterns, FlowState};
-use super::price_path::PricePathState;
+use super::flow_window::{window_key, WindowState};
+use super::price_lifetime::PriceLifetimeState;
 use super::price_window::PriceWindowState;
 use super::snapshot::SnapshotState;
-use super::time_window::{window_key, WindowState};
 use super::{MetricId, TradeLite, Ts};
 
 /// All metric state for one token.
@@ -33,11 +33,11 @@ use super::{MetricId, TradeLite, Ts};
 pub struct TokenTrack {
     created_at: Ts,
     snapshot: SnapshotState,
-    price_path: PricePathState,
+    price_lifetime: PriceLifetimeState,
     /// Dynamic flow windows, keyed by [`window_key`] so equal sizes dedupe.
     windows: BTreeMap<u64, WindowState>,
     /// Dynamic price-extrema windows, keyed by [`window_key`]. Kept apart from
-    /// `windows` so a rule using only `m_time_window` pays for no price deque (and
+    /// `windows` so a rule using only `m_flow_window` pays for no price deque (and
     /// vice versa) — the two dynamic groups share the `window_size_sec` param name
     /// but not the buffers.
     price_windows: BTreeMap<u64, PriceWindowState>,
@@ -53,7 +53,7 @@ impl TokenTrack {
         Self {
             created_at,
             snapshot: SnapshotState::default(),
-            price_path: PricePathState::new(created_at),
+            price_lifetime: PriceLifetimeState::new(created_at),
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
             flow: BTreeMap::new(),
@@ -79,7 +79,7 @@ impl TokenTrack {
     }
 
     /// Register fingerprint-scoped flow state (idempotent). `windows` are the
-    /// distinct `m_flow_window` sizes to track under this fingerprint.
+    /// distinct `m_flow_split_window` sizes to track under this fingerprint.
     pub fn ensure_flow(
         &mut self,
         fp: FingerprintId,
@@ -109,7 +109,7 @@ impl TokenTrack {
     /// Fold one trade into every group.
     pub fn on_trade(&mut self, t: TradeLite) {
         self.snapshot.on_trade(t.reserve_sol);
-        self.price_path.on_trade(t.price, t.at);
+        self.price_lifetime.on_trade(t.price, t.at);
         for w in self.windows.values_mut() {
             w.on_trade(t.side, t.sol, t.at);
         }
@@ -140,7 +140,7 @@ impl TokenTrack {
     /// The "last known price" a tick-driven TP/SL check reads (a tick carries no
     /// trade, so the position is marked against the last print).
     pub fn current_price(&self) -> f64 {
-        self.price_path.last_price()
+        self.price_lifetime.last_price()
     }
 
     /// The most recently observed SOL reserves (`NaN` before the first trade) — the
@@ -163,7 +163,7 @@ impl TokenTrack {
         use MetricId::*;
         match id {
             Time | Liquidity => self.snapshot.value(id, self.created_at, now),
-            Stall | Trail => self.price_path.value(id, now),
+            Stall | Trail => self.price_lifetime.value(id, now),
             WinTrail | WinRise => {
                 match window_secs.and_then(|ws| self.price_windows.get(&window_key(ws))) {
                     Some(pw) => pw.value(id),

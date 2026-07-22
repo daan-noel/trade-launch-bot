@@ -100,8 +100,8 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'Use for age gates and pool-depth filters on entry or exit. Kind: static.',
     ].join('\n'),
   },
-  m_price_path: {
-    title: 'm_price_path — price behaviour',
+  m_price_lifetime: {
+    title: 'm_price_lifetime — price behaviour',
     body: [
       'How price has been moving since the token (and your hold) has been alive.',
       '',
@@ -115,7 +115,7 @@ export const GROUP_HELP: Record<string, HelpTip> = {
     title: 'm_price_window — rolling price extrema',
     body: [
       'Price position relative to the highest/lowest print over the last N seconds',
-      '(N = window_size_sec, required). Unlike m_price_path (lifetime peak), this',
+      '(N = window_size_sec, required). Unlike m_price_lifetime (lifetime peak), this',
       'high/low rolls forward, so it reads short dips inside an otherwise-hot token.',
       '',
       '• trail — % below the rolling-window high (the dip-buy trigger).',
@@ -124,8 +124,8 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'Empty window (no trade for N s) ⇒ NaN (never fires). Kind: dynamic.',
     ].join('\n'),
   },
-  m_time_window: {
-    title: 'm_time_window — trailing flow',
+  m_flow_window: {
+    title: 'm_flow_window — trailing flow',
     body: [
       'Sums buys/sells over the last N seconds (N = window_size_sec, required).',
       '',
@@ -148,8 +148,8 @@ export const GROUP_HELP: Record<string, HelpTip> = {
       'Unconfigured fingerprint ⇒ all NaN (conditions never fire). Kind: static.',
     ].join('\n'),
   },
-  m_flow_window: {
-    title: 'm_flow_window — volume vs organic (trailing)',
+  m_flow_split_window: {
+    title: 'm_flow_split_window — volume vs organic (trailing)',
     body: [
       'Same split as m_flow_split, but over the last N seconds (window_size_sec).',
       'Reads the same volume_ix_patterns from the fingerprint (no duplicate config).',
@@ -221,7 +221,7 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       'Percent below the high-water mark. 0 at the high; grows as price gives back.',
       '',
       'Two groups use this name:',
-      '• m_price_path.trail — vs the LIFETIME peak (classic trailing exit).',
+      '• m_price_lifetime.trail — vs the LIFETIME peak (classic trailing exit).',
       '• m_price_window.trail — vs the ROLLING window high (the dip-buy entry).',
       '',
       'Examples:',
@@ -310,7 +310,7 @@ export const METRIC_HELP: Record<string, HelpTip> = {
     ].join('\n'),
   },
 
-  // m_flow_split / m_flow_window — same JSON names; registry appends unit/tol/monotonic.
+  // m_flow_split / m_flow_split_window — same JSON names; registry appends unit/tol/monotonic.
   vol_buy: {
     title: 'vol_buy — volume-side buys (SOL)',
     body: [
@@ -324,7 +324,7 @@ export const METRIC_HELP: Record<string, HelpTip> = {
       '  <0.5   little tooling buy pressure',
       '',
       'Needs fingerprint m_flow_split.volume_ix_patterns; else NaN (never fires).',
-      'Windowed form also needs window_size_sec on m_flow_window.',
+      'Windowed form also needs window_size_sec on m_flow_split_window.',
     ].join('\n'),
   },
   vol_sell: {
@@ -450,8 +450,8 @@ export const STRICT_PARAM_HELP: Record<string, HelpTip> = {
     title: 'window_size_sec — trailing lookback',
     body: [
       'How many seconds of recent trades to include for dynamic groups:',
-      '  • m_time_window — gross_flow, net_flow, buy, sell',
-      '  • m_flow_window — vol_*, nonvol_*, vol_share (same split as lifetime)',
+      '  • m_flow_window — gross_flow, net_flow, buy, sell',
+      '  • m_flow_split_window — vol_*, nonvol_*, vol_share (same split as lifetime)',
       '',
       'Required if any metric in that group has a condition. Example: 10 → last 10s only.',
       '',
@@ -675,7 +675,7 @@ export const FINGERPRINT_FIELD_HELP = {
     title: 'Volume-side ix patterns',
     body: [
       'Ordered instruction-label sequences that mark a trade as volume-side for',
-      'm_flow_split / m_flow_window. Exact ordered match — same vocabulary as fingerprint ix_labels.',
+      'm_flow_split / m_flow_split_window. Exact ordered match — same vocabulary as fingerprint ix_labels.',
       '',
       'Classifier (any one is enough):',
       '  1) trade ix_labels hash ∈ one of these pattern rows',
@@ -816,7 +816,7 @@ export const SWEEP_FIELD_HELP = {
     title: 'Window (seconds)',
     body: [
       'Trailing window for dynamic metrics on this axis (same as window_size_sec on a rule):',
-      'm_time_window and m_flow_window.',
+      'm_flow_window and m_flow_split_window.',
       '',
       'Every windowed axis of the same group on the same side must share one window —',
       'conflicts are rejected. Lifetime / static metrics ignore this.',

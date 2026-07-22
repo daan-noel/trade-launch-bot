@@ -59,9 +59,9 @@ user-chosen operators instead of operators hardcoded in Rust `check_*` fns.
 2. **Metrics** live in their own module tree, one file per group, self-describing
    (name, unit, equality tolerance, compute logic). Adding a metric = one file, no schema change.
    - **Static** (rule-independent, one value per token): `m_snapshot` → `time` (sec since
-     creation), `liquidity` (SOL reserves); `m_price_path` → `stall` (sec since price last
+     creation), `liquidity` (SOL reserves); `m_price_lifetime` → `stall` (sec since price last
      moved), `trail` (% off peak).
-   - **Dynamic** (needs per-rule strict params): `m_time_window(window_size_sec)` →
+   - **Dynamic** (needs per-rule strict params): `m_flow_window(window_size_sec)` →
      `gross_flow`, `net_flow`, `buy`, `sell` (SOL over trailing window).
 3. **Rule storage**: columns say *how* it trades — `fingerprint_id` FK, `is_active`,
    `trade_mode` (paper|real), `buy_amount_lamports BIGINT`, `max_concurrent_tokens`,
@@ -142,14 +142,14 @@ user-chosen operators instead of operators hardcoded in Rust `check_*` fns.
 │ max_sol_cost        │ bucket-     │ params JSONB: "WHEN it trades"           │
 │ spendable_sol_in    │ matched     │  ├ take_profit / stop_loss (strict)      │
 │ first_slot_buy      │ by row's    │  ├ entry ┐  m_snapshot   {metric:[{op,v}]}│
-│ first_slot_sell    ─┘ width       │  └ exit  ┘  m_price_path {metric:[{op,v}]}│
-│ bucket_size_amount      │         │             m_time_window{window_size_sec │
+│ first_slot_sell    ─┘ width       │  └ exit  ┘  m_price_lifetime {metric:[{op,v}]}│
+│ bucket_size_amount      │         │             m_flow_window{window_size_sec │
 └─────────────────────────┘         │                          + metric:[{op,v}]}│
                                     └──────────────────────────────────────────┘
          metrics module (code, extensible — one file per group)
          ├─ snapshot.rs    time, liquidity          ── static (per token)
-         ├─ price_path.rs  stall, trail             ── static (per token)
-         └─ time_window.rs gross/net_flow, buy, sell── dynamic (per rule params)
+         ├─ price_lifetime.rs  stall, trail             ── static (per token)
+         └─ flow_window.rs gross/net_flow, buy, sell── dynamic (per rule params)
             each file: name · unit · eq-tolerance · compute logic
 ```
 
@@ -209,8 +209,8 @@ user-chosen operators instead of operators hardcoded in Rust `check_*` fns.
   STATIC metrics — computed ONCE per token     DYNAMIC metrics — computed per
   shared by all armed rules                    distinct rule params (deduped:
   · m_snapshot:   time, liquidity              rules sharing window_size_sec=10
-  · m_price_path: stall, trail                 share one computation)
-                                               · m_time_window(window_size_sec):
+  · m_price_lifetime: stall, trail                 share one computation)
+                                               · m_flow_window(window_size_sec):
                                                  gross_flow, net_flow, buy, sell
           └───────────────┬────────────────────────────┘
                           ▼
@@ -311,8 +311,8 @@ hunter/engine/                        NEW crate (pkg hunter-engine, lib hunter_e
         ├── track.rs                  TokenTrack: on_trade/on_tick, deduped dynamic states
         ├── series.rs                 MetricSeries emit (sweep precompute) — same compute code
         ├── snapshot.rs               time, liquidity                 (static)
-        ├── price_path.rs             stall, trail                    (static)
-        └── time_window.rs            gross_flow, net_flow, buy, sell (dynamic)
+        ├── price_lifetime.rs             stall, trail                    (static)
+        └── flow_window.rs            gross_flow, net_flow, buy, sell (dynamic)
 
 hunter/core/                          keeps: models, repos, SSE bridge, HTTP framework
 ├── src/models/fingerprint.rs         NEW DB row model (lamports at rest ↔ SOL accessors)
@@ -418,7 +418,7 @@ pub enum Operator { Gt, Gte, Lt, Lte, Eq, Ne }   // ">" ">=" "<" "<=" "=" "!="
 Validation (rejected at rule save, `rules.rs::validate` calling the engine registry):
 - unknown group / metric / operator names (registry-checked, so a typo can't silently no-op);
 - metric listed under the wrong group; strict param missing for a group that requires it
-  (`m_time_window` without `window_size_sec`);
+  (`m_flow_window` without `window_size_sec`);
 - contradictory pairs on one metric (e.g. `> 30` AND `< 10`) — impossible entry;
 - non-finite values; TP/SL ≤ 0.
 - Parse **once at rule load** into typed structs (delivered to the engine via a
@@ -512,10 +512,10 @@ Determinism rules (violation = bug):
 - [x] 1.3 `metrics/snapshot.rs`: `time` (monotonic ✓, s, tol 0.5), `liquidity` (SOL,
       tol 0.1) — from creation time + last `reserve_sol`. `liquidity` = `NaN` before the
       first trade (no market data ⇒ satisfies nothing).
-- [x] 1.4 `metrics/price_path.rs`: incremental `{peak_price, last_price, last_move_at}` →
+- [x] 1.4 `metrics/price_lifetime.rs`: incremental `{peak_price, last_price, last_move_at}` →
       `stall` (s, tol 0.5; clock starts at creation, any price change resets it),
       `trail` (% off peak, tol 1.0; `NaN` pre-first-trade). Price = canonical curve-spot.
-- [x] 1.5 `metrics/time_window.rs`: per-`window_size_sec` `VecDeque` of `(ts, signed_sol)`
+- [x] 1.5 `metrics/flow_window.rs`: per-`window_size_sec` `VecDeque` of `(ts, signed_sol)`
       + running `buy`/`sell` sums → `gross_flow`/`net_flow`/`buy`/`sell` (SOL, tol 0.1).
       **Dedup key = `window_key(w)` (ms-rounded).** Trailing window `(now−w, now]`; evict
       on every trade/tick; O(1) read/fold, no per-event alloc.
@@ -707,7 +707,7 @@ Determinism rules (violation = bug):
 - [x] 5.7 Metric-series endpoint `GET /api/tokens/{mint}/metric-series?windows=…` —
       replays one token's full history (lake ∪ PG tail) through `metrics/series.rs` on
       demand, returning every metric's value at every trade as parallel arrays
-      (`m_time_window` metrics per requested window; non-finite ⇒ `null`). Never
+      (`m_flow_window` metrics per requested window; non-finite ⇒ `null`). Never
       persisted. `api/handlers/tokens/metric_series.rs`.
 - [x] 5.8 Standing verification checks — **run end-to-end 2026-07-17** against the live
       lab bin + real lake corpus (after fixing the `0004` core-migration boot bug, below).

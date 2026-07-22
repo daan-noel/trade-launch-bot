@@ -1,4 +1,4 @@
-//! `m_time_window` — trailing-window flow aggregates (dynamic metrics).
+//! `m_flow_window` — trailing-window flow aggregates (dynamic metrics).
 //!
 //! Strict param `window_size_sec` (`w`): the trailing window is `(now − w, now]`.
 //! Over the trades in that window:
@@ -85,7 +85,7 @@ impl WindowState {
         }
     }
 
-    /// Value of one `m_time_window` metric over the current window contents.
+    /// Value of one `m_flow_window` metric over the current window contents.
     pub fn value(&self, id: MetricId) -> f64 {
         match id {
             MetricId::Buy => self.buy,

@@ -1523,19 +1523,40 @@ function TokenPreviewPanel({
   patternKeys: ReadonlySet<string>;
   onTogglePattern: (labels: string[]) => void;
 }) {
+  const [mintQuery, setMintQuery] = useState('');
+  const filteredTokens = useMemo(() => {
+    const q = mintQuery.trim().toLowerCase();
+    if (!q) return tokens;
+    return tokens.filter((t) => t.mint_address.toLowerCase().includes(q));
+  }, [tokens, mintQuery]);
   return (
     <div className="rounded border border-white/8 p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs font-semibold text-text-mid">
-          Token preview · {tokens.length.toLocaleString()} ranked
+          Token preview ·{' '}
+          {mintQuery.trim()
+            ? `${filteredTokens.length.toLocaleString()} / ${tokens.length.toLocaleString()}`
+            : tokens.length.toLocaleString()}{' '}
+          ranked
         </span>
         {selectedMint && tradesLoading && (
           <span className="text-[10px] text-text-dim">Loading trades…</span>
         )}
       </div>
       <div className="flex flex-wrap gap-3">
-        <div className="flex max-h-70 w-56 shrink-0 flex-col gap-1 overflow-y-auto pr-1">
-          {tokens.map((t) => (
+        <div className="flex w-56 shrink-0 flex-col gap-1">
+          <Input
+            type="search"
+            value={mintQuery}
+            onChange={(e) => setMintQuery(e.target.value)}
+            placeholder="Search mint…"
+            className="h-7 text-[11px]"
+          />
+          <div className="flex max-h-70 flex-col gap-1 overflow-y-auto pr-1">
+            {filteredTokens.length === 0 && (
+              <p className="px-2 py-1 text-[10px] text-text-dim">No tokens match.</p>
+            )}
+            {filteredTokens.map((t) => (
             <div
               key={t.mint_address}
               role="button"
@@ -1553,12 +1574,19 @@ function TokenPreviewPanel({
                   : 'border-white/8 text-text-mid hover:border-white/20'
               }`}
             >
-              <AddressDisplay address={t.mint_address} truncate={false} kind="token" iconSize='lg' stopPropagation />
+              <AddressDisplay
+                address={t.mint_address}
+                truncate={false}
+                kind="token"
+                iconSize="lg"
+                stopPropagation={false}
+              />
               <div className="text-text-dim">
                 {fmt(t.gross_sol)}◎ · {t.n_trades.toLocaleString()} trades
               </div>
             </div>
           ))}
+          </div>
         </div>
         <div className="min-w-0 flex-1">
           {selectedMint ? (

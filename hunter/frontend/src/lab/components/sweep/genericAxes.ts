@@ -178,7 +178,7 @@ export function axisRowError(
 
 /**
  * Cross-row check: RuleParams stores one `window_size_sec` per (side, dynamic
- * group), so two `m_time_window` axes on the same side must agree. Returns a
+ * group), so two `m_flow_window` axes on the same side must agree. Returns a
  * form-level error string, or `null`. (The backend also rejects this, but
  * flagging up front avoids an admitted-then-dropped run.)
  */

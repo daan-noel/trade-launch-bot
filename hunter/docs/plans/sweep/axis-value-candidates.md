@@ -76,16 +76,16 @@ per side per group - windows themselves are not sweepable in one run; compare
 | entry | `m_snapshot.time` | `>` | off, 30, 60, 120, 300, 600 | p25..p90 of trade age; blueprint gate 120, omego med entry 780 |
 | entry | `m_snapshot.liquidity` | `>` | off, 35, 45, 55, 70 | p10/p25/p50/p75; 35 ~ "any traction" |
 | entry | `m_snapshot.liquidity` | `<` | off, 90, 100, 110 | p90/p95/p99 - pre-migration cap |
-| entry | `m_price_path.trail` | `>` | off, 5, 8, 15, 25, 40 | HOT p25..p75; blueprint dip depth 8-25 |
-| entry | `m_price_path.trail` | `<` | off, 35, 60 | cap vs dead-dump (HOT p75/p90) |
-| entry | `m_price_path.stall` | `<` | off, 5, 15, 60 | momentum variant only (recent new high) |
-| entry | `m_time_window.gross_flow@30` | `>` | off, 5, 10, 25, 50 | HOT p25/p40/p70/p90; blueprint hot gate 10 |
-| entry | `m_time_window.net_flow@30` | `>` | off, -5, 0, 3, 8 | HOT p20/p50/p75/p90 |
-| entry | `m_time_window.buy@30` | `>` | off, 3, 8, 15, 30 | HOT p25/p50/p75/p90 (momentum variant) |
-| exit | `m_price_path.stall` | `>` | off, 60, 120, 300, 600 | HOT p40/p60/p75/p90; deadness verdict is the true floor |
-| exit | `m_price_path.trail` | `>` | off, 20, 35, 50, 65 | must exceed the entry dip gate or it fires at entry |
-| exit | `m_time_window.net_flow@10` | `<` | off, -2, -6, -12 | HOT p35/p10/p05 - dump-detector exit |
-| exit | `m_time_window.sell@10` | `>` | off, 7, 18, 34 | HOT p75/p90/p95 of sell@10 (alt dump-detector) |
+| entry | `m_price_lifetime.trail` | `>` | off, 5, 8, 15, 25, 40 | HOT p25..p75; blueprint dip depth 8-25 |
+| entry | `m_price_lifetime.trail` | `<` | off, 35, 60 | cap vs dead-dump (HOT p75/p90) |
+| entry | `m_price_lifetime.stall` | `<` | off, 5, 15, 60 | momentum variant only (recent new high) |
+| entry | `m_flow_window.gross_flow@30` | `>` | off, 5, 10, 25, 50 | HOT p25/p40/p70/p90; blueprint hot gate 10 |
+| entry | `m_flow_window.net_flow@30` | `>` | off, -5, 0, 3, 8 | HOT p20/p50/p75/p90 |
+| entry | `m_flow_window.buy@30` | `>` | off, 3, 8, 15, 30 | HOT p25/p50/p75/p90 (momentum variant) |
+| exit | `m_price_lifetime.stall` | `>` | off, 60, 120, 300, 600 | HOT p40/p60/p75/p90; deadness verdict is the true floor |
+| exit | `m_price_lifetime.trail` | `>` | off, 20, 35, 50, 65 | must exceed the entry dip gate or it fires at entry |
+| exit | `m_flow_window.net_flow@10` | `<` | off, -2, -6, -12 | HOT p35/p10/p05 - dump-detector exit |
+| exit | `m_flow_window.sell@10` | `>` | off, 7, 18, 34 | HOT p75/p90/p95 of sell@10 (alt dump-detector) |
 | - | `take_profit` | - | 20, 30, 60, 100, 150 | fut_gain HOT ~p40/p50/p75/p85/p90 |
 | - | `stop_loss` | - | 10, 15, 25, 40 | fut_dd HOT ~p10/p15/p25/p40; blueprint catastrophe SL 25 |
 
@@ -150,7 +150,7 @@ Notes:
   directly off the ranked table (combo with vs without).
 - A deep entry `trail >` pick combined with a low exit `trail >` pick yields
   instant exits (~0 PnL rows) - expected; the ranking discards them.
-- `m_flow_split` / `m_flow_window` axes need `volume_ix_patterns` configured
+- `m_flow_split` / `m_flow_split_window` axes need `volume_ix_patterns` configured
   per run; corpus-wide percentiles are pattern-dependent, so no fixed menu.
   Principled `vol_share` cutpoints: `<` {25, 50, 75}. The 07-20/21 ix-structure
   scan flags nonce-pumped spam shapes (e.g. AdvanceNonceAccount sell structures
