@@ -73,6 +73,10 @@ export interface MetricPanesProps {
   onEventMarkersChange?: (markers: ChartEventMarker[]) => void;
   /** When set, overlay these params (not the dropdown rule's). */
   ruleOverride?: MetricPanesRuleOverride | null;
+  /** Inspected run's entry fill. Supplies the position-scoped `m_position`
+   *  (retrace/pnl/held) columns — those anchor on the entry, so without it they
+   *  can't be computed and the whole group is hidden. */
+  positionEntry?: { time: string; price: number } | null;
 }
 
 /**
@@ -88,6 +92,7 @@ export function MetricPanes({
   onCrosshairTimeChange,
   onEventMarkersChange,
   ruleOverride = null,
+  positionEntry = null,
 }: MetricPanesProps) {
   const { data: registry } = useStrategyRegistry();
   const { data: rules = [] } = useGetStrategyRulesQuery();
@@ -131,6 +136,8 @@ export function MetricPanes({
       mint,
       windows,
       fingerprintId: ruleOverride ? ruleOverride.fingerprintId : selectedRule?.fingerprint_id ?? null,
+      entryTime: positionEntry?.time ?? null,
+      entryPrice: positionEntry?.price ?? null,
     },
     { skip: !mint },
   );
@@ -175,6 +182,10 @@ export function MetricPanes({
       group: string;
     }> = [];
     for (const g of registry?.groups ?? []) {
+      // Position-scoped metrics need the inspected run's entry fill; with no entry
+      // context the backend can't compute them, so hide the group entirely rather
+      // than surface an all-empty pane set.
+      if (g.scope === 'position' && !positionEntry) continue;
       for (const m of g.metrics) {
         if (g.kind === 'dynamic') {
           for (const w of windows) {
@@ -186,7 +197,7 @@ export function MetricPanes({
       }
     }
     return cols;
-  }, [registry, windows]);
+  }, [registry, windows, positionEntry]);
 
   /** Registry group order + name for a column key — drives the grouped layout. */
   const groupOf = useMemo(() => {

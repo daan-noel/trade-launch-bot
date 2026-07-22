@@ -39,6 +39,16 @@ export function LabTokenInspectModal({
   const extraEventMarkers = eventMarkers ?? singleMarkers;
   const heading = target.symbol || target.mint_address.slice(0, 8);
 
+  // The inspected run's entry fill drives the position-scoped `m_position` panes.
+  // Absent on a never-entered (`NoEntry`) target → the group stays hidden.
+  const positionEntry = useMemo(
+    () =>
+      target.entryTime != null && target.entryPrice != null
+        ? { time: target.entryTime, price: target.entryPrice }
+        : null,
+    [target.entryTime, target.entryPrice],
+  );
+
   return (
     <Modal title={`${heading} — ${titleSuffix}`} open onClose={onClose} size="xl">
       <LabTokenInspect
@@ -48,6 +58,7 @@ export function LabTokenInspectModal({
         tableId="lab_run_inspect"
         extraEventMarkers={extraEventMarkers}
         ruleOverride={ruleOverride}
+        positionEntry={positionEntry}
       />
     </Modal>
   );

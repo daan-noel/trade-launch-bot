@@ -78,12 +78,24 @@ export const labApi = baseApi.injectEndpoints({
     // SAME engine compute the live/sweep paths use (never persisted).
     getMetricSeries: builder.query<
       MetricSeriesResponse,
-      { mint: string; windows?: number[]; fingerprintId?: string | null }
+      {
+        mint: string;
+        windows?: number[];
+        fingerprintId?: string | null;
+        /** Inspected run's entry fill — supplies the `m_position` (retrace/pnl/held)
+         *  columns, which are position-scoped and omitted without it. */
+        entryTime?: string | null;
+        entryPrice?: number | null;
+      }
     >({
-      query: ({ mint, windows, fingerprintId }) => {
+      query: ({ mint, windows, fingerprintId, entryTime, entryPrice }) => {
         const params = new URLSearchParams();
         if (windows && windows.length) params.set('windows', windows.join(','));
         if (fingerprintId) params.set('fingerprint_id', fingerprintId);
+        if (entryTime && entryPrice != null && Number.isFinite(entryPrice)) {
+          params.set('entry_time', entryTime);
+          params.set('entry_price', String(entryPrice));
+        }
         const q = params.toString();
         return `/api/tokens/${encodeURIComponent(mint)}/metric-series${q ? `?${q}` : ''}`;
       },

@@ -8,13 +8,17 @@
 use std::sync::Arc;
 
 use actix_web::{web, HttpResponse, Responder};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use hunter_engine::fingerprint::FingerprintId;
 use hunter_engine::metrics::flow_split::FlowPatterns;
+use hunter_engine::metrics::position::PositionCtx;
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
-use hunter_engine::metrics::{group_spec, metric_spec, MetricGroupId, MetricKind, REGISTRY};
+use hunter_engine::metrics::{
+    group_spec, metric_spec, MetricGroupId, MetricId, MetricKind, Ts, REGISTRY,
+};
 
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::strategies::fingerprint_axes::fp_to_engine;
@@ -39,6 +43,16 @@ pub struct MetricSeriesQuery {
     /// a pattern context).
     #[serde(default)]
     pub fingerprint_id: Option<String>,
+    /// Entry-fill time of the run being inspected (RFC3339). Together with
+    /// `entry_price` it supplies the [`PositionCtx`] the position-scoped `m_position`
+    /// metrics anchor on — a token-only replay has no position, so without this pair
+    /// those columns are omitted (they'd be all-`NaN`). See [`build_position_series`].
+    #[serde(default)]
+    pub entry_time: Option<DateTime<Utc>>,
+    /// Entry-fill price of the inspected run (the `pnl` reference). Paired with
+    /// `entry_time`; ignored unless both are present and the price is positive.
+    #[serde(default)]
+    pub entry_price: Option<f64>,
 }
 
 /// One computed series in the response.
@@ -66,6 +80,12 @@ pub async fn token_metric_series(
 ) -> impl Responder {
     let mint = path.into_inner();
     let windows = parse_windows(query.windows.as_deref());
+    // Position-scoped metrics need the caller's entry fill; require both halves and a
+    // sane price, else they stay omitted (the token-only replay can't compute them).
+    let entry = match (query.entry_time, query.entry_price) {
+        (Some(at), Some(price)) if price.is_finite() && price > 0.0 => Some((at, price)),
+        _ => None,
+    };
 
     let flow_ctx = match resolve_flow_ctx(&state, query.fingerprint_id.as_deref()).await {
         Ok(c) => c,
@@ -91,7 +111,8 @@ pub async fn token_metric_series(
         }));
     }
 
-    let result = web::block(move || build_series(&mint, &trades, &windows, flow_ctx.as_ref())).await;
+    let result =
+        web::block(move || build_series(&mint, &trades, &windows, flow_ctx.as_ref(), entry)).await;
     match result {
         Ok(resp) => HttpResponse::Ok().json(resp),
         Err(e) => {
@@ -163,6 +184,7 @@ fn build_series(
     trades: &[crate::sweep::projection::CorpusTrade],
     windows: &[f64],
     flow: Option<&FlowCtx>,
+    entry: Option<(Ts, f64)>,
 ) -> serde_json::Value {
     let mut columns: Vec<SeriesColumn> = Vec::new();
     let mut labels: Vec<(SeriesColumn, Option<f64>)> = Vec::new();
@@ -171,6 +193,12 @@ fn build_series(
         let is_flow_group =
             matches!(group.id, MetricGroupId::FlowSplit | MetricGroupId::FlowSplitWindow);
         if is_flow_group && flow.is_none() {
+            continue;
+        }
+        // Position-scoped metrics anchor on the caller's entry fill, not the token
+        // track (which would read all-`NaN`). They're computed separately below from
+        // `entry`, and omitted entirely when there's no entry context.
+        if matches!(group.id, MetricGroupId::Position) {
             continue;
         }
         for m in group.metrics {
@@ -212,7 +240,7 @@ fn build_series(
         series.push_trade(to_trade_lite(t));
     }
 
-    let out: Vec<SeriesOut> = labels
+    let mut out: Vec<SeriesOut> = labels
         .iter()
         .filter_map(|(col, window)| {
             let id = match col {
@@ -231,6 +259,12 @@ fn build_series(
         })
         .collect();
 
+    // Position-scoped columns, computed from the caller's entry fill (see the fold in
+    // `reduce.rs`). Omitted when there's no entry context.
+    if let Some((entered_at, entry_price)) = entry {
+        out.extend(build_position_series(&series, entered_at, entry_price));
+    }
+
     let price: Vec<Option<f64>> = series
         .price
         .iter()
@@ -246,11 +280,124 @@ fn build_series(
 }
 
 /// The group name owning a metric id (walks the registry).
-fn group_for(id: hunter_engine::metrics::MetricId) -> &'static str {
+fn group_for(id: MetricId) -> &'static str {
     for group in REGISTRY {
         if group.metrics.iter().any(|m| m.id == id) {
             return group_spec(group.id).name;
         }
     }
     "unknown"
+}
+
+/// The `m_position` columns (`retrace`/`pnl`/`held`) over a series, anchored on the
+/// inspected run's entry fill. Mirrors the live engine's [`PositionCtx`] fold
+/// (`reduce.rs`): the peak seeds at the entry price and ratchets up on each finite
+/// print from the entry event onward, and every metric reads `NaN` (serialized
+/// `null`) at any event *before* the entry — so the panes draw the position metrics
+/// exactly over the held window, blank before it.
+fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64) -> Vec<SeriesOut> {
+    let n = series.n_rows();
+    let mut peak = entry_price;
+    let mut retrace = Vec::with_capacity(n);
+    let mut pnl = Vec::with_capacity(n);
+    let mut held = Vec::with_capacity(n);
+    for i in 0..n {
+        let at = series.at[i];
+        if at < entered_at {
+            retrace.push(None);
+            pnl.push(None);
+            held.push(None);
+            continue;
+        }
+        let price = series.price[i];
+        if price.is_finite() && price > peak {
+            peak = price;
+        }
+        let ctx = PositionCtx { entry_price, peak_price: peak, entered_at };
+        retrace.push(finite(ctx.retrace(price)));
+        pnl.push(finite(ctx.pnl(price)));
+        held.push(finite(ctx.held(at)));
+    }
+
+    let group = group_spec(MetricGroupId::Position);
+    group
+        .metrics
+        .iter()
+        .map(|m| {
+            let values = match m.id {
+                MetricId::Retrace => retrace.clone(),
+                MetricId::Pnl => pnl.clone(),
+                MetricId::Held => held.clone(),
+                _ => vec![None; n],
+            };
+            SeriesOut {
+                metric: m.name,
+                group: group.name,
+                unit: m.unit.as_str(),
+                window_size_sec: None,
+                values,
+            }
+        })
+        .collect()
+}
+
+/// A finite metric value as `Some` (non-finite → `null`, the pane's "no value").
+#[inline]
+fn finite(v: f64) -> Option<f64> {
+    v.is_finite().then_some(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use hunter_engine::metrics::{Side, TradeLite};
+
+    fn ts(secs: i64) -> Ts {
+        Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()
+    }
+
+    fn trade(price: f64, secs: i64) -> TradeLite {
+        TradeLite { side: Side::Buy, sol: 1.0, price, reserve_sol: 30.0, at: ts(secs), ..Default::default() }
+    }
+
+    /// The values of one `m_position` metric out of a position series.
+    fn col<'a>(out: &'a [SeriesOut], metric: &str) -> &'a [Option<f64>] {
+        &out.iter().find(|s| s.metric == metric).expect("metric present").values
+    }
+
+    #[test]
+    fn position_series_blanks_before_entry_then_tracks_the_held_window() {
+        // Events at t=0 (pre-entry), t=10 (entry, fill 1.0), t=20 (+50% run-up →
+        // new peak), t=30 (pullback to 1.2 off the 1.5 peak).
+        let mut s = MetricSeries::new(ts(0), Vec::new());
+        for (p, secs) in [(1.0, 0), (1.0, 10), (1.5, 20), (1.2, 30)] {
+            s.push_trade(trade(p, secs));
+        }
+        let out = build_position_series(&s, ts(10), 1.0);
+        let (pnl, retrace, held) = (col(&out, "pnl"), col(&out, "retrace"), col(&out, "held"));
+
+        // Before entry → blank (position metrics have no value with no position).
+        assert_eq!((pnl[0], retrace[0], held[0]), (None, None, None));
+        // Entry event: flat pnl, at-peak retrace, zero held.
+        assert_eq!((pnl[1], retrace[1], held[1]), (Some(0.0), Some(0.0), Some(0.0)));
+        // Run-up to 1.5: +50% pnl, still at peak (retrace 0), 10 s held.
+        assert_eq!((pnl[2], retrace[2], held[2]), (Some(50.0), Some(0.0), Some(10.0)));
+        // Pullback to 1.2 off the ratcheted 1.5 peak: +20% pnl, 20% retrace, 20 s held.
+        assert!((pnl[3].unwrap() - 20.0).abs() < 1e-9);
+        assert!((retrace[3].unwrap() - 20.0).abs() < 1e-9);
+        assert_eq!(held[3], Some(20.0));
+    }
+
+    #[test]
+    fn no_entry_context_omits_the_position_group() {
+        // `build_series` skips `MetricGroupId::Position` in its generic loop, so with
+        // no entry the response carries no `m_position` columns at all (not all-null).
+        let mut s = MetricSeries::new(ts(0), Vec::new());
+        s.push_trade(trade(1.0, 0));
+        let out = build_position_series(&s, ts(0), 1.0);
+        // The group has exactly its three metrics when an entry IS supplied…
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|c| c.group == "m_position"));
+    }
 }

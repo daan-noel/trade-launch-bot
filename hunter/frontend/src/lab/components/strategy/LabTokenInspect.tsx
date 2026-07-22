@@ -22,6 +22,7 @@ export function LabTokenInspect({
   /** Backend fill entry·exit markers; merged with pane `signal` markers. */
   extraEventMarkers = [],
   ruleOverride = null,
+  positionEntry = null,
 }: {
   detail: TokenDetailRecord | null;
   loading?: boolean;
@@ -32,6 +33,8 @@ export function LabTokenInspect({
   extraEventMarkers?: ChartEventMarker[];
   /** Pin the metric panes to the inspected run's exact params (see MetricPanes). */
   ruleOverride?: MetricPanesRuleOverride | null;
+  /** Inspected run's entry fill — drives the `m_position` panes (see MetricPanes). */
+  positionEntry?: { time: string; price: number } | null;
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
   /** Who last drove the shared crosshair — only pane hover is pushed into the price chart. */
@@ -84,6 +87,7 @@ export function LabTokenInspect({
             onCrosshairTimeChange={onPanesCrosshair}
             onEventMarkersChange={onEventMarkersChange}
             ruleOverride={ruleOverride}
+            positionEntry={positionEntry}
           />
         </Accordion>
       ) : null}

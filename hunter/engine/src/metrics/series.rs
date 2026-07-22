@@ -10,7 +10,7 @@
 
 use super::flow_split::FlowPatterns;
 use super::track::TokenTrack;
-use super::{MetricId, TradeLite, Ts};
+use super::{group_of, MetricGroupId, MetricId, TradeLite, Ts};
 use crate::deadness::{is_dead_verdict, DEAD_MEANINGFUL_TRADE_SOL};
 use crate::fingerprint::FingerprintId;
 
@@ -77,6 +77,21 @@ pub struct MetricSeries {
     pub dead: Vec<bool>,
 }
 
+/// Register a windowed column's backing deque on `track`, routed to the buffer its
+/// metric actually reads: `m_price_window` (`WinTrail`/`WinRise`) needs the
+/// price-extrema deque (`ensure_price_window`), every other windowed group the flow
+/// deque (`ensure_window`). They share the `window_size_sec` param but not the state,
+/// so registering only one — as the old blanket `ensure_window` did — left the price
+/// windows unregistered and every `m_price_window` column reading `NaN`. This mirrors
+/// the live engine's split registration in `state.rs`.
+fn register_window(track: &mut TokenTrack, id: MetricId, ws: f64) {
+    if group_of(id).id == MetricGroupId::PriceWindow {
+        track.ensure_price_window(ws);
+    } else {
+        track.ensure_window(ws);
+    }
+}
+
 impl MetricSeries {
     /// Start a series for a token created at `created_at`, recording `columns`.
     /// Any dynamic column's window is registered up front so the whole history
@@ -84,8 +99,8 @@ impl MetricSeries {
     pub fn new(created_at: Ts, columns: Vec<SeriesColumn>) -> Self {
         let mut track = TokenTrack::new(created_at);
         for c in &columns {
-            if let SeriesColumn::Window(_, ws) = c {
-                track.ensure_window(*ws);
+            if let SeriesColumn::Window(id, ws) = c {
+                register_window(&mut track, *id, *ws);
             }
         }
         let n_cols = columns.len();
@@ -250,8 +265,8 @@ mod tests {
     fn track_reference(created: Ts, cols: &[SeriesColumn], evs: &[Ev]) -> Vec<Vec<u64>> {
         let mut track = TokenTrack::new(created);
         for c in cols {
-            if let SeriesColumn::Window(_, ws) = c {
-                track.ensure_window(*ws);
+            if let SeriesColumn::Window(id, ws) = c {
+                register_window(&mut track, *id, *ws);
             }
         }
         let mut out = Vec::new();
@@ -319,6 +334,22 @@ mod tests {
         assert!(s.dead.last().copied().unwrap(), "silent + drained token must read dead");
         // Price on a tick carries the last print (no trade at the tick).
         assert_eq!(s.price.last().copied(), Some(0.9));
+    }
+
+    #[test]
+    fn price_window_column_is_registered_and_finite() {
+        // Regression: `m_price_window` (WinTrail/WinRise) reads a SEPARATE price-extrema
+        // deque from the flow windows. The series must route its registration to
+        // `ensure_price_window`; the old blanket `ensure_window` left it unregistered so
+        // every price-window column read `NaN` (empty panes / dead sweep entry gate).
+        let created = ts(0.0);
+        let col = SeriesColumn::Window(MetricId::WinTrail, 30.0);
+        let mut s = MetricSeries::new(created, vec![col]);
+        s.push_trade(trade(Side::Buy, 3.0, 2.0, 15.0, 0.0)); // rolling high = 2.0
+        s.push_trade(trade(Side::Sell, 1.0, 1.5, 14.0, 1.0)); // dip to 1.5 → 25% below high
+        let trail = s.column_values(col).unwrap();
+        assert!(trail.iter().all(|v| v.is_finite()), "price-window column must not be NaN");
+        assert!((trail.last().unwrap() - 25.0).abs() < 1e-9, "trail = % below the rolling high");
     }
 
     #[test]

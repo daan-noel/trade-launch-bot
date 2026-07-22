@@ -232,7 +232,8 @@ extra wiring), not the sweep, for this phase.
 
 ## Phase 4 - re-entry lifecycle (re-arm after Done)
 
-> **DONE 2026-07-22 (`strategy-redesign`, uncommitted).** Gate met after the
+> **DONE 2026-07-22 (`strategy-redesign`, committed `2db03ba4` engine + `5eddd54e`
+> validation/FE).** Gate met after the
 > fill-sensitivity correction (see analysis doc): the honest `realFee` bottom line is
 > positive under realistic fills, so re-entry now amplifies a positive per-episode edge.
 > Shipped: `RuleParams.reentry { cooldown_sec, max_episodes_per_token }` (parse/validate/
@@ -248,8 +249,10 @@ extra wiring), not the sweep, for this phase.
 > timing, tick promotion, episode cap, Manual/Dead no-rearm, migration disarm) + the
 > pre-existing one-shot goldens as the non-regression; `cargo check` + 113 sweep guards +
 > engine/property green; clippy clean on touched code. Sweep wiring stays Phase 6 (the
-> sweep is a parallel impl; re-entry validates via simulate/replay for now). FE editor
-> deferred (absent ⇒ one-shot, so the builder is unaffected).
+> sweep is a parallel impl; re-entry validates via simulate/replay for now). **FE editor
+> SHIPPED** (`5eddd54e`): re-entry toggle + cooldown/episode inputs in `RuleEditor.tsx`,
+> `reentry` round-trips through `ruleParams.ts` (silent-strip regression test), validated
+> in `validate.ts` — absent ⇒ one-shot, so legacy rules are unaffected.
 
 `ArmState` is one-shot: `Done` is terminal per (token, rule), and the observed edge
 depends on rapid re-entry (median gap ~31s, up to 31 episodes/token).
