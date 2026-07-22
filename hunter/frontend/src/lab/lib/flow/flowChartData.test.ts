@@ -26,12 +26,12 @@ function trade(overrides: Partial<TradeRecord>): TradeRecord {
 const NO_PATTERNS = { patternKeys: new Set<string>(), creatorWallet: null };
 
 describe('buildFlowLines', () => {
-  it('nets buy − sell (net_sol) so the line drops when a cohort sells', () => {
+  it('nets buy − sell (cost_sol) so the line drops when a cohort sells', () => {
     const trades: TradeRecord[] = [
       trade({ slot: 1, block_time: '2026-07-21T01:00:00Z', amount_sol: 10, trade_type: 'buy' }),
       trade({ slot: 2, block_time: '2026-07-21T01:01:00Z', amount_sol: 4, trade_type: 'sell' }),
     ];
-    const lines = buildFlowLines(trades, 'time', 60, 'net_sol', NO_PATTERNS);
+    const lines = buildFlowLines(trades, 'time', 60, 'cost_sol', NO_PATTERNS);
     expect(lines.nonVol[0].value).toBeCloseTo(10, 6);
     // A sell pulls the running net BACK down — impossible under the old gross flow.
     expect(lines.nonVol.at(-1)!.value).toBeCloseTo(6, 6);
@@ -44,7 +44,7 @@ describe('buildFlowLines', () => {
     // must place each net delta in the right bucket regardless of array order.
     const early = trade({ slot: 1, tx_index: 0, block_time: '2026-07-21T01:00:00Z', amount_sol: 5 });
     const late = trade({ slot: 2, tx_index: 0, block_time: '2026-07-21T01:05:00Z', amount_sol: 7 });
-    const lines = buildFlowLines([late, early], 'time', 60, 'net_sol', NO_PATTERNS);
+    const lines = buildFlowLines([late, early], 'time', 60, 'cost_sol', NO_PATTERNS);
     expect(lines.nonVol[0].value).toBeCloseTo(5, 6);
     expect(lines.nonVol.at(-1)!.value).toBeCloseTo(12, 6);
   });
@@ -59,7 +59,7 @@ describe('buildFlowLines', () => {
     expect(lines.nonVol.at(-1)!.value).toBeCloseTo(600, 6);
   });
 
-  it('real_sol marks the net token bag to the candle-close canonical spot, carrying it forward', () => {
+  it('value_sol marks the net token bag to the candle-close canonical spot, carrying it forward', () => {
     const trades: TradeRecord[] = [
       // Bucket A: net 1000 tokens, spot 20/1000 = 0.02 → 1000 × 0.02 = 20.
       trade({
@@ -90,7 +90,7 @@ describe('buildFlowLines', () => {
         price_per_token: 0,
       }),
     ];
-    const lines = buildFlowLines(trades, 'time', 60, 'real_sol', NO_PATTERNS);
+    const lines = buildFlowLines(trades, 'time', 60, 'value_sol', NO_PATTERNS);
     expect(lines.nonVol[0].value).toBeCloseTo(20, 6);
     expect(lines.nonVol[1].value).toBeCloseTo(44, 6);
     expect(lines.nonVol.at(-1)!.value).toBeCloseTo(48, 6);

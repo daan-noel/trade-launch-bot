@@ -117,7 +117,7 @@ const DEFAULT_FLOW_CHART_PREFS: FlowPreviewChartPrefs = {
   style: 'candles',
   groupMode: 'time',
   interval: '1s',
-  basis: 'real_sol',
+  basis: 'cost_sol',
   trimEmptyBars: true,
   // Live ALWAYS classifies the creator wallet as volume (flow_split.rs
   // FlowState::classify), so default ON to mirror live. Turn OFF only to
@@ -144,8 +144,9 @@ function loadFlowChartPrefs(): FlowPreviewChartPrefs {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<FlowPreviewChartPrefs>;
       const merged = { ...DEFAULT_FLOW_CHART_PREFS, ...parsed };
-      // Guard the basis against a stale persisted value — the old two-way
-      // toggle stored 'sol', which no longer exists (now net_sol/token/real_sol).
+      // Guard the basis against a stale persisted value — earlier builds stored
+      // 'sol' (two-way toggle) and later 'net_sol'/'real_sol', none of which
+      // exist now (basis is cost_sol/token/value_sol). Fall back to the default.
       if (!BASIS_OPTIONS.some((o) => o.value === merged.basis)) {
         merged.basis = DEFAULT_FLOW_CHART_PREFS.basis;
       }
@@ -191,7 +192,7 @@ const VOL_GHOST_COLOR = '#35363d';
  *  is a cumulative whole-token count that runs to 1e14+ for a normal pump.fun
  *  token (≈1e15 raw supply, traded over repeatedly), so its two flow lines are
  *  charted divided by this scale (multiplied back for every axis/readout label);
- *  the two SOL bases (net_sol / real_sol) are orders of magnitude smaller and
+ *  the two SOL bases (cost_sol / value_sol) are orders of magnitude smaller and
  *  chart 1:1. */
 const TOKEN_FLOW_SERIES_SCALE = 1e6;
 
@@ -259,8 +260,8 @@ function outlineVolumeCandles(
 }
 
 const BASIS_OPTIONS: { value: FlowBasis; label: string }[] = [
-  { value: 'real_sol', label: 'Real SOL' },
-  { value: 'net_sol', label: 'Net SOL' },
+  { value: 'cost_sol', label: 'Cost SOL' },
+  { value: 'value_sol', label: 'Value SOL' },
   { value: 'token', label: 'Token' },
 ];
 
@@ -775,7 +776,7 @@ export function FlowPreviewChart({
   // The token basis is a cumulative whole-token count that runs past
   // lightweight-charts' ±9.007e13 series-value ceiling, so it's charted divided
   // by TOKEN_FLOW_SERIES_SCALE with a custom axis formatter that multiplies back;
-  // the SOL bases (net_sol/real_sol) are small and chart 1:1. Header/crosshair readouts always read
+  // the SOL bases (cost_sol/value_sol) are small and chart 1:1. Header/crosshair readouts always read
   // the true (unscaled) values straight off `lines`.
   useEffect(() => {
     const scale = flowSeriesScale(basis);

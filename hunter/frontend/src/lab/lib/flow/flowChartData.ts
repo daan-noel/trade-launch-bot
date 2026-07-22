@@ -12,19 +12,20 @@ import { classifyFlowTrades, type FlowClassifyOptions } from './classifyFlow';
 /** Cumulative-line basis — each cohort's line is the running NET (buy − sell),
  *  not gross turnover, so a line legitimately drops when that cohort sells.
  *
- *  - `net_sol`  — net SOL cash-flow: Σ(buy − sell) of `amount_sol`. What the
- *                 cohort has net *paid in*.
- *  - `token`    — net token balance: Σ(buy − sell) of `token_amount`. How many
- *                 tokens the cohort is net *holding*.
- *  - `real_sol` — mark-to-market SOL value of that net token balance, priced at
- *                 each candle's canonical spot (`tradeSpotPriceSol` = the GMGN
- *                 `reserve_sol / reserve_token` pair, `price_per_token` fallback
- *                 — the SAME price the candles draw at). What the cohort's bag is
- *                 currently *worth*, vs `net_sol` = what it cost; the gap between
- *                 the two lines is unrealized PnL. (The literal non-virtual
- *                 `real_reserve_sol` is a live-decoder-only field, never persisted,
- *                 so it isn't available on this historical trades endpoint.) */
-export type FlowBasis = 'net_sol' | 'token' | 'real_sol';
+ *  - `cost_sol`  — net SOL cash-flow: Σ(buy − sell) of `amount_sol`. What the
+ *                  cohort has net *paid in* (its cost basis).
+ *  - `token`     — net token balance: Σ(buy − sell) of `token_amount`. How many
+ *                  tokens the cohort is net *holding*.
+ *  - `value_sol` — mark-to-market SOL value of that net token balance, priced at
+ *                  each candle's canonical spot (`tradeSpotPriceSol` = the GMGN
+ *                  `reserve_sol / reserve_token` pair, `price_per_token` fallback
+ *                  — the SAME price the candles draw at). What the cohort's bag is
+ *                  currently *worth*, vs `cost_sol` = what it cost; the gap between
+ *                  the two lines is unrealized PnL. (Named `value_sol`, NOT
+ *                  `real_sol`, to avoid colliding with the literal non-virtual
+ *                  `real_reserve_sol` — a live-decoder-only field, never persisted,
+ *                  so it isn't available on this historical trades endpoint.) */
+export type FlowBasis = 'cost_sol' | 'token' | 'value_sol';
 
 export interface FlowLinePoint {
   time: UTCTimestamp;
@@ -66,7 +67,7 @@ interface FlowBucket {
  *  (Unlike the old gross-flow version, the resulting line is NOT monotonic — a
  *  net balance falls when the cohort sells; that's the point.)
  *
- *  For `real_sol` the value at a candle is the cohort's cumulative net TOKEN
+ *  For `value_sol` the value at a candle is the cohort's cumulative net TOKEN
  *  balance × the candle-close canonical spot, carried forward across buckets
  *  with no resolvable spot. */
 export function buildFlowLines(
@@ -135,7 +136,7 @@ export function buildFlowLines(
     if (basis === 'token') {
       volVal = volTok;
       nonVolVal = nonVolTok;
-    } else if (basis === 'real_sol') {
+    } else if (basis === 'value_sol') {
       const spot = lastSpot ?? 0;
       volVal = volTok * spot;
       nonVolVal = nonVolTok * spot;
