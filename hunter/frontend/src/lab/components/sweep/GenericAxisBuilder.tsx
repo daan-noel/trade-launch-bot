@@ -16,10 +16,12 @@ import {
 } from 'lib/strategy/strategyHelp';
 import { unitSuffix, useStrategyRegistry, type StrategyRegistry } from 'lib/strategy/registry';
 import { metricColorStyle } from 'lib/strategy/metricColors';
+import { isPnlAdvancedMetric } from 'lib/strategy/validate';
 import {
   axisRowError,
   comboCount,
   newAxisRow,
+  pnlAxisSugarDuplicateError,
   rowNeedsWindow,
   sharedWindowError,
   type AxisKind,
@@ -70,6 +72,7 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
 
   const combos = useMemo(() => projected ?? comboCount(rows, registry), [projected, rows, registry]);
   const windowErr = useMemo(() => sharedWindowError(rows, registry), [rows, registry]);
+  const pnlSugarErr = useMemo(() => pnlAxisSugarDuplicateError(rows), [rows]);
 
   const tpRow = useMemo(() => rows.find((r) => r.kind === 'take_profit'), [rows]);
   const slRow = useMemo(() => rows.find((r) => r.kind === 'stop_loss'), [rows]);
@@ -208,6 +211,7 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
       )}
 
       {windowErr && <p className="text-[11px] text-red">{windowErr}</p>}
+      {pnlSugarErr && <p className="text-[11px] text-red">{pnlSugarErr}</p>}
     </div>
   );
 }
@@ -604,7 +608,7 @@ function AxisRow({
               <option value="">metric…</option>
               {group?.metrics.map((m) => (
                 <option key={m.name} value={m.name}>
-                  {m.name}
+                  {isPnlAdvancedMetric(group.name, m.name) ? `${m.name} (advanced)` : m.name}
                 </option>
               ))}
             </Select>

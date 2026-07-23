@@ -41,6 +41,7 @@ import {
   comboCount,
   newAxisRow,
   serializeAxisRows,
+  pnlAxisSugarDuplicateError,
   sharedWindowError,
   type AxisKind,
   type AxisSpecWire,
@@ -392,7 +393,9 @@ export function GenericSweepConfigForm({
     [axisRows, registry],
   );
   const windowErr = useMemo(() => sharedWindowError(axisRows, registry), [axisRows, registry]);
-  const axesValid = axisRows.length > 0 && rowErrors.every((e) => e == null) && !windowErr;
+  const pnlSugarErr = useMemo(() => pnlAxisSugarDuplicateError(axisRows), [axisRows]);
+  const axesValid =
+    axisRows.length > 0 && rowErrors.every((e) => e == null) && !windowErr && !pnlSugarErr;
   const wireAxes: AxisSpecWire[] = useMemo(
     () => serializeAxisRows(axisRows, registry),
     [axisRows, registry],

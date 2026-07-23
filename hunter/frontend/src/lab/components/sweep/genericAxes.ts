@@ -10,6 +10,7 @@
 // `SWING1_AXES`) with one registry-driven builder.
 
 import type { GroupSpec, Operator, StrategyRegistry } from 'lib/strategy/registry';
+import { isPnlAdvancedMetric } from 'lib/strategy/validate';
 
 /** Which kind of dimension an axis sweeps. `metric` conditions a side; the TP/SL
  *  axes set the rule's take-profit / stop-loss %. */
@@ -196,6 +197,41 @@ export function sharedWindowError(
         return `conflicting ${side} time-window sizes (${win}s vs ${w}s) — one window per side`;
       }
       win = w;
+    }
+  }
+  return null;
+}
+
+/**
+ * Cross-row check: an exit `m_position.pnl` axis that restates TP/SL sugar
+ * (`>=` overlapping a take_profit value, or `<=` overlapping `−stop_loss`) is
+ * the same footgun as duplicating sugar in the rule editor. Prefer the TP/SL
+ * axes for those bounds.
+ */
+export function pnlAxisSugarDuplicateError(rows: GenericAxisRow[]): string | null {
+  const tpValues = new Set<number>();
+  const slValues = new Set<number>();
+  for (const r of rows) {
+    if (r.kind === 'take_profit') {
+      for (const v of rowValues(r)) if (v != null && v > 0) tpValues.add(v);
+    } else if (r.kind === 'stop_loss') {
+      for (const v of rowValues(r)) if (v != null && v > 0) slValues.add(v);
+    }
+  }
+  if (tpValues.size === 0 && slValues.size === 0) return null;
+
+  for (const r of rows) {
+    if (r.kind !== 'metric' || r.side !== 'exit') continue;
+    if (!isPnlAdvancedMetric(r.group, r.metric)) continue;
+    const values = rowValues(r).filter((v): v is number => v != null);
+    if (r.operator === '>=' && values.some((v) => [...tpValues].some((t) => Math.abs(v - t) < 1e-9))) {
+      return 'exit m_position.pnl duplicates a TP axis value — use the TP % axis (or drop that pnl value)';
+    }
+    if (
+      r.operator === '<=' &&
+      values.some((v) => [...slValues].some((s) => Math.abs(v - -s) < 1e-9))
+    ) {
+      return 'exit m_position.pnl duplicates an SL axis value — use the SL % axis (or drop that pnl value)';
     }
   }
   return null;

@@ -23,7 +23,57 @@ export function validateRuleParams(p: RuleParams, reg: StrategyRegistry | undefi
   validateSide('entry', p.entry, reg, errors);
   validateSide('exit', p.exit, reg, errors);
   validateReentry(p.reentry, errors);
+  errors.push(...pnlSugarDuplicateErrors(p));
   return errors;
+}
+
+/** True for the advanced `m_position.pnl` metric (TP/SL sugar is the primary surface). */
+export function isPnlAdvancedMetric(group: string, metric: string): boolean {
+  return group === 'm_position' && metric === 'pnl';
+}
+
+/**
+ * Authored `m_position.pnl` conditions that exactly restate the TP/SL sugar
+ * (`pnl >= take_profit` / `pnl <= −stop_loss`). Backend desugar produces those
+ * same bounds — duplicating them is a footgun, not a second exit.
+ */
+export function pnlSugarDuplicateErrors(p: RuleParams): string[] {
+  const arms = p.exit?.m_position?.metrics?.pnl;
+  if (!arms?.length) return [];
+  const errors: string[] = [];
+  let sawTp = false;
+  let sawSl = false;
+  for (const arm of arms) {
+    for (const c of arm) {
+      if (
+        !sawTp &&
+        p.take_profit != null &&
+        c.operator === '>=' &&
+        nearlyEqual(c.value, p.take_profit)
+      ) {
+        errors.push(
+          'exit.m_position.pnl duplicates take_profit — use the TP % field (or clear it)',
+        );
+        sawTp = true;
+      }
+      if (
+        !sawSl &&
+        p.stop_loss != null &&
+        c.operator === '<=' &&
+        nearlyEqual(c.value, -p.stop_loss)
+      ) {
+        errors.push(
+          'exit.m_position.pnl duplicates stop_loss — use the SL % field (or clear it)',
+        );
+        sawSl = true;
+      }
+    }
+  }
+  return errors;
+}
+
+function nearlyEqual(a: number, b: number): boolean {
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 1e-9;
 }
 
 /** Mirror of the backend `parse_opt_reentry`: `cooldown_sec` finite `>= 0`,

@@ -5,6 +5,7 @@ import { ConditionInput } from './ConditionInput';
 import type { ConditionExpr } from 'lib/strategy/grammar';
 import type { SideConditions, GroupConditions } from 'lib/strategy/ruleParams';
 import type { StrategyRegistry, MetricUnit } from 'lib/strategy/registry';
+import { isPnlAdvancedMetric } from 'lib/strategy/validate';
 import {
   GROUP_HELP,
   METRIC_HELP,
@@ -107,19 +108,32 @@ export function ConditionSideEditor({
               {gspec.metrics.map((m) => {
                 const tipTitle = METRIC_HELP[m.name]?.title ?? m.name;
                 const tipBody = metricHelpBody(m.name, m);
+                const pnlAdvanced = isPnlAdvancedMetric(gspec.name, m.name);
                 return (
                   <div key={m.name} className="contents">
                     <label className="flex items-center gap-1 pt-1.5 font-mono text-[12px] text-text-dim">
                       {m.name}
+                      {pnlAdvanced && (
+                        <span className="rounded px-1 py-px text-[9px] font-sans uppercase tracking-wide text-text-dim/60">
+                          adv
+                        </span>
+                      )}
                       <InfoTooltip title={tipTitle} body={tipBody} />
                     </label>
-                    <ConditionInput
-                      value={g.metrics[m.name] ?? []}
-                      onChange={(conds) => setMetric(gspec.name, m.name, conds)}
-                      unit={m.unit as MetricUnit}
-                      eqTolerance={m.eq_tolerance}
-                      disabled={disabled}
-                    />
+                    <div className="flex flex-col gap-0.5">
+                      <ConditionInput
+                        value={g.metrics[m.name] ?? []}
+                        onChange={(conds) => setMetric(gspec.name, m.name, conds)}
+                        unit={m.unit as MetricUnit}
+                        eqTolerance={m.eq_tolerance}
+                        disabled={disabled}
+                      />
+                      {pnlAdvanced && (
+                        <p className="text-[10px] text-text-dim/60">
+                          Prefer TP / SL % above for classic exits; use pnl for extra/custom bounds.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 );
               })}

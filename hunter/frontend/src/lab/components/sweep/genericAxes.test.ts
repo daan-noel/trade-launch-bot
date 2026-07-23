@@ -6,6 +6,7 @@ import {
   invalidValueFragments,
   newAxisRow,
   parseValueList,
+  pnlAxisSugarDuplicateError,
   serializeAxisRows,
   sharedWindowError,
   type GenericAxisRow,
@@ -155,5 +156,49 @@ describe('sharedWindowError', () => {
       metricRow({ side: 'exit', group: 'm_flow_window', metric: 'net_flow', window: '20', valuesText: '1' }),
     ];
     expect(sharedWindowError(rows, REG)).toBeNull();
+  });
+});
+
+describe('pnlAxisSugarDuplicateError', () => {
+  it('rejects exit pnl >= that overlaps a TP axis value', () => {
+    const rows: GenericAxisRow[] = [
+      { ...newAxisRow('take_profit'), valuesText: '50, 100' },
+      metricRow({
+        side: 'exit',
+        group: 'm_position',
+        metric: 'pnl',
+        operator: '>=',
+        valuesText: '50, 75',
+      }),
+    ];
+    expect(pnlAxisSugarDuplicateError(rows)).toMatch(/duplicates a TP axis/);
+  });
+
+  it('rejects exit pnl <= that overlaps −SL', () => {
+    const rows: GenericAxisRow[] = [
+      { ...newAxisRow('stop_loss'), valuesText: '30' },
+      metricRow({
+        side: 'exit',
+        group: 'm_position',
+        metric: 'pnl',
+        operator: '<=',
+        valuesText: '-30, -25',
+      }),
+    ];
+    expect(pnlAxisSugarDuplicateError(rows)).toMatch(/duplicates an SL axis/);
+  });
+
+  it('allows a non-overlapping catastrophe pnl beside SL', () => {
+    const rows: GenericAxisRow[] = [
+      { ...newAxisRow('stop_loss'), valuesText: '30' },
+      metricRow({
+        side: 'exit',
+        group: 'm_position',
+        metric: 'pnl',
+        operator: '<=',
+        valuesText: '-25',
+      }),
+    ];
+    expect(pnlAxisSugarDuplicateError(rows)).toBeNull();
   });
 });
