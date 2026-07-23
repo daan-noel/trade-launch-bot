@@ -983,14 +983,18 @@ mod tests {
 /// Turn a replayed [`PositionOutcome`] into a result row, pricing the round-trip
 /// through the shared [`CostModel`](trading_core::strategies::kernel::CostModel) so
 /// PnL matches the sweep + the old single-rule simulate byte-for-byte. `created_at`
-/// / `symbol` come from the token metadata; `buy_amount_sol` sizes the round-trip.
+/// / `symbol` come from the token metadata; `buy_amount_sol` sizes the round-trip;
+/// `cost_model` is the caller's chosen [`CostModelKind`](trading_core::strategies::kernel::CostModelKind)
+/// (request-selectable — see `EngineSimRequest::cost_model` — no longer hardcoded to
+/// `pumpfun_default`, which double-counts slippage against a non-default fill model).
 pub fn outcome_to_row(
     outcome: &PositionOutcome,
     symbol: &str,
     created_at: Ts,
     buy_amount_sol: f64,
+    cost_model: trading_core::strategies::kernel::CostModelKind,
 ) -> EngineBacktestResult {
-    use trading_core::strategies::kernel::{quantize_f32, round_trip_with_costs, CostModel};
+    use trading_core::strategies::kernel::{quantize_f32, round_trip_with_costs};
 
     let (exit_price_for_pnl, exit_price, exit_time, exit_tx, holding_secs, exit_reason) =
         match outcome.exit_reason {
@@ -1011,7 +1015,7 @@ pub fn outcome_to_row(
         outcome.entry_price,
         exit_price_for_pnl,
         buy_amount_sol,
-        &CostModel::pumpfun_default(),
+        &cost_model.model(),
     );
 
     EngineBacktestResult {

@@ -87,7 +87,7 @@ enum NonceState {
 1. **Live percentile ladder** — level 0 = configured percentile (default p75), 1 = p95, 2 = p99, then `p99 × escalation_tail_mult^(n-2)` (cold feed: floor-scaled).
 2. **Floor escalation** — `min_sol × escalation_tail_mult^level` so retries still climb when live percentiles sit below the Sender floor.
 
-Result is clamped to `[min_sol, max_sol]` (hunter defaults `0.001` / `0.005` — Sender Max priority-tip-buffer). Stale/cold feed falls back to the floor ladder.
+Result is clamped to `[min_sol, max_sol]` (hunter `FeeTuning` / `.env` defaults `0.0001` / `0.0005` — SWQoS-only band; executor crate `Default` is still `0.001` / `0.005` until live overwrites). Stale/cold feed falls back to the floor ladder. Lab CostModel uses the same `JITO_MIN_TIP_SOL` as its representative per-leg tip.
 
 ## `sim.rs` — simulation engine
 

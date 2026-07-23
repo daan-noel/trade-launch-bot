@@ -3,9 +3,9 @@
 //! pools (the corpus), serves the core read routes + the local routes (rule
 //! authoring, backtests, grouped sweeps), and runs the SOL-price
 //! poller + token-list refresh. It boots with **no** trading keys and **no**
-//! HELIUS gRPC: it loads the shared `Settings::from_env` (same as live) and
-//! simply leaves the optional Helius endpoints empty and never loads
-//! `live::config::TradingSecrets`.
+//! HELIUS gRPC: it loads the shared `Settings::from_env` + `FeeTuning::from_env`
+//! (same tip/CU knobs as live, for CostModel) and simply leaves the optional
+//! Helius endpoints empty and never loads `live::config::TradingSecrets`.
 
 use lab::{api, state, storage, sweep};
 
@@ -55,12 +55,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
+    // Same tip/CU knobs live applies to the trader — CostModel's fixed per-leg
+    // cost reads them via FeeTuning::current().
+    let fee_tuning = config::FeeTuning::from_env()
+        .context("Failed to load fee/tip tuning for CostModel")?;
+    fee_tuning.clone().install();
     // HTTP bind — lab reads its own LAB_HOST/LAB_PORT (docker's HOST/PORT wins),
     // defaulting to :8140 (the deploy LAB_API_PORT) so it never collides with the
     // live bin's :8130 and local + docker use the same port.
     let http_host = config::resolve_host("LAB_HOST");
     let http_port = config::resolve_port("LAB_PORT", 8140)?;
-    info!(host = %http_host, port = http_port, "Local (analysis) configuration loaded");
+    info!(
+        host = %http_host,
+        port = http_port,
+        jito_min_tip_sol = fee_tuning.jito_min_tip_sol,
+        cu_price_micro_lamports = fee_tuning.cu_price_micro_lamports,
+        "Local (analysis) configuration loaded"
+    );
 
     // Database — the three workload-isolated pools + migrations. `api_db` backs the
     // fast handlers, `batch_db` the heavy sweep/backtest jobs; `db` (hot) backs the

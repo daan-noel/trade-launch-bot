@@ -8,7 +8,9 @@ import { connectSimulationFinished } from 'services/sse';
 import type { RuleEditorDraft } from 'components/strategy/RuleEditor';
 import {
   lamportsToSol,
+  COST_MODELS,
   FILL_MODELS,
+  type CostModelId,
   type EngineRuleDraft,
   type FillModelId,
 } from 'lib/strategy/types';
@@ -40,6 +42,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
   const [err, setErr] = useState<string | null>(null);
   const [windowHours, setWindowHours] = useState(24);
   const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
+  const [costModel, setCostModel] = useState<CostModelId>('pumpfun_default');
   const handleRef = useRef<{ close: () => void } | null>(null);
   const runIdRef = useRef<string | null>(null);
 
@@ -64,7 +67,12 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
         ? new Date(Date.now() - windowHours * 3600 * 1000).toISOString()
         : undefined;
     try {
-      const res = await start({ draft: engineDraft, since, fill_model: fillModel }).unwrap();
+      const res = await start({
+        draft: engineDraft,
+        since,
+        fill_model: fillModel,
+        cost_model: costModel,
+      }).unwrap();
       runIdRef.current = res.run_id;
       handleRef.current?.close();
       handleRef.current = connectSimulationFinished(async (ev) => {
@@ -114,6 +122,19 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
           title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
         >
           {FILL_MODELS.map((m) => (
+            <option key={m.id} value={m.id} title={m.hint}>
+              {m.label}
+            </option>
+          ))}
+        </Select>
+        <Select
+          fieldSize="sm"
+          value={costModel}
+          onChange={(e) => setCostModel(e.target.value as CostModelId)}
+          className="w-36"
+          title={COST_MODELS.find((m) => m.id === costModel)?.hint}
+        >
+          {COST_MODELS.map((m) => (
             <option key={m.id} value={m.id} title={m.hint}>
               {m.label}
             </option>

@@ -27,7 +27,7 @@ fold; live, sweep, and the replay debugger all drive it.
 | `rule_params.rs` | `RuleParams` registry-guided parse → canonical `to_value` + validation |
 | `grouping.rs` | bucket matching (`same_bucket`) for the SOL fingerprint axes |
 | `deadness.rs` | `is_dead_verdict` + `DEAD_*` consts — the ONE deadness SSOT (core + live + sweep re-export it) |
-| `kernel.rs` | `CostModel` / `round_trip_with_costs` + `RunAgg` → `RunMetrics` (≡ `strategy_run_metrics` cols) + the quantile sketch / robust score — one copy of the PnL+summary math shared by live/paper/sweep |
+| `kernel.rs` | `CostModel` / `round_trip_with_costs` + `RunAgg` → `RunMetrics` (≡ `strategy_run_metrics` cols) + the quantile sketch / robust score — one copy of the PnL+summary math shared by live/paper/sweep. Fixed per-leg cost (tip + CU priority) comes from process-wide [`FeeTuning`](../../core/src/config/fee_tuning.rs) (`JITO_MIN_TIP_SOL` + `CU_PRICE_MICRO_LAMPORTS`), installed at boot by both bins |
 | `event_log.rs` | `LoggedEvent` — the on-disk JSONL format, SSOT for the live recorder (writer) + the lab replay inspector (reader) |
 
 ## Live adapters — `live/src/strategies/engine/`
@@ -110,14 +110,20 @@ with a first-slot axis arms `PendingFirstSlot` and resolves on `FirstSlotSettled
   over one shared `EngineState`, so cross-token concurrency/lifetime caps apply
   exactly as live (not a post-hoc per-token select). Synthetic 500 ms ticks between
   event times, emission stopping the instant `state.tokens` empties (long quiet gaps
-  are O(1) jumps). Sim fills mirror `exec_paper` (worst-case slot-window fill via
-  `trading_core::strategies::paper_fill`).
+  are O(1) jumps). Fills price via the request's `FillModel` (`trading_core::
+  strategies::paper_fill`, default `worst_case` — live-paper parity); `outcome_to_row`
+  then round-trips through the request's `CostModelKind` (default `pumpfun_default`)
+  — the caller must pair a non-default fill model with `pumpfun_fee_only` or the
+  round-trip double-counts slippage (same `Pricing` coherence rule as the sweep, below).
 - **`strategies/engine_sim.rs`** + **`api/handlers/strategies/engine.rs`** —
-  `POST /api/strategies/simulate` (`rule_id` OR inline `draft`); reuses the
-  fingerprint candidate scan + the analysis-cache single-flight; results served by
-  the strategy-agnostic `positions::sim_result_{page,summary}`. Loads `with_flow`
-  when rule params reference `m_flow_*`; dry-run uses the rule's fingerprint
-  `metric_config`.
+  `POST /api/strategies/simulate` (`rule_id` OR inline `draft`, `fill_model` +
+  `cost_model`); reuses the fingerprint candidate scan + the analysis-cache
+  single-flight; results served by the strategy-agnostic `positions::
+  sim_result_{page,summary}`. Both pricing knobs persist on the saved-rule's
+  `SimMeta` (`state/sim_results.rs`) and surface as the Simulate table's Fill/Cost
+  columns, so a stored result always shows what it was priced under. Loads
+  `with_flow` when rule params reference `m_flow_*`; dry-run uses the rule's
+  fingerprint `metric_config`.
 - **`strategies/flow_discovery.rs`** + **`api/handlers/strategies/flow_discovery.rs`** —
   lab-only job: score trade ix-structures per fingerprint group → toggle
   `volume_ix_patterns` (mutual `409` with sweeps; ephemeral in-RAM results).

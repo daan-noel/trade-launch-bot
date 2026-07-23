@@ -28,6 +28,7 @@ use hunter_engine::fingerprint::{match_all, Fingerprint as EngineFingerprint, Ma
 
 use trading_core::models::ingest::SseEvent;
 use trading_core::models::{Fingerprint as ModelFingerprint, StrategyRule};
+use trading_core::strategies::kernel::CostModelKind;
 use trading_core::strategies::paper_fill::FillModel;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
@@ -73,6 +74,14 @@ pub struct EngineSimRequest {
     /// saved-rule and a draft run.
     #[serde(default)]
     pub fill_model: FillModel,
+    /// Which execution-cost model prices the round-trips. Defaults to
+    /// [`CostModelKind::PumpfunDefault`] (fee + slippage), which pairs correctly
+    /// with the default `fill_model` (`WorstCase`) but **double-counts** slippage
+    /// against an explicit `first_in_window`/`signal_price` fill — those already
+    /// price it into the fill itself. Pass `pumpfun_fee_only` alongside a non-default
+    /// fill model to avoid that (mirrors the grouped-sweep's `cost_model`).
+    #[serde(default)]
+    pub cost_model: CostModelKind,
 }
 
 /// An inline, unsaved rule for a dry-run simulate — the "how it trades" columns
@@ -114,6 +123,7 @@ pub async fn spawn_engine_simulation(
     let since = req.since;
     let until = req.until;
     let fill_model = req.fill_model;
+    let cost_model = req.cost_model;
     let target = match resolve_target(&app_state, &req).await {
         Ok(t) => t,
         Err(resp) => return resp,
@@ -150,7 +160,7 @@ pub async fn spawn_engine_simulation(
         let _guard = Guard { state: app_state.clone(), run_id, cancel: cancel.clone() };
 
         let outcome = match run_engine_backtest(
-            &app_state, &target, since, until, fill_model, cancel, cell,
+            &app_state, &target, since, until, fill_model, cost_model, cancel, cell,
         )
         .await
         {
@@ -164,6 +174,7 @@ pub async fn spawn_engine_simulation(
             since,
             until,
             fill_model,
+            cost_model,
             outcome,
             persist,
         );
@@ -255,6 +266,7 @@ async fn run_engine_backtest(
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
     fill_model: FillModel,
+    cost_model: CostModelKind,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     progress_cell: Arc<crate::state::job_progress::ProgressCell>,
 ) -> Result<Vec<Value>> {
@@ -353,7 +365,7 @@ async fn run_engine_backtest(
                 .filter_map(|o| {
                     let (symbol, created_at) = meta.get(&o.mint)?;
                     progress2.tick();
-                    Some(outcome_to_row(o, symbol, *created_at, buy_amount_sol))
+                    Some(outcome_to_row(o, symbol, *created_at, buy_amount_sol, cost_model))
                 })
                 .collect()
         })

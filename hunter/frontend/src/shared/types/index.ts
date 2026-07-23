@@ -1,5 +1,5 @@
 import type { RunSummary } from 'lib/strategy/runSummary';
-import type { FillModelId } from 'lib/strategy/types';
+import type { CostModelId, FillModelId } from 'lib/strategy/types';
 
 export type { RunMetrics, RunSummary } from 'lib/strategy/runSummary';
 
@@ -381,6 +381,10 @@ export interface SimulatedSummary extends RunSummary {
    *  table's Fill column. Absent/null on legacy payloads → falls back to the
    *  default (worst-case) label. */
   fill_model?: FillModelId | null;
+  /** Which execution-cost model priced this run's round-trips — rendered as the
+   *  Simulate table's Cost column. Absent/null on legacy payloads → falls back to
+   *  the default (`pumpfun_default`) label. */
+  cost_model?: CostModelId | null;
 }
 
 /** Hold + wall-clock bins for the Temporal summary band — mirrors lab

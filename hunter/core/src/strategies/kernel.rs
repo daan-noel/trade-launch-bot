@@ -12,10 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::constants::{
-    COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
-    COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, LAMPORTS_PER_SOL,
-};
+use crate::config::FeeTuning;
 
 // ── Per-token outcome ─────────────────────────────────────────────────────────
 
@@ -94,18 +91,16 @@ impl TokenOutcome {
 
 // ── Cost model (ported from lab sweep; Phase 4 collapses the duplicate) ────────
 
-const REPRESENTATIVE_JITO_TIP_SOL: f64 = 0.001;
 const FEE_BPS_PER_LEG: f64 = 100.0;
 const SLIPPAGE_BPS_PER_LEG: f64 = 100.0;
-
-fn priority_fee_sol(cu_limit: u32) -> f64 {
-    let lamports = COMPUTE_UNIT_PRICE_MICRO_LAMPORTS as f64 * cu_limit as f64 / 1_000_000.0;
-    lamports / LAMPORTS_PER_SOL as f64
-}
 
 /// Execution-cost model the kernel prices every round-trip with, so simulated
 /// PnL reflects the frictions the live trader pays. All knobs apply to **both**
 /// legs (symmetric entry/exit).
+///
+/// Fixed per-leg cost (tip + priority) comes from process-wide [`FeeTuning`] —
+/// the same `JITO_MIN_TIP_SOL` / `CU_PRICE_MICRO_LAMPORTS` live applies to the
+/// trader. Install via [`FeeTuning::install`] after `dotenvy` in each bin.
 #[derive(Clone, Copy, Debug)]
 pub struct CostModel {
     pub fee_bps_per_leg: f64,
@@ -114,16 +109,19 @@ pub struct CostModel {
 }
 
 impl CostModel {
-    /// Default model from the live `pump_trader` curve constants (fee/slippage +
-    /// representative Jito tip + priority fee at the average curve CU limit).
+    /// Default model: ~1%/leg fee + ~1%/leg slippage + [`FeeTuning::current`]'s
+    /// tip floor and CU priority fee.
     pub fn pumpfun_default() -> Self {
-        let avg_priority_sol = (priority_fee_sol(COMPUTE_UNIT_LIMIT_CURVE_BUY)
-            + priority_fee_sol(COMPUTE_UNIT_LIMIT_CURVE_SELL))
-            / 2.0;
+        Self::pumpfun_default_with(&FeeTuning::current())
+    }
+
+    /// Like [`pumpfun_default`](Self::pumpfun_default) but with an explicit
+    /// [`FeeTuning`] (tests / one-off repricing without touching process state).
+    pub fn pumpfun_default_with(tuning: &FeeTuning) -> Self {
         Self {
             fee_bps_per_leg: FEE_BPS_PER_LEG,
             slippage_bps: SLIPPAGE_BPS_PER_LEG,
-            fixed_cost_sol_per_leg: REPRESENTATIVE_JITO_TIP_SOL + avg_priority_sol,
+            fixed_cost_sol_per_leg: tuning.fixed_cost_sol_per_leg(),
         }
     }
 
@@ -134,7 +132,12 @@ impl CostModel {
     /// top would double-count it. The `slippage_bps` knob is for callers that price at
     /// a signal spot without a granular fill model (e.g. quick analytic baselines).
     pub fn pumpfun_fee_only() -> Self {
-        Self { slippage_bps: 0.0, ..Self::pumpfun_default() }
+        Self::pumpfun_fee_only_with(&FeeTuning::current())
+    }
+
+    /// Fee-only variant of [`pumpfun_default_with`](Self::pumpfun_default_with).
+    pub fn pumpfun_fee_only_with(tuning: &FeeTuning) -> Self {
+        Self { slippage_bps: 0.0, ..Self::pumpfun_default_with(tuning) }
     }
 
     /// A frictionless model (no fees/slippage/fixed cost) — pure price-to-price,
@@ -172,11 +175,16 @@ pub enum CostModelKind {
 }
 
 impl CostModelKind {
-    /// The [`CostModel`] this kind selects.
+    /// The [`CostModel`] this kind selects under process [`FeeTuning::current`].
     pub fn model(self) -> CostModel {
+        self.model_with(&FeeTuning::current())
+    }
+
+    /// Like [`model`](Self::model) with an explicit [`FeeTuning`].
+    pub fn model_with(self, tuning: &FeeTuning) -> CostModel {
         match self {
-            CostModelKind::PumpfunDefault => CostModel::pumpfun_default(),
-            CostModelKind::PumpfunFeeOnly => CostModel::pumpfun_fee_only(),
+            CostModelKind::PumpfunDefault => CostModel::pumpfun_default_with(tuning),
+            CostModelKind::PumpfunFeeOnly => CostModel::pumpfun_fee_only_with(tuning),
         }
     }
 }
@@ -886,6 +894,22 @@ mod tests {
         let big = round_trip_with_costs(1.0, 3.0, 1.0, &d).0
             - round_trip_with_costs(1.0, 3.0, 1.0, &f).0;
         assert!(big < small, "slippage haircut grows with the exit price");
+    }
+
+    #[test]
+    fn cost_model_fixed_cost_tracks_fee_tuning_tip() {
+        let cheap = FeeTuning {
+            jito_min_tip_sol: 0.0001,
+            ..FeeTuning::defaults()
+        };
+        let dear = FeeTuning {
+            jito_min_tip_sol: 0.001,
+            ..FeeTuning::defaults()
+        };
+        let c = CostModel::pumpfun_default_with(&cheap);
+        let d = CostModel::pumpfun_default_with(&dear);
+        assert!((c.fixed_cost_sol_per_leg - cheap.fixed_cost_sol_per_leg()).abs() < 1e-15);
+        assert!(d.fixed_cost_sol_per_leg > c.fixed_cost_sol_per_leg);
     }
 
     // ── exact_run_metrics (parity plan D1) ──────────────────────────────────

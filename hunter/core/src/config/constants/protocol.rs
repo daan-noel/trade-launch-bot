@@ -25,9 +25,12 @@ pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /// USDC mint decimals (raw units → UI).
 pub const USDC_DECIMALS: u8 = 6;
 
-// CU cost-model constants (duplicated with `pump_trader::constants`) — read by
-// `lab`'s sweep cost model via `trading_core::config::constants`.
-/// Compute-unit price in micro-lamports (priority-fee rate per CU).
+// Curve CU limits (duplicated with `pump_trader::constants`). The *rate*
+// (`CU_PRICE_MICRO_LAMPORTS` env) lives on [`crate::config::FeeTuning`]; the
+// compile-time default below matches that env default and is kept for callers
+// that still need a constant (executor defaults, docs).
+/// Compute-unit price in micro-lamports (priority-fee rate per CU). Prefer
+/// [`crate::config::FeeTuning::cu_price_micro_lamports`] at runtime.
 pub const COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: u64 = 200_000;
 /// Curve buy CU limit (measured p95 × 1.2).
 pub const COMPUTE_UNIT_LIMIT_CURVE_BUY: u32 = 150_000;

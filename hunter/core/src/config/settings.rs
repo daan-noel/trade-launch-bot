@@ -7,10 +7,11 @@ use std::time::Duration;
 ///
 /// **Live-only trading credentials do NOT live here.** The trader wallet key,
 /// nonce accounts, and Helius Sender endpoints are required to move real SOL, so
-/// only the live bin loads them — see `live::config::TradingSecrets`. Keeping
-/// them off this struct means lab can't accidentally require (or hold) trading
-/// secrets, and there's no second constructor to drift out of sync. Mirrors
-/// forge's `Settings` (DB-only) + `LauncherSettings` (live-only) split.
+/// only the live bin loads them — see `live::config::TradingSecrets`. Tip / CU
+/// knobs are shared ([`crate::config::FeeTuning`]) so lab's CostModel can price
+/// the same floor live bids. Keeping secrets off this struct means lab can't
+/// accidentally require (or hold) them. Mirrors forge's `Settings` (DB-only) +
+/// `LauncherSettings` (live-only) split.
 ///
 /// **HTTP host/port are read per-bin**, not here: live and lab bind different
 /// ports (`LIVE_PORT` :8130 / `LAB_PORT` :8140 — matching the deploy

@@ -71,7 +71,9 @@ import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
   disabledRuleRowClass,
   lamportsToSol,
+  COST_MODELS,
   FILL_MODELS,
+  type CostModelId,
   type Fingerprint,
   type FillModelId,
   type StrategyRule,
@@ -109,6 +111,13 @@ const FILL_MODEL_VARIANT: Record<FillModelId, BadgeVariant> = {
   first_in_window: 'info',
   signal_price: 'success',
 };
+/** `pumpfun_default` double-counts slippage against an explicit fill model (see
+ *  `COST_MODELS`), so it reads as the cautionary color; `pumpfun_fee_only` is the
+ *  honest pairing. */
+const COST_MODEL_VARIANT: Record<CostModelId, BadgeVariant> = {
+  pumpfun_default: 'danger',
+  pumpfun_fee_only: 'info',
+};
 const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
 const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
 const simRowOverlay = markerRowOverlay(inspectFromSim);
@@ -132,11 +141,19 @@ export function SimulatePage() {
   const [runs, setRuns] = useState<Record<string, RunState>>({});
   const [bulkMode, setBulkMode] = useState<TradeMode | null>(null);
   const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
+  // Kept alongside fillModel — pairing an explicit fill model with the default
+  // cost model double-counts slippage (see `COST_MODELS`), so the two travel
+  // together. Default stays `pumpfun_default` (the historically hardcoded value)
+  // so a user who never touches this control sees unchanged numbers.
+  const [costModel, setCostModel] = useState<CostModelId>('pumpfun_default');
   // Read through a ref in the run handlers: `runRule` is captured inside the
   // memoized `columns` (deps: runs/fpById/fpTints), so a plain closure over
-  // `fillModel` would go stale until one of those changes. The ref is always current.
+  // `fillModel`/`costModel` would go stale until one of those changes. The refs
+  // are always current.
   const fillModelRef = useRef(fillModel);
   fillModelRef.current = fillModel;
+  const costModelRef = useRef(costModel);
+  costModelRef.current = costModel;
   const [selectedRuleId, setSelectedRuleId] = useSelectionSearchParam(STRATEGY_PARAMS.rule);
   const [inspect, setInspect] = useState<{
     key: string;
@@ -282,7 +299,11 @@ export function SimulatePage() {
     setRuns((r) => ({ ...r, [rule.id]: { running: true } }));
     setSelectedRuleId(rule.id);
     try {
-      await start({ rule_id: rule.id, fill_model: fillModelRef.current }).unwrap();
+      await start({
+        rule_id: rule.id,
+        fill_model: fillModelRef.current,
+        cost_model: costModelRef.current,
+      }).unwrap();
     } catch (e) {
       setRuns((r) => ({ ...r, [rule.id]: { running: false, error: apiErrorMessage(e as never) ?? 'start failed' } }));
     }
@@ -302,7 +323,11 @@ export function SimulatePage() {
       await Promise.all(
         targets.map(async (rule) => {
           try {
-            await start({ rule_id: rule.id, fill_model: fillModelRef.current }).unwrap();
+            await start({
+              rule_id: rule.id,
+              fill_model: fillModelRef.current,
+              cost_model: costModelRef.current,
+            }).unwrap();
           } catch (e) {
             setRuns((r) => ({
               ...r,
@@ -370,6 +395,22 @@ export function SimulatePage() {
               title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
             >
               {FILL_MODELS.map((m) => (
+                <option key={m.id} value={m.id} title={m.hint}>
+                  {m.label}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="flex items-center gap-1.5 text-[12px] text-text-dim">
+            <span>Cost</span>
+            <Select
+              fieldSize="sm"
+              value={costModel}
+              onChange={(e) => setCostModel(e.target.value as CostModelId)}
+              className="w-36"
+              title={COST_MODELS.find((m) => m.id === costModel)?.hint}
+            >
+              {COST_MODELS.map((m) => (
                 <option key={m.id} value={m.id} title={m.hint}>
                   {m.label}
                 </option>
@@ -1026,6 +1067,30 @@ function buildColumns(
       searchValue: (r) => {
         const id = summaryOf(r)?.fill_model;
         return id ? (FILL_MODELS.find((m) => m.id === id)?.label ?? id) : '';
+      },
+    },
+    {
+      key: 'sim_cost_model',
+      label: 'Cost',
+      group: 'sim',
+      tooltip:
+        'Which execution-cost model priced this result’s round-trips — pairing "Fee + slippage" with a non-default Fill double-counts slippage',
+      sortable: true,
+      render: (r) => {
+        const run = runOf(r);
+        if (!run || run.running || run.error || !run.summary) return DASH;
+        const id = run.summary.cost_model ?? 'pumpfun_default';
+        const model = COST_MODELS.find((m) => m.id === id);
+        return (
+          <Badge variant={COST_MODEL_VARIANT[id]} size="sm" title={model?.hint}>
+            {model?.label ?? id}
+          </Badge>
+        );
+      },
+      sortValue: (r) => summaryOf(r)?.cost_model ?? null,
+      searchValue: (r) => {
+        const id = summaryOf(r)?.cost_model;
+        return id ? (COST_MODELS.find((m) => m.id === id)?.label ?? id) : '';
       },
     },
     // Mirrors the grouped-sweep combo table's stat columns (same metrics, same

@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use trading_core::strategies::kernel::RunSummary;
+use trading_core::strategies::kernel::{CostModelKind, RunSummary};
 use trading_core::strategies::paper_fill::FillModel;
 use uuid::Uuid;
 
@@ -65,6 +65,12 @@ pub struct SimMeta {
     /// under. `#[serde(default)]` so legacy metas (pre-field) load as `WorstCase`.
     #[serde(default)]
     pub fill_model: FillModel,
+    /// Which execution-cost model priced this run's round-trips — surfaced as the
+    /// Simulate table's Cost column, mirroring `fill_model` above. `#[serde(default)]`
+    /// so legacy metas (pre-field) load as `PumpfunDefault` — the model they were
+    /// actually hardcoded to before this field existed, so their numbers keep meaning.
+    #[serde(default)]
+    pub cost_model: CostModelKind,
     /// Unfiltered rollup — powers the Simulate page's per-rule columns without
     /// loading rows from disk.
     pub summary: RunSummary,
@@ -175,6 +181,7 @@ impl SimResults {
         from: Option<DateTime<Utc>>,
         to: Option<DateTime<Utc>>,
         fill_model: FillModel,
+        cost_model: CostModelKind,
         outcome: SimOutcome,
         persist: bool,
     ) {
@@ -204,6 +211,7 @@ impl SimResults {
                     n_rows: rows.len(),
                     n_migrated,
                     fill_model,
+                    cost_model,
                     summary,
                 };
                 if let Err(e) = self.write_durable(&meta, rows) {
@@ -303,6 +311,11 @@ impl SimResults {
         self.index.get(rule_id).map(|m| m.fill_model)
     }
 
+    /// Cost model the stored result was priced under, or `None` if absent.
+    pub fn cost_model(&self, rule_id: &Uuid) -> Option<CostModelKind> {
+        self.index.get(rule_id).map(|m| m.cost_model)
+    }
+
     /// Durable meta for a rule, if any (no row load).
     pub fn meta(&self, rule_id: &Uuid) -> Option<SimMeta> {
         self.index.get(rule_id).map(|e| e.clone())
@@ -393,6 +406,7 @@ pub fn summary_wire(meta: &SimMeta) -> Value {
         obj.insert("computed_at".into(), serde_json::json!(meta.computed_at));
         obj.insert("n_migrated".into(), serde_json::json!(meta.n_migrated));
         obj.insert("fill_model".into(), serde_json::json!(meta.fill_model));
+        obj.insert("cost_model".into(), serde_json::json!(meta.cost_model));
     }
     body
 }
@@ -468,6 +482,7 @@ mod tests {
             None,
             None,
             FillModel::WorstCase,
+            CostModelKind::PumpfunDefault,
             SimOutcome::Done(rows.clone()),
             true,
         );
@@ -507,6 +522,7 @@ mod tests {
             None,
             None,
             FillModel::WorstCase,
+            CostModelKind::PumpfunDefault,
             SimOutcome::Done(Arc::new(vec![serde_json::json!({"fired": false})])),
             false,
         );
@@ -529,6 +545,7 @@ mod tests {
             None,
             None,
             FillModel::WorstCase,
+            CostModelKind::PumpfunDefault,
             SimOutcome::Done(Arc::new(vec![])),
             true,
         );

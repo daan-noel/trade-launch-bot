@@ -1026,9 +1026,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Config. Shared settings load for both bins; the live bin additionally
     // requires the Helius endpoints (fail fast at boot) and loads its own trading
-    // credentials (`TradingSecrets` — wallet key, nonce accounts, Sender URLs) plus
-    // fee/tip tuning (`TraderFeeTuning`), which lab never touches.
+    // credentials (`TradingSecrets` — wallet key, nonce accounts, Sender URLs).
+    // Tip/CU knobs (`FeeTuning`) are shared with lab so CostModel prices the same
+    // floor the trader bids.
     let settings = config::Settings::from_env().context("Failed to load configuration")?;
+    let fee_tuning = config::FeeTuning::from_env()
+        .context("Failed to load trader fee/tip tuning")?;
+    fee_tuning.clone().install();
 
     // `unknown-programs` — offline diagnostic. Scans stored `raw_txs` and ranks the
     // top-level program IDs the labeler still can't name (they render as
@@ -1044,8 +1048,6 @@ async fn main() -> anyhow::Result<()> {
         .context("live bin is missing a required Helius endpoint")?;
     let secrets = live::config::TradingSecrets::from_env()
         .context("Failed to load live trading credentials")?;
-    let fee_tuning = live::config::TraderFeeTuning::from_env()
-        .context("Failed to load trader fee/tip tuning")?;
 
     // HTTP bind — live reads its own LIVE_HOST/LIVE_PORT (docker's HOST/PORT wins).
     // Default matches the deploy LIVE_API_PORT so local + docker use the same port.
@@ -1064,7 +1066,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // The trader takes an `Arc<dyn Signer>` (HSM/remote-signer-ready) and parsed
-    // nonce pubkeys; fee/tip knobs come from env (see `TraderFeeTuning`).
+    // nonce pubkeys; fee/tip knobs come from env (see `FeeTuning`).
     let signer: Arc<dyn solana_sdk::signature::Signer + Send + Sync> = Arc::new(
         parse_wallet_keypair(&secrets.wallet_private_key)
             .context("Failed to parse trader wallet private key")?,

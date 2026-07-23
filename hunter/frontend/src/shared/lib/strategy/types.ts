@@ -224,13 +224,17 @@ export const COST_MODELS: ReadonlyArray<{ id: CostModelId; label: string; hint: 
 
 /** `POST /api/strategies/simulate` body — a saved rule (`rule_id`) or an inline
  *  `draft` (ignored if `rule_id` is set), over an optional creation window.
- *  `fill_model` (top-level, default `worst_case`) prices the round-trips. */
+ *  `fill_model` (top-level, default `worst_case`) and `cost_model` (default
+ *  `pumpfun_default`) together decide what the round-trip PnL means — pairing an
+ *  explicit fill model with `pumpfun_default` double-counts slippage (see
+ *  `COST_MODELS`). */
 export interface EngineSimRequest {
   rule_id?: string;
   draft?: EngineRuleDraft;
   since?: string;
   until?: string;
   fill_model?: FillModelId;
+  cost_model?: CostModelId;
 }
 
 /** `202` response of `POST /api/strategies/simulate`. `run_id` = the rule id for
