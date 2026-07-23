@@ -4,6 +4,9 @@ import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { Accordion } from 'components/ui/Accordion';
 import type { ChartEventMarker, ChartVisibleTimeRange } from 'components/token-price-chart';
+import { patternKeysFrom } from 'lib/flow/classifyFlow';
+import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
+import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import type { TokenDetailRecord } from 'types';
 import { MetricPanes, type MetricPanesRuleOverride } from '@lab/components/strategy/MetricPanes';
 
@@ -23,6 +26,8 @@ export function LabTokenInspect({
   extraEventMarkers = [],
   ruleOverride = null,
   positionEntry = null,
+  /** Explicit pattern keys; when omitted, resolved from `ruleOverride.fingerprintId`. */
+  flowPatternKeys: flowPatternKeysProp = null,
 }: {
   detail: TokenDetailRecord | null;
   loading?: boolean;
@@ -35,12 +40,26 @@ export function LabTokenInspect({
   ruleOverride?: MetricPanesRuleOverride | null;
   /** Inspected run's entry fill — drives the `m_position` panes (see MetricPanes). */
   positionEntry?: { time: string; price: number } | null;
+  flowPatternKeys?: ReadonlySet<string> | null;
 }) {
   const [crosshairTimeSec, setCrosshairTimeSec] = useState<number | null>(null);
   /** Who last drove the shared crosshair — only pane hover is pushed into the price chart. */
   const [crosshairSource, setCrosshairSource] = useState<'chart' | 'panes' | null>(null);
   const [visibleTimeRange, setVisibleTimeRange] = useState<ChartVisibleTimeRange | null>(null);
   const [paneMarkers, setPaneMarkers] = useState<ChartEventMarker[]>([]);
+
+  const { data: fingerprints = [] } = useGetFingerprintsQuery(undefined, {
+    skip: flowPatternKeysProp != null || !ruleOverride?.fingerprintId,
+  });
+
+  const flowPatternKeys = useMemo(() => {
+    if (flowPatternKeysProp) return flowPatternKeysProp;
+    const fpId = ruleOverride?.fingerprintId;
+    if (!fpId) return null;
+    const fp = fingerprints.find((f) => f.id === fpId);
+    if (!fp) return null;
+    return patternKeysFrom(volumeIxPatternsFromConfig(fp.metric_config));
+  }, [flowPatternKeysProp, ruleOverride?.fingerprintId, fingerprints]);
 
   const onEventMarkersChange = useCallback((markers: ChartEventMarker[]) => {
     setPaneMarkers(markers);
@@ -77,6 +96,7 @@ export function LabTokenInspect({
         onCrosshairTimeChange={onChartCrosshair}
         externalCrosshairTimeSec={crosshairSource === 'panes' ? crosshairTimeSec : null}
         onVisibleTimeRangeChange={setVisibleTimeRange}
+        flowPatternKeys={flowPatternKeys}
       />
       {mint ? (
         <Accordion title="Metric panes" bordered={false} padding="sm" storageKey="mt:inspect-panes-open">

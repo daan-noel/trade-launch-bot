@@ -8,6 +8,7 @@ import {
   CHART_STYLE_LABELS,
   createChartPriceFormatter,
 } from './constants';
+import { FLOW_NON_VOL_LINE_COLOR, FLOW_VOL_LINE_COLOR } from 'lib/flow/flowChartData';
 import { BarCrosshairFields } from './BarCrosshairFields';
 import { Checkbox } from 'components/ui/Checkbox';
 import { cn } from 'lib/cn';
@@ -64,6 +65,26 @@ export function RangeSelectIcon() {
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeDasharray="1.5 2"
+      />
+    </svg>
+  );
+}
+
+/** Two overlaid cumulative curves — vol (red) / non-vol (gold). */
+export function FlowLinesIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden className="size-3.5">
+      <path
+        d="M3 15 C7 14 9 8 17 5"
+        stroke={FLOW_VOL_LINE_COLOR}
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M3 16.5 C8 16 11 12 17 11"
+        stroke={FLOW_NON_VOL_LINE_COLOR}
+        strokeWidth="1.6"
+        strokeLinecap="round"
       />
     </svg>
   );
@@ -298,8 +319,10 @@ export function ChartToolbar({
   athLineAvailable,
   showMigrationLine,
   trimEmptyBars,
+  showFlowLines,
   rangeSelectMode,
   crosshair,
+  formatFlow,
   isMigrated,
   isMayhemMode,
   isCashbackEnabled,
@@ -315,6 +338,7 @@ export function ChartToolbar({
   onShowAthLineChange,
   onShowMigrationLineChange,
   onTrimEmptyBarsChange,
+  onShowFlowLinesChange,
   onRangeSelectModeChange,
 }: ChartToolbarProps) {
   const [showMore, setShowMore] = useState(false);
@@ -324,13 +348,27 @@ export function ChartToolbar({
   const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
 
   const crosshairLine = crosshair ? (
-    <BarCrosshairFields
-      style={style}
-      crosshair={crosshair}
-      formatPrice={formatChartPrice}
-      formatVol={formatVol}
-      layout="inline"
-    />
+    <>
+      <BarCrosshairFields
+        style={style}
+        crosshair={crosshair}
+        formatPrice={formatChartPrice}
+        formatVol={formatVol}
+        layout="inline"
+      />
+      {(crosshair.flowVol != null || crosshair.flowNonVol != null) && (
+        <div>
+          <span style={{ color: FLOW_VOL_LINE_COLOR }}>
+            <span className="font-semibold">VolMk</span>{' '}
+            {crosshair.flowVol != null ? formatFlow(crosshair.flowVol) : '—'}
+          </span>{' '}
+          <span style={{ color: FLOW_NON_VOL_LINE_COLOR }}>
+            <span className="font-semibold">NonVol</span>{' '}
+            {crosshair.flowNonVol != null ? formatFlow(crosshair.flowNonVol) : '—'}
+          </span>
+        </div>
+      )}
+    </>
   ) : null;
 
   const showStatusBadges = isMigrated != null;
@@ -341,6 +379,7 @@ export function ChartToolbar({
     trimEmptyBars ||
     showAthLine ||
     showMigrationLine ||
+    showFlowLines ||
     rangeSelectMode ||
     (showDevMarkers && devMarkersBoundariesOnly);
 
@@ -384,6 +423,7 @@ export function ChartToolbar({
               <div>—</div>
               <div>—</div>
               {style === 'candles' && <div>—</div>}
+              <div>—</div>
             </div>
           )}
         </div>
@@ -551,6 +591,16 @@ export function ChartToolbar({
             tooltip="Hide flat candles for intervals with no trades"
           >
             <TrimGapsIcon />
+          </IconToggleButton>
+
+          <IconToggleButton
+            active={showFlowLines}
+            onClick={() => onShowFlowLinesChange(!showFlowLines)}
+            label="Toggle vol/non-vol flow lines"
+            tooltip="Cumulative volume-maker (red) vs non-volume (gold) overlay — uses fingerprint volume_ix_patterns when available, else creator-seeded classification"
+            activeColor={FLOW_VOL_LINE_COLOR}
+          >
+            <FlowLinesIcon />
           </IconToggleButton>
 
           <button

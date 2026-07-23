@@ -59,6 +59,11 @@ interface TokenTradeChartProps {
   externalCrosshairTimeSec?: number | null;
   /** Visible wall-clock window for sibling panes (time-grouping mode only). */
   onVisibleTimeRangeChange?: (range: { from: number; to: number } | null) => void;
+  /**
+   * Fingerprint `volume_ix_patterns` keys for the vol/non-vol overlay. Omit to
+   * still show creator-seeded classification when the chart toggle is on.
+   */
+  flowPatternKeys?: ReadonlySet<string> | null;
 }
 
 /** Maps tx signature → kind for entry/exit row highlighting in the trades table.
@@ -116,6 +121,7 @@ export function TokenTradeChart({
   onCrosshairTimeChange,
   externalCrosshairTimeSec = null,
   onVisibleTimeRangeChange,
+  flowPatternKeys = null,
 }: TokenTradeChartProps) {
   const { unit, usdRate } = usePriceUnit();
   const { timezone } = useTimezone();
@@ -290,6 +296,7 @@ export function TokenTradeChart({
         onCrosshairTimeChange={onCrosshairTimeChange}
         externalCrosshairTimeSec={externalCrosshairTimeSec}
         onVisibleTimeRangeChange={onVisibleTimeRangeChange}
+        flowPatternKeys={flowPatternKeys}
       />
 
       {showSelectionPanel && (

@@ -110,6 +110,8 @@ interface TokenTableCommon<R> {
   titleOf?: (row: R) => string;
   /** Wallet to spotlight on every chart (Trader Analysis). */
   highlightWallet?: string | null;
+  /** Fingerprint volume_ix_patterns keys for the charts-grid vol/non-vol overlay. */
+  flowPatternKeys?: ReadonlySet<string> | null;
   rowActions?: (row: R) => ReactNode;
   rowClassName?: (row: R) => string | undefined;
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
@@ -173,6 +175,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     chartsGroupByMint,
     mintChartGroupOverlay,
     useMintChartGroupOverlay,
+    flowPatternKeys,
   } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() => (charts ? loadChartsPref(tableId) : false));
@@ -234,6 +237,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           groupByMint={chartsGroupByMint}
           mintGroupOverlay={mintChartGroupOverlay}
           useMintGroupOverlay={useMintChartGroupOverlay}
+          flowPatternKeys={flowPatternKeys}
         />
       )}
     </>

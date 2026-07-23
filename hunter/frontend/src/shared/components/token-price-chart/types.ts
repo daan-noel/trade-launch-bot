@@ -25,6 +25,8 @@ export interface ChartTrade {
   real_token_reserves?: number | null;
   venue?: 'curve' | 'amm';
   wallet_address?: string;
+  /** Ordered instruction labels — drives vol/non-vol flow classification. */
+  instruction_labels?: string[] | null;
 }
 
 /** A tag attached to a wallet's owning profile. */
@@ -111,6 +113,10 @@ export interface ChartCrosshairInfo {
   /** Sell-side SOL volume in the hovered bar. */
   outflow: number;
   liquiditySol: number | null;
+  /** Cumulative volume-maker cohort at this bar (null when flow overlay has no point). */
+  flowVol: number | null;
+  /** Cumulative non-volume cohort at this bar (null when flow overlay has no point). */
+  flowNonVol: number | null;
 }
 
 export interface ChartBarSelection {
@@ -198,6 +204,8 @@ export interface ChartBarTooltipState {
   inflow: number;
   outflow: number;
   liquiditySol: number | null;
+  flowVol: number | null;
+  flowNonVol: number | null;
   barTime: UTCTimestamp;
   /** Age of the bar's earliest trade since token creation (seconds); null when unknown. */
   ageSec: number | null;
@@ -259,6 +267,14 @@ export interface TokenPriceChartProps {
   tokenCreatedAt?: string;
   /** Strategy entry/exit points to overlay as arrows + dashed price lines. */
   eventMarkers?: ChartEventMarker[] | null;
+  /**
+   * `JSON.stringify(labels)` keys of `volume_ix_patterns` for the vol/non-vol
+   * overlay. Omit/empty still classifies the creator as volume when
+   * {@link creatorWallet} is set. Toggle lives in the chart toolbar.
+   */
+  flowPatternKeys?: ReadonlySet<string> | null;
+  /** Cumulative flow-line basis (default `cost_sol`). */
+  flowBasis?: 'cost_sol' | 'token' | 'value_sol';
 }
 
 export interface ChartToolbarProps {
@@ -286,9 +302,13 @@ export interface ChartToolbarProps {
   athLineAvailable: boolean;
   showMigrationLine: boolean;
   trimEmptyBars: boolean;
+  /** Vol/non-vol cumulative overlay lines (left price scale). */
+  showFlowLines: boolean;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;
+  /** Formatter for cumulative vol/non-vol amounts in the toolbar readout. */
+  formatFlow: (value: number) => string;
   isMigrated?: boolean;
   isMayhemMode?: boolean;
   isCashbackEnabled?: boolean;
@@ -304,5 +324,6 @@ export interface ChartToolbarProps {
   onShowAthLineChange: (show: boolean) => void;
   onShowMigrationLineChange: (show: boolean) => void;
   onTrimEmptyBarsChange: (trim: boolean) => void;
+  onShowFlowLinesChange: (show: boolean) => void;
   onRangeSelectModeChange: (active: boolean) => void;
 }

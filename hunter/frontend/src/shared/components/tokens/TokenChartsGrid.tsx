@@ -95,6 +95,7 @@ interface TokenChartCardProps<R> {
    *  group-by-mint path to overlay a token's whole re-entry episode set on one
    *  card. `undefined` ⇒ use the hook; `null`/array ⇒ override. */
   eventMarkersOverride?: ChartEventMarker[] | null;
+  flowPatternKeys?: ReadonlySet<string> | null;
   /** Extra content rendered in the card header (per-row context). */
   extra?: ReactNode;
   selected?: boolean;
@@ -110,6 +111,7 @@ function TokenChartCard<R>({
   chartTableId,
   useOverlay,
   eventMarkersOverride,
+  flowPatternKeys,
   extra,
   selected,
   onSelect,
@@ -168,6 +170,7 @@ function TokenChartCard<R>({
           eventMarkers={eventMarkers ?? null}
           highlightWallet={highlightWallet ?? null}
           tableId={chartTableId}
+          flowPatternKeys={flowPatternKeys}
         />
       </div>
     </div>
@@ -216,6 +219,8 @@ export interface TokenChartsGridProps<R> {
   /** Hook-based alternative to {@link mintGroupOverlay} — see
    *  {@link MintGroupOverlayHook}. Takes precedence when both are supplied. */
   useMintGroupOverlay?: MintGroupOverlayHook<R>;
+  /** Fingerprint volume_ix_patterns keys for the vol/non-vol overlay on every card. */
+  flowPatternKeys?: ReadonlySet<string> | null;
 }
 
 const mintOfRow = <R,>(row: R): string =>
@@ -234,6 +239,7 @@ export function TokenChartsGrid<R>({
   groupByMint,
   mintGroupOverlay,
   useMintGroupOverlay,
+  flowPatternKeys,
 }: TokenChartsGridProps<R>) {
   const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
   if (rows.length === 0) return null;
@@ -281,6 +287,7 @@ export function TokenChartsGrid<R>({
                 chartTableId={chartTableId}
                 useOverlay={overlayHook}
                 eventMarkersOverride={eventMarkersOverride}
+                flowPatternKeys={flowPatternKeys}
                 extra={renderChartCardExtra?.(rep)}
                 selected={selected}
                 onSelect={
@@ -311,6 +318,7 @@ export function TokenChartsGrid<R>({
               highlightWallet={highlightWallet}
               chartTableId={chartTableId}
               useOverlay={useOverlay}
+              flowPatternKeys={flowPatternKeys}
               extra={renderChartCardExtra?.(row)}
               selected={selected}
               onSelect={

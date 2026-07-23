@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   CandlestickSeries,
   createChart,
@@ -11,9 +11,9 @@ import {
   type ISeriesApi,
   type MouseEventParams,
   type SeriesMarker,
-  type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
+import { usePriceUnit } from 'context/PriceUnitContext';
 import {
   aggregateTradesToBars,
   aggregateTradesToBarsBySlot,
@@ -46,7 +46,9 @@ import {
   CHART_INTERVAL_LABELS,
   CHART_INTERVALS,
   CHART_STYLES,
+  DUAL_CHART_HANDLE_SCALE,
   createChartOptions,
+  createChartPriceFormat,
   createChartPriceFormatter,
   LINE_SERIES_OPTIONS,
   responsiveChartHeight,
@@ -89,10 +91,19 @@ import { cn } from 'lib/cn';
 import { useTimezone } from 'context/TimezoneContext';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { formatTimestampMs } from 'utils/date';
-import { formatCompact, formatDecimalTrim } from 'utils/format';
 import { formatIxLabelsText } from 'lib/ixLabels';
-import { classifyFlowTrades } from '@lab/lib/flow/classifyFlow';
-import { buildFlowLines, type FlowBasis, type FlowLinePoint } from '@lab/lib/flow/flowChartData';
+import { classifyFlowTrades } from 'lib/flow/classifyFlow';
+import {
+  alignFlowToBars,
+  buildFlowLines,
+  flowAt,
+  formatFlowTokenCount,
+  FLOW_NON_VOL_LINE_COLOR,
+  FLOW_VOL_LINE_COLOR,
+  type FlowBasis,
+  type FlowLinePoint,
+} from 'lib/flow/flowChartData';
+import { attachDualPriceScaleSync, rearmDualAutoScale } from 'components/token-price-chart/dualPriceScaleSync';
 import { getString, setString, STORAGE_KEYS } from 'lib/storage';
 import type { TradeRecord } from 'types';
 
@@ -176,8 +187,8 @@ function tradesInBar(trades: TradeRecord[], bar: ChartBarSelection): TradeRecord
  *  - VOL is dev-generated volume → red (`#EF5350`).
  *  - NON_VOL is real trader volume → gold (`#F5C542`).
  *  Both are high-luminance so they read at a glance over the candle field. */
-const VOL_LINE_COLOR = '#EF5350';
-const NON_VOL_COLOR = '#F5C542';
+const VOL_LINE_COLOR = FLOW_VOL_LINE_COLOR;
+const NON_VOL_COLOR = FLOW_NON_VOL_LINE_COLOR;
 
 /** Pure-volume (dev-generated) candles are DE-EMPHASISED rather than
  *  highlighted: their body + border + wick are painted a dark grey just a hair
@@ -198,14 +209,6 @@ const TOKEN_FLOW_SERIES_SCALE = 1e6;
 
 function flowSeriesScale(basis: FlowBasis): number {
   return basis === 'token' ? TOKEN_FLOW_SERIES_SCALE : 1;
-}
-
-/** Compact token count with a trillions tier — {@link formatCompact} caps at G,
- *  but cumulative token counts reach 1e14+. */
-function formatTokenCount(v: number): string {
-  const abs = Math.abs(v);
-  if (abs >= 1e12) return `${formatDecimalTrim(v / 1e12, 2)}T`;
-  return formatCompact(v, 2);
 }
 
 /** Three bars with the middle one lit — "highlight the flow-split odd-ones-out". */
@@ -350,24 +353,6 @@ function StylePillGroup({
   );
 }
 
-function formatAmount(v: number, unit: string): string {
-  if (!Number.isFinite(v)) return '—';
-  const a = Math.abs(v);
-  const s = a >= 1000 ? v.toFixed(0) : a >= 1 ? v.toFixed(2) : v.toPrecision(2);
-  return `${s}${unit}`;
-}
-
-/** Find the vol/non-vol point matching a bar's time key (both arrays share
- *  the exact same time sequence — see {@link buildFlowLines}). */
-function flowAt(
-  lines: { vol: FlowLinePoint[]; nonVol: FlowLinePoint[] },
-  time: Time,
-): { vol: number | null; nonVol: number | null } {
-  const idx = lines.vol.findIndex((p) => p.time === time);
-  if (idx === -1) return { vol: null, nonVol: null };
-  return { vol: lines.vol[idx].value, nonVol: lines.nonVol[idx].value };
-}
-
 export interface FlowPreviewChartProps {
   trades: TradeRecord[];
   /** `JSON.stringify(labels)` keys of the checked volume_ix_patterns rows —
@@ -413,6 +398,7 @@ export function FlowPreviewChart({
   height: fixedHeight,
 }: FlowPreviewChartProps) {
   const { timezone } = useTimezone();
+  const { unit: priceUnit, usdRate } = usePriceUnit();
   const profileWallets = useProfileWallets();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -468,9 +454,15 @@ export function FlowPreviewChart({
   const [rangeTooltip, setRangeTooltip] = useState<ChartRangeTooltipState | null>(null);
   const [walletTooltip, setWalletTooltip] = useState<ChartWalletMarkersTooltipState | null>(null);
 
-  const formatPrice = useMemo(() => createChartPriceFormatter('SOL'), []);
-  const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
-  const toValue = (sol: number) => sol;
+  const formatPrice = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
+  const formatVol = useMemo(() => createChartPriceFormatter(priceUnit), [priceUnit]);
+  // Same SOL→display conversion TokenTradeChart uses so the header SOL/USD
+  // toggle moves candles and SOL-basis flow lines together.
+  const toValue = useCallback(
+    (sol: number) => (priceUnit === 'USD' && usdRate != null ? sol * usdRate : sol),
+    [priceUnit, usdRate],
+  );
+  const solUnitScale = priceUnit === 'USD' && usdRate != null ? usdRate : 1;
 
   const intervalSec = CHART_INTERVALS[interval];
   const intervalsDisabled = groupMode === 'slot';
@@ -483,7 +475,7 @@ export function FlowPreviewChart({
         ? aggregateTradesToBarsBySlot(sortedTrades, toValue, 'price')
         : aggregateTradesToBars(sortedTrades, intervalSec, toValue, 'price');
     return trimEmptyBars ? dropEmptyBars(raw) : raw;
-  }, [sortedTrades, groupMode, intervalSec, trimEmptyBars]);
+  }, [sortedTrades, groupMode, intervalSec, trimEmptyBars, toValue]);
 
   const classifyOpts = useMemo(
     () => ({ patternKeys, creatorWallet: seedCreatorAsVol ? creatorWallet : null }),
@@ -494,6 +486,9 @@ export function FlowPreviewChart({
     () => buildFlowLines(trades, groupMode, intervalSec, basis, classifyOpts),
     [trades, groupMode, intervalSec, basis, classifyOpts],
   );
+
+  // 1:1 with candle bar times so crosshair / X-zoom always hit both series.
+  const alignedLines = useMemo(() => alignFlowToBars(lines, bars), [lines, bars]);
 
   const rangeStats: ChartRangeStats | null = useMemo(() => {
     if (!selectedRange) return null;
@@ -571,8 +566,8 @@ export function FlowPreviewChart({
     barsRef.current = bars;
   }, [bars]);
   useEffect(() => {
-    linesRef.current = lines;
-  }, [lines]);
+    linesRef.current = alignedLines;
+  }, [alignedLines]);
   useEffect(() => {
     rangeSelectModeRef.current = rangeSelectMode;
   }, [rangeSelectMode]);
@@ -595,14 +590,25 @@ export function FlowPreviewChart({
     setChartHeight(initialHeight);
     const chart = createChart(
       el,
-      createChartOptions(el.clientWidth, initialHeight, groupMode, 'SOL', timezone),
+      createChartOptions(el.clientWidth, initialHeight, groupMode, priceUnit, timezone, {
+        dualPriceScale: true,
+      }),
     );
     chartRef.current = chart;
 
+    const priceFormat = createChartPriceFormat(priceUnit);
     const mainSeries =
       style === 'candles'
-        ? chart.addSeries(CandlestickSeries, { ...CANDLE_SERIES_OPTIONS, priceScaleId: 'right' })
-        : chart.addSeries(LineSeries, { ...LINE_SERIES_OPTIONS, priceScaleId: 'right' });
+        ? chart.addSeries(CandlestickSeries, {
+            ...CANDLE_SERIES_OPTIONS,
+            priceScaleId: 'right',
+            priceFormat,
+          })
+        : chart.addSeries(LineSeries, {
+            ...LINE_SERIES_OPTIONS,
+            priceScaleId: 'right',
+            priceFormat,
+          });
     mainSeriesRef.current = mainSeries;
 
     const walletPrim = new WalletMarkersPlugin();
@@ -633,8 +639,6 @@ export function FlowPreviewChart({
     });
     nonVolSeriesRef.current = nonVolSeries;
 
-    chart.priceScale('left').applyOptions({ visible: true, borderColor: CHART_COLORS.border });
-
     const handleCrosshairMove = (param: MouseEventParams) => {
       const onRangeLabel =
         param.point != null &&
@@ -664,6 +668,7 @@ export function FlowPreviewChart({
         setWalletTooltip(null);
         return;
       }
+      const flow = flowAt(linesRef.current, param.time);
       setCrosshair({
         open: bar.open,
         high: bar.high,
@@ -673,8 +678,10 @@ export function FlowPreviewChart({
         inflow: bar.inflow,
         outflow: bar.outflow,
         liquiditySol: bar.liquiditySol,
+        flowVol: flow.vol,
+        flowNonVol: flow.nonVol,
       });
-      setFlowCrosshair(flowAt(linesRef.current, param.time));
+      setFlowCrosshair(flow);
 
       const onWalletMarker =
         param.point != null &&
@@ -709,6 +716,10 @@ export function FlowPreviewChart({
       setSelectedBar(selection);
     });
 
+    const detachScaleSync = attachDualPriceScaleSync(chart, el, {
+      isPaused: () => rangeSelectModeRef.current,
+    });
+
     const observer = new ResizeObserver(() => {
       const node = containerRef.current;
       if (!node) return;
@@ -729,6 +740,7 @@ export function FlowPreviewChart({
 
     return () => {
       observer.disconnect();
+      detachScaleSync();
       chart.remove();
       chartRef.current = null;
       mainSeriesRef.current = null;
@@ -754,7 +766,7 @@ export function FlowPreviewChart({
     // closes over `intervalAtMount`, which must be rebuilt whenever the
     // bucket width changes or `tradesInBar` filters against the wrong width.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [style, groupMode, intervalSec, fixedHeight, timezone]);
+  }, [style, groupMode, intervalSec, fixedHeight, timezone, priceUnit]);
 
   useEffect(() => {
     if (style === 'candles') {
@@ -771,30 +783,43 @@ export function FlowPreviewChart({
     } else {
       (mainSeriesRef.current as ISeriesApi<'Line'> | null)?.setData(barsToLineData(bars));
     }
+    const chart = chartRef.current;
+    if (chart) rearmDualAutoScale(chart);
   }, [bars, style, selectedBar, highlightVolumeBars, pureVolumeBarTimes]);
 
   // The token basis is a cumulative whole-token count that runs past
   // lightweight-charts' ±9.007e13 series-value ceiling, so it's charted divided
   // by TOKEN_FLOW_SERIES_SCALE with a custom axis formatter that multiplies back;
-  // the SOL bases (cost_sol/value_sol) are small and chart 1:1. Header/crosshair readouts always read
-  // the true (unscaled) values straight off `lines`.
+  // the SOL bases (cost_sol/value_sol) are small and chart 1:1 (× USD rate when
+  // the header toggle is USD). Header/crosshair readouts always read the true
+  // (unscaled) values straight off `alignedLines`, then apply display-unit conversion.
   useEffect(() => {
-    const scale = flowSeriesScale(basis);
+    const tokenScale = flowSeriesScale(basis);
+    const displayScale = basis === 'token' ? 1 : solUnitScale;
     const priceFormat =
       basis === 'token'
         ? {
             type: 'custom' as const,
-            formatter: (v: number) => formatTokenCount(v * scale),
+            formatter: (v: number) => formatFlowTokenCount(v * tokenScale),
             minMove: 0.01,
           }
-        : { type: 'price' as const, precision: 2, minMove: 0.01 };
+        : {
+            type: 'custom' as const,
+            formatter: createChartPriceFormatter(priceUnit),
+            minMove: 0.01,
+          };
     const toData = (pts: FlowLinePoint[]) =>
-      scale === 1 ? pts : pts.map((p) => ({ time: p.time, value: p.value / scale }));
+      pts.map((p) => ({
+        time: p.time,
+        value: (p.value / tokenScale) * displayScale,
+      }));
     volSeriesRef.current?.applyOptions({ priceFormat });
     nonVolSeriesRef.current?.applyOptions({ priceFormat });
-    volSeriesRef.current?.setData(toData(lines.vol));
-    nonVolSeriesRef.current?.setData(toData(lines.nonVol));
-  }, [lines, basis]);
+    const chart = chartRef.current;
+    if (chart) rearmDualAutoScale(chart);
+    volSeriesRef.current?.setData(toData(alignedLines.vol));
+    nonVolSeriesRef.current?.setData(toData(alignedLines.nonVol));
+  }, [alignedLines, basis, priceUnit, solUnitScale]);
 
   // Show/hide the two flow-split overlay lines (and their shared left price
   // scale) as one unit. Re-applied after any series recreation (structural deps)
@@ -927,7 +952,7 @@ export function FlowPreviewChart({
       axisLabelVisible: true,
       title: 'ATH',
     });
-  }, [showAthLine, athPriceInSol, style]);
+  }, [showAthLine, athPriceInSol, style, toValue]);
 
   // Pump.fun migration reference line.
   useEffect(() => {
@@ -947,7 +972,7 @@ export function FlowPreviewChart({
       axisLabelVisible: true,
       title: 'Migration',
     });
-  }, [showMigrationLine, style]);
+  }, [showMigrationLine, style, toValue]);
 
   // Render the committed range band + duration chip.
   useEffect(() => {
@@ -1053,16 +1078,22 @@ export function FlowPreviewChart({
       window.removeEventListener('keydown', onKeyDown);
       el.style.cursor = '';
       if (chartRef.current === chart) {
-        chart.applyOptions({ handleScroll: true, handleScale: true });
+        chart.applyOptions({
+          handleScroll: true,
+          handleScale: { ...DUAL_CHART_HANDLE_SCALE },
+        });
+        rearmDualAutoScale(chart);
       }
     };
   }, [rangeSelectMode, style, groupMode, intervalSec, fixedHeight, timezone]);
 
   // True (unscaled) cumulative readouts — token counts render compact (with a
-  // trillions tier), SOL keeps its ◎ formatting. Mirrors the scaled series above.
-  const formatFlow = (v: number) => (basis === 'token' ? formatTokenCount(v) : formatAmount(v, '◎'));
-  const readVol = flowCrosshair?.vol ?? lines.vol.at(-1)?.value ?? null;
-  const readNonVol = flowCrosshair?.nonVol ?? lines.nonVol.at(-1)?.value ?? null;
+  // trillions tier); SOL bases follow the header SOL/USD toggle. Mirrors the
+  // scaled series above.
+  const formatFlow = (v: number) =>
+    basis === 'token' ? formatFlowTokenCount(v) : formatPrice(toValue(v));
+  const readVol = flowCrosshair?.vol ?? alignedLines.vol.at(-1)?.value ?? null;
+  const readNonVol = flowCrosshair?.nonVol ?? alignedLines.nonVol.at(-1)?.value ?? null;
   const moreActive = showMore || showAthLine || showMigrationLine || rangeSelectMode;
 
   const baseTradeColumns = useMemo(() => tokenTradeColumns('SOL'), []);

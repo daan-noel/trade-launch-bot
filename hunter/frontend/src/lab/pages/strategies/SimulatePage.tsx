@@ -68,6 +68,8 @@ import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { useSelectionSearchParam } from 'hooks/useSelectionSearchParam';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import { patternKeysFrom } from 'lib/flow/classifyFlow';
+import { volumeIxPatternsFromConfig } from 'lib/strategy/registry';
 import { STORAGE_KEYS } from 'lib/storage';
 import { rulesHref, STRATEGY_PARAMS } from 'lib/strategy/nav';
 import {
@@ -606,6 +608,7 @@ export function SimulatePage() {
           reloadNonce={reloadNonce}
           onInspect={setInspect}
           inspectKey={inspect?.key ?? null}
+          fingerprints={fps}
         />
       )}
 
@@ -637,12 +640,20 @@ function RuleSimPositionsPanel({
   reloadNonce,
   onInspect,
   inspectKey,
+  fingerprints,
 }: {
   rule: StrategyRule;
   reloadNonce: number;
   onInspect: (v: { key: string; target: InspectTarget; rule: StrategyRule } | null) => void;
   inspectKey: string | null;
+  fingerprints: Fingerprint[];
 }) {
+  const flowPatternKeys = useMemo(() => {
+    const fp = fingerprints.find((f) => f.id === rule.fingerprint_id);
+    if (!fp) return null;
+    return patternKeysFrom(volumeIxPatternsFromConfig(fp.metric_config));
+  }, [fingerprints, rule.fingerprint_id]);
+
   const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
   const [showNotFired, setShowNotFired] = useLocalStorage(
     STORAGE_KEYS.simShowNotFired,
@@ -932,6 +943,7 @@ function RuleSimPositionsPanel({
             useMintChartGroupOverlay={(mint, rows) =>
               useSimMintEpisodeOverlay(rule.id, mint, rows)
             }
+            flowPatternKeys={flowPatternKeys}
             rows={simTokens}
             rowKey={episodeRowKey}
             selectedKey={inspectKey}

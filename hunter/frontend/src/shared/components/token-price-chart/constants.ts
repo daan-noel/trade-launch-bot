@@ -171,6 +171,7 @@ export const DEFAULT_CHART_PREFS = {
   showDevMarkers: false,
   devMarkersBoundariesOnly: false,
   showEventMarkers: true,
+  showFlowLines: true,
 };
 
 /** Responsive chart height. The chart width fills its container (fluid), so on a
@@ -194,16 +195,39 @@ export function responsiveChartHeight(
   return Math.round(Math.min(max, Math.max(min, width / aspect)));
 }
 
+/** Optional extras for {@link createChartOptions}. */
+export interface CreateChartOptionsExtras {
+  /**
+   * Dual left+right price scales with independent units (e.g. flow overlay +
+   * token price). Enables the left scale and omits the chart-level
+   * `localization.priceFormatter` so each series' own `priceFormat` owns its
+   * axis ticks — a single chart formatter would paint both scales the same.
+   */
+  dualPriceScale?: boolean;
+}
+
+const DUAL_PRICE_SCALE_MARGINS = { top: 0.1, bottom: 0.1 };
+
+/** Shared by dual-axis charts so range-select teardown restores the same policy. */
+export const DUAL_CHART_HANDLE_SCALE = {
+  mouseWheel: true,
+  pinch: true,
+  axisPressedMouseMove: { time: true, price: true },
+  axisDoubleClickReset: { time: true, price: true },
+} as const;
+
 export function createChartOptions(
   width: number,
   height: number,
   groupMode: ChartGroupMode = 'time',
   priceUnit: PriceUnit = 'SOL',
   timezone?: string,
+  extras?: CreateChartOptionsExtras,
 ): DeepPartial<ChartOptions> {
   const slotTimeFormatter = (time: number) => String(time);
   const timeFormatters =
     groupMode === 'time' && timezone ? createChartTimeFormatters(timezone) : null;
+  const dual = extras?.dualPriceScale === true;
 
   return {
     width,
@@ -216,7 +240,21 @@ export function createChartOptions(
       vertLines: { color: CHART_COLORS.grid },
       horzLines: { color: CHART_COLORS.grid },
     },
-    rightPriceScale: { borderColor: CHART_COLORS.border },
+    rightPriceScale: {
+      borderColor: CHART_COLORS.border,
+      ...(dual ? { scaleMargins: DUAL_PRICE_SCALE_MARGINS, autoScale: true } : {}),
+    },
+    ...(dual
+      ? {
+          leftPriceScale: {
+            visible: true,
+            borderColor: CHART_COLORS.border,
+            scaleMargins: DUAL_PRICE_SCALE_MARGINS,
+            autoScale: true,
+          },
+          handleScale: { ...DUAL_CHART_HANDLE_SCALE },
+        }
+      : {}),
     timeScale: {
       borderColor: CHART_COLORS.border,
       timeVisible: groupMode === 'time',
@@ -233,7 +271,9 @@ export function createChartOptions(
       horzLine: { color: CHART_COLORS.crosshair },
     },
     localization: {
-      priceFormatter: createChartPriceFormatter(priceUnit),
+      // Dual-axis charts must NOT set a chart-level priceFormatter — it overrides
+      // every series' priceFormat and forces left+right through one unit.
+      ...(dual ? {} : { priceFormatter: createChartPriceFormatter(priceUnit) }),
       ...(groupMode === 'slot'
         ? { timeFormatter: slotTimeFormatter }
         : timeFormatters

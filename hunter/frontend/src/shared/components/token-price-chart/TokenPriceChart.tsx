@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createChart,
   createSeriesMarkers,
+  LineSeries,
   LineStyle,
   type Coordinate,
   type IChartApi,
@@ -12,6 +13,18 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
+import {
+  alignFlowToBars,
+  buildFlowLines,
+  flowAt,
+  flowSeriesScale,
+  formatFlowTokenCount,
+  FLOW_NON_VOL_LINE_COLOR,
+  FLOW_VOL_LINE_COLOR,
+  type FlowBasis,
+  type FlowLines,
+} from 'lib/flow/flowChartData';
+import { attachDualPriceScaleSync, rearmDualAutoScale } from './dualPriceScaleSync';
 import {
   barsSignature,
   captureChartViewport,
@@ -46,6 +59,7 @@ import {
   createChartPriceFormat,
   createChartPriceFormatter,
   DEFAULT_CHART_PREFS,
+  DUAL_CHART_HANDLE_SCALE,
   LINE_SERIES_OPTIONS,
   LS_CHART_PREFS_KEY,
   responsiveChartHeight,
@@ -77,6 +91,8 @@ import type {
 } from './types';
 
 type ChartPrefs = typeof DEFAULT_CHART_PREFS;
+
+const EMPTY_FLOW_PATTERN_KEYS: ReadonlySet<string> = new Set();
 
 function loadPrefs(): ChartPrefs {
   try {
@@ -472,6 +488,8 @@ export function TokenPriceChart({
   creatorWallet = null,
   tokenCreatedAt,
   eventMarkers = null,
+  flowPatternKeys = null,
+  flowBasis = 'cost_sol',
 }: TokenPriceChartProps) {
   // Tracked-wallet markers are a project-wide invariant: EVERY token trade chart
   // renders them. Callers may supply `profileWallets` (e.g. `TokenTradeChart`,
@@ -515,11 +533,14 @@ export function TokenPriceChart({
   const applyingExternalCrosshairRef = useRef(false);
   const prevExternalCrosshairRef = useRef<number | null>(null);
   const seriesRef = useRef<ISeriesApi<'Line' | 'Candlestick'> | null>(null);
+  const volSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const nonVolSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const sortedTradesRef = useRef<ChartTrade[]>([]);
   const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const walletMarkersPrimRef = useRef<WalletMarkersPlugin | null>(null);
   const rangeSelectPrimRef = useRef<RangeSelectPlugin | null>(null);
   const barsRef = useRef<OhlcBar[]>([]);
+  const alignedFlowLinesRef = useRef<FlowLines>({ vol: [], nonVol: [] });
 
   // Height tracks width unless the caller pins it (`fixedHeight`). A fluid width
   // with a fixed height renders wide-and-flat on a big monitor; deriving height
@@ -542,6 +563,7 @@ export function TokenPriceChart({
     initialPrefs.devMarkersBoundariesOnly,
   );
   const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
+  const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
   const { timezone: chartTimezone } = useTimezone();
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -673,6 +695,11 @@ export function TokenPriceChart({
     [groupMode, chartTimezone],
   );
   const formatVol = useMemo(() => createChartPriceFormatter('SOL'), []);
+  const formatFlow = useCallback(
+    (v: number) =>
+      flowBasis === 'token' ? formatFlowTokenCount(v) : formatChartPrice(toValue(v)),
+    [flowBasis, formatChartPrice, toValue],
+  );
 
   const rangeStats = useMemo(
     () =>
@@ -764,6 +791,11 @@ export function TokenPriceChart({
     savePrefs({ showEventMarkers: next });
   }, []);
 
+  const handleShowFlowLinesChange = useCallback((next: boolean) => {
+    setShowFlowLines(next);
+    savePrefs({ showFlowLines: next });
+  }, []);
+
   const handleSliderChange = useCallback((from: number, to: number) => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -804,9 +836,34 @@ export function TokenPriceChart({
     setChartHeight(initialHeight);
     const chart = createChart(
       el,
-      createChartOptions(width, initialHeight, groupMode, priceUnit, chartTimezone),
+      createChartOptions(width, initialHeight, groupMode, priceUnit, chartTimezone, {
+        dualPriceScale: true,
+      }),
     );
     chartRef.current = chart;
+
+    const volSeries = chart.addSeries(LineSeries, {
+      color: FLOW_VOL_LINE_COLOR,
+      lineWidth: 2,
+      priceScaleId: 'left',
+      title: 'Vol makers',
+      lastValueVisible: true,
+      priceLineVisible: false,
+    });
+    const nonVolSeries = chart.addSeries(LineSeries, {
+      color: FLOW_NON_VOL_LINE_COLOR,
+      lineWidth: 2,
+      priceScaleId: 'left',
+      title: 'Non-vol',
+      lastValueVisible: true,
+      priceLineVisible: false,
+    });
+    volSeriesRef.current = volSeries;
+    nonVolSeriesRef.current = nonVolSeries;
+
+    const detachScaleSync = attachDualPriceScaleSync(chart, el, {
+      isPaused: () => rangeSelectModeRef.current,
+    });
 
     // Width-only resize. Feeding contentRect.height back into applyOptions fights
     // the fixed parent height and the inspect-modal scrollbar (content grows →
@@ -900,6 +957,7 @@ export function TokenPriceChart({
         setCrosshairTimeSec(null);
         return;
       }
+      const flow = flowAt(alignedFlowLinesRef.current, param.time);
       const info: ChartCrosshairInfo = {
         open: bar.open,
         high: bar.high,
@@ -909,6 +967,8 @@ export function TokenPriceChart({
         inflow: bar.inflow,
         outflow: bar.outflow,
         liquiditySol: bar.liquiditySol,
+        flowVol: flow.vol,
+        flowNonVol: flow.nonVol,
       };
       setCrosshair(info);
       // Resolve wall-clock seconds for sibling panes (metric series). Time mode
@@ -1022,6 +1082,7 @@ export function TokenPriceChart({
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleLogicalRangeChange);
       chart.timeScale().unsubscribeVisibleTimeRangeChange(onVisibleTimeRangeChange);
+      detachScaleSync();
       if (crosshairRafRef.current != null) {
         cancelAnimationFrame(crosshairRafRef.current);
         crosshairRafRef.current = null;
@@ -1033,6 +1094,8 @@ export function TokenPriceChart({
       walletMarkersPrimRef.current = null;
       rangeSelectPrimRef.current = null;
       seriesRef.current = null;
+      volSeriesRef.current = null;
+      nonVolSeriesRef.current = null;
       chart.remove();
       chartRef.current = null;
       setCrosshair(null);
@@ -1045,15 +1108,11 @@ export function TokenPriceChart({
   }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone]);
 
   useEffect(() => {
-    const chart = chartRef.current;
     const series = seriesRef.current;
-    if (!chart || !series || !showChart) return;
-
-    const priceFormat = createChartPriceFormat(priceUnit);
-    chart.applyOptions({
-      localization: { priceFormatter: priceFormat.formatter },
-    });
-    series.applyOptions({ priceFormat });
+    if (!series || !showChart) return;
+    // Dual-axis: do not set chart-level localization.priceFormatter — it would
+    // override the left (flow) series formatters. Main series owns its labels.
+    series.applyOptions({ priceFormat: createChartPriceFormat(priceUnit) });
   }, [priceUnit, showChart]);
 
   useEffect(() => {
@@ -1165,6 +1224,67 @@ export function TokenPriceChart({
       });
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
+
+  // Vol/non-vol cumulative overlay (left price scale) — creator-seeded + optional
+  // fingerprint volume_ix_patterns. Aligns to candle bar times for lockstep X.
+  const effectiveFlowPatternKeys = flowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS;
+  const flowLines = useMemo(
+    () =>
+      buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
+        patternKeys: effectiveFlowPatternKeys,
+        creatorWallet,
+      }),
+    [sortedTrades, groupMode, intervalSec, flowBasis, effectiveFlowPatternKeys, creatorWallet],
+  );
+  const alignedFlowLines = useMemo(() => alignFlowToBars(flowLines, bars), [flowLines, bars]);
+  alignedFlowLinesRef.current = alignedFlowLines;
+
+  useEffect(() => {
+    if (!showChart) return;
+    const tokenScale = flowSeriesScale(flowBasis as FlowBasis);
+    const priceFormat =
+      flowBasis === 'token'
+        ? {
+            type: 'custom' as const,
+            formatter: (v: number) => {
+              const n = v * tokenScale;
+              if (Math.abs(n) >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+              if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+              if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+              return n.toFixed(0);
+            },
+            minMove: 0.01,
+          }
+        : {
+            type: 'custom' as const,
+            formatter: createChartPriceFormatter(priceUnit),
+            minMove: 0.01,
+          };
+    const toData = (pts: { time: UTCTimestamp; value: number }[]) =>
+      pts.map((p) => ({
+        time: p.time,
+        value:
+          flowBasis === 'token' ? p.value / tokenScale : toValue(p.value),
+      }));
+    volSeriesRef.current?.applyOptions({ priceFormat, visible: showFlowLines });
+    nonVolSeriesRef.current?.applyOptions({ priceFormat, visible: showFlowLines });
+    const chart = chartRef.current;
+    if (chart) {
+      rearmDualAutoScale(chart);
+      chart.priceScale('left').applyOptions({ visible: showFlowLines });
+    }
+    volSeriesRef.current?.setData(toData(alignedFlowLines.vol));
+    nonVolSeriesRef.current?.setData(toData(alignedFlowLines.nonVol));
+  }, [
+    alignedFlowLines,
+    flowBasis,
+    priceUnit,
+    toValue,
+    showFlowLines,
+    showChart,
+    style,
+    groupingKey,
+  ]);
 
   // Sibling panes (metric series) drive the price-chart crosshair via wall-clock time.
   useEffect(() => {
@@ -1430,7 +1550,11 @@ export function TokenPriceChart({
       el.style.cursor = '';
       // Restore pan/zoom unless the chart was already torn down/replaced.
       if (chartRef.current === chart) {
-        chart.applyOptions({ handleScroll: true, handleScale: true });
+        chart.applyOptions({
+          handleScroll: true,
+          handleScale: { ...DUAL_CHART_HANDLE_SCALE },
+        });
+        rearmDualAutoScale(chart);
       }
     };
   }, [showChart, fixedHeight, groupingKey, groupMode, priceUnit, chartTimezone, rangeSelectMode]);
@@ -1589,8 +1713,10 @@ export function TokenPriceChart({
         athLineAvailable={athLineAvailable}
         showMigrationLine={showMigrationLine}
         trimEmptyBars={trimEmptyBars}
+        showFlowLines={showFlowLines}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
+        formatFlow={formatFlow}
         isMigrated={isMigrated}
         isMayhemMode={isMayhemMode}
         isCashbackEnabled={isCashbackEnabled}
@@ -1606,6 +1732,7 @@ export function TokenPriceChart({
         onShowAthLineChange={handleShowAthLineChange}
         onShowMigrationLineChange={handleShowMigrationLineChange}
         onTrimEmptyBarsChange={handleTrimEmptyBarsChange}
+        onShowFlowLinesChange={handleShowFlowLinesChange}
         onRangeSelectModeChange={setRangeSelectMode}
       />
       <div className="relative" style={{ height: chartHeight, width: '100%' }}>
@@ -1614,6 +1741,7 @@ export function TokenPriceChart({
           <BarCrosshairTooltip
             tooltip={barTooltip}
             formatVol={formatVol}
+            formatFlow={formatFlow}
             formatTime={formatBarTime}
           />
         )}

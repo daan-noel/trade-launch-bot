@@ -1,11 +1,14 @@
+import { FLOW_NON_VOL_LINE_COLOR, FLOW_VOL_LINE_COLOR } from 'lib/flow/flowChartData';
 import { CHART_COLORS } from './constants';
 import { formatDecimalTrim } from 'utils/format';
 import type { ChartCrosshairInfo } from './types';
 
 type BarFlowFieldsProps = {
   crosshair: ChartCrosshairInfo;
-  /** SOL amount formatter (e.g. "◎ 1.23"). */
+  /** SOL amount formatter (e.g. "◎ 1.23") for Net/In/Out. */
   formatVol: (value: number) => string;
+  /** Formatter for cumulative vol/non-vol (SOL or token, depending on basis). */
+  formatFlow: (value: number) => string;
   layout: 'grid' | 'inline';
 };
 
@@ -36,11 +39,11 @@ function FlowField({
 }
 
 /**
- * Per-bar order flow readout: net flow, inflow, outflow, and the bar's price
- * change percent — shown on crosshair hover in place of OHLC/Vol/Liq.
+ * Per-bar order flow readout: net flow, inflow, outflow, price change percent,
+ * and — when present — cumulative vol-maker / non-vol amounts.
  */
-export function BarFlowFields({ crosshair, formatVol, layout }: BarFlowFieldsProps) {
-  const { open, close, inflow, outflow } = crosshair;
+export function BarFlowFields({ crosshair, formatVol, formatFlow, layout }: BarFlowFieldsProps) {
+  const { open, close, inflow, outflow, flowVol, flowNonVol } = crosshair;
   const net = inflow - outflow;
   const deltaPct = open !== 0 ? ((close - open) / open) * 100 : null;
 
@@ -54,6 +57,25 @@ export function BarFlowFields({ crosshair, formatVol, layout }: BarFlowFieldsPro
       ? '—'
       : `${deltaPct >= 0 ? '+' : ''}${formatDecimalTrim(deltaPct, 2)}%`;
 
+  const flowFields =
+    flowVol != null || flowNonVol != null ? (
+      <>
+        <FlowField
+          label="VolMk"
+          value={flowVol != null ? formatFlow(flowVol) : '—'}
+          color={FLOW_VOL_LINE_COLOR}
+          layout={layout}
+        />
+        {layout === 'inline' ? ' ' : null}
+        <FlowField
+          label="NonVol"
+          value={flowNonVol != null ? formatFlow(flowNonVol) : '—'}
+          color={FLOW_NON_VOL_LINE_COLOR}
+          layout={layout}
+        />
+      </>
+    ) : null;
+
   if (layout === 'grid') {
     return (
       <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
@@ -61,6 +83,7 @@ export function BarFlowFields({ crosshair, formatVol, layout }: BarFlowFieldsPro
         <FlowField label="In" value={formatVol(inflow)} color={CHART_COLORS.buy} layout="grid" />
         <FlowField label="Out" value={formatVol(outflow)} color={CHART_COLORS.sell} layout="grid" />
         <FlowField label="Δ" value={deltaValue} color={deltaColor} layout="grid" />
+        {flowFields}
       </div>
     );
   }
@@ -71,6 +94,7 @@ export function BarFlowFields({ crosshair, formatVol, layout }: BarFlowFieldsPro
       <FlowField label="In" value={formatVol(inflow)} color={CHART_COLORS.buy} layout="inline" />{' '}
       <FlowField label="Out" value={formatVol(outflow)} color={CHART_COLORS.sell} layout="inline" />{' '}
       <FlowField label="Δ" value={deltaValue} color={deltaColor} layout="inline" />
+      {flowFields != null ? <> {flowFields}</> : null}
     </>
   );
 }
