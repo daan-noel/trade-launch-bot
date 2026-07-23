@@ -9,6 +9,7 @@ import { BuyIcon, RefreshIcon, SellIcon, SpinnerIcon } from 'components/ui/icons
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
 import { walletColumns, WALLET_KEYS } from '@live/components/wallet/walletColumns';
 import { HoldingsSummaryBar } from '@live/components/wallet/HoldingsSummaryBar';
 import { CashbackCard } from '@live/components/wallet/CashbackCard';
@@ -586,55 +587,58 @@ export function MyWalletPage() {
 
   return (
     <div>
-      <div className="mb-3.5 flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-extrabold text-text">Wallet</h1>
-        <span className="text-sm text-text-mid">Balances · positions · execute</span>
-        <Badge variant="primary" className="font-mono">
-          {total} positions
-        </Badge>
-        <IconButton
-          variant="subtle"
-          size="md"
-          onClick={refreshAll}
-          disabled={loading}
-          title={loading ? 'Loading…' : 'Refresh'}
-          aria-label={loading ? 'Loading…' : 'Refresh'}
-        >
-          {loading ? <SpinnerIcon /> : <RefreshIcon />}
-        </IconButton>
-        <Button
-          variant={hideDust ? 'primary' : 'subtle'}
-          size="sm"
-          onClick={() => setHideDust((v) => !v)}
-        >
-          {hideDust ? '✓ ' : ''}Hide dust
-        </Button>
-        <div className="flex-grow" />
-        <IconButton
-          variant="primary"
-          size="lg"
-          onClick={handleManualBuyOpen}
-          label="Manual Buy"
-          title="Manual Buy"
-        >
-          <BuyIcon />
-        </IconButton>
-        <IconButton
-          variant="danger"
-          size="lg"
-          onClick={handleManualSellOpen}
-          label="Manual Sell"
-          title="Manual Sell"
-        >
-          <SellIcon />
-        </IconButton>
-        <Link
-          to="/trade"
-          className="inline-flex min-h-8 items-center justify-center rounded-md border border-primary bg-primary/15 px-3 text-[12px] font-semibold text-primary transition hover:bg-primary/25"
-        >
-          Trade desk →
-        </Link>
-      </div>
+      <PageHeader
+        title="Wallet"
+        description="Balances · positions · execute"
+        actions={
+          <>
+            <Badge variant="primary" className="font-mono">
+              {total} positions
+            </Badge>
+            <IconButton
+              variant="subtle"
+              size="md"
+              onClick={refreshAll}
+              disabled={loading}
+              title={loading ? 'Loading…' : 'Refresh'}
+              aria-label={loading ? 'Loading…' : 'Refresh'}
+            >
+              {loading ? <SpinnerIcon /> : <RefreshIcon />}
+            </IconButton>
+            <Button
+              variant={hideDust ? 'primary' : 'subtle'}
+              size="sm"
+              onClick={() => setHideDust((v) => !v)}
+            >
+              {hideDust ? '✓ ' : ''}Hide dust
+            </Button>
+            <IconButton
+              variant="primary"
+              size="lg"
+              onClick={handleManualBuyOpen}
+              label="Manual Buy"
+              title="Manual Buy"
+            >
+              <BuyIcon />
+            </IconButton>
+            <IconButton
+              variant="danger"
+              size="lg"
+              onClick={handleManualSellOpen}
+              label="Manual Sell"
+              title="Manual Sell"
+            >
+              <SellIcon />
+            </IconButton>
+            <Link
+              to="/trade"
+              className="inline-flex min-h-8 items-center justify-center rounded-md border border-primary bg-primary/15 px-3 text-xs font-semibold text-primary transition hover:bg-primary/25"
+            >
+              Trade desk →
+            </Link>
+          </>
+        }
+      />
 
       {summary && <HoldingsSummaryBar summary={summary} />}
 

@@ -7,6 +7,7 @@ import { BuyIcon, SearchIcon, SellIcon, SpinnerIcon } from 'components/ui/icons'
 import { Button } from 'components/ui/Button';
 import { Input } from 'components/ui/Input';
 import { InlineAlert, Modal } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
 import { Badge } from 'components/ui/Badge';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
@@ -152,12 +153,10 @@ export function TradePage() {
 
   return (
     <div>
-      <div className="mb-3.5 flex flex-wrap items-baseline gap-3">
-        <h1 className="text-lg font-extrabold text-text">Trade</h1>
-        <span className="text-sm text-text-mid">
-          Mint-first execute desk · Wallet = bag overview · Positions = bot inventory
-        </span>
-      </div>
+      <PageHeader
+        title="Trade"
+        description="Mint-first execute desk · Wallet = bag overview · Positions = bot inventory"
+      />
 
       <div className="mb-3 flex flex-wrap items-end gap-2">
         <label className="flex flex-1 flex-col gap-1.5" style={{ minWidth: 280 }}>

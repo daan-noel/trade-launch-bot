@@ -8,6 +8,7 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Badge } from 'components/ui/Badge';
 import { Accordion } from 'components/ui/Accordion';
 import { InlineAlert } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { LazyTokenTradeChart } from 'components/tokens/LazyTokenTradeChart';
 import { TokenDetailPanel } from 'components/tokens/TokenDetailPanel';
@@ -202,12 +203,11 @@ export function ReplayViewerPage() {
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <h1 className="text-lg font-semibold text-text">Replay viewer</h1>
-        <span className="text-[12px] text-text-dim">
-          Re-run the engine over a recorded live event log — every decision, reproduced offline.
-        </span>
-      </div>
+      <PageHeader
+        title="Replay viewer"
+        description="Re-run the engine over a recorded live event log — every decision, reproduced offline."
+        className="mb-0"
+      />
 
       <Accordion title="Load a log slice" defaultOpen={!run}>
         <div className="flex flex-col gap-3">

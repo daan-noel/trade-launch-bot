@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { StatTile } from 'components/ui/StatTile';
+import { PageHeader } from 'components/ui/PageHeader';
 import { LinkIcon } from 'components/ui/icons';
 import { floorHref, rulesHref } from 'lib/strategy/nav';
 import { formatCompact } from 'utils/format';
@@ -172,10 +173,10 @@ export function PortfolioPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-3">
-          <h1 className="text-lg font-extrabold text-text">Portfolio</h1>
-          <span className="text-sm text-text-mid">
+      <PageHeader
+        title="Portfolio"
+        description={
+          <>
             Cross-rule money ·{' '}
             <Link to={rulesHref()} className="text-accent hover:underline">
               Rules
@@ -184,9 +185,9 @@ export function PortfolioPage() {
             <Link to={floorHref()} className="text-accent hover:underline">
               Floor
             </Link>
-          </span>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <div className="flex flex-wrap items-center gap-2">
         {(

@@ -19,6 +19,7 @@ import {
   TrashIcon,
 } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
+import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { buildCapsColumns } from './capsRuleColumns';
 import { buildFingerprintRuleColumns } from './fingerprintRuleColumns';
@@ -690,110 +691,118 @@ export function RulesView({
   return (
     <div className="flex flex-col gap-3 p-4">
       <div
-        className={`flex flex-wrap items-center justify-between gap-2 ${
+        className={
           showScores && onScoreScopeChange
             ? 'sticky top-0 z-20 -mx-4 border-b border-white/6 bg-bg/95 px-4 py-3 backdrop-blur-sm'
-            : ''
-        }`}
+            : undefined
+        }
       >
-        <div className="flex flex-wrap items-baseline gap-3">
-          <h1 className="text-lg font-semibold text-text">
-            {showScores ? 'Rules Control' : 'Rules'}
-          </h1>
-          {showScores && onScoreScopeChange && (
-            <div className="flex gap-1">
-              {([
-                ['current', 'Current run'],
-                ['all', 'All-time'],
-              ] as const).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => onScoreScopeChange(key)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
-                    (scoreScope ?? 'current') === key
-                      ? 'bg-primary/20 text-primary'
-                      : 'bg-white/5 text-text-dim hover:bg-white/8'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
-          {showScores && (
-            <span className="text-[11px] text-text-dim">
-              {(scoreScope ?? 'current') === 'current'
-                ? 'Scoreboard = latest run — Pause from Execute or Evidence'
-                : 'Scoreboard = all-time (real) / latest run (paper)'}
-            </span>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {(['paper', 'real'] as TradeMode[]).map((mode) => {
-            const bulkStop = stopByMode[mode];
-            const stopping = !!bulkStop && bulkStop.status === 'running';
-            const show = activeByMode[mode] > 0 || stopping;
-            if (!show) return null;
-            return (
-              <div key={mode} className="flex items-center gap-1 rounded-md border border-white/8 px-1.5 py-1">
-                <span className="text-[11px] uppercase tracking-wide text-text-dim">{mode}</span>
-                <IconButtonGroup>
-                  <IconButton
-                    variant="ghost"
-                    size="md"
-                    disabled={bulkBusy || stopping}
-                    onClick={() => doPauseAll(mode)}
-                    title={`Pause All (${activeByMode[mode]})`}
-                    aria-label={`Pause All (${activeByMode[mode]})`}
+        <PageHeader
+          className="mb-0"
+          title={showScores ? 'Rules Control' : 'Rules'}
+          description={
+            showScores ? (
+              <>
+                {onScoreScopeChange && (
+                  <span className="mr-2 inline-flex gap-1 align-middle">
+                    {([
+                      ['current', 'Current run'],
+                      ['all', 'All-time'],
+                    ] as const).map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => onScoreScopeChange(key)}
+                        className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                          (scoreScope ?? 'current') === key
+                            ? 'bg-primary/20 text-primary'
+                            : 'bg-white/5 text-text-dim hover:bg-white/8'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                )}
+                <span className="text-xs text-text-dim">
+                  {(scoreScope ?? 'current') === 'current'
+                    ? 'Scoreboard = latest run — Pause from Execute or Evidence'
+                    : 'Scoreboard = all-time (real) / latest run (paper)'}
+                </span>
+              </>
+            ) : undefined
+          }
+          actions={
+            <>
+              {(['paper', 'real'] as TradeMode[]).map((mode) => {
+                const bulkStop = stopByMode[mode];
+                const stopping = !!bulkStop && bulkStop.status === 'running';
+                const show = activeByMode[mode] > 0 || stopping;
+                if (!show) return null;
+                return (
+                  <div
+                    key={mode}
+                    className="flex items-center gap-1 rounded-md border border-white/8 px-1.5 py-1"
                   >
-                    <PauseIcon />
-                  </IconButton>
-                  <IconButton
-                    variant="danger"
-                    size="md"
-                    disabled={bulkBusy || stopping}
-                    onClick={() => doStopAll(mode)}
-                    title={
-                      stopping
-                        ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
-                        : `Stop All (${activeByMode[mode]})`
-                    }
-                    aria-label={
-                      stopping
-                        ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
-                        : `Stop All (${activeByMode[mode]})`
-                    }
-                  >
-                    {stopping ? <SpinnerIcon /> : <StopIcon />}
-                  </IconButton>
-                </IconButtonGroup>
-              </div>
-            );
-          })}
-          {disabledCount > 0 && (
-            <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-text-dim">
-              <input
-                type="checkbox"
-                checked={showDisabled}
-                onChange={(e) => setShowDisabled(e.target.checked)}
-                className="accent-accent"
-              />
-              Show disabled ({disabledCount})
-            </label>
-          )}
-          <IconButton
-            variant="success"
-            size="lg"
-            label="New rule"
-            title="New rule"
-            onClick={actions.openNew}
-          >
-            <PlusIcon />
-          </IconButton>
-        </div>
+                    <span className="text-xs uppercase tracking-wide text-text-dim">{mode}</span>
+                    <IconButtonGroup>
+                      <IconButton
+                        variant="ghost"
+                        size="md"
+                        disabled={bulkBusy || stopping}
+                        onClick={() => doPauseAll(mode)}
+                        title={`Pause All (${activeByMode[mode]})`}
+                        aria-label={`Pause All (${activeByMode[mode]})`}
+                      >
+                        <PauseIcon />
+                      </IconButton>
+                      <IconButton
+                        variant="danger"
+                        size="md"
+                        disabled={bulkBusy || stopping}
+                        onClick={() => doStopAll(mode)}
+                        title={
+                          stopping
+                            ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
+                            : `Stop All (${activeByMode[mode]})`
+                        }
+                        aria-label={
+                          stopping
+                            ? `Stopping ${bulkStop!.done}/${bulkStop!.total}`
+                            : `Stop All (${activeByMode[mode]})`
+                        }
+                      >
+                        {stopping ? <SpinnerIcon /> : <StopIcon />}
+                      </IconButton>
+                    </IconButtonGroup>
+                  </div>
+                );
+              })}
+              {disabledCount > 0 && (
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-dim">
+                  <input
+                    type="checkbox"
+                    checked={showDisabled}
+                    onChange={(e) => setShowDisabled(e.target.checked)}
+                    className="accent-accent"
+                  />
+                  Show disabled ({disabledCount})
+                </label>
+              )}
+              <IconButton
+                variant="success"
+                size="lg"
+                label="New rule"
+                title="New rule"
+                onClick={actions.openNew}
+              >
+                <PlusIcon />
+              </IconButton>
+            </>
+          }
+        />
       </div>
-      {err && <p className="text-[12px] text-red">{err}</p>}
+      {err && <p className="text-xs text-red">{err}</p>}
       {showScores && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
           <StatTile

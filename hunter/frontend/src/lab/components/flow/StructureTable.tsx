@@ -1,0 +1,268 @@
+import { useMemo } from 'react';
+
+import { DataTable } from 'components/table/DataTable';
+import type { ColumnDef } from 'components/table/types';
+import { Badge } from 'components/ui/Badge';
+import { Checkbox } from 'components/ui/Checkbox';
+import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { formatIxLabelsText } from 'lib/ixLabels';
+import { signalGradeClass } from 'lib/signedTone';
+import { DISCOVERY_COL_HELP, type HelpTip } from 'lib/strategy/strategyHelp';
+import type { FlowDiscoveryStructure } from 'types';
+
+import {
+  liftGrade,
+  pctGrade,
+  sideOf,
+  unitGrade,
+  washGrade,
+  type StructureSuggestion,
+} from './flowDiscoverySuggest';
+
+function fmt(n: number, digits = 1): string {
+  if (!Number.isFinite(n)) return '—';
+  return n.toFixed(digits);
+}
+
+/** Flatten a rich `{title, body}` help tip into the plain string DataTable's
+ *  `ColumnDef.tooltip` (native title attr) expects — same convention as the
+ *  generic sweep table's column tooltips. */
+function helpText(tip: HelpTip): string {
+  return `${tip.title}\n\n${tip.body}`;
+}
+
+/** Ranking-table columns for the ix-structure DataTable. `draftPatterns`/
+ *  `contagionByStructure` are per-render (selection + checked-structure
+ *  dependent), so this is rebuilt via `useMemo` rather than module-level. */
+function buildStructureColumns(opts: {
+  draftPatterns: string[][];
+  contagionByStructure: Map<string, number | null>;
+  suggestionByStructure: Map<string, StructureSuggestion>;
+  onToggle: (labels: string[]) => void;
+}): ColumnDef<FlowDiscoveryStructure>[] {
+  const { draftPatterns, contagionByStructure, suggestionByStructure, onToggle } = opts;
+  const draftKeys = new Set(draftPatterns.map((p) => JSON.stringify(p)));
+
+  return [
+    {
+      key: 'vol',
+      label: 'Vol',
+      tooltip: helpText(DISCOVERY_COL_HELP.vol),
+      render: (s) => (
+        <Checkbox
+          checked={draftKeys.has(JSON.stringify(s.ix_labels))}
+          onChange={() => onToggle(s.ix_labels)}
+        />
+      ),
+      searchValue: () => '',
+    },
+    {
+      key: 'suggested',
+      label: 'Auto',
+      tooltip: helpText(DISCOVERY_COL_HELP.suggested),
+      render: (s) => {
+        const sug = suggestionByStructure.get(JSON.stringify(s.ix_labels));
+        if (!sug) return <span className="text-text-dim/50">—</span>;
+        if (sug.gated) {
+          return (
+            <span
+              className="text-text-dim/40"
+              title="Gated out — Lift × < 1.25 (ambient everywhere) or Gross◎ below the dust floor"
+            >
+              —
+            </span>
+          );
+        }
+        const pct = `${fmt(sug.score * 100, 0)}%`;
+        if (sug.suggested) {
+          return (
+            <Badge variant="warning" size="sm" title={`Strong: ${sug.reasons.join(', ')}`}>
+              vol {pct}
+            </Badge>
+          );
+        }
+        return (
+          <span
+            className={signalGradeClass(sug.score)}
+            title={
+              sug.reasons.length
+                ? `Strong: ${sug.reasons.join(', ')} — needs ≥ 2 to auto-flag`
+                : 'No strong signals'
+            }
+          >
+            {pct}
+          </span>
+        );
+      },
+      // Rank by band first (suggested → eligible-but-under → gated), then by
+      // score within the band — so sorting surfaces the check-me rows on top
+      // instead of interleaving badges with dim scores and "—" gated rows.
+      sortValue: (s) => {
+        const sug = suggestionByStructure.get(JSON.stringify(s.ix_labels));
+        if (!sug) return -1;
+        const band = sug.suggested ? 2 : sug.gated ? 0 : 1;
+        return band + sug.score;
+      },
+      searchValue: () => '',
+    },
+    {
+      key: 'structure',
+      label: 'Structure',
+      tooltip: helpText(DISCOVERY_COL_HELP.structure),
+      render: (s) => <IxLabelsDisplay labels={s.ix_labels} copyJson />,
+      searchValue: (s) => formatIxLabelsText(s.ix_labels),
+    },
+    {
+      key: 'side',
+      label: 'Side',
+      tooltip: helpText(DISCOVERY_COL_HELP.side),
+      render: (s) => {
+        const side = sideOf(s);
+        if (side === 'buy') return <Badge variant="buy" size="sm">buy-only</Badge>;
+        if (side === 'sell') return <Badge variant="sell" size="sm">sell-only</Badge>;
+        return <Badge variant="neutral" size="sm">both sides</Badge>;
+      },
+      sortValue: (s) => sideOf(s),
+      searchValue: (s) => sideOf(s),
+    },
+    {
+      key: 'lift',
+      label: 'Lift ×',
+      tooltip: helpText(DISCOVERY_COL_HELP.lift),
+      render: (s) => <span className={liftGrade(s.group_lift)}>{fmt(s.group_lift, 2)}</span>,
+      sortValue: (s) => s.group_lift,
+      filterNumber: (s) => s.group_lift,
+      searchValue: () => '',
+    },
+    {
+      key: 'share',
+      label: 'Share%',
+      tooltip: helpText(DISCOVERY_COL_HELP.share),
+      render: (s) => fmt(s.volume_share),
+      sortValue: (s) => s.volume_share,
+      filterNumber: (s) => s.volume_share,
+      searchValue: () => '',
+    },
+    {
+      key: 'wash',
+      label: 'Wash 0–1',
+      tooltip: helpText(DISCOVERY_COL_HELP.wash),
+      render: (s) => {
+        const side = sideOf(s);
+        return (
+          <span
+            className={side === 'both' ? washGrade(s.wash_symmetry) : undefined}
+            title={
+              side === 'both'
+                ? undefined
+                : 'Wash ≈1 is trivial for a one-sided row — check Contagion% instead'
+            }
+          >
+            {fmt(s.wash_symmetry, 2)}
+          </span>
+        );
+      },
+      sortValue: (s) => s.wash_symmetry,
+      filterNumber: (s) => s.wash_symmetry,
+      searchValue: () => '',
+    },
+    {
+      key: 'recur',
+      label: 'Recur%',
+      tooltip: helpText(DISCOVERY_COL_HELP.recur),
+      render: (s) => (
+        <span className={pctGrade(s.cross_token_recurrence)}>
+          {fmt(s.cross_token_recurrence)}
+        </span>
+      ),
+      sortValue: (s) => s.cross_token_recurrence,
+      filterNumber: (s) => s.cross_token_recurrence,
+      searchValue: () => '',
+    },
+    {
+      key: 'burst',
+      label: 'Burst%',
+      tooltip: helpText(DISCOVERY_COL_HELP.burst),
+      render: (s) => <span className={pctGrade(s.slot_burst)}>{fmt(s.slot_burst)}</span>,
+      sortValue: (s) => s.slot_burst,
+      filterNumber: (s) => s.slot_burst,
+      searchValue: () => '',
+    },
+    {
+      key: 'reuse',
+      label: 'Reuse 0–1',
+      tooltip: helpText(DISCOVERY_COL_HELP.reuse),
+      render: (s) => <span className={unitGrade(s.wallet_reuse)}>{fmt(s.wallet_reuse, 2)}</span>,
+      sortValue: (s) => s.wallet_reuse,
+      filterNumber: (s) => s.wallet_reuse,
+      searchValue: () => '',
+    },
+    {
+      key: 'gross',
+      label: 'Gross◎',
+      tooltip: helpText(DISCOVERY_COL_HELP.gross),
+      render: (s) => fmt(s.gross_sol),
+      sortValue: (s) => s.gross_sol,
+      filterNumber: (s) => s.gross_sol,
+      searchValue: () => '',
+    },
+    {
+      key: 'contagion',
+      label: 'Contagion%',
+      tooltip: helpText(DISCOVERY_COL_HELP.contagion),
+      render: (s) => {
+        const c = contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null;
+        if (c == null) return <span className="text-text-dim/50">—</span>;
+        return <span className={pctGrade(c)}>{fmt(c)}</span>;
+      },
+      sortValue: (s) => contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null,
+      searchValue: () => '',
+    },
+  ];
+}
+
+/** Ranking table itself, split out so its `columns` memo only recomputes on
+ *  selection/checked-pattern changes, not on every `FlowDiscoveryPage` render. */
+export function StructureTable({
+  structures,
+  draftPatterns,
+  contagionByStructure,
+  suggestionByStructure,
+  onToggle,
+}: {
+  structures: FlowDiscoveryStructure[];
+  draftPatterns: string[][];
+  contagionByStructure: Map<string, number | null>;
+  suggestionByStructure: Map<string, StructureSuggestion>;
+  onToggle: (labels: string[]) => void;
+}) {
+  const draftKeysSig = draftPatterns.map((p) => JSON.stringify(p)).join('|');
+  const columns = useMemo(
+    () =>
+      buildStructureColumns({
+        draftPatterns,
+        contagionByStructure,
+        suggestionByStructure,
+        onToggle,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draftKeysSig/contagion/suggestion maps are the real identities
+    [draftKeysSig, contagionByStructure, suggestionByStructure, onToggle],
+  );
+  return (
+    <DataTable
+      columns={columns}
+      rows={structures}
+      rowKey={(s) => JSON.stringify(s.ix_labels)}
+      rowClassName={(s) =>
+        draftPatterns.some((p) => JSON.stringify(p) === JSON.stringify(s.ix_labels))
+          ? 'bg-accent/8'
+          : undefined
+      }
+      searchable={false}
+      colFilters={false}
+      colToggle={false}
+      selectable={false}
+      paginate={false}
+    />
+  );
+}

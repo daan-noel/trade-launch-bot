@@ -17,8 +17,10 @@ import {
 import type { TableQuery } from 'components/table/types';
 import { Badge } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
+import { PageHeader } from 'components/ui/PageHeader';
 import { SettingsIcon } from 'components/ui/icons';
 import { StatusButton } from 'components/ui/StatusButton';
+import { cn } from 'lib/cn';
 import { FALLBACK_POLL_INTERVAL_MS } from 'services/config';
 import { connectTokenCreatedStream, connectTradeStream } from 'services/sse';
 import type { LiveTrade, TokenDetailRecord, TokenLiveStats, TokenRecord } from 'types';
@@ -29,7 +31,6 @@ import {
 } from 'store/apiSlice';
 import { sharedApi } from 'store/sharedEndpoints';
 import type { AppDispatch } from 'store/types';
-import { cn } from 'lib/cn';
 import { useTimezone } from 'context/TimezoneContext';
 import { STORAGE_KEYS, getJSON, setJSON } from 'lib/storage';
 
@@ -311,38 +312,39 @@ export function TokensPage({
 
   return (
     <div>
-      <div className="mb-3.5 flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-extrabold text-text">Tokens</h1>
-        <span className="text-sm text-text-mid">
-          {renderDetailChart
+      <PageHeader
+        title="Tokens"
+        description={
+          renderDetailChart
             ? 'Universe · select a row for chart + metric panes'
-            : 'Universe · select a row for detail + chart'}
-        </span>
-        <Badge
-          variant={trackedOnly ? 'neutral' : 'primary'}
-          className="cursor-pointer font-mono"
-          onClick={() => setTrackedOnly(false)}
-        >
-          {total} {anyActive ? 'matched' : 'all'}
-        </Badge>
-        <Badge
-          variant={trackedOnly ? 'primary' : 'neutral'}
-          className="cursor-pointer font-mono"
-          onClick={() => setTrackedOnly(true)}
-        >
-          {tracked} tracked
-        </Badge>
-        <StatusButton
-          state={live ? 'live' : 'dead'}
-          label={live ? 'STREAM ON' : 'STREAM OFF'}
-          title="Table live updates only — not the header trading switch"
-          onClick={() => setLive((v) => !v)}
-          className={cn(
-            'px-4 py-0.5 text-[10px]',
-            live && 'animate-pulse',
-          )}
-        />
-      </div>
+            : 'Universe · select a row for detail + chart'
+        }
+        actions={
+          <>
+            <Badge
+              variant={trackedOnly ? 'neutral' : 'primary'}
+              className="cursor-pointer font-mono"
+              onClick={() => setTrackedOnly(false)}
+            >
+              {total} {anyActive ? 'matched' : 'all'}
+            </Badge>
+            <Badge
+              variant={trackedOnly ? 'primary' : 'neutral'}
+              className="cursor-pointer font-mono"
+              onClick={() => setTrackedOnly(true)}
+            >
+              {tracked} tracked
+            </Badge>
+            <StatusButton
+              state={live ? 'live' : 'dead'}
+              label={live ? 'STREAM ON' : 'STREAM OFF'}
+              title="Table live updates only — not the header trading switch"
+              onClick={() => setLive((v) => !v)}
+              className={cn('px-4 py-0.5 text-xs', live && 'animate-pulse')}
+            />
+          </>
+        }
+      />
 
       <div className="mb-1.5 flex gap-1.5 justify-end">
         <IconButton

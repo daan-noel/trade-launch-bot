@@ -8,6 +8,8 @@ import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import { EditIcon, LinkIcon, PlusIcon, TrashIcon } from 'components/ui/icons';
 import { Badge } from 'components/ui/Badge';
 import { Modal } from 'components/ui/Modal';
+import { EmptyState } from 'components/ui/EmptyState';
+import { PageHeader } from 'components/ui/PageHeader';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { FingerprintForm } from './FingerprintForm';
 import { ruleParamsCell } from './RuleParamsSummary';
@@ -87,11 +89,7 @@ const COLOR_COLS: {
 function FingerprintUsedByDetail({ rules }: { rules: StrategyRule[] }) {
   if (rules.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-white/12 bg-white/2 px-3 py-2.5">
-        <p className="text-[12px] text-text-dim">
-          Not used by any rules — safe to delete.
-        </p>
-      </div>
+      <EmptyState compact message="Not used by any rules — safe to delete." />
     );
   }
   return (
@@ -401,24 +399,23 @@ export function FingerprintsView({
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h1 className="text-lg font-semibold text-text">Fingerprints</h1>
-          <span className="text-sm text-text-mid">
-            Match specs · select a row to see which rules use it
-          </span>
-        </div>
-        <IconButton
-          variant="success"
-          size="lg"
-          label="New fingerprint"
-          title="New fingerprint"
-          onClick={() => setEditing('new')}
-        >
-          <PlusIcon />
-        </IconButton>
-      </div>
-      {err && <p className="text-[12px] text-red">{err}</p>}
+      <PageHeader
+        className="mb-0"
+        title="Fingerprints"
+        description="Match specs · select a row to see which rules use it"
+        actions={
+          <IconButton
+            variant="success"
+            size="lg"
+            label="New fingerprint"
+            title="New fingerprint"
+            onClick={() => setEditing('new')}
+          >
+            <PlusIcon />
+          </IconButton>
+        }
+      />
+      {err && <p className="text-xs text-red">{err}</p>}
       <DataTable
         columns={columns}
         rows={fps}

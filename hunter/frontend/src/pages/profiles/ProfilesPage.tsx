@@ -17,7 +17,6 @@ import { apiErrorMessage, useGetProfilesQuery } from 'store/apiSlice';
 import { sharedApi } from 'store/sharedEndpoints';
 import type { AppDispatch } from 'store/types';
 import type { ProfileType, WalletEntry, WalletProfile, WalletProfileTag } from 'types';
-import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
 import { IconButtonGroup } from 'components/ui/IconButtonGroup';
 import {
@@ -33,6 +32,8 @@ import { Input, Textarea } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { EmptyState } from 'components/ui/EmptyState';
 import { InlineAlert, Modal } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
+import { ColorPicker, PRESET_COLORS, TagChip, TypeBadge, shortAddr } from './profileUi';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatIsoLines } from 'utils/date';
 
@@ -45,99 +46,6 @@ import { formatIsoLines } from 'utils/date';
 const EMPTY_PROFILES: WalletProfile[] = [];
 
 const PROFILE_TYPES: ProfileType[] = ['trader', 'whale', 'dev'];
-
-const TYPE_BADGE: Record<ProfileType, BadgeVariant> = {
-  mine: 'primary',
-  trader: 'info',
-  whale: 'warning',
-  dev: 'accent',
-};
-
-/** Tag swatches aligned to `index.css` theme tokens (stored as hex on the tag). */
-const PRESET_COLORS = [
-  '#f23645', // danger / red
-  '#f69768', // accent
-  '#f4e07a', // warning
-  '#eed35a', // secondary
-  '#089981', // green
-  '#13ceaf', // primary (live teal)
-  '#06b6d4', // lab cyan
-  '#4c7ef0', // info
-  '#a855f7', // purple (no theme twin — keeps picker breadth)
-  '#999999', // text-dim
-];
-
-// ---------------------------------------------------------------------------
-// Small shared components
-// ---------------------------------------------------------------------------
-
-function TypeBadge({ type }: { type: ProfileType }) {
-  return (
-    <Badge variant={TYPE_BADGE[type]} size="sm" pill>
-      {type}
-    </Badge>
-  );
-}
-
-function shortAddr(address: string) {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`;
-}
-
-interface TagChipProps {
-  tag: WalletProfileTag;
-  onRemove?: () => void;
-}
-
-function TagChip({ tag, onRemove }: TagChipProps) {
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
-      style={{ backgroundColor: `${tag.color}22`, color: tag.color, border: `1px solid ${tag.color}55` }}
-    >
-      <span
-        className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-        style={{ backgroundColor: tag.color }}
-      />
-      {tag.name}
-      {onRemove && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onRemove(); }}
-          className="ml-0.5 opacity-60 hover:opacity-100 leading-none"
-          title="Remove tag"
-        >
-          ×
-        </button>
-      )}
-    </span>
-  );
-}
-
-interface ColorPickerProps {
-  value: string;
-  onChange: (color: string) => void;
-}
-
-function ColorPicker({ value, onChange }: ColorPickerProps) {
-  return (
-    <div className="flex gap-1.5 flex-wrap">
-      {PRESET_COLORS.map((c) => (
-        <button
-          key={c}
-          type="button"
-          onClick={() => onChange(c)}
-          className="w-5 h-5 rounded-full border-2 transition-transform hover:scale-110"
-          style={{
-            backgroundColor: c,
-            borderColor: value === c ? '#fff' : 'transparent',
-            outline: value === c ? `2px solid ${c}` : 'none',
-            outlineOffset: '1px',
-          }}
-          title={c}
-        />
-      ))}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Manage Tags modal
@@ -1160,33 +1068,33 @@ export function ProfilesPage() {
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-6 p-6">
-      {/* Page header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-text">Profiles</h1>
-          <p className="mt-0.5 text-xs text-text-dim">Your own wallet, plus tracked trader, whale, and dev wallet profiles.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <IconButton
-            variant="ghost"
-            size="md"
-            onClick={() => setManageTagsOpen(true)}
-            title="Manage tags"
-            aria-label="Manage tags"
-          >
-            <SettingsIcon />
-          </IconButton>
-          <IconButton
-            variant="success"
-            size="lg"
-            onClick={() => setProfileModal({ open: true })}
-            label="New profile"
-            title="New profile"
-          >
-            <PlusIcon />
-          </IconButton>
-        </div>
-      </div>
+      <PageHeader
+        className="mb-0"
+        title="Profiles"
+        description="Your own wallet, plus tracked trader, whale, and dev wallet profiles."
+        actions={
+          <>
+            <IconButton
+              variant="ghost"
+              size="md"
+              onClick={() => setManageTagsOpen(true)}
+              title="Manage tags"
+              aria-label="Manage tags"
+            >
+              <SettingsIcon />
+            </IconButton>
+            <IconButton
+              variant="success"
+              size="lg"
+              onClick={() => setProfileModal({ open: true })}
+              label="New profile"
+              title="New profile"
+            >
+              <PlusIcon />
+            </IconButton>
+          </>
+        }
+      />
 
       {/* Tags overview bar */}
       {allTags.length > 0 && (
@@ -1217,20 +1125,22 @@ export function ProfilesPage() {
               togglingWalletId={togglingWalletId}
             />
           ) : (
-            <div className="flex items-center justify-between rounded-xl border border-dashed border-white/12 bg-white/2 px-4 py-4">
-              <span className="text-sm text-text-dim">
-                Add your own wallet(s) to mark your trades on charts and tables.
-              </span>
-              <IconButton
-                variant="success"
-                size="lg"
-                onClick={() => setProfileModal({ open: true, forcedType: 'mine' })}
-                label="Add my profile"
-                title="Add my profile"
-              >
-                <PlusIcon />
-              </IconButton>
-            </div>
+            <EmptyState
+              compact
+              className="flex-row items-center justify-between gap-4 text-left sm:flex-row"
+              message="Add your own wallet(s) to mark your trades on charts and tables."
+              action={
+                <IconButton
+                  variant="success"
+                  size="lg"
+                  onClick={() => setProfileModal({ open: true, forcedType: 'mine' })}
+                  label="Add my profile"
+                  title="Add my profile"
+                >
+                  <PlusIcon />
+                </IconButton>
+              }
+            />
           )}
         </div>
       )}

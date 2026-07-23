@@ -28,7 +28,7 @@ export function EmptyState({
         className,
       )}
     >
-      <p className={cn('text-text-dim', compact ? 'text-xs' : 'text-sm')}>{message}</p>
+      <p className={cn('min-w-0 text-text-dim', compact ? 'text-xs' : 'text-sm')}>{message}</p>
       {action}
     </div>
   );

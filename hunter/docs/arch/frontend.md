@@ -255,9 +255,10 @@ next load (no per-metric frontend work).
 - Lab **Flow discovery** (`/strategies/flow-discovery`, `FlowDiscoveryPage`) — corpus
   window + optional **Scope by saved fingerprint** (sends `fingerprint_id`; engine
   match SSOT fills the corpus) or manual `FingerprintGroupPicker` → ranked
-  ix-structure table → toggle draft patterns → Apply (`PUT` / create-bind). Job
-  kind `discovery` in `BackgroundJobsContext` (SSE `flow_discovery_*`, mutual
-  exclusion with sweeps).
+  ix-structure table → toggle draft patterns → Apply (`PUT` / create-bind). UI split:
+  `flowDiscoverySuggest` / `StructureTable` / `DraftPatternsCart` / `TokenPreviewPanel`
+  under `lab/components/flow/`. Job kind `discovery` in `BackgroundJobsContext`
+  (SSE `flow_discovery_*`, mutual exclusion with sweeps).
 - The lab `RulesPage` injects `@lab/components/strategy/DryRunPanel` via `renderDryRun`
   (inline draft → `POST /api/strategies/simulate` → funnel summary), boundary-clean.
   Lab `SimulatePage` (`/strategies/simulate`) runs saved rules over the full lake and
