@@ -19,6 +19,7 @@ import {
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
 import { TokenTable } from 'components/tokens/TokenTable';
@@ -411,6 +412,7 @@ export function SimulatePage() {
           <IconButton
             variant="primary"
             size="md"
+            label={runs[r.id]?.running ? 'Running…' : 'Run'}
             disabled={runs[r.id]?.running}
             onClick={() => void runRule(r)}
             title={runs[r.id]?.running ? 'Running…' : 'Simulate'}
@@ -437,15 +439,13 @@ export function SimulatePage() {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex flex-wrap items-baseline gap-3">
-          <h1 className="text-lg font-semibold text-text">Simulate</h1>
-          <span className="text-sm text-text-mid">
-            Lake backtest for saved rules · drafts use Rules dry-run
-          </span>
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-1.5 text-[12px] text-text-dim">
+      <PageHeader
+        title="Simulate"
+        description="Lake backtest for saved rules · drafts use Rules dry-run"
+        className="mb-0"
+        actions={
+          <>
+          <label className="flex items-center gap-1.5 text-xs text-text-dim">
             <span>Fill</span>
             <Select
               fieldSize="sm"
@@ -461,7 +461,7 @@ export function SimulatePage() {
               ))}
             </Select>
           </label>
-          <label className="flex items-center gap-1.5 text-[12px] text-text-dim">
+          <label className="flex items-center gap-1.5 text-xs text-text-dim">
             <span>Cost</span>
             <Select
               fieldSize="sm"
@@ -520,10 +520,11 @@ export function SimulatePage() {
           >
             {bulkMode === 'real' ? <SpinnerIcon /> : <SimulateIcon />}
           </IconButton>
-        </div>
-      </div>
+          </>
+        }
+      />
       {(actions.err || opErr) && (
-        <p className="text-[12px] text-red">{actions.err || opErr}</p>
+        <p className="text-xs text-red">{actions.err || opErr}</p>
       )}
       <DataTable
         columns={columns}

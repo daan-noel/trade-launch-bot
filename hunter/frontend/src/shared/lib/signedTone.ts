@@ -73,6 +73,29 @@ export function signedToneClass(v: number | null | undefined): SignedToneClass {
   return 'text-text-mid';
 }
 
+/**
+ * 0..1 "how bot/wash-like" signal grade (Flow Discovery columns / suggest score).
+ * Dim at ~0 → warning mid → danger high. Prefer this over ad-hoc rgba blends so
+ * warning/danger stay on theme tokens (`--color-warning` / `--color-danger`).
+ *
+ * | range        | tone                    |
+ * |--------------|-------------------------|
+ * | `≤ 0.02`     | dim                     |
+ * | `(0.02, 0.35)` | warning muted         |
+ * | `[0.35, 0.65)` | warning               |
+ * | `[0.65, 0.85)` | danger muted          |
+ * | `≥ 0.85`     | danger + semibold       |
+ */
+export function signalGradeClass(t: number | null | undefined): string {
+  if (t == null || !Number.isFinite(t)) return 'text-text-dim';
+  const c = Math.max(0, Math.min(1, t));
+  if (c <= 0.02) return 'text-text-dim';
+  if (c < 0.35) return 'text-warning/70';
+  if (c < 0.65) return 'text-warning';
+  if (c < 0.85) return 'text-red/80';
+  return 'text-red font-semibold';
+}
+
 /** StatTile `tone` for the same sign rule. */
 export function signedStatTone(v: number | null | undefined): SignedStatTone {
   if (v == null || !Number.isFinite(v) || v === 0) return 'default';

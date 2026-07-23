@@ -6,6 +6,7 @@ import { DataTable } from 'components/table/DataTable';
 import { TokenTable } from 'components/tokens/TokenTable';
 import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
 import { InlineAlert } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
 import { SectionDivider } from 'components/ui/SectionDivider';
 import { Badge } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
@@ -315,8 +316,9 @@ export function GenericSweepView() {
   const groupRowActions = useCallback(
     (g: GroupedSweepGroupRecord): ReactNode => (
       <IconButton
-        variant="ghost"
+        variant="primary"
         size="md"
+        label="Promote"
         disabled={promoteState.isLoading}
         onClick={(e) => {
           e.stopPropagation();
@@ -334,8 +336,9 @@ export function GenericSweepView() {
     (r: GroupedSweepResultRecord): ReactNode =>
       activeGroupId ? (
         <IconButton
-          variant="ghost"
+          variant="primary"
           size="md"
+          label="Promote"
           disabled={promoteState.isLoading}
           onClick={(e) => {
             e.stopPropagation();
@@ -354,15 +357,15 @@ export function GenericSweepView() {
   const groupsErr = apiErrorMessage(groupsQuery.error, 'Failed to load groups');
   return (
     <div>
-      <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
-        <h1 className="text-lg font-extrabold text-text">Grouped Sweep</h1>
-        <span className="text-sm text-text-mid">
-          Configure → run → promote · drill into combos/tokens
-        </span>
-        <Badge variant="primary" className="font-mono">
-          {runs.length} runs · {groups.length} groups
-        </Badge>
-      </div>
+      <PageHeader
+        title="Grouped Sweep"
+        description="Configure → run → promote · drill into combos/tokens"
+        actions={
+          <Badge variant="primary" className="font-mono">
+            {runs.length} runs · {groups.length} groups
+          </Badge>
+        }
+      />
 
       {activeRunId && (
         <nav

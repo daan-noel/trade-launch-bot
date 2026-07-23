@@ -102,6 +102,21 @@ export function markerRowOverlay<R>(toTarget: (r: R) => InspectTarget): ChartOve
   return (row) => ({ eventMarkers: buildEventMarkers(toTarget(row)) });
 }
 
+/** Mint-only inspect (no fill markers) — Creation Stats drill-down, universe browse. */
+export function inspectFromMint(
+  mint_address: string,
+  symbol?: string | null,
+): InspectTarget {
+  return {
+    mint_address,
+    symbol: symbol ?? null,
+    entryTime: null,
+    entryPrice: null,
+    exitTime: null,
+    exitPrice: null,
+  };
+}
+
 /** Map a backtest/simulate result row to an inspect target. */
 export function inspectFromSim(r: SimulatedTokenResult): InspectTarget {
   const fired = r.fired !== false && r.exit_reason !== 'NoEntry';

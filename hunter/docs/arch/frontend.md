@@ -182,7 +182,9 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   (**mint-first execute** desk, `?mint=` preload), Rules/Fingerprints
   (+ `InputSyncStatus`, `wallet/` components; `usePositionNotifications`; `syncTokenSlice`).
 - **Lab (`@lab/pages`):** **Research home** (`LabHomePage` — shortcuts + recent sweeps
-  deep-linked with `?run=` + running jobs), Creation Stats, Tokens (detail = chart +
+  deep-linked with `?run=` + running jobs), Creation Stats (drill-down opens
+  `LazyLabTokenInspectModal` via `inspectFromMint` — same chart + metric panes as
+  Tokens, not the live-only `TokenDetailModal`), Tokens (detail = chart +
   metric panes via `LabTokenInspect`), **TraderAnalysis**, Rules (authoring + dry-run
   **+ Evidence over the traded real/paper positions from the synced mirror**, where a
   fill opens the metric panes — see the Rule Evidence bullet below)/Fingerprints/
@@ -191,6 +193,7 @@ See [rules-cockpit-ux.md](../plans/frontend/rules-cockpit-ux.md).
   breadcrumb; Simple = configure→promote; Full drill = combo/token inspect via
   `SweepTokenInspectModal` with metric panes; `sweep/` + `strategy/` components,
   `useStreamedSweepResults`, `BackgroundJobsContext`).
+  Shared page chrome: `PageHeader` / `EmptyState` / theme-token `InlineAlert`.
   **Metric panes** (lab Tokens detail; old `/strategies/metric-panes` redirects): `LabTokenInspect`
   stacks `TokenTradeChart` above registry-driven `MetricPanes`. Shared wall-clock
   crosshair / visible range (`TokenPriceChart.onCrosshairTimeChange` /

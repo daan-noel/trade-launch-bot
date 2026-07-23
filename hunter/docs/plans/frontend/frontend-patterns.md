@@ -199,6 +199,18 @@ Glanceable green/red for PnL-like numbers. SSOT:
 match wallet/home. Non-zero pivots (win-rate 0.5, profit-factor 1) keep threshold semantics.
 Do **not** reintroduce local `pnlClass` / `v > 0 ? 'text-green' : …` ternaries for signed PnL.
 
+## UI chrome SSOT — page header / empty / alert / signal grade
+
+| Primitive | Where | Use for |
+|---|---|---|
+| `PageHeader` | `components/ui/PageHeader` | Title + one-line job + optional actions (homes = `size="page"`, tools = default) |
+| `EmptyState` | `components/ui/EmptyState` | Dashed empty panel + optional single CTA — prefer over ad-hoc dashed boxes |
+| `InlineAlert` | `components/ui/Modal` | Error / success / warning strips — **theme tokens only** (`text-green` / `text-warning` / `text-red`) |
+| `signalGradeClass` | `lib/signedTone` | 0..1 bot/wash-like grades (Flow Discovery) — same warning→danger ladder as theme |
+| `inspectFromMint` | `components/strategy/inspectTarget` | Lab mint-only inspect (Creation Stats) → `LazyLabTokenInspectModal` (chart + metric panes) |
+
+Lab Evidence must surface the sync-snapshot caveat via `InlineAlert variant="warning"`, not dim microcopy.
+
 ## localStorage — `lib/storage.ts`
 
 All localStorage access goes through `lib/storage` wrapper. Keys are namespaced `mt:`:

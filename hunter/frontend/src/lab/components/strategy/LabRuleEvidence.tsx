@@ -1,5 +1,6 @@
 import { RuleAnalyzePanel } from 'components/strategy/RuleAnalyzePanel';
 import { inspectFromPosition } from 'components/strategy/inspectTarget';
+import { InlineAlert } from 'components/ui/Modal';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import type { StrategyRule } from 'lib/strategy/types';
 
@@ -39,10 +40,10 @@ export function LabRuleEvidence({
       onClose={onClose}
       initialScopeKind={scoreScope}
       notice={
-        <p className="text-[11px] text-text-dim">
-          Traded positions from the last DB sync — a snapshot, not a live feed. Click a
-          position to inspect its chart + metric panes.
-        </p>
+        <InlineAlert variant="warning">
+          Snapshot from the last DB sync — not a live feed. Click a position to open
+          chart + metric panes.
+        </InlineAlert>
       }
       renderInspect={({ position, rule: inspectRule, onClose: close }) => (
         <LazyLabTokenInspectModal

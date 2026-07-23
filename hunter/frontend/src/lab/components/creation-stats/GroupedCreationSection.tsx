@@ -10,9 +10,10 @@ import { apiErrorMessage } from 'store/apiSlice';
 import { TokenTable } from 'components/tokens/TokenTable';
 import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
 import { tokenColumns } from 'components/tokens/tokenColumns';
-import { TokenDetailModal } from 'components/tokens/TokenDetailModal';
+import { inspectFromMint } from 'components/strategy/inspectTarget';
 import type { TableQuery } from 'components/table/types';
 import type { TokenRecord } from 'types';
+import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import {
   useGetGroupedCreationStatsQuery,
   useGetGroupedCreationTokensQuery,
@@ -561,11 +562,10 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
             </div>
           )}
           {inspectedToken && (
-            <TokenDetailModal
-              mint={inspectedToken.mint}
-              symbol={inspectedToken.symbol}
+            <LazyLabTokenInspectModal
+              target={inspectFromMint(inspectedToken.mint, inspectedToken.symbol)}
+              titleSuffix="Token inspect"
               onClose={() => setInspectedToken(null)}
-              tableId="creation_stats_grouped_drilldown_trades"
             />
           )}
         </>

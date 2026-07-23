@@ -31,6 +31,7 @@ import {
 import { Button } from 'components/ui/Button';
 import { Input, Textarea } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
+import { EmptyState } from 'components/ui/EmptyState';
 import { InlineAlert, Modal } from 'components/ui/Modal';
 import { useTimezone } from 'context/TimezoneContext';
 import { formatIsoLines } from 'utils/date';
@@ -52,17 +53,18 @@ const TYPE_BADGE: Record<ProfileType, BadgeVariant> = {
   dev: 'accent',
 };
 
+/** Tag swatches aligned to `index.css` theme tokens (stored as hex on the tag). */
 const PRESET_COLORS = [
-  '#ef4444', // red
-  '#f97316', // orange
-  '#eab308', // yellow
-  '#22c55e', // green
-  '#14b8a6', // teal
-  '#3b82f6', // blue
-  '#6366f1', // indigo
-  '#a855f7', // purple
-  '#ec4899', // pink
-  '#6b7280', // gray
+  '#f23645', // danger / red
+  '#f69768', // accent
+  '#f4e07a', // warning
+  '#eed35a', // secondary
+  '#089981', // green
+  '#13ceaf', // primary (live teal)
+  '#06b6d4', // lab cyan
+  '#4c7ef0', // info
+  '#a855f7', // purple (no theme twin — keeps picker breadth)
+  '#999999', // text-dim
 ];
 
 // ---------------------------------------------------------------------------
@@ -1235,9 +1237,7 @@ export function ProfilesPage() {
 
       {/* Profile cards */}
       {!loading && profiles.length === 0 && !error && (
-        <div className="rounded-xl border border-white/6 bg-white/2 px-6 py-10 text-center text-sm text-text-dim">
-          No profiles yet. Create one to start grouping wallets.
-        </div>
+        <EmptyState message="No profiles yet. Create one to start grouping wallets." />
       )}
       <div className="flex flex-col gap-4">
         {profiles.map((p) => (

@@ -6,6 +6,7 @@ import type { ColumnDef } from 'components/table/types';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
 import { InlineAlert } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { LinkIcon, SellIcon, SpinnerIcon } from 'components/ui/icons';
@@ -484,6 +485,7 @@ export function OpsPage() {
             <IconButton
               variant="danger"
               size="md"
+              label="Sell"
               disabled={!canSell || busy}
               onClick={() => void onSell(r)}
               title={
@@ -693,10 +695,10 @@ export function OpsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-3">
-          <h1 className="text-lg font-extrabold text-text">Floor</h1>
-          <span className="text-sm text-text-mid">
+      <PageHeader
+        title="Floor"
+        description={
+          <>
             Live book · sell / triage ·{' '}
             <Link to={rulesHref()} className="text-accent hover:underline">
               Rules Evidence
@@ -705,17 +707,19 @@ export function OpsPage() {
             <Link to={portfolioHref('today')} className="text-accent hover:underline">
               Portfolio
             </Link>
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={sseLive ? 'success' : sse === 'connecting' ? 'info' : 'warning'}>
-            SSE {sse === 'open' ? 'Live' : sse === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
-          </Badge>
-          {!sseLive && (
-            <span className="text-[11px] text-warning">Status may be stale — sells disabled</span>
-          )}
-        </div>
-      </div>
+          </>
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={sseLive ? 'success' : sse === 'connecting' ? 'info' : 'warning'}>
+              SSE {sse === 'open' ? 'Live' : sse === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
+            </Badge>
+            {!sseLive && (
+              <span className="text-xs text-warning">Status may be stale — sells disabled</span>
+            )}
+          </div>
+        }
+      />
 
       {sellErr && <InlineAlert variant="error">{sellErr}</InlineAlert>}
 

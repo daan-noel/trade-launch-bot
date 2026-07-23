@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Badge } from 'components/ui/Badge';
+import { EmptyState } from 'components/ui/EmptyState';
+import { PageHeader } from 'components/ui/PageHeader';
 import { useBackgroundJobsState } from '@lab/context/BackgroundJobsContext';
 import { useGetGroupedSweepRunsQuery } from '@lab/store/labEndpoints';
 import { GENERIC_STRATEGY_ID } from '@lab/components/sweep/GenericSweepConfigForm';
@@ -23,10 +25,11 @@ export function LabHomePage() {
 
   return (
     <div className="pt-2">
-      <div className="mb-4 flex flex-wrap items-baseline gap-3">
-        <h1 className="text-2xl font-extrabold text-text">Research</h1>
-        <span className="text-sm text-text-mid">Pick a path, or resume a recent sweep</span>
-      </div>
+      <PageHeader
+        size="page"
+        title="Research"
+        description="Pick a path, or resume a recent sweep"
+      />
 
       <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         {SHORTCUTS.map((s) => (
@@ -36,7 +39,7 @@ export function LabHomePage() {
             className="rounded-lg border border-white/6 bg-white/2 px-3 py-3 transition hover:border-primary/40 hover:bg-white/4"
           >
             <div className="text-sm font-bold text-text">{s.label}</div>
-            <div className="mt-0.5 text-[11px] text-text-dim">{s.blurb}</div>
+            <div className="mt-0.5 text-xs text-text-dim">{s.blurb}</div>
           </Link>
         ))}
       </div>
@@ -54,7 +57,7 @@ export function LabHomePage() {
               >
                 <Badge variant="info">{j.kind}</Badge>
                 <span className="truncate text-text">{j.label}</span>
-                <span className="ml-auto text-[11px] text-text-dim">
+                <span className="ml-auto text-xs text-text-dim">
                   {j.cancelling ? 'cancelling…' : 'running'}
                 </span>
               </li>
@@ -68,14 +71,23 @@ export function LabHomePage() {
           <h2 className="text-xs font-semibold uppercase tracking-wide text-text-dim">
             Recent sweeps
           </h2>
-          <Link to="/strategies/sweep" className="text-[11px] text-accent hover:text-primary hover:underline">
+          <Link to="/strategies/sweep" className="text-xs text-accent hover:text-primary hover:underline">
             Open sweep →
           </Link>
         </div>
         {recent.length === 0 ? (
-          <p className="rounded-md border border-dashed border-white/8 px-3 py-6 text-center text-xs text-text-dim">
-            No sweep runs yet. Start one from Grouped sweep.
-          </p>
+          <EmptyState
+            compact
+            message="No sweep runs yet."
+            action={
+              <Link
+                to="/strategies/sweep"
+                className="text-xs font-semibold text-primary hover:underline"
+              >
+                Start a grouped sweep →
+              </Link>
+            }
+          />
         ) : (
           <ul className="flex flex-col gap-1.5">
             {recent.map((r) => {
@@ -87,10 +99,11 @@ export function LabHomePage() {
                     to={`/strategies/sweep?run=${encodeURIComponent(r.id)}`}
                     className="flex flex-wrap items-center gap-2 rounded-md border border-white/6 bg-white/2 px-3 py-2 text-sm transition hover:border-primary/30"
                   >
-                    <span className="font-mono text-[11px] text-text-dim">{when}</span>
+                    <span className="font-mono text-xs text-text-dim">{when}</span>
                     <Badge variant={r.status === 'completed' ? 'success' : 'neutral'}>{r.status}</Badge>
                     <span className="text-text-mid">
-                      {r.token_count.toLocaleString()} tok · {r.group_count} grp · {r.combo_count.toLocaleString()} combos
+                      {r.token_count.toLocaleString()} tok · {r.group_count} grp ·{' '}
+                      {r.combo_count.toLocaleString()} combos
                     </span>
                     {r.label && <span className="truncate text-text-dim">· {r.label}</span>}
                   </Link>

@@ -19,8 +19,10 @@ import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { InlineAlert } from 'components/ui/Modal';
+import { PageHeader } from 'components/ui/PageHeader';
 import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
+import { signalGradeClass } from 'lib/signedTone';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
 import {
   fingerprintParamsCell,
@@ -276,31 +278,15 @@ function sideOf(s: { buy_sol: number; sell_sol: number }): 'buy' | 'sell' | 'bot
   return 'both';
 }
 
-/** Text color for a 0..1 "how bot/wash-like does this value look" grade —
- *  dim slate at 0 (no signal) fading up through warning into danger red as the
- *  signal strengthens. Mirrors the warning=volume convention used by the flow
- *  split bar above this table. */
-function signalColor(t: number): string {
-  const c = Math.max(0, Math.min(1, t));
-  if (c <= 0.02) return 'rgba(148,163,184,0.55)';
-  const warn: [number, number, number] = [244, 224, 122];
-  const danger: [number, number, number] = [242, 54, 69];
-  const r = Math.round(warn[0] + (danger[0] - warn[0]) * c);
-  const g = Math.round(warn[1] + (danger[1] - warn[1]) * c);
-  const b = Math.round(warn[2] + (danger[2] - warn[2]) * c);
-  const a = (0.45 + 0.55 * c).toFixed(2);
-  return `rgba(${r},${g},${b},${a})`;
-}
-
-/** Lift ≈1 is common-everywhere noise; ≥3× concentrated here is the strongest
- *  "this shape is this group's own tooling" signal (see DISCOVERY_COL_HELP.lift). */
-const liftGrade = (lift: number) => signalColor((lift - 1) / 2);
-/** Recur% / Burst% / Reuse are already 0..1 or 0..100 signals — higher = more bot-like. */
-const pctGrade = (pct: number) => signalColor(pct / 100);
-const unitGrade = (v: number) => signalColor(v);
-/** Wash trends toward 0 as buys/sells cancel out (bot round-trip) — invert so
- *  the danger end lines up with "money went in a circle", not with 1. */
-const washGrade = (wash: number) => signalColor(1 - wash);
+/**
+ * 0..1 bot/wash-like grade → theme tone classes (SSOT: `signalGradeClass`).
+ * Lift ≈1 is noise; ≥3× is strong — normalize via `(lift - 1) / 2`.
+ * Wash trends toward 0 as buys/sells cancel — invert so danger = round-trip.
+ */
+const liftGrade = (lift: number) => signalGradeClass((lift - 1) / 2);
+const pctGrade = (pct: number) => signalGradeClass(pct / 100);
+const unitGrade = (v: number) => signalGradeClass(v);
+const washGrade = (wash: number) => signalGradeClass(1 - wash);
 
 const clamp01 = (t: number) => Math.max(0, Math.min(1, t));
 
@@ -422,7 +408,7 @@ function buildStructureColumns(opts: {
         }
         return (
           <span
-            style={{ color: signalColor(sug.score) }}
+            className={signalGradeClass(sug.score)}
             title={
               sug.reasons.length
                 ? `Strong: ${sug.reasons.join(', ')} — needs ≥ 2 to auto-flag`
@@ -468,7 +454,7 @@ function buildStructureColumns(opts: {
       key: 'lift',
       label: 'Lift ×',
       tooltip: helpText(DISCOVERY_COL_HELP.lift),
-      render: (s) => <span style={{ color: liftGrade(s.group_lift) }}>{fmt(s.group_lift, 2)}</span>,
+      render: (s) => <span className={liftGrade(s.group_lift)}>{fmt(s.group_lift, 2)}</span>,
       sortValue: (s) => s.group_lift,
       filterNumber: (s) => s.group_lift,
       searchValue: () => '',
@@ -490,7 +476,7 @@ function buildStructureColumns(opts: {
         const side = sideOf(s);
         return (
           <span
-            style={side === 'both' ? { color: washGrade(s.wash_symmetry) } : undefined}
+            className={side === 'both' ? washGrade(s.wash_symmetry) : undefined}
             title={
               side === 'both'
                 ? undefined
@@ -510,7 +496,7 @@ function buildStructureColumns(opts: {
       label: 'Recur%',
       tooltip: helpText(DISCOVERY_COL_HELP.recur),
       render: (s) => (
-        <span style={{ color: pctGrade(s.cross_token_recurrence) }}>
+        <span className={pctGrade(s.cross_token_recurrence)}>
           {fmt(s.cross_token_recurrence)}
         </span>
       ),
@@ -522,7 +508,7 @@ function buildStructureColumns(opts: {
       key: 'burst',
       label: 'Burst%',
       tooltip: helpText(DISCOVERY_COL_HELP.burst),
-      render: (s) => <span style={{ color: pctGrade(s.slot_burst) }}>{fmt(s.slot_burst)}</span>,
+      render: (s) => <span className={pctGrade(s.slot_burst)}>{fmt(s.slot_burst)}</span>,
       sortValue: (s) => s.slot_burst,
       filterNumber: (s) => s.slot_burst,
       searchValue: () => '',
@@ -531,7 +517,7 @@ function buildStructureColumns(opts: {
       key: 'reuse',
       label: 'Reuse 0–1',
       tooltip: helpText(DISCOVERY_COL_HELP.reuse),
-      render: (s) => <span style={{ color: unitGrade(s.wallet_reuse) }}>{fmt(s.wallet_reuse, 2)}</span>,
+      render: (s) => <span className={unitGrade(s.wallet_reuse)}>{fmt(s.wallet_reuse, 2)}</span>,
       sortValue: (s) => s.wallet_reuse,
       filterNumber: (s) => s.wallet_reuse,
       searchValue: () => '',
@@ -552,7 +538,7 @@ function buildStructureColumns(opts: {
       render: (s) => {
         const c = contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null;
         if (c == null) return <span className="text-text-dim/50">—</span>;
-        return <span style={{ color: pctGrade(c) }}>{fmt(c)}</span>;
+        return <span className={pctGrade(c)}>{fmt(c)}</span>;
       },
       sortValue: (s) => contagionByStructure.get(JSON.stringify(s.ix_labels)) ?? null,
       searchValue: () => '',
@@ -893,12 +879,10 @@ export function FlowDiscoveryPage() {
 
   return (
     <div className="pt-2">
-      <div className="mb-3 flex flex-wrap items-baseline gap-3">
-        <h1 className="text-xl font-extrabold text-text">Flow discovery</h1>
-        <span className="text-sm text-text-mid">
-          Rank ix structures per fingerprint group → toggle volume patterns
-        </span>
-      </div>
+      <PageHeader
+        title="Flow discovery"
+        description="Rank ix structures per fingerprint group → toggle volume patterns"
+      />
 
       <div className="mb-4 flex flex-wrap items-end gap-3 bg-surface">
         <div className="flex flex-col gap-1">

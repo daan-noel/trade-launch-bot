@@ -149,10 +149,11 @@ interface AlertProps {
   children: ReactNode;
 }
 
+/** Theme-token tones only — never hard-code hex here (drifts from `index.css`). */
 const alertVariants: Record<AlertProps['variant'], string> = {
   error: 'border-red/25 bg-red/8 text-red',
-  success: 'border-[rgba(39,174,96,0.25)] bg-[rgba(39,174,96,0.08)] text-[#27ae60]',
-  warning: 'border-[rgba(241,196,15,0.25)] bg-[rgba(241,196,15,0.08)] text-[#f1c40f]',
+  success: 'border-green/25 bg-green/8 text-green',
+  warning: 'border-warning/25 bg-warning/8 text-warning',
 };
 
 export function InlineAlert({ variant, children }: AlertProps) {

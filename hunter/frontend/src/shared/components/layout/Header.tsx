@@ -40,7 +40,7 @@ function NavItem({ to, children }: { to: string; children: ReactNode }) {
         cn(
           'rounded-md px-3 py-1.5 text-[13px] font-medium transition-all duration-150',
           // Active highlight rides `--color-primary`, so it's teal on live and
-          // violet on lab with no per-mode branch.
+          // cyan on lab with no per-mode branch.
           isActive
             ? 'bg-primary/12 text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]'
             : 'text-text-mid hover:bg-white/4 hover:text-text',

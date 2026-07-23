@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useSelector } from 'react-redux';
+import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { useUsdRate } from 'context/PriceUnitContext';
 import { formatCompact, formatUsd } from 'utils/format';
@@ -50,12 +51,11 @@ export function LiveHomePage() {
 
   return (
     <div className="pt-2">
-      <div className="mb-4 flex flex-wrap items-baseline gap-3">
-        <h1 className="text-2xl font-extrabold text-text">Command Center</h1>
-        <span className="text-sm text-text-mid">
-          Glance → act · Floor = book · Portfolio = money · Rules = keep/kill
-        </span>
-      </div>
+      <PageHeader
+        size="page"
+        title="Command Center"
+        description="Glance → act · Floor = book · Portfolio = money · Rules = keep/kill"
+      />
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
         <Link to="/wallet" className="block rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-primary">
