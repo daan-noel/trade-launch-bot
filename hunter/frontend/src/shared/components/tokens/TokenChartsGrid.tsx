@@ -20,6 +20,15 @@ export interface RowChartOverlay {
  */
 export type ChartOverlayHook<R> = (row: R, mint: string) => RowChartOverlay;
 
+/** Hook-based overlay for {@link TokenChartsGridProps.groupByMint} — called once
+ *  per mint card (rules-of-hooks safe, same contract as {@link ChartOverlayHook}).
+ *  Use when a mint's full episode set can't be derived from the rows the grid was
+ *  handed (which are only the table's CURRENT PAGE) — e.g. a server-paged table
+ *  where a rule's re-entries land on different pages — so the hook can fetch the
+ *  mint's full set itself. `rows` is that mint's rows from the current page, handed
+ *  over as an immediate seed/fallback while the hook's own fetch is in flight. */
+export type MintGroupOverlayHook<R> = (mint: string, rows: R[]) => RowChartOverlay;
+
 const NO_OVERLAY: RowChartOverlay = {};
 /** Stable default so cards always call a hook (rules-of-hooks) when none passed. */
 const useNoRowOverlay: ChartOverlayHook<unknown> = () => NO_OVERLAY;
@@ -191,14 +200,22 @@ export interface TokenChartsGridProps<R> {
    *  `rowKey`. Ignored when `groupByMint` is on (cards are keyed by mint). */
   rowKey?: (row: R) => string;
   /** Collapse the grid to ONE card per mint (not per row) and draw the markers
-   *  {@link mintGroupOverlay} builds from all rows sharing that mint — so a token
-   *  a rule re-entered N times shows all N episodes overlaid on a single chart,
-   *  matching the inspect modal. The card's selection key is the mint. Only the
-   *  rows on the current page are grouped (the grid is page-scoped). */
+   *  {@link mintGroupOverlay} (or {@link useMintGroupOverlay}) builds from all rows
+   *  sharing that mint — so a token a rule re-entered N times shows all N episodes
+   *  overlaid on a single chart, matching the inspect modal. The card's selection
+   *  key is the mint. The rows handed to either overlay builder are only the rows
+   *  on the current page (the grid itself is page-scoped) — a table whose re-entry
+   *  episodes can land on different pages needs {@link useMintGroupOverlay}, which
+   *  can fetch/derive the mint's full set beyond just this page. */
   groupByMint?: boolean;
-  /** Builds one card's overlay from every row of its mint (pure — no hooks).
-   *  Required for {@link groupByMint}; ignored otherwise. */
+  /** Builds one card's overlay from every row of its mint that's on the CURRENT
+   *  PAGE (pure — no hooks). Fine when a mint's episodes are guaranteed to co-occur
+   *  on one page (e.g. a client table already holding its full filtered dataset);
+   *  otherwise use {@link useMintGroupOverlay}. Ignored when that hook is supplied. */
   mintGroupOverlay?: (rows: R[], mint: string) => RowChartOverlay;
+  /** Hook-based alternative to {@link mintGroupOverlay} — see
+   *  {@link MintGroupOverlayHook}. Takes precedence when both are supplied. */
+  useMintGroupOverlay?: MintGroupOverlayHook<R>;
 }
 
 const mintOfRow = <R,>(row: R): string =>
@@ -216,14 +233,15 @@ export function TokenChartsGrid<R>({
   rowKey,
   groupByMint,
   mintGroupOverlay,
+  useMintGroupOverlay,
 }: TokenChartsGridProps<R>) {
   const useOverlay = (useRowOverlay ?? useNoRowOverlay) as ChartOverlayHook<R>;
   if (rows.length === 0) return null;
 
   // Group-by-mint: one card per token, its markers built from ALL of that mint's
-  // rows on the page (re-entry episodes overlaid on one chart). Falls through to
-  // the per-row path when no group overlay was supplied.
-  if (groupByMint && mintGroupOverlay) {
+  // episodes (re-entries overlaid on one chart). Falls through to the per-row path
+  // when no group overlay was supplied.
+  if (groupByMint && (mintGroupOverlay || useMintGroupOverlay)) {
     const order: string[] = [];
     const byMint = new Map<string, R[]>();
     for (const row of rows) {
@@ -242,7 +260,17 @@ export function TokenChartsGrid<R>({
           const groupRows = byMint.get(mint)!;
           const rep = groupRows[0];
           const selected = !!mint && selectedKey === mint;
-          const { eventMarkers } = mintGroupOverlay(groupRows, mint);
+          // Hook path (can fetch beyond this page) wins over the pure/page-scoped
+          // builder; either way `useOverlay` below is still always called (rules
+          // of hooks) — it just ignores its (row, mint) args in the hook path.
+          const overlayHook = (
+            useMintGroupOverlay
+              ? () => useMintGroupOverlay(mint, groupRows)
+              : useNoRowOverlay
+          ) as ChartOverlayHook<R>;
+          const eventMarkersOverride = useMintGroupOverlay
+            ? undefined
+            : (mintGroupOverlay!(groupRows, mint).eventMarkers ?? null);
           return (
             <LazyMount key={mint}>
               <TokenChartCard
@@ -251,8 +279,8 @@ export function TokenChartsGrid<R>({
                 title={titleOf?.(rep)}
                 highlightWallet={highlightWallet}
                 chartTableId={chartTableId}
-                useOverlay={useNoRowOverlay as ChartOverlayHook<R>}
-                eventMarkersOverride={eventMarkers ?? null}
+                useOverlay={overlayHook}
+                eventMarkersOverride={eventMarkersOverride}
                 extra={renderChartCardExtra?.(rep)}
                 selected={selected}
                 onSelect={

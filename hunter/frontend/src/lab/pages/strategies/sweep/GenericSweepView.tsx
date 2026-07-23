@@ -840,9 +840,13 @@ function ComboTokenResults({
         charts
         useRowOverlay={comboRowOverlay}
         chartsGroupByMint
-        mintChartGroupOverlay={(gr, _mint) => ({
+        // `rowsForTable` is this combo's FULL (already client-loaded) row set, not
+        // just the grid's current page — group over it directly by mint instead of
+        // the page-scoped `gr` the grid hands back, so a token re-entered on a
+        // different page than its other episodes still overlays all of them.
+        mintChartGroupOverlay={(_gr, mint) => ({
           eventMarkers: buildEventMarkersForEpisodes(
-            gr.filter((r) => r.fired).map(comboTarget),
+            rowsForTable.filter((r) => r.fired && r.mint_address === mint).map(comboTarget),
           ),
         })}
         rows={rowsForTable}

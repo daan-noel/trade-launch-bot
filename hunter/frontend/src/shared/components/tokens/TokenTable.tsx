@@ -5,7 +5,7 @@ import type { FilterSpec } from 'components/table/numericFilter';
 import { appendedTokenColumns } from './sharedTokenColumns';
 import { MintSetInput } from './MintSetInput';
 import { LazyTokenChartsGrid } from './LazyTokenChartsGrid';
-import type { ChartOverlayHook, RowChartOverlay } from './TokenChartsGrid';
+import type { ChartOverlayHook, MintGroupOverlayHook, RowChartOverlay } from './TokenChartsGrid';
 import { cn } from 'lib/cn';
 
 /** Persist the charts-grid toggle per `tableId` (localStorage; SSR/test safe). */
@@ -94,9 +94,16 @@ interface TokenTableCommon<R> {
    *  rows' markers on it (re-entry episodes on one chart). Pass alongside
    *  {@link mintChartGroupOverlay}; takes precedence over `useRowOverlay` in the grid. */
   chartsGroupByMint?: boolean;
-  /** Builds a mint card's overlay from every row of that mint (pure). Required for
-   *  {@link chartsGroupByMint}. */
+  /** Builds a mint card's overlay from every row of that mint ON THE CURRENT PAGE
+   *  (pure). Required for {@link chartsGroupByMint} unless {@link useMintChartGroupOverlay}
+   *  is supplied instead. */
   mintChartGroupOverlay?: (rows: R[], mint: string) => RowChartOverlay;
+  /** Hook-based alternative to {@link mintChartGroupOverlay} for when a mint's
+   *  re-entry episodes aren't guaranteed to co-occur on the table's current page
+   *  (e.g. a server-paged table) — the hook can fetch/derive the full episode set
+   *  itself. Takes precedence over {@link mintChartGroupOverlay} when both are
+   *  supplied. See {@link MintGroupOverlayHook}. */
+  useMintChartGroupOverlay?: MintGroupOverlayHook<R>;
   /** Per-row extra rendered in a chart card's header when `charts` is on. */
   renderChartCardExtra?: (row: R) => ReactNode;
   /** Per-row chart-card title (else derived from the fetched detail). */
@@ -165,6 +172,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
     rowKey,
     chartsGroupByMint,
     mintChartGroupOverlay,
+    useMintChartGroupOverlay,
   } = props;
   const mintOf = mintAddressOf;
   const [chartsOn, setChartsOn] = useState(() => (charts ? loadChartsPref(tableId) : false));
@@ -225,6 +233,7 @@ export function TokenTable<R>(props: TokenTableProps<R>) {
           rowKey={rowKey}
           groupByMint={chartsGroupByMint}
           mintGroupOverlay={mintChartGroupOverlay}
+          useMintGroupOverlay={useMintChartGroupOverlay}
         />
       )}
     </>
