@@ -16,6 +16,14 @@ Query script (throwaway, session scratchpad): DuckDB over
 `$SWEEP_LAKE_DIR/trades/dt=*/data.parquet`. Re-derive any time; the percentile
 anchors below are the permanent record.
 
+> **Now generated.** `lab/src/discovery/candidates.rs` (`screen_plan` →
+> `collect_percentiles` → `build_menus`) derives this ladder and these menus for any
+> cohort straight off the metric `REGISTRY` — measured through the engine's own
+> `MetricSeries`, not re-derived in SQL. The tables below stay as the recorded
+> ground truth for the 2026-07 lake and as the sanity check a generated menu is
+> compared against; a **new** metric no longer needs a hand-derivation pass. See
+> `docs/roadmap/metric-combo-discovery.md` §2.1.
+
 Subsets used:
 - **ALL** - every curve trade moment.
 - **HOT** - `age >= 120s AND vsol in [40, 115]` (the blueprint universe gate;

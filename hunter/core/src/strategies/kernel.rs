@@ -697,7 +697,11 @@ pub fn run_summary<'a>(outcomes: impl Iterator<Item = &'a TokenOutcome>) -> RunS
 
 /// Nearest-rank percentile `q` (`0.0..=1.0`) over an ascending-sorted, non-empty
 /// slice. `q=0.5`/`q=0.9` are the median/p90 [`exact_run_metrics`] needs.
-fn exact_quantile_f64(sorted: &[f64], q: f64) -> f64 {
+///
+/// Public as the ONE nearest-rank percentile in the workspace — `lab`'s discovery
+/// candidate generator derives its metric percentile ladder through it, so the
+/// anchors it publishes and the medians a run reports are the same statistic.
+pub fn exact_quantile_f64(sorted: &[f64], q: f64) -> f64 {
     let idx = (((sorted.len() - 1) as f64) * q).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
 }

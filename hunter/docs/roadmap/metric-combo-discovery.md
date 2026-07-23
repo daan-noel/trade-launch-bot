@@ -9,9 +9,9 @@ through with no pipeline edit.
 engine + lake corpus. Nothing ships to EC2. Live/paper are untouched — this is an
 analysis aid that *outputs* combos to promote, exactly like the sweep does today.
 
-**Status.** In progress. **Step 1 (objective re-ranker) — DONE** (see §8). Steps 2–6
-not started; continue there. Build Layer 1 first (highest leverage, least code);
-Layers 2–3 compose on top.
+**Status.** In progress. **Step 1 (objective re-ranker) — DONE**; **step 2 (candidate
+generation) — DONE** (see §8). Steps 3–6 not started; continue there. Build Layer 1
+first (highest leverage, least code); Layers 2–3 compose on top.
 
 Related code (grounding — read before touching):
 - Metric SSOT: [`engine/src/metrics/mod.rs`](../../engine/src/metrics/mod.rs) (`REGISTRY`)
@@ -123,25 +123,56 @@ not a hard cut.
 threshold, in what direction — and throw out the dead ones. This shrinks every
 downstream grid and is where the overfit guards live.
 
-### 2.1 Automated candidate values (closes gap #1)
+### 2.1 Automated candidate values (closes gap #1) — **BUILT**
 
-New: a **lake percentile service** in `lab/src/lake/duck.rs`
-(`metric_percentiles(metric, subset) -> [p05..p99]`). For each numeric metric it
-runs one `approx_quantile` (DuckDB native, cheap) over the loaded corpus, subset to
-the cohort. The candidate menu is then percentile-spaced (`p10, p25, p50, p75, p90`)
-plus the `off` sentinel — the exact recipe `axis-value-candidates.md` documents by
-hand, now generated.
+`lab/src/discovery/candidates.rs`: `screen_plan` (registry → screenable metrics +
+skip reasons) → `collect_percentiles` (measured `[p05..p99]` ladder per metric) →
+`build_menus` (percentile-spaced `p10, p25, p50, p75, p90` + the `off` sentinel,
+rounded by `unit`) → `MetricCandidates::axis_spec` hands a menu straight to
+`AxesModel`. The exact recipe `axis-value-candidates.md` documents by hand, now
+generated.
+
+**Where the percentiles come from (design change vs. the original sketch).** This was
+planned as `metric_percentiles` in `lake/duck.rs` — one DuckDB `approx_quantile`. It
+isn't, deliberately: only `time`/`liquidity` are raw lake columns; `trail`, `stall`,
+the rolling-window flows and the price-window extrema are *engine* quantities. Writing
+them as DuckDB window functions would be a **second implementation of metric
+semantics** that can silently drift from `hunter_engine` (SSOT rule), and the published
+anchors would then describe values the screen never actually gates on. The ladder is
+instead measured through the engine's own `MetricSeries` compute — the exact numbers
+the Layer-1 scan reads — over the same per-token precompute the screen needs anyway
+(§6.1). Cost keeps its shape: one corpus load, one series pass. Nearest-rank quantile
+is the kernel's `exact_quantile_f64` (now `pub`), so anchors and reported medians are
+one statistic.
+
+Sampling: values are taken at **trade moments** (trades folded, no synthetic ticks) —
+what the hand-derived table measured. Weighting by wall-clock silence would drag every
+menu toward dead-token values. RAM is bounded per metric by a deterministic decimating
+reservoir (`sample_cap`, default 200k ⇒ ~1.6 MB/column): no RNG, so the same corpus
+yields the same menu on every run.
 
 Registry-driven specifics (all read off `MetricSpec`/`GroupSpec`, so a new metric is
-handled automatically):
-- **unit** picks sensible rounding (`seconds`/`sol`/`percent`).
-- **operator direction** inferred from `monotonic` + unit, overridable.
-- **dynamic** groups (`window_size_sec`) → screen at a default window (30s entry /
-  10s exit per the doc); windows are cross-run, not swept in one run.
-- **position-scoped** (`m_position`) → screened on the **exit** side only (registry
-  `scope == Position`; entry axis is rejected by `axes.rs`).
-- **flow-split** (`m_flow_split*`) → needs `volume_ix_patterns`; skip in the generic
-  screen unless a pattern set is supplied for the run (mirrors the existing 400).
+handled automatically) — as built:
+- **unit** picks the rounding step, widening with magnitude (`round_for_unit`), so a
+  menu reads like the hand-authored ones (`5/8/15/25` %, `30/60/120/300` s).
+- **operator direction is measured, not inferred.** `DirectionPolicy::Both` (default)
+  screens `>=` and `<` per metric — the plan already treats the operator as an *output*
+  of the screen (§2.2 "keep, with the suggested operator"), and the anchor table shows
+  the same metric earning a gate in either direction by side (`liquidity >` floor vs
+  `liquidity <` pre-migration cap). It stays additive (2 × 5 values), never a product.
+- **dynamic** groups (`window_size_sec`) → screened at the run's per-side window
+  (30 s entry / 10 s exit by default); windows are cross-run, not swept in one run.
+- **position-scoped** (`m_position`) → **exit** side only, and their values are
+  *declared* (`POSITION_MENUS`): a position metric anchors on your entry fill, so no
+  token-independent distribution exists to measure. This is the "one explicit
+  annotation" §5 predicts. `m_position.pnl` is skipped entirely — it **is** the
+  baseline TP/SL (they desugar into it), already carried by every screening combo.
+- **flow-split** (`m_flow_split*`) → needs `volume_ix_patterns`; skipped unless a
+  pattern set is supplied for the run.
+- **Nothing is dropped silently.** Every registry metric × side is either screened or
+  carries a `SkipReason`; a measured metric with no usable menu is reported as a
+  `MenuGap` (`NoSamples` / `Degenerate`). A guard test asserts screened-xor-reported
+  over the whole registry, so a metric added later can't go quietly unscreened.
 
 ### 2.2 The screen itself (additive, not multiplicative)
 
@@ -341,8 +372,22 @@ Each layer is independently useful; ship in order.
    `mtm_pnl_pct` on `grouped_sweep_results` (+ the repo read/write). Deferred — the
    forward pipeline builds `ComboStats` from freshly-computed `ComboMetrics`, so this
    only blocks re-ranking historical runs.
-2. **Lake percentile service** (§2.1) — `metric_percentiles` in `duck.rs` + candidate
-   generator keyed off `REGISTRY`. Closes the hand-derivation gap.
+2. **Candidate generation** (§2.1) — **DONE.** `lab/src/discovery/candidates.rs`:
+   `ScreenConfig` / `screen_plan` (+ `SkipReason`), `collect_percentiles` →
+   `PercentileTable` (deterministic bounded reservoir, nearest-rank via the kernel's
+   now-`pub` `exact_quantile_f64`), `build_menus` → `MetricCandidates` (+ `MenuGap`),
+   `round_for_unit`, and `axis_spec()` into `AxesModel`. 13 unit tests (registry
+   screened-xor-reported, flow-split needs patterns, position exit-only + declared
+   menus, per-side windows + column dedup, reservoir exactness/boundedness, rounding,
+   off-first menus, degenerate/no-sample reporting, axis round-trip, end-to-end over a
+   synthetic corpus). **NOT** in `duck.rs` and **not** DuckDB SQL — see §2.1 for why
+   (SSOT: the ladder is measured through the engine's own `MetricSeries`).
+   **Findings for step 3:** (a) the percentile pass and the Layer-1 screen want the
+   *same* per-token series — build step 3's scan so `collect_percentiles` and the screen
+   share one precompute rather than folding the corpus twice (that is D2's real payoff);
+   (b) `collect_percentiles` is sequential — parallelising it needs a mergeable
+   reservoir (buffers with different strides can't be concatenated without bias), so
+   fold it into the screen's rayon pass instead of parallelising it standalone.
 3. **Layer 1 screen** (§2.2) — orchestrate the additive per-metric scan + response-
    curve analysis → ranked metric shortlist. *This is the deliverable you feel first.*
 4. **Layer 2 family grid + interaction check** (§3).
