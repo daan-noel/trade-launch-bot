@@ -30,7 +30,7 @@ export function TokenDetailModal({ mint, symbol, onClose, tableId }: TokenDetail
   const heading = symbol || truncate(mint, 8);
 
   return (
-    <Modal title={`${heading} — Token detail`} open onClose={onClose} size="xl">
+    <Modal title={`${heading} — Token detail`} open onClose={onClose} size="xxl">
       <div className="flex flex-col gap-3.5">
         <TokenDetailPanel
           detail={detail ?? null}

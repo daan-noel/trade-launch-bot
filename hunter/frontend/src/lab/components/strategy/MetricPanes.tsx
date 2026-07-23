@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
+import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { useStrategyRegistry, unitSuffix, type MetricUnit } from 'lib/strategy/registry';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
@@ -296,6 +297,15 @@ export function MetricPanes({
       panes: panes.includes(key) ? panes.filter((k) => k !== key) : [...panes, key],
     }));
 
+  const allSelected = allColumns.length > 0 && allColumns.every((c) => panes.includes(c.key));
+
+  const toggleSelectAll = () =>
+    setPrefs((p) => ({
+      ...p,
+      autoPanes: false,
+      panes: allSelected ? [] : allColumns.map((c) => c.key),
+    }));
+
   const xDomain: ChartVisibleTimeRange | null = useMemo(() => {
     if (visibleTimeRange && visibleTimeRange.to > visibleTimeRange.from) return visibleTimeRange;
     const finite = atSec.filter((t) => Number.isFinite(t));
@@ -337,22 +347,74 @@ export function MetricPanes({
           storageKey="mt:metric-selector-open"
         >
           <div className="flex flex-col gap-2">
-            {columnsByGroup.map(({ group, cols }) => (
-              <div key={group} className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-                <span className="w-24 shrink-0 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
-                  {group}
-                </span>
-                {cols.map((c) => (
-                  <label key={c.key} className="flex items-center gap-1.5 text-[12px] text-text-dim">
-                    <Checkbox checked={panes.includes(c.key)} onChange={() => togglePane(c.key)} />
-                    <span className="font-mono">
-                      {c.metric}
-                      {c.window != null && <span className="text-text-dim/60">@{c.window}s</span>}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            ))}
+            <div className="flex items-center justify-between gap-2 border-b border-white/8 pb-2">
+              <span className="text-[11px] text-text-dim">
+                {panes.length} / {allColumns.length} selected
+              </span>
+              <Button variant="subtle" size="xs" onClick={toggleSelectAll}>
+                {allSelected ? 'unselect all' : 'select all'}
+              </Button>
+            </div>
+            {columnsByGroup.map(({ group, cols }) => {
+              const windowRows = colsByWindow(cols);
+              const isDynamic = windowRows.some((r) => r.window != null);
+              return (
+                <div
+                  key={group}
+                  className="flex items-start gap-x-3 border-b border-white/5 pb-1.5 last:border-b-0 last:pb-0"
+                >
+                  <span
+                    className="w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary"
+                    title={group}
+                  >
+                    {group}
+                  </span>
+                  <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
+                    {windowRows.map(({ window, items }) => (
+                      <div
+                        key={window ?? 'static'}
+                        className={`flex min-w-0 items-center gap-2 ${
+                          isDynamic ? 'rounded px-1 py-0.5 odd:bg-white/2' : 'px-1'
+                        }`}
+                      >
+                        {/* Always reserve the badge column so static groups (m_flow_split)
+                            share the same checkbox indent as dynamic ones (m_flow_split_window). */}
+                        <span
+                          className={`w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
+                            window != null
+                              ? 'rounded bg-white/8 px-1 py-px text-text'
+                              : 'invisible select-none'
+                          }`}
+                          aria-hidden={window == null}
+                        >
+                          {window != null ? `${window}s` : '0s'}
+                        </span>
+                        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                          {items.map((c) => (
+                            <label
+                              key={c.key}
+                              className="flex shrink-0 items-center gap-1 text-[11px] text-text-dim"
+                            >
+                              <Checkbox
+                                boxSize="sm"
+                                checked={panes.includes(c.key)}
+                                onChange={() => togglePane(c.key)}
+                              />
+                              <span
+                                className="font-mono whitespace-nowrap"
+                                title={`${c.metric}${c.window != null ? `@${c.window}s` : ''}`}
+                              >
+                                {c.metric}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
           <div className="flex items-center gap-2 border-t border-white/8 pt-2">
             <span className="text-[11px] text-text-dim">rule overlay</span>
@@ -394,28 +456,61 @@ export function MetricPanes({
           <span className="text-[10px] font-semibold uppercase tracking-wider text-text-dim">
             {crosshairIdx != null ? 'at crosshair' : 'latest'}
           </span>
-          {groupKeys(valueStrip, (v) => v.key).map(({ group, items }) => (
-            <div key={group} className="flex flex-wrap items-end gap-x-3 gap-y-2">
-              <span className="w-24 shrink-0 self-center font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
-                {group}
-              </span>
-              {items.map((v) => (
-                <div key={v.key} className="min-w-[4.5rem]">
-                  <div className="font-mono text-[10px] text-text-dim">{v.label}</div>
-                  <div
-                    className={`font-mono text-[15px] font-semibold tabular-nums leading-tight ${v.ok === true
-                        ? 'text-green'
-                        : v.ok === false
-                          ? 'text-warning'
-                          : 'text-text'
+          {groupKeys(valueStrip, (v) => v.key).map(({ group, items }) => {
+            // Same window banding as the selector — strip `@Ns` from the label once the
+            // row tag owns the window, so the eye reads "10s → values" not "foo@10s".
+            const rows = colsByWindow(
+              items.map((v) => {
+                const meta = allColumns.find((c) => c.key === v.key);
+                return { ...v, window: meta?.window ?? null, metric: meta?.metric ?? v.label };
+              }),
+            );
+            const isDynamic = rows.some((r) => r.window != null);
+            return (
+              <div key={group} className="flex items-start gap-x-3">
+                <span className="w-32 shrink-0 pt-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
+                  {group}
+                </span>
+                <div className={`min-w-0 flex-1 ${isDynamic ? 'flex flex-col gap-0.5' : ''}`}>
+                  {rows.map(({ window, items: rowItems }) => (
+                    <div
+                      key={window ?? 'static'}
+                      className={`flex min-w-0 flex-wrap items-end gap-x-3 gap-y-1 px-1 ${
+                        isDynamic ? 'rounded py-0.5 odd:bg-white/2' : ''
                       }`}
-                  >
-                    {v.text}
-                  </div>
+                    >
+                      <span
+                        className={`mb-0.5 w-8 shrink-0 text-center font-mono text-[10px] font-semibold tabular-nums ${
+                          window != null
+                            ? 'rounded bg-white/8 px-1 py-px text-text'
+                            : 'invisible select-none'
+                        }`}
+                        aria-hidden={window == null}
+                      >
+                        {window != null ? `${window}s` : '0s'}
+                      </span>
+                      {rowItems.map((v) => (
+                        <div key={v.key} className="min-w-[4.5rem]">
+                          <div className="font-mono text-[10px] text-text-dim">{v.metric}</div>
+                          <div
+                            className={`font-mono text-[15px] font-semibold tabular-nums leading-tight ${
+                              v.ok === true
+                                ? 'text-green'
+                                : v.ok === false
+                                  ? 'text-warning'
+                                  : 'text-text'
+                            }`}
+                          >
+                            {v.text}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -436,43 +531,82 @@ export function MetricPanes({
             }
           }}
         >
-          {groupKeys(panes, (key) => key).map(({ group, items }) => (
-            <div key={group} className="flex flex-col gap-2">
-              <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
-                {group}
-              </span>
-              {items.map((key) => {
-                const col = seriesByKey.get(key);
+          {groupKeys(panes, (key) => key).map(({ group, items }) => {
+            const rows = colsByWindow(
+              items.map((key) => {
                 const meta = allColumns.find((c) => c.key === key);
-                if (!col || !meta) {
-                  return (
-                    <div key={key} className="rounded border border-white/8 p-2 text-[11px] text-text-dim/60">
-                      {key} — no data
-                    </div>
-                  );
-                }
-                return (
-                  <MetricPane
-                    key={key}
-                    label={key}
-                    unit={meta.unit}
-                    atSec={atSec}
-                    values={col.values}
-                    xDomain={xDomain}
-                    crosshairTimeSec={crosshairTimeSec}
-                    crosshairIdx={crosshairIdx}
-                    thresholds={ruleParams ? metricThresholds(ruleParams, meta.metric) : []}
-                    conditionOk={conditionByMetric.get(meta.metric)?.ok ?? null}
-                    onPointerTime={handlePanePointer}
-                  />
-                );
-              })}
-            </div>
-          ))}
+                return { key, window: meta?.window ?? null };
+              }),
+            );
+            const isDynamic = rows.some((r) => r.window != null);
+            return (
+              <div key={group} className="flex flex-col gap-1.5">
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary">
+                  {group}
+                </span>
+                {rows.map(({ window, items: rowItems }) => (
+                  <div key={window ?? 'static'} className="flex flex-col gap-1.5">
+                    {isDynamic && (
+                      <span className="w-fit rounded bg-white/8 px-1.5 py-px font-mono text-[10px] font-semibold tabular-nums text-text">
+                        {window}s
+                      </span>
+                    )}
+                    {rowItems.map(({ key }) => {
+                      const col = seriesByKey.get(key);
+                      const meta = allColumns.find((c) => c.key === key);
+                      if (!col || !meta) {
+                        return (
+                          <div
+                            key={key}
+                            className="rounded border border-white/8 p-2 text-[11px] text-text-dim/60"
+                          >
+                            {key} — no data
+                          </div>
+                        );
+                      }
+                      return (
+                        <MetricPane
+                          key={key}
+                          label={meta.metric}
+                          unit={meta.unit}
+                          atSec={atSec}
+                          values={col.values}
+                          xDomain={xDomain}
+                          crosshairTimeSec={crosshairTimeSec}
+                          crosshairIdx={crosshairIdx}
+                          thresholds={ruleParams ? metricThresholds(ruleParams, meta.metric) : []}
+                          conditionOk={conditionByMetric.get(meta.metric)?.ok ?? null}
+                          onPointerTime={handlePanePointer}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
+}
+
+/** Split a group's columns into one line per time window (static/no-window cols first). */
+function colsByWindow<T extends { window: number | null }>(
+  cols: T[],
+): Array<{ window: number | null; items: T[] }> {
+  const buckets = new Map<number | null, T[]>();
+  for (const c of cols) {
+    const arr = buckets.get(c.window) ?? [];
+    arr.push(c);
+    buckets.set(c.window, arr);
+  }
+  const windowKeys = [...buckets.keys()].sort((a, b) => {
+    if (a == null) return b == null ? 0 : -1;
+    if (b == null) return 1;
+    return a - b;
+  });
+  return windowKeys.map((window) => ({ window, items: buckets.get(window)! }));
 }
 
 /** Compact metric number for the HUD / pane rail. */

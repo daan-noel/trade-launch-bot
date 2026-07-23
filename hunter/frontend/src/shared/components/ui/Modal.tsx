@@ -7,13 +7,15 @@ interface ModalProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
-  /** Width preset: `md` (default, ~600px) or `xl` (~1200px, e.g. for a chart). */
-  size?: 'md' | 'xl';
+  /** Width preset: `md` (default, ~700px), `xl` (~1200px, e.g. for a chart), or
+   *  `xxl` (~1600px, e.g. a token-detail modal with chart + metric panes). */
+  size?: 'md' | 'xl' | 'xxl';
 }
 
 const MODAL_WIDTH: Record<NonNullable<ModalProps['size']>, string> = {
   md: 'max-w-[700px]',
   xl: 'max-w-[1200px]',
+  xxl: 'max-w-[1600px]',
 };
 
 /** Selector for the focusable elements we keep `Tab` cycling between. */
