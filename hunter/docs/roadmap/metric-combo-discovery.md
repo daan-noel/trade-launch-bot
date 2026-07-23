@@ -9,8 +9,9 @@ through with no pipeline edit.
 engine + lake corpus. Nothing ships to EC2. Live/paper are untouched — this is an
 analysis aid that *outputs* combos to promote, exactly like the sweep does today.
 
-**Status.** Planned, not started. Build Layer 1 first (highest leverage, least
-code). Layers 2–3 compose on top.
+**Status.** In progress. **Step 1 (objective re-ranker) — DONE** (see §8). Steps 2–6
+not started; continue there. Build Layer 1 first (highest leverage, least code);
+Layers 2–3 compose on top.
 
 Related code (grounding — read before touching):
 - Metric SSOT: [`engine/src/metrics/mod.rs`](../../engine/src/metrics/mod.rs) (`REGISTRY`)
@@ -328,8 +329,18 @@ sccache already caches rustc output across builds.
 
 Each layer is independently useful; ship in order.
 
-1. **Objective re-ranker** (§1) — pure fn over `ComboMetrics`. Unit-tested against
-   the existing sweep rows; no engine/DB change. *Smallest, unblocks everything.*
+1. **Objective re-ranker** (§1) — **DONE.** `lab/src/discovery/objective.rs`:
+   `DiscoveryWeights` (D1 defaults), `ComboStats` (+ `from_combo_metrics`),
+   `discovery_score → ScoreOutcome{Ranked|BelowMinClosed|NoFire}`. Pure fn over the
+   in-memory `ComboMetrics`; 6 unit tests (median-beats-whales, min-N gate, fire-rate
+   scaling, open haircut, profit-factor cap); no engine/DB change.
+   **Finding for step 2+:** the *persisted* DB row `GroupedSweepResult`
+   (`core/src/models/grouped_sweep.rs`) does **not** carry `mtm_pnl_pct` — only the
+   in-memory `ComboMetrics` (`lab/src/sweep/aggregate.rs`) does. So re-ranking a
+   *stored* run (a `from_result` constructor) needs a migration to persist
+   `mtm_pnl_pct` on `grouped_sweep_results` (+ the repo read/write). Deferred — the
+   forward pipeline builds `ComboStats` from freshly-computed `ComboMetrics`, so this
+   only blocks re-ranking historical runs.
 2. **Lake percentile service** (§2.1) — `metric_percentiles` in `duck.rs` + candidate
    generator keyed off `REGISTRY`. Closes the hand-derivation gap.
 3. **Layer 1 screen** (§2.2) — orchestrate the additive per-metric scan + response-
