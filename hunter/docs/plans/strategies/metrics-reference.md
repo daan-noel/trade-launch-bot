@@ -1,8 +1,30 @@
-# Metrics reference — volume/organic flow split
+# Metrics reference — flow groups
 
-Deep-dive for `m_flow_split` / `m_flow_split_window`. High-level map:
-[`arch/strategies.md`](../../arch/strategies.md). Origin roadmap (shipped):
+Deep-dive for aggregate flow (`m_flow_lifetime` / `m_flow_window`) and the
+volume/organic split (`m_flow_split` / `m_flow_split_window`). High-level map:
+[`arch/strategies.md`](../../arch/strategies.md). Split origin roadmap (shipped):
 [`roadmap/volume-flow-split-plan.md`](../../roadmap/volume-flow-split-plan.md).
+
+## Aggregate flow (`m_flow_lifetime` / `m_flow_window`)
+
+Classifier-free SOL totals on the token. Same four JSON metric names; distinct
+registry `MetricId`s so lifetime can be monotonic while the window is not.
+
+| group | kind | strict params | state |
+| --- | --- | --- | --- |
+| `m_flow_lifetime` | static | none | two running counters on `TokenTrack` |
+| `m_flow_window` | dynamic | `window_size_sec` | ring buffer deduped by window size |
+
+| metric | meaning | unit | eq-tol | monotonic (lifetime only) |
+| --- | --- | --- | --- | --- |
+| `buy` | buy SOL | SOL | 0.1 | ✓ |
+| `sell` | sell SOL | SOL | 0.1 | ✓ |
+| `net_flow` | `buy − sell` | SOL | 0.1 | ✗ |
+| `gross_flow` | `buy + sell` | SOL | 0.1 | ✓ |
+
+Non-finite / negative SOL is ignored. Windowed variants are never monotonic.
+Lifetime is the maturity / critical-mass gate; window is the hot-right-now filter.
+No fingerprint config — unlike the split groups below.
 
 ## Classifier (per trade × fingerprint)
 

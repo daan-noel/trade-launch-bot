@@ -1,7 +1,7 @@
 //! `TokenTrack` — the per-token metric state the engine folds trades and ticks
 //! into. It composes the group states:
-//! * static [`SnapshotState`] + [`PriceLifetimeState`] — one copy, shared by every
-//!   rule armed on the token;
+//! * static [`SnapshotState`] + [`PriceLifetimeState`] + [`FlowLifetimeState`] —
+//!   one copy each, shared by every rule armed on the token;
 //! * dynamic [`WindowState`]s — **deduped by `window_size_sec`**, so rules that
 //!   share a window share one buffer;
 //! * fingerprint-scoped [`FlowState`]s — one classifier + totals per fingerprint
@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::fingerprint::FingerprintId;
 
+use super::flow_lifetime::FlowLifetimeState;
 use super::flow_split::{FlowPatterns, FlowState};
 use super::flow_window::{window_key, WindowState};
 use super::price_lifetime::PriceLifetimeState;
@@ -34,6 +35,7 @@ pub struct TokenTrack {
     created_at: Ts,
     snapshot: SnapshotState,
     price_lifetime: PriceLifetimeState,
+    flow_lifetime: FlowLifetimeState,
     /// Dynamic flow windows, keyed by [`window_key`] so equal sizes dedupe.
     windows: BTreeMap<u64, WindowState>,
     /// Dynamic price-extrema windows, keyed by [`window_key`]. Kept apart from
@@ -54,6 +56,7 @@ impl TokenTrack {
             created_at,
             snapshot: SnapshotState::default(),
             price_lifetime: PriceLifetimeState::new(created_at),
+            flow_lifetime: FlowLifetimeState::default(),
             windows: BTreeMap::new(),
             price_windows: BTreeMap::new(),
             flow: BTreeMap::new(),
@@ -110,6 +113,7 @@ impl TokenTrack {
     pub fn on_trade(&mut self, t: TradeLite) {
         self.snapshot.on_trade(t.reserve_sol);
         self.price_lifetime.on_trade(t.price, t.at);
+        self.flow_lifetime.on_trade(t.side, t.sol);
         for w in self.windows.values_mut() {
             w.on_trade(t.side, t.sol, t.at);
         }
@@ -164,6 +168,7 @@ impl TokenTrack {
         match id {
             Time | Liquidity => self.snapshot.value(id, self.created_at, now),
             Stall | Trail => self.price_lifetime.value(id, now),
+            LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell => self.flow_lifetime.value(id),
             WinTrail | WinRise => {
                 match window_secs.and_then(|ws| self.price_windows.get(&window_key(ws))) {
                     Some(pw) => pw.value(id),
@@ -255,6 +260,23 @@ mod tests {
         assert_eq!(track.value(MetricId::Trail, None, None, ts(5.0)), 0.0); // at peak
         assert_eq!(track.value(MetricId::Buy, Some(10.0), None, ts(5.0)), 3.0);
         assert_eq!(track.value(MetricId::GrossFlow, Some(10.0), None, ts(5.0)), 3.0);
+        // Lifetime totals ignore the window arg and do not need ensure_window.
+        assert_eq!(track.value(MetricId::LifeBuy, None, None, ts(5.0)), 3.0);
+        assert_eq!(track.value(MetricId::LifeGrossFlow, None, None, ts(5.0)), 3.0);
+    }
+
+    #[test]
+    fn lifetime_flow_survives_window_decay() {
+        let mut track = TokenTrack::new(ts(0.0));
+        track.ensure_window(10.0);
+        track.on_trade(buy(4.0, 1.0, 20.0, 0.0));
+        assert_eq!(track.value(MetricId::Buy, Some(10.0), None, ts(5.0)), 4.0);
+        assert_eq!(track.value(MetricId::LifeBuy, None, None, ts(5.0)), 4.0);
+        // Tick past the window edge → window decays; lifetime keeps the total.
+        track.on_tick(ts(11.0));
+        assert_eq!(track.value(MetricId::Buy, Some(10.0), None, ts(11.0)), 0.0);
+        assert_eq!(track.value(MetricId::LifeBuy, None, None, ts(11.0)), 4.0);
+        assert_eq!(track.value(MetricId::LifeGrossFlow, None, None, ts(11.0)), 4.0);
     }
 
     #[test]

@@ -8,8 +8,10 @@
 //! * `m_price_lifetime` (static) — `stall`, `trail` (lifetime peak)
 //! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
 //!   (rolling-window extrema; the dip trigger)
-//! * `m_flow_window` (dynamic, strict param `window_size_sec`) — `gross_flow`,
-//!   `net_flow`, `buy`, `sell`
+//! * `m_flow_lifetime` (static) — `gross_flow`, `net_flow`, `buy`, `sell`
+//!   (lifetime SOL totals; no classifier)
+//! * `m_flow_window` (dynamic, strict param `window_size_sec`) — same metrics
+//!   over a trailing window
 //! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
 //! * `m_flow_split_window` (dynamic, fingerprint-scoped) — same metrics over a window
 //! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `pnl`,
@@ -22,6 +24,7 @@
 //! makes it immediately usable everywhere, with no schema change.
 
 pub mod evaluator;
+pub mod flow_lifetime;
 pub mod flow_split;
 pub mod flow_window;
 pub mod position;
@@ -101,6 +104,8 @@ pub enum MetricGroupId {
     PriceLifetime,
     /// `m_price_window` — trailing-window price extrema (rolling high/low).
     PriceWindow,
+    /// `m_flow_lifetime` — lifetime flow aggregates (no classifier).
+    FlowLifetime,
     /// `m_flow_window` — trailing-window flow aggregates.
     FlowWindow,
     /// `m_flow_split` — volume/organic lifetime totals (fingerprint-scoped).
@@ -138,6 +143,16 @@ pub enum MetricId {
     WinTrail,
     /// Percent above the rolling-window low (`m_price_window`).
     WinRise,
+    // ── m_flow_lifetime (lifetime; JSON names shared with m_flow_window) ─
+    /// Buy + sell SOL since token birth (`m_flow_lifetime`).
+    LifeGrossFlow,
+    /// Buy − sell SOL since token birth (`m_flow_lifetime`).
+    LifeNetFlow,
+    /// Buy SOL since token birth (`m_flow_lifetime`).
+    LifeBuy,
+    /// Sell SOL since token birth (`m_flow_lifetime`).
+    LifeSell,
+    // ── m_flow_window (trailing) ─
     /// Buy + sell SOL over the trailing window (`m_flow_window`).
     GrossFlow,
     /// Buy − sell SOL over the trailing window (`m_flow_window`).
@@ -425,17 +440,62 @@ pub const REGISTRY: &[GroupSpec] = &[
         ],
     },
     GroupSpec {
+        id: MetricGroupId::FlowLifetime,
+        name: "m_flow_lifetime",
+        kind: MetricKind::Static,
+        scope: MetricScope::Token,
+        strict_params: &[],
+        fingerprint_config: &[],
+        // Violet/magenta family (~278–300), shared with m_flow_window (one aggregate
+        // flow, two views). `buy`/`sell` take the candle hues — same direction override
+        // as the window sibling; the family-width guard exempts them.
+        // Lifetime buy/sell/gross are monotonic (only grow) so entry upper bounds can
+        // disarm; net is not (sells can reverse it).
+        metrics: &[
+            MetricSpec {
+                id: MetricId::LifeGrossFlow,
+                name: "gross_flow",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: 278,
+            },
+            MetricSpec {
+                id: MetricId::LifeNetFlow,
+                name: "net_flow",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: false,
+                hue: 300,
+            },
+            MetricSpec {
+                id: MetricId::LifeBuy,
+                name: "buy",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: CANDLE_UP_HUE,
+            },
+            MetricSpec {
+                id: MetricId::LifeSell,
+                name: "sell",
+                unit: Unit::Sol,
+                eq_tolerance: 0.1,
+                monotonic: true,
+                hue: CANDLE_DOWN_HUE,
+            },
+        ],
+    },
+    GroupSpec {
         id: MetricGroupId::FlowWindow,
         name: "m_flow_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         fingerprint_config: &[],
-        // Violet/magenta family (~278–300) for the aggregate flow metrics — but `buy` and
-        // `sell` deliberately leave the family and take the candle up/down hues
-        // instead. Trade DIRECTION outranks group identity: a `buy` chip has to
-        // read the same green as an up-candle everywhere in the UI. The
-        // family-width guard test below exempts them for exactly this reason.
+        // Same violet/magenta family as m_flow_lifetime — the cross-group hue guard
+        // exempts the sibling pair. `buy`/`sell` take the candle up/down hues
+        // (direction outranks group identity); the family-width guard exempts them.
         metrics: &[
             MetricSpec {
                 id: MetricId::GrossFlow,
@@ -804,7 +864,8 @@ mod tests {
         assert_eq!(group_names.len(), REGISTRY.len());
 
         // Metric names are unique within a group. The same name may appear in
-        // sibling groups (m_flow_split / m_flow_window share vol_* names).
+        // sibling groups (m_flow_lifetime / m_flow_window share buy/sell/net/gross;
+        // m_flow_split / m_flow_split_window share vol_*).
         for g in REGISTRY {
             let mut names: Vec<_> = g.metrics.iter().map(|m| m.name).collect();
             let total = names.len();
@@ -832,9 +893,13 @@ mod tests {
 
     #[test]
     fn monotonic_flags_match_contract() {
-        // Lifetime accumulators that only grow: time + m_flow_split vol/nonvol
-        // buy/sell/gross. Windowed / net / share / everything else: not monotonic.
+        // Lifetime accumulators that only grow: time + m_flow_lifetime buy/sell/gross
+        // + m_flow_split vol/nonvol buy/sell/gross. Windowed / net / share /
+        // everything else: not monotonic.
         let lifetime_flow_mono = [
+            MetricId::LifeBuy,
+            MetricId::LifeSell,
+            MetricId::LifeGrossFlow,
             MetricId::VolBuy,
             MetricId::VolSell,
             MetricId::VolGross,
@@ -871,10 +936,13 @@ mod tests {
                 assert_eq!(m_json["hue"], m.hue);
             }
         }
-        // m_flow_window advertises its required strict param.
+        // m_flow_window advertises its required strict param; lifetime has none.
         let tw = groups.iter().find(|g| g["name"] == "m_flow_window").unwrap();
         assert_eq!(tw["strict_params"][0]["name"], "window_size_sec");
         assert_eq!(tw["strict_params"][0]["required"], true);
+        let life = groups.iter().find(|g| g["name"] == "m_flow_lifetime").unwrap();
+        assert!(life["strict_params"].as_array().unwrap().is_empty());
+        assert_eq!(life["kind"], "static");
     }
 
     /// Metrics that intentionally sit outside their group's hue family because
@@ -956,7 +1024,8 @@ mod tests {
     /// Metrics from different groups must not collide either — otherwise a
     /// `m_snapshot` chip and a `m_flow_window` chip read as the same thing.
     /// **Sibling families** share a hue band on purpose and are exempt:
-    /// * flow — `m_flow_split` / `m_flow_split_window` (one classifier, two views);
+    /// * split flow — `m_flow_split` / `m_flow_split_window` (one classifier, two views);
+    /// * aggregate flow — `m_flow_lifetime` / `m_flow_window` (lifetime vs trailing);
     /// * price — `m_price_lifetime` / `m_price_window` / `m_position` (lifetime peak,
     ///   rolling extrema, and since-entry — three views of the one price path).
     #[test]
@@ -967,6 +1036,7 @@ mod tests {
             match g {
                 FlowSplit | FlowSplitWindow => Some(0),
                 PriceLifetime | PriceWindow | Position => Some(1),
+                FlowLifetime | FlowWindow => Some(2),
                 _ => None,
             }
         };
@@ -1004,21 +1074,22 @@ mod tests {
     /// hue or the frontend hex moved — reconcile them, don't just update one.
     #[test]
     fn direction_metrics_match_candle_hues() {
-        let tw = REGISTRY
-            .iter()
-            .find(|g| g.name == "m_flow_window")
-            .expect("m_flow_window group");
-
-        assert_eq!(
-            tw.metric_by_name("buy").expect("buy metric").hue,
-            CANDLE_UP_HUE,
-            "buy must render the candle up (#089981) hue",
-        );
-        assert_eq!(
-            tw.metric_by_name("sell").expect("sell metric").hue,
-            CANDLE_DOWN_HUE,
-            "sell must render the candle down (#f23645) hue",
-        );
+        for group_name in ["m_flow_lifetime", "m_flow_window"] {
+            let g = REGISTRY
+                .iter()
+                .find(|g| g.name == group_name)
+                .unwrap_or_else(|| panic!("{group_name} group"));
+            assert_eq!(
+                g.metric_by_name("buy").expect("buy metric").hue,
+                CANDLE_UP_HUE,
+                "{group_name}.buy must render the candle up (#089981) hue",
+            );
+            assert_eq!(
+                g.metric_by_name("sell").expect("sell metric").hue,
+                CANDLE_DOWN_HUE,
+                "{group_name}.sell must render the candle down (#f23645) hue",
+            );
+        }
 
         // Every direction metric named above must actually exist somewhere in the
         // registry, so the exemption list can't silently rot into a no-op.

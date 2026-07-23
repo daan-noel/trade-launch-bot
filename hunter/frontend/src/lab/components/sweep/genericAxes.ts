@@ -179,9 +179,11 @@ export function axisRowError(
 
 /**
  * Cross-row check: RuleParams stores one `window_size_sec` per (side, dynamic
- * group), so two `m_flow_window` axes on the same side must agree. Returns a
- * form-level error string, or `null`. (The backend also rejects this, but
- * flagging up front avoids an admitted-then-dropped run.)
+ * group), so two axes of the same dynamic group on the same side
+ * (`m_flow_window`, `m_flow_split_window`, `m_price_window`) must agree.
+ * Static groups (`m_flow_lifetime`, …) have no window. Returns a form-level
+ * error string, or `null`. (The backend also rejects this, but flagging up
+ * front avoids an admitted-then-dropped run.)
  */
 export function sharedWindowError(
   rows: GenericAxisRow[],

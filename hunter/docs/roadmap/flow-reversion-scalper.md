@@ -346,6 +346,224 @@ mix shifts to the 15s stall net firing first. The levers that matter, in priorit
    a ≤0 per-episode expectancy just scales the loss. Gate it on a positive-after-costs
    one-shot first.
 
+## Token filtering: what omego actually enters (2026-07-22, 42h window)
+
+Re-analysed on the grown local window (2026-07-20 20:49 -> 07-22 14:43, 1.58M trades,
+17,115 mints, omego = 1,013 buys / 136 mints). Scripts in the session scratchpad
+(`omego_entry_features.sql`, `omego_selection.sql`, `omego_universe.sql`,
+`omego_tokenlevel.sql`, `omego_lifecycle.sql`).
+
+**Headline: token selection is not a side condition, it IS most of the edge.** He touches
+136 of 17,115 mints = **0.8% of the universe**. The dip trigger only runs on a
+pre-filtered, extremely narrow hot-list.
+
+### Token-level profile (his 133 mints vs the 3,195 other mints that reached vsol >= 45)
+
+| lifetime stat (median) | OMEGO mints | skipped (peak vsol >= 45) |
+| --- | --- | --- |
+| trade legs | **1,483** | 159 |
+| unique wallets | **446** | 64 |
+| volume | **674 SOL** | 94 SOL |
+| peak vsol | **94.2** (p10 69, p90 115) | 55.8 |
+| life (first->last trade) | **39.4 min** | 5.0 min |
+| price max/min multiple | **9.2x** | 3.3x |
+| reached vsol >= 110 (near migration) | **38.3%** | 10.9% |
+
+He trades the small set of tokens that actually *run*: deep curve, hundreds of distinct
+participants, tens of minutes of life. (Partly survivorship - those stats include the
+future - hence the entry-time-observable set below.)
+
+### Entry-time-observable state at his FIRST buy on a mint (n=136, no lookahead)
+
+| feature | p10 | p25 | med | p75 | p90 |
+| --- | --- | --- | --- | --- | --- |
+| age | 1.1 min | 2.8 min | **5.3 min** | 12.5 min | 30.3 min |
+| vsol | 51.8 | 61.7 | **73.5** | 82.4 | 95.3 |
+| **off lifetime ATH** | -39.2% | -25.3% | **-15.1%** | -8.1% | -0.1% |
+| prior trades | 206 | 303 | **561** | 913 | 1,163 |
+| prior unique wallets | 103 | 140 | **221** | 325 | 404 |
+| trades in last 60s | 10 | 40 | **92** | 243 | 389 |
+
+Across **all** entries (incl. re-entries) off-ATH median drifts to **-31.8%** while
+prior-trades rises to 1,307. So the *adoption* decision happens while the token is still
+near its high; the re-entries then ride it down. **Token pick = near-ATH; episode
+entries = anywhere.**
+
+### The chosen token is the hottest thing on the chain at that instant
+
+At each of the 136 first-buy moments, ranking every mint alive in the prior 60s:
+
+- chosen token sits at the **88th-91st percentile** of the alive pool on trades/wallets/
+  gross-flow/vsol (avg pool = 42 alive mints).
+- rank by 60s trade count: **median 3**; **75/136 are top-3**, **111/136 are top-10**.
+- chosen vs skipped medians at those moments: 92.5 vs 3.0 trades/60s, 66 vs 3 unique
+  wallets/60s, 47.7 vs 1.1 SOL gross/60s, vsol 74.4 vs 31.1, and 60s price range
+  **59.5% vs 2.6%**.
+
+The rank is not a separate mechanism though - a 60s-grid funnel shows
+`rank<=10 & vsol>=55 & w60>=25` (900 mints) is essentially the **same set** as the
+rank-free `vsol>=55 & w60>=25 & gross60>=10` (898 mints). A **unique-wallets-per-window
+threshold reproduces the ranking**. Rank is the readable diagnosis; the wallet count is
+the implementable gate.
+
+### Universe funnel over the 42h window (recall vs precision on his 136 mints)
+
+| gate | mints passing | his mints | recall | precision |
+| --- | --- | --- | --- | --- |
+| everything traded | 17,115 | 136 | 100% | 0.8% |
+| **our blueprint gate** `vsol 45-110 & gross60>=10` | 1,721 | 129 | 94.9% | **7.5%** |
+| `vsol>=55 & w60>=25 & gross60>=10` | 898 | 125 | 91.9% | **13.9%** |
+| `rank<=3 & vsol>=55` | 682 | 111 | 81.6% | 16.3% |
+| token-level `peak_vsol>=60 & vol>=500 SOL` | 360 | 95 | 70.4% | 26.4% |
+
+The blueprint gate the Phase-3 backtest used is **~2x too loose** and it was already
+measured **non-binding** (the "both gates together" result above was byte-identical) -
+consistent with the finding here: `gross_flow >= 10 SOL` is satisfied by almost anything
+in the liquidity band, so it filters nothing. **The binding dimension is unique wallets
+and trade velocity, which the engine has no metric for.**
+
+### Engagement lifecycle (how the hot-list turns over)
+
+- adopts **3.26 new mints/hour**; median **5 episodes** per mint (max 31); stays engaged
+  **9.4 min** (p25 1.1, p90 75.5).
+- concurrency: median **2** mints active per 5-min bucket, p90 4, max 6.
+- abandonment is **cooling, not death**: at his last leg the token still does 17 trades in
+  the next 60s (down from 55 in the prior 60s) and keeps trading another 13.4 min. He
+  leaves when velocity halves, not when the token dies.
+- his first buy lands at **17.6% (median) into the token's eventual life** - early in the
+  run, not at the tail.
+
+### Missing engine metrics implied by this (beyond the 2 in the impl plan)
+
+1. **`unique_wallets` in `m_time_window`** - the single most discriminative gate
+   (66 vs 3 per 60s). Requires a per-window distinct-wallet estimator (HLL or a small
+   ring of hashed wallet ids); this is the highest-value new metric.
+2. **`range` / realized volatility in `m_price_window`** - 60s high/low spread; his
+   tokens run 56-60%, skipped ones 2.6%. Cheap: the `m_price_window` monotonic deques
+   from Phase 1 already carry both extrema, so `range = (hi-lo)/lo` is free.
+3. **Near-ATH adoption gate** - needs NO new metric: existing `m_price_path.trail`
+   (% off lifetime peak) with `trail <= ~25` reproduces the first-buy condition
+   (med -15%, p75 -8%). This is a one-line rule addition and should be tested first.
+4. Optional: `trade_count` in `m_time_window` (velocity) - his 92/60s median vs pool 3.
+
+### Fingerprint-axis grouping of his tokens (2026-07-22) - creation shape carries NO signal
+
+Grouped his 136 mints by every engine fingerprint axis
+(`hunter/engine/src/fingerprint.rs` + `grouping.rs`): `ix_labels` (ordered sequence),
+`cu_limit`, `cu_price`, `init_buy_lamports`, `max_cost_lamports`,
+`first_slot_{buy,sell}_lamports` (0.1 SOL buckets, engine `bucket_index` semantics),
+`token_program_id`, `is_cashback_enabled`, `is_mayhem_mode`. Script:
+`omego_fingerprint.sql` / `omego_fp_lift.sql`.
+
+Axis coverage on his mints: ix_labels 136/136, first_slot_{buy,sell} 136/136,
+init_buy 135, cu_price 110, cu_limit 109, max_cost 104. `spendable_lamports_in` is
+**absent from every creation row in this window** (only `max_cost_lamports` and
+`token_amount` are written) - that axis is currently unusable. `token_program_id` is a
+single value (Tokenz...) and `is_mayhem_mode` is false for all 17,115 mints: both are
+**constants, zero information**.
+
+**The test that matters** is conditional on hotness - otherwise a fingerprint axis just
+re-measures "this token got big". Restricting to the hot pool he picks from (950 mints
+that reached vsol >= 45 and 200 SOL volume; 123 of them are his = **12.95% base rate**):
+
+| axis | groups | chi2 | df | chi2/df | max lift (groups >= 20 mints) |
+| --- | --- | --- | --- | --- | --- |
+| first_slot_buy_sol | 320 | 337.9 | 320 | **1.06** | 1.93 (n=28) |
+| cu_limit | 184 | 224.7 | 184 | **1.22** | 1.08 |
+| cu_price | 142 | 164.9 | 142 | **1.16** | 1.76 |
+| max_cost_sol | 85 | 110.1 | 85 | **1.29** | 1.76 |
+| init_buy_sol | 94 | 83.8 | 94 | **0.89** | 1.76 |
+| ix_labels | 15 | 25.0 | 15 | 1.67 | 1.26 |
+| first_slot_sell_sol | 46 | 13.8 | 46 | 0.30 | 1.09 |
+| is_cashback_enabled | 2 | 0.1 | 2 | **0.05** | 1.03 |
+
+chi2/df ~ 1.0 is exactly the null expectation. **No fingerprint axis discriminates which
+hot token he picks.** His mints spread across 17 of 54 ix_labels variants, 42 of 184
+cu_limits, 82 of 418 full fingerprints - roughly proportional occupancy, not a cluster.
+The largest lifts (1.76-1.93) sit on groups of 25-123 mints where the excess is 3-4
+tokens - noise at this sample size.
+
+The only directional hint: two `ix_labels` variants that lack any Compute-Budget
+instruction (bare `Create_v2 | CreateIdempotent | Buy...`) go **0/53 and 4/86** vs ~13%
+expected - he appears to skip manually/unsophisticatedly-created tokens. Weak, and
+confounded with those tokens simply being thinner.
+
+**Where the fingerprint DOES have power: predicting hotness, not his pick.** Over all
+17,115 mints (base hot rate 5.55%): `init_buy >= 2 SOL` -> 10.0%, `>= 5 SOL` -> 13.2%,
+`< 0.5 SOL` -> 1.6%. But as a tracking pre-filter its recall on his mints degrades in
+lockstep with its recall on the hot pool:
+
+| pre-filter | % of universe | recall of his 136 | recall of the 950 hot |
+| --- | --- | --- | --- |
+| `init_buy >= 0.5` | 56.9% | **89.7%** | 87.7% |
+| `init_buy >= 1.0` | 48.4% | 80.9% | 80.6% |
+| `init_buy >= 2.0` | 37.0% | 66.9% | 66.7% |
+| `init_buy >= 3.0` | 29.1% | 55.1% | 57.2% |
+| has Compute-Budget ix | 70.4% | 80.9% | 68.2% |
+
+His-recall tracks hot-recall to within ~2pp at every threshold - conclusive that the
+dev-buy axis selects for **hotness**, and adds nothing once hotness is known.
+
+#### The combos he actually enters (ranked by entries, 1,013 buys / 136 mints)
+
+`ix_labels` sequences (the only axis with any measurable effect), IDs by his entry count:
+
+| id | sequence | mints | entries | hot pool | hit rate | lift |
+| --- | --- | --- | --- | --- | --- | --- |
+| IX1 | `SetComputeUnitLimit \| SetComputeUnitPrice \| Create_v2 \| CreateIdempotent \| BuyV2` | 47 | 273 | 167 | 22.2% | **1.71** |
+| IX2 | `...Limit \| ...Price \| Create_v2 \| CreateIdempotent \| Buy \| Transfer` | 24 | 187 | 191 | 12.0% | 0.93 |
+| IX3 | `Transfer \| Transfer \| Create_v2 \| ExtendAccount \| CreateIdempotent \| BuyExactSolIn` | 15 | 168 | 101 | 14.9% | 1.15 |
+| IX4 | `...Limit \| ...Price \| Create_v2 \| CreateIdempotent \| Buy \| Transfer \| Transfer` | 12 | 126 | 91 | 13.2% | 1.02 |
+| IX5 | `Transfer \| Transfer \| Create_v2 \| CreateIdempotent \| BuyExactQuoteInV2` | 7 | 88 | 43 | 16.3% | 1.26 |
+| IX6 | `...Limit \| ...Price \| Create_v2 \| CreateIdempotent \| Buy \| Transfer x3` | 7 | 59 | 30 | 23.3% | **1.80** |
+| IX7 | `...Limit \| ...Price \| Create_v2 \| CreateIdempotent \| BuyV2 \| Transfer` | 5 | 22 | 13 | 38.5% | 2.97 (n=13) |
+| IX8 | `Create_v2 \| CreateIdempotent \| Buy` (bare, no compute budget) | 2 | 21 | 79 | 2.5% | **0.20** |
+
+This is the one honest signal in the whole fingerprint space, and it is weak: modern
+tool-built creates (`BuyV2` / compute-budget present) run ~1.7-1.8x, bare hand-rolled
+creates (IX8) run 0.2x (2 of 79). It is a **"created by a bot/tool" proxy**, not a
+strategy signal - and the axis-level chi2/df of 1.67 on 15 groups is only borderline.
+
+Top combos at finer granularity (lift vs the 12.95% hot-pool base):
+
+| level | combo | mints | entries | hot n | hit rate | lift |
+| --- | --- | --- | --- | --- | --- | --- |
+| B | IX3, cu `-`/`-` | 15 | 168 | 101 | 14.9% | 1.15 |
+| B | IX2, cu 300000 / 3333333 | 21 | 163 | 162 | 12.3% | 0.95 |
+| B | IX4, cu 300000 / 3333333 | 11 | 124 | 80 | 13.8% | 1.06 |
+| C | IX2, 300000/3333333, init_buy 3.0 | 15 | 131 | 64 | 23.4% | 1.81 |
+| C | IX4, 300000/3333333, init_buy 3.0 | 6 | 81 | 27 | 22.2% | 1.72 |
+| C | IX3, `-`/`-`, init_buy 2.4 | 4 | 67 | 11 | 36.4% | 2.81 |
+
+Fragmentation as axes are added - this is why fingerprint scoping fails here:
+
+| grouping level | distinct combos (for 136 mints) | top-1 | top-5 | top-10 (% of his 1,013 entries) |
+| --- | --- | --- | --- | --- |
+| A `ix_labels` | 18 | 26.9% | 83.1% | 96.4% |
+| B `+ cu_limit + cu_price` | 69 | 16.6% | 57.1% | 66.9% |
+| C `+ init_buy` | 95 | 12.9% | 34.6% | 47.6% |
+| D full engine identity (7 axes) | **128** | 3.4% | 14.3% | 24.4% |
+
+At full identity his 136 mints scatter into 128 fingerprints - effectively one per token.
+Only level A stays usable (5 sequences = 83% of his entries), and level A's lift is
+~1.0-1.8. A rule scoped even to IX1 would cover 27% of his activity while still admitting
+77.8% non-omego tokens.
+
+**Design consequence.** Do NOT scope this strategy's rule to a narrow fingerprint. Use a
+maximally-broad fingerprint (arm everything) and let the runtime metric gates filter;
+optionally `init_buy >= 0.5 SOL` purely as a **tracking-cost** reduction (-43% of the
+universe for -10% recall), never as an edge filter. This matches the Phase-3 harness
+choice ("a broad fingerprint; `tf` feeds only matching, never a metric") and the earlier
+sweep finding that fingerprint grouping over-fragments.
+
+### Why a hand-picked few-token test cannot validate this strategy
+
+Running the scalper logic over a small chosen token set removes the filter that produces
+almost all of the edge (0.8% selectivity) and replaces it with an arbitrary, usually
+lookahead-tainted universe. The Phase-3 harness is right in principle - arm everything
+and let the metric gates filter - but its gates admit ~12x too many mints. Any validation
+must run over the full lake with a gate whose precision is measured against this table.
+
 ## Data caveats / next data steps
 - Window = one ~26h weekday slice; one wallet fully analyzed. Fees/tips estimated,
   not measured (amount_lamports is curve-side; pump.fun ~1%/side fee + ~0.001 tip/tx

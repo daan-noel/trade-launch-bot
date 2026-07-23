@@ -60,7 +60,8 @@ user-chosen operators instead of operators hardcoded in Rust `check_*` fns.
    (name, unit, equality tolerance, compute logic). Adding a metric = one file, no schema change.
    - **Static** (rule-independent, one value per token): `m_snapshot` → `time` (sec since
      creation), `liquidity` (SOL reserves); `m_price_lifetime` → `stall` (sec since price last
-     moved), `trail` (% off peak).
+     moved), `trail` (% off peak); `m_flow_lifetime` → `gross_flow`, `net_flow`, `buy`,
+     `sell` (SOL since birth).
    - **Dynamic** (needs per-rule strict params): `m_flow_window(window_size_sec)` →
      `gross_flow`, `net_flow`, `buy`, `sell` (SOL over trailing window).
 3. **Rule storage**: columns say *how* it trades — `fingerprint_id` FK, `is_active`,

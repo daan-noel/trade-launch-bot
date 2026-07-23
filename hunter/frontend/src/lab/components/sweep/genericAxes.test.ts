@@ -12,7 +12,7 @@ import {
   type GenericAxisRow,
 } from './genericAxes';
 
-// A tiny registry mirroring the real one (m_snapshot static, m_flow_window dynamic).
+// Tiny registry: static snapshot + lifetime flow, dynamic trailing flow.
 const REG: StrategyRegistry = {
   operators: ['>', '>=', '<', '<=', '=', '!='],
   groups: [
@@ -23,6 +23,15 @@ const REG: StrategyRegistry = {
       metrics: [
         { name: 'time', unit: 'seconds', eq_tolerance: 0.5, monotonic: true, hue: 200 },
         { name: 'liquidity', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 185 },
+      ],
+    },
+    {
+      name: 'm_flow_lifetime',
+      kind: 'static',
+      strict_params: [],
+      metrics: [
+        { name: 'gross_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: true, hue: 278 },
+        { name: 'buy', unit: 'sol', eq_tolerance: 0.1, monotonic: true, hue: 170 },
       ],
     },
     {
@@ -85,6 +94,16 @@ describe('axisRowError', () => {
     expect(axisRowError(row, REG)).toBe('window (s) > 0 required');
     expect(axisRowError({ ...row, window: '10' }, REG)).toBeNull();
   });
+  it('does not require a window on m_flow_lifetime (static)', () => {
+    const row = metricRow({
+      group: 'm_flow_lifetime',
+      metric: 'gross_flow',
+      operator: '>=',
+      window: '',
+      valuesText: '50',
+    });
+    expect(axisRowError(row, REG)).toBeNull();
+  });
   it('accepts a valid static metric row', () => {
     expect(
       axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: '5, 10' }), REG),
@@ -120,11 +139,24 @@ describe('serializeAxisRows + comboCount', () => {
   ];
 
   it('drops the window on static metrics and keeps it on dynamic', () => {
-    const specs = serializeAxisRows(rows, REG);
+    const withLifetime = [
+      ...rows,
+      metricRow({
+        side: 'entry',
+        group: 'm_flow_lifetime',
+        metric: 'gross_flow',
+        operator: '>=',
+        window: '999',
+        valuesText: '50',
+      }),
+    ];
+    const specs = serializeAxisRows(withLifetime, REG);
     expect(specs[0]).toMatchObject({ kind: 'metric', group: 'm_snapshot', metric: 'time', values: [5, 10, 15] });
     expect(specs[0].window).toBeUndefined();
     expect(specs[1]).toMatchObject({ group: 'm_flow_window', window: 10, values: [0, 2.5] });
     expect(specs[2]).toEqual({ kind: 'take_profit', values: [50, 100, 200] });
+    expect(specs[3]).toMatchObject({ group: 'm_flow_lifetime', metric: 'gross_flow', values: [50] });
+    expect(specs[3].window).toBeUndefined();
   });
 
   it('combo count is the product of value counts', () => {

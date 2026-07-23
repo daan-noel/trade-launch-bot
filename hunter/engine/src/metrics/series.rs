@@ -253,6 +253,8 @@ mod tests {
             SeriesColumn::Static(MetricId::Liquidity),
             SeriesColumn::Static(MetricId::Stall),
             SeriesColumn::Static(MetricId::Trail),
+            SeriesColumn::Static(MetricId::LifeGrossFlow),
+            SeriesColumn::Static(MetricId::LifeBuy),
             SeriesColumn::Window(MetricId::GrossFlow, 10.0),
             SeriesColumn::Window(MetricId::NetFlow, 10.0),
             SeriesColumn::Window(MetricId::Buy, 10.0),

@@ -225,6 +225,8 @@ next load (no per-metric frontend work).
 - `lib/strategy/registry.ts` — types mirroring the registry payload (`operators`,
   `groups[]` → metrics w/ unit/eq-tolerance/monotonic + strict params) + the cached
   `useStrategyRegistry()` hook (RTK Query, 1 h). `unitSuffix`/`findGroup`/`findMetric`.
+  New engine groups (e.g. `m_flow_lifetime`) appear in rule/sweep pickers from this
+  payload alone; `strategyHelp.ts` `GROUP_HELP` / `METRIC_HELP` supplies the ⓘ copy.
 - `lib/strategy/grammar.ts` — the condition grammar (`">10, <=30"` → `{operator,value}`
   list; `1..10` → `>=1 AND <=10`), wrapping the shared compound `numericFilter` parser.
 - `lib/strategy/ruleParams.ts` — the ONE generic `params` JSONB ⇄ form serializer

@@ -137,7 +137,8 @@ interface GenericSweepConfig {
   ramReserveMb: number;
   /** Opt into the AVX-512 vectorized exit scan (lab-only; host-gated server-side). */
   useAvx512: boolean;
-  /** Corpus-wide volume-ix patterns when axes reference m_flow_*. */
+  /** Corpus-wide volume-ix patterns when axes reference m_flow_split /
+   *  m_flow_split_window (not m_flow_lifetime / m_flow_window). */
   volumeIxPatterns: string[][];
   /** Which trade in the fill window prices each leg. Unlike the RAM/AVX knobs this
    *  changes the RESULT, so it is persisted on the run and shown on its header. */

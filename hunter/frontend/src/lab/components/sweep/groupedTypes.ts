@@ -238,8 +238,9 @@ export interface GroupedSweepStartArgs {
    *  *how the box computed*, not the analysis, so it isn't persisted on the run row.
    *  Omitted ⇒ scalar. */
   use_avx512?: boolean;
-  /** Corpus-wide volume-ix patterns when axes reference `m_flow_*`. Required by
-   *  the backend for those runs; omitted otherwise. */
+  /** Corpus-wide volume-ix patterns when axes reference `m_flow_split` /
+   *  `m_flow_split_window` (not aggregate `m_flow_lifetime` / `m_flow_window`).
+   *  Required by the backend for those runs; omitted otherwise. */
   volume_ix_patterns?: string[][];
   /** Which trade in the fill window prices each simulated leg. Omitted ⇒
    *  `worst_case` (what the sweep hardcoded before this was selectable), so stored

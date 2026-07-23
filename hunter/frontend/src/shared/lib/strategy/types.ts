@@ -155,7 +155,8 @@ export interface MetricSeriesColumn {
   metric: string;
   group: string;
   unit: string;
-  /** Present only for dynamic (`m_flow_window`) metrics. */
+  /** Present only for dynamic groups (`m_flow_window`, `m_flow_split_window`,
+   *  `m_price_window`). Null for static groups (`m_flow_lifetime`, …). */
   window_size_sec: number | null;
   /** One value per event (aligned with `at`); non-finite ⇒ `null`. */
   values: Array<number | null>;
