@@ -116,6 +116,48 @@ impl GenericSweepStrategy {
         Self { model, as_of, pricing, columns, grid, flow_patterns }
     }
 
+    /// The precompute columns this strategy records per token (the union its axes
+    /// read), in the order [`BoundCombo`] resolves indices against.
+    pub fn columns(&self) -> &[SeriesColumn] {
+        &self.columns
+    }
+
+    /// The sparse-grid horizons that size this strategy's tick stream.
+    pub fn grid(&self) -> SparseGrid {
+        self.grid
+    }
+
+    /// Widen the precompute to a **superset** of this strategy's own columns and
+    /// horizons, so several strategies can share ONE per-token [`MetricSeries`].
+    ///
+    /// This is the additive-scan seam the discovery screen is built on
+    /// (`lab::discovery::screen`, plan §6.1 / D2): N one-metric strategies over the
+    /// same cohort would otherwise each rebuild the series — N precompute passes for
+    /// what is by construction one union of columns. Given the union, `prepare_token`
+    /// on *any* of them yields a series every other one can scan, so the corpus is
+    /// precomputed once and the N screens are pure scan.
+    ///
+    /// Widening is decision-neutral: extra columns are recorded and never read (the
+    /// combo's `BoundCombo` resolves only the reqs its own rule carries), and a wider
+    /// grid horizon only emits ticks the sparse grid would otherwise have proved
+    /// static — the same values a dense series carries. A **narrower** set would drop
+    /// columns the scan reads (`MISSING_COL` ⇒ silently unsatisfiable conditions), so
+    /// the superset relation is asserted, not assumed.
+    pub fn share_precompute(&mut self, columns: Vec<SeriesColumn>, grid: SparseGrid) {
+        debug_assert!(
+            self.columns.iter().all(|c| columns.contains(c)),
+            "share_precompute needs a superset of this model's own columns",
+        );
+        debug_assert!(
+            grid.max_window_secs >= self.grid.max_window_secs
+                && grid.time_horizon_secs >= self.grid.time_horizon_secs
+                && grid.stall_horizon_secs >= self.grid.stall_horizon_secs,
+            "share_precompute needs horizons at least as wide as this model's own",
+        );
+        self.columns = columns;
+        self.grid = grid;
+    }
+
     /// Estimate the worst-case resident bytes of one token's precomputed series —
     /// the admission guard's per-token unit (plan §P4). A row costs `n_cols` f64s
     /// in the flat buffer plus the `at`/`price`/`reserve_sol`/`dead` parallel vecs.

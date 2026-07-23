@@ -6,6 +6,8 @@
 //! * [`objective`] — the robust re-rank over persisted combo metrics (step 1).
 //! * [`candidates`] — registry-driven screen plan + measured percentile ladders +
 //!   the candidate value menus they generate (step 2).
+//! * [`screen`] — Layer 1: the additive per-metric scan over one shared precompute,
+//!   its response curves, and the ranked metric shortlist (step 3).
 //!
 //! Everything here reads the metric [`REGISTRY`](hunter_engine::metrics) and the
 //! already-persisted `ComboMetrics` columns, so a metric added later flows through
@@ -13,3 +15,4 @@
 
 pub mod candidates;
 pub mod objective;
+pub mod screen;

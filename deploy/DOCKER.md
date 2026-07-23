@@ -153,6 +153,9 @@ Set in `.env` (scheme `8·F·C·P`); the values below are the defaults.
 
 ## Housekeeping
 
+For the live EC2 disk-full / 502 runbook (build-cache prune, orphan volumes,
+zombie systemd units), see [EC2-DISK-HOUSEKEEPING.md](EC2-DISK-HOUSEKEEPING.md).
+
 ```bash
 # Remove stopped containers + dangling images (keeps named volumes)
 docker system prune

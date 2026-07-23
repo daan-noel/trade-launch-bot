@@ -9,9 +9,9 @@ through with no pipeline edit.
 engine + lake corpus. Nothing ships to EC2. Live/paper are untouched — this is an
 analysis aid that *outputs* combos to promote, exactly like the sweep does today.
 
-**Status.** In progress. **Step 1 (objective re-ranker) — DONE**; **step 2 (candidate
-generation) — DONE** (see §8). Steps 3–6 not started; continue there. Build Layer 1
-first (highest leverage, least code); Layers 2–3 compose on top.
+**Status.** In progress. **Steps 1–3 DONE** (objective re-ranker, candidate generation,
+Layer-1 screen — see §8). Steps 4–6 next; Layers 2–3 compose on the shortlist Layer 1
+emits.
 
 Related code (grounding — read before touching):
 - Metric SSOT: [`engine/src/metrics/mod.rs`](../../engine/src/metrics/mod.rs) (`REGISTRY`)
@@ -174,7 +174,26 @@ handled automatically) — as built:
   `MenuGap` (`NoSamples` / `Degenerate`). A guard test asserts screened-xor-reported
   over the whole registry, so a metric added later can't go quietly unscreened.
 
-### 2.2 The screen itself (additive, not multiplicative)
+### 2.2 The screen itself (additive, not multiplicative) — **BUILT**
+
+`lab/src/discovery/screen.rs`: `run_screen` = `screen_plan` → `collect_percentiles` →
+`build_menus` → one additive sweep → `DiscoveryScore` per pick → verdict. The scan mode
+is `ScreenStrategy`: N per-metric sub-models presented as **one flat combo space over
+one shared precompute** (`GenericSweepStrategy::share_precompute` widens every segment
+onto the column union + widest grid), so the engine builds each token's `MetricSeries`
+once for the whole screen and reuses its RAM ladder / wave driver / cancellation
+verbatim — D2 resolved in favour of the scan mode, and it is a scan mode, not a second
+engine.
+
+**Why the percentile pass is still its own pass** (revising step 2's finding (a)): the
+menus are an *input* to the sparse grid's `time`/`stall` horizons, so one fused pass
+would have to size the grid from percentiles it hasn't measured yet. The percentile
+pass folds trades only (no synthetic ticks) — the cheap half — and the corpus is still
+loaded once for both. The reuse that actually mattered (N−1 precompute passes across
+the metric screens) is fully realised.
+
+The description below is what it does.
+
 
 For a chosen cohort, sweep **each metric alone** across its candidate menu with a
 fixed baseline TP/SL, and record the `DiscoveryScore` response curve per metric.
@@ -388,8 +407,23 @@ Each layer is independently useful; ship in order.
    (b) `collect_percentiles` is sequential — parallelising it needs a mergeable
    reservoir (buffers with different strides can't be concatenated without bias), so
    fold it into the screen's rayon pass instead of parallelising it standalone.
-3. **Layer 1 screen** (§2.2) — orchestrate the additive per-metric scan + response-
-   curve analysis → ranked metric shortlist. *This is the deliverable you feel first.*
+3. **Layer 1 screen** (§2.2) — **DONE.** `lab/src/discovery/screen.rs`:
+   `ScreenBaseline` (fixed TP/SL, no `Default` — it is part of a screen's identity, like
+   `Pricing`), `ScreenThresholds` (lift ratio / abs floor / plateau / narrow-to),
+   `ScreenSegment` + `ScreenStrategy` (the additive scan mode over one shared
+   precompute), `run_screen` / `screen_with_menus`, and the response-curve classifier
+   `Verdict{Keep|DropNoEdge|DropSpike|DropThin|DropNoBaseline}` → `ScreenReport`
+   (ranked `shortlist`, every skipped/gapped/errored metric with its reason, the
+   min-N gate's kill count, the percentile audit trail). Enabled by one new seam in the
+   engine: `GenericSweepStrategy::share_precompute`.
+   **Findings for step 4:** (a) `ScreenStrategy` deliberately does **not** override
+   `order_for_entry_cache` — flat `(segment, pick)` order is already entry-contiguous,
+   which is what keeps `combo_id == flat index` so rows map back without a lookup table;
+   preserve that property in any additive model Layer 2 adds. (b) `Verdict::Keep`
+   carries `narrowed` (2–3 values) — that is Layer 2's grid input, so the family grid
+   should consume the shortlist rather than re-deriving menus. (c) The `off` sentinel is
+   what makes a *marginal* comparison possible; keep it as pick 0 in the family grid so
+   an interaction check can read "with-vs-without family A" the same way.
 4. **Layer 2 family grid + interaction check** (§3).
 5. **Layer 3 validation** (§4).
 6. Surface: a lab page/endpoint (mirrors `flow_discovery` job shape) that runs the
@@ -402,12 +436,11 @@ Each layer is independently useful; ship in order.
 
 - **D1** — objective constants (`OPEN_HAIRCUT`, `profit_factor` cap, `MIN_CLOSED`,
   floors, plateau-penalty weight). Seed from anchors; validate; pin in `docs/plans/`.
-- **D2** — Layer-1 screening: new additive scan mode that **precomputes the series
-  once and reuses it across all metric screens** (saves N−1 precompute passes — the
-  dominant cost, see §6.1) vs. N one-axis `run_grouped` calls on the warm corpus
-  (zero engine change, but re-precomputes per metric). Recommend starting with the
-  fallback to prove the pipeline, then promoting to the scan mode — the reuse win is
-  large enough that it's likely worth building, not just a fallback-if-slow.
+- ~~**D2**~~ — **SETTLED (step 3): the scan mode.** `ScreenStrategy` presents the N
+  per-metric sub-models as one flat combo space over one shared precompute
+  (`share_precompute`), so the series is built once per token for the whole screen. The
+  N-`run_grouped` fallback was skipped entirely: the reuse win is the dominant cost and
+  the scan mode reuses the existing engine wholesale (~1 new method).
 - **D3** — `family` field on `GroupSpec` (needs the registry + `registry_json` guard
   tests updated) vs. a lab-side family map (no engine touch, but a second place to
   keep in sync). Recommend the registry field — it's the SSOT and the color-family
