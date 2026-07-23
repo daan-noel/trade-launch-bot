@@ -102,10 +102,21 @@ pub enum ResolvedAxis {
 
 impl ResolvedAxis {
     /// The number of values this axis contributes to the combo product.
-    fn len(&self) -> usize {
+    pub fn value_count(&self) -> usize {
         match self {
             ResolvedAxis::Metric { values, .. } => values.len(),
             ResolvedAxis::TakeProfit { values } | ResolvedAxis::StopLoss { values } => values.len(),
+        }
+    }
+
+    /// This axis's value at `pick` — `None` on a metric axis means the **off**
+    /// sentinel, so the two `None`s are distinguished by the outer `Option`.
+    pub fn value_at(&self, pick: usize) -> Option<Option<f64>> {
+        match self {
+            ResolvedAxis::Metric { values, .. } => values.get(pick).copied(),
+            ResolvedAxis::TakeProfit { values } | ResolvedAxis::StopLoss { values } => {
+                values.get(pick).copied().map(Some)
+            }
         }
     }
 
@@ -175,7 +186,7 @@ impl AxesModel {
     pub fn combo_count(&self) -> usize {
         let mut n: usize = 1;
         for a in &self.axes {
-            let len = a.len().max(1);
+            let len = a.value_count().max(1);
             match n.checked_mul(len) {
                 Some(p) => n = p,
                 None => return usize::MAX,
@@ -259,36 +270,41 @@ impl AxesModel {
         self.axes.iter().filter(|a| a.is_entry()).count()
     }
 
-    /// Assemble the `RuleParams` for combo `idx` by mixed-radix decoding (axis 0
-    /// most significant). Panics only if `idx >= combo_count` (caller-guarded).
-    pub fn combo_params(&self, idx: usize) -> RuleParams {
+    /// The per-axis value indices combo `idx` picks — the mixed-radix decode every
+    /// other combo accessor is defined in terms of (axis 0 most significant, so the
+    /// entry axes at the front are the slowest-varying digits).
+    ///
+    /// SSOT: `combo_params` and `entry_key` used to carry their own copies of this
+    /// loop. Discovery reads the picks directly (to compare which value a family's
+    /// best combo landed on), which is the third caller — one decode, three readers.
+    pub fn combo_picks(&self, idx: usize) -> Vec<usize> {
         let mut rem = idx;
-        // Decode from the least-significant axis (last) upward so the entry axes
-        // (front) are the slowest-varying digits.
         let mut picks = vec![0usize; self.axes.len()];
         for (a_idx, axis) in self.axes.iter().enumerate().rev() {
-            let radix = axis.len().max(1);
+            let radix = axis.value_count().max(1);
             picks[a_idx] = rem % radix;
             rem /= radix;
         }
-        self.assemble(&picks)
+        picks
+    }
+
+    /// Assemble the `RuleParams` for combo `idx` by mixed-radix decoding (axis 0
+    /// most significant). Panics only if `idx >= combo_count` (caller-guarded).
+    pub fn combo_params(&self, idx: usize) -> RuleParams {
+        self.assemble(&self.combo_picks(idx))
     }
 
     /// The packed entry-axis pick indices for combo `idx` — the engine's entry
     /// cache key (two combos with equal packing share an entry resolution).
     pub fn entry_key(&self, idx: usize) -> u64 {
-        let mut rem = idx;
-        let mut picks = vec![0usize; self.axes.len()];
-        for (a_idx, axis) in self.axes.iter().enumerate().rev() {
-            let radix = axis.len().max(1);
-            picks[a_idx] = rem % radix;
-            rem /= radix;
-        }
+        let picks = self.combo_picks(idx);
         // Pack only the entry-axis picks (the high-order front) into a key.
         let mut key = 0u64;
         for (a_idx, axis) in self.axes.iter().enumerate() {
             if axis.is_entry() {
-                key = key.wrapping_mul(axis.len() as u64 + 1).wrapping_add(picks[a_idx] as u64 + 1);
+                key = key
+                    .wrapping_mul(axis.value_count() as u64 + 1)
+                    .wrapping_add(picks[a_idx] as u64 + 1);
             }
         }
         key

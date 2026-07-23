@@ -9,9 +9,9 @@ through with no pipeline edit.
 engine + lake corpus. Nothing ships to EC2. Live/paper are untouched — this is an
 analysis aid that *outputs* combos to promote, exactly like the sweep does today.
 
-**Status.** In progress. **Steps 1–3 DONE** (objective re-ranker, candidate generation,
-Layer-1 screen — see §8). Steps 4–6 next; Layers 2–3 compose on the shortlist Layer 1
-emits.
+**Status.** In progress. **Steps 1–4 DONE** (objective re-ranker, candidate generation,
+Layer-1 screen, Layer-2 family grid + interaction check — see §8). Steps 5–6 next;
+Layer 3 validates the combos Layer 2 emits.
 
 Related code (grounding — read before touching):
 - Metric SSOT: [`engine/src/metrics/mod.rs`](../../engine/src/metrics/mod.rs) (`REGISTRY`)
@@ -222,16 +222,23 @@ metrics are worth combining."
 
 ---
 
-## 3. Layer 2 — Family grid + interaction check
+## 3. Layer 2 — Family grid + interaction check — **BUILT**
 
 **Purpose.** Combine only the survivors, and spend the combo budget on metrics that
 *interact*, not on a blind full cross-product.
 
+`lab/src/discovery/family.rs`: `plan_families` (Layer-1 shortlist → per-family members,
+bounded by `FamilyLimits`, every capped member reported) → **one** additive pass of
+family grids → **one** additive pass of pairwise interaction checks → `FamilyReport`.
+Two passes, and they must be two: the interaction models are built *from* phase 1's
+winners. Both ride the same `discovery::additive` scan mode as Layer 1, so each phase
+is one sweep over one shared precompute regardless of family count.
+
 ### 3.1 Families
 
 Metrics interact **within a family**, largely independently **across families**. The
-registry's groups already are the natural families; we add one lightweight
-`family` tag so the mapping is data, not code:
+registry's groups already are the natural families; the `family` tag makes the mapping
+data, not code:
 
 | family | groups |
 | --- | --- |
@@ -242,6 +249,13 @@ registry's groups already are the natural families; we add one lightweight
 
 (These mirror the existing color-family grouping in the registry's hue guards — same
 intuition, promoted to a real field. Default for any new group = `standalone`.)
+
+**D3 settled: the registry field.** `hunter_engine::metrics::MetricFamily` on
+`GroupSpec`, mirrored into `registry_json` and the frontend `GroupSpec` type, guarded by
+`families_group_the_registry_the_way_hues_do` (families must stay aligned with the hue
+families they were promoted from, and nothing may sit unclassified in `standalone`).
+Layer 2 never names a group — it reads `group_spec(..).family`, so a group added later
+lands in a family with no edit.
 
 ### 3.2 The grid
 
@@ -258,7 +272,13 @@ intuition, promoted to a real field. Default for any new group = `standalone`.)
   measurement instead of a guess.
 
 **Output:** the combined multi-metric combo(s), plus an interaction map showing which
-families had to be gridded jointly.
+families had to be gridded jointly. As built: `FamilyResult{members, dropped, combos,
+best: BestCombo{picks, score, params_json}, n_gated}` per family, plus one
+`Interaction{pinned, swept, alone, given, verdict}` per **ordered** pair —
+`Independent` when B's best picks are unchanged, `Interacting` when they move,
+`Inconclusive` when nothing under A was rankable (never silently read as independent).
+`BestCombo::params_json` is the canonical `RuleParams`, so a winner promotes / re-sims
+directly — that is Layer 3's input.
 
 ---
 
@@ -424,7 +444,28 @@ Each layer is independently useful; ship in order.
    should consume the shortlist rather than re-deriving menus. (c) The `off` sentinel is
    what makes a *marginal* comparison possible; keep it as pick 0 in the family grid so
    an interaction check can read "with-vs-without family A" the same way.
-4. **Layer 2 family grid + interaction check** (§3).
+4. **Layer 2 family grid + interaction check** (§3) — **DONE.**
+   `lab/src/discovery/family.rs`: `FamilyLimits` (axis + combo caps, drops reported
+   with a `DropReason`), `FamilyMember` / `plan_families` (shortlist → registry
+   families, lift-ordered), `run_family_layer` (phase 1 = one additive pass of family
+   grids, phase 2 = one additive pass of pinned-A/swept-B interaction checks) →
+   `FamilyReport{families, interactions, combos_scanned}` with
+   `InteractionVerdict{Independent|Interacting|Inconclusive}`. Enabling changes:
+   `MetricFamily` on the engine's `GroupSpec` (**D3**, + `registry_json` + the FE
+   `GroupSpec` type + a guard test), `AxesModel::combo_picks` /
+   `ResolvedAxis::{value_count,value_at}` (the mixed-radix decode was duplicated
+   between `combo_params` and `entry_key`; now one decode, three readers), and the
+   step-3 scan mode generalised into `discovery::additive::AdditiveStrategy` so every
+   layer's fan-out shares one precompute.
+   **Findings for step 5:** (a) `BestCombo::params_json` is already the canonical
+   `RuleParams`, so Layer 3 validates through `simulate_one_combo` with no adapter —
+   but that fn needs the run's own `Pricing` + `as_of`, so a validation must carry the
+   same pair the grid ran under or the train→validate delta is meaningless (parity
+   plan B7). (b) Interaction checks are **ordered** pairs and `Inconclusive` is a real
+   third outcome — Layer 3 must not read a missing verdict as independence. (c) The
+   time-split (D4) has to split the *corpus*, not the report: `plan_families` is pure,
+   so re-running `run_family_layer` on a held-out sub-corpus with the same shortlist is
+   the cheapest honest validation of the grid itself.
 5. **Layer 3 validation** (§4).
 6. Surface: a lab page/endpoint (mirrors `flow_discovery` job shape) that runs the
    pipeline for a cohort and shows shortlist → combos → validation verdicts, with a
@@ -441,9 +482,8 @@ Each layer is independently useful; ship in order.
   (`share_precompute`), so the series is built once per token for the whole screen. The
   N-`run_grouped` fallback was skipped entirely: the reuse win is the dominant cost and
   the scan mode reuses the existing engine wholesale (~1 new method).
-- **D3** — `family` field on `GroupSpec` (needs the registry + `registry_json` guard
-  tests updated) vs. a lab-side family map (no engine touch, but a second place to
-  keep in sync). Recommend the registry field — it's the SSOT and the color-family
-  intuition already lives there.
+- ~~**D3**~~ — **SETTLED (step 4): the registry field.** `MetricFamily` on `GroupSpec`,
+  mirrored into `registry_json` + the FE `GroupSpec` type, guarded by
+  `families_group_the_registry_the_way_hues_do`. Layer 2 never names a group.
 - **D4** — validation split policy: time-split now, or wait-for-new-data cycle.
   Recommend supporting both; time-split is available immediately.

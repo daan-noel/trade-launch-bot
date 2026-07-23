@@ -11,15 +11,11 @@
 //!
 //! ## One precompute for every metric (the D2 payoff)
 //!
-//! Discovery is scan/precompute-bound, not fold-bound (plan §6.1): the wall-clock is
-//! the corpus load plus the per-token [`MetricSeries`] build, not the handful of
-//! combos. N separate `run_grouped` calls would rebuild that series N times. Instead
-//! [`ScreenStrategy`] presents the N per-metric sub-models as **one flat combo space**
-//! over **one shared precompute** ([`GenericSweepStrategy::share_precompute`]): the
-//! sweep engine builds each token's series once over the union of every screened
-//! metric's columns, and each segment's combos scan it. That saves N−1 of the
-//! expensive passes and reuses the engine's RAM ladder / wave driver / cancellation
-//! verbatim — it is a scan mode, not a second engine.
+//! The whole screen runs as ONE [`AdditiveStrategy`] pass: each `(metric, operator)`
+//! is a segment, every segment shares one per-token precompute, and the sweep engine
+//! builds each token's series once for all of them instead of once per metric. See
+//! [`additive`](super::additive) for the mechanism and why it is a scan mode rather
+//! than a second engine.
 //!
 //! The percentile pass ([`collect_percentiles`]) still walks the corpus once before
 //! this, and deliberately so: the menus are an *input* to the sparse grid's
@@ -43,18 +39,15 @@
 
 use anyhow::{bail, Result};
 use hunter_engine::metrics::evaluator::Operator;
-use hunter_engine::metrics::series::SeriesColumn;
 use hunter_engine::metrics::Ts;
 
 use crate::sweep::aggregate::ComboMetrics;
 use crate::sweep::corpus::Corpus;
-use crate::sweep::engine::{combo_batch_size, run_sweep};
 use crate::sweep::generic::axes::{AxesModel, AxesRequest, AxisSpec, ResolvedAxis};
-use crate::sweep::generic::strategy::{GenericCombo, SparseGrid};
-use crate::sweep::generic::{GenericSweepStrategy, Pricing};
+use crate::sweep::generic::Pricing;
 use crate::sweep::progress::SweepObserver;
-use crate::sweep::strategy::{ParamSpace, Strategy, SweepMethod, TokenOutcome};
 
+use super::additive::AdditiveStrategy;
 use super::candidates::{
     build_menus, collect_percentiles, MenuGap, MetricCandidates, PercentileTable, ScreenConfig,
     ScreenMetric, ScreenPlan, Skipped,
@@ -153,6 +146,7 @@ impl Default for ScreenThresholds {
 // ───────────────────────────── the segments ────────────────────────────────
 
 /// One `(side, metric, operator)` swept alone — the screen's unit of work.
+#[derive(Clone, Debug)]
 pub struct ScreenSegment {
     pub metric: ScreenMetric,
     pub operator: Operator,
@@ -160,7 +154,8 @@ pub struct ScreenSegment {
     /// curve can never drift from what the sweep actually ran. `values[0]` is the
     /// `off` sentinel (`None`).
     pub values: Vec<Option<f64>>,
-    strategy: GenericSweepStrategy,
+    /// The sub-model handed to the additive scan.
+    pub model: AxesModel,
 }
 
 impl ScreenSegment {
@@ -170,28 +165,22 @@ impl ScreenSegment {
         menu: &MetricCandidates,
         operator: Operator,
         baseline: &ScreenBaseline,
-        pricing: Pricing,
-        as_of: Ts,
-        flow: Option<&hunter_engine::metrics::flow_split::FlowPatterns>,
     ) -> Result<Self, String> {
         let mut axes = vec![menu.axis_spec(operator)];
         axes.extend(baseline.axes());
         let model = AxesModel::resolve(&AxesRequest { axes })?;
-        let values = model
-            .axes
-            .iter()
-            .find_map(|a| match a {
-                ResolvedAxis::Metric { values, .. } => Some(values.clone()),
-                _ => None,
-            })
+        let values = metric_axis_values(&model)
             .ok_or_else(|| "segment lost its metric axis".to_string())?;
-        Ok(Self {
-            metric: menu.metric,
-            operator,
-            values,
-            strategy: GenericSweepStrategy::new(model, pricing, as_of, flow.cloned()),
-        })
+        Ok(Self { metric: menu.metric, operator, values, model })
     }
+}
+
+/// The swept values of a model's (single) metric axis, in pick order.
+fn metric_axis_values(model: &AxesModel) -> Option<Vec<Option<f64>>> {
+    model.axes.iter().find_map(|a| match a {
+        ResolvedAxis::Metric { values, .. } => Some(values.clone()),
+        _ => None,
+    })
 }
 
 /// A registry metric whose menu existed but whose sub-model could not be resolved
@@ -201,166 +190,6 @@ pub struct SegmentError {
     pub metric: ScreenMetric,
     pub operator: Operator,
     pub error: String,
-}
-
-// ───────────────────────────── the scan mode ───────────────────────────────
-
-/// One combo of the additive screen: which segment, and which pick on that segment's
-/// menu. Index-only and `Copy`, exactly like [`GenericCombo`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScreenCombo {
-    pub segment: u32,
-    pub pick: u32,
-}
-
-/// The additive screen as one sweep [`Strategy`]: N per-metric sub-strategies over a
-/// **shared** per-token precompute.
-///
-/// Every segment is widened to the union of all segments' columns and the widest grid
-/// horizons ([`GenericSweepStrategy::share_precompute`]), so `prepare_token` on any one
-/// of them produces a series every segment can scan. The engine therefore builds each
-/// token's `MetricSeries` exactly once for the whole screen — the dominant cost, paid
-/// once instead of N times.
-pub struct ScreenStrategy {
-    segments: Vec<ScreenSegment>,
-}
-
-impl ScreenStrategy {
-    /// Widen every segment onto one shared precompute and take ownership of them.
-    pub fn new(mut segments: Vec<ScreenSegment>) -> Self {
-        let mut columns: Vec<SeriesColumn> = Vec::new();
-        let mut grid = SparseGrid::default();
-        for s in &segments {
-            for c in s.strategy.columns() {
-                if !columns.contains(c) {
-                    columns.push(*c);
-                }
-            }
-            let g = s.strategy.grid();
-            grid.max_window_secs = grid.max_window_secs.max(g.max_window_secs);
-            grid.time_horizon_secs = grid.time_horizon_secs.max(g.time_horizon_secs);
-            grid.stall_horizon_secs = grid.stall_horizon_secs.max(g.stall_horizon_secs);
-        }
-        for s in &mut segments {
-            s.strategy.share_precompute(columns.clone(), grid);
-        }
-        Self { segments }
-    }
-
-    pub fn segments(&self) -> &[ScreenSegment] {
-        &self.segments
-    }
-
-    /// The flat combo list, in `(segment, pick)` order. Also the order every result
-    /// row comes back in, so `combo_id` indexes straight into it.
-    pub fn combos(&self) -> Vec<ScreenCombo> {
-        let mut out = Vec::new();
-        for (s, seg) in self.segments.iter().enumerate() {
-            for pick in 0..seg.values.len() {
-                out.push(ScreenCombo { segment: s as u32, pick: pick as u32 });
-            }
-        }
-        out
-    }
-
-    fn seg(&self, c: &ScreenCombo) -> &ScreenSegment {
-        &self.segments[c.segment as usize]
-    }
-
-    fn inner(&self, c: &ScreenCombo) -> (&GenericSweepStrategy, GenericCombo) {
-        let seg = self.seg(c);
-        (&seg.strategy, GenericCombo { idx: c.pick as usize })
-    }
-}
-
-impl ParamSpace for ScreenStrategy {
-    type Params = ScreenCombo;
-
-    /// Always the full additive set. Sampling a screen makes no sense: the point is
-    /// that it is already `Σ menu_len` combos, and dropping menu entries would punch
-    /// holes in the response curves the verdict reads.
-    fn sample(&self, _method: SweepMethod) -> Vec<Self::Params> {
-        self.combos()
-    }
-
-    // No `order_for_entry_cache` override — and that is deliberate. Within a segment
-    // an entry-side menu is the only entry axis (so each pick is its own contiguous
-    // one-combo block) and an exit-side menu leaves the entry key constant across the
-    // whole segment. Flat order is therefore already entry-contiguous, and leaving it
-    // alone keeps `combo_id == flat index`, which is what lets the report map rows
-    // back to `(segment, pick)` without a lookup table.
-}
-
-impl Strategy for ScreenStrategy {
-    type Entry = <GenericSweepStrategy as Strategy>::Entry;
-    /// Segment-qualified: two segments' sub-keys are unrelated, so a bare sub-key
-    /// would let one segment's cached entry be served to another's combo.
-    type EntryKey = (u32, <GenericSweepStrategy as Strategy>::EntryKey);
-    type TokenState = <GenericSweepStrategy as Strategy>::TokenState;
-    type BoundParams = <GenericSweepStrategy as Strategy>::BoundParams;
-    type ExitCtx = <GenericSweepStrategy as Strategy>::ExitCtx;
-
-    fn entry_key(&self, p: &Self::Params) -> Self::EntryKey {
-        let (s, c) = self.inner(p);
-        (p.segment, s.entry_key(&c))
-    }
-
-    fn bind_param(&self, p: &Self::Params) -> Self::BoundParams {
-        let (s, c) = self.inner(p);
-        s.bind_param(&c)
-    }
-
-    /// One series for the whole screen — every segment shares the same columns/grid,
-    /// so segment 0 speaks for all of them.
-    fn prepare_token(&self, token: &crate::sweep::corpus::CorpusToken) -> Self::TokenState {
-        self.segments[0].strategy.prepare_token(token)
-    }
-
-    fn build_exit_ctx(
-        &self,
-        trades: &[crate::sweep::projection::CorpusTrade],
-        state: &Self::TokenState,
-        bound: &Self::BoundParams,
-        entry: &Self::Entry,
-        p: &Self::Params,
-        ctx: &mut Self::ExitCtx,
-    ) {
-        let (s, c) = self.inner(p);
-        s.build_exit_ctx(trades, state, bound, entry, &c, ctx);
-    }
-
-    fn resolve_entry(
-        &self,
-        trades: &[crate::sweep::projection::CorpusTrade],
-        state: &Self::TokenState,
-        bound: &Self::BoundParams,
-        p: &Self::Params,
-    ) -> Self::Entry {
-        let (s, c) = self.inner(p);
-        s.resolve_entry(trades, state, bound, &c)
-    }
-
-    fn resolve_exit(
-        &self,
-        trades: &[crate::sweep::projection::CorpusTrade],
-        state: &Self::TokenState,
-        bound: &Self::BoundParams,
-        entry: &Self::Entry,
-        p: &Self::Params,
-        ctx: &Self::ExitCtx,
-    ) -> TokenOutcome {
-        let (s, c) = self.inner(p);
-        s.resolve_exit(trades, state, bound, entry, &c, ctx)
-    }
-
-    fn params_json(&self, p: &Self::Params) -> serde_json::Value {
-        let (s, c) = self.inner(p);
-        s.params_json(&c)
-    }
-
-    fn token_state_bytes_estimate(&self, token: &crate::sweep::corpus::CorpusToken) -> usize {
-        self.segments[0].strategy.token_state_bytes_estimate(token)
-    }
 }
 
 // ───────────────────────────── response curves ─────────────────────────────
@@ -534,14 +363,7 @@ pub fn screen_with_menus(
     let mut errors = Vec::new();
     for menu in menus {
         for op in &menu.operators {
-            match ScreenSegment::build(
-                menu,
-                *op,
-                &baseline,
-                pricing,
-                as_of,
-                cfg.flow_patterns.as_ref(),
-            ) {
+            match ScreenSegment::build(menu, *op, &baseline) {
                 Ok(seg) => segments.push(seg),
                 Err(error) => {
                     errors.push(SegmentError { metric: menu.metric, operator: *op, error })
@@ -568,22 +390,22 @@ pub fn screen_with_menus(
         });
     }
 
-    let strategy = ScreenStrategy::new(segments);
-    let params = strategy.sample(SweepMethod::Grid);
-    let threads = rayon::current_num_threads().max(1);
-    let batch = combo_batch_size(params.len(), threads);
-    observer.set_total(corpus.token_count(), params.len());
-    let (_stats, metrics) = run_sweep(&strategy, &params, corpus, observer, batch)?;
+    // One additive pass: every segment shares one per-token precompute.
+    let strategy = AdditiveStrategy::new(
+        segments.iter().map(|s| s.model.clone()).collect(),
+        pricing,
+        as_of,
+        cfg.flow_patterns.as_ref(),
+    );
+    let combos_scanned = strategy.combos().len();
+    let rows_by_segment = strategy.run(corpus, observer)?;
 
-    let mut responses = Vec::with_capacity(strategy.segments().len());
+    let mut responses = Vec::with_capacity(segments.len());
     let mut n_gated = 0usize;
-    let mut base = 0usize;
-    for seg in strategy.segments() {
-        let rows = &metrics[base..base + seg.values.len()];
+    for (seg, rows) in segments.iter().zip(&rows_by_segment) {
         let (r, gated) = analyse(seg, rows, matched, weights, thresholds);
         n_gated += gated;
         responses.push(r);
-        base += seg.values.len();
     }
 
     let mut shortlist: Vec<usize> = (0..responses.len()).filter(|i| responses[*i].verdict.is_keep()).collect();
@@ -605,7 +427,7 @@ pub fn screen_with_menus(
         errors,
         percentiles,
         n_gated,
-        combos_scanned: params.len(),
+        combos_scanned,
     })
 }
 
@@ -723,25 +545,13 @@ fn narrow(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sweep::progress::NoopObserver;
-    use crate::sweep::projection::CorpusTrade;
-    use chrono::{Duration, TimeZone, Utc};
-    use hunter_engine::metrics::{MetricGroupId, MetricId};
-    use std::sync::Arc;
-    use trading_core::strategies::kernel::CostModel;
-    use trading_core::strategies::paper_fill::FillModel;
+    use chrono::Utc;
+    use hunter_engine::metrics::MetricGroupId;
 
     use super::super::candidates::{screen_plan, ValueSource};
-    use crate::sweep::corpus::CorpusToken;
+    use super::super::fixtures::{corpus, pricing};
     use crate::sweep::generic::axes::AxisSide;
-
-    fn pricing() -> Pricing {
-        Pricing {
-            buy_amount_sol: 1.0,
-            fill_model: FillModel::FirstInWindow,
-            cost: CostModel::pumpfun_fee_only(),
-        }
-    }
+    use crate::sweep::progress::NoopObserver;
 
     fn baseline() -> ScreenBaseline {
         ScreenBaseline { take_profit_pct: Some(30.0), stop_loss_pct: Some(15.0) }
@@ -832,146 +642,7 @@ mod tests {
         assert_eq!(classify(&curve, ScreenThresholds::default()), Verdict::DropNoBaseline);
     }
 
-    // ── the scan mode ──────────────────────────────────────────────────────
-
-    fn trade(secs: i64, price: f64, reserve: f64, is_buy: bool) -> CorpusTrade {
-        CorpusTrade {
-            block_time: Utc.timestamp_opt(1_700_000_000, 0).unwrap() + Duration::seconds(secs),
-            amount_sol: 1.0,
-            token_amount: 1.0,
-            price_per_token: price,
-            reserve_sol: Some(reserve),
-            reserve_token: Some(1_000.0),
-            real_reserve_sol: Some(reserve),
-            real_token_reserves: None,
-            slot: secs as u64,
-            leg_index: 0,
-            is_buy,
-            tx_signature: None,
-            ix_labels: None,
-            wallet: None,
-        }
-    }
-
-    /// A token that rises then falls, so TP and SL both get exercised.
-    fn token(mint: &str, n: usize) -> CorpusToken {
-        let created = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
-        let trades: Vec<CorpusTrade> = (0..n)
-            .map(|i| {
-                let f = i as f64;
-                let price = if i < n / 2 { 1.0 + f * 0.2 } else { 1.0 + (n as f64 - f) * 0.1 };
-                trade(i as i64 * 5, price, 40.0 + f, i % 3 != 0)
-            })
-            .collect();
-        CorpusToken {
-            mint: mint.into(),
-            symbol: mint.into(),
-            created_at: created,
-            trades: Arc::new(trades),
-            fp: Default::default(),
-        }
-    }
-
-    fn corpus(n_tokens: usize) -> Corpus {
-        Corpus {
-            tokens: (0..n_tokens).map(|i| token(&format!("m{i}"), 20 + i % 7)).collect(),
-            hash: "screen-test".into(),
-            has_fingerprints: false,
-            candidates_capped: false,
-        }
-    }
-
-    fn segment_for(metric: MetricId, side: AxisSide, values: Vec<f64>) -> ScreenSegment {
-        let cfg = ScreenConfig::default();
-        let plan = screen_plan(&cfg);
-        let m = plan
-            .metrics
-            .iter()
-            .find(|m| m.metric == metric && m.side == side)
-            .copied()
-            .expect("metric screened");
-        let menu = MetricCandidates {
-            metric: m,
-            operators: vec![Operator::Gte],
-            values: std::iter::once(None).chain(values.into_iter().map(Some)).collect(),
-            anchors: Vec::new(),
-        };
-        ScreenSegment::build(
-            &menu,
-            Operator::Gte,
-            &baseline(),
-            pricing(),
-            Utc::now(),
-            None,
-        )
-        .expect("segment resolves")
-    }
-
-    /// The shared-precompute contract: every segment widens onto ONE column union +
-    /// grid, so the engine builds a token's series once for the whole screen.
-    #[test]
-    fn segments_share_one_precompute() {
-        let a = segment_for(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0]);
-        let b = segment_for(MetricId::Liquidity, AxisSide::Entry, vec![40.0, 50.0]);
-        let strat = ScreenStrategy::new(vec![a, b]);
-        let cols: Vec<_> = strat.segments().iter().map(|s| s.strategy.columns().to_vec()).collect();
-        assert_eq!(cols[0], cols[1], "segments must share the column union");
-        assert!(cols[0].contains(&SeriesColumn::Static(MetricId::Time)));
-        assert!(cols[0].contains(&SeriesColumn::Static(MetricId::Liquidity)));
-        // The union grid takes the widest horizon of either segment.
-        let grids: Vec<_> = strat.segments().iter().map(|s| s.strategy.grid()).collect();
-        assert_eq!(grids[0].time_horizon_secs, grids[1].time_horizon_secs);
-        assert!(grids[0].time_horizon_secs >= 30.0);
-    }
-
-    /// The additive budget: combos are `Σ menu_len`, never the product.
-    #[test]
-    fn combo_space_is_additive() {
-        let a = segment_for(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0, 60.0]);
-        let b = segment_for(MetricId::Liquidity, AxisSide::Entry, vec![40.0, 50.0]);
-        let strat = ScreenStrategy::new(vec![a, b]);
-        // (off + 3) + (off + 2) = 7, not 4 × 3 = 12.
-        assert_eq!(strat.combos().len(), 7);
-        let combos = strat.combos();
-        assert_eq!(combos[0], ScreenCombo { segment: 0, pick: 0 });
-        assert_eq!(combos[4], ScreenCombo { segment: 1, pick: 0 });
-    }
-
-    /// Entry keys must be segment-qualified — otherwise the engine's single-slot
-    /// entry cache can hand one segment's resolved entry to another segment's combo.
-    #[test]
-    fn entry_keys_are_segment_qualified() {
-        let a = segment_for(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0]);
-        let b = segment_for(MetricId::Liquidity, AxisSide::Entry, vec![40.0, 50.0]);
-        let strat = ScreenStrategy::new(vec![a, b]);
-        let k0 = strat.entry_key(&ScreenCombo { segment: 0, pick: 1 });
-        let k1 = strat.entry_key(&ScreenCombo { segment: 1, pick: 1 });
-        assert_ne!(k0, k1, "same sub-key on two segments must not collide");
-    }
-
-    /// End-to-end: the additive sweep must produce exactly `Σ menu_len` rows, in
-    /// `(segment, pick)` order, and each segment's `off` pick must be the same
-    /// baseline rule for every segment on the same side.
-    #[test]
-    fn additive_sweep_returns_one_row_per_pick_in_order() {
-        let a = segment_for(MetricId::Time, AxisSide::Entry, vec![5.0, 30.0]);
-        let b = segment_for(MetricId::Liquidity, AxisSide::Entry, vec![40.0, 50.0]);
-        let strat = ScreenStrategy::new(vec![a, b]);
-        let params = strat.sample(SweepMethod::Grid);
-        let c = corpus(6);
-        let (stats, metrics) =
-            run_sweep(&strat, &params, &c, &NoopObserver, params.len()).unwrap();
-        assert_eq!(metrics.len(), params.len());
-        assert_eq!(stats.rows, (c.token_count() * params.len()) as u64);
-        for (i, m) in metrics.iter().enumerate() {
-            assert_eq!(m.combo_id, i as u32, "combo_id must index the flat combo list");
-        }
-        // Both segments' `off` picks are the bare baseline rule ⇒ identical results.
-        assert_eq!(metrics[0].n_fired, metrics[3].n_fired);
-        assert_eq!(metrics[0].total_pnl_sol, metrics[3].total_pnl_sol);
-        // A `time >= 30` gate can only fire on a subset of what `off` fires on.
-        assert!(metrics[2].n_fired <= metrics[0].n_fired);
-    }
+    // ── end-to-end ─────────────────────────────────────────────────────────
 
     /// The screen orchestration end-to-end over a synthetic cohort: every screened
     /// metric gets a response, nothing is dropped without a reason, and the shortlist

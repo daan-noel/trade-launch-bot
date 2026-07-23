@@ -215,19 +215,14 @@ impl GenericSweepStrategy {
         GenericCombo { idx }
     }
 
+    /// The resolved axes this strategy sweeps.
+    pub fn model(&self) -> &AxesModel {
+        &self.model
+    }
+
     /// Per-axis value counts, in combo-significance order (index 0 most significant).
     fn axis_lens(&self) -> Vec<usize> {
-        self.model.axes.iter().map(axis_value_count).collect()
-    }
-}
-
-/// Value count of one resolved axis (mirror of `ResolvedAxis::len`, kept local to
-/// avoid widening the axis module's surface).
-fn axis_value_count(a: &super::axes::ResolvedAxis) -> usize {
-    use super::axes::ResolvedAxis::*;
-    match a {
-        Metric { values, .. } => values.len(),
-        TakeProfit { values } | StopLoss { values } => values.len(),
+        self.model.axes.iter().map(|a| a.value_count()).collect()
     }
 }
 

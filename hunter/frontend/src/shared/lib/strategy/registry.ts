@@ -23,6 +23,12 @@ export type MetricGroupKind = 'static' | 'dynamic';
  *  **exit-only** (the backend rejects it under `entry`; the builder hides it there). */
 export type MetricScope = 'token' | 'position';
 
+/** Which metrics a group is expected to *interact* with — the grouping the lab's
+ *  metric-combo discovery pipeline grids over (backend `MetricFamily`). Mirrors the
+ *  hue families the registry already keeps, so it also reads as "these chips are
+ *  siblings". `standalone` = a group belonging to no established family. */
+export type MetricFamily = 'price' | 'flow' | 'flow_split' | 'liquidity_age' | 'standalone';
+
 /** A group's strict (non-condition) parameter, e.g. `window_size_sec`. */
 export interface StrictParamSpec {
   name: string;
@@ -56,6 +62,8 @@ export interface GroupSpec {
   /** Token-scoped (default) or position-scoped (`m_position`, exit-only). Optional
    *  so a pre-scope registry payload still parses. */
   scope?: MetricScope;
+  /** Interaction family. Optional so a pre-family registry payload still parses. */
+  family?: MetricFamily;
   strict_params: StrictParamSpec[];
   /** Fingerprint-level config fields (empty / omitted for most groups). */
   fingerprint_config?: FpConfigFieldSpec[];

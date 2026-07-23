@@ -6,13 +6,22 @@
 //! * [`objective`] — the robust re-rank over persisted combo metrics (step 1).
 //! * [`candidates`] — registry-driven screen plan + measured percentile ladders +
 //!   the candidate value menus they generate (step 2).
-//! * [`screen`] — Layer 1: the additive per-metric scan over one shared precompute,
-//!   its response curves, and the ranked metric shortlist (step 3).
+//! * [`additive`] — the shared scan mode: N sub-models as one flat combo space over
+//!   ONE per-token precompute (the pipeline's dominant performance lever).
+//! * [`screen`] — Layer 1: the additive per-metric scan, its response curves, and
+//!   the ranked metric shortlist (step 3).
+//! * [`family`] — Layer 2: a grid per registry metric family over Layer 1's narrowed
+//!   ranges, plus the pairwise interaction check (step 4).
 //!
 //! Everything here reads the metric [`REGISTRY`](hunter_engine::metrics) and the
 //! already-persisted `ComboMetrics` columns, so a metric added later flows through
 //! with no edit (extensibility contract, plan §5).
 
+pub mod additive;
 pub mod candidates;
+pub mod family;
 pub mod objective;
 pub mod screen;
+
+#[cfg(test)]
+pub(crate) mod fixtures;

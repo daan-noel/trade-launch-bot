@@ -312,6 +312,49 @@ pub struct FpConfigFieldSpec {
     pub required: bool,
 }
 
+/// The **interaction family** a group belongs to.
+///
+/// Metrics interact strongly *within* a family (they are different views of the same
+/// underlying quantity) and largely compose *across* families. The discovery
+/// pipeline's Layer 2 grids per family and then measures whether two families
+/// actually interact, instead of paying for one blind cross-product
+/// (`hunter/docs/roadmap/metric-combo-discovery.md` §3). The grouping mirrors the hue
+/// families the registry already keeps — promoted from a color convention to a real
+/// field so the pipeline reads it as data.
+///
+/// A newly registered group that fits none of these declares [`Standalone`]: it is
+/// gridded alone and interaction-checked against everything else, which costs compute
+/// but is never wrong.
+///
+/// [`Standalone`]: MetricFamily::Standalone
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MetricFamily {
+    /// The price path — lifetime extrema, rolling-window extrema, since-entry
+    /// extrema. One path, three views.
+    Price,
+    /// Unclassified SOL flow — lifetime and trailing-window aggregates.
+    Flow,
+    /// Classifier-split flow (volume vs organic), lifetime and windowed.
+    FlowSplit,
+    /// Token state that is neither price nor flow: age and liquidity.
+    LiquidityAge,
+    /// Default for a group that belongs to no established family.
+    Standalone,
+}
+
+impl MetricFamily {
+    /// Stable JSON/label token (frontend registry contract).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MetricFamily::Price => "price",
+            MetricFamily::Flow => "flow",
+            MetricFamily::FlowSplit => "flow_split",
+            MetricFamily::LiquidityAge => "liquidity_age",
+            MetricFamily::Standalone => "standalone",
+        }
+    }
+}
+
 /// Registry entry for one metric group.
 #[derive(Debug, Clone, Copy)]
 pub struct GroupSpec {
@@ -320,6 +363,8 @@ pub struct GroupSpec {
     pub kind: MetricKind,
     /// Token-scoped (default) or position-scoped (`m_position`, exit-only).
     pub scope: MetricScope,
+    /// Which metrics this group is expected to *interact* with (discovery Layer 2).
+    pub family: MetricFamily,
     pub strict_params: &'static [StrictParamSpec],
     /// Fingerprint-side config fields (empty for most groups).
     pub fingerprint_config: &'static [FpConfigFieldSpec],
@@ -359,6 +404,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_snapshot",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
+        family: MetricFamily::LiquidityAge,
         strict_params: &[],
         fingerprint_config: &[],
         // Blue/indigo family (~212–236). Deliberately clear of the green at 170:
@@ -388,6 +434,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_price_lifetime",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
+        family: MetricFamily::Price,
         strict_params: &[],
         fingerprint_config: &[],
         // Amber/gold family (~40–62). Peak metrics (`stall`/`trail`) and the trough
@@ -425,6 +472,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_price_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
+        family: MetricFamily::Price,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         fingerprint_config: &[],
         // Amber family (44–48), sharing the 40–62 price band with m_price_lifetime —
@@ -457,6 +505,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_flow_lifetime",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
+        family: MetricFamily::Flow,
         strict_params: &[],
         fingerprint_config: &[],
         // Violet/magenta family (~278–300), shared with m_flow_window (one aggregate
@@ -504,6 +553,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_flow_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
+        family: MetricFamily::Flow,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         fingerprint_config: &[],
         // Same violet/magenta family as m_flow_lifetime — the cross-group hue guard
@@ -549,6 +599,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_flow_split",
         kind: MetricKind::Static,
         scope: MetricScope::Token,
+        family: MetricFamily::FlowSplit,
         strict_params: &[],
         fingerprint_config: &[FpConfigFieldSpec {
             name: "volume_ix_patterns",
@@ -636,6 +687,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_flow_split_window",
         kind: MetricKind::Dynamic,
         scope: MetricScope::Token,
+        family: MetricFamily::FlowSplit,
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         // Reads the same fingerprint key as m_flow_split (one classifier, two views).
         fingerprint_config: &[],
@@ -721,6 +773,7 @@ pub const REGISTRY: &[GroupSpec] = &[
         name: "m_position",
         kind: MetricKind::Static,
         scope: MetricScope::Position,
+        family: MetricFamily::Price,
         strict_params: &[],
         fingerprint_config: &[],
         // Amber family (52–60), the third view in the price family
@@ -848,6 +901,7 @@ pub fn registry_json() -> serde_json::Value {
                 "name": g.name,
                 "kind": g.kind.as_str(),
                 "scope": g.scope.as_str(),
+                "family": g.family.as_str(),
                 "strict_params": strict,
                 "fingerprint_config": fp_cfg,
                 "metrics": metrics,
@@ -903,6 +957,28 @@ mod tests {
         assert_eq!(ids.len(), total);
     }
 
+    /// Families mirror the hue families the registry already keeps — that is the
+    /// intuition they were promoted from, and the discovery pipeline's Layer-2 grid
+    /// is only meaningful if the two stay aligned. Sibling groups that deliberately
+    /// share a hue band (`m_price_*`/`m_position`, `m_flow_*`, `m_flow_split*`) must
+    /// therefore also share a family, and a group in `Standalone` must be alone.
+    #[test]
+    fn families_group_the_registry_the_way_hues_do() {
+        use std::collections::BTreeMap;
+        let mut by_family: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for g in REGISTRY {
+            by_family.entry(g.family.as_str()).or_default().push(g.name);
+        }
+        assert_eq!(by_family["price"], vec!["m_price_lifetime", "m_price_window", "m_position"]);
+        assert_eq!(by_family["flow"], vec!["m_flow_lifetime", "m_flow_window"]);
+        assert_eq!(by_family["flow_split"], vec!["m_flow_split", "m_flow_split_window"]);
+        assert_eq!(by_family["liquidity_age"], vec!["m_snapshot"]);
+        // Nothing is unclassified today; a new group that lands in `Standalone` is
+        // gridded alone (correct, just more compute) and this assert is the prompt
+        // to decide whether it really belongs to an existing family.
+        assert!(!by_family.contains_key("standalone"), "unclassified group: {by_family:?}");
+    }
+
     #[test]
     fn tolerances_are_positive_and_finite() {
         for g in REGISTRY {
@@ -946,6 +1022,7 @@ mod tests {
             assert_eq!(jg["name"], g.name);
             assert_eq!(jg["kind"], g.kind.as_str());
             assert_eq!(jg["scope"], g.scope.as_str());
+            assert_eq!(jg["family"], g.family.as_str());
             assert_eq!(jg["strict_params"].as_array().unwrap().len(), g.strict_params.len());
             let jm = jg["metrics"].as_array().unwrap();
             assert_eq!(jm.len(), g.metrics.len());
