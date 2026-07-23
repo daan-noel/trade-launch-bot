@@ -2,10 +2,13 @@ use actix_web::{web, HttpResponse, Responder};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::api::table_query::TableRequest;
 use crate::state::core_state::CoreState;
-use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
+use crate::storage::repositories::creation_stats_repo::{
+    fingerprint_bucket_width, HeatCellRow, StatsFilter, TrendPointRow,
+};
 use crate::grouping::GroupField;
 
 use super::tokens::TokenSummary;
@@ -300,6 +303,15 @@ pub struct GroupedCreationQuery {
     /// tokens whose `ix_labels` set equals these labels (order-independent).
     /// Omitted/empty ⇒ no filter.
     pub ix_labels_filter: Option<String>,
+    /// Optional saved-fingerprint scope — same contract as the sweep's/flow
+    /// discovery's `fingerprint_id`: when set, the corpus keeps only tokens the
+    /// ENGINE matches against that fingerprint (SQL mirror of
+    /// `hunter_engine::fingerprint::matches`), collapsed into a single "ALL"
+    /// group (`g = 0`); `group_by`/`top`/`field_filters`/`ix_labels_filter`/
+    /// `bucket_width` above are all ignored (the fingerprint's own axes/bucket
+    /// replace them, exactly as the sweep/discovery scoping does).
+    #[serde(default)]
+    pub fingerprint_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -434,6 +446,55 @@ pub async fn get_grouped_creation_stats(
     let segment = query.segment.clone().unwrap_or_else(|| "all".to_string());
     let (mayhem, cashback) = parse_segment(&segment);
     let (from, to) = resolve_window(query.from.as_deref(), query.to.as_deref(), now);
+    let repo = state.creation_stats_repo();
+
+    // Saved-fingerprint scope — short-circuits the manual group_by/filters path
+    // entirely (same contract as the sweep's/flow discovery's fingerprint_id).
+    if let Some(fp_id) = query.fingerprint_id {
+        let fp = match state.fingerprint_repo().find(fp_id).await {
+            Ok(Some(fp)) => fp,
+            Ok(None) => {
+                return HttpResponse::NotFound()
+                    .json(serde_json::json!({ "error": "fingerprint not found" }));
+            }
+            Err(e) => return db_error(e),
+        };
+        let filter = StatsFilter { tz: &tz, maturity_secs: 0.0, from, to, mayhem, cashback };
+        let data = match repo.grouped_scoped(&fp, bucket, filter).await {
+            Ok(d) => d,
+            Err(e) => return db_error(e),
+        };
+        let total: i64 = data.groups.iter().map(|g| g.total).sum();
+        let resp = GroupedCreationResponse {
+            bucket: bucket.to_string(),
+            tz,
+            from,
+            to,
+            segment,
+            group_by: Vec::new(),
+            bucket_width: fingerprint_bucket_width(&fp),
+            field_filters: serde_json::json!({}),
+            ix_labels_filter: fp.ix_labels.clone().filter(|v| !v.is_empty()),
+            total,
+            groups: data
+                .groups
+                .into_iter()
+                .map(|r| GroupedGroup { g: r.g, group_key: r.group_key, total: r.total })
+                .collect(),
+            cells: data
+                .cells
+                .into_iter()
+                .map(|r| GroupedCell { g: r.g, dow: r.dow, hour: r.hour, count: r.count })
+                .collect(),
+            points: data
+                .points
+                .into_iter()
+                .map(|r| GroupedPoint { g: r.g, bucket: r.bucket, count: r.count })
+                .collect(),
+        };
+        return HttpResponse::Ok().json(resp);
+    }
+
     let top = clamp_top(query.top);
     // Clamp the bucket width like the sweep handler: invalid/sub-floor ⇒ default,
     // so the dashboard groups a corpus at the same width a sweep would.
@@ -474,7 +535,6 @@ pub async fn get_grouped_creation_stats(
         cashback,
     };
 
-    let repo = state.creation_stats_repo();
     let data = match repo
         .grouped(&fields, bucket, top, &field_filters, ix_labels_filter.as_deref(), bucket_width, filter)
         .await
@@ -580,6 +640,12 @@ pub struct GroupedCreationTokensRequest {
     /// present or both absent — a lone one is a 400.
     pub dow: Option<i32>,
     pub hour: Option<i32>,
+    /// Saved-fingerprint scope — mirrors [`GroupedCreationQuery::fingerprint_id`].
+    /// When set, `group_by`/`field_filters`/`ix_labels_filter`/`group_key` above
+    /// are all ignored (there's only ever one group, `g = 0`) and the corpus is
+    /// the fingerprint's own engine-matched tokens.
+    #[serde(default)]
+    pub fingerprint_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -611,48 +677,6 @@ pub async fn get_grouped_creation_tokens(
         _ => crate::grouping::SOL_BUCKET_WIDTH,
     };
 
-    let fields = match parse_group_by(body.group_by.as_deref()) {
-        Ok(f) => f,
-        Err(tag) => {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!("unknown group_by field: {tag}")
-            }));
-        }
-    };
-    let field_filters = match parse_field_filters(body.field_filters.as_deref()) {
-        Ok(f) => f,
-        Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
-    };
-    let ix_labels_filter = match parse_ix_labels_filter(body.ix_labels_filter.as_deref()) {
-        Ok(f) => f,
-        Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
-    };
-
-    // `group_key` must name every selected field — else the "exact group" the
-    // client thinks it's drilling into is actually broader than what it saw
-    // (a silently-dropped field would match every value of that field).
-    let group_key_obj = match body.group_key.as_object() {
-        Some(o) => o,
-        None => {
-            return HttpResponse::BadRequest()
-                .json(serde_json::json!({ "error": "group_key must be a JSON object" }));
-        }
-    };
-    let mut group_key: Vec<(GroupField, String)> = Vec::with_capacity(fields.len());
-    for field in &fields {
-        let Some(v) = group_key_obj.get(field.as_str()) else {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!("group_key missing value for field: {}", field.as_str())
-            }));
-        };
-        let Some(s) = v.as_str() else {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!("group_key[{}] must be a string", field.as_str())
-            }));
-        };
-        group_key.push((*field, s.to_string()));
-    }
-
     // dow/hour: both-or-neither, and in-range when present.
     let cell = match (body.dow, body.hour) {
         (Some(dow), Some(hour)) if (0..=6).contains(&dow) && (0..=23).contains(&hour) => {
@@ -668,17 +692,81 @@ pub async fn get_grouped_creation_tokens(
     let (dow, hour) = cell.map_or((None, None), |(d, h)| (Some(d), Some(h)));
 
     let filter = StatsFilter { tz: &tz, maturity_secs: 0.0, from, to, mayhem, cashback };
-    let (where_sql, args) = crate::storage::repositories::creation_stats_repo::build_grouped_tokens_where(
-        &fields,
-        &group_key,
-        &field_filters,
-        ix_labels_filter.as_deref(),
-        bucket_width,
-        dow,
-        hour,
-        &body.table.search,
-        filter,
-    );
+
+    let (where_sql, args) = if let Some(fp_id) = body.fingerprint_id {
+        // Saved-fingerprint scope — group_by/field_filters/ix_labels_filter/
+        // group_key above are all ignored (mirrors the main endpoint's contract).
+        let fp = match state.fingerprint_repo().find(fp_id).await {
+            Ok(Some(fp)) => fp,
+            Ok(None) => {
+                return HttpResponse::NotFound()
+                    .json(serde_json::json!({ "error": "fingerprint not found" }));
+            }
+            Err(e) => return db_error(e),
+        };
+        crate::storage::repositories::creation_stats_repo::build_grouped_tokens_where_scoped(
+            &fp,
+            dow,
+            hour,
+            &body.table.search,
+            filter,
+        )
+    } else {
+        let fields = match parse_group_by(body.group_by.as_deref()) {
+            Ok(f) => f,
+            Err(tag) => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("unknown group_by field: {tag}")
+                }));
+            }
+        };
+        let field_filters = match parse_field_filters(body.field_filters.as_deref()) {
+            Ok(f) => f,
+            Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+        };
+        let ix_labels_filter = match parse_ix_labels_filter(body.ix_labels_filter.as_deref()) {
+            Ok(f) => f,
+            Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+        };
+
+        // `group_key` must name every selected field — else the "exact group" the
+        // client thinks it's drilling into is actually broader than what it saw
+        // (a silently-dropped field would match every value of that field).
+        let group_key_obj = match body.group_key.as_object() {
+            Some(o) => o,
+            None => {
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({ "error": "group_key must be a JSON object" }));
+            }
+        };
+        let mut group_key: Vec<(GroupField, String)> = Vec::with_capacity(fields.len());
+        for field in &fields {
+            let Some(v) = group_key_obj.get(field.as_str()) else {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("group_key missing value for field: {}", field.as_str())
+                }));
+            };
+            let Some(s) = v.as_str() else {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("group_key[{}] must be a string", field.as_str())
+                }));
+            };
+            group_key.push((*field, s.to_string()));
+        }
+
+        crate::storage::repositories::creation_stats_repo::build_grouped_tokens_where(
+            &fields,
+            &group_key,
+            &field_filters,
+            ix_labels_filter.as_deref(),
+            bucket_width,
+            dow,
+            hour,
+            &body.table.search,
+            filter,
+        )
+    };
+
     let order_sql = crate::storage::repositories::creation_stats_repo::build_grouped_tokens_order(
         &body
             .table

@@ -24,6 +24,7 @@ fn bind_sql_args<'q, O>(
             SqlArg::Ts(t) => query.bind(*t),
             SqlArg::Bool(b) => query.bind(*b),
             SqlArg::StrArray(a) => query.bind(a),
+            SqlArg::Json(a) => query.bind(Json(a)),
         };
     }
     query
@@ -42,6 +43,7 @@ fn bind_sql_args_scalar<'q, O>(
             SqlArg::Ts(t) => query.bind(*t),
             SqlArg::Bool(b) => query.bind(*b),
             SqlArg::StrArray(a) => query.bind(a),
+            SqlArg::Json(a) => query.bind(Json(a)),
         };
     }
     query

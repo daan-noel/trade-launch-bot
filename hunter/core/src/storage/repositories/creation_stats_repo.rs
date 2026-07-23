@@ -1,7 +1,9 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::PgPool;
 
+use crate::config::constants::lamports_to_sol;
 use crate::grouping::GroupField;
+use crate::models::Fingerprint;
 
 /// Token-creation-time bias aggregates. Reads `tokens` (creation time + segment
 /// flags) LEFT JOINed to `tokens_info` (outcome: migrated / dead), grouped
@@ -277,6 +279,91 @@ fn group_field_sql(f: GroupField, width: f64, ti_alias: &str) -> String {
     }
 }
 
+/// Effective bucket width (SOL) for a saved fingerprint's continuous SOL axes —
+/// its own `bucket_size_amount`, falling back to the shared default when unset
+/// (mirrors the sweep/discovery "scope by fingerprint" contract, which always
+/// groups/matches at the fingerprint's own width, never the caller's).
+pub fn fingerprint_bucket_width(fp: &Fingerprint) -> f64 {
+    if fp.bucket_size_amount > 0.0 {
+        fp.bucket_size_amount
+    } else {
+        crate::grouping::SOL_BUCKET_WIDTH
+    }
+}
+
+/// SQL predicate pinning a continuous SOL token expression to the SAME bucket
+/// as a fingerprint's own axis value, at `width` — the SQL mirror of
+/// `hunter_engine::grouping::same_bucket` (kept in lockstep: identical
+/// `+ BUCKET_EPS` boundary epsilon). `fp_value_sol` is computed from a trusted
+/// numeric field on the `Fingerprint` DB row (never user free-text), so
+/// literal-embedding it is injection-safe — same convention `sol_bucket_sql`
+/// already uses for `width`. No leading `AND`; join clauses with `" AND "`.
+fn bucket_eq_clause(sol_expr: &str, fp_value_sol: f64, width: f64) -> String {
+    let idx = crate::grouping::bucket_index(fp_value_sol, width);
+    format!(
+        "floor(({sol_expr}) / {width} + {eps}) = {idx}",
+        eps = crate::grouping::BUCKET_EPS,
+    )
+}
+
+/// Every configured-axis clause for the "scope by saved fingerprint" path
+/// (exact `cu_limit`/`cu_price`, bucketed SOL axes) — the SQL mirror of
+/// `hunter_engine::fingerprint::matches`. `ix_labels` is excluded: it's the only
+/// *bound* (not literal) predicate, since labels are arbitrary on-chain text
+/// rather than a trusted numeric column — callers add it themselves via a
+/// `t.ix_labels = $n` bind (see [`CreationStatsRepo::grouped_scoped`] /
+/// [`build_grouped_tokens_where_scoped`]). `ti_alias` is the `tokens_info` LEFT
+/// JOIN alias the first-slot buy/sell axes read off of — `"ti"` from
+/// `grouped_scoped`, `"i"` from the drill-down's `token_repo` query (see
+/// [`group_field_sql`]'s doc for why the two differ).
+///
+/// An all-`None` fingerprint mirrors the engine matcher's guard (a fingerprint
+/// with no criteria never matches "everything") with a single `FALSE` clause.
+fn fingerprint_scope_clauses(fp: &Fingerprint, width: f64, ti_alias: &str) -> Vec<String> {
+    if !fp.has_any_criterion() {
+        return vec!["FALSE".to_string()];
+    }
+    let mut out = Vec::new();
+    if let Some(v) = fp.cu_limit {
+        out.push(format!("t.cu_limit = {v}"));
+    }
+    if let Some(v) = fp.cu_price {
+        out.push(format!("t.cu_price = {v}"));
+    }
+    if let Some(l) = fp.init_buy_lamports {
+        out.push(bucket_eq_clause("t.initial_buy_lamports::float8 / 1e9", lamports_to_sol(l), width));
+    }
+    if let Some(l) = fp.max_cost_lamports {
+        out.push(bucket_eq_clause(
+            "(t.initial_buy_instruction->>'max_cost_lamports')::float8 / 1e9",
+            lamports_to_sol(l),
+            width,
+        ));
+    }
+    if let Some(l) = fp.spendable_lamports_in {
+        out.push(bucket_eq_clause(
+            "(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9",
+            lamports_to_sol(l),
+            width,
+        ));
+    }
+    if let Some(l) = fp.first_slot_buy_lamports {
+        out.push(bucket_eq_clause(
+            &format!("{ti_alias}.first_slot_buy_lamports::float8 / 1e9"),
+            lamports_to_sol(l),
+            width,
+        ));
+    }
+    if let Some(l) = fp.first_slot_sell_lamports {
+        out.push(bucket_eq_clause(
+            &format!("{ti_alias}.first_slot_sell_lamports::float8 / 1e9"),
+            lamports_to_sol(l),
+            width,
+        ));
+    }
+    out
+}
+
 /// Per-group time-series for the grouped dashboard section.
 pub struct GroupedCreation {
     pub groups: Vec<GroupedGroupRow>,
@@ -422,6 +509,81 @@ impl CreationStatsRepo {
             points,
         })
     }
+
+    /// The "scope by saved fingerprint" path: a single "ALL" group (`g = 0`) over
+    /// tokens the fingerprint's own axes select — the SQL mirror of the sweep's
+    /// and flow discovery's `fp_to_engine` + `hunter_engine::fingerprint::matches`
+    /// scoping (exact `cu_limit`/`cu_price`/`ix_labels`, SOL axes by the
+    /// fingerprint's own bucket width), so a scoped dashboard reads the same
+    /// corpus a scoped sweep/discovery run would. Manual `group_by` /
+    /// `field_filters` / `ix_labels_filter` don't apply here (same contract).
+    pub async fn grouped_scoped(
+        &self,
+        fp: &Fingerprint,
+        bucket_unit: &str,
+        f: StatsFilter<'_>,
+    ) -> anyhow::Result<GroupedCreation> {
+        let width = fingerprint_bucket_width(fp);
+        let mut preds = String::new();
+        for clause in fingerprint_scope_clauses(fp, width, "ti") {
+            preds.push_str(&format!("\n  AND {clause}"));
+        }
+        // ix_labels: ordered exact match (jsonb structural equality preserves
+        // array order) — NOT `grouped()`'s sorted-set-equality `ix_labels_filter`.
+        // Bound, not literal-embedded: labels are arbitrary on-chain text. Owned
+        // (not a borrow of `fp`) so it can be re-bound across all three queries.
+        let ix_bind: Option<Vec<String>> = fp.ix_labels.clone().filter(|l| !l.is_empty());
+        if ix_bind.is_some() {
+            preds.push_str("\n  AND t.ix_labels = $6");
+        }
+
+        let bkt = bucket_expr("(t.created_at AT TIME ZONE $1)", bucket_unit);
+        let cte = format!(
+            r#"
+            WITH base AS (
+                SELECT EXTRACT(DOW  FROM (t.created_at AT TIME ZONE $1))::int AS dow,
+                       EXTRACT(HOUR FROM (t.created_at AT TIME ZONE $1))::int AS hour,
+                       {bkt} AS bkt
+                FROM tokens t
+                LEFT JOIN tokens_info ti ON ti.mint_address = t.mint_address
+                WHERE t.created_at >= $2 AND t.created_at < $3
+                  AND ($4::bool IS NULL OR t.is_mayhem_mode = $4)
+                  AND ($5::bool IS NULL OR t.is_cashback_enabled = $5){preds}
+            )
+            "#,
+        );
+        // Ungrouped `HAVING` collapses to zero rows when the corpus is empty
+        // (rather than one row reading `total = 0`) — same "no group" shape an
+        // empty manual ALL group gets from `grouped()`'s `GROUP BY gkey`.
+        let groups_sql =
+            format!("{cte} SELECT 0::bigint AS g, '{{}}'::jsonb AS group_key, COUNT(*)::bigint AS total FROM base HAVING COUNT(*) > 0");
+        let cells_sql = format!(
+            "{cte} SELECT 0::bigint AS g, dow, hour, COUNT(*)::bigint AS count FROM base GROUP BY dow, hour"
+        );
+        let points_sql =
+            format!("{cte} SELECT 0::bigint AS g, bkt AS bucket, COUNT(*)::bigint AS count FROM base GROUP BY bkt ORDER BY bkt");
+
+        macro_rules! run {
+            ($sql:expr, $ty:ty) => {{
+                let mut q = sqlx::query_as::<_, $ty>($sql)
+                    .bind(f.tz)
+                    .bind(f.from)
+                    .bind(f.to)
+                    .bind(f.mayhem)
+                    .bind(f.cashback);
+                if let Some(labels) = &ix_bind {
+                    q = q.bind(sqlx::types::Json(labels));
+                }
+                q.fetch_all(&self.pool).await?
+            }};
+        }
+
+        let groups = run!(&groups_sql, GroupedGroupRow);
+        let cells = run!(&cells_sql, GroupedHeatCellRow);
+        let points = run!(&points_sql, GroupedTrendPointRow);
+
+        Ok(GroupedCreation { groups, cells, points })
+    }
 }
 
 impl Clone for CreationStatsRepo {
@@ -552,6 +714,80 @@ pub fn build_grouped_tokens_where(
         clauses.join(" AND ")
     };
     (where_sql, args)
+}
+
+/// Same contract as [`build_grouped_tokens_where`], but for the "scope by saved
+/// fingerprint" path (`fingerprint_id` set on the request): pins the corpus to
+/// the tokens [`CreationStatsRepo::grouped_scoped`] selected instead of a manual
+/// `group_by`/`field_filters`/`group_key` — there's only ever one group (`g = 0`),
+/// so no `group_key` disambiguation is needed.
+pub fn build_grouped_tokens_where_scoped(
+    fp: &Fingerprint,
+    dow: Option<i32>,
+    hour: Option<i32>,
+    search: &str,
+    f: StatsFilter<'_>,
+) -> (String, Vec<crate::api::handlers::tokens::SqlArg>) {
+    use crate::api::handlers::tokens::SqlArg;
+
+    let width = fingerprint_bucket_width(fp);
+    let mut clauses: Vec<String> = Vec::new();
+    let mut args: Vec<SqlArg> = Vec::new();
+
+    args.push(SqlArg::Ts(f.from));
+    clauses.push(format!("t.created_at >= ${}", args.len()));
+    args.push(SqlArg::Ts(f.to));
+    clauses.push(format!("t.created_at < ${}", args.len()));
+
+    if let Some(m) = f.mayhem {
+        args.push(SqlArg::Bool(m));
+        clauses.push(format!("t.is_mayhem_mode = ${}", args.len()));
+    }
+    if let Some(c) = f.cashback {
+        args.push(SqlArg::Bool(c));
+        clauses.push(format!("t.is_cashback_enabled = ${}", args.len()));
+    }
+
+    // Fingerprint scope — runs against `token_repo`'s query, which joins
+    // `tokens_info` as `i` (NOT `grouped_scoped`'s `ti`; see `group_field_sql`).
+    clauses.extend(fingerprint_scope_clauses(fp, width, "i"));
+    if let Some(labels) = fp.ix_labels.as_ref().filter(|l| !l.is_empty()) {
+        args.push(SqlArg::Json(labels.clone()));
+        clauses.push(format!("t.ix_labels = ${}", args.len()));
+    }
+
+    // Recurring weekly slot (a heatmap tile) — identical to `build_grouped_tokens_where`.
+    if let (Some(dow), Some(hour)) = (dow, hour) {
+        args.push(SqlArg::Str(f.tz.to_string()));
+        let tz_ph = args.len();
+        args.push(SqlArg::I64(dow as i64));
+        let dow_ph = args.len();
+        args.push(SqlArg::I64(hour as i64));
+        let hour_ph = args.len();
+        clauses.push(format!(
+            "EXTRACT(DOW FROM (t.created_at AT TIME ZONE ${tz_ph}))::int = ${dow_ph} \
+             AND EXTRACT(HOUR FROM (t.created_at AT TIME ZONE ${tz_ph}))::int = ${hour_ph}"
+        ));
+    }
+
+    let needle = search.trim();
+    if !needle.is_empty() {
+        let esc = needle
+            .to_lowercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        args.push(SqlArg::Str(esc));
+        let ph = args.len();
+        clauses.push(format!(
+            "(LOWER(t.mint_address) LIKE '%' || ${ph} || '%' ESCAPE '\\' \
+              OR LOWER(t.symbol) LIKE '%' || ${ph} || '%' ESCAPE '\\')"
+        ));
+    }
+
+    // `clauses` always has the two window bounds, so this never falls back to
+    // the `build_grouped_tokens_where` "TRUE" empty case.
+    (clauses.join(" AND "), args)
 }
 
 /// `ORDER BY` body for the drill-down list. Reuses the SAME per-column sort

@@ -79,6 +79,10 @@ export interface GroupedCreationTokensArgs {
   bucketWidth?: number;
   fieldFilters?: Record<string, string[]>;
   ixLabelsFilter?: string[];
+  /** Saved-fingerprint scope — mirrors {@link GroupedCreationArgs.fingerprintId}.
+   *  When set, `groupBy`/`fieldFilters`/`ixLabelsFilter`/`groupKey` are all
+   *  ignored (there's only ever one group, `g = 0`). */
+  fingerprintId?: string;
   /** The exact group to drill into — echoes {@link GroupedCreationGroup.group_key} verbatim. */
   groupKey: Record<string, string>;
   /** Recurring weekly slot (a heatmap-tile click): 0=Sun..6=Sat / 0..23. Both set,
@@ -116,6 +120,11 @@ export interface GroupedCreationArgs {
   fieldFilters?: Record<string, string[]>;
   /** Exact instruction-label set filter (set-equality). Omitted ⇒ no filter. */
   ixLabelsFilter?: string[];
+  /** Saved-fingerprint scope — same contract as the sweep's/flow discovery's
+   *  `fingerprint_id`: when set, `groupBy`/`top`/`fieldFilters`/`ixLabelsFilter`
+   *  above are all ignored; the corpus becomes the fingerprint's own
+   *  engine-matched tokens, collapsed into a single "ALL" group (`g = 0`). */
+  fingerprintId?: string;
 }
 
 /** Look-back-derived top-N presets for the group-count picker. */

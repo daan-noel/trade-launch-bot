@@ -40,6 +40,11 @@ pub enum SqlArg {
     Bool(bool),
     /// Ordered lowercase label list for ix-label JSON set-equality.
     StrArray(Vec<String>),
+    /// Ordered instruction-label list bound as `jsonb` for exact array-order
+    /// equality (`t.ix_labels = $n`) — unlike `StrArray`, which binds a `text[]`
+    /// for set-equality against a sorted `array_agg`. Used by the "scope by saved
+    /// fingerprint" path, which mirrors the engine matcher's ordered comparison.
+    Json(Vec<String>),
 }
 
 /// Accumulates positional binds while the WHERE/ORDER fragment is built, so `$n`

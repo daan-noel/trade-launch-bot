@@ -984,6 +984,24 @@ export const DISCOVERY_FIELD_HELP = {
   },
 } as const satisfies Record<string, HelpTip>;
 
+// ── Creation-stats dashboard ("Creation by token group") ─────────────────────
+
+export const CREATION_FIELD_HELP = {
+  seedFingerprint: {
+    title: 'Scope by saved fingerprint',
+    body: [
+      'When set, the dashboard keeps only tokens that MATCH this fingerprint',
+      '(engine match SSOT — exact axes exact, continuous SOL axes by bucket, same',
+      'gate the live entry arms on) and shows them as a single "ALL" group.',
+      '',
+      'The manual group-by / value filters below are then IGNORED — they compare',
+      'exact values, so they cannot express a bucket axis.',
+      '',
+      'Leave empty to partition the corpus with the manual group-by / filters instead.',
+    ].join('\n'),
+  },
+} as const satisfies Record<string, HelpTip>;
+
 /** Column tips for the discovery structure ranking table. */
 export const DISCOVERY_COL_HELP = {
   vol: {

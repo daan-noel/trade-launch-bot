@@ -28,6 +28,7 @@ import {
   axisTint,
 } from 'components/strategy/FingerprintParamsSummary';
 import { LabelTip } from 'components/strategy/LabelTip';
+import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { apiErrorMessage } from 'store/baseApi';
@@ -611,9 +612,6 @@ export function FlowDiscoveryPage() {
   const [updateFp, updateState] = useUpdateFingerprintMutation();
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
 
-  const seedFp =
-    (seedFingerprintId && fingerprints.find((f) => f.id === seedFingerprintId)) || null;
-
   const [result, setResult] = useState<FlowDiscoveryResult | null>(null);
   const [selectedGroupIdx, setSelectedGroupIdx] = useState(0);
   const { data: lastResult } = useGetLastFlowDiscoveryQuery();
@@ -976,53 +974,14 @@ export function FlowDiscoveryPage() {
 
       <div className="mb-4 border-t border-white/10 pt-3">
         <Accordion title="Group by fingerprint" defaultOpen>
-          <div className="mb-3 flex flex-col gap-2 rounded border border-white/8 p-3">
-            <label className="flex min-w-[16rem] flex-col gap-1 text-[11px] text-text-dim">
-              <LabelTip
-                tip={DISCOVERY_FIELD_HELP.seedFingerprint}
-                className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
-              >
-                Scope by saved fingerprint
-              </LabelTip>
-              <Select
-                fieldSize="sm"
-                value={seedFingerprintId ?? ''}
-                onChange={(e) => selectSeedFingerprint(e.target.value)}
-              >
-                <option value="">Manual group-by / filters below</option>
-                {fingerprints.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name || f.id.slice(0, 8)}
-                    {f.used_by != null ? ` · used by ${f.used_by}` : ''}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            {seedFp ? (
-              <div className="flex flex-col gap-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Link
-                    to={fingerprintsHref(seedFp.id)}
-                    className="inline-flex items-center gap-1 rounded-md hover:opacity-90"
-                    title={`Open fingerprint “${seedFp.name}”`}
-                  >
-                    <Badge variant="info">engine match · {seedFp.name}</Badge>
-                    <LinkIcon className="h-3.5 w-3.5 text-accent" />
-                  </Link>
-                  <span className="text-[10px] text-text-dim">
-                    Discovery scores only tokens that match this fingerprint, then
-                    Apply writes volume_ix_patterns back to it.
-                  </span>
-                </div>
-                {fingerprintParamsCell(seedFp)}
-              </div>
-            ) : (
-              <p className="text-[10px] text-text-dim">
-                Pick a fingerprint to detect its volume_ix_patterns — or leave empty and
-                use the manual group-by / filters.
-              </p>
-            )}
-          </div>
+          <FingerprintScopeControl
+            fingerprints={fingerprints}
+            value={seedFingerprintId}
+            onChange={selectSeedFingerprint}
+            tip={DISCOVERY_FIELD_HELP.seedFingerprint}
+            scopedDescription="Discovery scores only tokens that match this fingerprint, then Apply writes volume_ix_patterns back to it."
+            manualHint="Pick a fingerprint to detect its volume_ix_patterns — or leave empty and use the manual group-by / filters."
+          />
           <FingerprintGroupPicker
             groupBy={groupBy}
             onToggleField={(f) =>

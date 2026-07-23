@@ -27,6 +27,9 @@ import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { DOW_ROWS } from 'components/creation-stats/creationStats';
+import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
+import { CREATION_FIELD_HELP } from 'lib/strategy/strategyHelp';
+import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 
 const GroupedCreationTrendChart = lazy(() =>
   import('./GroupedCreationTrendChart').then((m) => ({ default: m.GroupedCreationTrendChart })),
@@ -138,6 +141,17 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const [fieldFiltersText, setFieldFiltersText] = useLocalStorage<Record<string, string>>(STORAGE_KEYS.groupedFilters, {});
   const [cashbackFilter, setCashbackFilter] = useLocalStorage<CashbackFilter>(STORAGE_KEYS.groupedCashback, 'all');
   const [ixLabelsText, setIxLabelsText] = useLocalStorage<string>(STORAGE_KEYS.groupedIxLabels, '');
+  // Saved-fingerprint scope — same "ALL group over the engine-matched tokens"
+  // contract as the sweep's/flow discovery's seed select. Set ⇒ the manual
+  // group-by/filters above are ignored (both client-side and server-side).
+  const [seedFingerprintId, setSeedFingerprintId] = useLocalStorage<string | null>(
+    STORAGE_KEYS.groupedFingerprintId,
+    null,
+  );
+  const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  function selectSeedFingerprint(id: string) {
+    setSeedFingerprintId(id || null);
+  }
 
   // --- applied snapshot (drives the query) ----------------------------------
   const [applied, setApplied] = useState<GroupedCreationArgs | null>(null);
@@ -163,8 +177,22 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   const ixFilter = useMemo(() => parseIxLabelsFilter(ixLabelsText), [ixLabelsText]);
 
   // Build the query args from the current draft + page props (the thing Analyze
-  // snapshots). Memoized so dirty-checking + click are cheap.
+  // snapshots). Memoized so dirty-checking + click are cheap. Scoped by a saved
+  // fingerprint ⇒ the manual group-by/filters below are dropped entirely (the
+  // backend ignores them too — see `getGroupedCreationStats`'s query builder).
   const draftArgs = useMemo<GroupedCreationArgs>(() => {
+    if (seedFingerprintId) {
+      return {
+        bucket: effBucket,
+        tz,
+        from,
+        segment,
+        groupBy: [],
+        top,
+        fingerprintId: seedFingerprintId,
+      };
+    }
+
     const fieldFilters: Record<string, string[]> = {};
     for (const f of SCALAR_FILTER_FIELDS) {
       const nums = parseNumbers(fieldFiltersText[f] ?? '');
@@ -188,7 +216,19 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         ? { ixLabelsFilter: ixFilter.labels }
         : {}),
     };
-  }, [effBucket, tz, from, segment, groupBy, top, bucketWidth, fieldFiltersText, cashbackFilter, ixFilter.labels]);
+  }, [
+    effBucket,
+    tz,
+    from,
+    segment,
+    groupBy,
+    top,
+    bucketWidth,
+    fieldFiltersText,
+    cashbackFilter,
+    ixFilter.labels,
+    seedFingerprintId,
+  ]);
 
   const { data, isFetching, isError, error } = useGetGroupedCreationStatsQuery(applied ?? skipToken);
 
@@ -239,6 +279,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       bucketWidth: applied.bucketWidth,
       fieldFilters: applied.fieldFilters,
       ixLabelsFilter: applied.ixLabelsFilter,
+      fingerprintId: applied.fingerprintId,
       groupKey: drillGroup.group_key,
       ...(drillTarget.dow != null && drillTarget.hour != null
         ? { dow: drillTarget.dow, hour: drillTarget.hour }
@@ -324,6 +365,19 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         </div>
       </div>
 
+      {/* Saved-fingerprint scope — the engine-match path (same control the
+          sweep/flow discovery pages use). Set → the dashboard shows a single
+          "ALL" group over the fingerprint's matched tokens and the manual
+          group-by / filters below are ignored; empty → manual selects the corpus. */}
+      <FingerprintScopeControl
+        fingerprints={fingerprints}
+        value={seedFingerprintId}
+        onChange={selectSeedFingerprint}
+        tip={CREATION_FIELD_HELP.seedFingerprint}
+        scopedDescription="Only tokens this fingerprint matches are shown (exact axes exact, SOL axes by bucket) — the manual group-by / filters below are ignored; the dashboard shows a single ALL group for the matched tokens."
+        manualHint="Pick a fingerprint to see exactly the tokens it matches — or leave empty and partition the corpus with the manual group-by / filters below."
+      />
+
       {/* Group-by + value filters — shared with the sweep page's fingerprint
           control so both read identically. */}
       <div className="mb-3 rounded-md border border-white/8 bg-white/2 p-2.5">
@@ -339,7 +393,11 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
           ixLabelsText={ixLabelsText}
           onSetIxLabels={setIxLabelsText}
           ixFilter={ixFilter}
-          emptyHint='No fields selected → one "ALL" group (every token in the window).'
+          emptyHint={
+            seedFingerprintId
+              ? 'Scoped to the saved fingerprint → one "ALL" group of matching tokens.'
+              : 'No fields selected → one "ALL" group (every token in the window).'
+          }
         />
       </div>
 

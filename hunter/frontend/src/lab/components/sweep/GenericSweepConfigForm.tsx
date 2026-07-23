@@ -1,9 +1,8 @@
 import { useEffect, useMemo, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
 import { cn } from 'lib/cn';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { IconButton } from 'components/ui/IconButton';
-import { LinkIcon, PlayIcon, SpinnerIcon } from 'components/ui/icons';
+import { PlayIcon, SpinnerIcon } from 'components/ui/icons';
 import { Input } from 'components/ui/Input';
 import { Select } from 'components/ui/Select';
 import { Checkbox } from 'components/ui/Checkbox';
@@ -24,15 +23,13 @@ import { formatIxLabelsText } from 'lib/ixLabels';
 import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
-import { fingerprintParamsCell } from 'components/strategy/FingerprintParamsSummary';
+import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from 'components/strategy/LabelTip';
-import { fingerprintsHref } from 'lib/strategy/nav';
 import {
   COST_MODELS,
   FILL_MODELS,
   type CostModelId,
-  type Fingerprint,
   type FillModelId,
 } from 'lib/strategy/types';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
@@ -344,8 +341,6 @@ export function GenericSweepConfigForm({
   } = config;
 
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
-  const seedFp: Fingerprint | null =
-    (seedFingerprintId && fingerprints.find((f) => f.id === seedFingerprintId)) || null;
 
   /** Scope the corpus to a saved fingerprint (engine match, server-side) — or clear
    *  back to manual group-by / filters. Selecting one drops the group-by selection
@@ -700,54 +695,20 @@ export function GenericSweepConfigForm({
               discovery page uses). Set → the corpus is the fingerprint's matched
               token set and the value filters below are ignored; empty → manual
               group-by / filters select the corpus. */}
-          <div className="mb-3 flex flex-col gap-2 rounded border border-white/8 p-3">
-            <label className="flex min-w-[16rem] flex-col gap-1 text-[11px] text-text-dim">
-              <LabelTip
-                tip={SWEEP_FIELD_HELP.seedFingerprint}
-                className="text-[9px] font-bold uppercase tracking-wider text-text-dim/80"
-              >
-                Scope by saved fingerprint
-              </LabelTip>
-              <Select
-                fieldSize="sm"
-                value={seedFingerprintId ?? ''}
-                onChange={(e) => selectSeedFingerprint(e.target.value)}
-              >
-                <option value="">Manual group-by / filters below</option>
-                {fingerprints.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name || f.id.slice(0, 8)}
-                    {f.used_by != null ? ` · used by ${f.used_by}` : ''}
-                  </option>
-                ))}
-              </Select>
-            </label>
-            {seedFp ? (
-              <div className="flex flex-col gap-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Link
-                    to={fingerprintsHref(seedFp.id)}
-                    className="inline-flex items-center gap-1 rounded-md hover:opacity-90"
-                    title={`Open fingerprint “${seedFp.name}”`}
-                  >
-                    <Badge variant="info">engine match · {seedFp.name}</Badge>
-                    <LinkIcon className="h-3.5 w-3.5 text-accent" />
-                  </Link>
-                  <span className="text-[10px] text-text-dim">
-                    Only tokens this fingerprint matches are swept (exact axes exact,
-                    SOL axes by bucket) — the value filters below are <b>not sent</b>.
-                    Group-by still splits inside that slice.
-                  </span>
-                </div>
-                {fingerprintParamsCell(seedFp)}
-              </div>
-            ) : (
-              <p className="text-[10px] text-text-dim">
-                Pick a fingerprint to sweep exactly the tokens it matches — or leave
-                empty and select the corpus with the group-by / filters below.
-              </p>
-            )}
-          </div>
+          <FingerprintScopeControl
+            fingerprints={fingerprints}
+            value={seedFingerprintId}
+            onChange={selectSeedFingerprint}
+            tip={SWEEP_FIELD_HELP.seedFingerprint}
+            scopedDescription={
+              <>
+                Only tokens this fingerprint matches are swept (exact axes exact, SOL
+                axes by bucket) — the value filters below are <b>not sent</b>. Group-by
+                still splits inside that slice.
+              </>
+            }
+            manualHint="Pick a fingerprint to sweep exactly the tokens it matches — or leave empty and select the corpus with the group-by / filters below."
+          />
           <FingerprintGroupPicker
             groupBy={groupBy}
             onToggleField={toggleGroupField}

@@ -236,17 +236,35 @@ export const labApi = baseApi.injectEndpoints({
       GroupedCreationResponse,
       GroupedCreationArgs
     >({
-      query: ({ bucket, tz, from, segment, groupBy, top, bucketWidth, fieldFilters, ixLabelsFilter }) => {
+      query: ({
+        bucket,
+        tz,
+        from,
+        segment,
+        groupBy,
+        top,
+        bucketWidth,
+        fieldFilters,
+        ixLabelsFilter,
+        fingerprintId,
+      }) => {
         const p = new URLSearchParams();
         p.set('bucket', bucket);
         p.set('tz', tz);
         p.set('segment', segment);
+        if (from) p.set('from', from);
+        // Scoped by a saved fingerprint ⇒ the backend ignores group_by/top/
+        // field_filters/ix_labels_filter/bucket_width entirely (same contract
+        // as the sweep's/flow discovery's fingerprint_id) — don't send them.
+        if (fingerprintId) {
+          p.set('fingerprint_id', fingerprintId);
+          return `/api/tokens/creation-stats/grouped?${p.toString()}`;
+        }
         p.set('group_by', groupBy.join(','));
         p.set('top', String(top));
         // Only attach a non-default width so the cache key stays stable for the
         // common 0.1 case; omitted ⇒ backend default.
         if (bucketWidth != null) p.set('bucket_width', String(bucketWidth));
-        if (from) p.set('from', from);
         // Only attach filter params when non-empty so the cache key stays stable.
         if (fieldFilters && Object.keys(fieldFilters).length > 0) {
           p.set('field_filters', JSON.stringify(fieldFilters));
@@ -278,15 +296,22 @@ export const labApi = baseApi.injectEndpoints({
           tz: a.tz,
           from: a.from,
           segment: a.segment,
-          group_by: a.groupBy.join(','),
-          ...(a.bucketWidth != null ? { bucket_width: a.bucketWidth } : {}),
-          ...(a.fieldFilters && Object.keys(a.fieldFilters).length > 0
-            ? { field_filters: JSON.stringify(a.fieldFilters) }
-            : {}),
-          ...(a.ixLabelsFilter && a.ixLabelsFilter.length > 0
-            ? { ix_labels_filter: JSON.stringify(a.ixLabelsFilter) }
-            : {}),
-          group_key: a.groupKey,
+          // Scoped by a saved fingerprint ⇒ group_by/field_filters/
+          // ix_labels_filter/group_key are all ignored server-side; don't send
+          // them (same contract as `getGroupedCreationStats`).
+          ...(a.fingerprintId
+            ? { fingerprint_id: a.fingerprintId }
+            : {
+                group_by: a.groupBy.join(','),
+                ...(a.bucketWidth != null ? { bucket_width: a.bucketWidth } : {}),
+                ...(a.fieldFilters && Object.keys(a.fieldFilters).length > 0
+                  ? { field_filters: JSON.stringify(a.fieldFilters) }
+                  : {}),
+                ...(a.ixLabelsFilter && a.ixLabelsFilter.length > 0
+                  ? { ix_labels_filter: JSON.stringify(a.ixLabelsFilter) }
+                  : {}),
+                group_key: a.groupKey,
+              }),
           ...(a.dow != null && a.hour != null ? { dow: a.dow, hour: a.hour } : {}),
         },
       }),

@@ -129,6 +129,36 @@ Result is stored in `simulationResultSlice` / `swingResultSlice` and retrieved v
 
 **`buildGroupColumns` / `buildSweepColumns`**: column factories called once per render with the current `strategyId`. Memoized with `useMemo` — column defs are stable objects so `DataTable` doesn't re-sort unnecessarily.
 
+## Fingerprint scope control — `SearchableSelect` + `FingerprintScopeControl`
+
+Flow Discovery, Grouped Sweep (`GenericSweepConfigForm`), and the Creation Stats
+dashboard (`GroupedCreationSection`) all let the user "scope by a saved fingerprint":
+pick one from a dropdown and the page's corpus collapses to a single "ALL" group of
+tokens the engine matcher (`hunter_engine::fingerprint::matches`) says match it —
+manual group-by / value filters are then ignored (both client-side and, for
+Creation Stats, server-side — see below).
+
+- **`shared/components/ui/SearchableSelect.tsx`** — generic type-to-filter combobox
+  primitive (case-insensitive substring match, ↑/↓/Enter/Esc, click-outside-to-close,
+  a clear button). Not fingerprint-specific; reuse for any long option list that needs
+  search-as-you-type instead of a native `<select>` (which has no filtering).
+- **`shared/components/strategy/FingerprintScopeControl.tsx`** — wraps
+  `SearchableSelect` with the fingerprint-picking UX: selected-fingerprint badge + link
+  (`fingerprintsHref`) + axis-params summary (`fingerprintParamsCell`), or a manual-mode
+  hint when nothing's picked. The three pages share this component; only the help copy
+  (`tip`, `scopedDescription`, `manualHint`) differs per page, passed in by the caller.
+
+**Creation Stats parity note:** unlike Flow Discovery/Sweep (which load a corpus into
+memory and run the engine matcher directly), Creation Stats is SQL-only. Its backend
+(`creation_stats_repo::grouped_scoped` / `build_grouped_tokens_where_scoped`) reproduces
+the engine matcher as SQL predicates instead: exact equality for discrete fields,
+bucket-index equality (same `bucket_index`/`BUCKET_EPS` math as `hunter_engine::grouping`)
+for continuous SOL fields at the fingerprint's own `bucket_size_amount`, and `jsonb`
+structural equality (`SqlArg::Json`) for `ix_labels` to preserve order/duplicates like the
+in-memory matcher. The frontend sends `fingerprint_id` and omits every other grouping/
+filter param when scoped (`labEndpoints.ts`'s `getGroupedCreationStats` /
+`getGroupedCreationTokens` query builders branch on it).
+
 ## Strategy cross-page selection — `?rule=` / `?fp=`
 
 Same deep-link shape as Tokens `?mint=` and Sweep `?run=`: selection in the URL so
@@ -178,5 +208,6 @@ All localStorage access goes through `lib/storage` wrapper. Keys are namespaced 
 | `mt:table.cols` | `{ [tableId]: string[] }` — hidden column keys per table |
 | `mt:price-unit` | `'SOL'` or `'USD'` |
 | `mt:timezone` | `'local'` or `'UTC'` |
+| `mt:dashboard.grouped.fingerprintId` | Creation Stats' saved-fingerprint scope (`GroupedCreationSection`) |
 
 Direct `localStorage.getItem/setItem` calls outside `lib/storage` are a code smell — they bypass SSR safety guards and miss the namespace prefix.
