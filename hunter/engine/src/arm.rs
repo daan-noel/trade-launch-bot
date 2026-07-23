@@ -470,14 +470,16 @@ pub enum ArmState {
     /// already exists (`BuySubmitted`) so a fill just flips it to held.
     EntryPending { intent: IntentId, position: PositionId, attempts: u32 },
     /// Entry filled; the position is held and evaluating exit. `entry_price` is the
-    /// fill price `pnl` measures against, `entered_at` the fill time (`held`), and
-    /// `peak_price` the highest price since entry (`retrace`, folded forward each
-    /// event) — the [`PositionCtx`] the position-scoped exit metrics read.
+    /// fill price `pnl` measures against, `entered_at` the fill time (`held`),
+    /// `peak_price` the highest price since entry (`retrace`), and `trough_price`
+    /// the lowest (`bounce`) — both folded forward each event into the
+    /// [`PositionCtx`] the position-scoped exit metrics read.
     Entered {
         position: PositionId,
         entry_price: f64,
         entered_at: Ts,
         peak_price: f64,
+        trough_price: f64,
     },
     /// A sell is in flight for `intent` (the `attempts`-th try), closing for `reason`.
     ExitPending { position: PositionId, intent: IntentId, reason: ExitReason, attempts: u32 },

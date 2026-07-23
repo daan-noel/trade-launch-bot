@@ -5,7 +5,7 @@
 //! A **metric** is a named per-token quantity a rule can put `{operator, value}`
 //! conditions on. Metrics live in **groups** (one file per group):
 //! * `m_snapshot` (static) — `time`, `liquidity`
-//! * `m_price_lifetime` (static) — `stall`, `trail` (lifetime peak)
+//! * `m_price_lifetime` (static) — `stall`, `trail`, `rise` (lifetime peak/trough)
 //! * `m_price_window` (dynamic, strict param `window_size_sec`) — `trail`, `rise`
 //!   (rolling-window extrema; the dip trigger)
 //! * `m_flow_lifetime` (static) — `gross_flow`, `net_flow`, `buy`, `sell`
@@ -14,8 +14,8 @@
 //!   over a trailing window
 //! * `m_flow_split` (static, fingerprint-scoped) — vol/organic lifetime totals
 //! * `m_flow_split_window` (dynamic, fingerprint-scoped) — same metrics over a window
-//! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `pnl`,
-//!   `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
+//! * `m_position` (static, **position-scoped**, exit-only) — `retrace`, `bounce`,
+//!   `pnl`, `held` (anchored on your entry fill; TP/SL desugar into `pnl` — see `arm.rs`)
 //!
 //! The **registry** below is the single source of truth for group/metric names,
 //! units, `=`-tolerances, static/dynamic kind, monotonicity, and required strict
@@ -139,6 +139,8 @@ pub enum MetricId {
     Stall,
     /// Percent off the peak price (`m_price_lifetime`).
     Trail,
+    /// Percent above the lifetime trough (`m_price_lifetime`).
+    LifeRise,
     /// Percent below the rolling-window high (`m_price_window`) — the dip trigger.
     WinTrail,
     /// Percent above the rolling-window low (`m_price_window`).
@@ -184,6 +186,8 @@ pub enum MetricId {
     // ── m_position (position-scoped; anchored on the entry fill; exit-only) ──
     /// Percent below the since-entry peak — the trailing stop.
     Retrace,
+    /// Percent above the since-entry trough — the bounce twin of `retrace`.
+    Bounce,
     /// Signed percent vs the entry price.
     Pnl,
     /// Seconds since the entry fill.
@@ -386,9 +390,9 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Token,
         strict_params: &[],
         fingerprint_config: &[],
-        // Amber/gold family (~40–62). Both metrics anchor on the all-time high:
-        // `trail` is how far below it price sits, `stall` how long since it was
-        // set. Nudged up off 35 to widen the gap to the red at 355.
+        // Amber/gold family (~40–62). Peak metrics (`stall`/`trail`) and the trough
+        // twin (`rise`) share the band with m_price_window / m_position. Nudged up
+        // off 35 to widen the gap to the red at 355.
         metrics: &[
             MetricSpec {
                 id: MetricId::Stall,
@@ -404,7 +408,15 @@ pub const REGISTRY: &[GroupSpec] = &[
                 unit: Unit::Percent,
                 eq_tolerance: 1.0,
                 monotonic: false,
-                hue: 62,
+                hue: 42,
+            },
+            MetricSpec {
+                id: MetricId::LifeRise,
+                name: "rise",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 50,
             },
         ],
     },
@@ -416,10 +428,11 @@ pub const REGISTRY: &[GroupSpec] = &[
         strict_params: &[StrictParamSpec { name: "window_size_sec", required: true }],
         fingerprint_config: &[],
         // Amber family (44–48), sharing the 40–62 price band with m_price_lifetime —
-        // three views of one price path (lifetime peak vs rolling extrema), the
-        // same "one classifier, sibling groups" rationale as m_flow_split /
-        // m_flow_split_window. The cross-group hue guard exempts the price family; do NOT
-        // widen the gap constants (the wheel is full — see the guard test).
+        // three views of one price path (lifetime extrema vs rolling extrema vs
+        // since-entry), the same "one classifier, sibling groups" rationale as
+        // m_flow_split / m_flow_split_window. The cross-group hue guard exempts the
+        // price family; do NOT widen the gap constants (the wheel is full — see
+        // the guard test).
         metrics: &[
             MetricSpec {
                 id: MetricId::WinTrail,
@@ -710,10 +723,10 @@ pub const REGISTRY: &[GroupSpec] = &[
         scope: MetricScope::Position,
         strict_params: &[],
         fingerprint_config: &[],
-        // Amber family (52–58), the third view in the price family
+        // Amber family (52–60), the third view in the price family
         // {m_price_lifetime, m_price_window, m_position} sharing the 40–62 band — the
-        // cross-group hue guard exempts the whole family. `monotonic: false` for all
-        // three: the flag powers ENTRY-side derived disarm, and these are exit-only.
+        // cross-group hue guard exempts the whole family. `monotonic: false` for all:
+        // the flag powers ENTRY-side derived disarm, and these are exit-only.
         metrics: &[
             MetricSpec {
                 id: MetricId::Retrace,
@@ -722,6 +735,14 @@ pub const REGISTRY: &[GroupSpec] = &[
                 eq_tolerance: 1.0,
                 monotonic: false,
                 hue: 52,
+            },
+            MetricSpec {
+                id: MetricId::Bounce,
+                name: "bounce",
+                unit: Unit::Percent,
+                eq_tolerance: 1.0,
+                monotonic: false,
+                hue: 54,
             },
             MetricSpec {
                 id: MetricId::Pnl,
@@ -1026,8 +1047,8 @@ mod tests {
     /// **Sibling families** share a hue band on purpose and are exempt:
     /// * split flow — `m_flow_split` / `m_flow_split_window` (one classifier, two views);
     /// * aggregate flow — `m_flow_lifetime` / `m_flow_window` (lifetime vs trailing);
-    /// * price — `m_price_lifetime` / `m_price_window` / `m_position` (lifetime peak,
-    ///   rolling extrema, and since-entry — three views of the one price path).
+    /// * price — `m_price_lifetime` / `m_price_window` / `m_position` (lifetime
+    ///   extrema, rolling extrema, and since-entry — three views of the one price path).
     #[test]
     fn distinct_groups_use_distinct_hues() {
         use MetricGroupId::*;

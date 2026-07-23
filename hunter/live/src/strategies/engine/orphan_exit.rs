@@ -433,7 +433,13 @@ pub fn adopt_holding_into_engine(
     // fold in — a conservative restart baseline).
     token.arms.insert(
         rule_id,
-        ArmState::Entered { position, entry_price, entered_at: created_at, peak_price: entry_price },
+        ArmState::Entered {
+            position,
+            entry_price,
+            entered_at: created_at,
+            peak_price: entry_price,
+            trough_price: entry_price,
+        },
     );
 
     let ctr = state.counters.entry(rule_id).or_insert(RuleCounters::default());

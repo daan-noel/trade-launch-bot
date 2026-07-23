@@ -162,9 +162,11 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                             position,
                             entry_price: fill.price,
                             entered_at: fill.at,
-                            // Peak starts at the fill: before any run-up `retrace`
-                            // measures the drop from entry (a soft stop).
+                            // Peak/trough start at the fill: before any run-up
+                            // `retrace` measures the drop from entry (a soft stop);
+                            // before any dip `bounce` equals `pnl`.
                             peak_price: fill.price,
+                            trough_price: fill.price,
                         },
                     );
                     fx.push(Effect::PositionUpdate(PositionDelta {
@@ -418,15 +420,18 @@ fn evaluate_token(
     let last_meaningful = token.last_meaningful_at.unwrap_or(token.created_at);
     let dead = is_dead_verdict(reserves, last_meaningful, now);
 
-    // Fold the current price into every held position's since-entry peak BEFORE
-    // deciding — one bare compare per Entered arm, no alloc — so `retrace` reads
-    // against a peak that already includes this event's price.
+    // Fold the current price into every held position's since-entry peak/trough
+    // BEFORE deciding — two bare compares per Entered arm, no alloc — so
+    // `retrace`/`bounce` already include this event's price.
     let cur_price = token.track.current_price();
     if cur_price.is_finite() {
         for arm in token.arms.values_mut() {
-            if let ArmState::Entered { peak_price, .. } = arm {
+            if let ArmState::Entered { peak_price, trough_price, .. } = arm {
                 if cur_price > *peak_price {
                     *peak_price = cur_price;
+                }
+                if cur_price < *trough_price {
+                    *trough_price = cur_price;
                 }
             }
         }
@@ -485,7 +490,7 @@ fn decide_arm(
             }
             ArmDecision::None
         }
-        ArmState::Entered { entry_price, entered_at, peak_price, .. } => {
+        ArmState::Entered { entry_price, entered_at, peak_price, trough_price, .. } => {
             // Dead stays first and special (liquidity-based, not price). Every
             // price-based exit — the desugared TP/SL and every authored metric —
             // flows through the one `exit_fired` loop, so priority collapses from
@@ -497,6 +502,7 @@ fn decide_arm(
             let ctx = PositionCtx {
                 entry_price: *entry_price,
                 peak_price: *peak_price,
+                trough_price: *trough_price,
                 entered_at: *entered_at,
             };
             if let Some(reason) = c.exit_fired(&token.track, &ctx, now) {

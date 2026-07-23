@@ -84,7 +84,7 @@ export const labApi = baseApi.injectEndpoints({
         mint: string;
         windows?: number[];
         fingerprintId?: string | null;
-        /** Inspected run's entry fill — supplies the `m_position` (retrace/pnl/held)
+        /** Inspected run's entry fill — supplies the `m_position` (retrace/bounce/pnl/held)
          *  columns, which are position-scoped and omitted without it. */
         entryTime?: string | null;
         entryPrice?: number | null;

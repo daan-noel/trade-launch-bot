@@ -823,6 +823,9 @@ pub(crate) enum ExitClass {
     /// prefix query supplies. **O(n)**, vectorized (see `first_trailing_row`). Any
     /// condition shape is fine: the resolver is a linear scan through `eval`.
     Trailing,
+    /// `m_position.bounce` — needs the running since-entry trough (mirror of
+    /// [`Trailing`]). **O(n)** scalar scan (see `first_bounce_row`).
+    Bounce,
     /// Token-scoped columns, multi-arm DNF, tolerance-sensitive `=`/`!=`, anything
     /// unrecognised — the scalar walk stays the SSOT reference.
     General,
@@ -862,6 +865,7 @@ fn classify_exit_req(req: &MetricReq) -> ExitClass {
         // A linear scan evaluates any condition shape correctly, so `retrace`
         // classifies unconditionally.
         MetricId::Retrace => ExitClass::Trailing,
+        MetricId::Bounce => ExitClass::Bounce,
         MetricId::Pnl => match lone_cond(req).map(|c| c.operator) {
             Some(Operator::Gt | Operator::Gte) => ExitClass::PnlBound { up: true },
             Some(Operator::Lt | Operator::Lte) => ExitClass::PnlBound { up: false },
@@ -1090,6 +1094,7 @@ pub(crate) fn resolve_exit_indexed(
                 Err(()) => return resolve_exit(trades, series, b, entry, pricing),
             },
             ExitClass::Trailing => first_trailing_row(series, fill_row, entry_price, req),
+            ExitClass::Bounce => first_bounce_row(series, fill_row, entry_price, req),
             ExitClass::General => unreachable!("fast_exit implies no General req"),
         };
         if let Some(row) = row {
@@ -1156,23 +1161,19 @@ pub(crate) fn resolve_exit(
     let has_exit_reqs = c.has_exit_metrics();
     // Pre-resolved at bind time — this was the run's most-executed heap allocation.
     let exit_cols = &b.exit_cols;
-    // Running since-entry peak for the position-scoped exit metrics (`retrace`/`pnl`).
-    // Seeded to the fill price — exactly as `reduce.rs` seeds `ArmState::Entered`'s
-    // `peak_price` — and folded forward each event BEFORE that event's exit decision,
-    // mirroring `evaluate_token`'s per-event peak fold.
-    let mut peak_price = entry_price;
+    // Running since-entry peak/trough for the position-scoped exit metrics
+    // (`retrace`/`bounce`/`pnl`). Seeded to the fill price — exactly as `reduce.rs`
+    // seeds `ArmState::Entered` — and folded forward each event BEFORE that event's
+    // exit decision, mirroring `evaluate_token`'s per-event extrema fold.
+    let mut ctx = PositionCtx::at_fill(entry_price, entry_at);
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return close_at_fire(
                 trades, series, ExitCode::Dead, entry_price, entry_at, entry_slot, j, pricing,
             );
         }
-        let p = series.price[j];
-        if p.is_finite() && p > peak_price {
-            peak_price = p;
-        }
+        ctx.fold_price(series.price[j]);
         if has_exit_reqs {
-            let ctx = PositionCtx { entry_price, peak_price, entered_at: entry_at };
             if let Some(exit) = first_exit_req_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
                 return close_at_fire(
                     trades, series, exit, entry_price, entry_at, entry_slot, j, pricing,
@@ -1240,7 +1241,7 @@ fn first_pnl_row(
         // `pnl` is NaN throughout — no row can fire, exactly as scalar finds.
         return Ok(None);
     }
-    let ctx = PositionCtx { entry_price, peak_price: entry_price, entered_at: DateTime::UNIX_EPOCH };
+    let ctx = PositionCtx::at_fill(entry_price, DateTime::UNIX_EPOCH);
     let extreme = if up { index.hull_max_last() } else { index.hull_min_last() };
     if let Some(x) = extreme {
         // The extreme bounds every value the hull can carry; if `pnl` stays finite
@@ -1275,7 +1276,7 @@ fn first_held_row(
     if start >= n {
         return Ok(None);
     }
-    let ctx = PositionCtx { entry_price: 1.0, peak_price: 1.0, entered_at: entry_at };
+    let ctx = PositionCtx::at_fill(1.0, entry_at);
     let at = &series.at[start..n];
     // `partition_point` wants the "not yet fired" prefix — true then false.
     let i = at.partition_point(|&now| !eval(&req.conds, ctx.held(now), req.tolerance));
@@ -1314,16 +1315,10 @@ fn first_trailing_row_scalar(
     entry_price: f64,
     req: &MetricReq,
 ) -> Option<usize> {
-    let mut ctx = PositionCtx {
-        entry_price,
-        peak_price: entry_price,
-        entered_at: DateTime::UNIX_EPOCH,
-    };
+    let mut ctx = PositionCtx::at_fill(entry_price, DateTime::UNIX_EPOCH);
     for j in start..n {
         let p = series.price[j];
-        if p.is_finite() && p > ctx.peak_price {
-            ctx.peak_price = p;
-        }
+        ctx.fold_price(p);
         if eval(&req.conds, ctx.retrace(p), req.tolerance) {
             return Some(j);
         }
@@ -1331,9 +1326,34 @@ fn first_trailing_row_scalar(
     None
 }
 
+/// First row satisfying a `m_position.bounce` condition — O(n) with the running
+/// since-entry trough (mirror of [`first_trailing_row`]).
+fn first_bounce_row(
+    series: &MetricSeries,
+    fill_row: usize,
+    entry_price: f64,
+    req: &MetricReq,
+) -> Option<usize> {
+    let n = series.n_rows();
+    let start = fill_row.saturating_add(1);
+    if start >= n {
+        return None;
+    }
+    let mut ctx = PositionCtx::at_fill(entry_price, DateTime::UNIX_EPOCH);
+    for j in start..n {
+        let p = series.price[j];
+        ctx.fold_price(p);
+        if eval(&req.conds, ctx.bounce(p), req.tolerance) {
+            return Some(j);
+        }
+    }
+    None
+}
+
 /// Whether `entry_price` is a usable reference for the position metrics.
-/// [`PositionCtx::pnl`] / [`PositionCtx::retrace`] yield `NaN` for anything else, so
-/// no row can fire and the fast paths have nothing to search for.
+/// [`PositionCtx::pnl`] / [`PositionCtx::retrace`] / [`PositionCtx::bounce`] yield
+/// `NaN` for anything else, so no row can fire and the fast paths have nothing to
+/// search for.
 #[inline]
 fn usable_entry_price(p: f64) -> bool {
     p.is_finite() && p > 0.0
@@ -1420,7 +1440,7 @@ pub(crate) fn resolve_exit_simd(
         let exit = if series.dead[j] {
             ExitCode::Dead
         } else {
-            let ctx = PositionCtx { entry_price, peak_price: entry_price, entered_at: entry_at };
+            let ctx = PositionCtx::at_fill(entry_price, entry_at);
             first_exit_req_fired(series, &b.rule.exit_reqs, &b.exit_cols, j, &ctx)
                 .unwrap_or(ExitCode::Metrics)
         };
@@ -1531,11 +1551,7 @@ fn first_pnl_exit_row_scalar(
     entry_price: f64,
     bounds: &[PnlBound],
 ) -> Option<usize> {
-    let ctx = PositionCtx {
-        entry_price,
-        peak_price: entry_price,
-        entered_at: DateTime::UNIX_EPOCH,
-    };
+    let ctx = PositionCtx::at_fill(entry_price, DateTime::UNIX_EPOCH);
     for j in start..n {
         if dead[j] {
             return Some(j);
@@ -1673,15 +1689,9 @@ fn first_trailing_row_cmp_scalar(
     op: Operator,
     value: f64,
 ) -> Option<usize> {
-    let mut ctx = PositionCtx {
-        entry_price,
-        peak_price: entry_price,
-        entered_at: DateTime::UNIX_EPOCH,
-    };
+    let mut ctx = PositionCtx::at_fill(entry_price, DateTime::UNIX_EPOCH);
     for (j, &p) in price.iter().enumerate().take(n).skip(start) {
-        if p.is_finite() && p > ctx.peak_price {
-            ctx.peak_price = p;
-        }
+        ctx.fold_price(p);
         if cmp_ordering(op, ctx.retrace(p), value) {
             return Some(j);
         }
@@ -1764,12 +1774,15 @@ unsafe fn first_trailing_row_avx512(
         j += LANES;
     }
     // Tail (< 8 rows left): the shared scalar predicate, resumed at the carried peak.
-    let mut ctx =
-        PositionCtx { entry_price, peak_price: carry, entered_at: DateTime::UNIX_EPOCH };
+    // Trough is unused for `retrace` — seed it to the fill so the ctx is well-formed.
+    let mut ctx = PositionCtx {
+        entry_price,
+        peak_price: carry,
+        trough_price: entry_price,
+        entered_at: DateTime::UNIX_EPOCH,
+    };
     for (k, &p) in price.iter().enumerate().take(n).skip(j) {
-        if p.is_finite() && p > ctx.peak_price {
-            ctx.peak_price = p;
-        }
+        ctx.fold_price(p);
         if cmp_ordering(op, ctx.retrace(p), value) {
             return Some(k);
         }
@@ -2207,6 +2220,13 @@ mod tests {
         }));
         let b = BoundCombo::new(&[], retrace);
         assert_eq!(b.exit_classes, vec![ExitClass::Trailing]);
+        assert!(b.fast_exit);
+
+        let bounce = compiled(serde_json::json!({
+            "exit": { "m_position": { "bounce": [{ "operator": ">=", "value": 15 }] } }
+        }));
+        let b = BoundCombo::new(&[], bounce);
+        assert_eq!(b.exit_classes, vec![ExitClass::Bounce]);
         assert!(b.fast_exit);
 
         let held = compiled(serde_json::json!({

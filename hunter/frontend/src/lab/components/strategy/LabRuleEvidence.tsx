@@ -12,7 +12,7 @@ import type { StrategyRule } from 'lib/strategy/types';
  * opens the metric panes pinned to the rule that traded it (`ruleOverride`) and
  * anchored on the actual entry (`positionEntry`), so you can read what every metric
  * said at the moment the engine fired — and what the position-scoped
- * retrace/pnl/held series did afterwards. Neither is possible on the live app: that
+ * retrace/bounce/pnl/held series did afterwards. Neither is possible on the live app: that
  * bin serves no `metric-series` route.
  *
  * The rows come from the local mirror `scripts/db-incremental-sync.ps1` fills, so

@@ -9,9 +9,12 @@
 //! * `trail` — percent the current price sits **below its peak**
 //!   (`(peak − current) / peak · 100`), the classic trailing-drawdown reading.
 //!   Undefined (`NaN`) until the first trade — no peak, nothing to trail from.
+//! * `rise` — percent the current price sits **above its trough**
+//!   (`(current − trough) / trough · 100`), the climb-from-ATL twin of `trail`.
+//!   Undefined (`NaN`) until the first trade — no trough, nothing to rise from.
 //!
 //! Price is the canonical curve-spot price (same value the exit ladder folds).
-//! Peak/last-price are tracked incrementally — O(1) per trade, no history.
+//! Peak/trough/last-price are tracked incrementally — O(1) per trade, no history.
 
 use super::{secs_between, MetricId, Ts};
 
@@ -20,6 +23,8 @@ use super::{secs_between, MetricId, Ts};
 pub struct PriceLifetimeState {
     /// Highest price seen so far. `None` until the first trade.
     peak_price: Option<f64>,
+    /// Lowest price seen so far. `None` until the first trade.
+    trough_price: Option<f64>,
     /// Most recently observed price. `None` until the first trade.
     last_price: Option<f64>,
     /// Instant the peak was last set (init = creation time).
@@ -29,12 +34,18 @@ pub struct PriceLifetimeState {
 impl PriceLifetimeState {
     /// Fresh state for a token created at `created_at`.
     pub fn new(created_at: Ts) -> Self {
-        Self { peak_price: None, last_price: None, peak_at: created_at }
+        Self {
+            peak_price: None,
+            trough_price: None,
+            last_price: None,
+            peak_at: created_at,
+        }
     }
 
     /// Fold one trade's price (ignores non-finite prices). A price strictly above
     /// the running peak — including the very first — sets a new all-time high and
-    /// restarts the stall clock.
+    /// restarts the stall clock. A price strictly below the running trough —
+    /// including the very first — sets a new all-time low.
     pub fn on_trade(&mut self, price: f64, at: Ts) {
         if !price.is_finite() {
             return;
@@ -46,6 +57,13 @@ impl PriceLifetimeState {
         if new_high {
             self.peak_price = Some(price);
             self.peak_at = at;
+        }
+        let new_low = match self.trough_price {
+            Some(trough) => price < trough,
+            None => true,
+        };
+        if new_low {
+            self.trough_price = Some(price);
         }
         self.last_price = Some(price);
     }
@@ -76,12 +94,24 @@ impl PriceLifetimeState {
         }
     }
 
+    /// `rise` — percent above the trough; `NaN` before the first trade or if the
+    /// trough is non-positive (no meaningful climb reference).
+    pub fn rise(&self) -> f64 {
+        match (self.trough_price, self.last_price) {
+            (Some(trough), Some(current)) if trough > 0.0 => {
+                (current - trough) / trough * 100.0
+            }
+            _ => f64::NAN,
+        }
+    }
+
     /// Value of one `m_price_lifetime` metric. Non-price-lifetime ids yield `NaN`
     /// (unreachable — `TokenTrack` routes by group).
     pub fn value(&self, id: MetricId, now: Ts) -> f64 {
         match id {
             MetricId::Stall => self.stall(now),
             MetricId::Trail => self.trail(),
+            MetricId::LifeRise => self.rise(),
             _ => f64::NAN,
         }
     }
@@ -140,11 +170,27 @@ mod tests {
     }
 
     #[test]
+    fn rise_is_percent_above_trough() {
+        let mut s = PriceLifetimeState::new(ts(0));
+        assert!(s.rise().is_nan()); // no data yet
+        s.on_trade(10.0, ts(1));
+        assert_eq!(s.rise(), 0.0); // at the trough
+        s.on_trade(8.0, ts(2)); // new trough, still at trough
+        assert_eq!(s.rise(), 0.0);
+        s.on_trade(10.0, ts(3)); // 25% above trough of 8
+        assert!((s.rise() - 25.0).abs() < 1e-9);
+        // A new high does not move the trough.
+        s.on_trade(12.0, ts(4));
+        assert!((s.rise() - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn non_finite_price_ignored() {
         let mut s = PriceLifetimeState::new(ts(0));
         s.on_trade(10.0, ts(1));
         s.on_trade(f64::NAN, ts(2));
         assert_eq!(s.trail(), 0.0);
+        assert_eq!(s.rise(), 0.0);
         assert_eq!(s.stall(ts(2)), 1.0); // NaN trade did not count as a new high
     }
 }

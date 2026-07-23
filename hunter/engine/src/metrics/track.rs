@@ -167,7 +167,7 @@ impl TokenTrack {
         use MetricId::*;
         match id {
             Time | Liquidity => self.snapshot.value(id, self.created_at, now),
-            Stall | Trail => self.price_lifetime.value(id, now),
+            Stall | Trail | LifeRise => self.price_lifetime.value(id, now),
             LifeGrossFlow | LifeNetFlow | LifeBuy | LifeSell => self.flow_lifetime.value(id),
             WinTrail | WinRise => {
                 match window_secs.and_then(|ws| self.price_windows.get(&window_key(ws))) {
@@ -196,7 +196,7 @@ impl TokenTrack {
             // `PositionCtx` (see `metrics::position`), never the track. Before entry
             // (the only place `TokenTrack::value` reaches them, via the `can_enter`
             // exit-gate) they read NaN, so a position exit metric never blocks entry.
-            Retrace | Pnl | Held => f64::NAN,
+            Retrace | Bounce | Pnl | Held => f64::NAN,
         }
     }
 
@@ -258,6 +258,7 @@ mod tests {
         assert_eq!(track.value(MetricId::Liquidity, None, None, ts(5.0)), 15.0);
         assert_eq!(track.value(MetricId::Stall, None, None, ts(5.0)), 4.0); // moved at t=1
         assert_eq!(track.value(MetricId::Trail, None, None, ts(5.0)), 0.0); // at peak
+        assert_eq!(track.value(MetricId::LifeRise, None, None, ts(5.0)), 0.0); // at trough
         assert_eq!(track.value(MetricId::Buy, Some(10.0), None, ts(5.0)), 3.0);
         assert_eq!(track.value(MetricId::GrossFlow, Some(10.0), None, ts(5.0)), 3.0);
         // Lifetime totals ignore the window arg and do not need ensure_window.

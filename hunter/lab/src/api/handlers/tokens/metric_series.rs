@@ -289,32 +289,32 @@ fn group_for(id: MetricId) -> &'static str {
     "unknown"
 }
 
-/// The `m_position` columns (`retrace`/`pnl`/`held`) over a series, anchored on the
-/// inspected run's entry fill. Mirrors the live engine's [`PositionCtx`] fold
-/// (`reduce.rs`): the peak seeds at the entry price and ratchets up on each finite
-/// print from the entry event onward, and every metric reads `NaN` (serialized
-/// `null`) at any event *before* the entry — so the panes draw the position metrics
-/// exactly over the held window, blank before it.
+/// The `m_position` columns (`retrace`/`bounce`/`pnl`/`held`) over a series,
+/// anchored on the inspected run's entry fill. Mirrors the live engine's
+/// [`PositionCtx`] fold (`reduce.rs`): peak/trough seed at the entry price and
+/// ratchet on each finite print from the entry event onward, and every metric
+/// reads `NaN` (serialized `null`) at any event *before* the entry — so the panes
+/// draw the position metrics exactly over the held window, blank before it.
 fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64) -> Vec<SeriesOut> {
     let n = series.n_rows();
-    let mut peak = entry_price;
+    let mut ctx = PositionCtx::at_fill(entry_price, entered_at);
     let mut retrace = Vec::with_capacity(n);
+    let mut bounce = Vec::with_capacity(n);
     let mut pnl = Vec::with_capacity(n);
     let mut held = Vec::with_capacity(n);
     for i in 0..n {
         let at = series.at[i];
         if at < entered_at {
             retrace.push(None);
+            bounce.push(None);
             pnl.push(None);
             held.push(None);
             continue;
         }
         let price = series.price[i];
-        if price.is_finite() && price > peak {
-            peak = price;
-        }
-        let ctx = PositionCtx { entry_price, peak_price: peak, entered_at };
+        ctx.fold_price(price);
         retrace.push(finite(ctx.retrace(price)));
+        bounce.push(finite(ctx.bounce(price)));
         pnl.push(finite(ctx.pnl(price)));
         held.push(finite(ctx.held(at)));
     }
@@ -326,6 +326,7 @@ fn build_position_series(series: &MetricSeries, entered_at: Ts, entry_price: f64
         .map(|m| {
             let values = match m.id {
                 MetricId::Retrace => retrace.clone(),
+                MetricId::Bounce => bounce.clone(),
                 MetricId::Pnl => pnl.clone(),
                 MetricId::Held => held.clone(),
                 _ => vec![None; n],
@@ -375,18 +376,46 @@ mod tests {
             s.push_trade(trade(p, secs));
         }
         let out = build_position_series(&s, ts(10), 1.0);
-        let (pnl, retrace, held) = (col(&out, "pnl"), col(&out, "retrace"), col(&out, "held"));
+        let (pnl, retrace, bounce, held) = (
+            col(&out, "pnl"),
+            col(&out, "retrace"),
+            col(&out, "bounce"),
+            col(&out, "held"),
+        );
 
         // Before entry → blank (position metrics have no value with no position).
-        assert_eq!((pnl[0], retrace[0], held[0]), (None, None, None));
-        // Entry event: flat pnl, at-peak retrace, zero held.
-        assert_eq!((pnl[1], retrace[1], held[1]), (Some(0.0), Some(0.0), Some(0.0)));
-        // Run-up to 1.5: +50% pnl, still at peak (retrace 0), 10 s held.
-        assert_eq!((pnl[2], retrace[2], held[2]), (Some(50.0), Some(0.0), Some(10.0)));
-        // Pullback to 1.2 off the ratcheted 1.5 peak: +20% pnl, 20% retrace, 20 s held.
+        assert_eq!((pnl[0], retrace[0], bounce[0], held[0]), (None, None, None, None));
+        // Entry event: flat pnl, at-peak retrace, at-trough bounce, zero held.
+        assert_eq!(
+            (pnl[1], retrace[1], bounce[1], held[1]),
+            (Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        );
+        // Run-up to 1.5: +50% pnl, still at peak (retrace 0), bounce = pnl (no dip),
+        // 10 s held.
+        assert_eq!(
+            (pnl[2], retrace[2], bounce[2], held[2]),
+            (Some(50.0), Some(0.0), Some(50.0), Some(10.0))
+        );
+        // Pullback to 1.2 off the ratcheted 1.5 peak: +20% pnl, 20% retrace;
+        // trough still at entry so bounce = pnl = 20%; 20 s held.
         assert!((pnl[3].unwrap() - 20.0).abs() < 1e-9);
         assert!((retrace[3].unwrap() - 20.0).abs() < 1e-9);
+        assert!((bounce[3].unwrap() - 20.0).abs() < 1e-9);
         assert_eq!(held[3], Some(20.0));
+    }
+
+    #[test]
+    fn position_series_tracks_bounce_off_since_entry_trough() {
+        // Entry at 1.0, dip to 0.8 (new trough), recover to 1.0 → bounce = 25%.
+        let mut s = MetricSeries::new(ts(0), Vec::new());
+        for (p, secs) in [(1.0, 0), (0.8, 10), (1.0, 20)] {
+            s.push_trade(trade(p, secs));
+        }
+        let out = build_position_series(&s, ts(0), 1.0);
+        let bounce = col(&out, "bounce");
+        assert_eq!(bounce[0], Some(0.0));
+        assert_eq!(bounce[1], Some(0.0)); // at the trough
+        assert!((bounce[2].unwrap() - 25.0).abs() < 1e-9);
     }
 
     #[test]
@@ -396,8 +425,8 @@ mod tests {
         let mut s = MetricSeries::new(ts(0), Vec::new());
         s.push_trade(trade(1.0, 0));
         let out = build_position_series(&s, ts(0), 1.0);
-        // The group has exactly its three metrics when an entry IS supplied…
-        assert_eq!(out.len(), 3);
+        // The group has exactly its four metrics when an entry IS supplied…
+        assert_eq!(out.len(), 4);
         assert!(out.iter().all(|c| c.group == "m_position"));
     }
 }

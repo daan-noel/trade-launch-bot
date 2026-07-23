@@ -30,7 +30,7 @@ export interface ConditionSideEditorProps {
  * Rust appears here on the next load with no code change (plan §8). Empty metric
  * inputs mean "unconstrained"; a group with no conditions is dropped at save.
  *
- * Position-scoped groups (`m_position` — retrace/pnl/held) are **exit-only**: they
+ * Position-scoped groups (`m_position` — retrace/bounce/pnl/held) are **exit-only**: they
  * anchor on your entry fill, so they have no value on the entry side. The registry's
  * `scope` flag hides them from the ENTRY picker (the backend also rejects them there),
  * without this component hardcoding any group name.

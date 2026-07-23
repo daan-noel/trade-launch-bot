@@ -75,7 +75,7 @@ export interface MetricPanesProps {
   /** When set, overlay these params (not the dropdown rule's). */
   ruleOverride?: MetricPanesRuleOverride | null;
   /** Inspected run's entry fill. Supplies the position-scoped `m_position`
-   *  (retrace/pnl/held) columns — those anchor on the entry, so without it they
+   *  (retrace/bounce/pnl/held) columns — those anchor on the entry, so without it they
    *  can't be computed and the whole group is hidden. */
   positionEntry?: { time: string; price: number } | null;
 }
