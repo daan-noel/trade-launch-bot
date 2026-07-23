@@ -145,6 +145,42 @@ pub struct StartGroupedSweepBody {
     /// writes them into the fingerprint's `metric_config`.
     #[serde(default)]
     pub volume_ix_patterns: Option<Vec<Vec<String>>>,
+    /// Which trade in the fill window prices each simulated leg — mirrors
+    /// `EngineSimRequest.fill_model`, and threads the same `FillModel` the sweep's
+    /// scan and `run_replay` both take. Omitted ⇒ `worst_case`, which is what the
+    /// sweep hardcoded before, so every stored/replayed run keeps its meaning.
+    ///
+    /// **A ranking under one fill model does not carry to another.** Worst-in-slot
+    /// penalises short holds disproportionately, so it biases a grid toward wide
+    /// retraces and long holds — the exact direction the deep-dip analysis rejected.
+    #[serde(default)]
+    pub fill_model: trading_core::strategies::paper_fill::FillModel,
+    /// Which execution-cost model prices the round-trips. Omitted ⇒
+    /// `pumpfun_default` (legacy meaning). Pick `pumpfun_fee_only` alongside any
+    /// explicit `fill_model`: the fill price already prices execution slippage, so
+    /// charging `slippage_bps` again double-counts it — and because the fixed cost is
+    /// per-leg, that haircut is **not** rank-preserving across combos.
+    #[serde(default)]
+    pub cost_model: trading_core::strategies::kernel::CostModelKind,
+}
+
+/// The [`Pricing`](crate::sweep::generic::Pricing) a stored run was computed under.
+///
+/// The persisted columns are the serde tags; a `NULL` (legacy row, written before the
+/// models were selectable) or an unparseable value falls back to what the sweep
+/// hardcoded then — worst-case fills + `pumpfun_default` — so an old run re-simulates
+/// as it originally scored rather than under today's defaults.
+fn run_pricing(run: &GroupedSweepRun) -> crate::sweep::generic::Pricing {
+    fn tag<T: serde::de::DeserializeOwned + Default>(v: &Option<String>) -> T {
+        v.as_deref()
+            .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok())
+            .unwrap_or_default()
+    }
+    crate::sweep::generic::Pricing {
+        buy_amount_sol: run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL),
+        fill_model: tag(&run.fill_model),
+        cost: tag::<trading_core::strategies::kernel::CostModelKind>(&run.cost_model).model(),
+    }
 }
 
 fn default_min_tokens() -> usize {
@@ -877,6 +913,16 @@ async fn run_grouped_sweep_job(
             .volume_ix_patterns
             .as_ref()
             .and_then(|p| serde_json::to_value(p).ok()),
+        // The run's pricing identity. Persisted (not just applied) because a PnL
+        // column without them is unreadable: two runs under different models are not
+        // comparable, and the drill-in re-simulates against these to reproduce the
+        // very row it drills into.
+        fill_model: serde_json::to_value(b.fill_model)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string)),
+        cost_model: serde_json::to_value(b.cost_model)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string)),
     };
     let repo = GroupedSweepRepo::new(state.batch_db.clone(), tables);
     if let Err(e) = repo.insert_run(&run).await {
@@ -1036,7 +1082,11 @@ async fn run_grouped_sweep_job(
         min_tokens,
         floor,
         b.max_combos,
-        b.buy_amount_sol,
+        crate::sweep::generic::Pricing {
+            buy_amount_sol: b.buy_amount_sol,
+            fill_model: b.fill_model,
+            cost: b.cost_model.model(),
+        },
         b.volume_ix_patterns.clone(),
         coarse_observer,
         observer,
@@ -1984,7 +2034,11 @@ pub async fn list_token_results(
 
     // Re-simulate on a blocking thread (CPU-bound but short: one combo × N tokens).
     let strategy_id = query.strategy_id.clone();
-    let buy_amount_sol = run.buy_amount_sol.unwrap_or(registry::SWEEP_DEFAULT_BUY_AMOUNT_SOL);
+    // The run's OWN pricing, not today's defaults — same reason as `as_of` below: a
+    // drill-in that repriced under a different fill/cost model would disagree with the
+    // combo row it was opened from. Legacy rows (NULL) read back as what the sweep
+    // hardcoded then: worst-case fills + `pumpfun_default`.
+    let pricing = run_pricing(&run);
     // The run's own instant, NOT wall-clock now — a drill-in must reproduce the row
     // it drills into, and deadness is judged against this (parity plan B7).
     let run_as_of = run.created_at;
@@ -1997,7 +2051,7 @@ pub async fn list_token_results(
             &strategy_id,
             &tokens,
             &params_json,
-            buy_amount_sol,
+            pricing,
             run_as_of,
             volume_ix_patterns.as_deref(),
         )

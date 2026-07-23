@@ -29,7 +29,7 @@ use hunter_engine::arm::{CompiledRule, MetricReq, ReqOrigin};
 use hunter_engine::deadness::DEAD_QUIET_SECS;
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::metrics::evaluator::eval;
+use hunter_engine::metrics::evaluator::{eval, Operator};
 use hunter_engine::metrics::position::{position_value, PositionCtx};
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{MetricId, TradeLite, Ts};
@@ -38,7 +38,7 @@ use hunter_engine::TICK_MS;
 use trading_core::config::constants::sol_to_lamports;
 use trading_core::strategies::kernel::{round_trip_with_costs, CostModel, ExitCode};
 use trading_core::strategies::paper_fill::{
-    find_worst_case_paper_entry_at, find_worst_case_paper_exit_at, PaperFill,
+    find_paper_entry_at, find_paper_exit_at, FillModel, PaperFill,
 };
 
 use crate::sweep::corpus::CorpusToken;
@@ -56,13 +56,35 @@ pub struct GenericCombo {
     pub idx: usize,
 }
 
+/// How a scan prices a round-trip: the notional, which trade in the fill window
+/// prices each leg, and the execution-cost model charged on top.
+///
+/// **This is part of a run's identity, not a tuning knob.** Two runs under
+/// different pricing are not comparable, and the pair must be chosen coherently:
+/// a [`FillModel`] already prices execution slippage, so pairing one with
+/// [`CostModel::pumpfun_default`] (which charges `slippage_bps` again) double-counts
+/// it — [`CostModel::pumpfun_fee_only`] is the honest partner. Carried as one struct
+/// so a scan fn can never be handed the fill model without the cost model.
+#[derive(Clone, Copy, Debug)]
+pub struct Pricing {
+    /// Notional (SOL) every round-trip is sized at.
+    pub buy_amount_sol: f64,
+    /// Which trade in the fill window prices the entry / exit leg.
+    pub fill_model: FillModel,
+    /// Execution frictions charged on the round-trip.
+    pub cost: CostModel,
+}
+
+// Deliberately NO `Default` impl: the only sensible default would be the legacy
+// worst-case + `pumpfun_default` pair, and that is exactly the silent, unlabelled
+// pricing this type exists to make impossible. Callers name both halves.
+
 /// The generic engine as a sweep [`Strategy`]. Holds the resolved axes model, the
-/// notional every round-trip is priced at, and the deadness "now".
+/// run's [`Pricing`], and the deadness "now".
 pub struct GenericSweepStrategy {
     model: AxesModel,
-    buy_amount_sol: f64,
     as_of: Ts,
-    cost: CostModel,
+    pricing: Pricing,
     /// The union of every axis's precompute columns (built once).
     columns: Vec<SeriesColumn>,
     /// The sparse-grid horizons derived from the swept axes — sizes the precompute
@@ -77,9 +99,11 @@ impl GenericSweepStrategy {
     /// Build the strategy from a resolved axes model. `as_of` is the run-time now
     /// the deadness clock advances toward (matches `run_replay`'s `ReplayConfig`).
     /// `flow_patterns` is the run's optional `volume_ix_patterns` (corpus-wide).
+    /// `pricing` carries the run's notional + fill model + cost model — see
+    /// [`Pricing`] for why the last two travel together.
     pub fn new(
         model: AxesModel,
-        buy_amount_sol: f64,
+        pricing: Pricing,
         as_of: Ts,
         flow_patterns: Option<hunter_engine::metrics::flow_split::FlowPatterns>,
     ) -> Self {
@@ -89,15 +113,7 @@ impl GenericSweepStrategy {
             time_horizon_secs: model.metric_value_ceiling(MetricId::Time),
             stall_horizon_secs: model.metric_value_ceiling(MetricId::Stall),
         };
-        Self {
-            model,
-            buy_amount_sol,
-            as_of,
-            cost: CostModel::pumpfun_default(),
-            columns,
-            grid,
-            flow_patterns,
-        }
+        Self { model, as_of, pricing, columns, grid, flow_patterns }
     }
 
     /// Estimate the worst-case resident bytes of one token's precomputed series —
@@ -143,7 +159,7 @@ impl GenericSweepStrategy {
             id: RuleId(Uuid::nil()),
             fingerprint_id: FingerprintId(Uuid::nil()),
             trade_mode: TradeMode::Paper,
-            buy_amount_lamports: sol_to_lamports(self.buy_amount_sol).max(0) as u64,
+            buy_amount_lamports: sol_to_lamports(self.pricing.buy_amount_sol).max(0) as u64,
             // Unlimited caps — see the doc above; changing this changes the meaning
             // of every sweep number, it does not "fix" a parity bug.
             max_concurrent_tokens: u32::MAX,
@@ -295,9 +311,15 @@ impl Strategy for GenericSweepStrategy {
         _params: &Self::Params,
         ctx: &mut Self::ExitCtx,
     ) {
-        // Index only helps pure-TP/SL Entered paths. Metrics / NoEntry keep scalar.
+        // Built for every Entered path whose exit reqs ALL classified (plan item B):
+        // pure TP/SL, `m_position.pnl`/`held` bounds, and trailing stops. A rule with
+        // any `General` req walks scalar, so the hulls would be pure waste there.
+        //
+        // Before bind-time classification this read `!has_exit_metrics()`, which
+        // desugaring made false for **every** TP/SL rule — silently disabling the
+        // index (and the SIMD scan) for the exact shape they were built for.
         match entry {
-            EntryResolution::Entered { fill_row, .. } if !bound.rule.has_exit_metrics() => {
+            EntryResolution::Entered { fill_row, .. } if wants_exit_index(bound, entry) => {
                 ctx.rebuild(series, *fill_row);
             }
             _ => ctx.clear(),
@@ -311,7 +333,7 @@ impl Strategy for GenericSweepStrategy {
         bound: &Self::BoundParams,
         _params: &Self::Params,
     ) -> Self::Entry {
-        resolve_entry(trades, series, bound)
+        resolve_entry(trades, series, bound, &self.pricing)
     }
 
     fn resolve_exit(
@@ -326,9 +348,9 @@ impl Strategy for GenericSweepStrategy {
         // AVX-512 toggle still selectable (exit-index plan Phase 5). Default path
         // is the O(log n) index; SIMD remains for A/B. Both must match scalar.
         if crate::sweep::registry::use_simd() {
-            resolve_exit_simd(trades, series, bound, entry, self.buy_amount_sol, &self.cost)
+            resolve_exit_simd(trades, series, bound, entry, &self.pricing, ctx)
         } else {
-            resolve_exit_indexed(trades, series, bound, entry, self.buy_amount_sol, &self.cost, ctx)
+            resolve_exit_indexed(trades, series, bound, entry, &self.pricing, ctx)
         }
     }
 
@@ -750,6 +772,14 @@ pub struct BoundCombo {
     entry_cols: Vec<usize>,
     mono_cols: Vec<usize>,
     exit_cols: Vec<usize>,
+    /// One [`ExitClass`] per `rule.exit_reqs`, in lockstep — how the fast paths may
+    /// resolve each req's first firing row.
+    exit_classes: Vec<ExitClass>,
+    /// `true` ⇔ **every** exit req classified (no [`ExitClass::General`]), so the
+    /// index / SIMD paths can resolve the whole exit. One `General` req forces the
+    /// scalar walk for the entire rule: that walk is O(n) and must evaluate every
+    /// req anyway, so resolving the others by index would only add work.
+    pub(crate) fast_exit: bool,
 }
 
 impl BoundCombo {
@@ -758,7 +788,95 @@ impl BoundCombo {
         let entry_cols = resolve_cols_in(columns, &rule.entry_reqs);
         let exit_cols = resolve_cols_in(columns, &rule.exit_reqs);
         let mono_cols = rule.mono_kills.iter().map(|k| col_idx_mono(columns, k)).collect();
-        Self { rule, entry_cols, mono_cols, exit_cols }
+        let exit_classes: Vec<ExitClass> = rule.exit_reqs.iter().map(classify_exit_req).collect();
+        let fast_exit = !exit_classes.iter().any(|c| matches!(c, ExitClass::General));
+        Self { rule, entry_cols, mono_cols, exit_cols, exit_classes, fast_exit }
+    }
+}
+
+// ─────────────────────── exit-req classification (bind time) ───────────────────
+//
+// Phase 2 collapsed TP/SL into position `pnl` reqs, but the fast paths still keyed
+// off `has_exit_metrics()` (`!exit_reqs.is_empty()`) — true for every TP/SL rule
+// after desugaring — so both the exit index and the AVX-512 scan quietly stopped
+// being *taken*. Correctness never moved (scalar is the reference they fall back
+// to), which is exactly why nothing caught it.
+//
+// The fix is to ask a sharper question once per combo, here: not "are there exit
+// metrics?" but "can each exit req's FIRST firing row be found without walking
+// every row?". Recognition is deliberately conservative — anything not provably
+// resolvable lands in `General` and keeps the scalar walk, because a correct
+// scalar walk always beats a clever wrong index.
+
+/// How one exit req's first firing row may be resolved.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ExitClass {
+    /// `m_position.pnl` under a single monotone bound. `pnl` is strictly increasing
+    /// in price, so the condition is upward-closed in price for `>`/`>=` (`up`) and
+    /// downward-closed for `<`/`<=` — either way the prefix-extrema hull answers it
+    /// in **O(log n)**. This is where the desugared TP/SL land.
+    PnlBound { up: bool },
+    /// `m_position.held` under a `>`/`>=` bound: `held` is monotone in row time, so
+    /// a binary search on `series.at` finds the crossing in **O(log n)**.
+    HeldBound,
+    /// `m_position.retrace` — needs the running since-entry peak, which no static
+    /// prefix query supplies. **O(n)**, vectorized (see `first_trailing_row`). Any
+    /// condition shape is fine: the resolver is a linear scan through `eval`.
+    Trailing,
+    /// Token-scoped columns, multi-arm DNF, tolerance-sensitive `=`/`!=`, anything
+    /// unrecognised — the scalar walk stays the SSOT reference.
+    General,
+}
+
+/// The single condition of a single-arm req, if that's what this is.
+fn lone_cond(req: &MetricReq) -> Option<hunter_engine::metrics::evaluator::Condition> {
+    match req.conds.as_slice() {
+        [arm] => match arm.as_slice() {
+            [c] => Some(*c),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether this (combo, entry) warrants building the exit index — **the one
+/// predicate** `Strategy::build_exit_ctx` branches on, named so the reachability
+/// guard can assert the real condition instead of a copy of it.
+///
+/// Item B exists because a fast path can silently stop being *taken* while staying
+/// correct: desugaring flipped the old `!has_exit_metrics()` gate to false for every
+/// TP/SL rule and nothing failed, because the scalar fallback is right. Equality
+/// tests can't catch that class of rot — only an assertion on reachability can.
+pub(crate) fn wants_exit_index(bound: &BoundCombo, entry: &EntryResolution) -> bool {
+    bound.fast_exit && matches!(entry, EntryResolution::Entered { .. })
+}
+
+/// Classify one exit req (bind time — never per row, never per token).
+fn classify_exit_req(req: &MetricReq) -> ExitClass {
+    if !req.position_scoped {
+        // Token-scoped metrics are arbitrary functions of the series columns; only
+        // the scalar walk knows when they flip.
+        return ExitClass::General;
+    }
+    match req.metric {
+        // A linear scan evaluates any condition shape correctly, so `retrace`
+        // classifies unconditionally.
+        MetricId::Retrace => ExitClass::Trailing,
+        MetricId::Pnl => match lone_cond(req).map(|c| c.operator) {
+            Some(Operator::Gt | Operator::Gte) => ExitClass::PnlBound { up: true },
+            Some(Operator::Lt | Operator::Lte) => ExitClass::PnlBound { up: false },
+            // `=`/`!=` are tolerance bands (not monotone) and multi-arm DNF can be
+            // an interval — neither is a prefix query.
+            _ => ExitClass::General,
+        },
+        MetricId::Held => match lone_cond(req).map(|c| c.operator) {
+            // `held` only ever rises, so a lower bound is a single crossing. An
+            // upper bound (`held <= X`) is satisfied from the fill onward and would
+            // need the opposite search — not worth a second code path.
+            Some(Operator::Gt | Operator::Gte) => ExitClass::HeldBound,
+            _ => ExitClass::General,
+        },
+        _ => ExitClass::General,
     }
 }
 
@@ -815,32 +933,55 @@ fn reqs_any_satisfied(
         .any(|(r, &col)| eval(&r.conds, value_at_col(series, col, row), r.tolerance))
 }
 
-/// Held-side authored exit-metric combinator (mirror of `CompiledRule::exit_fired`'s
-/// authored walk). OR across metrics — any one authored reason fires. Desugared TP/SL
-/// reqs (`origin != Authored`) are skipped: the caller's SL/TP price-threshold
-/// branches handle them with the correct `StopLoss`/`TakeProfit` label. Token-scoped
-/// reqs read the precomputed series column; position-scoped reqs (`m_position`) read
-/// the running [`PositionCtx`] at this row's price/time.
-fn exit_position_metrics_fired(
+/// The exit label a fired req carries — mirror of `CompiledRule::exit_fired`'s
+/// `ReqOrigin` → `ExitReason` mapping, so a desugared TP/SL still reads
+/// `TakeProfit`/`StopLoss` and an authored metric reads `Metrics`.
+#[inline]
+fn exit_code_of(origin: ReqOrigin) -> ExitCode {
+    match origin {
+        ReqOrigin::TakeProfit => ExitCode::TakeProfit,
+        ReqOrigin::StopLoss => ExitCode::StopLoss,
+        ReqOrigin::Authored => ExitCode::Metrics,
+    }
+}
+
+/// Whether one exit req holds at `row`. Token-scoped reqs read the precomputed
+/// series column; position-scoped reqs (`m_position`) read the running
+/// [`PositionCtx`] at this row's price/time. **The one place a req is judged** —
+/// every fast path below must agree with it.
+#[inline]
+fn exit_req_fires(
+    series: &MetricSeries,
+    req: &MetricReq,
+    col: usize,
+    row: usize,
+    ctx: &PositionCtx,
+) -> bool {
+    let reading = if req.position_scoped {
+        position_value(req.metric, ctx, series.price[row], series.at[row])
+    } else {
+        value_at_col(series, col, row)
+    };
+    eval(&req.conds, reading, req.tolerance)
+}
+
+/// Held-side exit combinator — the scan's mirror of `CompiledRule::exit_fired`.
+/// Walks `exit_reqs` **in order** (compile prepends the desugared SL then TP ahead
+/// of the authored metrics) and returns the first that holds, labelled by its
+/// [`ReqOrigin`]. That order is what preserves the ladder's
+/// `StopLoss > TakeProfit > Metrics` priority now that TP/SL are ordinary `pnl`
+/// reqs rather than a separate price-threshold branch.
+fn first_exit_req_fired(
     series: &MetricSeries,
     reqs: &[MetricReq],
     cols: &[usize],
     row: usize,
     ctx: &PositionCtx,
-) -> bool {
-    let price = series.price[row];
-    let now = series.at[row];
-    reqs.iter().zip(cols).any(|(r, &col)| {
-        if r.origin != ReqOrigin::Authored {
-            return false; // desugared TP/SL — handled by the price-threshold branch
-        }
-        let reading = if r.position_scoped {
-            position_value(r.metric, ctx, price, now)
-        } else {
-            value_at_col(series, col, row)
-        };
-        eval(&r.conds, reading, r.tolerance)
-    })
+) -> Option<ExitCode> {
+    reqs.iter()
+        .zip(cols)
+        .find(|(r, &col)| exit_req_fires(series, r, col, row, ctx))
+        .map(|(r, _)| exit_code_of(r.origin))
 }
 
 fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usize], row: usize) -> bool {
@@ -852,15 +993,18 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usi
 
 /// Walk the series to the entry decision, mirroring the armed-side `decide_arm`:
 /// `Dead > Unsatisfiable > can_enter` (entry conditions hold and exit metrics, if
-/// any, do not). The fill is the worst-case adverse buy after the trigger trade
-/// (trigger slot + next slot within
+/// any, do not). The fill is the buy the run's [`FillModel`] picks out of the window
+/// after the trigger trade (trigger slot + next slot within
 /// [`MAX_FILL_WAIT_SLOTS`](trading_core::config::constants::MAX_FILL_WAIT_SLOTS)) —
-/// same model as live paper / replay. A tick-timed decision before any print uses
-/// the first later trade as the trigger; an empty fill window ⇒ `NoEntry`.
+/// the same model `run_replay` threads through `ReplayConfig.fill_model`. Fill
+/// *eligibility* is identical across models, so the taken set never moves; only the
+/// price does. A tick-timed decision before any print uses the first later trade as
+/// the trigger; an empty fill window ⇒ `NoEntry`.
 pub(crate) fn resolve_entry(
     trades: &[CorpusTrade],
     series: &MetricSeries,
     b: &BoundCombo,
+    pricing: &Pricing,
 ) -> EntryResolution {
     debug_assert_cols_match(series, b);
     let c = &b.rule;
@@ -884,7 +1028,7 @@ pub(crate) fn resolve_entry(
             let Some(trigger_idx) = entry_trigger_trade_idx(series, i) else {
                 return EntryResolution::NoEntry;
             };
-            let Some(fill) = find_worst_case_paper_entry_at(trades, trigger_idx) else {
+            let Some(fill) = find_paper_entry_at(trades, trigger_idx, pricing.fill_model) else {
                 return EntryResolution::NoEntry;
             };
             let Some(fill_row) = series_row_for_trade_idx(series, fill.trade_idx) else {
@@ -900,77 +1044,102 @@ pub(crate) fn resolve_entry(
     EntryResolution::NoEntry
 }
 
-/// O(log n) pure-TP/SL exit via a prebuilt [`super::exit_index::ExitIndex`].
-/// Falls back to scalar [`resolve_exit`] for `NoEntry`, metrics exits, or an
-/// unready index (parity reference never deleted).
+/// Class-directed exit resolution over a prebuilt [`super::exit_index::ExitIndex`]:
+/// each exit req's **first firing row** is found by whichever query its bind-time
+/// [`ExitClass`] allows (O(log n) hull / binary search; O(n) vectorized for a
+/// trailing stop), then the earliest of those rows — and `Dead` — decides.
+///
+/// Falls back to the scalar [`resolve_exit`] for `NoEntry`, an unready index, any
+/// `General` req, or a monotonicity guard trip. The scalar walk is never deleted:
+/// it is the reference every one of these queries is proven equal to.
 pub(crate) fn resolve_exit_indexed(
     trades: &[CorpusTrade],
     series: &MetricSeries,
     b: &BoundCombo,
     entry: &EntryResolution,
-    buy_amount_sol: f64,
-    cost: &CostModel,
+    pricing: &Pricing,
     index: &super::exit_index::ExitIndex,
 ) -> TokenOutcome {
     debug_assert_cols_match(series, b);
-    let c = &b.rule;
     let (fill_row, entry_price, entry_at) = match entry {
         EntryResolution::NoEntry => return TokenOutcome::no_entry(),
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
-    if c.has_exit_metrics() || !index.is_ready() {
-        return resolve_exit(trades, series, b, entry, buy_amount_sol, cost);
+    if !b.fast_exit || !index.is_ready() {
+        return resolve_exit(trades, series, b, entry, pricing);
     }
 
-    let entry_slot = fill_trade_slot(series, fill_row);
-    let sl_thresh = c.stop_loss.map(|sl| entry_price * (1.0 - sl / 100.0));
-    let tp_thresh = c.take_profit.map(|tp| entry_price * (1.0 + tp / 100.0));
-    let sl_row = sl_thresh.and_then(|t| index.first_sl_row(t));
-    let tp_row = tp_thresh.and_then(|t| index.first_tp_row(t));
-
-    use super::exit_index::{pick_exit_row, ExitKind};
-    if let Some((j, kind)) = pick_exit_row(index.dead_row(), sl_row, tp_row) {
-        let exit = match kind {
-            ExitKind::Dead => ExitCode::Dead,
-            ExitKind::StopLoss => ExitCode::StopLoss,
-            ExitKind::TakeProfit => ExitCode::TakeProfit,
+    // Earliest firing row across the classified reqs. On a tie the req EARLIER in
+    // `exit_reqs` wins — the same order the scalar walk breaks ties by, which is what
+    // keeps the desugared SL ahead of TP ahead of the authored metrics. (A req whose
+    // first firing row is `min` is exactly a req that fires at `min`: an earlier first
+    // row would contradict minimality.)
+    let mut best: Option<(usize, ExitCode)> = None;
+    for (i, req) in b.rule.exit_reqs.iter().enumerate() {
+        let row = match b.exit_classes[i] {
+            ExitClass::PnlBound { up } => match first_pnl_row(index, req, entry_price, up) {
+                Ok(row) => row,
+                // Non-monotone `pnl` over this token's price range (overflow) — the
+                // hull query would be unsound, so hand the whole rule to scalar.
+                Err(()) => return resolve_exit(trades, series, b, entry, pricing),
+            },
+            ExitClass::HeldBound => match first_held_row(series, index, fill_row, entry_at, req) {
+                Ok(row) => row,
+                // Block time regressed inside the scan range, so `held` is not
+                // monotone and a binary search could land anywhere.
+                Err(()) => return resolve_exit(trades, series, b, entry, pricing),
+            },
+            ExitClass::Trailing => first_trailing_row(series, fill_row, entry_price, req),
+            ExitClass::General => unreachable!("fast_exit implies no General req"),
         };
-        return close_at_fire(trades, series, exit, entry_price, entry_at, entry_slot, j, buy_amount_sol, cost);
+        if let Some(row) = row {
+            if best.is_none_or(|(br, _)| row < br) {
+                best = Some((row, exit_code_of(req.origin)));
+            }
+        }
+    }
+    if let Some(dead) = index.dead_row() {
+        // Dead outranks every strategy exit, at any row (scalar checks it first).
+        if best.is_none_or(|(br, _)| dead <= br) {
+            best = Some((dead, ExitCode::Dead));
+        }
     }
 
-    // Open: mark to last finite (precomputed on the index for the whole series).
-    let last_price = index
-        .last_finite_row()
-        .map(|k| series.price[k])
-        .filter(|p| p.is_finite())
-        .unwrap_or(entry_price);
-    let (pnl_sol, pnl_pct) = round_trip_with_costs(entry_price, last_price, buy_amount_sol, cost);
-    TokenOutcome {
-        fired: true,
-        holding_secs: 0,
-        pnl_percent: pnl_pct as f32,
-        pnl_sol: pnl_sol as f32,
-        exit: ExitCode::Open,
-        entry_time: Some(entry_at),
-        entry_price: Some(entry_price),
-        entry_slot,
-        exit_time: None,
-        exit_price: None,
-        exit_slot: None,
+    match best {
+        Some((row, exit)) => close_at_fire(
+            trades, series, exit, entry_price, entry_at, fill_trade_slot(series, fill_row), row,
+            pricing,
+        ),
+        // Open: mark to last finite (precomputed on the index for the whole series).
+        None => {
+            let last_price = index
+                .last_finite_row()
+                .map(|k| series.price[k])
+                .filter(|p| p.is_finite())
+                .unwrap_or(entry_price);
+            open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+        }
     }
 }
 
 /// Walk from the entry fill to the exit decision, mirroring the open-side
-/// `decide_arm`: `Dead > StopLoss > TakeProfit > Metrics`. No exit by the tail ⇒
-/// `Open`, marked to the last known price. Exit *price* is the worst-case adverse
-/// fill after the firing row (analysis: market-fill fallback on an empty window).
+/// `decide_arm`: `Dead` first, then the first `exit_reqs` entry that holds (compile
+/// prepends the desugared SL/TP, so the ladder's `StopLoss > TakeProfit > Metrics`
+/// order survives). No exit by the tail ⇒ `Open`, marked to the last known price.
+/// Exit *price* is the run's [`FillModel`] fill after the firing row (analysis:
+/// market-fill fallback on an empty window).
+///
+/// **This walk is the SSOT.** TP/SL used to be re-derived here as an
+/// `entry_price · (1 ∓ pct/100)` price branch — a second representation of the same
+/// fact the engine already desugars into a `pnl` req, and one that compared in price
+/// space where the fold compares in pnl space. That branch is gone: the sweep now
+/// evaluates the very reqs `CompiledRule::exit_fired` does.
 pub(crate) fn resolve_exit(
     trades: &[CorpusTrade],
     series: &MetricSeries,
     b: &BoundCombo,
     entry: &EntryResolution,
-    buy_amount_sol: f64,
-    cost: &CostModel,
+    pricing: &Pricing,
 ) -> TokenOutcome {
     debug_assert_cols_match(series, b);
     let c = &b.rule;
@@ -984,7 +1153,7 @@ pub(crate) fn resolve_exit(
     // marks the entry candle *at or after* the entry signal, never a stale earlier one.
     let entry_slot = fill_trade_slot(series, fill_row);
     let n = series.n_rows();
-    let has_exit_metrics = c.has_exit_metrics();
+    let has_exit_reqs = c.has_exit_metrics();
     // Pre-resolved at bind time — this was the run's most-executed heap allocation.
     let exit_cols = &b.exit_cols;
     // Running since-entry peak for the position-scoped exit metrics (`retrace`/`pnl`).
@@ -995,45 +1164,18 @@ pub(crate) fn resolve_exit(
     for j in (fill_row + 1)..n {
         if series.dead[j] {
             return close_at_fire(
-                trades, series, ExitCode::Dead, entry_price, entry_at, entry_slot, j, buy_amount_sol, cost,
+                trades, series, ExitCode::Dead, entry_price, entry_at, entry_slot, j, pricing,
             );
         }
         let p = series.price[j];
-        if p.is_finite() {
-            if p > peak_price {
-                peak_price = p;
-            }
-            // SL / TP price thresholds — the labeled fast path for the desugared `pnl`
-            // reqs (`price <= entry·(1−sl)` ⟺ `pnl <= −sl`; likewise TP). Kept here so
-            // `ExitCode::StopLoss`/`TakeProfit` stay stamped; the generic loop below
-            // skips these origin-tagged reqs.
-            if let Some(sl) = c.stop_loss {
-                if p <= entry_price * (1.0 - sl / 100.0) {
-                    return close_at_fire(
-                        trades, series, ExitCode::StopLoss, entry_price, entry_at, entry_slot, j,
-                        buy_amount_sol, cost,
-                    );
-                }
-            }
-            if let Some(tp) = c.take_profit {
-                if p >= entry_price * (1.0 + tp / 100.0) {
-                    return close_at_fire(
-                        trades, series, ExitCode::TakeProfit, entry_price, entry_at, entry_slot, j,
-                        buy_amount_sol, cost,
-                    );
-                }
-            }
+        if p.is_finite() && p > peak_price {
+            peak_price = p;
         }
-        // Authored exit metrics (`Dead > SL > TP > Metrics` priority preserved: dead
-        // and the SL/TP branches rank ahead of this). Token-scoped reqs read the
-        // precomputed column; position-scoped reqs (`m_position`) read the running
-        // `PositionCtx` — mirroring `CompiledRule::exit_fired`.
-        if has_exit_metrics {
+        if has_exit_reqs {
             let ctx = PositionCtx { entry_price, peak_price, entered_at: entry_at };
-            if exit_position_metrics_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
+            if let Some(exit) = first_exit_req_fired(series, &c.exit_reqs, exit_cols, j, &ctx) {
                 return close_at_fire(
-                    trades, series, ExitCode::Metrics, entry_price, entry_at, entry_slot, j,
-                    buy_amount_sol, cost,
+                    trades, series, exit, entry_price, entry_at, entry_slot, j, pricing,
                 );
             }
         }
@@ -1041,7 +1183,21 @@ pub(crate) fn resolve_exit(
     // Open: mark to the last finite price (unrealized — excluded from the realized
     // stats by `RunAgg`, but priced for the drill-in / row view).
     let last_price = (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
-    let (pnl_sol, pnl_pct) = round_trip_with_costs(entry_price, last_price, buy_amount_sol, cost);
+    open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+}
+
+/// The still-`Open` outcome, marked to `last_price`. One copy shared by every exit
+/// path so the scalar / index / SIMD tails can't drift.
+fn open_outcome(
+    series: &MetricSeries,
+    fill_row: usize,
+    entry_price: f64,
+    entry_at: DateTime<Utc>,
+    last_price: f64,
+    pricing: &Pricing,
+) -> TokenOutcome {
+    let (pnl_sol, pnl_pct) =
+        round_trip_with_costs(entry_price, last_price, pricing.buy_amount_sol, &pricing.cost);
     TokenOutcome {
         fired: true,
         holding_secs: 0,
@@ -1050,10 +1206,160 @@ pub(crate) fn resolve_exit(
         exit: ExitCode::Open,
         entry_time: Some(entry_at),
         entry_price: Some(entry_price),
-        entry_slot,
+        entry_slot: fill_trade_slot(series, fill_row),
         exit_time: None,
         exit_price: None,
         exit_slot: None,
+    }
+}
+
+// ───────────────────── per-class first-firing-row resolvers ────────────────────
+//
+// Each of these must return **exactly** the row the scalar walk would stop at for
+// that one req — same `eval`, same value, same NaN handling. They differ only in
+// how they get there.
+
+/// First row satisfying a monotone `m_position.pnl` bound, via the prefix-extrema
+/// hull — O(log n).
+///
+/// `pnl` is strictly increasing in price (for `entry_price > 0`), so an upward-closed
+/// condition holds at some row `≤ i` iff it holds at the running **max** price up to
+/// `i`; symmetrically for the running min. The predicate is the same `eval` the
+/// scalar walk applies, so the two cannot disagree about inclusivity or NaN.
+///
+/// `Err(())` ⇒ the monotonicity premise doesn't hold on this token (a price extreme
+/// whose `pnl` overflows to ±inf, which `eval` then rejects out of order); the caller
+/// must fall back to scalar.
+fn first_pnl_row(
+    index: &super::exit_index::ExitIndex,
+    req: &MetricReq,
+    entry_price: f64,
+    up: bool,
+) -> Result<Option<usize>, ()> {
+    if !usable_entry_price(entry_price) {
+        // `pnl` is NaN throughout — no row can fire, exactly as scalar finds.
+        return Ok(None);
+    }
+    let ctx = PositionCtx { entry_price, peak_price: entry_price, entered_at: DateTime::UNIX_EPOCH };
+    let extreme = if up { index.hull_max_last() } else { index.hull_min_last() };
+    if let Some(x) = extreme {
+        // The extreme bounds every value the hull can carry; if `pnl` stays finite
+        // there it is finite (and monotone) everywhere in range.
+        if x.is_finite() && !ctx.pnl(x).is_finite() {
+            return Err(());
+        }
+    }
+    let pred = |price: f64| eval(&req.conds, ctx.pnl(price), req.tolerance);
+    Ok(if up { index.first_max_row(pred) } else { index.first_min_row(pred) })
+}
+
+/// First row satisfying a `>=`/`>` bound on `m_position.held`, by binary search on
+/// the series' `at` column — O(log n).
+///
+/// `held` is `now − entered_at` floored at zero, so it rises with `at`; the search is
+/// only sound while `at` is non-decreasing over the scan range, which
+/// [`ExitIndex`](super::exit_index::ExitIndex) checks during its rebuild. `Err(())`
+/// ⇒ it isn't; fall back to scalar.
+fn first_held_row(
+    series: &MetricSeries,
+    index: &super::exit_index::ExitIndex,
+    fill_row: usize,
+    entry_at: Ts,
+    req: &MetricReq,
+) -> Result<Option<usize>, ()> {
+    if !index.at_nondecreasing() {
+        return Err(());
+    }
+    let n = series.n_rows();
+    let start = fill_row.saturating_add(1);
+    if start >= n {
+        return Ok(None);
+    }
+    let ctx = PositionCtx { entry_price: 1.0, peak_price: 1.0, entered_at: entry_at };
+    let at = &series.at[start..n];
+    // `partition_point` wants the "not yet fired" prefix — true then false.
+    let i = at.partition_point(|&now| !eval(&req.conds, ctx.held(now), req.tolerance));
+    Ok((i < at.len()).then_some(start + i))
+}
+
+/// First row satisfying a `m_position.retrace` condition — O(n) with the running
+/// since-entry peak, vectorized on AVX-512 hosts for a single ordering condition.
+///
+/// **Not** O(log n), and there is no cheap index for it: the peak is a running
+/// quantity, so this is a genuine prefix-dependent scan, not a static prefix query.
+fn first_trailing_row(
+    series: &MetricSeries,
+    fill_row: usize,
+    entry_price: f64,
+    req: &MetricReq,
+) -> Option<usize> {
+    let n = series.n_rows();
+    let start = fill_row.saturating_add(1);
+    if start >= n {
+        return None;
+    }
+    if let Some(c) = lone_cond(req).filter(|c| is_ordering_op(c.operator)) {
+        return first_trailing_row_cmp(&series.price, start, n, entry_price, c.operator, c.value);
+    }
+    first_trailing_row_scalar(series, start, n, entry_price, req)
+}
+
+/// Scalar reference for [`first_trailing_row`] — the exact per-row work the scalar
+/// walk does for a `retrace` req, extracted so the vector kernel has one definition
+/// to be proven against.
+fn first_trailing_row_scalar(
+    series: &MetricSeries,
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    req: &MetricReq,
+) -> Option<usize> {
+    let mut ctx = PositionCtx {
+        entry_price,
+        peak_price: entry_price,
+        entered_at: DateTime::UNIX_EPOCH,
+    };
+    for j in start..n {
+        let p = series.price[j];
+        if p.is_finite() && p > ctx.peak_price {
+            ctx.peak_price = p;
+        }
+        if eval(&req.conds, ctx.retrace(p), req.tolerance) {
+            return Some(j);
+        }
+    }
+    None
+}
+
+/// Whether `entry_price` is a usable reference for the position metrics.
+/// [`PositionCtx::pnl`] / [`PositionCtx::retrace`] yield `NaN` for anything else, so
+/// no row can fire and the fast paths have nothing to search for.
+#[inline]
+fn usable_entry_price(p: f64) -> bool {
+    p.is_finite() && p > 0.0
+}
+
+/// Ordering operators the vector kernels can replicate exactly (`=`/`!=` are
+/// tolerance bands and stay on the scalar path).
+#[inline]
+fn is_ordering_op(op: Operator) -> bool {
+    matches!(op, Operator::Gt | Operator::Gte | Operator::Lt | Operator::Lte)
+}
+
+/// `eval_one` for an ordering operator, spelled out so the vector kernels and the
+/// scalar remainder share one definition of the compare.
+#[inline]
+fn cmp_ordering(op: Operator, value: f64, threshold: f64) -> bool {
+    if !value.is_finite() {
+        return false;
+    }
+    match op {
+        Operator::Gt => value > threshold,
+        Operator::Gte => value >= threshold,
+        Operator::Lt => value < threshold,
+        Operator::Lte => value <= threshold,
+        // Never reached: `is_ordering_op` gates every caller.
+        _ => false,
     }
 }
 
@@ -1068,78 +1374,95 @@ pub(crate) fn resolve_exit(
 // Note the price column is `f64`, so the vector width is 8 lanes (`__m512d`), not
 // the 16×f32 the plan's prose assumed — the search still runs 8-wide per instruction.
 
-/// AVX-512 counterpart of [`resolve_exit`]'s pure TP/SL scan (plan §P1, locked
+/// AVX-512 counterpart of the [`ExitClass::PnlBound`] exit scan (plan §P1, locked
 /// design decision 1). Finds the first exit *row* with the vector unit, then
 /// classifies + closes through the exact same shared kernel the scalar path uses —
 /// the money math is never duplicated.
 ///
-/// Falls back to the scalar [`resolve_exit`] for the metrics-condition case
-/// (`has_exit_metrics`) and on any host without AVX-512, so it is always safe to
-/// call directly — the parity guard and the runtime CPU gate both rely on that.
+/// Handles the shape it can vectorize end to end: every exit req is a monotone
+/// `m_position.pnl` bound with a single ordering condition — which, after the Phase-2
+/// desugaring, is precisely a TP/SL rule. **This is the shape the vector scan was
+/// built for and had silently stopped being reached on**: the old gate was
+/// `has_exit_metrics()`, which desugaring made true for every TP/SL rule. Anything
+/// else (a trailing stop, a `held` bound, a `General` req) delegates to
+/// [`resolve_exit_indexed`], which resolves those classes properly instead of
+/// pretending they aren't there. Also delegates on a host without AVX-512, so a
+/// direct caller (the parity guard) is always safe.
 pub(crate) fn resolve_exit_simd(
     trades: &[CorpusTrade],
     series: &MetricSeries,
     b: &BoundCombo,
     entry: &EntryResolution,
-    buy_amount_sol: f64,
-    cost: &CostModel,
+    pricing: &Pricing,
+    index: &super::exit_index::ExitIndex,
 ) -> TokenOutcome {
     debug_assert_cols_match(series, b);
-    let c = &b.rule;
     let (fill_row, entry_price, entry_at) = match entry {
         EntryResolution::NoEntry => return TokenOutcome::no_entry(),
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
-    // Arbitrary metric exit conditions aren't vectorized — the scalar loop is their
-    // SSOT. The CPU gate already forces scalar when AVX-512 is absent, but re-check
-    // here so a direct caller (the parity guard, a non-AVX-512 host) stays sound.
-    if c.has_exit_metrics() || !simd_available() {
-        return resolve_exit(trades, series, b, entry, buy_amount_sol, cost);
+    let Some(bounds) = pnl_bounds_for_vector_scan(b, entry_price) else {
+        return resolve_exit_indexed(trades, series, b, entry, pricing, index);
+    };
+    if !simd_available() {
+        return resolve_exit_indexed(trades, series, b, entry, pricing, index);
     }
     let entry_slot = fill_trade_slot(series, fill_row);
     let n = series.n_rows();
-    // Loop-invariant thresholds — computed once, exactly the scalar loop's per-row
-    // `entry_price · (1 ∓ pct/100)`.
-    let sl_thresh = c.stop_loss.map(|sl| entry_price * (1.0 - sl / 100.0));
-    let tp_thresh = c.take_profit.map(|tp| entry_price * (1.0 + tp / 100.0));
 
-    if let Some(j) = first_exit_row(&series.price, &series.dead, fill_row + 1, n, sl_thresh, tp_thresh) {
-        let p = series.price[j];
-        // The same within-row priority the scalar loop applies: Dead > StopLoss >
-        // TakeProfit. `first_exit_row` only returns rows where one of these holds, so
-        // a row that is neither Dead nor a finite StopLoss must be a TakeProfit.
+    if let Some(j) =
+        first_pnl_exit_row(&series.price, &series.dead, fill_row + 1, n, entry_price, &bounds)
+    {
+        // Same within-row priority the scalar walk applies: Dead first, else the
+        // EARLIEST req in `exit_reqs` order that holds here. A req firing at `j`
+        // whose own first firing row were earlier would contradict `j` being first,
+        // so re-judging this one row reproduces the walk exactly.
         let exit = if series.dead[j] {
             ExitCode::Dead
-        } else if p.is_finite() && sl_thresh.is_some_and(|t| p <= t) {
-            ExitCode::StopLoss
         } else {
-            ExitCode::TakeProfit
+            let ctx = PositionCtx { entry_price, peak_price: entry_price, entered_at: entry_at };
+            first_exit_req_fired(series, &b.rule.exit_reqs, &b.exit_cols, j, &ctx)
+                .unwrap_or(ExitCode::Metrics)
         };
         return close_at_fire(
-            trades, series, exit, entry_price, entry_at, entry_slot, j, buy_amount_sol, cost,
+            trades, series, exit, entry_price, entry_at, entry_slot, j, pricing,
         );
     }
 
     // Open: identical tail to the scalar path — mark to the last finite price.
     let last_price = (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
-    let (pnl_sol, pnl_pct) = round_trip_with_costs(entry_price, last_price, buy_amount_sol, cost);
-    TokenOutcome {
-        fired: true,
-        holding_secs: 0,
-        pnl_percent: pnl_pct as f32,
-        pnl_sol: pnl_sol as f32,
-        exit: ExitCode::Open,
-        entry_time: Some(entry_at),
-        entry_price: Some(entry_price),
-        entry_slot,
-        exit_time: None,
-        exit_price: None,
-        exit_slot: None,
-    }
+    open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
 }
 
-/// True only when the host has the AVX-512 features [`first_exit_row_avx512`] uses.
-/// The kernel needs just `avx512f` (the dead lanes are built scalar), matching
+/// One lane-comparable exit bound: `pnl <op> value`, with `op` an ordering operator.
+#[derive(Clone, Copy, Debug)]
+struct PnlBound {
+    op: Operator,
+    value: f64,
+}
+
+/// The rule's exit reqs as vector-comparable `pnl` bounds, or `None` when even one
+/// req is something the kernel can't replicate exactly (a different class, a
+/// multi-arm DNF, a tolerance-banded `=`/`!=`) — the caller then takes the class-
+/// directed path. Also `None` for a non-positive entry price, where `pnl` is `NaN`
+/// throughout and the vector compares would have nothing to say.
+fn pnl_bounds_for_vector_scan(b: &BoundCombo, entry_price: f64) -> Option<Vec<PnlBound>> {
+    if !b.fast_exit || !usable_entry_price(entry_price) || b.rule.exit_reqs.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(b.rule.exit_reqs.len());
+    for (i, req) in b.rule.exit_reqs.iter().enumerate() {
+        if !matches!(b.exit_classes[i], ExitClass::PnlBound { .. }) {
+            return None;
+        }
+        let c = lone_cond(req).filter(|c| is_ordering_op(c.operator))?;
+        out.push(PnlBound { op: c.operator, value: c.value });
+    }
+    Some(out)
+}
+
+/// True only when the host has the AVX-512 features the kernels here use. They need
+/// just `avx512f` (the dead lanes are built scalar), matching
 /// [`crate::sweep::registry::avx512_available`].
 #[cfg(target_arch = "x86_64")]
 #[inline]
@@ -1153,11 +1476,24 @@ fn simd_available() -> bool {
 }
 
 /// First series row in `start..n` at which the scalar exit predicate holds:
-/// `dead[j] || (price[j].is_finite() && (SL || TP))`. Returned in the same scan
-/// order the scalar loop uses, so the caller classifies exactly one row identically
-/// to scalar. Vectorized 8×`f64` on AVX-512; scalar remainder + scalar fallback.
+/// `dead[j] || any bound holds on pnl(price[j])`. Returned in the same scan order
+/// the scalar loop uses, so the caller classifies exactly one row identically to
+/// scalar. Vectorized 8×`f64` on AVX-512; scalar remainder + scalar fallback.
+///
+/// `pnl` is computed per lane with the same `(p − entry) / entry · 100` op sequence
+/// [`PositionCtx::pnl`] uses. IEEE-754 basic ops are exactly rounded, so the vector
+/// and scalar values are **bit-identical** — which is why this can compare in pnl
+/// space rather than inverting each bound back into a price threshold (an inversion
+/// that would only be correct to within a rounding step).
 #[cfg(target_arch = "x86_64")]
-fn first_exit_row(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
+fn first_pnl_exit_row(
+    price: &[f64],
+    dead: &[bool],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    bounds: &[PnlBound],
+) -> Option<usize> {
     if start >= n {
         return None;
     }
@@ -1165,59 +1501,76 @@ fn first_exit_row(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Opti
         // SAFETY: `avx512f` confirmed present just above. The kernel reads `price`
         // and `dead` only within `[start, n)`, and `n == series.n_rows()` bounds both
         // parallel columns (see `MetricSeries`), so every access is in range.
-        unsafe { first_exit_row_avx512(price, dead, start, n, sl, tp) }
+        unsafe { first_pnl_exit_row_avx512(price, dead, start, n, entry_price, bounds) }
     } else {
-        first_exit_row_scalar(price, dead, start, n, sl, tp)
+        first_pnl_exit_row_scalar(price, dead, start, n, entry_price, bounds)
     }
 }
 #[cfg(not(target_arch = "x86_64"))]
-fn first_exit_row(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
-    first_exit_row_scalar(price, dead, start, n, sl, tp)
+fn first_pnl_exit_row(
+    price: &[f64],
+    dead: &[bool],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    bounds: &[PnlBound],
+) -> Option<usize> {
+    first_pnl_exit_row_scalar(price, dead, start, n, entry_price, bounds)
 }
 
-/// Scalar reference for [`first_exit_row`] — the exact predicate the scalar
-/// [`resolve_exit`] loop applies, extracted so the vector path's remainder tail, the
-/// non-AVX-512 fallback, and the parity guard all share one definition of it.
+/// Scalar reference for [`first_pnl_exit_row`] — the exact predicate the scalar
+/// [`resolve_exit`] loop applies for a set of `pnl` bounds, extracted so the vector
+/// path's remainder tail, the non-AVX-512 fallback, and the parity guard all share
+/// one definition of it.
 #[inline]
-fn first_exit_row_scalar(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
+fn first_pnl_exit_row_scalar(
+    price: &[f64],
+    dead: &[bool],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    bounds: &[PnlBound],
+) -> Option<usize> {
+    let ctx = PositionCtx {
+        entry_price,
+        peak_price: entry_price,
+        entered_at: DateTime::UNIX_EPOCH,
+    };
     for j in start..n {
         if dead[j] {
             return Some(j);
         }
-        let p = price[j];
-        if p.is_finite() {
-            if let Some(t) = sl {
-                if p <= t {
-                    return Some(j);
-                }
-            }
-            if let Some(t) = tp {
-                if p >= t {
-                    return Some(j);
-                }
-            }
+        let v = ctx.pnl(price[j]);
+        if bounds.iter().any(|b| cmp_ordering(b.op, v, b.value)) {
+            return Some(j);
         }
     }
     None
 }
 
-/// AVX-512 kernel for [`first_exit_row`]: scans 8 `f64` prices per instruction for
-/// the first exit row, handling the `< 8` tail via [`first_exit_row_scalar`].
+/// AVX-512 kernel for [`first_pnl_exit_row`]: scans 8 `f64` prices per instruction
+/// for the first exit row, handling the `< 8` tail via
+/// [`first_pnl_exit_row_scalar`].
 ///
 /// # Safety
-/// The caller must have verified `avx512f` is available (see [`first_exit_row`]).
+/// The caller must have verified `avx512f` is available (see [`first_pnl_exit_row`]).
 /// `start ≤ n` and `n` must not exceed `price.len()` or `dead.len()`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn first_exit_row_avx512(price: &[f64], dead: &[bool], start: usize, n: usize, sl: Option<f64>, tp: Option<f64>) -> Option<usize> {
+unsafe fn first_pnl_exit_row_avx512(
+    price: &[f64],
+    dead: &[bool],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    bounds: &[PnlBound],
+) -> Option<usize> {
     use std::arch::x86_64::*;
     const LANES: usize = 8;
 
     let max_v = _mm512_set1_pd(f64::MAX);
-    let sl_v = _mm512_set1_pd(sl.unwrap_or(0.0));
-    let tp_v = _mm512_set1_pd(tp.unwrap_or(0.0));
-    let have_sl = sl.is_some();
-    let have_tp = tp.is_some();
+    let entry_v = _mm512_set1_pd(entry_price);
+    let hundred_v = _mm512_set1_pd(100.0);
 
     let mut j = start;
     while j + LANES <= n {
@@ -1225,17 +1578,28 @@ unsafe fn first_exit_row_avx512(price: &[f64], dead: &[bool], start: usize, n: u
         let pv = _mm512_loadu_pd(price.as_ptr().add(j));
         // finite lanes: |p| ≤ f64::MAX — false for NaN and ±inf, exactly `is_finite`.
         let finite = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(_mm512_abs_pd(pv), max_v);
-        // price-hit lanes: (p ≤ sl_thresh) | (p ≥ tp_thresh). Ordered compares so NaN
-        // never matches; then AND with `finite` so a −inf can't produce a phantom SL
-        // hit the scalar `is_finite()` guard would have rejected.
-        let mut price_hit: __mmask8 = 0;
-        if have_sl {
-            price_hit |= _mm512_cmp_pd_mask::<_CMP_LE_OQ>(pv, sl_v);
+        // pnl per lane, same op order as `PositionCtx::pnl` ⇒ bit-identical.
+        let pnl = _mm512_mul_pd(
+            _mm512_div_pd(_mm512_sub_pd(pv, entry_v), entry_v),
+            hundred_v,
+        );
+        let mut hit: __mmask8 = 0;
+        for b in bounds {
+            let t = _mm512_set1_pd(b.value);
+            // Ordered compares so a NaN lane never matches, matching `eval_one`'s
+            // non-finite rejection; the `finite` AND below covers ±inf prices, whose
+            // pnl would otherwise compare as a genuine ±inf.
+            hit |= match b.op {
+                Operator::Gt => _mm512_cmp_pd_mask::<_CMP_GT_OQ>(pnl, t),
+                Operator::Gte => _mm512_cmp_pd_mask::<_CMP_GE_OQ>(pnl, t),
+                Operator::Lt => _mm512_cmp_pd_mask::<_CMP_LT_OQ>(pnl, t),
+                _ => _mm512_cmp_pd_mask::<_CMP_LE_OQ>(pnl, t),
+            };
         }
-        if have_tp {
-            price_hit |= _mm512_cmp_pd_mask::<_CMP_GE_OQ>(pv, tp_v);
-        }
-        price_hit &= finite;
+        // A finite price can still overflow `pnl` to ±inf on a tiny entry price;
+        // `is_finite` on the pnl VALUE is what `eval_one` checks, so mask on both.
+        let pnl_finite = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(_mm512_abs_pd(pnl), max_v);
+        hit &= finite & pnl_finite;
         // dead lanes: built scalar (dead is rarely set → cheap predictable branches),
         // which keeps the kernel to plain AVX-512F (no BW/VL byte-mask intrinsics).
         let mut dead_hit: __mmask8 = 0;
@@ -1244,14 +1608,173 @@ unsafe fn first_exit_row_avx512(price: &[f64], dead: &[bool], start: usize, n: u
                 dead_hit |= 1u8 << lane;
             }
         }
-        let hit = price_hit | dead_hit;
+        let hit = hit | dead_hit;
         if hit != 0 {
             return Some(j + hit.trailing_zeros() as usize);
         }
         j += LANES;
     }
     // Tail (< 8 rows left): the shared scalar predicate.
-    first_exit_row_scalar(price, dead, j, n, sl, tp)
+    first_pnl_exit_row_scalar(price, dead, j, n, entry_price, bounds)
+}
+
+// ─────────────────── AVX-512 trailing stop (running-peak scan) ─────────────────
+//
+// `retrace` compares against the since-entry PEAK, so its first crossing is
+// `first j where price[j] <= k · max(price[fill..j])` — a prefix-dependent scan, not
+// a static prefix query. There is no cheap index for it and none is claimed: the
+// honest target is a **vectorized O(n)**, which is what this is. The prefix max is
+// built with a 3-step Hillis-Steele shift-and-max inside each 8-lane block, seeded
+// with the max carried out of the previous block.
+
+/// First row in `start..n` where `retrace <op> value` holds against the running
+/// since-entry peak (seeded at `entry_price`). Vectorized on AVX-512; the scalar
+/// reference below is the SSOT both the tail and non-AVX-512 hosts use.
+#[cfg(target_arch = "x86_64")]
+fn first_trailing_row_cmp(
+    price: &[f64],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    op: Operator,
+    value: f64,
+) -> Option<usize> {
+    if start >= n {
+        return None;
+    }
+    if simd_available() {
+        // SAFETY: `avx512f` confirmed present just above; the kernel reads `price`
+        // only within `[start, n)` and `n ≤ price.len()` by construction.
+        unsafe { first_trailing_row_avx512(price, start, n, entry_price, op, value) }
+    } else {
+        first_trailing_row_cmp_scalar(price, start, n, entry_price, op, value)
+    }
+}
+#[cfg(not(target_arch = "x86_64"))]
+fn first_trailing_row_cmp(
+    price: &[f64],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    op: Operator,
+    value: f64,
+) -> Option<usize> {
+    first_trailing_row_cmp_scalar(price, start, n, entry_price, op, value)
+}
+
+/// Scalar reference for [`first_trailing_row_cmp`] — the same running-peak +
+/// [`PositionCtx::retrace`] the scalar walk computes per row.
+#[inline]
+fn first_trailing_row_cmp_scalar(
+    price: &[f64],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    op: Operator,
+    value: f64,
+) -> Option<usize> {
+    let mut ctx = PositionCtx {
+        entry_price,
+        peak_price: entry_price,
+        entered_at: DateTime::UNIX_EPOCH,
+    };
+    for (j, &p) in price.iter().enumerate().take(n).skip(start) {
+        if p.is_finite() && p > ctx.peak_price {
+            ctx.peak_price = p;
+        }
+        if cmp_ordering(op, ctx.retrace(p), value) {
+            return Some(j);
+        }
+    }
+    None
+}
+
+/// AVX-512 kernel for [`first_trailing_row_cmp`].
+///
+/// Per 8-lane block: replace non-finite prices with `−inf` (the scalar peak update
+/// only admits finite prices, and `−inf` never wins a max), inclusive-prefix-max the
+/// block, fold in the carried peak, compute `retrace = (peak − p) / peak · 100` with
+/// the same op sequence [`PositionCtx::retrace`] uses (⇒ bit-identical), then compare
+/// with an ordered predicate ANDed with the finite-price mask.
+///
+/// # Safety
+/// The caller must have verified `avx512f` (see [`first_trailing_row_cmp`]).
+/// `start ≤ n ≤ price.len()`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn first_trailing_row_avx512(
+    price: &[f64],
+    start: usize,
+    n: usize,
+    entry_price: f64,
+    op: Operator,
+    value: f64,
+) -> Option<usize> {
+    use std::arch::x86_64::*;
+    const LANES: usize = 8;
+
+    let max_v = _mm512_set1_pd(f64::MAX);
+    let neg_inf = _mm512_set1_pd(f64::NEG_INFINITY);
+    let hundred_v = _mm512_set1_pd(100.0);
+    let thresh_v = _mm512_set1_pd(value);
+    let zero_v = _mm512_setzero_pd();
+    // Lane-shift permutations for the Hillis-Steele prefix max: lane i reads lane
+    // i−d (lanes < d are masked to −inf, the max identity).
+    let sh1 = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
+    let sh2 = _mm512_set_epi64(5, 4, 3, 2, 1, 0, 0, 0);
+    let sh4 = _mm512_set_epi64(3, 2, 1, 0, 0, 0, 0, 0);
+
+    let mut carry = entry_price;
+    let mut j = start;
+    while j + LANES <= n {
+        let pv = _mm512_loadu_pd(price.as_ptr().add(j));
+        let finite = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(_mm512_abs_pd(pv), max_v);
+        // Only finite prices may raise the peak — everything else becomes −inf.
+        let clean = _mm512_mask_blend_pd(finite, neg_inf, pv);
+        // Inclusive prefix max, 3 shift-and-max steps (no NaN survives `clean`, so
+        // plain `max` is well-defined here).
+        let mut pm = clean;
+        pm = _mm512_max_pd(pm, _mm512_mask_permutexvar_pd(neg_inf, 0xFE, sh1, pm));
+        pm = _mm512_max_pd(pm, _mm512_mask_permutexvar_pd(neg_inf, 0xFC, sh2, pm));
+        pm = _mm512_max_pd(pm, _mm512_mask_permutexvar_pd(neg_inf, 0xF0, sh4, pm));
+        // Fold in the peak carried out of every earlier row.
+        let peak = _mm512_max_pd(pm, _mm512_set1_pd(carry));
+        // retrace = (peak − p) / peak · 100, with `peak > 0 && p finite` (else NaN,
+        // which satisfies nothing).
+        let retrace = _mm512_mul_pd(
+            _mm512_div_pd(_mm512_sub_pd(peak, pv), peak),
+            hundred_v,
+        );
+        let peak_pos = _mm512_cmp_pd_mask::<_CMP_GT_OQ>(peak, zero_v);
+        let retrace_finite = _mm512_cmp_pd_mask::<_CMP_LE_OQ>(_mm512_abs_pd(retrace), max_v);
+        let mut hit = match op {
+            Operator::Gt => _mm512_cmp_pd_mask::<_CMP_GT_OQ>(retrace, thresh_v),
+            Operator::Gte => _mm512_cmp_pd_mask::<_CMP_GE_OQ>(retrace, thresh_v),
+            Operator::Lt => _mm512_cmp_pd_mask::<_CMP_LT_OQ>(retrace, thresh_v),
+            _ => _mm512_cmp_pd_mask::<_CMP_LE_OQ>(retrace, thresh_v),
+        };
+        hit &= finite & peak_pos & retrace_finite;
+        if hit != 0 {
+            return Some(j + hit.trailing_zeros() as usize);
+        }
+        // Carry the block's last (== whole-block) prefix max forward.
+        let mut lanes = [0f64; LANES];
+        _mm512_storeu_pd(lanes.as_mut_ptr(), peak);
+        carry = lanes[LANES - 1];
+        j += LANES;
+    }
+    // Tail (< 8 rows left): the shared scalar predicate, resumed at the carried peak.
+    let mut ctx =
+        PositionCtx { entry_price, peak_price: carry, entered_at: DateTime::UNIX_EPOCH };
+    for (k, &p) in price.iter().enumerate().take(n).skip(j) {
+        if p.is_finite() && p > ctx.peak_price {
+            ctx.peak_price = p;
+        }
+        if cmp_ordering(op, ctx.retrace(p), value) {
+            return Some(k);
+        }
+    }
+    None
 }
 
 /// The real trade a fill resolved on series `row` executes against: the first trade
@@ -1310,12 +1833,14 @@ fn series_row_for_trade_idx(series: &MetricSeries, trade_idx: usize) -> Option<u
     None
 }
 
-/// Worst-case exit fill after the ladder fires at series row `fire_row`.
-/// Analysis path: market-fill at the firing trade when the window is empty.
-fn worst_case_exit_fill(
+/// Exit fill after the ladder fires at series row `fire_row`, priced by the run's
+/// [`FillModel`]. Analysis path: market-fill at the firing trade when the window is
+/// empty (`market_fill_on_empty_window: true`, as every analysis path books).
+fn exit_fill(
     trades: &[CorpusTrade],
     series: &MetricSeries,
     fire_row: usize,
+    fill_model: FillModel,
 ) -> Option<PaperFill> {
     let fire_idx = trade_idx_at_row(series, fire_row)
         .or_else(|| {
@@ -1324,10 +1849,11 @@ fn worst_case_exit_fill(
                 .rev()
                 .find_map(|r| trade_idx_at_row(series, r))
         })?;
-    find_worst_case_paper_exit_at(trades, fire_idx, true)
+    find_paper_exit_at(trades, fire_idx, true, fill_model)
 }
 
-/// Book a closed outcome at the worst-case fill after fire row `j`.
+/// Book a closed outcome at the run's fill-model price after fire row `j`.
+#[allow(clippy::too_many_arguments)]
 fn close_at_fire(
     trades: &[CorpusTrade],
     series: &MetricSeries,
@@ -1336,10 +1862,9 @@ fn close_at_fire(
     entry_at: DateTime<Utc>,
     entry_slot: Option<u64>,
     fire_row: usize,
-    buy_amount_sol: f64,
-    cost: &CostModel,
+    pricing: &Pricing,
 ) -> TokenOutcome {
-    let fill = worst_case_exit_fill(trades, series, fire_row).unwrap_or_else(|| {
+    let fill = exit_fill(trades, series, fire_row, pricing.fill_model).unwrap_or_else(|| {
         // No mappable fire trade (should be rare): fall back to the series spot.
         PaperFill {
             trade_idx: 0,
@@ -1359,8 +1884,7 @@ fn close_at_fire(
         fill.price,
         fill.block_time,
         fill_trade_slot(series, exit_row),
-        buy_amount_sol,
-        cost,
+        pricing,
     )
 }
 
@@ -1374,12 +1898,11 @@ pub(crate) fn scan(
     trades: &[CorpusTrade],
     series: &MetricSeries,
     c: &CompiledRule,
-    buy_amount_sol: f64,
-    cost: &CostModel,
+    pricing: &Pricing,
 ) -> TokenOutcome {
     let bound = BoundCombo::new(series.columns(), c.clone());
-    let entry = resolve_entry(trades, series, &bound);
-    resolve_exit(trades, series, &bound, &entry, buy_amount_sol, cost)
+    let entry = resolve_entry(trades, series, &bound, pricing);
+    resolve_exit(trades, series, &bound, &entry, pricing)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1391,10 +1914,10 @@ fn closed(
     exit_price: f64,
     exit_at: DateTime<Utc>,
     exit_slot: Option<u64>,
-    buy_amount_sol: f64,
-    cost: &CostModel,
+    pricing: &Pricing,
 ) -> TokenOutcome {
-    let (pnl_sol, pnl_pct) = round_trip_with_costs(entry_price, exit_price, buy_amount_sol, cost);
+    let (pnl_sol, pnl_pct) =
+        round_trip_with_costs(entry_price, exit_price, pricing.buy_amount_sol, &pricing.cost);
     TokenOutcome {
         fired: true,
         holding_secs: (exit_at - entry_at).num_seconds(),
@@ -1410,31 +1933,45 @@ fn closed(
     }
 }
 
-// ───────────────────────── SIMD kernel parity (plan §P3) ─────────────────────
+// ──────────────── vector-kernel + classification parity (plan §P3) ────────────
 //
-// The vector kernel is only sound if `first_exit_row` returns the exact same row
-// the scalar predicate does — for every threshold config, at every block boundary,
-// and for non-finite prices the scalar `is_finite()` guard rejects. These tests
-// drive crafted `price`/`dead` arrays (no DB, no sparse grid) so the 8-lane block
-// loop, the `< 8` remainder tail, and the finite mask are each exercised at precise
-// positions. On an AVX-512 host `first_exit_row` runs the real kernel; on any other
-// host it delegates to `first_exit_row_scalar`, so the assertions hold either way.
+// A vector kernel is only sound if it returns the exact same row the scalar
+// predicate does — for every threshold config, at every block boundary, and for the
+// non-finite values `eval_one` rejects. These tests drive crafted `price`/`dead`
+// arrays (no DB, no sparse grid) so the 8-lane block loop, the `< 8` remainder tail,
+// and the finite masks are each exercised at precise positions. On an AVX-512 host
+// the real kernels run; on any other host the entry points delegate to their scalar
+// reference, so the assertions hold either way.
+//
+// The classification tests are the other half of item B: a fast path that is
+// *correct* but never *taken* rots silently (that is exactly what happened to the
+// exit index after TP/SL desugaring), so reachability is asserted, not just equality.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hunter_engine::event::LoadedRule;
+    use hunter_engine::metrics::evaluator::Condition;
+    use hunter_engine::rule_params::RuleParams;
 
-    /// Assert the (possibly vectorized) `first_exit_row` agrees with the scalar
+    // ── pnl-bound exit scan ────────────────────────────────────────────────────
+
+    fn bound(op: Operator, value: f64) -> PnlBound {
+        PnlBound { op, value }
+    }
+
+    /// Assert the (possibly vectorized) `first_pnl_exit_row` agrees with the scalar
     /// reference for **every** start offset — so a block-vs-remainder split at any
     /// alignment is covered.
-    fn assert_agrees(price: &[f64], dead: &[bool], sl: Option<f64>, tp: Option<f64>) {
+    fn assert_agrees(price: &[f64], dead: &[bool], entry: f64, bounds: &[PnlBound]) {
         let n = price.len();
         assert_eq!(dead.len(), n, "test arrays must be parallel");
         for start in 0..=n {
-            let got = first_exit_row(price, dead, start, n, sl, tp);
-            let want = first_exit_row_scalar(price, dead, start, n, sl, tp);
+            let got = first_pnl_exit_row(price, dead, start, n, entry, bounds);
+            let want = first_pnl_exit_row_scalar(price, dead, start, n, entry, bounds);
             assert_eq!(
                 got, want,
-                "first_exit_row != scalar (start={start}, sl={sl:?}, tp={tp:?}, price={price:?}, dead={dead:?})"
+                "first_pnl_exit_row != scalar (start={start}, entry={entry}, \
+                 bounds={bounds:?}, price={price:?}, dead={dead:?})"
             );
         }
     }
@@ -1445,82 +1982,291 @@ mod tests {
 
     #[test]
     fn simd_sl_cross_every_position() {
-        let sl = Some(0.5);
+        // entry 1.0, `pnl <= −50` ⇔ price ≤ 0.5.
+        let sl = [bound(Operator::Lte, -50.0)];
         for &n in &LENS {
             for cross in 0..n {
                 let mut price = vec![1.0f64; n];
-                price[cross] = 0.4; // ≤ 0.5 → SL
-                assert_agrees(&price, &vec![false; n], sl, None);
+                price[cross] = 0.4;
+                assert_agrees(&price, &vec![false; n], 1.0, &sl);
             }
         }
     }
 
     #[test]
     fn simd_tp_cross_every_position() {
-        let tp = Some(2.0);
+        // entry 1.0, `pnl >= 100` ⇔ price ≥ 2.0.
+        let tp = [bound(Operator::Gte, 100.0)];
         for &n in &LENS {
             for cross in 0..n {
                 let mut price = vec![1.0f64; n];
-                price[cross] = 2.5; // ≥ 2.0 → TP
-                assert_agrees(&price, &vec![false; n], None, tp);
+                price[cross] = 2.5;
+                assert_agrees(&price, &vec![false; n], 1.0, &tp);
+            }
+        }
+    }
+
+    #[test]
+    fn simd_strict_operators_match_scalar() {
+        // `>` / `<` must not fire exactly at the threshold, in vector or scalar.
+        for &n in &LENS {
+            for cross in 0..n {
+                let mut price = vec![1.0f64; n];
+                price[cross] = 2.0; // pnl == 100 exactly
+                assert_agrees(&price, &vec![false; n], 1.0, &[bound(Operator::Gt, 100.0)]);
+                assert_agrees(&price, &vec![false; n], 1.0, &[bound(Operator::Gte, 100.0)]);
+                price[cross] = 0.5; // pnl == −50 exactly
+                assert_agrees(&price, &vec![false; n], 1.0, &[bound(Operator::Lt, -50.0)]);
+                assert_agrees(&price, &vec![false; n], 1.0, &[bound(Operator::Lte, -50.0)]);
             }
         }
     }
 
     #[test]
     fn simd_dead_every_position_beats_price() {
-        // Dead has priority over a same/later price cross, and fires with no TP/SL set.
+        // Dead has priority over a same/later price cross, and fires with no bounds.
         for &n in &LENS {
             for k in 0..n {
                 let mut dead = vec![false; n];
                 dead[k] = true;
-                // A price that would SL one row after the dead row: dead must still win.
                 let mut price = vec![1.0f64; n];
                 if k + 1 < n {
                     price[k + 1] = 0.1;
                 }
-                assert_agrees(&price, &dead, Some(0.5), None);
-                assert_agrees(&price, &dead, None, None); // dead-only
+                assert_agrees(&price, &dead, 1.0, &[bound(Operator::Lte, -50.0)]);
+                assert_agrees(&price, &dead, 1.0, &[]); // dead-only
             }
         }
     }
 
     #[test]
-    fn simd_both_thresholds_and_no_cross() {
-        let (sl, tp) = (Some(0.5), Some(2.0));
+    fn simd_both_bounds_and_no_cross() {
+        let both = [bound(Operator::Lte, -50.0), bound(Operator::Gte, 100.0)];
         // No cross anywhere → None.
-        assert_agrees(&vec![1.0f64; 33], &vec![false; 33], sl, tp);
+        assert_agrees(&vec![1.0f64; 33], &[false; 33], 1.0, &both);
         // SL and TP crosses on the same run — the earlier row wins (scalar order).
         let mut price = vec![1.0f64; 33];
         price[20] = 2.9; // TP
         price[9] = 0.2; // SL earlier → this one
-        assert_agrees(&price, &vec![false; 33], sl, tp);
+        assert_agrees(&price, &[false; 33], 1.0, &both);
     }
 
     #[test]
     fn simd_non_finite_prices_never_cross() {
-        // NaN / ±inf must be ignored exactly as scalar `is_finite()` does, even though
-        // an ordered `-inf ≤ sl` / `+inf ≥ tp` compare would "match" without the mask.
-        let (sl, tp) = (Some(0.5), Some(2.0));
+        // NaN / ±inf must be ignored exactly as `eval_one`'s non-finite guard does,
+        // even though an ordered `−inf ≤ t` / `+inf ≥ t` compare would "match".
+        let both = [bound(Operator::Lte, -50.0), bound(Operator::Gte, 100.0)];
         let n = 20;
         let mut price = vec![1.0f64; n];
         price[3] = f64::NAN;
-        price[5] = f64::INFINITY; // ≥ tp but not finite → skip
-        price[9] = f64::NEG_INFINITY; // ≤ sl but not finite → skip
-        // No finite cross → None (the non-finite lanes must not be picked).
-        assert_agrees(&price, &vec![false; n], sl, tp);
-        assert_eq!(first_exit_row(&price, &vec![false; n], 0, n, sl, tp), None);
-        // Add a real finite SL after the non-finite noise: it, not the ±inf, is found.
+        price[5] = f64::INFINITY;
+        price[9] = f64::NEG_INFINITY;
+        assert_agrees(&price, &vec![false; n], 1.0, &both);
+        assert_eq!(first_pnl_exit_row(&price, &vec![false; n], 0, n, 1.0, &both), None);
+        // Add a real finite cross after the non-finite noise: it, not the ±inf, is found.
         price[12] = 0.3;
-        assert_agrees(&price, &vec![false; n], sl, tp);
-        assert_eq!(first_exit_row(&price, &vec![false; n], 0, n, sl, tp), Some(12));
+        assert_agrees(&price, &vec![false; n], 1.0, &both);
+        assert_eq!(first_pnl_exit_row(&price, &vec![false; n], 0, n, 1.0, &both), Some(12));
     }
 
     #[test]
     fn simd_empty_range_is_none() {
         let price = vec![1.0f64; 8];
         let dead = vec![false; 8];
-        assert_eq!(first_exit_row(&price, &dead, 8, 8, Some(0.5), Some(2.0)), None);
-        assert_eq!(first_exit_row(&[], &[], 0, 0, Some(0.5), None), None);
+        let both = [bound(Operator::Lte, -50.0), bound(Operator::Gte, 100.0)];
+        assert_eq!(first_pnl_exit_row(&price, &dead, 8, 8, 1.0, &both), None);
+        assert_eq!(first_pnl_exit_row(&[], &[], 0, 0, 1.0, &both), None);
+    }
+
+    // ── trailing-stop (running-peak) scan ──────────────────────────────────────
+
+    /// Assert the (possibly vectorized) trailing scan agrees with its scalar
+    /// reference for every start offset. Start matters more here than for a static
+    /// threshold: the peak is seeded at `entry` and carried, so a shifted start is a
+    /// genuinely different scan, not just a shifted window.
+    fn assert_trailing_agrees(price: &[f64], entry: f64, op: Operator, value: f64) {
+        let n = price.len();
+        for start in 0..=n {
+            let got = first_trailing_row_cmp(price, start, n, entry, op, value);
+            let want = first_trailing_row_cmp_scalar(price, start, n, entry, op, value);
+            assert_eq!(
+                got, want,
+                "first_trailing_row_cmp != scalar (start={start}, entry={entry}, \
+                 {op:?} {value}, price={price:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_cross_every_position_after_a_run_up() {
+        // Rise to a peak at `peak_at`, then dump — the retrace crossing must be found
+        // at the dump row for every peak position and every array length.
+        for &n in &LENS {
+            for peak_at in 0..n {
+                let mut price = vec![1.0f64; n];
+                price[peak_at] = 4.0;
+                if peak_at + 1 < n {
+                    price[peak_at + 1] = 1.0; // 75% off the 4.0 peak
+                }
+                assert_trailing_agrees(&price, 1.0, Operator::Gte, 50.0);
+                assert_trailing_agrees(&price, 1.0, Operator::Gt, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_peak_carries_across_block_boundaries() {
+        // Peak in block 0, crossing in block 2 — only a correct carried max finds it.
+        let mut price = vec![1.0f64; 24];
+        price[2] = 10.0;
+        price[20] = 4.0; // 60% off the 10.0 peak, two blocks later
+        assert_trailing_agrees(&price, 1.0, Operator::Gte, 50.0);
+        assert_eq!(
+            first_trailing_row_cmp(&price, 0, price.len(), 1.0, Operator::Gte, 50.0),
+            Some(3),
+            "the row right after the peak is already 90% off it"
+        );
+    }
+
+    #[test]
+    fn trailing_seeded_peak_is_the_entry_price() {
+        // Before any run-up the peak IS the fill price, so `retrace` measures the drop
+        // from entry — a soft stop. Nothing here ever exceeds entry.
+        let price = vec![1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
+        assert_trailing_agrees(&price, 1.0, Operator::Gte, 25.0);
+        assert_eq!(
+            first_trailing_row_cmp(&price, 0, price.len(), 1.0, Operator::Gte, 25.0),
+            Some(3),
+            "0.7 is 30% below the 1.0 seed peak"
+        );
+    }
+
+    #[test]
+    fn trailing_non_finite_prices_neither_raise_the_peak_nor_fire() {
+        for &n in &LENS {
+            if n < 8 {
+                continue;
+            }
+            let mut price = vec![2.0f64; n];
+            price[1] = f64::INFINITY; // must NOT become the peak
+            price[2] = f64::NAN; // must not fire
+            price[3] = f64::NEG_INFINITY;
+            price[n - 1] = 1.0; // 50% off the real 2.0 peak
+            assert_trailing_agrees(&price, 2.0, Operator::Gte, 40.0);
+            assert_eq!(
+                first_trailing_row_cmp(&price, 0, n, 2.0, Operator::Gte, 40.0),
+                Some(n - 1),
+                "an +inf print must not inflate the peak into an early trigger"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_no_cross_and_empty_range() {
+        let price = vec![1.0f64; 33];
+        assert_trailing_agrees(&price, 1.0, Operator::Gte, 1.0);
+        assert_eq!(first_trailing_row_cmp(&price, 0, 33, 1.0, Operator::Gte, 1.0), None);
+        assert_eq!(first_trailing_row_cmp(&price, 33, 33, 1.0, Operator::Gte, 1.0), None);
+    }
+
+    // ── bind-time classification ───────────────────────────────────────────────
+
+    fn compiled(params: serde_json::Value) -> CompiledRule {
+        CompiledRule::compile(&LoadedRule {
+            id: RuleId(Uuid::from_u128(1)),
+            fingerprint_id: FingerprintId(Uuid::from_u128(2)),
+            trade_mode: TradeMode::Paper,
+            buy_amount_lamports: 1_000_000_000,
+            max_concurrent_tokens: 1,
+            max_total_tokens: 0,
+            params: RuleParams::parse(&params).expect("valid params"),
+        })
+    }
+
+    #[test]
+    fn tp_sl_desugars_into_classified_pnl_bounds() {
+        // THE regression lock, at the classification layer: after Phase 2 a pure
+        // TP/SL rule compiles to two `pnl` exit reqs, which made `has_exit_metrics()`
+        // true and silently disabled every fast path. Both must classify, and the
+        // combo must be `fast_exit`.
+        let c = compiled(serde_json::json!({ "take_profit": 50, "stop_loss": 30 }));
+        assert!(c.has_exit_metrics(), "desugaring makes the old gate true — the bug");
+        let b = BoundCombo::new(&[], c);
+        assert_eq!(
+            b.exit_classes,
+            vec![ExitClass::PnlBound { up: false }, ExitClass::PnlBound { up: true }],
+            "SL is the downward bound and is prepended ahead of TP"
+        );
+        assert!(b.fast_exit, "a pure TP/SL rule must take the index path");
+    }
+
+    #[test]
+    fn position_metrics_classify_by_kind() {
+        let retrace = compiled(serde_json::json!({
+            "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } }
+        }));
+        let b = BoundCombo::new(&[], retrace);
+        assert_eq!(b.exit_classes, vec![ExitClass::Trailing]);
+        assert!(b.fast_exit);
+
+        let held = compiled(serde_json::json!({
+            "exit": { "m_position": { "held": [{ "operator": ">=", "value": 60 }] } }
+        }));
+        let b = BoundCombo::new(&[], held);
+        assert_eq!(b.exit_classes, vec![ExitClass::HeldBound]);
+        assert!(b.fast_exit);
+    }
+
+    #[test]
+    fn unrecognised_shapes_stay_general() {
+        // A token-scoped exit column is an arbitrary function of the series.
+        let token_scoped = compiled(serde_json::json!({
+            "exit": { "m_price_lifetime": { "trail": [{ "operator": ">", "value": 50 }] } }
+        }));
+        let b = BoundCombo::new(&[], token_scoped);
+        assert_eq!(b.exit_classes, vec![ExitClass::General]);
+        assert!(!b.fast_exit, "a General req forces the scalar walk for the whole rule");
+
+        // `=` on `pnl` is a tolerance band, not a monotone bound — no prefix query.
+        let eq_band = compiled(serde_json::json!({
+            "exit": { "m_position": { "pnl": [{ "operator": "=", "value": 10 }] } }
+        }));
+        assert_eq!(BoundCombo::new(&[], eq_band).exit_classes, vec![ExitClass::General]);
+
+        // An upper bound on `held` needs the opposite search — deliberately General.
+        let held_upper = compiled(serde_json::json!({
+            "exit": { "m_position": { "held": [{ "operator": "<=", "value": 60 }] } }
+        }));
+        assert_eq!(BoundCombo::new(&[], held_upper).exit_classes, vec![ExitClass::General]);
+
+        // Multi-arm DNF on `pnl` is an OR of bands, not one crossing.
+        let mut multi = compiled(serde_json::json!({ "take_profit": 50 }));
+        multi.exit_reqs[0].conds = vec![
+            vec![Condition { operator: Operator::Gte, value: 50.0 }],
+            vec![Condition { operator: Operator::Lte, value: -20.0 }],
+        ];
+        assert_eq!(BoundCombo::new(&[], multi).exit_classes, vec![ExitClass::General]);
+    }
+
+    #[test]
+    fn mixed_classes_stay_fast_but_a_general_req_does_not() {
+        // TP/SL + a trailing stop: every req classified ⇒ the index path resolves all
+        // three (hull, hull, vectorized scan) and picks the earliest row.
+        let mixed = compiled(serde_json::json!({
+            "take_profit": 50,
+            "stop_loss": 30,
+            "exit": { "m_position": { "retrace": [{ "operator": ">=", "value": 3 }] } }
+        }));
+        let b = BoundCombo::new(&[], mixed);
+        assert!(b.fast_exit);
+        assert_eq!(b.exit_classes.len(), 3);
+        assert_eq!(b.exit_classes[2], ExitClass::Trailing);
+
+        // Add one token-scoped req and the whole rule drops to scalar.
+        let with_general = compiled(serde_json::json!({
+            "take_profit": 50,
+            "exit": { "m_price_lifetime": { "trail": [{ "operator": ">", "value": 50 }] } }
+        }));
+        assert!(!BoundCombo::new(&[], with_general).fast_exit);
     }
 }

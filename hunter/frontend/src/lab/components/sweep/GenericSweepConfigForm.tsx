@@ -28,7 +28,13 @@ import { fingerprintParamsCell } from 'components/strategy/FingerprintParamsSumm
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { fingerprintsHref } from 'lib/strategy/nav';
-import type { Fingerprint } from 'lib/strategy/types';
+import {
+  COST_MODELS,
+  FILL_MODELS,
+  type CostModelId,
+  type Fingerprint,
+  type FillModelId,
+} from 'lib/strategy/types';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import {
   axisRowError,
@@ -132,6 +138,11 @@ interface GenericSweepConfig {
   useAvx512: boolean;
   /** Corpus-wide volume-ix patterns when axes reference m_flow_*. */
   volumeIxPatterns: string[][];
+  /** Which trade in the fill window prices each leg. Unlike the RAM/AVX knobs this
+   *  changes the RESULT, so it is persisted on the run and shown on its header. */
+  fillModel: FillModelId;
+  /** Which execution-cost model prices the round-trips. */
+  costModel: CostModelId;
   /** Saved fingerprint the corpus is scoped to (engine match SSOT). When set the
    *  manual value filters are not sent — the backend matches instead. */
   seedFingerprintId: string | null;
@@ -165,6 +176,14 @@ function defaultConfig(): GenericSweepConfig {
     // A/B (plan §P5) confirms the speedup on your corpus — the result is identical.
     useAvx512: false,
     volumeIxPatterns: [],
+    // New runs default to the pair the fill-sensitivity analysis was measured under:
+    // the next print after the signal, with slippage charged ONCE (in the fill price,
+    // not again in the cost model). The old worst-case + fee+slippage pair is still
+    // selectable, and stays the wire default so stored runs keep their meaning — but
+    // it is the regime this strategy loses money in, so it is not what a fresh grid
+    // should rank inside.
+    fillModel: 'first_in_window',
+    costModel: 'pumpfun_fee_only',
     seedFingerprintId: null,
   };
 }
@@ -252,6 +271,10 @@ function runToConfig(run: GroupedSweepRunRecord, defaults: GenericSweepConfig): 
     buyAmountSol: tidySolDecimal(run.buy_amount_sol ?? defaults.buyAmountSol),
     bucketWidthSol: tidySolDecimal(run.bucket_width_sol ?? defaults.bucketWidthSol),
     volumeIxPatterns: run.volume_ix_patterns ?? defaults.volumeIxPatterns,
+    // Legacy rows (null) were computed under what the sweep hardcoded then — restore
+    // THAT, not today's default, or a "re-run" would quietly reprice the comparison.
+    fillModel: run.fill_model ?? 'worst_case',
+    costModel: run.cost_model ?? 'pumpfun_default',
     // Restore the scope so a re-run sweeps the SAME matched slice — the manual
     // filters are NULL on a scoped run, so without this the re-run would silently
     // widen to the whole selection window.
@@ -313,6 +336,8 @@ export function GenericSweepConfigForm({
     ramReserveMb,
     useAvx512,
     volumeIxPatterns,
+    fillModel,
+    costModel,
     seedFingerprintId,
   } = config;
 
@@ -432,6 +457,10 @@ export function GenericSweepConfigForm({
       token_cap: Math.min(MAX_TOKEN_CAP, Math.max(1, tokenCap)),
       max_combos: effectiveCap !== DEFAULT_MAX_COMBOS ? effectiveCap : undefined,
       buy_amount_sol: buyAmountSol,
+      // Always sent: these decide what the numbers MEAN, so leaving them to the
+      // wire default (the legacy pair) would silently contradict the form.
+      fill_model: fillModel,
+      cost_model: costModel,
       ram_reserve_mb: ramReserveMb !== DEFAULT_RAM_RESERVE_MB ? ramReserveMb : undefined,
       // Omit-when-default (same shape as ram_reserve_mb): only send when opted in.
       use_avx512: useAvx512 ? true : undefined,
@@ -542,6 +571,42 @@ export function GenericSweepConfigForm({
             numericValue={buyAmountSol}
             onNumericChange={(n) => setField('buyAmountSol', n == null ? 0.001 : Math.max(0.001, n))}
           />
+        </Field>
+        <Field
+          label="Fill model"
+          hint="per leg"
+          desc={SWEEP_FIELD_HELP.fillModel.body}
+          className="w-[150px]"
+        >
+          <Select
+            value={fillModel}
+            onChange={(e) => setField('fillModel', e.target.value as FillModelId)}
+            title={FILL_MODELS.find((m) => m.id === fillModel)?.hint}
+          >
+            {FILL_MODELS.map((m) => (
+              <option key={m.id} value={m.id} title={m.hint}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field
+          label="Cost model"
+          hint="per round-trip"
+          desc={SWEEP_FIELD_HELP.costModel.body}
+          className="w-[150px]"
+        >
+          <Select
+            value={costModel}
+            onChange={(e) => setField('costModel', e.target.value as CostModelId)}
+            title={COST_MODELS.find((m) => m.id === costModel)?.hint}
+          >
+            {COST_MODELS.map((m) => (
+              <option key={m.id} value={m.id} title={m.hint}>
+                {m.label}
+              </option>
+            ))}
+          </Select>
         </Field>
         <Field
           label="RAM reserve"

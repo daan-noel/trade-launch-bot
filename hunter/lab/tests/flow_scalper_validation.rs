@@ -322,6 +322,10 @@ fn run_with_fill(
         tokens.iter().map(|t| (t.mint.clone(), Arc::clone(&t.trades))).collect();
 
     let costed = CostModel::pumpfun_default();
+    // `realFee` — the honest column, and the one the sweep's `cost_model` selector
+    // must reproduce. `sweep_cost_selector_matches_the_realfee_column` locks the two
+    // to the same `CostModel` so a sweep run under `pumpfun_fee_only` + a fill model
+    // can be read against this harness's numbers directly.
     let feeonly = CostModel::pumpfun_fee_only();
     let free = CostModel::frictionless();
 
@@ -458,6 +462,28 @@ fn summary_line(r: &Report) {
         r.label, r.fired, r.closed, r.win_rate_before * 100.0, r.win_rate_feeonly * 100.0,
         r.hold_med, r.dip_med, r.pnl_med_after, r.p10_after,
         r.total_realized_feeonly, r.total_realized_after, r.total_realized_before,
+    );
+}
+
+/// The sweep's wire cost-model selector must resolve to the **same** `CostModel`
+/// this harness prints as `realFee` — otherwise a grid run under `pumpfun_fee_only`
+/// could not be compared against the numbers these probes report, which is the whole
+/// point of exposing the selector. No lake, no fold: a pure wiring lock, so it runs
+/// on every `cargo test` rather than only under `--ignored`.
+#[test]
+fn sweep_cost_selector_matches_the_realfee_column() {
+    use trading_core::strategies::kernel::CostModelKind;
+
+    let selected = CostModelKind::PumpfunFeeOnly.model();
+    let harness = CostModel::pumpfun_fee_only();
+    assert_eq!(selected.fee_bps_per_leg, harness.fee_bps_per_leg);
+    assert_eq!(selected.fixed_cost_sol_per_leg, harness.fixed_cost_sol_per_leg);
+    assert_eq!(selected.slippage_bps, 0.0, "the fill model already prices slippage");
+    // The legacy default is `realA` — slippage charged ON TOP of the fill model.
+    assert_eq!(
+        CostModelKind::default().model().slippage_bps,
+        CostModel::pumpfun_default().slippage_bps,
+        "an omitted cost_model must keep every stored run's original meaning"
     );
 }
 

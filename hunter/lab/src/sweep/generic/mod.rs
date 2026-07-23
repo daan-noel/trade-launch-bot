@@ -15,4 +15,4 @@ pub mod strategy;
 mod guard;
 
 pub use axes::{AxesModel, AxesRequest, AxisSide, AxisSpec, ResolvedAxis};
-pub use strategy::GenericSweepStrategy;
+pub use strategy::{GenericSweepStrategy, Pricing};

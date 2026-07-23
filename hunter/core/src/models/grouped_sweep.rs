@@ -65,6 +65,17 @@ pub struct GroupedSweepRun {
     /// use ("swept = run"). `None` on legacy rows → callers fall back to the default
     /// (`grouping::SOL_BUCKET_WIDTH`, 0.1). Stored for display + re-run + promotion.
     pub bucket_width_sol: Option<f64>,
+    /// Which trade in the fill window priced each leg
+    /// (`worst_case` | `first_in_window` | `signal_price`). `None` on legacy rows ⇒
+    /// `worst_case`, what the sweep hardcoded before the model became selectable.
+    /// Part of the run's **identity**: two runs under different fill models are not
+    /// comparable, so the UI must show it next to the PnL.
+    pub fill_model: Option<String>,
+    /// Which execution-cost model priced the round-trips (`pumpfun_default` |
+    /// `pumpfun_fee_only`). `None` on legacy rows ⇒ `pumpfun_default`. Pairing
+    /// `pumpfun_default` with an explicit fill model double-counts slippage — see
+    /// `CostModelKind`.
+    pub cost_model: Option<String>,
     /// Optional volume-ix pattern set for flow-metric sweeps (`string[][]`).
     /// Compiled corpus-wide into `FlowPatterns`; Promote copies into the
     /// fingerprint's `metric_config.m_flow_split.volume_ix_patterns`. `None` =

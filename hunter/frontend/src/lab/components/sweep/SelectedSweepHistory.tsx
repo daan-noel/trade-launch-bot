@@ -9,6 +9,7 @@ import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useRenameGroupedSweepRunMutation } from '@lab/store/labEndpoints';
 import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
 import { fingerprintsHref } from 'lib/strategy/nav';
+import { COST_MODELS, FILL_MODELS } from 'lib/strategy/types';
 import {
   GROUP_FIELD_LABELS,
   SOL_BUCKET_WIDTH,
@@ -99,6 +100,19 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
   const scopeFp = run.fingerprint_id
     ? fingerprints.find((f) => f.id === run.fingerprint_id)
     : undefined;
+  // NULL = a legacy run, written before either model was selectable — it was
+  // computed under what the sweep hardcoded then, so that is what we report.
+  const fillModel = run.fill_model ?? 'worst_case';
+  const costModel = run.cost_model ?? 'pumpfun_default';
+  const fill = FILL_MODELS.find((m) => m.id === fillModel);
+  const cost = COST_MODELS.find((m) => m.id === costModel);
+  const fillLabel = fill?.label ?? fillModel;
+  const costLabel = cost?.label ?? costModel;
+  const fillHint = fill?.hint;
+  const costHint = cost?.hint;
+  // The pairing this whole selector exists to make visible: an explicit fill model
+  // already prices execution slippage, so `pumpfun_default` charges it a second time.
+  const doubleCounted = costModel === 'pumpfun_default';
 
   return (
     <div className="mb-4 bg-surface">
@@ -191,6 +205,25 @@ export function SelectedSweepHistory({ strategyId, run, tokensDone, onReuse }: S
           {run.max_combos ?? 'default'} · buy {tidySolDecimal(run.buy_amount_sol ?? 1)} SOL · bucket{' '}
           {tidySolDecimal(run.bucket_width_sol ?? SOL_BUCKET_WIDTH)} SOL
           {run.curve_only ? ' · curve-only' : ''}
+        </Row>
+        {/* Pricing is part of this run's IDENTITY, not a display preference: every
+            PnL number below is only readable against these two. Shown on its own
+            row — and warned about when the pair double-counts slippage — because a
+            sweep whose fill model isn't visible next to its PnL is a trap. */}
+        <Row label="Pricing">
+          <span className="flex flex-wrap items-center gap-1.5">
+            <Badge variant={fillModel === 'worst_case' ? 'warning' : 'info'} title={fillHint}>
+              fill · {fillLabel}
+            </Badge>
+            <Badge variant={doubleCounted ? 'danger' : 'info'} title={costHint}>
+              cost · {costLabel}
+            </Badge>
+            <span className="text-[10px] text-text-dim/60">
+              {doubleCounted
+                ? 'slippage charged twice — also priced into the fill'
+                : 'not comparable with a run under different models'}
+            </span>
+          </span>
         </Row>
         {run.fingerprint_id && (
           <Row label="Corpus scope">

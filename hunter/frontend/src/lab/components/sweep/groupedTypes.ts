@@ -5,6 +5,8 @@
 // (`genericAxes.ts`) — the old per-strategy static axis grids + fingerprint-blob
 // serializers were removed with the legacy sweep pages (redesign FE5.4).
 
+import type { CostModelId, FillModelId } from 'lib/strategy/types';
+
 import type { SweepResultRecord } from './types';
 
 // --- grouping fields --------------------------------------------------------
@@ -107,6 +109,14 @@ export interface GroupedSweepRunRecord {
   /** Corpus-wide volume-ix patterns used when the run swept flow axes. `null` =
    *  non-flow run / legacy. Promote copies these into the fingerprint. */
   volume_ix_patterns: string[][] | null;
+  /** Which trade in the fill window priced each leg. `null` on legacy runs ⇒
+   *  `worst_case`, what the sweep hardcoded before the model became selectable.
+   *  Part of the run's IDENTITY — two runs under different fill models are not
+   *  comparable, so this is shown next to the run's PnL. */
+  fill_model: FillModelId | null;
+  /** Which cost model priced the round-trips. `null` on legacy runs ⇒
+   *  `pumpfun_default`, which charges slippage on top of the fill price. */
+  cost_model: CostModelId | null;
 }
 
 /** One group's summary row: its fingerprint key, sample size, and winning combo. */
@@ -231,4 +241,13 @@ export interface GroupedSweepStartArgs {
   /** Corpus-wide volume-ix patterns when axes reference `m_flow_*`. Required by
    *  the backend for those runs; omitted otherwise. */
   volume_ix_patterns?: string[][];
+  /** Which trade in the fill window prices each simulated leg. Omitted ⇒
+   *  `worst_case` (what the sweep hardcoded before this was selectable), so stored
+   *  and replayed runs keep their meaning. Unlike `use_avx512` this changes the
+   *  RESULT, not just how it was computed — it is persisted on the run row. */
+  fill_model?: FillModelId;
+  /** Which execution-cost model prices the round-trips. Omitted ⇒
+   *  `pumpfun_default`. Pair an explicit `fill_model` with `pumpfun_fee_only`:
+   *  the fill price already prices slippage. */
+  cost_model?: CostModelId;
 }

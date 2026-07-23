@@ -221,6 +221,16 @@ interface DataTableProps<R> {
    *  Pass a stable (useCallback) handler; `pageRows` is memoized so it only fires
    *  on a real change, not every render. */
   onVisibleRowsChange?: (rows: R[]) => void;
+  /**
+   * Keep the selected row in view when the result set changes (re-sort,
+   * re-filter, search, page-size, poll/refresh): the table re-pages to wherever
+   * that row moved and scrolls it back into view. Following pauses while the
+   * user has paged away by hand, and resumes on the next selection change.
+   * Default on; pass `false` for tables where the page must never move on its
+   * own. Cross-page follow needs client-side mode (server mode can't locate a
+   * row it hasn't fetched) — the scroll-into-view half still applies there.
+   */
+  followSelected?: boolean;
   /** Fires with the FULL filtered result set (client mode: after search/column
    *  filters/sort, before pagination — every matching row, not just the page).
    *  Lets a sibling summary recompute over the whole matching cohort the way a
@@ -259,6 +269,7 @@ export function DataTable<R>({
   onVisibleRowsChange,
   onFilteredRowsChange,
   sameValueTints = false,
+  followSelected = true,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -477,17 +488,37 @@ export function DataTable<R>({
     return list;
   }, [serverSide, rows, columns, debouncedSearch, activeColFilters, sortKeys]);
 
+  // ---------------------------------------------------------------------
+  // Selection follow
+  // ---------------------------------------------------------------------
+  // The selected row is *followed*: whenever the result set is re-ordered,
+  // re-filtered or refreshed, the table re-pages to wherever that row moved and
+  // scrolls it back into view, so the selection never silently ends up on a page
+  // the user isn't looking at.
+  //
+  // `followRef` is the anchor that keeps this from fighting the user: it records
+  // the key we're following and the page we last placed it on. While the visible
+  // page still equals that page we are "attached" and keep following; the moment
+  // the user pages away by hand the two diverge and following pauses (their
+  // navigation wins) until the selection changes again.
+  const followRef = useRef<{ key: string | null; page: number }>({ key: null, page: 1 });
+  // Scope for the `tr[data-row-key]` lookup the scroll-into-view effect does, so
+  // sibling tables on the same page can't match each other's rows.
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  // Index of the selected row in the FULL processed list, or -1. Not a callback:
+  // it's only ever called from effects, which always see the current render's
+  // `processed`/`rowKey` — so it needs no dependency bookkeeping.
+  const indexOfSelected = (key: string) => processed.findIndex((row) => rowKey(row) === key);
+
   // Reset to page 1 when the filter/sort/pageSize view *changes* — but NOT on the
   // initial mount (page already starts at 1) and NOT on a redundant re-fire. We
   // compare a signature of the view against the last one we acted on, rather than
-  // calling `setPage(1)` on every effect run. This is essential: an unconditional
-  // mount-time `setPage(1)` races (and, under StrictMode's double-invoke, clobbers)
-  // the "jump to the selected row's page" effect below, leaving a deep-linked
-  // selection stranded on page 1. Signature-comparison also makes it StrictMode-safe
-  // (the doubled setup sees an unchanged signature → no-op). Selection changes are
-  // intentionally excluded here; the jump effect owns them. `processed`/`rowKey` are
-  // deliberately NOT dependencies — a poll hands back a new identity, so depending
-  // on them would reset the page out from under the user on every refresh.
+  // calling `setPage(1)` on every effect run. Signature-comparison also makes it
+  // StrictMode-safe (the doubled setup sees an unchanged signature → no-op).
+  // `processed`/`rowKey` are deliberately NOT dependencies — a poll hands back a
+  // new identity, and re-running this on every refresh would reset the page out
+  // from under the user. With a followed selection the reset target is that row's
+  // NEW page instead of page 1: re-sorting a table must not strand the selection.
   const clientResetSig = `${debouncedSearch}|${JSON.stringify(debouncedColFilters)}|${JSON.stringify(sortKeys)}|${pageSize}`;
   const prevClientResetSig = useRef<string | null>(null);
   useEffect(() => {
@@ -496,35 +527,17 @@ export function DataTable<R>({
       prevClientResetSig.current = clientResetSig; // seed on mount; don't reset
       return;
     }
-    if (prevClientResetSig.current !== clientResetSig) {
-      prevClientResetSig.current = clientResetSig;
-      setPage(1);
-    }
+    if (prevClientResetSig.current === clientResetSig) return;
+    prevClientResetSig.current = clientResetSig;
+    // A re-sort/re-filter is an explicit view change, so it re-attaches the
+    // follow even if the user had paged away — the selection is what they asked
+    // to see re-ordered.
+    const index = followSelected && selectedKey ? indexOfSelected(selectedKey) : -1;
+    const target = index >= 0 ? Math.floor(index / pageSize) + 1 : 1;
+    if (index >= 0) followRef.current = { key: selectedKey, page: target };
+    setPage(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientResetSig, paginate, serverSide]);
-
-  // Jump to the selected row's page when a row is selected (selectedKey becomes
-  // truthy or changes to a different key). Deselection (→ null) is a no-op here
-  // so the page stays where it was.
-  //
-  // We DO depend on `processed` — cross-page navigation (clicking a fingerprint /
-  // rule chip lands here with `selectedKey` already set from the URL) mounts before
-  // the RTK Query rows resolve, so on first run the row isn't found yet; the jump
-  // must re-fire once the rows arrive. To stay immune to poll-driven `processed`
-  // identity churn (a refresh must not yank the user's page back), we jump exactly
-  // ONCE per selected key: `jumpedForKey` records the key we've already located, so
-  // later polls (and manual page changes) are left alone until the selection changes.
-  const jumpedForKey = useRef<string | null>(null);
-  useEffect(() => {
-    if (!paginate || serverSide || !selectedKey) return;
-    if (jumpedForKey.current === selectedKey) return;
-    const index = processed.findIndex((row) => rowKey(row) === selectedKey);
-    if (index >= 0) {
-      jumpedForKey.current = selectedKey;
-      setPage(Math.floor(index / pageSize) + 1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedKey, pageSize, paginate, serverSide, processed]);
 
   // Debounce the text inputs before they drive filtering: server mode emits the
   // view-state from these; client mode feeds them into `processed` above. Either
@@ -591,6 +604,60 @@ export function DataTable<R>({
       serverSide ? rows : paginate ? processed.slice(start, start + pageSize) : processed,
     [serverSide, rows, paginate, processed, start, pageSize],
   );
+  // Follow the selection across (a) a selection change and (b) any change to the
+  // result set — a poll/refresh that reorders rows, an upstream filter, rows
+  // arriving late. `processed` is a dependency precisely so a refresh re-locates
+  // the row; the follow anchor above is what keeps that from yanking a user who
+  // has navigated elsewhere.
+  //
+  // Depending on `processed` also covers cross-page navigation (clicking a
+  // fingerprint / rule chip lands here with `selectedKey` already set from the
+  // URL): the table mounts before the RTK Query rows resolve, so the first run
+  // finds nothing and the jump re-fires once the rows arrive.
+  useEffect(() => {
+    if (!selectedKey) {
+      followRef.current = { key: null, page: followRef.current.page };
+      return;
+    }
+    if (!followSelected || !paginate || serverSide) return;
+    const index = indexOfSelected(selectedKey);
+    if (index < 0) return; // not in the current result set — nothing to follow
+    const target = Math.floor(index / pageSize) + 1;
+    const selectionChanged = followRef.current.key !== selectedKey;
+    // Still attached? (a brand-new selection always re-attaches)
+    if (!selectionChanged && followRef.current.page !== pageVal) return;
+    followRef.current = { key: selectedKey, page: target };
+    if (target !== pageVal) setPage(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey, processed, pageVal, pageSize, paginate, serverSide, followSelected]);
+
+  // Scroll the selected row back into view — the other half of "follow": paging
+  // to the right page is useless if the row sits below the fold. Fires only when
+  // the row's identity or its position actually changed (new selection, a jump,
+  // or a re-sort that moved it), never on an idle poll, so a user who has
+  // scrolled away from a still-put selection is left alone. `block: 'nearest'`
+  // makes it a no-op when the row is already fully visible, which is exactly the
+  // "re-focus" semantic; the row's `scroll-margin` clears the sticky header.
+  // Runs in server mode too (the page is whatever the backend returned, but the
+  // row is still on screen and still worth re-focusing).
+  const scrollAnchor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!followSelected || !selectedKey) {
+      scrollAnchor.current = null;
+      return;
+    }
+    const idx = pageRows.findIndex((row) => rowKey(row) === selectedKey);
+    if (idx < 0) return;
+    const anchor = `${selectedKey}\0${start + idx}`;
+    if (scrollAnchor.current === anchor) return;
+    scrollAnchor.current = anchor;
+    const el = tableWrapRef.current?.querySelector<HTMLElement>(
+      `tr[data-row-key="${CSS.escape(selectedKey)}"]`,
+    );
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey, pageRows, start, followSelected]);
+
   // Surface the on-screen rows so a synced sibling (e.g. the Trader Analysis
   // charts grid) can mirror the current sort/filter/page. Memoized `pageRows`
   // keeps this from firing every render.
@@ -742,7 +809,10 @@ export function DataTable<R>({
         );
       })()}
 
-      <div className="overflow-hidden rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.4),0_8px_32px_rgba(0,0,0,0.3)]">
+      <div
+        ref={tableWrapRef}
+        className="overflow-hidden rounded-lg shadow-[0_2px_12px_rgba(0,0,0,0.4),0_8px_32px_rgba(0,0,0,0.3)]"
+      >
         <div className="overflow-x-auto border border-primary rounded-lg">
           <table className={cn('w-full border-collapse font-mono text-xs', hoverable && 'dt-colhover')}>
             <thead>
@@ -924,6 +994,9 @@ interface TableRowProps<R> {
   valueTints?: Map<string, string> | null;
 }
 
+/** Module-level so its identity is stable — it's a prop on a memoized row. */
+const SELECTED_SCROLL_MARGIN = { scrollMarginTop: '7rem', scrollMarginBottom: '3rem' } as const;
+
 /**
  * A single table row, extracted and memoized so that a re-render of the table
  * (most often a poll handing back a fresh page) only re-renders the rows that
@@ -952,7 +1025,24 @@ function TableRowInner<R>({
   return (
     <Fragment>
       <tr
-        onClick={selectable ? () => onSelectRow(rowKeyValue, isSelected) : undefined}
+        data-row-key={rowKeyValue}
+        // The `thead` pins at `top-0` over the page scroll, so a plain
+        // scroll-into-view can park the row underneath it. The margin reserves
+        // the header band (group banner + sort row + filter row).
+        style={isSelected ? SELECTED_SCROLL_MARGIN : undefined}
+        onClick={
+          selectable
+            ? (e) => {
+                // A button (or anything acting like one) inside a cell — e.g. a
+                // row action rendered directly in a data column, not just the
+                // dedicated Actions column — fires its own click semantics.
+                // Without this guard that click bubbles to the row and toggles
+                // selection underneath it.
+                if ((e.target as HTMLElement).closest('button, a, [role="button"]')) return;
+                onSelectRow(rowKeyValue, isSelected);
+              }
+            : undefined
+        }
         className={cn(
           selectable && 'cursor-pointer',
           'transition-colors hover:bg-primary/12',

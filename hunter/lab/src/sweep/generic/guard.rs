@@ -24,16 +24,39 @@ use hunter_engine::rule_params::{GroupConditions, RuleParams, SideConditions};
 
 use trading_core::config::constants::sol_to_lamports;
 use trading_core::strategies::kernel::{round_trip_with_costs, CostModel, ExitCode};
+use trading_core::strategies::paper_fill::FillModel;
 
 use crate::sweep::corpus::CorpusToken;
 use crate::sweep::projection::CorpusTrade;
 use crate::sweep::strategy::TokenOutcome;
 use crate::strategies::replay::{run_replay, PositionOutcome, ReplayConfig, ReplayToken};
 
-use super::strategy::{build_series_with_flow, columns_for, scan, sparse_grid_for};
+use super::strategy::{
+    build_series_with_flow, columns_for, scan, sparse_grid_for, wants_exit_index, Pricing,
+};
 
 const BUY_SOL: f64 = 1.0;
 const FP_ID: uuid::Uuid = uuid::Uuid::from_u128(0x1234);
+
+/// The sweep's legacy pricing — worst-case fills + `pumpfun_default`. The default
+/// for tests that aren't about the fill model; [`pricing_for`] varies it.
+fn pricing() -> Pricing {
+    pricing_for(FillModel::WorstCase)
+}
+
+/// Legacy pricing repriced under `fill_model`. The cost model is deliberately held
+/// at `pumpfun_default` here: these tests lock scan ≡ replay, and replay prices with
+/// the same `CostModel` the assertion computes with, so varying it would only test
+/// the arithmetic — the fill model is the half that changes *which trade* each leg
+/// fills against, and so the half a parity guard has to cover.
+fn pricing_for(fill_model: FillModel) -> Pricing {
+    Pricing { buy_amount_sol: BUY_SOL, fill_model, cost: CostModel::pumpfun_default() }
+}
+
+/// Every selectable fill model — parity must hold under each, not just the one the
+/// sweep used to hardcode.
+const FILL_MODELS: [FillModel; 3] =
+    [FillModel::WorstCase, FillModel::FirstInWindow, FillModel::SignalPrice];
 
 fn base() -> Ts {
     Utc.timestamp_opt(1_700_000_000, 0).unwrap()
@@ -187,8 +210,15 @@ fn replay_tuple(po: Option<&PositionOutcome>, cost: &CostModel) -> (bool, ExitCo
     }
 }
 
-/// Run `rule` over `corpus_tokens` two ways — full engine replay and the scan —
-/// and assert the per-token outcomes match.
+/// Run `rule` over `corpus_tokens` two ways — full engine replay and the scan — and
+/// assert the per-token outcomes match, **under every [`FillModel`]**.
+///
+/// The fill model is not a display setting: it decides which trade in the window
+/// prices each leg, so it moves entry/exit prices, PnL and (through the entry fill
+/// row) every subsequent exit decision. `ReplayConfig` already threads it, so running
+/// both sides under the same model is the real lock on the sweep's new fill selector
+/// — a scan that only matched replay under `worst_case` would silently lie for the
+/// two models the fill-sensitivity analysis actually reported on.
 fn assert_parity(label: &str, params: RuleParams, tokens: &[(CorpusToken, ReplayToken)], as_of: Ts) {
     assert_parity_with_flow(label, params, tokens, as_of, None);
 }
@@ -202,6 +232,28 @@ fn assert_parity_with_flow(
     as_of: Ts,
     volume_ix_patterns: Option<Vec<Vec<String>>>,
 ) {
+    for fm in FILL_MODELS {
+        assert_parity_under(
+            &format!("{label}/{fm:?}"),
+            params.clone(),
+            tokens,
+            as_of,
+            volume_ix_patterns.clone(),
+            fm,
+        );
+    }
+}
+
+/// One (`rule`, corpus, fill model) parity assertion — the body [`assert_parity`]
+/// runs once per model.
+fn assert_parity_under(
+    label: &str,
+    params: RuleParams,
+    tokens: &[(CorpusToken, ReplayToken)],
+    as_of: Ts,
+    volume_ix_patterns: Option<Vec<Vec<String>>>,
+    fill_model: FillModel,
+) {
     let rule = loaded(params);
     let mut fp = fingerprint();
     if let Some(patterns) = &volume_ix_patterns {
@@ -212,7 +264,8 @@ fn assert_parity_with_flow(
     let flow_patterns = volume_ix_patterns
         .as_ref()
         .map(|p| FlowPatterns::from_label_sequences(p));
-    let cost = CostModel::pumpfun_default();
+    let pricing = pricing_for(fill_model);
+    let cost = pricing.cost;
 
     // Replay each token in isolation (single-token stream) — the sweep judges each
     // token independently, so single-token replay is the right reference.
@@ -225,7 +278,7 @@ fn assert_parity_with_flow(
             std::slice::from_ref(&rule),
             std::slice::from_ref(&fp),
             vec![replay_tok.clone()],
-            ReplayConfig { as_of, ..Default::default() },
+            ReplayConfig { as_of, fill_model },
         );
         let po = replay_out.iter().find(|o| o.mint == corpus_tok.mint);
         let (r_fired, r_exit, r_entry, r_exit_price, r_pnl_sol, r_pnl_pct) = replay_tuple(po, &cost);
@@ -237,7 +290,7 @@ fn assert_parity_with_flow(
             as_of,
             flow_patterns.as_ref(),
         );
-        let outcome = scan(&corpus_tok.trades, &series, &compiled, BUY_SOL, &cost);
+        let outcome = scan(&corpus_tok.trades, &series, &compiled, &pricing);
 
         assert_eq!(
             outcome.fired, r_fired,
@@ -437,6 +490,31 @@ fn scan_matches_replay_position_pnl_exit() {
 }
 
 #[test]
+fn scan_matches_replay_position_held_exit() {
+    // `m_position.held >= 5` — a time stop. New fast-path class (binary search on the
+    // series' `at` column), and one no sweep path could resolve without walking every
+    // row before item B; locked against the fold on both a dense and a gappy corpus.
+    let params = exit_metric(MetricGroupId::Position, MetricId::Held, Operator::Gte, 5.0);
+    assert_parity("position_held", params.clone(), &corpus(), at(1000.0));
+    assert_parity("position_held_gappy", params, &gappy_corpus(), at(100_000.0));
+}
+
+#[test]
+fn scan_matches_replay_tp_sl_plus_authored_metric() {
+    // Mixed classes AND mixed origins on one rule: the desugared SL/TP must still
+    // outrank the authored trailing stop when both fire on the same row, and the
+    // labels must stay `StopLoss`/`TakeProfit` rather than collapsing to `Metrics`.
+    let params = RuleParams {
+        take_profit: Some(50.0),
+        stop_loss: Some(30.0),
+        entry: None,
+        exit: Some(static_metric_side(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0)),
+        reentry: None,
+    };
+    assert_parity("tp_sl_plus_retrace", params, &corpus(), at(1000.0));
+}
+
+#[test]
 fn scan_matches_replay_price_window_dip_entry() {
     // Entry on `m_price_window(30).trail >= 12` (buy a 12%+ dip off the rolling high),
     // exit via TP. Exercises the windowed price-extrema entry column end-to-end.
@@ -482,13 +560,13 @@ fn position_retrace_actually_fires_the_trailing_stop() {
     assert_eq!(sparse_grid_for(&compiled).max_window_secs, 30.0);
 
     let grid = sparse_grid_for(&compiled);
-    let cost = CostModel::pumpfun_default();
+    let pricing = pricing();
     let toks = pw_dip_corpus();
 
     // The dipping token: enters on the 16.7% dip, closes on the post-peak retrace.
     let (dip, _) = &toks[0];
     let series = build_series_with_flow(dip, cols.clone(), &grid, at(1000.0), None);
-    let out = scan(&dip.trades, &series, &compiled, BUY_SOL, &cost);
+    let out = scan(&dip.trades, &series, &compiled, &pricing);
     assert!(out.fired, "the 12% dip entry must fire");
     assert_eq!(out.exit, ExitCode::Metrics, "the retrace trailing stop must close it");
     assert!(
@@ -500,7 +578,7 @@ fn position_retrace_actually_fires_the_trailing_stop() {
     // The flat token never dips 12% off its rolling high → never enters.
     let (flat, _) = &toks[1];
     let flat_series = build_series_with_flow(flat, cols, &grid, at(1000.0), None);
-    let flat_out = scan(&flat.trades, &flat_series, &compiled, BUY_SOL, &cost);
+    let flat_out = scan(&flat.trades, &flat_series, &compiled, &pricing);
     assert!(!flat_out.fired, "no 12% dip → no entry");
 }
 
@@ -597,7 +675,7 @@ fn scan_matches_replay_stall_eq_exit_across_gap() {
 fn shared_bind_matches_per_token_bind() {
     use super::strategy::{resolve_entry, resolve_exit, BoundCombo};
 
-    let cost = CostModel::pumpfun_default();
+    let pricing = pricing();
     let as_of = at(100_000.0);
     // Two rule shapes (metric-exit and TP/SL) over both corpora, so the entry, exit
     // and mono-kill column sets are all exercised on tokens with differing series
@@ -623,10 +701,10 @@ fn shared_bind_matches_per_token_bind() {
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
             let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
 
-            let entry = resolve_entry(&corpus_tok.trades, &series, &shared);
-            let shared_out = resolve_exit(&corpus_tok.trades, &series, &shared, &entry, BUY_SOL, &cost);
+            let entry = resolve_entry(&corpus_tok.trades, &series, &shared, &pricing);
+            let shared_out = resolve_exit(&corpus_tok.trades, &series, &shared, &entry, &pricing);
             // `scan` binds against this token's own series — the reference.
-            let per_token_out = scan(&corpus_tok.trades, &series, &compiled, BUY_SOL, &cost);
+            let per_token_out = scan(&corpus_tok.trades, &series, &compiled, &pricing);
 
             let m = &corpus_tok.mint;
             assert_eq!(shared_out.fired, per_token_out.fired, "{m}: fired");
@@ -768,9 +846,10 @@ fn assert_outcomes_eq(a: &TokenOutcome, b: &TokenOutcome, msg: &str) {
 
 #[test]
 fn simd_exit_scan_matches_scalar_across_paths() {
+    use super::exit_index::ExitIndex;
     use super::strategy::{resolve_entry, resolve_exit, resolve_exit_simd, BoundCombo};
 
-    let cost = CostModel::pumpfun_default();
+    let pricing = pricing();
     let as_of = at(100_000.0);
 
     // Entry gated on time > 2 s so the fill defers past the first print — exercises a
@@ -807,9 +886,18 @@ fn simd_exit_scan_matches_scalar_across_paths() {
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
             let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
             let trades = &corpus_tok.trades;
-            let entry = resolve_entry(trades, &series, &bound);
-            let scalar = resolve_exit(trades, &series, &bound, &entry, BUY_SOL, &cost);
-            let simd = resolve_exit_simd(trades, &series, &bound, &entry, BUY_SOL, &cost);
+            let entry = resolve_entry(trades, &series, &bound, &pricing);
+            let mut idx = ExitIndex::default();
+            match &entry {
+                super::strategy::EntryResolution::Entered { fill_row, .. }
+                    if wants_exit_index(&bound, &entry) =>
+                {
+                    idx.rebuild(&series, *fill_row);
+                }
+                _ => idx.clear(),
+            }
+            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing);
+            let simd = resolve_exit_simd(trades, &series, &bound, &entry, &pricing, &idx);
             assert_eq!(
                 outcome_tuple(&simd),
                 outcome_tuple(&scalar),
@@ -820,12 +908,73 @@ fn simd_exit_scan_matches_scalar_across_paths() {
     }
 }
 
+/// **Reachability lock** (item B's regression, not its correctness).
+///
+/// From Phase 2 until this change, the exit index and the AVX-512 scan were dead for
+/// every TP/SL rule: desugaring turned `take_profit`/`stop_loss` into `pnl` exit reqs,
+/// which made `has_exit_metrics()` — the flag both fast paths gated on — true. Nothing
+/// failed, because the scalar fallback they dropped into is the correct reference. The
+/// absence of *this* assertion is what let that rot for a whole phase, so it asserts
+/// the gate is open, on a real entered token, for the exact rule shape it was built for.
+#[test]
+fn tp_sl_rules_actually_reach_the_exit_index() {
+    use super::exit_index::ExitIndex;
+    use super::strategy::{resolve_entry, BoundCombo, EntryResolution};
+
+    let pricing = pricing();
+    let as_of = at(1000.0);
+    // Every pure price-ladder shape: TP+SL, TP only, SL only.
+    let ladders = [
+        (Some(50.0), Some(30.0)),
+        (Some(20.0), None),
+        (None, Some(40.0)),
+    ];
+
+    let mut entered_tokens = 0;
+    for (tp, sl) in ladders {
+        let compiled = CompiledRule::compile(&loaded(RuleParams {
+            take_profit: tp,
+            stop_loss: sl,
+            entry: None,
+            exit: None,
+            reentry: None,
+        }));
+        // The shape the old gate got wrong: desugared reqs exist, so the pre-fix
+        // branch would have refused the index here.
+        assert!(
+            compiled.has_exit_metrics(),
+            "TP/SL desugars into exit reqs — that is what broke the old gate"
+        );
+        let cols = columns_for(&compiled);
+        let grid = sparse_grid_for(&compiled);
+        let bound = BoundCombo::new(&cols, compiled.clone());
+        assert!(bound.fast_exit, "a pure TP/SL rule must classify entirely");
+
+        for (corpus_tok, _) in corpus().iter() {
+            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let entry = resolve_entry(&corpus_tok.trades, &series, &bound, &pricing);
+            let EntryResolution::Entered { fill_row, .. } = entry else { continue };
+            entered_tokens += 1;
+            assert!(
+                wants_exit_index(&bound, &entry),
+                "{}: TP/SL entry must open the index gate",
+                corpus_tok.mint
+            );
+            let mut idx = ExitIndex::default();
+            idx.rebuild(&series, fill_row);
+            assert!(idx.is_ready(), "{}: the rebuilt index must be usable", corpus_tok.mint);
+        }
+    }
+    // Non-vacuity: the loop above must actually have entered somewhere.
+    assert!(entered_tokens > 0, "no token entered — the assertions above proved nothing");
+}
+
 #[test]
 fn index_exit_scan_matches_scalar_across_paths() {
     use super::exit_index::ExitIndex;
     use super::strategy::{resolve_entry, resolve_exit, resolve_exit_indexed, BoundCombo};
 
-    let cost = CostModel::pumpfun_default();
+    let pricing = pricing();
     let as_of = at(100_000.0);
 
     let entry_gate = {
@@ -853,6 +1002,26 @@ fn index_exit_scan_matches_scalar_across_paths() {
         entry_gate,
         // Metrics → index falls back to scalar; still must match.
         exit_metric(MetricGroupId::PriceLifetime, MetricId::Trail, Operator::Gt, 50.0),
+        // The three position classes the fast path now resolves itself: a trailing
+        // stop (O(n) running peak), a time stop (binary search on `at`), and an
+        // authored `pnl` bound (hull, but labelled `Metrics` not `StopLoss`).
+        exit_metric(MetricGroupId::Position, MetricId::Retrace, Operator::Gte, 3.0),
+        exit_metric(MetricGroupId::Position, MetricId::Held, Operator::Gte, 5.0),
+        exit_metric(MetricGroupId::Position, MetricId::Pnl, Operator::Lte, -20.0),
+        // Mixed classes on one rule — the earliest row across hull + scan wins, and
+        // the tie-break must keep the desugared SL/TP ahead of the authored metric.
+        RuleParams {
+            take_profit: Some(50.0),
+            stop_loss: Some(30.0),
+            entry: None,
+            exit: Some(static_metric_side(
+                MetricGroupId::Position,
+                MetricId::Retrace,
+                Operator::Gte,
+                3.0,
+            )),
+            reentry: None,
+        },
     ];
 
     for (i, params) in rules.into_iter().enumerate() {
@@ -864,18 +1033,18 @@ fn index_exit_scan_matches_scalar_across_paths() {
         for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
             let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
             let trades = &corpus_tok.trades;
-            let entry = resolve_entry(trades, &series, &bound);
+            let entry = resolve_entry(trades, &series, &bound, &pricing);
             let mut idx = ExitIndex::default();
             match &entry {
                 super::strategy::EntryResolution::Entered { fill_row, .. }
-                    if !bound.rule.has_exit_metrics() =>
+                    if wants_exit_index(&bound, &entry) =>
                 {
                     idx.rebuild(&series, *fill_row);
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(trades, &series, &bound, &entry, BUY_SOL, &cost);
-            let indexed = resolve_exit_indexed(trades, &series, &bound, &entry, BUY_SOL, &cost, &idx);
+            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing);
+            let indexed = resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx);
             assert_outcomes_eq(
                 &indexed,
                 &scalar,
@@ -892,7 +1061,7 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
     use hunter_engine::metrics::series::MetricSeries;
     use hunter_engine::metrics::{Side, TradeLite};
 
-    let cost = CostModel::pumpfun_default();
+    let pricing = pricing();
     // Deterministic LCG — no rand dep needed in this module.
     let mut seed: u64 = 0xC0FFEE_u64;
     let mut next = || {
@@ -975,13 +1144,13 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
             };
             let compiled = CompiledRule::compile(&loaded(params));
             let bound = BoundCombo::new(series.columns(), compiled);
-            let entry = resolve_entry(&trades, &series, &bound);
+            let entry = resolve_entry(&trades, &series, &bound, &pricing);
             let mut idx = ExitIndex::default();
             if let super::strategy::EntryResolution::Entered { fill_row, .. } = &entry {
                 idx.rebuild(&series, *fill_row);
             }
-            let scalar = resolve_exit(&trades, &series, &bound, &entry, BUY_SOL, &cost);
-            let indexed = resolve_exit_indexed(&trades, &series, &bound, &entry, BUY_SOL, &cost, &idx);
+            let scalar = resolve_exit(&trades, &series, &bound, &entry, &pricing);
+            let indexed = resolve_exit_indexed(&trades, &series, &bound, &entry, &pricing, &idx);
             assert_outcomes_eq(
                 &indexed,
                 &scalar,

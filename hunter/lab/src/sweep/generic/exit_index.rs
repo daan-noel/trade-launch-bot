@@ -1,11 +1,21 @@
-//! Per-`(token, entry)` prefix-extrema index for O(log n) pure-TP/SL exit
-//! resolution (exit-index plan). Built once when the engine's entry cache goes
-//! stale; hull Vecs are reused in place so peak RSS does not grow.
+//! Per-`(token, entry)` prefix-extrema index for O(log n) exit resolution
+//! (exit-index plan). Built once when the engine's entry cache goes stale; hull
+//! Vecs are reused in place so peak RSS does not grow.
 //!
 //! Hull definitions (over `fill_row+1..n`):
 //! - `hull_max[i]` = running max of **finite** prices (carried through NaN rows)
 //! - `hull_min[i]` = running min of finite prices (same carry)
-//! Both are monotone ⇒ `partition_point` finds the first crossing exactly.
+//!
+//! Both are monotone, so for a predicate that is upward-closed in price (`pnl >= tp`)
+//! the first satisfying row is `partition_point` over `hull_max` — and symmetrically
+//! over `hull_min` for a downward-closed one. The predicate is supplied by the caller
+//! and is the same `eval` the scalar walk applies, so the two cannot disagree about
+//! inclusivity or non-finite handling; this module only supplies the *search*.
+//!
+//! The rebuild also records whether the row timestamps are non-decreasing over the
+//! scan range — the precondition for answering an `m_position.held` bound by binary
+//! search. Block time can regress a few seconds across slots, and a regression would
+//! make `held` non-monotone and land such a search anywhere.
 
 use hunter_engine::metrics::series::MetricSeries;
 
@@ -21,6 +31,9 @@ pub struct ExitIndex {
     last_finite_row: Option<usize>,
     /// First series row the hull covers (`fill_row + 1`).
     start: usize,
+    /// Whether `series.at` is non-decreasing over `start..n` — the soundness
+    /// precondition for a binary search on `held`.
+    at_nondecreasing: bool,
     /// Whether [`Self::rebuild`] produced a usable index for the current entry.
     ready: bool,
 }
@@ -33,6 +46,7 @@ impl ExitIndex {
         self.dead_row = None;
         self.last_finite_row = None;
         self.start = 0;
+        self.at_nondecreasing = false;
         self.ready = false;
     }
 
@@ -42,6 +56,7 @@ impl ExitIndex {
         self.hull_min.clear();
         self.dead_row = None;
         self.last_finite_row = None;
+        self.at_nondecreasing = true;
 
         let n = series.n_rows();
         // Open path parity: last finite anywhere in the series.
@@ -80,6 +95,9 @@ impl ExitIndex {
             if self.dead_row.is_none() && series.dead[j] {
                 self.dead_row = Some(j);
             }
+            if j > start && series.at[j] < series.at[j - 1] {
+                self.at_nondecreasing = false;
+            }
         }
         self.ready = true;
     }
@@ -99,65 +117,48 @@ impl ExitIndex {
         self.last_finite_row
     }
 
-    /// First series row with a finite price `≥ tp_price`, or `None`.
-    /// `partition_point(hull_max < tp)` ⇒ first index where `hull_max >= tp`.
-    pub fn first_tp_row(&self, tp_price: f64) -> Option<usize> {
+    /// Whether row timestamps are non-decreasing over the indexed range — the
+    /// precondition for answering a `held` bound by binary search.
+    #[inline]
+    pub fn at_nondecreasing(&self) -> bool {
+        self.at_nondecreasing
+    }
+
+    /// Highest / lowest finite price the hull carries (`None` for an empty range).
+    /// Callers use these to check that a price→metric transform stays finite (hence
+    /// monotone) over the whole range before trusting a prefix query.
+    #[inline]
+    pub fn hull_max_last(&self) -> Option<f64> {
+        self.hull_max.last().copied()
+    }
+
+    #[inline]
+    pub fn hull_min_last(&self) -> Option<f64> {
+        self.hull_min.last().copied()
+    }
+
+    /// First series row at which `pred` holds for some price up to that row, given
+    /// `pred` is **upward-closed in price** (once true at a price it is true at every
+    /// higher one). `partition_point(!pred(hull_max))` ⇒ the first index where the
+    /// running max satisfies it — which is necessarily a row whose own price is that
+    /// max, so it is exactly the row a scalar walk would stop at.
+    pub fn first_max_row(&self, pred: impl Fn(f64) -> bool) -> Option<usize> {
         if !self.ready || self.hull_max.is_empty() {
             return None;
         }
-        let i = self.hull_max.partition_point(|&m| m < tp_price);
-        if i < self.hull_max.len() {
-            Some(self.start + i)
-        } else {
-            None
-        }
+        let i = self.hull_max.partition_point(|&m| !pred(m));
+        (i < self.hull_max.len()).then_some(self.start + i)
     }
 
-    /// First series row with a finite price `≤ sl_price`, or `None`.
-    /// `partition_point(hull_min > sl)` ⇒ first index where `hull_min <= sl`.
-    pub fn first_sl_row(&self, sl_price: f64) -> Option<usize> {
+    /// [`Self::first_max_row`]'s mirror for a **downward-closed** predicate, over the
+    /// running min.
+    pub fn first_min_row(&self, pred: impl Fn(f64) -> bool) -> Option<usize> {
         if !self.ready || self.hull_min.is_empty() {
             return None;
         }
-        let i = self.hull_min.partition_point(|&m| m > sl_price);
-        if i < self.hull_min.len() {
-            Some(self.start + i)
-        } else {
-            None
-        }
+        let i = self.hull_min.partition_point(|&m| !pred(m));
+        (i < self.hull_min.len()).then_some(self.start + i)
     }
-}
-
-/// Pick the earliest exit among Dead / SL / TP. On equal rows, priority is
-/// **Dead > StopLoss > TakeProfit** (scalar within-row check order).
-pub fn pick_exit_row(
-    dead: Option<usize>,
-    sl: Option<usize>,
-    tp: Option<usize>,
-) -> Option<(usize, ExitKind)> {
-    let mut best: Option<(usize, u8, ExitKind)> = None;
-    let mut consider = |row: Option<usize>, prio: u8, kind: ExitKind| {
-        if let Some(r) = row {
-            match best {
-                None => best = Some((r, prio, kind)),
-                Some((br, bp, _)) if r < br || (r == br && prio < bp) => {
-                    best = Some((r, prio, kind));
-                }
-                _ => {}
-            }
-        }
-    };
-    consider(dead, 0, ExitKind::Dead);
-    consider(sl, 1, ExitKind::StopLoss);
-    consider(tp, 2, ExitKind::TakeProfit);
-    best.map(|(r, _, k)| (r, k))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExitKind {
-    Dead,
-    StopLoss,
-    TakeProfit,
 }
 
 #[cfg(test)]
@@ -208,8 +209,9 @@ mod tests {
         idx.rebuild(&s, 0); // fill at last row → empty scan range
         assert!(idx.is_ready());
         assert!(idx.hull_max.is_empty());
-        assert_eq!(idx.first_tp_row(2.0), None);
+        assert_eq!(idx.first_max_row(|m| m >= 2.0), None);
         assert_eq!(idx.dead_row(), None);
+        assert_eq!(idx.hull_max_last(), None);
     }
 
     #[test]
@@ -219,36 +221,58 @@ mod tests {
         idx.rebuild(&s, 0);
         assert_eq!(idx.dead_row(), Some(1));
         assert_eq!(idx.last_finite_row(), None);
-        assert_eq!(idx.first_tp_row(1.0), None);
-        assert_eq!(idx.first_sl_row(1.0), None);
+        // The hull carries ±inf, which no finite-guarded predicate accepts.
+        assert_eq!(idx.first_max_row(|m| m.is_finite() && m >= 1.0), None);
+        assert_eq!(idx.first_min_row(|m| m.is_finite() && m <= 1.0), None);
     }
 
     #[test]
-    fn tp_sl_inclusivity_matches_scalar() {
+    fn threshold_inclusivity_matches_scalar() {
         // price hits exactly the threshold at row 2.
         let s = series_from(&[1.0, 1.0, 1.5, 2.0], &[false; 4]);
         let mut idx = ExitIndex::default();
         idx.rebuild(&s, 0);
-        // TP at 1.5 → ≥ inclusive → row 2
-        assert_eq!(idx.first_tp_row(1.5), Some(2));
-        // SL at 1.0 → ≤ inclusive → row 1 (first after fill at 0)
-        assert_eq!(idx.first_sl_row(1.0), Some(1));
+        // `>= 1.5` → inclusive → row 2
+        assert_eq!(idx.first_max_row(|m| m >= 1.5), Some(2));
+        // `> 1.5` → exclusive → row 3 (2.0)
+        assert_eq!(idx.first_max_row(|m| m > 1.5), Some(3));
+        // `<= 1.0` → row 1 (first after the fill at 0)
+        assert_eq!(idx.first_min_row(|m| m <= 1.0), Some(1));
     }
 
     #[test]
-    fn pick_tie_break_dead_over_sl_over_tp() {
-        assert_eq!(
-            pick_exit_row(Some(5), Some(5), Some(5)),
-            Some((5, ExitKind::Dead))
-        );
-        assert_eq!(
-            pick_exit_row(None, Some(5), Some(5)),
-            Some((5, ExitKind::StopLoss))
-        );
-        assert_eq!(
-            pick_exit_row(Some(10), Some(5), Some(7)),
-            Some((5, ExitKind::StopLoss))
-        );
+    fn hull_queries_agree_with_a_scalar_walk() {
+        // The property the fast path rests on, checked directly against a per-row
+        // walk for every threshold in a grid.
+        let prices = [1.0, 1.4, f64::NAN, 0.9, 2.2, 0.4, 1.1, 3.0, 0.2];
+        let s = series_from(&prices, &[false; 9]);
+        let mut idx = ExitIndex::default();
+        for fill_row in 0..prices.len() {
+            idx.rebuild(&s, fill_row);
+            for t in [0.2, 0.4, 0.9, 1.0, 1.1, 1.4, 2.2, 3.0, 5.0] {
+                let up = |p: f64| p.is_finite() && p >= t;
+                let down = |p: f64| p.is_finite() && p <= t;
+                let want_up = (fill_row + 1..prices.len()).find(|&j| up(prices[j]));
+                let want_down = (fill_row + 1..prices.len()).find(|&j| down(prices[j]));
+                assert_eq!(idx.first_max_row(up), want_up, "fill={fill_row} t={t} up");
+                assert_eq!(idx.first_min_row(down), want_down, "fill={fill_row} t={t} down");
+            }
+        }
+    }
+
+    #[test]
+    fn at_monotonicity_is_recorded() {
+        let mut s = series_from(&[1.0, 1.0, 1.0, 1.0], &[false; 4]);
+        let mut idx = ExitIndex::default();
+        idx.rebuild(&s, 0);
+        assert!(idx.at_nondecreasing(), "1 s apart, strictly increasing");
+        // Regress one row's block time inside the scan range.
+        s.at[2] = s.at[1] - Duration::seconds(5);
+        idx.rebuild(&s, 0);
+        assert!(!idx.at_nondecreasing(), "a regressed block time must be caught");
+        // A regression BEFORE the fill row is outside the range and must not matter.
+        idx.rebuild(&s, 2);
+        assert!(idx.at_nondecreasing());
     }
 
     #[test]

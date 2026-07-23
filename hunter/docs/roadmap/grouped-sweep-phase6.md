@@ -14,20 +14,26 @@ Order is deliberate: **A → B → C**. A is small and invalidates the grid unti
 B must land as one unit (migration alone regresses perf; classification alone leaves the
 SSOT violation). C is its own phase — the scan is cheap, the outcome model is not.
 
+> **Status: A and B are DONE** (see the per-item notes below); **C is not started**.
+> The permanent record of what A and B shipped lives in
+> [../arch/sweep.md](../arch/sweep.md) (the *Exit-scan path* + *Pricing* rows and the
+> metric-scope section). This file keeps their design rationale only until C lands,
+> at which point the whole file is deleted.
+
 ## Anatomy (so you don't re-explore)
 
 | File | Role in this plan |
 | --- | --- |
-| `lab/src/sweep/generic/strategy.rs` | `GenericSweepStrategy` (holds `cost`, `as_of`, `columns`, `grid`); `resolve_entry` / `resolve_exit` / `resolve_exit_simd` / `resolve_exit_indexed`; `BoundCombo` (bind-time column indices) |
-| `lab/src/sweep/generic/exit_index.rs` | `ExitIndex` — prefix-extrema hulls; `first_tp_row(price)` / `first_sl_row(price)` / `dead_row()` / `last_finite_row()`, O(log n) |
+| `lab/src/sweep/generic/strategy.rs` | `GenericSweepStrategy` (holds `pricing`, `as_of`, `columns`, `grid`); `Pricing { buy_amount_sol, fill_model, cost }`; `resolve_entry` / `resolve_exit` (scalar SSOT) / `resolve_exit_indexed` (class-directed) / `resolve_exit_simd`; `BoundCombo` (bind-time column indices + `exit_classes` + `fast_exit`); `wants_exit_index` |
+| `lab/src/sweep/generic/exit_index.rs` | `ExitIndex` — prefix-extrema hulls; `first_max_row(pred)` / `first_min_row(pred)` (O(log n), predicate-driven so the caller's own `eval` decides) / `dead_row()` / `last_finite_row()` / `at_nondecreasing()` / `hull_{max,min}_last()` |
 | `lab/src/sweep/generic/axes.rs` | `AxisSpec` → `ResolvedAxis`; `entry_key`, `combo_params`; entry axes sorted to high-order digits |
-| `lab/src/sweep/generic/guard.rs` | scan ≡ `run_replay` parity + index/SIMD ≡ scalar. Every item below extends it |
+| `lab/src/sweep/generic/guard.rs` | scan ≡ `run_replay` parity (looped over every `FillModel`) + index/SIMD ≡ scalar + `tp_sl_rules_actually_reach_the_exit_index` (reachability). Item C extends it |
 | `lab/src/sweep/engine.rs` | `fill_outcomes_with_state` (entry cache + `out.push` per combo); `aggs[combo_id].record(o)` at :527; `combo_batch_size` memory model |
 | `lab/src/sweep/aggregate.rs` | `ComboAgg` → core `RunAgg` (streaming DDSketch, O(1)/combo) → `ComboMetrics` |
 | `lab/src/sweep/strategy.rs` | `TokenOutcome` (`Copy`), `Strategy` / `ParamSpace` traits |
 | `core/src/strategies/paper_fill.rs` | `FillModel {WorstCase, FirstPrint, Signal}`; `find_paper_entry_at(.., model)` / `find_paper_exit_at(.., model)`; the `find_worst_case_*` wrappers |
-| `core/src/strategies/kernel.rs` | `CostModel::pumpfun_default()` (with slippage) vs `pumpfun_fee_only()` (:134) |
-| `engine/src/arm.rs` | `MetricReq { position_scoped, origin: ReqOrigin }`; `CompiledRule::{has_exit_metrics, exit_fired}` |
+| `core/src/strategies/kernel.rs` | `CostModel::pumpfun_default()` (with slippage) vs `pumpfun_fee_only()`; `CostModelKind` — the wire selector |
+| `engine/src/arm.rs` | `MetricReq { position_scoped, origin: ReqOrigin }`; `CompiledRule::{has_exit_metrics, exit_fired}` — `has_exit_metrics` is no longer a fast-path gate anywhere in the sweep |
 
 Commands: `cargo check -p hunter-lab`, `cargo test -p hunter-lab --lib sweep::generic`,
 `--target-dir "C:/Users/User/Documents/Bot/target-check"` when a bin is running. Build the
@@ -35,7 +41,28 @@ test target with `-j 2` — a full-parallelism link OOMs this box (pagefile erro
 
 ---
 
-## Item A — fill-model + cost-model fidelity (BLOCKER for the grid)
+## Item A — fill-model + cost-model fidelity (BLOCKER for the grid) — **DONE**
+
+**What landed.** `Pricing { buy_amount_sol, fill_model, cost }` threads request →
+`run_grouped` → `GenericSweepStrategy` → every scan fn (one struct, so a scan can never
+be handed one half without the other). `CostModelKind` (`pumpfun_default` |
+`pumpfun_fee_only`) is the wire selector. Both persist on the run row (lab migration
+`0010`), show on the run header as badges, and are re-applied by the token-results
+drill-in — same reason it re-uses the run's `as_of`. `#[serde(default)]` keeps the
+legacy pair for stored rows; the **form** defaults new runs to `first_in_window` +
+`pumpfun_fee_only` (step 5), and the results view warns when a run carries the
+double-counting pair. Guard: `assert_parity` now runs scan ≡ `run_replay` under **every**
+`FillModel` (`ReplayConfig.fill_model` threaded on both sides).
+
+Deliberately **not** changed: `replay.rs` / `strategy_repo.rs` still build
+`CostModel::pumpfun_default()` directly. Those are single-rule surfaces with their own
+request shapes; giving the sweep a selector was the blocker, and repricing simulate in
+the same change would have moved two baselines at once.
+
+Still to run (needs the real lake, not a unit test): the two corpus-level acceptance
+checks below — a `first`-fill sweep reproducing the `flow_scalper_fill_sensitivity`
+sign, and `pumpfun_fee_only` matching the harness's `realFee`. The *wiring* half of the
+latter is locked by `sweep_cost_selector_matches_the_realfee_column`.
 
 **The sweep is hardcoded to the one fill regime where this strategy loses money.**
 
@@ -86,7 +113,34 @@ comparison a sweep exists to make.
 
 ---
 
-## Item B — TP/SL → `m_position.pnl` migration + bind-time req classification
+## Item B — TP/SL → `m_position.pnl` migration + bind-time req classification — **DONE**
+
+**What landed.** `resolve_exit`'s `c.stop_loss` / `c.take_profit` price branches are
+gone; the scalar walk now evaluates the desugared `pnl` reqs through the same
+`position_value` + `eval` the fold uses, and takes the exit label from the fired req's
+`ReqOrigin`. Priority is carried by `exit_reqs` **order** (compile prepends SL then TP),
+not by a hand-written ladder. `BoundCombo::new` classifies each exit req into
+`ExitClass::{PnlBound, HeldBound, Trailing, General}`; `fast_exit` (no `General`)
+replaces `has_exit_metrics()` as the gate on the index and the SIMD scan, and
+`wants_exit_index` is the single predicate both `build_exit_ctx` and the reachability
+guard read.
+
+Two design points worth keeping:
+
+* **The hull answers a predicate, not a threshold.** `first_max_row` / `first_min_row`
+  take the caller's `eval` closure, so the fast path never inverts `pnl >= tp` back into
+  a price — an inversion that is only correct to within a rounding step. Same reason the
+  AVX-512 kernels compute `pnl` / `retrace` per lane with the *same* op sequence
+  `PositionCtx` uses: IEEE basic ops are exactly rounded, so vector ≡ scalar bitwise.
+* **Monotonicity is checked, not assumed.** `PnlBound` bails to scalar if `pnl` at the
+  hull extreme is non-finite (overflow breaks the ordering `partition_point` needs);
+  `HeldBound` bails if `series.at` regresses over the scan range (`ExitIndex` records
+  that during its existing O(n) rebuild).
+
+Trailing stops get the vectorized prefix-max kernel described below. Item B's *benchmark*
+step (`resolve_exit` before/after on a real grid) has not been run.
+
+### Original design (kept for the rationale)
 
 Two goals that must be solved together.
 

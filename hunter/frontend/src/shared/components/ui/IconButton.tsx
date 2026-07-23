@@ -89,6 +89,7 @@ export function IconButton({
   children,
   title,
   'aria-label': ariaLabel,
+  onClick,
   ...props
 }: IconButtonProps) {
   const labeled = label != null && label !== '';
@@ -105,6 +106,18 @@ export function IconButton({
         active && (activeClassName ?? activeVariants[variant]),
         className,
       )}
+      onClick={
+        onClick
+          ? (e) => {
+              // IconButtons are almost always rendered inside a clickable row/card
+              // (table rows, chart cards) — without this, its click bubbles up and
+              // fires that ancestor's own onClick (e.g. row selection) alongside
+              // whatever this button does.
+              e.stopPropagation();
+              onClick(e);
+            }
+          : undefined
+      }
       {...props}
     >
       {labeled ? (

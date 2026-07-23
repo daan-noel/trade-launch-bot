@@ -21,7 +21,7 @@ use crate::sweep::corpus::{Corpus, CorpusToken};
 use crate::sweep::grouped_engine::{run_grouped_with_refine, CoverageFloor, GroupResult, GroupSink};
 use crate::sweep::grouping::GroupField;
 use crate::sweep::progress::SweepObserver;
-use crate::sweep::generic::{AxesModel, AxesRequest, GenericSweepStrategy};
+use crate::sweep::generic::{AxesModel, AxesRequest, GenericSweepStrategy, Pricing};
 use crate::sweep::strategy::{ExitCode, ParamSpace, RefineSpec, SweepMethod};
 
 /// Notional (SOL) a grouped-sweep run prices every combo's round-trip at when the
@@ -617,7 +617,9 @@ pub async fn run_grouped(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
-    buy_amount_sol: f64,
+    // Notional + fill model + cost model — the run's PRICING IDENTITY, not tuning
+    // knobs: two runs priced differently are not comparable (see `Pricing`).
+    pricing: Pricing,
     // Corpus-wide volume-ix patterns for flow-metric axes (`None` = non-flow).
     volume_ix_patterns: Option<Vec<Vec<String>>>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
@@ -628,7 +630,7 @@ pub async fn run_grouped(
         "generic" => {
             sweep_generic(
                 axes_json, method, refine, corpus, fields, width, min_tokens, floor, max_combos,
-                buy_amount_sol, volume_ix_patterns, coarse_observer, observer, sink,
+                pricing, volume_ix_patterns, coarse_observer, observer, sink,
             )
             .await
         }
@@ -673,7 +675,7 @@ async fn sweep_generic(
     min_tokens: usize,
     floor: CoverageFloor,
     max_combos: Option<usize>,
-    buy_amount_sol: f64,
+    pricing: Pricing,
     volume_ix_patterns: Option<Vec<Vec<String>>>,
     coarse_observer: Arc<dyn SweepObserver + Send>,
     observer: Arc<dyn SweepObserver + Send>,
@@ -722,7 +724,7 @@ async fn sweep_generic(
         bail!("param space is empty");
     }
     let strategy =
-        GenericSweepStrategy::new(model, buy_amount_sol, chrono::Utc::now(), flow_patterns);
+        GenericSweepStrategy::new(model, pricing, chrono::Utc::now(), flow_patterns);
     let max_series_bytes = corpus
         .tokens
         .iter()
@@ -836,12 +838,14 @@ async fn sweep_generic(
 ///
 /// `as_of` is the run's **own** "now" (its `created_at`), not wall-clock — see
 /// [`simulate_generic_one_combo`] for why re-deriving it here corrupts the drill-in
-/// (parity plan B7).
+/// (parity plan B7). `pricing` is the run's stored notional + fill model + cost model
+/// for exactly the same reason: re-simulating a row under different pricing would
+/// show different PnL for the very combo being drilled into.
 pub fn simulate_one_combo(
     strategy_id: &str,
     tokens: &[CorpusToken],
     params_json: &Value,
-    buy_amount_sol: f64,
+    pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
     volume_ix_patterns: Option<&[Vec<String>]>,
 ) -> Result<Vec<ComboTokenResult>> {
@@ -849,7 +853,7 @@ pub fn simulate_one_combo(
         "generic" => simulate_generic_one_combo(
             tokens,
             params_json,
-            buy_amount_sol,
+            pricing,
             as_of,
             volume_ix_patterns,
         ),
@@ -897,7 +901,7 @@ fn exit_label(code: ExitCode) -> &'static str {
 fn simulate_generic_one_combo(
     tokens: &[CorpusToken],
     params_json: &Value,
-    buy_amount_sol: f64,
+    pricing: Pricing,
     as_of: chrono::DateTime<chrono::Utc>,
     volume_ix_patterns: Option<&[Vec<String>]>,
 ) -> Result<Vec<ComboTokenResult>> {
@@ -906,7 +910,6 @@ fn simulate_generic_one_combo(
     use hunter_engine::fingerprint::FingerprintId;
     use hunter_engine::rule_params::RuleParams;
     use trading_core::config::constants::sol_to_lamports;
-    use trading_core::strategies::kernel::CostModel;
 
     use crate::sweep::generic::strategy::{
         build_series_with_flow, columns_for, scan, sparse_grid_for,
@@ -920,7 +923,7 @@ fn simulate_generic_one_combo(
         id: RuleId(uuid::Uuid::nil()),
         fingerprint_id: FingerprintId(uuid::Uuid::nil()),
         trade_mode: TradeMode::Paper,
-        buy_amount_lamports: sol_to_lamports(buy_amount_sol).max(0) as u64,
+        buy_amount_lamports: sol_to_lamports(pricing.buy_amount_sol).max(0) as u64,
         max_concurrent_tokens: u32::MAX,
         max_total_tokens: 0,
         params,
@@ -928,7 +931,6 @@ fn simulate_generic_one_combo(
     let compiled = CompiledRule::compile(&loaded);
     let columns = columns_for(&compiled);
     let grid = sparse_grid_for(&compiled);
-    let cost = CostModel::pumpfun_default();
     let flow_patterns = volume_ix_patterns.map(|p| {
         hunter_engine::metrics::flow_split::FlowPatterns::from_label_sequences(p)
     });
@@ -942,7 +944,7 @@ fn simulate_generic_one_combo(
             as_of,
             flow_patterns.as_ref(),
         );
-        let o = scan(&tt.trades, &series, &compiled, buy_amount_sol, &cost);
+        let o = scan(&tt.trades, &series, &compiled, &pricing);
         results.push(ComboTokenResult {
             mint_address: tt.mint.clone(),
             symbol: tt.symbol.clone(),

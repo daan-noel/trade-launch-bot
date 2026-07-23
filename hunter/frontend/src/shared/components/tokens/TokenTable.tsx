@@ -110,6 +110,9 @@ interface TokenTableCommon<R> {
   sameValueTints?: boolean;
   selectedKey?: string | null;
   onSelect?: (key: string | null) => void;
+  /** Re-page + scroll the selected row back into view when the rows change
+   *  (sort/filter/refresh). Forwarded verbatim to {@link DataTable}; default on. */
+  followSelected?: boolean;
   onVisibleRowsChange?: (rows: R[]) => void;
   /** Full filtered cohort (post search/column-filter, pre-pagination) — passed
    *  straight through to {@link DataTable} so a sibling summary can aggregate over

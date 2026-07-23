@@ -10,6 +10,8 @@
 //! `ComboAgg` wrapper, so backtest and live/paper metrics can never drift to a
 //! second copy.
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::constants::{
     COMPUTE_UNIT_LIMIT_CURVE_BUY, COMPUTE_UNIT_LIMIT_CURVE_SELL,
     COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, LAMPORTS_PER_SOL,
@@ -139,6 +141,43 @@ impl CostModel {
     /// for analytic baselines and tests.
     pub fn frictionless() -> Self {
         Self { fee_bps_per_leg: 0.0, slippage_bps: 0.0, fixed_cost_sol_per_leg: 0.0 }
+    }
+}
+
+/// Wire-selectable [`CostModel`] — the cost half of a run's **identity** (the fill
+/// model is the other half). Two runs priced under different kinds are not
+/// comparable, so a request that carries this must persist and display it.
+///
+/// The choice is not a cosmetic knob: `pumpfun_default` charges `slippage_bps` on
+/// top of whatever the fill model already priced, so pairing it with an explicit
+/// [`FillModel`](crate::strategies::paper_fill::FillModel) **double-counts**
+/// execution slippage. Worse for a sweep, `fixed_cost_sol_per_leg` is per-leg, so
+/// the haircut scales with how often a combo fires — it is not rank-preserving
+/// across combos.
+///
+/// Serde: canonical `snake_case` names, plus short aliases matching the
+/// fill-sensitivity analysis doc's column labels. Absent ⇒ `PumpfunDefault`, so
+/// every stored/replayed run keeps the meaning it was computed under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostModelKind {
+    /// [`CostModel::pumpfun_default`] — fee + slippage + fixed per-leg cost.
+    #[default]
+    #[serde(alias = "default")]
+    PumpfunDefault,
+    /// [`CostModel::pumpfun_fee_only`] — no `slippage_bps`; the correct pairing
+    /// for any run whose fill price already prices execution slippage.
+    #[serde(alias = "fee_only")]
+    PumpfunFeeOnly,
+}
+
+impl CostModelKind {
+    /// The [`CostModel`] this kind selects.
+    pub fn model(self) -> CostModel {
+        match self {
+            CostModelKind::PumpfunDefault => CostModel::pumpfun_default(),
+            CostModelKind::PumpfunFeeOnly => CostModel::pumpfun_fee_only(),
+        }
     }
 }
 
@@ -808,6 +847,45 @@ mod tests {
         let friction = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::pumpfun_default()).0;
         let free = round_trip_with_costs(1.0, 2.0, 1.0, &CostModel::frictionless()).0;
         assert!(friction < free, "costs must drag PnL down");
+    }
+
+    #[test]
+    fn cost_model_kind_serde_names_and_default() {
+        use serde_json::json;
+        for (name, want) in [
+            ("pumpfun_default", CostModelKind::PumpfunDefault),
+            ("pumpfun_fee_only", CostModelKind::PumpfunFeeOnly),
+            // Short aliases, so a request can name the model the way the analysis does.
+            ("default", CostModelKind::PumpfunDefault),
+            ("fee_only", CostModelKind::PumpfunFeeOnly),
+        ] {
+            let got: CostModelKind = serde_json::from_value(json!(name)).unwrap();
+            assert_eq!(got, want, "'{name}'");
+        }
+        // Absent ⇒ the legacy model, so a stored run without the field keeps meaning.
+        assert_eq!(CostModelKind::default(), CostModelKind::PumpfunDefault);
+        assert_eq!(
+            serde_json::to_value(CostModelKind::PumpfunFeeOnly).unwrap(),
+            json!("pumpfun_fee_only")
+        );
+    }
+
+    #[test]
+    fn fee_only_drops_slippage_and_nothing_else() {
+        // The whole point of the selector: pairing an explicit fill model (which
+        // already prices slippage) with `pumpfun_default` charges it twice.
+        let d = CostModelKind::PumpfunDefault.model();
+        let f = CostModelKind::PumpfunFeeOnly.model();
+        assert_eq!(f.slippage_bps, 0.0);
+        assert!(d.slippage_bps > 0.0);
+        assert_eq!(f.fee_bps_per_leg, d.fee_bps_per_leg);
+        assert_eq!(f.fixed_cost_sol_per_leg, d.fixed_cost_sol_per_leg);
+        // …and the double-count is not a constant offset: it scales with the move.
+        let small = round_trip_with_costs(1.0, 1.05, 1.0, &d).0
+            - round_trip_with_costs(1.0, 1.05, 1.0, &f).0;
+        let big = round_trip_with_costs(1.0, 3.0, 1.0, &d).0
+            - round_trip_with_costs(1.0, 3.0, 1.0, &f).0;
+        assert!(big < small, "slippage haircut grows with the exit price");
     }
 
     // ── exact_run_metrics (parity plan D1) ──────────────────────────────────

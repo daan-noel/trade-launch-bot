@@ -493,6 +493,20 @@ export function GenericSweepView() {
             </Accordion>
           )}
 
+          {/* A run priced under the legacy pair charges slippage twice: once inside
+              the fill price, once again as `slippage_bps`. Because the fixed cost is
+              per leg, that haircut scales with how often a combo fires — so it does
+              not just shift every PnL down, it re-orders the ranking. Say so where
+              the ranking is read, not only on the run header. */}
+          {activeRun && (activeRun.cost_model ?? 'pumpfun_default') === 'pumpfun_default' && (
+            <InlineAlert variant="warning">
+              Priced with the legacy cost model (fee + slippage) on top of{' '}
+              {activeRun.fill_model ?? 'worst_case'} fills, which already price slippage — so
+              execution cost is counted twice, and not evenly across combos. Re-run with
+              “Fee only” before acting on this ranking.
+            </InlineAlert>
+          )}
+
           {activeRun && activeRun.status !== 'completed' && (
             <InlineAlert variant="warning">
               {activeRun.status === 'running' ? 'In-progress' : 'Partial'} run —{' '}

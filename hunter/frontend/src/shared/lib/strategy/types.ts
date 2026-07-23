@@ -200,6 +200,28 @@ export const FILL_MODELS: ReadonlyArray<{ id: FillModelId; label: string; hint: 
   { id: 'signal_price', label: 'Signal price', hint: 'Zero-slippage — optimistic bound' },
 ];
 
+/** Which execution-cost model prices a simulated round-trip (backend
+ *  `trading_core::strategies::kernel::CostModelKind`). */
+export type CostModelId = 'pumpfun_default' | 'pumpfun_fee_only';
+
+/** Selectable cost models. `pumpfun_default` charges `slippage_bps` on top of the
+ *  fill price — which already prices slippage — so it DOUBLE-COUNTS execution cost
+ *  whenever a fill model is chosen explicitly. It stays the default only so stored
+ *  runs keep the meaning they were computed under; `pumpfun_fee_only` is the honest
+ *  partner for any fill model, and the one the fill-sensitivity analysis reported. */
+export const COST_MODELS: ReadonlyArray<{ id: CostModelId; label: string; hint: string }> = [
+  {
+    id: 'pumpfun_fee_only',
+    label: 'Fee only',
+    hint: 'Fee + tip + priority — no slippage on top of the fill price (recommended)',
+  },
+  {
+    id: 'pumpfun_default',
+    label: 'Fee + slippage',
+    hint: 'Legacy: also charges slippage_bps, double-counting what the fill already priced',
+  },
+];
+
 /** `POST /api/strategies/simulate` body — a saved rule (`rule_id`) or an inline
  *  `draft` (ignored if `rule_id` is set), over an optional creation window.
  *  `fill_model` (top-level, default `worst_case`) prices the round-trips. */

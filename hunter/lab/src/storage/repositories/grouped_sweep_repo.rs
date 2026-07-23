@@ -78,6 +78,8 @@ struct RunDbRow {
     buy_amount_sol: Option<f64>,
     bucket_width_sol: Option<f64>,
     volume_ix_patterns: Option<sqlx::types::Json<Value>>,
+    fill_model: Option<String>,
+    cost_model: Option<String>,
 }
 
 impl From<RunDbRow> for GroupedSweepRun {
@@ -109,6 +111,8 @@ impl From<RunDbRow> for GroupedSweepRun {
             buy_amount_sol: r.buy_amount_sol.map(tidy_sol_decimal),
             bucket_width_sol: r.bucket_width_sol.map(tidy_sol_decimal),
             volume_ix_patterns: r.volume_ix_patterns.map(|j| j.0),
+            fill_model: r.fill_model,
+            cost_model: r.cost_model,
         }
     }
 }
@@ -267,9 +271,9 @@ impl GroupedSweepRepo {
               curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
               combo_count, corpus_hash, created_at, status, groups_done, \
               ix_labels_filter, field_filters, fingerprint_id, token_cap, max_combos, label, \
-              buy_amount_sol, bucket_width_sol, volume_ix_patterns) \
+              buy_amount_sol, bucket_width_sol, volume_ix_patterns, fill_model, cost_model) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\
-                     $18,$19,$20,$21,$22,$23,$24,$25,$26)",
+                     $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)",
             self.tables.runs
         );
         sqlx::query(&run_sql)
@@ -299,6 +303,8 @@ impl GroupedSweepRepo {
             .bind(run.buy_amount_sol.map(tidy_sol_decimal))
             .bind(run.bucket_width_sol.map(tidy_sol_decimal))
             .bind(run.volume_ix_patterns.as_ref().map(sqlx::types::Json))
+            .bind(&run.fill_model)
+            .bind(&run.cost_model)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -547,7 +553,7 @@ impl GroupedSweepRepo {
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
                     ix_labels_filter, field_filters, fingerprint_id, token_cap, max_combos, label, \
-                    buy_amount_sol, bucket_width_sol, volume_ix_patterns \
+                    buy_amount_sol, bucket_width_sol, volume_ix_patterns,                     fill_model, cost_model \
              FROM {} WHERE id = $1",
             self.tables.runs
         );
@@ -623,7 +629,7 @@ impl GroupedSweepRepo {
                     curve_only, grouping_spec, axes_spec, min_tokens, token_count, group_count, \
                     combo_count, corpus_hash, created_at, status, groups_done, \
                     ix_labels_filter, field_filters, fingerprint_id, token_cap, max_combos, label, \
-                    buy_amount_sol, bucket_width_sol, volume_ix_patterns \
+                    buy_amount_sol, bucket_width_sol, volume_ix_patterns,                     fill_model, cost_model \
              FROM {} ORDER BY created_at DESC LIMIT $1",
             self.tables.runs
         );
