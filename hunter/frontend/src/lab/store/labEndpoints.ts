@@ -9,6 +9,8 @@ import type {
 import type {
   GroupedCreationArgs,
   GroupedCreationResponse,
+  GroupedCreationTokensArgs,
+  GroupedCreationTokensResponse,
 } from '@lab/components/creation-stats/groupedCreationStats';
 import type {
   SimulatedSummary,
@@ -256,6 +258,44 @@ export const labApi = baseApi.injectEndpoints({
       },
       keepUnusedDataFor: 120,
     }),
+    // Drill-down tokens table behind one group card (or one of its heatmap
+    // tiles): the exact rows `getGroupedCreationStats` folded into that
+    // `group_key` (optionally narrowed to a recurring dow/hour slot), paged
+    // through the SAME SQL projection as the Tokens page so `TokenTable`
+    // renders identically. See `creation_stats.rs::get_grouped_creation_tokens`.
+    getGroupedCreationTokens: builder.query<
+      GroupedCreationTokensResponse,
+      GroupedCreationTokensArgs
+    >({
+      query: (a) => ({
+        url: '/api/tokens/creation-stats/grouped/tokens',
+        method: 'POST',
+        body: {
+          pagination: { page: a.page, pageSize: a.pageSize },
+          sorting: a.sortKeys.map((s) => ({ col: s.col, dir: s.dir })),
+          search: a.search,
+          filters: {},
+          tz: a.tz,
+          from: a.from,
+          segment: a.segment,
+          group_by: a.groupBy.join(','),
+          ...(a.bucketWidth != null ? { bucket_width: a.bucketWidth } : {}),
+          ...(a.fieldFilters && Object.keys(a.fieldFilters).length > 0
+            ? { field_filters: JSON.stringify(a.fieldFilters) }
+            : {}),
+          ...(a.ixLabelsFilter && a.ixLabelsFilter.length > 0
+            ? { ix_labels_filter: JSON.stringify(a.ixLabelsFilter) }
+            : {}),
+          group_key: a.groupKey,
+          ...(a.dow != null && a.hour != null ? { dow: a.dow, hour: a.hour } : {}),
+        },
+      }),
+      transformResponse: (r: GroupedCreationTokensResponse) => ({
+        total: r.total,
+        items: r.items.map((t) => ({ ...t, created_at_ms: Date.parse(t.created_at) })),
+      }),
+      keepUnusedDataFor: 30,
+    }),
     // Trader Analysis: full token rows (+ the wallet's per-mint stats) for every
     // mint a wallet traded in the last `days`, most-recent-trade first, capped at
     // `limit`. PG-backed on purpose — the 7-day default window includes today,
@@ -316,6 +356,7 @@ export const labApi = baseApi.injectEndpoints({
 
 export const {
   useGetGroupedCreationStatsQuery,
+  useGetGroupedCreationTokensQuery,
   useGetGroupedSweepRunsQuery,
   useGetGroupedSweepGroupsQuery,
   useGetComboTokenResultsQuery,

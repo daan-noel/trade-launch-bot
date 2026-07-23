@@ -14,6 +14,8 @@ import {
 } from '@lab/components/sweep/groupedTypes';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
 import type { CreationBucket, CreationSegment } from 'components/creation-stats/creationStats';
+import type { SortEntry } from 'components/table/types';
+import type { TokenRecord } from 'types';
 
 export { GROUP_FIELDS, GROUP_FIELD_LABELS };
 export type { GroupField };
@@ -58,6 +60,40 @@ export interface GroupedCreationResponse {
   groups: GroupedCreationGroup[];
   cells: GroupedCreationCell[];
   points: GroupedCreationPoint[];
+}
+
+/**
+ * Args for the "drill-down" tokens table behind one group card (or one of its
+ * heatmap tiles): the same window/segment/corpus selectors {@link GroupedCreationArgs}
+ * applies (minus `top` — there's no ranking here, just one exact group) plus the
+ * two selectors pinning it to a single row (`groupKey`, and for a tile click
+ * `dow`/`hour`), plus the drill-down table's own view-state. Mirrors the backend
+ * `POST /api/tokens/creation-stats/grouped/tokens` body
+ * (`creation_stats.rs::get_grouped_creation_tokens`).
+ */
+export interface GroupedCreationTokensArgs {
+  tz: string;
+  from?: string;
+  segment: CreationSegment;
+  groupBy: GroupField[];
+  bucketWidth?: number;
+  fieldFilters?: Record<string, string[]>;
+  ixLabelsFilter?: string[];
+  /** The exact group to drill into — echoes {@link GroupedCreationGroup.group_key} verbatim. */
+  groupKey: Record<string, string>;
+  /** Recurring weekly slot (a heatmap-tile click): 0=Sun..6=Sat / 0..23. Both set,
+   *  or both omitted for the whole group. */
+  dow?: number;
+  hour?: number;
+  page: number;
+  pageSize: number;
+  sortKeys: SortEntry[];
+  search: string;
+}
+
+export interface GroupedCreationTokensResponse {
+  total: number;
+  items: TokenRecord[];
 }
 
 export interface GroupedCreationArgs {

@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
@@ -7,7 +7,16 @@ import { Select } from 'components/ui/Select';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { LoadingState } from 'components/ui/LoadingState';
 import { apiErrorMessage } from 'store/apiSlice';
-import { useGetGroupedCreationStatsQuery } from '@lab/store/labEndpoints';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { ALL_TOKEN_INFO_KEYS } from 'components/tokens/sharedTokenColumns';
+import { tokenColumns } from 'components/tokens/tokenColumns';
+import { TokenDetailModal } from 'components/tokens/TokenDetailModal';
+import type { TableQuery } from 'components/table/types';
+import type { TokenRecord } from 'types';
+import {
+  useGetGroupedCreationStatsQuery,
+  useGetGroupedCreationTokensQuery,
+} from '@lab/store/labEndpoints';
 import { parseNumbers, parseIxLabelsFilter } from '@lab/components/sweep/fingerprintFilters';
 import {
   FingerprintGroupPicker,
@@ -17,6 +26,7 @@ import { SOL_BUCKET_WIDTH } from '@lab/components/sweep/groupedTypes';
 import { formatWithCommas } from 'utils/format';
 import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
+import { DOW_ROWS } from 'components/creation-stats/creationStats';
 
 const GroupedCreationTrendChart = lazy(() =>
   import('./GroupedCreationTrendChart').then((m) => ({ default: m.GroupedCreationTrendChart })),
@@ -40,6 +50,7 @@ import {
   type GroupedCreationArgs,
   type GroupedCreationCell,
   type GroupedCreationGroup,
+  type GroupedCreationTokensArgs,
   type GroupField,
 } from './groupedCreationStats';
 
@@ -70,6 +81,31 @@ const SCALAR_FILTER_FIELDS: GroupField[] = [
 function toHeatCell(c: GroupedCreationCell): CreationHeatCell {
   return { dow: c.dow, hour: c.hour, count: c.count, matured: 0, known: 0, migrated: 0, dead: 0 };
 }
+
+/** What the shared drill-down section is currently showing: one group card
+ *  (`dow`/`hour` both `null`), or one of its heatmap tiles (both set). */
+interface DrillTarget {
+  g: number;
+  dow: number | null;
+  hour: number | null;
+}
+
+/** Short label for a recurring weekly slot, e.g. "Mon 15:00 (every week)". */
+function dowLabel(dow: number): string {
+  return DOW_ROWS.find((r) => r.dow === dow)?.label ?? String(dow);
+}
+
+/** Stable empty reference so the drill-down table doesn't remount on every
+ *  render while its query is loading. */
+const EMPTY_DRILL_TOKENS: TokenRecord[] = [];
+
+const INITIAL_DRILL_QUERY: TableQuery = {
+  page: 1,
+  pageSize: 10,
+  sortKeys: [],
+  search: '',
+  colFilters: {},
+};
 
 /**
  * Dashboard section: partition token creation by a fingerprint key and show each
@@ -106,6 +142,18 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   // --- applied snapshot (drives the query) ----------------------------------
   const [applied, setApplied] = useState<GroupedCreationArgs | null>(null);
   const [isolatedGroup, setIsolatedGroup] = useState<number | null>(null);
+
+  // --- drill-down tokens table (one shared section, shows whichever group
+  // card or heatmap tile was last picked) ------------------------------------
+  const [drillTarget, setDrillTarget] = useState<DrillTarget | null>(null);
+  const [drillQuery, setDrillQuery] = useState<TableQuery>(INITIAL_DRILL_QUERY);
+  // Columns built once — same recipe as the Tokens page, so the drill-down
+  // table renders with identical columns/enrichment.
+  const drillColumns = useMemo(() => tokenColumns(), []);
+  // Row click opens the shared detail modal (chart + stats) — the drill-down
+  // table sits nested inside an already-scrolling dashboard card, so an
+  // inline panel (as the Tokens page uses) has nowhere good to land.
+  const [inspectedToken, setInspectedToken] = useState<{ mint: string; symbol?: string } | null>(null);
 
   const from = useMemo(() => windowFrom(rangeDays), [rangeDays]);
   const bucketOpts = useMemo(() => bucketOptionsForRange(rangeDays), [rangeDays]);
@@ -144,8 +192,13 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
 
   const { data, isFetching, isError, error } = useGetGroupedCreationStatsQuery(applied ?? skipToken);
 
-  // Reset line isolation whenever a fresh analysis is applied.
-  useEffect(() => setIsolatedGroup(null), [applied]);
+  // Reset line isolation + the drill-down selection whenever a fresh analysis
+  // is applied — a stale `group_key`/index from the previous grouping would
+  // silently target the wrong (or a nonexistent) group otherwise.
+  useEffect(() => {
+    setIsolatedGroup(null);
+    setDrillTarget(null);
+  }, [applied]);
 
   // "Dirty" = the draft differs from what's applied (or nothing applied yet).
   // Same builder on both sides ⇒ key order is stable, so a string compare works.
@@ -169,6 +222,46 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     );
 
   const groups = data?.groups ?? [];
+  const drillGroup = drillTarget ? groups.find((g) => g.g === drillTarget.g) ?? null : null;
+
+  // Resets the drill-down table to page 1 when the target (group/tile) changes.
+  const drillResetKey = drillTarget
+    ? `g=${drillTarget.g}:dow=${drillTarget.dow ?? ''}:hour=${drillTarget.hour ?? ''}`
+    : '';
+
+  const drillArgs = useMemo<GroupedCreationTokensArgs | null>(() => {
+    if (!applied || !drillTarget || !drillGroup) return null;
+    return {
+      tz: applied.tz,
+      from: applied.from,
+      segment: applied.segment,
+      groupBy: applied.groupBy,
+      bucketWidth: applied.bucketWidth,
+      fieldFilters: applied.fieldFilters,
+      ixLabelsFilter: applied.ixLabelsFilter,
+      groupKey: drillGroup.group_key,
+      ...(drillTarget.dow != null && drillTarget.hour != null
+        ? { dow: drillTarget.dow, hour: drillTarget.hour }
+        : {}),
+      page: drillQuery.page,
+      pageSize: drillQuery.pageSize,
+      sortKeys: drillQuery.sortKeys,
+      search: drillQuery.search,
+    };
+  }, [applied, drillTarget, drillGroup, drillQuery]);
+
+  const {
+    data: drillData,
+    isFetching: drillLoading,
+    isError: drillIsError,
+    error: drillErrorRaw,
+  } = useGetGroupedCreationTokensQuery(drillArgs ?? skipToken);
+  // Hold the last successful page while a new one loads (target/page/sort
+  // change) so the table doesn't flash empty between round-trips.
+  const drillItemsRef = useRef<TokenRecord[]>(EMPTY_DRILL_TOKENS);
+  if (drillData?.items) drillItemsRef.current = drillData.items;
+  const drillTokens = drillArgs ? drillData?.items ?? drillItemsRef.current : EMPTY_DRILL_TOKENS;
+  const drillTotal = drillArgs ? drillData?.total ?? 0 : 0;
 
   return (
     <section className="rounded-lg border border-white/8 bg-white/2 p-3">
@@ -306,28 +399,117 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
 
           {/* Small-multiple day×hour heatmaps (recurring active hours per group). */}
           <div className="mt-4 grid gap-3 xl:grid-cols-2">
-            {groups.map((g) => (
-              <div key={g.g} className="rounded-md border border-white/8 bg-white/2 p-2.5">
-                <div className="mb-1.5 flex items-start gap-2">
-                  <span
-                    className="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-                    style={{ background: groupColor(g.g) }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <GroupKeyBlock group={g} />
+            {groups.map((g) => {
+              const targetingThisGroup = drillTarget?.g === g.g;
+              return (
+                <div key={g.g} className="rounded-md border border-white/8 bg-white/2 p-2.5">
+                  <div className="mb-1.5 flex items-start gap-2">
+                    <span
+                      className="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                      style={{ background: groupColor(g.g) }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <GroupKeyBlock group={g} />
+                    </div>
+                    <span className="shrink-0 text-[11px] text-text-dim">
+                      {formatWithCommas(g.total)} tokens
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setDrillTarget({ g: g.g, dow: null, hour: null })}
+                      title="View the tokens in this group"
+                      className={cn(
+                        'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-dim transition hover:bg-white/5 hover:text-text',
+                        targetingThisGroup && drillTarget?.dow == null && 'bg-primary/12 text-primary',
+                      )}
+                    >
+                      View tokens
+                    </button>
                   </div>
-                  <span className="shrink-0 text-[11px] text-text-dim">
-                    {formatWithCommas(g.total)} tokens
-                  </span>
+                  <CreationHeatmap
+                    cells={cellsByGroup.get(g.g) ?? []}
+                    metric="count"
+                    total={g.total}
+                    onCellClick={(dow, hour) => setDrillTarget({ g: g.g, dow, hour })}
+                    selectedCell={
+                      targetingThisGroup && drillTarget?.dow != null
+                        ? { dow: drillTarget.dow, hour: drillTarget.hour! }
+                        : null
+                    }
+                  />
                 </div>
-                <CreationHeatmap
-                  cells={cellsByGroup.get(g.g) ?? []}
-                  metric="count"
-                  total={g.total}
-                />
-              </div>
-            ))}
+              );
+            })}
           </div>
+
+          {/* Shared drill-down: the tokens behind whichever group card or
+              heatmap tile was last picked above. */}
+          {drillTarget && drillGroup && (
+            <div className="mt-4 rounded-md border border-white/8 bg-white/2 p-2.5">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span
+                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
+                    style={{ background: groupColor(drillGroup.g) }}
+                  />
+                  <span className="font-semibold text-text">Tokens</span>
+                  <span className="text-text-dim">·</span>
+                  <GroupKeyInline group={drillGroup} />
+                  {drillTarget.dow != null && drillTarget.hour != null && (
+                    <>
+                      <span className="text-text-dim">·</span>
+                      <span className="text-text-dim">
+                        {dowLabel(drillTarget.dow)} {String(drillTarget.hour).padStart(2, '0')}:00
+                        (every week in window)
+                      </span>
+                    </>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDrillTarget(null)}
+                  className="shrink-0 text-[11px] text-text-dim hover:text-text"
+                >
+                  Close
+                </button>
+              </div>
+              {drillIsError ? (
+                <p className="text-red">
+                  {apiErrorMessage(drillErrorRaw, 'Failed to load tokens')}
+                </p>
+              ) : (
+                <TokenTable
+                  columns={drillColumns}
+                  rows={drillTokens}
+                  existingKeys={ALL_TOKEN_INFO_KEYS}
+                  serverSide
+                  serverTotal={drillTotal}
+                  onQueryChange={setDrillQuery}
+                  loading={drillLoading}
+                  resetKey={drillResetKey}
+                  charts
+                  searchable
+                  colToggle
+                  hoverable
+                  tableId="creation_stats_grouped_drilldown"
+                  emptyMessage="No tokens found for this selection"
+                  selectedKey={inspectedToken?.mint ?? null}
+                  onSelect={(mint) => {
+                    const row = mint ? drillTokens.find((r) => r.mint_address === mint) : null;
+                    setInspectedToken(mint ? { mint, symbol: row?.symbol } : null);
+                  }}
+                />
+              )}
+            </div>
+          )}
+          {inspectedToken && (
+            <TokenDetailModal
+              mint={inspectedToken.mint}
+              symbol={inspectedToken.symbol}
+              onClose={() => setInspectedToken(null)}
+              tableId="creation_stats_grouped_drilldown_trades"
+            />
+          )}
         </>
       )}
     </section>

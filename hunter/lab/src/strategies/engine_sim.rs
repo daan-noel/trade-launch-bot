@@ -468,11 +468,17 @@ fn rule_needs_flow(loaded: &LoadedRule) -> bool {
 }
 
 /// Scan (or reuse) the fingerprint's **matched** candidate set: every token whose
-/// observed creation axes satisfy the fingerprint's *instant* axes. This is the
-/// superset the replay fold then arms/enters from — the two-phase matcher's
-/// first-slot axes resolve inside the fold, so a token that matches here but fails
-/// first-slot simply never arms. Single-flighted + TTL-cached, so the matched-tokens
-/// endpoint and the backtest share one whole-table scan.
+/// observed creation axes satisfy every configured axis, first-slot included —
+/// [`MatchPhase::Full`] against the token's already-settled `first_slot_buy_sol`/
+/// `first_slot_sell_sol`. Analysis-only tokens are historical, so the creation slot
+/// has always settled by the time this scan runs (unlike the live `TokenCreated`
+/// arm, which must defer first-slot axes to a later `FirstSlotSettled`). Matching
+/// Full here — not just the live arm's *instant* phase — keeps this the exact set
+/// the replay fold goes on to arm/enter from: a fingerprint with a first-slot axis
+/// (e.g. a promoted rule scoped to one creation-buy-size bucket) would otherwise
+/// list tokens outside that bucket as "matched" even though they can never actually
+/// arm. Single-flighted + TTL-cached, so the matched-tokens endpoint and the
+/// backtest share one whole-table scan.
 pub(crate) async fn scan_matched_candidates(
     app_state: &Arc<LocalState>,
     fp: &EngineFingerprint,
@@ -490,8 +496,8 @@ pub(crate) async fn scan_matched_candidates(
                 !t.is_mayhem_mode
                     && !match_all(
                         std::slice::from_ref(&fp_scan),
-                        &observed_axes(t, None, None),
-                        MatchPhase::Instant,
+                        &observed_axes(t, t.first_slot_buy_sol, t.first_slot_sell_sol),
+                        MatchPhase::Full,
                     )
                     .is_empty()
             })

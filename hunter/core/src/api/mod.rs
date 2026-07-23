@@ -54,6 +54,10 @@ pub fn configure_core_routes(cfg: &mut web::ServiceConfig) {
             "/api/tokens/creation-stats/grouped",
             web::get().to(handlers::tokens::get_grouped_creation_stats),
         )
+        .route(
+            "/api/tokens/creation-stats/grouped/tokens",
+            web::post().to(handlers::tokens::get_grouped_creation_tokens),
+        )
         .route("/api/tokens/batch", web::post().to(handlers::tokens::post_tokens_batch))
         // Token reads
         .route("/api/tokens/{mint}", web::get().to(handlers::tokens::get_token))

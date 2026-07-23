@@ -9,12 +9,19 @@ import {
   type CreationMetric,
 } from './creationStats';
 import { formatCompact, formatWithCommas } from 'utils/format';
+import { cn } from 'lib/cn';
 
 interface CreationHeatmapProps {
   cells: CreationHeatCell[];
   metric: CreationMetric;
   /** Window count total — used to render each cell's share-of-total. */
   total: number;
+  /** Opt-in: makes every tile clickable (a drill-down into that recurring
+   *  day×hour slot) — the tile gets a pointer cursor + hover ring. Omit for a
+   *  read-only heatmap. */
+  onCellClick?: (dow: number, hour: number) => void;
+  /** Highlights one tile (the currently drilled-into slot). */
+  selectedCell?: { dow: number; hour: number } | null;
 }
 
 const EMPTY_CELL: CreationHeatCell = {
@@ -41,6 +48,8 @@ export const CreationHeatmap = memo(function CreationHeatmap({
   cells,
   metric,
   total,
+  onCellClick,
+  selectedCell,
 }: CreationHeatmapProps) {
   // For the rate views, shade by each cell's position within the observed
   // min→max spread (contrast stretch), not by the absolute 0..1 rate. Nearly
@@ -95,6 +104,8 @@ export const CreationHeatmap = memo(function CreationHeatmap({
             rateMin={rateMin}
             rateSpan={rateSpan}
             total={total}
+            onCellClick={onCellClick}
+            selectedCell={selectedCell}
           />
         ))}
       </div>
@@ -111,9 +122,22 @@ interface RowProps {
   rateMin: number;
   rateSpan: number;
   total: number;
+  onCellClick?: (dow: number, hour: number) => void;
+  selectedCell?: { dow: number; hour: number } | null;
 }
 
-function Row({ label, dow, lookup, metric, maxCount, rateMin, rateSpan, total }: RowProps) {
+function Row({
+  label,
+  dow,
+  lookup,
+  metric,
+  maxCount,
+  rateMin,
+  rateSpan,
+  total,
+  onCellClick,
+  selectedCell,
+}: RowProps) {
   return (
     <>
       <div className="flex items-center pr-1.5 font-semibold text-text-dim">
@@ -142,21 +166,31 @@ function Row({ label, dow, lookup, metric, maxCount, rateMin, rateSpan, total }:
             : value == null
               ? ''
               : `${Math.round(value * 100)}%`;
+        const clickable = onCellClick != null;
+        const selected = selectedCell?.dow === dow && selectedCell?.hour === h;
         const title =
           `${label} ${h}:00\n` +
           `Created: ${formatWithCommas(cell.count)} (${(share * 100).toFixed(1)}%)\n` +
           `Migrate: ${formatPct(metricValue(cell, 'migrate_rate'))}  ` +
           `Dead: ${formatPct(metricValue(cell, 'dead_rate'))}\n` +
-          `Coverage: ${cell.known}/${cell.matured} matured`;
+          `Coverage: ${cell.known}/${cell.matured} matured` +
+          (clickable ? '\nClick to view tokens' : '');
         return (
-          <div
+          <button
             key={h}
+            type="button"
             title={title}
-            className="flex aspect-square items-center justify-center overflow-hidden rounded-[2px] border border-white/5 text-center font-mono leading-none tabular-nums text-white/85"
+            disabled={!clickable}
+            onClick={clickable ? () => onCellClick(dow, h) : undefined}
+            className={cn(
+              'flex aspect-square items-center justify-center overflow-hidden rounded-[2px] border border-white/5 text-center font-mono leading-none tabular-nums text-white/85',
+              clickable && 'cursor-pointer transition hover:ring-1 hover:ring-primary/70',
+              selected && 'ring-2 ring-primary',
+            )}
             style={{ background: heatColor(metric, norm) }}
           >
             {cellLabel}
-          </div>
+          </button>
         );
       })}
     </>

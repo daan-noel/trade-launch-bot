@@ -237,7 +237,14 @@ fn sol_bucket_sql(sol_expr: &str, width: f64) -> String {
 /// missing, `" | "`-joined on-chain-order labels for `ix_labels`); the continuous
 /// SOL-amount fields are **binned** via [`sol_bucket_sql`]. Fields come from the fixed
 /// [`GroupField`] enum (never user free-text), so interpolating these is injection-safe.
-fn group_field_sql(f: GroupField, width: f64) -> String {
+///
+/// `ti_alias` is the `tokens_info` LEFT JOIN alias the first-slot buy/sell fields
+/// read off of — it varies by caller: [`grouped`](CreationStatsRepo::grouped) joins
+/// it as `ti`, while the drill-down builders below run against
+/// `token_repo`'s own query (`TokenRepo::LIST_FROM`), which joins it as `i`. Passing
+/// the wrong one is a silent SQL error ("missing FROM-clause entry") only surfaced
+/// at query time — every call site is listed here so a rename can't miss one.
+fn group_field_sql(f: GroupField, width: f64, ti_alias: &str) -> String {
     match f {
         GroupField::TokenProgramId => "COALESCE(t.token_program_id, '∅')".to_string(),
         GroupField::CuLimit => "COALESCE(t.cu_limit::text, '∅')".to_string(),
@@ -253,10 +260,14 @@ fn group_field_sql(f: GroupField, width: f64) -> String {
             sol_bucket_sql("(t.initial_buy_instruction->>'spendable_lamports_in')::float8 / 1e9", width)
         }
         GroupField::InitialBuySol => sol_bucket_sql("t.initial_buy_lamports::float8 / 1e9", width),
-        // First-slot buy/sell are trade-derived, sourced from `tokens_info` (the `ti`
-        // alias the LEFT JOIN in `grouped()` adds) — the only non-`tokens` group fields.
-        GroupField::FirstSlotBuySol => sol_bucket_sql("ti.first_slot_buy_lamports::float8 / 1e9", width),
-        GroupField::FirstSlotSellSol => sol_bucket_sql("ti.first_slot_sell_lamports::float8 / 1e9", width),
+        // First-slot buy/sell are trade-derived, sourced from the caller's
+        // `tokens_info` LEFT JOIN — the only non-`tokens` group fields.
+        GroupField::FirstSlotBuySol => {
+            sol_bucket_sql(&format!("{ti_alias}.first_slot_buy_lamports::float8 / 1e9"), width)
+        }
+        GroupField::FirstSlotSellSol => {
+            sol_bucket_sql(&format!("{ti_alias}.first_slot_sell_lamports::float8 / 1e9"), width)
+        }
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
         // preserves array position; duplicates are kept intentionally.
@@ -305,7 +316,7 @@ impl CreationStatsRepo {
         } else {
             let pairs: Vec<String> = fields
                 .iter()
-                .map(|fld| format!("'{}', {}", fld.as_str(), group_field_sql(*fld, bucket_width)))
+                .map(|fld| format!("'{}', {}", fld.as_str(), group_field_sql(*fld, bucket_width, "ti")))
                 .collect();
             format!("jsonb_build_object({})", pairs.join(", "))
         };
@@ -320,7 +331,7 @@ impl CreationStatsRepo {
         let mut filter_binds: Vec<Vec<String>> = Vec::new();
         let mut idx = 7;
         for (fld, vals) in field_filters {
-            preds.push_str(&format!("\n  AND {} = ANY(${idx})", group_field_sql(*fld, bucket_width)));
+            preds.push_str(&format!("\n  AND {} = ANY(${idx})", group_field_sql(*fld, bucket_width, "ti")));
             filter_binds.push(vals.clone());
             idx += 1;
         }
@@ -418,5 +429,273 @@ impl Clone for CreationStatsRepo {
         Self {
             pool: self.pool.clone(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grouped-creation "drill-down" token list — pure WHERE/ORDER builders (no DB).
+//
+// Backs the dashboard's "view tokens" action: identify every token belonging
+// to ONE specific fingerprint group `grouped()` already ranked (an exact
+// `group_key` match on each `fields` entry), optionally narrowed to one
+// recurring weekly day-of-week+hour-of-day slot (a heatmap tile click). The
+// actual row fetch/pagination reuses `token_repo::{find_list_page,count_list}`
+// verbatim (same `TokenListRow` projection the live Tokens list serves) — this
+// module only builds the extra `WHERE`/`ORDER BY` fragment identifying the
+// group/cell, numbered from `$1` (the caller — `token_repo`— appends its own
+// trailing `LIMIT`/`OFFSET` binds after these).
+// ---------------------------------------------------------------------------
+
+/// Build the `WHERE` body + positional binds selecting every token in one exact
+/// fingerprint group (optionally narrowed to one recurring day-of-week+hour
+/// slot), reusing the SAME window/segment/corpus filters `grouped()` used when
+/// it computed the group. `search` is an optional mint/symbol substring
+/// (mirrors the Tokens page's global search box); blank ⇒ no restriction.
+#[allow(clippy::too_many_arguments)]
+pub fn build_grouped_tokens_where(
+    fields: &[GroupField],
+    group_key: &[(GroupField, String)],
+    field_filters: &[(GroupField, Vec<String>)],
+    ix_labels_filter: Option<&[String]>,
+    bucket_width: f64,
+    dow: Option<i32>,
+    hour: Option<i32>,
+    search: &str,
+    f: StatsFilter<'_>,
+) -> (String, Vec<crate::api::handlers::tokens::SqlArg>) {
+    use crate::api::handlers::tokens::SqlArg;
+
+    let mut clauses: Vec<String> = Vec::new();
+    let mut args: Vec<SqlArg> = Vec::new();
+
+    args.push(SqlArg::Ts(f.from));
+    clauses.push(format!("t.created_at >= ${}", args.len()));
+    args.push(SqlArg::Ts(f.to));
+    clauses.push(format!("t.created_at < ${}", args.len()));
+
+    if let Some(m) = f.mayhem {
+        args.push(SqlArg::Bool(m));
+        clauses.push(format!("t.is_mayhem_mode = ${}", args.len()));
+    }
+    if let Some(c) = f.cashback {
+        args.push(SqlArg::Bool(c));
+        clauses.push(format!("t.is_cashback_enabled = ${}", args.len()));
+    }
+
+    // The exact group: every selected `fields` entry must render to its
+    // `group_key` value — the same equality `grouped()`'s `ranked` CTE applies
+    // per-`gkey`, just pinned to this one rank instead of top-N'd.
+    for field in fields {
+        let Some((_, val)) = group_key.iter().find(|(f2, _)| f2 == field) else {
+            continue;
+        };
+        args.push(SqlArg::Str(val.clone()));
+        // Runs against `token_repo`'s query (`TokenRepo::LIST_FROM`), which joins
+        // `tokens_info` as `i` (NOT the `ti` `grouped()` uses) — see `group_field_sql`.
+        clauses.push(format!("{} = ${}", group_field_sql(*field, bucket_width, "i"), args.len()));
+    }
+
+    // Corpus-level filters applied before the groups were ranked (same as `grouped()`).
+    for (field, vals) in field_filters {
+        args.push(SqlArg::StrArray(vals.clone()));
+        clauses.push(format!("{} = ANY(${})", group_field_sql(*field, bucket_width, "i"), args.len()));
+    }
+    if let Some(labels) = ix_labels_filter {
+        let mut sorted: Vec<String> = labels.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        args.push(SqlArg::StrArray(sorted));
+        clauses.push(format!(
+            "(SELECT array_agg(DISTINCT e.val ORDER BY e.val) \
+              FROM jsonb_array_elements_text(t.ix_labels) AS e(val)) = ${}",
+            args.len()
+        ));
+    }
+
+    // Recurring weekly slot (a heatmap tile): every occurrence of this
+    // day-of-week + hour-of-day across the whole window, in the requested tz —
+    // mirrors exactly how `heatmap()`/`grouped()` fold their cells.
+    if let (Some(dow), Some(hour)) = (dow, hour) {
+        args.push(SqlArg::Str(f.tz.to_string()));
+        let tz_ph = args.len();
+        args.push(SqlArg::I64(dow as i64));
+        let dow_ph = args.len();
+        args.push(SqlArg::I64(hour as i64));
+        let hour_ph = args.len();
+        clauses.push(format!(
+            "EXTRACT(DOW FROM (t.created_at AT TIME ZONE ${tz_ph}))::int = ${dow_ph} \
+             AND EXTRACT(HOUR FROM (t.created_at AT TIME ZONE ${tz_ph}))::int = ${hour_ph}"
+        ));
+    }
+
+    // Mint/symbol substring search (mirrors the Tokens page's global search;
+    // `sql.rs::search_clause` is the SSOT for the live list — narrowed here to
+    // avoid pulling in its `SqlArgs` counter type for one extra clause).
+    let needle = search.trim();
+    if !needle.is_empty() {
+        let esc = needle
+            .to_lowercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        args.push(SqlArg::Str(esc));
+        let ph = args.len();
+        clauses.push(format!(
+            "(LOWER(t.mint_address) LIKE '%' || ${ph} || '%' ESCAPE '\\' \
+              OR LOWER(t.symbol) LIKE '%' || ${ph} || '%' ESCAPE '\\')"
+        ));
+    }
+
+    let where_sql = if clauses.is_empty() {
+        "TRUE".to_string()
+    } else {
+        clauses.join(" AND ")
+    };
+    (where_sql, args)
+}
+
+/// `ORDER BY` body for the drill-down list. Reuses the SAME per-column sort
+/// registry the live Tokens list reads (`sort_sql_expr`), so a column-header
+/// sort click behaves identically here. Unknown/empty sort ⇒ newest-first
+/// (matches the heatmap/trend's implicit ordering).
+pub fn build_grouped_tokens_order(sorting: &[(String, bool)]) -> String {
+    let mut terms: Vec<String> = Vec::new();
+    for (col, desc) in sorting {
+        if let Some((expr, is_text)) = crate::api::handlers::tokens::sort_sql_expr(col) {
+            let dir = if *desc { "DESC" } else { "ASC" };
+            let keyed = if is_text { format!("LOWER({expr})") } else { expr };
+            terms.push(format!("{keyed} {dir} NULLS LAST"));
+        }
+    }
+    if terms.is_empty() {
+        return "t.created_at DESC, t.mint_address DESC".to_string();
+    }
+    terms.push("t.mint_address ASC".to_string());
+    terms.join(", ")
+}
+
+#[cfg(test)]
+mod grouped_tokens_tests {
+    use super::*;
+    use crate::api::handlers::tokens::SqlArg;
+    use crate::grouping::SOL_BUCKET_WIDTH;
+
+    fn filter(from: DateTime<Utc>, to: DateTime<Utc>) -> StatsFilter<'static> {
+        StatsFilter { tz: "UTC", maturity_secs: 0.0, from, to, mayhem: None, cashback: None }
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn all_group_with_no_extra_filters_is_window_only() {
+        let (where_sql, args) = build_grouped_tokens_where(
+            &[], &[], &[], None, SOL_BUCKET_WIDTH, None, None, "", filter(now(), now()),
+        );
+        assert_eq!(where_sql, "t.created_at >= $1 AND t.created_at < $2");
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn group_key_lowers_to_equality_per_field() {
+        let (where_sql, args) = build_grouped_tokens_where(
+            &[GroupField::CuLimit],
+            &[(GroupField::CuLimit, "200000".to_string())],
+            &[],
+            None,
+            SOL_BUCKET_WIDTH,
+            None,
+            None,
+            "",
+            filter(now(), now()),
+        );
+        assert!(where_sql.contains("COALESCE(t.cu_limit::text, '∅') = $3"));
+        match &args[2] {
+            SqlArg::Str(s) => assert_eq!(s, "200000"),
+            other => panic!("expected Str, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_slot_sol_fields_use_token_repos_tokens_info_alias() {
+        // Regression: `grouped()` joins `tokens_info` as `ti`, but the drill-down
+        // WHERE runs against `token_repo`'s own query (`TokenRepo::LIST_FROM`),
+        // which joins it as `i`. Emitting `ti.` here produced a live Postgres
+        // "missing FROM-clause entry for table \"ti\"" (surfaced to the client as
+        // the generic "failed to compute creation stats" 500).
+        let (where_sql, _args) = build_grouped_tokens_where(
+            &[GroupField::FirstSlotBuySol],
+            &[(GroupField::FirstSlotBuySol, "0.0–0.1".to_string())],
+            &[(GroupField::FirstSlotSellSol, vec!["0.0–0.1".to_string()])],
+            None,
+            SOL_BUCKET_WIDTH,
+            None,
+            None,
+            "",
+            filter(now(), now()),
+        );
+        assert!(where_sql.contains("i.first_slot_buy_lamports"));
+        assert!(where_sql.contains("i.first_slot_sell_lamports"));
+        assert!(!where_sql.contains("ti."), "must not reference the grouped()-only `ti` alias: {where_sql}");
+    }
+
+    #[test]
+    fn missing_group_key_entry_is_skipped_not_faked() {
+        // A `fields` entry with no matching `group_key` value emits no clause for
+        // it (defensive — the handler validates completeness before calling in).
+        let (where_sql, _args) = build_grouped_tokens_where(
+            &[GroupField::CuLimit],
+            &[],
+            &[],
+            None,
+            SOL_BUCKET_WIDTH,
+            None,
+            None,
+            "",
+            filter(now(), now()),
+        );
+        assert!(!where_sql.contains("cu_limit"));
+    }
+
+    #[test]
+    fn dow_hour_binds_tz_once_and_reuses_the_placeholder() {
+        let (where_sql, args) = build_grouped_tokens_where(
+            &[], &[], &[], None, SOL_BUCKET_WIDTH, Some(1), Some(15), "", filter(now(), now()),
+        );
+        assert_eq!(where_sql.matches("$3").count(), 2, "tz placeholder reused for both EXTRACTs");
+        assert!(where_sql.contains("EXTRACT(DOW"));
+        assert!(where_sql.contains("EXTRACT(HOUR"));
+        assert_eq!(args.len(), 5); // from, to, tz, dow, hour
+    }
+
+    #[test]
+    fn search_matches_mint_or_symbol_lowercased() {
+        let (where_sql, args) = build_grouped_tokens_where(
+            &[], &[], &[], None, SOL_BUCKET_WIDTH, None, None, "  BONK  ", filter(now(), now()),
+        );
+        assert!(where_sql.contains("LOWER(t.mint_address) LIKE"));
+        assert!(where_sql.contains("LOWER(t.symbol) LIKE"));
+        match args.last() {
+            Some(SqlArg::Str(s)) => assert_eq!(s, "bonk"),
+            other => panic!("expected Str, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn order_defaults_to_newest_first() {
+        assert_eq!(build_grouped_tokens_order(&[]), "t.created_at DESC, t.mint_address DESC");
+        // Unknown column ⇒ dropped, same fallback.
+        assert_eq!(
+            build_grouped_tokens_order(&[("bogus".to_string(), true)]),
+            "t.created_at DESC, t.mint_address DESC"
+        );
+    }
+
+    #[test]
+    fn order_maps_known_column_with_tiebreak() {
+        let sql = build_grouped_tokens_order(&[("cu_limit".to_string(), true)]);
+        assert!(sql.contains("t.cu_limit DESC NULLS LAST"));
+        assert!(sql.ends_with("t.mint_address ASC"));
     }
 }

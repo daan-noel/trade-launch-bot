@@ -3,9 +3,12 @@ use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::api::table_query::TableRequest;
 use crate::state::core_state::CoreState;
 use crate::storage::repositories::creation_stats_repo::{HeatCellRow, StatsFilter, TrendPointRow};
 use crate::grouping::GroupField;
+
+use super::tokens::TokenSummary;
 
 /// Default outcome-maturity window (24h): tokens younger than this are excluded
 /// from migrate/dead counts so a fresh bucket doesn't read artificially bad.
@@ -538,6 +541,171 @@ pub async fn get_grouped_creation_stats(
     };
 
     HttpResponse::Ok().json(resp)
+}
+
+// ---------------------------------------------------------------------------
+// Grouped-creation "drill-down" token list — the actual tokens behind one
+// group card (or one of its heatmap tiles).
+// ---------------------------------------------------------------------------
+
+/// Hard cap on the drill-down page size — a table page, not a bulk export.
+const MAX_GROUPED_TOKENS_PAGE_SIZE: i64 = 500;
+
+/// `POST /api/tokens/creation-stats/grouped/tokens` body. Mirrors
+/// [`GroupedCreationQuery`]'s window/segment/corpus fields (so the drill-down
+/// reads the SAME corpus `grouped()` ranked) plus the two selectors that pin it
+/// to one row: `group_key` (required — the exact group, echoing back
+/// [`GroupedGroup::group_key`]) and, for a heatmap-tile click, `dow`/`hour`.
+/// The embedded [`TableRequest`] supplies pagination/sort/search (its
+/// `filters`/`range`/`tracked_only` are unused — this endpoint's corpus is
+/// scoped entirely by the fields above, not the per-column FilterPanel grammar).
+#[derive(Deserialize)]
+pub struct GroupedCreationTokensRequest {
+    #[serde(flatten)]
+    pub table: TableRequest,
+    pub tz: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub segment: Option<String>,
+    pub group_by: Option<String>,
+    pub bucket_width: Option<f64>,
+    pub field_filters: Option<String>,
+    pub ix_labels_filter: Option<String>,
+    /// The exact group to drill into: `{"cu_limit":"200000","ix_labels":"A | B"}`
+    /// — same rendered shape as [`GroupedGroup::group_key`]. Required to carry a
+    /// value for every field named in `group_by` (a missing one is silently
+    /// dropped from the match, so an incomplete key over-matches — validated below).
+    pub group_key: serde_json::Value,
+    /// Recurring weekly slot (a heatmap-tile click): 0=Sun..6=Sat / 0..23. Both
+    /// present or both absent — a lone one is a 400.
+    pub dow: Option<i32>,
+    pub hour: Option<i32>,
+}
+
+#[derive(Serialize)]
+pub struct GroupedCreationTokensResponse {
+    pub total: i64,
+    pub items: Vec<TokenSummary>,
+}
+
+/// `POST /api/tokens/creation-stats/grouped/tokens` — the concrete tokens
+/// behind one "Creation by token group" card, optionally narrowed to one of
+/// its heatmap tiles. Filters the SAME `tokens`/`tokens_info` corpus
+/// `get_grouped_creation_stats` ranks (window, segment, `field_filters`,
+/// `ix_labels_filter`, `bucket_width`) down to rows matching one exact
+/// `group_key`, then pages it through the live Tokens list's own SQL
+/// projection (`token_repo::{find_list_page,count_list}`) — so the drill-down
+/// table renders with the identical column set/enrichment as the Tokens page.
+pub async fn get_grouped_creation_tokens(
+    state: web::Data<Arc<CoreState>>,
+    body: web::Json<GroupedCreationTokensRequest>,
+) -> impl Responder {
+    let body = body.into_inner();
+    let now = Utc::now();
+    let tz = body.tz.clone().unwrap_or_else(|| "UTC".to_string());
+    let segment = body.segment.clone().unwrap_or_else(|| "all".to_string());
+    let (mayhem, cashback) = parse_segment(&segment);
+    let (from, to) = resolve_window(body.from.as_deref(), body.to.as_deref(), now);
+    let bucket_width = match body.bucket_width {
+        Some(w) if w.is_finite() && w >= crate::grouping::MIN_BUCKET_WIDTH_SOL => w,
+        _ => crate::grouping::SOL_BUCKET_WIDTH,
+    };
+
+    let fields = match parse_group_by(body.group_by.as_deref()) {
+        Ok(f) => f,
+        Err(tag) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("unknown group_by field: {tag}")
+            }));
+        }
+    };
+    let field_filters = match parse_field_filters(body.field_filters.as_deref()) {
+        Ok(f) => f,
+        Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+    };
+    let ix_labels_filter = match parse_ix_labels_filter(body.ix_labels_filter.as_deref()) {
+        Ok(f) => f,
+        Err(msg) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+    };
+
+    // `group_key` must name every selected field — else the "exact group" the
+    // client thinks it's drilling into is actually broader than what it saw
+    // (a silently-dropped field would match every value of that field).
+    let group_key_obj = match body.group_key.as_object() {
+        Some(o) => o,
+        None => {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({ "error": "group_key must be a JSON object" }));
+        }
+    };
+    let mut group_key: Vec<(GroupField, String)> = Vec::with_capacity(fields.len());
+    for field in &fields {
+        let Some(v) = group_key_obj.get(field.as_str()) else {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("group_key missing value for field: {}", field.as_str())
+            }));
+        };
+        let Some(s) = v.as_str() else {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": format!("group_key[{}] must be a string", field.as_str())
+            }));
+        };
+        group_key.push((*field, s.to_string()));
+    }
+
+    // dow/hour: both-or-neither, and in-range when present.
+    let cell = match (body.dow, body.hour) {
+        (Some(dow), Some(hour)) if (0..=6).contains(&dow) && (0..=23).contains(&hour) => {
+            Some((dow, hour))
+        }
+        (None, None) => None,
+        _ => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "dow (0..6) and hour (0..23) must both be set, or both omitted"
+            }));
+        }
+    };
+    let (dow, hour) = cell.map_or((None, None), |(d, h)| (Some(d), Some(h)));
+
+    let filter = StatsFilter { tz: &tz, maturity_secs: 0.0, from, to, mayhem, cashback };
+    let (where_sql, args) = crate::storage::repositories::creation_stats_repo::build_grouped_tokens_where(
+        &fields,
+        &group_key,
+        &field_filters,
+        ix_labels_filter.as_deref(),
+        bucket_width,
+        dow,
+        hour,
+        &body.table.search,
+        filter,
+    );
+    let order_sql = crate::storage::repositories::creation_stats_repo::build_grouped_tokens_order(
+        &body
+            .table
+            .sorting
+            .iter()
+            .map(|s| (s.col.clone(), s.dir.is_desc()))
+            .collect::<Vec<_>>(),
+    );
+
+    let (limit, offset) = {
+        let page = body.table.pagination.page.max(1);
+        let page_size = body.table.pagination.page_size.clamp(1, MAX_GROUPED_TOKENS_PAGE_SIZE);
+        (page_size, (page - 1) * page_size)
+    };
+
+    let repo = state.token_repo();
+    let total = match repo.count_list(&where_sql, &args).await {
+        Ok(n) => n,
+        Err(e) => return db_error(e),
+    };
+    let rows = match repo.find_list_page(&where_sql, &order_sql, &args, limit, offset).await {
+        Ok(r) => r,
+        Err(e) => return db_error(e),
+    };
+    let items: Vec<TokenSummary> = rows.into_iter().map(TokenSummary::from).collect();
+
+    HttpResponse::Ok().json(GroupedCreationTokensResponse { total, items })
 }
 
 fn db_error(e: anyhow::Error) -> HttpResponse {

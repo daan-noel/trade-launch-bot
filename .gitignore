@@ -64,6 +64,7 @@ wallet-backups/**/keystore/
 *.parquet
 lake-data/
 .lake/
+/*.json
 sweep-out/
 tpsl2-sweep-out/
 venv
