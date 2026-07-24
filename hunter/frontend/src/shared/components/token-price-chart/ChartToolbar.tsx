@@ -320,6 +320,7 @@ export function ChartToolbar({
   showMigrationLine,
   trimEmptyBars,
   showFlowLines,
+  flowLinesAvailable,
   rangeSelectMode,
   crosshair,
   formatFlow,
@@ -379,7 +380,7 @@ export function ChartToolbar({
     trimEmptyBars ||
     showAthLine ||
     showMigrationLine ||
-    showFlowLines ||
+    (showFlowLines && flowLinesAvailable) ||
     rangeSelectMode ||
     (showDevMarkers && devMarkersBoundariesOnly);
 
@@ -594,10 +595,15 @@ export function ChartToolbar({
           </IconToggleButton>
 
           <IconToggleButton
-            active={showFlowLines}
+            active={showFlowLines && flowLinesAvailable}
             onClick={() => onShowFlowLinesChange(!showFlowLines)}
+            disabled={!flowLinesAvailable}
             label="Toggle vol/non-vol flow lines"
-            tooltip="Cumulative volume-maker (red) vs non-volume (gold) overlay — uses fingerprint volume_ix_patterns when available, else creator-seeded classification"
+            tooltip={
+              flowLinesAvailable
+                ? 'Cumulative volume-maker (red) vs non-volume (gold) overlay — classified via fingerprint volume_ix_patterns + creator/wallet contagion'
+                : 'Needs fingerprint volume_ix_patterns — empty/unconfigured fingerprints hide this overlay'
+            }
             activeColor={FLOW_VOL_LINE_COLOR}
           >
             <FlowLinesIcon />

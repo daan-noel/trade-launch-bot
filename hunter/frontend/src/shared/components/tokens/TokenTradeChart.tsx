@@ -60,8 +60,8 @@ interface TokenTradeChartProps {
   /** Visible wall-clock window for sibling panes (time-grouping mode only). */
   onVisibleTimeRangeChange?: (range: { from: number; to: number } | null) => void;
   /**
-   * Fingerprint `volume_ix_patterns` keys for the vol/non-vol overlay. Omit to
-   * still show creator-seeded classification when the chart toggle is on.
+   * Fingerprint `volume_ix_patterns` keys for the vol/non-vol overlay + Vol
+   * badge. Non-empty only — omit/empty hides both (no creator-only fallback).
    */
   flowPatternKeys?: ReadonlySet<string> | null;
 }
@@ -204,7 +204,10 @@ export function TokenTradeChart({
     externalSelection?.onClear();
   }, [externalSelection]);
 
-  const tradeColumns = useMemo(() => tokenTradeColumns(price.unitLabel), [price.unitLabel]);
+  const tradeColumns = useMemo(
+    () => tokenTradeColumns(price.unitLabel, { flowPatternKeys }),
+    [price.unitLabel, flowPatternKeys],
+  );
 
   const entryExitMap = useMemo(() => buildEntryExitMap(eventMarkers), [eventMarkers]);
 

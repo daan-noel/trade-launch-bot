@@ -5,6 +5,26 @@ import { formatDecimal } from 'utils/format';
 import { AmountCell, PriceCell } from 'components/tokens/priceCells';
 import { cn } from 'lib/cn';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
+import { Badge } from 'components/ui/Badge';
+import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
+import { formatIxLabelsText } from 'lib/ixLabels';
+
+export interface TokenTradeColumnsOpts {
+  /**
+   * Fingerprint `volume_ix_patterns` keys (`JSON.stringify(labels)`). When
+   * non-empty, prepends a read-only Vol/Non-vol badge (structural ix match
+   * only — no creator/wallet contagion). Omit or empty → column hidden.
+   */
+  flowPatternKeys?: ReadonlySet<string> | null;
+}
+
+/** True when ordered `instruction_labels` exact-match a volume_ix_patterns row. */
+export function isVolumeIxPattern(
+  labels: readonly string[] | null | undefined,
+  patternKeys: ReadonlySet<string>,
+): boolean {
+  return !!labels && labels.length > 0 && patternKeys.has(JSON.stringify(labels));
+}
 
 /**
  * Takes only the unit *label* (not the whole `usePriceDisplay` object) so the
@@ -14,8 +34,58 @@ import { AddressDisplay } from 'components/ui/AddressDisplay';
  * value cells use the memoized `AmountCell`/`PriceCell`, which read the rate from
  * context themselves and re-render in isolation when it changes.
  */
-export function tokenTradeColumns(unit: string): ColumnDef<TradeRecord>[] {
+export function tokenTradeColumns(
+  unit: string,
+  opts?: TokenTradeColumnsOpts,
+): ColumnDef<TradeRecord>[] {
+  const patternKeys = opts?.flowPatternKeys;
+  const showVol = patternKeys != null && patternKeys.size > 0;
+
+  const leading: ColumnDef<TradeRecord>[] = [];
+
+  if (showVol) {
+    const keys = patternKeys;
+    leading.push({
+      key: 'is_volume_ix_pattern',
+      label: 'Vol',
+      tooltip:
+        'Structural volume ix-pattern match — this trade’s ordered instruction_labels ' +
+        'exact-match a fingerprint volume_ix_patterns row (no creator/wallet contagion).',
+      render: (t) => {
+        const labels = t.instruction_labels;
+        if (!labels || labels.length === 0) {
+          return <span className="text-text-dim/40">—</span>;
+        }
+        const isVol = isVolumeIxPattern(labels, keys);
+        return (
+          <Badge variant={isVol ? 'danger' : 'neutral'} size="sm">
+            {isVol ? 'Vol' : 'Non-vol'}
+          </Badge>
+        );
+      },
+      sortValue: (t) => (isVolumeIxPattern(t.instruction_labels, keys) ? 1 : 0),
+      searchValue: (t) =>
+        isVolumeIxPattern(t.instruction_labels, keys) ? 'vol' : 'non-vol',
+    });
+  }
+
+  leading.push({
+    key: 'ix_structure',
+    label: 'ix_labels',
+    tooltip: 'Ordered instruction-label structure of this trade — the flow-split matching key.',
+    render: (t) => (
+      <IxLabelsDisplay
+        labels={t.instruction_labels ?? []}
+        empty="—"
+        copyJson
+        maxHeight="4.5rem"
+      />
+    ),
+    searchValue: (t) => formatIxLabelsText(t.instruction_labels ?? []),
+  });
+
   return [
+    ...leading,
     {
       key: 'side',
       label: 'Side',

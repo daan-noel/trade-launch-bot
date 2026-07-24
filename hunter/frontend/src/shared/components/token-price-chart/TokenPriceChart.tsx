@@ -92,8 +92,6 @@ import type {
 
 type ChartPrefs = typeof DEFAULT_CHART_PREFS;
 
-const EMPTY_FLOW_PATTERN_KEYS: ReadonlySet<string> = new Set();
-
 function loadPrefs(): ChartPrefs {
   try {
     const raw = getString(LS_CHART_PREFS_KEY);
@@ -564,6 +562,11 @@ export function TokenPriceChart({
   );
   const [showEventMarkers, setShowEventMarkers] = useState(initialPrefs.showEventMarkers);
   const [showFlowLines, setShowFlowLines] = useState(initialPrefs.showFlowLines);
+  /** Same gate as the trades-table Vol badge — empty/omit ⇒ no overlay. */
+  const flowLinesAvailable = flowPatternKeys != null && flowPatternKeys.size > 0;
+  const flowLinesVisible = showFlowLines && flowLinesAvailable;
+  const flowLinesAvailableRef = useRef(flowLinesAvailable);
+  flowLinesAvailableRef.current = flowLinesAvailable;
   const { timezone: chartTimezone } = useTimezone();
   const [rangeSelectMode, setRangeSelectMode] = useState(false);
   const [selectedRange, setSelectedRange] = useState<ChartRangeSelection | null>(null);
@@ -849,6 +852,7 @@ export function TokenPriceChart({
       title: 'Vol makers',
       lastValueVisible: true,
       priceLineVisible: false,
+      visible: false,
     });
     const nonVolSeries = chart.addSeries(LineSeries, {
       color: FLOW_NON_VOL_LINE_COLOR,
@@ -857,7 +861,9 @@ export function TokenPriceChart({
       title: 'Non-vol',
       lastValueVisible: true,
       priceLineVisible: false,
+      visible: false,
     });
+    chart.priceScale('left').applyOptions({ visible: false });
     volSeriesRef.current = volSeries;
     nonVolSeriesRef.current = nonVolSeries;
 
@@ -957,7 +963,9 @@ export function TokenPriceChart({
         setCrosshairTimeSec(null);
         return;
       }
-      const flow = flowAt(alignedFlowLinesRef.current, param.time);
+      const flow = flowLinesAvailableRef.current
+        ? flowAt(alignedFlowLinesRef.current, param.time)
+        : { vol: null, nonVol: null };
       const info: ChartCrosshairInfo = {
         open: bar.open,
         high: bar.high,
@@ -1225,17 +1233,25 @@ export function TokenPriceChart({
     }
   }, [bars, style, showChart, groupingKey, priceUnit, highlightBarKey, snapshotVisibleViewport]);
 
-  // Vol/non-vol cumulative overlay (left price scale) — creator-seeded + optional
-  // fingerprint volume_ix_patterns. Aligns to candle bar times for lockstep X.
-  const effectiveFlowPatternKeys = flowPatternKeys ?? EMPTY_FLOW_PATTERN_KEYS;
-  const flowLines = useMemo(
-    () =>
-      buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
-        patternKeys: effectiveFlowPatternKeys,
-        creatorWallet,
-      }),
-    [sortedTrades, groupMode, intervalSec, flowBasis, effectiveFlowPatternKeys, creatorWallet],
-  );
+  // Vol/non-vol cumulative overlay (left price scale) — only when fingerprint
+  // has non-empty volume_ix_patterns (matches trades-table Vol badge gate).
+  const flowLines = useMemo(() => {
+    if (!flowLinesAvailable || !flowPatternKeys) {
+      return { vol: [], nonVol: [] } satisfies FlowLines;
+    }
+    return buildFlowLines(sortedTrades, groupMode, intervalSec, flowBasis as FlowBasis, {
+      patternKeys: flowPatternKeys,
+      creatorWallet,
+    });
+  }, [
+    sortedTrades,
+    groupMode,
+    intervalSec,
+    flowBasis,
+    flowLinesAvailable,
+    flowPatternKeys,
+    creatorWallet,
+  ]);
   const alignedFlowLines = useMemo(() => alignFlowToBars(flowLines, bars), [flowLines, bars]);
   alignedFlowLinesRef.current = alignedFlowLines;
 
@@ -1266,12 +1282,12 @@ export function TokenPriceChart({
         value:
           flowBasis === 'token' ? p.value / tokenScale : toValue(p.value),
       }));
-    volSeriesRef.current?.applyOptions({ priceFormat, visible: showFlowLines });
-    nonVolSeriesRef.current?.applyOptions({ priceFormat, visible: showFlowLines });
+    volSeriesRef.current?.applyOptions({ priceFormat, visible: flowLinesVisible });
+    nonVolSeriesRef.current?.applyOptions({ priceFormat, visible: flowLinesVisible });
     const chart = chartRef.current;
     if (chart) {
       rearmDualAutoScale(chart);
-      chart.priceScale('left').applyOptions({ visible: showFlowLines });
+      chart.priceScale('left').applyOptions({ visible: flowLinesVisible });
     }
     volSeriesRef.current?.setData(toData(alignedFlowLines.vol));
     nonVolSeriesRef.current?.setData(toData(alignedFlowLines.nonVol));
@@ -1280,7 +1296,7 @@ export function TokenPriceChart({
     flowBasis,
     priceUnit,
     toValue,
-    showFlowLines,
+    flowLinesVisible,
     showChart,
     style,
     groupingKey,
@@ -1714,6 +1730,7 @@ export function TokenPriceChart({
         showMigrationLine={showMigrationLine}
         trimEmptyBars={trimEmptyBars}
         showFlowLines={showFlowLines}
+        flowLinesAvailable={flowLinesAvailable}
         rangeSelectMode={rangeSelectMode}
         crosshair={crosshair}
         formatFlow={formatFlow}

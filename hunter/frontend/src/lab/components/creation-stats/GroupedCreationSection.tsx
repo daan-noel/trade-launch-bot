@@ -1,8 +1,10 @@
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { STORAGE_KEYS } from 'lib/storage';
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { Button } from 'components/ui/Button';
+import { Badge } from 'components/ui/Badge';
 import { Select } from 'components/ui/Select';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { LoadingState } from 'components/ui/LoadingState';
@@ -30,7 +32,14 @@ import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { DOW_ROWS } from 'components/creation-stats/creationStats';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
 import { CREATION_FIELD_HELP } from 'lib/strategy/strategyHelp';
-import { useGetFingerprintsQuery } from 'store/sharedEndpoints';
+import { useGetFingerprintsQuery, useCreateFingerprintMutation } from 'store/sharedEndpoints';
+import {
+  findFingerprintForGroupKey,
+  fingerprintIdentityFromGroupKey,
+  identityHasCriterion,
+} from 'lib/strategy/matchGroupFingerprint';
+import { fingerprintsHref } from 'lib/strategy/nav';
+import type { Fingerprint } from 'lib/strategy/types';
 
 const GroupedCreationTrendChart = lazy(() =>
   import('./GroupedCreationTrendChart').then((m) => ({ default: m.GroupedCreationTrendChart })),
@@ -50,6 +59,7 @@ import {
   TOP_OPTIONS,
   MISSING_VALUE,
   groupColor,
+  groupShortLabel,
   groupValueParts,
   type GroupedCreationArgs,
   type GroupedCreationCell,
@@ -154,6 +164,14 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     setSeedFingerprintId(id || null);
   }
 
+  // Create-fingerprint-from-card: the group card's key is the same fingerprint
+  // identity the sweep/flow-discovery promote path uses, so a card can be saved
+  // as a fingerprint directly. `fpBusyGroup` = the group whose create is in
+  // flight (per-card spinner); `fpError` surfaces a failure inline.
+  const [createFingerprint] = useCreateFingerprintMutation();
+  const [fpBusyGroup, setFpBusyGroup] = useState<number | null>(null);
+  const [fpError, setFpError] = useState<string | null>(null);
+
   // --- applied snapshot (drives the query) ----------------------------------
   const [applied, setApplied] = useState<GroupedCreationArgs | null>(null);
   const [isolatedGroup, setIsolatedGroup] = useState<number | null>(null);
@@ -239,6 +257,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
   useEffect(() => {
     setIsolatedGroup(null);
     setDrillTarget(null);
+    setFpError(null);
   }, [applied]);
 
   // "Dirty" = the draft differs from what's applied (or nothing applied yet).
@@ -264,6 +283,46 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
 
   const groups = data?.groups ?? [];
   const drillGroup = drillTarget ? groups.find((g) => g.g === drillTarget.g) ?? null : null;
+
+  // The bucket width the applied run grouped SOL axes at — the same width the
+  // fingerprint identity match/create must use so a card maps to the fingerprint
+  // it would actually match. `applied.bucketWidth` is omitted for the default.
+  const appliedBucketWidth = applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
+
+  // Per-group: the saved fingerprint whose identity matches this card's key (for
+  // the "already a fingerprint" badge), and whether the key carries any criterion
+  // (ALL / grouping-only cards can't become a fingerprint — hide Create then).
+  const fpByGroup = useMemo(() => {
+    const map = new Map<number, { matched: Fingerprint | null; canCreate: boolean }>();
+    for (const g of groups) {
+      const matched = findFingerprintForGroupKey(g.group_key, fingerprints, appliedBucketWidth);
+      const canCreate =
+        matched == null &&
+        identityHasCriterion(fingerprintIdentityFromGroupKey(g.group_key, appliedBucketWidth));
+      map.set(g.g, { matched, canCreate });
+    }
+    return map;
+  }, [groups, fingerprints, appliedBucketWidth]);
+
+  // Save a group card as a fingerprint (find-or-create identity is shared with
+  // the badge match, so on success the card flips from "Create" to its "fp"
+  // badge once the fingerprint list refetches). Plain fingerprint — no metric
+  // config; flow patterns are added later on the Flow discovery page.
+  async function createFingerprintFromGroup(group: GroupedCreationGroup) {
+    setFpError(null);
+    setFpBusyGroup(group.g);
+    try {
+      await createFingerprint({
+        name: `creation · ${groupShortLabel(group)}`,
+        ...fingerprintIdentityFromGroupKey(group.group_key, appliedBucketWidth),
+        metric_config: {},
+      }).unwrap();
+    } catch (e) {
+      setFpError(apiErrorMessage(e as never, 'Failed to create fingerprint'));
+    } finally {
+      setFpBusyGroup(null);
+    }
+  }
 
   // Resets the drill-down table to page 1 when the target (group/tile) changes.
   const drillResetKey = drillTarget
@@ -456,12 +515,25 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
             />
           </Suspense>
 
+          {fpError && <p className="mt-3 text-[11px] text-red">{fpError}</p>}
+
           {/* Small-multiple day×hour heatmaps (recurring active hours per group). */}
           <div className="mt-4 grid gap-3 xl:grid-cols-2">
             {groups.map((g) => {
               const targetingThisGroup = drillTarget?.g === g.g;
+              // Selected = its tokens are showing in the shared drill-down below.
+              const selected = targetingThisGroup;
+              const fp = fpByGroup.get(g.g) ?? { matched: null, canCreate: false };
               return (
-                <div key={g.g} className="rounded-md border border-white/8 bg-white/2 p-2.5">
+                <div
+                  key={g.g}
+                  className={cn(
+                    'rounded-md border p-2.5 transition',
+                    selected
+                      ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/30'
+                      : 'border-white/8 bg-white/2',
+                  )}
+                >
                   <div className="mb-1.5 flex items-start gap-2">
                     <span
                       className="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
@@ -470,20 +542,46 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                     <div className="min-w-0 flex-1">
                       <GroupKeyBlock group={g} />
                     </div>
-                    <span className="shrink-0 text-[11px] text-text-dim">
-                      {formatWithCommas(g.total)} tokens
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setDrillTarget({ g: g.g, dow: null, hour: null })}
-                      title="View the tokens in this group"
-                      className={cn(
-                        'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-dim transition hover:bg-white/5 hover:text-text',
-                        targetingThisGroup && drillTarget?.dow == null && 'bg-primary/12 text-primary',
-                      )}
-                    >
-                      View tokens
-                    </button>
+                    <div className="flex shrink-0 flex-col items-end gap-1.5">
+                      <span className="text-[11px] text-text-dim">
+                        {formatWithCommas(g.total)} tokens
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {/* Already saved → link to it; else offer one-click save.
+                            The ALL / grouping-only cards carry no criterion, so
+                            neither shows (nothing to bind). */}
+                        {fp.matched ? (
+                          <Link
+                            to={fingerprintsHref(fp.matched.id)}
+                            title={`Open fingerprint “${fp.matched.name || fp.matched.id.slice(0, 8)}”`}
+                            className="hover:opacity-90"
+                          >
+                            <Badge variant="info" size="sm">
+                              fp · {fp.matched.name || fp.matched.id.slice(0, 8)}
+                            </Badge>
+                          </Link>
+                        ) : fp.canCreate ? (
+                          <Button
+                            size="sm"
+                            variant="subtle"
+                            disabled={fpBusyGroup === g.g}
+                            onClick={() => createFingerprintFromGroup(g)}
+                            title="Save this group as a fingerprint"
+                          >
+                            {fpBusyGroup === g.g ? 'Creating…' : 'Create fingerprint'}
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant={selected && drillTarget?.dow == null ? 'primary' : 'subtle'}
+                          active={selected && drillTarget?.dow == null}
+                          onClick={() => setDrillTarget({ g: g.g, dow: null, hour: null })}
+                          title="View the tokens in this group"
+                        >
+                          View tokens
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                   <CreationHeatmap
                     cells={cellsByGroup.get(g.g) ?? []}

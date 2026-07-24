@@ -86,12 +86,10 @@ import type { ColumnDef } from 'components/table/types';
 import { tokenTradeColumns } from 'components/tokens/tokenTradeColumns';
 import { Badge } from 'components/ui/Badge';
 import { Checkbox } from 'components/ui/Checkbox';
-import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { cn } from 'lib/cn';
 import { useTimezone } from 'context/TimezoneContext';
 import { useProfileWallets } from 'hooks/useProfileWallets';
 import { formatTimestampMs } from 'utils/date';
-import { formatIxLabelsText } from 'lib/ixLabels';
 import { classifyFlowTrades } from 'lib/flow/classifyFlow';
 import {
   alignFlowToBars,
@@ -1096,51 +1094,34 @@ export function FlowPreviewChart({
   const readNonVol = flowCrosshair?.nonVol ?? alignedLines.nonVol.at(-1)?.value ?? null;
   const moreActive = showMore || showAthLine || showMigrationLine || rangeSelectMode;
 
+  // Shared columns already include ix_labels (+ optional Vol badge). Flow
+  // discovery prepends only the interactive draft-pattern checkbox — never a
+  // second ix column. Pass no flowPatternKeys so the read-only badge stays
+  // hidden here (checkbox is the draft-edit control).
   const baseTradeColumns = useMemo(() => tokenTradeColumns('SOL'), []);
-  // Prepend flow-discovery columns: the ix-structure of each trade + a Vol
-  // checkbox that toggles that exact shape in/out of the draft
-  // volume_ix_patterns (same equivalence class as the ranked structure table,
-  // keyed by JSON.stringify(labels)). Cheap to rebuild on each toggle — the
-  // Bar-Trades table only ever holds one bar's worth of rows.
   const tradeColumns = useMemo<ColumnDef<TradeRecord>[]>(() => {
-    const flowCols: ColumnDef<TradeRecord>[] = [];
-    if (onTogglePattern) {
-      flowCols.push({
-        key: 'vol_pattern',
-        label: 'Vol',
-        tooltip:
-          'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
-          'volume_ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
-        render: (t) => {
-          const labels = t.instruction_labels;
-          if (!labels || labels.length === 0) {
-            return <span className="text-text-dim/40">—</span>;
-          }
-          return (
-            <Checkbox
-              checked={patternKeys.has(JSON.stringify(labels))}
-              onChange={() => onTogglePattern(labels)}
-            />
-          );
-        },
-        searchValue: () => '',
-      });
-    }
-    flowCols.push({
-      key: 'ix_structure',
-      label: 'ix_labels',
-      tooltip: 'Ordered instruction-label structure of this trade — the flow-split matching key.',
-      render: (t) => (
-        <IxLabelsDisplay
-          labels={t.instruction_labels ?? []}
-          empty="—"
-          copyJson
-          maxHeight="4.5rem"
-        />
-      ),
-      searchValue: (t) => formatIxLabelsText(t.instruction_labels ?? []),
-    });
-    return [...flowCols, ...baseTradeColumns];
+    if (!onTogglePattern) return baseTradeColumns;
+    const volToggle: ColumnDef<TradeRecord> = {
+      key: 'vol_pattern',
+      label: 'Vol',
+      tooltip:
+        'Flag this trade’s ix-structure as manufactured volume — adds it to the draft ' +
+        'volume_ix_patterns (applies to EVERY trade with this exact shape, not just this row).',
+      render: (t) => {
+        const labels = t.instruction_labels;
+        if (!labels || labels.length === 0) {
+          return <span className="text-text-dim/40">—</span>;
+        }
+        return (
+          <Checkbox
+            checked={patternKeys.has(JSON.stringify(labels))}
+            onChange={() => onTogglePattern(labels)}
+          />
+        );
+      },
+      searchValue: () => '',
+    };
+    return [volToggle, ...baseTradeColumns];
   }, [baseTradeColumns, patternKeys, onTogglePattern]);
   const selectionLabel = selectedBar
     ? selectedBar.groupMode === 'slot'

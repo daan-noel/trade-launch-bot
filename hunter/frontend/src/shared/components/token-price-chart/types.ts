@@ -268,9 +268,10 @@ export interface TokenPriceChartProps {
   /** Strategy entry/exit points to overlay as arrows + dashed price lines. */
   eventMarkers?: ChartEventMarker[] | null;
   /**
-   * `JSON.stringify(labels)` keys of `volume_ix_patterns` for the vol/non-vol
-   * overlay. Omit/empty still classifies the creator as volume when
-   * {@link creatorWallet} is set. Toggle lives in the chart toolbar.
+   * `JSON.stringify(labels)` keys of fingerprint `volume_ix_patterns` for the
+   * vol/non-vol overlay. Overlay + toolbar toggle are enabled only when this
+   * set is non-empty (same gate as the trades-table Vol badge). Omit/empty ⇒
+   * no lines (creator-only classification alone is not shown as vol/non-vol).
    */
   flowPatternKeys?: ReadonlySet<string> | null;
   /** Cumulative flow-line basis (default `cost_sol`). */
@@ -304,6 +305,8 @@ export interface ChartToolbarProps {
   trimEmptyBars: boolean;
   /** Vol/non-vol cumulative overlay lines (left price scale). */
   showFlowLines: boolean;
+  /** False when fingerprint has no `volume_ix_patterns` — toggle disabled. */
+  flowLinesAvailable: boolean;
   /** Range-select (drag-to-highlight) mode is active. */
   rangeSelectMode: boolean;
   crosshair: ChartCrosshairInfo | null;

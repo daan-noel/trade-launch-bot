@@ -90,6 +90,24 @@ export function fingerprintIdentityFromGroupKey(
   return id;
 }
 
+/** True when the identity carries at least one match criterion — mirrors the
+ *  backend `Fingerprint::has_any_criterion` (`bucket_size_amount` alone doesn't
+ *  count). A group with none (e.g. the ALL group, or grouping only by the
+ *  grouping-only axes) can't be turned into a fingerprint — the create endpoints
+ *  reject it. */
+export function identityHasCriterion(id: FingerprintIdentity): boolean {
+  return (
+    id.cu_limit != null ||
+    id.cu_price != null ||
+    id.init_buy_lamports != null ||
+    id.max_cost_lamports != null ||
+    id.spendable_lamports_in != null ||
+    id.first_slot_buy_lamports != null ||
+    id.first_slot_sell_lamports != null ||
+    id.ix_labels != null
+  );
+}
+
 function ixLabelsEqual(a: string[] | null, b: string[] | null): boolean {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
