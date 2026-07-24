@@ -233,6 +233,23 @@ pub fn configure_local_routes(cfg: &mut web::ServiceConfig) {
             .route(
                 "/strategies/flow-discovery/{run_id}",
                 web::get().to(handlers::strategies::flow_discovery::get_flow_discovery),
+            )
+            // ── Metric-combo discovery pipeline (screen → family → validate) ──
+            .route(
+                "/strategies/metric-discovery",
+                web::post().to(handlers::strategies::metric_discovery::start_metric_discovery),
+            )
+            .route(
+                "/strategies/metric-discovery/cancel",
+                web::post().to(handlers::strategies::metric_discovery::cancel_metric_discovery),
+            )
+            .route(
+                "/strategies/metric-discovery/last",
+                web::get().to(handlers::strategies::metric_discovery::get_last_metric_discovery),
+            )
+            .route(
+                "/strategies/metric-discovery/{run_id}",
+                web::get().to(handlers::strategies::metric_discovery::get_metric_discovery),
             ),
     );
 }

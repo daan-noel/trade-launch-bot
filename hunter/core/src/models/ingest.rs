@@ -176,6 +176,30 @@ pub enum SseEvent {
         run_id: uuid::Uuid,
         message: String,
     },
+    /// Progress of an in-flight metric-combo discovery pipeline (lab only). `phase`
+    /// is `"corpus"` (lake load; `total: 0` ⇒ indeterminate), `"screen"` (Layer 1),
+    /// `"family"` (Layer 2), or `"validate"` (Layer 3) — the pipeline re-declares the
+    /// total at each layer, so `processed`/`total` reset per phase. Not mint-scoped —
+    /// always delivered.
+    MetricDiscoveryProgress {
+        run_id: uuid::Uuid,
+        phase: String,
+        processed: u64,
+        total: u64,
+    },
+    /// Terminal frame for the metric-combo discovery pipeline (`cancelled` / optional
+    /// `error`). The client's only reliable signal the run ended.
+    MetricDiscoveryFinished {
+        run_id: uuid::Uuid,
+        cancelled: bool,
+        error: Option<String>,
+    },
+    /// Non-fatal notice during the pipeline (e.g. token_cap truncation, a degenerate
+    /// validation split).
+    MetricDiscoveryNotice {
+        run_id: uuid::Uuid,
+        message: String,
+    },
     /// A generic-engine position transition, emitted by the engine's
     /// `PositionUpdate` sink. Mint-scoped. `status` is the `strategy_positions`
     /// lifecycle string (`BuySubmitted` | `Holding` | `ExitPending` | `End` |

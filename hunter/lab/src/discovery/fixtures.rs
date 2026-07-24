@@ -47,12 +47,18 @@ pub fn trade(secs: i64, price: f64, reserve: f64, is_buy: bool) -> CorpusTrade {
 
 /// A token whose price rises then falls, so both TP and SL get exercised and the
 /// price-path metrics (`trail`, `rise`, `stall`) take a real range of values.
+///
+/// Trade slots are **consecutive** (1 s apart): the paper fill only looks one slot
+/// ahead ([`MAX_FILL_WAIT_SLOTS`](trading_core::config::constants::MAX_FILL_WAIT_SLOTS)
+/// = 3), so a wider spacing would leave every enter-on-arm trigger unable to find a
+/// qualifying buy in its window and no combo would ever fire. Buys land on 2 of every
+/// 3 trades so a sell-slot trigger still has an adjacent buy to fill against.
 pub fn token(mint: &str, n: usize) -> CorpusToken {
     let trades: Vec<CorpusTrade> = (0..n)
         .map(|i| {
             let f = i as f64;
             let price = if i < n / 2 { 1.0 + f * 0.2 } else { 1.0 + (n as f64 - f) * 0.1 };
-            trade(i as i64 * 5, price, 40.0 + f, i % 3 != 0)
+            trade(i as i64, price, 40.0 + f, i % 3 != 0)
         })
         .collect();
     CorpusToken {

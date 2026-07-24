@@ -453,6 +453,11 @@ export async function cancelFlowDiscovery(): Promise<void> {
   await request(`${API_BASE}/api/strategies/flow-discovery/cancel`, { method: 'POST' });
 }
 
+/** Cooperative cancel for the in-flight metric-combo discovery pipeline. */
+export async function cancelMetricDiscovery(): Promise<void> {
+  await request(`${API_BASE}/api/strategies/metric-discovery/cancel`, { method: 'POST' });
+}
+
 /** Start a rule's backtest as a detached background job (returns immediately).
  *  The run is uncapped and may take minutes, so the result is NOT delivered on
  *  this request — collect it via the result endpoint (`getStrategySimulateResult`)

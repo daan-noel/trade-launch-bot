@@ -12,6 +12,8 @@
 //!   the ranked metric shortlist (step 3).
 //! * [`family`] — Layer 2: a grid per registry metric family over Layer 1's narrowed
 //!   ranges, plus the pairwise interaction check (step 4).
+//! * [`validate`] — Layer 3: the time-split out-of-sample re-score that turns a
+//!   fitted winner into a kept-or-overfit verdict (step 5).
 //!
 //! Everything here reads the metric [`REGISTRY`](hunter_engine::metrics) and the
 //! already-persisted `ComboMetrics` columns, so a metric added later flows through
@@ -19,9 +21,12 @@
 
 pub mod additive;
 pub mod candidates;
+pub mod dto;
 pub mod family;
 pub mod objective;
+pub mod pipeline;
 pub mod screen;
+pub mod validate;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

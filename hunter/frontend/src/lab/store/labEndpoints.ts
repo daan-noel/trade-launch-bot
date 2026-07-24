@@ -26,6 +26,10 @@ import type {
   Fingerprint,
 } from 'lib/strategy/types';
 import type { GroupField } from '@lab/components/sweep/groupedTypes';
+import type {
+  MetricDiscoveryResult,
+  MetricDiscoveryStartArgs,
+} from '@lab/lib/metricDiscoveryTypes';
 
 /** Body for `POST /api/strategies/flow-discovery`. */
 export interface FlowDiscoveryStartArgs {
@@ -376,6 +380,26 @@ export const labApi = baseApi.injectEndpoints({
       }),
       invalidatesTags: ['Fingerprint'],
     }),
+    // Metric-combo discovery pipeline (screen → family → validate). Returns
+    // `202 { run_id }` and runs detached; collect via getMetricDiscovery once the
+    // `metric_discovery_finished` SSE fires (same shape as flow discovery).
+    startMetricDiscovery: builder.mutation<
+      { run_id: string; status: string },
+      MetricDiscoveryStartArgs
+    >({
+      query: (body) => ({
+        url: '/api/strategies/metric-discovery',
+        method: 'POST',
+        body,
+      }),
+    }),
+    getMetricDiscovery: builder.query<MetricDiscoveryResult, string>({
+      query: (runId) => `/api/strategies/metric-discovery/${encodeURIComponent(runId)}`,
+    }),
+    // Last cached pipeline result — rehydrates the page after a reload. 404 ⇒ none.
+    getLastMetricDiscovery: builder.query<MetricDiscoveryResult, void>({
+      query: () => '/api/strategies/metric-discovery/last',
+    }),
   }),
 });
 
@@ -401,4 +425,7 @@ export const {
   useLazyGetFlowDiscoveryQuery,
   useGetLastFlowDiscoveryQuery,
   useBindFlowDiscoveryMutation,
+  useStartMetricDiscoveryMutation,
+  useLazyGetMetricDiscoveryQuery,
+  useGetLastMetricDiscoveryQuery,
 } = labApi;

@@ -372,11 +372,15 @@ mod generic_tests {
         }));
         assert!(matches!(build_rule(&d), Err(e) if e.contains("tyme")));
 
-        // Contradictory conditions fail the save.
+        // Contradictory conditions fail the save. A *flat* same-field list is now
+        // coalesced to OR arms (`> 30 OR < 10`, satisfiable — see
+        // `normalize_condition_expr`), so contradiction is only unavoidable when every
+        // explicit OR arm is itself unsatisfiable — the multi-arm form the engine keeps
+        // as authored (`multi_arm_all_unsat_still_rejected`).
         let d = generic_draft(json!({
             "entry": {"m_snapshot": {"time": [
-                {"operator": ">", "value": 30},
-                {"operator": "<", "value": 10}
+                [{"operator": ">", "value": 30}, {"operator": "<", "value": 10}],
+                [{"operator": ">", "value": 50}, {"operator": "<", "value": 20}]
             ]}}
         }));
         assert!(matches!(build_rule(&d), Err(e) if e.contains("contradictory")));

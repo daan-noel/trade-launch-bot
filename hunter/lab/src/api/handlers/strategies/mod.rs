@@ -10,4 +10,5 @@ pub mod engine_crud;
 pub mod flow_discovery;
 pub mod grouped_sweep;
 pub mod live_positions;
+pub mod metric_discovery;
 pub mod positions;

@@ -102,6 +102,18 @@ pub struct LocalState {
     /// shouldn't have to re-run just to be looked at again. See
     /// [`super::discovery_result_cache`].
     pub discovery_result: Arc<DiscoveryResultCache>,
+    /// Single-flight gate for the metric-combo discovery **pipeline** (screen →
+    /// family → validate). Mutually exclusive with [`Self::sweep_running`] and
+    /// [`Self::discovery_running`] — all three are Duck/RAM hungry.
+    pub metric_discovery_running: Arc<AtomicBool>,
+    /// Cooperative cancel for the in-flight pipeline run.
+    pub metric_discovery_cancel: Arc<AtomicBool>,
+    /// Progress cell for `/api/jobs/status` recovery (pipeline phase).
+    pub metric_discovery_progress: Arc<ProgressCell>,
+    /// Last pipeline result as its JSON DTO, keyed by `run_id`. In-RAM single-slot
+    /// (single-flight run) — an authoring aid, not durable state, so a lab restart
+    /// simply re-runs. `None` until the first pipeline completes.
+    pub metric_discovery_result: Arc<RwLock<Option<(Uuid, serde_json::Value)>>>,
 }
 
 impl LocalState {
@@ -122,6 +134,10 @@ impl LocalState {
             discovery_cancel: Arc::new(AtomicBool::new(false)),
             discovery_progress: Arc::new(ProgressCell::default()),
             discovery_result: Arc::new(DiscoveryResultCache::new()),
+            metric_discovery_running: Arc::new(AtomicBool::new(false)),
+            metric_discovery_cancel: Arc::new(AtomicBool::new(false)),
+            metric_discovery_progress: Arc::new(ProgressCell::default()),
+            metric_discovery_result: Arc::new(RwLock::new(None)),
         }
     }
 }

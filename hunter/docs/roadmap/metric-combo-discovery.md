@@ -9,9 +9,11 @@ through with no pipeline edit.
 engine + lake corpus. Nothing ships to EC2. Live/paper are untouched — this is an
 analysis aid that *outputs* combos to promote, exactly like the sweep does today.
 
-**Status.** In progress. **Steps 1–4 DONE** (objective re-ranker, candidate generation,
-Layer-1 screen, Layer-2 family grid + interaction check — see §8). Steps 5–6 next;
-Layer 3 validates the combos Layer 2 emits.
+**Status.** **COMPLETE.** All six steps shipped (see §8): objective re-ranker,
+candidate generation, Layer-1 screen, Layer-2 family grid + interaction check, Layer-3
+out-of-sample validation, and the lab pipeline endpoint + page. The pipeline runs
+screen → family → validate over one corpus load and surfaces shortlist → combos →
+verdicts with a one-click promote into the shared rule editor.
 
 Related code (grounding — read before touching):
 - Metric SSOT: [`engine/src/metrics/mod.rs`](../../engine/src/metrics/mod.rs) (`REGISTRY`)
@@ -466,10 +468,34 @@ Each layer is independently useful; ship in order.
    time-split (D4) has to split the *corpus*, not the report: `plan_families` is pure,
    so re-running `run_family_layer` on a held-out sub-corpus with the same shortlist is
    the cheapest honest validation of the grid itself.
-5. **Layer 3 validation** (§4).
-6. Surface: a lab page/endpoint (mirrors `flow_discovery` job shape) that runs the
-   pipeline for a cohort and shows shortlist → combos → validation verdicts, with a
-   one-click promote (reuse the sweep's promote path).
+5. **Layer 3 validation** (§4) — **DONE.** `lab/src/discovery/validate.rs`:
+   `SplitPolicy{AgeFraction|Boundary}` + `split_tokens` (by `(created_at, mint)`, so a
+   re-run splits identically), `Candidate` (+ `from_family` / `candidates_from_family_report`
+   — the Layer-2 winner drops in with no adapter), `ValidationThresholds`,
+   `validate_candidates` (re-scores **both** slices with `simulate_one_combo` under the
+   run's own `Pricing`+`as_of`, exact-quantile folded), and the verdict
+   `ValidationVerdict{Holds|Degraded|Failed|ThinValidate|NoFireValidate|UnrankableTrain}`.
+   The two "can't tell" outcomes are first-class — never silently a pass. 6 unit tests
+   (age-split earliest-first, tie-determinism, boundary split, holds/degraded/failed on
+   retention, inconclusive-not-a-pass, end-to-end on both slices).
+   **D4 settled:** time-split now (`AgeFraction`/`Boundary`); the wait-for-new-data cycle
+   is the *same call* with two arbitrary token slices, so no extra machinery.
+6. **Surface** (§8) — **DONE.** `lab/src/discovery/pipeline.rs`
+   (`run_pipeline` — splits first, fits Layers 1–2 on the train slice, validates winners
+   on the held-out slice; a degenerate split fits the whole cohort and reports
+   `no_validation` rather than a vacuous pass), `lab/src/discovery/dto.rs`
+   (`PipelineDto` — the whole report flattened to stable tag strings + numbers, the
+   redesign wire vocabulary), and the endpoint
+   `lab/src/api/handlers/strategies/metric_discovery.rs`
+   (`POST /api/strategies/metric-discovery` + `/cancel` + `/last` + `/{run_id}`,
+   single-flight gate mutually exclusive with sweep/flow-discovery, `MetricDiscovery*`
+   SSE progress, cohort scoping by fingerprint / ix_labels / field filters — same SSOT
+   as flow-discovery). Frontend: `frontend/src/lab/pages/strategies/MetricDiscoveryPage.tsx`
+   + `lib/metricDiscoveryTypes.ts` + labEndpoints, showing shortlist → family winners +
+   interaction map → validation verdicts, with **Promote…** on any winner/candidate
+   (builds a `PromotedRuleDraft` client-side from the winner's `params` + the scoped
+   fingerprint and opens the shared `PromoteRuleModal` → rule editor). No new backend
+   promote endpoint — the winner's `params_json` is already the canonical `RuleParams`.
 
 ---
 
@@ -485,5 +511,8 @@ Each layer is independently useful; ship in order.
 - ~~**D3**~~ — **SETTLED (step 4): the registry field.** `MetricFamily` on `GroupSpec`,
   mirrored into `registry_json` + the FE `GroupSpec` type, guarded by
   `families_group_the_registry_the_way_hues_do`. Layer 2 never names a group.
-- **D4** — validation split policy: time-split now, or wait-for-new-data cycle.
-  Recommend supporting both; time-split is available immediately.
+- ~~**D4**~~ — **SETTLED (step 5): both, via one call.** `SplitPolicy{AgeFraction|Boundary}`
+  splits the loaded cohort by token age for the time-split-now path;
+  `validate_candidates` takes two arbitrary token slices, so the wait-for-new-data cycle
+  is the same function with last cycle's cohort as train and a fresh newer one as
+  validate — no extra machinery.
