@@ -6,8 +6,9 @@
 //! ([`trading_core::strategies::paper_fill`]): after the trigger/fire trade, the
 //! fill is the highest buy (entry) or lowest price (exit) in trigger slot `S` +
 //! the next observed slot within [`MAX_FILL_WAIT_SLOTS`]. The executor polls the
-//! token-cache trade feed until that window is indexed (or a short deadline),
-//! then resolves — never inventing a spot fill at the decision instant.
+//! token-cache trade feed until that window is indexed (or a short deadline).
+//! Entry uses `market_fill_on_empty_window = true` (same taken-position set as
+//! analysis); exit keeps `false` and times out rather than inventing a sell print.
 //!
 //! There is no on-chain identity for a paper fill, so the executor stashes no
 //! signatures — the sink's `record_entry_fill`/`close` just see an empty sig list.
@@ -44,7 +45,9 @@ const FILL_POLL: Duration = Duration::from_millis(100);
 /// (`trades_base + offset`). `None` means no trade yet (enter-on-arm) — wait for
 /// the first print and use that as the trigger. When a trigger resolves, its
 /// snapshot is written to [`PositionMeta::paper_target`] so the sink can persist
-/// `target_*` alongside the worst-case entry fill.
+/// `target_*` alongside the worst-case entry fill. Empty window market-fills at
+/// the trigger (`market_fill_on_empty_window = true`) so live paper takes the
+/// same position set as lab replay/sweep.
 pub async fn run_entry(
     fill_tx: mpsc::Sender<Event>,
     token_cache: Arc<TokenCache>,
@@ -143,12 +146,14 @@ async fn wait_entry_fill(
                     let timed_out = tokio::time::Instant::now() >= deadline;
                     if exit_fill_window_closed(trigger_slot, max_slot) || timed_out {
                         let trigger = paper_target_from(&trades[rel]);
-                        return find_worst_case_paper_entry_at(trades.as_slice(), rel).map(|f| {
-                            (
-                                ResolvedFill { price: f.price, block_time: f.block_time },
-                                trigger,
-                            )
-                        });
+                        return find_worst_case_paper_entry_at(trades.as_slice(), rel, true).map(
+                            |f| {
+                                (
+                                    ResolvedFill { price: f.price, block_time: f.block_time },
+                                    trigger,
+                                )
+                            },
+                        );
                     }
                 } else if t_abs < base {
                     // Trigger trimmed out of the retained window — fail closed.
@@ -163,7 +168,7 @@ async fn wait_entry_fill(
             {
                 if let Some(rel) = abs_to_rel(t_abs, base, trades.len()) {
                     let trigger = paper_target_from(&trades[rel]);
-                    return find_worst_case_paper_entry_at(trades.as_slice(), rel).map(|f| {
+                    return find_worst_case_paper_entry_at(trades.as_slice(), rel, true).map(|f| {
                         (
                             ResolvedFill { price: f.price, block_time: f.block_time },
                             trigger,

@@ -119,10 +119,15 @@ with a first-slot axis arms `PendingFirstSlot` and resolves on `FirstSlotSettled
   exactly as live (not a post-hoc per-token select). Synthetic 500 ms ticks between
   event times, emission stopping the instant `state.tokens` empties (long quiet gaps
   are O(1) jumps). Fills price via the request's `FillModel` (`trading_core::
-  strategies::paper_fill`, default `worst_case` — live-paper parity); `outcome_to_row`
-  then round-trips through the request's `CostModelKind` (default `pumpfun_default`)
-  — the caller must pair a non-default fill model with `pumpfun_fee_only` or the
-  round-trip double-counts slippage (same `Pricing` coherence rule as the sweep, below).
+  strategies::paper_fill`, default `worst_case` — live-paper parity on pricing);
+  both legs pass `market_fill_on_empty_window = true` so a sparse trigger/fire with
+  an empty fill window still books at that trade; live paper entry matches
+  (`true`) for the same taken-position set, while live paper exit keeps `false`
+  and can fail closed.
+  `outcome_to_row` then round-trips through the request's `CostModelKind` (default
+  `pumpfun_default`) — the caller must pair a non-default fill model with
+  `pumpfun_fee_only` or the round-trip double-counts slippage (same `Pricing`
+  coherence rule as the sweep, below).
 - **`strategies/engine_sim.rs`** + **`api/handlers/strategies/engine.rs`** —
   `POST /api/strategies/simulate` (`rule_id` OR inline `draft`, `fill_model` +
   `cost_model`); reuses the fingerprint candidate scan + the analysis-cache

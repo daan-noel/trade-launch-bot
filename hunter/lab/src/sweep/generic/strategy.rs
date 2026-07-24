@@ -1040,7 +1040,9 @@ fn entry_unsatisfiable(series: &MetricSeries, c: &CompiledRule, mono_cols: &[usi
 /// the same model `run_replay` threads through `ReplayConfig.fill_model`. Fill
 /// *eligibility* is identical across models, so the taken set never moves; only the
 /// price does. A tick-timed decision before any print uses the first later trade as
-/// the trigger; an empty fill window ⇒ `NoEntry`.
+/// the trigger. Analysis path: empty fill window market-fills at the trigger
+/// (`market_fill_on_empty_window: true`, matching replay); a zero-price trigger
+/// still yields `NoEntry`.
 pub(crate) fn resolve_entry(
     trades: &[CorpusTrade],
     series: &MetricSeries,
@@ -1069,7 +1071,8 @@ pub(crate) fn resolve_entry(
             let Some(trigger_idx) = entry_trigger_trade_idx(series, i) else {
                 return EntryResolution::NoEntry;
             };
-            let Some(fill) = find_paper_entry_at(trades, trigger_idx, pricing.fill_model) else {
+            let Some(fill) = find_paper_entry_at(trades, trigger_idx, true, pricing.fill_model)
+            else {
                 return EntryResolution::NoEntry;
             };
             let Some(fill_row) = series_row_for_trade_idx(series, fill.trade_idx) else {

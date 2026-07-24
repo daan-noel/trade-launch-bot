@@ -458,9 +458,11 @@ impl Replay {
         }
     }
 
-    /// Resolve the worst-case entry after the mint's last folded trade (trigger).
-    /// Empty window → `FillFailed`. Otherwise confirm now if the pricing trade is
-    /// already the current print, else defer until that corpus index is folded.
+    /// Resolve the paper entry after the mint's last folded trade (trigger).
+    /// Analysis path: market-fill at the trigger when the window is empty.
+    /// Empty window with no fallback → `FillFailed`. Otherwise confirm now if the
+    /// pricing trade is already the current print, else defer until that corpus
+    /// index is folded.
     fn queue_entry_fill(
         &mut self,
         mint: &Mint,
@@ -476,7 +478,7 @@ impl Replay {
             self.pending_buys.insert(mint.clone(), intent);
             return;
         };
-        match find_paper_entry_at(trades.as_slice(), trigger_idx, self.cfg.fill_model) {
+        match find_paper_entry_at(trades.as_slice(), trigger_idx, true, self.cfg.fill_model) {
             None => {
                 self.pending_targets.remove(mint);
                 work.push(Event::FillFailed {
