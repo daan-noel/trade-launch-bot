@@ -63,6 +63,9 @@ register on_signed write-ahead hook        ← sync journal + fire-and-forget
                                              mark_buy_submitted (≤250 ms bound);
                                              never holds the nonce slot on PG
 send_snipe_buy() [confirm=false]           ← hook returns immediately, then submit
+                                             (send_transaction_rebroadcast: detached
+                                             bounded re-post of the IDENTICAL durable-
+                                             nonce tx every 500 ms for ~5 s — see below)
 poll_feed_until_entry_fill() ~12 s         ← event-driven (TradeSignals.notify)
 on timeout → classify_silent_send(sig) routes a Reverted status through the SSOT
              classify_swap_revert(custom, SwapRoute::Curve, SwapDirection::Buy):
@@ -94,6 +97,19 @@ journal without a PG read.
 **Why per-signature attribution:** adopt-before-send only matches fills against *this
 position's* submitted signatures — two concurrent positions in the same wallet on the
 same token can never cross-adopt each other's fills.
+
+**Why rebroadcast the snipe buy** (`Engine::send_transaction_rebroadcast`, curve snipe
+only, gated on `durable_nonce`): the Helius Sender submits once with `maxRetries: 0` and
+does NOT rebroadcast. On the cheap sub-`0.001 SOL` tip tier (Sender's best-effort band —
+"fewer pathways, no priority buffer") that single un-prioritized shot frequently misses
+every leader slot, so the tx never lands and the row sits at `BuySubmitted` forever
+(observed 0/4 landing on the deployed box, 2026-07-24). The fix keeps the cheap tier and
+re-posts the **identical** signed durable-nonce tx in a detached loop for ~5 s. Safe by
+construction: the signature is fixed, so the bank dedups every re-post — the tx executes
+at most once and the Jito tip is paid at most once; once it lands it consumes the nonce
+and later re-posts are rejected as stale (harmless). Sender POSTs are 0-credit, so the
+extra broadcasts add landing paths at no cost. Sells already retry (6-attempt loop), so
+only the buy needed this.
 
 ## C. Sell path — `exec_real::run_exit` (+ engine exit retries)
 

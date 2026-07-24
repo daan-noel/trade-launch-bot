@@ -124,7 +124,7 @@
   ./scripts/db-incremental-sync.ps1 -IncludeToday -ExportLake
 #>
 param(
-  [string]$SshTarget       = 'ubuntu@54.93.174.192',                      # user@host of the EC2 box
+  [string]$SshTarget       = 'ubuntu@35.158.128.131',                      # user@host of the EC2 box
   [string]$SshKey          = $(foreach ($p in "$PSScriptRoot/../aws-ec2-key.pem", "$HOME/.ssh/aws-ec2-key.pem") { if (Test-Path $p) { $p; break } }),
   [string]$RemoteDir       = '~/trade-launch-bot/hunter',                         # where the server's .env lives
   [string]$Database        = 'hunter_bot',

@@ -115,16 +115,6 @@ export function TokensPage({
     [setSearchParams],
   );
 
-  const detailRef = useRef<HTMLDivElement>(null);
-  // Scroll detail into view on select (including `?mint=` deep-links).
-  useEffect(() => {
-    if (!selectedMint) return;
-    const id = window.requestAnimationFrame(() => {
-      detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    return () => window.cancelAnimationFrame(id);
-  }, [selectedMint]);
-
   // The query args, shared by the live query and the adjacent-page prefetch
   // below so both hit identical cache keys.
   const queryArgs = useMemo(
@@ -407,7 +397,6 @@ export function TokensPage({
           sizes to page width. Row select highlights + fills this panel. */}
       {selectedMint && (
         <div
-          ref={detailRef}
           id={`detail-${selectedMint}`}
           className="mt-3.5 scroll-mt-16 flex flex-col gap-2.5 rounded-lg border border-white/6 bg-bg-panel p-3"
         >

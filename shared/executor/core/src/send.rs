@@ -41,6 +41,14 @@ use tracing::{debug, info, warn};
 /// isn't bounded here — its caller already wraps the send in a timeout.)
 const FANOUT_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Cadence of the background rebroadcast ([`Engine::send_transaction_rebroadcast`]).
+const REBROADCAST_INTERVAL: Duration = Duration::from_millis(500);
+/// Total window over which a durable-nonce snipe is re-broadcast. Kept well under
+/// the nonce-refresh fallback window so we never re-post a tx whose slot has
+/// already been re-armed and handed to another buy — ~10 attempts across leader
+/// slots is plenty to catch the next few blocks on the best-effort tier.
+const REBROADCAST_WINDOW: Duration = Duration::from_secs(5);
+
 /// Solana's hard wire cap for a single serialized transaction (`PACKET_DATA_SIZE`).
 /// A tx over this can't land; the Helius sender rejects it with the opaque
 /// `base64 encoded too large`. We check locally before the network round-trip so
@@ -345,6 +353,54 @@ impl Engine {
         self.send_raw(raw).await
     }
 
+    /// Submit a signed tx, then keep re-broadcasting the **identical** signed tx
+    /// in the background for [`REBROADCAST_WINDOW`]. For a **durable-nonce snipe**
+    /// on the cheap (sub-0.001 SOL) Sender tier — which routes best-effort through
+    /// fewer pathways and does NOT rebroadcast (`maxRetries: 0`) — a single
+    /// submission frequently misses every leader slot and the tx never lands. The
+    /// signature is fixed the instant the tx is signed, so the bank dedups every
+    /// re-post: the tx executes **at most once** and the Jito tip is paid at most
+    /// once — extra broadcasts only add landing paths, never cost or double-buy
+    /// risk. Once the tx lands it consumes the nonce, and every later re-post is
+    /// rejected as a stale-nonce tx (harmless). Helius Sender POSTs are 0-credit,
+    /// so the re-posts are free. Returns the sig from the FIRST accepted
+    /// submission — identical to [`Self::send_transaction`], and it never gates the
+    /// caller (the confirm loop starts polling the feed on the returned sig while
+    /// the rebroadcast runs underneath).
+    ///
+    /// Only valid for a **durable-nonce** tx: a recent-blockhash tx would expire
+    /// mid-window and a resend past expiry is a wasted round-trip. The snipe caller
+    /// gates on `self.config.durable_nonce`.
+    pub async fn send_transaction_rebroadcast(&self, tx: &Transaction) -> Result<String> {
+        let body = self.encode_send_body(tx)?;
+        let raw = Bytes::from(serde_json::to_vec(&body).context("serialize sendTransaction body")?);
+        // First submission on the hot path — its acceptance is what we return.
+        let sig = self.send_raw(raw.clone()).await?;
+        // Detached bounded rebroadcast — never awaited by the caller.
+        let http = self.http.clone();
+        let urls = self.config.helius_sender_urls.clone();
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + REBROADCAST_WINDOW;
+            loop {
+                tokio::time::sleep(REBROADCAST_INTERVAL).await;
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                for url in &urls {
+                    // Bound each re-post so a wedged endpoint can't stall the loop;
+                    // ignore the outcome — a rejected stale-nonce re-post (after the
+                    // tx has landed) is the expected steady state, not an error.
+                    let _ = tokio::time::timeout(
+                        FANOUT_SEND_TIMEOUT,
+                        post_tx_bytes(&http, url, raw.clone()),
+                    )
+                    .await;
+                }
+            }
+        });
+        Ok(sig)
+    }
+
     /// Submit a signed **v0 (versioned)** tx over the same fan-out as
     /// [`Self::send_transaction`]. The launch create path uses this when a launch
     /// ALT is configured. Size-guarded on the tx wire like the legacy path.
@@ -617,6 +673,37 @@ mod tests {
         format!("http://{addr}/")
     }
 
+    /// Like [`spawn_mock`] but accepts connections forever and counts every
+    /// request it receives, so a test can assert how many times a tx was posted.
+    async fn spawn_counting_mock(
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => break,
+                };
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+        (format!("http://{addr}/"), count)
+    }
+
     fn trader_with(urls: Vec<String>) -> Engine {
         // The send fan-out only touches `config.helius_sender_urls` + `http`, so a
         // bare engine (no init, dummy tip account / rent) is enough to drive it.
@@ -663,6 +750,23 @@ mod tests {
         let trader = trader_with(vec![bad, good]);
         let sig = trader.send_transaction(&dummy_signed_tx()).await.unwrap();
         assert!(sig.starts_with("5xMock"), "got {sig}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rebroadcast_re_posts_the_same_tx_multiple_times() {
+        // The first submission is synchronous and returns the sig; the detached
+        // loop then re-posts the identical tx every REBROADCAST_INTERVAL (500ms).
+        // After ~1.3s we must have seen the initial send + at least two re-posts.
+        let (url, count) = spawn_counting_mock(OK_BODY).await;
+        let trader = trader_with(vec![url]);
+        let sig = trader
+            .send_transaction_rebroadcast(&dummy_signed_tx())
+            .await
+            .unwrap();
+        assert!(sig.starts_with("5xMock"), "got {sig}");
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        let n = count.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(n >= 3, "expected >=3 posts (1 initial + >=2 rebroadcasts), got {n}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

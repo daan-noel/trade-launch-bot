@@ -354,7 +354,17 @@ impl PumpFunTrader {
                             .context("signed buy tx has no signature")?;
                         hook(sig).await;
                     }
-                    let sig = self.send_transaction(&tx).await?;
+                    // Snipe on the cheap best-effort Sender tier: keep re-posting
+                    // the identical durable-nonce tx in the background so it gets
+                    // multiple landing chances across leader slots (the bank dedups
+                    // on signature → at most one execution, tip paid once). The
+                    // manual/confirm path (and forge's recent-blockhash mode) send
+                    // once as before.
+                    let sig = if skip_confirm && self.config.durable_nonce {
+                        self.send_transaction_rebroadcast(&tx).await?
+                    } else {
+                        self.send_transaction(&tx).await?
+                    };
                     info!(
                         "📤 Buy sent — sig: {} | SOL: {} | {}ms",
                         sig,
