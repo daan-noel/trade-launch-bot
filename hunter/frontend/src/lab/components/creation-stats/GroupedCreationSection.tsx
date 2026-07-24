@@ -38,6 +38,7 @@ import {
   fingerprintIdentityFromGroupKey,
   identityHasCriterion,
 } from 'lib/strategy/matchGroupFingerprint';
+import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { fingerprintsHref } from 'lib/strategy/nav';
 import type { Fingerprint } from 'lib/strategy/types';
 
@@ -59,7 +60,6 @@ import {
   TOP_OPTIONS,
   MISSING_VALUE,
   groupColor,
-  groupShortLabel,
   groupValueParts,
   type GroupedCreationArgs,
   type GroupedCreationCell,
@@ -313,17 +313,26 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     return map;
   }, [groups, fingerprints, appliedBucketWidth, applied?.fingerprintId]);
 
-  // Save a group card as a fingerprint (find-or-create identity is shared with
-  // the badge match, so on success the card flips from "Create" to its "fp"
-  // badge once the fingerprint list refetches). Plain fingerprint — no metric
-  // config; flow patterns are added later on the Flow discovery page.
+  // Save a group card as a fingerprint. Identity = the card's group_key axes
+  // only (same builder as the "already a fingerprint" badge) — so `ix_labels`
+  // is persisted iff Instruction labels is in the applied group-by. Plain
+  // fingerprint — no metric config; flow patterns are added later on Flow
+  // discovery. On success the card flips to its "fp" badge after refetch.
   async function createFingerprintFromGroup(group: GroupedCreationGroup) {
     setFpError(null);
     setFpBusyGroup(group.g);
     try {
+      const identity = fingerprintIdentityFromGroupKey(
+        group.group_key,
+        appliedBucketWidth,
+      );
       await createFingerprint({
-        name: `creation · ${groupShortLabel(group)}`,
-        ...fingerprintIdentityFromGroupKey(group.group_key, appliedBucketWidth),
+        name: fingerprintNameFromGroupKey(
+          group.group_key,
+          'c',
+          appliedBucketWidth,
+        ),
+        ...identity,
         metric_config: {},
       }).unwrap();
     } catch (e) {
@@ -575,7 +584,12 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
                             variant="subtle"
                             disabled={fpBusyGroup === g.g}
                             onClick={() => createFingerprintFromGroup(g)}
-                            title="Save this group as a fingerprint"
+                            title={
+                              Object.prototype.hasOwnProperty.call(g.group_key, 'ix_labels') &&
+                              g.group_key.ix_labels !== MISSING_VALUE
+                                ? 'Save this group as a fingerprint (includes ix_labels)'
+                                : 'Save this group as a fingerprint — only grouped axes are saved; add Instruction labels to the group-by to persist ix_labels'
+                            }
                           >
                             {fpBusyGroup === g.g ? 'Creating…' : 'Create fingerprint'}
                           </Button>

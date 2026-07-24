@@ -76,6 +76,7 @@ import type {
   FlowDiscoveryResult,
 } from 'types';
 import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
+import { fingerprintNameFromGroupKey } from 'lib/strategy/fingerprintNameFromGroupKey';
 import { lamportsToSol, type Fingerprint } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
 
@@ -158,24 +159,6 @@ function fmt(n: number, digits = 1): string {
 
 function groupKeyLabel(gk: Record<string, string>): string {
   const parts = Object.entries(gk).map(([k, v]) => `${k}=${v}`);
-  return parts.length ? parts.join(' · ') : 'ALL';
-}
-
-/** Compact group-key label for a fingerprint NAME. Unlike `groupKeyLabel` this
- *  drops `∅` (absent) params — they carry no info in a name — and collapses the
- *  pipe-joined `ix_labels` sequence into a `Nix` count so the name stays short
- *  instead of listing every instruction. */
-function groupKeyName(gk: Record<string, string>): string {
-  const parts: string[] = [];
-  for (const [k, v] of Object.entries(gk)) {
-    if (v === MISSING_GROUP_VALUE) continue;
-    if (k === 'ix_labels') {
-      parts.push(`${v.split(' | ').length}ix`);
-      continue;
-    }
-    const short = GROUP_FIELD_AXIS[k as GroupField] ?? k;
-    parts.push(`${short}=${v}`);
-  }
   return parts.length ? parts.join(' · ') : 'ALL';
 }
 
@@ -581,7 +564,11 @@ export function FlowDiscoveryPage() {
           group_key: selectedGroup.group_key,
           bucket_width_sol: bucketWidthSol,
           volume_ix_patterns: patterns,
-          name: `flow · ${groupKeyName(selectedGroup.group_key)}`,
+          name: fingerprintNameFromGroupKey(
+            selectedGroup.group_key,
+            'f',
+            bucketWidthSol,
+          ),
         }).unwrap();
         setTargetFpId(fp.id);
         setApplyOk(`Bound fingerprint “${fp.name}”.`);

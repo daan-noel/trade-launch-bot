@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Fingerprint } from './types';
 import {
   findFingerprintForGroupKey,
+  fingerprintCompatibleWithGroupKey,
   fingerprintIdentityFromGroupKey,
   parseLoLamports,
 } from './matchGroupFingerprint';
@@ -54,6 +55,44 @@ describe('fingerprintIdentityFromGroupKey', () => {
   });
 });
 
+describe('fingerprintCompatibleWithGroupKey', () => {
+  it('allows a fingerprint refined with extra ix_labels when the card omitted that axis', () => {
+    const refined = fp({
+      id: 'refined',
+      first_slot_buy_lamports: 19_500_000_000,
+      first_slot_sell_lamports: 0,
+      max_cost_lamports: 0,
+      bucket_size_amount: 0.5,
+      ix_labels: ['Pump.Fun: Create_v2', 'Associated Token: CreateIdempotent', 'Pump.Fun: Buy'],
+    });
+    const gk = {
+      cu_limit: '∅',
+      cu_price: '∅',
+      first_slot_buy_sol: '19.5–20.0',
+      first_slot_sell_sol: '0.0–0.5',
+      max_cost_lamports: '0.0–0.5',
+      spendable_lamports_in: '∅',
+    };
+    expect(fingerprintCompatibleWithGroupKey(refined, gk, 0.5)).toBe(true);
+  });
+
+  it('rejects when a present ∅ axis is set on the fingerprint', () => {
+    const refined = fp({
+      id: 'x',
+      cu_limit: 200000,
+      first_slot_buy_lamports: 19_500_000_000,
+      bucket_size_amount: 0.5,
+    });
+    expect(
+      fingerprintCompatibleWithGroupKey(
+        refined,
+        { cu_limit: '∅', first_slot_buy_sol: '19.5–20.0' },
+        0.5,
+      ),
+    ).toBe(false);
+  });
+});
+
 describe('findFingerprintForGroupKey', () => {
   const library = [
     fp({
@@ -91,8 +130,45 @@ describe('findFingerprintForGroupKey', () => {
     expect(hit).toBeNull();
   });
 
-  it('matches a sparse group key to a sparse fingerprint', () => {
-    const hit = findFingerprintForGroupKey({ cu_limit: '200000' }, library, 0.1);
+  it('matches a sparse group key to a sparse fingerprint when that is the only fit', () => {
+    const hit = findFingerprintForGroupKey(
+      { cu_limit: '200000' },
+      [library[1]!],
+      0.1,
+    );
     expect(hit?.id).toBe('b');
+  });
+
+  it('prefers a refined fingerprint (extra ix_labels) over a sparse duplicate', () => {
+    const sparse = fp({
+      id: 'sparse',
+      first_slot_buy_lamports: 19_500_000_000,
+      first_slot_sell_lamports: 0,
+      max_cost_lamports: 0,
+      bucket_size_amount: 0.5,
+    });
+    const refined = fp({
+      id: 'refined',
+      first_slot_buy_lamports: 19_500_000_000,
+      first_slot_sell_lamports: 0,
+      max_cost_lamports: 0,
+      bucket_size_amount: 0.5,
+      ix_labels: ['Pump.Fun: Create_v2', 'Associated Token: CreateIdempotent', 'Pump.Fun: Buy'],
+    });
+    const gk = {
+      cu_limit: '∅',
+      cu_price: '∅',
+      first_slot_buy_sol: '19.5–20.0',
+      first_slot_sell_sol: '0.0–0.5',
+      max_cost_lamports: '0.0–0.5',
+      spendable_lamports_in: '∅',
+    };
+    const hit = findFingerprintForGroupKey(gk, [sparse, refined], 0.5);
+    expect(hit?.id).toBe('refined');
+  });
+
+  it('prefers the more-specific fingerprint when a sparse group key fits several', () => {
+    const hit = findFingerprintForGroupKey({ cu_limit: '200000' }, library, 0.1);
+    expect(hit?.id).toBe('a');
   });
 });
