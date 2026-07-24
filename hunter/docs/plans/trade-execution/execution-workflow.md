@@ -18,8 +18,9 @@ awaits durable PG for the hot transitions:
 | Transition | Pass 1 | Submit spawn |
 |---|---|---|
 | `BuySubmitted` | registry upsert + background `insert_position` (handle kept) | immediate once registry has `pg_id` |
-| `ExitPending` | fire-and-forget status update (awaits pending insert only) | not gated on the status write |
-| later fills / terminal | await pending insert, then PG | n/a |
+| `Holding` | registry fill economics sync; background `record_entry_fill` (chains after insert) | n/a (sell sizes from registry) |
+| `ExitPending` | fire-and-forget status update (chains after pending write inside spawn) | not gated on the status write |
+| later fills / terminal | await pending PG chain, then write | n/a |
 
 `Sink::warm_runs` on rule reload pre-caches `strategy_runs` so the first buy of a
 rule rarely awaits `insert_run`. Cold miss reuses the latest still-`Running` row

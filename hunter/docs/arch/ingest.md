@@ -27,12 +27,14 @@ Host adapter (live/src/ingest/):
 Channels: `update_tx` cap 4096 · `event_rx` cap 8192 · `db_tx` cap 16384 · `strategy_tx` cap 512 · `sse_tx` broadcast.
 
 **Backpressure:** money-critical writes (`Trade`/`Migration`/`Token`/`Wallet`) use
-`send_timeout(500ms)` on the hot `db_tx` (cap 16384) so a PG stall cannot wedge
-ingest / sell-confirm. On timeout the op is deferred into a bounded retry buffer
-(cap 4096) drained by a background task with `send().await`; only when that
-buffer is also full is the write shed (counted). Recomputable writes
-(`Metrics`/`Raw`) use `try_send` (dropped on Full). See
-`@plans/ingest/backpressure-watchdog.md`.
+non-blocking `try_send` on the hot `db_tx` (cap 16384) so a PG stall never
+awaits on the ingest consumer (create/trade pings stay unblocked). On Full the
+op is deferred into a bounded retry buffer (cap 4096) drained by a background
+task with `send().await`; only when that buffer is also full is the write shed
+(counted). Recomputable writes (`Metrics`/`Raw`) use `try_send` (dropped on
+Full). Own-wallet trades also call `TradeSignals::observe_own_leg` before the
+durable enqueue so buy/sell confirm can resolve without waiting on DbWriter.
+See `@plans/ingest/backpressure-watchdog.md`.
 
 **Liveness watchdog:** `db_writer.rs` stamps `DbHeartbeat` at the end of a `flush()` **only when it persisted ≥1 row** (`any_ok`) — an all-failed flush leaves it stale. A dedicated OS thread (via `watchdog::spawn_watchdog`) force-exits (`exit(1)`) when live mode is on AND no successful write landed within `watchdog_stall_timeout_secs`. It no longer gates on DB-queue depth: that proxy missed upstream stalls (a dead transport drains the queue empty), so `live + stale` alone now catches both a wedged downstream and a dead upstream. (2026-07-22: stamping unconditionally kept the heartbeat fresh through a pool-exhaustion wedge, so the watchdog never fired for 7h.)
 

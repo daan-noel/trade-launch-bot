@@ -6,7 +6,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -39,22 +38,12 @@ use super::held_pools::HeldPoolGate;
 
 pub const DB_QUEUE_CAP: usize = 16384;
 pub const STRATEGY_QUEUE_CAP: usize = 512;
-/// Bounded overflow for durable writes that timed out on the hot `db_tx`. A
-/// dedicated retry task drains this into `db_tx` with `send().await` so a PG
-/// stall does not silently drop Trade/Token/Wallet/Migration rows (C2). When
-/// this buffer is also full the write is shed and counted.
+/// Bounded overflow for durable writes that could not enter the hot `db_tx`
+/// without blocking. A dedicated retry task drains this into `db_tx` with
+/// `send().await` so a PG stall does not silently drop Trade/Token/Wallet/
+/// Migration rows (C2). When this buffer is also full the write is shed and
+/// counted.
 pub const DB_RETRY_CAP: usize = 4096;
-
-/// Upper bound on how long a hot-path durable write (`Trade`/`Wallet`/`Token`/
-/// `Migration`) may block the ingest loop when the DbWriter is backpressured. The
-/// channel is deep (`DB_QUEUE_CAP`), so hitting this means PG has been stalled for
-/// half a second straight; rather than wedge ingest — and with it every real exit's
-/// strategy ping / sell-confirm feed — we defer into [`DB_RETRY_CAP`] (or shed if
-/// that is full too) and count it. The strategy ping + reserve update are already
-/// dispatched *before* the enqueue, so a defer/shed here never delays an exit
-/// decision, only the durable trail. (`Metrics`/`Raw` are shed non-blocking via
-/// `enqueue_db_lossy`.)
-const DB_SEND_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Counts of intentionally-shed messages under back-pressure.
 #[derive(Default)]
@@ -68,7 +57,7 @@ pub struct ShedCounters {
 pub struct IngestConsumer {
     token_cache: Arc<TokenCache>,
     db_tx: mpsc::Sender<DbWriteOp>,
-    /// Overflow for durable writes that timed out on `db_tx` (see [`DB_RETRY_CAP`]).
+    /// Overflow for durable writes that could not enter `db_tx` without blocking.
     db_retry_tx: mpsc::Sender<DbWriteOp>,
     strategy_tx: mpsc::Sender<StrategyPing>,
     sse_tx: broadcast::Sender<SseEvent>,
@@ -77,6 +66,8 @@ pub struct IngestConsumer {
     trade_signals: Arc<TradeSignals>,
     ingest_handle: Arc<IngestHandle>,
     held_pools: HeldPoolGate,
+    /// Real trading wallet — used to early-observe own legs for fill confirm.
+    trading_wallet: String,
     shed: Arc<ShedCounters>,
 }
 
@@ -93,6 +84,7 @@ impl IngestConsumer {
         trade_signals: Arc<TradeSignals>,
         ingest_handle: Arc<IngestHandle>,
         held_pools: HeldPoolGate,
+        trading_wallet: String,
     ) -> (Self, Arc<ShedCounters>) {
         let shed = Arc::new(ShedCounters::default());
         (
@@ -107,6 +99,7 @@ impl IngestConsumer {
                 trade_signals,
                 ingest_handle,
                 held_pools,
+                trading_wallet,
                 shed: shed.clone(),
             },
             shed,
@@ -230,8 +223,8 @@ impl IngestConsumer {
         self.token_cache.insert(mint.clone(), token_state);
         self.ping_strategy(mint.clone(), IngestKind::TokenCreated);
 
-        self.enqueue_db_timeout(DbWriteOp::Token(token)).await;
-        self.enqueue_db_timeout(DbWriteOp::Wallet(creator)).await;
+        self.enqueue_db_durable(DbWriteOp::Token(token));
+        self.enqueue_db_durable(DbWriteOp::Wallet(creator));
         self.enqueue_db_lossy(DbWriteOp::Metrics(metrics));
 
         self.emit_sse(SseEvent::TokenCreated {
@@ -311,11 +304,24 @@ impl IngestConsumer {
 
         self.ping_strategy(mint.clone(), IngestKind::Trade);
 
-        // ── Durable sinks (bounded; shed under sustained backpressure) ─────────
-        self.enqueue_db_timeout(DbWriteOp::Trade(db_trade)).await;
-        self.enqueue_db_timeout(DbWriteOp::Wallet(wallet.clone())).await;
+        // Own-wallet preview + early wake *before* durable enqueue so buy/sell
+        // confirm can resolve without waiting on DbWriter commit.
+        if wallet == self.trading_wallet {
+            self.trade_signals.observe_own_leg(
+                &wallet,
+                &mint,
+                &e.signature,
+                e.tokens,
+                e.sol,
+                e.block_time,
+            );
+        }
 
-        // Wake the sell-confirm feed only after the Trade write is queued.
+        // ── Durable sinks (non-blocking; defer under backpressure) ─────────────
+        self.enqueue_db_durable(DbWriteOp::Trade(db_trade));
+        self.enqueue_db_durable(DbWriteOp::Wallet(wallet.clone()));
+
+        // Wake mint-lane watchers after the Trade write is queued (or deferred).
         self.trade_signals.notify_mint(&mint);
 
         if let Some(metrics) = metrics {
@@ -368,7 +374,7 @@ impl IngestConsumer {
         // `is_migrated` flag set above — before the durable enqueue, so a DB hiccup
         // can't delay the re-route (H2).
         self.ping_strategy(mint.clone(), IngestKind::Migrated);
-        self.enqueue_db_timeout(DbWriteOp::Migration { mint }).await;
+        self.enqueue_db_durable(DbWriteOp::Migration { mint });
     }
 
     fn on_creator_activity(&self, e: CreatorActivityEvent) {
@@ -460,30 +466,26 @@ impl IngestConsumer {
 
     // ── Sink helpers ───────────────────────────────────────────────────────────
 
-    /// Enqueue a hot-path durable write, bounded by [`DB_SEND_TIMEOUT`] so a
-    /// backpressured DbWriter can't wedge the ingest loop (and with it the strategy
-    /// pings / sell-confirm feed that gate real exits). On timeout the write is
-    /// deferred into the bounded retry buffer (drained by a background task into
-    /// `db_tx`); only when that buffer is also full is the write shed and counted.
-    /// The strategy ping + reserve update already ran before this call, so an exit
-    /// decision is never delayed by defer/shed.
-    async fn enqueue_db_timeout(&self, op: DbWriteOp) {
-        match self.db_tx.send_timeout(op, DB_SEND_TIMEOUT).await {
+    /// Enqueue a hot-path durable write without awaiting. Prefer `try_send` into
+    /// `db_tx`; on full, defer into the bounded retry buffer (drained by a
+    /// background task). Only when that buffer is also full is the write shed.
+    /// Strategy ping + reserve update already ran before this call, so a
+    /// defer/shed never delays an exit decision — only the durable trail.
+    fn enqueue_db_durable(&self, op: DbWriteOp) {
+        match self.db_tx.try_send(op) {
             Ok(()) => {}
-            Err(mpsc::error::SendTimeoutError::Timeout(op)) => {
+            Err(mpsc::error::TrySendError::Full(op)) => {
                 match self.db_retry_tx.try_send(op) {
                     Ok(()) => {
                         let n = self.shed.db_deferred.fetch_add(1, Ordering::Relaxed) + 1;
                         warn!(
                             deferred_total = n,
-                            "DbWriter backpressured >{DB_SEND_TIMEOUT:?} — durable write deferred"
+                            "DbWriter backpressured — durable write deferred"
                         );
                     }
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         self.shed.db_writes.fetch_add(1, Ordering::Relaxed);
-                        warn!(
-                            "DbWriter + retry buffer full — hot-path durable write shed"
-                        );
+                        warn!("DbWriter + retry buffer full — hot-path durable write shed");
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         self.shed.db_writes.fetch_add(1, Ordering::Relaxed);
@@ -491,7 +493,7 @@ impl IngestConsumer {
                     }
                 }
             }
-            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+            Err(mpsc::error::TrySendError::Closed(_)) => {
                 warn!("DbWriter channel closed — write not persisted");
             }
         }

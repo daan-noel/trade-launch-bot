@@ -9,7 +9,10 @@
 //!
 //! Publish side — [`TradeSignals::notify`] is called by the `DbWriter` for every
 //! trade it commits, *after* the row is queryable, so a woken waiter that reads
-//! the DB is guaranteed to see it.
+//! the DB is guaranteed to see it. The ingest consumer can also
+//! [`observe_own_leg`](TradeSignals::observe_own_leg) + early-`notify` when our
+//! wallet's trade hits the in-RAM path (before PG), so confirm can resolve from
+//! the process-local preview without waiting on DbWriter.
 //!
 //! Wait side — a waiter [`register`](TradeSignals::register)s its key (holding the
 //! returned [`WaitGuard`] for the wait) and awaits [`WaitGuard::notified`]. The
@@ -22,9 +25,14 @@
 //! per-trade `String` allocation, instead of a linear shard scan + key compare.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use tokio::sync::Notify;
+
+/// How long an [`ObservedLegs`] preview is retained after last observation.
+const OWN_LEG_TTL: Duration = Duration::from_secs(60);
 
 struct Slot {
     notify: Arc<Notify>,
@@ -35,6 +43,21 @@ struct Slot {
     /// to tell "a new trade landed" from "a bare fallback tick", so the sell-
     /// confirm loop can skip its net-balance SQL aggregate when nothing changed.
     seq: u64,
+}
+
+/// Process-local rollup of one tx signature's legs (buy or sell), seen on the
+/// ingest hot path before PG commit. Confirm loops prefer this over SQL.
+#[derive(Debug, Clone)]
+pub struct ObservedLegs {
+    pub token_amount: u64,
+    pub amount_sol: f64,
+    pub first_block_time: DateTime<Utc>,
+    pub last_block_time: DateTime<Utc>,
+}
+
+struct OwnLegEntry {
+    legs: ObservedLegs,
+    seen_at: Instant,
 }
 
 /// Shared hub mapping an in-flight `(wallet, mint)` to its wakeup primitive.
@@ -51,11 +74,106 @@ struct Slot {
 pub struct TradeSignals {
     wallets: DashMap<String, DashMap<String, Slot>>,
     mints: DashMap<String, Slot>,
+    /// Own-wallet legs keyed by tx signature — only written while a waiter is
+    /// registered for that `(wallet, mint)`.
+    own_legs: DashMap<String, OwnLegEntry>,
 }
 
 impl TradeSignals {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether anyone is waiting on `(wallet, mint)` (buy/sell confirm in flight).
+    pub fn has_waiter(&self, wallet: &str, mint: &str) -> bool {
+        self.wallets
+            .get(wallet)
+            .and_then(|m| m.get(mint).map(|s| s.waiters > 0))
+            .unwrap_or(false)
+    }
+
+    /// Accumulate one observed own-wallet leg and early-wake waiters. No-op when
+    /// nobody is waiting on `(wallet, mint)` — keeps the preview map tiny.
+    pub fn observe_own_leg(
+        &self,
+        wallet: &str,
+        mint: &str,
+        signature: &str,
+        token_amount: u64,
+        amount_sol: f64,
+        block_time: DateTime<Utc>,
+    ) {
+        if !self.has_waiter(wallet, mint) {
+            return;
+        }
+        self.own_legs
+            .entry(signature.to_string())
+            .and_modify(|e| {
+                e.legs.token_amount = e.legs.token_amount.saturating_add(token_amount);
+                e.legs.amount_sol += amount_sol;
+                if block_time < e.legs.first_block_time {
+                    e.legs.first_block_time = block_time;
+                }
+                if block_time > e.legs.last_block_time {
+                    e.legs.last_block_time = block_time;
+                }
+                e.seen_at = Instant::now();
+            })
+            .or_insert_with(|| OwnLegEntry {
+                legs: ObservedLegs {
+                    token_amount,
+                    amount_sol,
+                    first_block_time: block_time,
+                    last_block_time: block_time,
+                },
+                seen_at: Instant::now(),
+            });
+        // Early wake: confirm can resolve from `own_legs` without waiting on PG.
+        self.notify(wallet, mint);
+        self.prune_own_legs();
+    }
+
+    /// Preview legs for one signature, if still within TTL.
+    pub fn observed_legs(&self, signature: &str) -> Option<ObservedLegs> {
+        let entry = self.own_legs.get(signature)?;
+        if entry.seen_at.elapsed() > OWN_LEG_TTL {
+            return None;
+        }
+        Some(entry.legs.clone())
+    }
+
+    /// Sum preview legs across signatures (missing sigs contribute nothing).
+    /// `None` when no sig has a live preview.
+    pub fn sum_observed_legs(&self, signatures: &[String]) -> Option<ObservedLegs> {
+        let mut acc: Option<ObservedLegs> = None;
+        for sig in signatures {
+            let Some(legs) = self.observed_legs(sig) else {
+                continue;
+            };
+            acc = Some(match acc {
+                None => legs,
+                Some(mut a) => {
+                    a.token_amount = a.token_amount.saturating_add(legs.token_amount);
+                    a.amount_sol += legs.amount_sol;
+                    if legs.first_block_time < a.first_block_time {
+                        a.first_block_time = legs.first_block_time;
+                    }
+                    if legs.last_block_time > a.last_block_time {
+                        a.last_block_time = legs.last_block_time;
+                    }
+                    a
+                }
+            });
+        }
+        acc
+    }
+
+    fn prune_own_legs(&self) {
+        // Opportunistic: only when the map grows past a handful of in-flight sigs.
+        if self.own_legs.len() < 32 {
+            return;
+        }
+        self.own_legs.retain(|_, e| e.seen_at.elapsed() <= OWN_LEG_TTL);
     }
 
     /// Register interest in `(wallet, mint)`. Hold the returned guard for the
@@ -254,5 +372,37 @@ mod tests {
         let signals = Arc::new(TradeSignals::new());
         signals.notify_mint("NOBODY");
         assert!(signals.mints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn observe_own_leg_accumulates_and_wakes() {
+        let signals = Arc::new(TradeSignals::new());
+        let guard = signals.register("WALLET", "MINT");
+        let at = Utc::now();
+
+        {
+            let notified = guard.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, at);
+            tokio::time::timeout(Duration::from_secs(1), notified.as_mut())
+                .await
+                .expect("waiter should wake on observe_own_leg");
+        }
+
+        let legs = signals.observed_legs("sig1").expect("preview present");
+        assert_eq!(legs.token_amount, 100);
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 50, 0.25, at);
+        let legs = signals.observed_legs("sig1").expect("preview present");
+        assert_eq!(legs.token_amount, 150);
+        assert!((legs.amount_sol - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn observe_own_leg_noop_without_waiter() {
+        let signals = TradeSignals::new();
+        signals.observe_own_leg("WALLET", "MINT", "sig1", 100, 0.5, Utc::now());
+        assert!(signals.observed_legs("sig1").is_none());
+        assert!(signals.own_legs.is_empty());
     }
 }

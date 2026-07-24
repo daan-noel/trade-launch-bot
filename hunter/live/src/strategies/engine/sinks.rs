@@ -7,24 +7,26 @@
 //! durable `strategy_positions.id` (via [`PositionRegistry`]) and lazily creates
 //! one `strategy_runs` row per rule (the run is the parent FK positions need).
 //!
-//! **Durability ordering (crash-safety):** `BuySubmitted` upserts the in-memory
-//! registry (so Pass-2 can read the frozen trade_mode) and then **awaits** the PG
-//! insert before returning — the row is durable before Pass-2 can sign/send the
-//! buy, so a crash cannot orphan an on-chain bag with no DB trace. `ExitPending`
-//! likewise **awaits** a single `mark_status` UPDATE before its `SubmitSell` is
-//! dispatched, so a mid-sell crash leaves the row `ExitPending` (reaper re-drives
-//! the sell) rather than `Holding` (which boot-adopt would re-enter → double
-//! sell). Because both writes are awaited on the one serialized decision loop,
-//! later transitions can never race a missing row. Runs are warmed on rule reload
-//! so the first buy of a rule rarely blocks on `ensure_run`. Cold miss reuses the latest
-//! still-`Running` DB run (and collapses empty leading shells) so a process
-//! restart does not orphan the paper scoreboard onto a new empty `run_seq`.
+//! **Latency + durability (A0):** `BuySubmitted` upserts the in-memory registry
+//! (so Pass-2 can read the frozen trade_mode / spawn buy immediately) and
+//! **backgrounds** `insert_position` — the handle is kept so later transitions
+//! chain after the row exists. `ExitPending` is fire-and-forget (awaits any
+//! pending write only inside the spawn) so `SubmitSell` is not gated on PG.
+//! `Holding` updates the registry synchronously (sell sizing) and backgrounds
+//! the fill persist. Terminal handlers await the pending chain before closing.
+//! Crash recovery: process-local `SubmittedBuyJournal` + BuySubmitted/ExitPending
+//! reapers + boot Holding adopt / externally-cleared reconcile. Runs are warmed
+//! on rule reload so the first buy of a rule rarely blocks on `ensure_run`. Cold
+//! miss reuses the latest still-`Running` DB run (and collapses empty leading
+//! shells) so a process restart does not orphan the paper scoreboard onto a new
+//! empty `run_seq`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::Utc;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tracing::warn;
 
 use hunter_engine::event::{
@@ -77,6 +79,10 @@ pub struct Sink {
     rules: HashMap<RuleId, RuleInfo>,
     /// One live run per rule (lazily created on the first position).
     run_cache: HashMap<RuleId, uuid::Uuid>,
+    /// In-flight PG lifecycle tasks keyed by position PG id. Later sink
+    /// transitions take/await these so a fast fill cannot write before the row
+    /// exists, without gating buy/sell *spawn* on the decision loop.
+    pending_pg: HashMap<uuid::Uuid, JoinHandle<()>>,
 }
 
 impl Sink {
@@ -104,6 +110,7 @@ impl Sink {
             wallet,
             rules: HashMap::new(),
             run_cache: HashMap::new(),
+            pending_pg: HashMap::new(),
         }
     }
 
@@ -245,11 +252,8 @@ impl Sink {
         pos.token_program_id = token_program_id.clone();
         pos.status = "BuySubmitted".to_string();
 
-        // Registry first so Pass-2 can read the frozen trade_mode (in-memory);
-        // then AWAIT the PG insert so the `BuySubmitted` row is durable BEFORE
-        // Pass-2 can sign/send the buy. If a crash lands after the buy but before
-        // this row, a real on-chain bag is orphaned — the reaper only recovers
-        // rows that reached PG, and the boot wallet sweep is advisory-only.
+        // Registry first so Pass-2 can spawn the buy immediately; PG insert is
+        // backgrounded. Later transitions chain via `pending_pg`.
         self.registry.upsert(
             delta.position,
             PositionMeta {
@@ -269,9 +273,14 @@ impl Sink {
             },
         );
         self.retain_held_pool(&mint, info.mode);
-        if let Err(e) = self.repo.insert_position(&pos).await {
-            warn!(mint = %mint, pg = %pos.id, "engine sink: insert_position failed: {e}");
-        }
+        let repo = self.repo.clone();
+        let pg_id = pos.id;
+        let handle = tokio::spawn(async move {
+            if let Err(e) = repo.insert_position(&pos).await {
+                warn!(mint = %mint, pg = %pg_id, "engine sink: insert_position failed: {e}");
+            }
+        });
+        self.pending_pg.insert(pg_id, handle);
         // Leave Waiting: Enter does not emit ArmedChanged(Disarmed). Clear the
         // armed registry (+ SSE) so snapshots cannot re-inject a stale Waiting row.
         self.leave_waiting(delta.rule.0, delta.mint.as_str());
@@ -283,68 +292,85 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else { return };
         let Some(fill) = delta.fill else { return };
         self.retain_held_pool(&meta.mint, meta.trade_mode);
-        // Paper: persist the trigger (`target_*`) before the worst-case entry fill
-        // so the UI can show the modeled adverse-slippage gap.
-        if let Some(target) = meta.paper_target.clone() {
-            if let Err(e) = self
-                .repo
-                .record_target(
-                    meta.pg_id,
-                    target.price,
-                    target.token_amount,
-                    target.time,
-                    &target.tx,
-                )
-                .await
-            {
-                warn!(pg = %meta.pg_id, "engine sink: record_target failed: {e}");
-            }
-        }
+
         // Fill signatures + token account stashed by the executor, keyed by intent.
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
-        let entry_tx = fs.sigs.first().map(String::as_str).unwrap_or("");
-        let token_account = fs.token_account.as_deref();
-        if let Err(e) = self
-            .repo
-            .record_entry_fill(
-                meta.pg_id,
-                entry_tx,
-                fill.token_amount,
-                fill.price,
-                fill.sol,
-                fill.at,
-                token_account,
-            )
-            .await
-        {
-            warn!(pg = %meta.pg_id, "engine sink: record_entry_fill failed: {e}");
-        }
+        let entry_tx = fs.sigs.first().cloned().unwrap_or_default();
+        let token_account = fs.token_account.clone();
+        let paper_target = meta.paper_target.clone();
+
+        // Registry first so Pass-2 / next Trade can size a sell without waiting on PG.
         self.registry.update(delta.position, |m| {
             m.entry_token_amount = Some(fill.token_amount);
             m.entry_price = Some(fill.price);
             m.paper_target = None;
-            if fs.token_account.is_some() {
-                m.token_account = fs.token_account.clone();
+            if token_account.is_some() {
+                m.token_account = token_account.clone();
             }
         });
+
+        let prev = self.pending_pg.remove(&meta.pg_id);
+        let repo = self.repo.clone();
+        let pg_id = meta.pg_id;
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
+            }
+            // Paper: persist the trigger (`target_*`) before the worst-case entry fill
+            // so the UI can show the modeled adverse-slippage gap.
+            if let Some(target) = paper_target {
+                if let Err(e) = repo
+                    .record_target(
+                        pg_id,
+                        target.price,
+                        target.token_amount,
+                        target.time,
+                        &target.tx,
+                    )
+                    .await
+                {
+                    warn!(pg = %pg_id, "engine sink: record_target failed: {e}");
+                }
+            }
+            if let Err(e) = repo
+                .record_entry_fill(
+                    pg_id,
+                    &entry_tx,
+                    fill.token_amount,
+                    fill.price,
+                    fill.sol,
+                    fill.at,
+                    token_account.as_deref(),
+                )
+                .await
+            {
+                warn!(pg = %pg_id, "engine sink: record_entry_fill failed: {e}");
+            }
+        });
+        self.pending_pg.insert(pg_id, handle);
     }
 
-    /// A status-only transition (`ExitPending`). The write is **awaited** — a
-    /// single-row `mark_status` UPDATE that MUST commit before the caller's Pass-2
-    /// `SubmitSell` fires. If a crash lands mid-sell, the durable `ExitPending`
-    /// routes recovery to the ExitPending reaper (re-drive the sell); leaving it
-    /// `Holding` would let boot-adopt re-enter the position and sell a second time.
-    /// One local UPDATE (no RPC) — cheap relative to the sell's own network cost.
+    /// Status-only transition (`ExitPending`): fire-and-forget PG so Pass-2
+    /// `SubmitSell` is not gated on the write. Chains after any pending insert /
+    /// Holding persist inside the spawn. Mid-sell crash recovery: ExitPending
+    /// reaper re-drives when the row lands; externally-cleared Holding reconcile
+    /// covers a landed sell whose status write never committed.
     async fn on_status_only(&mut self, delta: &PositionDelta, status: &str) {
         let Some(meta) = self.registry.get(delta.position) else { return };
+        let prev = self.pending_pg.remove(&meta.pg_id);
+        let repo = self.repo.clone();
+        let pg_id = meta.pg_id;
+        let status = status.to_string();
         let reason = delta.reason.map(|r| r.label().into_owned());
-        if let Err(e) = self
-            .repo
-            .mark_status(meta.pg_id, status, reason.as_deref())
-            .await
-        {
-            warn!(pg = %meta.pg_id, "engine sink: mark_status({status}) failed: {e}");
-        }
+        let handle = tokio::spawn(async move {
+            if let Some(h) = prev {
+                let _ = h.await;
+            }
+            if let Err(e) = repo.mark_status(pg_id, &status, reason.as_deref()).await {
+                warn!(pg = %pg_id, "engine sink: mark_status({status}) failed: {e}");
+            }
+        });
+        self.pending_pg.insert(pg_id, handle);
     }
 
     /// Returns `true` when finalized — caller emits SSE then drops the registry row.
@@ -355,6 +381,7 @@ impl Sink {
         let Some(fill) = delta.fill else {
             return false;
         };
+        self.await_pending_pg(meta.pg_id).await;
         let fs = delta.intent.as_ref().and_then(|i| self.fill_sigs.take(i)).unwrap_or_default();
         let reason = delta
             .reason
@@ -381,6 +408,7 @@ impl Sink {
         let Some(meta) = self.registry.get(delta.position) else {
             return false;
         };
+        self.await_pending_pg(meta.pg_id).await;
         if let Some(trader) = &self.trader {
             trader.release_sol_for_position(&meta.pg_id.to_string());
         }
@@ -408,6 +436,13 @@ impl Sink {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Wait for any background PG lifecycle task so terminal writes see a consistent row.
+    async fn await_pending_pg(&mut self, pg_id: uuid::Uuid) {
+        if let Some(handle) = self.pending_pg.remove(&pg_id) {
+            let _ = handle.await;
+        }
+    }
 
     /// Keep this mint's PumpSwap pool on the LaserStream filter for the life of
     /// the real position (independent of `track_post_migration`).

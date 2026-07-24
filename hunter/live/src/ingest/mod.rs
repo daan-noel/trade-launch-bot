@@ -56,6 +56,7 @@ pub async fn spawn_ingest(
     trader: Arc<dyn TraderHook>,
     trade_signals: Arc<TradeSignals>,
     push_hooks: PushHooks,
+    trading_wallet: String,
 ) -> IngestSpawnResult {
     let (strategy_tx, strategy_rx) =
         mpsc::channel::<StrategyPing>(STRATEGY_QUEUE_CAP);
@@ -93,6 +94,7 @@ pub async fn spawn_ingest(
         trade_signals.clone(),
         handle.clone(),
         held_pools.clone(),
+        trading_wallet,
     );
 
     let db_writer = DbWriter::new(db, trade_signals, heartbeat.clone());
@@ -100,10 +102,10 @@ pub async fn spawn_ingest(
     let consumer_task = tokio::spawn(consumer.run(event_rx));
     let db_writer_task = tokio::spawn(db_writer.run(db_rx));
 
-    // Drain durable writes that timed out on the hot path into `db_tx` without
-    // blocking the ingest loop. `send().await` applies backpressure here so rows
-    // are retained across a PG stall until the writer catches up (or the channel
-    // closes on shutdown).
+    // Drain durable writes that could not enter `db_tx` without blocking into
+    // `db_tx` without blocking the ingest loop. `send().await` applies
+    // backpressure here so rows are retained across a PG stall until the writer
+    // catches up (or the channel closes on shutdown).
     {
         let db_tx = db_tx.clone();
         tokio::spawn(async move {

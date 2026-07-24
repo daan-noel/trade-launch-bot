@@ -307,6 +307,20 @@ async fn adopt_existing_fill(
         return None;
     }
     for sig in &sigs {
+        if let Some(obs) = deps.trade_signals.observed_legs(sig) {
+            if obs.token_amount > PARTIAL_FILL_THRESHOLD {
+                info!(mint = %order.mint, sig = %sig, "adopted own-leg preview before re-send");
+                return Some((
+                    sig.clone(),
+                    SigLegs {
+                        token_amount: obs.token_amount,
+                        amount_sol: obs.amount_sol,
+                        first_block_time: obs.first_block_time,
+                        last_block_time: obs.last_block_time,
+                    },
+                ));
+            }
+        }
         if let Ok(Some(legs)) = deps.trade_repo.find_fill_by_signature(wallet, &order.mint, sig).await
         {
             if legs.token_amount > PARTIAL_FILL_THRESHOLD {
@@ -433,6 +447,17 @@ async fn poll_feed_buy(
 ) -> Option<SigLegs> {
     let deadline = tokio::time::Instant::now() + window;
     loop {
+        // Prefer process-local own-leg preview (ingest saw our buy before PG).
+        if let Some(obs) = deps.trade_signals.observed_legs(sig) {
+            if obs.token_amount > PARTIAL_FILL_THRESHOLD {
+                return Some(SigLegs {
+                    token_amount: obs.token_amount,
+                    amount_sol: obs.amount_sol,
+                    first_block_time: obs.first_block_time,
+                    last_block_time: obs.last_block_time,
+                });
+            }
+        }
         if let Ok(Some(legs)) = deps.trade_repo.find_fill_by_signature(wallet, mint, sig).await {
             if legs.token_amount > PARTIAL_FILL_THRESHOLD {
                 return Some(legs);
@@ -781,6 +806,17 @@ async fn confirm_sell(
             at_deadline || last_query.map_or(true, |t| now.duration_since(t) >= SELL_BALANCE_QUERY_MIN_INTERVAL);
         if rate_ok {
             last_query = Some(now);
+            // Prefer process-local own-leg preview before SQL.
+            if let Some(obs) = deps.trade_signals.sum_observed_legs(sell_sigs) {
+                if obs.token_amount.saturating_add(PARTIAL_FILL_THRESHOLD) >= order.token_amount {
+                    return Some(SigLegs {
+                        token_amount: obs.token_amount,
+                        amount_sol: obs.amount_sol,
+                        first_block_time: obs.first_block_time,
+                        last_block_time: obs.last_block_time,
+                    });
+                }
+            }
             if let Ok(Some(legs)) = deps
                 .trade_repo
                 .sum_legs_by_signatures(wallet, &order.mint, sell_sigs, TradeType::Sell)

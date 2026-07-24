@@ -1261,6 +1261,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(trader::TraderHookBridge(trader.clone())),
         trade_signals.clone(),
         push_hooks,
+        trader.wallet_pubkey(),
     ).await;
     let pool_index = ingest_result.pool_index;
     let pools_changed = ingest_result.pools_changed;
