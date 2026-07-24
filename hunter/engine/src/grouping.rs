@@ -99,7 +99,7 @@ pub fn decimals_for(width: f64) -> usize {
 /// `lo = bucket_index(v, width) · width`. Built on [`bucket_index`] so the label
 /// and the [`same_bucket`] membership test can never drift. The dashboard SQL
 /// applies the identical epsilon + `to_char` rounding for byte-identical labels.
-fn bucket_sol_label(v: f64, width: f64, decimals: usize) -> String {
+pub fn bucket_sol_label(v: f64, width: f64, decimals: usize) -> String {
     let lo = bucket_index(v, width) as f64 * width;
     let hi = lo + width;
     format!("{lo:.decimals$}–{hi:.decimals$}")
@@ -134,7 +134,7 @@ pub struct TokenFingerprint {
     pub first_slot_buy_sol: Option<f64>,
     /// Total sell SOL across trades landing in the token's creation slot (human SOL).
     pub first_slot_sell_sol: Option<f64>,
-    /// Creation instruction-label set, sorted + deduped for a stable key.
+    /// Creation instruction-label sequence (exact on-chain order + count).
     pub ix_labels: Vec<String>,
 }
 
@@ -150,13 +150,22 @@ pub fn extract_lamports(instruction: Option<&Value>, key: &str) -> Option<i64> {
     })
 }
 
-/// Collect an instruction-labels JSON array into a `Vec<String>`, preserving
-/// exact on-chain order and count.
+/// Collect an instruction-labels JSON value into a `Vec<String>`, preserving
+/// exact on-chain order and count. Accepts both persisted shapes:
+/// bare `["A","B"]` and `{ "instructions": ["A","B"] }` (same dual-shape
+/// contract as `tokens`/`trades` SQL helpers and the Tokens UI).
 pub fn normalize_labels(labels: &Value) -> Vec<String> {
-    labels
-        .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-        .unwrap_or_default()
+    let arr = match labels {
+        Value::Array(a) => a.as_slice(),
+        Value::Object(o) => match o.get("instructions") {
+            Some(Value::Array(a)) => a.as_slice(),
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    arr.iter()
+        .filter_map(|x| x.as_str().map(str::to_string))
+        .collect()
 }
 
 /// Collect a label `Vec` into its canonical fingerprint form. Preserves exact
@@ -362,6 +371,12 @@ mod tests {
     fn labels_normalized_order_preserved_and_joined() {
         // exact on-chain sequence preserved — consecutive duplicates are kept
         assert_eq!(normalize_labels(&json!(["b", "a", "a"])), vec!["b", "a", "a"]);
+        // Object shape used by some persisted token/trade rows.
+        assert_eq!(
+            normalize_labels(&json!({"instructions": ["b", "a", "a"]})),
+            vec!["b", "a", "a"]
+        );
+        assert!(normalize_labels(&json!({"instructions": "nope"})).is_empty());
         let k = group_key(&fp(), &[GroupField::IxLabels], SOL_BUCKET_WIDTH);
         assert_eq!(k.0[0].1, "Pump.Fun: Create | System: Transfer");
     }

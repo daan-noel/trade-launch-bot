@@ -286,23 +286,32 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
 
   // The bucket width the applied run grouped SOL axes at — the same width the
   // fingerprint identity match/create must use so a card maps to the fingerprint
-  // it would actually match. `applied.bucketWidth` is omitted for the default.
-  const appliedBucketWidth = applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
+  // it would actually match. Prefer the server echo (`data.bucket_width`): scoped
+  // runs ignore the draft width and use the fingerprint's own; `applied.bucketWidth`
+  // is also omitted for the default 0.1 case.
+  const appliedBucketWidth = data?.bucket_width ?? applied?.bucketWidth ?? SOL_BUCKET_WIDTH;
 
   // Per-group: the saved fingerprint whose identity matches this card's key (for
   // the "already a fingerprint" badge), and whether the key carries any criterion
   // (ALL / grouping-only cards can't become a fingerprint — hide Create then).
+  // When scoped by a saved fingerprint, prefer that id directly (group_key is
+  // stamped from it server-side, but the scope select is the authoritative link).
   const fpByGroup = useMemo(() => {
     const map = new Map<number, { matched: Fingerprint | null; canCreate: boolean }>();
+    const scoped =
+      applied?.fingerprintId != null
+        ? fingerprints.find((f) => f.id === applied.fingerprintId) ?? null
+        : null;
     for (const g of groups) {
-      const matched = findFingerprintForGroupKey(g.group_key, fingerprints, appliedBucketWidth);
+      const matched =
+        scoped ?? findFingerprintForGroupKey(g.group_key, fingerprints, appliedBucketWidth);
       const canCreate =
         matched == null &&
         identityHasCriterion(fingerprintIdentityFromGroupKey(g.group_key, appliedBucketWidth));
       map.set(g.g, { matched, canCreate });
     }
     return map;
-  }, [groups, fingerprints, appliedBucketWidth]);
+  }, [groups, fingerprints, appliedBucketWidth, applied?.fingerprintId]);
 
   // Save a group card as a fingerprint (find-or-create identity is shared with
   // the badge match, so on success the card flips from "Create" to its "fp"

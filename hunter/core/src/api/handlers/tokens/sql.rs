@@ -40,10 +40,11 @@ pub enum SqlArg {
     Bool(bool),
     /// Ordered lowercase label list for ix-label JSON set-equality.
     StrArray(Vec<String>),
-    /// Ordered instruction-label list bound as `jsonb` for exact array-order
-    /// equality (`t.ix_labels = $n`) — unlike `StrArray`, which binds a `text[]`
-    /// for set-equality against a sorted `array_agg`. Used by the "scope by saved
-    /// fingerprint" path, which mirrors the engine matcher's ordered comparison.
+    /// Ordered instruction-label list bound as `jsonb`. Prefer
+    /// [`crate::storage::ix_labels_sql::ix_labels_ordered_eq_sql`] + `StrArray`
+    /// for fingerprint-scope matches (handles both bare-array and
+    /// `{instructions:[…]}` shapes); keep `Json` only when structural JSONB
+    /// equality against a bare array is intentional.
     Json(Vec<String>),
 }
 
@@ -171,7 +172,8 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     push_opt_range(&mut clauses, "t.cu_limit::float8", q.f_get("cu_limit_min"), q.f_get("cu_limit_max"), &mut a);
     push_opt_range(&mut clauses, "t.cu_price::float8", q.f_get("cu_price_min"), q.f_get("cu_price_max"), &mut a);
     // ix_count = jsonb array length of ix_labels (handles {instructions:[…]} shape).
-    push_range(&mut clauses, ix_count_expr(), q.f_get("ix_count_min"), q.f_get("ix_count_max"), &mut a);
+    let ix_count = ix_count_expr();
+    push_range(&mut clauses, &ix_count, q.f_get("ix_count_min"), q.f_get("ix_count_max"), &mut a);
     if let Some(raw) = q.f_get("ix_label") {
         if let Some(c) = ix_label_clause(raw, &mut a) {
             clauses.push(c);
@@ -222,20 +224,17 @@ fn buy_arg_expr(field: &str) -> String {
 
 /// jsonb array length of the ix_labels, handling both the bare-array and the
 /// `{instructions:[…]}` object shape; non-array ⇒ 0.
-fn ix_count_expr() -> &'static str {
-    "COALESCE(jsonb_array_length(CASE \
-        WHEN jsonb_typeof(t.ix_labels) = 'array' THEN t.ix_labels \
-        WHEN jsonb_typeof(t.ix_labels->'instructions') = 'array' THEN t.ix_labels->'instructions' \
-        ELSE '[]'::jsonb END), 0)"
+fn ix_count_expr() -> String {
+    format!(
+        "COALESCE(jsonb_array_length({}), 0)",
+        crate::storage::ix_labels_sql::ix_labels_array_sql("t.ix_labels")
+    )
 }
 
 /// Lowercase text elements of ix_labels (both shapes), as a SQL set expression
-/// usable inside EXISTS / array_agg.
-fn ix_labels_elements_sql() -> &'static str {
-    "jsonb_array_elements_text(CASE \
-        WHEN jsonb_typeof(t.ix_labels) = 'array' THEN t.ix_labels \
-        WHEN jsonb_typeof(t.ix_labels->'instructions') = 'array' THEN t.ix_labels->'instructions' \
-        ELSE '[]'::jsonb END)"
+/// usable inside EXISTS / array_agg. SSOT: [`crate::storage::ix_labels_sql`].
+fn ix_labels_elements_sql() -> String {
+    crate::storage::ix_labels_sql::ix_labels_elements_sql("t.ix_labels")
 }
 
 // ---------------------------------------------------------------------------

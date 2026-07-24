@@ -1,9 +1,11 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
+use serde_json::{json, Value as JsonValue};
 use sqlx::PgPool;
 
 use crate::config::constants::lamports_to_sol;
-use crate::grouping::GroupField;
+use crate::grouping::{bucket_sol_label, decimals_for, GroupField};
 use crate::models::Fingerprint;
+use crate::storage::ix_labels_sql::{ix_labels_elements_sql, ix_labels_ordered_eq_sql};
 
 /// Token-creation-time bias aggregates. Reads `tokens` (creation time + segment
 /// flags) LEFT JOINed to `tokens_info` (outcome: migrated / dead), grouped
@@ -272,11 +274,64 @@ fn group_field_sql(f: GroupField, width: f64, ti_alias: &str) -> String {
         }
         // Labels joined with " | " in on-chain order (NOT alphabetised) so the
         // displayed/copied set mirrors the real instruction sequence. Ordinality
-        // preserves array position; duplicates are kept intentionally.
-        GroupField::IxLabels => "COALESCE((SELECT string_agg(e.val, ' | ' ORDER BY e.ord) \
-              FROM jsonb_array_elements_text(t.ix_labels) WITH ORDINALITY AS e(val, ord)), '∅')"
-            .to_string(),
+        // preserves array position; duplicates are kept intentionally. Unwraps
+        // both bare-array and `{instructions:[…]}` shapes (see ix_labels_sql).
+        GroupField::IxLabels => format!(
+            "COALESCE((SELECT string_agg(e.val, ' | ' ORDER BY e.ord) \
+              FROM {} WITH ORDINALITY AS e(val, ord)), '∅')",
+            ix_labels_elements_sql("t.ix_labels")
+        ),
     }
+}
+
+/// Render a saved fingerprint as a `group_key` JSON object (same `" | "`-joined
+/// `ix_labels` + bucketed SOL labels the manual `grouped()` path emits). Used by
+/// the scoped dashboard so the single `g = 0` card displays the fingerprint's
+/// axes as-is — including `ix_labels` — instead of an empty `{}` "ALL" key.
+pub fn group_key_from_fingerprint(fp: &Fingerprint) -> JsonValue {
+    let width = fingerprint_bucket_width(fp);
+    let decimals = decimals_for(width);
+    let mut map = serde_json::Map::new();
+    if let Some(v) = fp.cu_limit {
+        map.insert("cu_limit".into(), json!(v.to_string()));
+    }
+    if let Some(v) = fp.cu_price {
+        map.insert("cu_price".into(), json!(v.to_string()));
+    }
+    if let Some(l) = fp.init_buy_lamports {
+        map.insert(
+            "initial_buy_sol".into(),
+            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+        );
+    }
+    if let Some(l) = fp.max_cost_lamports {
+        map.insert(
+            "max_cost_lamports".into(),
+            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+        );
+    }
+    if let Some(l) = fp.spendable_lamports_in {
+        map.insert(
+            "spendable_lamports_in".into(),
+            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+        );
+    }
+    if let Some(l) = fp.first_slot_buy_lamports {
+        map.insert(
+            "first_slot_buy_sol".into(),
+            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+        );
+    }
+    if let Some(l) = fp.first_slot_sell_lamports {
+        map.insert(
+            "first_slot_sell_sol".into(),
+            json!(bucket_sol_label(lamports_to_sol(l), width, decimals)),
+        );
+    }
+    if let Some(labels) = fp.ix_labels.as_ref().filter(|l| !l.is_empty()) {
+        map.insert("ix_labels".into(), json!(labels.join(" | ")));
+    }
+    JsonValue::Object(map)
 }
 
 /// Effective bucket width (SOL) for a saved fingerprint's continuous SOL axes —
@@ -426,9 +481,10 @@ impl CreationStatsRepo {
             let mut sorted: Vec<String> = labels.to_vec();
             sorted.sort();
             sorted.dedup();
+            let elems = ix_labels_elements_sql("t.ix_labels");
             preds.push_str(&format!(
                 "\n  AND (SELECT array_agg(DISTINCT e.val ORDER BY e.val) \
-                 FROM jsonb_array_elements_text(t.ix_labels) AS e(val)) = ${idx}"
+                 FROM {elems} AS e(val)) = ${idx}"
             ));
             filter_binds.push(sorted);
             idx += 1;
@@ -528,13 +584,16 @@ impl CreationStatsRepo {
         for clause in fingerprint_scope_clauses(fp, width, "ti") {
             preds.push_str(&format!("\n  AND {clause}"));
         }
-        // ix_labels: ordered exact match (jsonb structural equality preserves
-        // array order) — NOT `grouped()`'s sorted-set-equality `ix_labels_filter`.
-        // Bound, not literal-embedded: labels are arbitrary on-chain text. Owned
-        // (not a borrow of `fp`) so it can be re-bound across all three queries.
+        // ix_labels: ordered exact match over the unwrapped label sequence
+        // (handles bare-array + `{instructions:[…]}`) — NOT `grouped()`'s
+        // sorted-set-equality `ix_labels_filter`. Bound as `text[]`. Owned so
+        // it can be re-bound across all three queries.
         let ix_bind: Option<Vec<String>> = fp.ix_labels.clone().filter(|l| !l.is_empty());
         if ix_bind.is_some() {
-            preds.push_str("\n  AND t.ix_labels = $6");
+            preds.push_str(&format!(
+                "\n  AND {}",
+                ix_labels_ordered_eq_sql("t.ix_labels", "$6")
+            ));
         }
 
         let bkt = bucket_expr("(t.created_at AT TIME ZONE $1)", bucket_unit);
@@ -552,9 +611,10 @@ impl CreationStatsRepo {
             )
             "#,
         );
-        // Ungrouped `HAVING` collapses to zero rows when the corpus is empty
-        // (rather than one row reading `total = 0`) — same "no group" shape an
-        // empty manual ALL group gets from `grouped()`'s `GROUP BY gkey`.
+        // Placeholder `group_key` (`{}`) is overwritten below with
+        // [`group_key_from_fingerprint`] so the card shows the fingerprint axes
+        // (incl. `ix_labels`) as-is. Ungrouped `HAVING` collapses to zero rows
+        // when the corpus is empty (rather than one row reading `total = 0`).
         let groups_sql =
             format!("{cte} SELECT 0::bigint AS g, '{{}}'::jsonb AS group_key, COUNT(*)::bigint AS total FROM base HAVING COUNT(*) > 0");
         let cells_sql = format!(
@@ -572,15 +632,23 @@ impl CreationStatsRepo {
                     .bind(f.mayhem)
                     .bind(f.cashback);
                 if let Some(labels) = &ix_bind {
-                    q = q.bind(sqlx::types::Json(labels));
+                    q = q.bind(labels.as_slice());
                 }
                 q.fetch_all(&self.pool).await?
             }};
         }
 
-        let groups = run!(&groups_sql, GroupedGroupRow);
+        let mut groups = run!(&groups_sql, GroupedGroupRow);
         let cells = run!(&cells_sql, GroupedHeatCellRow);
         let points = run!(&points_sql, GroupedTrendPointRow);
+
+        // Scoped path always emits one logical group — stamp its key from the
+        // fingerprint so the card shows cu_*/ix_labels/… as-is (create-from-card
+        // + fp badge matching reuse the same identity).
+        let gk = group_key_from_fingerprint(fp);
+        for g in &mut groups {
+            g.group_key = gk.clone();
+        }
 
         Ok(GroupedCreation { groups, cells, points })
     }
@@ -667,9 +735,10 @@ pub fn build_grouped_tokens_where(
         sorted.sort();
         sorted.dedup();
         args.push(SqlArg::StrArray(sorted));
+        let elems = ix_labels_elements_sql("t.ix_labels");
         clauses.push(format!(
             "(SELECT array_agg(DISTINCT e.val ORDER BY e.val) \
-              FROM jsonb_array_elements_text(t.ix_labels) AS e(val)) = ${}",
+              FROM {elems} AS e(val)) = ${}",
             args.len()
         ));
     }
@@ -752,8 +821,9 @@ pub fn build_grouped_tokens_where_scoped(
     // `tokens_info` as `i` (NOT `grouped_scoped`'s `ti`; see `group_field_sql`).
     clauses.extend(fingerprint_scope_clauses(fp, width, "i"));
     if let Some(labels) = fp.ix_labels.as_ref().filter(|l| !l.is_empty()) {
-        args.push(SqlArg::Json(labels.clone()));
-        clauses.push(format!("t.ix_labels = ${}", args.len()));
+        args.push(SqlArg::StrArray(labels.clone()));
+        let ph = format!("${}", args.len());
+        clauses.push(ix_labels_ordered_eq_sql("t.ix_labels", &ph));
     }
 
     // Recurring weekly slot (a heatmap tile) — identical to `build_grouped_tokens_where`.
@@ -822,6 +892,38 @@ mod grouped_tokens_tests {
 
     fn now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn group_key_from_fingerprint_includes_ix_labels_structure() {
+        let now = Utc::now();
+        let fp = Fingerprint {
+            id: uuid::Uuid::nil(),
+            name: "t".into(),
+            cu_limit: Some(200_000),
+            cu_price: Some(1_000),
+            init_buy_lamports: None,
+            max_cost_lamports: None,
+            spendable_lamports_in: None,
+            first_slot_buy_lamports: None,
+            first_slot_sell_lamports: None,
+            bucket_size_amount: 0.1,
+            ix_labels: Some(vec!["Pump.Fun: Create".into(), "Pump.Fun: Buy".into()]),
+            metric_config: serde_json::json!({}),
+            created_at: now,
+            updated_at: now,
+        };
+        let gk = group_key_from_fingerprint(&fp);
+        assert_eq!(gk["cu_limit"], "200000");
+        assert_eq!(gk["cu_price"], "1000");
+        assert_eq!(gk["ix_labels"], "Pump.Fun: Create | Pump.Fun: Buy");
+    }
+
+    #[test]
+    fn ix_labels_group_field_sql_unwraps_object_shape() {
+        let sql = group_field_sql(GroupField::IxLabels, SOL_BUCKET_WIDTH, "ti");
+        assert!(sql.contains("t.ix_labels->'instructions'"), "dual-shape unwrap missing: {sql}");
+        assert!(sql.contains("string_agg"), "ordered join missing: {sql}");
     }
 
     #[test]

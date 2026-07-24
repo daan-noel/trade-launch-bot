@@ -661,7 +661,7 @@ fn build_registry() -> Vec<ColumnSpec> {
             .sortable("t.cu_price", false, |t| SortKey::Num(t.cu_price.map(|v| v as f64))),
         C::new("ix_count", Some(format!("{}::text", ix_count_sql())), |t| t.ix_labels_count.to_string())
             .numeric(ix_count_sql(), |t| Some(t.ix_labels_count as f64))
-            .sortable(IX_COUNT_SORT, false, |t| SortKey::Num(Some(t.ix_labels_count as f64))),
+            .sortable(ix_count_sql(), false, |t| SortKey::Num(Some(t.ix_labels_count as f64))),
         // --- numeric (nullable): sortable + numeric-filterable. The panel filters
         //     these as opt_f64 ranges; making them `is_numeric_col` lets the unified
         //     per-column path handle both the panel range and a per-column predicate.
@@ -764,15 +764,17 @@ const TOKEN_AMOUNT_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'token_a
 const MAX_SOL_COST_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'max_cost_lamports' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'max_cost_lamports')::float8 END)";
 const SPENDABLE_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'spendable_lamports_in' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'spendable_lamports_in')::float8 END)";
 const MIN_TOKENS_OUT_SORT: &str = "(CASE WHEN t.initial_buy_instruction->>'min_tokens_out' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'min_tokens_out')::float8 END)";
-const IX_COUNT_SORT: &str = "COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(t.ix_labels) = 'array' THEN t.ix_labels WHEN jsonb_typeof(t.ix_labels->'instructions') = 'array' THEN t.ix_labels->'instructions' ELSE '[]'::jsonb END), 0)";
-
 /// buy-ix JSON numeric reader for the col-filter map.
 fn buy_arg_sql(field: &str) -> String {
     format!("(CASE WHEN t.initial_buy_instruction->>'{field}' ~ '^[0-9]+$' THEN (t.initial_buy_instruction->>'{field}')::float8 END)")
 }
 
-fn ix_count_sql() -> &'static str {
-    IX_COUNT_SORT
+/// ix_labels array length - SSOT unwrap via [`crate::storage::ix_labels_sql`].
+fn ix_count_sql() -> String {
+    format!(
+        "COALESCE(jsonb_array_length({}), 0)",
+        crate::storage::ix_labels_sql::ix_labels_array_sql("t.ix_labels")
+    )
 }
 
 /// RFC3339 rendering of a nullable timestamptz as text (matches `to_rfc3339()`),
