@@ -20,6 +20,7 @@ import {
   useGetEngineSimSummaryMutation,
 } from '@lab/store/labEndpoints';
 import { SimSummary } from './SimSummary';
+import { DryRunDetail } from './DryRunDetail';
 
 const WINDOWS = [
   { label: 'last 24h', hours: 24 },
@@ -39,6 +40,9 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [running, setRunning] = useState(false);
   const [summary, setSummary] = useState<SimulatedSummary | null>(null);
+  // The finished run's id — lifted into state (not just the ref) so the per-token
+  // detail table can page the same stored result. Only set once the run finishes.
+  const [runId, setRunId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [windowHours, setWindowHours] = useState(24);
   const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
@@ -53,6 +57,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
     if (!draft) return;
     setErr(null);
     setSummary(null);
+    setRunId(null);
     setRunning(true);
     const engineDraft: EngineRuleDraft = {
       fingerprint_id: draft.fingerprint_id,
@@ -85,6 +90,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
         }
         try {
           setSummary(await fetchSummary(res.run_id).unwrap());
+          setRunId(res.run_id);
         } catch (e) {
           setErr(apiErrorMessage(e as never) ?? 'summary failed');
         } finally {
@@ -154,6 +160,7 @@ export function DryRunPanel({ draft, canRun }: { draft: RuleEditorDraft | null; 
       </div>
       {err && <p className="mt-2 text-[11px] text-red">{err}</p>}
       {summary && <SimSummary summary={summary} />}
+      {runId && summary && <DryRunDetail runId={runId} />}
     </div>
   );
 }

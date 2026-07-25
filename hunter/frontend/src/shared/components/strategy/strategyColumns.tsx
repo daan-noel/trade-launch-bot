@@ -271,22 +271,20 @@ const EXIT_TOOLTIPS: Partial<Record<LegField, string>> = {
 /**
  * Bespoke Positions columns that default to HIDDEN (the enrichment columns are
  * governed separately by `APPENDED_HIDDEN_KEYS`). Keeps the table scannable:
- * one price per leg + entry/exit size, PnL, and state — the rest are opt-in.
+ * price + time per leg, plus Created/Holding/PnL/state — the per-leg Tokens,
+ * Size, and Tx are opt-in. Mirrors the sim table's `SIM_HIDDEN_KEYS`.
  */
 const POSITION_HIDDEN_KEYS = new Set([
   'name',
-  'created',
   'target_tokens',
   'target_sol',
-  'target_time',
   'target_tx',
   'entry_tokens',
-  'entry_time',
+  'entry_sol',
   'entry_tx',
   'exit_tokens',
-  'exit_time',
+  'exit_sol',
   'exit_tx',
-  'holding',
 ]);
 
 // Price/amount cells read the unit + USD rate from context themselves (see
@@ -455,7 +453,26 @@ export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   },
 ];
 
-export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
+/**
+ * Dry-run / sim trades columns that default to HIDDEN. Same philosophy as
+ * `POSITION_HIDDEN_KEYS`: price + time per leg stay visible; the per-leg Tokens,
+ * Size, Tx and the sim-only `ath_price` are opt-in. (The sim exit leg carries no
+ * Tokens/Size columns to begin with — see the `legColumns('exit', …)` note.)
+ */
+const SIM_HIDDEN_KEYS = new Set([
+  'name',
+  'target_tokens',
+  'target_sol',
+  'target_tx',
+  'entry_tokens',
+  'entry_sol',
+  'entry_tx',
+  'ath_price',
+  'exit_tx',
+]);
+
+export const simColumns: ColumnDef<SimulatedTokenResult>[] = (
+  [
   {
     key: 'symbol',
     label: 'Symbol',
@@ -587,7 +604,8 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = [
   },
   // Trade count comes from the shared "Token Trades" enrichment column
   // (`trade_count`), appended by `TokenTable` — the sim no longer carries its own.
-];
+] as ColumnDef<SimulatedTokenResult>[]
+).map((c) => (SIM_HIDDEN_KEYS.has(c.key) ? { ...c, defaultVisible: false } : c));
 
 // `*_KEYS` are the column keys each table already renders, so `TokenTable` skips
 // them when appending the shared token-info set. Derived straight from the column

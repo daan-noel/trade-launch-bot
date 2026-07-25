@@ -1,0 +1,196 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+
+import { Badge } from 'components/ui/Badge';
+import { InlineAlert } from 'components/ui/Modal';
+import { VisibilityToggleButton } from 'components/ui/VisibilityToggleButton';
+import { TokenTable } from 'components/tokens/TokenTable';
+import { tokenAmountColKeys, tokenNumericColKeys } from 'components/tokens/sharedTokenColumns';
+import { simColumns, SIM_KEYS } from 'components/strategy/strategyColumns';
+import { episodeRowKey } from 'components/strategy/inspectTarget';
+import { TemporalSummary, type TemporalSelection } from 'components/strategy/TemporalSummary';
+import { fetchEngineSimPage, fetchEngineSimTimeSummary } from 'services/api';
+import { toSummaryBody, toTableRequest, type TableRequestBody } from 'services/tableRequest';
+import { DEFAULT_POSITIONS_QUERY, useServerTable } from 'hooks/useServerTable';
+import type { TableQuery } from 'components/table/types';
+import type {
+  HoldSchemeChoice,
+  WallGrainChoice,
+  WallTimeField,
+} from 'lib/strategy/temporalSummary';
+import type { SimulatedTokenResult, TemporalSummaryPayload } from 'types';
+
+const SIM_NUMERIC_COLS = tokenNumericColKeys(simColumns);
+const SIM_AMOUNT_COLS = tokenAmountColKeys(simColumns);
+
+/**
+ * Per-token detail for a finished dry-run (Tier 2): the exact `/result` +
+ * `/result/time-summary` endpoints the Simulate page reads for saved rules, but
+ * keyed by the inline draft's `run_id` (the sim start response id). Renders the
+ * trades table (`simColumns`) + the hold/wall-clock timing bins so a draft is
+ * reviewable trade-by-trade in the editor without leaving for the Simulate page.
+ *
+ * Deliberately lighter than the Simulate page's `RuleSimPositionsPanel`: no
+ * chart drill-in / inspect modal (that page owns the modal state) and no linked
+ * temporal cohort — a modal-scoped preview, not the full analysis surface.
+ */
+export function DryRunDetail({ runId }: { runId: string }) {
+  const [simQuery, setSimQuery] = useState<TableQuery>(DEFAULT_POSITIONS_QUERY);
+  // Matched-but-not-entered `NoEntry` rows are hidden by default — a dry-run's
+  // "Trades" read is the positions it took; toggle to see everything it matched.
+  const [showNotFired, setShowNotFired] = useState(false);
+  const [temporalSel, setTemporalSel] = useState<TemporalSelection>(null);
+  const [wallField, setWallField] = useState<WallTimeField>('created_at');
+  const [wallGrain, setWallGrain] = useState<WallGrainChoice>('auto');
+  const [holdScheme, setHoldScheme] = useState<HoldSchemeChoice>('auto');
+  const [timeSummary, setTimeSummary] = useState<TemporalSummaryPayload | null>(null);
+
+  // Hide-not-fired injects a server-side `exit_reason != NoEntry` so paging /
+  // totals stay correct (same toggle as the sweep combo drill-in).
+  const applyNotFired = useCallback(
+    (q: TableQuery): TableQuery =>
+      showNotFired
+        ? q
+        : {
+            ...q,
+            structuredFilters: {
+              ...q.structuredFilters,
+              exit_reason: { op: 'neq', val: 'NoEntry' },
+            },
+          },
+    [showNotFired],
+  );
+
+  // A temporal-bin click narrows the table page to that cohort's mints.
+  const pageQuery = useMemo(() => {
+    const base = applyNotFired(simQuery);
+    if (!temporalSel?.mints.length) return base;
+    return {
+      ...base,
+      structuredFilters: {
+        ...base.structuredFilters,
+        mint_address: { op: 'in' as const, val: temporalSel.mints },
+      },
+    };
+  }, [simQuery, temporalSel, applyNotFired]);
+
+  const simBody = useMemo(
+    () => toTableRequest(pageQuery, SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
+    [pageQuery],
+  );
+  // Time chart stays on the table's own filters (not the bin click) so the
+  // driving chart doesn't collapse after a selection.
+  const timeBody = useMemo(
+    () => toSummaryBody(applyNotFired(simQuery), SIM_NUMERIC_COLS, { amountCols: SIM_AMOUNT_COLS }),
+    [simQuery.search, simQuery.colFilters, simQuery.structuredFilters, applyNotFired],
+  );
+
+  const fetchPage = useCallback(
+    (body: unknown, signal: AbortSignal) =>
+      fetchEngineSimPage(runId, body as TableRequestBody, signal),
+    [runId],
+  );
+  const {
+    items: rows,
+    total,
+    loading,
+    error,
+  } = useServerTable<SimulatedTokenResult>(true, simBody, fetchPage, undefined, undefined, runId);
+
+  // Clear the temporal cohort when the table's own filters change or the run switches.
+  const baseFilterKey = JSON.stringify({
+    s: simQuery.search,
+    c: simQuery.colFilters,
+    f: simQuery.structuredFilters,
+  });
+  useEffect(() => {
+    setTemporalSel(null);
+  }, [runId, baseFilterKey]);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    void fetchEngineSimTimeSummary(
+      runId,
+      timeBody as TableRequestBody,
+      wallField,
+      wallGrain,
+      holdScheme,
+      ctrl.signal,
+    )
+      .then((t) => {
+        if (!ctrl.signal.aborted) setTimeSummary(t);
+      })
+      .catch((e) => {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+        if (!ctrl.signal.aborted) setTimeSummary(null);
+      });
+    return () => ctrl.abort();
+  }, [runId, timeBody, wallField, wallGrain, holdScheme]);
+
+  return (
+    <section className="mt-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2.5">
+        <span className="h-4 w-1 rounded-full bg-info" />
+        <h3 className="text-sm font-bold text-text">Trades</h3>
+        <Badge variant="info" size="sm" className="font-mono font-normal">
+          {total}
+        </Badge>
+        <VisibilityToggleButton
+          visible={showNotFired}
+          onToggle={() => {
+            setShowNotFired((v) => !v);
+            setSimQuery((q) => ({ ...q, page: 1 }));
+          }}
+          label="not-fired tokens"
+        >
+          {showNotFired ? 'Hide not fired' : 'Show not fired'}
+        </VisibilityToggleButton>
+      </div>
+
+      {error ? (
+        <InlineAlert variant="error">{error}</InlineAlert>
+      ) : (
+        <>
+          {timeSummary && timeSummary.nFired > 0 && (
+            <TemporalSummary
+              data={{
+                ...timeSummary,
+                holdScheme: timeSummary.holdScheme ?? 'mid_30m',
+                holdSchemeAuto:
+                  timeSummary.holdSchemeAuto ?? timeSummary.holdScheme ?? 'mid_30m',
+                wallGrainAuto: timeSummary.wallGrainAuto ?? timeSummary.wallGrain,
+                wallSpanMs: timeSummary.wallSpanMs ?? 0,
+              }}
+              selection={temporalSel}
+              onSelect={setTemporalSel}
+              wallField={wallField}
+              onWallFieldChange={setWallField}
+              wallGrain={wallGrain}
+              onWallGrainChange={setWallGrain}
+              holdScheme={holdScheme}
+              onHoldSchemeChange={setHoldScheme}
+            />
+          )}
+          <TokenTable
+            columns={simColumns}
+            existingKeys={SIM_KEYS}
+            mintSetFilter
+            rows={rows}
+            rowKey={episodeRowKey}
+            charts
+            serverSide
+            serverTotal={total}
+            onQueryChange={setSimQuery}
+            loading={loading}
+            resetKey={`${runId}_${showNotFired}`}
+            tableId="dryrun-positions"
+            emptyMessage={
+              showNotFired
+                ? 'No tokens in this dry-run result.'
+                : 'No fired positions in this dry-run result.'
+            }
+          />
+        </>
+      )}
+    </section>
+  );
+}

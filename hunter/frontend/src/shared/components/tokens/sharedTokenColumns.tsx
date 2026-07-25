@@ -408,6 +408,7 @@ const APPENDED_HIDDEN_KEYS = new Set([
   'market_cap',
   'volume',
   'init_supply',
+  'token_amount',
   'min_tokens_out',
   'cu_price',
   'ix_labels',

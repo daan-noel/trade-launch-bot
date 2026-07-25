@@ -392,9 +392,9 @@ export function openTone(openShare: number): string {
 /** Render one band as a strip of tiles. Both bands go through this, so realized
  *  and mark-to-market are formatted identically and compare tile-for-tile down
  *  the column — the whole reason for showing them stacked. */
-function bandStats(m: RunMetrics): SummaryStat[] {
+function bandStats(m: RunMetrics, extended = false): SummaryStat[] {
   const empty = m.n_closed === 0;
-  return [
+  const stats: SummaryStat[] = [
     { label: 'Total PnL (◎)', value: solText(m.total_pnl_sol), cls: goodBad(m.total_pnl_sol) },
     {
       label: 'Win %',
@@ -412,6 +412,20 @@ function bandStats(m: RunMetrics): SummaryStat[] {
     { label: 'Best %', value: empty ? '—' : pctText(m.best_pnl_pct), cls: empty ? undefined : pctGradeClass(m.best_pnl_pct) },
     { label: 'Worst %', value: empty ? '—' : pctText(m.worst_pnl_pct), cls: empty ? undefined : pctGradeClass(m.worst_pnl_pct) },
   ];
+  // Extended tiles — the distribution's tails/spread, shown only where the summary
+  // is server-computed (dry-run). The client-side row builder can't fill `std`/
+  // `p90` faithfully, so its surfaces don't opt in and never show a misleading 0.
+  if (extended) {
+    stats.push(
+      { label: 'P90 %', value: empty ? '—' : pctText(m.p90_pnl_pct), cls: empty ? undefined : pctGradeClass(m.p90_pnl_pct) },
+      {
+        label: 'Std %',
+        value: empty || m.std_pnl_pct == null ? '—' : `${formatDecimalTrim(m.std_pnl_pct, 1)}%`,
+        cls: 'text-text-mid',
+      },
+    );
+  }
+  return stats;
 }
 
 /**
@@ -462,11 +476,16 @@ export function runSummarySections(
      *  mix. Omit when the surface can't source it; the tile is then hidden
      *  rather than shown as a misleading `0`. */
     migrated?: number;
+    /** Append the distribution's tail/spread tiles (P90 %, Std %) to each band
+     *  and median-hold + score to Positions. Only for server-computed summaries
+     *  (the dry-run) — the client-side row builder can't fill these faithfully. */
+    extended?: boolean;
   } = {},
 ): {
   hero: SummaryStat[];
   sections: SummarySection[];
 } {
+  const extended = extras.extended ?? false;
   const { realized, mtm } = s;
   const nFired = realized.n_fired;
   const nOpen = realized.n_open;
@@ -531,6 +550,16 @@ export function runSummarySections(
             ]
           : []),
         { label: 'Avg hold', value: fmtSecs(realized.avg_holding_secs), cls: 'text-accent' },
+        ...(extended
+          ? [
+              { label: 'Median hold', value: fmtSecs(realized.median_holding_secs), cls: 'text-accent' },
+              {
+                label: 'Score',
+                value: realized.score == null ? '—' : realized.score.toFixed(2),
+                cls: 'text-secondary',
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -563,7 +592,7 @@ export function runSummarySections(
           ? `Closed positions only (${nClosed} of ${nFired}) — the ${nOpen} open are excluded`
           : `All ${nClosed} positions closed`,
       titleCls: 'text-green',
-      stats: bandStats(realized),
+      stats: bandStats(realized, extended),
     },
   ];
 
@@ -573,7 +602,7 @@ export function runSummarySections(
       hint: `All ${nFired} fired — the ${nOpen} open valued at their last price (unrealized)`,
       titleCls: 'text-warning',
       stats: [
-        ...bandStats(mtm),
+        ...bandStats(mtm, extended),
         {
           label: 'of which unreal.',
           value: solText(realized.open_pnl_sol),
