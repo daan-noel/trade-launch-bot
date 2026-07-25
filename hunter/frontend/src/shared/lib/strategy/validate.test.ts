@@ -21,7 +21,7 @@ describe('pnlSugarDuplicateErrors', () => {
       pnlSugarDuplicateErrors({
         ...emptyRuleParams(),
         take_profit: 50,
-        exit: { m_position: { strict: {}, metrics: { pnl: [[{ operator: '<=', value: -25 }]] } } },
+        exit: { m_position: [{ strict: {}, metrics: { pnl: [[{ operator: '<=', value: -25 }]] } }] },
       }),
     ).toEqual([]);
   });
@@ -30,7 +30,7 @@ describe('pnlSugarDuplicateErrors', () => {
     const errs = pnlSugarDuplicateErrors({
       ...emptyRuleParams(),
       take_profit: 50,
-      exit: { m_position: { strict: {}, metrics: { pnl: [[{ operator: '>=', value: 50 }]] } } },
+      exit: { m_position: [{ strict: {}, metrics: { pnl: [[{ operator: '>=', value: 50 }]] } }] },
     });
     expect(errs).toHaveLength(1);
     expect(errs[0]).toMatch(/duplicates take_profit/);
@@ -40,7 +40,7 @@ describe('pnlSugarDuplicateErrors', () => {
     const errs = pnlSugarDuplicateErrors({
       ...emptyRuleParams(),
       stop_loss: 30,
-      exit: { m_position: { strict: {}, metrics: { pnl: [[{ operator: '<=', value: -30 }]] } } },
+      exit: { m_position: [{ strict: {}, metrics: { pnl: [[{ operator: '<=', value: -30 }]] } }] },
     });
     expect(errs).toHaveLength(1);
     expect(errs[0]).toMatch(/duplicates stop_loss/);
@@ -53,10 +53,12 @@ describe('pnlSugarDuplicateErrors', () => {
         take_profit: 50,
         stop_loss: 30,
         exit: {
-          m_position: {
-            strict: {},
-            metrics: { pnl: [[{ operator: '<=', value: -25 }]] },
-          },
+          m_position: [
+            {
+              strict: {},
+              metrics: { pnl: [[{ operator: '<=', value: -25 }]] },
+            },
+          ],
         },
       }),
     ).toEqual([]);
@@ -67,7 +69,7 @@ describe('pnlSugarDuplicateErrors', () => {
       {
         ...emptyRuleParams(),
         take_profit: 100,
-        exit: { m_position: { strict: {}, metrics: { pnl: [[{ operator: '>=', value: 100 }]] } } },
+        exit: { m_position: [{ strict: {}, metrics: { pnl: [[{ operator: '>=', value: 100 }]] } }] },
       },
       undefined,
     );

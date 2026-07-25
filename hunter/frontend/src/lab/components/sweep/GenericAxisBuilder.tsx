@@ -574,11 +574,15 @@ function AxisRow({
               className="w-32"
             >
               <option value="">group…</option>
-              {registry?.groups.map((g) => (
-                <option key={g.name} value={g.name}>
-                  {g.name}
-                </option>
-              ))}
+              {registry?.groups
+                // Hide position-scoped (exit-only) groups from an entry axis — they
+                // read NaN before entry, so an entry condition can never fire.
+                .filter((g) => !(row.side === 'entry' && g.scope === 'position'))
+                .map((g) => (
+                  <option key={g.name} value={g.name}>
+                    {g.name}
+                  </option>
+                ))}
             </Select>
           </Cell>
           <Cell

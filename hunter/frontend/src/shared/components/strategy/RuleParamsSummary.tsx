@@ -9,12 +9,14 @@ import { findMetric, useStrategyRegistry, type Operator } from 'lib/strategy/reg
 import { metricColorStyle } from 'lib/strategy/metricColors';
 import { conditionExprFromJson } from 'lib/strategy/grammar';
 
-/** Nested `params` blob as stored on `strategy_rules.params` / sweep combos. */
+/** Nested `params` blob as stored on `strategy_rules.params` / sweep combos. A
+ *  group's value is a plain object (one window) OR an array of them (one per
+ *  window) — the multi-window-per-group wire form. */
 interface RuleParamsJson {
   take_profit?: number | null;
   stop_loss?: number | null;
-  entry?: Record<string, Record<string, unknown>>;
-  exit?: Record<string, Record<string, unknown>>;
+  entry?: Record<string, unknown>;
+  exit?: Record<string, unknown>;
 }
 
 interface SideChip {
@@ -40,28 +42,34 @@ function chip(text: ReactNode, cls?: string, style?: CSSProperties): ReactNode {
   );
 }
 
-/** Terse chips for one side's metric conditions, e.g. `time>10`, `liquidity<30 | liquidity>=70`. */
-function sideChips(side: Record<string, Record<string, unknown>> | undefined): SideChip[] {
+/** Terse chips for one side's metric conditions, e.g. `time>10`, `liquidity<30 | liquidity>=70`.
+ *  A group value is a plain object (one window) or an array of them (one per window). */
+function sideChips(side: Record<string, unknown> | undefined): SideChip[] {
   if (!side) return [];
   const out: SideChip[] = [];
-  for (const [group, body] of Object.entries(side)) {
-    const window = typeof body.window_size_sec === 'number' ? body.window_size_sec : null;
-    const suffix = window != null ? `(${window}s)` : '';
-    for (const [metric, raw] of Object.entries(body)) {
-      if (metric === 'window_size_sec' || !Array.isArray(raw)) continue;
-      const arms = conditionExprFromJson(raw);
-      if (!arms) continue;
-      for (let ai = 0; ai < arms.length; ai++) {
-        const arm = arms[ai];
-        for (let ci = 0; ci < arm.length; ci++) {
-          const c = arm[ci];
-          out.push({
-            group,
-            metric,
-            operator: c.operator,
-            text: `${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`,
-            orBefore: ai > 0 && ci === 0,
-          });
+  for (const [group, groupVal] of Object.entries(side)) {
+    const instances = Array.isArray(groupVal) ? groupVal : [groupVal];
+    for (const body of instances) {
+      if (!body || typeof body !== 'object' || Array.isArray(body)) continue;
+      const inst = body as Record<string, unknown>;
+      const window = typeof inst.window_size_sec === 'number' ? inst.window_size_sec : null;
+      const suffix = window != null ? `(${window}s)` : '';
+      for (const [metric, raw] of Object.entries(inst)) {
+        if (metric === 'window_size_sec' || !Array.isArray(raw)) continue;
+        const arms = conditionExprFromJson(raw);
+        if (!arms) continue;
+        for (let ai = 0; ai < arms.length; ai++) {
+          const arm = arms[ai];
+          for (let ci = 0; ci < arm.length; ci++) {
+            const c = arm[ci];
+            out.push({
+              group,
+              metric,
+              operator: c.operator,
+              text: `${metric}${suffix}${c.operator}${formatDecimalTrim(c.value, 4)}`,
+              orBefore: ai > 0 && ci === 0,
+            });
+          }
         }
       }
     }

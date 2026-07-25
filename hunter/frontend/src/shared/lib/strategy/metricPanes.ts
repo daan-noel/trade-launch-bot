@@ -7,7 +7,7 @@ import type { Condition, ConditionExpr } from './grammar';
 import type { RuleParams, SideConditions } from './ruleParams';
 import type { StrategyRegistry } from './registry';
 import type { MetricSeriesColumn, MetricSeriesResponse, StrategyRule } from './types';
-import { ruleParamsFromJson } from './ruleParams';
+import { ruleParamsFromJson, sideInstances } from './ruleParams';
 import { formatMetricExitLabel } from './exitReason';
 
 const DEFAULT_WINDOWS = [10, 30, 60];
@@ -40,7 +40,7 @@ export function metricPrefsFromParams(
 
   for (const side of [params.entry, params.exit]) {
     if (!side) continue;
-    for (const [groupName, group] of Object.entries(side)) {
+    for (const [groupName, group] of sideInstances(side)) {
       const kind = registry?.groups.find((g) => g.name === groupName)?.kind;
       const w =
         typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
@@ -122,7 +122,7 @@ function sideMetricRows(
     dynamic: boolean;
     window: number | null;
   }> = [];
-  for (const [groupName, group] of Object.entries(side)) {
+  for (const [groupName, group] of sideInstances(side)) {
     const gSpec = registry?.groups.find((g) => g.name === groupName);
     const w =
       typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
@@ -224,7 +224,7 @@ export function metricConditionStatesAt(
   for (const sideName of ['entry', 'exit'] as const) {
     const side = params[sideName];
     if (!side) continue;
-    for (const [groupName, group] of Object.entries(side)) {
+    for (const [groupName, group] of sideInstances(side)) {
       const gSpec = registry?.groups.find((g) => g.name === groupName);
       const w =
         typeof group.strict.window_size_sec === 'number' && group.strict.window_size_sec > 0
@@ -263,10 +263,10 @@ export function findRuleFireMarkers(
   const n = data.at.length;
   if (n === 0) return [];
   const byKey = seriesLookup(data.series);
-  const hasEntry = Object.values(params.entry ?? {}).some((g) =>
+  const hasEntry = sideInstances(params.entry).some(([, g]) =>
     Object.values(g.metrics).some((c) => c?.length),
   );
-  const hasExit = Object.values(params.exit ?? {}).some((g) =>
+  const hasExit = sideInstances(params.exit).some(([, g]) =>
     Object.values(g.metrics).some((c) => c?.length),
   );
 

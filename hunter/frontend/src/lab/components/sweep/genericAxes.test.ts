@@ -48,6 +48,15 @@ const REG: StrategyRegistry = {
       strict_params: [{ name: 'window_size_sec', required: true }],
       metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
     },
+    {
+      // Position-scoped (exit-only): reads NaN before entry, so an entry axis on it
+      // can never fire — the builder hides it on entry and axisRowError rejects it.
+      name: 'm_position',
+      kind: 'static',
+      scope: 'position',
+      strict_params: [],
+      metrics: [{ name: 'retrace', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 15 }],
+    },
   ],
 };
 
@@ -116,6 +125,11 @@ describe('axisRowError', () => {
     expect(
       axisRowError(metricRow({ group: 'm_snapshot', metric: 'time', operator: '>', valuesText: '5, 10' }), REG),
     ).toBeNull();
+  });
+  it('rejects a position-scoped group on entry but accepts it on exit', () => {
+    const base = { group: 'm_position', metric: 'retrace', operator: '>=' as const, valuesText: '3' };
+    expect(axisRowError(metricRow({ ...base, side: 'entry' }), REG)).toMatch(/exit-only/);
+    expect(axisRowError(metricRow({ ...base, side: 'exit' }), REG)).toBeNull();
   });
   it('rejects TP/SL values <= 0', () => {
     expect(axisRowError({ ...newAxisRow('take_profit'), valuesText: '0, 100' }, REG)).toBe(

@@ -5,7 +5,7 @@
 // the authority; this is a fast-feedback pre-check.
 
 import { normalizeConditionExpr, type Condition, type ConditionExpr } from './grammar';
-import type { RuleParams, SideConditions, GroupConditions } from './ruleParams';
+import { sideInstances, type RuleParams, type SideConditions, type GroupConditions } from './ruleParams';
 import { findGroup, findMetric, type StrategyRegistry } from './registry';
 
 /** Validate a draft against the registry. Returns human-readable error strings
@@ -38,7 +38,8 @@ export function isPnlAdvancedMetric(group: string, metric: string): boolean {
  * same bounds — duplicating them is a footgun, not a second exit.
  */
 export function pnlSugarDuplicateErrors(p: RuleParams): string[] {
-  const arms = p.exit?.m_position?.metrics?.pnl;
+  // `m_position` is static (single instance), but read it instance-safely.
+  const arms = p.exit?.m_position?.find((g) => g.metrics.pnl?.length)?.metrics.pnl;
   if (!arms?.length) return [];
   const errors: string[] = [];
   let sawTp = false;
@@ -99,8 +100,9 @@ function validateSide(
   errors: string[],
 ): void {
   if (!conds) return;
-  for (const [groupName, group] of Object.entries(conds)) {
-    // Skip groups the user left entirely blank — an empty group is treated as
+  // One pass per group instance (a group may hold several — one per window).
+  for (const [groupName, group] of sideInstances(conds)) {
+    // Skip instances the user left entirely blank — an empty group is treated as
     // absent (only groups that carry a constraint are serialized).
     if (!groupHasConstraint(group)) continue;
     const spec = findGroup(reg, groupName);

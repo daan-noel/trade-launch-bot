@@ -4,7 +4,23 @@ import {
   ruleParamsFromJson,
   ruleParamsJsonEqual,
   ruleParamsToJson,
+  sideInstances,
 } from './ruleParams';
+import type { StrategyRegistry } from './registry';
+
+// Minimal registry: a dynamic price-window group (so `window_size_sec` is a strict
+// param and `trail` is a known metric with a tolerance).
+const REG: StrategyRegistry = {
+  operators: ['>', '>=', '<', '<=', '=', '!='],
+  groups: [
+    {
+      name: 'm_price_window',
+      kind: 'dynamic',
+      strict_params: [{ name: 'window_size_sec', required: true }],
+      metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
+    },
+  ],
+};
 
 describe('ruleParamsJsonEqual', () => {
   it('treats null / missing leaves as equal', () => {
@@ -85,5 +101,52 @@ describe('reentry round-trip (the silent-strip regression)', () => {
       reentry: { cooldown_sec: NaN, max_episodes_per_token: 10 },
     });
     expect('reentry' in json).toBe(false);
+  });
+});
+
+describe('multi-window per group (the array-form round-trip)', () => {
+  it('serializes one instance as an object, two as an array (mirrors the backend)', () => {
+    const one = ruleParamsFromJson(
+      { entry: { m_price_window: { window_size_sec: 30, trail: [{ operator: '>=', value: 8 }] } } },
+      REG,
+    );
+    expect((ruleParamsToJson(one).entry as Record<string, unknown>).m_price_window).not.toBeInstanceOf(
+      Array,
+    );
+
+    const two = ruleParamsFromJson(
+      {
+        entry: {
+          m_price_window: [
+            { window_size_sec: 5, trail: [{ operator: '>=', value: 8 }] },
+            { window_size_sec: 30, trail: [{ operator: '>=', value: 15 }] },
+          ],
+        },
+      },
+      REG,
+    );
+    const grp = (ruleParamsToJson(two).entry as Record<string, unknown>).m_price_window;
+    expect(Array.isArray(grp)).toBe(true);
+    expect((grp as unknown[]).length).toBe(2);
+  });
+
+  it('loads the two-window array form without dropping conditions (the silent-drop bug)', () => {
+    const json = {
+      entry: {
+        m_price_window: [
+          { window_size_sec: 5, trail: [{ operator: '>=', value: 8 }] },
+          { window_size_sec: 30, trail: [{ operator: '>=', value: 15 }] },
+        ],
+      },
+    };
+    const form = ruleParamsFromJson(json, REG);
+    // Both instances survive — the old Record<group,…> model collapsed these to nothing.
+    expect(form.entry?.m_price_window).toHaveLength(2);
+    const windows = sideInstances(form.entry)
+      .map(([, g]) => g.strict.window_size_sec)
+      .sort((a, b) => a - b);
+    expect(windows).toEqual([5, 30]);
+    // Full round-trip is identity.
+    expect(ruleParamsJsonEqual(ruleParamsToJson(form), json)).toBe(true);
   });
 });

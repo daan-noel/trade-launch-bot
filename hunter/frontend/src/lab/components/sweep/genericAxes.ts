@@ -168,6 +168,11 @@ export function axisRowError(
   if (values.every((v) => v == null)) return "add at least one number besides 'off'";
   const group = rowGroup(row, reg);
   if (!row.group || !group) return 'pick a metric group';
+  // Position-scoped groups (`m_position`) read NaN before entry, so an entry
+  // condition on one can never fire — the backend `resolve_one` rejects it. Flag
+  // it here rather than admit a dead axis (mirrors the sweep backend contract).
+  if (row.side === 'entry' && group.scope === 'position')
+    return `${group.name} is exit-only (no value before entry) — move it to the exit column`;
   if (!row.metric || !group.metrics.some((m) => m.name === row.metric)) return 'pick a metric';
   if (!row.operator) return 'pick an operator';
   if (group.kind === 'dynamic') {

@@ -6,7 +6,7 @@ import { Button } from 'components/ui/Button';
 import { Accordion } from 'components/ui/Accordion';
 import { useStrategyRegistry, unitSuffix, type MetricUnit } from 'lib/strategy/registry';
 import { useGetStrategyRulesQuery } from 'store/sharedEndpoints';
-import { ruleParamsFromJson, type RuleParams } from 'lib/strategy/ruleParams';
+import { ruleParamsFromJson, sideInstances, type RuleParams } from 'lib/strategy/ruleParams';
 import {
   DEFAULT_WINDOWS,
   extractRuleMetricPrefs,
@@ -629,7 +629,7 @@ function metricThresholds(
   for (const side of ['entry', 'exit'] as const) {
     const sc = params[side];
     if (!sc) continue;
-    for (const g of Object.values(sc)) {
+    for (const [, g] of sideInstances(sc)) {
       // `metrics[metric]` is DNF (`Condition[][]`) — flatten arms → atoms.
       const arms = g.metrics[metric];
       if (!arms) continue;

@@ -13,11 +13,15 @@ import {
   ruleParamsFromJson,
   ruleParamsToJson,
   type RuleParams,
-  type SideConditions,
 } from 'lib/strategy/ruleParams';
+import {
+  rowsToSides,
+  sidesToRows,
+  type RuleConditionRow,
+} from 'lib/strategy/ruleConditionRows';
 import { validateRuleParams } from 'lib/strategy/validate';
 import { solToLamports, lamportsToSol, type StrategyRule, type TradeMode } from 'lib/strategy/types';
-import { ConditionSideEditor } from './ConditionSideEditor';
+import { ConditionBuilder } from './ConditionBuilder';
 import { FingerprintPicker } from './FingerprintPicker';
 import { LabelTip } from './LabelTip';
 import { RULE_FIELD_HELP } from 'lib/strategy/strategyHelp';
@@ -75,11 +79,30 @@ function RuleEditorInner({
   const [maxTotal, setMaxTotal] = useState<number | null>(initial?.max_total_tokens ?? 0);
   const [fingerprintId, setFingerprintId] = useState<string | null>(initial?.fingerprint_id ?? null);
 
+  // `params` carries only TP/SL/re-entry; the entry/exit conditions live in `rows`
+  // (the row builder's source of truth) and are folded back into a `SideConditions`
+  // at compose time. Seeded from one parse of the initial rule.
   const [params, setParams] = useState<RuleParams>(() =>
     initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams(),
   );
+  const [rows, setRows] = useState<RuleConditionRow[]>(() => {
+    const p = initial ? ruleParamsFromJson(initial.params, registry) : emptyRuleParams();
+    return sidesToRows(p.entry, p.exit);
+  });
+  // The full rule params = TP/SL/re-entry + the conditions folded from the rows.
+  const composedParams: RuleParams = useMemo(
+    () => ({
+      take_profit: params.take_profit,
+      stop_loss: params.stop_loss,
+      reentry: params.reentry,
+      ...rowsToSides(rows),
+    }),
+    [params.take_profit, params.stop_loss, params.reentry, rows],
+  );
   const [tab, setTab] = useState<'builder' | 'json'>('builder');
-  const [jsonText, setJsonText] = useState(() => JSON.stringify(ruleParamsToJson(params), null, 2));
+  const [jsonText, setJsonText] = useState(() =>
+    JSON.stringify(ruleParamsToJson(composedParams), null, 2),
+  );
   const [jsonError, setJsonError] = useState<string | null>(null);
   // Persisted rules start with mode locked; unlock via the padlock to flip paper↔real.
   // Duplicate / promote pass an id-less `initial` — no lock control (create path).
@@ -107,9 +130,6 @@ function RuleEditorInner({
     setModeUnlocked(true);
   };
 
-  const setSide = (side: 'entry' | 'exit', next: SideConditions) =>
-    setParams((p) => ({ ...p, [side]: next }));
-
   // Re-entry: absent ⇒ one-shot. Toggling on seeds the family-observed defaults
   // (cooldown 5s, cap 10/token); toggling off drops the block entirely. Editing a
   // field to blank stores NaN so validation flags it (kept a number for the type).
@@ -130,23 +150,33 @@ function RuleEditorInner({
     }));
   const finiteOrNull = (v: number | undefined) => (v != null && Number.isFinite(v) ? v : null);
 
-  // When leaving the JSON tab, fold edited JSON back into the form model.
+  // When editing the JSON tab, fold it back into both the TP/SL/re-entry state and
+  // the condition rows so the builder stays in sync.
   const syncFromJson = (text: string) => {
     setJsonText(text);
     try {
-      const parsed = JSON.parse(text);
-      setParams(ruleParamsFromJson(parsed, registry));
+      const parsed = ruleParamsFromJson(JSON.parse(text), registry);
+      setParams((p) => ({
+        ...p,
+        take_profit: parsed.take_profit,
+        stop_loss: parsed.stop_loss,
+        reentry: parsed.reentry,
+      }));
+      setRows(sidesToRows(parsed.entry, parsed.exit));
       setJsonError(null);
     } catch (e) {
       setJsonError(e instanceof Error ? e.message : 'invalid JSON');
     }
   };
   const switchTab = (next: string) => {
-    if (next === 'json') setJsonText(JSON.stringify(ruleParamsToJson(params), null, 2));
+    if (next === 'json') setJsonText(JSON.stringify(ruleParamsToJson(composedParams), null, 2));
     setTab(next as 'builder' | 'json');
   };
 
-  const paramErrors = useMemo(() => validateRuleParams(params, registry), [params, registry]);
+  const paramErrors = useMemo(
+    () => validateRuleParams(composedParams, registry),
+    [composedParams, registry],
+  );
   const buyLamports = solToLamports(buySol) ?? 0;
   const errors: string[] = [];
   if (!ruleName.trim()) errors.push('rule_name must not be empty');
@@ -167,7 +197,7 @@ function RuleEditorInner({
         buy_amount_lamports: buyLamports,
         max_concurrent_tokens: maxConcurrent ?? 1,
         max_total_tokens: maxTotal ?? 0,
-        params: ruleParamsToJson(params),
+        params: ruleParamsToJson(composedParams),
       }
     : null;
 
@@ -327,22 +357,12 @@ function RuleEditorInner({
           <TabsTrigger value="json">JSON</TabsTrigger>
         </TabsList>
         <TabsPanel value="builder">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <ConditionSideEditor
-              side="entry"
-              registry={registry}
-              value={params.entry ?? {}}
-              onChange={(next) => setSide('entry', next)}
-              disabled={conditionsLocked}
-            />
-            <ConditionSideEditor
-              side="exit"
-              registry={registry}
-              value={params.exit ?? {}}
-              onChange={(next) => setSide('exit', next)}
-              disabled={conditionsLocked}
-            />
-          </div>
+          <ConditionBuilder
+            rows={rows}
+            onChange={setRows}
+            registry={registry}
+            disabled={conditionsLocked}
+          />
         </TabsPanel>
         <TabsPanel value="json">
           <textarea

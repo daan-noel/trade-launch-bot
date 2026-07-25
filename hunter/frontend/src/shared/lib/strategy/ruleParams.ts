@@ -15,15 +15,40 @@ import {
 } from './grammar';
 import type { StrategyRegistry } from './registry';
 
-/** Editor-friendly form of one side's (entry/exit) groups, keyed by group name. */
-export type SideConditions = Record<string, GroupConditions>;
+/**
+ * Editor-friendly form of one side's (entry/exit) groups, keyed by group name.
+ *
+ * Each group holds an **array of instances** — one per distinct `window_size_sec`
+ * — mirroring the backend `hunter_engine::rule_params::SideConditions`
+ * (`BTreeMap<group, Vec<GroupConditions>>`). This is what lets the same metric be
+ * authored at two different trailing windows (e.g. `m_price_window.trail@5` AND
+ * `@30`): two instances of the one group. A static group always has a single
+ * window-less instance. On the wire a one-instance group serializes as a plain
+ * object and a multi-instance group as an array (see `sideToJson`).
+ */
+export type SideConditions = Record<string, GroupConditions[]>;
 
-/** One group's authored content: strict params beside per-metric condition exprs. */
+/** One group **instance**'s authored content: strict params (its window) beside
+ *  per-metric condition exprs. A group may hold several — one per window. */
 export interface GroupConditions {
   /** Strict params by name, e.g. `{ window_size_sec: 10 }`. */
   strict: Record<string, number>;
   /** DNF condition arms per metric name. */
   metrics: Record<string, ConditionExpr>;
+}
+
+/** Flatten a side into `(groupName, instance)` pairs — one entry per window
+ *  instance. Consumers that iterate metrics/windows use this so they don't have to
+ *  care that a group may hold several instances. */
+export function sideInstances(
+  side: SideConditions | undefined,
+): Array<[string, GroupConditions]> {
+  if (!side) return [];
+  const out: Array<[string, GroupConditions]> = [];
+  for (const [groupName, instances] of Object.entries(side)) {
+    for (const inst of instances) out.push([groupName, inst]);
+  }
+  return out;
 }
 
 /** Re-entry lifecycle (backend `hunter_engine::rule_params::ReEntry`). Absent ⇒
@@ -86,21 +111,28 @@ export function ruleParamsToJson(p: RuleParams): Record<string, unknown> {
 function sideToJson(side: SideConditions | undefined): Record<string, unknown> | undefined {
   if (!side) return undefined;
   const out: Record<string, unknown> = {};
-  for (const [groupName, group] of Object.entries(side)) {
-    const g: Record<string, unknown> = {};
-    let hasMetric = false;
-    for (const [metric, arms] of Object.entries(group.metrics)) {
-      if (arms.length > 0) {
-        g[metric] = conditionExprToJson(arms);
-        hasMetric = true;
+  for (const [groupName, instances] of Object.entries(side)) {
+    const objs: Record<string, unknown>[] = [];
+    for (const group of instances) {
+      const g: Record<string, unknown> = {};
+      let hasMetric = false;
+      for (const [metric, arms] of Object.entries(group.metrics)) {
+        if (arms.length > 0) {
+          g[metric] = conditionExprToJson(arms);
+          hasMetric = true;
+        }
       }
+      // Strict params only ride along an instance that actually constrains something.
+      if (!hasMetric) continue;
+      for (const [name, v] of Object.entries(group.strict)) {
+        if (v != null && Number.isFinite(v)) g[name] = v;
+      }
+      objs.push(g);
     }
-    // Strict params only ride along a group that actually constrains something.
-    if (!hasMetric) continue;
-    for (const [name, v] of Object.entries(group.strict)) {
-      if (v != null && Number.isFinite(v)) g[name] = v;
-    }
-    out[groupName] = g;
+    if (objs.length === 0) continue;
+    // Mirror the backend `side_to_value`: a single instance stays a plain object
+    // (no migration for existing rules); several become a JSON array, one per window.
+    out[groupName] = objs.length === 1 ? objs[0] : objs;
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -139,23 +171,31 @@ function sideFromJson(
   const side: SideConditions = {};
   for (const [groupName, groupVal] of Object.entries(v as Record<string, unknown>)) {
     const spec = reg?.groups.find((g) => g.name === groupName);
-    const group: GroupConditions = { strict: {}, metrics: {} };
-    const gobj = (groupVal && typeof groupVal === 'object' ? groupVal : {}) as Record<
-      string,
-      unknown
-    >;
-    for (const [key, val] of Object.entries(gobj)) {
-      if (spec?.strict_params.some((sp) => sp.name === key)) {
-        if (typeof val === 'number') group.strict[key] = val;
-      } else if (Array.isArray(val)) {
-        const arms = conditionExprFromJson(val);
-        if (arms) {
-          const tol = spec?.metrics.find((m) => m.name === key)?.eq_tolerance ?? 0;
-          group.metrics[key] = normalizeConditionExpr(arms, tol);
+    // A group is a plain object (one window instance) OR a JSON array (one object
+    // per window). Parse both so a multi-window rule loads without dropping its
+    // conditions — the bug this fixes silently collapsed the array to nothing.
+    const rawInstances = Array.isArray(groupVal) ? groupVal : [groupVal];
+    const instances: GroupConditions[] = [];
+    for (const raw of rawInstances) {
+      const group: GroupConditions = { strict: {}, metrics: {} };
+      const gobj = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<
+        string,
+        unknown
+      >;
+      for (const [key, val] of Object.entries(gobj)) {
+        if (spec?.strict_params.some((sp) => sp.name === key)) {
+          if (typeof val === 'number') group.strict[key] = val;
+        } else if (Array.isArray(val)) {
+          const arms = conditionExprFromJson(val);
+          if (arms) {
+            const tol = spec?.metrics.find((m) => m.name === key)?.eq_tolerance ?? 0;
+            group.metrics[key] = normalizeConditionExpr(arms, tol);
+          }
         }
       }
+      instances.push(group);
     }
-    side[groupName] = group;
+    side[groupName] = instances;
   }
   return side;
 }
