@@ -178,33 +178,6 @@ export function axisRowError(
 }
 
 /**
- * Cross-row check: RuleParams stores one `window_size_sec` per (side, dynamic
- * group), so two axes of the same dynamic group on the same side
- * (`m_flow_window`, `m_flow_split_window`, `m_price_window`) must agree.
- * Static groups (`m_flow_lifetime`, …) have no window. Returns a form-level
- * error string, or `null`. (The backend also rejects this, but flagging up
- * front avoids an admitted-then-dropped run.)
- */
-export function sharedWindowError(
-  rows: GenericAxisRow[],
-  reg: StrategyRegistry | undefined,
-): string | null {
-  for (const side of ['entry', 'exit'] as MetricAxisSide[]) {
-    let win: number | null = null;
-    for (const r of rows) {
-      if (r.kind !== 'metric' || r.side !== side || !rowNeedsWindow(r, reg)) continue;
-      const w = Number(r.window);
-      if (!Number.isFinite(w) || w <= 0) continue;
-      if (win != null && Math.abs(win - w) > 1e-9) {
-        return `conflicting ${side} time-window sizes (${win}s vs ${w}s) — one window per side`;
-      }
-      win = w;
-    }
-  }
-  return null;
-}
-
-/**
  * Cross-row check: an exit `m_position.pnl` axis that restates TP/SL sugar
  * (`>=` overlapping a take_profit value, or `<=` overlapping `−stop_loss`) is
  * the same footgun as duplicating sugar in the rule editor. Prefer the TP/SL

@@ -286,7 +286,10 @@ per-strategy sweep pages. Reuses the kept streaming/persistence infra
 
 - `sweep/genericAxes.ts` — the registry-driven axis model: `AxisSpec[]`
   (`{side, group, metric, operator, values[, window]}`), value parse (comma list +
-  `lo..hi step s` ranges), per-row/shared-window validation, combo-count. Unit-tested.
+  `lo..hi step s` ranges), per-row validation, combo-count. Distinct windows on the
+  same (side, group) are allowed — they assemble into one `GroupConditions` instance
+  per `window_size_sec` (the engine's multi-window-per-group model), so there is no
+  cross-row window-conflict check. Unit-tested.
 - `sweep/GenericAxisBuilder.tsx` — axis-row UI + projected-combo badge; `GenericSweepConfigForm`
   wraps it with corpus/method/caps + `FingerprintGroupPicker`, emitting `{axes:[...]}`.
   When axes reference `m_flow_*`, the form requires `volume_ix_patterns` (corpus-wide

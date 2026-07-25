@@ -171,10 +171,11 @@ impl AxesModel {
         for (i, spec) in req.axes.iter().enumerate() {
             resolved.push(resolve_one(spec).map_err(|e| format!("axis {i}: {e}"))?);
         }
-        // One window per (side, m_flow_window group): RuleParams carries a single
-        // `window_size_sec` per group per side, so time-window axes on one side
-        // must agree. Reject a mixed set rather than silently dropping one.
-        check_shared_windows(&resolved)?;
+        // No shared-window constraint: `assemble` places each axis into the
+        // `GroupConditions` instance matching its `window_size_sec`, so different
+        // windows on the same (side, group) become distinct instances — exactly the
+        // engine's multi-window-per-group model. Same-window axes merge; nothing
+        // conflicts.
         // Entry axes first (high-order); the rest keep their relative order.
         resolved.sort_by_key(|a| !a.is_entry());
         Ok(Self { axes: resolved })
@@ -326,16 +327,30 @@ impl AxesModel {
                         AxisSide::Exit => &mut rp.exit,
                     };
                     let sc = side_slot.get_or_insert_with(SideConditions::default);
-                    // The sweep model places one window per (side, group) — see
-                    // `check_shared_windows` — so a single instance per group holds.
-                    let instances = sc
-                        .0
-                        .entry(*group)
-                        .or_insert_with(|| vec![GroupConditions::default()]);
-                    let gc = &mut instances[0];
-                    if let Some(w) = window {
-                        gc.strict.insert("window_size_sec".to_string(), *w);
-                    }
+                    // One `GroupConditions` instance per distinct `window_size_sec`,
+                    // mirroring the engine's multi-window-per-group model
+                    // (`hunter_engine::rule_params`): axes sharing a window merge into
+                    // the same instance, distinct windows each get their own. So
+                    // `m_flow_window@30` and `m_flow_window@60` coexist, and a
+                    // `m_price_window` window is independent of any flow window. A
+                    // static group's axes all carry `window == None`, so they collapse
+                    // to a single window-less instance. Created lazily on the first
+                    // metric so an all-off group leaves no window-only instance behind.
+                    let instances = sc.0.entry(*group).or_default();
+                    let gc = match instances
+                        .iter()
+                        .position(|g| same_window(g.strict_param("window_size_sec"), *window))
+                    {
+                        Some(i) => &mut instances[i],
+                        None => {
+                            let mut g = GroupConditions::default();
+                            if let Some(w) = window {
+                                g.strict.insert("window_size_sec".to_string(), *w);
+                            }
+                            instances.push(g);
+                            instances.last_mut().expect("just pushed")
+                        }
+                    };
                     // Stage each axis contribution as its own single-condition arm;
                     // coalesce below: AND when the combined list is satisfiable
                     // (range `> a, < b`), else one OR arm per contribution (`< a | > b`).
@@ -452,37 +467,16 @@ fn resolve_one(spec: &AxisSpec) -> Result<ResolvedAxis, String> {
     }
 }
 
-/// Enforce one `window_size_sec` per (side, dynamic group) — RuleParams stores a
-/// single window per group per side.
-fn check_shared_windows(axes: &[ResolvedAxis]) -> Result<(), String> {
-    for want_group in [MetricGroupId::FlowWindow, MetricGroupId::FlowSplitWindow] {
-        for want_side in [AxisSide::Entry, AxisSide::Exit] {
-            let mut window: Option<f64> = None;
-            for a in axes {
-                if let ResolvedAxis::Metric {
-                    side,
-                    group,
-                    window: Some(w),
-                    ..
-                } = a
-                {
-                    if *side != want_side || *group != want_group {
-                        continue;
-                    }
-                    match window {
-                        Some(prev) if (prev - *w).abs() > f64::EPSILON => {
-                            return Err(format!(
-                                "conflicting {} windows on the {want_side:?} side ({prev} vs {w}) — one window per side",
-                                group_spec(want_group).name,
-                            ))
-                        }
-                        _ => window = Some(*w),
-                    }
-                }
-            }
-        }
+/// Whether two group instances share a `window_size_sec` (so an axis merges into
+/// an existing instance rather than opening a new one). Static-group axes carry
+/// `None` and collapse to the single window-less instance. Matches the engine's
+/// duplicate-window rule (`(a - b).abs() <= EPSILON`).
+fn same_window(a: Option<f64>, b: Option<f64>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => (x - y).abs() <= f64::EPSILON,
+        (None, None) => true,
+        _ => false,
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -661,14 +655,83 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_windows_rejected() {
+    fn same_group_distinct_windows_make_two_instances() {
+        // Two `m_flow_window` axes with different windows on the same side are NOT a
+        // conflict — they assemble into two `GroupConditions` instances (one per
+        // window), exactly the engine's multi-window-per-group model. This is the
+        // reported case: the exit side's `buy` at both 30 s and 60 s.
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Exit, "m_flow_window", "buy", "<", Some(30.0), vec![1.0]),
+                metric_axis(AxisSide::Exit, "m_flow_window", "buy", "<", Some(60.0), vec![1.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).expect("distinct windows on one group must resolve");
+        let p = m.combo_params(0);
+        let insts = &p.exit.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
+        assert_eq!(insts.len(), 2, "one instance per distinct window");
+        // Sorted ascending by window when serialized; assert both windows present.
+        let windows: Vec<f64> =
+            insts.iter().filter_map(|g| g.strict_param("window_size_sec")).collect();
+        assert!(windows.contains(&30.0) && windows.contains(&60.0), "{windows:?}");
+        // Each carries its own `buy` condition, and the whole thing is promotable.
+        assert!(insts.iter().all(|g| g.metrics.contains_key(&MetricId::Buy)));
+        RuleParams::parse(&p.to_value()).unwrap();
+    }
+
+    #[test]
+    fn same_group_same_window_merges_into_one_instance() {
+        // Two axes on the same (side, group, window) merge into ONE instance — the
+        // engine rejects duplicate windows, so they must not become two.
         let req = AxesRequest {
             axes: vec![
                 metric_axis(AxisSide::Entry, "m_flow_window", "buy", ">", Some(10.0), vec![1.0]),
-                metric_axis(AxisSide::Entry, "m_flow_window", "sell", ">", Some(20.0), vec![1.0]),
+                metric_axis(AxisSide::Entry, "m_flow_window", "sell", ">", Some(10.0), vec![1.0]),
             ],
         };
-        assert!(AxesModel::resolve(&req).is_err());
+        let m = AxesModel::resolve(&req).unwrap();
+        let p = m.combo_params(0);
+        let insts = &p.entry.as_ref().unwrap().0[&MetricGroupId::FlowWindow];
+        assert_eq!(insts.len(), 1, "same window ⇒ one instance");
+        assert!(insts[0].metrics.contains_key(&MetricId::Buy));
+        assert!(insts[0].metrics.contains_key(&MetricId::Sell));
+        RuleParams::parse(&p.to_value()).unwrap();
+    }
+
+    #[test]
+    fn distinct_groups_keep_independent_windows() {
+        // The reported footgun: `m_price_window(5)` and `m_flow_window(3)` on the
+        // same side are DIFFERENT groups, each with its own `window_size_sec`, so
+        // the sizes are free to differ — this must resolve, not error.
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Entry, "m_price_window", "trail", ">", Some(5.0), vec![1.0, 3.0]),
+                metric_axis(AxisSide::Entry, "m_flow_window", "gross_flow", "<", Some(3.0), vec![10.0, 15.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).expect("distinct groups may hold different windows");
+        // Each group carries its own window in the assembled params.
+        let p = m.combo_params(0);
+        let entry = &p.entry.as_ref().unwrap().0;
+        assert_eq!(entry[&MetricGroupId::PriceWindow][0].strict["window_size_sec"], 5.0);
+        assert_eq!(entry[&MetricGroupId::FlowWindow][0].strict["window_size_sec"], 3.0);
+        RuleParams::parse(&p.to_value()).unwrap();
+    }
+
+    #[test]
+    fn same_group_two_windows_per_metric_promotable() {
+        // A single metric (`trail`) swept at two `m_price_window` windows becomes two
+        // instances, each with a `trail` condition — the engine accepts this.
+        let req = AxesRequest {
+            axes: vec![
+                metric_axis(AxisSide::Entry, "m_price_window", "trail", ">", Some(5.0), vec![1.0]),
+                metric_axis(AxisSide::Entry, "m_price_window", "trail", ">", Some(30.0), vec![1.0]),
+            ],
+        };
+        let m = AxesModel::resolve(&req).expect("same metric at two windows must resolve");
+        let p = m.combo_params(0);
+        assert_eq!(p.entry.as_ref().unwrap().0[&MetricGroupId::PriceWindow].len(), 2);
+        RuleParams::parse(&p.to_value()).unwrap();
     }
 
     #[test]

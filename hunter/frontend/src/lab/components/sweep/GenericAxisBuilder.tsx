@@ -23,7 +23,6 @@ import {
   newAxisRow,
   pnlAxisSugarDuplicateError,
   rowNeedsWindow,
-  sharedWindowError,
   type AxisKind,
   type GenericAxisRow,
   type MetricAxisSide,
@@ -71,7 +70,6 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
   const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
 
   const combos = useMemo(() => projected ?? comboCount(rows, registry), [projected, rows, registry]);
-  const windowErr = useMemo(() => sharedWindowError(rows, registry), [rows, registry]);
   const pnlSugarErr = useMemo(() => pnlAxisSugarDuplicateError(rows), [rows]);
 
   const tpRow = useMemo(() => rows.find((r) => r.kind === 'take_profit'), [rows]);
@@ -210,7 +208,6 @@ export function GenericAxisBuilder({ rows, onChange, projected }: GenericAxisBui
         </p>
       )}
 
-      {windowErr && <p className="text-[11px] text-red">{windowErr}</p>}
       {pnlSugarErr && <p className="text-[11px] text-red">{pnlSugarErr}</p>}
     </div>
   );

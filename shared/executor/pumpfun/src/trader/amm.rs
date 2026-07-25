@@ -584,8 +584,17 @@ impl PumpFunTrader {
             // (readonly) in this slot, on both buy and sell. The deployed program
             // derives it but no published IDL documents it and it isn't
             // reproducible offline — so it's read from a recent on-chain swap and
-            // cached on `AmmPoolInfo` (see `fetch_fee_share_marker`).
-            accounts.push(AccountMeta::new_readonly(marker, false));
+            // cached on `AmmPoolInfo` (see `fetch_swap_layout`). The marker and
+            // `pool_v2` are MUTUALLY EXCLUSIVE — the Apr-2026 pool_v2 upgrade took
+            // over this slot — so appending both shifts pool_v2 out of its
+            // remaining-account position and reverts with InvalidPoolV2 (6062).
+            // Mirrors the cashback branch's `!needs_pool_v2` guard above. (A
+            // correctly-read `AmmPoolInfo` already has `fee_share_marker=None` when
+            // pool_v2 is present; this guard also protects the feed-harvest path,
+            // whose parser can carry a stale marker alongside `needs_pool_v2`.)
+            if !pool.needs_pool_v2 {
+                accounts.push(AccountMeta::new_readonly(marker, false));
+            }
         }
 
         // pool_v2 — Apr-2026 pump_amm upgrade. Required on every swap; sits
@@ -720,14 +729,15 @@ impl PumpFunTrader {
         Ok(info)
     }
 
-    /// On-chain pool account → [`AmmPoolInfo`]. When `reuse_fee_share_marker` is
-    /// `Some`, that marker is kept (2006 self-heal) instead of re-running
-    /// `fetch_fee_share_marker`'s getTransaction burst.
+    /// On-chain pool account → [`AmmPoolInfo`]. When `reuse_layout` is `Some`, the
+    /// `(needs_pool_v2, fee_share_marker)` pair is kept (2006 self-heal) instead of
+    /// re-running `fetch_swap_layout`'s getSignaturesForAddress/getTransaction burst
+    /// — that layout is stable across a `coin_creator` rotate.
     async fn load_amm_pool_info_from_chain(
         &self,
         pool: Pubkey,
         base_token_program_id: &str,
-        reuse_fee_share_marker: Option<Pubkey>,
+        reuse_layout: Option<(bool, Option<Pubkey>)>,
     ) -> Result<AmmPoolInfo> {
         let account = self
             .rpc
@@ -740,30 +750,44 @@ impl PumpFunTrader {
         }
 
         let is_cashback_coin = data[AMM_POOL_IS_CASHBACK_OFFSET] != 0;
-        let fee_share_marker = if is_cashback_coin {
-            None
-        } else if let Some(m) = reuse_fee_share_marker {
-            Some(m)
+        let coin_creator = read_pubkey(data, AMM_POOL_COIN_CREATOR_OFFSET)?;
+
+        // `needs_pool_v2` and the fee-share marker are read TOGETHER from one recent
+        // on-chain swap (non-cashback path), because `pool_v2` is required
+        // INDEPENDENTLY of `coin_creator`: a `pool_v2`-era pool can carry a zero
+        // `coin_creator`, so the old `coin_creator != default` inference wrongly
+        // dropped `pool_v2` and reverted every sell with InvalidPoolV2 (6062). When
+        // `pool_v2` is present the per-coin marker slot is absent — the two are
+        // mutually exclusive.
+        let (needs_pool_v2, fee_share_marker) = if let Some(layout) = reuse_layout {
+            // 2006 self-heal: layout is stable across a `coin_creator` rotate — reuse
+            // it so the heal never re-bursts getSignaturesForAddress/getTransaction.
+            layout
+        } else if is_cashback_coin {
+            // Cashback pools always carry a creator, so `coin_creator` is a reliable
+            // pool_v2 signal here; the cashback tail uses `cashback_ata`, not a
+            // fee-share marker. No swap fetch on this branch.
+            (coin_creator != Pubkey::default(), None)
         } else {
-            match self.fetch_fee_share_marker(&pool).await? {
-                Some(m) => Some(m),
+            // Non-cashback: the SAME recent-swap read the marker already required now
+            // ALSO reports whether `pool_v2` is present — no extra Helius calls.
+            match self.fetch_swap_layout(&pool).await? {
+                Some(layout) => layout,
                 None => bail!(
-                    "No recent PumpSwap swap found for pool {} to read its fee-share \
-                     marker — cannot build a valid non-cashback AMM swap (token may \
+                    "No recent PumpSwap swap found for pool {} to read its swap \
+                     layout — cannot build a valid non-cashback AMM swap (token may \
                      have no AMM trades yet)",
                     pool
                 ),
             }
         };
 
-        let coin_creator = read_pubkey(data, AMM_POOL_COIN_CREATOR_OFFSET)?;
         let coin_creator_vault_authority = self.amm_coin_creator_vault_authority(&coin_creator);
         let coin_creator_vault_ata = get_associated_token_address_with_program_id(
             &coin_creator_vault_authority,
             &protocol::WSOL_MINT,
             &protocol::TOKEN,
         );
-        let needs_pool_v2 = coin_creator != Pubkey::default();
         Ok(AmmPoolInfo {
             pool,
             base_mint: read_pubkey(data, 43)?,
@@ -780,19 +804,20 @@ impl PumpFunTrader {
         })
     }
 
-    /// Read the per-coin fee-share marker from a recent on-chain swap of `pool`.
-    /// Tail layout is `[marker, (pool_v2)?, buyback_recipient, buyback_recipient_wsol]`
-    /// — `pool_v2` is present when the pool's coin_creator is set. It's per-coin
-    /// and constant, so any recent successful swap yields it. `None` if the pool
-    /// has no swap in its recent history.
+    /// Read the swap-tail layout `(needs_pool_v2, fee_share_marker)` from a recent
+    /// on-chain swap of `pool`. Tail is
+    /// `[marker?, pool_v2?, buyback_recipient, buyback_recipient_wsol]`: a
+    /// `pool_v2`-era pool has `pool_v2` in that slot and NO per-coin marker; an older
+    /// pool has the marker and no `pool_v2`. Both facts are per-coin and constant, so
+    /// any recent successful swap yields them. `None` if the pool has no swap in its
+    /// recent history.
     ///
-    /// COLD path only: the steady-state source of the marker is the passive feed
-    /// harvest (`observe_amm_swap_accounts`), so this is reached solely from
-    /// manual/exit trades of a pool with no observed swap since boot. The marker
-    /// is in every successful swap, so tx #1 almost always suffices — fetch
-    /// candidates sequentially with early exit instead of bursting
-    /// `getTransaction` calls for all of them.
-    async fn fetch_fee_share_marker(&self, pool: &Pubkey) -> Result<Option<Pubkey>> {
+    /// COLD path only: the steady-state source is the passive feed harvest
+    /// (`observe_amm_swap_accounts`), so this is reached solely from manual/exit
+    /// trades of a pool with no observed swap since boot. The layout is in every
+    /// successful swap, so tx #1 almost always suffices — fetch candidates
+    /// sequentially with early exit instead of bursting `getTransaction` calls.
+    async fn fetch_swap_layout(&self, pool: &Pubkey) -> Result<Option<(bool, Option<Pubkey>)>> {
         let pool_str = pool.to_string();
         let sigs = self
             .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 5 }]))
@@ -817,11 +842,17 @@ impl PumpFunTrader {
             {
                 Ok(tx) => tx,
                 // A single failed lookup shouldn't sink the whole resolution —
-                // the next candidate may still yield the marker.
+                // the next candidate may still yield the layout.
                 Err(_) => continue,
             };
-            if let Some(marker) = extract_swap_marker(&tx, &program_str, &pool_str) {
-                return Ok(Some(Pubkey::from_str(&marker)?));
+            if let Some((needs_pool_v2, marker)) =
+                extract_swap_layout(&tx, &program_str, &pool_str)
+            {
+                let marker = match marker {
+                    Some(m) => Some(Pubkey::from_str(&m)?),
+                    None => None,
+                };
+                return Ok(Some((needs_pool_v2, marker)));
             }
         }
         Ok(None)
@@ -1042,7 +1073,14 @@ impl PumpFunTrader {
                 (true, None)
             } else if Self::is_cashback_ata_before_pool_v2(keys, before_pk, needs_pool_v2) {
                 (true, None)
+            } else if needs_pool_v2 {
+                // Non-cashback pool_v2 pool: the slot before pool_v2 is a fixed
+                // program account (fee_program), NOT a per-coin marker — the marker
+                // no longer exists once pool_v2 is present (mutually exclusive).
+                (false, None)
             } else {
+                // Older non-cashback layout: the slot before the buyback pair IS the
+                // per-coin fee-share marker.
                 (false, Some(before_pk))
             };
 
@@ -1089,16 +1127,17 @@ impl PumpFunTrader {
         // entry doesn't know its `coin_creator` (only the derived pair).
         let prev = self.amm_pool_cache.get(token_mint).map(|r| *r);
         let prev_authority = prev.map(|p| p.coin_creator_vault_authority);
-        // Reuse a known fee-share marker — the 2006 heal only needs a fresh
-        // coin_creator from the pool account; re-running getTransaction for the
-        // marker is pure waste.
-        let reuse_marker = prev.and_then(|p| p.fee_share_marker);
+        // Reuse the known swap layout (pool_v2 need + fee-share marker) — the 2006
+        // heal only needs a fresh coin_creator from the pool account; the tail
+        // layout is stable across a creator rotate, so re-running
+        // getSignaturesForAddress/getTransaction for it is pure waste.
+        let reuse_layout = prev.map(|p| (p.needs_pool_v2, p.fee_share_marker));
         let mint = Pubkey::from_str(token_mint)?;
         let pool_pk = prev
             .map(|p| p.pool)
             .unwrap_or_else(|| self.derive_amm_pool(&mint));
         let pool = self
-            .load_amm_pool_info_from_chain(pool_pk, base_token_program_id, reuse_marker)
+            .load_amm_pool_info_from_chain(pool_pk, base_token_program_id, reuse_layout)
             .await?;
         self.amm_pool_cache.insert(token_mint.to_string(), pool);
         if prev_authority == Some(pool.coin_creator_vault_authority) {
@@ -1145,12 +1184,18 @@ impl PumpFunTrader {
 // ---------------------------------------------------------------------------
 
 /// Find a pump_amm buy/sell instruction (top-level or inner) for `pool` in a
-/// jsonParsed transaction and return its fee-share marker. Tail layout is
-/// `[marker, (pool_v2)?, buyback_recipient, buyback_recipient_wsol]` — when
-/// `pool_v2` is present the marker is 4th-from-last, otherwise 3rd-from-last.
-/// A swap is identified by program id, `accounts[0] == pool`, and the buy/sell
+/// jsonParsed transaction and return its tail layout `(needs_pool_v2, marker)`.
+/// Tail is `[marker?, pool_v2?, buyback_recipient, buyback_recipient_wsol]`: when
+/// `pool_v2` (== `derive_pool_v2(base_mint)`) sits 3rd-from-last, the pool is
+/// pool_v2-era and carries NO per-coin marker (`marker = None`); otherwise the
+/// 3rd-from-last slot IS the marker and there is no `pool_v2`. A swap is
+/// identified by program id, `accounts[0] == pool`, and the buy/sell
 /// discriminator in its data (so deposit/withdraw don't match).
-fn extract_swap_marker(tx: &serde_json::Value, program: &str, pool: &str) -> Option<String> {
+fn extract_swap_layout(
+    tx: &serde_json::Value,
+    program: &str,
+    pool: &str,
+) -> Option<(bool, Option<String>)> {
     let msg = tx.get("transaction")?.get("message")?;
 
     let mut ixs: Vec<&serde_json::Value> = Vec::new();
@@ -1190,22 +1235,24 @@ fn extract_swap_marker(tx: &serde_json::Value, program: &str, pool: &str) -> Opt
         if !is_swap || accounts.len() < 4 {
             continue;
         }
-        // base_mint is accounts[3] — derive pool_v2 to decide marker index.
+        // base_mint is accounts[3] — derive pool_v2 to read the tail shape.
         let base_mint = accounts.get(3).and_then(|v| v.as_str())?;
         let base_mint_pk = Pubkey::from_str(base_mint).ok()?;
         let pool_v2 = PumpFunTrader::derive_pool_v2(&base_mint_pk);
         let n = accounts.len();
-        let marker_idx = if accounts
+        let slot3 = accounts
             .get(n - 3)
             .and_then(|v| v.as_str())
-            .and_then(|s| Pubkey::from_str(s).ok())
-            == Some(pool_v2)
-        {
-            n - 4
-        } else {
-            n - 3
-        };
-        return accounts.get(marker_idx).and_then(|v| v.as_str()).map(str::to_string);
+            .and_then(|s| Pubkey::from_str(s).ok());
+        if slot3 == Some(pool_v2) {
+            // pool_v2-era pool: `pool_v2` occupies the 3rd-from-last slot and there
+            // is NO per-coin fee-share marker (the upgrade replaced it).
+            return Some((true, None));
+        }
+        // Older layout: the 3rd-from-last slot IS the per-coin fee-share marker and
+        // there is no `pool_v2`.
+        let marker = accounts.get(n - 3).and_then(|v| v.as_str()).map(str::to_string);
+        return Some((false, marker));
     }
     None
 }
@@ -1303,7 +1350,10 @@ fn read_u64(data: &[u8], off: usize) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_u64, AmmGlobalConfig, AmmPoolInfo, PumpFunTrader, BUY_DISC, SELL_DISC};
+    use super::{
+        extract_swap_layout, read_u64, AmmGlobalConfig, AmmPoolInfo, PumpFunTrader, BUY_DISC,
+        SELL_DISC,
+    };
     use crate::config::ComputeBudgetCfg;
     use crate::protocol::{self, TOKEN_2022_PROGRAM_ID};
     use crate::trader::TraderConfig;
@@ -1490,8 +1540,9 @@ mod tests {
             coin_creator_vault_ata: ata,
             coin_creator_vault_authority: authority,
             is_cashback_coin,
-            fee_share_marker: if is_cashback_coin { None } else { Some(Pubkey::new_unique()) },
-            // Non-default creator ⇒ pool_v2 required (matches RPC-path rule).
+            // A pool_v2 pool carries NO per-coin fee-share marker (the upgrade took
+            // over that slot) — mutually exclusive with `needs_pool_v2` below.
+            fee_share_marker: None,
             needs_pool_v2: true,
         }
     }
@@ -1590,6 +1641,87 @@ mod tests {
         // The untampered list parses — and once cached, observe is a fast no-op true.
         assert!(t.observe_amm_swap_accounts(&mint.to_string(), &tp.to_string(), &good));
         assert!(t.observe_amm_swap_accounts(&mint.to_string(), &tp.to_string(), &good));
+    }
+
+    // --- pool_v2 / fee-share-marker mutual exclusion (6062 regression) ---------
+    //
+    // Migrated-token sells reverted with InvalidPoolV2 (6062) because the builder
+    // appended BOTH a fee-share marker and pool_v2, shifting pool_v2 out of its
+    // remaining-account slot. These pin the invariant: when pool_v2 is present the
+    // marker is never emitted, and pool_v2 sits 3rd-from-last (before the buyback
+    // pair). Verified against a real on-chain sell of
+    // BK3cX2USbgadv7CRvyotQrpV2tJmMiHMBxWKb1Pspump (24 accounts, 2026-07-24).
+
+    #[test]
+    fn pool_v2_sell_omits_stale_fee_share_marker() {
+        let t = dummy_trader();
+        let mint = Pubkey::new_unique();
+        let stale_marker = Pubkey::new_unique();
+        // A pool_v2 non-cashback pool whose cached info still carries a (stale /
+        // harvested) marker — the builder must NOT emit it.
+        let pool = AmmPoolInfo {
+            fee_share_marker: Some(stale_marker),
+            ..harvestable_pool(&t, mint, protocol::TOKEN, false)
+        };
+        assert!(pool.needs_pool_v2, "fixture must be a pool_v2 pool");
+        let keys = swap_keys(&t, &pool, false); // sell
+        let n = keys.len();
+        let v2 = PumpFunTrader::derive_pool_v2(&mint).to_string();
+        assert!(
+            !keys.contains(&stale_marker.to_string()),
+            "fee-share marker must be omitted when pool_v2 is present"
+        );
+        assert_eq!(keys[n - 3], v2, "pool_v2 must sit 3rd-from-last");
+        assert!(
+            protocol::is_amm_buyback_fee_recipient(&Pubkey::from_str(&keys[n - 2]).unwrap()),
+            "buyback recipient must sit at n-2"
+        );
+    }
+
+    #[test]
+    fn extract_swap_layout_distinguishes_pool_v2_from_legacy_marker() {
+        let program = protocol::PUMP_SWAP.to_string();
+        let pool = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let v2 = PumpFunTrader::derive_pool_v2(&mint);
+        let mk = |accs: Vec<String>, disc: &[u8]| {
+            serde_json::json!({
+                "transaction": { "message": { "instructions": [
+                    { "programId": program, "accounts": accs, "data": bs58::encode(disc).into_string() }
+                ]}},
+                "meta": { "innerInstructions": [] }
+            })
+        };
+        let filler = |n: usize| {
+            (0..n).map(|_| Pubkey::new_unique().to_string()).collect::<Vec<_>>()
+        };
+
+        // pool_v2 layout: [pool, _, _, base_mint, …, pool_v2, buyback, buyback_wsol].
+        let mut a = filler(24);
+        a[0] = pool.to_string();
+        a[3] = mint.to_string();
+        let na = a.len();
+        a[na - 3] = v2.to_string();
+        let tx = mk(a, &SELL_DISC);
+        assert_eq!(
+            extract_swap_layout(&tx, &program, &pool.to_string()),
+            Some((true, None)),
+            "pool_v2 at 3rd-from-last ⇒ (needs_pool_v2=true, marker=None)"
+        );
+
+        // Legacy layout: [pool, _, _, base_mint, …, marker, buyback, buyback_wsol].
+        let mut b = filler(24);
+        b[0] = pool.to_string();
+        b[3] = mint.to_string();
+        let marker = Pubkey::new_unique().to_string();
+        let nb = b.len();
+        b[nb - 3] = marker.clone();
+        let tx2 = mk(b, &BUY_DISC);
+        assert_eq!(
+            extract_swap_layout(&tx2, &program, &pool.to_string()),
+            Some((false, Some(marker))),
+            "no pool_v2 ⇒ (needs_pool_v2=false, marker=<3rd-from-last>)"
+        );
     }
 
     #[test]

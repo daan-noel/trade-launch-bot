@@ -39,7 +39,6 @@ import {
   newAxisRow,
   serializeAxisRows,
   pnlAxisSugarDuplicateError,
-  sharedWindowError,
   type AxisKind,
   type AxisSpecWire,
   type GenericAxisRow,
@@ -388,10 +387,9 @@ export function GenericSweepConfigForm({
     () => axisRows.map((r) => axisRowError(r, registry)),
     [axisRows, registry],
   );
-  const windowErr = useMemo(() => sharedWindowError(axisRows, registry), [axisRows, registry]);
   const pnlSugarErr = useMemo(() => pnlAxisSugarDuplicateError(axisRows), [axisRows]);
   const axesValid =
-    axisRows.length > 0 && rowErrors.every((e) => e == null) && !windowErr && !pnlSugarErr;
+    axisRows.length > 0 && rowErrors.every((e) => e == null) && !pnlSugarErr;
   const wireAxes: AxisSpecWire[] = useMemo(
     () => serializeAxisRows(axisRows, registry),
     [axisRows, registry],

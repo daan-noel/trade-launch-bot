@@ -8,7 +8,6 @@ import {
   parseValueList,
   pnlAxisSugarDuplicateError,
   serializeAxisRows,
-  sharedWindowError,
   type GenericAxisRow,
 } from './genericAxes';
 
@@ -38,7 +37,16 @@ const REG: StrategyRegistry = {
       name: 'm_flow_window',
       kind: 'dynamic',
       strict_params: [{ name: 'window_size_sec', required: true }],
-      metrics: [{ name: 'net_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 285 }],
+      metrics: [
+        { name: 'net_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 285 },
+        { name: 'gross_flow', unit: 'sol', eq_tolerance: 0.1, monotonic: false, hue: 290 },
+      ],
+    },
+    {
+      name: 'm_price_window',
+      kind: 'dynamic',
+      strict_params: [{ name: 'window_size_sec', required: true }],
+      metrics: [{ name: 'trail', unit: 'percent', eq_tolerance: 0.1, monotonic: false, hue: 45 }],
     },
   ],
 };
@@ -174,20 +182,28 @@ describe('serializeAxisRows + comboCount', () => {
   });
 });
 
-describe('sharedWindowError', () => {
-  it('rejects conflicting windows on the same side', () => {
+describe('multi-window axes serialize independently', () => {
+  // No cross-row window validation: different windows on the same (side, group)
+  // and on distinct groups both serialize as their own axes. The backend
+  // assembles one GroupConditions instance per distinct window_size_sec, exactly
+  // the engine's multi-window-per-group model.
+  it('same group, two windows → two wire axes carrying each window', () => {
     const rows: GenericAxisRow[] = [
-      metricRow({ side: 'entry', group: 'm_flow_window', metric: 'net_flow', window: '10', valuesText: '1' }),
-      metricRow({ side: 'entry', group: 'm_flow_window', metric: 'net_flow', window: '20', valuesText: '1' }),
+      metricRow({ side: 'exit', group: 'm_flow_window', metric: 'buy', window: '30', valuesText: '1, 3' }),
+      metricRow({ side: 'exit', group: 'm_flow_window', metric: 'buy', window: '60', valuesText: '1, 3' }),
     ];
-    expect(sharedWindowError(rows, REG)).toMatch(/conflicting entry time-window/);
+    const specs = serializeAxisRows(rows, REG);
+    expect(specs.map((s) => s.window)).toEqual([30, 60]);
   });
-  it('allows the same window twice / different sides', () => {
+  it('distinct groups keep independent windows', () => {
+    // The reported footgun: m_price_window(5) and m_flow_window(3) are DIFFERENT
+    // dynamic groups, each with its own window_size_sec, so the sizes may differ.
     const rows: GenericAxisRow[] = [
-      metricRow({ side: 'entry', group: 'm_flow_window', metric: 'net_flow', window: '10', valuesText: '1' }),
-      metricRow({ side: 'exit', group: 'm_flow_window', metric: 'net_flow', window: '20', valuesText: '1' }),
+      metricRow({ side: 'entry', group: 'm_price_window', metric: 'trail', window: '5', valuesText: '1' }),
+      metricRow({ side: 'entry', group: 'm_flow_window', metric: 'gross_flow', window: '3', valuesText: '10' }),
     ];
-    expect(sharedWindowError(rows, REG)).toBeNull();
+    const specs = serializeAxisRows(rows, REG);
+    expect(specs.map((s) => s.window)).toEqual([5, 3]);
   });
 });
 

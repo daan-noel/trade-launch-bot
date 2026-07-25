@@ -291,13 +291,22 @@ export function GenericSweepView() {
   // group_key → saved fingerprint (promote identity) → rules for the Used-by column.
   const fingerprintByGroupId = useMemo(() => {
     const width = tidySolDecimal(activeRun?.bucket_width_sol ?? SOL_BUCKET_WIDTH);
+    // A scoped run pins the whole corpus to one saved fingerprint; every group is a
+    // sub-slice of it, so that fingerprint is the authoritative attribution. The
+    // group_key omits the scope's identity axes, so group-key matching can't recover
+    // it — and on an empty key it would fuzzily match an unrelated fingerprint that
+    // merely shares the bucket width, so prefer the scope fingerprint outright.
+    const scopeFp =
+      activeRun?.fingerprint_id != null
+        ? fingerprints.find((f) => f.id === activeRun.fingerprint_id) ?? null
+        : null;
     const map = new Map<string, Fingerprint>();
     for (const g of groups) {
-      const fp = findFingerprintForGroupKey(g.group_key, fingerprints, width);
+      const fp = scopeFp ?? findFingerprintForGroupKey(g.group_key, fingerprints, width);
       if (fp) map.set(g.id, fp);
     }
     return map;
-  }, [groups, fingerprints, activeRun?.bucket_width_sol]);
+  }, [groups, fingerprints, activeRun?.bucket_width_sol, activeRun?.fingerprint_id]);
   const rulesByFingerprintId = useMemo(() => {
     const map = new Map<string, StrategyRule[]>();
     for (const r of strategyRules) {

@@ -75,9 +75,11 @@ Per-token: life p50 110s / p75 250s / p90 645s; max stall p50 74s / p90 416s.
 ## Candidate value menus (per axis)
 
 Percentile-spaced; pick 3-5 per axis per run. `off` = the null sentinel (sweep
-with-vs-without). Entry-side window = 30s, exit-side window = 10s (one window
-per side per group - windows themselves are not sweepable in one run; compare
-30 vs 60 across runs).
+with-vs-without). Windows ARE sweepable within one run: two axes on the same
+(side, group) with different `window_size_sec` assemble into separate
+`GroupConditions` instances (the engine's multi-window-per-group model), so e.g.
+`m_flow_window.buy` at both 30s and 60s can run in one grid. Distinct groups
+(`m_flow_window` vs `m_price_window`) always carry independent windows.
 
 | side | axis | operator | candidates (full menu) | anchors |
 | --- | --- | --- | --- | --- |
