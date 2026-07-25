@@ -60,12 +60,34 @@ const TOKEN_COL_WIDTH: Record<string, string> = {
   cashback: '72px',
 };
 
+/**
+ * Tokens-page columns that default to HIDDEN. The page lays out every column
+ * (it ignores `APPENDED_HIDDEN_KEYS`), so its default visibility is specced here
+ * directly — keeps the initial view to the fields watched most often.
+ */
+const TOKENS_HIDDEN_KEYS = new Set([
+  'name',
+  'creator',
+  'create_tx',
+  'created',
+  'lifetime',
+  'last_synced',
+  'ath_timestamp',
+  'ath_fep_ratio',
+  'current_fep_ratio',
+  'market_cap',
+  'volume',
+  'init_supply',
+  'min_tokens_out',
+  'cu_price',
+]);
+
 export function tokenColumns(): ColumnDef<TokenRecord>[] {
   const info = tokenInfoColumnMap();
   // Pull a shared token-info column and apply the Tokens-page width.
   const c = (key: string): ColumnDef<TokenRecord> => ({ ...info[key], width: TOKEN_COL_WIDTH[key] });
 
-  return [
+  const cols: ColumnDef<TokenRecord>[] = [
     // identity — symbol/name/mint are Tokens-page-specific (own rendering);
     // creator/create_tx come from the shared SSOT.
     {
@@ -235,4 +257,8 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
     c('mayhem_mode'),
     c('cashback'),
   ];
+
+  return cols.map((col) =>
+    TOKENS_HIDDEN_KEYS.has(col.key) ? { ...col, defaultVisible: false } : col,
+  );
 }

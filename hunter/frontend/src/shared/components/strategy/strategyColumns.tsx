@@ -268,10 +268,32 @@ const EXIT_TOOLTIPS: Partial<Record<LegField, string>> = {
   size: 'SOL received at exit (exit price × tokens).',
 };
 
+/**
+ * Bespoke Positions columns that default to HIDDEN (the enrichment columns are
+ * governed separately by `APPENDED_HIDDEN_KEYS`). Keeps the table scannable:
+ * one price per leg + entry/exit size, PnL, and state — the rest are opt-in.
+ */
+const POSITION_HIDDEN_KEYS = new Set([
+  'name',
+  'created',
+  'target_tokens',
+  'target_sol',
+  'target_time',
+  'target_tx',
+  'entry_tokens',
+  'entry_time',
+  'entry_tx',
+  'exit_tokens',
+  'exit_time',
+  'exit_tx',
+  'holding',
+]);
+
 // Price/amount cells read the unit + USD rate from context themselves (see
 // priceCells), so these column arrays are referentially stable across a rate
 // tick: only the rate-aware cells re-render, not the whole table.
-export const positionColumns: ColumnDef<RulePositionRecord>[] = [
+export const positionColumns: ColumnDef<RulePositionRecord>[] = (
+  [
   {
     key: 'run_seq',
     label: 'Run',
@@ -399,7 +421,8 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = [
     searchValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
     filterValue: (r) => exitReasonSearchText(r.exit_reason, r.pnl_sol),
   },
-];
+] as ColumnDef<RulePositionRecord>[]
+).map((c) => (POSITION_HIDDEN_KEYS.has(c.key) ? { ...c, defaultVisible: false } : c));
 
 export const matchedColumns: ColumnDef<MatchedTokenRecord>[] = [
   {

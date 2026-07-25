@@ -407,11 +407,9 @@ const APPENDED_HIDDEN_KEYS = new Set([
   'ath_timestamp',
   'market_cap',
   'volume',
-  'first_slot_buy',
-  'first_slot_sell',
   'init_supply',
-  'token_amount',
   'min_tokens_out',
+  'cu_price',
   'ix_labels',
 ]);
 
