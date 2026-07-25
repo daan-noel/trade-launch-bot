@@ -28,6 +28,7 @@ use trading_core::models::trade::TradeType;
 use trading_core::state::token_cache::TokenCache;
 use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::token_info_repo::TokenInfoRepo;
 use trading_core::storage::repositories::trade_repo::{SigLegs, TradeRepo};
 
 use crate::trader::{PumpFunTrader, SigStatus};
@@ -134,6 +135,10 @@ pub struct RealExecDeps {
     pub token_cache: Arc<TokenCache>,
     pub trade_repo: TradeRepo,
     pub strategy_repo: StrategyRepo,
+    /// Durable `tokens_info.is_migrated` source. The exit loop consults it when the
+    /// volatile token cache aged out on a long hold, so a cache miss can't route a
+    /// doomed curve sell into a migrated pool. Off the snipe hot path (exit only).
+    pub token_info_repo: TokenInfoRepo,
     pub trade_signals: Arc<TradeSignals>,
     pub fill_sigs: FillSigStore,
     pub fill_tx: mpsc::Sender<Event>,
@@ -192,6 +197,24 @@ pub async fn run_entry(deps: RealExecDeps, order: BuyOrder) {
     // (empty journal) skips the PG round-trip entirely.
     if let Some(legs) = adopt_existing_fill(&deps, &wallet, &order).await {
         emit_entry_filled(&deps, &order, legs.0, legs.1).await;
+        return;
+    }
+
+    // Entry migration gate (option a): the snipe is CURVE-ONLY, so a token that has
+    // already migrated to the AMM can only revert on the curve. Skip migrated
+    // tokens entirely rather than chase them on the AMM. Cache-only (in-RAM) read —
+    // no DB/RPC on the snipe hot path; the migrate-during-window race is caught in
+    // `confirm_entry` below.
+    if deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(false) {
+        info!(
+            mint = %order.mint,
+            "real buy skipped — token already migrated (curve snipe would revert)"
+        );
+        deps.trader.release_sol_for_position(&order.pg_id.to_string());
+        let _ = deps
+            .fill_tx
+            .send(Event::FillFailed { intent: order.intent, reason: FillFailReason::Fatal })
+            .await;
         return;
     }
 
@@ -402,6 +425,17 @@ async fn confirm_entry(
     if let Some(legs) = poll_feed_buy(deps, wallet, mint, sig, guard, window).await {
         return EntryOutcome::Filled(legs);
     }
+    // Race (option a): the token migrated during the buy window. The feed poll above
+    // saw no own-leg over the full window, and a curve snipe into a completed curve
+    // cannot fill — so give up decisively instead of chasing the AMM or spending a
+    // `signature_state_detailed` RPC just to confirm the inevitable curve revert.
+    if deps.token_cache.get(mint).map(|e| e.value().is_migrated).unwrap_or(false) {
+        warn!(
+            mint = %mint,
+            "buy unfilled and token migrated during window — giving up (curve-only snipe)"
+        );
+        return EntryOutcome::Fatal;
+    }
     let status = deps.trader.signature_state_detailed(sig).await;
     match classify_silent_send(&status) {
         SilentSendOutcome::Resend => EntryOutcome::Retry,
@@ -508,9 +542,28 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
     let mut cashback = order.cashback_enabled;
     let base_program = order.token_program_id.clone().unwrap_or_default();
 
+    // Durable migration seed (option 2): the volatile token cache can age out on a
+    // long hold, and reading `is_migrated` from it alone (`.unwrap_or(false)`) would
+    // route a doomed CURVE sell into a migrated AMM pool. Migration is monotonic, so
+    // consult the sticky durable `tokens_info.is_migrated` ONCE up front when the
+    // cache doesn't already know — off the snipe hot path (this is an exit): one
+    // indexed read per exit only, and skipped entirely when the cache is warm.
+    let durable_migrated = if deps
+        .token_cache
+        .get(&order.mint)
+        .map(|e| e.value().is_migrated)
+        .unwrap_or(false)
+    {
+        true
+    } else {
+        deps.token_info_repo.is_migrated(&order.mint).await.unwrap_or(false)
+    };
+
     for attempt in 0..SELL_ATTEMPTS {
-        let is_migrated =
-            deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(false);
+        // `durable_migrated` OR the live cache (which `RerouteMigrated` may flip true
+        // mid-loop) — so the FIRST attempt already routes to the AMM when migrated.
+        let is_migrated = durable_migrated
+            || deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(false);
 
         let submit = {
             let send = submit_one_sell(&deps, &order, attempt, is_migrated, cashback);
@@ -546,8 +599,8 @@ pub async fn run_exit(deps: RealExecDeps, order: SellOrder) {
             continue;
         };
 
-        let now_migrated =
-            deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(is_migrated);
+        let now_migrated = durable_migrated
+            || deps.token_cache.get(&order.mint).map(|e| e.value().is_migrated).unwrap_or(is_migrated);
         let state = deps.trader.signature_state_detailed(&sig).await;
         match classify_sell_confirm(&state, is_migrated, now_migrated) {
             SellConfirmAction::WaitConfirm => {

@@ -41,6 +41,7 @@ use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::fingerprint_repo::FingerprintRepo;
 use trading_core::storage::repositories::rule_repo::RuleRepo;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::token_info_repo::TokenInfoRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::trader::PumpFunTrader;
@@ -172,6 +173,7 @@ async fn run_loop(
         token_cache: token_cache.clone(),
         trade_repo: trade_repo.clone(),
         strategy_repo: strategy_repo.clone(),
+        token_info_repo: TokenInfoRepo::new(strategy_repo.pool().clone()),
         trade_signals: trade_signals.clone(),
         fill_sigs: fill_sigs.clone(),
         fill_tx: fill_tx.clone(),

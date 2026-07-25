@@ -21,6 +21,7 @@ use trading_core::state::token_cache::TokenCache;
 use trading_core::state::trade_signals::TradeSignals;
 use trading_core::storage::repositories::settings_repo::AppSettings;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
+use trading_core::storage::repositories::token_info_repo::TokenInfoRepo;
 use trading_core::storage::repositories::trade_repo::TradeRepo;
 
 use crate::trader::PumpFunTrader;
@@ -107,6 +108,7 @@ pub fn spawn_orphan_sell(
         token_cache: deps.token_cache.clone(),
         trade_repo: deps.trade_repo.clone(),
         strategy_repo: deps.strategy_repo.clone(),
+        token_info_repo: TokenInfoRepo::new(deps.strategy_repo.pool().clone()),
         trade_signals: deps.trade_signals.clone(),
         fill_sigs: FillSigStore::new(),
         fill_tx,

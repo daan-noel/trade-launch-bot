@@ -125,6 +125,21 @@ impl TokenInfoRepo {
         Self { pool }
     }
 
+    /// Durable migration flag for one mint — the sticky `tokens_info.is_migrated`
+    /// (set `true` by the ingest migration write, never cleared). The exit loop
+    /// consults this when the volatile in-RAM token cache has aged out on a long
+    /// hold, so a cache miss can't route a doomed **curve** sell into a migrated
+    /// AMM pool. One indexed PK read — off the snipe hot path (exit only). Missing
+    /// row ⇒ not migrated.
+    pub async fn is_migrated(&self, mint: &str) -> anyhow::Result<bool> {
+        let row: Option<(bool,)> =
+            sqlx::query_as("SELECT is_migrated FROM tokens_info WHERE mint_address = $1")
+                .bind(mint)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(m,)| m).unwrap_or(false))
+    }
+
     /// Upsert token metrics. `age` / `market_cap` are accepted for signature
     /// stability but no longer stored (derived in `token_overview`).
     ///
