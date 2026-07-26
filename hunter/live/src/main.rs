@@ -1278,6 +1278,7 @@ async fn main() -> anyhow::Result<()> {
         let db = db.clone();
         let token_cache = token_cache.clone();
         let held_pools = held_pools.clone();
+        let trader = trader.clone();
         tokio::spawn(async move {
             let started = std::time::Instant::now();
             match seed::seed_token_cache(&db, token_cache).await {
@@ -1286,12 +1287,28 @@ async fn main() -> anyhow::Result<()> {
                         held_pools.note(mint);
                     }
                     held_pools.track_migrated_many(&outcome.held_migrated_mints);
+                    // Re-seed the trader's AMM pool-facts cache for held migrated
+                    // mints from the durable store (zero RPC) so a sell right after
+                    // boot skips the cold RPC swap-layout read. Facts absent from
+                    // the store fall back to the deterministic pool_v2 cold probe.
+                    services::amm_pool_facts::seed_from_db(
+                        &trader,
+                        &db,
+                        &outcome.held_migrated_mints,
+                    )
+                    .await;
                     info!("Cache seed task finished in {:?}", started.elapsed());
                 }
                 Err(e) => error!("Cache seed task failed (cache will fill from live events): {e}"),
             }
         });
     }
+
+    // Persist newly harvested AMM pool facts to the durable store so the seed
+    // above has something to load after the next restart. Background, off every
+    // hot path; only writes pools not already stored.
+    let _amm_pool_facts_persist_task =
+        services::amm_pool_facts::spawn_persist_loop(trader.clone(), db.clone());
 
     // Bridge the operator live-mode toggle to the ingest transport. The host
     // `live_tx` (flipped by `PUT /api/system/live`) and the ingest crate's own

@@ -61,7 +61,8 @@ pub use trader::claim::{ClaimOutcome, PotStatus};
 pub use trader::probe::{EndpointResult, FanoutReport, SenderPinRecommendation};
 pub use trader::{BundleBuyVariant, BundleLegParams, BuySignedHook, DevBuy, PumpFunTrader};
 pub use types::{
-    BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram, WalletHolding,
+    AmmPoolFacts, BuyRouting, CreateTokenArgs, CreateTokenV2Args, TokenBalance, TokenProgram,
+    WalletHolding,
 };
 
 // The variant catalog (SSOT for on-chain instruction selection) — the orchestrator

@@ -1,6 +1,30 @@
 use crate::protocol::{self, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
+
+/// A durable, transport-neutral snapshot of the PumpSwap pool facts the trader
+/// caches for a migrated token (internally `AmmPoolInfo`). Pubkeys are base58
+/// strings so a consumer can persist it to its own store and later hand it back
+/// via [`crate::PumpFunTrader::seed_amm_pool_facts`] to warm the cache with **no
+/// RPC**. The steady-state source of these facts is the zero-RPC feed harvest
+/// (`observe_amm_swap_accounts`); persisting them lets that knowledge survive a
+/// restart, so even a dead/illiquid token whose pool has no *recent* swap still
+/// sells (the cold RPC path would otherwise have to reconstruct the swap tail).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmmPoolFacts {
+    pub pool: String,
+    pub base_mint: String,
+    pub quote_mint: String,
+    pub base_token_program: String,
+    pub pool_base_token_account: String,
+    pub pool_quote_token_account: String,
+    pub coin_creator: String,
+    pub coin_creator_vault_ata: String,
+    pub coin_creator_vault_authority: String,
+    pub is_cashback_coin: bool,
+    pub fee_share_marker: Option<String>,
+    pub needs_pool_v2: bool,
+}
 
 /// The SPL token program a mint uses. Resolved once at the trade boundary so the
 /// hot path branches on a two-variant enum the compiler exhaustively checks,

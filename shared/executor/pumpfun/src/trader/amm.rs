@@ -653,6 +653,24 @@ impl PumpFunTrader {
         Pubkey::find_program_address(&[b"pool-v2", base_mint.as_ref()], &protocol::PUMP_SWAP).0
     }
 
+    /// Deterministic `needs_pool_v2` probe: the `["pool-v2", base_mint]` PDA
+    /// exists on-chain iff the pool is pool_v2-era. Unlike reading it from a
+    /// recent swap, this does not depend on the pool having any recent (or
+    /// successful) swap, so it resolves the tail shape even for dead/illiquid
+    /// pools. One `getAccount`; a transport error propagates (retryable) instead
+    /// of being silently misread as "legacy" (which would drop pool_v2 → 6062).
+    async fn amm_pool_v2_exists(&self, base_mint: &Pubkey) -> Result<bool> {
+        let pv2 = Self::derive_pool_v2(base_mint);
+        let exists = self
+            .rpc
+            .get_account_with_commitment(&pv2, self.rpc.commitment())
+            .await
+            .with_context(|| format!("pool_v2 existence probe failed ({pv2})"))?
+            .value
+            .is_some();
+        Ok(exists)
+    }
+
     /// Harvest helper: `before_pk` is the account immediately before `pool_v2`
     /// (or before the buyback pair when pool_v2 is absent).
     ///
@@ -751,32 +769,45 @@ impl PumpFunTrader {
 
         let is_cashback_coin = data[AMM_POOL_IS_CASHBACK_OFFSET] != 0;
         let coin_creator = read_pubkey(data, AMM_POOL_COIN_CREATOR_OFFSET)?;
+        let base_mint = read_pubkey(data, 43)?;
 
-        // `needs_pool_v2` and the fee-share marker are read TOGETHER from one recent
-        // on-chain swap (non-cashback path), because `pool_v2` is required
-        // INDEPENDENTLY of `coin_creator`: a `pool_v2`-era pool can carry a zero
-        // `coin_creator`, so the old `coin_creator != default` inference wrongly
-        // dropped `pool_v2` and reverted every sell with InvalidPoolV2 (6062). When
-        // `pool_v2` is present the per-coin marker slot is absent — the two are
-        // mutually exclusive.
+        // `needs_pool_v2` decides whether the swap tail carries PDA(["pool-v2",
+        // base_mint]) before the buyback pair; getting it wrong reverts with
+        // `InvalidPoolV2` (6062). It is resolved WITHOUT any dependence on recent
+        // swap history so a dead/illiquid pool still sells: `pool_v2` and the legacy
+        // per-coin fee-share marker are mutually exclusive, and the `pool_v2` PDA
+        // exists on-chain iff the pool is pool_v2-era. One deterministic `getAccount`
+        // — never shadowed by a tail of failed exit attempts the way the old
+        // `getSignaturesForAddress(limit:5)` scrape was (it skipped every errored tx
+        // and so returned nothing once a dead pool's recent signatures were all
+        // failed sells, even with hundreds of good swaps behind them).
         let (needs_pool_v2, fee_share_marker) = if let Some(layout) = reuse_layout {
             // 2006 self-heal: layout is stable across a `coin_creator` rotate — reuse
-            // it so the heal never re-bursts getSignaturesForAddress/getTransaction.
+            // it so the heal never re-reads chain for the tail shape.
             layout
         } else if is_cashback_coin {
             // Cashback pools always carry a creator, so `coin_creator` is a reliable
             // pool_v2 signal here; the cashback tail uses `cashback_ata`, not a
-            // fee-share marker. No swap fetch on this branch.
+            // fee-share marker. No extra fetch on this branch.
             (coin_creator != Pubkey::default(), None)
+        } else if self.amm_pool_v2_exists(&base_mint).await? {
+            // pool_v2-era pool: append pool_v2, and the per-coin marker slot is
+            // absent (the Apr-2026 upgrade took it over).
+            (true, None)
         } else {
-            // Non-cashback: the SAME recent-swap read the marker already required now
-            // ALSO reports whether `pool_v2` is present — no extra Helius calls.
+            // Legacy (pre-pool_v2) non-cashback pool: no pool_v2 account, so the tail
+            // still carries the per-coin fee-share marker — which only a real swap
+            // reveals. This is the rare tail (an OLD pool with no recent swap); the
+            // common pool_v2 path above never reaches it.
             match self.fetch_swap_layout(&pool).await? {
-                Some(layout) => layout,
+                Some((false, marker)) => (false, marker),
+                // Defensive: a swap reporting pool_v2 despite the PDA probe saying
+                // otherwise (they are mutually exclusive, so this should not fire) —
+                // trust the swap and append pool_v2.
+                Some((true, _)) => (true, None),
                 None => bail!(
-                    "No recent PumpSwap swap found for pool {} to read its swap \
-                     layout — cannot build a valid non-cashback AMM swap (token may \
-                     have no AMM trades yet)",
+                    "Legacy non-cashback pool {} has no pool_v2 account and no recent \
+                     swap to read its fee-share marker — cannot build a valid AMM swap",
                     pool
                 ),
             }
@@ -790,7 +821,7 @@ impl PumpFunTrader {
         );
         Ok(AmmPoolInfo {
             pool,
-            base_mint: read_pubkey(data, 43)?,
+            base_mint,
             quote_mint: read_pubkey(data, 75)?,
             base_token_program: Pubkey::from_str(base_token_program_id)?,
             pool_base_token_account: read_pubkey(data, AMM_POOL_BASE_VAULT_OFFSET)?,
@@ -819,8 +850,14 @@ impl PumpFunTrader {
     /// sequentially with early exit instead of bursting `getTransaction` calls.
     async fn fetch_swap_layout(&self, pool: &Pubkey) -> Result<Option<(bool, Option<Pubkey>)>> {
         let pool_str = pool.to_string();
+        // Legacy-only fallback (non-cashback pools with no `pool_v2` account). Pull
+        // a wider window than the happy path needs — a dead legacy pool's recent
+        // signatures can be a long tail of failed exit attempts (all skipped below),
+        // and the last *successful* swap carrying the marker may sit well behind
+        // them. Errored sigs are filtered before `getTransaction`, so the common
+        // case still stops at the first good swap (~1 `getTransaction`).
         let sigs = self
-            .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 5 }]))
+            .rpc_json("getSignaturesForAddress", json!([pool_str, { "limit": 50 }]))
             .await?;
         let program_str = protocol::PUMP_SWAP.to_string();
 
@@ -1003,6 +1040,93 @@ impl PumpFunTrader {
         );
         self.amm_pool_cache.insert(token_mint.to_string(), info);
         true
+    }
+
+    // -----------------------------------------------------------------------
+    // Durable pool-facts bridge (persist/seed)
+    //
+    // The `amm_pool_cache` has no TTL and lives only in memory, warmed for free
+    // by the feed harvest above. A restart wipes it, and a token whose pool has
+    // since gone dead never re-harvests — so its sell falls to the cold RPC path.
+    // These let a consumer (which owns a durable store; this crate does not)
+    // persist the harvested facts and re-seed them on boot with ZERO RPC.
+    // -----------------------------------------------------------------------
+
+    /// Mints currently in the pool-facts cache. Cheap key clone — a persistence
+    /// loop diffs this against what it has already stored and snapshots the delta.
+    pub fn amm_pool_cached_mints(&self) -> Vec<String> {
+        self.amm_pool_cache
+            .iter()
+            .map(|e| e.key().clone())
+            .collect()
+    }
+
+    /// Snapshot the cached pool facts for `token_mint` as a durable
+    /// [`AmmPoolFacts`] (base58 strings), or `None` if the mint isn't cached.
+    pub fn amm_pool_facts_snapshot(&self, token_mint: &str) -> Option<crate::types::AmmPoolFacts> {
+        let info = *self.amm_pool_cache.get(token_mint)?;
+        Some(crate::types::AmmPoolFacts {
+            pool: info.pool.to_string(),
+            base_mint: info.base_mint.to_string(),
+            quote_mint: info.quote_mint.to_string(),
+            base_token_program: info.base_token_program.to_string(),
+            pool_base_token_account: info.pool_base_token_account.to_string(),
+            pool_quote_token_account: info.pool_quote_token_account.to_string(),
+            coin_creator: info.coin_creator.to_string(),
+            coin_creator_vault_ata: info.coin_creator_vault_ata.to_string(),
+            coin_creator_vault_authority: info.coin_creator_vault_authority.to_string(),
+            is_cashback_coin: info.is_cashback_coin,
+            fee_share_marker: info.fee_share_marker.map(|p| p.to_string()),
+            needs_pool_v2: info.needs_pool_v2,
+        })
+    }
+
+    /// Seed the cache for `token_mint` from durable [`AmmPoolFacts`] (loaded from
+    /// a persistent store on boot). No-op — returns `false` — if the mint is
+    /// already cached (a live harvest / cold read always wins), if any field
+    /// fails to parse, or if the facts are not internally consistent for this
+    /// mint (base mint + canonical pool must match, so a corrupt/wrong row can
+    /// never poison the cache into building a wrong-pool tail). Zero RPC.
+    pub fn seed_amm_pool_facts(&self, token_mint: &str, facts: &crate::types::AmmPoolFacts) -> bool {
+        if self.amm_pool_cache.contains_key(token_mint) {
+            return false;
+        }
+        let Ok(mint_pk) = Pubkey::from_str(token_mint) else {
+            return false;
+        };
+        let Some(info) = Self::amm_pool_info_from_facts(facts) else {
+            return false;
+        };
+        if info.base_mint != mint_pk || info.pool != self.derive_amm_pool(&mint_pk) {
+            return false;
+        }
+        self.amm_pool_cache.insert(token_mint.to_string(), info);
+        true
+    }
+
+    /// Parse a durable [`AmmPoolFacts`] back into the internal `AmmPoolInfo`.
+    /// `None` if any base58 field is malformed — the caller must fail SAFE
+    /// (skip the seed) rather than cache a half-parsed entry.
+    fn amm_pool_info_from_facts(facts: &crate::types::AmmPoolFacts) -> Option<AmmPoolInfo> {
+        let pk = |s: &str| Pubkey::from_str(s).ok();
+        let fee_share_marker = match &facts.fee_share_marker {
+            Some(s) => Some(pk(s)?),
+            None => None,
+        };
+        Some(AmmPoolInfo {
+            pool: pk(&facts.pool)?,
+            base_mint: pk(&facts.base_mint)?,
+            quote_mint: pk(&facts.quote_mint)?,
+            base_token_program: pk(&facts.base_token_program)?,
+            pool_base_token_account: pk(&facts.pool_base_token_account)?,
+            pool_quote_token_account: pk(&facts.pool_quote_token_account)?,
+            coin_creator: pk(&facts.coin_creator)?,
+            coin_creator_vault_ata: pk(&facts.coin_creator_vault_ata)?,
+            coin_creator_vault_authority: pk(&facts.coin_creator_vault_authority)?,
+            is_cashback_coin: facts.is_cashback_coin,
+            fee_share_marker,
+            needs_pool_v2: facts.needs_pool_v2,
+        })
     }
 
     /// The pure parse half of [`Self::observe_amm_swap_accounts`]. `None` ⇒ the
@@ -1611,6 +1735,60 @@ mod tests {
             let expect = AmmPoolInfo { coin_creator: Pubkey::default(), ..pool };
             assert_eq!(got, expect, "is_buy={is_buy}, cashback={is_cashback}");
         }
+    }
+
+    #[test]
+    fn pool_facts_snapshot_seed_round_trips() {
+        // Harvest a pool into trader A, snapshot it, then seed a fresh trader B
+        // from that snapshot — B's cache entry must equal A's (the durable
+        // persist/seed bridge must not lose or alter any field).
+        let t_a = dummy_trader();
+        let mint = Pubkey::new_unique();
+        let base_tp = protocol::TOKEN;
+        let pool = harvestable_pool(&t_a, mint, base_tp, false);
+        let keys = swap_keys(&t_a, &pool, false);
+        assert!(t_a.observe_amm_swap_accounts(&mint.to_string(), &base_tp.to_string(), &keys));
+        let cached = *t_a.amm_pool_cache.get(&mint.to_string()).unwrap();
+
+        let facts = t_a
+            .amm_pool_facts_snapshot(&mint.to_string())
+            .expect("snapshot of a cached mint");
+
+        let t_b = dummy_trader();
+        assert!(
+            t_b.seed_amm_pool_facts(&mint.to_string(), &facts),
+            "fresh trader must accept a valid snapshot"
+        );
+        let seeded = *t_b.amm_pool_cache.get(&mint.to_string()).unwrap();
+        assert_eq!(seeded, cached, "seed must reproduce the harvested facts verbatim");
+
+        // Idempotent: seeding an already-cached mint is a no-op `false` (a live
+        // harvest / cold read always wins over a possibly-stale seed).
+        assert!(!t_b.seed_amm_pool_facts(&mint.to_string(), &facts));
+    }
+
+    #[test]
+    fn seed_rejects_wrong_mint_and_corrupt_facts() {
+        let t = dummy_trader();
+        let mint = Pubkey::new_unique();
+        let pool = harvestable_pool(&t, mint, protocol::TOKEN, false);
+        let keys = swap_keys(&t, &pool, false);
+        assert!(t.observe_amm_swap_accounts(&mint.to_string(), &protocol::TOKEN.to_string(), &keys));
+        let facts = t.amm_pool_facts_snapshot(&mint.to_string()).unwrap();
+
+        // Same facts under a DIFFERENT mint: base_mint / canonical pool no longer
+        // match, so a corrupt/wrong row can't poison the cache into a wrong-pool tail.
+        let other = dummy_trader();
+        let wrong_mint = Pubkey::new_unique();
+        assert!(!other.seed_amm_pool_facts(&wrong_mint.to_string(), &facts));
+        assert!(!other.amm_pool_cache.contains_key(&wrong_mint.to_string()));
+
+        // Malformed base58 field → rejected (fail safe, no partial insert).
+        let fresh = dummy_trader();
+        let mut corrupt = facts.clone();
+        corrupt.coin_creator_vault_authority = "not-a-pubkey".to_string();
+        assert!(!fresh.seed_amm_pool_facts(&mint.to_string(), &corrupt));
+        assert!(!fresh.amm_pool_cache.contains_key(&mint.to_string()));
     }
 
     #[test]
