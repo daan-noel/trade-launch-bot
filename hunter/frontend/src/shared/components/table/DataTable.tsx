@@ -1127,15 +1127,12 @@ function TableRowInner<R>({
         )}
       >
         {pinningEnabled ? (
-          // The pin toggle lives in the `#` cell: row number by default, swapping
-          // to the pin on hover; a pinned row always shows the (primary) pin. This
-          // avoids adding a column, which would shift the `nth-child` column-hover
-          // math and every column's group class.
-          <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
-            <span className="group/pin relative inline-flex h-4 min-w-5 items-center justify-center">
-              <span className={cn(pinned ? 'invisible' : 'group-hover/pin:invisible')}>
-                {index >= 0 ? index + 1 : ''}
-              </span>
+          // The pin toggle lives in the `#` cell (an always-visible pushpin next to
+          // the row number), so it needs no extra column — which would otherwise
+          // shift the `nth-child` column-hover math and every column's group class.
+          // Dim when unpinned (brightens on hover), primary when pinned.
+          <td className="border-b border-border px-2 py-1.5 text-[11px] text-text-dim">
+            <div className="flex items-center justify-center gap-1.5">
               <button
                 type="button"
                 title={pinned ? 'Unpin row' : 'Pin row'}
@@ -1146,15 +1143,14 @@ function TableRowInner<R>({
                   onTogglePin?.(row);
                 }}
                 className={cn(
-                  'absolute inset-0 flex items-center justify-center transition-opacity',
-                  pinned
-                    ? 'text-primary opacity-100'
-                    : 'text-text opacity-0 group-hover/pin:opacity-100',
+                  'inline-flex shrink-0 items-center justify-center transition-colors',
+                  pinned ? 'text-primary' : 'text-text-dim/45 hover:text-text',
                 )}
               >
                 <PinIcon className="size-3.5" />
               </button>
-            </span>
+              <span className="tabular-nums">{index >= 0 ? index + 1 : ''}</span>
+            </div>
           </td>
         ) : (
           <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
