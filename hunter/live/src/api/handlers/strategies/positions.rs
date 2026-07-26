@@ -16,11 +16,13 @@ use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use hunter_engine::event::Fill;
+use hunter_engine::event::{Fill, ManualExit};
 
 use crate::state::deploy_state::DeployState;
 use trading_core::api::handlers::strategies::rule_positions;
 use trading_core::api::table_query::TableRequest;
+use trading_core::config::constants::{sol_to_lamports, MAX_MANUAL_BUY_SOL};
+use trading_core::models::wallet::validate_solana_address;
 use trading_core::models::StrategyPosition;
 use trading_core::storage::repositories::strategy_repo::StrategyRepo;
 
@@ -452,6 +454,154 @@ async fn verify_position(
             "error": format!("verify applies only to ExitUnconfirmed/BuySubmitted, not {other}")
         })),
     }
+}
+
+/// Body of `POST /api/positions/manual-buy` — a Console manual buy that becomes a
+/// full tracked position (M1 fix). TP/SL are optional; absent ⇒ tracked-only.
+#[derive(Debug, Deserialize)]
+pub struct ManualBuyRequest {
+    pub mint_address: String,
+    pub amount_sol: f64,
+    #[serde(default)]
+    pub tp_pct: Option<f64>,
+    #[serde(default)]
+    pub sl_pct: Option<f64>,
+}
+
+/// POST /api/positions/manual-buy
+///
+/// Replaces the old synchronous `POST /api/solana/wallet/buy`: inserts a
+/// `BuySubmitted` position (`origin='manual'`) via the engine and returns **202
+/// `{position_id}` immediately** — all further truth arrives over the
+/// `strategy_position_update` SSE stream exactly like a bot buy (M2 fix: there is
+/// no sync "green submitted" to lie with). Bypasses entry gates/caps (the user's
+/// call) but keeps the one-open-position-per-mint guard and `MAX_MANUAL_BUY_SOL`.
+pub async fn manual_buy_position(
+    app_state: web::Data<Arc<DeployState>>,
+    body: web::Json<ManualBuyRequest>,
+) -> impl Responder {
+    let amount_sol = body.amount_sol;
+    if !amount_sol.is_finite() || amount_sol <= 0.0 {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": "amount_sol must be a finite, positive number" }));
+    }
+    if amount_sol > MAX_MANUAL_BUY_SOL {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!(
+                "amount_sol {amount_sol} exceeds the per-trade limit of {MAX_MANUAL_BUY_SOL} SOL"
+            )
+        }));
+    }
+    if let Err(e) = validate_solana_address(&body.mint_address) {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
+    }
+    for (name, v) in [("tp_pct", body.tp_pct), ("sl_pct", body.sl_pct)] {
+        if let Some(v) = v {
+            if !v.is_finite() || v <= 0.0 {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("{name} must be a finite, positive percentage")
+                }));
+            }
+        }
+    }
+
+    // One open position per mint (double-click double-buys included, M3): the
+    // serialized engine loop also dedups, but reject early with an honest 409.
+    match app_state.strategy_repo.has_open_real_position_on_mint(&body.mint_address).await {
+        Ok(true) => {
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "error": "An open position already exists for this mint — use its row actions"
+            }));
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({ "error": format!("open-position check failed: {e}") }));
+        }
+    }
+
+    let exit = (body.tp_pct.is_some() || body.sl_pct.is_some())
+        .then_some(ManualExit { tp_pct: body.tp_pct, sl_pct: body.sl_pct });
+    let pg_id = Uuid::new_v4();
+    let lamports = sol_to_lamports(amount_sol).max(0) as u64;
+    if !app_state
+        .engine
+        .manual_buy(pg_id, body.mint_address.clone(), lamports, exit)
+        .await
+    {
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({ "error": "Engine shutting down" }));
+    }
+    HttpResponse::Accepted().json(serde_json::json!({ "position_id": pg_id }))
+}
+
+/// Body of the manual-exit PATCH — both absent/null clears the config
+/// (tracked-only again).
+#[derive(Debug, Deserialize)]
+pub struct ManualExitRequest {
+    #[serde(default)]
+    pub tp_pct: Option<f64>,
+    #[serde(default)]
+    pub sl_pct: Option<f64>,
+}
+
+/// POST /api/strategies/{strategy}/positions/{position_id}/manual-exit
+///
+/// Set / replace / clear a **manual** position's TP/SL. Persists the JSONB, then
+/// tells the engine to (re)synthesize the one-off exit rule — the position gains
+/// the full engine exit stack (TP/SL + Dead) or drops back to tracked-only.
+pub async fn set_manual_exit(
+    app_state: web::Data<Arc<DeployState>>,
+    path: web::Path<(String, Uuid)>,
+    body: web::Json<ManualExitRequest>,
+) -> impl Responder {
+    let (_strategy, position_id) = path.into_inner();
+    for (name, v) in [("tp_pct", body.tp_pct), ("sl_pct", body.sl_pct)] {
+        if let Some(v) = v {
+            if !v.is_finite() || v <= 0.0 {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("{name} must be a finite, positive percentage")
+                }));
+            }
+        }
+    }
+    let pos = match app_state.strategy_repo.find_position(position_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Position not found"}));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("Failed to load position: {e}")}));
+        }
+    };
+    if pos.origin != "manual" {
+        return HttpResponse::Conflict()
+            .json(serde_json::json!({"error": "TP/SL config applies to manual positions only"}));
+    }
+    if !matches!(pos.status.as_str(), "BuySubmitted" | "Holding") {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": format!("Cannot change TP/SL from status {}", pos.status)
+        }));
+    }
+
+    let exit = (body.tp_pct.is_some() || body.sl_pct.is_some())
+        .then_some(ManualExit { tp_pct: body.tp_pct, sl_pct: body.sl_pct });
+    let json = exit.map(|e| serde_json::json!({ "tp_pct": e.tp_pct, "sl_pct": e.sl_pct }));
+    if let Err(e) = app_state
+        .strategy_repo
+        .set_manual_exit(position_id, json.as_ref())
+        .await
+    {
+        return HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": format!("persist failed: {e}")}));
+    }
+    // Engine-held (Holding) → resynthesize now; a BuySubmitted row picks the
+    // config up when the fill adopts (the JSONB is read at adopt time).
+    let _ = app_state.engine.set_manual_exit(position_id, exit).await;
+    HttpResponse::Ok().json(serde_json::json!({ "updated": true, "manual_exit": json }))
 }
 
 fn orphan_deps_from_state(app_state: &DeployState) -> crate::strategies::engine::orphan_exit::OrphanExitDeps {

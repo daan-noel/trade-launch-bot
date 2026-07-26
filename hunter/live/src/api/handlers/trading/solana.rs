@@ -288,6 +288,15 @@ pub async fn manual_sell(
             .json(serde_json::json!({ "error": format!("invalid mint: {e}") }));
     }
 
+    // N2 fix: claim the engine's per-mint exit lock for the whole sweep so a
+    // wallet-level "Sell All" can never race a concurrent bot/orphan exit on the
+    // same mint (both firing → one lands, the other reverts into an empty wallet).
+    let Some(_mint_guard) = app_state.inflight.try_begin_exit_mint(&body.mint_address) else {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "A bot exit is in progress for this mint — retry once it settles"
+        }));
+    };
+
     let slippage = resolve_sell_slippage(&app_state, body.slippage_bps);
 
     // Enumerate EVERY token account the wallet holds for this mint — not just the

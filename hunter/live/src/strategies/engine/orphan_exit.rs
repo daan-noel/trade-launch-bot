@@ -429,6 +429,13 @@ pub fn adopt_holding_into_engine(
             },
         );
     }
+    // Manual position with TP/SL: re-synthesize its one-off exit rule so the
+    // full exit stack (TP/SL + Dead) resumes after restart. Tracked-only manual
+    // rows install nothing — the Entered arm stays inert (no auto-exit).
+    if pos.origin == "manual" {
+        state.set_manual_exit(position, rule_id, manual_exit_of(pos));
+    }
+
     let token = state.tokens.get_mut(&mint)?;
     // Seed the position context from the adopted fill: `held` counts from the entry
     // time, `retrace` from the entry price (the peak is re-established as live trades
@@ -466,6 +473,17 @@ pub fn adopt_holding_into_engine(
         },
     );
     Some(position)
+}
+
+/// Decode a manual position's `manual_exit` JSONB (`{tp_pct, sl_pct}`) into the
+/// engine's [`ManualExit`] — `None` when absent/empty (tracked-only).
+pub fn manual_exit_of(pos: &StrategyPosition) -> Option<hunter_engine::event::ManualExit> {
+    let v = pos.manual_exit.as_ref()?;
+    let exit = hunter_engine::event::ManualExit {
+        tp_pct: v.get("tp_pct").and_then(|x| x.as_f64()),
+        sl_pct: v.get("sl_pct").and_then(|x| x.as_f64()),
+    };
+    exit.is_some().then_some(exit)
 }
 
 /// Adopt a PG `BuySubmitted` row into the live engine + registry as an inert
@@ -531,12 +549,20 @@ pub fn adopt_buy_submitted_into_engine(
         );
     }
 
+    // Manual row: re-install its one-off TP/SL rule so a reaper-adopted fill
+    // resumes the full exit stack.
+    if pos.origin == "manual" {
+        state.set_manual_exit(position, rule_id, manual_exit_of(pos));
+    }
+
     // Fresh intent keying both the arm and the registry meta (see doc above).
     let intent = state.next_intent(rule_id, mint.clone());
     let token = state.tokens.get_mut(&mint)?;
     token.arms.insert(
         rule_id,
-        ArmState::EntryPending { intent: intent.clone(), position, attempts: 1 },
+        // `lamports: 0` — an adopted arm never re-sends on its own; an engine
+        // retry falls back to the rule's configured amount (none for manual).
+        ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports: 0 },
     );
 
     let ctr = state.counters.entry(rule_id).or_insert(RuleCounters::default());

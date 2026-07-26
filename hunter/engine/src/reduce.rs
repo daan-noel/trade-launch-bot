@@ -25,7 +25,7 @@ use crate::event::{
     PositionDelta, PositionStatus, RuleId,
 };
 use crate::fingerprint::{match_all, MatchPhase};
-use crate::grouping::LAMPORTS_PER_SOL_F64;
+use crate::grouping::{TokenFingerprint, LAMPORTS_PER_SOL_F64};
 use crate::metrics::position::PositionCtx;
 use crate::metrics::Ts;
 use crate::state::{EngineState, PositionRef, TokenState};
@@ -184,7 +184,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     if pend == intent =>
                 {
                     decrement_open(state, rule_id);
-                    state.positions.remove(&position);
+                    state.remove_position(position);
                     // Re-arm into a cooldown if the rule allows it (else terminal Done).
                     let next = rearm_after_close(state, &mut token.episodes, rule_id, reason, fill.at);
                     token.arms.insert(rule_id, next);
@@ -210,33 +210,42 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             let rule_id = intent.rule;
             let Some(mut token) = state.tokens.remove(&mint) else { return fx };
             match token.arms.get(&rule_id).cloned() {
-                Some(ArmState::EntryPending { intent: pend, position, attempts })
+                Some(ArmState::EntryPending { intent: pend, position, attempts, lamports })
                     if pend == intent =>
                 {
+                    // Retry size: frozen at submit on the arm; `0` (a boot-adopted
+                    // arm) falls back to the rule's configured amount. No amount
+                    // resolvable ⇒ no blind resend.
+                    let retry_lamports = if lamports > 0 {
+                        lamports
+                    } else {
+                        state.rules.get(&rule_id).map(|c| c.buy_amount_lamports).unwrap_or(0)
+                    };
                     // Fatal = structural / StopFeeBurn — never burn fee retries.
-                    let retry = reason != FillFailReason::Fatal && attempts < MAX_ENTRY_ATTEMPTS;
+                    let retry = reason != FillFailReason::Fatal
+                        && attempts < MAX_ENTRY_ATTEMPTS
+                        && retry_lamports > 0;
                     if retry {
                         let next = state.next_intent(rule_id, mint.clone());
-                        let lamports =
-                            state.rules.get(&rule_id).map(|c| c.buy_amount_lamports).unwrap_or(0);
                         token.arms.insert(
                             rule_id,
                             ArmState::EntryPending {
                                 intent: next.clone(),
                                 position,
                                 attempts: attempts + 1,
+                                lamports: retry_lamports,
                             },
                         );
                         fx.push(Effect::SubmitBuy {
                             intent: next,
                             rule: rule_id,
                             mint: mint.clone(),
-                            lamports,
+                            lamports: retry_lamports,
                         });
                     } else {
                         // Never entered — roll the cap counters back and drop it.
                         rollback_entry(state, rule_id);
-                        state.positions.remove(&position);
+                        state.remove_position(position);
                         token.arms.insert(rule_id, ArmState::Done);
                         fx.push(Effect::PositionUpdate(PositionDelta {
                             position,
@@ -258,7 +267,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     if reason == FillFailReason::Unconfirmed {
                         // May have cleared — never re-sell; alarm for manual review.
                         decrement_open(state, rule_id);
-                        state.positions.remove(&position);
+                        state.remove_position(position);
                         token.arms.insert(rule_id, ArmState::Done);
                         fx.push(Effect::PositionUpdate(PositionDelta {
                             position,
@@ -273,7 +282,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                         // Sell gave up but the bag is still held — the position
                         // stays open in PG (`ExitStuck`); the reaper owns it now.
                         decrement_open(state, rule_id);
-                        state.positions.remove(&position);
+                        state.remove_position(position);
                         token.arms.insert(rule_id, ArmState::Done);
                         fx.push(Effect::PositionUpdate(PositionDelta {
                             position,
@@ -303,6 +312,66 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
             if token.is_active() {
                 state.tokens.insert(mint, token);
             }
+        }
+
+        Event::ManualBuy { mint, rule, lamports, at, exit } => {
+            if lamports == 0 {
+                return fx;
+            }
+            // Ensure a token state exists — a manual buy may target a mint the
+            // engine never armed (or one it already pruned). A bare track folds
+            // prices forward from subsequent trades; first-slot is irrelevant here.
+            if !state.tokens.contains_key(&mint) {
+                let track = state.new_track(at);
+                state.tokens.insert(
+                    mint.clone(),
+                    TokenState {
+                        created_at: at,
+                        tf: TokenFingerprint::default(),
+                        track,
+                        last_meaningful_at: None,
+                        first_slot_settled: true,
+                        arms: BTreeMap::new(),
+                        episodes: BTreeMap::new(),
+                    },
+                );
+            }
+            // The adapter mints a fresh per-episode rule id, so a collision here
+            // means a duplicate command — idempotent no-op.
+            if state.tokens.get(&mint).is_some_and(|t| t.arms.contains_key(&rule)) {
+                return fx;
+            }
+            let position = state.next_position();
+            let intent = state.next_intent(rule, mint.clone());
+            state.positions.insert(position, PositionRef { mint: mint.clone(), rule });
+            // TP/SL config compiles into a one-off exit rule (full engine exit
+            // stack incl. Dead); absent ⇒ tracked-only, no auto-exit of any kind.
+            state.set_manual_exit(position, rule, exit);
+            let Some(token) = state.tokens.get_mut(&mint) else { return fx };
+            token.arms.insert(
+                rule,
+                ArmState::EntryPending { intent: intent.clone(), position, attempts: 1, lamports },
+            );
+            fx.push(Effect::SubmitBuy {
+                intent: intent.clone(),
+                rule,
+                mint: mint.clone(),
+                lamports,
+            });
+            fx.push(Effect::PositionUpdate(PositionDelta {
+                position,
+                rule,
+                mint: mint.clone(),
+                status: PositionStatus::BuySubmitted,
+                fill: None,
+                reason: None,
+                intent: Some(intent),
+            }));
+        }
+
+        Event::SetManualExit { position, exit } => {
+            let Some(pref) = state.positions.get(&position).cloned() else { return fx };
+            state.set_manual_exit(position, pref.rule, exit);
         }
 
         Event::ManualClose { position } => {
@@ -351,7 +420,7 @@ pub fn reduce(state: &mut EngineState, event: Event) -> Effects {
                     // The bag is already gone → close terminally at the resolved fill.
                     // No `SubmitSell` (the twin of `ManualClose`, minus the sell).
                     decrement_open(state, rule);
-                    state.positions.remove(&position);
+                    state.remove_position(position);
                     token.arms.insert(rule, ArmState::Done);
                     fx.push(Effect::PositionUpdate(PositionDelta {
                         position,
@@ -455,8 +524,10 @@ fn evaluate_token(
     let rule_ids: SmallVec<[RuleId; 4]> = token.arms.keys().copied().collect();
     for rule_id in rule_ids {
         let (decision, buy_lamports, cap, max_total) = {
-            let Some(c) = state.rules.get(&rule_id) else { continue };
             let arm = &token.arms[&rule_id];
+            // Manual episodes resolve via their per-position exit rule; a
+            // tracked-only manual arm has neither ⇒ no decision (no auto-exit).
+            let Some(c) = state.rule_for(rule_id, arm_position(arm)) else { continue };
             (
                 decide_arm(c, arm, token, dead, now),
                 c.buy_amount_lamports,
@@ -465,6 +536,16 @@ fn evaluate_token(
             )
         };
         apply_decision(state, token, mint, rule_id, decision, buy_lamports, cap, max_total, fx);
+    }
+}
+
+/// The position an arm owns, when it owns one (keys the manual exit-rule lookup).
+fn arm_position(arm: &ArmState) -> Option<crate::event::PositionId> {
+    match arm {
+        ArmState::EntryPending { position, .. }
+        | ArmState::Entered { position, .. }
+        | ArmState::ExitPending { position, .. } => Some(*position),
+        _ => None,
     }
 }
 
@@ -556,7 +637,12 @@ fn apply_decision(
             state.positions.insert(position, PositionRef { mint: mint.clone(), rule: rule_id });
             token.arms.insert(
                 rule_id,
-                ArmState::EntryPending { intent: intent.clone(), position, attempts: 1 },
+                ArmState::EntryPending {
+                    intent: intent.clone(),
+                    position,
+                    attempts: 1,
+                    lamports: buy_lamports,
+                },
             );
             fx.push(Effect::SubmitBuy {
                 intent: intent.clone(),

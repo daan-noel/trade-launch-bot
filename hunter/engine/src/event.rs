@@ -302,6 +302,23 @@ impl LoadedRule {
     }
 }
 
+/// A manual position's optional exit config (`{tp_pct, sl_pct}`). Compiled into a
+/// one-off per-position exit rule (the same TP/SL desugar bot rules use), so a
+/// manual position with TP/SL gets the full engine exit stack including the
+/// Dead-exit. Both `None` ⇒ tracked-only (no auto-exit of any kind).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ManualExit {
+    pub tp_pct: Option<f64>,
+    pub sl_pct: Option<f64>,
+}
+
+impl ManualExit {
+    /// Whether any exit is configured (else the position is tracked-only).
+    pub fn is_some(&self) -> bool {
+        self.tp_pct.is_some() || self.sl_pct.is_some()
+    }
+}
+
 /// The ordered input stream. One variant per thing that can change a decision.
 pub enum Event {
     /// A new token appeared. `fp` carries its instant creation axes (the
@@ -332,6 +349,22 @@ pub enum Event {
     /// once at load; the engine recompiles per-rule metric requests + derived
     /// bounds here, never per event.
     RulesReloaded { rules: Arc<[LoadedRule]>, fps: Arc<[Fingerprint]> },
+    /// A manual (operator) buy episode injected by the Console. Bypasses
+    /// fingerprint arming, entry conditions, and rule caps (they're the user's
+    /// call) — but from here on it IS a bot buy: the same `EntryPending` arm,
+    /// retry policy, fill confirm, and reaper coverage. `rule` is a **fresh
+    /// per-episode id** minted by the adapter (never a real `strategy_rules`
+    /// row); it keys the arm, the intents, and the synthesized exit rule.
+    ManualBuy {
+        mint: Mint,
+        rule: RuleId,
+        lamports: u64,
+        at: Ts,
+        exit: Option<ManualExit>,
+    },
+    /// Set / replace / clear a manual position's TP/SL config post-entry
+    /// (`[+TP/SL]` on a Holding row). `None` ⇒ back to tracked-only.
+    SetManualExit { position: PositionId, exit: Option<ManualExit> },
     /// A manual sell / stop-all targeting one open position.
     ManualClose { position: PositionId },
     /// One open position whose token bag was already cleared **off-chain** (an

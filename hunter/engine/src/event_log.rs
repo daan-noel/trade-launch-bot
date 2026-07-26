@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::event::{Event, Fill, FillFailReason, IntentId, Mint, PositionId};
+use crate::event::{Event, Fill, FillFailReason, IntentId, ManualExit, Mint, PositionId, RuleId};
 use crate::grouping::TokenFingerprint;
 use crate::metrics::{Ts, TradeLite};
 
@@ -36,6 +36,8 @@ pub enum LoggedEvent {
     FillConfirmed { intent: IntentId, fill: Fill },
     FillFailed { intent: IntentId, reason: FillFailReason },
     Migrated { mint: Mint, at: Ts },
+    ManualBuy { mint: Mint, rule: RuleId, lamports: u64, at: Ts, exit: Option<ManualExit> },
+    SetManualExit { position: PositionId, exit: Option<ManualExit> },
     ManualClose { position: PositionId },
     ExternallyCleared { position: PositionId, fill: Fill },
 }
@@ -71,6 +73,16 @@ impl LoggedEvent {
                 LoggedEvent::FillFailed { intent: intent.clone(), reason: *reason }
             }
             Event::Migrated { mint, at } => LoggedEvent::Migrated { mint: mint.clone(), at: *at },
+            Event::ManualBuy { mint, rule, lamports, at, exit } => LoggedEvent::ManualBuy {
+                mint: mint.clone(),
+                rule: *rule,
+                lamports: *lamports,
+                at: *at,
+                exit: *exit,
+            },
+            Event::SetManualExit { position, exit } => {
+                LoggedEvent::SetManualExit { position: *position, exit: *exit }
+            }
             Event::ManualClose { position } => LoggedEvent::ManualClose { position: *position },
             Event::ExternallyCleared { position, fill } => {
                 LoggedEvent::ExternallyCleared { position: *position, fill: *fill }
@@ -85,6 +97,7 @@ impl LoggedEvent {
             LoggedEvent::TokenCreated { mint, .. }
             | LoggedEvent::FirstSlotSettled { mint, .. }
             | LoggedEvent::Trade { mint, .. }
+            | LoggedEvent::ManualBuy { mint, .. }
             | LoggedEvent::Migrated { mint, .. } => Some(mint.as_str()),
             _ => None,
         }
@@ -96,6 +109,7 @@ impl LoggedEvent {
         match self {
             LoggedEvent::TokenCreated { at, .. }
             | LoggedEvent::FirstSlotSettled { at, .. }
+            | LoggedEvent::ManualBuy { at, .. }
             | LoggedEvent::Migrated { at, .. } => Some(*at),
             LoggedEvent::Trade { trade, .. } => Some(trade.at),
             LoggedEvent::FillConfirmed { fill, .. }
@@ -127,6 +141,12 @@ impl LoggedEvent {
             LoggedEvent::FillConfirmed { intent, fill } => Event::FillConfirmed { intent, fill },
             LoggedEvent::FillFailed { intent, reason } => Event::FillFailed { intent, reason },
             LoggedEvent::Migrated { mint, at } => Event::Migrated { mint, at },
+            LoggedEvent::ManualBuy { mint, rule, lamports, at, exit } => {
+                Event::ManualBuy { mint, rule, lamports, at, exit }
+            }
+            LoggedEvent::SetManualExit { position, exit } => {
+                Event::SetManualExit { position, exit }
+            }
             LoggedEvent::ManualClose { position } => Event::ManualClose { position },
             LoggedEvent::ExternallyCleared { position, fill } => {
                 Event::ExternallyCleared { position, fill }

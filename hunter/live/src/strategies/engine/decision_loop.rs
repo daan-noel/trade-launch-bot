@@ -523,6 +523,40 @@ async fn handle_command(
             info!(?mode, positions = positions.len(), "engine: stop-all — closing open positions");
             EventBatch::many(positions.into_iter().map(|position| Event::ManualClose { position }).collect())
         }
+        EngineCommand::ManualBuy { pg_id, mint, lamports, exit } => {
+            // Fresh per-episode rule id: keys the arm, the intents, and the
+            // synthesized exit rule. Staged with the sink BEFORE the fold so the
+            // BuySubmitted delta creates the row with the handler's pre-minted id.
+            let rule = RuleId(uuid::Uuid::new_v4());
+            sink.stage_manual(
+                rule,
+                super::sinks::StagedManual {
+                    pg_id,
+                    manual_exit: exit.filter(|e| e.is_some()).map(|e| {
+                        serde_json::json!({ "tp_pct": e.tp_pct, "sl_pct": e.sl_pct })
+                    }),
+                },
+            );
+            info!(pg = %pg_id, mint = %mint, lamports, "engine: manual buy episode");
+            EventBatch::one(Event::ManualBuy {
+                mint: Mint::from(mint.as_str()),
+                rule,
+                lamports,
+                at: Utc::now(),
+                exit,
+            })
+        }
+        EngineCommand::SetManualExit { pg_position_id, exit } => {
+            match registry.engine_id(pg_position_id) {
+                Some(position) => EventBatch::one(Event::SetManualExit { position, exit }),
+                None => {
+                    // Not engine-held (e.g. still BuySubmitted-adopted or stuck) —
+                    // the persisted JSONB re-installs the rule on the next adopt.
+                    warn!(pg = %pg_position_id, "set manual exit: no live engine position — deferred to adopt");
+                    EventBatch::none()
+                }
+            }
+        }
     }
 }
 

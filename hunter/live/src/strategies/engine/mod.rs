@@ -35,7 +35,7 @@ use dashmap::DashSet;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use hunter_engine::event::{Fill, IntentId, PositionId, RuleId, TradeMode};
+use hunter_engine::event::{Fill, IntentId, ManualExit, PositionId, RuleId, TradeMode};
 
 pub use decision_loop::{spawn_engine, EngineDeps, EngineHandles};
 
@@ -157,6 +157,20 @@ pub enum EngineCommand {
     /// and folds an [`Event::ExternallyCleared`], which closes the position at `fill`
     /// WITHOUT emitting a sell (a no-op if the position isn't a live engine-held one).
     ReconcileCleared { pg_position_id: Uuid, fill: Fill },
+    /// A Console manual buy: the loop mints a fresh per-episode rule id, stages
+    /// the pre-minted PG row id + exit config with the sink, and folds a
+    /// [`Event::ManualBuy`] — from there it is a bot buy (same retry / fill /
+    /// reaper machinery). The handler already returned 202 `{position_id: pg_id}`.
+    ManualBuy {
+        pg_id: Uuid,
+        mint: String,
+        lamports: u64,
+        exit: Option<ManualExit>,
+    },
+    /// Set / replace / clear a manual position's TP/SL post-entry — the loop
+    /// resolves the engine position via the registry and folds a
+    /// [`Event::SetManualExit`] (the handler persists the JSONB separately).
+    SetManualExit { pg_position_id: Uuid, exit: Option<ManualExit> },
 }
 
 /// A cheap, cloneable handle the HTTP layer holds to talk to the running engine
@@ -210,6 +224,30 @@ impl EngineHandle {
     pub async fn reconcile_cleared(&self, pg_position_id: Uuid, fill: Fill) -> bool {
         self.cmd_tx
             .send(EngineCommand::ReconcileCleared { pg_position_id, fill })
+            .await
+            .is_ok()
+    }
+
+    /// Inject a Console manual buy (the PG row is born as `pg_id`). Returns `false`
+    /// only if the loop channel is closed (shutting down).
+    pub async fn manual_buy(
+        &self,
+        pg_id: Uuid,
+        mint: String,
+        lamports: u64,
+        exit: Option<ManualExit>,
+    ) -> bool {
+        self.cmd_tx
+            .send(EngineCommand::ManualBuy { pg_id, mint, lamports, exit })
+            .await
+            .is_ok()
+    }
+
+    /// Set / replace / clear a manual position's TP/SL config. Returns `false`
+    /// only if the loop channel is closed (shutting down).
+    pub async fn set_manual_exit(&self, pg_position_id: Uuid, exit: Option<ManualExit>) -> bool {
+        self.cmd_tx
+            .send(EngineCommand::SetManualExit { pg_position_id, exit })
             .await
             .is_ok()
     }

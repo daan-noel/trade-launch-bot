@@ -468,7 +468,10 @@ pub enum ArmState {
     Armed,
     /// A buy is in flight for `intent` (the `attempts`-th try); the position row
     /// already exists (`BuySubmitted`) so a fill just flips it to held.
-    EntryPending { intent: IntentId, position: PositionId, attempts: u32 },
+    /// `lamports` is the submitted buy size, frozen at submit so retries resize
+    /// identically (manual episodes have no rule row to re-read; `0` ⇒ fall back
+    /// to the rule's configured amount, as boot-adopted arms do).
+    EntryPending { intent: IntentId, position: PositionId, attempts: u32, lamports: u64 },
     /// Entry filled; the position is held and evaluating exit. `entry_price` is the
     /// fill price `pnl` measures against, `entered_at` the fill time (`held`),
     /// `peak_price` the highest price since entry (`retrace`), and `trough_price`

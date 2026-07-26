@@ -123,6 +123,17 @@ pub fn configure_deploy_routes(cfg: &mut web::ServiceConfig) {
                 "/strategies/{strategy}/positions/{position_id}/close",
                 web::post().to(handlers::strategies::positions::close_position),
             )
+            // Manual position's TP/SL config (set / replace / clear).
+            .route(
+                "/strategies/{strategy}/positions/{position_id}/manual-exit",
+                web::post().to(handlers::strategies::positions::set_manual_exit),
+            )
+            // Console manual buy → a full tracked position (202 {position_id};
+            // progress over SSE like a bot buy). Replaces the sync wallet buy.
+            .route(
+                "/positions/manual-buy",
+                web::post().to(handlers::strategies::positions::manual_buy_position),
+            )
             .route(
                 "/strategies/{strategy}/positions/{position_id}",
                 web::get().to(handlers::strategies::positions::get_position),

@@ -1226,6 +1226,70 @@ impl StrategyRepo {
         Ok(())
     }
 
+    /// The one manual-position run (`strategy_id='manual'`, `rule_id` NULL, mode
+    /// real) — find the running one or mint it. Manual positions all hang off
+    /// this run so `strategy_runs`' NOT NULL FK is satisfied without a fake rule.
+    pub async fn ensure_manual_run(&self) -> anyhow::Result<Uuid> {
+        if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM strategy_runs \
+             WHERE strategy_id = 'manual' AND mode = 'real' AND status = 'Running' \
+             ORDER BY started_at DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return Ok(id);
+        }
+        let run = StrategyRun {
+            id: Uuid::new_v4(),
+            strategy_id: "manual".to_string(),
+            rule_id: None,
+            mode: "real".to_string(),
+            run_seq: 1,
+            status: "Running".to_string(),
+            params_snapshot: serde_json::json!({}),
+            max_total_tokens: None,
+            started_at: Utc::now(),
+            finished_at: None,
+        };
+        self.insert_run(&run).await?;
+        Ok(run.id)
+    }
+
+    /// Whether any OPEN (not `End`/`EntryFailed`) real position exists on `mint`
+    /// — the manual-buy one-position-per-mint guard.
+    pub async fn has_open_real_position_on_mint(&self, mint: &str) -> anyhow::Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM strategy_positions \
+                 WHERE mint_address = $1 AND mode = 'real' \
+                   AND status NOT IN ('End','EntryFailed') \
+             )",
+        )
+        .bind(mint)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
+    /// Persist a manual position's TP/SL config (`NULL` clears → tracked-only).
+    /// Manual-origin rows only; returns rows affected so the handler can 404/409.
+    pub async fn set_manual_exit(
+        &self,
+        id: Uuid,
+        manual_exit: Option<&Value>,
+    ) -> anyhow::Result<u64> {
+        let res = sqlx::query(
+            "UPDATE strategy_positions SET manual_exit = $2, updated_at = now() \
+             WHERE id = $1 AND origin = 'manual'",
+        )
+        .bind(id)
+        .bind(manual_exit.map(Json))
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn find_position(&self, id: Uuid) -> anyhow::Result<Option<StrategyPosition>> {
         let row = sqlx::query_as::<_, StrategyPositionDbRow>(&format!(
             "SELECT {POSITION_COLS} FROM strategy_positions WHERE id = $1"

@@ -21,7 +21,7 @@
 //! shells) so a process restart does not orphan the paper scoreboard onto a new
 //! empty `run_seq`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -62,6 +62,20 @@ const GENERIC_STRATEGY_ID: &str = "generic";
 /// The `strategy_positions.wallet` sentinel for paper positions (no real wallet).
 const PAPER_WALLET: &str = "paper";
 
+/// The `strategy_runs.strategy_id` of the ONE manual-position run (rule_id NULL).
+const MANUAL_STRATEGY_ID: &str = "manual";
+
+/// Adapter-side facts for one staged manual-buy episode, keyed by the fresh
+/// per-episode `RuleId` the command minted. The HTTP handler pre-mints the PG
+/// row id (so it can 202 `{position_id}` immediately); the sink consumes this
+/// when the `BuySubmitted` delta arrives and stamps `origin='manual'` +
+/// `manual_exit` onto the row it creates.
+#[derive(Debug, Clone)]
+pub struct StagedManual {
+    pub pg_id: uuid::Uuid,
+    pub manual_exit: Option<serde_json::Value>,
+}
+
 pub struct Sink {
     repo: StrategyRepo,
     token_cache: Arc<TokenCache>,
@@ -79,6 +93,12 @@ pub struct Sink {
     rules: HashMap<RuleId, RuleInfo>,
     /// One live run per rule (lazily created on the first position).
     run_cache: HashMap<RuleId, uuid::Uuid>,
+    /// Staged manual-buy episodes awaiting their `BuySubmitted` delta.
+    manual_pending: HashMap<RuleId, StagedManual>,
+    /// Live manual episode rule ids (for the SSE `rule_name` = "manual" label).
+    manual_episodes: HashSet<RuleId>,
+    /// The one manual run row (rule_id NULL), lazily ensured.
+    manual_run: Option<uuid::Uuid>,
     /// In-flight PG lifecycle tasks keyed by position PG id. Later sink
     /// transitions take/await these so a fast fill cannot write before the row
     /// exists, without gating buy/sell *spawn* on the decision loop.
@@ -110,8 +130,17 @@ impl Sink {
             wallet,
             rules: HashMap::new(),
             run_cache: HashMap::new(),
+            manual_pending: HashMap::new(),
+            manual_episodes: HashSet::new(),
+            manual_run: None,
             pending_pg: HashMap::new(),
         }
+    }
+
+    /// Stage a manual-buy episode (called by the loop's command handler BEFORE the
+    /// `ManualBuy` event folds, so the `BuySubmitted` delta finds it).
+    pub fn stage_manual(&mut self, rule: RuleId, staged: StagedManual) {
+        self.manual_pending.insert(rule, staged);
     }
 
     /// Refresh the per-rule info from a reload (mode, name, cap, params snapshot).
@@ -185,6 +214,7 @@ impl Sink {
         self.emit_position_sse(&delta);
         if finalized {
             self.registry.remove(delta.position);
+            self.manual_episodes.remove(&delta.rule);
         }
     }
 
@@ -217,16 +247,39 @@ impl Sink {
     // ── PositionUpdate handlers ───────────────────────────────────────────────
 
     async fn on_buy_submitted(&mut self, delta: &PositionDelta) {
-        let Some(info) = self.rules.get(&delta.rule).cloned() else {
-            warn!(rule = %delta.rule.0, "engine sink: BuySubmitted for unknown rule — skipping");
-            return;
+        // A staged manual episode (fresh per-episode rule id, never in `rules`)
+        // gets the fixed manual identity: real mode, the one manual run, and the
+        // handler's pre-minted PG id.
+        let staged = self.manual_pending.remove(&delta.rule);
+        let info = match (self.rules.get(&delta.rule).cloned(), &staged) {
+            (Some(info), _) => info,
+            (None, Some(_)) => RuleInfo {
+                mode: TradeMode::Real,
+                name: MANUAL_STRATEGY_ID.to_string(),
+                max_total: None,
+                params: serde_json::json!({}),
+            },
+            (None, None) => {
+                warn!(rule = %delta.rule.0, "engine sink: BuySubmitted for unknown rule — skipping");
+                return;
+            }
         };
         // Usually a run_cache hit after `warm_runs`; cold miss still awaits once.
-        let run_id = match self.ensure_run(delta.rule, &info).await {
-            Ok(id) => id,
-            Err(e) => {
-                warn!(rule = %delta.rule.0, "engine sink: run creation failed: {e}");
-                return;
+        let run_id = if staged.is_some() {
+            match self.ensure_manual_run().await {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!("engine sink: manual run creation failed: {e}");
+                    return;
+                }
+            }
+        } else {
+            match self.ensure_run(delta.rule, &info).await {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(rule = %delta.rule.0, "engine sink: run creation failed: {e}");
+                    return;
+                }
             }
         };
         let mint = delta.mint.to_string();
@@ -254,6 +307,13 @@ impl Sink {
         );
         pos.token_program_id = token_program_id.clone();
         pos.status = "BuySubmitted".to_string();
+        if let Some(m) = &staged {
+            // The handler already 202'd this id — the row must be born with it.
+            pos.id = m.pg_id;
+            pos.origin = MANUAL_STRATEGY_ID.to_string();
+            pos.manual_exit = m.manual_exit.clone();
+            self.manual_episodes.insert(delta.rule);
+        }
 
         // Registry first so Pass-2 can spawn the buy immediately; PG insert is
         // backgrounded. Later transitions chain via `pending_pg`.
@@ -529,6 +589,17 @@ impl Sink {
         });
     }
 
+    /// The one manual-position run (`strategy_id='manual'`, `rule_id` NULL) —
+    /// reused across restarts so the manual book never fragments across runs.
+    async fn ensure_manual_run(&mut self) -> anyhow::Result<uuid::Uuid> {
+        if let Some(id) = self.manual_run {
+            return Ok(id);
+        }
+        let id = self.repo.ensure_manual_run().await?;
+        self.manual_run = Some(id);
+        Ok(id)
+    }
+
     async fn ensure_run(&mut self, rule: RuleId, info: &RuleInfo) -> anyhow::Result<uuid::Uuid> {
         if let Some(id) = self.run_cache.get(&rule) {
             return Ok(*id);
@@ -603,7 +674,16 @@ impl Sink {
             .fill
             .filter(|_| delta.status == PositionStatus::End)
             .map(|f| f.price);
-        let info = self.rules.get(&delta.rule);
+        let rule_name = self
+            .rules
+            .get(&delta.rule)
+            .map(|i| i.name.clone())
+            .filter(|n| !n.is_empty())
+            .or_else(|| {
+                self.manual_episodes
+                    .contains(&delta.rule)
+                    .then(|| MANUAL_STRATEGY_ID.to_string())
+            });
         let _ = self.sse_tx.send(SseEvent::StrategyPositionUpdate {
             rule_id: delta.rule.0,
             mint_address: delta.mint.to_string(),
@@ -613,9 +693,7 @@ impl Sink {
             entry_price,
             exit_price,
             trade_mode,
-            rule_name: info
-                .map(|i| i.name.clone())
-                .filter(|n| !n.is_empty()),
+            rule_name,
             needs_review: None,
         });
     }

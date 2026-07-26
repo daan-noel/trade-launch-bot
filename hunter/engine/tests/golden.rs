@@ -1042,3 +1042,103 @@ fn reentry_cooldown_disarms_on_migration() {
     assert_eq!(disarms(&fx), vec![DisarmReason::Migrated]);
     assert!(!s.tokens.contains_key(&m));
 }
+
+// ── Manual episodes (Console manual buys, plan P2) ───────────────────────────
+
+#[test]
+fn manual_buy_tracked_only_never_auto_exits() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    // No rules loaded at all — a manual buy needs none.
+    let fx = reduce(&mut s, Event::ManualBuy {
+        mint: m.clone(), rule: rid(9), lamports: 500, at: ts(0.0), exit: None,
+    });
+    assert_eq!(buys(&fx), vec![(rid(9), 500)], "manual buy submits immediately");
+    assert_eq!(statuses(&fx), vec![PositionStatus::BuySubmitted]);
+    let entry = buy_intent(&fx);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::Holding]);
+
+    // Tracked-only: neither a crash in price nor a dead pool may auto-exit it.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.01, 0.5, 200.0) });
+    assert!(sells(&fx).is_empty(), "tracked-only manual position has NO auto-exit");
+    let fx = reduce(&mut s, Event::Tick { now: ts(2000.0) });
+    assert!(sells(&fx).is_empty(), "not even the dead-token verdict fires");
+
+    // Manual close still routes through the engine.
+    let position = *s.positions.keys().next().expect("held");
+    let fx = reduce(&mut s, Event::ManualClose { position });
+    assert_eq!(sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![ExitReason::Manual]);
+}
+
+#[test]
+fn manual_buy_with_tp_sl_gets_full_exit_stack() {
+    use hunter_engine::event::ManualExit;
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    let fx = reduce(&mut s, Event::ManualBuy {
+        mint: m.clone(), rule: rid(9), lamports: 500, at: ts(0.0),
+        exit: Some(ManualExit { tp_pct: Some(100.0), sl_pct: Some(30.0) }),
+    });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+
+    // +100% → TakeProfit fires through the one desugared pnl path.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 2.0, 40.0, 1.0) });
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::TakeProfit],
+    );
+    let exit = sell_intent(&fx);
+    let fx = reduce(&mut s, Event::FillConfirmed { intent: exit, fill: fill(2.0, 1.1) });
+    assert_eq!(statuses(&fx), vec![PositionStatus::End]);
+    assert!(s.manual_rules.is_empty(), "one-off exit rule dies with the position");
+    assert!(!s.tokens.contains_key(&m), "manual episode is one-shot — token pruned");
+}
+
+#[test]
+fn set_manual_exit_upgrades_tracked_only_position() {
+    use hunter_engine::event::ManualExit;
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    let fx = reduce(&mut s, Event::ManualBuy {
+        mint: m.clone(), rule: rid(9), lamports: 500, at: ts(0.0), exit: None,
+    });
+    let entry = buy_intent(&fx);
+    reduce(&mut s, Event::FillConfirmed { intent: entry, fill: fill(1.0, 0.1) });
+    let position = *s.positions.keys().next().expect("held");
+
+    // Still tracked-only: -70% does nothing.
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.3, 40.0, 1.0) });
+    assert!(sells(&fx).is_empty());
+
+    // [+TP/SL] → the same drop now fires the StopLoss.
+    reduce(&mut s, Event::SetManualExit {
+        position,
+        exit: Some(ManualExit { tp_pct: None, sl_pct: Some(30.0) }),
+    });
+    let fx = reduce(&mut s, Event::Trade { mint: m.clone(), trade: trade(1.0, 0.3, 40.0, 2.0) });
+    assert_eq!(
+        sells(&fx).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![ExitReason::StopLoss],
+    );
+}
+
+#[test]
+fn manual_buy_retries_with_frozen_lamports_then_entry_failed() {
+    let mut s = EngineState::new();
+    let m = Mint::from("tokA");
+    let fx = reduce(&mut s, Event::ManualBuy {
+        mint: m.clone(), rule: rid(9), lamports: 777, at: ts(0.0), exit: None,
+    });
+    let mut intent = buy_intent(&fx);
+    for _ in 0..2 {
+        let fx = reduce(&mut s, Event::FillFailed { intent: intent.clone(), reason: FillFailReason::Reverted });
+        assert_eq!(buys(&fx), vec![(rid(9), 777)], "retry resubmits the FROZEN manual size");
+        intent = buy_intent(&fx);
+    }
+    let fx = reduce(&mut s, Event::FillFailed { intent, reason: FillFailReason::Reverted });
+    assert!(buys(&fx).is_empty());
+    assert_eq!(statuses(&fx), vec![PositionStatus::EntryFailed]);
+    assert!(s.manual_rules.is_empty() && s.positions.is_empty());
+}

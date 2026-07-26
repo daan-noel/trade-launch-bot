@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use crate::arm::{ArmState, CompiledRule};
-use crate::event::{IntentId, LoadedRule, Mint, PositionId, RuleId};
+use crate::event::{IntentId, LoadedRule, ManualExit, Mint, PositionId, RuleId, TradeMode};
 use crate::fingerprint::{Fingerprint, FingerprintId};
 use crate::grouping::TokenFingerprint;
 use crate::metrics::flow_split::FlowPatterns;
@@ -68,6 +68,12 @@ impl TokenState {
 pub struct EngineState {
     /// Compiled active rules, by id.
     pub rules: BTreeMap<RuleId, CompiledRule>,
+    /// One-off exit rules synthesized for **manual** positions with TP/SL, keyed
+    /// by position (each manual episode has its own config). Deliberately outside
+    /// `rules` so a `RulesReloaded` cannot wipe them; removed with the position.
+    /// A manual position with NO entry here is tracked-only: the evaluate sweep
+    /// finds no rule and makes no decision — no TP/SL, no Dead-exit.
+    pub manual_rules: BTreeMap<PositionId, CompiledRule>,
     /// Loaded fingerprints (input order preserved for multi-match).
     pub fps: Vec<Fingerprint>,
     /// Union of every rule's distinct **flow** `window_size_sec` (`m_flow_window` +
@@ -104,6 +110,26 @@ impl EngineState {
     pub fn next_position(&mut self) -> PositionId {
         self.position_seq += 1;
         PositionId(self.position_seq)
+    }
+
+    /// Drop a closed position from the owner map AND its one-off manual exit rule
+    /// (1:1 with the position) — the one removal path, so the two can't leak apart.
+    pub fn remove_position(&mut self, position: PositionId) {
+        self.positions.remove(&position);
+        self.manual_rules.remove(&position);
+    }
+
+    /// Synthesize + install the one-off exit rule for a manual position's TP/SL
+    /// config. `None` / empty config removes any existing rule (tracked-only).
+    pub fn set_manual_exit(&mut self, position: PositionId, rule: RuleId, exit: Option<ManualExit>) {
+        match exit {
+            Some(e) if e.is_some() => {
+                self.manual_rules.insert(position, compile_manual_exit_rule(rule, &e));
+            }
+            _ => {
+                self.manual_rules.remove(&position);
+            }
+        }
     }
 
     /// Whether a fingerprint (by id) has a first-slot axis, i.e. its full identity
@@ -157,6 +183,15 @@ impl EngineState {
         track
     }
 
+    /// Resolve the compiled rule an arm evaluates under: a real rule by id, else
+    /// the position's one-off manual exit rule (manual episodes are never in
+    /// `rules`). `None` ⇒ no decision is made for the arm (tracked-only manual).
+    pub fn rule_for(&self, rule: RuleId, position: Option<PositionId>) -> Option<&CompiledRule> {
+        self.rules
+            .get(&rule)
+            .or_else(|| position.and_then(|p| self.manual_rules.get(&p)))
+    }
+
     fn ensure_track_windows_and_flow(
         track: &mut TokenTrack,
         windows: &[f64],
@@ -175,4 +210,31 @@ impl EngineState {
             }
         }
     }
+}
+
+/// Compile a manual position's TP/SL config into a one-off exit rule via the ONE
+/// bot desugar path ([`CompiledRule::compile`]'s pnl-req expansion) — so a manual
+/// TP/SL can never drift from a rule TP/SL. No entry conditions, no caps, no
+/// fingerprint (nil id; the arm exists, arming never re-evaluates).
+fn compile_manual_exit_rule(rule: RuleId, exit: &ManualExit) -> CompiledRule {
+    use crate::fingerprint::FingerprintId;
+    use crate::rule_params::RuleParams;
+
+    let params = RuleParams {
+        take_profit: exit.tp_pct.filter(|v| v.is_finite() && *v > 0.0),
+        stop_loss: exit.sl_pct.filter(|v| v.is_finite() && *v > 0.0),
+        entry: None,
+        exit: None,
+        reentry: None,
+    };
+    let loaded = LoadedRule {
+        id: rule,
+        fingerprint_id: FingerprintId(uuid::Uuid::nil()),
+        trade_mode: TradeMode::Real,
+        buy_amount_lamports: 0,
+        max_concurrent_tokens: 1,
+        max_total_tokens: 0,
+        params,
+    };
+    CompiledRule::compile(&loaded)
 }

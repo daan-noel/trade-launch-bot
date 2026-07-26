@@ -217,7 +217,7 @@ that scrolls/flashes the row in whichever lane it lives — fixes defect #3 stru
 | Phase | Scope | Ships alone? |
 |---|---|---|
 | **P1 — status split** ✅ DONE | §1 whole: enum, migration 0013 (remap + CHECK + `origin` + `manual_exit` cols in one migration), reduce/sinks/reapers/repo, close-action matrix (incl. `?action=verify`), drift test. FE minimal patch: slice sets + labels + notification maps updated; OpsPage attention lane now holds ExitStuck with Retry/Dump/Write-off | yes (old UI still renders; ExitStuck rows now appear in Needs-attention — already an improvement) |
-| **P2 — manual positions** | §2: reserved manual rule, engine injection, `manual-buy` 202 endpoint, TP/SL synthesis, sell lock | yes (Trade page can point at the new endpoint temporarily) |
+| **P2 — manual positions** ✅ DONE | §2: engine `ManualBuy`/`SetManualExit` events + per-position `manual_rules`, `POST /api/positions/manual-buy` (202 `{position_id}`), `POST …/{id}/manual-exit`, wallet-sell mint lock (N2). Deviation from decision 2: since `strategy_positions.rule_id` has NO FK, manual episodes use a **fresh per-episode rule uuid** + ONE `strategy_runs` row (`strategy_id='manual'`, `rule_id` NULL) instead of a hidden rule row — same goal, zero Rules-UI filtering needed | yes (FE wiring lands with P3's Console) |
 | **P3 — Console** | §3 build + §4 deletions + redirects + notifications | yes |
 | **P4 — polish** | dead-pool chip, persistent trade log, stale-SSE row cue, mode-badge nullability fix | incremental |
 
