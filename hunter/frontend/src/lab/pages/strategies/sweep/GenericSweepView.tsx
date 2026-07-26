@@ -557,6 +557,7 @@ export function GenericSweepView() {
             onSelect={setActiveGroupId}
             sameValueTints
             tableId="generic_sweep_groups"
+            pinnable
             resetKey={activeRunId ?? ''}
             loading={groupsQuery.isFetching}
             emptyMessage="No groups cleared the min-tokens threshold for this run."
@@ -595,6 +596,7 @@ export function GenericSweepView() {
                 serverTotal={resultsTotal}
                 onQueryChange={onComboQueryChange}
                 tableId="generic_sweep_combos"
+                pinnable
                 resetKey={activeGroupId ?? ''}
                 loading={resultsLoading}
                 emptyMessage="No combo results for this group."

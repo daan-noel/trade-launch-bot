@@ -2,9 +2,11 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type
 import { cn } from 'lib/cn';
 import { Checkbox } from 'components/ui/Checkbox';
 import { Input } from 'components/ui/Input';
+import { PinIcon } from 'components/ui/icons';
 import { Pagination, DEFAULT_PAGE_SIZE } from './Pagination';
 import { parseNumericPredicate } from './numericFilter';
 import { computeSameValueCellClasses } from 'lib/sameValueCellColors';
+import { usePinnedRows } from './usePinnedRows';
 import {
   getTableCols,
   setTableCols,
@@ -237,6 +239,14 @@ interface DataTableProps<R> {
    *  server-side summary would. In server mode this equals the current page.
    *  Pass a stable (useCallback) handler; `processed` is memoized. */
   onFilteredRowsChange?: (rows: R[]) => void;
+  /**
+   * Opt-in row pinning. Adds a pin toggle in the `#` cell and floats pinned rows in
+   * a section above the page on every page, deduped from the paged body. Pinned rows
+   * render from snapshots (persisted per `tableId`), so they show even when their
+   * page isn't the one currently loaded. Requires `tableId` (pins are stored under
+   * it); a no-op without one. Omit to render exactly as before.
+   */
+  pinnable?: boolean;
 }
 
 export function DataTable<R>({
@@ -270,6 +280,7 @@ export function DataTable<R>({
   onFilteredRowsChange,
   sameValueTints = false,
   followSelected = true,
+  pinnable = false,
 }: DataTableProps<R>) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
@@ -716,6 +727,22 @@ export function DataTable<R>({
     [onSelect],
   );
 
+  // Row pinning (opt-in via `pinnable` + `tableId`). The hook is inert without a
+  // tableId, so this single call stays rules-of-hooks-safe for every table.
+  const pinningEnabled = pinnable && !!tableId;
+  const pinning = usePinnedRows(pinningEnabled ? tableId : undefined, rowKey, pageRows);
+  const togglePin = pinning.onToggle; // stable (useCallback in the hook)
+
+  // Pinned rows render (from snapshots) in a section above the paged body, on
+  // every page. Any that also land on the current page are skipped below so a row
+  // never shows twice. Kept as its own array so `pageRows`/`processed` — and every
+  // callback that reads them — stay untouched; the dedup is display-only.
+  const pinnedDisplay = pinning.pinnedRows;
+  const pageBodyCount = pinningEnabled
+    ? pageRows.reduce((n, r) => n + (pinning.isPinned(r) ? 0 : 1), 0)
+    : pageRows.length;
+  const bodyEmpty = pinnedDisplay.length === 0 && pageBodyCount === 0;
+
   return (
     <div className="flex flex-col gap-0">
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -917,7 +944,36 @@ export function DataTable<R>({
               )}
             </thead>
             <tbody>
-              {pageRows.length === 0 ? (
+              {/* Pinned section: floats above the page on every page. Rendered from
+                  snapshots so a pinned row shows even when its page isn't loaded. */}
+              {pinnedDisplay.map((row, i) => {
+                const key = rowKey(row);
+                return (
+                  <TableRow
+                    key={`pin:${key}`}
+                    row={row}
+                    rowKeyValue={key}
+                    index={-1}
+                    visCols={visCols}
+                    groupClasses={groupClasses}
+                    selectable={selectable}
+                    isSelected={selectedKey === key}
+                    onSelectRow={selectRow}
+                    rowActions={rowActions}
+                    actionsCellCls={actionsCellCls}
+                    rowDetail={rowDetail}
+                    colCount={colCount}
+                    rowClassName={rowClassName}
+                    cellGroupClassName={cellGroupClassName}
+                    valueTints={valueTints}
+                    pinningEnabled
+                    pinned
+                    pinnedLast={i === pinnedDisplay.length - 1}
+                    onTogglePin={togglePin}
+                  />
+                );
+              })}
+              {bodyEmpty ? (
                 <tr>
                   <td colSpan={colCount} className="px-2 py-12 text-center font-sans text-text-dim">
                     {loading ? 'Loading…' : emptyMessage}
@@ -925,6 +981,10 @@ export function DataTable<R>({
                 </tr>
               ) : (
                 pageRows.map((row, i) => {
+                  // Skip the paged copy of a pinned row — it's shown in the section
+                  // above. `index` stays the global position so `#` numbering is
+                  // unchanged (a pinned row just leaves a gap).
+                  if (pinningEnabled && pinning.isPinned(row)) return null;
                   const key = rowKey(row);
                   return (
                     <TableRow
@@ -944,6 +1004,8 @@ export function DataTable<R>({
                       rowClassName={rowClassName}
                       cellGroupClassName={cellGroupClassName}
                       valueTints={valueTints}
+                      pinningEnabled={pinningEnabled}
+                      onTogglePin={pinningEnabled ? togglePin : undefined}
                     />
                   );
                 })
@@ -992,6 +1054,14 @@ interface TableRowProps<R> {
    *  are off. Identity is stable while the page + columns are unchanged, so it
    *  doesn't defeat this row's `memo`. */
   valueTints?: Map<string, string> | null;
+  /** Pinning is active for this table → the `#` cell shows a pin toggle on hover. */
+  pinningEnabled?: boolean;
+  /** This row is currently pinned (rendered in the section above the page). */
+  pinned?: boolean;
+  /** This is the last pinned row → draw the divider under the pinned section. */
+  pinnedLast?: boolean;
+  /** Flip this row's pinned state. Stable identity (see `togglePin`). */
+  onTogglePin?: (row: R) => void;
 }
 
 /** Module-level so its identity is stable — it's a prop on a memoized row. */
@@ -1021,6 +1091,10 @@ function TableRowInner<R>({
   rowClassName,
   cellGroupClassName,
   valueTints,
+  pinningEnabled,
+  pinned,
+  pinnedLast,
+  onTogglePin,
 }: TableRowProps<R>) {
   return (
     <Fragment>
@@ -1047,12 +1121,46 @@ function TableRowInner<R>({
           selectable && 'cursor-pointer',
           'transition-colors hover:bg-primary/12',
           isSelected && selectable && 'bg-primary/18 shadow-[0_14px_32px_rgba(2,192,118,0.06)]',
+          pinned && 'bg-primary/4.5',
+          pinnedLast && 'shadow-[inset_0_-2px_0_0_var(--color-primary)]',
           rowClassName?.(row),
         )}
       >
-        <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
-          {index + 1}
-        </td>
+        {pinningEnabled ? (
+          // The pin toggle lives in the `#` cell: row number by default, swapping
+          // to the pin on hover; a pinned row always shows the (primary) pin. This
+          // avoids adding a column, which would shift the `nth-child` column-hover
+          // math and every column's group class.
+          <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
+            <span className="group/pin relative inline-flex h-4 min-w-5 items-center justify-center">
+              <span className={cn(pinned ? 'invisible' : 'group-hover/pin:invisible')}>
+                {index >= 0 ? index + 1 : ''}
+              </span>
+              <button
+                type="button"
+                title={pinned ? 'Unpin row' : 'Pin row'}
+                aria-label={pinned ? 'Unpin row' : 'Pin row'}
+                aria-pressed={pinned}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTogglePin?.(row);
+                }}
+                className={cn(
+                  'absolute inset-0 flex items-center justify-center transition-opacity',
+                  pinned
+                    ? 'text-primary opacity-100'
+                    : 'text-text opacity-0 group-hover/pin:opacity-100',
+                )}
+              >
+                <PinIcon className="size-3.5" />
+              </button>
+            </span>
+          </td>
+        ) : (
+          <td className="border-b border-border px-2 py-1.5 text-center text-[11px] text-text-dim">
+            {index + 1}
+          </td>
+        )}
         {visCols.map((col, ci) => (
           <td
             key={col.key}

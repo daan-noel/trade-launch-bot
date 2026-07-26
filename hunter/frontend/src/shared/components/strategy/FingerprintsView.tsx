@@ -425,6 +425,7 @@ export function FingerprintsView({
         colFilters
         colToggle
         tableId="fingerprints-v2"
+        pinnable
         emptyMessage="No fingerprints yet — create one to start authoring rules."
         selectedKey={selectedKey}
         onSelect={setSelectedKey}

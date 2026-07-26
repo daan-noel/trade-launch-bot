@@ -314,6 +314,7 @@ export function PortfolioPage() {
         searchable
         defaultSort={{ col: 'pnl', dir: 'desc' }}
         tableId="portfolio-by-rule"
+        pinnable
         emptyMessage="No closed trades in this window."
         onFilteredRowsChange={onFilteredRowsChange}
         selectedKey={selectedRule}

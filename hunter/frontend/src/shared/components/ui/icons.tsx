@@ -236,6 +236,19 @@ export function UnlockIcon({ className }: IconProps) {
   );
 }
 
+/** Pushpin — pin a table row to the top. Filled look comes from color, not fill. */
+export function PinIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M10 13.2V17" {...stroke} />
+      <path
+        d="M7.6 9.1a1.6 1.6 0 0 1-.85 1.4l-1.4.75a.75.75 0 0 0 .35 1.4h8.6a.75.75 0 0 0 .35-1.4l-1.4-.75a1.6 1.6 0 0 1-.85-1.4V6a.75.75 0 0 1 .75-.75 1.6 1.6 0 0 0 0-3.25H6.85a1.6 1.6 0 0 0 0 3.25.75.75 0 0 1 .75.75z"
+        {...stroke}
+      />
+    </Svg>
+  );
+}
+
 /** Lightweight spinner for loading icon-button states. */
 export function SpinnerIcon({ className }: IconProps) {
   return (

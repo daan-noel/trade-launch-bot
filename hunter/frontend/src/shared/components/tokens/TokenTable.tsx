@@ -117,6 +117,8 @@ interface TokenTableCommon<R> {
   cellGroupClassName?: (group: string | undefined, row: R) => string | undefined;
   /** Opt-in same-value cell tints — forwarded verbatim to {@link DataTable}. */
   sameValueTints?: boolean;
+  /** Opt-in row pinning — forwarded verbatim to {@link DataTable} (needs `tableId`). */
+  pinnable?: boolean;
   selectedKey?: string | null;
   onSelect?: (key: string | null) => void;
   /** Re-page + scroll the selected row back into view when the rows change

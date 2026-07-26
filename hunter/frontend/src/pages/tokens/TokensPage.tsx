@@ -389,6 +389,7 @@ export function TokensPage({
           colToggle
           hoverable
           tableId="tokens"
+          pinnable
           emptyMessage="No tokens found"
         />
       )}

@@ -39,6 +39,9 @@ export const STORAGE_KEYS = {
   tableKnownCols: `${PREFIX}table.knownCols`,
   /** Map of `{ [tableId]: { pageSize, sortKeys } }` — DataTable sort + page-size. */
   tablePrefs: `${PREFIX}table.prefs`,
+  /** Map of `{ [tableId]: { keys, rows } }` — DataTable pinned rows (keys + a
+   *  snapshot of each pinned row so it renders on every page without a refetch). */
+  tablePins: `${PREFIX}table.pins`,
   /** Notification preferences (real/paper toggles, status filter, fp-param display). */
   notificationPrefs: `${PREFIX}notifications`,
   /** Base key for the per-strategy-page "show pending positions" toggle; append `.${pageId}` for a per-page key. */
@@ -168,6 +171,34 @@ export function setTablePrefs(tableId: string, prefs: TablePrefs): void {
   const map = getJSON<TablePrefsMap>(STORAGE_KEYS.tablePrefs, {});
   map[tableId] = prefs;
   setJSON(STORAGE_KEYS.tablePrefs, map);
+}
+
+// ── table pinned-rows ───────────────────────────────────────────────────────
+// Pins persist per table. Because tables are often server-paged, a pinned row is
+// usually not in the page currently held — so we store a snapshot of each pinned
+// row alongside its key and render from that, refreshing it whenever a page
+// happens to contain the row. See `usePinnedRows`.
+
+export interface TablePins {
+  keys: string[];
+  /** key → last-seen full row object (snapshot). */
+  rows: Record<string, unknown>;
+}
+
+type TablePinsMap = Record<string, TablePins>;
+
+/** Pinned-row keys + snapshots saved for `tableId`, or empty if none stored. */
+export function getTablePins(tableId: string): TablePins {
+  const map = getJSON<TablePinsMap>(STORAGE_KEYS.tablePins, {});
+  const v = map[tableId];
+  return v && Array.isArray(v.keys) ? { keys: v.keys, rows: v.rows ?? {} } : { keys: [], rows: {} };
+}
+
+/** Persist pinned-row keys + snapshots for `tableId` into the shared map. */
+export function setTablePins(tableId: string, pins: TablePins): void {
+  const map = getJSON<TablePinsMap>(STORAGE_KEYS.tablePins, {});
+  map[tableId] = pins;
+  setJSON(STORAGE_KEYS.tablePins, map);
 }
 
 // ── one-time cleanup of pre-namespace keys ──────────────────────────────────

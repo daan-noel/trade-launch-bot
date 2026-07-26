@@ -877,6 +877,7 @@ export function RulesView({
         searchable
         colFilters
         tableId="strategy-rules"
+        pinnable
         emptyMessage="No rules yet — create one from a fingerprint."
         selectedKey={selectedKey}
         onSelect={setSelectedKey}
