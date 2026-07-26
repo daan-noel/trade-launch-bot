@@ -261,6 +261,35 @@ a:hover {
     cursor: pointer;
   }
 
+  /* Row pinning: a narrow leading toggle column + a sticky pinned section that
+     floats above the paged body on every page. */
+  .dt-pin-col {
+    width: 1%;
+    white-space: nowrap;
+    padding-right: 0.2rem;
+  }
+  .dt-pin {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-muted);
+    opacity: 0.4;
+    transition: opacity 0.12s ease, color 0.12s ease;
+  }
+  .dt tbody tr:hover .dt-pin {
+    opacity: 0.85;
+  }
+  .dt-pin--on {
+    color: var(--color-accent);
+    opacity: 1;
+  }
+  .dt-pinned td {
+    background: rgba(45, 108, 223, 0.07);
+  }
+  .dt-pinned tr:last-child td {
+    border-bottom: 2px solid var(--color-line);
+  }
+
   .mono {
     font-family: var(--font-mono);
   }

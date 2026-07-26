@@ -6,7 +6,7 @@ import {
   useDeleteMetadataTemplateMutation,
 } from '@shared/store/endpoints';
 import { apiErrorMessage } from '@shared/store/baseApi';
-import { AgeCell, Banner, Button, Card, Column, DataTable, Field, IconButton, Input } from '@shared/components/ui';
+import { AgeCell, Banner, Button, Card, Column, DataTable, Field, IconButton, Input, usePinnedRows } from '@shared/components/ui';
 import { fileToBase64 } from '@shared/lib/format';
 import type { MetadataTemplate } from '@shared/types';
 
@@ -22,6 +22,7 @@ const emptyForm = {
 
 export function MetadataTemplatesPage() {
   const { data: templates = [], isFetching } = useMetadataTemplatesQuery();
+  const pinning = usePinnedRows('metadata-templates', (t: MetadataTemplate) => t.id, templates);
   const [create, createState] = useCreateMetadataTemplateMutation();
   const [update, updateState] = useUpdateMetadataTemplateMutation();
   const [remove, removeState] = useDeleteMetadataTemplateMutation();
@@ -212,6 +213,7 @@ export function MetadataTemplatesPage() {
           rowKey={(t) => t.id}
           loading={isFetching}
           empty="No metadata templates yet — author one above."
+          pinning={pinning}
         />
       </Card>
     </div>

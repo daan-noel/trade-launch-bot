@@ -31,6 +31,7 @@ import {
   statusTone,
   toneColorVar,
   AddressDisplay,
+  usePinnedRows,
 } from '@shared/components/ui';
 import {
   connectWalletPoolStream,
@@ -517,6 +518,8 @@ export function WalletPoolPage() {
         (a.label ?? '').localeCompare(b.label ?? ''),
     );
   }, [wallets, showRetiredEmpty, showGenerated]);
+
+  const pinning = usePinnedRows('wallet-pool', (w: ManagedWalletPool) => w.id, sortedWallets);
 
   const lowPoolRoles = Object.entries(counts).filter(
     ([, s]) => (s.funded ?? 0) < LOW_POOL_THRESHOLD,
@@ -1103,6 +1106,7 @@ export function WalletPoolPage() {
           rowKey={(w) => w.id}
           loading={isFetching}
           empty="No wallets yet — generate a batch above."
+          pinning={pinning}
         />
       </Card>
 

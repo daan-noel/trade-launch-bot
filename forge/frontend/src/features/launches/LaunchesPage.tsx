@@ -11,6 +11,7 @@ import {
   DataTable,
   IconButton,
   StatusPill,
+  usePinnedRows,
 } from '@shared/components/ui';
 import { formatCount, formatUsd, gmgnMint, quoteToHuman } from '@shared/lib/format';
 import type { LaunchListRow } from '@shared/types';
@@ -105,6 +106,7 @@ export function LaunchesPage() {
 
   const rows = data?.launches ?? [];
   const total = data?.total ?? 0;
+  const pinning = usePinnedRows('launches', (l: LaunchListRow) => l.id, rows);
 
   return (
     <div className="space-y-4">
@@ -144,6 +146,7 @@ export function LaunchesPage() {
           loading={isFetching}
           empty="No launches yet — run one from the Launch Console."
           onRowClick={(l) => navigate(`/tokens/${l.mint_address}`)}
+          pinning={pinning}
         />
       </Card>
     </div>

@@ -22,6 +22,7 @@ import {
   InfoTip,
   Input,
   Select,
+  usePinnedRows,
 } from '@shared/components/ui';
 import { IxLayoutEditor } from '@shared/components/IxLayoutEditor';
 import type { BuyVariant, DecoStep, LaunchTemplate, NewLaunchTemplateInput } from '@shared/types';
@@ -39,6 +40,7 @@ import {
 
 export function LaunchTemplatesPage() {
   const { data: templates = [], isFetching } = useTemplatesQuery();
+  const pinning = usePinnedRows('launch-templates', (t: LaunchTemplate) => t.id, templates);
   const { data: launchpads = [] } = useLaunchpadsQuery();
   const { data: quoteAssets = [] } = useQuoteAssetsQuery();
   const { data: metadataTemplates = [] } = useMetadataTemplatesQuery();
@@ -468,6 +470,7 @@ export function LaunchTemplatesPage() {
           rowKey={(t) => t.id}
           loading={isFetching}
           empty="No launch templates yet — author one above."
+          pinning={pinning}
         />
       </Card>
     </div>

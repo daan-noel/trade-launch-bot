@@ -9,6 +9,8 @@ export { Field, InfoTip, Input, Textarea, Select, Checkbox } from './form';
 export { Card, Banner } from './Card';
 export { DataTable } from './DataTable';
 export type { Column } from './DataTable';
+export { usePinnedRows } from './usePinnedRows';
+export type { PinnedRows } from './usePinnedRows';
 export { StatCard } from './Stat';
 export { AgeCell } from './AgeCell';
 export { AddressDisplay } from './AddressDisplay';
