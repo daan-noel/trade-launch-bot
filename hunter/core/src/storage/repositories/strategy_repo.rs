@@ -2198,6 +2198,7 @@ impl StrategyRepo {
             FROM strategy_positions p
             JOIN wallet_dict w ON w.address = p.wallet
             WHERE p.mode = 'real' AND p.status = 'ExitFailed' AND p.entry_price IS NOT NULL
+              AND NOT p.exit_parked
               AND COALESCE((
                     SELECT SUM(CASE WHEN t.trade_type = 'buy'  THEN t.token_amount
                                     WHEN t.trade_type = 'sell' THEN -t.token_amount
@@ -2212,6 +2213,34 @@ impl StrategyRepo {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(StrategyPosition::from).collect())
+    }
+
+    /// Atomically increment the reaper's ExitFailed redrive counter, returning the
+    /// new count. A dedicated column (not `extra`) so the fold's full-row
+    /// `update_position` re-booking ExitFailed after a failed redrive can never
+    /// clobber it. See [`Self::set_exit_parked`] / migration 0012.
+    pub async fn bump_exit_redrive(&self, id: Uuid) -> anyhow::Result<i32> {
+        let (n,): (i32,) = sqlx::query_as(
+            "UPDATE strategy_positions SET exit_redrive_count = exit_redrive_count + 1 \
+             WHERE id = $1 RETURNING exit_redrive_count",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
+    }
+
+    /// Park (or un-park) an ExitFailed position. Parked ⇒ the reaper stops
+    /// auto-redriving it (retry cap hit); it stays ExitFailed and is surfaced for a
+    /// manual decision (retry / force-dump / write-off). Only a manual action or a
+    /// bag-cleared heal resolves it from here.
+    pub async fn set_exit_parked(&self, id: Uuid, parked: bool) -> anyhow::Result<()> {
+        sqlx::query("UPDATE strategy_positions SET exit_parked = $2 WHERE id = $1")
+            .bind(id)
+            .bind(parked)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Real `ExitFailed` whose wallet mint net is already ≤ `threshold_raw` (bag

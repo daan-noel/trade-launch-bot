@@ -12,8 +12,11 @@
 //! (list / by-mint / by-wallet / single / close) is deploy-only.
 
 use actix_web::{web, HttpResponse, Responder};
+use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
+
+use hunter_engine::event::Fill;
 
 use crate::state::deploy_state::DeployState;
 use trading_core::api::handlers::strategies::rule_positions;
@@ -198,6 +201,18 @@ pub async fn get_position(
     }
 }
 
+/// `?action=` selector for [`close_position`]:
+/// - `retry` (default) — normal sell at the configured slippage.
+/// - `dump` — force sell with NO slippage floor (accept dust); for a rugged /
+///   near-drained pool where the floor reverts every attempt.
+/// - `writeoff` — terminally book a **parked** `ExitFailed` position `Dead`
+///   (full loss) WITHOUT an on-chain sell, for a pool with no sellable liquidity.
+#[derive(Debug, Deserialize)]
+pub struct CloseParams {
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
 /// POST /api/strategies/{strategy}/positions/{position_id}/close
 ///
 /// Force-close ONE open position now — backs the per-row "Sell ALL" button on Ops.
@@ -206,14 +221,17 @@ pub async fn get_position(
 /// 2. Registry miss (post-restart orphan) → direct `orphan_exit` sell via the same
 ///    `run_exit` feed-confirm path, **or** PG book-close when `trades` net already
 ///    shows the bag cleared (no sell RPC).
+///
 /// Never returns 202 on a silent no-op.
 pub async fn close_position(
     app_state: web::Data<Arc<DeployState>>,
     path: web::Path<(String, Uuid)>,
+    query: web::Query<CloseParams>,
 ) -> impl Responder {
     use crate::strategies::engine::orphan_exit::{self, OrphanStart, BAG_CLEARED_THRESHOLD_RAW};
 
     let (_strategy, position_id) = path.into_inner();
+    let action = query.action.as_deref().unwrap_or("retry");
     let pos = match app_state.strategy_repo.find_position(position_id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
@@ -230,6 +248,40 @@ pub async fn close_position(
         return HttpResponse::Conflict()
             .json(serde_json::json!({"error": "Only real positions can be sold on-chain"}));
     }
+
+    // Write-off: terminally book a parked/failed exit `Dead` (full loss) with NO
+    // on-chain sell — for a rugged pool with no sellable liquidity. Restricted to
+    // `ExitFailed` so it can never race a live engine arm (those are never
+    // ExitFailed). Manual-only; the reaper never writes a position off.
+    if action == "writeoff" {
+        if pos.status != "ExitFailed" {
+            return HttpResponse::Conflict().json(serde_json::json!({
+                "error": format!(
+                    "write-off applies only to a failed/parked exit (status ExitFailed), not {}",
+                    pos.status
+                )
+            }));
+        }
+        let fill = Fill {
+            price: 0.0,
+            sol: 0.0,
+            token_amount: pos.entry_token_amount.unwrap_or(0),
+            at: chrono::Utc::now(),
+        };
+        return match orphan_exit::book_externally_cleared_pg(
+            &app_state.strategy_repo,
+            pos.id,
+            fill,
+            "Dead",
+        )
+        .await
+        {
+            Ok(()) => HttpResponse::Ok().json(serde_json::json!({ "written_off": true })),
+            Err(e) => HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": format!("write-off failed: {e}")})),
+        };
+    }
+    let dump = action == "dump";
 
     let status = pos.status.as_str();
     let retry_failed = status == "ExitFailed";
@@ -304,8 +356,9 @@ pub async fn close_position(
     }
 
     // Orphan / ExitFailed retry — direct sell (feed confirm), never silent 202.
+    // `dump` forces no-floor slippage so a near-drained pool still clears.
     let deps = orphan_deps_from_state(&app_state);
-    match orphan_exit::spawn_orphan_sell(&deps, pos, "Manual") {
+    match orphan_exit::spawn_orphan_sell(&deps, pos, "Manual", dump) {
         OrphanStart::Started => {
             HttpResponse::Accepted().json(serde_json::json!({ "closing": true }))
         }

@@ -61,10 +61,15 @@ pub enum OrphanStart {
 /// Spawn a direct `run_exit` for a PG row that is not (or may not be) in the live
 /// engine registry. Claims pg + mint locks on `deps.inflight`; nested `run_exit`
 /// uses a fresh guard set so it does not deadlock on the outer pg claim.
+/// `dump = true` forces a no-floor sell (`slippage_bps = None`, min_out = 1):
+/// accept whatever the pool gives, for a manual force-close of a near-drained
+/// pool where the settings slippage floor would revert every attempt. The normal
+/// (reaper / manual retry) path passes `false` and uses the configured slippage.
 pub fn spawn_orphan_sell(
     deps: &OrphanExitDeps,
     position: StrategyPosition,
     default_reason: &str,
+    dump: bool,
 ) -> OrphanStart {
     let token_amount = position.entry_token_amount.unwrap_or(0);
     if token_amount == 0 {
@@ -81,7 +86,11 @@ pub fn spawn_orphan_sell(
         return OrphanStart::Busy;
     };
 
-    let slippage = {
+    let slippage = if dump {
+        // No floor: min_out = 1, accept dust. Clears a rugged/near-drained pool
+        // whose price has collapsed below any configured slippage floor.
+        None
+    } else {
         let s = deps.settings.borrow();
         resolve_sell_slippage_bps(s.sell_slippage_bps, None)
     };

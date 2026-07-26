@@ -44,6 +44,11 @@ const BUY_SUBMITTED_REVIEW: Duration = Duration::from_secs(600);
 /// After a Fatal/unresolved ExitFailed redrive, skip this many reaper ticks
 /// before trying again (no Helius spam).
 const EXIT_FAILED_BACKOFF_TICKS: u8 = 5;
+/// Bounded-then-park: total automatic redrives of one ExitFailed position before
+/// it is parked (reaper stops auto-retrying, surfaced for a manual decision). Each
+/// redrive can send reverting sells (tip+fees) on a dead/rugged pool, so this is
+/// kept low. Reset only when a fresh entry re-opens the position.
+const EXIT_REDRIVE_CAP: i32 = 2;
 
 pub struct ReaperDeps {
     pub strategy_repo: StrategyRepo,
@@ -326,7 +331,7 @@ async fn redrive_orphaned_exit_pending(deps: &ReaperDeps) {
             }
         }
 
-        match orphan_exit::spawn_orphan_sell(&orphan, position, "Recovery") {
+        match orphan_exit::spawn_orphan_sell(&orphan, position, "Recovery", false) {
             OrphanStart::Started => {}
             OrphanStart::Busy | OrphanStart::NothingToSell => {}
         }
@@ -405,11 +410,30 @@ async fn redrive_exit_failed_bags(deps: &ReaperDeps, backoff: &mut HashMap<Uuid,
         {
             continue;
         }
-        match orphan_exit::spawn_orphan_sell(&orphan, position.clone(), "Recovery") {
+        match orphan_exit::spawn_orphan_sell(&orphan, position.clone(), "Recovery", false) {
             OrphanStart::Started => {
                 // Back off regardless of outcome so we don't re-spam every 60s while
                 // the sell task runs / after Fatal.
                 backoff.insert(position.id, EXIT_FAILED_BACKOFF_TICKS);
+                // Bounded-then-park: count this redrive; at the cap, park it so the
+                // reaper stops auto-retrying (a dead/rugged pool would otherwise burn
+                // tip+fees forever) and it surfaces for a manual decision. Never
+                // auto-written-off.
+                match deps.strategy_repo.bump_exit_redrive(position.id).await {
+                    Ok(n) if n >= EXIT_REDRIVE_CAP => {
+                        match deps.strategy_repo.set_exit_parked(position.id, true).await {
+                            Ok(()) => info!(
+                                id = %position.id, mint = %position.mint_address, redrives = n,
+                                "reaper: ExitFailed hit redrive cap → parked for manual resolution"
+                            ),
+                            Err(e) => {
+                                warn!(id = %position.id, "reaper: park ExitFailed failed: {e}")
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!(id = %position.id, "reaper: bump_exit_redrive failed: {e}"),
+                }
             }
             OrphanStart::Busy => {}
             OrphanStart::NothingToSell => {
