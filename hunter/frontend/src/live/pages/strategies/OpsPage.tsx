@@ -25,6 +25,7 @@ import {
   signedToneClass,
 } from 'lib/signedTone';
 import { resolvePnlPct } from 'lib/pnlPct';
+import { exitReasonBadge, exitReasonSearchText } from 'components/strategy/strategyColumns';
 import { apiErrorMessage } from 'store/apiSlice';
 import { ArmedHistoryPanel } from '@live/components/strategy/ArmedHistoryPanel';
 import { FloorBookStrip } from '@live/components/floor/FloorBookStrip';
@@ -619,8 +620,8 @@ export function OpsPage() {
     {
       key: 'exit',
       label: 'Exit reason',
-      render: (r) => <span className="text-text-dim">{r.exitReason ?? '—'}</span>,
-      searchValue: (r) => r.exitReason ?? '',
+      render: (r) => exitReasonBadge(r.exitReason, r.pnlSol),
+      searchValue: (r) => exitReasonSearchText(r.exitReason, r.pnlSol),
     },
     {
       key: 'hold',

@@ -8,6 +8,7 @@ import { Input } from 'components/ui/Input';
 import { InlineAlert } from 'components/ui/Modal';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
+import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { PageHeader } from 'components/ui/PageHeader';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { apiErrorMessage } from 'store/baseApi';
@@ -99,6 +100,10 @@ export function MetricDiscoveryPage() {
     setConfig((prev) => ({ ...DEFAULTS, ...prev, [key]: value }));
 
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const selectedFp = config.fingerprintId
+    ? fingerprints.find((f) => f.id === config.fingerprintId)
+    : undefined;
+  const fpMatches = useFingerprintMatches(config.fingerprintId, selectedFp?.name);
   const [start, startState] = useStartMetricDiscoveryMutation();
   const [fetchResult] = useLazyGetMetricDiscoveryQuery();
   const { data: lastResult } = useGetLastMetricDiscoveryQuery();
@@ -265,7 +270,11 @@ export function MetricDiscoveryPage() {
           }}
           scopedDescription="The pipeline fits + validates on this fingerprint's token group, and a promoted winner arms on it."
           manualHint="Unscoped runs the whole cohort (noisier); a promoted winner then needs a fingerprint chosen at promote time."
+          matchedCount={fpMatches.count}
+          matchedCountLoading={fpMatches.countLoading}
+          onViewMatches={fpMatches.openMatches}
         />
+        {fpMatches.matchesModal}
       </div>
 
       {running && pct != null && (

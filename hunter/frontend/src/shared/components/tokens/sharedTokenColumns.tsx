@@ -4,7 +4,7 @@ import { DateCell } from 'components/table/DateCell';
 import { RelativeTimeCell } from 'components/table/RelativeTimeCell';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
-import { AmountCell, CompactCell, CurrentPriceCell, PriceCell } from 'components/tokens/priceCells';
+import { AmountCell, CompactCell, CurrentPriceCell } from 'components/tokens/priceCells';
 import { amountColKeys, numericColKeys } from 'services/tableRequest';
 import { amountInDisplayUnit, type AmountStorageUnit } from 'lib/priceUnitSnapshot';
 import { formatCompact, formatDecimalTrim, formatWithCommas } from 'utils/format';
@@ -155,7 +155,7 @@ function tokenInfoColumns(): ColumnDef<any>[] {
       label: 'ATH',
       group: 'price',
       sortable: true,
-      render: (r: { ath_price?: number | null }) => <PriceCell sol={r.ath_price ?? null} />,
+      render: (r: { ath_price?: number | null }) => <CurrentPriceCell sol={r.ath_price ?? null} />,
       sortValue: (r: { ath_price?: number | null }) => r.ath_price ?? null,
       searchValue: (r: { ath_price?: number | null }) => String(r.ath_price ?? ''),
       filterNumber: (r: { ath_price?: number | null }) => solFilter(r.ath_price),

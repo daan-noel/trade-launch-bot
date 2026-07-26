@@ -11,6 +11,7 @@ import {
   signedStatTone,
   signedToneClass,
 } from 'lib/signedTone';
+import { exitReasonBadge } from 'components/strategy/strategyColumns';
 import { fetchRulePositionsPage } from 'services/api';
 import { FloorMintChart } from '@live/components/floor/FloorMintChart';
 import { buildEventMarkers, inspectFromPosition } from 'components/strategy/inspectTarget';
@@ -203,7 +204,7 @@ export function PortfolioRuleDetail({
                       >
                         {p.pnl_percent != null ? formatSignedPct(p.pnl_percent, 1) : '—'}
                       </td>
-                      <td className="px-2 py-1 text-text-dim">{p.exit_reason ?? '—'}</td>
+                      <td className="px-2 py-1">{exitReasonBadge(p.exit_reason, p.pnl_sol)}</td>
                     </tr>
                   );
                 })}

@@ -24,6 +24,7 @@ import { FingerprintGroupPicker } from './FingerprintGroupPicker';
 import { GenericAxisBuilder } from './GenericAxisBuilder';
 import { VolumeIxPatternsEditor } from 'components/strategy/VolumeIxPatternsEditor';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
+import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { FINGERPRINT_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { LabelTip } from 'components/strategy/LabelTip';
 import {
@@ -340,6 +341,10 @@ export function GenericSweepConfigForm({
   } = config;
 
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const seedFp = seedFingerprintId
+    ? fingerprints.find((f) => f.id === seedFingerprintId)
+    : undefined;
+  const fpMatches = useFingerprintMatches(seedFingerprintId, seedFp?.name);
 
   /** Scope the corpus to a saved fingerprint (engine match, server-side) — or clear
    *  back to manual group-by / filters. Selecting one drops the group-by selection
@@ -706,7 +711,11 @@ export function GenericSweepConfigForm({
               </>
             }
             manualHint="Pick a fingerprint to sweep exactly the tokens it matches — or leave empty and select the corpus with the group-by / filters below."
+            matchedCount={fpMatches.count}
+            matchedCountLoading={fpMatches.countLoading}
+            onViewMatches={fpMatches.openMatches}
           />
+          {fpMatches.matchesModal}
           <FingerprintGroupPicker
             groupBy={groupBy}
             onToggleField={toggleGroupField}

@@ -31,6 +31,7 @@ import { cn } from 'lib/cn';
 import { CreationHeatmap } from 'components/creation-stats/CreationHeatmap';
 import { DOW_ROWS } from 'components/creation-stats/creationStats';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
+import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { CREATION_FIELD_HELP } from 'lib/strategy/strategyHelp';
 import { useGetFingerprintsQuery, useCreateFingerprintMutation } from 'store/sharedEndpoints';
 import {
@@ -160,6 +161,10 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
     null,
   );
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const seedFp = seedFingerprintId
+    ? fingerprints.find((f) => f.id === seedFingerprintId)
+    : undefined;
+  const fpMatches = useFingerprintMatches(seedFingerprintId, seedFp?.name);
   function selectSeedFingerprint(id: string) {
     setSeedFingerprintId(id || null);
   }
@@ -454,7 +459,11 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
         tip={CREATION_FIELD_HELP.seedFingerprint}
         scopedDescription="Only tokens this fingerprint matches are shown (exact axes exact, SOL axes by bucket) — the manual group-by / filters below are ignored; the dashboard shows a single ALL group for the matched tokens."
         manualHint="Pick a fingerprint to see exactly the tokens it matches — or leave empty and partition the corpus with the manual group-by / filters below."
+        matchedCount={fpMatches.count}
+        matchedCountLoading={fpMatches.countLoading}
+        onViewMatches={fpMatches.openMatches}
       />
+      {fpMatches.matchesModal}
 
       {/* Group-by + value filters — shared with the sweep page's fingerprint
           control so both read identically. */}

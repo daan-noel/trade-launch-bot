@@ -10,6 +10,7 @@ import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Badge } from 'components/ui/Badge';
 import { LinkIcon } from 'components/ui/icons';
+import { formatWithCommas } from 'utils/format';
 import { SearchableSelect, type SearchableSelectOption } from 'components/ui/SearchableSelect';
 import { LabelTip } from './LabelTip';
 import { fingerprintParamsCell } from './FingerprintParamsSummary';
@@ -34,6 +35,20 @@ export interface FingerprintScopeControlProps {
   manualHint: ReactNode;
   /** Badge caption prefix. Defaults to `"engine match"`. */
   badgeLabel?: string;
+  /** Number of tokens the selected fingerprint matches, or `null` when unknown /
+   *  still loading. Rendered as a chip next to the badge. The matched-tokens
+   *  affordance (chip + "View matches") only appears when `onViewMatches` is
+   *  passed — the shared control stays presentational; a `@lab` caller (see
+   *  `useFingerprintMatches`) owns the query + modal. */
+  matchedCount?: number | null;
+  /** Show a "counting…" placeholder in the chip while the count loads. */
+  matchedCountLoading?: boolean;
+  /** Opens the caller's matched-tokens view. Presence of this callback is what
+   *  enables the count chip + "View matches" button. */
+  onViewMatches?: () => void;
+  /** Look-back window (days) the match count/list covers — labels the chip so a
+   *  window-scoped count doesn't read as all-time. Defaults to 30. */
+  matchWindowDays?: number;
 }
 
 export function FingerprintScopeControl({
@@ -46,6 +61,10 @@ export function FingerprintScopeControl({
   scopedDescription,
   manualHint,
   badgeLabel = 'engine match',
+  matchedCount,
+  matchedCountLoading = false,
+  onViewMatches,
+  matchWindowDays = 30,
 }: FingerprintScopeControlProps) {
   const selected = (value && fingerprints.find((f) => f.id === value)) || null;
 
@@ -92,6 +111,28 @@ export function FingerprintScopeControl({
               <LinkIcon className="h-3.5 w-3.5 text-accent" />
             </Link>
             <span className="text-[10px] text-text-dim">{scopedDescription}</span>
+            {onViewMatches && (
+              <>
+                <span
+                  className="inline-flex items-center rounded border border-white/10 bg-surface px-1.5 py-0.5 font-mono text-[10px] leading-tight text-text-dim"
+                  title={`Tokens matching this fingerprint, created in the last ${matchWindowDays} days`}
+                >
+                  {matchedCountLoading
+                    ? 'counting…'
+                    : matchedCount != null
+                      ? `${formatWithCommas(matchedCount)} match · ${matchWindowDays}d`
+                      : '— match'}
+                </span>
+                <button
+                  type="button"
+                  onClick={onViewMatches}
+                  disabled={matchedCount === 0}
+                  className="text-[10px] font-semibold text-accent hover:underline disabled:cursor-not-allowed disabled:text-text-dim/50 disabled:no-underline"
+                >
+                  View matches
+                </button>
+              </>
+            )}
           </div>
           {fingerprintParamsCell(selected)}
         </div>

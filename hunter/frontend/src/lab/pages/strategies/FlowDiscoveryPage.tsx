@@ -23,6 +23,7 @@ import {
 } from 'components/strategy/FingerprintParamsSummary';
 import { LabelTip } from 'components/strategy/LabelTip';
 import { FingerprintScopeControl } from 'components/strategy/FingerprintScopeControl';
+import { useFingerprintMatches } from '@lab/components/strategy/useFingerprintMatches';
 import { IxLabelsDisplay } from 'components/ui/IxLabelsDisplay';
 import { useLocalStorage } from 'hooks/useLocalStorage';
 import { apiErrorMessage } from 'store/baseApi';
@@ -296,6 +297,10 @@ export function FlowDiscoveryPage() {
   const [bindFp, bindState] = useBindFlowDiscoveryMutation();
   const [updateFp, updateState] = useUpdateFingerprintMutation();
   const { data: fingerprints = [] } = useGetFingerprintsQuery();
+  const seedFp = seedFingerprintId
+    ? fingerprints.find((f) => f.id === seedFingerprintId)
+    : undefined;
+  const fpMatches = useFingerprintMatches(seedFingerprintId, seedFp?.name);
 
   const [result, setResult] = useState<FlowDiscoveryResult | null>(null);
   const [selectedGroupIdx, setSelectedGroupIdx] = useState(0);
@@ -668,7 +673,11 @@ export function FlowDiscoveryPage() {
             tip={DISCOVERY_FIELD_HELP.seedFingerprint}
             scopedDescription="Discovery scores only tokens that match this fingerprint, then Apply writes volume_ix_patterns back to it."
             manualHint="Pick a fingerprint to detect its volume_ix_patterns — or leave empty and use the manual group-by / filters."
+            matchedCount={fpMatches.count}
+            matchedCountLoading={fpMatches.countLoading}
+            onViewMatches={fpMatches.openMatches}
           />
+          {fpMatches.matchesModal}
           <FingerprintGroupPicker
             groupBy={groupBy}
             onToggleField={(f) =>

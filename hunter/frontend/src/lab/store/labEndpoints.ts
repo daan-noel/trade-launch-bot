@@ -300,9 +300,15 @@ export const labApi = baseApi.injectEndpoints({
           tz: a.tz,
           from: a.from,
           segment: a.segment,
+          // `group_key` is a required (non-defaulted) field on the backend
+          // request struct, so it must always be present or serde 400s
+          // ("missing field group_key") before the handler runs — even in the
+          // fingerprint-scope branch where the handler then ignores it. Send the
+          // caller's key (`{}` under fingerprint scope).
+          group_key: a.groupKey,
           // Scoped by a saved fingerprint ⇒ group_by/field_filters/
           // ix_labels_filter/group_key are all ignored server-side; don't send
-          // them (same contract as `getGroupedCreationStats`).
+          // the rest (same contract as `getGroupedCreationStats`).
           ...(a.fingerprintId
             ? { fingerprint_id: a.fingerprintId }
             : {
@@ -314,7 +320,6 @@ export const labApi = baseApi.injectEndpoints({
                 ...(a.ixLabelsFilter && a.ixLabelsFilter.length > 0
                   ? { ix_labels_filter: JSON.stringify(a.ixLabelsFilter) }
                   : {}),
-                group_key: a.groupKey,
               }),
           ...(a.dow != null && a.hour != null ? { dow: a.dow, hour: a.hour } : {}),
         },
