@@ -271,21 +271,24 @@ export function OpsPage() {
   }, [recentRows]);
 
   const onSell = useCallback(
-    async (row: LiveOpenRow) => {
-      if (
-        !window.confirm(
-          `Sell ALL of this position (${row.mint.slice(0, 8)}…)? REAL mode sends an on-chain sell.`,
-        )
-      )
-        return;
+    async (row: LiveOpenRow, action: 'retry' | 'dump' | 'writeoff' = 'retry') => {
+      const mint = row.mint.slice(0, 8);
+      const prompt =
+        action === 'dump'
+          ? `Force-DUMP ${mint}…? Sells with NO slippage floor — accepts whatever the (near-drained) pool gives. REAL on-chain sell.`
+          : action === 'writeoff'
+            ? `WRITE OFF ${mint}…? Books this failed position closed at a FULL LOSS with no sell — for a pool with no sellable liquidity. Cannot be undone.`
+            : `Sell ALL of this position (${mint}…)? REAL mode sends an on-chain sell.`;
+      if (!window.confirm(prompt)) return;
       setSellErr(null);
       setSellingId(row.positionId);
       try {
         const res = await closePosition({
           strategy: row.strategyId || 'generic',
           positionId: row.positionId,
+          action,
         }).unwrap();
-        if (res && 'closed' in res && res.closed) {
+        if (res && (('closed' in res && res.closed) || ('written_off' in res && res.written_off))) {
           setSellingId(null);
         }
       } catch (e) {
@@ -486,7 +489,7 @@ export function OpsPage() {
     {
       key: 'actions',
       label: '',
-      width: '140px',
+      width: '230px',
       render: (r) => {
         const busy =
           sellingId === r.positionId || r.status === 'ExitPending' || r.status === 'BuySubmitted';
@@ -519,6 +522,28 @@ export function OpsPage() {
                 <SellIcon />
               )}
             </IconButton>
+            {sseLive && r.mode === 'real' && r.status === 'ExitFailed' && (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void onSell(r, 'dump')}
+                  title="Force-dump — sell with NO slippage floor (accept dust); clears a near-drained pool"
+                  className="text-[11px] font-semibold text-warning hover:underline disabled:opacity-40"
+                >
+                  Dump
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void onSell(r, 'writeoff')}
+                  title="Write off — book this failed position closed at a full loss with no sell (no sellable liquidity)"
+                  className="text-[11px] font-semibold text-muted hover:text-danger hover:underline disabled:opacity-40"
+                >
+                  Write off
+                </button>
+              </>
+            )}
             <Link
               to={`/trade?mint=${encodeURIComponent(r.mint)}`}
               className="text-[11px] font-semibold text-accent hover:text-primary hover:underline"

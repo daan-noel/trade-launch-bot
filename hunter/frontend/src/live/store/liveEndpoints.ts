@@ -114,12 +114,19 @@ export const liveApi = baseApi.injectEndpoints({
     // the `strategy_position_update` SSE stream — live, reload-proof status. The backend
     // returns 202 as soon as the close begins; the terminal state arrives over SSE, so
     // no cache tag is invalidated here (the stream patches the row).
+    // `action` (default `retry`) selects how a failed/parked exit is resolved:
+    //   'dump'     — sell with NO slippage floor (accept dust); clears a rugged,
+    //                near-drained pool that reverts every normal-slippage sell.
+    //   'writeoff' — book a parked `ExitFailed` position closed at a full loss with
+    //                NO on-chain sell (a pool with no sellable liquidity at all).
     closeRulePosition: builder.mutation<
-      { closing?: boolean; closed?: boolean },
-      { strategy: string; positionId: string }
+      { closing?: boolean; closed?: boolean; written_off?: boolean },
+      { strategy: string; positionId: string; action?: 'retry' | 'dump' | 'writeoff' }
     >({
-      query: ({ strategy, positionId }) => ({
-        url: `/api/strategies/${strategy}/positions/${positionId}/close`,
+      query: ({ strategy, positionId, action }) => ({
+        url: `/api/strategies/${strategy}/positions/${positionId}/close${
+          action && action !== 'retry' ? `?action=${action}` : ''
+        }`,
         method: 'POST',
       }),
     }),
