@@ -49,17 +49,25 @@ pub enum SqlArg {
 }
 
 /// Accumulates positional binds while the WHERE/ORDER fragment is built, so `$n`
-/// placeholders and the bind vec stay in lockstep.
+/// placeholders and the bind vec stay in lockstep. `base` shifts the first
+/// placeholder to `$(base+1)`, so a fragment can be ANDed after a caller's
+/// existing `base`-arg WHERE without renumbering the SQL string.
 #[derive(Default)]
 pub(crate) struct SqlArgs {
     args: Vec<SqlArg>,
+    base: usize,
 }
 
 impl SqlArgs {
-    /// Push a bind and return its `$n` placeholder (1-based, matching sqlx).
+    /// A fresh accumulator whose first placeholder is `$(base+1)`.
+    fn with_base(base: usize) -> Self {
+        SqlArgs { args: Vec::new(), base }
+    }
+
+    /// Push a bind and return its `$n` placeholder (1-based + `base`, matching sqlx).
     fn push(&mut self, arg: SqlArg) -> String {
         self.args.push(arg);
-        format!("${}", self.args.len())
+        format!("${}", self.base + self.args.len())
     }
 
     pub fn into_vec(self) -> Vec<SqlArg> {
@@ -84,6 +92,50 @@ pub struct BuiltQuery {
 /// exempt" rule).
 pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     let mut a = SqlArgs::default();
+    let clauses = collect_where_clauses(q, now, &mut a, true);
+
+    let where_sql = if clauses.is_empty() {
+        "TRUE".to_string()
+    } else {
+        clauses.join(" AND ")
+    };
+
+    let order_sql = build_order(q);
+
+    BuiltQuery { where_sql, order_sql, args: a.into_vec() }
+}
+
+/// Build ONLY the filter/panel WHERE body for a parsed query, with positional
+/// placeholders numbered from `$(base+1)` (so the fragment can be ANDed after a
+/// caller's existing `base`-arg WHERE). Global **search** and **ORDER BY** are
+/// intentionally excluded: the grouped-creation drill-in already applies its own
+/// mint/symbol search, corpus scope, and sort, and only needs the token columns'
+/// FilterPanel + per-column grammar layered on top. Returns `None` when no filter
+/// is active (so the caller can skip the AND entirely). Same clause code as
+/// [`build_where_and_order`] — no second filter→SQL implementation.
+pub fn build_filter_where_from(
+    q: &TokenQuery,
+    now: DateTime<Utc>,
+    base: usize,
+) -> Option<(String, Vec<SqlArg>)> {
+    let mut a = SqlArgs::with_base(base);
+    let clauses = collect_where_clauses(q, now, &mut a, false);
+    if clauses.is_empty() {
+        return None;
+    }
+    Some((clauses.join(" AND "), a.into_vec()))
+}
+
+/// Collect the ANDed WHERE clauses for a parsed query into `a`'s bind order. When
+/// `include_search` is false the global-search clause is skipped (the caller applies
+/// its own). This is the single body both [`build_where_and_order`] and
+/// [`build_filter_where_from`] share, so the two can never drift.
+fn collect_where_clauses(
+    q: &TokenQuery,
+    now: DateTime<Utc>,
+    a: &mut SqlArgs,
+    include_search: bool,
+) -> Vec<String> {
     let mut clauses: Vec<String> = Vec::new();
 
     // --- Identity (text_match: case-insensitive substring) ---
@@ -95,7 +147,7 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
         ("t.creation_tx_signature", "create_tx"),
     ] {
         if let Some(v) = q.f_get(key) {
-            clauses.push(like_ci(expr, v, &mut a));
+            clauses.push(like_ci(expr, v, a));
         }
     }
 
@@ -106,9 +158,9 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     }
 
     // --- Time (date_in_range over an Option<timestamptz>) ---
-    push_date_range(&mut clauses, "t.created_at", q.f_get("created_from"), q.f_get("created_to"), &mut a);
-    push_date_range(&mut clauses, "i.last_trade_at", q.f_get("last_trade_from"), q.f_get("last_trade_to"), &mut a);
-    push_date_range(&mut clauses, "i.ath_timestamp", q.f_get("ath_from"), q.f_get("ath_to"), &mut a);
+    push_date_range(&mut clauses, "t.created_at", q.f_get("created_from"), q.f_get("created_to"), a);
+    push_date_range(&mut clauses, "i.last_trade_at", q.f_get("last_trade_from"), q.f_get("last_trade_to"), a);
+    push_date_range(&mut clauses, "i.ath_timestamp", q.f_get("ath_from"), q.f_get("ath_to"), a);
 
     // --- Lifetime (minutes; dead-only stale guard) ---
     // Only apply when the token is NOT still-trading (last_trade older than the
@@ -144,38 +196,38 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     }
 
     // --- Performance (opt_f64: NULL fails when a bound is set) ---
-    push_opt_range(&mut clauses, ath_fep_sql_expr(), q.f_get("ath_fep_min"), q.f_get("ath_fep_max"), &mut a);
-    push_opt_range(&mut clauses, cur_fep_sql_expr(), q.f_get("cur_fep_min"), q.f_get("cur_fep_max"), &mut a);
-    push_opt_range(&mut clauses, "i.ath_price", q.f_get("ath_price_min"), q.f_get("ath_price_max"), &mut a);
-    push_opt_range(&mut clauses, "i.current_price", q.f_get("price_min"), q.f_get("price_max"), &mut a);
+    push_opt_range(&mut clauses, ath_fep_sql_expr(), q.f_get("ath_fep_min"), q.f_get("ath_fep_max"), a);
+    push_opt_range(&mut clauses, cur_fep_sql_expr(), q.f_get("cur_fep_min"), q.f_get("cur_fep_max"), a);
+    push_opt_range(&mut clauses, "i.ath_price", q.f_get("ath_price_min"), q.f_get("ath_price_max"), a);
+    push_opt_range(&mut clauses, "i.current_price", q.f_get("price_min"), q.f_get("price_max"), a);
 
     // --- Market ---
     // volume / trade_count / ix_count use range_f64 (present-or-0). volume &
     // trade_count are NOT NULL in tokens_info, but the LEFT JOIN can null them for a
     // token with no info row → COALESCE to 0 to match the in-RAM `.unwrap_or(0.0)`.
-    push_range(&mut clauses, "COALESCE(i.volume_sol, 0)", q.f_get("volume_min"), q.f_get("volume_max"), &mut a);
-    push_opt_range(&mut clauses, "i.first_slot_buy_lamports::float8/1e9", q.f_get("first_slot_buy_min"), q.f_get("first_slot_buy_max"), &mut a);
-    push_opt_range(&mut clauses, "i.first_slot_sell_lamports::float8/1e9", q.f_get("first_slot_sell_min"), q.f_get("first_slot_sell_max"), &mut a);
-    push_opt_range(&mut clauses, MARKET_CAP_SQL, q.f_get("mcap_min"), q.f_get("mcap_max"), &mut a);
-    push_range(&mut clauses, "COALESCE(i.trade_count, 0)", q.f_get("trades_min"), q.f_get("trades_max"), &mut a);
+    push_range(&mut clauses, "COALESCE(i.volume_sol, 0)", q.f_get("volume_min"), q.f_get("volume_max"), a);
+    push_opt_range(&mut clauses, "i.first_slot_buy_lamports::float8/1e9", q.f_get("first_slot_buy_min"), q.f_get("first_slot_buy_max"), a);
+    push_opt_range(&mut clauses, "i.first_slot_sell_lamports::float8/1e9", q.f_get("first_slot_sell_min"), q.f_get("first_slot_sell_max"), a);
+    push_opt_range(&mut clauses, MARKET_CAP_SQL, q.f_get("mcap_min"), q.f_get("mcap_max"), a);
+    push_range(&mut clauses, "COALESCE(i.trade_count, 0)", q.f_get("trades_min"), q.f_get("trades_max"), a);
     // initial_buy_sol stored lamports; model is human SOL → /1e9.
-    push_opt_range(&mut clauses, "t.initial_buy_lamports::float8/1e9", q.f_get("init_buy_min"), q.f_get("init_buy_max"), &mut a);
-    push_opt_range(&mut clauses, "t.initial_supply_token::float8", q.f_get("init_supply_min"), q.f_get("init_supply_max"), &mut a);
+    push_opt_range(&mut clauses, "t.initial_buy_lamports::float8/1e9", q.f_get("init_buy_min"), q.f_get("init_buy_max"), a);
+    push_opt_range(&mut clauses, "t.initial_supply_token::float8", q.f_get("init_supply_min"), q.f_get("init_supply_max"), a);
     // token_amount / min_tokens_out from the buy-ix JSON (raw units, no /1e9).
-    push_opt_range(&mut clauses, &buy_arg_expr("token_amount"), q.f_get("token_amount_min"), q.f_get("token_amount_max"), &mut a);
+    push_opt_range(&mut clauses, &buy_arg_expr("token_amount"), q.f_get("token_amount_min"), q.f_get("token_amount_max"), a);
     // max_cost_lamports / spendable_lamports_in from the buy-ix JSON, lamports → SOL.
-    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("max_cost_lamports")), q.f_get("max_cost_lamports_min"), q.f_get("max_cost_lamports_max"), &mut a);
-    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("spendable_lamports_in")), q.f_get("spendable_lamports_in_min"), q.f_get("spendable_lamports_in_max"), &mut a);
-    push_opt_range(&mut clauses, &buy_arg_expr("min_tokens_out"), q.f_get("min_tokens_out_min"), q.f_get("min_tokens_out_max"), &mut a);
+    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("max_cost_lamports")), q.f_get("max_cost_lamports_min"), q.f_get("max_cost_lamports_max"), a);
+    push_opt_range(&mut clauses, &format!("({}/1e9)", buy_arg_expr("spendable_lamports_in")), q.f_get("spendable_lamports_in_min"), q.f_get("spendable_lamports_in_max"), a);
+    push_opt_range(&mut clauses, &buy_arg_expr("min_tokens_out"), q.f_get("min_tokens_out_min"), q.f_get("min_tokens_out_max"), a);
 
     // --- Technical ---
-    push_opt_range(&mut clauses, "t.cu_limit::float8", q.f_get("cu_limit_min"), q.f_get("cu_limit_max"), &mut a);
-    push_opt_range(&mut clauses, "t.cu_price::float8", q.f_get("cu_price_min"), q.f_get("cu_price_max"), &mut a);
+    push_opt_range(&mut clauses, "t.cu_limit::float8", q.f_get("cu_limit_min"), q.f_get("cu_limit_max"), a);
+    push_opt_range(&mut clauses, "t.cu_price::float8", q.f_get("cu_price_min"), q.f_get("cu_price_max"), a);
     // ix_count = jsonb array length of ix_labels (handles {instructions:[…]} shape).
     let ix_count = ix_count_expr();
-    push_range(&mut clauses, &ix_count, q.f_get("ix_count_min"), q.f_get("ix_count_max"), &mut a);
+    push_range(&mut clauses, &ix_count, q.f_get("ix_count_min"), q.f_get("ix_count_max"), a);
     if let Some(raw) = q.f_get("ix_label") {
-        if let Some(c) = ix_label_clause(raw, &mut a) {
+        if let Some(c) = ix_label_clause(raw, a) {
             clauses.push(c);
         }
     }
@@ -187,27 +239,23 @@ pub fn build_where_and_order(q: &TokenQuery, now: DateTime<Utc>) -> BuiltQuery {
     push_tri(&mut clauses, "t.is_cashback_enabled", q.f_get("cashback"));
 
     // --- Global search (full parity: text + date + numeric substrings) ---
-    let search = q.search_str();
-    if !search.is_empty() {
-        clauses.push(search_clause(search, &mut a));
+    // Skipped for the drill-in filter fragment — that caller applies its own
+    // mint/symbol search over the grouped corpus.
+    if include_search {
+        let search = q.search_str();
+        if !search.is_empty() {
+            clauses.push(search_clause(search, a));
+        }
     }
 
     // --- Per-column filters (numeric grammar or substring) ---
     for (key, expr) in q.col_filters_slice() {
-        if let Some(c) = col_filter_clause(key, expr, &mut a) {
+        if let Some(c) = col_filter_clause(key, expr, a) {
             clauses.push(c);
         }
     }
 
-    let where_sql = if clauses.is_empty() {
-        "TRUE".to_string()
-    } else {
-        clauses.join(" AND ")
-    };
-
-    let order_sql = build_order(q);
-
-    BuiltQuery { where_sql, order_sql, args: a.into_vec() }
+    clauses
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +668,37 @@ mod tests {
             SqlArg::StrArray(v) => assert_eq!(v, &vec!["MintA".to_string(), "MintB".to_string()]),
             other => panic!("expected StrArray, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn filter_where_from_renumbers_from_base_and_excludes_search() {
+        // A base WHERE already consumed 3 args ($1..$3). The drill-in filter
+        // fragment must start its placeholders at $4 and must NOT emit a search
+        // clause (the grouped endpoint applies its own).
+        let (sql, args) = build_filter_where_from(
+            &query(serde_json::json!({
+                "search": "shouldbeignored",
+                "filters": {"trade_count": {"op":"gte","val":100}},
+            })),
+            now(),
+            3,
+        )
+        .expect("active filter");
+        // Placeholder renumbered to $4 (base 3 + 1), not $1.
+        assert!(sql.contains(">= $4"), "got: {sql}");
+        assert!(!sql.contains("$1"), "must not reuse base placeholders: {sql}");
+        // Search excluded ⇒ no mint/symbol LIKE, and exactly one bound arg.
+        assert!(!sql.contains("t.mint_address) LIKE"));
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0], SqlArg::F64(v) if (v - 100.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn filter_where_from_none_when_no_filters() {
+        // No per-column/panel filters (only search, which is excluded) ⇒ None, so
+        // the caller skips the AND entirely.
+        assert!(build_filter_where_from(&query(serde_json::json!({"search": "x"})), now(), 5).is_none());
+        assert!(build_filter_where_from(&query(serde_json::json!({})), now(), 0).is_none());
     }
 
     #[test]

@@ -296,7 +296,10 @@ export const labApi = baseApi.injectEndpoints({
           pagination: { page: a.page, pageSize: a.pageSize },
           sorting: a.sortKeys.map((s) => ({ col: s.col, dir: s.dir })),
           search: a.search,
-          filters: {},
+          // Per-column drill-in filters (numeric/amount/flag/identity grammar),
+          // already lowered by `drillTokenFilters`; the backend layers them onto
+          // the group's corpus scope. Empty ⇒ no per-column filter.
+          filters: a.filters ?? {},
           tz: a.tz,
           from: a.from,
           segment: a.segment,

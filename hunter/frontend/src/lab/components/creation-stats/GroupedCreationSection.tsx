@@ -62,6 +62,7 @@ import {
   MISSING_VALUE,
   groupColor,
   groupValueParts,
+  drillTokenFilters,
   type GroupedCreationArgs,
   type GroupedCreationCell,
   type GroupedCreationGroup,
@@ -371,6 +372,7 @@ export function GroupedCreationSection({ tz, segment }: GroupedCreationSectionPr
       pageSize: drillQuery.pageSize,
       sortKeys: drillQuery.sortKeys,
       search: drillQuery.search,
+      filters: drillTokenFilters(drillQuery),
     };
   }, [applied, drillTarget, drillGroup, drillQuery]);
 

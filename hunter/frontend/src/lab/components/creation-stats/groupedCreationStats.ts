@@ -14,7 +14,10 @@ import {
 } from '@lab/components/sweep/groupedTypes';
 import { WALLET_MARKER_COLORS } from 'components/token-price-chart/constants';
 import type { CreationBucket, CreationSegment } from 'components/creation-stats/creationStats';
-import type { SortEntry } from 'components/table/types';
+import type { SortEntry, TableQuery } from 'components/table/types';
+import type { FilterSpec } from 'components/table/numericFilter';
+import { toTableRequest } from 'services/tableRequest';
+import { TOKEN_INFO_AMOUNT_COLS } from 'components/tokens/sharedTokenColumns';
 import type { TokenRecord } from 'types';
 
 export { GROUP_FIELDS, GROUP_FIELD_LABELS };
@@ -93,6 +96,35 @@ export interface GroupedCreationTokensArgs {
   pageSize: number;
   sortKeys: SortEntry[];
   search: string;
+  /** Per-column filters from the drill-in TokenTable, already lowered to the
+   *  unified `TableRequest.filters` grammar (via {@link drillTokenFilters}). The
+   *  backend layers these onto the group's corpus scope so they narrow the rows
+   *  AND the pager total. Empty/omitted ⇒ no per-column filter. */
+  filters?: Record<string, FilterSpec>;
+}
+
+/**
+ * Serialize a drill-in TokenTable's view-state per-column filters into the
+ * `TableRequest.filters` map the grouped-tokens endpoint applies. Uses the SAME
+ * serializer path as the live Tokens list ({@link tokensTableRequestBody}): an
+ * empty `numericCols` set (the backend re-parses each raw predicate via
+ * `lower_filter`) plus `TOKEN_INFO_AMOUNT_COLS` so SOL amount-column filters
+ * rewrite display→storage units before that re-parse. Search/sort/page are
+ * carried by the args' own fields, so only `.filters` is lifted here.
+ */
+export function drillTokenFilters(query: TableQuery): Record<string, FilterSpec> {
+  return toTableRequest(
+    {
+      page: query.page,
+      pageSize: query.pageSize,
+      sortKeys: query.sortKeys,
+      search: query.search,
+      colFilters: query.colFilters,
+      structuredFilters: query.structuredFilters,
+    },
+    new Set(),
+    { amountCols: TOKEN_INFO_AMOUNT_COLS },
+  ).filters;
 }
 
 export interface GroupedCreationTokensResponse {

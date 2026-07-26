@@ -616,9 +616,12 @@ const MAX_GROUPED_TOKENS_PAGE_SIZE: i64 = 500;
 /// reads the SAME corpus `grouped()` ranked) plus the two selectors that pin it
 /// to one row: `group_key` (required — the exact group, echoing back
 /// [`GroupedGroup::group_key`]) and, for a heatmap-tile click, `dow`/`hour`.
-/// The embedded [`TableRequest`] supplies pagination/sort/search (its
-/// `filters`/`range`/`tracked_only` are unused — this endpoint's corpus is
-/// scoped entirely by the fields above, not the per-column FilterPanel grammar).
+/// The embedded [`TableRequest`] supplies pagination/sort/search AND its
+/// per-column `filters`: the corpus is scoped to one group by the fields above,
+/// then the drill-in table's FilterPanel/per-column grammar is layered on via the
+/// live Tokens list's SSOT filter→SQL builder (`build_filter_where_from`), so a
+/// numeric/flag column filter narrows the rows AND the pager total. (`range` /
+/// `tracked_only` remain unused — the corpus window is the fields above.)
 #[derive(Deserialize)]
 pub struct GroupedCreationTokensRequest {
     #[serde(flatten)]
@@ -693,7 +696,7 @@ pub async fn get_grouped_creation_tokens(
 
     let filter = StatsFilter { tz: &tz, maturity_secs: 0.0, from, to, mayhem, cashback };
 
-    let (where_sql, args) = if let Some(fp_id) = body.fingerprint_id {
+    let (mut where_sql, mut args) = if let Some(fp_id) = body.fingerprint_id {
         // Saved-fingerprint scope — group_by/field_filters/ix_labels_filter/
         // group_key above are all ignored (mirrors the main endpoint's contract).
         let fp = match state.fingerprint_repo().find(fp_id).await {
@@ -767,6 +770,21 @@ pub async fn get_grouped_creation_tokens(
         )
     };
 
+    // Layer the drill-in table's per-column filters (numeric/amount/flag/identity
+    // grammar) onto the base corpus scope. The grouped corpus + window + global
+    // search are already applied above; here we lift ONLY the FilterPanel/col-filter
+    // grammar from `body.table.filters`, reusing the live Tokens list's SSOT
+    // filter→SQL builder (no re-implementation). Search is excluded (applied above);
+    // placeholders start after the base args so the two fragments compose cleanly.
+    let filter_query =
+        crate::api::handlers::tokens::TokenQuery::from_table_request(&body.table);
+    if let Some((filter_sql, filter_args)) =
+        crate::api::handlers::tokens::build_filter_where_from(&filter_query, now, args.len())
+    {
+        where_sql = format!("({where_sql}) AND ({filter_sql})");
+        args.extend(filter_args);
+    }
+
     let order_sql = crate::storage::repositories::creation_stats_repo::build_grouped_tokens_order(
         &body
             .table
@@ -806,6 +824,44 @@ fn db_error(e: anyhow::Error) -> HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The drill-in filter fragment must renumber onto the grouped base's args and
+    /// compose into a single valid WHERE (the exact merge the handler performs).
+    #[test]
+    fn drill_in_filters_merge_onto_grouped_base() {
+        use crate::api::handlers::tokens::{build_filter_where_from, SqlArg, TokenQuery};
+        use crate::api::table_query::TableRequest;
+
+        // A grouped base that already consumed 3 args ($1..$3).
+        let mut where_sql = "t.created_at >= $1 AND t.created_at < $2 AND t.is_mayhem_mode = $3".to_string();
+        let mut args: Vec<SqlArg> = vec![
+            SqlArg::Ts(Utc::now()),
+            SqlArg::Ts(Utc::now()),
+            SqlArg::Bool(true),
+        ];
+
+        // A drill-in table filtering trade_count >= 100 (numeric) + dead=yes (flag).
+        let req: TableRequest = serde_json::from_value(serde_json::json!({
+            "filters": {
+                "trade_count": {"op": "gte", "val": 100},
+                "dead": {"op": "eq", "val": "yes"},
+            }
+        }))
+        .unwrap();
+        let tq = TokenQuery::from_table_request(&req);
+
+        let (filter_sql, filter_args) =
+            build_filter_where_from(&tq, Utc::now(), args.len()).expect("active filter");
+        where_sql = format!("({where_sql}) AND ({filter_sql})");
+        args.extend(filter_args);
+
+        // The numeric predicate's bound renumbered to $4 (after the 3 base args);
+        // the tri-flag emits no bind, so total args = 3 base + 1 filter.
+        assert!(where_sql.contains(">= $4"), "got: {where_sql}");
+        assert!(where_sql.contains("COALESCE(i.is_dead, false) = true"), "got: {where_sql}");
+        assert!(!where_sql.contains("$5"), "no extra placeholder: {where_sql}");
+        assert_eq!(args.len(), 4);
+    }
 
     #[test]
     fn segment_maps_to_flag_predicates() {

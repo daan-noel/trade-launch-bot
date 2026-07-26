@@ -22,7 +22,10 @@ import { inspectFromMint } from 'components/strategy/inspectTarget';
 import { LazyLabTokenInspectModal } from '@lab/components/strategy/LazyLabTokenInspectModal';
 import { apiErrorMessage } from 'store/apiSlice';
 import { useGetGroupedCreationTokensQuery } from '@lab/store/labEndpoints';
-import type { GroupedCreationTokensArgs } from '@lab/components/creation-stats/groupedCreationStats';
+import {
+  drillTokenFilters,
+  type GroupedCreationTokensArgs,
+} from '@lab/components/creation-stats/groupedCreationStats';
 import type { TableQuery } from 'components/table/types';
 import type { TokenRecord } from 'types';
 
@@ -45,23 +48,18 @@ const EMPTY_ROWS: TokenRecord[] = [];
 /** Build the scoped-token args (fingerprint scope ⇒ group_by/group_key ignored
  *  server-side; we still pass the required-but-ignored fields). `from` omitted ⇒
  *  the backend's default {@link FINGERPRINT_MATCH_WINDOW_DAYS}-day window. */
-function scopedArgs(
-  fingerprintId: string,
-  page: number,
-  pageSize: number,
-  sortKeys: TableQuery['sortKeys'],
-  search: string,
-): GroupedCreationTokensArgs {
+function scopedArgs(fingerprintId: string, query: TableQuery): GroupedCreationTokensArgs {
   return {
     tz: 'UTC',
     segment: 'all',
     groupBy: [],
     groupKey: {},
     fingerprintId,
-    page,
-    pageSize,
-    sortKeys,
-    search,
+    page: query.page,
+    pageSize: query.pageSize,
+    sortKeys: query.sortKeys,
+    search: query.search,
+    filters: drillTokenFilters(query),
   };
 }
 
@@ -82,10 +80,7 @@ function FingerprintMatchesModal({
   const columns = useMemo(() => tokenColumns(), []);
   const [inspected, setInspected] = useState<{ mint: string; symbol?: string } | null>(null);
 
-  const args = useMemo(
-    () => scopedArgs(fingerprintId, query.page, query.pageSize, query.sortKeys, query.search),
-    [fingerprintId, query],
-  );
+  const args = useMemo(() => scopedArgs(fingerprintId, query), [fingerprintId, query]);
   const { data, isFetching, isError, error } = useGetGroupedCreationTokensQuery(args);
   // Hold the last successful page so the table doesn't flash empty between pages.
   const itemsRef = useRef<TokenRecord[]>(EMPTY_ROWS);
@@ -160,9 +155,10 @@ export function useFingerprintMatches(
 ): UseFingerprintMatches {
   const [open, setOpen] = useState(false);
 
-  // Count = the `total` of a 1-row page; reuses the modal's cache-adjacent query.
+  // Count = the `total` of a 1-row page; no per-column filters (the raw match
+  // count for the whole window). Reuses the modal's cache-adjacent query shape.
   const countArgs = fingerprintId
-    ? scopedArgs(fingerprintId, 1, 1, [], '')
+    ? scopedArgs(fingerprintId, { ...INITIAL_QUERY, page: 1, pageSize: 1 })
     : skipToken;
   const { data: countData, isFetching: countLoading } =
     useGetGroupedCreationTokensQuery(countArgs);
