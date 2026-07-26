@@ -1,8 +1,11 @@
 # Real-trade Console redesign — plan
 
-> Status: PLANNED (2026-07-26, `strategy-redesign`). Successor to the audit in
-> [../arch/position-lifecycle.md](../arch/position-lifecycle.md) — read that first; this plan
-> assumes its case matrix (B1-B5 / S1-S7 / M1-M4 / N1-N4) and defect list.
+> Status: **ALL PHASES LANDED** (2026-07-26, `strategy-redesign`) — P1..P4 implemented and
+> committed; migration 0013 auto-applies on next boot. REMAINING before this file is
+> deleted: paper/zero-SOL smoke of the new status flow + manual-buy path, then a real-SOL
+> smoke on the EC2 box. [../arch/position-lifecycle.md](../arch/position-lifecycle.md) now
+> describes the NEW machine (the pre-redesign audit this plan grew from lives in git
+> history).
 >
 > User decisions locked in:
 > 1. **One unified Console** replaces Floor + Trade (Wallet slimmed to funding/keys).
@@ -219,7 +222,7 @@ that scrolls/flashes the row in whichever lane it lives — fixes defect #3 stru
 | **P1 — status split** ✅ DONE | §1 whole: enum, migration 0013 (remap + CHECK + `origin` + `manual_exit` cols in one migration), reduce/sinks/reapers/repo, close-action matrix (incl. `?action=verify`), drift test. FE minimal patch: slice sets + labels + notification maps updated; OpsPage attention lane now holds ExitStuck with Retry/Dump/Write-off | yes (old UI still renders; ExitStuck rows now appear in Needs-attention — already an improvement) |
 | **P2 — manual positions** ✅ DONE | §2: engine `ManualBuy`/`SetManualExit` events + per-position `manual_rules`, `POST /api/positions/manual-buy` (202 `{position_id}`), `POST …/{id}/manual-exit`, wallet-sell mint lock (N2). Deviation from decision 2: since `strategy_positions.rule_id` has NO FK, manual episodes use a **fresh per-episode rule uuid** + ONE `strategy_runs` row (`strategy_id='manual'`, `rule_id` NULL) instead of a hidden rule row — same goal, zero Rules-UI filtering needed | yes (FE wiring lands with P3's Console) |
 | **P3 — Console** ✅ DONE | `/console` (`ConsolePage.tsx`): attention lane on top (per-status action cells mirroring the close matrix, PARKED/retry/stale chips), OPEN ∥ MANUAL TRADE panels (buy→202+SSE, TP/SL, sell-all-by-mint with tracked-row warning, session trade log), collapsible WAITING, RECENT (End·EntryFailed). Deleted `TradePage.tsx`+`OpsPage.tsx`; `/floor` `/trade` `/ops` `/positions` redirect (query preserved — `/trade?mint=X` prefills the panel); MyWalletPage header manual modals (M4) removed, links → Console; notifications deep-link to `/console` | yes |
-| **P4 — polish** | dead-pool chip, persistent trade log, stale-SSE row cue, mode-badge nullability fix | incremental |
+| **P4 — polish** ✅ DONE | dead-pool ❗ chip (holdings `is_dead` join), trade log persists across reloads (localStorage `mt:console-trade-log`; the durable record stays the positions table — a PG `manual_actions` table remains optional future work), stale-SSE age cue (⚠ + warning tone), unknown-mode badge (`mode?` instead of masquerading as real) | incremental |
 
 P1 and P2 are backend-first and independently smoke-testable via paper mode + the probe/dryrun
 bins (zero-SOL verification per the usual workflow). Real-SOL smoke happens once per phase on

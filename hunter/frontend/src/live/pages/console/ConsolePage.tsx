@@ -108,6 +108,22 @@ interface LogEntry {
   ok: boolean;
 }
 
+/** Persistent manual-trade log (defect #10: the old page-local array died on
+ *  reload). localStorage-backed; the durable source of truth for manual
+ *  activity remains the positions table itself (origin='manual' rows). */
+const TRADE_LOG_KEY = 'mt:console-trade-log';
+
+function loadTradeLog(): LogEntry[] {
+  try {
+    const raw = localStorage.getItem(TRADE_LOG_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as LogEntry[];
+    return Array.isArray(arr) ? arr.slice(0, 50) : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The unified real-trade Console (`/console`) — replaces Floor + Trade.
  * Lanes, top to bottom: ATTENTION (always first — every row has an action),
@@ -150,14 +166,20 @@ export function ConsolePage() {
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
 
-  // Session trade log (manual buys/sells + resolutions).
-  const [log, setLog] = useState<LogEntry[]>([]);
-  const logSeq = useRef(0);
+  // Manual-trade log — survives reloads (localStorage).
+  const [log, setLog] = useState<LogEntry[]>(loadTradeLog);
+  const logSeq = useRef(Date.now());
   const pushLog = useCallback((action: string, mint: string, note: string, ok: boolean) => {
     const key = `${logSeq.current++}`;
-    setLog((prev) =>
-      [{ key, at: Date.now(), action, mint, note, ok }, ...prev].slice(0, 50),
-    );
+    setLog((prev) => {
+      const next = [{ key, at: Date.now(), action, mint, note, ok }, ...prev].slice(0, 50);
+      try {
+        localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(next));
+      } catch {
+        /* quota/private mode — session-only fallback */
+      }
+      return next;
+    });
   }, []);
 
   // ── Bag marks (SSOT unrealized PnL) — join by mint for real open MTM ────────
@@ -447,13 +469,23 @@ export function ConsolePage() {
       {r.status === 'BuySubmitted' && r.needsReview && (
         <Badge variant="warning">stale — verify</Badge>
       )}
+      {/* Deadness chip (defect #9): a rugged/drained pool must not read as
+          "no data" — the shared is_dead verdict rides on the holdings join. */}
+      {holdingByMint.get(r.mint)?.is_dead && (
+        <span title="Dead pool — liquidity gone; sells may only clear via Dump / Write off">
+          <Badge variant="danger">❗ dead</Badge>
+        </span>
+      )}
       {r.mode === 'paper' && <Badge variant="neutral">paper</Badge>}
     </span>
   );
 
+  // Per-row stale cue (defect #10): with a dead feed the Age keeps ticking but
+  // the STATUS may be old — mark it instead of letting it read as live.
   const ageCell = (r: LiveOpenRow) => {
     const t = r.entryTime ? Date.parse(r.entryTime) : r.updatedAt;
-    return Number.isFinite(t) ? fmtAge(Date.now() - t) : '—';
+    const age = Number.isFinite(t) ? fmtAge(Date.now() - t) : '—';
+    return sseLive ? age : `${age} ⚠`;
   };
   const ageSecs = (r: LiveOpenRow) => {
     const t = r.entryTime ? Date.parse(r.entryTime) : r.updatedAt;
@@ -589,7 +621,14 @@ export function ConsolePage() {
       key: 'age',
       label: 'Age',
       sortable: true,
-      render: (r) => <span className="tabular-nums text-text-dim">{ageCell(r)}</span>,
+      render: (r) => (
+        <span
+          className={`tabular-nums ${sseLive ? 'text-text-dim' : 'text-warning'}`}
+          title={sseLive ? undefined : 'SSE stale — status may be out of date'}
+        >
+          {ageCell(r)}
+        </span>
+      ),
       sortValue: (r) => ageSecs(r) ?? -1,
       searchValue: () => '',
       filterNumber: ageSecs,
@@ -715,9 +754,18 @@ export function ConsolePage() {
       label: 'Status',
       sortable: true,
       render: (r) => (
-        <Badge variant={r.status === 'EntryFailed' ? 'neutral' : 'primary'}>
-          {STATUS_LABEL[r.status] ?? r.status}
-        </Badge>
+        <span className="inline-flex flex-wrap items-center gap-1">
+          <Badge variant={r.status === 'EntryFailed' ? 'neutral' : 'primary'}>
+            {STATUS_LABEL[r.status] ?? r.status}
+          </Badge>
+          {r.mode === 'paper' && <Badge variant="neutral">paper</Badge>}
+          {/* An unknown mode must not masquerade as real (defect #10). */}
+          {r.mode == null && (
+            <span title="Mode unknown (older SSE frame)">
+              <Badge variant="neutral">mode?</Badge>
+            </span>
+          )}
+        </span>
       ),
       sortValue: (r) => r.status,
       searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
