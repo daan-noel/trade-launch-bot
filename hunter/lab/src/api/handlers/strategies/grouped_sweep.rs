@@ -249,106 +249,99 @@ pub struct ResultsQuery {
     /// Legacy `"asc"` or `"desc"` (default `"desc"`).
     #[serde(default)]
     pub sort_dir: Option<String>,
+    /// Per-column filters as a URL-encoded JSON object: `{"<col>": {op, val|min/max}}`,
+    /// where `<col>` is a frontend column key (same vocabulary as `sort`). Every
+    /// combo column is numeric, so operands are numbers and the ops are the numeric
+    /// set (`gt`/`gte`/`lt`/`lte`/`eq`/`neq`/`between`); non-numeric ops and
+    /// unresolvable columns are dropped, exactly like an unknown sort key. Applied to
+    /// both the page query and the `X-Total-Count` count so the pager stays correct.
+    #[serde(default)]
+    pub filters: Option<String>,
 }
 
-/// Validated sort spec derived from `ResultsQuery`.
-enum SortSpec {
-    DirectCol { col: &'static str, dir: &'static str },
-    /// A derived, table-qualified SQL expression over result columns (e.g. the
-    /// mark-to-market total `r.total_pnl_sol + r.open_pnl_sol`, which has no
-    /// column of its own). Always a `&'static str` written here — never built
-    /// from request input — so it carries the same injection-safety as the
-    /// `DirectCol` allowlist.
-    Expr { sql: &'static str, dir: &'static str },
-    ParamKey { key: String, dir: &'static str },
+/// One column filter's wire shape (mirrors the frontend `FilterSpec`). Operands are
+/// `f64` because every filterable combo column is numeric; a `contains`/`in` op or a
+/// missing operand fails to resolve and the filter is dropped.
+#[derive(serde::Deserialize)]
+struct FilterWire {
+    op: String,
+    #[serde(default)]
+    val: Option<f64>,
+    #[serde(default)]
+    min: Option<f64>,
+    #[serde(default)]
+    max: Option<f64>,
 }
 
-impl SortSpec {
-    /// SQL `ORDER BY` fragment for this level (table-qualified, `NULLS LAST`).
-    /// Every column/expression is allowlisted in `resolve_sort`, so the result
-    /// is injection-safe.
-    fn order_fragment(&self) -> String {
-        match self {
-            SortSpec::DirectCol { col, dir } => format!("r.{} {} NULLS LAST", col, dir),
-            SortSpec::Expr { sql, dir } => format!("({}) {} NULLS LAST", sql, dir),
-            SortSpec::ParamKey { key, dir } => {
-                format!("(c.params->>'{}')::numeric {} NULLS LAST", key, dir)
-            }
-        }
-    }
+/// A validated, injection-safe numeric predicate over one allowlisted column
+/// expression. `expr` always comes from [`resolve_result_expr`]; operands are
+/// bound as parameters (never interpolated), so this carries the same safety as
+/// the sort allowlist.
+enum FilterPred {
+    /// `(expr) <sql_op> $n` — one bound operand.
+    Cmp { expr: String, sql_op: &'static str, val: f64 },
+    /// `(expr) BETWEEN $n AND $n+1` — two bound operands.
+    Between { expr: String, min: f64, max: f64 },
 }
 
-/// Build the full `ORDER BY` body from the frontend sort params. Prefers the
-/// multi-key `sort=col:dir,…` list; falls back to the legacy single
-/// `sort_col`/`sort_dir`. Unresolvable levels are dropped. A stable
-/// `r.combo_id ASC` tiebreak is always appended so equal rows keep a
-/// deterministic order across pages/refetches. Empty ⇒ caller's default.
-fn build_order_by(query: &ResultsQuery) -> String {
-    order_by_from(
-        query.sort.as_deref(),
-        query.sort_col.as_deref(),
-        query.sort_dir.as_deref(),
-    )
-}
-
-/// Core of [`build_order_by`], split out so it's unit-testable without building
-/// the full `ResultsQuery`.
-fn order_by_from(sort: Option<&str>, sort_col: Option<&str>, sort_dir: Option<&str>) -> String {
-    let mut levels: Vec<String> = Vec::new();
-    if let Some(spec) = sort.filter(|s| !s.is_empty()) {
-        for entry in spec.split(',') {
-            let (col, dir) = entry.split_once(':').unwrap_or((entry, "desc"));
-            if let Some(s) = resolve_sort(col.trim(), dir.trim()) {
-                levels.push(s.order_fragment());
-            }
-        }
-    } else if let Some(col) = sort_col {
-        let dir = sort_dir.unwrap_or("desc");
-        if let Some(s) = resolve_sort(col, dir) {
-            levels.push(s.order_fragment());
-        }
-    }
-    if levels.is_empty() {
-        return String::new();
-    }
-    levels.push("r.combo_id ASC".to_string());
-    levels.join(", ")
-}
-
-/// Allowlist of direct DB columns the frontend may sort by (maps frontend key
-/// → DB column name, which happen to be identical here).
-fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
-    let dir_str: &'static str = match dir { "asc" => "ASC", _ => "DESC" };
-    // Param column: frontend prefix is `p_`, DB expression is `(params->>'key')::numeric`.
+/// Resolve a frontend column key to a table-qualified, injection-safe **numeric**
+/// SQL expression over the results row (`r`) / per-run combos row (`c`). This is the
+/// single allowlist shared by sort ([`order_by_from`]) and filter
+/// ([`build_filter_preds`]) — a column is sortable **iff** it is filterable, so the
+/// two can never drift. Every branch returns a fixed expression built only from
+/// static SQL plus an `[a-z0-9_]`-validated param key, so interpolating the result
+/// is safe.
+///
+/// Columns whose *displayed* value is scaled (win% / open% render `×100`) fold that
+/// scale into the expression, so the operand the frontend sends (in displayed units)
+/// compares directly and sorts identically (monotonic). `buy_amount_sol` supplies the
+/// run notional the derived `mtm_pnl_pct` needs; `None` (or a non-positive value)
+/// leaves that one column unresolvable.
+fn resolve_result_expr(col: &str, buy_amount_sol: Option<f64>) -> Option<String> {
+    // Param column: frontend prefix `p_`, DB expression `(params->>'key')::numeric`.
     if let Some(param_key) = col.strip_prefix("p_") {
-        // Only allow [a-z0-9_]+ to prevent injection.
-        if param_key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && !param_key.is_empty() {
-            return Some(SortSpec::ParamKey { key: param_key.to_string(), dir: dir_str });
+        // Only allow [a-z0-9_]+ to keep the interpolation injection-safe.
+        if !param_key.is_empty()
+            && param_key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Some(format!("(c.params->>'{}')::numeric", param_key));
         }
         return None;
     }
-    // Derived column: mark-to-market total (realized + unrealized). No stored
-    // column, so it sorts as an expression.
-    if col == "pnl_mtm_sol" {
-        return Some(SortSpec::Expr {
-            sql: "r.total_pnl_sol + r.open_pnl_sol",
-            dir: dir_str,
-        });
+    // Derived columns with no stored column of their own.
+    match col {
+        // Mark-to-market total (realized + unrealized).
+        "pnl_mtm_sol" => return Some("(r.total_pnl_sol + r.open_pnl_sol)".to_string()),
+        // Share of fired positions still open, in percent points to match the cell.
+        // `NULLIF` guards n_fired = 0 (→ NULL, parked last / excluded by any compare).
+        "open_share" => {
+            return Some("(r.n_open::numeric / NULLIF(r.n_fired, 0) * 100)".to_string())
+        }
+        // Per-trade MTM % = (realized + unrealized) / (buy × fired) × 100. Mirrors the
+        // frontend `mtmPctOf`; needs the run notional, so it only resolves when known.
+        "mtm_pnl_pct" => {
+            let buy = buy_amount_sol?;
+            if !buy.is_finite() || buy <= 0.0 {
+                return None;
+            }
+            // `buy` is a trusted f64 from our own runs table; Rust's f64 `Display`
+            // never emits scientific notation, so it is a plain SQL decimal literal.
+            return Some(format!(
+                "((r.total_pnl_sol + r.open_pnl_sol) / NULLIF({} * r.n_fired, 0) * 100)",
+                buy
+            ));
+        }
+        _ => {}
     }
-    // Share of fired positions still open. `NULLIF` guards n_fired = 0 (yields
-    // NULL, which the `NULLS LAST` in `order_fragment` parks at the end).
-    if col == "open_share" {
-        return Some(SortSpec::Expr {
-            sql: "r.n_open::numeric / NULLIF(r.n_fired, 0)",
-            dir: dir_str,
-        });
+    // Win% renders `×100` off a 0..1 fraction — fold the scale in (monotonic for sort).
+    if col == "win_rate" {
+        return Some("(r.win_rate * 100)".to_string());
     }
     let db_col: &'static str = match col {
         "score"               => "score",
         "n_fired"             => "n_fired",
         "n_closed"            => "n_closed",
         "n_open"              => "n_open",
-        "win_rate"            => "win_rate",
         "total_pnl_sol"       => "total_pnl_sol",
         "open_pnl_sol"        => "open_pnl_sol",
         "mean_pnl_pct"        => "mean_pnl_pct",
@@ -369,13 +362,131 @@ fn resolve_sort(col: &str, dir: &str) -> Option<SortSpec> {
         "n_exit_liquidity"    => "n_exit_liquidity",
         "n_exit_next_kill"    => "n_exit_next_kill",
         "n_exit_dead"         => "n_exit_dead",
-        // Was missing while the column was rendered as sortable, so sorting by it
-        // silently no-op'd (an unlisted key returns None and the sort is dropped).
         "n_exit_metrics"      => "n_exit_metrics",
         "n_exit_open"         => "n_exit_open",
         _                     => return None,
     };
-    Some(SortSpec::DirectCol { col: db_col, dir: dir_str })
+    Some(format!("r.{}", db_col))
+}
+
+/// Build the full `ORDER BY` body from the frontend sort params. Prefers the
+/// multi-key `sort=col:dir,…` list; falls back to the legacy single
+/// `sort_col`/`sort_dir`. Unresolvable levels are dropped. A stable
+/// `r.combo_id ASC` tiebreak is always appended so equal rows keep a
+/// deterministic order across pages/refetches. Empty ⇒ caller's default.
+fn build_order_by(query: &ResultsQuery, buy_amount_sol: Option<f64>) -> String {
+    order_by_from(
+        query.sort.as_deref(),
+        query.sort_col.as_deref(),
+        query.sort_dir.as_deref(),
+        buy_amount_sol,
+    )
+}
+
+/// Core of [`build_order_by`], split out so it's unit-testable without building
+/// the full `ResultsQuery`.
+fn order_by_from(
+    sort: Option<&str>,
+    sort_col: Option<&str>,
+    sort_dir: Option<&str>,
+    buy_amount_sol: Option<f64>,
+) -> String {
+    let dir_sql = |dir: &str| -> &'static str { if dir.trim() == "asc" { "ASC" } else { "DESC" } };
+    let mut levels: Vec<String> = Vec::new();
+    if let Some(spec) = sort.filter(|s| !s.is_empty()) {
+        for entry in spec.split(',') {
+            let (col, dir) = entry.split_once(':').unwrap_or((entry, "desc"));
+            if let Some(expr) = resolve_result_expr(col.trim(), buy_amount_sol) {
+                levels.push(format!("{} {} NULLS LAST", expr, dir_sql(dir)));
+            }
+        }
+    } else if let Some(col) = sort_col {
+        let dir = sort_dir.unwrap_or("desc");
+        if let Some(expr) = resolve_result_expr(col, buy_amount_sol) {
+            levels.push(format!("{} {} NULLS LAST", expr, dir_sql(dir)));
+        }
+    }
+    if levels.is_empty() {
+        return String::new();
+    }
+    levels.push("r.combo_id ASC".to_string());
+    levels.join(", ")
+}
+
+/// Parse the URL-encoded `filters` JSON into validated numeric predicates. Each
+/// entry's column resolves through the shared [`resolve_result_expr`] allowlist and
+/// its op maps to a numeric SQL comparison; entries with an unresolvable column,
+/// non-numeric op, or missing operand are dropped (mirrors the sort policy). Order
+/// is stabilized by sorting on the column key so the emitted `$n` placeholders are
+/// deterministic across the count and page queries.
+fn build_filter_preds(filters_json: Option<&str>, buy_amount_sol: Option<f64>) -> Vec<FilterPred> {
+    let Some(raw) = filters_json.filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let map: std::collections::HashMap<String, FilterWire> = match serde_json::from_str(raw) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    let mut entries: Vec<(String, FilterWire)> = map.into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut preds = Vec::new();
+    for (col, f) in entries {
+        let Some(expr) = resolve_result_expr(&col, buy_amount_sol) else {
+            continue;
+        };
+        let sql_op: Option<&'static str> = match f.op.as_str() {
+            "gt" => Some(">"),
+            "gte" => Some(">="),
+            "lt" => Some("<"),
+            "lte" => Some("<="),
+            "eq" => Some("="),
+            "neq" => Some("<>"),
+            "between" => {
+                if let (Some(min), Some(max)) = (f.min, f.max) {
+                    preds.push(FilterPred::Between { expr, min, max });
+                }
+                continue;
+            }
+            // `contains`/`in` have no numeric meaning for these columns — drop them.
+            _ => None,
+        };
+        if let (Some(sql_op), Some(val)) = (sql_op, f.val) {
+            preds.push(FilterPred::Cmp { expr, sql_op, val });
+        }
+    }
+    preds
+}
+
+/// Render the predicates into a `WHERE`-appendable ` AND (…) AND (…)` fragment plus
+/// the operands to bind, numbered from `$start`. Returns an empty fragment (and no
+/// binds) when there are no predicates. The caller binds `binds` in order, right
+/// after the fixed `run_id`/`group_id` params.
+fn render_filter_sql(preds: &[FilterPred], start: usize) -> (String, Vec<f64>) {
+    let mut idx = start;
+    let mut frags: Vec<String> = Vec::new();
+    let mut binds: Vec<f64> = Vec::new();
+    for p in preds {
+        match p {
+            FilterPred::Cmp { expr, sql_op, val } => {
+                frags.push(format!("({}) {} ${}", expr, sql_op, idx));
+                binds.push(*val);
+                idx += 1;
+            }
+            FilterPred::Between { expr, min, max } => {
+                frags.push(format!("({}) BETWEEN ${} AND ${}", expr, idx, idx + 1));
+                binds.push(*min);
+                binds.push(*max);
+                idx += 2;
+            }
+        }
+    }
+    let sql = if frags.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", frags.join(" AND "))
+    };
+    (sql, binds)
 }
 
 // ---------------------------------------------------------------------------
@@ -1421,11 +1532,29 @@ pub async fn list_results(
     let limit = query.limit.unwrap_or(200).clamp(1, 1000);
     let offset = page * limit;
 
-    let order_by = build_order_by(&query);
-
     let repo = GroupedSweepRepo::new(state.db.clone(), tables);
 
-    let total = match repo.count_results(run_id, group_id).await {
+    // The derived `mtm_pnl_pct` column needs the run's `buy_amount_sol`. Fetch it
+    // only when a sort level or filter actually references that column — the common
+    // path (sorting/filtering the stored columns) skips the extra round-trip.
+    let needs_buy = query.sort.as_deref().is_some_and(|s| s.contains("mtm_pnl_pct"))
+        || query.sort_col.as_deref() == Some("mtm_pnl_pct")
+        || query.filters.as_deref().is_some_and(|s| s.contains("mtm_pnl_pct"));
+    let buy_amount_sol = if needs_buy {
+        repo.run_buy_amount_sol(run_id).await.ok().flatten()
+    } else {
+        None
+    };
+
+    let order_by = build_order_by(&query, buy_amount_sol);
+
+    // Per-column filters shrink both the page and the total. They bind after the
+    // fixed `run_id` ($1) / `group_id` ($2) params, so the fragment starts at $3;
+    // it is identical for the count and page queries (both share that prefix).
+    let preds = build_filter_preds(query.filters.as_deref(), buy_amount_sol);
+    let (filter_sql, filter_binds) = render_filter_sql(&preds, 3);
+
+    let total = match repo.count_results(run_id, group_id, &filter_sql, &filter_binds).await {
         Ok(n) => n,
         Err(e) => {
             tracing::error!("DB error counting grouped sweep results: {e}");
@@ -1434,7 +1563,10 @@ pub async fn list_results(
         }
     };
 
-    let results = match repo.list_results_paged(run_id, group_id, limit, offset, &order_by).await {
+    let results = match repo
+        .list_results_paged(run_id, group_id, limit, offset, &order_by, &filter_sql, &filter_binds)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("DB error listing grouped sweep results: {e}");
@@ -2210,17 +2342,19 @@ mod order_by_tests {
     fn multi_key_builds_all_levels_with_stable_tiebreak() {
         // The reported bug: the secondary key never reached SQL, so rows tied on
         // the primary (all FIRED = 6) fell back to heap order. Both levels must
-        // appear, in order, followed by the stable `combo_id` tiebreak.
-        let order = order_by_from(Some("n_fired:desc,win_rate:desc"), None, None);
+        // appear, in order, followed by the stable `combo_id` tiebreak. `win_rate`
+        // sorts on its display-scaled (`×100`) expression — same order as the raw
+        // fraction, and the expression the filter path compares against.
+        let order = order_by_from(Some("n_fired:desc,win_rate:desc"), None, None, None);
         assert_eq!(
             order,
-            "r.n_fired DESC NULLS LAST, r.win_rate DESC NULLS LAST, r.combo_id ASC"
+            "r.n_fired DESC NULLS LAST, (r.win_rate * 100) DESC NULLS LAST, r.combo_id ASC"
         );
     }
 
     #[test]
     fn param_column_level_uses_jsonb_expression() {
-        let order = order_by_from(Some("p_exit_take_profit:asc,score:desc"), None, None);
+        let order = order_by_from(Some("p_exit_take_profit:asc,score:desc"), None, None, None);
         assert_eq!(
             order,
             "(c.params->>'exit_take_profit')::numeric ASC NULLS LAST, \
@@ -2230,21 +2364,85 @@ mod order_by_tests {
 
     #[test]
     fn unknown_levels_are_dropped() {
-        let order = order_by_from(Some("bogus:desc,n_closed:asc"), None, None);
+        let order = order_by_from(Some("bogus:desc,n_closed:asc"), None, None, None);
         assert_eq!(order, "r.n_closed ASC NULLS LAST, r.combo_id ASC");
         // All-unknown → empty (repo applies its score default).
-        assert!(order_by_from(Some("bogus:desc"), None, None).is_empty());
+        assert!(order_by_from(Some("bogus:desc"), None, None, None).is_empty());
     }
 
     #[test]
     fn legacy_single_pair_fallback() {
-        let order = order_by_from(None, Some("win_rate"), Some("asc"));
-        assert_eq!(order, "r.win_rate ASC NULLS LAST, r.combo_id ASC");
+        let order = order_by_from(None, Some("win_rate"), Some("asc"), None);
+        assert_eq!(order, "(r.win_rate * 100) ASC NULLS LAST, r.combo_id ASC");
     }
 
     #[test]
     fn empty_sort_yields_empty_default() {
-        assert!(order_by_from(None, None, None).is_empty());
-        assert!(order_by_from(Some(""), None, None).is_empty());
+        assert!(order_by_from(None, None, None, None).is_empty());
+        assert!(order_by_from(Some(""), None, None, None).is_empty());
+    }
+
+    #[test]
+    fn mtm_pnl_pct_needs_buy_amount() {
+        // Without the run notional the derived column is unresolvable → level dropped.
+        assert!(order_by_from(Some("mtm_pnl_pct:desc"), None, None, None).is_empty());
+        // With it, the level expands to the same formula the frontend `mtmPctOf` uses.
+        let order = order_by_from(Some("mtm_pnl_pct:desc"), None, None, Some(1.0));
+        assert_eq!(
+            order,
+            "((r.total_pnl_sol + r.open_pnl_sol) / NULLIF(1 * r.n_fired, 0) * 100) \
+             DESC NULLS LAST, r.combo_id ASC"
+        );
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::{build_filter_preds, render_filter_sql};
+
+    #[test]
+    fn numeric_ops_bind_from_start_index() {
+        // Two columns → deterministic (key-sorted) placeholder order: n_closed, score.
+        let json = r#"{"score":{"op":"gt","val":0.5},"n_closed":{"op":"gte","val":10}}"#;
+        let preds = build_filter_preds(Some(json), None);
+        let (sql, binds) = render_filter_sql(&preds, 3);
+        assert_eq!(sql, " AND (r.n_closed) >= $3 AND (r.score) > $4");
+        assert_eq!(binds, vec![10.0, 0.5]);
+    }
+
+    #[test]
+    fn between_binds_two_operands() {
+        let json = r#"{"win_rate":{"op":"between","min":50,"max":80}}"#;
+        let preds = build_filter_preds(Some(json), None);
+        let (sql, binds) = render_filter_sql(&preds, 3);
+        // Win% folds the display `×100` into the expression so the operand (percent)
+        // compares directly against the stored 0..1 fraction. (The already-parenthesized
+        // expression is wrapped once more by the renderer — harmless in SQL.)
+        assert_eq!(sql, " AND ((r.win_rate * 100)) BETWEEN $3 AND $4");
+        assert_eq!(binds, vec![50.0, 80.0]);
+    }
+
+    #[test]
+    fn param_and_unresolvable_columns() {
+        // `p_take_profit` → JSONB expr; `bogus` and non-numeric `mtm_pnl_pct`
+        // (no buy amount) are dropped.
+        let json = r#"{"p_take_profit":{"op":"lte","val":30},"bogus":{"op":"eq","val":1},"mtm_pnl_pct":{"op":"gt","val":0}}"#;
+        let preds = build_filter_preds(Some(json), None);
+        let (sql, binds) = render_filter_sql(&preds, 3);
+        assert_eq!(sql, " AND ((c.params->>'take_profit')::numeric) <= $3");
+        assert_eq!(binds, vec![30.0]);
+    }
+
+    #[test]
+    fn non_numeric_ops_and_empty_are_dropped() {
+        // `contains` has no numeric meaning here; a missing operand also drops.
+        let json = r#"{"score":{"op":"contains","val":5},"n_fired":{"op":"gt"}}"#;
+        let preds = build_filter_preds(Some(json), None);
+        let (sql, binds) = render_filter_sql(&preds, 3);
+        assert!(sql.is_empty());
+        assert!(binds.is_empty());
+        // Absent / malformed JSON → no predicates.
+        assert!(build_filter_preds(None, None).is_empty());
+        assert!(build_filter_preds(Some("not json"), None).is_empty());
     }
 }

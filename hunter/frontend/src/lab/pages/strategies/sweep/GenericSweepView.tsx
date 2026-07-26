@@ -5,6 +5,9 @@ import { STORAGE_KEYS } from 'lib/storage';
 import { DataTable } from 'components/table/DataTable';
 import { TokenTable } from 'components/tokens/TokenTable';
 import type { ColumnDef, SortEntry, TableQuery } from 'components/table/types';
+import type { FilterSpec } from 'components/table/numericFilter';
+import { parseFilterSpec } from 'components/table/numericFilter';
+import { numericColKeys } from 'services/tableRequest';
 import { InlineAlert } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
 import { SectionDivider } from 'components/ui/SectionDivider';
@@ -64,6 +67,35 @@ import { SOL_BUCKET_WIDTH } from '@lab/components/sweep/groupedTypes';
 import { findFingerprintForGroupKey } from 'lib/strategy/matchGroupFingerprint';
 import type { Fingerprint, PromotedRuleDraft, StrategyRule } from 'lib/strategy/types';
 import { tidySolDecimal } from 'utils/format';
+
+/**
+ * Convert the DataTable's raw per-column filter strings into structured
+ * {@link FilterSpec}s for the server. Only numeric combo columns (`filterNumber`)
+ * participate — every filterable combo column is numeric — and only recognized
+ * numeric expressions (`>5`, `1..10`, …) are forwarded; anything else is dropped
+ * (the backend resolves each column through the same allowlist as sort). Operands
+ * stay in the column's *displayed* units (e.g. Win% as percent points); the server
+ * expression is scaled to match, so no unit conversion is needed here.
+ */
+function comboFiltersFromColFilters(
+  colFilters: Record<string, string>,
+  numericKeys: ReadonlySet<string>,
+): Record<string, FilterSpec> {
+  const out: Record<string, FilterSpec> = {};
+  for (const [key, raw] of Object.entries(colFilters)) {
+    if (!numericKeys.has(key)) continue;
+    const text = raw.trim();
+    if (!text) continue;
+    const spec = parseFilterSpec(text);
+    if (spec) out[key] = spec;
+  }
+  return out;
+}
+
+/** Combo columns that filter numerically (declare `filterNumber`) — the set the
+ *  server accepts. `buyAmountSol` doesn't change *which* columns are filterable,
+ *  so this is a stable, build-once set. */
+const COMBO_NUMERIC_KEYS: ReadonlySet<string> = numericColKeys(buildGenericComboColumns());
 
 /** Compact run-picker line (date · method · tokens · groups · combos). */
 function runPickerLine(r: GroupedSweepRunRecord): string {
@@ -244,10 +276,12 @@ export function GenericSweepView() {
   const [comboPage, setComboPage] = useState(0);
   const [comboPageSize, setComboPageSize] = useState(COMBO_PAGE_SIZE);
   const [comboSortKeys, setComboSortKeys] = useState<SortEntry[]>([]);
+  const [comboFilters, setComboFilters] = useState<Record<string, FilterSpec>>({});
   const onComboQueryChange = useCallback((q: TableQuery) => {
     setComboPage(q.page - 1);
     setComboPageSize(q.pageSize);
     setComboSortKeys(q.sortKeys);
+    setComboFilters(comboFiltersFromColFilters(q.colFilters, COMBO_NUMERIC_KEYS));
   }, []);
   useEffect(() => setComboPage(0), [activeGroupId]);
 
@@ -263,7 +297,15 @@ export function GenericSweepView() {
   }
 
   const { rows: results, total: resultsTotal, loading: resultsLoading, error: resultsErr } =
-    useStreamedSweepResults(strategyId, activeRunId, activeGroupId, comboPage, comboPageSize, comboSortKeys);
+    useStreamedSweepResults(
+      strategyId,
+      activeRunId,
+      activeGroupId,
+      comboPage,
+      comboPageSize,
+      comboSortKeys,
+      comboFilters,
+    );
 
   // --- promote ---
   const [promote, promoteState] = usePromoteSweepGroupMutation();
@@ -586,8 +628,10 @@ export function GenericSweepView() {
                 rowActions={comboRowActions}
                 groupLabels={{ params: 'Rule', counts: 'Counts', pnl: 'PnL', holding: 'Holding', exits: 'Exit reasons' }}
                 searchable={false}
-                // Server page/sort only — column filters are not forwarded yet.
-                colFilters={false}
+                // Per-column filters (numeric ops `>5` / `1..10`) are forwarded to the
+                // server via `onComboQueryChange` → `useStreamedSweepResults`, and the
+                // filtered `X-Total-Count` keeps the pager honest.
+                colFilters
                 selectable
                 selectedKey={activeComboId !== null ? String(activeComboId) : null}
                 onSelect={(key) => setActiveComboId(key !== null ? Number(key) : null)}

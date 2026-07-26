@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GroupedSweepResultRecord } from '@lab/components/sweep/groupedTypes';
 import type { SortEntry } from 'components/table/types';
+import type { FilterSpec } from 'components/table/numericFilter';
 
 export const COMBO_PAGE_SIZE = 200;
 
@@ -15,9 +16,10 @@ export interface StreamedSweepState {
  * Fetches one page of combo results as NDJSON and streams rows into state as
  * each line arrives. Rows become visible progressively rather than all at once.
  *
- * The backend returns `X-Total-Count` so the DataTable can render a correct
- * page count. A new fetch fires whenever strategyId/runId/groupId/page/pageSize
- * changes; the previous fetch is aborted.
+ * The backend returns `X-Total-Count` (of the *filtered* set) so the DataTable can
+ * render a correct page count. A new fetch fires whenever
+ * strategyId/runId/groupId/page/pageSize/sort/filters change; the previous fetch is
+ * aborted.
  */
 export function useStreamedSweepResults(
   strategyId: string,
@@ -26,6 +28,7 @@ export function useStreamedSweepResults(
   page: number,
   pageSize: number,
   sortKeys: SortEntry[] = [],
+  filters: Record<string, FilterSpec> = {},
 ): StreamedSweepState {
   const [rows, setRows] = useState<GroupedSweepResultRecord[]>([]);
   const [total, setTotal] = useState(0);
@@ -71,11 +74,17 @@ export function useStreamedSweepResults(
       sortKeys.length > 0
         ? `&sort=${encodeURIComponent(sortKeys.map((s) => `${s.col}:${s.dir}`).join(','))}`
         : '';
+    // Per-column filters as a URL-encoded JSON object the backend applies to both
+    // the page query and the `X-Total-Count` count (so the pager stays correct).
+    const filterParams =
+      Object.keys(filters).length > 0
+        ? `&filters=${encodeURIComponent(JSON.stringify(filters))}`
+        : '';
     const url =
       `/api/strategies/sweeps/${encodeURIComponent(runId)}` +
       `/groups/${encodeURIComponent(groupId)}` +
       `/results?strategy_id=${encodeURIComponent(strategyId)}` +
-      `&page=${page}&limit=${pageSize}${sortParams}`;
+      `&page=${page}&limit=${pageSize}${sortParams}${filterParams}`;
 
     (async () => {
       try {
@@ -127,7 +136,7 @@ export function useStreamedSweepResults(
 
     return () => controller.abort();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId, runId, groupId, page, pageSize, JSON.stringify(sortKeys)]);
+  }, [strategyId, runId, groupId, page, pageSize, JSON.stringify(sortKeys), JSON.stringify(filters)]);
 
   return { rows, total, loading, error };
 }

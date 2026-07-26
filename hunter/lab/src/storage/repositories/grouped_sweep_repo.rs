@@ -703,19 +703,46 @@ impl GroupedSweepRepo {
         Ok(rows.into_iter().map(GroupedSweepGroupSummary::from).collect())
     }
 
-    /// Total combo count for a group — used to populate `X-Total-Count` on the
-    /// paged results endpoint without fetching the full row set.
-    pub async fn count_results(&self, run_id: Uuid, group_id: Uuid) -> anyhow::Result<i64> {
+    /// The run's `buy_amount_sol` (the sim notional), or `None` when unset. Cheap PK
+    /// lookup used by the results endpoint only when a sort/filter references the
+    /// derived `mtm_pnl_pct` column (which is computed from this notional).
+    pub async fn run_buy_amount_sol(&self, run_id: Uuid) -> anyhow::Result<Option<f64>> {
         let sql = format!(
-            "SELECT COUNT(*) FROM {} WHERE run_id = $1 AND group_id = $2",
-            self.tables.results
+            "SELECT buy_amount_sol FROM {} WHERE id = $1",
+            self.tables.runs
         );
-        let count: i64 = sqlx::query_scalar(&sql)
+        let v: Option<Option<f64>> = sqlx::query_scalar(&sql)
             .bind(run_id)
-            .bind(group_id)
-            .fetch_one(&self.pool)
+            .fetch_optional(&self.pool)
             .await?;
-        Ok(count)
+        Ok(v.flatten())
+    }
+
+    /// Combo count for a group **after applying the same per-column filters** as the
+    /// page query — so `X-Total-Count` matches the filtered row set the pager walks.
+    ///
+    /// `filter_sql` is the pre-validated ` AND (…) …` fragment from the handler
+    /// (every column/op allowlisted there; operands parameterized). Its placeholders
+    /// start at `$3`, so `filter_binds` bind in order right after `run_id`/`group_id`.
+    /// The `_combos` JOIN is present so a filter on a `p_*` param column resolves; it
+    /// is a 1:1 inner join on `(run_id, combo_id)`, so it never changes the count.
+    pub async fn count_results(
+        &self,
+        run_id: Uuid,
+        group_id: Uuid,
+        filter_sql: &str,
+        filter_binds: &[f64],
+    ) -> anyhow::Result<i64> {
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} r JOIN {} c ON c.run_id = r.run_id AND c.combo_id = r.combo_id \
+             WHERE r.run_id = $1 AND r.group_id = $2{}",
+            self.tables.results, self.tables.combos, filter_sql
+        );
+        let mut q = sqlx::query_scalar::<_, i64>(&sql).bind(run_id).bind(group_id);
+        for v in filter_binds {
+            q = q.bind(*v);
+        }
+        Ok(q.fetch_one(&self.pool).await?)
     }
 
     /// One page of ranked combo rows for a group.
@@ -725,7 +752,9 @@ impl GroupedSweepRepo {
     /// the frontend `TableQuery` — every column name/expression is allowlisted
     /// there, so it is safe to interpolate. Empty falls back to `score DESC`.
     ///
-    /// `limit`/`offset` are already validated by the caller.
+    /// `filter_sql`/`filter_binds` are the same pre-validated per-column filter the
+    /// count applies (placeholders from `$3`); `limit`/`offset` bind *after* the
+    /// filter operands, so their placeholder numbers shift by `filter_binds.len()`.
     pub async fn list_results_paged(
         &self,
         run_id: Uuid,
@@ -733,6 +762,8 @@ impl GroupedSweepRepo {
         limit: i64,
         offset: i64,
         order_by: &str,
+        filter_sql: &str,
+        filter_binds: &[f64],
     ) -> anyhow::Result<Vec<GroupedSweepResult>> {
         // `params` lives on the per-run `_combos` dictionary (migration `0007`),
         // JOINed back on `(run_id, combo_id)`. Order columns are table-qualified:
@@ -742,6 +773,9 @@ impl GroupedSweepRepo {
         } else {
             order_by.to_string()
         };
+        // Filter operands are $3..; LIMIT/OFFSET come after them.
+        let lim_idx = 3 + filter_binds.len();
+        let off_idx = lim_idx + 1;
         let sql = format!(
             "SELECT r.combo_id, c.params, r.n_fired, r.n_open, r.n_closed, r.win_rate, \
                     r.total_pnl_sol, r.open_pnl_sol, r.mean_pnl_pct, r.median_pnl_pct, r.p90_pnl_pct, \
@@ -751,13 +785,15 @@ impl GroupedSweepRepo {
                     r.n_exit_time, r.n_exit_liquidity, r.n_exit_next_kill, \
                     r.n_exit_dead, r.n_exit_metrics, r.n_exit_open \
              FROM {} r JOIN {} c ON c.run_id = r.run_id AND c.combo_id = r.combo_id \
-             WHERE r.run_id = $1 AND r.group_id = $2 \
-             ORDER BY {} LIMIT $3 OFFSET $4",
-            self.tables.results, self.tables.combos, order
+             WHERE r.run_id = $1 AND r.group_id = $2{} \
+             ORDER BY {} LIMIT ${} OFFSET ${}",
+            self.tables.results, self.tables.combos, filter_sql, order, lim_idx, off_idx
         );
-        let rows = sqlx::query_as::<_, ResultDbRow>(&sql)
-            .bind(run_id)
-            .bind(group_id)
+        let mut q = sqlx::query_as::<_, ResultDbRow>(&sql).bind(run_id).bind(group_id);
+        for v in filter_binds {
+            q = q.bind(*v);
+        }
+        let rows = q
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool)
