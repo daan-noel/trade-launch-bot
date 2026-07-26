@@ -5,7 +5,7 @@ import { DataTable } from 'components/table/DataTable';
 import type { ColumnDef } from 'components/table/types';
 import { Badge, type BadgeVariant } from 'components/ui/Badge';
 import { IconButton } from 'components/ui/IconButton';
-import { InlineAlert } from 'components/ui/Modal';
+import { InlineAlert, Modal } from 'components/ui/Modal';
 import { PageHeader } from 'components/ui/PageHeader';
 import { StatTile } from 'components/ui/StatTile';
 import { AddressDisplay } from 'components/ui/AddressDisplay';
@@ -215,6 +215,19 @@ export function OpsPage() {
 
   const selectedKey = positionParam;
 
+  // Row-click opens the position detail as a modal (matching the sim-result
+  // tables) instead of an inline expander — the chart renders reliably in a
+  // block modal container, and the bigger overlay reads far better than a
+  // squeezed table row. Resolve the selected row for whichever table is active.
+  const inspectOpen =
+    tab === 'waiting' || tab === 'recent'
+      ? null
+      : (openTableRows.find((r) => r.positionId === selectedKey) ?? null);
+  const inspectRecent =
+    tab === 'recent' ? (recentTableRows.find((r) => r.positionId === selectedKey) ?? null) : null;
+  const inspectWaiting =
+    tab === 'waiting' ? (waitingTableRows.find((r) => r.key === selectedKey) ?? null) : null;
+
   // Armed-history context follows the selected waiting row, independent of the
   // `rule` deep-link filter (which must stay notification-only — see onSelect
   // below). Cheap lookup over the small in-memory armed set.
@@ -375,7 +388,7 @@ export function OpsPage() {
           Trade
         </Link>
       </div>
-      <FloorMintChart mint={r.mint} tableId="floor-waiting" />
+      <FloorMintChart mint={r.mint} tableId="floor-waiting" height={420} />
     </div>
   );
 
@@ -543,6 +556,7 @@ export function OpsPage() {
             exitPrice: null,
           },
         }}
+        chartHeight={420}
       />
     );
   };
@@ -683,6 +697,7 @@ export function OpsPage() {
             exitLabel: r.exitReason,
           },
         }}
+        chartHeight={420}
       />
     );
   };
@@ -820,7 +835,6 @@ export function OpsPage() {
             tableId="floor-waiting"
             emptyMessage="Nothing waiting on entry."
             selectedKey={selectedKey}
-            rowDetail={waitingDetail}
             onSelect={(key) => {
               if (!key) {
                 clearDeepLink();
@@ -855,7 +869,6 @@ export function OpsPage() {
             tableId="floor-recent"
             emptyMessage="No recent closes — full history is on Rules Evidence."
             selectedKey={selectedKey}
-            rowDetail={recentDetail}
             onSelect={(key) => {
               if (!key) {
                 clearDeepLink();
@@ -892,7 +905,6 @@ export function OpsPage() {
                 : 'No open positions.'
             }
             selectedKey={selectedKey}
-            rowDetail={openDetail}
             onSelect={(key) => {
               if (!key) {
                 clearDeepLink();
@@ -907,6 +919,37 @@ export function OpsPage() {
             }}
           />
         </>
+      )}
+
+      {inspectOpen && (
+        <Modal
+          title={`${inspectOpen.mint.slice(0, 8)}… — Open position`}
+          open
+          onClose={clearDeepLink}
+          size="xxl"
+        >
+          {openDetail(inspectOpen)}
+        </Modal>
+      )}
+      {inspectRecent && (
+        <Modal
+          title={`${inspectRecent.mint.slice(0, 8)}… — Closed position`}
+          open
+          onClose={clearDeepLink}
+          size="xxl"
+        >
+          {recentDetail(inspectRecent)}
+        </Modal>
+      )}
+      {inspectWaiting && (
+        <Modal
+          title={`${inspectWaiting.mint.slice(0, 8)}… — Waiting position`}
+          open
+          onClose={clearDeepLink}
+          size="xxl"
+        >
+          {waitingDetail(inspectWaiting)}
+        </Modal>
       )}
     </div>
   );

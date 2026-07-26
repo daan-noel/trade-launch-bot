@@ -17,6 +17,7 @@ import type { Fingerprint } from 'lib/strategy/types';
 import { fingerprintsHref } from 'lib/strategy/nav';
 
 import {
+  fingerprintIdentityKey,
   fingerprintParamsCell,
   fingerprintParamsSearchText,
   flowStatusBadge,
@@ -25,11 +26,21 @@ import {
 type FpSortAxis = {
   key: string;
   label: string;
+  /** Optional native tooltip on the header toggle (the label alone is terse). */
+  title?: string;
   sortValue: (fp: Fingerprint | undefined, fingerprintId: string) => SortValue;
 };
 
-/** Axes offered in the fingerprint header — labels match the param chips. */
+/** Axes offered in the fingerprint header — labels match the param chips. The
+ *  leading `fp` axis sorts by the whole-fingerprint identity so byte-identical
+ *  fingerprints (which tie on every single axis) always land adjacent. */
 const FP_SORT_AXES: FpSortAxis[] = [
+  {
+    key: 'fp_id',
+    label: 'fp',
+    title: 'Sort by the whole fingerprint — groups identical fingerprints together',
+    sortValue: (fp, id) => fingerprintIdentityKey(fp, id),
+  },
   {
     key: 'fp_name',
     label: 'name',

@@ -129,7 +129,35 @@ export function fingerprintParamsSearchText(fp: Fingerprint | undefined, fallbac
     parts.push(formatIxLabelsText(fp.ix_labels));
   }
   const flowCount = volumeIxPatternsFromConfig(fp.metric_config).length;
-  parts.push(flowCount > 0 ? `flow=${flowCount}` : 'flow✗');
+  // Match the `flowStatusBadge` pill text (`flow N` / `flow✗`) so filtering by
+  // what's actually shown works; the `flow=N` form stays matchable too.
+  parts.push(flowCount > 0 ? `flow ${flowCount} flow=${flowCount}` : 'flow✗');
   parts.push(`bkt=${formatDecimalTrim(fp.bucket_size_amount, 4)}`);
   return parts.join(' ');
+}
+
+/**
+ * Stable identity string for a whole fingerprint — every match axis in a fixed
+ * order, so two byte-identical fingerprints produce the same key (and sort
+ * adjacent) while any difference splits them. Built from raw values (not the
+ * display-formatted text) for precision, joined by a delimiter no name holds.
+ * SSOT for the "sort by the fingerprint itself" column key. `undefined` fp falls
+ * back to its id so unresolved rows still order deterministically.
+ */
+export function fingerprintIdentityKey(fp: Fingerprint | undefined, fallbackId?: string): string {
+  if (!fp) return `~${fallbackId ?? ''}`;
+  const flowCount = volumeIxPatternsFromConfig(fp.metric_config).length;
+  return [
+    fp.name || fp.id,
+    fp.cu_limit ?? '',
+    fp.cu_price ?? '',
+    fp.init_buy_lamports ?? '',
+    fp.max_cost_lamports ?? '',
+    fp.spendable_lamports_in ?? '',
+    fp.first_slot_buy_lamports ?? '',
+    fp.first_slot_sell_lamports ?? '',
+    fp.bucket_size_amount,
+    (fp.ix_labels ?? []).join(','),
+    flowCount,
+  ].join('\u0001');
 }

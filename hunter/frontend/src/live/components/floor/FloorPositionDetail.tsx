@@ -37,7 +37,14 @@ export interface FloorDetailFacts {
  * Expanded row body for Floor tables — fact strip + mint price chart with
  * entry/exit markers.
  */
-export function FloorPositionDetail({ facts }: { facts: FloorDetailFacts }) {
+export function FloorPositionDetail({
+  facts,
+  chartHeight = 220,
+}: {
+  facts: FloorDetailFacts;
+  /** Chart height — taller when the detail is shown in a modal vs. an inline row. */
+  chartHeight?: number;
+}) {
   const markers = buildEventMarkers(facts.inspect);
   const mtmOrPnl = facts.mtmSol ?? facts.pnlSol;
   const pct = facts.pnlPct;
@@ -110,7 +117,7 @@ export function FloorPositionDetail({ facts }: { facts: FloorDetailFacts }) {
         )}
       </div>
 
-      <FloorMintChart mint={facts.mint} markers={markers} tableId="floor-detail" />
+      <FloorMintChart mint={facts.mint} markers={markers} tableId="floor-detail" height={chartHeight} />
     </div>
   );
 }

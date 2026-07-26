@@ -7,15 +7,17 @@ import { cn } from 'lib/cn';
 
 import type { SortCtx } from './types';
 
-export type MultiSortAxis = { key: string; label: string };
+export type MultiSortAxis = { key: string; label: string; title?: string };
 
 function SortToggle({
   label,
   sortKey,
+  title,
   ctx,
 }: {
   label: string;
   sortKey: string;
+  title?: string;
   ctx: SortCtx;
 }) {
   const idx = ctx.sortKeys.findIndex((s) => s.col === sortKey);
@@ -23,6 +25,7 @@ function SortToggle({
   return (
     <button
       type="button"
+      title={title}
       className={cn(
         'rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
         entry ? 'text-accent' : 'text-primary/70 hover:text-accent',
@@ -58,7 +61,7 @@ export function MultiSortHeader({
       <span>{title}</span>
       <div className="flex flex-nowrap items-center gap-x-0.5 font-normal normal-case tracking-normal">
         {axes.map((axis) => (
-          <SortToggle key={axis.key} label={axis.label} sortKey={axis.key} ctx={ctx} />
+          <SortToggle key={axis.key} label={axis.label} sortKey={axis.key} title={axis.title} ctx={ctx} />
         ))}
       </div>
     </div>
