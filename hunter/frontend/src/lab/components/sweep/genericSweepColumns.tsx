@@ -62,6 +62,31 @@ const SKETCHED_QUANTILE_TOOLTIP =
   'Approximate (~15%): sketched from a 64-bucket DDSketch, not computed exactly. ' +
   'Ranking is unaffected — open the combo drill-in or Simulate for an exact median.';
 
+/** Above this share of still-open positions the realized headline (Total PnL, Win%)
+ *  rests on a thin closed sample. A sweep is a **screener, not a backtest** — its
+ *  numbers are uncapped per-token-tail estimates (parity plan D1/D2) — so flag the
+ *  realized PnL for re-simulation. Matches the Open% column's warning tint threshold. */
+const SCREENER_OPEN_SHARE = 0.25;
+const SCREENER_ESTIMATE_TOOLTIP =
+  'Screener estimate — re-simulate for PnL. A large share of fired positions are still ' +
+  'open, so this realized total is computed over a thin closed sample; the sweep is also ' +
+  'uncapped vs a live rule (both optimistic). Promote + Simulate the combo for a trustworthy PnL.';
+
+/** Realized-PnL cell with an "est" flag when the open share is high — a screener
+ *  estimate to re-simulate. One renderer shared by the combo + group Total PnL cells. */
+function pnlCellWithScreenerFlag(pnlSol: number, openShare: number | null): ReactNode {
+  const cell = tone(solText(pnlSol), goodBad(pnlSol));
+  if (openShare == null || openShare < SCREENER_OPEN_SHARE) return cell;
+  return (
+    <span className="inline-flex items-center gap-1">
+      {cell}
+      <Badge variant="warning" size="sm" title={SCREENER_ESTIMATE_TOOLTIP}>
+        est
+      </Badge>
+    </span>
+  );
+}
+
 /** The nested `params` blob a generic combo / group carries. */
 interface RuleParamsJson {
   take_profit?: number | null;
@@ -229,9 +254,18 @@ function genericStatColumns(buyAmountSol: number): ColumnDef<SweepResultRecord>[
         displayUnits: (n) => n * 100,
       },
     ),
-    metric('total_pnl_sol', 'Total PnL', 'pnl', (r) => r.total_pnl_sol, (r) => tone(solText(r.total_pnl_sol), goodBad(r.total_pnl_sol)), {
-      tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',
-    }),
+    metric(
+      'total_pnl_sol',
+      'Total PnL',
+      'pnl',
+      (r) => r.total_pnl_sol,
+      (r) => pnlCellWithScreenerFlag(r.total_pnl_sol, r.n_fired > 0 ? r.n_open / r.n_fired : null),
+      {
+        tooltip:
+          'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL. ' +
+          'An “est” flag marks a high open-share row whose realized total is a screener estimate — re-simulate.',
+      },
+    ),
     metric(
       'open_pnl_sol',
       'Open PnL',
@@ -576,9 +610,22 @@ export function buildGenericGroupColumns(
           : tone(`${(g.best_win_rate * 100).toFixed(0)}%`, winRateGradeClass(g.best_win_rate)),
       { displayUnits: (n) => n * 100 },
     ),
-    gm('best_total_pnl_sol', 'Total PnL', 'pnl', (g) => g.best_total_pnl_sol, (g) => tone(solText(g.best_total_pnl_sol), goodBad(g.best_total_pnl_sol)), {
-      tooltip: 'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL.',
-    }),
+    gm(
+      'best_total_pnl_sol',
+      'Total PnL',
+      'pnl',
+      (g) => g.best_total_pnl_sol,
+      (g) =>
+        pnlCellWithScreenerFlag(
+          g.best_total_pnl_sol,
+          g.fired_count > 0 ? (g.best_n_open ?? 0) / g.fired_count : null,
+        ),
+      {
+        tooltip:
+          'Realized only — sum of CLOSED positions. Still-open positions are excluded; see Open PnL. ' +
+          'An “est” flag marks a high open-share winner whose realized total is a screener estimate — re-simulate.',
+      },
+    ),
     gm(
       'best_open_pnl_sol',
       'Open PnL',

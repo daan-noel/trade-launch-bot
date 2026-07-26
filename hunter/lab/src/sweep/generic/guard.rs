@@ -100,21 +100,30 @@ fn ct_flow(
     }
 }
 
-/// A token that matches the test fingerprint (via `cu_limit`) and carries `trades`.
+/// A token that matches the test fingerprint (via `cu_limit`) and carries `trades`,
+/// created at `base()`.
 fn token(mint: &str, trades: Vec<CorpusTrade>) -> (CorpusToken, ReplayToken) {
+    token_at(mint, 0.0, trades)
+}
+
+/// Like [`token`], with an explicit creation offset (seconds past `base()`) — lets a
+/// multi-token corpus stagger token ages so `time`-based clocks cross at different
+/// absolute instants (the D1 frozen-tail fixtures).
+fn token_at(mint: &str, created_secs: f64, trades: Vec<CorpusTrade>) -> (CorpusToken, ReplayToken) {
     let tf = TokenFingerprint { cu_limit: Some(200_000), ..Default::default() };
     let trades = Arc::new(trades);
+    let created = at(created_secs);
     let corpus = CorpusToken {
         mint: mint.to_string(),
         symbol: "SYM".to_string(),
-        created_at: base(),
+        created_at: created,
         trades: trades.clone(),
         fp: tf.clone(),
     };
     let replay = ReplayToken {
         mint: mint.to_string(),
         symbol: "SYM".to_string(),
-        created_at: base(),
+        created_at: created,
         tf,
         trades,
         creator_wallet_hash: None,
@@ -702,7 +711,7 @@ fn shared_bind_matches_per_token_bind() {
             let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
 
             let entry = resolve_entry(&corpus_tok.trades, &series, &shared, &pricing);
-            let shared_out = resolve_exit(&corpus_tok.trades, &series, &shared, &entry, &pricing);
+            let shared_out = resolve_exit(&corpus_tok.trades, &series, &shared, &entry, &pricing, None);
             // `scan` binds against this token's own series — the reference.
             let per_token_out = scan(&corpus_tok.trades, &series, &compiled, &pricing);
 
@@ -896,8 +905,8 @@ fn simd_exit_scan_matches_scalar_across_paths() {
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing);
-            let simd = resolve_exit_simd(trades, &series, &bound, &entry, &pricing, &idx);
+            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, None);
+            let simd = resolve_exit_simd(trades, &series, &bound, &entry, &pricing, &idx, None);
             assert_eq!(
                 outcome_tuple(&simd),
                 outcome_tuple(&scalar),
@@ -1043,8 +1052,8 @@ fn index_exit_scan_matches_scalar_across_paths() {
                 }
                 _ => idx.clear(),
             }
-            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing);
-            let indexed = resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx);
+            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, None);
+            let indexed = resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx, None);
             assert_outcomes_eq(
                 &indexed,
                 &scalar,
@@ -1149,8 +1158,8 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
             if let super::strategy::EntryResolution::Entered { fill_row, .. } = &entry {
                 idx.rebuild(&series, *fill_row);
             }
-            let scalar = resolve_exit(&trades, &series, &bound, &entry, &pricing);
-            let indexed = resolve_exit_indexed(&trades, &series, &bound, &entry, &pricing, &idx);
+            let scalar = resolve_exit(&trades, &series, &bound, &entry, &pricing, None);
+            let indexed = resolve_exit_indexed(&trades, &series, &bound, &entry, &pricing, &idx, None);
             assert_outcomes_eq(
                 &indexed,
                 &scalar,
@@ -1158,4 +1167,236 @@ fn index_exit_scan_matches_scalar_on_randomized_walks() {
             );
         }
     }
+}
+
+// ─────────────── multi-token aggregate parity — the D1 backstop ────────────────
+//
+// **This is the guard the single-token locks above cannot be.** They replay each token
+// in ISOLATION, so `run_replay`'s tail (bounded by the CORPUS-wide last trade) and the
+// sweep's per-token tail truncate at the exact same instant — the D1 asymmetry is
+// invisible by construction. The fix (`resolve_frozen_tail`) is therefore also a no-op
+// there. Here a MULTI-token corpus makes the corpus tail outrun a quiet token's own
+// cut, so a deterministic clock exit that lands in that gap must close in the sweep
+// exactly as it does in a multi-token simulate. The `legacy` control folds the same
+// corpus with the resolve OFF and asserts it DIVERGES — i.e. this test fails if Task 1
+// is reverted, which is the whole point (parity plan Task 2).
+
+/// A ≥3-token corpus with overlapping lifetimes and one quiet-but-still-liquid token
+/// (`quiet`) whose exit lands after its own last trade. All created at `base()` except
+/// `young`. Under `time > 1000`:
+/// * `quiet` (last @50, own cut ≈410) — the D1 shape: `time` crosses 1000 in the corpus
+///   tail, past its own cut. Open without the fix, closed with it.
+/// * `active` (last @1200) — crosses INSIDE its own dense/`time`-horizon region, so it
+///   closes in-series either way (a normal closed token that also extends the corpus
+///   tail to 1200 → horizon 1560).
+/// * `young` (created @800) — at horizon 1560 its `time` is only 760, so it never
+///   crosses: genuinely Open in BOTH sweep and simulate.
+fn d1_time_corpus() -> Vec<(CorpusToken, ReplayToken)> {
+    vec![
+        token(
+            "quiet",
+            vec![
+                ct(0.0, true, 1.0, 1.0, 100.0),
+                ct(1.0, true, 0.5, 1.05, 100.0),
+                ct(50.0, true, 0.5, 1.1, 100.0),
+            ],
+        ),
+        token(
+            "active",
+            vec![
+                ct(0.0, true, 1.0, 1.0, 100.0),
+                ct(1.0, true, 0.5, 1.02, 100.0),
+                ct(1200.0, true, 0.5, 1.3, 100.0),
+            ],
+        ),
+        token_at(
+            "young",
+            800.0,
+            vec![
+                ct(800.0, true, 1.0, 1.0, 100.0),
+                ct(801.0, true, 0.5, 1.05, 100.0),
+                ct(850.0, true, 0.5, 1.1, 100.0),
+            ],
+        ),
+    ]
+}
+
+/// Fold a `run_replay` outcome into the same core aggregate the sweep uses, pricing the
+/// round-trip through the shared kernel (open ⇒ marked to last price, as the sweep does).
+fn replay_outcome_to_token(po: &PositionOutcome, cost: &CostModel) -> TokenOutcome {
+    let exit_price = po.exit_price.unwrap_or(po.last_price);
+    let (pnl_sol, pnl_pct) = round_trip_with_costs(po.entry_price, exit_price, BUY_SOL, cost);
+    TokenOutcome {
+        fired: true,
+        holding_secs: po.exit_time.map(|t| (t - po.entry_time).num_seconds()).unwrap_or(0),
+        pnl_percent: pnl_pct as f32,
+        pnl_sol: pnl_sol as f32,
+        exit: exit_code_of(po.exit_reason),
+        entry_time: None,
+        entry_price: None,
+        entry_slot: None,
+        exit_time: None,
+        exit_price: None,
+        exit_slot: None,
+    }
+}
+
+#[test]
+fn scan_matches_replay_multi_token_frozen_tail() {
+    use super::exit_index::ExitIndex;
+    use super::strategy::{
+        frozen_tail_horizon, resolve_entry, resolve_exit, resolve_exit_indexed, resolve_exit_simd,
+        wants_exit_index, BoundCombo, EntryResolution,
+    };
+    use crate::sweep::aggregate::ComboAgg;
+
+    let as_of = at(100_000.0);
+    let corpus = d1_time_corpus();
+    let corpus_tokens: Vec<CorpusToken> = corpus.iter().map(|(c, _)| c.clone()).collect();
+    let replay_tokens: Vec<ReplayToken> = corpus.iter().map(|(_, r)| r.clone()).collect();
+    // The corpus-wide tail cap `run_replay` bounds its tick loop by — the horizon the
+    // sweep's per-token series never reaches on its own. D2 out of the way: caps are ∞
+    // on both sides (`loaded` sets `max_concurrent_tokens: u32::MAX`, `run_replay`
+    // honors it), so only the tail asymmetry is under test.
+    let tail_horizon = frozen_tail_horizon(as_of, &corpus_tokens);
+    assert!(tail_horizon.is_some(), "corpus has trades");
+
+    // `time > 1000`: the plan's canonical deterministic clock (token-scoped ⇒ the scalar
+    // path, and grid-horizon-aware so no mid-history tick is dropped). The `held` clock
+    // is locked separately in `held_frozen_tail_matches_across_exit_paths` (its position
+    // scope needs a tail crossing, not a mid-gap one).
+    let params = exit_metric(MetricGroupId::Snapshot, MetricId::Time, Operator::Gt, 1000.0);
+
+    for fm in FILL_MODELS {
+        let pricing = pricing_for(fm);
+        let cost = pricing.cost;
+        let compiled = CompiledRule::compile(&loaded(params.clone()));
+        let cols = columns_for(&compiled);
+        let grid = sparse_grid_for(&compiled);
+        let bound = BoundCombo::new(&cols, compiled.clone());
+
+        let mut sweep = ComboAgg::default();
+        let mut legacy = ComboAgg::default();
+
+        for (corpus_tok, _) in &corpus {
+            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let trades = &corpus_tok.trades;
+            let entry = resolve_entry(trades, &series, &bound, &pricing);
+            let mut idx = ExitIndex::default();
+            match &entry {
+                EntryResolution::Entered { fill_row, .. } if wants_exit_index(&bound, &entry) => {
+                    idx.rebuild(&series, *fill_row);
+                }
+                _ => idx.clear(),
+            }
+            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, tail_horizon);
+            // All three exit paths must resolve the frozen tail identically (time is a
+            // `General` req, so index/simd delegate to scalar — asserted, not assumed).
+            let indexed =
+                resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx, tail_horizon);
+            let simd =
+                resolve_exit_simd(trades, &series, &bound, &entry, &pricing, &idx, tail_horizon);
+            assert_outcomes_eq(&indexed, &scalar, &format!("{fm:?}/{} index", corpus_tok.mint));
+            assert_outcomes_eq(&simd, &scalar, &format!("{fm:?}/{} simd", corpus_tok.mint));
+            sweep.record(&scalar);
+            legacy.record(&resolve_exit(trades, &series, &bound, &entry, &pricing, None));
+        }
+
+        let replay_out = run_replay(
+            std::slice::from_ref(&loaded(params.clone())),
+            std::slice::from_ref(&fingerprint()),
+            replay_tokens.clone(),
+            ReplayConfig { as_of, fill_model: fm },
+        );
+        let mut replay = ComboAgg::default();
+        for po in &replay_out {
+            replay.record(&replay_outcome_to_token(po, &cost));
+        }
+
+        let s = sweep.finalize(0);
+        let r = replay.finalize(0);
+        let l = legacy.finalize(0);
+
+        assert_eq!(s.n_fired, r.n_fired, "{fm:?}: fired count");
+        assert_eq!(
+            s.n_closed, r.n_closed,
+            "{fm:?}: closed count — the quiet-but-liquid token must close in the corpus tail (D1)"
+        );
+        assert_eq!(s.n_open, r.n_open, "{fm:?}: open count");
+        assert!(
+            (s.total_pnl_sol - r.total_pnl_sol).abs() < 1e-9,
+            "{fm:?}: realized pnl (sweep {} vs replay {})",
+            s.total_pnl_sol,
+            r.total_pnl_sol
+        );
+
+        // Control (Task 2's raison d'être): with the resolve OFF the sweep leaves `quiet`
+        // Open where simulate closes it, so the aggregate MUST diverge. If this ever
+        // stops differing, the corpus no longer exercises D1 and every assert above is
+        // vacuous — this is the assertion that fails when Task 1 is reverted.
+        assert_ne!(
+            (l.n_open, l.n_closed),
+            (r.n_open, r.n_closed),
+            "{fm:?}: control — the legacy per-token tail must diverge from simulate (D1)"
+        );
+    }
+}
+
+#[test]
+fn held_frozen_tail_matches_across_exit_paths() {
+    // The `held` clock is position-scoped, so it takes the fast HeldBound index path
+    // (not the scalar walk `time` forces). Its frozen-tail Open branch must resolve
+    // byte-identically across scalar / index / simd. `held > 500` crosses ~500 s after
+    // entry — past every `corpus()` token's own ≈370 s cut, so the crossing lands in the
+    // frozen tail (not a sparse mid-history gap), and an explicit far horizon fires it.
+    use super::exit_index::ExitIndex;
+    use super::strategy::{
+        resolve_entry, resolve_exit, resolve_exit_indexed, resolve_exit_simd, wants_exit_index,
+        BoundCombo, EntryResolution,
+    };
+
+    let as_of = at(100_000.0);
+    let tail_horizon = Some(at(2000.0)); // ≫ entry + 500, so the tail crossing fires
+    let params = exit_metric(MetricGroupId::Position, MetricId::Held, Operator::Gt, 500.0);
+
+    let mut saw_frozen_close = false;
+    for fm in FILL_MODELS {
+        let pricing = pricing_for(fm);
+        let compiled = CompiledRule::compile(&loaded(params.clone()));
+        let cols = columns_for(&compiled);
+        let grid = sparse_grid_for(&compiled);
+        let bound = BoundCombo::new(&cols, compiled.clone());
+        assert!(bound.fast_exit, "a lone held bound must classify (fast path)");
+
+        for (corpus_tok, _) in corpus().iter().chain(gappy_corpus().iter()) {
+            let series = build_series_with_flow(corpus_tok, cols.clone(), &grid, as_of, None);
+            let trades = &corpus_tok.trades;
+            let entry = resolve_entry(trades, &series, &bound, &pricing);
+            let mut idx = ExitIndex::default();
+            match &entry {
+                EntryResolution::Entered { fill_row, .. } if wants_exit_index(&bound, &entry) => {
+                    idx.rebuild(&series, *fill_row);
+                }
+                _ => idx.clear(),
+            }
+            let scalar = resolve_exit(trades, &series, &bound, &entry, &pricing, tail_horizon);
+            let indexed =
+                resolve_exit_indexed(trades, &series, &bound, &entry, &pricing, &idx, tail_horizon);
+            let simd =
+                resolve_exit_simd(trades, &series, &bound, &entry, &pricing, &idx, tail_horizon);
+            assert_outcomes_eq(&indexed, &scalar, &format!("{fm:?}/{} held index", corpus_tok.mint));
+            assert_outcomes_eq(&simd, &scalar, &format!("{fm:?}/{} held simd", corpus_tok.mint));
+
+            // Non-vacuity: the horizon-off resolve leaves a healthy token Open where the
+            // horizon-on resolve closes it via the frozen-tail held crossing.
+            let off = resolve_exit(trades, &series, &bound, &entry, &pricing, None);
+            if scalar.exit == ExitCode::Metrics && off.exit == ExitCode::Open {
+                saw_frozen_close = true;
+            }
+        }
+    }
+    assert!(
+        saw_frozen_close,
+        "no token exercised the held frozen-tail close — the fixture proved nothing"
+    );
 }

@@ -34,11 +34,6 @@ condition `eval`, `CompiledRule::compile`.
 
 ### Deliberate — accepted, keep
 
-- **D1 · Bounded-tail asymmetry.** Sweep caps a token's series at
-   `last_trade + DEAD_QUIET + TAIL_MARGIN`; replay caps at the corpus-wide last trade.
-   A quiet-but-liquid token reads `Open` in sweep and closed `Metrics` in simulate.
-   Per-token tails keep every series short; a corpus-wide horizon would extend each
-   token to the newest trade in the run.
 - **D2 · Concurrency / lifetime caps stripped in sweep** (`max_concurrent_tokens: u32::MAX`).
    `n_fired` / `total_pnl_sol` are therefore **upper bounds** vs. a live rule under its
    own caps. Caps make token outcomes order-dependent, which would serialize the rayon
@@ -52,6 +47,25 @@ condition `eval`, `CompiledRule::compile`.
 
 ### Fixed
 
+- **D1 · Bounded-tail asymmetry — CLOSED (2026-07-26).** The sweep still caps each
+   token's series at its OWN `last_trade + DEAD_QUIET + TAIL_MARGIN` (that keeps every
+   series short — extending the *tick grid* to the corpus horizon is the RAM cost the
+   sparse-grid design exists to avoid). Instead, when the in-series scan leaves a
+   position `Open`, `resolve_frozen_tail` (`sweep/generic/strategy.rs`) resolves the
+   quiet tail **analytically in O(1)**: at a frozen price only the rate-1 clocks move
+   (`time` since creation, `stall` since the last high, `held` since entry), so the
+   earliest deterministic crossing up to the corpus-wide horizon — `min(as_of,
+   corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`, the same cap `run_replay` uses — is
+   computed and booked at the last trade's market fill (byte-identical to the exit
+   `run_replay`'s `queue_exit_fill` books). `Dead`, SL/TP and price-movement exits can
+   never newly fire on a flat price, and a windowed exit metric (which *does* keep
+   changing in the tail) conservatively keeps the legacy `Open` — the one remaining
+   residual, documented at the fn. The horizon is opt-in per run
+   (`GenericSweepStrategy::set_corpus`); the drill-in threads the same horizon
+   (`frozen_tail_horizon` over its token set) so a row's exit matches the aggregate the
+   user clicked. Locked by `guard::scan_matches_replay_multi_token_frozen_tail` (the
+   first **multi-token** guard — fails if the resolve is reverted) and
+   `held_frozen_tail_matches_across_exit_paths` (scalar ≡ index ≡ SIMD in the tail).
 3. **`as_of` was three different instants** (sweep run start / `run.created_at` /
    request time), so deadness flipped `Open` ↔ `Dead` with wall-clock and a run
    disagreed with its own drill-in as it aged. `simulate_one_combo` already took `as_of`
@@ -72,9 +86,13 @@ condition `eval`, `CompiledRule::compile`.
 - **No `RunSummary` / `mtm` band in `sweep/`.** The "all 3 surfaces unified" claim is
   half true: the realized band is genuinely shared and test-locked; `mtm` exists only on
   simulate.
-- **Guard-test gaps.** The 8 fixtures use single-token streams only, so the concurrency
-  caps and global ordering are untestable *by construction*. No mono-kill disarm, no
-  `PendingFirstSlot`, no retry/give-up terminals.
+- **Guard-test gaps.** Most fixtures use single-token streams, so the concurrency caps
+  and global ordering are untestable *by construction*. No mono-kill disarm, no
+  `PendingFirstSlot`, no retry/give-up terminals. **Partly closed (2026-07-26):**
+  `scan_matches_replay_multi_token_frozen_tail` is the first multi-token guard — it
+  compares the sweep aggregate against `run_replay` over a ≥3-token corpus and so covers
+  the corpus-wide tail case (the D1 fix); caps stay `∞` on both sides there, so
+  concurrency ordering is still out of scope.
 - **Fingerprint matching + first-slot gating are absent from sweep** (it compiles
   `Uuid::nil()`), so entry-gate behavior is not swept.
 - **Sweep has no row at the `TokenCreated` instant** — `build_series` starts at

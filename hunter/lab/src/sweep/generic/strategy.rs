@@ -29,7 +29,7 @@ use hunter_engine::arm::{CompiledRule, MetricReq, ReqOrigin};
 use hunter_engine::deadness::DEAD_QUIET_SECS;
 use hunter_engine::event::{LoadedRule, RuleId, TradeMode};
 use hunter_engine::fingerprint::FingerprintId;
-use hunter_engine::metrics::evaluator::{eval, Operator};
+use hunter_engine::metrics::evaluator::{eval, Condition, Operator};
 use hunter_engine::metrics::position::{position_value, PositionCtx};
 use hunter_engine::metrics::series::{MetricSeries, SeriesColumn};
 use hunter_engine::metrics::{MetricId, TradeLite, Ts};
@@ -84,6 +84,12 @@ pub struct Pricing {
 pub struct GenericSweepStrategy {
     model: AxesModel,
     as_of: Ts,
+    /// The corpus-wide frozen-tail resolve horizon (D1) — `min(as_of, corpus_last_trade
+    /// + DEAD_QUIET + TAIL_MARGIN)`, the same tail cap `run_replay` bounds its tick loop
+    /// by. `None` (the default) leaves the legacy per-token bounded-tail behavior:
+    /// [`set_corpus`] opts a run in, computing it from the corpus this strategy scans.
+    /// See [`resolve_frozen_tail`].
+    corpus_horizon: Option<Ts>,
     pricing: Pricing,
     /// The union of every axis's precompute columns (built once).
     columns: Vec<SeriesColumn>,
@@ -113,7 +119,17 @@ impl GenericSweepStrategy {
             time_horizon_secs: model.metric_value_ceiling(MetricId::Time),
             stall_horizon_secs: model.metric_value_ceiling(MetricId::Stall),
         };
-        Self { model, as_of, pricing, columns, grid, flow_patterns }
+        Self { model, as_of, corpus_horizon: None, pricing, columns, grid, flow_patterns }
+    }
+
+    /// Opt this run into the analytic frozen-tail resolve (D1) by anchoring it to the
+    /// corpus it scans: sets [`corpus_horizon`](Self::corpus_horizon) to the same tail
+    /// cap `run_replay` uses (`min(as_of, corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`),
+    /// so a deterministic clock exit that lands past a token's OWN per-token series cut
+    /// still closes in the sweep — matching simulate over the same tokens. Call it once,
+    /// with the whole token set, before scanning. A trade-less corpus leaves it `None`.
+    pub fn set_corpus(&mut self, tokens: &[CorpusToken]) {
+        self.corpus_horizon = frozen_tail_horizon(self.as_of, tokens);
     }
 
     /// The precompute columns this strategy records per token (the union its axes
@@ -385,9 +401,9 @@ impl Strategy for GenericSweepStrategy {
         // AVX-512 toggle still selectable (exit-index plan Phase 5). Default path
         // is the O(log n) index; SIMD remains for A/B. Both must match scalar.
         if crate::sweep::registry::use_simd() {
-            resolve_exit_simd(trades, series, bound, entry, &self.pricing, ctx)
+            resolve_exit_simd(trades, series, bound, entry, &self.pricing, ctx, self.corpus_horizon)
         } else {
-            resolve_exit_indexed(trades, series, bound, entry, &self.pricing, ctx)
+            resolve_exit_indexed(trades, series, bound, entry, &self.pricing, ctx, self.corpus_horizon)
         }
     }
 
@@ -565,28 +581,19 @@ pub(crate) fn build_series_with_flow(
             last_trade_at = at;
         }
     }
-    // Tail: keep ticking so a quiet token books its dead verdict, but no further
-    // than the window past which every token is provably dead + pruned.
+    // Tail: keep ticking so a quiet token books its dead verdict, but no further than
+    // the window past which every token is provably dead + pruned. The series stays
+    // capped at **this token's own** `last_trade + DEAD_QUIET + TAIL_MARGIN` — extending
+    // it to the corpus-wide horizon would cost the RAM the sparse-grid design exists to
+    // bound (and would fire exits a single-token replay never does, which
+    // `guard::scan_matches_replay_stall_eq_exit_across_gap` locks against).
     //
-    // **Known bounded-tail approximation (parity plan B8).** The justification —
-    // "past this the token is provably dead" — holds only for a token that lost its
-    // liquidity. A token that goes quiet while still liquid never books `Dead`, yet
-    // its monotone `time`/`stall` clocks keep running in reality: live would tick it
-    // indefinitely and fire, say, an `exit on time > 2h` long after this cap. So for
-    // that shape the sweep can report `Open` where live/simulate exit.
-    //
-    // Left as-is deliberately. `replay::run_replay` bounds its tail by the
-    // **corpus-wide** last trade, so a single-token replay truncates at exactly this
-    // same point (which is why `guard::scan_matches_replay_*` passes) — but a
-    // multi-token simulate ticks longer and lands closer to live. Fixing the
-    // asymmetry by truncating simulate per-token would move simulate *away* from
-    // live, which is the wrong direction; fixing it by extending this tail costs the
-    // memory the sparse-grid design exists to bound. Don't "align" the two without
-    // deciding which one should move — and it isn't this one.
-    //
-    // Prior attempt, for the record: extending `tail_end` to `dead_cap.max(horizon)`
-    // here makes the scan fire exits a single-token replay never does, and
-    // `guard::scan_matches_replay_stall_eq_exit_across_gap` fails immediately.
+    // The D1 asymmetry this leaves — a still-liquid quiet token whose deterministic
+    // `time`/`stall`/`held` clock crosses in the gap between this per-token cut and the
+    // **corpus-wide** tail `run_replay` ticks to — is resolved not here (by ticking) but
+    // in [`resolve_frozen_tail`] (by an O(1) analytic crossing at the frozen price),
+    // which the scan calls before reporting `Open`. So the series builder and the guard
+    // are unchanged; the extra decision lives entirely on the scan side.
     let cap = last_trade_at + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS);
     let tail_end = as_of.min(cap);
     let horizon = grid.gap_horizon(created, last_trade_at, series.last_meaningful_at());
@@ -1103,6 +1110,7 @@ pub(crate) fn resolve_exit_indexed(
     entry: &EntryResolution,
     pricing: &Pricing,
     index: &super::exit_index::ExitIndex,
+    tail_horizon: Option<Ts>,
 ) -> TokenOutcome {
     debug_assert_cols_match(series, b);
     let (fill_row, entry_price, entry_at) = match entry {
@@ -1110,7 +1118,7 @@ pub(crate) fn resolve_exit_indexed(
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
     if !b.fast_exit || !index.is_ready() {
-        return resolve_exit(trades, series, b, entry, pricing);
+        return resolve_exit(trades, series, b, entry, pricing, tail_horizon);
     }
 
     // Earliest firing row across the classified reqs. On a tie the req EARLIER in
@@ -1125,13 +1133,13 @@ pub(crate) fn resolve_exit_indexed(
                 Ok(row) => row,
                 // Non-monotone `pnl` over this token's price range (overflow) — the
                 // hull query would be unsound, so hand the whole rule to scalar.
-                Err(()) => return resolve_exit(trades, series, b, entry, pricing),
+                Err(()) => return resolve_exit(trades, series, b, entry, pricing, tail_horizon),
             },
             ExitClass::HeldBound => match first_held_row(series, index, fill_row, entry_at, req) {
                 Ok(row) => row,
                 // Block time regressed inside the scan range, so `held` is not
                 // monotone and a binary search could land anywhere.
-                Err(()) => return resolve_exit(trades, series, b, entry, pricing),
+                Err(()) => return resolve_exit(trades, series, b, entry, pricing, tail_horizon),
             },
             ExitClass::Trailing => first_trailing_row(series, fill_row, entry_price, req),
             ExitClass::Bounce => first_bounce_row(series, fill_row, entry_price, req),
@@ -1155,15 +1163,19 @@ pub(crate) fn resolve_exit_indexed(
             trades, series, exit, entry_price, entry_at, fill_trade_slot(series, fill_row), row,
             pricing,
         ),
-        // Open: mark to last finite (precomputed on the index for the whole series).
-        None => {
+        // Open by the series' per-token cut: first try the analytic frozen-tail
+        // resolve (D1), else mark to last finite (precomputed on the index).
+        None => resolve_frozen_tail(
+            trades, series, b, fill_row, entry_price, entry_at, pricing, tail_horizon,
+        )
+        .unwrap_or_else(|| {
             let last_price = index
                 .last_finite_row()
                 .map(|k| series.price[k])
                 .filter(|p| p.is_finite())
                 .unwrap_or(entry_price);
             open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
-        }
+        }),
     }
 }
 
@@ -1185,6 +1197,7 @@ pub(crate) fn resolve_exit(
     b: &BoundCombo,
     entry: &EntryResolution,
     pricing: &Pricing,
+    tail_horizon: Option<Ts>,
 ) -> TokenOutcome {
     debug_assert_cols_match(series, b);
     let c = &b.rule;
@@ -1221,8 +1234,16 @@ pub(crate) fn resolve_exit(
             }
         }
     }
-    // Open: mark to the last finite price (unrealized — excluded from the realized
-    // stats by `RunAgg`, but priced for the drill-in / row view).
+    // Open by the series' per-token cut. Before reporting `Open`, resolve the frozen
+    // quiet tail analytically (D1): a deterministic clock can still fire past this
+    // token's own last-trade cut, up to the corpus-wide tail simulate ticks to.
+    if let Some(closed) =
+        resolve_frozen_tail(trades, series, b, fill_row, entry_price, entry_at, pricing, tail_horizon)
+    {
+        return closed;
+    }
+    // Genuinely open: mark to the last finite price (unrealized — excluded from the
+    // realized stats by `RunAgg`, but priced for the drill-in / row view).
     let last_price = (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
     open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
 }
@@ -1252,6 +1273,181 @@ fn open_outcome(
         exit_price: None,
         exit_slot: None,
     }
+}
+
+// ───────────────────────── frozen quiet-tail resolve (D1) ──────────────────────
+//
+// After a token's last trade the price is **frozen** (no later print moves it), so
+// the sweep caps each token's series at `own_last_trade + DEAD_QUIET + TAIL_MARGIN`.
+// `run_replay` (simulate + live) instead ticks every held token to the **corpus-wide**
+// tail `min(as_of, corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`. In the gap between
+// the two, a position a multi-token simulate closes reads a false `Open` in the sweep
+// — the parity plan's D1 (`docs/roadmap/sweep-sim-parity-close.md`, `sim-parity.md`).
+//
+// At a frozen price only the rate-1 clocks keep moving — `time` (since creation),
+// `stall` (since the last high; a flat price sets no new high), and `held` (since
+// entry). Everything else is constant: `pnl`/`retrace`/`bounce`/`trail`/`liquidity`
+// can't newly cross a level they haven't reached, and `Dead` already resolves inside
+// the per-token series (its cap covers `last_meaningful + DEAD_QUIET`, and a still-Open
+// position has healthy reserves, so it never dies in the extra tail). So the extra tail
+// is resolved **analytically in O(1)** — find the earliest grid tick a clock crosses,
+// book it at the last trade's market fill — instead of extending the tick grid (which
+// is exactly the RAM the sparse-grid design exists to bound).
+
+/// The frozen-tail resolve horizon for a token set scanned at `as_of` — the
+/// corpus-wide tail cap `run_replay` bounds its tick loop by, `min(as_of,
+/// corpus_last_trade + DEAD_QUIET + TAIL_MARGIN)`. `None` for a trade-less set.
+pub(crate) fn frozen_tail_horizon(as_of: Ts, tokens: &[CorpusToken]) -> Option<Ts> {
+    // Canonical order is block-time-monotone, so a token's last trade carries its own
+    // max block_time; the corpus max over those is `run_replay`'s `last_trade_at`.
+    let last = tokens.iter().filter_map(|t| t.trades.last().map(|ct| ct.block_time)).max()?;
+    Some(as_of.min(last + Duration::seconds(DEAD_QUIET_SECS + TAIL_MARGIN_SECS)))
+}
+
+/// The clock tick as fractional seconds — the frozen-tail extrapolation step.
+const TICK_SECS: f64 = TICK_MS as f64 / 1000.0;
+
+/// D1 resolve: when the in-series scan leaves a position `Open`, book the earliest
+/// deterministic-clock exit that fires in the frozen tail `(last_row, tail_horizon]`,
+/// or `None` (⇒ the caller reports `Open`) when none does.
+///
+/// `None` immediately when: the resolve is off (`tail_horizon: None`, e.g. single-token
+/// `scan`), the horizon adds no full tick past the series' last row, or **any** exit
+/// req is windowed — a rolling flow/price window keeps changing in the tail (flows
+/// decay, extrema age out), which this clock-only resolve does not model, so such a
+/// rule conservatively keeps the legacy bounded-tail `Open` rather than risk a
+/// mis-timed close (documented residual — see the section comment).
+///
+/// The exit is priced through the shared [`close_at_fire`] at the series' last row, so
+/// its fill (the last trade's market fill on an empty window), time, slot and PnL are
+/// **byte-identical** to the exit `run_replay`'s `queue_exit_fill` books for the same
+/// crossing — this only decides *that* a clock fires and *which* one, never the money.
+#[allow(clippy::too_many_arguments)]
+fn resolve_frozen_tail(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    b: &BoundCombo,
+    fill_row: usize,
+    entry_price: f64,
+    entry_at: Ts,
+    pricing: &Pricing,
+    tail_horizon: Option<Ts>,
+) -> Option<TokenOutcome> {
+    let horizon = tail_horizon?;
+    // A windowed exit metric is not a rate-1 clock — leave it to the legacy Open.
+    if b.rule.exit_reqs.iter().any(|r| r.window.is_some()) {
+        return None;
+    }
+    let n = series.n_rows();
+    if n == 0 {
+        return None;
+    }
+    let last = n - 1;
+    let last_at = series.at[last];
+    // `run_replay` ticks while `next_tick < tail_end`, so the last tick is the largest
+    // `m` with `last_at + m·TICK < horizon` — match its strict bound exactly.
+    let horizon_ms = horizon.signed_duration_since(last_at).num_milliseconds();
+    if horizon_ms < TICK_MS {
+        return None;
+    }
+    let m_max = (horizon_ms - 1) / TICK_MS;
+    if m_max < 1 {
+        return None;
+    }
+    // The `held` clock reads the per-entry context; `time`/`stall` read their series
+    // column at the last row (the scan already proved every req false there).
+    let pos_ctx = PositionCtx::at_fill(entry_price, entry_at);
+    let mut best_m: Option<i64> = None;
+    for (i, req) in b.rule.exit_reqs.iter().enumerate() {
+        let Some(base) = frozen_tail_clock_base(series, b, &pos_ctx, i, req, last) else {
+            continue;
+        };
+        if let Some(m) = first_monotone_fire(&req.conds, req.tolerance, base, TICK_SECS, m_max) {
+            best_m = Some(best_m.map_or(m, |b| b.min(m)));
+        }
+    }
+    let delta = best_m? as f64 * TICK_SECS;
+    // First req (in `exit_reqs` order) that holds at the firing instant labels the exit
+    // — a non-clock req reads the frozen values that left the position Open, so only a
+    // clock can hold here; this mirrors `first_exit_req_fired` at one row.
+    let mut exit = None;
+    for (i, req) in b.rule.exit_reqs.iter().enumerate() {
+        let Some(base) = frozen_tail_clock_base(series, b, &pos_ctx, i, req, last) else {
+            continue;
+        };
+        if eval(&req.conds, base + delta, req.tolerance) {
+            exit = Some(exit_code_of(req.origin));
+            break;
+        }
+    }
+    let entry_slot = fill_trade_slot(series, fill_row);
+    Some(close_at_fire(trades, series, exit?, entry_price, entry_at, entry_slot, last, pricing))
+}
+
+/// The base reading of a **frozen-tail rate-1 clock** exit req at the series' last row,
+/// or `None` when this req is not such a clock. Only `time`/`stall` (token-scoped,
+/// non-windowed) and `held` (position-scoped) advance at exactly 1 s/s while the price
+/// is frozen; every other exit metric is constant in the tail and so never newly fires.
+fn frozen_tail_clock_base(
+    series: &MetricSeries,
+    b: &BoundCombo,
+    pos_ctx: &PositionCtx,
+    i: usize,
+    req: &MetricReq,
+    row: usize,
+) -> Option<f64> {
+    if req.window.is_some() {
+        return None;
+    }
+    match req.metric {
+        MetricId::Time | MetricId::Stall if !req.position_scoped => {
+            Some(value_at_col(series, b.exit_cols[i], row))
+        }
+        MetricId::Held if req.position_scoped => {
+            Some(position_value(MetricId::Held, pos_ctx, series.price[row], series.at[row]))
+        }
+        _ => None,
+    }
+}
+
+/// Earliest grid step `m` (`1 ≤ m ≤ m_max`) at which a monotone-increasing reading
+/// `base + m·dt` first satisfies `eval(conds, ·, tol)`, or `None` if it never does in
+/// range. The reading is already false at `base` (the scan left the position Open), and
+/// a piecewise-constant predicate can only flip false→true at a condition breakpoint,
+/// so it suffices to test the grid steps bracketing each breakpoint (`value`, `value ±
+/// tol/2`) with the **real** `eval` — exact tolerance / operator / DNF semantics, never
+/// re-derived, just sampled where a crossing can occur. O(#conds).
+fn first_monotone_fire(
+    conds: &[Vec<Condition>],
+    tol: f64,
+    base: f64,
+    dt: f64,
+    m_max: i64,
+) -> Option<i64> {
+    if !base.is_finite() || dt <= 0.0 || dt.is_nan() || m_max < 1 {
+        return None;
+    }
+    let half = tol / 2.0;
+    let mut best: Option<i64> = None;
+    for arm in conds {
+        for c in arm {
+            for theta in [c.value, c.value - half, c.value + half] {
+                if !theta.is_finite() {
+                    continue;
+                }
+                let m0 = ((theta - base) / dt).floor() as i64;
+                for m in (m0 - 1)..=(m0 + 2) {
+                    if m < 1 || m > m_max || best.is_some_and(|b| m >= b) {
+                        continue;
+                    }
+                    if eval(conds, base + m as f64 * dt, tol) {
+                        best = Some(m);
+                    }
+                }
+            }
+        }
+    }
+    best
 }
 
 // ───────────────────── per-class first-firing-row resolvers ────────────────────
@@ -1455,6 +1651,7 @@ pub(crate) fn resolve_exit_simd(
     entry: &EntryResolution,
     pricing: &Pricing,
     index: &super::exit_index::ExitIndex,
+    tail_horizon: Option<Ts>,
 ) -> TokenOutcome {
     debug_assert_cols_match(series, b);
     let (fill_row, entry_price, entry_at) = match entry {
@@ -1462,10 +1659,10 @@ pub(crate) fn resolve_exit_simd(
         EntryResolution::Entered { fill_row, price, at } => (*fill_row, *price, *at),
     };
     let Some(bounds) = pnl_bounds_for_vector_scan(b, entry_price) else {
-        return resolve_exit_indexed(trades, series, b, entry, pricing, index);
+        return resolve_exit_indexed(trades, series, b, entry, pricing, index, tail_horizon);
     };
     if !simd_available() {
-        return resolve_exit_indexed(trades, series, b, entry, pricing, index);
+        return resolve_exit_indexed(trades, series, b, entry, pricing, index, tail_horizon);
     }
     let entry_slot = fill_trade_slot(series, fill_row);
     let n = series.n_rows();
@@ -1489,9 +1686,14 @@ pub(crate) fn resolve_exit_simd(
         );
     }
 
-    // Open: identical tail to the scalar path — mark to the last finite price.
-    let last_price = (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
-    open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+    // Open: identical tail to the scalar path — analytic frozen-tail resolve (D1)
+    // first, else mark to the last finite price.
+    resolve_frozen_tail(trades, series, b, fill_row, entry_price, entry_at, pricing, tail_horizon)
+        .unwrap_or_else(|| {
+            let last_price =
+                (0..n).rev().map(|k| series.price[k]).find(|p| p.is_finite()).unwrap_or(entry_price);
+            open_outcome(series, fill_row, entry_price, entry_at, last_price, pricing)
+        })
 }
 
 /// One lane-comparable exit bound: `pnl <op> value`, with `op` an ordering operator.
@@ -1947,15 +2149,36 @@ fn close_at_fire(
 /// separate bind step. The sweep does NOT go through here — it binds once per combo
 /// (`bind_param`) and reuses that across every token, which is the whole point of
 /// [`BoundCombo`].
+// The no-horizon convenience is exercised only by the single-token `guard` locks now
+// that the drill-in threads a corpus horizon through `scan_with_horizon`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn scan(
     trades: &[CorpusTrade],
     series: &MetricSeries,
     c: &CompiledRule,
     pricing: &Pricing,
 ) -> TokenOutcome {
+    // No corpus horizon ⇒ the frozen-tail resolve is off, i.e. the exact single-token
+    // behavior the `guard` locks against a single-token `run_replay` (whose tail is this
+    // same per-token cut). A multi-token caller uses [`scan_with_horizon`].
+    scan_with_horizon(trades, series, c, pricing, None)
+}
+
+/// [`scan`] with an explicit corpus frozen-tail horizon (D1) — the per-token driver a
+/// multi-token caller (the grouped-sweep drill-in) uses so a deterministic clock exit
+/// that lands past a token's own last-trade cut still closes, matching a simulate over
+/// the same token set. Pass [`frozen_tail_horizon`] of the scanned set; `None` reduces
+/// to [`scan`].
+pub(crate) fn scan_with_horizon(
+    trades: &[CorpusTrade],
+    series: &MetricSeries,
+    c: &CompiledRule,
+    pricing: &Pricing,
+    tail_horizon: Option<Ts>,
+) -> TokenOutcome {
     let bound = BoundCombo::new(series.columns(), c.clone());
     let entry = resolve_entry(trades, series, &bound, pricing);
-    resolve_exit(trades, series, &bound, &entry, pricing)
+    resolve_exit(trades, series, &bound, &entry, pricing, tail_horizon)
 }
 
 #[allow(clippy::too_many_arguments)]

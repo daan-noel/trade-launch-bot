@@ -723,8 +723,12 @@ async fn sweep_generic(
     if planned == 0 {
         bail!("param space is empty");
     }
-    let strategy =
+    let mut strategy =
         GenericSweepStrategy::new(model, pricing, chrono::Utc::now(), flow_patterns);
+    // Opt into the analytic frozen-tail resolve (D1): anchor it to this run's corpus so
+    // a deterministic clock exit past a token's own last-trade cut still closes, matching
+    // a simulate over the same tokens (parity plan Task 1). No-op on a trade-less corpus.
+    strategy.set_corpus(&corpus.tokens);
     let max_series_bytes = corpus
         .tokens
         .iter()
@@ -912,7 +916,7 @@ fn simulate_generic_one_combo(
     use trading_core::config::constants::sol_to_lamports;
 
     use crate::sweep::generic::strategy::{
-        build_series_with_flow, columns_for, scan, sparse_grid_for,
+        build_series_with_flow, columns_for, frozen_tail_horizon, scan_with_horizon, sparse_grid_for,
     };
 
     let params = RuleParams::parse(params_json)
@@ -934,6 +938,9 @@ fn simulate_generic_one_combo(
     let flow_patterns = volume_ix_patterns.map(|p| {
         hunter_engine::metrics::flow_split::FlowPatterns::from_label_sequences(p)
     });
+    // The frozen-tail resolve (D1) anchored on THIS drill-in's token set, so a row's
+    // exit matches the sweep aggregate the user clicked (parity plan Task 1 / B7).
+    let tail_horizon = frozen_tail_horizon(as_of, tokens);
 
     let mut results = Vec::with_capacity(tokens.len());
     for tt in tokens {
@@ -944,7 +951,7 @@ fn simulate_generic_one_combo(
             as_of,
             flow_patterns.as_ref(),
         );
-        let o = scan(&tt.trades, &series, &compiled, &pricing);
+        let o = scan_with_horizon(&tt.trades, &series, &compiled, &pricing, tail_horizon);
         results.push(ComboTokenResult {
             mint_address: tt.mint.clone(),
             symbol: tt.symbol.clone(),
