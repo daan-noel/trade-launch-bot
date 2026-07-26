@@ -26,7 +26,15 @@ import {
 } from '@live/slices/syncTokenSlice';
 import type { SyncResultItem } from '@live/slices/syncTokenSlice';
 import { cn } from 'lib/cn';
+import { amountInDisplayUnit } from 'lib/priceUnitSnapshot';
 import { formatWithCommas } from 'utils/format';
+
+/** SOL storage → displayed unit for PriceUnit-aware numeric filters (SSOT
+ *  mirror of `sharedTokenColumns`' helper — the cells here render through the
+ *  same SOL/USD `price.*` formatters, so the filter must match what's shown). */
+function solFilter(n: number | null | undefined): number | null {
+  return n == null ? null : amountInDisplayUnit(n, 'sol');
+}
 
 function stageLabel(stage: string): string {
   switch (stage) {
@@ -124,6 +132,7 @@ function syncedTokenColumns(
       render: (r) => r.token?.trade_count ?? '-',
       sortValue: (r) => r.token?.trade_count ?? null,
       searchValue: (r) => String(r.token?.trade_count ?? ''),
+      filterNumber: (r) => r.token?.trade_count ?? null,
     },
     {
       key: 'volume',
@@ -134,6 +143,7 @@ function syncedTokenColumns(
         r.token?.volume_sol_total != null ? price.displayCompact(r.token.volume_sol_total, 4) : '-',
       sortValue: (r) => r.token?.volume_sol_total ?? null,
       searchValue: (r) => String(r.token?.volume_sol_total ?? ''),
+      filterNumber: (r) => solFilter(r.token?.volume_sol_total),
     },
     {
       key: 'market_cap',
@@ -144,6 +154,7 @@ function syncedTokenColumns(
         r.token?.market_cap != null ? price.displayCompact(r.token.market_cap, 3) : '-',
       sortValue: (r) => r.token?.market_cap ?? null,
       searchValue: (r) => String(r.token?.market_cap ?? ''),
+      filterNumber: (r) => solFilter(r.token?.market_cap),
     },
     {
       key: 'current_price',
@@ -154,6 +165,7 @@ function syncedTokenColumns(
         r.token?.current_price != null ? price.displayPrice(r.token.current_price) : '-',
       sortValue: (r) => r.token?.current_price ?? null,
       searchValue: (r) => String(r.token?.current_price ?? ''),
+      filterNumber: (r) => solFilter(r.token?.current_price),
     },
     {
       key: 'migrated',

@@ -357,6 +357,7 @@ export function OpsPage() {
       ),
       sortValue: (r) => r.armedAt,
       searchValue: () => '',
+      filterNumber: (r) => Math.max(0, Math.floor((Date.now() - r.armedAt) / 1000)),
     },
     {
       key: 'trade',
@@ -439,6 +440,10 @@ export function OpsPage() {
       },
       sortValue: (r) => (r.entryTime ? Date.parse(r.entryTime) : r.updatedAt),
       searchValue: () => '',
+      filterNumber: (r) => {
+        const t = r.entryTime ? Date.parse(r.entryTime) : r.updatedAt;
+        return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 1000)) : null;
+      },
     },
     {
       key: 'entry',
@@ -451,6 +456,7 @@ export function OpsPage() {
       ),
       sortValue: (r) => r.entrySol ?? -1,
       searchValue: (r) => String(r.entrySol ?? ''),
+      filterNumber: (r) => r.entrySol ?? null,
     },
     {
       key: 'mtm',
@@ -468,6 +474,7 @@ export function OpsPage() {
       },
       sortValue: (r) => openMark(r).mtmSol ?? 0,
       searchValue: (r) => String(openMark(r).mtmSol ?? ''),
+      filterNumber: (r) => openMark(r).mtmSol,
     },
     {
       key: 'pnl_pct',
@@ -485,6 +492,7 @@ export function OpsPage() {
       },
       sortValue: (r) => openMark(r).mtmPct ?? 0,
       searchValue: (r) => String(openMark(r).mtmPct ?? ''),
+      filterNumber: (r) => openMark(r).mtmPct,
     },
     {
       key: 'actions',
@@ -613,6 +621,7 @@ export function OpsPage() {
         ),
       sortValue: (r) => r.pnlSol ?? 0,
       searchValue: (r) => String(r.pnlSol ?? ''),
+      filterNumber: (r) => r.pnlSol ?? null,
     },
     {
       key: 'pnl_pct',
@@ -649,6 +658,13 @@ export function OpsPage() {
             exitPrice: r.exitPrice,
           }) ?? '',
         ),
+      filterNumber: (r) =>
+        resolvePnlPct({
+          pnlSol: r.pnlSol,
+          entrySol: r.entrySol,
+          entryPrice: r.entryPrice,
+          exitPrice: r.exitPrice,
+        }),
     },
     {
       key: 'status',
@@ -678,6 +694,12 @@ export function OpsPage() {
         return Number.isFinite(entryMs) ? r.closedAt - entryMs : 0;
       },
       searchValue: () => '',
+      filterNumber: (r) => {
+        const entryMs = r.entryTime ? Date.parse(r.entryTime) : NaN;
+        return Number.isFinite(entryMs)
+          ? Math.max(0, Math.floor((r.closedAt - entryMs) / 1000))
+          : null;
+      },
     },
     {
       key: 'when',
@@ -688,6 +710,7 @@ export function OpsPage() {
       ),
       sortValue: (r) => r.closedAt,
       searchValue: () => '',
+      filterNumber: (r) => Math.max(0, Math.floor((Date.now() - r.closedAt) / 1000)),
     },
   ];
 

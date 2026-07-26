@@ -789,6 +789,7 @@ function ComboTokenResults({
           );
         },
         searchValue: () => '',
+        filterNumber: (r) => (r.fired ? r.pnl_pct : null),
         sortValue: (r) => r.pnl_pct,
         sortable: true,
       },
@@ -797,6 +798,7 @@ function ComboTokenResults({
         label: 'Hold (s)',
         render: (r) => <span className="text-text-dim">{r.fired ? r.holding_secs : '—'}</span>,
         searchValue: () => '',
+        filterNumber: (r) => (r.fired ? r.holding_secs : null),
         sortValue: (r) => r.holding_secs,
         sortable: true,
       },

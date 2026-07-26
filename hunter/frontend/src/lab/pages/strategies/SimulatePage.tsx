@@ -105,6 +105,10 @@ import {
 
 type RunState = { running: boolean; summary?: SimulatedSummary; error?: string };
 
+/** Which bulk-simulate button fired: one of the two trade modes, or the rows the
+ *  table's current search/column filters have narrowed to. */
+type BulkTag = TradeMode | 'filtered';
+
 const DASH = <span className="text-text-dim/60">—</span>;
 
 /** One distinct hue per fill model so equal values read the same at a glance,
@@ -202,7 +206,9 @@ export function SimulatePage() {
   const [fetchSummary] = useGetEngineSimSummaryMutation();
   const [fetchSummaries] = useGetEngineSimSummariesMutation();
   const [runs, setRuns] = useState<Record<string, RunState>>({});
-  const [bulkMode, setBulkMode] = useState<TradeMode | null>(null);
+  // Which bulk run is in flight: a trade-mode ('paper'/'real') or the table's
+  // current filter cohort ('filtered'). Guards all three "Simulate All" buttons.
+  const [bulkMode, setBulkMode] = useState<BulkTag | null>(null);
   const [fillModel, setFillModel] = useState<FillModelId>('worst_case');
   // Kept alongside fillModel — pairing an explicit fill model with the default
   // cost model double-counts slippage (see `COST_MODELS`), so the two travel
@@ -305,6 +311,15 @@ export function SimulatePage() {
     [visibleRules],
   );
 
+  // The exact rows the DataTable is showing after the user's search/column filters
+  // (pre-pagination). Null until the first change → fall back to the full visible
+  // set so the button is meaningful before any filtering. Lets "Simulate Filtered"
+  // run precisely the cohort on screen, across both trade modes.
+  const [filteredRules, setFilteredRules] = useState<StrategyRule[] | null>(null);
+  const onFilteredRowsChange = useCallback((r: StrategyRule[]) => setFilteredRules(r), []);
+  const filteredTargets = filteredRules ?? visibleRules;
+  const filteredCount = filteredTargets.length;
+
   // Hydrate every rule's resident sim summary on load (and when new rules appear),
   // so the table columns + position panels show without needing a row click.
   // One batch round-trip — missing/expired runs are omitted from the map.
@@ -372,19 +387,20 @@ export function SimulatePage() {
     }
   };
 
-  /** Queue a lake backtest for every saved rule in `mode` that isn't already running. */
-  const runAll = async (mode: TradeMode) => {
-    const targets = visibleRules.filter((r) => r.trade_mode === mode && !runs[r.id]?.running);
-    if (targets.length === 0) return;
-    setBulkMode(mode);
+  /** Queue a lake backtest for each of `targets` that isn't already running; `tag`
+   *  identifies which bulk button owns the in-flight run. */
+  const runRules = async (targets: StrategyRule[], tag: BulkTag) => {
+    const pending = targets.filter((r) => !runs[r.id]?.running);
+    if (pending.length === 0) return;
+    setBulkMode(tag);
     setRuns((prev) => {
       const next = { ...prev };
-      for (const r of targets) next[r.id] = { running: true };
+      for (const r of pending) next[r.id] = { running: true };
       return next;
     });
     try {
       await Promise.all(
-        targets.map(async (rule) => {
+        pending.map(async (rule) => {
           try {
             await start({
               rule_id: rule.id,
@@ -403,6 +419,12 @@ export function SimulatePage() {
       setBulkMode(null);
     }
   };
+
+  /** Simulate every saved rule of one trade mode. */
+  const runAll = (mode: TradeMode) =>
+    runRules(visibleRules.filter((r) => r.trade_mode === mode), mode);
+  /** Simulate exactly the rows the table's current filters have narrowed to. */
+  const runFiltered = () => runRules(filteredTargets, 'filtered');
 
   const columns = useMemo<ColumnDef<StrategyRule>[]>(
     () => [
@@ -490,38 +512,67 @@ export function SimulatePage() {
               Show disabled ({disabledCount})
             </label>
           )}
-          <IconButton
-            variant="subtle"
-            size="lg"
-            disabled={paperCount === 0 || bulkMode !== null}
-            onClick={() => runAll('paper')}
-            label={
-              bulkMode === 'paper'
-                ? 'Starting paper…'
-                : `Simulate All Paper (${paperCount})`
-            }
-            title={
-              bulkMode === 'paper'
-                ? 'Starting paper…'
-                : `Simulate All Paper (${paperCount})`
-            }
-          >
-            {bulkMode === 'paper' ? <SpinnerIcon /> : <SimulateIcon />}
-          </IconButton>
-          <IconButton
-            variant="subtle"
-            size="lg"
-            disabled={realCount === 0 || bulkMode !== null}
-            onClick={() => runAll('real')}
-            label={
-              bulkMode === 'real' ? 'Starting real…' : `Simulate All Real (${realCount})`
-            }
-            title={
-              bulkMode === 'real' ? 'Starting real…' : `Simulate All Real (${realCount})`
-            }
-          >
-            {bulkMode === 'real' ? <SpinnerIcon /> : <SimulateIcon />}
-          </IconButton>
+          {/* Three standalone bulk-simulate CTAs, spaced apart and each with its
+              own hue + self-describing label so they read as distinct actions:
+              the table's current filter cohort (primary/glow — the highlighted
+              default), all paper rules (green), all real rules (orange). */}
+          <div className="flex items-center gap-3">
+            <IconButton
+              variant="primary"
+              size="lg"
+              className="shadow-sm ring-1 ring-primary/30"
+              disabled={filteredCount === 0 || bulkMode !== null}
+              onClick={runFiltered}
+              label={
+                bulkMode === 'filtered'
+                  ? 'Starting filtered…'
+                  : `Simulate Filtered (${filteredCount})`
+              }
+              title={
+                bulkMode === 'filtered'
+                  ? 'Starting filtered…'
+                  : `Simulate the ${filteredCount} rule(s) the table's filters currently show`
+              }
+            >
+              {bulkMode === 'filtered' ? <SpinnerIcon /> : <SimulateIcon />}
+            </IconButton>
+            <IconButton
+              variant="success"
+              size="lg"
+              className="shadow-sm"
+              disabled={paperCount === 0 || bulkMode !== null}
+              onClick={() => runAll('paper')}
+              label={
+                bulkMode === 'paper'
+                  ? 'Starting paper…'
+                  : `Simulate Paper (${paperCount})`
+              }
+              title={
+                bulkMode === 'paper'
+                  ? 'Starting paper…'
+                  : `Simulate all ${paperCount} paper rule(s)`
+              }
+            >
+              {bulkMode === 'paper' ? <SpinnerIcon /> : <SimulateIcon />}
+            </IconButton>
+            <IconButton
+              variant="accent"
+              size="lg"
+              className="shadow-sm"
+              disabled={realCount === 0 || bulkMode !== null}
+              onClick={() => runAll('real')}
+              label={
+                bulkMode === 'real' ? 'Starting real…' : `Simulate Real (${realCount})`
+              }
+              title={
+                bulkMode === 'real'
+                  ? 'Starting real…'
+                  : `Simulate all ${realCount} real rule(s)`
+              }
+            >
+              {bulkMode === 'real' ? <SpinnerIcon /> : <SimulateIcon />}
+            </IconButton>
+          </div>
           </>
         }
       />
@@ -538,6 +589,7 @@ export function SimulatePage() {
         emptyMessage="No rules yet — author one on the Rules page."
         selectedKey={selectedRuleId}
         onSelect={setSelectedRuleId}
+        onFilteredRowsChange={onFilteredRowsChange}
         rowClassName={disabledRuleRowClass}
         rowActions={(r) => (
           <IconButtonGroup>
@@ -954,6 +1006,7 @@ function RuleSimPositionsPanel({
             loading={simTableLoading}
             resetKey={`${rule.id}_${showNotFired}`}
             tableId="simulate-positions"
+            pinnable
             emptyMessage={
               showNotFired
                 ? 'No tokens in this simulation result.'
@@ -1081,6 +1134,7 @@ function buildColumns(
       label: 'Buy',
       render: (r) => <span className="tabular-nums">{lamportsToSol(r.buy_amount_lamports)}◎</span>,
       searchValue: (r) => String(lamportsToSol(r.buy_amount_lamports)),
+      filterNumber: (r) => lamportsToSol(r.buy_amount_lamports),
       sortValue: (r) => r.buy_amount_lamports,
       sortable: true,
     },

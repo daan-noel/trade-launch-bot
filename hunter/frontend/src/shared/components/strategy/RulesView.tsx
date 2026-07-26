@@ -412,6 +412,8 @@ export function RulesView({
             },
             searchValue: (r: StrategyRule) => String(r.total_pnl_sol ?? 0),
             sortValue: (r: StrategyRule) => r.total_pnl_sol ?? 0,
+            filterNumber: (r: StrategyRule) =>
+              (r.total_positions ?? 0) === 0 ? null : r.total_pnl_sol ?? 0,
             sortable: true as const,
           },
           {
@@ -431,6 +433,8 @@ export function RulesView({
             },
             searchValue: (r: StrategyRule) => String(r.avg_pnl_pct ?? 0),
             sortValue: (r: StrategyRule) => r.avg_pnl_pct ?? 0,
+            filterNumber: (r: StrategyRule) =>
+              closedCount(r) === 0 ? null : r.avg_pnl_pct ?? 0,
             sortable: true as const,
           },
           {
@@ -458,6 +462,10 @@ export function RulesView({
               const n = closedCount(r);
               return n > 0 ? (r.total_pnl_sol ?? 0) / n : 0;
             },
+            filterNumber: (r: StrategyRule) => {
+              const n = closedCount(r);
+              return n === 0 ? null : (r.total_pnl_sol ?? 0) / n;
+            },
             sortable: true as const,
           },
           {
@@ -477,6 +485,8 @@ export function RulesView({
             },
             searchValue: (r: StrategyRule) => String(r.win_rate ?? 0),
             sortValue: (r: StrategyRule) => r.win_rate ?? 0,
+            filterNumber: (r: StrategyRule) =>
+              closedCount(r) === 0 ? null : r.win_rate ?? 0,
             sortable: true as const,
           },
           {
@@ -528,6 +538,8 @@ export function RulesView({
             },
             searchValue: (r: StrategyRule) => String(r.total_positions ?? 0),
             sortValue: (r: StrategyRule) => r.total_positions ?? 0,
+            filterNumber: (r: StrategyRule) =>
+              (r.total_positions ?? 0) === 0 ? null : r.total_positions ?? 0,
             sortable: true as const,
           },
         ] satisfies ColumnDef<StrategyRule>[])
@@ -610,6 +622,7 @@ export function RulesView({
       render: (r) => <span className="tabular-nums">{lamportsToSol(r.buy_amount_lamports)}◎</span>,
       searchValue: (r) => String(lamportsToSol(r.buy_amount_lamports)),
       sortValue: (r) => r.buy_amount_lamports,
+      filterNumber: (r) => lamportsToSol(r.buy_amount_lamports),
       sortable: true,
     },
     ...buildCapsColumns(),

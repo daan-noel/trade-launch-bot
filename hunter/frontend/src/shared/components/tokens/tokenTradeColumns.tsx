@@ -129,6 +129,7 @@ export function tokenTradeColumns(
       },
       sortValue: (t) => t.amount_sol,
       searchValue: (t) => String(t.amount_sol),
+      filterNumber: (t) => t.amount_sol,
     },
     {
       key: 'tokens',
@@ -143,6 +144,7 @@ export function tokenTradeColumns(
       },
       sortValue: (t) => t.token_amount,
       searchValue: (t) => String(t.token_amount),
+      filterNumber: (t) => t.token_amount,
     },
     {
       key: 'price',
@@ -157,6 +159,7 @@ export function tokenTradeColumns(
       },
       sortValue: (t) => t.price_per_token,
       searchValue: (t) => String(t.price_per_token),
+      filterNumber: (t) => t.price_per_token,
     },
     {
       key: 'signature',
@@ -173,6 +176,7 @@ export function tokenTradeColumns(
       render: (t) => t.slot,
       sortValue: (t) => t.slot,
       searchValue: (t) => String(t.slot),
+      filterNumber: (t) => t.slot,
     },
     {
       key: 'time',

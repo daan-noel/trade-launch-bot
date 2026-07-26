@@ -134,6 +134,11 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
       render: (r) => <AgeCell createdMs={createdMsOf(r)} />,
       sortValue: (r) => ageSecondsOf(r),
       searchValue: (r) => formatAge(ageSecondsOf(r)),
+      // Age in seconds — same units the cell reads ("2m" etc.). Enables numeric
+      // filtering (>60, 5..10) client-side. Client-DERIVED (now − created), with
+      // no matching server column, so on serverSide tables (e.g. TokensPage) this
+      // operand is unsupported and won't round-trip — a no-op there, live client-side.
+      filterNumber: (r) => ageSecondsOf(r),
     },
     {
       key: 'created',
@@ -163,6 +168,9 @@ export function tokenColumns(): ColumnDef<TokenRecord>[] {
       sortValue: (r) => r.lifetime_secs,
       searchValue: (r) =>
         r.lifetime_secs != null ? formatAge(r.lifetime_secs) : '',
+      // Seconds — same units the cell reads. Backed by the real `lifetime_secs`
+      // server column, so serverSide numeric filtering round-trips.
+      filterNumber: (r) => r.lifetime_secs ?? null,
     },
     c('last_synced'),
     c('trade_count'),

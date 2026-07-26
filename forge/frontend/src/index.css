@@ -290,6 +290,30 @@ a:hover {
     border-bottom: 2px solid var(--color-line);
   }
 
+  /* Opt-in per-column filter row (DataTable `filterable`). Sits directly under
+     the header; kept NON-sticky so two header rows never stack at top:0 and
+     overlap. `.dt th.dt-filter-th` out-specifies `.dt th`'s sticky rule so the
+     override actually lands. Cells without a filter accessor render empty. */
+  .dt th.dt-filter-th {
+    position: static;
+    top: auto;
+    z-index: auto;
+    padding: 0.25rem 0.4rem;
+    background: var(--color-panel);
+    border-bottom: 1px solid var(--color-line);
+    text-transform: none;
+    letter-spacing: normal;
+    font-weight: 400;
+  }
+  .dt-filter-input {
+    width: 100%;
+    min-width: 0;
+    padding: 0.22rem 0.4rem;
+    font-size: 0.72rem;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
   .mono {
     font-family: var(--font-mono);
   }

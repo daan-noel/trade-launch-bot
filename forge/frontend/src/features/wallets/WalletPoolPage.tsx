@@ -58,6 +58,8 @@ import type {
 const NON_SOURCE_STATUSES = new Set<WalletStatus>(['funding', 'reserved', 'retired']);
 
 const LOW_POOL_THRESHOLD = 3;
+// Lamports per SOL — for the Balance column's numeric filter (displayed in SOL).
+const LAMPORTS_PER_SOL = 1_000_000_000;
 const ROLES: WalletRole[] = ['dev', 'bundler', 'treasury', 'trading'];
 // Only these roles are funded treasury→pool (dev launches, bundlers co-buy). Treasury
 // is the SOURCE and trading isn't part of the launch warm-pool, so the per-role/low-pool
@@ -619,13 +621,32 @@ export function WalletPoolPage() {
   const poolActionBusy = poolAction?.status === 'running';
 
   const columns: Column<ManagedWalletPool>[] = [
-    { header: 'Address', render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} /> },
-    { header: 'Label', render: (w) => w.label ?? <span className="muted">—</span> },
-    { header: 'Role', render: (w) => <RolePill role={w.role} /> },
-    { header: 'Status', render: (w) => <StatusPill status={w.status} /> },
+    {
+      header: 'Address',
+      render: (w) => <AddressDisplay value={w.address} lead={6} tail={6} />,
+      filterValue: (w) => w.address,
+    },
+    {
+      header: 'Label',
+      render: (w) => w.label ?? <span className="muted">—</span>,
+      filterValue: (w) => w.label ?? '',
+    },
+    {
+      header: 'Role',
+      render: (w) => <RolePill role={w.role} />,
+      filterValue: (w) => w.role,
+    },
+    {
+      header: 'Status',
+      render: (w) => <StatusPill status={w.status} />,
+      filterValue: (w) => w.status,
+    },
     {
       header: 'Balance',
       align: 'right',
+      // Displayed units: SOL (lamports ÷ 1e9), matching the formatSol cell.
+      filterNumber: (w) =>
+        w.balance_lamports == null ? null : w.balance_lamports / LAMPORTS_PER_SOL,
       // Show every wallet's balance (incl. used/retired). A countable balance (freshly
       // read, or a stable funded/reserved wallet) renders normal — matching what folds
       // into the holdings total; a stale used/retired snapshot renders dimmed with its
@@ -1107,6 +1128,7 @@ export function WalletPoolPage() {
           loading={isFetching}
           empty="No wallets yet — generate a batch above."
           pinning={pinning}
+          filterable
         />
       </Card>
 

@@ -33,13 +33,43 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       ) : (
         <span className="muted italic">pending ingest…</span>
       ),
+    filterValue: (l) => `${l.name ?? ''} ${l.symbol ?? ''}`,
+    filterPlaceholder: 'name / symbol',
   },
-  { header: 'Mint', render: (l) => <AddressDisplay value={l.mint_address} kind="token" /> },
-  { header: 'Launch', render: (l) => <StatusPill status={l.status} /> },
-  { header: 'Bundle', render: (l) => <StatusPill status={l.bundle_status ?? undefined} /> },
-  { header: 'Flags', render: (l) => <Flags l={l} /> },
-  { header: 'Trades', align: 'right', render: (l) => <span className="mono">{formatCount(l.trade_count)}</span> },
-  { header: 'Mkt cap', align: 'right', render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span> },
+  {
+    header: 'Mint',
+    render: (l) => <AddressDisplay value={l.mint_address} kind="token" />,
+    filterValue: (l) => l.mint_address,
+  },
+  {
+    header: 'Launch',
+    render: (l) => <StatusPill status={l.status} />,
+    filterValue: (l) => l.status,
+  },
+  {
+    header: 'Bundle',
+    render: (l) => <StatusPill status={l.bundle_status ?? undefined} />,
+    filterValue: (l) => l.bundle_status ?? '',
+  },
+  {
+    header: 'Flags',
+    render: (l) => <Flags l={l} />,
+    filterValue: (l) => `${l.is_migrated ? 'migrated' : ''} ${l.is_dead ? 'dead' : ''}`,
+  },
+  {
+    header: 'Trades',
+    align: 'right',
+    render: (l) => <span className="mono">{formatCount(l.trade_count)}</span>,
+    // Integer trade count.
+    filterNumber: (l) => l.trade_count,
+  },
+  {
+    header: 'Mkt cap',
+    align: 'right',
+    render: (l) => <span className="mono">{formatUsd(l.market_cap_usd)}</span>,
+    // USD market cap.
+    filterNumber: (l) => l.market_cap_usd,
+  },
   {
     header: 'Holding',
     align: 'right',
@@ -53,6 +83,11 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       ) : (
         <span className="muted">—</span>
       ),
+    // Human token amount (base units ÷ token decimals) — same value the cell shows.
+    filterNumber: (l) =>
+      l.holding_base && l.holding_base > 0
+        ? l.holding_base / 10 ** (l.token_decimals ?? 6)
+        : null,
   },
   {
     header: 'Cost (SOL)',
@@ -63,6 +98,11 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       ) : (
         <span className="muted">—</span>
       ),
+    // Cost basis in SOL (quote base units ÷ quote decimals).
+    filterNumber: (l) =>
+      l.holding_base && l.holding_base > 0 && l.holding_cost_quote != null
+        ? l.holding_cost_quote / 10 ** (l.quote_decimals ?? 9)
+        : null,
   },
   {
     header: 'Value (SOL)',
@@ -73,8 +113,17 @@ const LAUNCH_COLUMNS: Column<LaunchListRow>[] = [
       ) : (
         <span className="muted">—</span>
       ),
+    // Current SOL value (quote base units ÷ quote decimals).
+    filterNumber: (l) =>
+      l.holding_base && l.holding_base > 0 && l.holding_value_quote != null
+        ? l.holding_value_quote / 10 ** (l.quote_decimals ?? 9)
+        : null,
   },
-  { header: 'Variant', render: (l) => <span className="mono text-xs muted">{l.variant}</span> },
+  {
+    header: 'Variant',
+    render: (l) => <span className="mono text-xs muted">{l.variant}</span>,
+    filterValue: (l) => l.variant,
+  },
   { header: 'Age', align: 'right', render: (l) => <AgeCell iso={l.created_at} /> },
   {
     header: '',
@@ -147,6 +196,7 @@ export function LaunchesPage() {
           empty="No launches yet — run one from the Launch Console."
           onRowClick={(l) => navigate(`/tokens/${l.mint_address}`)}
           pinning={pinning}
+          filterable
         />
       </Card>
     </div>

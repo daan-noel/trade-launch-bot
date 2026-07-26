@@ -125,6 +125,7 @@ export function PortfolioPage() {
         ),
         sortValue: (r) => r.realized_pnl_sol,
         searchValue: (r) => String(r.realized_pnl_sol),
+        filterNumber: (r) => r.realized_pnl_sol,
       },
       {
         key: 'pnl_pct',
@@ -142,6 +143,7 @@ export function PortfolioPage() {
         },
         sortValue: (r) => pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol) ?? 0,
         searchValue: (r) => String(pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol) ?? ''),
+        filterNumber: (r) => pnlPctFromSol(r.realized_pnl_sol, r.total_entry_sol),
       },
       {
         key: 'win',
@@ -157,6 +159,7 @@ export function PortfolioPage() {
           ),
         sortValue: (r) => r.win_rate,
         searchValue: (r) => String(r.win_rate),
+        filterNumber: (r) => (r.closed > 0 ? r.win_rate : null),
       },
       {
         key: 'wl',
@@ -179,6 +182,7 @@ export function PortfolioPage() {
         render: (r) => <span className="tabular-nums text-xs text-text-mid">{r.closed}</span>,
         sortValue: (r) => r.closed,
         searchValue: (r) => String(r.closed),
+        filterNumber: (r) => r.closed,
       },
       {
         key: 'entry',
@@ -191,6 +195,7 @@ export function PortfolioPage() {
         ),
         sortValue: (r) => r.total_entry_sol,
         searchValue: (r) => String(r.total_entry_sol),
+        filterNumber: (r) => r.total_entry_sol,
       },
       {
         key: 'floor',

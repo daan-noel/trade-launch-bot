@@ -179,6 +179,7 @@ export function legColumns<T>(prefix: LegPrefix, acc: LegAccessors<T>, opts: Leg
           },
           sortValue: (r) => acc.tokens!(r),
           searchValue: (r) => String(acc.tokens!(r) ?? ''),
+          filterNumber: (r) => acc.tokens!(r) ?? null,
         });
         break;
       case 'size':
@@ -305,6 +306,7 @@ export const positionColumns: ColumnDef<RulePositionRecord>[] = (
     sortValue: (r) => r.run_seq ?? 0,
     searchValue: (r) => (r.run_seq != null ? String(r.run_seq) : ''),
     filterValue: (r) => (r.run_seq != null ? String(r.run_seq) : ''),
+    filterNumber: (r) => r.run_seq ?? null,
     sortable: true,
   },
   mintColumn<RulePositionRecord>(),
@@ -528,6 +530,8 @@ export const simColumns: ColumnDef<SimulatedTokenResult>[] = (
     render: (r) => <CurrentPriceCell sol={r.ath_price} />,
     sortValue: (r) => r.ath_price,
     searchValue: (r) => String(r.ath_price ?? ''),
+    filterNumber: (r) => solFilter(r.ath_price),
+    filterAmount: 'sol',
   },
   // The sim result payload carries no exit token count (unlike a live position),
   // so the exit leg omits Tokens + the derived Size — the builder drops both when
