@@ -105,6 +105,28 @@ export const liveApi = baseApi.injectEndpoints({
     buyToken: builder.mutation<{ success: boolean }, BuyTokenArgs>({
       query: (body) => ({ url: '/api/solana/wallet/buy', method: 'POST', body }),
     }),
+    // Console manual buy → a FULL tracked position (origin='manual'). 202
+    // `{position_id}` returns immediately; the row appears as BuySubmitted and
+    // every further truth arrives over `strategy_position_update` SSE — there is
+    // no sync success to misreport (M2). TP/SL optional; absent = tracked-only.
+    manualBuyPosition: builder.mutation<
+      { position_id: string },
+      { mint_address: string; amount_sol: number; tp_pct?: number; sl_pct?: number }
+    >({
+      query: (body) => ({ url: '/api/positions/manual-buy', method: 'POST', body }),
+    }),
+    // Set / replace / clear a manual position's TP/SL ([+TP/SL] on a Holding
+    // row). Clearing (both absent) drops it back to tracked-only.
+    setManualExitConfig: builder.mutation<
+      { updated: boolean },
+      { positionId: string; tp_pct?: number; sl_pct?: number }
+    >({
+      query: ({ positionId, tp_pct, sl_pct }) => ({
+        url: `/api/strategies/generic/positions/${positionId}/manual-exit`,
+        method: 'POST',
+        body: { tp_pct, sl_pct },
+      }),
+    }),
     sellToken: builder.mutation<{ success: boolean }, SellTokenArgs>({
       query: (body) => ({ url: '/api/solana/wallet/sell', method: 'POST', body }),
     }),
@@ -195,6 +217,8 @@ export const {
   useGetPortfolioPerformanceQuery,
   useGetWalletPricesQuery,
   useBuyTokenMutation,
+  useManualBuyPositionMutation,
+  useSetManualExitConfigMutation,
   useSellTokenMutation,
   useCloseRulePositionMutation,
   useGetCashbackStatusQuery,

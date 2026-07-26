@@ -13,10 +13,13 @@
 export const STRATEGY_PATHS = {
   rules: '/strategies/rules',
   fingerprints: '/strategies/fingerprints',
-  /** Live Floor — waiting / open / attention / recent. */
-  floor: '/floor',
-  /** @deprecated Prefer `floor`; kept for any lingering `/ops` string refs. */
-  ops: '/floor',
+  /** The unified real-trade Console — attention / open / manual trade / waiting /
+   *  recent. Replaces the old Floor + Trade pages (both redirect here). */
+  console: '/console',
+  /** @deprecated Prefer `console`; kept for lingering `/floor` string refs. */
+  floor: '/console',
+  /** @deprecated Prefer `console`; kept for any lingering `/ops` string refs. */
+  ops: '/console',
   /** Live Portfolio — cross-rule money. */
   portfolio: '/portfolio',
   /** Lab app only. */
@@ -63,7 +66,8 @@ export function portfolioHref(range?: 'today' | '7d' | 'all'): string {
   return `${STRATEGY_PATHS.portfolio}?range=${range}`;
 }
 
-/** Floor deep-link query keys (notification click-through + Home). */
+/** Console deep-link query keys (notification click-through + Home). `tab` is
+ *  legacy (the Console is one page of lanes) — accepted but ignored. */
 export const OPS_PARAMS = {
   tab: 'tab',
   mode: 'mode',
@@ -73,29 +77,11 @@ export const OPS_PARAMS = {
   position: 'position',
 } as const;
 
+/** @deprecated The Console has no tabs — kept only for old link compatibility. */
 export type OpsTab = 'waiting' | 'open' | 'attention' | 'recent';
 
-/** Map a notification status pill → Floor tab that holds that row. Since the
- *  status split, a stuck bag (`ExitStuck`) is OPEN·attention (defect #3 fix:
- *  the deep link lands where the row actually is). */
-export function opsTabForNotifyStatus(status: string): OpsTab {
-  switch (status) {
-    case 'Armed':
-    case 'Disarmed':
-      return 'waiting';
-    case 'ExitStuck':
-    case 'ExitUnconfirmed':
-    case 'ExitPending':
-      return 'attention';
-    case 'End':
-    case 'EntryFailed':
-      return 'recent';
-    default:
-      return 'open';
-  }
-}
-
-export function floorHref(opts?: {
+export function consoleHref(opts?: {
+  /** Legacy tab hint — ignored by the Console (lanes are always visible). */
   tab?: OpsTab;
   mode?: string;
   status?: string;
@@ -103,22 +89,29 @@ export function floorHref(opts?: {
   ruleId?: string;
   positionId?: string | null;
 }): string {
-  if (!opts) return STRATEGY_PATHS.floor;
+  if (!opts) return STRATEGY_PATHS.console;
   const q = new URLSearchParams();
-  if (opts.tab) q.set(OPS_PARAMS.tab, opts.tab);
   if (opts.mode) q.set(OPS_PARAMS.mode, opts.mode === 'paper' ? 'paper' : 'real');
   if (opts.status) q.set(OPS_PARAMS.status, opts.status);
   if (opts.mint) q.set(OPS_PARAMS.mint, opts.mint);
   if (opts.ruleId) q.set(OPS_PARAMS.rule, opts.ruleId);
   if (opts.positionId) q.set(OPS_PARAMS.position, opts.positionId);
   const s = q.toString();
-  return s ? `${STRATEGY_PATHS.floor}?${s}` : STRATEGY_PATHS.floor;
+  return s ? `${STRATEGY_PATHS.console}?${s}` : STRATEGY_PATHS.console;
+}
+
+/** @deprecated Prefer {@link consoleHref}. */
+export const floorHref = consoleHref;
+
+/** Console trade-panel deep link — prefills the manual-trade mint. */
+export function consoleTradeHref(mint: string): string {
+  return consoleHref({ mint });
 }
 
 /**
- * Deep-link for a position/arm notification.
- * Clean `End` → Rules Evidence (history). Stuck exits → Floor attention.
- * Open/waiting → Floor inventory.
+ * Deep-link for a position/arm notification — always the Console with the
+ * position focused; whichever lane the row lives in, it is on this one page
+ * (defect #3 fix: there is no wrong tab to land in).
  */
 export function opsNotifyHref(opts: {
   status: string;
@@ -127,14 +120,8 @@ export function opsNotifyHref(opts: {
   ruleId: string;
   positionId?: string | null;
 }): string {
-  if (opts.status === 'End' && opts.ruleId) {
-    return rulesHref(opts.ruleId);
-  }
-  return floorHref({
-    tab: opsTabForNotifyStatus(opts.status),
+  return consoleHref({
     mode: opts.mode,
-    status:
-      opts.status !== 'Armed' && opts.status !== 'Disarmed' ? opts.status : undefined,
     mint: opts.mint,
     ruleId: opts.ruleId || undefined,
     positionId: opts.positionId,

@@ -98,7 +98,7 @@ export function usePositionNotifications() {
         ruleId: delta.rule_id,
         positionId: delta.position_id,
       });
-      const tradeHref = `/trade?mint=${encodeURIComponent(delta.mint_address)}`;
+      const tradeHref = `/console?mint=${encodeURIComponent(delta.mint_address)}`;
 
       const detail =
         status === 'End' ||
@@ -144,7 +144,7 @@ export function usePositionNotifications() {
         mint: delta.mint_address,
         ruleId: delta.rule_id,
       });
-      const tradeHref = `/trade?mint=${encodeURIComponent(delta.mint_address)}`;
+      const tradeHref = `/console?mint=${encodeURIComponent(delta.mint_address)}`;
       const detail = status === 'Disarmed' ? delta.reason : null;
 
       addToast(

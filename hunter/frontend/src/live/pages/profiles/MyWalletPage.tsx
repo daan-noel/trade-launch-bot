@@ -58,19 +58,12 @@ interface MarkTip {
   unrealized_pnl_pct: number | null;
 }
 
+/** Row-triggered buy dialog. Free-text manual trading moved to the Console —
+ *  the old header modals (with their broken `mint` key, M4) are gone. */
 interface BuyDialog {
   mint_address: string;
-  /// Known for row-triggered buys; undefined for manual buys (backend resolves on-chain).
   tokenProgramId?: string;
   solInput: string;
-  /// Slippage tolerance as a percent string; blank = use the global default.
-  slippageInput: string;
-  manual: boolean;
-}
-
-interface SellDialog {
-  /// Mint to sell; entered by the user (manual sell sells the full balance).
-  mint_address: string;
   /// Slippage tolerance as a percent string; blank = use the global default.
   slippageInput: string;
 }
@@ -301,7 +294,6 @@ export function MyWalletPage() {
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [sellingMint, setSellingMint] = useState<string | null>(null);
   const [buyDialog, setBuyDialog] = useState<BuyDialog | null>(null);
-  const [sellDialog, setSellDialog] = useState<SellDialog | null>(null);
   // A pending manual sell held back for confirmation because a live strategy
   // manages this bag — selling manually can race the bot's own exit (double-sell).
   const [pendingSell, setPendingSell] = useState<{
@@ -472,53 +464,8 @@ export function MyWalletPage() {
     void runSell(mint, tokenAccount, slippageBps, prevAmount);
   }, [pendingSell, runSell]);
 
-  const handleManualSellOpen = useCallback(() => {
-    setSellDialog({ mint_address: '', slippageInput: '' });
-  }, []);
-
-  const handleSellSubmit = useCallback(async () => {
-    if (!sellDialog) return;
-    const mint = sellDialog.mint_address.trim();
-    if (!mint) {
-      setActionError('Enter a mint address');
-      return;
-    }
-    const { bps: slippageBps, error: slipError } = parseSlippageBps(sellDialog.slippageInput);
-    if (slipError) {
-      setActionError(slipError);
-      return;
-    }
-
-    // Resolve the composed holding (authoritative managed_by / token account /
-    // balance) from the warm scan — the typed mint may not be on the current page.
-    let holding: WalletHolding | null = null;
-    try {
-      holding = await fetchHoldingByMint(mint);
-    } catch {
-      /* fall through to the not-held guard */
-    }
-    if (!holding || !holding.amount) {
-      setActionError('Wallet holds no balance of this mint');
-      return;
-    }
-
-    setActionError(null);
-    setActionSuccess(null);
-    setSellDialog(null);
-    requestSell(mint, {
-      tokenAccount: holding.token_account,
-      slippageBps,
-      prevAmount: holding.amount,
-      managedBy: holding.managed_by,
-    });
-  }, [sellDialog, requestSell]);
-
   const handleBuyOpen = useCallback((mint: string, tokenProgramId: string) => {
-    setBuyDialog({ mint_address: mint, tokenProgramId, solInput: '0.001', slippageInput: '', manual: false });
-  }, []);
-
-  const handleManualBuyOpen = useCallback(() => {
-    setBuyDialog({ mint_address: '', solInput: '0.001', slippageInput: '', manual: true });
+    setBuyDialog({ mint_address: mint, tokenProgramId, solInput: '0.001', slippageInput: '' });
   }, []);
 
   const handleBuySubmit = useCallback(async () => {
@@ -580,9 +527,7 @@ export function MyWalletPage() {
   );
 
   const buyTitle = buyDialog
-    ? buyDialog.manual
-      ? 'Manual Buy'
-      : `Buy ${rowByMint.get(buyDialog.mint_address)?.symbol ?? buyDialog.mint_address}`
+    ? `Buy ${rowByMint.get(buyDialog.mint_address)?.symbol ?? buyDialog.mint_address}`
     : '';
 
   return (
@@ -612,29 +557,11 @@ export function MyWalletPage() {
             >
               {hideDust ? '✓ ' : ''}Hide dust
             </Button>
-            <IconButton
-              variant="primary"
-              size="lg"
-              onClick={handleManualBuyOpen}
-              label="Manual Buy"
-              title="Manual Buy"
-            >
-              <BuyIcon />
-            </IconButton>
-            <IconButton
-              variant="danger"
-              size="lg"
-              onClick={handleManualSellOpen}
-              label="Manual Sell"
-              title="Manual Sell"
-            >
-              <SellIcon />
-            </IconButton>
             <Link
-              to="/trade"
+              to="/console"
               className="inline-flex min-h-8 items-center justify-center rounded-md border border-primary bg-primary/15 px-3 text-xs font-semibold text-primary transition hover:bg-primary/25"
             >
-              Trade desk →
+              Console →
             </Link>
           </>
         }
@@ -686,10 +613,10 @@ export function MyWalletPage() {
             <span className="font-mono text-[11px] text-text-dim">{selectedMint}</span>
             <div className="grow" />
             <Link
-              to={`/trade?mint=${encodeURIComponent(selectedMint)}`}
+              to={`/console?mint=${encodeURIComponent(selectedMint)}`}
               className="rounded border border-white/15 bg-white/4 px-2 py-0.5 text-[11px] font-semibold text-accent hover:border-primary/40 hover:text-primary"
             >
-              Open Trade desk →
+              Open in Console →
             </Link>
             <Button variant="ghost" size="sm" onClick={() => selectMint(null)}>
               Close
@@ -717,25 +644,7 @@ export function MyWalletPage() {
       >
         {buyDialog && (
           <>
-            {buyDialog.manual ? (
-              <label className="mb-4 flex flex-col gap-1.5">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                  Mint Address
-                </span>
-                <Input
-                  type="text"
-                  fieldSize="md"
-                  placeholder="Token mint address"
-                  value={buyDialog.mint_address}
-                  onChange={(e) =>
-                    setBuyDialog((d) => (d ? { ...d, mint: e.target.value } : d))
-                  }
-                  className="font-mono focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
-                />
-              </label>
-            ) : (
-              <p className="mb-4 text-xs text-text-mid">Mint: {buyDialog.mint_address}</p>
-            )}
+            <p className="mb-4 text-xs text-text-mid">Mint: {buyDialog.mint_address}</p>
             <label className="mb-4 flex flex-col gap-1.5">
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
                 SOL Amount
@@ -782,68 +691,6 @@ export function MyWalletPage() {
                 title="Confirm Buy"
               >
                 <BuyIcon />
-              </IconButton>
-            </div>
-          </>
-        )}
-      </Modal>
-
-      <Modal
-        title="Manual Sell"
-        open={sellDialog != null}
-        onClose={() => setSellDialog(null)}
-      >
-        {sellDialog && (
-          <>
-            <InlineAlert variant="warning">
-              Sells the wallet's entire balance of this mint and closes the token
-              account to reclaim rent.
-            </InlineAlert>
-            <label className="mb-4 mt-4 flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                Mint Address
-              </span>
-              <Input
-                type="text"
-                fieldSize="md"
-                placeholder="Token mint address"
-                value={sellDialog.mint_address}
-                onChange={(e) =>
-                  setSellDialog((d) => (d ? { ...d, mint: e.target.value } : d))
-                }
-                className="font-mono focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
-              />
-            </label>
-            <label className="mb-4 flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-text-dim">
-                Slippage % (optional)
-              </span>
-              <Input
-                type="number"
-                fieldSize="md"
-                min={0}
-                max={50}
-                step={0.1}
-                placeholder="Default"
-                value={sellDialog.slippageInput}
-                onChange={(e) =>
-                  setSellDialog((d) => (d ? { ...d, slippageInput: e.target.value } : d))
-                }
-                className="focus:shadow-[0_0_0_2px_rgba(19,206,175,0.15)]"
-              />
-            </label>
-            <div className="flex items-center justify-end gap-2.5">
-              <Button variant="ghost" onClick={() => setSellDialog(null)}>
-                Cancel
-              </Button>
-              <IconButton
-                variant="danger"
-                size="lg"
-                onClick={handleSellSubmit}
-                label="Sell All"
-                title="Sell All"
-              >
-                <SellIcon />
               </IconButton>
             </div>
           </>

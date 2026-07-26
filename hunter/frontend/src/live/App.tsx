@@ -22,14 +22,13 @@ const ProfilesPage = lazy(() => import('pages/profiles/ProfilesPage').then((m) =
 const SettingsPage = lazy(() => import('pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const RulesPage = lazy(() => import('@live/pages/strategies/RulesPage').then((m) => ({ default: m.RulesPage })));
 const FingerprintsPage = lazy(() => import('@live/pages/strategies/FingerprintsPage').then((m) => ({ default: m.FingerprintsPage })));
-const OpsPage = lazy(() => import('@live/pages/strategies/OpsPage').then((m) => ({ default: m.OpsPage })));
+const ConsolePage = lazy(() => import('@live/pages/console/ConsolePage').then((m) => ({ default: m.ConsolePage })));
 const PortfolioPage = lazy(() =>
   import('@live/pages/portfolio/PortfolioPage').then((m) => ({ default: m.PortfolioPage })),
 );
 const RuleAnalyzePage = lazy(() =>
   import('@live/pages/strategies/RuleAnalyzePage').then((m) => ({ default: m.RuleAnalyzePage })),
 );
-const TradePage = lazy(() => import('@live/pages/trade/TradePage').then((m) => ({ default: m.TradePage })));
 const NotFoundPage = lazy(() => import('pages/not-found/NotFoundPage').then((m) => ({ default: m.NotFoundPage })));
 
 /** Mounts Live Status SSOT + portfolio/chart live pipes + position toasts. */
@@ -68,17 +67,20 @@ export default function App() {
               <Route path="tokens" element={<TokensPage />} />
               <Route path="tokens/sync" element={<SyncTokenPage />} />
               <Route path="token/sync" element={<RedirectPreserve to="/tokens/sync" />} />
-              <Route path="floor" element={<OpsPage />} />
-              <Route path="ops" element={<RedirectPreserve to="/floor" />} />
+              <Route path="console" element={<ConsolePage />} />
+              {/* Console replaced Floor + Trade — old routes redirect with query
+                  preserved (`/trade?mint=X` prefills the manual-trade panel). */}
+              <Route path="floor" element={<RedirectPreserve to="/console" />} />
+              <Route path="trade" element={<RedirectPreserve to="/console" />} />
+              <Route path="ops" element={<RedirectPreserve to="/console" />} />
               <Route path="portfolio" element={<PortfolioPage />} />
-              <Route path="positions" element={<RedirectPreserve to="/floor" />} />
-              <Route path="live-trading" element={<RedirectPreserve to="/floor" />} />
-              <Route path="strategies/armed" element={<Navigate to="/floor?tab=waiting" replace />} />
-              <Route path="strategies/monitor" element={<Navigate to="/floor?tab=waiting" replace />} />
+              <Route path="positions" element={<RedirectPreserve to="/console" />} />
+              <Route path="live-trading" element={<RedirectPreserve to="/console" />} />
+              <Route path="strategies/armed" element={<Navigate to="/console" replace />} />
+              <Route path="strategies/monitor" element={<Navigate to="/console" replace />} />
               <Route path="strategies/rules" element={<RulesPage />} />
               <Route path="strategies/rules/:ruleId" element={<RuleAnalyzePage />} />
               <Route path="strategies/fingerprints" element={<FingerprintsPage />} />
-              <Route path="trade" element={<TradePage />} />
               <Route path="wallet" element={<MyWalletPage />} />
               <Route path="profiles" element={<ProfilesPage />} />
               <Route path="settings" element={<SettingsPage />} />

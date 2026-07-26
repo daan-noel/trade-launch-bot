@@ -342,7 +342,7 @@ export function walletColumns(actions: WalletActions): ColumnDef<WalletHolding>[
               {isSelling ? <SpinnerIcon /> : <SellIcon />}
             </IconButton>
             <Link
-              to={`/trade?mint=${encodeURIComponent(r.mint_address)}`}
+              to={`/console?mint=${encodeURIComponent(r.mint_address)}`}
               className="rounded border border-white/15 bg-white/4 px-2 py-0.5 text-[11px] font-semibold text-accent hover:border-primary/40 hover:text-primary"
             >
               Trade

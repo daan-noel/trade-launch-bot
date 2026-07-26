@@ -102,7 +102,7 @@ export function FloorPositionDetail({
           </Link>
         ) : null}
         <Link
-          to={`/trade?mint=${encodeURIComponent(facts.mint)}`}
+          to={`/console?mint=${encodeURIComponent(facts.mint)}`}
           className="font-semibold text-accent hover:underline"
           onClick={(e) => e.stopPropagation()}
         >
